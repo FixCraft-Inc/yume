@@ -11,6 +11,7 @@
 #include <ctime>
 #include <thread>
 #include <vector>
+#include <atomic>
 #include <openssl/sha.h>
 #include <openssl/evp.h>
 #include <boost/asio.hpp>
@@ -30,6 +31,7 @@ constexpr const char kFixcraftAnonymPubPem[] =
     "MCowBQYDK2VwAyEAtupzLhANnB0VxP51vB/7yYwR+/3/jv4Str9MGLGA+is=\n"
     "-----END PUBLIC KEY-----\n";
 constexpr const char kDefaultSecretPath[] = "./.secrets/html_secret";
+constexpr int kAnonymRefreshSeconds = 300;
 void print_help() {
     std::cout
         << "yumed - YUME server\n\n"
@@ -283,6 +285,13 @@ bool verify_anonym_signature(const std::string& hash,
     return ok;
 }
 
+struct AnonymProof {
+    std::string hash;
+    std::string sig;
+    std::string ts;
+    std::string nonce;
+};
+
 struct ApiEndpoint {
     std::string host;
     std::string port;
@@ -312,6 +321,27 @@ ApiEndpoint parse_api_url(const std::string& url) {
         port = hostport.substr(colon + 1);
     }
     return {host, port, target};
+}
+
+AnonymProof fetch_anonym_proof(const std::string& hash,
+                               const std::string& api_url,
+                               const std::string& token) {
+    AnonymProof proof;
+    proof.hash = hash;
+    proof.ts = std::to_string(static_cast<long long>(std::time(nullptr)));
+    proof.nonce = yume::util::random_hex(16);
+    nlohmann::json req{{"hash", proof.hash}, {"ts", proof.ts}, {"nonce", proof.nonce}, {"prefix", kAnonMsgPrefix}};
+    ApiEndpoint ep = parse_api_url(api_url);
+    auto resp = post_json_https(ep.host, ep.port, ep.target, req, token);
+    proof.sig = resp.value("sig", "");
+    if (proof.sig.empty()) {
+        std::string err = resp.value("error", "unknown");
+        throw std::runtime_error("anonym signature missing (api error: " + err + ")");
+    }
+    if (!verify_anonym_signature(proof.hash, proof.ts, proof.nonce, proof.sig)) {
+        throw std::runtime_error("anonym signature verification failed (local check)");
+    }
+    return proof;
 }
 }  // namespace
 
@@ -835,19 +865,10 @@ int main(int argc, char** argv) {
             }
             std::string bin = read_file_bytes(self_path);
             cfg.anonym_hash = sha256_hex(bin);
-            cfg.anonym_ts = std::to_string(static_cast<long long>(std::time(nullptr)));
-            cfg.anonym_nonce = yume::util::random_hex(16);
-            nlohmann::json req{{"hash", cfg.anonym_hash}, {"ts", cfg.anonym_ts}, {"nonce", cfg.anonym_nonce}, {"prefix", kAnonMsgPrefix}};
-            ApiEndpoint ep = parse_api_url(cfg.anonym_api);
-            auto resp = post_json_https(ep.host, ep.port, ep.target, req, cfg.anonym_token);
-            cfg.anonym_sig = resp.value("sig", "");
-            if (cfg.anonym_sig.empty()) {
-                std::string err = resp.value("error", "unknown");
-                throw std::runtime_error("anonym signature missing (api error: " + err + ")");
-            }
-            if (!verify_anonym_signature(cfg.anonym_hash, cfg.anonym_ts, cfg.anonym_nonce, cfg.anonym_sig)) {
-                throw std::runtime_error("anonym signature verification failed (local check)");
-            }
+            auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_api, cfg.anonym_token);
+            cfg.anonym_sig = proof.sig;
+            cfg.anonym_ts = proof.ts;
+            cfg.anonym_nonce = proof.nonce;
         } catch (const std::exception& ex) {
             std::cerr << "\033[1;31mANONYM PROOF FAILED: " << ex.what() << "\033[0m\n";
             return 1;
@@ -858,6 +879,24 @@ int main(int argc, char** argv) {
 
     boost::asio::io_context io;
     yume::server::Manager manager(io, cfg);
+    std::atomic<bool> stop_refresh{false};
+    std::thread refresh_thread;
+    if (cfg.anonym) {
+        refresh_thread = std::thread([&manager, &cfg, &stop_refresh]() {
+            while (!stop_refresh.load()) {
+                std::this_thread::sleep_for(std::chrono::seconds(kAnonymRefreshSeconds));
+                if (stop_refresh.load()) {
+                    break;
+                }
+                try {
+                    auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_api, cfg.anonym_token);
+                    manager.update_anonym_proof(proof.hash, proof.sig, proof.ts, proof.nonce);
+                } catch (const std::exception& ex) {
+                    std::cerr << "\033[1;33mANONYM REFRESH FAILED: " << ex.what() << "\033[0m\n";
+                }
+            }
+        });
+    }
 
     yume::util::install_signal_handlers([&](int) {
         if (yume::util::is_logging_enabled()) {
@@ -867,6 +906,7 @@ int main(int argc, char** argv) {
         }
         manager.stop();
         io.stop();
+        stop_refresh.store(true);
     });
 
     try {
@@ -888,6 +928,10 @@ int main(int argc, char** argv) {
     }
     for (auto& t : workers) {
         t.join();
+    }
+    stop_refresh.store(true);
+    if (refresh_thread.joinable()) {
+        refresh_thread.join();
     }
 
     return 0;

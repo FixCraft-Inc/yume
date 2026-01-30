@@ -69,6 +69,9 @@ add_executable(yumed
 )
 
 target_link_libraries(yumed PRIVATE yume_core)
+if(YUME_STATIC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_link_options(yumed PRIVATE -static)
+endif()
 
 add_executable(yume
     main_client.cpp
@@ -79,3 +82,6 @@ add_executable(yume
 )
 
 target_link_libraries(yume PRIVATE yume_core)
+if(YUME_STATIC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_link_options(yume PRIVATE -static)
+endif()

@@ -11,6 +11,11 @@
 #include <fstream>
 #include <mutex>
 #include <iostream>
+#include <vector>
+
+#include <openssl/evp.h>
+#include <openssl/rand.h>
+#include <cctype>
 
 #if YUME_USE_SPDLOG
 #include <spdlog/spdlog.h>
@@ -21,6 +26,7 @@ namespace yume::util {
 namespace {
 std::function<void(int)> g_signal_handler;
 std::mutex g_signal_mutex;
+bool g_logging_enabled = true;
 
 void signal_dispatch(int signum) {
     std::lock_guard<std::mutex> lock(g_signal_mutex);
@@ -58,6 +64,9 @@ void init_logging() {
 }
 
 void log_info(const std::string& msg) {
+    if (!g_logging_enabled) {
+        return;
+    }
 #if YUME_USE_SPDLOG
     spdlog::info(msg);
 #else
@@ -66,6 +75,9 @@ void log_info(const std::string& msg) {
 }
 
 void log_warn(const std::string& msg) {
+    if (!g_logging_enabled) {
+        return;
+    }
 #if YUME_USE_SPDLOG
     spdlog::warn(msg);
 #else
@@ -74,11 +86,61 @@ void log_warn(const std::string& msg) {
 }
 
 void log_error(const std::string& msg) {
+    if (!g_logging_enabled) {
+        return;
+    }
 #if YUME_USE_SPDLOG
     spdlog::error(msg);
 #else
     std::cerr << "[ERROR] " << msg << std::endl;
 #endif
+}
+
+void set_logging_enabled(bool enabled) {
+    g_logging_enabled = enabled;
+}
+
+std::string random_hex(size_t bytes) {
+    static const char* kHex = "0123456789abcdef";
+    std::string out;
+    out.resize(bytes * 2);
+    std::vector<unsigned char> buf(bytes);
+    if (bytes > 0) {
+        if (RAND_bytes(buf.data(), static_cast<int>(buf.size())) != 1) {
+            return {};
+        }
+    }
+    for (size_t i = 0; i < bytes; ++i) {
+        out[i * 2] = kHex[(buf[i] >> 4) & 0xF];
+        out[i * 2 + 1] = kHex[buf[i] & 0xF];
+    }
+    return out;
+}
+
+std::string base64_decode(const std::string& input) {
+    if (input.empty()) {
+        return {};
+    }
+    std::string clean;
+    clean.reserve(input.size());
+    for (unsigned char c : input) {
+        if (c == '=' || std::isalnum(c) || c == '+' || c == '/') {
+            clean.push_back(static_cast<char>(c));
+        }
+    }
+
+    std::string out((clean.size() * 3) / 4 + 2, '\0');
+    int len = EVP_DecodeBlock(reinterpret_cast<unsigned char*>(&out[0]),
+                              reinterpret_cast<const unsigned char*>(clean.data()),
+                              static_cast<int>(clean.size()));
+    if (len < 0) {
+        return {};
+    }
+    while (!out.empty() && out.back() == '\0') {
+        out.pop_back();
+    }
+    out.resize(static_cast<size_t>(len));
+    return out;
 }
 
 void install_signal_handlers(const std::function<void(int)>& handler) {

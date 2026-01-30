@@ -32,8 +32,30 @@ Notes:
 ## Run
 
 ```bash
-sudo ./build/yumed --config config/yumed.json
-./build/yume --config config/yume.json --socks 1080
+sudo ./build/bin/yumed --config config/yumed.json
+./build/bin/yume --config config/yume.json --socks 1080
+```
+
+### Real HTTP facade
+
+Serve a real HTML page on `/` and redirect everything else to `/`:
+
+```bash
+sudo ./build/bin/yumed --listen 443 --cert certs/server.crt --key certs/server.key --auth-keys /etc/yume/authorized_keys --real --real-index certs/index.html --real-secret "change-me"
+```
+
+### Anonym mode (no server logging)
+
+```bash
+sudo ./build/bin/yumed --listen 443 --cert certs/server.crt --key certs/server.key --auth-keys /etc/yume/authorized_keys --anonym --anonym-api https://api.fixcraft.jp/api/verity
+```
+
+Client should set the FixCraft anonym public key:
+
+```json
+{
+  "anonym_pubkey": "/etc/yume/fixcraft_anonym_pub.pem"
+}
 ```
 
 ## Modes
@@ -55,6 +77,14 @@ One-shot command (must enable on server):
 ```bash
 yume -c "curl 1.1.1.1:7761"
 yume --run "ssh admin@fwx-jp"
+```
+
+## Key Management
+
+```bash
+./build/bin/yumed --auth-keys /etc/yume/authorized_keys --keys-list
+./build/bin/yumed --auth-keys /etc/yume/authorized_keys --keys-add /path/to/user.pub --keys-alias <fingerprint> alice
+./build/bin/yumed --auth-keys /etc/yume/authorized_keys --keys-remove alice
 ```
 
 ## Inner Crypto (BaseFWX + PQ)

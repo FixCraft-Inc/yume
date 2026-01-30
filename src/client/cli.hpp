@@ -12,6 +12,7 @@ struct ClientConfig {
     bool obfuscation{false};
     bool inner_crypto{false};
     std::string pq_public_key;
+    std::string anonym_pubkey;
 };
 
 class Cli {

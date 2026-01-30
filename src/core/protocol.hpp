@@ -9,7 +9,7 @@
 
 namespace yume::protocol {
 
-enum FrameType : uint8_t { AUTH = 1, OPEN, DATA, CLOSE, EXEC };
+enum FrameType : uint8_t { AUTH = 1, OPEN, DATA, CLOSE, EXEC, ANON };
 
 inline constexpr uint16_t kFlagOpenOk = 0x0001;
 inline constexpr uint16_t kFlagInnerEncrypted = 0x8000;

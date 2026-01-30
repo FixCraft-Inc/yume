@@ -8,6 +8,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(YUME_USE_BASEFWX "Enable BaseFWX inner crypto support" ON)
 option(YUME_USE_SPDLOG "Enable spdlog logging backend" ON)
 option(YUME_MINIMAL "Build for minimal systems (disable heavy deps/features)" OFF)
+option(YUME_STATIC "Attempt static build (requires static deps)" OFF)
+
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+if(YUME_STATIC)
+    set(BUILD_SHARED_LIBS OFF)
+    set(OPENSSL_USE_STATIC_LIBS TRUE)
+    set(Boost_USE_STATIC_LIBS ON)
+endif()
 
 find_package(OpenSSL REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system)

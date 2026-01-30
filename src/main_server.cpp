@@ -18,12 +18,17 @@
 #include <openssl/pem.h>
 #include <nlohmann/json.hpp>
 
+#include "core/crypto.hpp"
 #include "server/manager.hpp"
 #include "server/auth.hpp"
 #include "util.hpp"
 
 namespace {
 constexpr const char kAnonMsgPrefix[] = "YUME-ANON-V1:";
+constexpr const char kFixcraftAnonymPubPem[] =
+    "-----BEGIN PUBLIC KEY-----\n"
+    "MCowBQYDK2VwAyEAtupzLhANnB0VxP51vB/7yYwR+/3/jv4Str9MGLGA+is=\n"
+    "-----END PUBLIC KEY-----\n";
 constexpr const char kDefaultSecretPath[] = "./.secrets/html_secret";
 void print_help() {
     std::cout
@@ -242,6 +247,40 @@ nlohmann::json post_json_https(const std::string& host,
     } catch (...) {
         throw std::runtime_error("verity API returned invalid JSON: " + body_str.substr(0, 200));
     }
+}
+
+bool verify_anonym_signature(const std::string& hash,
+                             const std::string& ts,
+                             const std::string& nonce,
+                             const std::string& sig_b64) {
+    if (hash.empty() || ts.empty() || nonce.empty() || sig_b64.empty()) {
+        return false;
+    }
+    std::string message = std::string(kAnonMsgPrefix) + hash + ":" + ts + ":" + nonce;
+    yume::crypto::Bytes msg_bytes(message.begin(), message.end());
+    std::string sig_raw = yume::util::base64_decode(sig_b64);
+    if (sig_raw.empty()) {
+        return false;
+    }
+    yume::crypto::Bytes sig_bytes(sig_raw.begin(), sig_raw.end());
+
+    BIO* bio = BIO_new_mem_buf(kFixcraftAnonymPubPem, -1);
+    if (!bio) {
+        return false;
+    }
+    EVP_PKEY* key = PEM_read_bio_PUBKEY(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    if (!key) {
+        return false;
+    }
+    bool ok = false;
+    try {
+        ok = yume::crypto::verify_key(key, msg_bytes, sig_bytes);
+    } catch (...) {
+        ok = false;
+    }
+    EVP_PKEY_free(key);
+    return ok;
 }
 
 struct ApiEndpoint {
@@ -805,6 +844,9 @@ int main(int argc, char** argv) {
             if (cfg.anonym_sig.empty()) {
                 std::string err = resp.value("error", "unknown");
                 throw std::runtime_error("anonym signature missing (api error: " + err + ")");
+            }
+            if (!verify_anonym_signature(cfg.anonym_hash, cfg.anonym_ts, cfg.anonym_nonce, cfg.anonym_sig)) {
+                throw std::runtime_error("anonym signature verification failed (local check)");
             }
         } catch (const std::exception& ex) {
             std::cerr << "\033[1;31mANONYM PROOF FAILED: " << ex.what() << "\033[0m\n";

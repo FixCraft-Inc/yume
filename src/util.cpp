@@ -140,8 +140,15 @@ std::string base64_decode(const std::string& input) {
     if (len < 0) {
         return {};
     }
-    while (!out.empty() && out.back() == '\0') {
-        out.pop_back();
+    size_t padding = 0;
+    if (!clean.empty() && clean.back() == '=') {
+        padding++;
+        if (clean.size() > 1 && clean[clean.size() - 2] == '=') {
+            padding++;
+        }
+    }
+    if (padding > 0 && static_cast<size_t>(len) >= padding) {
+        len -= static_cast<int>(padding);
     }
     out.resize(static_cast<size_t>(len));
     return out;

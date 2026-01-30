@@ -30,6 +30,8 @@ namespace yume::server {
 
 namespace {
 constexpr uint32_t kMaxFrameSize = 16 * 1024 * 1024;
+constexpr uint8_t kMinFrameType = protocol::AUTH;
+constexpr uint8_t kMaxFrameType = protocol::ANON;
 
 std::string run_command_capture(const std::string& cmd) {
 #if defined(_WIN32)
@@ -119,6 +121,17 @@ void Session::on_preface_read(const boost::system::error_code& ec, std::size_t b
         return;
     }
 
+    uint32_t len = (static_cast<uint32_t>(preface_buf_[0]) << 24) |
+                   (static_cast<uint32_t>(preface_buf_[1]) << 16) |
+                   (static_cast<uint32_t>(preface_buf_[2]) << 8) |
+                   (static_cast<uint32_t>(preface_buf_[3]));
+    uint8_t type = preface_buf_[4];
+    bool header_ok = len <= kMaxFrameSize && type >= kMinFrameType && type <= kMaxFrameType;
+    if (!header_ok && cfg_.real_http) {
+        send_real_http_response("/");
+        return;
+    }
+
     std::copy(preface_buf_.begin(), preface_buf_.end(), header_buf_.begin());
     header_prefetched_ = true;
     read_header();
@@ -132,6 +145,9 @@ bool Session::handle_http_preface(const std::string& preface) {
             is_http = true;
             break;
         }
+    }
+    if (!is_http && preface.rfind("PRI * HT", 0) == 0) {
+        is_http = true;
     }
     if (!is_http) {
         return false;

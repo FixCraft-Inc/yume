@@ -758,7 +758,6 @@ int main(int argc, char** argv) {
     }
 
     if (cfg.anonym) {
-        yume::util::set_logging_enabled(false);
         if (cfg.anonym_api.empty()) {
             cfg.anonym_api = "https://api.fixcraft.jp/verity";
         }
@@ -779,9 +778,10 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("anonym signature missing");
             }
         } catch (const std::exception& ex) {
-            yume::util::log_error(std::string("anonym proof failed: ") + ex.what());
+            std::cerr << "\033[1;31mANONYM PROOF FAILED: " << ex.what() << "\033[0m\n";
             return 1;
         }
+        yume::util::set_logging_enabled(false);
     }
 
     boost::asio::io_context io;

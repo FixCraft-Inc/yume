@@ -525,37 +525,39 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (cfg.tls_cert.empty() || cfg.tls_key.empty()) {
-        yume::util::log_error("tls_cert and tls_key must be set in config");
-        return 1;
-    }
-    if (cfg.auth_keys.empty()) {
-        yume::util::log_error("auth_keys must be set in config");
-        return 1;
-    }
-    if (!file_readable(cfg.tls_cert)) {
-        yume::util::log_error("tls_cert not found: " + cfg.tls_cert);
-        return 1;
-    }
-    if (!file_readable(cfg.tls_key)) {
-        yume::util::log_error("tls_key not found: " + cfg.tls_key);
-        return 1;
-    }
-    if (!file_readable(cfg.auth_keys)) {
-        yume::util::log_error("auth_keys not found: " + cfg.auth_keys);
-        return 1;
-    }
-    if (cfg.inner_crypto && !cfg.pq_private_key.empty() && !file_readable(cfg.pq_private_key)) {
-        yume::util::log_error("pq_private_key not found: " + cfg.pq_private_key);
-        return 1;
-    }
-    if (cfg.real_http && !cfg.real_index_path.empty() && !file_readable(cfg.real_index_path)) {
-        yume::util::log_error("real_index_path not found: " + cfg.real_index_path);
-        return 1;
-    }
+    if (!(keys_list || !keys_add.empty() || !keys_remove.empty() || !keys_alias.empty() || !keys_gen.empty())) {
+        if (cfg.tls_cert.empty() || cfg.tls_key.empty()) {
+            yume::util::log_error("tls_cert and tls_key must be set in config");
+            return 1;
+        }
+        if (cfg.auth_keys.empty()) {
+            yume::util::log_error("auth_keys must be set in config");
+            return 1;
+        }
+        if (!file_readable(cfg.tls_cert)) {
+            yume::util::log_error("tls_cert not found: " + cfg.tls_cert);
+            return 1;
+        }
+        if (!file_readable(cfg.tls_key)) {
+            yume::util::log_error("tls_key not found: " + cfg.tls_key);
+            return 1;
+        }
+        if (!file_readable(cfg.auth_keys)) {
+            yume::util::log_error("auth_keys not found: " + cfg.auth_keys);
+            return 1;
+        }
+        if (cfg.inner_crypto && !cfg.pq_private_key.empty() && !file_readable(cfg.pq_private_key)) {
+            yume::util::log_error("pq_private_key not found: " + cfg.pq_private_key);
+            return 1;
+        }
+        if (cfg.real_http && !cfg.real_index_path.empty() && !file_readable(cfg.real_index_path)) {
+            yume::util::log_error("real_index_path not found: " + cfg.real_index_path);
+            return 1;
+        }
 
-    if (cfg.auth_keys_meta.empty() && !cfg.auth_keys.empty()) {
-        cfg.auth_keys_meta = cfg.auth_keys + ".json";
+        if (cfg.auth_keys_meta.empty() && !cfg.auth_keys.empty()) {
+            cfg.auth_keys_meta = cfg.auth_keys + ".json";
+        }
     }
 
     if (keys_list || !keys_add.empty() || !keys_remove.empty() || !keys_alias.empty() || !keys_gen.empty()) {

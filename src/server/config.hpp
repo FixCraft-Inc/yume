@@ -17,6 +17,7 @@ struct ServerConfig {
     bool real_http{false};
     std::string real_index_path;
     std::string real_secret;
+    std::string real_secret_file;
     bool anonym{false};
     std::string anonym_api;
     std::string anonym_token;

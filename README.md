@@ -44,10 +44,16 @@ Serve a real HTML page on `/` and redirect everything else to `/`:
 sudo ./build/bin/yumed --listen 443 --cert certs/server.crt --key certs/server.key --auth-keys /etc/yume/authorized_keys --real --real-index certs/index.html --real-secret "change-me"
 ```
 
+Auto-generate and store the HTML secret:
+
+```bash
+sudo ./build/bin/yumed --listen 443 --cert certs/server.crt --key certs/server.key --auth-keys /etc/yume/authorized_keys --real --real-index certs/index.html --real-secret-file ./.secrets/html_secret
+```
+
 ### Anonym mode (no server logging)
 
 ```bash
-sudo ./build/bin/yumed --listen 443 --cert certs/server.crt --key certs/server.key --auth-keys /etc/yume/authorized_keys --anonym --anonym-api https://api.fixcraft.jp/api/verity
+sudo ./build/bin/yumed --listen 443 --cert certs/server.crt --key certs/server.key --auth-keys /etc/yume/authorized_keys --anonym --anonym-api https://api.fixcraft.jp/verity
 ```
 
 Client should set the FixCraft anonym public key:
@@ -85,6 +91,7 @@ yume --run "ssh admin@fwx-jp"
 ./build/bin/yumed --auth-keys /etc/yume/authorized_keys --keys-list
 ./build/bin/yumed --auth-keys /etc/yume/authorized_keys --keys-add /path/to/user.pub --keys-alias <fingerprint> alice
 ./build/bin/yumed --auth-keys /etc/yume/authorized_keys --keys-remove alice
+./build/bin/yumed --auth-keys /etc/yume/authorized_keys --keys-gen ./keys/user1 --keys-gen-add
 ```
 
 ## Inner Crypto (BaseFWX + PQ)

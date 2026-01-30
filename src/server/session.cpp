@@ -154,18 +154,18 @@ bool Session::handle_http_preface(const std::string& preface) {
     }
 
     auto self = shared_from_this();
-    std::string request = preface;
-    boost::asio::async_read_until(stream_, boost::asio::dynamic_buffer(request), "\r\n\r\n",
+    auto request = std::make_shared<std::string>(preface);
+    boost::asio::async_read_until(stream_, boost::asio::dynamic_buffer(*request), "\r\n\r\n",
                                   boost::asio::bind_executor(strand_,
-                                                             [self, request = std::move(request)](const boost::system::error_code& e, std::size_t) mutable {
+                                                             [self, request](const boost::system::error_code& e, std::size_t) {
                                                                  if (e) {
                                                                      self->close();
                                                                      return;
                                                                  }
                                                                  std::string line;
-                                                                 auto pos = request.find("\r\n");
+                                                                 auto pos = request->find("\r\n");
                                                                  if (pos != std::string::npos) {
-                                                                     line = request.substr(0, pos);
+                                                                     line = request->substr(0, pos);
                                                                  }
                                                                  std::string path = "/";
                                                                  if (!line.empty()) {

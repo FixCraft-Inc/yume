@@ -234,7 +234,11 @@ nlohmann::json post_json_https(const std::string& host,
         throw std::runtime_error("invalid response from verity API");
     }
     std::string body_str = resp_str.substr(pos + 4);
-    return nlohmann::json::parse(body_str);
+    try {
+        return nlohmann::json::parse(body_str);
+    } catch (...) {
+        throw std::runtime_error("verity API returned invalid JSON: " + body_str.substr(0, 200));
+    }
 }
 
 struct ApiEndpoint {
@@ -776,7 +780,8 @@ int main(int argc, char** argv) {
             auto resp = post_json_https(ep.host, ep.port, ep.target, req, cfg.anonym_token);
             cfg.anonym_sig = resp.value("sig", "");
             if (cfg.anonym_sig.empty()) {
-                throw std::runtime_error("anonym signature missing");
+                std::string err = resp.value("error", "unknown");
+                throw std::runtime_error("anonym signature missing (api error: " + err + ")");
             }
         } catch (const std::exception& ex) {
             std::cerr << "\033[1;31mANONYM PROOF FAILED: " << ex.what() << "\033[0m\n";

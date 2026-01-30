@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -21,12 +22,17 @@ public:
 
     void start();
     void stop();
+    void update_anonym_proof(const std::string& hash,
+                             const std::string& sig,
+                             const std::string& ts,
+                             const std::string& nonce);
 
 private:
     void do_accept();
 
     boost::asio::io_context& io_;
     ServerConfig cfg_;
+    std::mutex cfg_mutex_;
     boost::asio::ip::tcp::acceptor acceptor_;
     boost::asio::ssl::context ssl_ctx_;
     std::shared_ptr<std::vector<crypto::Bytes>> authorized_keys_;

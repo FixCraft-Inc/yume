@@ -15,6 +15,10 @@
 #include <ctime>
 #include <cstdlib>
 #include <thread>
+#if !defined(_WIN32)
+#include <unistd.h>
+#include <sys/select.h>
+#endif
 #include <vector>
 
 #include <boost/asio.hpp>
@@ -121,9 +125,109 @@ std::string maybe_force_ipv4(const std::string& cmd, bool ipv4_only) {
     return out + cmd.substr(5);
 }
 
-std::string wrap_ssh_with_proxy(const std::string& cmd, int socks_port) {
+int run_proxycmd(const std::string& dest_host, int dest_port, int socks_port) {
+#if defined(_WIN32)
+    (void)dest_host;
+    (void)dest_port;
+    (void)socks_port;
+    util::log_error("proxycmd is not supported on Windows yet");
+    return 1;
+#else
+    if (dest_host.empty() || dest_port <= 0) {
+        util::log_error("proxycmd missing destination");
+        return 1;
+    }
+    boost::asio::io_context io;
+    boost::asio::ip::tcp::resolver resolver(io);
+    boost::asio::ip::tcp::socket sock(io);
+    auto endpoints = resolver.resolve("127.0.0.1", std::to_string(socks_port));
+    boost::asio::connect(sock, endpoints);
+
+    std::array<uint8_t, 3> hello{{0x05, 0x01, 0x00}};
+    boost::asio::write(sock, boost::asio::buffer(hello));
+    std::array<uint8_t, 2> reply{};
+    boost::asio::read(sock, boost::asio::buffer(reply));
+    if (reply[0] != 0x05 || reply[1] != 0x00) {
+        util::log_error("SOCKS5 auth failed");
+        return 1;
+    }
+
+    std::vector<uint8_t> req;
+    req.reserve(6 + dest_host.size());
+    req.push_back(0x05);
+    req.push_back(0x01);
+    req.push_back(0x00);
+    req.push_back(0x03);
+    req.push_back(static_cast<uint8_t>(dest_host.size()));
+    req.insert(req.end(), dest_host.begin(), dest_host.end());
+    req.push_back(static_cast<uint8_t>((dest_port >> 8) & 0xFF));
+    req.push_back(static_cast<uint8_t>(dest_port & 0xFF));
+    boost::asio::write(sock, boost::asio::buffer(req));
+
+    std::array<uint8_t, 4> rep{};
+    boost::asio::read(sock, boost::asio::buffer(rep));
+    if (rep[1] != 0x00) {
+        util::log_error("SOCKS5 connect failed");
+        return 1;
+    }
+    size_t to_read = 0;
+    if (rep[3] == 0x01) to_read = 4;
+    else if (rep[3] == 0x03) {
+        uint8_t len = 0;
+        boost::asio::read(sock, boost::asio::buffer(&len, 1));
+        to_read = len;
+    } else if (rep[3] == 0x04) to_read = 16;
+    if (to_read > 0) {
+        std::vector<uint8_t> discard(to_read);
+        boost::asio::read(sock, boost::asio::buffer(discard));
+    }
+    std::array<uint8_t, 2> discard_port{};
+    boost::asio::read(sock, boost::asio::buffer(discard_port));
+
+    int sock_fd = sock.native_handle();
+    bool stdin_open = true;
+    while (true) {
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        if (stdin_open) {
+            FD_SET(STDIN_FILENO, &rfds);
+        }
+        FD_SET(sock_fd, &rfds);
+        int maxfd = sock_fd > STDIN_FILENO ? sock_fd : STDIN_FILENO;
+        int rc = select(maxfd + 1, &rfds, nullptr, nullptr, nullptr);
+        if (rc <= 0) {
+            break;
+        }
+        if (stdin_open && FD_ISSET(STDIN_FILENO, &rfds)) {
+            char buf[4096];
+            ssize_t n = ::read(STDIN_FILENO, buf, sizeof(buf));
+            if (n <= 0) {
+                stdin_open = false;
+                boost::system::error_code ec;
+                sock.shutdown(boost::asio::ip::tcp::socket::shutdown_send, ec);
+            } else {
+                boost::asio::write(sock, boost::asio::buffer(buf, static_cast<size_t>(n)));
+            }
+        }
+        if (FD_ISSET(sock_fd, &rfds)) {
+            char buf[4096];
+            boost::system::error_code ec;
+            size_t n = sock.read_some(boost::asio::buffer(buf), ec);
+            if (ec || n == 0) {
+                break;
+            }
+            ssize_t w = ::write(STDOUT_FILENO, buf, n);
+            (void)w;
+        }
+    }
+    return 0;
+#endif
+}
+
+std::string wrap_ssh_with_proxy(const std::string& cmd, int socks_port, const std::string& self_path) {
 #if defined(_WIN32)
     (void)socks_port;
+    (void)self_path;
     return cmd;
 #else
     auto starts_with_ssh = [](const std::string& s) {
@@ -135,13 +239,9 @@ std::string wrap_ssh_with_proxy(const std::string& cmd, int socks_port) {
     if (cmd.find("ProxyCommand") != std::string::npos) {
         return cmd;
     }
-    std::string proxy =
-        "sh -c '"
-        "command -v nc >/dev/null && exec nc -x 127.0.0.1:" + std::to_string(socks_port) + " %h %p; "
-        "command -v ncat >/dev/null && exec ncat --proxy 127.0.0.1:" + std::to_string(socks_port) + " --proxy-type socks5 %h %p; "
-        "command -v connect-proxy >/dev/null && exec connect-proxy -S 127.0.0.1:" + std::to_string(socks_port) + " %h %p; "
-        "exit 127'";
-    std::string out = "ssh -o ProxyCommand=\"" + proxy + "\"";
+    std::string helper = self_path.empty() ? "yume" : self_path;
+    std::string out = "ssh -o ProxyCommand=\"" + helper + " --proxycmd --socks " +
+                      std::to_string(socks_port) + " --dest %h --dport %p\"";
     if (cmd == "ssh") {
         return out;
     }
@@ -160,6 +260,9 @@ struct ParsedArgs {
     int rport{0};
     std::string run_cmd;
     bool run_ipv4{false};
+    bool proxycmd{false};
+    std::string dest_host;
+    int dest_port{0};
     bool inner_crypto{false};
     bool inner_heavy{true};
     std::string pq_public_key;
@@ -197,6 +300,12 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.run_cmd = argv[++i];
         } else if (arg == "--run-ipv4") {
             args.run_ipv4 = true;
+        } else if (arg == "--proxycmd") {
+            args.proxycmd = true;
+        } else if (arg == "--dest" && i + 1 < argc) {
+            args.dest_host = argv[++i];
+        } else if (arg == "--dport" && i + 1 < argc) {
+            args.dest_port = std::stoi(argv[++i]);
         } else if (arg == "--inner") {
             args.inner_crypto = true;
         } else if (arg == "--inner-heavy") {
@@ -313,6 +422,7 @@ void print_help() {
         << "  -c, --cmd <cmd>      (run locally with YUME proxy)\n"
         << "                      (ssh auto-wraps ProxyCommand via local SOCKS)\n"
         << "  --run-ipv4           (prefer IPv4 for --run; curl gets -4 --http1.1)\n"
+        << "  --proxycmd           (internal: SSH ProxyCommand helper)\n"
         << "  --config <path>      (config file)\n"
         << "  --accept-monitoring  (skip monitoring warning)\n"
         << "  --save-server        (persist server into config)\n";
@@ -332,6 +442,10 @@ int Cli::run(int argc, char** argv) {
     util::init_logging();
 
     ParsedArgs args = parse_args(argc, argv);
+    if (args.proxycmd) {
+        int socks_port = args.socks_port > 0 ? args.socks_port : 1080;
+        return run_proxycmd(args.dest_host, args.dest_port, socks_port);
+    }
     if (args.help) {
         print_help();
         return 0;
@@ -566,7 +680,13 @@ int Cli::run(int argc, char** argv) {
             if (args.run_ipv4 && cmd == args.run_cmd) {
                 util::log_warn("--run-ipv4 set; if your command supports IPv4 forcing, add it explicitly.");
             }
-            cmd = wrap_ssh_with_proxy(cmd, actual_port);
+            std::string self_path;
+            try {
+                self_path = std::filesystem::absolute(argv[0]).string();
+            } catch (...) {
+                self_path.clear();
+            }
+            cmd = wrap_ssh_with_proxy(cmd, actual_port, self_path);
             int code = run_local_command_with_proxy(cmd, actual_port, args.run_ipv4);
             work.reset();
             io.stop();

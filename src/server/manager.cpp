@@ -56,11 +56,27 @@ void Manager::stop() {
     acceptor_.close(ec);
 }
 
+void Manager::update_anonym_proof(const std::string& hash,
+                                  const std::string& sig,
+                                  const std::string& ts,
+                                  const std::string& nonce) {
+    std::lock_guard<std::mutex> lock(cfg_mutex_);
+    cfg_.anonym_hash = hash;
+    cfg_.anonym_sig = sig;
+    cfg_.anonym_ts = ts;
+    cfg_.anonym_nonce = nonce;
+}
+
 void Manager::do_accept() {
     acceptor_.async_accept([this](boost::system::error_code ec, boost::asio::ip::tcp::socket socket) {
         if (!ec) {
             uint64_t session_id = next_session_id_.fetch_add(1);
-            auto session = std::make_shared<Session>(std::move(socket), ssl_ctx_, cfg_, authorized_keys_, session_id);
+            ServerConfig cfg_copy;
+            {
+                std::lock_guard<std::mutex> lock(cfg_mutex_);
+                cfg_copy = cfg_;
+            }
+            auto session = std::make_shared<Session>(std::move(socket), ssl_ctx_, cfg_copy, authorized_keys_, session_id);
             session->start();
         } else {
             util::log_warn(std::string("accept failed: ") + ec.message());

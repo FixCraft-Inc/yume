@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <utility>
 #include <filesystem>
+#include <fstream>
 #include <ctime>
 
 #include <boost/asio.hpp>
@@ -44,6 +45,7 @@ struct ParsedArgs {
     std::string run_cmd;
     bool help{false};
     bool accept_monitoring{false};
+    bool save_server{false};
 };
 
 ParsedArgs parse_args(int argc, char** argv) {
@@ -71,8 +73,12 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.rport = std::stoi(argv[++i]);
         } else if (arg == "--run" && i + 1 < argc) {
             args.run_cmd = argv[++i];
+        } else if ((arg == "-c" || arg == "--cmd") && i + 1 < argc) {
+            args.run_cmd = argv[++i];
         } else if (arg == "--accept-monitoring") {
             args.accept_monitoring = true;
+        } else if (arg == "--save-server") {
+            args.save_server = true;
         }
     }
     return args;
@@ -159,6 +165,7 @@ void print_help() {
         << "  --rhost <host>       (forward target host)\n"
         << "  --rport <port>       (forward target port)\n"
         << "  --run <cmd>          (one-shot command)\n"
+        << "  -c, --cmd <cmd>      (one-shot command)\n"
         << "  --config <path>      (config file)\n"
         << "  --accept-monitoring  (skip monitoring warning)\n";
 }
@@ -226,6 +233,24 @@ int Cli::run(int argc, char** argv) {
     }
     if (args.socks_port > 0) {
         cfg.socks_port = args.socks_port;
+    }
+
+    if (args.save_server && !cfg.server.empty()) {
+        nlohmann::json json;
+        std::ifstream in(args.config_path);
+        if (in) {
+            try { in >> json; } catch (...) { json = nlohmann::json::object(); }
+        } else {
+            json = nlohmann::json::object();
+        }
+        json["server"] = cfg.server;
+        if (cfg.port > 0) json["port"] = cfg.port;
+        if (!cfg.identity.empty()) json["identity"] = cfg.identity;
+        if (cfg.socks_port > 0) json["socks_port"] = cfg.socks_port;
+        std::ofstream out(args.config_path);
+        if (out) {
+            out << json.dump(2);
+        }
     }
 
     if (cfg.server.empty() || cfg.identity.empty()) {

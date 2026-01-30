@@ -53,6 +53,7 @@ void print_help() {
         << "  --keys-alias <id> <alias> (set alias)\n"
         << "  --keys-gen <prefix>   (generate Ed25519 keypair at <prefix>.key/.pub)\n"
         << "  --keys-gen-add        (append generated pubkey to auth_keys)\n"
+        << "  --ui                  (interactive server manager)\n"
         << "  --help                (show help)\n\n"
         << "Required config fields:\n"
         << "  listen_port   (int)\n"
@@ -280,6 +281,7 @@ int main(int argc, char** argv) {
     bool keys_list = false;
     std::string keys_gen;
     bool keys_gen_add = false;
+    bool ui_mode = false;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") {
@@ -334,6 +336,8 @@ int main(int argc, char** argv) {
             keys_gen = argv[++i];
         } else if (arg == "--keys-gen-add") {
             keys_gen_add = true;
+        } else if (arg == "--ui") {
+            ui_mode = true;
         }
     }
 
@@ -459,8 +463,103 @@ int main(int argc, char** argv) {
         cfg.auth_keys_meta = cfg.auth_keys + ".json";
     }
 
+    if (ui_mode) {
+        std::cout << "\n\033[1;36mYUME Server Manager\033[0m\n";
+        std::cout << "1) Generate keypair\n";
+        std::cout << "2) Add public key to auth_keys\n";
+        std::cout << "3) Remove key (fingerprint or alias)\n";
+        std::cout << "4) Set alias\n";
+        std::cout << "5) List keys\n";
+        std::cout << "6) Edit config\n";
+        std::cout << "0) Exit\n";
+        std::cout << "Select: ";
+        std::string choice;
+        std::getline(std::cin, choice);
+        if (choice == "1") {
+            std::cout << "Prefix (path without extension): ";
+            std::getline(std::cin, keys_gen);
+        } else if (choice == "2") {
+            std::cout << "Public key path: ";
+            std::getline(std::cin, keys_add);
+        } else if (choice == "3") {
+            std::cout << "Fingerprint or alias: ";
+            std::getline(std::cin, keys_remove);
+        } else if (choice == "4") {
+            std::cout << "Fingerprint or alias: ";
+            std::getline(std::cin, keys_alias);
+            std::cout << "New alias: ";
+            std::getline(std::cin, keys_alias_value);
+        } else if (choice == "5") {
+            keys_list = true;
+        } else if (choice == "6") {
+            std::string out_path = "config/yumed.json";
+            std::cout << "Config path [config/yumed.json]: ";
+            std::string input_path;
+            std::getline(std::cin, input_path);
+            if (!input_path.empty()) {
+                out_path = input_path;
+            }
+            nlohmann::json json;
+            std::ifstream in(out_path);
+            if (in) {
+                try { in >> json; } catch (...) { json = nlohmann::json::object(); }
+            } else {
+                json = nlohmann::json::object();
+            }
+            auto prompt = [&](const std::string& key, const std::string& current) {
+                std::cout << key << " [" << current << "]: ";
+                std::string v;
+                std::getline(std::cin, v);
+                return v.empty() ? current : v;
+            };
+            std::string listen = prompt("listen_port", std::to_string(cfg.listen_port));
+            std::string cert = prompt("tls_cert", cfg.tls_cert);
+            std::string key = prompt("tls_key", cfg.tls_key);
+            std::string auth = prompt("auth_keys", cfg.auth_keys);
+            std::string threads = prompt("threads", std::to_string(cfg.threads));
+            std::string obfs = prompt("obfuscation (true/false)", cfg.obfuscation ? "true" : "false");
+            std::string inner = prompt("inner_crypto (true/false)", cfg.inner_crypto ? "true" : "false");
+            std::string pq = prompt("pq_private_key", cfg.pq_private_key);
+            std::string allow_exec = prompt("allow_exec (true/false)", cfg.allow_exec ? "true" : "false");
+            std::string real_http = prompt("real_http (true/false)", cfg.real_http ? "true" : "false");
+            std::string real_index = prompt("real_index_path", cfg.real_index_path);
+            std::string real_secret_file = prompt("real_secret_file", cfg.real_secret_file);
+            std::string anonym = prompt("anonym (true/false)", cfg.anonym ? "true" : "false");
+            std::string anonym_api = prompt("anonym_api", cfg.anonym_api);
+            std::string anonym_token = prompt("anonym_token", cfg.anonym_token);
+
+            json["listen_port"] = std::stoi(listen);
+            json["tls_cert"] = cert;
+            json["tls_key"] = key;
+            json["auth_keys"] = auth;
+            json["threads"] = std::stoi(threads);
+            json["obfuscation"] = (obfs == "true");
+            json["inner_crypto"] = (inner == "true");
+            if (!pq.empty()) json["pq_private_key"] = pq;
+            json["allow_exec"] = (allow_exec == "true");
+            json["real_http"] = (real_http == "true");
+            if (!real_index.empty()) json["real_index_path"] = real_index;
+            if (!real_secret_file.empty()) json["real_secret_file"] = real_secret_file;
+            json["anonym"] = (anonym == "true");
+            if (!anonym_api.empty()) json["anonym_api"] = anonym_api;
+            if (!anonym_token.empty()) json["anonym_token"] = anonym_token;
+
+            ensure_dir(std::filesystem::path(out_path).parent_path().string());
+            std::ofstream out(out_path);
+            if (!out) {
+                yume::util::log_error("failed to write config: " + out_path);
+                return 1;
+            }
+            out << json.dump(2);
+            std::cout << "Saved config: " << out_path << "\n";
+            return 0;
+        } else {
+            return 0;
+        }
+    }
+
     if (keys_list || !keys_add.empty() || !keys_remove.empty() || !keys_alias.empty() || !keys_gen.empty()) {
-        if (cfg.auth_keys.empty()) {
+        if (cfg.auth_keys.empty() && (keys_list || !keys_add.empty() || !keys_remove.empty() || !keys_alias.empty() || keys_gen_add)) {
             yume::util::log_error("auth_keys must be set for key management");
             return 1;
         }
@@ -532,6 +631,10 @@ int main(int argc, char** argv) {
             }
             std::cout << "Generated: " << priv_path << " and " << pub_path << "\n";
             if (keys_gen_add) {
+                if (cfg.auth_keys.empty()) {
+                    yume::util::log_error("auth_keys must be set to add generated key");
+                    return 1;
+                }
                 keys_add = pub_path;
                 BIO* inbio = BIO_new_file(keys_add.c_str(), "r");
                 if (!inbio) {

@@ -79,12 +79,13 @@ Port forward (SSH-style):
 yume --lport 2222 --rhost fw-main.fixcraft.jp --rport 22
 ```
 
-One-shot command (must enable on server):
+Local run (executes locally; all network traffic goes through YUME):
 
 ```bash
-yume -c "curl 1.1.1.1:7761"
-yume --run "ssh admin@fwx-jp"
+yume --server fixcraft.net --auth id_ed25519 --run "curl https://1.1.1.1"
 ```
+
+Note: server-side command execution is disabled for safety. Use SOCKS or port forwarding.
 
 ## Key Management
 
@@ -97,11 +98,12 @@ yume --run "ssh admin@fwx-jp"
 
 ## Inner Crypto (BaseFWX + PQ)
 
-Optional inner encryption uses BaseFWX AES-GCM with ML-KEM-768 key exchange. Enable with:
+Optional inner encryption uses BaseFWX AES-GCM with ML-KEM-768 key exchange and a salted heavy KDF by default. Enable with:
 
 ```json
 {
   "inner_crypto": true,
+  "inner_heavy": true,
   "pq_public_key": "/etc/yume/master_pq.pk"
 }
 ```
@@ -111,6 +113,7 @@ Server config:
 ```json
 {
   "inner_crypto": true,
+  "inner_heavy": true,
   "pq_private_key": "/etc/yume/master_pq.sk",
   "allow_exec": false
 }

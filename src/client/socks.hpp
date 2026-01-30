@@ -72,6 +72,7 @@ public:
     SocksServer(boost::asio::io_context& io, int port, std::shared_ptr<Tunnel> tunnel);
 
     void start();
+    int port() const;
 
 private:
     void do_accept();

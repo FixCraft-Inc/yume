@@ -100,6 +100,10 @@ void set_logging_enabled(bool enabled) {
     g_logging_enabled = enabled;
 }
 
+bool is_logging_enabled() {
+    return g_logging_enabled;
+}
+
 std::string random_hex(size_t bytes) {
     static const char* kHex = "0123456789abcdef";
     std::string out;

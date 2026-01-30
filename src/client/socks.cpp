@@ -336,6 +336,15 @@ void SocksServer::start() {
     do_accept();
 }
 
+int SocksServer::port() const {
+    boost::system::error_code ec;
+    auto ep = acceptor_.local_endpoint(ec);
+    if (ec) {
+        return 0;
+    }
+    return static_cast<int>(ep.port());
+}
+
 void SocksServer::do_accept() {
     acceptor_.async_accept([this](const boost::system::error_code& ec, boost::asio::ip::tcp::socket socket) {
         if (!ec) {

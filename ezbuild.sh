@@ -10,6 +10,11 @@ COLOR_YELLOW="\033[0;33m"
 COLOR_BLUE="\033[0;34m"
 COLOR_MAGENTA="\033[0;35m"
 
+MINIMAL=0
+TARGET_ARCH=""
+CLEAN_ONLY=0
+CMAKE_ARGS=()
+
 info()  { echo -e "${COLOR_BLUE}✨ $*${COLOR_RESET}"; }
 warn()  { echo -e "${COLOR_YELLOW}⚠️  $*${COLOR_RESET}"; }
 error() { echo -e "${COLOR_RED}❌ $*${COLOR_RESET}"; }
@@ -178,7 +183,7 @@ build_project() {
     rm -rf build
     mkdir -p build
     step "Configuring build..."
-    cmake -B build
+    cmake -B build "${CMAKE_ARGS[@]}"
     step "Compiling..."
     cmake --build build -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu || echo 4)"
     ok "Build complete."
@@ -187,10 +192,56 @@ build_project() {
 main() {
     info "YUME ezbuild starting..."
 
-    if [[ "${1:-}" == "--clean" ]]; then
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --clean)
+                CLEAN_ONLY=1
+                shift
+                ;;
+            --minimal)
+                MINIMAL=1
+                shift
+                ;;
+            --arch)
+                shift
+                TARGET_ARCH="${1:-}"
+                if [[ -z "$TARGET_ARCH" ]]; then
+                    error "--arch requires a value (e.g. x86_64, aarch64)"
+                    exit 1
+                fi
+                shift
+                ;;
+            *)
+                warn "Unknown option: $1"
+                shift
+                ;;
+        esac
+    done
+
+    if [[ $CLEAN_ONLY -eq 1 ]]; then
         step "Cleaning build directory..."
         rm -rf build
         ok "Cleaned."
+        exit 0
+    fi
+
+    if [[ $MINIMAL -eq 1 ]]; then
+        warn "Minimal mode: skipping dependency install and BaseFWX; enabling static build."
+        CMAKE_ARGS+=(
+            -DYUME_MINIMAL=ON
+            -DYUME_STATIC=ON
+            -DYUME_USE_BASEFWX=OFF
+            -DYUME_USE_SPDLOG=OFF
+            -DCMAKE_BUILD_TYPE=Release
+        )
+    fi
+
+    if [[ -n "$TARGET_ARCH" ]]; then
+        info "Target architecture: $TARGET_ARCH"
+        CMAKE_ARGS+=(
+            "-DCMAKE_SYSTEM_PROCESSOR=${TARGET_ARCH}"
+            "-DYUME_TARGET_ARCH=${TARGET_ARCH}"
+        )
     fi
 
     if need_cmd cmake; then
@@ -199,25 +250,28 @@ main() {
         warn "CMake not found. Will install build dependencies."
     fi
 
-    uname_out="$(uname -s)"
-    case "${uname_out}" in
-        Linux*)
-            install_deps_linux || { error "Dependency install failed."; exit 1; }
-            ;;
-        Darwin*)
-            install_deps_macos || { error "Dependency install failed."; exit 1; }
-            ;;
-        MINGW*|MSYS*|CYGWIN*)
-            install_deps_windows || { error "Dependency install failed."; exit 1; }
-            ;;
-        *)
-            error "Unsupported OS: ${uname_out}"
-            exit 1
-            ;;
-    esac
+    if [[ $MINIMAL -eq 0 ]]; then
+        uname_out="$(uname -s)"
+        case "${uname_out}" in
+            Linux*)
+                install_deps_linux || { error "Dependency install failed."; exit 1; }
+                ;;
+            Darwin*)
+                install_deps_macos || { error "Dependency install failed."; exit 1; }
+                ;;
+            MINGW*|MSYS*|CYGWIN*)
+                install_deps_windows || { error "Dependency install failed."; exit 1; }
+                ;;
+            *)
+                error "Unsupported OS: ${uname_out}"
+                exit 1
+                ;;
+        esac
 
-    ensure_basefwx
-    cleanup_vendor
+        ensure_basefwx
+        cleanup_vendor
+    fi
+
     build_project
     info "Done! 🎉"
     echo -e "${COLOR_GREEN}Run:${COLOR_RESET} ./build/bin/yumed --config config/yumed.json"

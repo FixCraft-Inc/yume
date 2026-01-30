@@ -8,13 +8,11 @@
 
 #include <openssl/pem.h>
 
-#include <cstdio>
 #include <algorithm>
 #include <fstream>
 #include <chrono>
 #include <ctime>
 #include <string>
-#include <thread>
 
 #include "core/inner_crypto.hpp"
 #include "core/protocol.hpp"
@@ -34,33 +32,6 @@ constexpr uint32_t kMaxFrameSize = 16 * 1024 * 1024;
 constexpr uint8_t kMinFrameType = protocol::AUTH;
 constexpr uint8_t kMaxFrameType = protocol::ANON;
 
-std::string run_command_capture(const std::string& cmd) {
-#if defined(_WIN32)
-    FILE* pipe = _popen(cmd.c_str(), "r");
-#else
-    FILE* pipe = popen(cmd.c_str(), "r");
-#endif
-    if (!pipe) {
-        return "EXEC failed: could not start command";
-    }
-    std::string output;
-    char buffer[4096];
-    while (true) {
-        size_t n = std::fread(buffer, 1, sizeof(buffer), pipe);
-        if (n > 0) {
-            output.append(buffer, buffer + n);
-        }
-        if (n < sizeof(buffer)) {
-            break;
-        }
-    }
-#if defined(_WIN32)
-    _pclose(pipe);
-#else
-    pclose(pipe);
-#endif
-    return output;
-}
 }
 
 Session::Session(boost::asio::ip::tcp::socket socket,
@@ -450,7 +421,7 @@ void Session::handle_frame(const protocol::Frame& frame) {
             handle_data(frame);
             break;
         case protocol::EXEC: {
-            handle_exec(frame);
+            send_open_reply(frame.header.stream_id, false, "EXEC disabled for safety");
             break;
         }
         case protocol::CLOSE:
@@ -470,8 +441,12 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         crypto::Bytes pub_pem = read_field(frame.payload, offset);
         crypto::Bytes sig = read_field(frame.payload, offset);
         std::optional<crypto::Bytes> pq_ciphertext;
+        std::optional<crypto::Bytes> pq_salt;
         if (offset < frame.payload.size()) {
             pq_ciphertext = read_field(frame.payload, offset);
+        }
+        if (offset < frame.payload.size()) {
+            pq_salt = read_field(frame.payload, offset);
         }
 
         BIO* pub_bio = BIO_new_mem_buf(pub_pem.data(), static_cast<int>(pub_pem.size()));
@@ -484,9 +459,9 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             return false;
         }
 
-    bool sig_ok = crypto::verify_key(pubkey, challenge_, sig);
-    bool auth_ok = authorized_keys_ ? is_authorized(pubkey, *authorized_keys_) : false;
-    std::string fingerprint = fingerprint_pubkey(pubkey);
+        bool sig_ok = crypto::verify_key(pubkey, challenge_, sig);
+        bool auth_ok = authorized_keys_ ? is_authorized(pubkey, *authorized_keys_) : false;
+        std::string fingerprint = fingerprint_pubkey(pubkey);
         EVP_PKEY_free(pubkey);
 
         if (!sig_ok || !auth_ok) {
@@ -494,14 +469,18 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         }
 
         if (cfg_.inner_crypto) {
-            if (!pq_ciphertext.has_value()) {
-                util::log_warn("session " + std::to_string(session_id_) + ": missing PQ ciphertext");
+            if (!pq_ciphertext.has_value() || !pq_salt.has_value()) {
+                util::log_warn("session " + std::to_string(session_id_) + ": missing PQ ciphertext or salt");
+                return false;
+            }
+            if (pq_salt->empty()) {
+                util::log_warn("session " + std::to_string(session_id_) + ": missing PQ salt");
                 return false;
             }
             inner::Config inner_cfg;
             inner_cfg.enabled = cfg_.inner_crypto;
             inner_cfg.pq_private_key = cfg_.pq_private_key;
-            auto derived = inner::server_derive_key(inner_cfg, *pq_ciphertext);
+            auto derived = inner::server_derive_key(inner_cfg, *pq_ciphertext, *pq_salt, cfg_.inner_heavy);
             if (!derived.has_value() || derived->empty()) {
                 util::log_warn("session " + std::to_string(session_id_) + ": PQ key derivation failed");
                 return false;
@@ -615,63 +594,17 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
 }
 
 void Session::handle_exec(const protocol::Frame& frame) {
-    if (!cfg_.allow_exec) {
-        const std::string msg = "EXEC disabled by server policy";
-        crypto::Bytes payload(msg.begin(), msg.end());
-        uint16_t flags = 0;
-        if (inner_key_.has_value()) {
-            payload = inner::encrypt_payload(*inner_key_, protocol::DATA, frame.header.stream_id, payload);
-            flags |= protocol::kFlagInnerEncrypted;
-        }
-        protocol::Frame resp{{static_cast<uint32_t>(payload.size()), protocol::DATA, frame.header.stream_id, flags}, payload};
-        async_write_frame(resp);
-        protocol::Frame close_frame{{0, protocol::CLOSE, frame.header.stream_id, 0}, {}};
-        async_write_frame(close_frame);
-        return;
+    const std::string msg = "EXEC disabled for safety";
+    crypto::Bytes payload(msg.begin(), msg.end());
+    uint16_t flags = 0;
+    if (inner_key_.has_value()) {
+        payload = inner::encrypt_payload(*inner_key_, protocol::DATA, frame.header.stream_id, payload);
+        flags |= protocol::kFlagInnerEncrypted;
     }
-
-    crypto::Bytes payload = frame.payload;
-    if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        try {
-            payload = inner::decrypt_payload(*inner_key_, frame.header.type, frame.header.stream_id, frame.payload);
-        } catch (const std::exception& ex) {
-            util::log_warn("session " + std::to_string(session_id_) + ": EXEC decrypt failed: " + ex.what());
-            close();
-            return;
-        }
-    }
-    std::string cmd(payload.begin(), payload.end());
-    if (cmd.empty()) {
-        const std::string msg = "EXEC failed: empty command";
-        crypto::Bytes payload(msg.begin(), msg.end());
-        uint16_t flags = 0;
-        if (inner_key_.has_value()) {
-            payload = inner::encrypt_payload(*inner_key_, protocol::DATA, frame.header.stream_id, payload);
-            flags |= protocol::kFlagInnerEncrypted;
-        }
-        protocol::Frame resp{{static_cast<uint32_t>(payload.size()), protocol::DATA, frame.header.stream_id, flags}, payload};
-        async_write_frame(resp);
-        protocol::Frame close_frame{{0, protocol::CLOSE, frame.header.stream_id, 0}, {}};
-        async_write_frame(close_frame);
-        return;
-    }
-
-    auto self = shared_from_this();
-    std::thread([self, cmd, stream_id = frame.header.stream_id]() {
-        std::string output = run_command_capture(cmd);
-        boost::asio::post(self->strand_, [self, output = std::move(output), stream_id]() {
-            crypto::Bytes payload(output.begin(), output.end());
-            uint16_t flags = 0;
-            if (self->inner_key_.has_value()) {
-                payload = inner::encrypt_payload(*self->inner_key_, protocol::DATA, stream_id, payload);
-                flags |= protocol::kFlagInnerEncrypted;
-            }
-            protocol::Frame resp{{static_cast<uint32_t>(payload.size()), protocol::DATA, stream_id, flags}, payload};
-            self->async_write_frame(resp);
-            protocol::Frame close_frame{{0, protocol::CLOSE, stream_id, 0}, {}};
-            self->async_write_frame(close_frame);
-        });
-    }).detach();
+    protocol::Frame resp{{static_cast<uint32_t>(payload.size()), protocol::DATA, frame.header.stream_id, flags}, payload};
+    async_write_frame(resp);
+    protocol::Frame close_frame{{0, protocol::CLOSE, frame.header.stream_id, 0}, {}};
+    async_write_frame(close_frame);
 }
 
 void Session::send_open_reply(uint8_t stream_id, bool ok, const std::string& message) {

@@ -12,6 +12,7 @@ struct ServerConfig {
     int threads{4};
     bool obfuscation{false};
     bool inner_crypto{false};
+    bool inner_heavy{true};
     std::string pq_private_key;
     bool allow_exec{false};
     bool real_http{false};

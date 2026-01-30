@@ -13,6 +13,9 @@
 #include <filesystem>
 #include <fstream>
 #include <ctime>
+#include <cstdlib>
+#include <thread>
+#include <vector>
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
@@ -32,6 +35,63 @@ namespace yume::client {
 
 namespace {
 constexpr const char kAnonMsgPrefix[] = "YUME-ANON-V1:";
+constexpr const char kFixcraftAnonymPubPem[] =
+    "-----BEGIN PUBLIC KEY-----\n"
+    "MCowBQYDK2VwAyEAtupzLhANnB0VxP51vB/7yYwR+/3/jv4Str9MGLGA+is=\n"
+    "-----END PUBLIC KEY-----\n";
+struct EnvGuard {
+    struct Entry {
+        std::string key;
+        std::string value;
+        bool had;
+    };
+    std::vector<Entry> prev;
+    ~EnvGuard() {
+#if defined(_WIN32)
+        for (const auto& e : prev) {
+            if (e.had) {
+                _putenv_s(e.key.c_str(), e.value.c_str());
+            } else {
+                _putenv_s(e.key.c_str(), "");
+            }
+        }
+#else
+        for (const auto& e : prev) {
+            if (e.had) {
+                setenv(e.key.c_str(), e.value.c_str(), 1);
+            } else {
+                unsetenv(e.key.c_str());
+            }
+        }
+#endif
+    }
+};
+
+void set_env(EnvGuard& guard, const std::string& key, const std::string& value) {
+    const char* old = std::getenv(key.c_str());
+    if (old) {
+        guard.prev.push_back({key, old, true});
+    } else {
+        guard.prev.push_back({key, "", false});
+    }
+#if defined(_WIN32)
+    _putenv_s(key.c_str(), value.c_str());
+#else
+    setenv(key.c_str(), value.c_str(), 1);
+#endif
+}
+
+int run_local_command_with_proxy(const std::string& cmd, int socks_port) {
+    std::string proxy = "socks5h://127.0.0.1:" + std::to_string(socks_port);
+    EnvGuard guard;
+    set_env(guard, "ALL_PROXY", proxy);
+    set_env(guard, "HTTPS_PROXY", proxy);
+    set_env(guard, "HTTP_PROXY", proxy);
+    set_env(guard, "all_proxy", proxy);
+    set_env(guard, "https_proxy", proxy);
+    set_env(guard, "http_proxy", proxy);
+    return std::system(cmd.c_str());
+}
 struct ParsedArgs {
     std::string config_path{"config/yume.json"};
     bool config_specified{false};
@@ -43,6 +103,9 @@ struct ParsedArgs {
     std::string rhost;
     int rport{0};
     std::string run_cmd;
+    bool inner_crypto{false};
+    bool inner_heavy{true};
+    std::string pq_public_key;
     bool help{false};
     bool accept_monitoring{false};
     bool save_server{false};
@@ -75,6 +138,16 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.run_cmd = argv[++i];
         } else if ((arg == "-c" || arg == "--cmd") && i + 1 < argc) {
             args.run_cmd = argv[++i];
+        } else if (arg == "--inner") {
+            args.inner_crypto = true;
+        } else if (arg == "--inner-heavy") {
+            args.inner_crypto = true;
+            args.inner_heavy = true;
+        } else if (arg == "--inner-light") {
+            args.inner_crypto = true;
+            args.inner_heavy = false;
+        } else if (arg == "--pq-pub" && i + 1 < argc) {
+            args.pq_public_key = argv[++i];
         } else if (arg == "--accept-monitoring") {
             args.accept_monitoring = true;
         } else if (arg == "--save-server") {
@@ -86,7 +159,8 @@ ParsedArgs parse_args(int argc, char** argv) {
 
 crypto::Bytes auth_payload(EVP_PKEY* pubkey,
                            const crypto::Bytes& signature,
-                           const std::optional<crypto::Bytes>& pq_ciphertext) {
+                           const std::optional<crypto::Bytes>& pq_ciphertext,
+                           const std::optional<crypto::Bytes>& pq_salt) {
     BIO* bio = BIO_new(BIO_s_mem());
     if (!bio) {
         throw std::runtime_error("failed to allocate pubkey bio");
@@ -124,6 +198,12 @@ crypto::Bytes auth_payload(EVP_PKEY* pubkey,
         payload.push_back(static_cast<uint8_t>((pq_len >> 8) & 0xFF));
         payload.push_back(static_cast<uint8_t>(pq_len & 0xFF));
         payload.insert(payload.end(), pq_ciphertext->begin(), pq_ciphertext->end());
+        if (pq_salt.has_value()) {
+            uint16_t salt_len = static_cast<uint16_t>(pq_salt->size());
+            payload.push_back(static_cast<uint8_t>((salt_len >> 8) & 0xFF));
+            payload.push_back(static_cast<uint8_t>(salt_len & 0xFF));
+            payload.insert(payload.end(), pq_salt->begin(), pq_salt->end());
+        }
     }
 
     return payload;
@@ -131,7 +211,8 @@ crypto::Bytes auth_payload(EVP_PKEY* pubkey,
 
 void authenticate(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
                   const std::string& identity_path,
-                  const std::optional<crypto::Bytes>& pq_ciphertext) {
+                  const std::optional<crypto::Bytes>& pq_ciphertext,
+                  const std::optional<crypto::Bytes>& pq_salt) {
     protocol::Frame challenge = protocol::read_frame(stream);
     if (challenge.header.type != protocol::AUTH) {
         throw std::runtime_error("server did not send AUTH challenge");
@@ -141,7 +222,8 @@ void authenticate(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream
     crypto::Bytes signature = crypto::sign_message(kp.private_key.get(), challenge.payload);
     crypto::Bytes payload = auth_payload(kp.public_key.get() ? kp.public_key.get() : kp.private_key.get(),
                                          signature,
-                                         pq_ciphertext);
+                                         pq_ciphertext,
+                                         pq_salt);
 
     protocol::Frame response{{static_cast<uint32_t>(payload.size()), protocol::AUTH, 0, 0}, payload};
     protocol::send_frame(stream, response);
@@ -164,10 +246,15 @@ void print_help() {
         << "  --lport <port>       (forward local port)\n"
         << "  --rhost <host>       (forward target host)\n"
         << "  --rport <port>       (forward target port)\n"
-        << "  --run <cmd>          (one-shot command)\n"
-        << "  -c, --cmd <cmd>      (one-shot command)\n"
+        << "  --inner              (enable inner encryption)\n"
+        << "  --inner-heavy        (heavy KDF, default)\n"
+        << "  --inner-light        (lighter KDF)\n"
+        << "  --pq-pub <path>      (override pq_public_key)\n"
+        << "  --run <cmd>          (run locally with YUME proxy)\n"
+        << "  -c, --cmd <cmd>      (run locally with YUME proxy)\n"
         << "  --config <path>      (config file)\n"
-        << "  --accept-monitoring  (skip monitoring warning)\n";
+        << "  --accept-monitoring  (skip monitoring warning)\n"
+        << "  --save-server        (persist server into config)\n";
 }
 
 bool file_exists(const std::string& path) {
@@ -211,6 +298,9 @@ int Cli::run(int argc, char** argv) {
             if (json.contains("inner_crypto") && !cfg.inner_crypto) {
                 cfg.inner_crypto = json["inner_crypto"].get<bool>();
             }
+            if (json.contains("inner_heavy")) {
+                cfg.inner_heavy = json["inner_heavy"].get<bool>();
+            }
             if (json.contains("pq_public_key") && cfg.pq_public_key.empty()) {
                 cfg.pq_public_key = util::expand_user(json["pq_public_key"].get<std::string>());
             }
@@ -234,6 +324,15 @@ int Cli::run(int argc, char** argv) {
     if (args.socks_port > 0) {
         cfg.socks_port = args.socks_port;
     }
+    if (args.inner_crypto) {
+        cfg.inner_crypto = true;
+    }
+    if (args.inner_crypto) {
+        cfg.inner_heavy = args.inner_heavy;
+    }
+    if (!args.pq_public_key.empty()) {
+        cfg.pq_public_key = util::expand_user(args.pq_public_key);
+    }
 
     if (args.save_server && !cfg.server.empty()) {
         nlohmann::json json;
@@ -247,6 +346,9 @@ int Cli::run(int argc, char** argv) {
         if (cfg.port > 0) json["port"] = cfg.port;
         if (!cfg.identity.empty()) json["identity"] = cfg.identity;
         if (cfg.socks_port > 0) json["socks_port"] = cfg.socks_port;
+        json["inner_crypto"] = cfg.inner_crypto;
+        json["inner_heavy"] = cfg.inner_heavy;
+        if (!cfg.pq_public_key.empty()) json["pq_public_key"] = cfg.pq_public_key;
         std::ofstream out(args.config_path);
         if (out) {
             out << json.dump(2);
@@ -279,17 +381,19 @@ int Cli::run(int argc, char** argv) {
         inner_cfg.pq_public_key = cfg.pq_public_key;
 
         std::optional<crypto::Bytes> pq_ciphertext;
+        std::optional<crypto::Bytes> pq_salt;
         std::optional<crypto::Bytes> inner_key;
         if (inner_cfg.enabled) {
-            auto hs = inner::client_prepare(inner_cfg);
+            auto hs = inner::client_prepare(inner_cfg, cfg.inner_heavy);
             if (!hs.enabled || hs.key.empty()) {
                 throw std::runtime_error("inner crypto init failed");
             }
             pq_ciphertext = hs.pq_ciphertext;
+            pq_salt = hs.salt;
             inner_key = hs.key;
         }
 
-        authenticate(stream, cfg.identity, pq_ciphertext);
+        authenticate(stream, cfg.identity, pq_ciphertext, pq_salt);
         util::log_info("authenticated to server");
 
         protocol::Frame anon_frame = protocol::read_frame(stream);
@@ -329,12 +433,26 @@ int Cli::run(int argc, char** argv) {
                     print_red("ANONYM PROOF EXPIRED OR NOT YET VALID");
                     return 1;
                 }
-                if (cfg.anonym_pubkey.empty()) {
-                    print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
-                    print_red("MISSING FIXCRAFT ANONYM PUBLIC KEY - CANNOT VERIFY SERVER");
-                    return 1;
+                crypto::EVP_PKEY_ptr pubkey{nullptr, EVP_PKEY_free};
+                if (!cfg.anonym_pubkey.empty()) {
+                    auto kp = crypto::load_keypair("", cfg.anonym_pubkey);
+                    pubkey.reset(kp.public_key.release());
+                } else {
+                    BIO* bio = BIO_new_mem_buf(kFixcraftAnonymPubPem, -1);
+                    if (!bio) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("FAILED TO LOAD EMBEDDED ANONYM PUBLIC KEY");
+                        return 1;
+                    }
+                    EVP_PKEY* key = PEM_read_bio_PUBKEY(bio, nullptr, nullptr, nullptr);
+                    BIO_free(bio);
+                    if (!key) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("FAILED TO LOAD EMBEDDED ANONYM PUBLIC KEY");
+                        return 1;
+                    }
+                    pubkey.reset(key);
                 }
-                auto kp = crypto::load_keypair("", cfg.anonym_pubkey);
                 std::string message = std::string(kAnonMsgPrefix) + hash + ":" + ts + ":" + nonce;
                 crypto::Bytes msg_bytes(message.begin(), message.end());
                 std::string sig_raw = util::base64_decode(sig);
@@ -344,7 +462,7 @@ int Cli::run(int argc, char** argv) {
                     return 1;
                 }
                 crypto::Bytes sig_bytes(sig_raw.begin(), sig_raw.end());
-                bool ok_sig = crypto::verify_key(kp.public_key.get(), msg_bytes, sig_bytes);
+                bool ok_sig = crypto::verify_key(pubkey.get(), msg_bytes, sig_bytes);
                 if (!ok_sig) {
                     print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
                     print_red("THIS SERVER IS FORGING SIGNATURES, REPORT IT TO FIXCRAFT, INC. ASAP, ALSO FILE A COMPLAINT TO AN INTERNET AUTHORITY");
@@ -354,7 +472,7 @@ int Cli::run(int argc, char** argv) {
             } else {
                 if (!args.accept_monitoring) {
                     print_red("🛑 🔓 CRITICAL WARNING:");
-                    print_red("YOUR DATA \033[1mWILL\033[0m BE MONITORED BY THE SERVER OPERATOR YOU ARE CONNECTING TO!! ARE YOU ULTIMATELY SURE YOU TRUST THAT PERSON??");
+                    print_red("YOUR DATA WILL BE MONITORED BY THE SERVER OPERATOR YOU ARE CONNECTING TO!! ARE YOU ULTIMATELY SURE YOU TRUST THAT PERSON??");
                     print_red("TYPE: \"THIS MAY COMPROMISE MY PRIVACY\" to contine");
                     std::string line;
                     std::getline(std::cin, line);
@@ -365,38 +483,32 @@ int Cli::run(int argc, char** argv) {
             }
         }
 
-        if (!args.run_cmd.empty()) {
-            crypto::Bytes payload(args.run_cmd.begin(), args.run_cmd.end());
-            uint16_t flags = 0;
-            if (inner_key.has_value()) {
-                payload = inner::encrypt_payload(*inner_key, protocol::EXEC, 1, payload);
-                flags |= protocol::kFlagInnerEncrypted;
-            }
-            protocol::Frame exec{{static_cast<uint32_t>(payload.size()), protocol::EXEC, 1, flags}, payload};
-            protocol::send_frame(stream, exec);
-
-            protocol::Frame reply = protocol::read_frame(stream);
-            if (reply.header.type == protocol::DATA) {
-                crypto::Bytes payload = reply.payload;
-                if (inner_key.has_value()) {
-                    if ((reply.header.flags & protocol::kFlagInnerEncrypted) == 0) {
-                        throw std::runtime_error("EXEC reply missing inner encryption flag");
-                    }
-                    payload = inner::decrypt_payload(*inner_key, reply.header.type, reply.header.stream_id, reply.payload);
-                }
-                std::string output(payload.begin(), payload.end());
-                std::cout << output << std::endl;
-            } else {
-                util::log_warn("unexpected response to EXEC");
-            }
-            return 0;
-        }
-
         auto tunnel = std::make_shared<Tunnel>(std::move(stream));
         if (inner_key.has_value()) {
             tunnel->set_inner_key(*inner_key);
         }
         tunnel->start();
+
+        if (!args.run_cmd.empty()) {
+            int port = cfg.socks_port > 0 ? cfg.socks_port : 0;
+            auto socks = std::make_shared<SocksServer>(io, port, tunnel);
+            socks->start();
+            int actual_port = socks->port();
+            if (actual_port <= 0) {
+                util::log_error("failed to start local SOCKS5 proxy for --run");
+                return 1;
+            }
+            util::log_info("running local command via SOCKS5 127.0.0.1:" + std::to_string(actual_port));
+            auto work = boost::asio::make_work_guard(io);
+            std::thread io_thread([&io]() { io.run(); });
+            int code = run_local_command_with_proxy(args.run_cmd, actual_port);
+            work.reset();
+            io.stop();
+            if (io_thread.joinable()) {
+                io_thread.join();
+            }
+            return code == 0 ? 0 : 1;
+        }
 
         if (args.lport > 0 || !args.rhost.empty() || args.rport > 0) {
             if (args.lport <= 0 || args.rhost.empty() || args.rport <= 0) {

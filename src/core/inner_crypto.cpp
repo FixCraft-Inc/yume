@@ -12,6 +12,7 @@
 #if YUME_USE_BASEFWX
 #include <basefwx/crypto.hpp>
 #include <basefwx/pq.hpp>
+#include <basefwx/constants.hpp>
 #endif
 
 namespace yume::inner {
@@ -77,6 +78,27 @@ Bytes derive_key(const Bytes& shared) {
 #endif
 }
 
+Bytes derive_key_heavy(const Bytes& shared, const Bytes& salt) {
+#if !YUME_USE_BASEFWX
+    (void)shared;
+    (void)salt;
+    throw std::runtime_error("inner crypto not available: BaseFWX disabled");
+#else
+#if defined(BASEFWX_HAS_ARGON2) && BASEFWX_HAS_ARGON2
+    std::string password(reinterpret_cast<const char*>(shared.data()), shared.size());
+    return basefwx::crypto::Argon2idHashRaw(password,
+                                           salt,
+                                           basefwx::constants::kHeavyArgon2TimeCost,
+                                           basefwx::constants::kHeavyArgon2MemoryCost,
+                                           basefwx::constants::DefaultHeavyArgon2Parallelism(),
+                                           32);
+#else
+    Bytes material = basefwx::crypto::HmacSha256(salt, shared);
+    return basefwx::crypto::HkdfSha256(material, kHkdfInfo, 32);
+#endif
+#endif
+}
+
 Bytes build_aad(std::uint8_t frame_type, std::uint8_t stream_id) {
     Bytes aad;
     aad.reserve(6);
@@ -90,36 +112,40 @@ Bytes build_aad(std::uint8_t frame_type, std::uint8_t stream_id) {
 }
 }  // namespace
 
-ClientHandshake client_prepare(const Config& cfg) {
+ClientHandshake client_prepare(const Config& cfg, bool heavy) {
     ClientHandshake result;
     if (!cfg.enabled) {
         return result;
     }
 #if !YUME_USE_BASEFWX
     (void)cfg;
+    (void)heavy;
     throw std::runtime_error("inner crypto not available: BaseFWX disabled");
 #else
     Bytes pub = load_pq_public_key(cfg.pq_public_key);
     auto kem = basefwx::pq::KemEncrypt(pub);
     result.enabled = true;
     result.pq_ciphertext = std::move(kem.ciphertext);
-    result.key = derive_key(kem.shared);
+    result.salt = basefwx::crypto::RandomBytes(basefwx::constants::kUserKdfSaltSize);
+    result.key = heavy ? derive_key_heavy(kem.shared, result.salt) : derive_key(kem.shared);
     return result;
 #endif
 }
 
-std::optional<Bytes> server_derive_key(const Config& cfg, const Bytes& pq_ciphertext) {
+std::optional<Bytes> server_derive_key(const Config& cfg, const Bytes& pq_ciphertext, const Bytes& salt, bool heavy) {
     if (!cfg.enabled) {
         return std::nullopt;
     }
 #if !YUME_USE_BASEFWX
     (void)cfg;
     (void)pq_ciphertext;
+    (void)salt;
+    (void)heavy;
     throw std::runtime_error("inner crypto not available: BaseFWX disabled");
 #else
     Bytes priv = load_pq_private_key(cfg.pq_private_key);
     Bytes shared = basefwx::pq::KemDecrypt(priv, pq_ciphertext);
-    return derive_key(shared);
+    return heavy ? derive_key_heavy(shared, salt) : derive_key(shared);
 #endif
 }
 

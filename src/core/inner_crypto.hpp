@@ -24,11 +24,12 @@ struct Config {
 struct ClientHandshake {
     bool enabled{false};
     Bytes pq_ciphertext;
+    Bytes salt;
     Bytes key;
 };
 
-ClientHandshake client_prepare(const Config& cfg);
-std::optional<Bytes> server_derive_key(const Config& cfg, const Bytes& pq_ciphertext);
+ClientHandshake client_prepare(const Config& cfg, bool heavy);
+std::optional<Bytes> server_derive_key(const Config& cfg, const Bytes& pq_ciphertext, const Bytes& salt, bool heavy);
 
 Bytes encrypt_payload(const Bytes& key, std::uint8_t frame_type, std::uint8_t stream_id, const Bytes& plaintext);
 Bytes decrypt_payload(const Bytes& key, std::uint8_t frame_type, std::uint8_t stream_id, const Bytes& blob);

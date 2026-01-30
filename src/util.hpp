@@ -15,6 +15,7 @@ void log_info(const std::string& msg);
 void log_warn(const std::string& msg);
 void log_error(const std::string& msg);
 void set_logging_enabled(bool enabled);
+bool is_logging_enabled();
 std::string random_hex(size_t bytes);
 std::string base64_decode(const std::string& input);
 

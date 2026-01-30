@@ -38,8 +38,10 @@ void print_help() {
         << "  --threads <n>         (override threads)\n"
         << "  --obfs                (enable obfuscation)\n"
         << "  --inner               (enable inner PQ crypto)\n"
+        << "  --inner-heavy         (heavy KDF, default)\n"
+        << "  --inner-light         (lighter KDF)\n"
         << "  --pq-key <path>       (override pq_private_key)\n"
-        << "  --allow-exec          (enable EXEC)\n"
+        << "  --allow-exec          (deprecated: EXEC is disabled for safety)\n"
         << "  --real                (serve real HTTP on non-client requests)\n"
         << "  --real-index <path>   (HTML file for /)\n"
         << "  --real-secret <str>   (secret for hidden metadata)\n"
@@ -64,8 +66,9 @@ void print_help() {
         << "  threads       (int)\n"
         << "  obfuscation   (bool)\n"
         << "  inner_crypto  (bool)\n"
+        << "  inner_heavy   (bool)\n"
         << "  pq_private_key (path)\n"
-        << "  allow_exec    (bool)\n"
+        << "  allow_exec    (bool, deprecated)\n"
         << "  real_http     (bool)\n"
         << "  real_index_path (path)\n"
         << "  real_secret   (string)\n";
@@ -287,6 +290,8 @@ int main(int argc, char** argv) {
     std::string keys_gen;
     bool keys_gen_add = false;
     bool ui_mode = false;
+    bool inner_heavy_override = false;
+    bool inner_heavy_value = true;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") {
@@ -310,6 +315,16 @@ int main(int argc, char** argv) {
             cfg.obfuscation = true;
         } else if (arg == "--inner") {
             cfg.inner_crypto = true;
+            inner_heavy_override = true;
+            inner_heavy_value = true;
+        } else if (arg == "--inner-heavy") {
+            cfg.inner_crypto = true;
+            inner_heavy_override = true;
+            inner_heavy_value = true;
+        } else if (arg == "--inner-light") {
+            cfg.inner_crypto = true;
+            inner_heavy_override = true;
+            inner_heavy_value = false;
         } else if (arg == "--pq-key" && i + 1 < argc) {
             cfg.pq_private_key = yume::util::expand_user(argv[++i]);
         } else if (arg == "--allow-exec") {
@@ -384,6 +399,9 @@ int main(int argc, char** argv) {
                     cfg.inner_crypto = json["inner_crypto"].get<bool>();
                 }
             }
+            if (json.contains("inner_heavy")) {
+                cfg.inner_heavy = json["inner_heavy"].get<bool>();
+            }
             if (json.contains("pq_private_key")) {
                 if (cfg.pq_private_key.empty()) {
                     cfg.pq_private_key = yume::util::expand_user(json["pq_private_key"].get<std::string>());
@@ -433,6 +451,9 @@ int main(int argc, char** argv) {
             yume::util::log_error(std::string("config load failed: ") + ex.what());
             return 1;
         }
+    }
+    if (inner_heavy_override) {
+        cfg.inner_heavy = inner_heavy_value;
     }
 
     if (ui_mode) {
@@ -491,6 +512,7 @@ int main(int argc, char** argv) {
             std::string threads = prompt("threads", std::to_string(cfg.threads));
             std::string obfs = prompt("obfuscation (true/false)", cfg.obfuscation ? "true" : "false");
             std::string inner = prompt("inner_crypto (true/false)", cfg.inner_crypto ? "true" : "false");
+            std::string inner_heavy = prompt("inner_heavy (true/false)", cfg.inner_heavy ? "true" : "false");
             std::string pq = prompt("pq_private_key", cfg.pq_private_key);
             std::string allow_exec = prompt("allow_exec (true/false)", cfg.allow_exec ? "true" : "false");
             std::string real_http = prompt("real_http (true/false)", cfg.real_http ? "true" : "false");
@@ -507,6 +529,7 @@ int main(int argc, char** argv) {
             json["threads"] = std::stoi(threads);
             json["obfuscation"] = (obfs == "true");
             json["inner_crypto"] = (inner == "true");
+            json["inner_heavy"] = (inner_heavy == "true");
             if (!pq.empty()) json["pq_private_key"] = pq;
             json["allow_exec"] = (allow_exec == "true");
             json["real_http"] = (real_http == "true");
@@ -788,13 +811,18 @@ int main(int argc, char** argv) {
             return 1;
         }
         yume::util::set_logging_enabled(false);
+        std::cerr << "\033[1;33mANONYM MODE ACTIVE — logging disabled (only critical notices will show)\033[0m\n";
     }
 
     boost::asio::io_context io;
     yume::server::Manager manager(io, cfg);
 
     yume::util::install_signal_handlers([&](int) {
-        yume::util::log_info("shutdown requested");
+        if (yume::util::is_logging_enabled()) {
+            yume::util::log_info("shutdown requested");
+        } else {
+            std::cerr << "\033[1;33mshutdown requested\033[0m\n";
+        }
         manager.stop();
         io.stop();
     });
@@ -802,7 +830,11 @@ int main(int argc, char** argv) {
     try {
         manager.start();
     } catch (const std::exception& ex) {
-        yume::util::log_error(std::string("server start failed: ") + ex.what());
+        if (yume::util::is_logging_enabled()) {
+            yume::util::log_error(std::string("server start failed: ") + ex.what());
+        } else {
+            std::cerr << "\033[1;31mserver start failed: " << ex.what() << "\033[0m\n";
+        }
         return 1;
     }
 

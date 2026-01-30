@@ -10,6 +10,7 @@
 #include "server/session.hpp"
 #include "util.hpp"
 
+#include <iostream>
 #include <stdexcept>
 
 namespace yume::server {
@@ -42,7 +43,11 @@ void Manager::start() {
     acceptor_.bind(ep);
     acceptor_.listen();
 
-    util::log_info("yumed listening on port " + std::to_string(cfg_.listen_port));
+    if (util::is_logging_enabled()) {
+        util::log_info("yumed listening on port " + std::to_string(cfg_.listen_port));
+    } else {
+        std::cerr << "\033[1;33myumed listening on port " << cfg_.listen_port << "\033[0m\n";
+    }
     do_accept();
 }
 

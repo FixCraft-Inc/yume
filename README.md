@@ -28,6 +28,7 @@ Notes:
 - Requires OpenSSL and Boost.System (or Boost from your SDK).
 - PQ inner crypto (BaseFWX + liboqs) is disabled in minimal mode.
 - For privileged port 443 on Linux, run with `sudo` or set `cap_net_bind_service`.
+- For Cloudflare, use a TCP passthrough product (e.g., Spectrum) or disable HTTP proxying. HTTP-mode proxies terminate TLS and will break YUME.
 
 ## Run
 

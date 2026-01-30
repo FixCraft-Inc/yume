@@ -19,9 +19,10 @@ struct ObfsConfig {
 };
 
 boost::asio::ssl::context create_server_context(const std::string& cert_path,
-                                               const std::string& key_path);
+                                               const std::string& key_path,
+                                               bool allow_h2 = true);
 boost::asio::ssl::context create_client_context();
-void configure_alpn(boost::asio::ssl::context& ctx, bool is_server);
+void configure_alpn(boost::asio::ssl::context& ctx, bool is_server, bool allow_h2 = true);
 
 void apply_jitter(int max_jitter_ms);
 

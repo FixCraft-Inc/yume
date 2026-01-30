@@ -112,7 +112,6 @@ void Session::start_preface_read() {
                                                          [self](const boost::system::error_code& ec) {
                                                              self->on_preface_timeout(ec);
                                                          }));
-    auto self = shared_from_this();
     stream_.async_read_some(boost::asio::buffer(preface_buf_),
                             boost::asio::bind_executor(strand_,
                                                        [self](const boost::system::error_code& ec, std::size_t bytes) {

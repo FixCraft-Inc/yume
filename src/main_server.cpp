@@ -590,6 +590,12 @@ int main(int argc, char** argv) {
         }
 
         if (keys_list) {
+            if (!file_readable(cfg.auth_keys)) {
+                std::cout << "No auth_keys found at: " << cfg.auth_keys << "\n";
+                std::cout << "Use option 2 to add a public key first.\n";
+                for (auto* key : keys) EVP_PKEY_free(key);
+                return 0;
+            }
             nlohmann::json meta = nlohmann::json::object();
             std::ifstream in(cfg.auth_keys_meta);
             if (in) {
@@ -640,8 +646,13 @@ int main(int argc, char** argv) {
         }
 
         if (!keys_gen.empty()) {
-            std::string priv_path = keys_gen + ".key";
-            std::string pub_path = keys_gen + ".pub";
+            std::filesystem::path base = std::filesystem::absolute(keys_gen);
+            std::string priv_path = base.string() + ".key";
+            std::string pub_path = base.string() + ".pub";
+            auto key_dir = base.parent_path();
+            if (!key_dir.empty()) {
+                ensure_dir(key_dir.string());
+            }
             if (!generate_ed25519_keypair(priv_path, pub_path)) {
                 yume::util::log_error("failed to generate keypair");
                 return 1;

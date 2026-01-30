@@ -18,7 +18,7 @@ Manager::Manager(boost::asio::io_context& io, const ServerConfig& cfg)
     : io_(io)
     , cfg_(cfg)
     , acceptor_(io)
-    , ssl_ctx_(obfs::create_server_context(cfg.tls_cert, cfg.tls_key))
+    , ssl_ctx_(obfs::create_server_context(cfg.tls_cert, cfg.tls_key, !cfg.real_http))
     , authorized_keys_(std::make_shared<std::vector<crypto::Bytes>>()) {}
 
 void Manager::start() {

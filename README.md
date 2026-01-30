@@ -85,6 +85,18 @@ Local run (executes locally; all network traffic goes through YUME):
 yume --server fixcraft.net --auth id_ed25519 --run "curl https://1.1.1.1"
 ```
 
+Force IPv4 for local run (curl gets `-4 --http1.1`):
+
+```bash
+yume --server fixcraft.net --auth id_ed25519 --run-ipv4 --run "curl https://ifconfig.me"
+```
+
+SSH (auto-wrapped to route via local SOCKS if `nc`, `ncat`, or `connect-proxy` is available):
+
+```bash
+yume --server fixcraft.net --auth id_ed25519 --run "ssh user@host"
+```
+
 Note: server-side command execution is disabled for safety. Use SOCKS or port forwarding.
 
 ## Key Management

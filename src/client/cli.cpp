@@ -81,7 +81,7 @@ void set_env(EnvGuard& guard, const std::string& key, const std::string& value) 
 #endif
 }
 
-int run_local_command_with_proxy(const std::string& cmd, int socks_port) {
+int run_local_command_with_proxy(const std::string& cmd, int socks_port, bool ipv4_only) {
     std::string proxy = "socks5h://127.0.0.1:" + std::to_string(socks_port);
     EnvGuard guard;
     set_env(guard, "ALL_PROXY", proxy);
@@ -90,7 +90,63 @@ int run_local_command_with_proxy(const std::string& cmd, int socks_port) {
     set_env(guard, "all_proxy", proxy);
     set_env(guard, "https_proxy", proxy);
     set_env(guard, "http_proxy", proxy);
+    if (ipv4_only) {
+        set_env(guard, "CURL_IPRESOLVE", "4");
+    }
     return std::system(cmd.c_str());
+}
+
+std::string maybe_force_ipv4(const std::string& cmd, bool ipv4_only) {
+    if (!ipv4_only) {
+        return cmd;
+    }
+    auto starts_with_curl = [](const std::string& s) {
+        return s.rfind("curl ", 0) == 0 || s.rfind("curl\t", 0) == 0 || s == "curl";
+    };
+    if (!starts_with_curl(cmd)) {
+        return cmd;
+    }
+    bool has_v4 = cmd.find(" -4") != std::string::npos || cmd.find("--ipv4") != std::string::npos;
+    bool has_http1 = cmd.find("--http1.1") != std::string::npos;
+    std::string out = "curl ";
+    if (!has_http1) {
+        out += "--http1.1 ";
+    }
+    if (!has_v4) {
+        out += "-4 ";
+    }
+    if (cmd == "curl") {
+        return out;
+    }
+    return out + cmd.substr(5);
+}
+
+std::string wrap_ssh_with_proxy(const std::string& cmd, int socks_port) {
+#if defined(_WIN32)
+    (void)socks_port;
+    return cmd;
+#else
+    auto starts_with_ssh = [](const std::string& s) {
+        return s.rfind("ssh ", 0) == 0 || s.rfind("ssh\t", 0) == 0 || s == "ssh";
+    };
+    if (!starts_with_ssh(cmd)) {
+        return cmd;
+    }
+    if (cmd.find("ProxyCommand") != std::string::npos) {
+        return cmd;
+    }
+    std::string proxy =
+        "sh -c '"
+        "command -v nc >/dev/null && exec nc -x 127.0.0.1:" + std::to_string(socks_port) + " %h %p; "
+        "command -v ncat >/dev/null && exec ncat --proxy 127.0.0.1:" + std::to_string(socks_port) + " --proxy-type socks5 %h %p; "
+        "command -v connect-proxy >/dev/null && exec connect-proxy -S 127.0.0.1:" + std::to_string(socks_port) + " %h %p; "
+        "exit 127'";
+    std::string out = "ssh -o ProxyCommand=\"" + proxy + "\"";
+    if (cmd == "ssh") {
+        return out;
+    }
+    return out + " " + cmd.substr(4);
+#endif
 }
 struct ParsedArgs {
     std::string config_path{"config/yume.json"};
@@ -103,6 +159,7 @@ struct ParsedArgs {
     std::string rhost;
     int rport{0};
     std::string run_cmd;
+    bool run_ipv4{false};
     bool inner_crypto{false};
     bool inner_heavy{true};
     std::string pq_public_key;
@@ -138,6 +195,8 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.run_cmd = argv[++i];
         } else if ((arg == "-c" || arg == "--cmd") && i + 1 < argc) {
             args.run_cmd = argv[++i];
+        } else if (arg == "--run-ipv4") {
+            args.run_ipv4 = true;
         } else if (arg == "--inner") {
             args.inner_crypto = true;
         } else if (arg == "--inner-heavy") {
@@ -252,6 +311,8 @@ void print_help() {
         << "  --pq-pub <path>      (override pq_public_key)\n"
         << "  --run <cmd>          (run locally with YUME proxy)\n"
         << "  -c, --cmd <cmd>      (run locally with YUME proxy)\n"
+        << "                      (ssh auto-wraps ProxyCommand via local SOCKS)\n"
+        << "  --run-ipv4           (prefer IPv4 for --run; curl gets -4 --http1.1)\n"
         << "  --config <path>      (config file)\n"
         << "  --accept-monitoring  (skip monitoring warning)\n"
         << "  --save-server        (persist server into config)\n";
@@ -501,7 +562,12 @@ int Cli::run(int argc, char** argv) {
             util::log_info("running local command via SOCKS5 127.0.0.1:" + std::to_string(actual_port));
             auto work = boost::asio::make_work_guard(io);
             std::thread io_thread([&io]() { io.run(); });
-            int code = run_local_command_with_proxy(args.run_cmd, actual_port);
+            std::string cmd = maybe_force_ipv4(args.run_cmd, args.run_ipv4);
+            if (args.run_ipv4 && cmd == args.run_cmd) {
+                util::log_warn("--run-ipv4 set; if your command supports IPv4 forcing, add it explicitly.");
+            }
+            cmd = wrap_ssh_with_proxy(cmd, actual_port);
+            int code = run_local_command_with_proxy(cmd, actual_port, args.run_ipv4);
             work.reset();
             io.stop();
             if (io_thread.joinable()) {

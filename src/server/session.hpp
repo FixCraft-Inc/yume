@@ -35,6 +35,7 @@ private:
     void on_handshake(const boost::system::error_code& ec);
     void start_preface_read();
     void on_preface_read(const boost::system::error_code& ec, std::size_t bytes);
+    void on_preface_timeout(const boost::system::error_code& ec);
     bool handle_http_preface(const std::string& preface);
     void send_real_http_response(const std::string& path);
     std::string load_real_index();
@@ -73,7 +74,10 @@ private:
 
     std::array<uint8_t, 8> header_buf_{};
     std::array<uint8_t, 8> preface_buf_{};
+    std::vector<uint8_t> preface_accum_;
+    bool preface_received_{false};
     bool header_prefetched_{false};
+    boost::asio::steady_timer preface_timer_;
     protocol::FrameHeader current_header_{};
     std::vector<uint8_t> payload_buf_;
     crypto::Bytes challenge_;

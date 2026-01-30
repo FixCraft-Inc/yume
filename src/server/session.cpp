@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <algorithm>
 #include <fstream>
+#include <chrono>
 #include <ctime>
 #include <string>
 #include <thread>
@@ -71,7 +72,8 @@ Session::Session(boost::asio::ip::tcp::socket socket,
     , cfg_(cfg)
     , authorized_keys_(std::move(authorized_keys))
     , session_id_(session_id)
-    , strand_(stream_.get_executor()) {}
+    , strand_(stream_.get_executor())
+    , preface_timer_(stream_.get_executor()) {}
 
 void Session::start() {
     auto self = shared_from_this();
@@ -102,8 +104,16 @@ void Session::on_handshake(const boost::system::error_code& ec) {
 }
 
 void Session::start_preface_read() {
+    preface_accum_.clear();
+    preface_received_ = false;
+    preface_timer_.expires_after(std::chrono::milliseconds(200));
     auto self = shared_from_this();
-    boost::asio::async_read(stream_, boost::asio::buffer(preface_buf_),
+    preface_timer_.async_wait(boost::asio::bind_executor(strand_,
+                                                         [self](const boost::system::error_code& ec) {
+                                                             self->on_preface_timeout(ec);
+                                                         }));
+    auto self = shared_from_this();
+    stream_.async_read_some(boost::asio::buffer(preface_buf_),
                             boost::asio::bind_executor(strand_,
                                                        [self](const boost::system::error_code& ec, std::size_t bytes) {
                                                            self->on_preface_read(ec, bytes);
@@ -111,32 +121,75 @@ void Session::start_preface_read() {
 }
 
 void Session::on_preface_read(const boost::system::error_code& ec, std::size_t bytes) {
-    if (ec || bytes < preface_buf_.size()) {
-        close();
+    if (ec) {
+        if (ec != boost::asio::error::operation_aborted) {
+            close();
+        }
+        return;
+    }
+    if (bytes == 0) {
         return;
     }
 
-    std::string preface(reinterpret_cast<const char*>(preface_buf_.data()), preface_buf_.size());
+    preface_timer_.cancel();
+    preface_received_ = true;
+    preface_accum_.insert(preface_accum_.end(), preface_buf_.begin(), preface_buf_.begin() + static_cast<std::ptrdiff_t>(bytes));
+
+    std::string preface(reinterpret_cast<const char*>(preface_accum_.data()), preface_accum_.size());
     if (handle_http_preface(preface)) {
         return;
     }
 
-    uint32_t len = (static_cast<uint32_t>(preface_buf_[0]) << 24) |
-                   (static_cast<uint32_t>(preface_buf_[1]) << 16) |
-                   (static_cast<uint32_t>(preface_buf_[2]) << 8) |
-                   (static_cast<uint32_t>(preface_buf_[3]));
-    uint8_t type = preface_buf_[4];
+    if (preface_accum_.size() < preface_buf_.size()) {
+        // need more to decide; read again
+        auto self = shared_from_this();
+        stream_.async_read_some(boost::asio::buffer(preface_buf_),
+                                boost::asio::bind_executor(strand_,
+                                                           [self](const boost::system::error_code& e, std::size_t n) {
+                                                               self->on_preface_read(e, n);
+                                                           }));
+        return;
+    }
+
+    if (preface_accum_.size() < header_buf_.size()) {
+        auto self = shared_from_this();
+        stream_.async_read_some(boost::asio::buffer(preface_buf_),
+                                boost::asio::bind_executor(strand_,
+                                                           [self](const boost::system::error_code& e, std::size_t n) {
+                                                               self->on_preface_read(e, n);
+                                                           }));
+        return;
+    }
+
+    uint32_t len = (static_cast<uint32_t>(preface_accum_[0]) << 24) |
+                   (static_cast<uint32_t>(preface_accum_[1]) << 16) |
+                   (static_cast<uint32_t>(preface_accum_[2]) << 8) |
+                   (static_cast<uint32_t>(preface_accum_[3]));
+    uint8_t type = preface_accum_[4];
     bool header_ok = len <= kMaxFrameSize && type >= kMinFrameType && type <= kMaxFrameType;
     if (!header_ok && cfg_.real_http) {
         send_real_http_response("/");
         return;
     }
+    if (preface_accum_.size() > header_buf_.size()) {
+        util::log_warn("session " + std::to_string(session_id_) + ": unexpected preface data");
+        close();
+        return;
+    }
 
-    std::copy(preface_buf_.begin(), preface_buf_.end(), header_buf_.begin());
+    std::copy(preface_accum_.begin(), preface_accum_.begin() + header_buf_.size(), header_buf_.begin());
     header_prefetched_ = true;
     read_header();
 }
 
+void Session::on_preface_timeout(const boost::system::error_code& ec) {
+    if (ec == boost::asio::error::operation_aborted) {
+        return;
+    }
+    if (!preface_received_) {
+        send_auth_challenge();
+    }
+}
 bool Session::handle_http_preface(const std::string& preface) {
     const std::string methods[] = {"GET ", "HEAD ", "POST ", "OPTIONS "};
     bool is_http = false;

@@ -1,0 +1,37 @@
+cmake_minimum_required(VERSION 3.20)
+project(YUME LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+option(YUME_USE_BASEFWX "Enable BaseFWX inner crypto support" ON)
+option(YUME_USE_SPDLOG "Enable spdlog logging backend" ON)
+option(YUME_MINIMAL "Build for minimal systems (disable heavy deps/features)" OFF)
+
+find_package(OpenSSL REQUIRED)
+find_package(Boost REQUIRED COMPONENTS system)
+find_package(Threads REQUIRED)
+
+if(YUME_MINIMAL)
+    set(YUME_USE_BASEFWX OFF CACHE BOOL "Disable BaseFWX for minimal builds" FORCE)
+    set(YUME_USE_SPDLOG OFF CACHE BOOL "Disable spdlog for minimal builds" FORCE)
+endif()
+
+if(YUME_USE_BASEFWX)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/basefwx/cpp/CMakeLists.txt")
+        set(BASEFWX_BUILD_CLI OFF CACHE BOOL "Disable BaseFWX CLI build" FORCE)
+        add_subdirectory(basefwx/cpp EXCLUDE_FROM_ALL)
+        if(TARGET basefwxcpp)
+            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                target_compile_options(basefwxcpp PRIVATE -Wno-deprecated-declarations)
+            elseif(MSVC)
+                target_compile_options(basefwxcpp PRIVATE /wd4996)
+            endif()
+        endif()
+    else()
+        message(FATAL_ERROR "BaseFWX sources not found at basefwx/cpp")
+    endif()
+endif()
+
+add_subdirectory(src)

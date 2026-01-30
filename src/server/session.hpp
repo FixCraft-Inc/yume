@@ -1,0 +1,98 @@
+#pragma once
+
+#include <array>
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <unordered_map>
+#include <vector>
+
+#include <boost/asio.hpp>
+#include <boost/asio/ssl.hpp>
+
+#include "core/crypto.hpp"
+#include "core/protocol.hpp"
+#include "server/config.hpp"
+
+namespace yume::server {
+
+class Session : public std::enable_shared_from_this<Session> {
+public:
+    Session(boost::asio::ip::tcp::socket socket,
+            boost::asio::ssl::context& ssl_ctx,
+            const ServerConfig& cfg,
+            std::shared_ptr<const std::vector<crypto::Bytes>> authorized_keys,
+            uint64_t session_id);
+
+    void start();
+    void stop();
+
+private:
+    void on_handshake(const boost::system::error_code& ec);
+    void send_auth_challenge();
+
+    void read_header();
+    void on_read_header(const boost::system::error_code& ec, std::size_t bytes);
+    void on_read_payload(const boost::system::error_code& ec, std::size_t bytes);
+
+    void handle_frame(const protocol::Frame& frame);
+    bool handle_auth(const protocol::Frame& frame);
+    void handle_open(const protocol::Frame& frame);
+    void handle_data(const protocol::Frame& frame);
+    void handle_close(uint8_t stream_id, const std::string& reason);
+    void handle_exec(const protocol::Frame& frame);
+
+    void send_open_reply(uint8_t stream_id, bool ok, const std::string& message);
+    void start_remote_read(uint8_t stream_id);
+    void on_remote_read(uint8_t stream_id, const boost::system::error_code& ec, std::size_t bytes);
+    void enqueue_remote_write(uint8_t stream_id, const std::vector<uint8_t>& data);
+    void do_remote_write(uint8_t stream_id);
+
+    void async_write_frame(const protocol::Frame& frame,
+                           std::function<void(const boost::system::error_code&, std::size_t)> handler = {});
+    void do_write();
+
+    void close();
+
+    boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream_;
+    ServerConfig cfg_;
+    std::shared_ptr<const std::vector<crypto::Bytes>> authorized_keys_;
+    uint64_t session_id_{0};
+
+    boost::asio::strand<boost::asio::any_io_executor> strand_;
+
+    std::array<uint8_t, 8> header_buf_{};
+    protocol::FrameHeader current_header_{};
+    std::vector<uint8_t> payload_buf_;
+    crypto::Bytes challenge_;
+    bool authenticated_{false};
+    std::optional<crypto::Bytes> inner_key_;
+
+    struct RemoteStream {
+        boost::asio::ip::tcp::socket socket;
+        boost::asio::ip::tcp::resolver resolver;
+        std::array<uint8_t, 4096> read_buf{};
+        std::deque<std::vector<uint8_t>> write_queue;
+        bool write_in_flight{false};
+
+        explicit RemoteStream(boost::asio::any_io_executor exec)
+            : socket(exec)
+            , resolver(exec) {}
+    };
+
+    std::unordered_map<uint8_t, std::shared_ptr<RemoteStream>> streams_;
+
+    struct PendingWrite {
+        std::shared_ptr<std::vector<uint8_t>> data;
+        std::function<void(const boost::system::error_code&, std::size_t)> handler;
+    };
+
+    std::deque<PendingWrite> write_queue_;
+    bool write_in_flight_{false};
+};
+
+}  // namespace yume::server

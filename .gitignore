@@ -1,0 +1,60 @@
+# Build
+/build/
+/build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# Logs
+*.log
+*.trace
+*.out
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / keys
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+*.der
+*.cer
+*.jwk
+*.jwe
+*.jwt
+*.kdbx
+*.keystore
+*.keytab
+*.sk
+*.pk
+id_ed25519
+id_rsa
+authorized_keys
+
+# Local configs
+config/*.local.json
+config/*.secrets.json
+config/*.private.json
+
+# BaseFWX builds
+basefwx/cpp/build/
+
+# Python
+__pycache__/
+*.pyc
+
+# Archives
+*.zip
+*.tar
+*.tgz
+*.txz

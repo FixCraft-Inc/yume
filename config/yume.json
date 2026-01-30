@@ -1,0 +1,7 @@
+{
+  "server": "yume.fixcraft.net",
+  "port": 443,
+  "identity": "~/.yume/id_ed25519",
+  "socks_port": 1080,
+  "obfuscation": true
+}

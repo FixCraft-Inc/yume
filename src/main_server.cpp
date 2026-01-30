@@ -208,6 +208,7 @@ nlohmann::json post_json_https(const std::string& host,
     boost::asio::ip::tcp::resolver resolver(io);
     auto endpoints = resolver.resolve(host, port);
     boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, ctx);
+    SSL_set_tlsext_host_name(stream.native_handle(), host.c_str());
     boost::asio::connect(stream.next_layer(), endpoints);
     stream.handshake(boost::asio::ssl::stream_base::client);
 

@@ -10,6 +10,8 @@
 #include <optional>
 #include <stdexcept>
 #include <utility>
+#include <filesystem>
+#include <ctime>
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
@@ -23,12 +25,15 @@
 #include "core/obfs.hpp"
 #include "core/protocol.hpp"
 #include "util.hpp"
+#include <nlohmann/json.hpp>
 
 namespace yume::client {
 
 namespace {
+constexpr const char kAnonMsgPrefix[] = "YUME-ANON-V1:";
 struct ParsedArgs {
     std::string config_path{"config/yume.json"};
+    bool config_specified{false};
     std::string server;
     int port{0};
     std::string identity;
@@ -37,6 +42,8 @@ struct ParsedArgs {
     std::string rhost;
     int rport{0};
     std::string run_cmd;
+    bool help{false};
+    bool accept_monitoring{false};
 };
 
 ParsedArgs parse_args(int argc, char** argv) {
@@ -45,6 +52,9 @@ ParsedArgs parse_args(int argc, char** argv) {
         std::string arg = argv[i];
         if (arg == "--config" && i + 1 < argc) {
             args.config_path = argv[++i];
+            args.config_specified = true;
+        } else if (arg == "--help" || arg == "-h") {
+            args.help = true;
         } else if (arg == "--server" && i + 1 < argc) {
             args.server = argv[++i];
         } else if (arg == "--port" && i + 1 < argc) {
@@ -61,6 +71,8 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.rport = std::stoi(argv[++i]);
         } else if (arg == "--run" && i + 1 < argc) {
             args.run_cmd = argv[++i];
+        } else if (arg == "--accept-monitoring") {
+            args.accept_monitoring = true;
         }
     }
     return args;
@@ -129,39 +141,78 @@ void authenticate(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream
     protocol::send_frame(stream, response);
 }
 
+void print_help() {
+    std::cout
+        << "yume - YUME client\n\n"
+        << "Usage:\n"
+        << "  yume --server <host> --auth <id_ed25519> [--port 443] [--socks 1080]\n"
+        << "  yume --server <host> --auth <id_ed25519> --lport <local> --rhost <host> --rport <port>\n"
+        << "  yume --server <host> --auth <id_ed25519> --run \"<command>\"\n"
+        << "  yume --help\n\n"
+        << "Required:\n"
+        << "  --server <host>\n"
+        << "  --auth <identity key>\n\n"
+        << "Optional:\n"
+        << "  --port <port>        (default 443)\n"
+        << "  --socks <port>       (SOCKS5 mode)\n"
+        << "  --lport <port>       (forward local port)\n"
+        << "  --rhost <host>       (forward target host)\n"
+        << "  --rport <port>       (forward target port)\n"
+        << "  --run <cmd>          (one-shot command)\n"
+        << "  --config <path>      (config file)\n"
+        << "  --accept-monitoring  (skip monitoring warning)\n";
+}
+
+bool file_exists(const std::string& path) {
+    if (path.empty()) {
+        return false;
+    }
+    std::error_code ec;
+    return std::filesystem::exists(path, ec);
+}
+
 }  // namespace
 
 int Cli::run(int argc, char** argv) {
     util::init_logging();
 
     ParsedArgs args = parse_args(argc, argv);
+    if (args.help) {
+        print_help();
+        return 0;
+    }
     ClientConfig cfg;
 
-    try {
-        auto json = util::read_json_config(args.config_path);
-        if (json.contains("server")) {
-            cfg.server = json["server"].get<std::string>();
+    if (args.config_specified || std::filesystem::exists(args.config_path)) {
+        try {
+            auto json = util::read_json_config(args.config_path);
+            if (json.contains("server") && cfg.server.empty()) {
+                cfg.server = json["server"].get<std::string>();
+            }
+            if (json.contains("port") && cfg.port == 443) {
+                cfg.port = json["port"].get<int>();
+            }
+            if (json.contains("identity") && cfg.identity.empty()) {
+                cfg.identity = util::expand_user(json["identity"].get<std::string>());
+            }
+            if (json.contains("socks_port") && cfg.socks_port == 0) {
+                cfg.socks_port = json["socks_port"].get<int>();
+            }
+            if (json.contains("obfuscation") && !cfg.obfuscation) {
+                cfg.obfuscation = json["obfuscation"].get<bool>();
+            }
+            if (json.contains("inner_crypto") && !cfg.inner_crypto) {
+                cfg.inner_crypto = json["inner_crypto"].get<bool>();
+            }
+            if (json.contains("pq_public_key") && cfg.pq_public_key.empty()) {
+                cfg.pq_public_key = util::expand_user(json["pq_public_key"].get<std::string>());
+            }
+            if (json.contains("anonym_pubkey") && cfg.anonym_pubkey.empty()) {
+                cfg.anonym_pubkey = util::expand_user(json["anonym_pubkey"].get<std::string>());
+            }
+        } catch (const std::exception& ex) {
+            util::log_warn(std::string("config load failed: ") + ex.what());
         }
-        if (json.contains("port")) {
-            cfg.port = json["port"].get<int>();
-        }
-        if (json.contains("identity")) {
-            cfg.identity = util::expand_user(json["identity"].get<std::string>());
-        }
-        if (json.contains("socks_port")) {
-            cfg.socks_port = json["socks_port"].get<int>();
-        }
-        if (json.contains("obfuscation")) {
-            cfg.obfuscation = json["obfuscation"].get<bool>();
-        }
-        if (json.contains("inner_crypto")) {
-            cfg.inner_crypto = json["inner_crypto"].get<bool>();
-        }
-        if (json.contains("pq_public_key")) {
-            cfg.pq_public_key = util::expand_user(json["pq_public_key"].get<std::string>());
-        }
-    } catch (const std::exception& ex) {
-        util::log_warn(std::string("config load failed: ") + ex.what());
     }
 
     if (!args.server.empty()) {
@@ -179,6 +230,11 @@ int Cli::run(int argc, char** argv) {
 
     if (cfg.server.empty() || cfg.identity.empty()) {
         util::log_error("--server and --auth (identity) are required");
+        print_help();
+        return 1;
+    }
+    if (!file_exists(cfg.identity)) {
+        util::log_error("identity key not found: " + cfg.identity);
         return 1;
     }
 
@@ -210,6 +266,79 @@ int Cli::run(int argc, char** argv) {
 
         authenticate(stream, cfg.identity, pq_ciphertext);
         util::log_info("authenticated to server");
+
+        protocol::Frame anon_frame = protocol::read_frame(stream);
+        if (anon_frame.header.type == protocol::ANON) {
+            std::string payload(anon_frame.payload.begin(), anon_frame.payload.end());
+            auto json = nlohmann::json::parse(payload);
+            std::string mode = json.value("mode", "normal");
+            std::string hash = json.value("hash", "");
+            std::string sig = json.value("sig", "");
+            std::string ts = json.value("ts", "");
+            std::string nonce = json.value("nonce", "");
+
+            auto print_red = [](const std::string& msg) {
+                std::cerr << "\033[1;31m" << msg << "\033[0m" << std::endl;
+            };
+            auto print_green = [](const std::string& msg) {
+                std::cout << "\033[1;32m" << msg << "\033[0m" << std::endl;
+            };
+
+            if (mode == "anonym") {
+                if (hash.empty() || sig.empty() || ts.empty() || nonce.empty()) {
+                    print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                    print_red("ANONYM PROOF IS INCOMPLETE");
+                    return 1;
+                }
+                long long ts_val = 0;
+                try {
+                    ts_val = std::stoll(ts);
+                } catch (...) {
+                    print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                    print_red("INVALID TIMESTAMP IN ANONYM PROOF");
+                    return 1;
+                }
+                const long long now = static_cast<long long>(std::time(nullptr));
+                if (std::llabs(now - ts_val) > 600) {
+                    print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                    print_red("ANONYM PROOF EXPIRED OR NOT YET VALID");
+                    return 1;
+                }
+                if (cfg.anonym_pubkey.empty()) {
+                    print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                    print_red("MISSING FIXCRAFT ANONYM PUBLIC KEY - CANNOT VERIFY SERVER");
+                    return 1;
+                }
+                auto kp = crypto::load_keypair("", cfg.anonym_pubkey);
+                std::string message = std::string(kAnonMsgPrefix) + hash + ":" + ts + ":" + nonce;
+                crypto::Bytes msg_bytes(message.begin(), message.end());
+                std::string sig_raw = util::base64_decode(sig);
+                if (sig_raw.empty()) {
+                    print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                    print_red("INVALID SIGNATURE FORMAT FROM SERVER");
+                    return 1;
+                }
+                crypto::Bytes sig_bytes(sig_raw.begin(), sig_raw.end());
+                bool ok_sig = crypto::verify_key(kp.public_key.get(), msg_bytes, sig_bytes);
+                if (!ok_sig) {
+                    print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                    print_red("THIS SERVER IS FORGING SIGNATURES, REPORT IT TO FIXCRAFT, INC. ASAP, ALSO FILE A COMPLAINT TO AN INTERNET AUTHORITY");
+                    return 1;
+                }
+                print_green("✅✒️ This Server Has Cryptographically Correct Signature, and is VERIFIED");
+            } else {
+                if (!args.accept_monitoring) {
+                    print_red("🛑 🔓 CRITICAL WARNING:");
+                    print_red("YOUR DATA \033[1mWILL\033[0m BE MONITORED BY THE SERVER OPERATOR YOU ARE CONNECTING TO!! ARE YOU ULTIMATELY SURE YOU TRUST THAT PERSON??");
+                    print_red("TYPE: \"THIS MAY COMPROMISE MY PRIVACY\" to contine");
+                    std::string line;
+                    std::getline(std::cin, line);
+                    if (line != "THIS MAY COMPROMISE MY PRIVACY") {
+                        return 1;
+                    }
+                }
+            }
+        }
 
         if (!args.run_cmd.empty()) {
             crypto::Bytes payload(args.run_cmd.begin(), args.run_cmd.end());

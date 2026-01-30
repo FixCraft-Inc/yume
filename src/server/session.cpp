@@ -10,6 +10,8 @@
 
 #include <cstdio>
 #include <algorithm>
+#include <fstream>
+#include <ctime>
 #include <string>
 #include <thread>
 
@@ -18,6 +20,11 @@
 #include "server/auth.hpp"
 #include "util.hpp"
 #include <nlohmann/json.hpp>
+#if YUME_USE_BASEFWX
+#include <basefwx/base64.hpp>
+#include <basefwx/crypto.hpp>
+#include <basefwx/constants.hpp>
+#endif
 
 namespace yume::server {
 
@@ -84,7 +91,161 @@ void Session::on_handshake(const boost::system::error_code& ec) {
         return;
     }
 
+    if (cfg_.real_http) {
+        start_preface_read();
+        return;
+    }
+
     send_auth_challenge();
+}
+
+void Session::start_preface_read() {
+    auto self = shared_from_this();
+    boost::asio::async_read(stream_, boost::asio::buffer(preface_buf_),
+                            boost::asio::bind_executor(strand_,
+                                                       [self](const boost::system::error_code& ec, std::size_t bytes) {
+                                                           self->on_preface_read(ec, bytes);
+                                                       }));
+}
+
+void Session::on_preface_read(const boost::system::error_code& ec, std::size_t bytes) {
+    if (ec || bytes < preface_buf_.size()) {
+        close();
+        return;
+    }
+
+    std::string preface(reinterpret_cast<const char*>(preface_buf_.data()), preface_buf_.size());
+    if (handle_http_preface(preface)) {
+        return;
+    }
+
+    std::copy(preface_buf_.begin(), preface_buf_.end(), header_buf_.begin());
+    header_prefetched_ = true;
+    read_header();
+}
+
+bool Session::handle_http_preface(const std::string& preface) {
+    const std::string methods[] = {"GET ", "HEAD ", "POST ", "OPTIONS "};
+    bool is_http = false;
+    for (const auto& m : methods) {
+        if (preface.rfind(m, 0) == 0) {
+            is_http = true;
+            break;
+        }
+    }
+    if (!is_http) {
+        return false;
+    }
+
+    auto self = shared_from_this();
+    std::string request = preface;
+    boost::asio::async_read_until(stream_, boost::asio::dynamic_buffer(request), "\r\n\r\n",
+                                  boost::asio::bind_executor(strand_,
+                                                             [self, request = std::move(request)](const boost::system::error_code& e, std::size_t) mutable {
+                                                                 if (e) {
+                                                                     self->close();
+                                                                     return;
+                                                                 }
+                                                                 std::string line;
+                                                                 auto pos = request.find("\r\n");
+                                                                 if (pos != std::string::npos) {
+                                                                     line = request.substr(0, pos);
+                                                                 }
+                                                                 std::string path = "/";
+                                                                 if (!line.empty()) {
+                                                                     auto p1 = line.find(' ');
+                                                                     if (p1 != std::string::npos) {
+                                                                         auto p2 = line.find(' ', p1 + 1);
+                                                                         if (p2 != std::string::npos) {
+                                                                             path = line.substr(p1 + 1, p2 - p1 - 1);
+                                                                         }
+                                                                     }
+                                                                 }
+                                                                 self->send_real_http_response(path);
+                                                             }));
+    return true;
+}
+
+std::string Session::load_real_index() {
+    if (!cfg_.real_index_path.empty()) {
+        std::ifstream in(cfg_.real_index_path, std::ios::binary);
+        if (in) {
+            std::string contents((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            return contents;
+        }
+    }
+    return "<!doctype html><html><head><meta charset=\"utf-8\"><title>OK</title></head>"
+           "<body><h1>Service Online</h1><p>Welcome.</p></body></html>";
+}
+
+std::string Session::build_hidden_blob() {
+#if YUME_USE_BASEFWX
+    if (cfg_.real_secret.empty()) {
+        return "";
+    }
+    basefwx::crypto::Bytes salt = basefwx::crypto::RandomBytes(basefwx::constants::kUserKdfSaltSize);
+    basefwx::crypto::Bytes key = basefwx::crypto::Pbkdf2HmacSha256(
+        cfg_.real_secret,
+        salt,
+        basefwx::constants::kUserKdfIterations,
+        32);
+    nlohmann::json meta{
+        {"ts", static_cast<long long>(std::time(nullptr))},
+        {"sid", static_cast<long long>(session_id_)},
+        {"note", "yume-real"}
+    };
+    std::string meta_str = meta.dump();
+    basefwx::crypto::Bytes payload(meta_str.begin(), meta_str.end());
+    basefwx::crypto::Bytes aad{'y', 'u', 'm', 'e', '-', 'r', 'e', 'a', 'l'};
+    basefwx::crypto::Bytes blob = basefwx::crypto::AeadEncrypt(key, payload, aad);
+
+    basefwx::crypto::Bytes combined;
+    combined.reserve(salt.size() + blob.size());
+    combined.insert(combined.end(), salt.begin(), salt.end());
+    combined.insert(combined.end(), blob.begin(), blob.end());
+    std::string b64 = basefwx::base64::Encode(combined);
+    return b64;
+#else
+    return "";
+#endif
+}
+
+void Session::send_real_http_response(const std::string& path) {
+    std::string body;
+    std::string status_line = "HTTP/1.1 200 OK\r\n";
+    if (path != "/") {
+        status_line = "HTTP/1.1 302 Found\r\n";
+        body = "<!doctype html><html><head><meta charset=\"utf-8\"><title>Redirect</title></head>"
+               "<body>Redirecting to /</body></html>";
+    } else {
+        body = load_real_index();
+    }
+
+    std::string hidden = build_hidden_blob();
+    if (!hidden.empty()) {
+        body += "<span style=\"display:none\" aria-hidden=\"true\">" + hidden + "</span>";
+        body += "<!--" + hidden + "-->";
+    }
+
+    std::string headers;
+    headers += status_line;
+    if (path != "/") {
+        headers += "Location: /\r\n";
+    }
+    headers += "Content-Type: text/html; charset=utf-8\r\n";
+    if (!hidden.empty()) {
+        headers += "X-Yume-Blob: " + hidden + "\r\n";
+    }
+    headers += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+    headers += "Connection: close\r\n\r\n";
+
+    auto resp = std::make_shared<std::string>(headers + body);
+    auto self = shared_from_this();
+    boost::asio::async_write(stream_, boost::asio::buffer(*resp),
+                             boost::asio::bind_executor(strand_,
+                                                        [self, resp](const boost::system::error_code&, std::size_t) {
+                                                            self->close();
+                                                        }));
 }
 
 void Session::send_auth_challenge() {
@@ -101,6 +262,11 @@ void Session::send_auth_challenge() {
 }
 
 void Session::read_header() {
+    if (header_prefetched_) {
+        header_prefetched_ = false;
+        on_read_header({}, header_buf_.size());
+        return;
+    }
     auto self = shared_from_this();
     boost::asio::async_read(stream_, boost::asio::buffer(header_buf_),
                             boost::asio::bind_executor(strand_,
@@ -174,8 +340,27 @@ void Session::handle_frame(const protocol::Frame& frame) {
         }
 
         authenticated_ = true;
-        util::log_info("session " + std::to_string(session_id_) + ": authenticated");
-        read_header();
+        if (!cfg_.anonym) {
+            util::log_info("session " + std::to_string(session_id_) + ": authenticated");
+        }
+        nlohmann::json anon = {
+            {"mode", cfg_.anonym ? "anonym" : "normal"},
+            {"hash", cfg_.anonym_hash},
+            {"sig", cfg_.anonym_sig},
+            {"ts", cfg_.anonym_ts},
+            {"nonce", cfg_.anonym_nonce},
+            {"algo", "ed25519"}
+        };
+        std::string payload_str = anon.dump();
+        crypto::Bytes payload(payload_str.begin(), payload_str.end());
+        protocol::Frame anon_frame{{static_cast<uint32_t>(payload.size()), protocol::ANON, 0, 0}, payload};
+        async_write_frame(anon_frame, [self = shared_from_this()](const boost::system::error_code& ec, std::size_t) {
+            if (ec) {
+                self->close();
+                return;
+            }
+            self->read_header();
+        });
         return;
     }
 
@@ -231,8 +416,9 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             return false;
         }
 
-        bool sig_ok = crypto::verify_key(pubkey, challenge_, sig);
-        bool auth_ok = authorized_keys_ ? is_authorized(pubkey, *authorized_keys_) : false;
+    bool sig_ok = crypto::verify_key(pubkey, challenge_, sig);
+    bool auth_ok = authorized_keys_ ? is_authorized(pubkey, *authorized_keys_) : false;
+    std::string fingerprint = fingerprint_pubkey(pubkey);
         EVP_PKEY_free(pubkey);
 
         if (!sig_ok || !auth_ok) {
@@ -255,6 +441,9 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             inner_key_ = *derived;
         }
 
+        if (!cfg_.anonym) {
+            update_auth_meta(cfg_.auth_keys_meta, fingerprint);
+        }
         return true;
     } catch (const std::exception&) {
         return false;

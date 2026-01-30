@@ -220,8 +220,8 @@ main() {
     cleanup_vendor
     build_project
     info "Done! 🎉"
-    echo -e "${COLOR_GREEN}Run:${COLOR_RESET} ./build/yumed --config config/yumed.json"
-    echo -e "${COLOR_GREEN}Then:${COLOR_RESET} ./build/yume --config config/yume.json --socks 1080"
+    echo -e "${COLOR_GREEN}Run:${COLOR_RESET} ./build/bin/yumed --config config/yumed.json"
+    echo -e "${COLOR_GREEN}Then:${COLOR_RESET} ./build/bin/yume --config config/yume.json --socks 1080"
 }
 
 main "$@"

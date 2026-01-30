@@ -559,9 +559,20 @@ int main(int argc, char** argv) {
     }
 
     if (keys_list || !keys_add.empty() || !keys_remove.empty() || !keys_alias.empty() || !keys_gen.empty()) {
-        if (cfg.auth_keys.empty() && (keys_list || !keys_add.empty() || !keys_remove.empty() || !keys_alias.empty() || keys_gen_add)) {
-            yume::util::log_error("auth_keys must be set for key management");
-            return 1;
+        if (cfg.auth_keys.empty()) {
+            std::string default_auth = "/etc/yume/authorized_keys";
+            if (ui_mode) {
+                std::cout << "auth_keys path [/etc/yume/authorized_keys]: ";
+                std::string input;
+                std::getline(std::cin, input);
+                if (!input.empty()) {
+                    default_auth = input;
+                }
+            }
+            cfg.auth_keys = default_auth;
+        }
+        if (cfg.auth_keys_meta.empty() && !cfg.auth_keys.empty()) {
+            cfg.auth_keys_meta = cfg.auth_keys + ".json";
         }
         std::vector<EVP_PKEY*> keys;
         BIO* bio = BIO_new_file(cfg.auth_keys.c_str(), "r");
@@ -597,6 +608,10 @@ int main(int argc, char** argv) {
         }
 
         if (!keys_add.empty()) {
+            auto auth_dir = std::filesystem::path(cfg.auth_keys).parent_path();
+            if (!auth_dir.empty()) {
+                ensure_dir(auth_dir.string());
+            }
             BIO* inbio = BIO_new_file(keys_add.c_str(), "r");
             if (!inbio) {
                 yume::util::log_error("failed to open key: " + keys_add);
@@ -634,6 +649,10 @@ int main(int argc, char** argv) {
                 if (cfg.auth_keys.empty()) {
                     yume::util::log_error("auth_keys must be set to add generated key");
                     return 1;
+                }
+                auto auth_dir = std::filesystem::path(cfg.auth_keys).parent_path();
+                if (!auth_dir.empty()) {
+                    ensure_dir(auth_dir.string());
                 }
                 keys_add = pub_path;
                 BIO* inbio = BIO_new_file(keys_add.c_str(), "r");

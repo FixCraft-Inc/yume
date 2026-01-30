@@ -12,6 +12,7 @@
 #include <thread>
 #include <vector>
 #include <openssl/sha.h>
+#include <openssl/evp.h>
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include <openssl/pem.h>
@@ -23,6 +24,7 @@
 
 namespace {
 constexpr const char kAnonMsgPrefix[] = "YUME-ANON-V1:";
+constexpr const char kDefaultSecretPath[] = "./.secrets/html_secret";
 void print_help() {
     std::cout
         << "yumed - YUME server\n\n"
@@ -41,6 +43,7 @@ void print_help() {
         << "  --real                (serve real HTTP on non-client requests)\n"
         << "  --real-index <path>   (HTML file for /)\n"
         << "  --real-secret <str>   (secret for hidden metadata)\n"
+        << "  --real-secret-file <path> (auto-generate/store secret)\n"
         << "  --anonym              (enable anonym mode + proof)\n"
         << "  --anonym-api <url>    (verity API endpoint)\n"
         << "  --anonym-token <str>  (verity API token)\n"
@@ -48,6 +51,8 @@ void print_help() {
         << "  --keys-add <pub.pem>  (add authorized key)\n"
         << "  --keys-remove <id>    (remove by fingerprint or alias)\n"
         << "  --keys-alias <id> <alias> (set alias)\n"
+        << "  --keys-gen <prefix>   (generate Ed25519 keypair at <prefix>.key/.pub)\n"
+        << "  --keys-gen-add        (append generated pubkey to auth_keys)\n"
         << "  --help                (show help)\n\n"
         << "Required config fields:\n"
         << "  listen_port   (int)\n"
@@ -73,6 +78,88 @@ bool file_readable(const std::string& path) {
     return std::filesystem::exists(path, ec);
 }
 
+bool ensure_dir(const std::string& dir) {
+    if (dir.empty()) {
+        return false;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return !ec;
+}
+
+bool write_file_secure(const std::string& path, const std::string& contents) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        return false;
+    }
+    out.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    out.close();
+    std::error_code ec;
+    std::filesystem::permissions(path,
+                                 std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+                                 std::filesystem::perm_options::replace, ec);
+    return !ec;
+}
+
+std::string load_or_create_secret(const std::string& path) {
+    std::ifstream in(path);
+    if (in) {
+        std::string val;
+        std::getline(in, val);
+        if (!val.empty()) {
+            return val;
+        }
+    }
+    std::string secret = yume::util::random_hex(32);
+    if (secret.empty()) {
+        throw std::runtime_error("failed to generate secret");
+    }
+    auto dir = std::filesystem::path(path).parent_path().string();
+    if (!dir.empty()) {
+        ensure_dir(dir);
+    }
+    if (!write_file_secure(path, secret)) {
+        throw std::runtime_error("failed to write secret file");
+    }
+    return secret;
+}
+
+bool generate_ed25519_keypair(const std::string& priv_path, const std::string& pub_path) {
+    EVP_PKEY_CTX* pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, nullptr);
+    if (!pctx) {
+        return false;
+    }
+    if (EVP_PKEY_keygen_init(pctx) != 1) {
+        EVP_PKEY_CTX_free(pctx);
+        return false;
+    }
+    EVP_PKEY* pkey = nullptr;
+    if (EVP_PKEY_keygen(pctx, &pkey) != 1) {
+        EVP_PKEY_CTX_free(pctx);
+        return false;
+    }
+    EVP_PKEY_CTX_free(pctx);
+
+    BIO* priv = BIO_new_file(priv_path.c_str(), "w");
+    BIO* pub = BIO_new_file(pub_path.c_str(), "w");
+    if (!priv || !pub) {
+        if (priv) BIO_free(priv);
+        if (pub) BIO_free(pub);
+        EVP_PKEY_free(pkey);
+        return false;
+    }
+    bool ok = PEM_write_bio_PrivateKey(priv, pkey, nullptr, nullptr, 0, nullptr, nullptr) == 1 &&
+              PEM_write_bio_PUBKEY(pub, pkey) == 1;
+    BIO_free(priv);
+    BIO_free(pub);
+    EVP_PKEY_free(pkey);
+
+    std::error_code ec;
+    std::filesystem::permissions(priv_path,
+                                 std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+                                 std::filesystem::perm_options::replace, ec);
+    return ok;
+}
 std::string read_file_bytes(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
@@ -191,6 +278,8 @@ int main(int argc, char** argv) {
     std::string keys_alias;
     std::string keys_alias_value;
     bool keys_list = false;
+    std::string keys_gen;
+    bool keys_gen_add = false;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") {
@@ -224,6 +313,8 @@ int main(int argc, char** argv) {
             cfg.real_index_path = argv[++i];
         } else if (arg == "--real-secret" && i + 1 < argc) {
             cfg.real_secret = argv[++i];
+        } else if (arg == "--real-secret-file" && i + 1 < argc) {
+            cfg.real_secret_file = argv[++i];
         } else if (arg == "--anonym") {
             cfg.anonym = true;
         } else if (arg == "--anonym-api" && i + 1 < argc) {
@@ -239,6 +330,10 @@ int main(int argc, char** argv) {
             keys_alias_value = argv[++i];
         } else if (arg == "--keys-list") {
             keys_list = true;
+        } else if (arg == "--keys-gen" && i + 1 < argc) {
+            keys_gen = argv[++i];
+        } else if (arg == "--keys-gen-add") {
+            keys_gen_add = true;
         }
     }
 
@@ -305,6 +400,11 @@ int main(int argc, char** argv) {
                     cfg.real_secret = json["real_secret"].get<std::string>();
                 }
             }
+            if (json.contains("real_secret_file")) {
+                if (cfg.real_secret_file.empty()) {
+                    cfg.real_secret_file = json["real_secret_file"].get<std::string>();
+                }
+            }
             if (json.contains("anonym")) {
                 if (!cfg.anonym) {
                     cfg.anonym = json["anonym"].get<bool>();
@@ -359,7 +459,7 @@ int main(int argc, char** argv) {
         cfg.auth_keys_meta = cfg.auth_keys + ".json";
     }
 
-    if (keys_list || !keys_add.empty() || !keys_remove.empty() || !keys_alias.empty()) {
+    if (keys_list || !keys_add.empty() || !keys_remove.empty() || !keys_alias.empty() || !keys_gen.empty()) {
         if (cfg.auth_keys.empty()) {
             yume::util::log_error("auth_keys must be set for key management");
             return 1;
@@ -423,6 +523,42 @@ int main(int argc, char** argv) {
             return 0;
         }
 
+        if (!keys_gen.empty()) {
+            std::string priv_path = keys_gen + ".key";
+            std::string pub_path = keys_gen + ".pub";
+            if (!generate_ed25519_keypair(priv_path, pub_path)) {
+                yume::util::log_error("failed to generate keypair");
+                return 1;
+            }
+            std::cout << "Generated: " << priv_path << " and " << pub_path << "\n";
+            if (keys_gen_add) {
+                keys_add = pub_path;
+                BIO* inbio = BIO_new_file(keys_add.c_str(), "r");
+                if (!inbio) {
+                    yume::util::log_error("failed to open key: " + keys_add);
+                    return 1;
+                }
+                EVP_PKEY* key = PEM_read_bio_PUBKEY(inbio, nullptr, nullptr, nullptr);
+                BIO_free(inbio);
+                if (!key) {
+                    yume::util::log_error("failed to parse key: " + keys_add);
+                    return 1;
+                }
+                BIO* outbio = BIO_new_file(cfg.auth_keys.c_str(), "a");
+                if (!outbio) {
+                    EVP_PKEY_free(key);
+                    yume::util::log_error("failed to open auth_keys for append");
+                    return 1;
+                }
+                PEM_write_bio_PUBKEY(outbio, key);
+                BIO_free(outbio);
+                std::string fp = yume::server::fingerprint_pubkey(key);
+                yume::server::update_auth_meta(cfg.auth_keys_meta, fp, keys_alias_value);
+                EVP_PKEY_free(key);
+            }
+            return 0;
+        }
+
         if (!keys_remove.empty() || !keys_alias.empty()) {
             nlohmann::json meta = nlohmann::json::object();
             std::ifstream in(cfg.auth_keys_meta);
@@ -472,6 +608,18 @@ int main(int argc, char** argv) {
 
     if (cfg.listen_port != 443 && !cfg.anonym) {
         yume::util::log_warn("WARNING: running on a port other than 443 reduces stealth and defeats HTTPS disguise.");
+    }
+
+    if (cfg.real_http) {
+        if (cfg.real_secret.empty()) {
+            const std::string secret_path = cfg.real_secret_file.empty() ? kDefaultSecretPath : cfg.real_secret_file;
+            try {
+                cfg.real_secret = load_or_create_secret(secret_path);
+            } catch (const std::exception& ex) {
+                yume::util::log_error(std::string("failed to load real_secret: ") + ex.what());
+                return 1;
+            }
+        }
     }
 
     if (cfg.anonym) {

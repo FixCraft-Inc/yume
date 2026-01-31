@@ -680,7 +680,8 @@ uint8_t Session::reserve_stream_id() {
     for (int i = 1; i < 255; ++i) {
         uint8_t candidate = static_cast<uint8_t>(i);
         if (streams_.find(candidate) == streams_.end() &&
-            pending_reverse_.find(candidate) == pending_reverse_.end()) {
+            pending_reverse_.find(candidate) == pending_reverse_.end() &&
+            reverse_listeners_.find(candidate) == reverse_listeners_.end()) {
             return candidate;
         }
     }

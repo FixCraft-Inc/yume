@@ -291,6 +291,7 @@ main() {
             if [[ -n "$TARGET_DIR" ]]; then
                 SYSROOT_PATH="$TARGET_DIR"
             fi
+            OPENWRT_USR="${SYSROOT_PATH}/usr"
             cat > "$TOOLCHAIN_FILE" <<EOF
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR ${TARGET_ARCH:-mips})
@@ -307,6 +308,10 @@ set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 EOF
             YUME_TOOLCHAIN_FILE="$TOOLCHAIN_FILE"
+            if [[ -d "$OPENWRT_USR" ]]; then
+                CMAKE_ARGS+=("-DOPENSSL_ROOT_DIR=${OPENWRT_USR}")
+                CMAKE_ARGS+=("-DCMAKE_PREFIX_PATH=${OPENWRT_USR}")
+            fi
         fi
 
         if [[ -z "${YUME_TOOLCHAIN_FILE:-}" ]]; then

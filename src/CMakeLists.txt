@@ -11,6 +11,8 @@ if(NOT nlohmann_json_FOUND)
     FetchContent_MakeAvailable(nlohmann_json)
 endif()
 
+find_package(ZSTD QUIET)
+
 if(YUME_USE_SPDLOG)
     find_package(spdlog QUIET)
     if(NOT spdlog_FOUND)
@@ -42,6 +44,12 @@ target_link_libraries(yume_core
         Threads::Threads
         nlohmann_json::nlohmann_json
 )
+
+if(ZSTD_FOUND)
+    target_link_libraries(yume_core PUBLIC ZSTD::ZSTD)
+elseif(YUME_STATIC)
+    message(WARNING "ZSTD not found; static OpenSSL builds may fail to link")
+endif()
 
 if(YUME_USE_SPDLOG)
     target_link_libraries(yume_core PUBLIC spdlog::spdlog)

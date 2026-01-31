@@ -339,6 +339,8 @@ EOF
             if [[ -n "${OPENWRT_USR:-}" && ! -f "${OPENWRT_USR}/lib/libz.a" ]]; then
                 warn "SDK missing static libz.a; disabling static link for OpenWRT build."
                 CMAKE_ARGS=("${CMAKE_ARGS[@]/-DYUME_STATIC=ON/-DYUME_STATIC=OFF}")
+                # Ensure the override is last to win.
+                CMAKE_ARGS+=("-DYUME_STATIC=OFF")
             fi
         fi
         CMAKE_ARGS+=("-DBASEFWX_NATIVE_OPT=OFF")

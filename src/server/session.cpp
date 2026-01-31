@@ -32,6 +32,64 @@ constexpr uint32_t kMaxFrameSize = 16 * 1024 * 1024;
 constexpr uint8_t kMinFrameType = protocol::AUTH;
 constexpr uint8_t kMaxFrameType = protocol::ANON;
 
+bool is_private_ipv4(const boost::asio::ip::address_v4& addr) {
+    const auto bytes = addr.to_bytes();
+    const uint8_t a = bytes[0];
+    const uint8_t b = bytes[1];
+    if (a == 10) return true;
+    if (a == 127) return true;
+    if (a == 0) return true;
+    if (a == 169 && b == 254) return true;
+    if (a == 172 && (b >= 16 && b <= 31)) return true;
+    if (a == 192 && b == 168) return true;
+    if (a == 100 && (b >= 64 && b <= 127)) return true; // CGNAT
+    if (a == 192 && b == 0) return true;
+    if (a == 198 && (b == 18 || b == 19)) return true;
+    if (a == 198 && b == 51) return true;
+    if (a == 203 && b == 0) return true;
+    if (a >= 224) return true; // multicast/reserved
+    return false;
+}
+
+bool is_private_ipv6(const boost::asio::ip::address_v6& addr) {
+    if (addr.is_loopback() || addr.is_unspecified() || addr.is_multicast()) {
+        return true;
+    }
+    const auto bytes = addr.to_bytes();
+    if ((bytes[0] & 0xFE) == 0xFC) { // fc00::/7
+        return true;
+    }
+    if (bytes[0] == 0xFE && (bytes[1] & 0xC0) == 0x80) { // fe80::/10
+        return true;
+    }
+    if (addr.is_v4_mapped()) {
+        return is_private_ipv4(addr.to_v4());
+    }
+    return false;
+}
+
+bool is_public_address(const boost::asio::ip::address& addr) {
+    if (addr.is_v4()) {
+        return !is_private_ipv4(addr.to_v4());
+    }
+    if (addr.is_v6()) {
+        return !is_private_ipv6(addr.to_v6());
+    }
+    return false;
+}
+
+bool is_blocked_host_literal(const std::string& host) {
+    if (host == "localhost" || host == "localhost.localdomain") {
+        return true;
+    }
+    boost::system::error_code ec;
+    auto addr = boost::asio::ip::make_address(host, ec);
+    if (!ec) {
+        return !is_public_address(addr);
+    }
+    return false;
+}
+
 }
 
 Session::Session(boost::asio::ip::tcp::socket socket,
@@ -388,6 +446,7 @@ void Session::handle_frame(const protocol::Frame& frame) {
             {"sig", cfg_.anonym_sig},
             {"ts", cfg_.anonym_ts},
             {"nonce", cfg_.anonym_nonce},
+            {"certfp", cfg_.anonym_certfp},
             {"algo", "ed25519"}
         };
         std::string payload_str = anon.dump();
@@ -532,6 +591,10 @@ void Session::handle_open(const protocol::Frame& frame) {
         send_open_reply(frame.header.stream_id, false, "missing host/port");
         return;
     }
+    if (is_blocked_host_literal(host)) {
+        send_open_reply(frame.header.stream_id, false, "blocked destination");
+        return;
+    }
 
     if (!proto.empty() && proto != "tcp") {
         send_open_reply(frame.header.stream_id, false, "proto not supported");
@@ -551,7 +614,18 @@ void Session::handle_open(const protocol::Frame& frame) {
                                                                       self->streams_.erase(stream_id);
                                                                       return;
                                                                   }
-                                                                  boost::asio::async_connect(remote->socket, results,
+                                                                  std::vector<boost::asio::ip::tcp::endpoint> allowed;
+                                                                  for (const auto& entry : results) {
+                                                                      if (is_public_address(entry.endpoint().address())) {
+                                                                          allowed.push_back(entry.endpoint());
+                                                                      }
+                                                                  }
+                                                                  if (allowed.empty()) {
+                                                                      self->send_open_reply(stream_id, false, "blocked destination");
+                                                                      self->streams_.erase(stream_id);
+                                                                      return;
+                                                                  }
+                                                                  boost::asio::async_connect(remote->socket, allowed,
                                                                                              boost::asio::bind_executor(self->strand_,
                                                                                                                         [self, stream_id, remote](const boost::system::error_code& ec2,
                                                                                                                                                  const boost::asio::ip::tcp::endpoint&) {

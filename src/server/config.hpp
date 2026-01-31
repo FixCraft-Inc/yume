@@ -26,6 +26,7 @@ struct ServerConfig {
     std::string anonym_sig;
     std::string anonym_ts;
     std::string anonym_nonce;
+    std::string anonym_certfp;
     std::string auth_keys_meta;
 };
 

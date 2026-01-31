@@ -226,11 +226,11 @@ main() {
     fi
 
     if [[ $MINIMAL -eq 1 ]]; then
-        warn "Minimal mode: skipping dependency install and BaseFWX; enabling static build."
+        warn "Minimal mode: enabling static build and BaseFWX."
         CMAKE_ARGS+=(
             -DYUME_MINIMAL=ON
             -DYUME_STATIC=ON
-            -DYUME_USE_BASEFWX=OFF
+            -DYUME_USE_BASEFWX=ON
             -DYUME_USE_SPDLOG=OFF
             -DCMAKE_BUILD_TYPE=Release
         )
@@ -250,28 +250,25 @@ main() {
         warn "CMake not found. Will install build dependencies."
     fi
 
-    if [[ $MINIMAL -eq 0 ]]; then
-        uname_out="$(uname -s)"
-        case "${uname_out}" in
-            Linux*)
-                install_deps_linux || { error "Dependency install failed."; exit 1; }
-                ;;
-            Darwin*)
-                install_deps_macos || { error "Dependency install failed."; exit 1; }
-                ;;
-            MINGW*|MSYS*|CYGWIN*)
-                install_deps_windows || { error "Dependency install failed."; exit 1; }
-                ;;
-            *)
-                error "Unsupported OS: ${uname_out}"
-                exit 1
-                ;;
-        esac
+    uname_out="$(uname -s)"
+    case "${uname_out}" in
+        Linux*)
+            install_deps_linux || { error "Dependency install failed."; exit 1; }
+            ;;
+        Darwin*)
+            install_deps_macos || { error "Dependency install failed."; exit 1; }
+            ;;
+        MINGW*|MSYS*|CYGWIN*)
+            install_deps_windows || { error "Dependency install failed."; exit 1; }
+            ;;
+        *)
+            error "Unsupported OS: ${uname_out}"
+            exit 1
+            ;;
+    esac
 
-        ensure_basefwx
-        cleanup_vendor
-    fi
-
+    ensure_basefwx
+    cleanup_vendor
     build_project
     info "Done! 🎉"
     echo -e "${COLOR_GREEN}Run:${COLOR_RESET} ./build/bin/yumed --config config/yumed.json"

@@ -24,6 +24,8 @@
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include <openssl/pem.h>
+#include <openssl/x509.h>
+#include <openssl/sha.h>
 
 #include "client/forward.hpp"
 #include "client/socks.hpp"
@@ -123,6 +125,39 @@ std::string maybe_force_ipv4(const std::string& cmd, bool ipv4_only) {
         return out;
     }
     return out + cmd.substr(5);
+}
+
+std::string hex_encode(const unsigned char* data, size_t len) {
+    static const char* kHex = "0123456789abcdef";
+    std::string out;
+    out.reserve(len * 2);
+    for (size_t i = 0; i < len; ++i) {
+        out.push_back(kHex[(data[i] >> 4) & 0xF]);
+        out.push_back(kHex[data[i] & 0xF]);
+    }
+    return out;
+}
+
+std::string get_peer_cert_fingerprint(EVP_PKEY* key, SSL* ssl) {
+    (void)key;
+    if (!ssl) {
+        return {};
+    }
+    X509* cert = SSL_get_peer_certificate(ssl);
+    if (!cert) {
+        return {};
+    }
+    unsigned char* der = nullptr;
+    int len = i2d_X509(cert, &der);
+    X509_free(cert);
+    if (len <= 0 || !der) {
+        if (der) OPENSSL_free(der);
+        return {};
+    }
+    unsigned char hash[SHA256_DIGEST_LENGTH] = {0};
+    SHA256(der, static_cast<size_t>(len), hash);
+    OPENSSL_free(der);
+    return hex_encode(hash, SHA256_DIGEST_LENGTH);
 }
 
 int run_proxycmd(const std::string& dest_host, int dest_port, int socks_port) {
@@ -269,6 +304,9 @@ struct ParsedArgs {
     bool help{false};
     bool accept_monitoring{false};
     bool save_server{false};
+    bool require_anonym{false};
+    std::string ssh_L;
+    std::string ssh_R;
 };
 
 ParsedArgs parse_args(int argc, char** argv) {
@@ -306,6 +344,12 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.dest_host = argv[++i];
         } else if (arg == "--dport" && i + 1 < argc) {
             args.dest_port = std::stoi(argv[++i]);
+        } else if (arg == "--require-anonym") {
+            args.require_anonym = true;
+        } else if (arg == "-L" && i + 1 < argc) {
+            args.ssh_L = argv[++i];
+        } else if (arg == "-R" && i + 1 < argc) {
+            args.ssh_R = argv[++i];
         } else if (arg == "--inner") {
             args.inner_crypto = true;
         } else if (arg == "--inner-heavy") {
@@ -423,6 +467,9 @@ void print_help() {
         << "                      (ssh auto-wraps ProxyCommand via local SOCKS)\n"
         << "  --run-ipv4           (prefer IPv4 for --run; curl gets -4 --http1.1)\n"
         << "  --proxycmd           (internal: SSH ProxyCommand helper)\n"
+        << "  --require-anonym     (abort if server is not in anonym mode)\n"
+        << "  -L [bind:]lport:host:port  (SSH-style local forward)\n"
+        << "  -R [bind:]rport:host:port  (SSH-style remote forward; not supported yet)\n"
         << "  --config <path>      (config file)\n"
         << "  --accept-monitoring  (skip monitoring warning)\n"
         << "  --save-server        (persist server into config)\n";
@@ -434,6 +481,46 @@ bool file_exists(const std::string& path) {
     }
     std::error_code ec;
     return std::filesystem::exists(path, ec);
+}
+
+bool parse_ssh_forward(const std::string& spec, int& lport, std::string& host, int& rport) {
+    if (spec.empty()) {
+        return false;
+    }
+    std::string s = spec;
+    std::string bind;
+    auto first = s.find(':');
+    auto last = s.rfind(':');
+    if (first == std::string::npos || last == std::string::npos || first == last) {
+        return false;
+    }
+    if (s.find(':', last + 1) != std::string::npos) {
+        return false;
+    }
+    std::string left = s.substr(0, first);
+    std::string middle = s.substr(first + 1, last - first - 1);
+    std::string right = s.substr(last + 1);
+    if (left.find(':') != std::string::npos) {
+        return false;
+    }
+    try {
+        lport = std::stoi(left);
+    } catch (...) {
+        return false;
+    }
+    if (lport <= 0) {
+        return false;
+    }
+    host = middle;
+    if (host.empty()) {
+        return false;
+    }
+    try {
+        rport = std::stoi(right);
+    } catch (...) {
+        return false;
+    }
+    return rport > 0;
 }
 
 }  // namespace
@@ -451,6 +538,23 @@ int Cli::run(int argc, char** argv) {
         return 0;
     }
     ClientConfig cfg;
+
+    if (!args.ssh_R.empty()) {
+        util::log_error("remote forwarding (-R) is not supported yet");
+        return 1;
+    }
+    if (!args.ssh_L.empty()) {
+        int lport = 0;
+        int rport = 0;
+        std::string host;
+        if (!parse_ssh_forward(args.ssh_L, lport, host, rport)) {
+            util::log_error("invalid -L syntax (expected [bind:]lport:host:port)");
+            return 1;
+        }
+        args.lport = lport;
+        args.rhost = host;
+        args.rport = rport;
+    }
 
     if (args.config_specified || std::filesystem::exists(args.config_path)) {
         try {
@@ -482,6 +586,9 @@ int Cli::run(int argc, char** argv) {
             if (json.contains("anonym_pubkey") && cfg.anonym_pubkey.empty()) {
                 cfg.anonym_pubkey = util::expand_user(json["anonym_pubkey"].get<std::string>());
             }
+            if (json.contains("require_anonym")) {
+                cfg.require_anonym = json["require_anonym"].get<bool>();
+            }
         } catch (const std::exception& ex) {
             util::log_warn(std::string("config load failed: ") + ex.what());
         }
@@ -508,6 +615,9 @@ int Cli::run(int argc, char** argv) {
     if (!args.pq_public_key.empty()) {
         cfg.pq_public_key = util::expand_user(args.pq_public_key);
     }
+    if (args.require_anonym) {
+        cfg.require_anonym = true;
+    }
 
     if (args.save_server && !cfg.server.empty()) {
         nlohmann::json json;
@@ -524,6 +634,7 @@ int Cli::run(int argc, char** argv) {
         json["inner_crypto"] = cfg.inner_crypto;
         json["inner_heavy"] = cfg.inner_heavy;
         if (!cfg.pq_public_key.empty()) json["pq_public_key"] = cfg.pq_public_key;
+        json["require_anonym"] = cfg.require_anonym;
         std::ofstream out(args.config_path);
         if (out) {
             out << json.dump(2);
@@ -580,6 +691,7 @@ int Cli::run(int argc, char** argv) {
             std::string sig = json.value("sig", "");
             std::string ts = json.value("ts", "");
             std::string nonce = json.value("nonce", "");
+            std::string certfp = json.value("certfp", "");
 
             auto print_red = [](const std::string& msg) {
                 std::cerr << "\033[1;31m" << msg << "\033[0m" << std::endl;
@@ -592,6 +704,11 @@ int Cli::run(int argc, char** argv) {
                 if (hash.empty() || sig.empty() || ts.empty() || nonce.empty()) {
                     print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
                     print_red("ANONYM PROOF IS INCOMPLETE");
+                    return 1;
+                }
+                if (cfg.require_anonym && certfp.empty()) {
+                    print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                    print_red("ANONYM PROOF MISSING CERTIFICATE FINGERPRINT");
                     return 1;
                 }
                 long long ts_val = 0;
@@ -628,7 +745,16 @@ int Cli::run(int argc, char** argv) {
                     }
                     pubkey.reset(key);
                 }
+                std::string peer_fp = get_peer_cert_fingerprint(pubkey.get(), stream.native_handle());
+                if (!certfp.empty() && !peer_fp.empty() && certfp != peer_fp) {
+                    print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                    print_red("ANONYM CERTIFICATE FINGERPRINT MISMATCH");
+                    return 1;
+                }
                 std::string message = std::string(kAnonMsgPrefix) + hash + ":" + ts + ":" + nonce;
+                if (!certfp.empty()) {
+                    message += ":" + certfp;
+                }
                 crypto::Bytes msg_bytes(message.begin(), message.end());
                 std::string sig_raw = util::base64_decode(sig);
                 if (sig_raw.empty()) {
@@ -645,6 +771,11 @@ int Cli::run(int argc, char** argv) {
                 }
                 print_green("✅✒️ This Server Has Cryptographically Correct Signature, and is VERIFIED");
             } else {
+                if (cfg.require_anonym) {
+                    print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                    print_red("SERVER IS NOT IN ANONYM MODE");
+                    return 1;
+                }
                 if (!args.accept_monitoring) {
                     print_red("🛑 🔓 CRITICAL WARNING:");
                     print_red("YOUR DATA WILL BE MONITORED BY THE SERVER OPERATOR YOU ARE CONNECTING TO!! ARE YOU ULTIMATELY SURE YOU TRUST THAT PERSON??");
@@ -656,6 +787,10 @@ int Cli::run(int argc, char** argv) {
                     }
                 }
             }
+        }
+        if (cfg.require_anonym && anon_frame.header.type != protocol::ANON) {
+            util::log_error("server did not provide anonym proof");
+            return 1;
         }
 
         auto tunnel = std::make_shared<Tunnel>(std::move(stream));

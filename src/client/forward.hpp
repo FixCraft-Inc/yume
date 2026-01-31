@@ -50,6 +50,34 @@ private:
     bool open_confirmed_{false};
 };
 
+class LocalForwardSession : public std::enable_shared_from_this<LocalForwardSession> {
+public:
+    LocalForwardSession(boost::asio::ip::tcp::socket socket,
+                        std::string target_host,
+                        int target_port);
+
+    void start();
+
+private:
+    void start_connect();
+    void start_client_read();
+    void start_remote_read();
+    void on_client_read(const boost::system::error_code& ec, std::size_t bytes);
+    void on_remote_read(const boost::system::error_code& ec, std::size_t bytes);
+    void close();
+
+    boost::asio::ip::tcp::socket socket_;
+    boost::asio::ip::tcp::socket remote_;
+    boost::asio::ip::tcp::resolver resolver_;
+    boost::asio::strand<boost::asio::any_io_executor> strand_;
+
+    std::array<uint8_t, 4096> client_buf_{};
+    std::array<uint8_t, 4096> remote_buf_{};
+
+    std::string target_host_;
+    int target_port_{0};
+};
+
 class ForwardServer {
 public:
     ForwardServer(boost::asio::io_context& io,
@@ -62,6 +90,7 @@ public:
 
 private:
     void do_accept();
+    bool is_local_target() const;
 
     boost::asio::ip::tcp::acceptor acceptor_;
     std::string target_host_;

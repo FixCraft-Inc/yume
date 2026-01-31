@@ -59,12 +59,24 @@ void Manager::stop() {
 void Manager::update_anonym_proof(const std::string& hash,
                                   const std::string& sig,
                                   const std::string& ts,
-                                  const std::string& nonce) {
+                                  const std::string& nonce,
+                                  const std::string& certfp,
+                                  const std::string& ca_sig,
+                                  const std::string& ca_alg,
+                                  const std::string& sub_sig,
+                                  const std::string& sub_alg,
+                                  const std::string& sub_cert_b64) {
     std::lock_guard<std::mutex> lock(cfg_mutex_);
     cfg_.anonym_hash = hash;
     cfg_.anonym_sig = sig;
     cfg_.anonym_ts = ts;
     cfg_.anonym_nonce = nonce;
+    cfg_.anonym_certfp = certfp;
+    cfg_.anonym_ca_sig = ca_sig;
+    cfg_.anonym_ca_alg = ca_alg;
+    cfg_.anonym_sub_sig = sub_sig;
+    cfg_.anonym_sub_alg = sub_alg;
+    cfg_.anonym_sub_cert_b64 = sub_cert_b64;
 }
 
 void Manager::do_accept() {

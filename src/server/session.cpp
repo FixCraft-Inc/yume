@@ -73,7 +73,7 @@ bool is_public_address(const boost::asio::ip::address& addr) {
         return !is_private_ipv4(addr.to_v4());
     }
     if (addr.is_v6()) {
-        return !is_private_ipv6(addr.to_v6());
+        return false;
     }
     return false;
 }
@@ -273,8 +273,14 @@ std::string Session::load_real_index() {
             return contents;
         }
     }
-    return "<!doctype html><html><head><meta charset=\"utf-8\"><title>OK</title></head>"
-           "<body><h1>Service Online</h1><p>Welcome.</p></body></html>";
+    return "<!doctype html><html><head><meta charset=\"utf-8\">"
+           "<title>Redirecting...</title>"
+           "<meta http-equiv=\"refresh\" content=\"0;url=https://ja.wikipedia.org/wiki/%E5%AE%87%E5%AE%99\">"
+           "<script>window.location.replace(\"https://ja.wikipedia.org/wiki/%E5%AE%87%E5%AE%99\");</script>"
+           "</head><body>"
+           "<noscript><meta http-equiv=\"refresh\" content=\"0;url=https://ja.wikipedia.org/wiki/%E5%AE%87%E5%AE%99\"></noscript>"
+           "<p>Redirecting to Wikipedia...</p>"
+           "</body></html>";
 }
 
 std::string Session::build_hidden_blob() {
@@ -331,7 +337,9 @@ void Session::send_real_http_response(const std::string& path) {
     if (path != "/") {
         headers += "Location: /\r\n";
     }
+    headers += "Server: nginx\r\n";
     headers += "Content-Type: text/html; charset=utf-8\r\n";
+    headers += "Cache-Control: no-store\r\n";
     if (!hidden.empty()) {
         headers += "X-Yume-Blob: " + hidden + "\r\n";
     }
@@ -449,7 +457,12 @@ void Session::handle_frame(const protocol::Frame& frame) {
             {"ts", cfg_.anonym_ts},
             {"nonce", cfg_.anonym_nonce},
             {"certfp", cfg_.anonym_certfp},
-            {"algo", "ed25519"}
+            {"algo", "ed25519"},
+            {"ca_sig", cfg_.anonym_ca_sig},
+            {"ca_alg", cfg_.anonym_ca_alg},
+            {"sub_sig", cfg_.anonym_sub_sig},
+            {"sub_alg", cfg_.anonym_sub_alg},
+            {"sub_cert", cfg_.anonym_sub_cert_b64}
         };
         std::string payload_str = anon.dump();
         crypto::Bytes payload(payload_str.begin(), payload_str.end());
@@ -641,7 +654,7 @@ void Session::handle_open(const protocol::Frame& frame) {
     streams_[frame.header.stream_id] = remote;
 
     auto self = shared_from_this();
-    remote->resolver.async_resolve(host, std::to_string(port),
+    remote->resolver.async_resolve(boost::asio::ip::tcp::v4(), host, std::to_string(port),
                                    boost::asio::bind_executor(strand_,
                                                               [self, stream_id = frame.header.stream_id, remote](const boost::system::error_code& ec,
                                                                                                                  const boost::asio::ip::tcp::resolver::results_type& results) {

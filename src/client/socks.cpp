@@ -182,9 +182,8 @@ void SocksSession::on_read_request_address(uint8_t atyp, const boost::system::er
         std::copy_n(addr_buf_.begin(), 4, bytes.begin());
         target_host_ = boost::asio::ip::address_v4(bytes).to_string();
     } else if (atyp == 0x04) {
-        boost::asio::ip::address_v6::bytes_type bytes{};
-        std::copy_n(addr_buf_.begin(), 16, bytes.begin());
-        target_host_ = boost::asio::ip::address_v6(bytes).to_string();
+        send_reply(kReplyAddrNotSupported, [self = shared_from_this()]() { self->close(); });
+        return;
     } else if (atyp == 0x03) {
         target_host_.assign(addr_buf_.begin(), addr_buf_.end());
     }

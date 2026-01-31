@@ -66,6 +66,31 @@ Client should set the FixCraft anonym public key:
 }
 ```
 
+#### Optional: CA-backed sub-signature for anonym proof
+
+You can add a CA-signed sub-certificate so clients can verify an extra signature chain.
+
+Generate a sub key + cert signed by your CA:
+
+```bash
+./scripts/gen_anonym_sub.sh --ca-cert /home/user/ca.cert.pem --ca-key /home/user/ca.key.pem --out-prefix /etc/yume/anonym_sub
+```
+
+Start yumed with the sub key + cert:
+
+```bash
+sudo ./build/bin/yumed --anonym --anonym-sub-key /etc/yume/anonym_sub.key --anonym-sub-cert /etc/yume/anonym_sub.pem
+```
+
+Clients must trust the CA cert to accept the sub signature:
+
+```json
+{
+  "anonym_ca_cert": "/home/user/ca.cert.pem",
+  "require_anonym": true
+}
+```
+
 ## Modes
 
 SOCKS proxy (default):

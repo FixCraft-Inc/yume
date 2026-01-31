@@ -57,6 +57,10 @@ void print_help() {
         << "  --anonym              (enable anonym mode + proof)\n"
         << "  --anonym-api <url>    (verity API endpoint)\n"
         << "  --anonym-token <str>  (verity API token)\n"
+        << "  --anonym-ca-key <path> (CA private key for extra anonym signature)\n"
+        << "  --anonym-ca-cert <path> (CA cert matching anonym CA key)\n"
+        << "  --anonym-sub-key <path> (sub-CA private key for anonym proof signing)\n"
+        << "  --anonym-sub-cert <path> (sub-CA cert to send to clients)\n"
         << "  --keys-list           (list authorized keys)\n"
         << "  --keys-add <pub.pem>  (add authorized key)\n"
         << "  --keys-remove <id>    (remove by fingerprint or alias)\n"
@@ -325,12 +329,89 @@ bool verify_anonym_signature(const std::string& hash,
     return ok;
 }
 
+std::string key_alg_label(EVP_PKEY* key) {
+    if (!key) {
+        return "unknown";
+    }
+    int type = EVP_PKEY_base_id(key);
+    if (type == EVP_PKEY_ED25519) {
+        return "ed25519";
+    }
+    if (type == EVP_PKEY_RSA || type == EVP_PKEY_RSA_PSS) {
+        return "rsa";
+    }
+    if (type == EVP_PKEY_EC) {
+        return "ecdsa";
+    }
+    return "unknown";
+}
+
+bool sign_anonym_with_ca(const std::string& hash,
+                          const std::string& ts,
+                          const std::string& nonce,
+                          const std::string& certfp,
+                          const std::string& ca_key_path,
+                          std::string* out_sig_b64,
+                          std::string* out_alg) {
+    if (!out_sig_b64 || !out_alg) {
+        return false;
+    }
+    if (hash.empty() || ts.empty() || nonce.empty() || ca_key_path.empty()) {
+        return false;
+    }
+    std::string message = std::string(kAnonMsgPrefix) + hash + ":" + ts + ":" + nonce;
+    if (!certfp.empty()) {
+        message += ":" + certfp;
+    }
+    yume::crypto::Bytes msg_bytes(message.begin(), message.end());
+
+    std::string key_pem;
+    try {
+        key_pem = read_file_bytes(ca_key_path);
+    } catch (...) {
+        return false;
+    }
+    if (key_pem.empty()) {
+        return false;
+    }
+
+    BIO* bio = BIO_new_mem_buf(key_pem.data(), static_cast<int>(key_pem.size()));
+    if (!bio) {
+        return false;
+    }
+    EVP_PKEY* key = PEM_read_bio_PrivateKey(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    if (!key) {
+        return false;
+    }
+
+    bool ok = false;
+    try {
+        auto sig = yume::crypto::sign_key(key, msg_bytes);
+        if (!sig.empty()) {
+            std::string sig_raw(reinterpret_cast<const char*>(sig.data()), sig.size());
+            *out_sig_b64 = yume::util::base64_encode(sig_raw);
+            *out_alg = key_alg_label(key);
+            ok = !out_sig_b64->empty();
+        }
+    } catch (...) {
+        ok = false;
+    }
+    EVP_PKEY_free(key);
+    return ok;
+}
+
 struct AnonymProof {
     std::string hash;
     std::string sig;
     std::string ts;
     std::string nonce;
     std::string certfp;
+    std::string ca_sig;
+    std::string ca_alg;
+    std::string sub_sig;
+    std::string sub_alg;
+    std::string sub_cert_b64;
 };
 
 struct ApiEndpoint {
@@ -367,7 +448,10 @@ ApiEndpoint parse_api_url(const std::string& url) {
 AnonymProof fetch_anonym_proof(const std::string& hash,
                                const std::string& certfp,
                                const std::string& api_url,
-                               const std::string& token) {
+                               const std::string& token,
+                               const std::string& ca_key_path,
+                               const std::string& sub_key_path,
+                               const std::string& sub_cert_path) {
     AnonymProof proof;
     proof.hash = hash;
     proof.ts = std::to_string(static_cast<long long>(std::time(nullptr)));
@@ -390,6 +474,29 @@ AnonymProof fetch_anonym_proof(const std::string& hash,
     if (!verify_anonym_signature(proof.hash, proof.ts, proof.nonce, proof.certfp, proof.sig)) {
         throw std::runtime_error("anonym signature verification failed (local check)");
     }
+    if (!ca_key_path.empty()) {
+        if (!sign_anonym_with_ca(proof.hash, proof.ts, proof.nonce, proof.certfp, ca_key_path,
+                                 &proof.ca_sig, &proof.ca_alg)) {
+            throw std::runtime_error("anonym CA signing failed");
+        }
+    }
+    if (!sub_key_path.empty()) {
+        if (sub_cert_path.empty()) {
+            throw std::runtime_error("anonym_sub_cert must be set when anonym_sub_key is set");
+        }
+        if (!sign_anonym_with_ca(proof.hash, proof.ts, proof.nonce, proof.certfp, sub_key_path,
+                                 &proof.sub_sig, &proof.sub_alg)) {
+            throw std::runtime_error("anonym subkey signing failed");
+        }
+        std::string sub_pem = read_file_bytes(sub_cert_path);
+        if (sub_pem.empty()) {
+            throw std::runtime_error("failed to read anonym_sub_cert");
+        }
+        proof.sub_cert_b64 = yume::util::base64_encode(sub_pem);
+        if (proof.sub_cert_b64.empty()) {
+            throw std::runtime_error("failed to encode anonym_sub_cert");
+        }
+    }
     return proof;
 }
 }  // namespace
@@ -410,6 +517,8 @@ int main(int argc, char** argv) {
     bool ui_mode = false;
     bool inner_heavy_override = false;
     bool inner_heavy_value = true;
+    bool inner_crypto_override = false;
+    bool anonym_override = false;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") {
@@ -433,18 +542,22 @@ int main(int argc, char** argv) {
             cfg.obfuscation = true;
         } else if (arg == "--inner") {
             cfg.inner_crypto = true;
+            inner_crypto_override = true;
             inner_heavy_override = true;
             inner_heavy_value = true;
         } else if (arg == "--inner-heavy") {
             cfg.inner_crypto = true;
+            inner_crypto_override = true;
             inner_heavy_override = true;
             inner_heavy_value = true;
         } else if (arg == "--inner-light") {
             cfg.inner_crypto = true;
+            inner_crypto_override = true;
             inner_heavy_override = true;
             inner_heavy_value = false;
         } else if (arg == "--pq-key" && i + 1 < argc) {
             cfg.pq_private_key = yume::util::expand_user(argv[++i]);
+            inner_crypto_override = true;
         } else if (arg == "--allow-exec") {
             cfg.allow_exec = true;
         } else if (arg == "--real") {
@@ -457,10 +570,19 @@ int main(int argc, char** argv) {
             cfg.real_secret_file = argv[++i];
         } else if (arg == "--anonym") {
             cfg.anonym = true;
+            anonym_override = true;
         } else if (arg == "--anonym-api" && i + 1 < argc) {
             cfg.anonym_api = argv[++i];
         } else if (arg == "--anonym-token" && i + 1 < argc) {
             cfg.anonym_token = argv[++i];
+        } else if (arg == "--anonym-ca-key" && i + 1 < argc) {
+            cfg.anonym_ca_key = yume::util::expand_user(argv[++i]);
+        } else if (arg == "--anonym-ca-cert" && i + 1 < argc) {
+            cfg.anonym_ca_cert = yume::util::expand_user(argv[++i]);
+        } else if (arg == "--anonym-sub-key" && i + 1 < argc) {
+            cfg.anonym_sub_key = yume::util::expand_user(argv[++i]);
+        } else if (arg == "--anonym-sub-cert" && i + 1 < argc) {
+            cfg.anonym_sub_cert = yume::util::expand_user(argv[++i]);
         } else if (arg == "--keys-add" && i + 1 < argc) {
             keys_add = argv[++i];
         } else if (arg == "--keys-remove" && i + 1 < argc) {
@@ -513,7 +635,7 @@ int main(int argc, char** argv) {
                 }
             }
             if (json.contains("inner_crypto")) {
-                if (!cfg.inner_crypto) {
+                if (!inner_crypto_override) {
                     cfg.inner_crypto = json["inner_crypto"].get<bool>();
                 }
             }
@@ -551,7 +673,7 @@ int main(int argc, char** argv) {
                 }
             }
             if (json.contains("anonym")) {
-                if (!cfg.anonym) {
+                if (!anonym_override) {
                     cfg.anonym = json["anonym"].get<bool>();
                 }
             }
@@ -563,6 +685,26 @@ int main(int argc, char** argv) {
             if (json.contains("anonym_token")) {
                 if (cfg.anonym_token.empty()) {
                     cfg.anonym_token = json["anonym_token"].get<std::string>();
+                }
+            }
+            if (json.contains("anonym_ca_key")) {
+                if (cfg.anonym_ca_key.empty()) {
+                    cfg.anonym_ca_key = yume::util::expand_user(json["anonym_ca_key"].get<std::string>());
+                }
+            }
+            if (json.contains("anonym_ca_cert")) {
+                if (cfg.anonym_ca_cert.empty()) {
+                    cfg.anonym_ca_cert = yume::util::expand_user(json["anonym_ca_cert"].get<std::string>());
+                }
+            }
+            if (json.contains("anonym_sub_key")) {
+                if (cfg.anonym_sub_key.empty()) {
+                    cfg.anonym_sub_key = yume::util::expand_user(json["anonym_sub_key"].get<std::string>());
+                }
+            }
+            if (json.contains("anonym_sub_cert")) {
+                if (cfg.anonym_sub_cert.empty()) {
+                    cfg.anonym_sub_cert = yume::util::expand_user(json["anonym_sub_cert"].get<std::string>());
                 }
             }
         } catch (const std::exception& ex) {
@@ -639,6 +781,10 @@ int main(int argc, char** argv) {
             std::string anonym = prompt("anonym (true/false)", cfg.anonym ? "true" : "false");
             std::string anonym_api = prompt("anonym_api", cfg.anonym_api);
             std::string anonym_token = prompt("anonym_token", cfg.anonym_token);
+            std::string anonym_ca_key = prompt("anonym_ca_key", cfg.anonym_ca_key);
+            std::string anonym_ca_cert = prompt("anonym_ca_cert", cfg.anonym_ca_cert);
+            std::string anonym_sub_key = prompt("anonym_sub_key", cfg.anonym_sub_key);
+            std::string anonym_sub_cert = prompt("anonym_sub_cert", cfg.anonym_sub_cert);
 
             json["listen_port"] = std::stoi(listen);
             json["tls_cert"] = cert;
@@ -656,6 +802,10 @@ int main(int argc, char** argv) {
             json["anonym"] = (anonym == "true");
             if (!anonym_api.empty()) json["anonym_api"] = anonym_api;
             if (!anonym_token.empty()) json["anonym_token"] = anonym_token;
+            if (!anonym_ca_key.empty()) json["anonym_ca_key"] = anonym_ca_key;
+            if (!anonym_ca_cert.empty()) json["anonym_ca_cert"] = anonym_ca_cert;
+            if (!anonym_sub_key.empty()) json["anonym_sub_key"] = anonym_sub_key;
+            if (!anonym_sub_cert.empty()) json["anonym_sub_cert"] = anonym_sub_cert;
 
             ensure_dir(std::filesystem::path(out_path).parent_path().string());
             std::ofstream out(out_path);
@@ -694,6 +844,22 @@ int main(int argc, char** argv) {
         }
         if (cfg.inner_crypto && !cfg.pq_private_key.empty() && !file_readable(cfg.pq_private_key)) {
             yume::util::log_error("pq_private_key not found: " + cfg.pq_private_key);
+            return 1;
+        }
+        if (cfg.anonym && !cfg.anonym_ca_key.empty() && !file_readable(cfg.anonym_ca_key)) {
+            yume::util::log_error("anonym_ca_key not found: " + cfg.anonym_ca_key);
+            return 1;
+        }
+        if (cfg.anonym && !cfg.anonym_ca_cert.empty() && !file_readable(cfg.anonym_ca_cert)) {
+            yume::util::log_error("anonym_ca_cert not found: " + cfg.anonym_ca_cert);
+            return 1;
+        }
+        if (cfg.anonym && !cfg.anonym_sub_key.empty() && !file_readable(cfg.anonym_sub_key)) {
+            yume::util::log_error("anonym_sub_key not found: " + cfg.anonym_sub_key);
+            return 1;
+        }
+        if (cfg.anonym && !cfg.anonym_sub_cert.empty() && !file_readable(cfg.anonym_sub_cert)) {
+            yume::util::log_error("anonym_sub_cert not found: " + cfg.anonym_sub_cert);
             return 1;
         }
         if (cfg.real_http && !cfg.real_index_path.empty() && !file_readable(cfg.real_index_path)) {
@@ -887,6 +1053,21 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (!cfg.inner_crypto) {
+        yume::util::log_warn("🔓⛓️‍💥 YOUR SECURITY IS SUFFERING BECAUSE YOU HAVE DISABLED: BASEFWX / PQ");
+    }
+    if (cfg.anonym && cfg.anonym_ca_key.empty() && !cfg.anonym_ca_cert.empty()) {
+        yume::util::log_warn("anonym_ca_cert set but anonym_ca_key is missing; no CA signature will be produced");
+    }
+    if (cfg.anonym && !cfg.anonym_ca_key.empty() && cfg.anonym_ca_cert.empty()) {
+        yume::util::log_warn("anonym_ca_key set but anonym_ca_cert is missing; clients cannot verify CA signature");
+    }
+    if (cfg.anonym && !cfg.anonym_sub_key.empty() && cfg.anonym_sub_cert.empty()) {
+        yume::util::log_warn("anonym_sub_key set but anonym_sub_cert is missing; sub signature cannot be used");
+    }
+    if (cfg.anonym && cfg.anonym_sub_key.empty() && !cfg.anonym_sub_cert.empty()) {
+        yume::util::log_warn("anonym_sub_cert set but anonym_sub_key is missing; no sub signature will be produced");
+    }
     if (cfg.listen_port != 443 && !cfg.anonym) {
         yume::util::log_warn("WARNING: running on a port other than 443 reduces stealth and defeats HTTPS disguise.");
     }
@@ -917,10 +1098,17 @@ int main(int argc, char** argv) {
             if (!cfg.tls_cert.empty()) {
                 cfg.anonym_certfp = cert_fingerprint_sha256(cfg.tls_cert);
             }
-            auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_certfp, cfg.anonym_api, cfg.anonym_token);
+            auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_certfp, cfg.anonym_api,
+                                            cfg.anonym_token, cfg.anonym_ca_key,
+                                            cfg.anonym_sub_key, cfg.anonym_sub_cert);
             cfg.anonym_sig = proof.sig;
             cfg.anonym_ts = proof.ts;
             cfg.anonym_nonce = proof.nonce;
+            cfg.anonym_ca_sig = proof.ca_sig;
+            cfg.anonym_ca_alg = proof.ca_alg;
+            cfg.anonym_sub_sig = proof.sub_sig;
+            cfg.anonym_sub_alg = proof.sub_alg;
+            cfg.anonym_sub_cert_b64 = proof.sub_cert_b64;
         } catch (const std::exception& ex) {
             std::cerr << "\033[1;31mANONYM PROOF FAILED: " << ex.what() << "\033[0m\n";
             return 1;
@@ -941,8 +1129,12 @@ int main(int argc, char** argv) {
                     break;
                 }
                 try {
-                    auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_certfp, cfg.anonym_api, cfg.anonym_token);
-                    manager.update_anonym_proof(proof.hash, proof.sig, proof.ts, proof.nonce);
+                    auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_certfp, cfg.anonym_api,
+                                                    cfg.anonym_token, cfg.anonym_ca_key,
+                                                    cfg.anonym_sub_key, cfg.anonym_sub_cert);
+                    manager.update_anonym_proof(proof.hash, proof.sig, proof.ts, proof.nonce,
+                                                proof.certfp, proof.ca_sig, proof.ca_alg,
+                                                proof.sub_sig, proof.sub_alg, proof.sub_cert_b64);
                 } catch (const std::exception& ex) {
                     std::cerr << "\033[1;33mANONYM REFRESH FAILED: " << ex.what() << "\033[0m\n";
                 }

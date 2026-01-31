@@ -25,7 +25,13 @@ public:
     void update_anonym_proof(const std::string& hash,
                              const std::string& sig,
                              const std::string& ts,
-                             const std::string& nonce);
+                             const std::string& nonce,
+                             const std::string& certfp,
+                             const std::string& ca_sig,
+                             const std::string& ca_alg,
+                             const std::string& sub_sig,
+                             const std::string& sub_alg,
+                             const std::string& sub_cert_b64);
 
 private:
     void do_accept();

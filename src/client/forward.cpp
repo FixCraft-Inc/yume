@@ -43,7 +43,7 @@ bool is_private_ipv6(const boost::asio::ip::address_v6& addr) {
 
 bool is_private_address(const boost::asio::ip::address& addr) {
     if (addr.is_v4()) return is_private_ipv4(addr.to_v4());
-    if (addr.is_v6()) return is_private_ipv6(addr.to_v6());
+    if (addr.is_v6()) return true;
     return false;
 }
 
@@ -232,7 +232,7 @@ void LocalForwardSession::start() {
 
 void LocalForwardSession::start_connect() {
     auto self = shared_from_this();
-    resolver_.async_resolve(target_host_, std::to_string(target_port_),
+    resolver_.async_resolve(boost::asio::ip::tcp::v4(), target_host_, std::to_string(target_port_),
                             boost::asio::bind_executor(strand_,
                                                        [self](const boost::system::error_code& ec,
                                                               const boost::asio::ip::tcp::resolver::results_type& results) {
@@ -338,7 +338,7 @@ void ReverseForwardSession::start() {
 
 void ReverseForwardSession::start_connect() {
     auto self = shared_from_this();
-    resolver_.async_resolve(target_host_, std::to_string(target_port_),
+    resolver_.async_resolve(boost::asio::ip::tcp::v4(), target_host_, std::to_string(target_port_),
                             boost::asio::bind_executor(strand_,
                                                        [self](const boost::system::error_code& ec,
                                                               const boost::asio::ip::tcp::resolver::results_type& results) {

@@ -47,6 +47,25 @@
 namespace yume::client {
 
 namespace {
+std::string get_self_path(const char* argv0) {
+#if defined(_WIN32)
+    (void)argv0;
+    return {};
+#else
+    char buf[4096];
+    ssize_t len = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (len > 0) {
+        buf[len] = '\0';
+        return std::string(buf);
+    }
+    if (argv0 && *argv0) {
+        std::error_code ec;
+        return std::filesystem::absolute(argv0, ec).string();
+    }
+    return {};
+#endif
+}
+
 constexpr const char kAnonMsgPrefix[] = "YUME-ANON-V1:";
 constexpr const char kFixcraftAnonymPubPem[] =
     "-----BEGIN PUBLIC KEY-----\n"

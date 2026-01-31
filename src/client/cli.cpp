@@ -22,6 +22,7 @@
 #include <unordered_map>
 #include <limits>
 #include <chrono>
+#include <cstring>
 #include <vector>
 
 #include <boost/asio.hpp>
@@ -414,38 +415,39 @@ crypto::Bytes auth_payload(EVP_PKEY* pubkey,
         throw std::runtime_error("PQ salt too large");
     }
 
-    crypto::Bytes payload;
-    size_t reserve_size = 0;
-    reserve_size = checked_add(reserve_size, 2 + pub_bytes.size());
-    reserve_size = checked_add(reserve_size, 2 + signature.size());
+    size_t total = 0;
+    total = checked_add(total, 2 + pub_bytes.size());
+    total = checked_add(total, 2 + signature.size());
     if (pq_ciphertext) {
-        reserve_size = checked_add(reserve_size, 2 + pq_ciphertext->size());
+        total = checked_add(total, 2 + pq_ciphertext->size());
     }
     if (pq_salt) {
-        reserve_size = checked_add(reserve_size, 2 + pq_salt->size());
+        total = checked_add(total, 2 + pq_salt->size());
     }
-    payload.reserve(reserve_size);
 
-    uint16_t pub_len = static_cast<uint16_t>(pub_bytes.size());
-    payload.push_back(static_cast<uint8_t>((pub_len >> 8) & 0xFF));
-    payload.push_back(static_cast<uint8_t>(pub_len & 0xFF));
-    payload.insert(payload.end(), pub_bytes.begin(), pub_bytes.end());
+    crypto::Bytes payload(total);
+    size_t off = 0;
+    auto write_len = [&](uint16_t v) {
+        payload[off++] = static_cast<uint8_t>((v >> 8) & 0xFF);
+        payload[off++] = static_cast<uint8_t>(v & 0xFF);
+    };
+    auto write_bytes = [&](const crypto::Bytes& data) {
+        if (!data.empty()) {
+            std::memcpy(payload.data() + off, data.data(), data.size());
+            off += data.size();
+        }
+    };
 
-    uint16_t sig_len = static_cast<uint16_t>(signature.size());
-    payload.push_back(static_cast<uint8_t>((sig_len >> 8) & 0xFF));
-    payload.push_back(static_cast<uint8_t>(sig_len & 0xFF));
-    payload.insert(payload.end(), signature.begin(), signature.end());
-
-    if (pq_ciphertext.has_value()) {
-        uint16_t pq_len = static_cast<uint16_t>(pq_ciphertext->size());
-        payload.push_back(static_cast<uint8_t>((pq_len >> 8) & 0xFF));
-        payload.push_back(static_cast<uint8_t>(pq_len & 0xFF));
-        payload.insert(payload.end(), pq_ciphertext->begin(), pq_ciphertext->end());
-        if (pq_salt.has_value()) {
-            uint16_t salt_len = static_cast<uint16_t>(pq_salt->size());
-            payload.push_back(static_cast<uint8_t>((salt_len >> 8) & 0xFF));
-            payload.push_back(static_cast<uint8_t>(salt_len & 0xFF));
-            payload.insert(payload.end(), pq_salt->begin(), pq_salt->end());
+    write_len(static_cast<uint16_t>(pub_bytes.size()));
+    write_bytes(pub_bytes);
+    write_len(static_cast<uint16_t>(signature.size()));
+    write_bytes(signature);
+    if (pq_ciphertext) {
+        write_len(static_cast<uint16_t>(pq_ciphertext->size()));
+        write_bytes(*pq_ciphertext);
+        if (pq_salt) {
+            write_len(static_cast<uint16_t>(pq_salt->size()));
+            write_bytes(*pq_salt);
         }
     }
 

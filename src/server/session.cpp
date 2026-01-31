@@ -106,6 +106,8 @@ Session::Session(boost::asio::ip::tcp::socket socket,
 
 void Session::start() {
     auto self = shared_from_this();
+    boost::system::error_code keep_ec;
+    stream_.lowest_layer().set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
     stream_.async_handshake(boost::asio::ssl::stream_base::server,
                             boost::asio::bind_executor(strand_,
                                                        [self](const boost::system::error_code& ec) {
@@ -627,6 +629,8 @@ void Session::handle_open(const protocol::Frame& frame) {
     }
 
     auto remote = std::make_shared<RemoteStream>(stream_.get_executor());
+    boost::system::error_code keep_ec;
+    remote->socket.set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
     streams_[frame.header.stream_id] = remote;
 
     auto self = shared_from_this();
@@ -742,6 +746,8 @@ void Session::handle_rlisten(const protocol::Frame& frame) {
                 } else {
                     auto remote = std::make_shared<RemoteStream>(self->stream_.get_executor());
                     remote->socket = std::move(socket);
+                    boost::system::error_code keep_ec;
+                    remote->socket.set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
                     self->streams_[stream_id] = remote;
                     self->pending_reverse_.insert(stream_id);
 

@@ -24,6 +24,7 @@ public:
     using OpenHandler = std::function<void(bool, const std::string&)>;
     using DataHandler = std::function<void(const Bytes&)>;
     using CloseHandler = std::function<void()>;
+    using TunnelCloseHandler = std::function<void(const std::string&)>;
     using ReverseOpenHandler = std::function<void(uint8_t listen_id, uint8_t stream_id)>;
 
     explicit Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream);
@@ -31,6 +32,7 @@ public:
     void start();
     void set_inner_key(const Bytes& key);
     void set_reverse_handler(ReverseOpenHandler handler);
+    void set_close_handler(TunnelCloseHandler handler);
     boost::asio::any_io_executor get_executor();
 
     uint8_t reserve_stream_id();
@@ -79,6 +81,7 @@ private:
     std::unordered_map<uint8_t, OpenHandler> pending_open_;
     std::unordered_map<uint8_t, OpenHandler> pending_rlisten_;
     ReverseOpenHandler reverse_handler_;
+    TunnelCloseHandler close_handler_;
     uint8_t next_stream_id_{1};
     std::optional<Bytes> inner_key_;
 };

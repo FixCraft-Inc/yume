@@ -36,6 +36,10 @@ void Tunnel::set_reverse_handler(ReverseOpenHandler handler) {
     reverse_handler_ = std::move(handler);
 }
 
+void Tunnel::set_close_handler(TunnelCloseHandler handler) {
+    close_handler_ = std::move(handler);
+}
+
 boost::asio::any_io_executor Tunnel::get_executor() {
     return stream_.get_executor();
 }
@@ -293,6 +297,9 @@ void Tunnel::do_write() {
 
 void Tunnel::close_all(const std::string& reason) {
     util::log_warn("tunnel closed: " + reason);
+    if (close_handler_) {
+        close_handler_(reason);
+    }
     for (auto& entry : streams_) {
         if (entry.second.on_close) {
             entry.second.on_close();

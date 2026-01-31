@@ -156,7 +156,11 @@ build_liboqs_openwrt() {
         -DOQS_BUILD_BENCHMARKS=OFF \
         -DOQS_BUILD_DEMOS=OFF \
         -DOQS_BUILD_EXAMPLES=OFF \
-        -DBUILD_SHARED_LIBS=ON
+        -DOQS_BUILD_SHARED=OFF \
+        -DOQS_BUILD_STATIC=ON \
+        -DOQS_INSTALL_SHARED=OFF \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DBUILD_TESTING=OFF
     cmake --build "${workdir}/build" -j"$(nproc 2>/dev/null || echo 4)"
     cmake --install "${workdir}/build"
     return 0
@@ -542,15 +546,33 @@ EOF
         if detect_liboqs_target; then
             info "OpenWRT liboqs detected in sysroot; enabling PQ in BaseFWX."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=ON")
+            if [[ -n "${YUME_OQS_STATIC:-}" ]] || [[ -f "${OPENWRT_USR}/lib/liboqs.a" ]]; then
+                if [[ -f "${OPENWRT_USR}/lib/liboqs.a" ]]; then
+                    info "OpenWRT: using static liboqs."
+                    CMAKE_ARGS+=("-DBASEFWX_OQS_STATIC=ON")
+                else
+                    warn "OpenWRT: YUME_OQS_STATIC=1 set but liboqs.a missing; falling back to shared."
+                fi
+            fi
         else
             warn "OpenWRT liboqs not detected in sysroot; PQ will be disabled."
+            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=OFF")
         fi
     else
         if detect_liboqs; then
             info "liboqs detected; enabling PQ in BaseFWX."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=ON")
+            if [[ -n "${YUME_OQS_STATIC:-}" ]]; then
+                if [[ -f /usr/lib/x86_64-linux-gnu/liboqs.a || -f /usr/local/lib/liboqs.a ]]; then
+                    info "Using static liboqs."
+                    CMAKE_ARGS+=("-DBASEFWX_OQS_STATIC=ON")
+                else
+                    warn "YUME_OQS_STATIC=1 set but liboqs.a not found; falling back to shared."
+                fi
+            fi
         else
             warn "liboqs not detected; PQ will be disabled unless you install it."
+            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=OFF")
         fi
     fi
     build_project

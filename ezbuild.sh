@@ -146,6 +146,7 @@ build_liboqs_openwrt() {
         -DCMAKE_C_FLAGS="${cflags}" \
         -DCMAKE_CXX_FLAGS="${cflags}" \
         -DCMAKE_INSTALL_PREFIX="${OPENWRT_USR}" \
+        -DOQS_PERMIT_UNSUPPORTED_ARCHITECTURE=ON \
         -DOQS_DIST_BUILD=ON \
         -DOQS_USE_AVX2=OFF \
         -DOQS_USE_AVX512=OFF \

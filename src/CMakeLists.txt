@@ -12,6 +12,9 @@ if(NOT nlohmann_json_FOUND)
 endif()
 
 find_package(ZSTD QUIET)
+if(CMAKE_CROSSCOMPILING)
+    find_library(ATOMIC_LIBRARY atomic)
+endif()
 
 if(YUME_USE_SPDLOG)
     find_package(spdlog QUIET)
@@ -49,6 +52,9 @@ target_link_libraries(yume_core
         Threads::Threads
         nlohmann_json::nlohmann_json
 )
+if(CMAKE_CROSSCOMPILING AND ATOMIC_LIBRARY)
+    target_link_libraries(yume_core PUBLIC ${ATOMIC_LIBRARY})
+endif()
 
 if(ZSTD_FOUND)
     target_link_libraries(yume_core PUBLIC ZSTD::ZSTD)

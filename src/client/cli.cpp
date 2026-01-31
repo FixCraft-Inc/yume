@@ -19,6 +19,7 @@
 #if !defined(_WIN32)
 #include <unistd.h>
 #include <sys/select.h>
+#include <sys/stat.h>
 #endif
 #include <unordered_map>
 #include <limits>
@@ -67,6 +68,7 @@ std::string get_self_path(const char* argv0) {
 }
 
 constexpr const char kAnonMsgPrefix[] = "YUME-ANON-V1:";
+constexpr const char kPqMsgPrefix[] = "YUME-PQ-V1:";
 constexpr const char kFixcraftAnonymPubPem[] =
     "-----BEGIN PUBLIC KEY-----\n"
     "MCowBQYDK2VwAyEAtupzLhANnB0VxP51vB/7yYwR+/3/jv4Str9MGLGA+is=\n"
@@ -112,6 +114,44 @@ void set_env(EnvGuard& guard, const std::string& key, const std::string& value) 
 #else
     setenv(key.c_str(), value.c_str(), 1);
 #endif
+}
+
+bool write_file_bytes(const std::string& path, const std::string& data, std::string* err) {
+    try {
+        std::filesystem::path p(path);
+        if (p.has_parent_path()) {
+            std::error_code ec;
+            std::filesystem::create_directories(p.parent_path(), ec);
+        }
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            if (err) *err = "failed to open file: " + path;
+            return false;
+        }
+        if (!data.empty()) {
+            out.write(data.data(), static_cast<std::streamsize>(data.size()));
+            if (!out) {
+                if (err) *err = "failed to write file: " + path;
+                return false;
+            }
+        }
+        out.close();
+        if (!out) {
+            if (err) *err = "failed to flush file: " + path;
+            return false;
+        }
+#if !defined(_WIN32)
+        if (path.find(".key") != std::string::npos) {
+            ::chmod(path.c_str(), 0600);
+        } else {
+            ::chmod(path.c_str(), 0644);
+        }
+#endif
+        return true;
+    } catch (const std::exception& ex) {
+        if (err) *err = ex.what();
+        return false;
+    }
 }
 
 int run_local_command_with_proxy(const std::string& cmd, int socks_port, bool ipv4_only) {
@@ -868,6 +908,7 @@ int Cli::run(int argc, char** argv) {
     }
 
     int attempt = 0;
+    bool pq_reconnect_used = false;
     for (;;) {
         try {
             boost::asio::io_context io;
@@ -904,6 +945,7 @@ int Cli::run(int argc, char** argv) {
             std::optional<crypto::Bytes> pq_ciphertext;
             std::optional<crypto::Bytes> pq_salt;
             std::optional<crypto::Bytes> inner_key;
+            bool inner_disabled_for_session = false;
             if (inner_cfg.enabled) {
                 try {
                     auto hs = inner::client_prepare(inner_cfg, cfg.inner_heavy);
@@ -918,6 +960,7 @@ int Cli::run(int argc, char** argv) {
                     if (msg.find("PQ public key not configured") != std::string::npos) {
                         std::cerr << "\033[1;31m🔓⛓️‍💥 YOUR SECURITY IS SUFFERING BECAUSE YOU HAVE DISABLED: PQ\033[0m\n";
                         util::log_warn("PQ public key not configured; inner crypto disabled for this session");
+                        inner_disabled_for_session = true;
                     } else {
                         throw;
                     }
@@ -928,6 +971,7 @@ int Cli::run(int argc, char** argv) {
             util::log_info("authenticated to server");
 
             protocol::Frame anon_frame = protocol::read_frame(stream);
+        bool pq_reconnect = false;
         if (anon_frame.header.type == protocol::ANON) {
             std::string payload(anon_frame.payload.begin(), anon_frame.payload.end());
             auto json = nlohmann::json::parse(payload);
@@ -942,6 +986,9 @@ int Cli::run(int argc, char** argv) {
             std::string sub_sig = json.value("sub_sig", "");
             std::string sub_alg = json.value("sub_alg", "");
             std::string sub_cert_b64 = json.value("sub_cert", "");
+            std::string pq_pub_b64 = json.value("pq_pub", "");
+            std::string pq_sig = json.value("pq_sig", "");
+            std::string pq_alg = json.value("pq_alg", "");
 
             auto print_red = [](const std::string& msg) {
                 std::cerr << "\033[1;31m" << msg << "\033[0m" << std::endl;
@@ -951,6 +998,10 @@ int Cli::run(int argc, char** argv) {
             };
 
             if (mode == "anonym") {
+                crypto::EVP_PKEY_ptr sub_pub{nullptr, EVP_PKEY_free};
+                crypto::EVP_PKEY_ptr ca_pub{nullptr, EVP_PKEY_free};
+                bool sub_ok = false;
+                bool ca_ok = false;
                 if (hash.empty() || sig.empty() || ts.empty() || nonce.empty()) {
                     print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
                     print_red("ANONYM PROOF IS INCOMPLETE");
@@ -1053,7 +1104,7 @@ int Cli::run(int argc, char** argv) {
                         print_red("ANONYM SUB CERT IS NOT SIGNED BY THE TRUSTED CA");
                         return 1;
                     }
-                    EVP_PKEY* sub_key = X509_get_pubkey(sub_cert.get());
+                    crypto::EVP_PKEY_ptr sub_key{X509_get_pubkey(sub_cert.get()), EVP_PKEY_free};
                     if (!sub_key) {
                         print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
                         print_red("FAILED TO LOAD SUB CERT PUBLIC KEY");
@@ -1061,19 +1112,19 @@ int Cli::run(int argc, char** argv) {
                     }
                     std::string sub_sig_raw = util::base64_decode(sub_sig);
                     if (sub_sig_raw.empty()) {
-                        EVP_PKEY_free(sub_key);
                         print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
                         print_red("INVALID ANONYM SUB SIGNATURE FORMAT");
                         return 1;
                     }
                     crypto::Bytes sub_sig_bytes(sub_sig_raw.begin(), sub_sig_raw.end());
-                    bool ok_sub = crypto::verify_key(sub_key, msg_bytes, sub_sig_bytes);
-                    EVP_PKEY_free(sub_key);
+                    bool ok_sub = crypto::verify_key(sub_key.get(), msg_bytes, sub_sig_bytes);
                     if (!ok_sub) {
                         print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
                         print_red("ANONYM SUB SIGNATURE INVALID");
                         return 1;
                     }
+                    sub_pub = std::move(sub_key);
+                    sub_ok = true;
                 }
                 if (!cfg.anonym_ca_cert.empty() && sub_cert_b64.empty()) {
                     if (ca_sig.empty()) {
@@ -1100,6 +1151,8 @@ int Cli::run(int argc, char** argv) {
                         print_red("ANONYM CA SIGNATURE INVALID");
                         return 1;
                     }
+                    ca_pub = std::move(ca_key);
+                    ca_ok = true;
                 } else if (!cfg.anonym_ca_cert.empty() && !ca_sig.empty()) {
                     auto ca_key = load_pubkey_from_cert(cfg.anonym_ca_cert);
                     if (!ca_key) {
@@ -1120,10 +1173,68 @@ int Cli::run(int argc, char** argv) {
                         print_red("ANONYM CA SIGNATURE INVALID");
                         return 1;
                     }
+                    ca_pub = std::move(ca_key);
+                    ca_ok = true;
                 } else if (!ca_sig.empty()) {
                     util::log_warn("anonym CA signature provided but no --anonym-ca-cert set; skipping CA verification");
                 }
                 print_green("✅✒️ This Server Has Cryptographically Correct Signature, and is VERIFIED");
+                if (!pq_pub_b64.empty()) {
+                    if (certfp.empty()) {
+                        util::log_warn("pq_pub provided but certfp missing; refusing PQ auto-trust");
+                    } else if (pq_sig.empty()) {
+                        util::log_warn("pq_pub provided but pq_sig missing; refusing PQ auto-trust");
+                    } else {
+                        EVP_PKEY* pq_key = sub_ok ? sub_pub.get() : (ca_ok ? ca_pub.get() : nullptr);
+                        if (!pq_key) {
+                            util::log_warn("pq_pub provided but no verified CA/sub cert available; refusing PQ auto-trust");
+                        } else {
+                            std::string pq_msg = std::string(kPqMsgPrefix) + pq_pub_b64 + ":" + certfp;
+                            crypto::Bytes pq_msg_bytes(pq_msg.begin(), pq_msg.end());
+                            std::string pq_sig_raw = util::base64_decode(pq_sig);
+                            if (pq_sig_raw.empty()) {
+                                util::log_warn("pq_sig invalid base64; refusing PQ auto-trust");
+                            } else {
+                                crypto::Bytes pq_sig_bytes(pq_sig_raw.begin(), pq_sig_raw.end());
+                                bool ok_pq = crypto::verify_key(pq_key, pq_msg_bytes, pq_sig_bytes);
+                                if (!ok_pq) {
+                                    util::log_warn("pq_pub signature invalid; refusing PQ auto-trust");
+                                } else {
+                                    std::string pq_raw = util::base64_decode(pq_pub_b64);
+                                    if (pq_raw.empty()) {
+                                        util::log_warn("pq_pub decode failed; refusing PQ auto-trust");
+                                    } else {
+                                        std::string target_path = cfg.pq_public_key;
+                                        if (target_path.empty()) {
+                                            std::error_code ec;
+                                            std::filesystem::path runtime_dir = std::filesystem::current_path(ec);
+                                            if (!runtime_dir.empty()) {
+                                                target_path = (runtime_dir / "pq_public.key").string();
+                                            }
+                                        }
+                                        if (!target_path.empty()) {
+                                            std::string err;
+                                            if (write_file_bytes(target_path, pq_raw, &err)) {
+                                                if (cfg.pq_public_key.empty()) {
+                                                    cfg.pq_public_key = target_path;
+                                                }
+                                                util::log_info("stored pq_public.key from server at " + target_path);
+                                                if (inner_disabled_for_session && !pq_reconnect_used) {
+                                                    pq_reconnect = true;
+                                                    pq_reconnect_used = true;
+                                                }
+                                            } else {
+                                                util::log_warn("failed to store pq_public.key: " + err);
+                                            }
+                                        } else {
+                                            util::log_warn("pq_pub verified but no output path available");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             } else {
                 if (cfg.require_anonym) {
                     print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
@@ -1145,6 +1256,11 @@ int Cli::run(int argc, char** argv) {
             if (cfg.require_anonym && anon_frame.header.type != protocol::ANON) {
                 util::log_error("server did not provide anonym proof");
                 return 1;
+            }
+            if (pq_reconnect) {
+                util::log_info("PQ public key received; reconnecting to enable inner crypto");
+                attempt++;
+                continue;
             }
 
             auto tunnel = std::make_shared<Tunnel>(std::move(stream));

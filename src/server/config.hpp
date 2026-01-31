@@ -36,6 +36,9 @@ struct ServerConfig {
     std::string anonym_sub_cert_b64;
     std::string anonym_sub_sig;
     std::string anonym_sub_alg;
+    std::string pq_pub_b64;
+    std::string pq_sig;
+    std::string pq_alg;
     std::string auth_keys_meta;
 };
 

@@ -31,7 +31,10 @@ public:
                              const std::string& ca_alg,
                              const std::string& sub_sig,
                              const std::string& sub_alg,
-                             const std::string& sub_cert_b64);
+                             const std::string& sub_cert_b64,
+                             const std::string& pq_pub_b64,
+                             const std::string& pq_sig,
+                             const std::string& pq_alg);
 
 private:
     void do_accept();

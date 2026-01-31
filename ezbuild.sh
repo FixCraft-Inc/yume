@@ -13,6 +13,8 @@ COLOR_MAGENTA="\033[0;35m"
 MINIMAL=0
 TARGET_ARCH=""
 CLEAN_ONLY=0
+OPENWRT=0
+BUSYBOX=0
 CMAKE_ARGS=()
 
 info()  { echo -e "${COLOR_BLUE}✨ $*${COLOR_RESET}"; }
@@ -207,6 +209,16 @@ main() {
                 MINIMAL=1
                 shift
                 ;;
+            --openwrt)
+                OPENWRT=1
+                MINIMAL=1
+                shift
+                ;;
+            --busybox)
+                BUSYBOX=1
+                MINIMAL=1
+                shift
+                ;;
             --arch)
                 shift
                 TARGET_ARCH="${1:-}"
@@ -241,6 +253,16 @@ main() {
         )
     fi
 
+    if [[ $OPENWRT -eq 1 || $BUSYBOX -eq 1 ]]; then
+        if [[ -z "${YUME_TOOLCHAIN_FILE:-}" ]]; then
+            error "YUME_TOOLCHAIN_FILE is required for --openwrt/--busybox (OpenWRT SDK toolchain file)."
+            exit 1
+        fi
+        info "Using toolchain: ${YUME_TOOLCHAIN_FILE}"
+        CMAKE_ARGS+=("-DCMAKE_TOOLCHAIN_FILE=${YUME_TOOLCHAIN_FILE}")
+        CMAKE_ARGS+=("-DCMAKE_SYSTEM_NAME=Linux")
+    fi
+
     if [[ -n "$TARGET_ARCH" ]]; then
         info "Target architecture: $TARGET_ARCH"
         CMAKE_ARGS+=(
@@ -249,7 +271,7 @@ main() {
         )
         if [[ -n "${YUME_TOOLCHAIN_FILE:-}" ]]; then
             CMAKE_ARGS+=("-DCMAKE_TOOLCHAIN_FILE=${YUME_TOOLCHAIN_FILE}")
-        else
+        elif [[ $OPENWRT -eq 0 && $BUSYBOX -eq 0 ]]; then
             warn "No YUME_TOOLCHAIN_FILE set; cross-compile may fail on ${TARGET_ARCH}."
         fi
     fi

@@ -292,6 +292,7 @@ main() {
                 SYSROOT_PATH="$TARGET_DIR"
             fi
             OPENWRT_USR="${SYSROOT_PATH}/usr"
+            OPENWRT_BOOST_CMAKE="$(find "$OPENWRT_USR/lib/cmake" -maxdepth 2 -type f -name 'BoostConfig.cmake' 2>/dev/null | head -n 1)"
             cat > "$TOOLCHAIN_FILE" <<EOF
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR ${TARGET_ARCH:-mips})
@@ -317,6 +318,19 @@ EOF
         if [[ -z "${YUME_TOOLCHAIN_FILE:-}" ]]; then
             error "YUME_TOOLCHAIN_FILE is required for --openwrt/--busybox (OpenWRT SDK toolchain file)."
             exit 1
+        fi
+        if [[ -n "${OPENWRT_USR:-}" ]]; then
+            if [[ ! -d "${OPENWRT_USR}/include/openssl" ]]; then
+                error "OpenSSL not staged in SDK. Build it inside the SDK first."
+                echo "Run inside SDK: make package/feeds/base/openssl/compile V=s"
+                exit 1
+            fi
+            if [[ -z "${OPENWRT_BOOST_CMAKE:-}" ]]; then
+                error "Boost not staged in SDK. Build it inside the SDK first."
+                echo "Run inside SDK: make package/feeds/packages/boost/compile V=s"
+                exit 1
+            fi
+            CMAKE_ARGS+=("-DBoost_DIR=$(dirname "${OPENWRT_BOOST_CMAKE}")")
         fi
         info "Using toolchain: ${YUME_TOOLCHAIN_FILE}"
         CMAKE_ARGS+=("-DCMAKE_TOOLCHAIN_FILE=${YUME_TOOLCHAIN_FILE}")

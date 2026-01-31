@@ -155,6 +155,7 @@ build_liboqs_openwrt() {
         -DOQS_BUILD_TESTS=OFF \
         -DOQS_BUILD_BENCHMARKS=OFF \
         -DOQS_BUILD_DEMOS=OFF \
+        -DOQS_BUILD_EXAMPLES=OFF \
         -DBUILD_SHARED_LIBS=ON
     cmake --build "${workdir}/build" -j"$(nproc 2>/dev/null || echo 4)"
     cmake --install "${workdir}/build"

@@ -15,6 +15,7 @@ TARGET_ARCH=""
 CLEAN_ONLY=0
 OPENWRT=0
 BUSYBOX=0
+OPENWRT_SDK=""
 CMAKE_ARGS=()
 
 info()  { echo -e "${COLOR_BLUE}✨ $*${COLOR_RESET}"; }
@@ -219,6 +220,15 @@ main() {
                 MINIMAL=1
                 shift
                 ;;
+            --openwrt-sdk)
+                shift
+                OPENWRT_SDK="${1:-}"
+                if [[ -z "$OPENWRT_SDK" ]]; then
+                    error "--openwrt-sdk requires a path to the OpenWRT SDK directory"
+                    exit 1
+                fi
+                shift
+                ;;
             --arch)
                 shift
                 TARGET_ARCH="${1:-}"
@@ -254,6 +264,51 @@ main() {
     fi
 
     if [[ $OPENWRT -eq 1 || $BUSYBOX -eq 1 ]]; then
+        if [[ -n "$OPENWRT_SDK" ]]; then
+            if [[ ! -d "$OPENWRT_SDK" ]]; then
+                error "--openwrt-sdk path not found: $OPENWRT_SDK"
+                exit 1
+            fi
+            info "Searching OpenWRT SDK at: $OPENWRT_SDK"
+            TOOLCHAIN_DIR="$(find "$OPENWRT_SDK/staging_dir" -maxdepth 2 -type d -name 'toolchain-*' 2>/dev/null | head -n 1)"
+            TARGET_DIR="$(find "$OPENWRT_SDK/staging_dir" -maxdepth 2 -type d -name 'target-*' 2>/dev/null | head -n 1)"
+            if [[ -z "$TOOLCHAIN_DIR" ]]; then
+                error "OpenWRT toolchain directory not found under $OPENWRT_SDK/staging_dir"
+                exit 1
+            fi
+            TOOLCHAIN_BIN="$TOOLCHAIN_DIR/bin"
+            CC_PATH="$(find "$TOOLCHAIN_BIN" -maxdepth 1 -type f -name '*-gcc' | head -n 1)"
+            CXX_PATH="$(find "$TOOLCHAIN_BIN" -maxdepth 1 -type f -name '*-g++' | head -n 1)"
+            AR_PATH="$(find "$TOOLCHAIN_BIN" -maxdepth 1 -type f -name '*-ar' | head -n 1)"
+            RANLIB_PATH="$(find "$TOOLCHAIN_BIN" -maxdepth 1 -type f -name '*-ranlib' | head -n 1)"
+            STRIP_PATH="$(find "$TOOLCHAIN_BIN" -maxdepth 1 -type f -name '*-strip' | head -n 1)"
+            if [[ -z "$CC_PATH" || -z "$CXX_PATH" ]]; then
+                error "OpenWRT SDK compilers not found in $TOOLCHAIN_BIN"
+                exit 1
+            fi
+            TOOLCHAIN_FILE="/tmp/yume-openwrt-toolchain.cmake"
+            SYSROOT_PATH="$TOOLCHAIN_DIR"
+            if [[ -n "$TARGET_DIR" ]]; then
+                SYSROOT_PATH="$TARGET_DIR"
+            fi
+            cat > "$TOOLCHAIN_FILE" <<EOF
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_SYSTEM_PROCESSOR ${TARGET_ARCH:-mips})
+set(CMAKE_C_COMPILER ${CC_PATH})
+set(CMAKE_CXX_COMPILER ${CXX_PATH})
+set(CMAKE_AR ${AR_PATH})
+set(CMAKE_RANLIB ${RANLIB_PATH})
+set(CMAKE_STRIP ${STRIP_PATH})
+set(CMAKE_SYSROOT ${SYSROOT_PATH})
+set(CMAKE_FIND_ROOT_PATH ${SYSROOT_PATH} ${TOOLCHAIN_DIR})
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+EOF
+            YUME_TOOLCHAIN_FILE="$TOOLCHAIN_FILE"
+        fi
+
         if [[ -z "${YUME_TOOLCHAIN_FILE:-}" ]]; then
             error "YUME_TOOLCHAIN_FILE is required for --openwrt/--busybox (OpenWRT SDK toolchain file)."
             exit 1

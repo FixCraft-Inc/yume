@@ -556,22 +556,20 @@ bool Session::handle_auth(const protocol::Frame& frame) {
 
         if (cfg_.inner_crypto) {
             if (!pq_ciphertext.has_value() || !pq_salt.has_value()) {
-                util::log_warn("session " + std::to_string(session_id_) + ": missing PQ ciphertext or salt");
-                return false;
+                util::log_warn("session " + std::to_string(session_id_) + ": missing PQ fields; inner crypto disabled for this session");
+            } else if (pq_salt->empty()) {
+                util::log_warn("session " + std::to_string(session_id_) + ": missing PQ salt; inner crypto disabled for this session");
+            } else {
+                inner::Config inner_cfg;
+                inner_cfg.enabled = cfg_.inner_crypto;
+                inner_cfg.pq_private_key = cfg_.pq_private_key;
+                auto derived = inner::server_derive_key(inner_cfg, *pq_ciphertext, *pq_salt, cfg_.inner_heavy);
+                if (!derived.has_value() || derived->empty()) {
+                    util::log_warn("session " + std::to_string(session_id_) + ": PQ key derivation failed");
+                    return false;
+                }
+                inner_key_ = *derived;
             }
-            if (pq_salt->empty()) {
-                util::log_warn("session " + std::to_string(session_id_) + ": missing PQ salt");
-                return false;
-            }
-            inner::Config inner_cfg;
-            inner_cfg.enabled = cfg_.inner_crypto;
-            inner_cfg.pq_private_key = cfg_.pq_private_key;
-            auto derived = inner::server_derive_key(inner_cfg, *pq_ciphertext, *pq_salt, cfg_.inner_heavy);
-            if (!derived.has_value() || derived->empty()) {
-                util::log_warn("session " + std::to_string(session_id_) + ": PQ key derivation failed");
-                return false;
-            }
-            inner_key_ = *derived;
         }
 
         if (!cfg_.anonym) {

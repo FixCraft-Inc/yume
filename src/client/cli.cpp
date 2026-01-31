@@ -773,6 +773,30 @@ int Cli::run(int argc, char** argv) {
         cfg.require_anonym = true;
     }
 
+    if (cfg.inner_crypto && cfg.pq_public_key.empty()) {
+        std::error_code ec;
+        std::filesystem::path runtime_dir = std::filesystem::current_path(ec);
+        std::filesystem::path exe_dir;
+        std::string self_path = get_self_path(argv[0]);
+        if (!self_path.empty()) {
+            exe_dir = std::filesystem::path(self_path).parent_path();
+        }
+        auto try_set = [&](const std::filesystem::path& base) {
+            if (!cfg.pq_public_key.empty() || base.empty()) {
+                return;
+            }
+            std::filesystem::path cand = base / "pq_public.key";
+            if (file_exists(cand.string())) {
+                cfg.pq_public_key = cand.string();
+            }
+        };
+        try_set(runtime_dir);
+        try_set(exe_dir);
+        if (!cfg.pq_public_key.empty()) {
+            util::log_info("using pq_public_key from runtime directory");
+        }
+    }
+
     if (cfg.port != 443) {
         util::log_warn("forcing server port to 443 for HTTPS-only transport");
         cfg.port = 443;
@@ -855,21 +879,31 @@ int Cli::run(int argc, char** argv) {
             }
 
             inner::Config inner_cfg;
-        inner_cfg.enabled = cfg.inner_crypto;
-        inner_cfg.pq_public_key = cfg.pq_public_key;
+            inner_cfg.enabled = cfg.inner_crypto;
+            inner_cfg.pq_public_key = cfg.pq_public_key;
 
-        std::optional<crypto::Bytes> pq_ciphertext;
-        std::optional<crypto::Bytes> pq_salt;
-        std::optional<crypto::Bytes> inner_key;
-        if (inner_cfg.enabled) {
-            auto hs = inner::client_prepare(inner_cfg, cfg.inner_heavy);
-            if (!hs.enabled || hs.key.empty()) {
-                throw std::runtime_error("inner crypto init failed");
+            std::optional<crypto::Bytes> pq_ciphertext;
+            std::optional<crypto::Bytes> pq_salt;
+            std::optional<crypto::Bytes> inner_key;
+            if (inner_cfg.enabled) {
+                try {
+                    auto hs = inner::client_prepare(inner_cfg, cfg.inner_heavy);
+                    if (!hs.enabled || hs.key.empty()) {
+                        throw std::runtime_error("inner crypto init failed");
+                    }
+                    pq_ciphertext = hs.pq_ciphertext;
+                    pq_salt = hs.salt;
+                    inner_key = hs.key;
+                } catch (const std::exception& ex) {
+                    std::string msg = ex.what();
+                    if (msg.find("PQ public key not configured") != std::string::npos) {
+                        std::cerr << "\033[1;31m🔓⛓️‍💥 YOUR SECURITY IS SUFFERING BECAUSE YOU HAVE DISABLED: PQ\033[0m\n";
+                        util::log_warn("PQ public key not configured; inner crypto disabled for this session");
+                    } else {
+                        throw;
+                    }
+                }
             }
-            pq_ciphertext = hs.pq_ciphertext;
-            pq_salt = hs.salt;
-            inner_key = hs.key;
-        }
 
             authenticate(stream, cfg.identity, pq_ciphertext, pq_salt);
             util::log_info("authenticated to server");

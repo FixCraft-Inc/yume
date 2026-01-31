@@ -21,6 +21,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/crypto.hpp"
+#include "core/inner_crypto.hpp"
 #include "server/manager.hpp"
 #include "server/auth.hpp"
 #include "util.hpp"
@@ -845,6 +846,40 @@ int main(int argc, char** argv) {
             try_set(cfg.anonym_sub_cert, exe_dir, "anonym_sub.pem");
             if (!cfg.anonym_sub_key.empty() && !cfg.anonym_sub_cert.empty()) {
                 yume::util::log_info("using anonym sub key/cert from runtime directory");
+            }
+        }
+        if (cfg.inner_crypto && cfg.pq_private_key.empty()) {
+            std::error_code ec;
+            std::filesystem::path runtime_dir = std::filesystem::current_path(ec);
+            std::filesystem::path exe_dir;
+            std::string self_path = get_self_path(argv[0]);
+            if (!self_path.empty()) {
+                exe_dir = std::filesystem::path(self_path).parent_path();
+            }
+            auto try_set = [&](std::string& out, const std::filesystem::path& base, const char* name) {
+                if (!out.empty() || base.empty()) {
+                    return;
+                }
+                std::filesystem::path cand = base / name;
+                if (file_readable(cand.string())) {
+                    out = cand.string();
+                }
+            };
+            try_set(cfg.pq_private_key, runtime_dir, "pq_private.key");
+            try_set(cfg.pq_private_key, exe_dir, "pq_private.key");
+            if (!cfg.pq_private_key.empty()) {
+                yume::util::log_info("using pq_private_key from runtime directory");
+            } else {
+                std::filesystem::path secret_dir = runtime_dir / ".secrets";
+                std::filesystem::path priv_path = secret_dir / "pq_private.key";
+                std::filesystem::path pub_path = secret_dir / "pq_public.key";
+                std::string err;
+                if (yume::inner::generate_pq_keypair(priv_path.string(), pub_path.string(), &err)) {
+                    cfg.pq_private_key = priv_path.string();
+                    yume::util::log_info("generated PQ keypair at ./.secrets (copy pq_public.key to clients)");
+                } else {
+                    yume::util::log_warn("PQ keypair generation failed: " + err);
+                }
             }
         }
         if (cfg.tls_cert.empty() || cfg.tls_key.empty()) {

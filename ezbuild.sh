@@ -293,6 +293,7 @@ main() {
             fi
             OPENWRT_USR="${SYSROOT_PATH}/usr"
             OPENWRT_BOOST_CMAKE="$(find "$OPENWRT_USR/lib/cmake" -maxdepth 2 -type f -name 'BoostConfig.cmake' 2>/dev/null | head -n 1)"
+            export STAGING_DIR="${OPENWRT_SDK}/staging_dir"
             cat > "$TOOLCHAIN_FILE" <<EOF
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR ${TARGET_ARCH:-mips})

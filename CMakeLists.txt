@@ -23,7 +23,7 @@ find_package(Boost REQUIRED COMPONENTS system)
 find_package(Threads REQUIRED)
 
 if(YUME_MINIMAL)
-    set(YUME_USE_BASEFWX OFF CACHE BOOL "Disable BaseFWX for minimal builds" FORCE)
+    set(YUME_USE_BASEFWX ON CACHE BOOL "Enable BaseFWX for minimal builds" FORCE)
     set(YUME_USE_SPDLOG OFF CACHE BOOL "Disable spdlog for minimal builds" FORCE)
 endif()
 

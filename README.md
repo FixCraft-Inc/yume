@@ -26,7 +26,7 @@ cmake -B build -DCMAKE_TOOLCHAIN_FILE=/path/to/toolchain.cmake -DYUME_MINIMAL=ON
 
 Notes:
 - Requires OpenSSL and Boost.System (or Boost from your SDK).
-- PQ inner crypto (BaseFWX + liboqs) is disabled in minimal mode.
+- BaseFWX is still used in minimal mode; PQ is enabled only if liboqs is available.
 - For privileged port 443 on Linux, run with `sudo` or set `cap_net_bind_service`.
 - For Cloudflare, use a TCP passthrough product (e.g., Spectrum) or disable HTTP proxying. HTTP-mode proxies terminate TLS and will break YUME.
 
@@ -61,7 +61,8 @@ Client should set the FixCraft anonym public key:
 
 ```json
 {
-  "anonym_pubkey": "/etc/yume/fixcraft_anonym_pub.pem"
+  "anonym_pubkey": "/etc/yume/fixcraft_anonym_pub.pem",
+  "require_anonym": true
 }
 ```
 

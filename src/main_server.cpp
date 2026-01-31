@@ -14,6 +14,7 @@
 #include <atomic>
 #include <openssl/sha.h>
 #include <openssl/evp.h>
+#include <openssl/x509.h>
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include <openssl/pem.h>
@@ -180,6 +181,41 @@ std::string read_file_bytes(const std::string& path) {
     return data;
 }
 
+std::string cert_fingerprint_sha256(const std::string& cert_path) {
+    std::ifstream in(cert_path, std::ios::binary);
+    if (!in) {
+        throw std::runtime_error("failed to open cert: " + cert_path);
+    }
+    std::string pem((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    BIO* bio = BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()));
+    if (!bio) {
+        throw std::runtime_error("failed to read cert bio");
+    }
+    X509* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    if (!cert) {
+        throw std::runtime_error("failed to parse cert");
+    }
+    unsigned char* der = nullptr;
+    int len = i2d_X509(cert, &der);
+    X509_free(cert);
+    if (len <= 0 || !der) {
+        if (der) OPENSSL_free(der);
+        throw std::runtime_error("failed to encode cert");
+    }
+    unsigned char hash[SHA256_DIGEST_LENGTH] = {0};
+    SHA256(der, static_cast<size_t>(len), hash);
+    OPENSSL_free(der);
+    static const char* kHex = "0123456789abcdef";
+    std::string out;
+    out.reserve(SHA256_DIGEST_LENGTH * 2);
+    for (size_t i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
+        out.push_back(kHex[(hash[i] >> 4) & 0xF]);
+        out.push_back(kHex[hash[i] & 0xF]);
+    }
+    return out;
+}
+
 std::string sha256_hex(const std::string& data) {
     unsigned char hash[SHA256_DIGEST_LENGTH] = {0};
     SHA256(reinterpret_cast<const unsigned char*>(data.data()), data.size(), hash);
@@ -254,11 +290,15 @@ nlohmann::json post_json_https(const std::string& host,
 bool verify_anonym_signature(const std::string& hash,
                              const std::string& ts,
                              const std::string& nonce,
+                             const std::string& certfp,
                              const std::string& sig_b64) {
     if (hash.empty() || ts.empty() || nonce.empty() || sig_b64.empty()) {
         return false;
     }
     std::string message = std::string(kAnonMsgPrefix) + hash + ":" + ts + ":" + nonce;
+    if (!certfp.empty()) {
+        message += ":" + certfp;
+    }
     yume::crypto::Bytes msg_bytes(message.begin(), message.end());
     std::string sig_raw = yume::util::base64_decode(sig_b64);
     if (sig_raw.empty()) {
@@ -290,6 +330,7 @@ struct AnonymProof {
     std::string sig;
     std::string ts;
     std::string nonce;
+    std::string certfp;
 };
 
 struct ApiEndpoint {
@@ -324,13 +365,21 @@ ApiEndpoint parse_api_url(const std::string& url) {
 }
 
 AnonymProof fetch_anonym_proof(const std::string& hash,
+                               const std::string& certfp,
                                const std::string& api_url,
                                const std::string& token) {
     AnonymProof proof;
     proof.hash = hash;
     proof.ts = std::to_string(static_cast<long long>(std::time(nullptr)));
     proof.nonce = yume::util::random_hex(16);
-    nlohmann::json req{{"hash", proof.hash}, {"ts", proof.ts}, {"nonce", proof.nonce}, {"prefix", kAnonMsgPrefix}};
+    proof.certfp = certfp;
+    nlohmann::json req{{"hash", proof.hash},
+                       {"ts", proof.ts},
+                       {"nonce", proof.nonce},
+                       {"prefix", kAnonMsgPrefix}};
+    if (!proof.certfp.empty()) {
+        req["certfp"] = proof.certfp;
+    }
     ApiEndpoint ep = parse_api_url(api_url);
     auto resp = post_json_https(ep.host, ep.port, ep.target, req, token);
     proof.sig = resp.value("sig", "");
@@ -338,7 +387,7 @@ AnonymProof fetch_anonym_proof(const std::string& hash,
         std::string err = resp.value("error", "unknown");
         throw std::runtime_error("anonym signature missing (api error: " + err + ")");
     }
-    if (!verify_anonym_signature(proof.hash, proof.ts, proof.nonce, proof.sig)) {
+    if (!verify_anonym_signature(proof.hash, proof.ts, proof.nonce, proof.certfp, proof.sig)) {
         throw std::runtime_error("anonym signature verification failed (local check)");
     }
     return proof;
@@ -865,7 +914,10 @@ int main(int argc, char** argv) {
             }
             std::string bin = read_file_bytes(self_path);
             cfg.anonym_hash = sha256_hex(bin);
-            auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_api, cfg.anonym_token);
+            if (!cfg.tls_cert.empty()) {
+                cfg.anonym_certfp = cert_fingerprint_sha256(cfg.tls_cert);
+            }
+            auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_certfp, cfg.anonym_api, cfg.anonym_token);
             cfg.anonym_sig = proof.sig;
             cfg.anonym_ts = proof.ts;
             cfg.anonym_nonce = proof.nonce;
@@ -889,7 +941,7 @@ int main(int argc, char** argv) {
                     break;
                 }
                 try {
-                    auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_api, cfg.anonym_token);
+                    auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_certfp, cfg.anonym_api, cfg.anonym_token);
                     manager.update_anonym_proof(proof.hash, proof.sig, proof.ts, proof.nonce);
                 } catch (const std::exception& ex) {
                     std::cerr << "\033[1;33mANONYM REFRESH FAILED: " << ex.what() << "\033[0m\n";

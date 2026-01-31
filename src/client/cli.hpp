@@ -14,6 +14,7 @@ struct ClientConfig {
     bool inner_heavy{true};
     std::string pq_public_key;
     std::string anonym_pubkey;
+    bool require_anonym{false};
 };
 
 class Cli {

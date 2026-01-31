@@ -30,7 +30,7 @@ namespace yume::server {
 namespace {
 constexpr uint32_t kMaxFrameSize = 16 * 1024 * 1024;
 constexpr uint8_t kMinFrameType = protocol::AUTH;
-constexpr uint8_t kMaxFrameType = protocol::ANON;
+constexpr uint8_t kMaxFrameType = protocol::PONG;
 
 bool is_private_ipv4(const boost::asio::ip::address_v4& addr) {
     const auto bytes = addr.to_bytes();
@@ -490,6 +490,13 @@ void Session::handle_frame(const protocol::Frame& frame) {
             handle_rlisten(frame);
             break;
         }
+        case protocol::PING: {
+            protocol::Frame pong{{0, protocol::PONG, 0, 0}, {}};
+            async_write_frame(pong);
+            break;
+        }
+        case protocol::PONG:
+            break;
         case protocol::CLOSE:
             handle_close(frame.header.stream_id, "client closed");
             break;

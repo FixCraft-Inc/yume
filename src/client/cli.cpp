@@ -191,16 +191,24 @@ int run_proxycmd(const std::string& dest_host, int dest_port, int socks_port) {
         return 1;
     }
 
-    std::vector<uint8_t> req;
-    req.reserve(6 + dest_host.size());
-    req.push_back(0x05);
-    req.push_back(0x01);
-    req.push_back(0x00);
-    req.push_back(0x03);
-    req.push_back(static_cast<uint8_t>(dest_host.size()));
-    req.insert(req.end(), dest_host.begin(), dest_host.end());
-    req.push_back(static_cast<uint8_t>((dest_port >> 8) & 0xFF));
-    req.push_back(static_cast<uint8_t>(dest_port & 0xFF));
+    if (dest_host.size() > 255) {
+        util::log_error("SOCKS5 destination too long");
+        return 1;
+    }
+    const size_t host_len = dest_host.size();
+    std::vector<uint8_t> req(7 + host_len);
+    size_t off = 0;
+    req[off++] = 0x05;
+    req[off++] = 0x01;
+    req[off++] = 0x00;
+    req[off++] = 0x03;
+    req[off++] = static_cast<uint8_t>(host_len);
+    if (host_len > 0) {
+        std::memcpy(req.data() + off, dest_host.data(), host_len);
+        off += host_len;
+    }
+    req[off++] = static_cast<uint8_t>((dest_port >> 8) & 0xFF);
+    req[off++] = static_cast<uint8_t>(dest_port & 0xFF);
     boost::asio::write(sock, boost::asio::buffer(req));
 
     std::array<uint8_t, 4> rep{};

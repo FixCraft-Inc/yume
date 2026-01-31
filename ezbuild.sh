@@ -62,6 +62,7 @@ install_deps_linux() {
             nlohmann-json3-dev \
             libspdlog-dev \
             zlib1g-dev \
+            libzstd-dev \
             libargon2-dev \
             liblzma-dev
         if apt-cache show liboqs-dev >/dev/null 2>&1; then
@@ -85,6 +86,7 @@ install_deps_linux() {
             nlohmann-json \
             spdlog \
             zlib \
+            zstd \
             argon2 \
             liboqs \
             xz
@@ -105,6 +107,7 @@ install_deps_linux() {
             nlohmann-json-devel \
             spdlog-devel \
             zlib-devel \
+            libzstd-devel \
             argon2-devel \
             liboqs-devel \
             xz-devel
@@ -126,6 +129,7 @@ install_deps_linux() {
             nlohmann_json-devel \
             spdlog-devel \
             zlib-devel \
+            libzstd-devel \
             libargon2-devel \
             liboqs-devel \
             xz-devel
@@ -153,6 +157,7 @@ install_deps_macos() {
         nlohmann-json \
         spdlog \
         zlib \
+        zstd \
         argon2 \
         liboqs \
         xz
@@ -242,6 +247,11 @@ main() {
             "-DCMAKE_SYSTEM_PROCESSOR=${TARGET_ARCH}"
             "-DYUME_TARGET_ARCH=${TARGET_ARCH}"
         )
+        if [[ -n "${YUME_TOOLCHAIN_FILE:-}" ]]; then
+            CMAKE_ARGS+=("-DCMAKE_TOOLCHAIN_FILE=${YUME_TOOLCHAIN_FILE}")
+        else
+            warn "No YUME_TOOLCHAIN_FILE set; cross-compile may fail on ${TARGET_ARCH}."
+        fi
     fi
 
     if need_cmd cmake; then

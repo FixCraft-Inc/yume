@@ -335,14 +335,12 @@ EOF
             CMAKE_ARGS+=("-DBoost_DIR=$(dirname "${OPENWRT_BOOST_CMAKE}")")
         fi
         # If static libs are missing in the SDK, fall back to dynamic.
+        # OpenWRT SDKs often lack full static deps; force dynamic by default.
         if [[ " ${CMAKE_ARGS[*]} " == *"-DYUME_STATIC=ON"* ]]; then
-            if [[ -n "${OPENWRT_USR:-}" && ! -f "${OPENWRT_USR}/lib/libz.a" ]]; then
-                warn "SDK missing static libz.a; disabling static link for OpenWRT build."
-                CMAKE_ARGS=("${CMAKE_ARGS[@]/-DYUME_STATIC=ON/-DYUME_STATIC=OFF}")
-                # Ensure the override is last to win.
-                CMAKE_ARGS+=("-DYUME_STATIC=OFF")
-            fi
+            warn "OpenWRT build: forcing YUME_STATIC=OFF to avoid static link of shared libs."
+            CMAKE_ARGS=("${CMAKE_ARGS[@]/-DYUME_STATIC=ON/-DYUME_STATIC=OFF}")
         fi
+        CMAKE_ARGS+=("-DYUME_STATIC=OFF")
         CMAKE_ARGS+=("-DBASEFWX_NATIVE_OPT=OFF")
         info "Using toolchain: ${YUME_TOOLCHAIN_FILE}"
         CMAKE_ARGS+=("-DCMAKE_TOOLCHAIN_FILE=${YUME_TOOLCHAIN_FILE}")

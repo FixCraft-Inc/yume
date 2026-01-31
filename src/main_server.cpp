@@ -951,9 +951,13 @@ int main(int argc, char** argv) {
     }
 
     std::atomic<bool> shutting_down{false};
-    yume::util::install_signal_handlers([&](int) {
+    yume::util::install_signal_handlers([&](int sig) {
+        if (sig == SIGTERM) {
+            shutting_down.store(true);
+        }
         if (shutting_down.exchange(true)) {
-            return;
+            std::cerr << "\033[1;31mforce exit requested\033[0m\n";
+            std::_Exit(1);
         }
         if (yume::util::is_logging_enabled()) {
             yume::util::log_info("shutdown requested");

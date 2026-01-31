@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -66,9 +67,12 @@ private:
     void do_write();
 
     void close_all(const std::string& reason);
+    void schedule_keepalive();
 
     boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream_;
     boost::asio::strand<boost::asio::any_io_executor> strand_;
+    boost::asio::steady_timer keepalive_timer_{stream_.get_executor()};
+    std::chrono::steady_clock::time_point last_pong_{};
 
     std::array<uint8_t, 8> header_buf_{};
     protocol::FrameHeader current_header_{};

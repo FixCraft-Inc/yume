@@ -25,6 +25,8 @@ Tunnel::Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream)
     , strand_(stream_.get_executor()) {}
 
 void Tunnel::start() {
+    last_pong_ = std::chrono::steady_clock::now();
+    schedule_keepalive();
     read_header();
 }
 
@@ -247,6 +249,15 @@ void Tunnel::handle_frame(const protocol::Frame& frame) {
             pending_rlisten_.erase(stream_id);
             break;
         }
+        case protocol::PING: {
+            protocol::Frame pong{{0, protocol::PONG, 0, 0}, {}};
+            async_write_frame(pong);
+            break;
+        }
+        case protocol::PONG: {
+            last_pong_ = std::chrono::steady_clock::now();
+            break;
+        }
         default:
             break;
     }
@@ -297,6 +308,8 @@ void Tunnel::do_write() {
 
 void Tunnel::close_all(const std::string& reason) {
     util::log_warn("tunnel closed: " + reason);
+    boost::system::error_code ec;
+    keepalive_timer_.cancel(ec);
     if (close_handler_) {
         close_handler_(reason);
     }
@@ -308,9 +321,28 @@ void Tunnel::close_all(const std::string& reason) {
     streams_.clear();
     pending_open_.clear();
 
-    boost::system::error_code ec;
     stream_.shutdown(ec);
     stream_.lowest_layer().close(ec);
+}
+
+void Tunnel::schedule_keepalive() {
+    keepalive_timer_.expires_after(std::chrono::seconds(15));
+    auto self = shared_from_this();
+    keepalive_timer_.async_wait(boost::asio::bind_executor(
+        strand_,
+        [self](const boost::system::error_code& ec) {
+            if (ec) {
+                return;
+            }
+            auto now = std::chrono::steady_clock::now();
+            if (now - self->last_pong_ > std::chrono::seconds(60)) {
+                self->close_all("keepalive timeout");
+                return;
+            }
+            protocol::Frame ping{{0, protocol::PING, 0, 0}, {}};
+            self->async_write_frame(ping);
+            self->schedule_keepalive();
+        }));
 }
 
 }  // namespace yume::client

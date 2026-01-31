@@ -334,6 +334,7 @@ EOF
             fi
             CMAKE_ARGS+=("-DBoost_DIR=$(dirname "${OPENWRT_BOOST_CMAKE}")")
         fi
+        CMAKE_ARGS+=("-DBASEFWX_NATIVE_OPT=OFF")
         info "Using toolchain: ${YUME_TOOLCHAIN_FILE}"
         CMAKE_ARGS+=("-DCMAKE_TOOLCHAIN_FILE=${YUME_TOOLCHAIN_FILE}")
         CMAKE_ARGS+=("-DCMAKE_SYSTEM_NAME=Linux")

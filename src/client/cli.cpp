@@ -20,6 +20,7 @@
 #include <sys/select.h>
 #endif
 #include <unordered_map>
+#include <chrono>
 #include <vector>
 
 #include <boost/asio.hpp>
@@ -654,18 +655,21 @@ int Cli::run(int argc, char** argv) {
         return 1;
     }
 
-    try {
-        boost::asio::io_context io;
-        auto ctx = obfs::create_client_context();
-        ctx.set_verify_mode(boost::asio::ssl::verify_none);
+    int attempt = 0;
+    for (;;) {
+        try {
+            boost::asio::io_context io;
+            auto ctx = obfs::create_client_context();
+            ctx.set_verify_mode(boost::asio::ssl::verify_none);
 
-        boost::asio::ip::tcp::resolver resolver(io);
-        auto endpoints = resolver.resolve(cfg.server, std::to_string(cfg.port));
-        boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, ctx);
-        boost::asio::connect(stream.next_layer(), endpoints);
-        stream.handshake(boost::asio::ssl::stream_base::client);
+            boost::asio::ip::tcp::resolver resolver(io);
+            auto endpoints = resolver.resolve(cfg.server, std::to_string(cfg.port));
+            boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, ctx);
+            stream.next_layer().set_option(boost::asio::socket_base::keep_alive(true));
+            boost::asio::connect(stream.next_layer(), endpoints);
+            stream.handshake(boost::asio::ssl::stream_base::client);
 
-        inner::Config inner_cfg;
+            inner::Config inner_cfg;
         inner_cfg.enabled = cfg.inner_crypto;
         inner_cfg.pq_public_key = cfg.pq_public_key;
 
@@ -682,10 +686,10 @@ int Cli::run(int argc, char** argv) {
             inner_key = hs.key;
         }
 
-        authenticate(stream, cfg.identity, pq_ciphertext, pq_salt);
-        util::log_info("authenticated to server");
+            authenticate(stream, cfg.identity, pq_ciphertext, pq_salt);
+            util::log_info("authenticated to server");
 
-        protocol::Frame anon_frame = protocol::read_frame(stream);
+            protocol::Frame anon_frame = protocol::read_frame(stream);
         if (anon_frame.header.type == protocol::ANON) {
             std::string payload(anon_frame.payload.begin(), anon_frame.payload.end());
             auto json = nlohmann::json::parse(payload);
@@ -791,15 +795,17 @@ int Cli::run(int argc, char** argv) {
                 }
             }
         }
-        if (cfg.require_anonym && anon_frame.header.type != protocol::ANON) {
-            util::log_error("server did not provide anonym proof");
-            return 1;
-        }
+            if (cfg.require_anonym && anon_frame.header.type != protocol::ANON) {
+                util::log_error("server did not provide anonym proof");
+                return 1;
+            }
 
-        auto tunnel = std::make_shared<Tunnel>(std::move(stream));
+            auto tunnel = std::make_shared<Tunnel>(std::move(stream));
         if (inner_key.has_value()) {
             tunnel->set_inner_key(*inner_key);
         }
+        std::string close_reason;
+        tunnel->set_close_handler([&close_reason](const std::string& reason) { close_reason = reason; });
         tunnel->start();
 
         struct ReverseTarget {
@@ -868,7 +874,7 @@ int Cli::run(int argc, char** argv) {
             return code == 0 ? 0 : 1;
         }
 
-        if (args.lport > 0 || !args.rhost.empty() || args.rport > 0) {
+            if (args.lport > 0 || !args.rhost.empty() || args.rport > 0) {
             if (args.lport <= 0 || args.rhost.empty() || args.rport <= 0) {
                 util::log_error("--lport, --rhost, and --rport must be set together");
                 return 1;
@@ -878,23 +884,33 @@ int Cli::run(int argc, char** argv) {
             forward->start();
             util::log_info("forwarding localhost:" + std::to_string(args.lport) + " -> " +
                            args.rhost + ":" + std::to_string(args.rport));
-            io.run();
-            return 0;
-        }
+                io.run();
+                if (!close_reason.empty()) {
+                    throw std::runtime_error("tunnel closed: " + close_reason);
+                }
+                return 0;
+            }
 
-        if (cfg.socks_port > 0) {
-            auto socks = std::make_shared<SocksServer>(io, cfg.socks_port, tunnel);
-            socks->start();
-            util::log_info("SOCKS5 listening on 127.0.0.1:" + std::to_string(cfg.socks_port));
-            io.run();
-            return 0;
-        }
+            if (cfg.socks_port > 0) {
+                auto socks = std::make_shared<SocksServer>(io, cfg.socks_port, tunnel);
+                socks->start();
+                util::log_info("SOCKS5 listening on 127.0.0.1:" + std::to_string(cfg.socks_port));
+                io.run();
+                if (!close_reason.empty()) {
+                    throw std::runtime_error("tunnel closed: " + close_reason);
+                }
+                return 0;
+            }
 
-        util::log_warn("no mode selected");
-        return 1;
-    } catch (const std::exception& ex) {
-        util::log_error(std::string("client error: ") + ex.what());
-        return 1;
+            util::log_warn("no mode selected");
+            return 1;
+        } catch (const std::exception& ex) {
+            attempt++;
+            int backoff = std::min(30, 1 << std::min(attempt, 5));
+            util::log_warn(std::string("connection failed: ") + ex.what());
+            util::log_warn("retrying in " + std::to_string(backoff) + "s");
+            std::this_thread::sleep_for(std::chrono::seconds(backoff));
+        }
     }
 }
 

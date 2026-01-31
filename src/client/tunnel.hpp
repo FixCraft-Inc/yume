@@ -24,19 +24,24 @@ public:
     using OpenHandler = std::function<void(bool, const std::string&)>;
     using DataHandler = std::function<void(const Bytes&)>;
     using CloseHandler = std::function<void()>;
+    using ReverseOpenHandler = std::function<void(uint8_t listen_id, uint8_t stream_id)>;
 
     explicit Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream);
 
     void start();
     void set_inner_key(const Bytes& key);
+    void set_reverse_handler(ReverseOpenHandler handler);
+    boost::asio::any_io_executor get_executor();
 
     uint8_t reserve_stream_id();
     void register_stream(uint8_t stream_id, DataHandler on_data, CloseHandler on_close);
     void unregister_stream(uint8_t stream_id);
 
     void open_stream(uint8_t stream_id, const std::string& host, int port, OpenHandler handler);
+    void request_remote_listen(uint8_t listen_id, int port, OpenHandler handler);
     void send_data(uint8_t stream_id, const Bytes& data);
     void send_close(uint8_t stream_id, const std::string& reason);
+    void send_open_ack(uint8_t stream_id, bool ok, const std::string& reason);
 
 private:
     struct PendingWrite {
@@ -72,6 +77,8 @@ private:
 
     std::unordered_map<uint8_t, StreamCallbacks> streams_;
     std::unordered_map<uint8_t, OpenHandler> pending_open_;
+    std::unordered_map<uint8_t, OpenHandler> pending_rlisten_;
+    ReverseOpenHandler reverse_handler_;
     uint8_t next_stream_id_{1};
     std::optional<Bytes> inner_key_;
 };

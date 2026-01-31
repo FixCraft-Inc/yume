@@ -80,6 +80,12 @@ Port forward (SSH-style):
 yume --lport 2222 --rhost fw-main.fixcraft.jp --rport 22
 ```
 
+Remote forward (server listens, tunnels back to client local):
+
+```bash
+yume -R 7437:127.0.0.1:22
+```
+
 Local run (executes locally; all network traffic goes through YUME):
 
 ```bash

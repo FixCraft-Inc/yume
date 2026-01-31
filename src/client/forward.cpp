@@ -316,4 +316,102 @@ void LocalForwardSession::close() {
     remote_.close(ec);
 }
 
+ReverseForwardSession::ReverseForwardSession(std::shared_ptr<Tunnel> tunnel,
+                                             uint8_t stream_id,
+                                             std::string target_host,
+                                             int target_port)
+    : tunnel_(std::move(tunnel))
+    , stream_id_(stream_id)
+    , local_(tunnel_->get_executor())
+    , resolver_(tunnel_->get_executor())
+    , strand_(tunnel_->get_executor())
+    , target_host_(std::move(target_host))
+    , target_port_(target_port) {}
+
+void ReverseForwardSession::start() {
+    tunnel_->register_stream(
+        stream_id_,
+        [self = shared_from_this()](const Tunnel::Bytes& data) { self->deliver_from_tunnel(data); },
+        [self = shared_from_this()]() { self->close_from_tunnel(); });
+    start_connect();
+}
+
+void ReverseForwardSession::start_connect() {
+    auto self = shared_from_this();
+    resolver_.async_resolve(target_host_, std::to_string(target_port_),
+                            boost::asio::bind_executor(strand_,
+                                                       [self](const boost::system::error_code& ec,
+                                                              const boost::asio::ip::tcp::resolver::results_type& results) {
+                                                           if (ec) {
+                                                               self->tunnel_->send_open_ack(self->stream_id_, false, "local resolve failed");
+                                                               self->close();
+                                                               return;
+                                                           }
+                                                           boost::asio::async_connect(self->local_, results,
+                                                                                      boost::asio::bind_executor(self->strand_,
+                                                                                                                 [self](const boost::system::error_code& ec2,
+                                                                                                                        const boost::asio::ip::tcp::endpoint&) {
+                                                                                                                     if (ec2) {
+                                                                                                                         self->tunnel_->send_open_ack(self->stream_id_, false, "local connect failed");
+                                                                                                                         self->close();
+                                                                                                                         return;
+                                                                                                                     }
+                                                                                                                     self->open_confirmed_ = true;
+                                                                                                                     self->tunnel_->send_open_ack(self->stream_id_, true, "");
+                                                                                                                     self->start_local_read();
+                                                                                                                 }));
+                                                       }));
+}
+
+void ReverseForwardSession::start_local_read() {
+    auto self = shared_from_this();
+    local_.async_read_some(boost::asio::buffer(read_buf_),
+                           boost::asio::bind_executor(strand_,
+                                                      [self](const boost::system::error_code& ec, std::size_t bytes) {
+                                                          self->on_local_read(ec, bytes);
+                                                      }));
+}
+
+void ReverseForwardSession::on_local_read(const boost::system::error_code& ec, std::size_t bytes) {
+    if (ec) {
+        close();
+        return;
+    }
+    Tunnel::Bytes payload(read_buf_.data(), read_buf_.data() + bytes);
+    tunnel_->send_data(stream_id_, payload);
+    start_local_read();
+}
+
+void ReverseForwardSession::deliver_from_tunnel(const Tunnel::Bytes& data) {
+    auto self = shared_from_this();
+    boost::asio::post(strand_, [self, data]() {
+        if (!self->open_confirmed_) {
+            return;
+        }
+        boost::asio::async_write(self->local_, boost::asio::buffer(data),
+                                 boost::asio::bind_executor(self->strand_,
+                                                            [self](const boost::system::error_code& ec, std::size_t) {
+                                                                if (ec) {
+                                                                    self->close();
+                                                                }
+                                                            }));
+    });
+}
+
+void ReverseForwardSession::close_from_tunnel() {
+    auto self = shared_from_this();
+    boost::asio::post(strand_, [self]() { self->close(); });
+}
+
+void ReverseForwardSession::close() {
+    if (stream_id_ != 0) {
+        tunnel_->send_close(stream_id_, "reverse closed");
+        tunnel_->unregister_stream(stream_id_);
+        stream_id_ = 0;
+    }
+    boost::system::error_code ec;
+    local_.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
+    local_.close(ec);
+}
+
 }  // namespace yume::client

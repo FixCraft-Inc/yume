@@ -464,7 +464,8 @@ void Session::handle_frame(const protocol::Frame& frame) {
 
     if (inner_key_.has_value() &&
         (frame.header.type == protocol::OPEN || frame.header.type == protocol::DATA ||
-         frame.header.type == protocol::EXEC || frame.header.type == protocol::CLOSE)) {
+         frame.header.type == protocol::EXEC || frame.header.type == protocol::CLOSE ||
+         frame.header.type == protocol::RLISTEN)) {
         if ((frame.header.flags & protocol::kFlagInnerEncrypted) == 0) {
             util::log_warn("session " + std::to_string(session_id_) + ": missing inner encryption flag");
             close();
@@ -481,6 +482,10 @@ void Session::handle_frame(const protocol::Frame& frame) {
             break;
         case protocol::EXEC: {
             send_open_reply(frame.header.stream_id, false, "EXEC disabled for safety");
+            break;
+        }
+        case protocol::RLISTEN: {
+            handle_rlisten(frame);
             break;
         }
         case protocol::CLOSE:
@@ -557,6 +562,26 @@ bool Session::handle_auth(const protocol::Frame& frame) {
 }
 
 void Session::handle_open(const protocol::Frame& frame) {
+    if (pending_reverse_.find(frame.header.stream_id) != pending_reverse_.end()) {
+        bool ok = (frame.header.flags & protocol::kFlagOpenOk) != 0;
+        crypto::Bytes payload = frame.payload;
+        if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
+            try {
+                payload = inner::decrypt_payload(*inner_key_, frame.header.type, frame.header.stream_id, frame.payload);
+            } catch (...) {
+                ok = false;
+            }
+        }
+        if (!ok) {
+            std::string reason(payload.begin(), payload.end());
+            util::log_warn("reverse open failed: " + reason);
+            handle_close(frame.header.stream_id, "reverse open failed");
+        } else {
+            start_remote_read(frame.header.stream_id);
+        }
+        pending_reverse_.erase(frame.header.stream_id);
+        return;
+    }
     if (streams_.find(frame.header.stream_id) != streams_.end()) {
         send_open_reply(frame.header.stream_id, false, "stream already exists");
         return;
@@ -638,6 +663,105 @@ void Session::handle_open(const protocol::Frame& frame) {
                                                                                                                             self->start_remote_read(stream_id);
                                                                                                                         }));
                                                               }));
+}
+
+uint8_t Session::reserve_stream_id() {
+    for (int i = 1; i < 255; ++i) {
+        uint8_t candidate = static_cast<uint8_t>(i);
+        if (streams_.find(candidate) == streams_.end() &&
+            pending_reverse_.find(candidate) == pending_reverse_.end()) {
+            return candidate;
+        }
+    }
+    return 0;
+}
+
+void Session::handle_rlisten(const protocol::Frame& frame) {
+    crypto::Bytes payload = frame.payload;
+    if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
+        try {
+            payload = inner::decrypt_payload(*inner_key_, frame.header.type, frame.header.stream_id, frame.payload);
+        } catch (...) {
+            send_open_reply(frame.header.stream_id, false, "RLISTEN decrypt failed");
+            return;
+        }
+    }
+    std::string payload_str(payload.begin(), payload.end());
+    int listen_port = 0;
+    try {
+        auto json = nlohmann::json::parse(payload_str);
+        listen_port = json.value("port", 0);
+    } catch (...) {
+        send_open_reply(frame.header.stream_id, false, "invalid RLISTEN payload");
+        return;
+    }
+    if (listen_port <= 0) {
+        send_open_reply(frame.header.stream_id, false, "invalid listen port");
+        return;
+    }
+    if (listen_port < 1024) {
+        send_open_reply(frame.header.stream_id, false, "listen port must be >= 1024");
+        return;
+    }
+    if (reverse_listeners_.find(frame.header.stream_id) != reverse_listeners_.end()) {
+        send_open_reply(frame.header.stream_id, false, "listener exists");
+        return;
+    }
+    auto acceptor = std::make_shared<boost::asio::ip::tcp::acceptor>(stream_.get_executor());
+    boost::system::error_code ec;
+    boost::asio::ip::tcp::endpoint ep(boost::asio::ip::tcp::v4(), listen_port);
+    acceptor->open(ep.protocol(), ec);
+    if (ec) {
+        send_open_reply(frame.header.stream_id, false, "listen failed: " + ec.message());
+        return;
+    }
+    acceptor->set_option(boost::asio::ip::tcp::acceptor::reuse_address(true), ec);
+    acceptor->bind(ep, ec);
+    if (ec) {
+        send_open_reply(frame.header.stream_id, false, "bind failed: " + ec.message());
+        return;
+    }
+    acceptor->listen(boost::asio::socket_base::max_listen_connections, ec);
+    if (ec) {
+        send_open_reply(frame.header.stream_id, false, "listen failed: " + ec.message());
+        return;
+    }
+    reverse_listeners_[frame.header.stream_id] = acceptor;
+    send_open_reply(frame.header.stream_id, true, "");
+
+    auto self = shared_from_this();
+    auto do_accept = std::make_shared<std::function<void()>>();
+    *do_accept = [self, acceptor, listen_id = frame.header.stream_id, do_accept]() {
+        acceptor->async_accept([self, acceptor, listen_id, do_accept](const boost::system::error_code& ec2,
+                                                                      boost::asio::ip::tcp::socket socket) {
+            if (!ec2) {
+                uint8_t stream_id = self->reserve_stream_id();
+                if (stream_id == 0) {
+                    boost::system::error_code close_ec;
+                    socket.close(close_ec);
+                } else {
+                    auto remote = std::make_shared<RemoteStream>(self->stream_.get_executor());
+                    remote->socket = std::move(socket);
+                    self->streams_[stream_id] = remote;
+                    self->pending_reverse_.insert(stream_id);
+
+                    nlohmann::json json{{"listen_id", listen_id}};
+                    std::string payload_str = json.dump();
+                    std::vector<uint8_t> payload(payload_str.begin(), payload_str.end());
+                    uint16_t flags = 0;
+                    if (self->inner_key_.has_value()) {
+                        payload = inner::encrypt_payload(*self->inner_key_, protocol::ROPEN, stream_id, payload);
+                        flags |= protocol::kFlagInnerEncrypted;
+                    }
+                    protocol::Frame notify{{static_cast<uint32_t>(payload.size()), protocol::ROPEN, stream_id, flags},
+                                           payload};
+                    self->async_write_frame(notify);
+                }
+            }
+            (*do_accept)();
+        });
+    };
+    (*do_accept)();
 }
 
 void Session::handle_data(const protocol::Frame& frame) {

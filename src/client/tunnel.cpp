@@ -32,6 +32,14 @@ void Tunnel::set_inner_key(const Bytes& key) {
     inner_key_ = key;
 }
 
+void Tunnel::set_reverse_handler(ReverseOpenHandler handler) {
+    reverse_handler_ = std::move(handler);
+}
+
+boost::asio::any_io_executor Tunnel::get_executor() {
+    return stream_.get_executor();
+}
+
 uint8_t Tunnel::reserve_stream_id() {
     for (int i = 0; i < 255; ++i) {
         uint8_t candidate = next_stream_id_++;
@@ -69,6 +77,20 @@ void Tunnel::open_stream(uint8_t stream_id, const std::string& host, int port, O
     async_write_frame(frame);
 }
 
+void Tunnel::request_remote_listen(uint8_t listen_id, int port, OpenHandler handler) {
+    nlohmann::json json{{"port", port}};
+    std::string payload_str = json.dump();
+    Bytes payload(payload_str.begin(), payload_str.end());
+    uint16_t flags = 0;
+    if (inner_key_.has_value()) {
+        payload = inner::encrypt_payload(*inner_key_, protocol::RLISTEN, listen_id, payload);
+        flags |= protocol::kFlagInnerEncrypted;
+    }
+    pending_rlisten_[listen_id] = std::move(handler);
+    protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::RLISTEN, listen_id, flags}, payload};
+    async_write_frame(frame);
+}
+
 void Tunnel::send_data(uint8_t stream_id, const Bytes& data) {
     Bytes payload = data;
     uint16_t flags = 0;
@@ -88,6 +110,17 @@ void Tunnel::send_close(uint8_t stream_id, const std::string& reason) {
         flags |= protocol::kFlagInnerEncrypted;
     }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::CLOSE, stream_id, flags}, payload};
+    async_write_frame(frame);
+}
+
+void Tunnel::send_open_ack(uint8_t stream_id, bool ok, const std::string& reason) {
+    Bytes payload(reason.begin(), reason.end());
+    uint16_t flags = ok ? protocol::kFlagOpenOk : 0;
+    if (inner_key_.has_value()) {
+        payload = inner::encrypt_payload(*inner_key_, protocol::OPEN, stream_id, payload);
+        flags |= protocol::kFlagInnerEncrypted;
+    }
+    protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::OPEN, stream_id, flags}, payload};
     async_write_frame(frame);
 }
 
@@ -155,6 +188,17 @@ void Tunnel::handle_frame(const protocol::Frame& frame) {
     }
     switch (frame.header.type) {
         case protocol::OPEN: {
+            auto it_listen = pending_rlisten_.find(stream_id);
+            if (it_listen != pending_rlisten_.end()) {
+                auto handler = std::move(it_listen->second);
+                pending_rlisten_.erase(it_listen);
+                if (frame.header.flags & protocol::kFlagOpenOk) {
+                    handler(true, "");
+                } else {
+                    handler(false, payload_to_string(payload));
+                }
+                break;
+            }
             auto it = pending_open_.find(stream_id);
             if (it != pending_open_.end()) {
                 auto handler = std::move(it->second);
@@ -163,6 +207,19 @@ void Tunnel::handle_frame(const protocol::Frame& frame) {
                     handler(true, "");
                 } else {
                     handler(false, payload_to_string(payload));
+                }
+            }
+            break;
+        }
+        case protocol::ROPEN: {
+            if (reverse_handler_) {
+                try {
+                    auto json = nlohmann::json::parse(payload_to_string(payload));
+                    uint8_t listen_id = static_cast<uint8_t>(json.value("listen_id", 0));
+                    if (listen_id != 0) {
+                        reverse_handler_(listen_id, stream_id);
+                    }
+                } catch (...) {
                 }
             }
             break;
@@ -183,6 +240,7 @@ void Tunnel::handle_frame(const protocol::Frame& frame) {
                 streams_.erase(it);
             }
             pending_open_.erase(stream_id);
+            pending_rlisten_.erase(stream_id);
             break;
         }
         default:

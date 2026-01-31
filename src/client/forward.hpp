@@ -78,6 +78,36 @@ private:
     int target_port_{0};
 };
 
+class ReverseForwardSession : public std::enable_shared_from_this<ReverseForwardSession> {
+public:
+    ReverseForwardSession(std::shared_ptr<Tunnel> tunnel,
+                          uint8_t stream_id,
+                          std::string target_host,
+                          int target_port);
+
+    void start();
+
+private:
+    void start_connect();
+    void start_local_read();
+    void on_local_read(const boost::system::error_code& ec, std::size_t bytes);
+    void deliver_from_tunnel(const Tunnel::Bytes& data);
+    void close_from_tunnel();
+    void close();
+
+    std::shared_ptr<Tunnel> tunnel_;
+    uint8_t stream_id_{0};
+
+    boost::asio::ip::tcp::socket local_;
+    boost::asio::ip::tcp::resolver resolver_;
+    boost::asio::strand<boost::asio::any_io_executor> strand_;
+    std::array<uint8_t, 4096> read_buf_{};
+
+    std::string target_host_;
+    int target_port_{0};
+    bool open_confirmed_{false};
+};
+
 class ForwardServer {
 public:
     ForwardServer(boost::asio::io_context& io,

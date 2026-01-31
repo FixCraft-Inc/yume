@@ -162,6 +162,36 @@ build_liboqs_openwrt() {
         -DBUILD_SHARED_LIBS=OFF \
         -DBUILD_TESTING=OFF
     cmake --build "${workdir}/build" -j"$(nproc 2>/dev/null || echo 4)"
+    if need_cmd sudo; then
+        sudo cmake --install "${workdir}/build"
+    else
+        cmake --install "${workdir}/build"
+    fi
+    return 0
+}
+
+build_liboqs_host() {
+    if ! need_cmd git || ! need_cmd cmake; then
+        warn "Host liboqs build skipped: git/cmake missing."
+        return 1
+    fi
+    step "Host: building liboqs (static) from source..."
+    local workdir="/tmp/yume-liboqs-host"
+    rm -rf "${workdir}"
+    git clone --depth 1 --branch 0.15.0 https://github.com/open-quantum-safe/liboqs.git "${workdir}"
+    cmake -S "${workdir}" -B "${workdir}/build" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DOQS_BUILD_TESTS=OFF \
+        -DOQS_BUILD_BENCHMARKS=OFF \
+        -DOQS_BUILD_DEMOS=OFF \
+        -DOQS_BUILD_EXAMPLES=OFF \
+        -DOQS_BUILD_SHARED=OFF \
+        -DOQS_BUILD_STATIC=ON \
+        -DOQS_INSTALL_SHARED=OFF \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DBUILD_TESTING=OFF
+    cmake --build "${workdir}/build" -j"$(nproc 2>/dev/null || echo 4)"
     cmake --install "${workdir}/build"
     return 0
 }
@@ -213,6 +243,14 @@ install_deps_linux() {
                 info "liboqs already installed (non-apt); skipping liboqs-dev warning."
             else
                 warn "liboqs-dev not available in apt repositories; PQ features will be disabled unless provided."
+            fi
+        fi
+        if [[ -n "${YUME_OQS_STATIC:-}" ]]; then
+            if [[ -f /usr/lib/x86_64-linux-gnu/liboqs.a || -f /usr/local/lib/liboqs.a ]]; then
+                info "Static liboqs already available."
+            else
+                warn "YUME_OQS_STATIC=1 set but liboqs.a missing; building liboqs from source."
+                build_liboqs_host || warn "Host liboqs build failed; PQ may fall back to shared."
             fi
         fi
         ok "Dependencies installed via apt-get."
@@ -559,6 +597,10 @@ EOF
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=OFF")
         fi
     else
+        if [[ -n "${YUME_OQS_STATIC:-}" ]] && [[ ! -f /usr/lib/x86_64-linux-gnu/liboqs.a && ! -f /usr/local/lib/liboqs.a ]]; then
+            warn "YUME_OQS_STATIC=1 set but liboqs.a missing; building liboqs (static) from source."
+            build_liboqs_host || warn "Host liboqs build failed; PQ may fall back to shared."
+        fi
         if detect_liboqs; then
             info "liboqs detected; enabling PQ in BaseFWX."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=ON")

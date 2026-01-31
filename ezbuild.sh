@@ -50,6 +50,18 @@ detect_liboqs() {
     return 1
 }
 
+detect_liboqs_target() {
+    if [[ -n "${OPENWRT_USR:-}" ]]; then
+        if [[ -f "${OPENWRT_USR}/include/oqs/oqs.h" ]]; then
+            return 0
+        fi
+        if [[ -f "${OPENWRT_USR}/lib/liboqs.so" ]] || [[ -f "${OPENWRT_USR}/lib/liboqs.a" ]]; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
 build_liboqs_openwrt() {
     if [[ -z "${OPENWRT_SDK:-}" || -z "${YUME_TOOLCHAIN_FILE:-}" || -z "${OPENWRT_USR:-}" ]]; then
         warn "OpenWRT liboqs build skipped: missing SDK/toolchain info."
@@ -63,15 +75,41 @@ build_liboqs_openwrt() {
     local workdir="/tmp/yume-liboqs-openwrt"
     rm -rf "${workdir}"
     git clone --depth 1 --branch 0.15.0 https://github.com/open-quantum-safe/liboqs.git "${workdir}"
+    local cc_bin="${CC_PATH:-}"
+    local cxx_bin="${CXX_PATH:-}"
+    if [[ -z "${cc_bin}" || -z "${cxx_bin}" ]]; then
+        local tool_bin=""
+        tool_bin="$(find "${OPENWRT_SDK}/staging_dir" -maxdepth 2 -type d -name 'toolchain-*' -print0 2>/dev/null | head -zn 1 | xargs -0 -I{} echo '{}/bin')"
+        cc_bin="$(find "${tool_bin}" -maxdepth 1 -type f -name '*-gcc' | head -n 1)"
+        cxx_bin="$(find "${tool_bin}" -maxdepth 1 -type f -name '*-g++' | head -n 1)"
+    fi
+    local sysroot="${SYSROOT_PATH}"
+    local cflags="--sysroot=${sysroot}"
+    if [[ -d "${sysroot}/usr/include" ]]; then
+        cflags="${cflags} -isystem ${sysroot}/usr/include"
+    fi
+    if [[ -d "${OPENWRT_SDK}/staging_dir/toolchain-*/include" ]]; then
+        cflags="${cflags} -isystem ${OPENWRT_SDK}/staging_dir/toolchain-*/include"
+    fi
+    if [[ -d "${OPENWRT_SDK}/staging_dir/toolchain-*/usr/include" ]]; then
+        cflags="${cflags} -isystem ${OPENWRT_SDK}/staging_dir/toolchain-*/usr/include"
+    fi
     cmake -S "${workdir}" -B "${workdir}/build" \
         -DCMAKE_TOOLCHAIN_FILE="${YUME_TOOLCHAIN_FILE}" \
         -DCMAKE_SYSROOT="${SYSROOT_PATH}" \
+        -DCMAKE_C_COMPILER="${cc_bin}" \
+        -DCMAKE_CXX_COMPILER="${cxx_bin}" \
+        -DCMAKE_C_FLAGS="${cflags}" \
+        -DCMAKE_CXX_FLAGS="${cflags}" \
         -DCMAKE_INSTALL_PREFIX="${OPENWRT_USR}" \
         -DOQS_DIST_BUILD=ON \
         -DOQS_USE_AVX2=OFF \
         -DOQS_USE_AVX512=OFF \
         -DOQS_USE_SSE2=OFF \
         -DOQS_USE_SVE=OFF \
+        -DOQS_BUILD_TESTS=OFF \
+        -DOQS_BUILD_BENCHMARKS=OFF \
+        -DOQS_BUILD_DEMOS=OFF \
         -DBUILD_SHARED_LIBS=ON
     cmake --build "${workdir}/build" -j"$(nproc 2>/dev/null || echo 4)"
     cmake --install "${workdir}/build"
@@ -387,7 +425,7 @@ EOF
                 exit 1
             fi
             CMAKE_ARGS+=("-DBoost_DIR=$(dirname "${OPENWRT_BOOST_CMAKE}")")
-            if ! detect_liboqs; then
+            if ! detect_liboqs_target; then
                 LIBOQS_MAKEFILE="$(find "${OPENWRT_SDK}/feeds" "${OPENWRT_SDK}/package" -path "*/liboqs/Makefile" 2>/dev/null | head -n 1)"
                 if [[ -n "${LIBOQS_MAKEFILE}" ]]; then
                     step "OpenWRT SDK: building liboqs from feeds..."
@@ -454,11 +492,20 @@ EOF
 
     ensure_basefwx
     cleanup_vendor
-    if detect_liboqs; then
-        info "liboqs detected; enabling PQ in BaseFWX."
-        CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=ON")
+    if [[ $OPENWRT -eq 1 || $BUSYBOX -eq 1 ]]; then
+        if detect_liboqs_target; then
+            info "OpenWRT liboqs detected in sysroot; enabling PQ in BaseFWX."
+            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=ON")
+        else
+            warn "OpenWRT liboqs not detected in sysroot; PQ will be disabled."
+        fi
     else
-        warn "liboqs not detected; PQ will be disabled unless you install it."
+        if detect_liboqs; then
+            info "liboqs detected; enabling PQ in BaseFWX."
+            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=ON")
+        else
+            warn "liboqs not detected; PQ will be disabled unless you install it."
+        fi
     fi
     build_project
     info "Done! 🎉"

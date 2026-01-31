@@ -18,6 +18,7 @@ void set_logging_enabled(bool enabled);
 bool is_logging_enabled();
 std::string random_hex(size_t bytes);
 std::string base64_decode(const std::string& input);
+std::string base64_encode(const std::string& input);
 
 void install_signal_handlers(const std::function<void(int)>& handler);
 

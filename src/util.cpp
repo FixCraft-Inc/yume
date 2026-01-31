@@ -154,6 +154,21 @@ std::string base64_decode(const std::string& input) {
     return out;
 }
 
+std::string base64_encode(const std::string& input) {
+    if (input.empty()) {
+        return {};
+    }
+    std::string out(((input.size() + 2) / 3) * 4, '\0');
+    int len = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(&out[0]),
+                              reinterpret_cast<const unsigned char*>(input.data()),
+                              static_cast<int>(input.size()));
+    if (len <= 0) {
+        return {};
+    }
+    out.resize(static_cast<size_t>(len));
+    return out;
+}
+
 void install_signal_handlers(const std::function<void(int)>& handler) {
     std::lock_guard<std::mutex> lock(g_signal_mutex);
     g_signal_handler = handler;

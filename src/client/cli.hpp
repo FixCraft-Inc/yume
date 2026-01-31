@@ -10,10 +10,13 @@ struct ClientConfig {
     std::string identity;
     int socks_port{0};
     bool obfuscation{false};
-    bool inner_crypto{false};
+    bool inner_crypto{true};
     bool inner_heavy{true};
     std::string pq_public_key;
     std::string anonym_pubkey;
+    std::string anonym_ca_cert;
+    std::string tls_ca_cert;
+    std::string tls_pin_sha256;
     bool require_anonym{false};
 };
 

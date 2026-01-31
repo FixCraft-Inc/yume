@@ -7,6 +7,7 @@
 #include "client/cli.hpp"
 
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -28,6 +29,8 @@
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include <openssl/pem.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
 #include <openssl/x509.h>
 #include <openssl/sha.h>
 
@@ -49,6 +52,7 @@ constexpr const char kFixcraftAnonymPubPem[] =
     "-----BEGIN PUBLIC KEY-----\n"
     "MCowBQYDK2VwAyEAtupzLhANnB0VxP51vB/7yYwR+/3/jv4Str9MGLGA+is=\n"
     "-----END PUBLIC KEY-----\n";
+constexpr const char kDefaultAnonymCaCertPath[] = "/home/f1xgod/ca.cert.pem";
 struct EnvGuard {
     struct Entry {
         std::string key;
@@ -142,6 +146,11 @@ std::string hex_encode(const unsigned char* data, size_t len) {
     return out;
 }
 
+void warn_security_disabled(const std::string& what) {
+    std::cerr << "\033[1;31m🔓⛓️‍💥 YOUR SECURITY IS SUFFERING BECAUSE YOU HAVE DISABLED: "
+              << what << "\033[0m\n";
+}
+
 std::string get_peer_cert_fingerprint(EVP_PKEY* key, SSL* ssl) {
     (void)key;
     if (!ssl) {
@@ -162,6 +171,77 @@ std::string get_peer_cert_fingerprint(EVP_PKEY* key, SSL* ssl) {
     SHA256(der, static_cast<size_t>(len), hash);
     OPENSSL_free(der);
     return hex_encode(hash, SHA256_DIGEST_LENGTH);
+}
+
+crypto::EVP_PKEY_ptr load_pubkey_from_cert(const std::string& path) {
+    BIO* bio = BIO_new_file(path.c_str(), "r");
+    if (!bio) {
+        return {nullptr, EVP_PKEY_free};
+    }
+    X509* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    if (!cert) {
+        return {nullptr, EVP_PKEY_free};
+    }
+    EVP_PKEY* key = X509_get_pubkey(cert);
+    X509_free(cert);
+    return {key, EVP_PKEY_free};
+}
+
+using X509_ptr = std::unique_ptr<X509, decltype(&X509_free)>;
+
+X509_ptr load_cert_from_pem(const std::string& pem) {
+    if (pem.empty()) {
+        return {nullptr, X509_free};
+    }
+    BIO* bio = BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()));
+    if (!bio) {
+        return {nullptr, X509_free};
+    }
+    X509* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    return {cert, X509_free};
+}
+
+X509_ptr load_cert_from_file(const std::string& path) {
+    BIO* bio = BIO_new_file(path.c_str(), "r");
+    if (!bio) {
+        return {nullptr, X509_free};
+    }
+    X509* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    return {cert, X509_free};
+}
+
+bool is_cert_time_valid(X509* cert) {
+    if (!cert) {
+        return false;
+    }
+    const ASN1_TIME* not_before = X509_get0_notBefore(cert);
+    const ASN1_TIME* not_after = X509_get0_notAfter(cert);
+    if (!not_before || !not_after) {
+        return false;
+    }
+    if (X509_cmp_time(not_before, nullptr) > 0) {
+        return false;
+    }
+    if (X509_cmp_time(not_after, nullptr) < 0) {
+        return false;
+    }
+    return true;
+}
+
+bool verify_cert_signed_by_ca(X509* cert, X509* ca) {
+    if (!cert || !ca) {
+        return false;
+    }
+    EVP_PKEY* ca_pub = X509_get_pubkey(ca);
+    if (!ca_pub) {
+        return false;
+    }
+    bool ok = X509_verify(cert, ca_pub) == 1;
+    EVP_PKEY_free(ca_pub);
+    return ok;
 }
 
 int run_proxycmd(const std::string& dest_host, int dest_port, int socks_port) {
@@ -313,6 +393,9 @@ struct ParsedArgs {
     bool inner_crypto{false};
     bool inner_heavy{true};
     std::string pq_public_key;
+    std::string anonym_ca_cert;
+    std::string tls_ca_cert;
+    std::string tls_pin_sha256;
     bool help{false};
     bool accept_monitoring{false};
     bool save_server{false};
@@ -360,6 +443,8 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.dest_port = std::stoi(argv[++i]);
         } else if (arg == "--require-anonym") {
             args.require_anonym = true;
+        } else if (arg == "--anonym-ca-cert" && i + 1 < argc) {
+            args.anonym_ca_cert = argv[++i];
         } else if (arg == "-L" && i + 1 < argc) {
             args.ssh_L = argv[++i];
         } else if (arg == "-R" && i + 1 < argc) {
@@ -374,6 +459,10 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.inner_heavy = false;
         } else if (arg == "--pq-pub" && i + 1 < argc) {
             args.pq_public_key = argv[++i];
+        } else if (arg == "--tls-ca" && i + 1 < argc) {
+            args.tls_ca_cert = argv[++i];
+        } else if (arg == "--tls-pin" && i + 1 < argc) {
+            args.tls_pin_sha256 = argv[++i];
         } else if (arg == "--accept-monitoring") {
             args.accept_monitoring = true;
         } else if (arg == "--save-server") {
@@ -486,7 +575,7 @@ void print_help() {
     std::cout
         << "yume - YUME client\n\n"
         << "Usage:\n"
-        << "  yume --server <host> --auth <id_ed25519> [--port 443] [--socks 1080]\n"
+        << "  yume --server <host> --auth <id_ed25519> [--socks 1080]\n"
         << "  yume --server <host> --auth <id_ed25519> --lport <local> --rhost <host> --rport <port>\n"
         << "  yume --server <host> --auth <id_ed25519> --run \"<command>\"\n"
         << "  yume --help\n\n"
@@ -494,7 +583,7 @@ void print_help() {
         << "  --server <host>\n"
         << "  --auth <identity key>  (or -i)\n\n"
         << "Optional:\n"
-        << "  --port <port>        (default 443)\n"
+        << "  --port <port>        (ignored; client always uses 443)\n"
         << "  --socks <port>       (SOCKS5 mode)\n"
         << "  --lport <port>       (forward local port)\n"
         << "  --rhost <host>       (forward target host)\n"
@@ -503,6 +592,9 @@ void print_help() {
         << "  --inner-heavy        (heavy KDF, default)\n"
         << "  --inner-light        (lighter KDF)\n"
         << "  --pq-pub <path>      (override pq_public_key)\n"
+        << "  --anonym-ca-cert <path> (verify extra CA signature for anonym proof)\n"
+        << "  --tls-ca <path>      (verify TLS with custom CA)\n"
+        << "  --tls-pin <sha256>   (pin server TLS certificate fingerprint)\n"
         << "  --run <cmd>          (run locally with YUME proxy)\n"
         << "  -c, --cmd <cmd>      (run locally with YUME proxy)\n"
         << "                      (ssh auto-wraps ProxyCommand via local SOCKS)\n"
@@ -572,6 +664,9 @@ int Cli::run(int argc, char** argv) {
         return 0;
     }
     ClientConfig cfg;
+    if (file_exists(kDefaultAnonymCaCertPath)) {
+        cfg.anonym_ca_cert = kDefaultAnonymCaCertPath;
+    }
 
     int reverse_listen_port = 0;
     std::string reverse_host;
@@ -615,7 +710,7 @@ int Cli::run(int argc, char** argv) {
             if (json.contains("obfuscation") && !cfg.obfuscation) {
                 cfg.obfuscation = json["obfuscation"].get<bool>();
             }
-            if (json.contains("inner_crypto") && !cfg.inner_crypto) {
+            if (json.contains("inner_crypto")) {
                 cfg.inner_crypto = json["inner_crypto"].get<bool>();
             }
             if (json.contains("inner_heavy")) {
@@ -626,6 +721,15 @@ int Cli::run(int argc, char** argv) {
             }
             if (json.contains("anonym_pubkey") && cfg.anonym_pubkey.empty()) {
                 cfg.anonym_pubkey = util::expand_user(json["anonym_pubkey"].get<std::string>());
+            }
+            if (json.contains("anonym_ca_cert")) {
+                cfg.anonym_ca_cert = util::expand_user(json["anonym_ca_cert"].get<std::string>());
+            }
+            if (json.contains("tls_ca_cert") && cfg.tls_ca_cert.empty()) {
+                cfg.tls_ca_cert = util::expand_user(json["tls_ca_cert"].get<std::string>());
+            }
+            if (json.contains("tls_pin") && cfg.tls_pin_sha256.empty()) {
+                cfg.tls_pin_sha256 = json["tls_pin"].get<std::string>();
             }
             if (json.contains("require_anonym")) {
                 cfg.require_anonym = json["require_anonym"].get<bool>();
@@ -656,9 +760,34 @@ int Cli::run(int argc, char** argv) {
     if (!args.pq_public_key.empty()) {
         cfg.pq_public_key = util::expand_user(args.pq_public_key);
     }
+    if (!args.anonym_ca_cert.empty()) {
+        cfg.anonym_ca_cert = util::expand_user(args.anonym_ca_cert);
+    }
+    if (!args.tls_ca_cert.empty()) {
+        cfg.tls_ca_cert = util::expand_user(args.tls_ca_cert);
+    }
+    if (!args.tls_pin_sha256.empty()) {
+        cfg.tls_pin_sha256 = args.tls_pin_sha256;
+    }
     if (args.require_anonym) {
         cfg.require_anonym = true;
     }
+
+    if (cfg.port != 443) {
+        util::log_warn("forcing server port to 443 for HTTPS-only transport");
+        cfg.port = 443;
+    }
+
+#if !YUME_USE_BASEFWX
+    if (cfg.inner_crypto) {
+        warn_security_disabled("BASEFWX / PQ");
+        cfg.inner_crypto = false;
+    }
+#else
+    if (!cfg.inner_crypto) {
+        warn_security_disabled("BASEFWX / PQ");
+    }
+#endif
 
     if (args.save_server && !cfg.server.empty()) {
         nlohmann::json json;
@@ -675,6 +804,9 @@ int Cli::run(int argc, char** argv) {
         json["inner_crypto"] = cfg.inner_crypto;
         json["inner_heavy"] = cfg.inner_heavy;
         if (!cfg.pq_public_key.empty()) json["pq_public_key"] = cfg.pq_public_key;
+        if (!cfg.anonym_ca_cert.empty()) json["anonym_ca_cert"] = cfg.anonym_ca_cert;
+        if (!cfg.tls_ca_cert.empty()) json["tls_ca_cert"] = cfg.tls_ca_cert;
+        if (!cfg.tls_pin_sha256.empty()) json["tls_pin"] = cfg.tls_pin_sha256;
         json["require_anonym"] = cfg.require_anonym;
         std::ofstream out(args.config_path);
         if (out) {
@@ -697,10 +829,14 @@ int Cli::run(int argc, char** argv) {
         try {
             boost::asio::io_context io;
             auto ctx = obfs::create_client_context();
-            ctx.set_verify_mode(boost::asio::ssl::verify_none);
+            ctx.set_verify_mode(boost::asio::ssl::verify_peer);
+            ctx.set_default_verify_paths();
+            if (!cfg.tls_ca_cert.empty()) {
+                ctx.load_verify_file(cfg.tls_ca_cert);
+            }
 
             boost::asio::ip::tcp::resolver resolver(io);
-            auto endpoints = resolver.resolve(cfg.server, std::to_string(cfg.port));
+            auto endpoints = resolver.resolve(boost::asio::ip::tcp::v4(), cfg.server, std::to_string(cfg.port));
             boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, ctx);
             boost::asio::connect(stream.next_layer(), endpoints);
             boost::system::error_code keep_ec;
@@ -708,7 +844,15 @@ int Cli::run(int argc, char** argv) {
             if (keep_ec) {
                 util::log_warn(std::string("keepalive set failed: ") + keep_ec.message());
             }
+            SSL_set_tlsext_host_name(stream.native_handle(), cfg.server.c_str());
+            SSL_set1_host(stream.native_handle(), cfg.server.c_str());
             stream.handshake(boost::asio::ssl::stream_base::client);
+            if (!cfg.tls_pin_sha256.empty()) {
+                std::string fp = get_peer_cert_fingerprint(nullptr, stream.native_handle());
+                if (fp.empty() || fp != cfg.tls_pin_sha256) {
+                    throw std::runtime_error("TLS pin mismatch");
+                }
+            }
 
             inner::Config inner_cfg;
         inner_cfg.enabled = cfg.inner_crypto;
@@ -740,6 +884,11 @@ int Cli::run(int argc, char** argv) {
             std::string ts = json.value("ts", "");
             std::string nonce = json.value("nonce", "");
             std::string certfp = json.value("certfp", "");
+            std::string ca_sig = json.value("ca_sig", "");
+            std::string ca_alg = json.value("ca_alg", "");
+            std::string sub_sig = json.value("sub_sig", "");
+            std::string sub_alg = json.value("sub_alg", "");
+            std::string sub_cert_b64 = json.value("sub_cert", "");
 
             auto print_red = [](const std::string& msg) {
                 std::cerr << "\033[1;31m" << msg << "\033[0m" << std::endl;
@@ -816,6 +965,110 @@ int Cli::run(int argc, char** argv) {
                     print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
                     print_red("THIS SERVER IS FORGING SIGNATURES, REPORT IT TO FIXCRAFT, INC. ASAP, ALSO FILE A COMPLAINT TO AN INTERNET AUTHORITY");
                     return 1;
+                }
+                if (!sub_cert_b64.empty()) {
+                    if (cfg.anonym_ca_cert.empty()) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("ANONYM SUB CERT PROVIDED BUT NO --anonym-ca-cert SET");
+                        return 1;
+                    }
+                    if (sub_sig.empty()) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("ANONYM SUB SIGNATURE MISSING");
+                        return 1;
+                    }
+                    std::string sub_pem = util::base64_decode(sub_cert_b64);
+                    auto sub_cert = load_cert_from_pem(sub_pem);
+                    if (!sub_cert) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("FAILED TO PARSE ANONYM SUB CERT");
+                        return 1;
+                    }
+                    auto ca_cert = load_cert_from_file(cfg.anonym_ca_cert);
+                    if (!ca_cert) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("FAILED TO LOAD ANONYM CA CERT");
+                        return 1;
+                    }
+                    if (!is_cert_time_valid(sub_cert.get())) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("ANONYM SUB CERT IS EXPIRED OR NOT YET VALID");
+                        return 1;
+                    }
+                    if (!verify_cert_signed_by_ca(sub_cert.get(), ca_cert.get())) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("ANONYM SUB CERT IS NOT SIGNED BY THE TRUSTED CA");
+                        return 1;
+                    }
+                    EVP_PKEY* sub_key = X509_get_pubkey(sub_cert.get());
+                    if (!sub_key) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("FAILED TO LOAD SUB CERT PUBLIC KEY");
+                        return 1;
+                    }
+                    std::string sub_sig_raw = util::base64_decode(sub_sig);
+                    if (sub_sig_raw.empty()) {
+                        EVP_PKEY_free(sub_key);
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("INVALID ANONYM SUB SIGNATURE FORMAT");
+                        return 1;
+                    }
+                    crypto::Bytes sub_sig_bytes(sub_sig_raw.begin(), sub_sig_raw.end());
+                    bool ok_sub = crypto::verify_key(sub_key, msg_bytes, sub_sig_bytes);
+                    EVP_PKEY_free(sub_key);
+                    if (!ok_sub) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("ANONYM SUB SIGNATURE INVALID");
+                        return 1;
+                    }
+                }
+                if (!cfg.anonym_ca_cert.empty() && sub_cert_b64.empty()) {
+                    if (ca_sig.empty()) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("ANONYM CA SIGNATURE MISSING");
+                        return 1;
+                    }
+                    auto ca_key = load_pubkey_from_cert(cfg.anonym_ca_cert);
+                    if (!ca_key) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("FAILED TO LOAD ANONYM CA CERT");
+                        return 1;
+                    }
+                    std::string ca_sig_raw = util::base64_decode(ca_sig);
+                    if (ca_sig_raw.empty()) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("INVALID ANONYM CA SIGNATURE FORMAT");
+                        return 1;
+                    }
+                    crypto::Bytes ca_sig_bytes(ca_sig_raw.begin(), ca_sig_raw.end());
+                    bool ok_ca = crypto::verify_key(ca_key.get(), msg_bytes, ca_sig_bytes);
+                    if (!ok_ca) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("ANONYM CA SIGNATURE INVALID");
+                        return 1;
+                    }
+                } else if (!cfg.anonym_ca_cert.empty() && !ca_sig.empty()) {
+                    auto ca_key = load_pubkey_from_cert(cfg.anonym_ca_cert);
+                    if (!ca_key) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("FAILED TO LOAD ANONYM CA CERT");
+                        return 1;
+                    }
+                    std::string ca_sig_raw = util::base64_decode(ca_sig);
+                    if (ca_sig_raw.empty()) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("INVALID ANONYM CA SIGNATURE FORMAT");
+                        return 1;
+                    }
+                    crypto::Bytes ca_sig_bytes(ca_sig_raw.begin(), ca_sig_raw.end());
+                    bool ok_ca = crypto::verify_key(ca_key.get(), msg_bytes, ca_sig_bytes);
+                    if (!ok_ca) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("ANONYM CA SIGNATURE INVALID");
+                        return 1;
+                    }
+                } else if (!ca_sig.empty()) {
+                    util::log_warn("anonym CA signature provided but no --anonym-ca-cert set; skipping CA verification");
                 }
                 print_green("✅✒️ This Server Has Cryptographically Correct Signature, and is VERIFIED");
             } else {
@@ -895,9 +1148,9 @@ int Cli::run(int argc, char** argv) {
             util::log_info("running local command via SOCKS5 127.0.0.1:" + std::to_string(actual_port));
             auto work = boost::asio::make_work_guard(io);
             std::thread io_thread([&io]() { io.run(); });
-            std::string cmd = maybe_force_ipv4(args.run_cmd, args.run_ipv4);
-            if (args.run_ipv4 && cmd == args.run_cmd) {
-                util::log_warn("--run-ipv4 set; if your command supports IPv4 forcing, add it explicitly.");
+            std::string cmd = maybe_force_ipv4(args.run_cmd, true);
+            if (cmd == args.run_cmd) {
+                util::log_warn("IPv4-only enforced; if your command supports IPv4 forcing, add it explicitly.");
             }
             std::string self_path;
             try {
@@ -906,7 +1159,7 @@ int Cli::run(int argc, char** argv) {
                 self_path.clear();
             }
             cmd = wrap_ssh_with_proxy(cmd, actual_port, self_path);
-            int code = run_local_command_with_proxy(cmd, actual_port, args.run_ipv4);
+            int code = run_local_command_with_proxy(cmd, actual_port, true);
             work.reset();
             io.stop();
             if (io_thread.joinable()) {

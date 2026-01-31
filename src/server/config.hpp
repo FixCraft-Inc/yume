@@ -11,7 +11,7 @@ struct ServerConfig {
     std::string auth_keys;
     int threads{4};
     bool obfuscation{false};
-    bool inner_crypto{false};
+    bool inner_crypto{true};
     bool inner_heavy{true};
     std::string pq_private_key;
     bool allow_exec{false};
@@ -27,6 +27,15 @@ struct ServerConfig {
     std::string anonym_ts;
     std::string anonym_nonce;
     std::string anonym_certfp;
+    std::string anonym_ca_key;
+    std::string anonym_ca_cert;
+    std::string anonym_ca_sig;
+    std::string anonym_ca_alg;
+    std::string anonym_sub_key;
+    std::string anonym_sub_cert;
+    std::string anonym_sub_cert_b64;
+    std::string anonym_sub_sig;
+    std::string anonym_sub_alg;
     std::string auth_keys_meta;
 };
 

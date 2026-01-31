@@ -9,6 +9,7 @@
 #include <string>
 #include <utility>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <boost/asio.hpp>
@@ -52,6 +53,8 @@ private:
     void handle_data(const protocol::Frame& frame);
     void handle_close(uint8_t stream_id, const std::string& reason);
     void handle_exec(const protocol::Frame& frame);
+    void handle_rlisten(const protocol::Frame& frame);
+    uint8_t reserve_stream_id();
 
     void send_open_reply(uint8_t stream_id, bool ok, const std::string& message);
     void start_remote_read(uint8_t stream_id);
@@ -97,6 +100,8 @@ private:
     };
 
     std::unordered_map<uint8_t, std::shared_ptr<RemoteStream>> streams_;
+    std::unordered_map<uint8_t, std::shared_ptr<boost::asio::ip::tcp::acceptor>> reverse_listeners_;
+    std::unordered_set<uint8_t> pending_reverse_;
 
     struct PendingWrite {
         std::shared_ptr<std::vector<uint8_t>> data;

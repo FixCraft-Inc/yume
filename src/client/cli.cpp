@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <sys/select.h>
 #endif
+#include <unordered_map>
 #include <vector>
 
 #include <boost/asio.hpp>
@@ -324,6 +325,8 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.port = std::stoi(argv[++i]);
         } else if (arg == "--auth" && i + 1 < argc) {
             args.identity = argv[++i];
+        } else if (arg == "-i" && i + 1 < argc) {
+            args.identity = argv[++i];
         } else if (arg == "--socks" && i + 1 < argc) {
             args.socks_port = std::stoi(argv[++i]);
         } else if (arg == "--lport" && i + 1 < argc) {
@@ -451,7 +454,7 @@ void print_help() {
         << "  yume --help\n\n"
         << "Required:\n"
         << "  --server <host>\n"
-        << "  --auth <identity key>\n\n"
+        << "  --auth <identity key>  (or -i)\n\n"
         << "Optional:\n"
         << "  --port <port>        (default 443)\n"
         << "  --socks <port>       (SOCKS5 mode)\n"
@@ -469,7 +472,7 @@ void print_help() {
         << "  --proxycmd           (internal: SSH ProxyCommand helper)\n"
         << "  --require-anonym     (abort if server is not in anonym mode)\n"
         << "  -L [bind:]lport:host:port  (SSH-style local forward)\n"
-        << "  -R [bind:]rport:host:port  (SSH-style remote forward; not supported yet)\n"
+        << "  -R [bind:]rport:host:port  (SSH-style remote forward)\n"
         << "  --config <path>      (config file)\n"
         << "  --accept-monitoring  (skip monitoring warning)\n"
         << "  --save-server        (persist server into config)\n";
@@ -487,40 +490,33 @@ bool parse_ssh_forward(const std::string& spec, int& lport, std::string& host, i
     if (spec.empty()) {
         return false;
     }
-    std::string s = spec;
-    std::string bind;
-    auto first = s.find(':');
-    auto last = s.rfind(':');
-    if (first == std::string::npos || last == std::string::npos || first == last) {
+    std::vector<std::string> parts;
+    size_t start = 0;
+    while (true) {
+        size_t pos = spec.find(':', start);
+        if (pos == std::string::npos) {
+            parts.push_back(spec.substr(start));
+            break;
+        }
+        parts.push_back(spec.substr(start, pos - start));
+        start = pos + 1;
+    }
+    if (parts.size() != 3 && parts.size() != 4) {
         return false;
     }
-    if (s.find(':', last + 1) != std::string::npos) {
-        return false;
-    }
-    std::string left = s.substr(0, first);
-    std::string middle = s.substr(first + 1, last - first - 1);
-    std::string right = s.substr(last + 1);
-    if (left.find(':') != std::string::npos) {
-        return false;
-    }
+    size_t idx = parts.size() == 4 ? 1 : 0;
     try {
-        lport = std::stoi(left);
+        lport = std::stoi(parts[idx]);
     } catch (...) {
         return false;
     }
-    if (lport <= 0) {
-        return false;
-    }
-    host = middle;
-    if (host.empty()) {
-        return false;
-    }
+    host = parts[idx + 1];
     try {
-        rport = std::stoi(right);
+        rport = std::stoi(parts[idx + 2]);
     } catch (...) {
         return false;
     }
-    return rport > 0;
+    return lport > 0 && rport > 0 && !host.empty();
 }
 
 }  // namespace
@@ -539,9 +535,16 @@ int Cli::run(int argc, char** argv) {
     }
     ClientConfig cfg;
 
+    int reverse_listen_port = 0;
+    std::string reverse_host;
+    int reverse_port = 0;
+    bool use_reverse = false;
     if (!args.ssh_R.empty()) {
-        util::log_error("remote forwarding (-R) is not supported yet");
-        return 1;
+        if (!parse_ssh_forward(args.ssh_R, reverse_listen_port, reverse_host, reverse_port)) {
+            util::log_error("invalid -R syntax (expected [bind:]rport:host:port)");
+            return 1;
+        }
+        use_reverse = true;
     }
     if (!args.ssh_L.empty()) {
         int lport = 0;
@@ -798,6 +801,40 @@ int Cli::run(int argc, char** argv) {
             tunnel->set_inner_key(*inner_key);
         }
         tunnel->start();
+
+        struct ReverseTarget {
+            std::string host;
+            int port;
+        };
+        auto reverse_targets = std::make_shared<std::unordered_map<uint8_t, ReverseTarget>>();
+        auto reverse_sessions = std::make_shared<std::unordered_map<uint8_t, std::shared_ptr<ReverseForwardSession>>>();
+        tunnel->set_reverse_handler([reverse_targets, reverse_sessions, tunnel](uint8_t listen_id, uint8_t stream_id) {
+            auto it = reverse_targets->find(listen_id);
+            if (it == reverse_targets->end()) {
+                tunnel->send_open_ack(stream_id, false, "unknown reverse listener");
+                return;
+            }
+            auto session = std::make_shared<ReverseForwardSession>(tunnel, stream_id, it->second.host, it->second.port);
+            (*reverse_sessions)[stream_id] = session;
+            session->start();
+        });
+
+        if (use_reverse) {
+            uint8_t listen_id = tunnel->reserve_stream_id();
+            if (listen_id == 0) {
+                util::log_error("no stream ids available for remote forward");
+                return 1;
+            }
+            (*reverse_targets)[listen_id] = ReverseTarget{reverse_host, reverse_port};
+            tunnel->request_remote_listen(listen_id, reverse_listen_port,
+                                          [listen_port = reverse_listen_port](bool ok, const std::string& reason) {
+                                              if (ok) {
+                                                  util::log_info("remote listener active on port " + std::to_string(listen_port));
+                                              } else {
+                                                  util::log_error("remote listener failed: " + reason);
+                                              }
+                                          });
+        }
 
         if (!args.run_cmd.empty()) {
             int port = cfg.socks_port > 0 ? cfg.socks_port : 0;

@@ -8,11 +8,19 @@
 
 #include <fstream>
 #include <stdexcept>
+#include <filesystem>
+
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#endif
 
 #if YUME_USE_BASEFWX
 #include <basefwx/crypto.hpp>
 #include <basefwx/pq.hpp>
 #include <basefwx/constants.hpp>
+#if defined(BASEFWX_HAS_OQS) && BASEFWX_HAS_OQS
+#include <oqs/oqs.h>
+#endif
 #endif
 
 namespace yume::inner {
@@ -69,6 +77,45 @@ Bytes load_pq_private_key(const std::string& path) {
 #endif
 }
 
+bool write_file_bytes(const std::string& path, const Bytes& data, std::string* err) {
+    try {
+        std::filesystem::path p(path);
+        if (p.has_parent_path()) {
+            std::error_code ec;
+            std::filesystem::create_directories(p.parent_path(), ec);
+        }
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            if (err) *err = "failed to open file: " + path;
+            return false;
+        }
+        if (!data.empty()) {
+            out.write(reinterpret_cast<const char*>(data.data()),
+                      static_cast<std::streamsize>(data.size()));
+            if (!out) {
+                if (err) *err = "failed to write file: " + path;
+                return false;
+            }
+        }
+        out.close();
+        if (!out) {
+            if (err) *err = "failed to flush file: " + path;
+            return false;
+        }
+#if !defined(_WIN32)
+        if (path.find(".key") != std::string::npos) {
+            ::chmod(path.c_str(), 0600);
+        } else {
+            ::chmod(path.c_str(), 0644);
+        }
+#endif
+        return true;
+    } catch (const std::exception& ex) {
+        if (err) *err = ex.what();
+        return false;
+    }
+}
+
 Bytes derive_key(const Bytes& shared) {
 #if !YUME_USE_BASEFWX
     (void)shared;
@@ -111,6 +158,42 @@ Bytes build_aad(std::uint8_t frame_type, std::uint8_t stream_id) {
     return aad;
 }
 }  // namespace
+
+bool generate_pq_keypair(const std::string& private_path,
+                         const std::string& public_path,
+                         std::string* err) {
+#if !YUME_USE_BASEFWX
+    if (err) *err = "inner crypto not available: BaseFWX disabled";
+    return false;
+#else
+#if !defined(BASEFWX_HAS_OQS) || !BASEFWX_HAS_OQS
+    if (err) *err = "PQ not available (liboqs not enabled in BaseFWX)";
+    return false;
+#else
+    const char* algo = basefwx::constants::kMasterPqAlg;
+    OQS_KEM* kem = OQS_KEM_new(algo);
+    if (!kem) {
+        if (err) *err = "OQS_KEM_new failed";
+        return false;
+    }
+    Bytes pub(kem->length_public_key);
+    Bytes priv(kem->length_secret_key);
+    if (OQS_KEM_keypair(kem, pub.data(), priv.data()) != OQS_SUCCESS) {
+        OQS_KEM_free(kem);
+        if (err) *err = "OQS_KEM_keypair failed";
+        return false;
+    }
+    OQS_KEM_free(kem);
+    if (!write_file_bytes(private_path, priv, err)) {
+        return false;
+    }
+    if (!write_file_bytes(public_path, pub, err)) {
+        return false;
+    }
+    return true;
+#endif
+#endif
+}
 
 ClientHandshake client_prepare(const Config& cfg, bool heavy) {
     ClientHandshake result;

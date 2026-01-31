@@ -387,7 +387,7 @@ bool sign_anonym_with_ca(const std::string& hash,
 
     bool ok = false;
     try {
-        auto sig = yume::crypto::sign_key(key, msg_bytes);
+        auto sig = yume::crypto::sign_message(key, msg_bytes);
         if (!sig.empty()) {
             std::string sig_raw(reinterpret_cast<const char*>(sig.data()), sig.size());
             *out_sig_b64 = yume::util::base64_encode(sig_raw);
@@ -822,6 +822,31 @@ int main(int argc, char** argv) {
     }
 
     if (!(keys_list || !keys_add.empty() || !keys_remove.empty() || !keys_alias.empty() || !keys_gen.empty())) {
+        if (cfg.anonym && (cfg.anonym_sub_key.empty() || cfg.anonym_sub_cert.empty())) {
+            std::error_code ec;
+            std::filesystem::path runtime_dir = std::filesystem::current_path(ec);
+            std::filesystem::path exe_dir;
+            std::string self_path = get_self_path(argv[0]);
+            if (!self_path.empty()) {
+                exe_dir = std::filesystem::path(self_path).parent_path();
+            }
+            auto try_set = [&](std::string& out, const std::filesystem::path& base, const char* name) {
+                if (!out.empty() || base.empty()) {
+                    return;
+                }
+                std::filesystem::path cand = base / name;
+                if (file_readable(cand.string())) {
+                    out = cand.string();
+                }
+            };
+            try_set(cfg.anonym_sub_key, runtime_dir, "anonym_sub.key");
+            try_set(cfg.anonym_sub_cert, runtime_dir, "anonym_sub.pem");
+            try_set(cfg.anonym_sub_key, exe_dir, "anonym_sub.key");
+            try_set(cfg.anonym_sub_cert, exe_dir, "anonym_sub.pem");
+            if (!cfg.anonym_sub_key.empty() && !cfg.anonym_sub_cert.empty()) {
+                yume::util::log_info("using anonym sub key/cert from runtime directory");
+            }
+        }
         if (cfg.tls_cert.empty() || cfg.tls_key.empty()) {
             yume::util::log_error("tls_cert and tls_key must be set in config");
             return 1;

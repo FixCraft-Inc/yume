@@ -20,6 +20,7 @@
 #include <sys/select.h>
 #endif
 #include <unordered_map>
+#include <limits>
 #include <chrono>
 #include <vector>
 
@@ -396,8 +397,34 @@ crypto::Bytes auth_payload(EVP_PKEY* pubkey,
     crypto::Bytes pub_bytes(reinterpret_cast<uint8_t*>(data), reinterpret_cast<uint8_t*>(data) + len);
     BIO_free(bio);
 
+    auto checked_add = [](size_t a, size_t b) {
+        if (a > (std::numeric_limits<size_t>::max() - b)) {
+            throw std::runtime_error("auth payload size overflow");
+        }
+        return a + b;
+    };
+
+    if (pub_bytes.size() > 0xFFFF || signature.size() > 0xFFFF) {
+        throw std::runtime_error("auth payload too large");
+    }
+    if (pq_ciphertext && pq_ciphertext->size() > 0xFFFF) {
+        throw std::runtime_error("PQ ciphertext too large");
+    }
+    if (pq_salt && pq_salt->size() > 0xFFFF) {
+        throw std::runtime_error("PQ salt too large");
+    }
+
     crypto::Bytes payload;
-    payload.reserve(2 + pub_bytes.size() + 2 + signature.size());
+    size_t reserve_size = 0;
+    reserve_size = checked_add(reserve_size, 2 + pub_bytes.size());
+    reserve_size = checked_add(reserve_size, 2 + signature.size());
+    if (pq_ciphertext) {
+        reserve_size = checked_add(reserve_size, 2 + pq_ciphertext->size());
+    }
+    if (pq_salt) {
+        reserve_size = checked_add(reserve_size, 2 + pq_salt->size());
+    }
+    payload.reserve(reserve_size);
 
     uint16_t pub_len = static_cast<uint16_t>(pub_bytes.size());
     payload.push_back(static_cast<uint8_t>((pub_len >> 8) & 0xFF));

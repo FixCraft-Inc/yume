@@ -665,8 +665,12 @@ int Cli::run(int argc, char** argv) {
             boost::asio::ip::tcp::resolver resolver(io);
             auto endpoints = resolver.resolve(cfg.server, std::to_string(cfg.port));
             boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, ctx);
-            stream.next_layer().set_option(boost::asio::socket_base::keep_alive(true));
             boost::asio::connect(stream.next_layer(), endpoints);
+            boost::system::error_code keep_ec;
+            stream.next_layer().set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
+            if (keep_ec) {
+                util::log_warn(std::string("keepalive set failed: ") + keep_ec.message());
+            }
             stream.handshake(boost::asio::ssl::stream_base::client);
 
             inner::Config inner_cfg;

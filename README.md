@@ -14,7 +14,7 @@ cmake --build build -j$(nproc)
 Use a minimal build to reduce dependencies:
 
 ```bash
-cmake -B build -DYUME_MINIMAL=ON -DYUME_USE_BASEFWX=OFF
+cmake -B build -DYUME_MINIMAL=ON -DYUME_USE_BASEFWX=ON
 cmake --build build -j$(nproc)
 ```
 

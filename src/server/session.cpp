@@ -699,8 +699,8 @@ void Session::handle_rlisten(const protocol::Frame& frame) {
         send_open_reply(frame.header.stream_id, false, "invalid listen port");
         return;
     }
-    if (listen_port < 1024) {
-        send_open_reply(frame.header.stream_id, false, "listen port must be >= 1024");
+    if (listen_port < 4100 || listen_port > 8600) {
+        send_open_reply(frame.header.stream_id, false, "listen port must be 4100-8600");
         return;
     }
     if (reverse_listeners_.find(frame.header.stream_id) != reverse_listeners_.end()) {
@@ -779,6 +779,13 @@ void Session::handle_data(const protocol::Frame& frame) {
 }
 
 void Session::handle_close(uint8_t stream_id, const std::string& reason) {
+    auto it_listener = reverse_listeners_.find(stream_id);
+    if (it_listener != reverse_listeners_.end()) {
+        boost::system::error_code ec;
+        it_listener->second->close(ec);
+        reverse_listeners_.erase(it_listener);
+        return;
+    }
     auto it = streams_.find(stream_id);
     if (it == streams_.end()) {
         return;
@@ -944,6 +951,11 @@ void Session::close() {
         entry.second->socket.close(ec);
     }
     streams_.clear();
+    for (auto& entry : reverse_listeners_) {
+        boost::system::error_code ec;
+        entry.second->close(ec);
+    }
+    reverse_listeners_.clear();
 
     boost::system::error_code ec;
     stream_.shutdown(ec);

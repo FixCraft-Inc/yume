@@ -16,6 +16,7 @@ CLEAN_ONLY=0
 OPENWRT=0
 BUSYBOX=0
 OPENWRT_SDK=""
+SYSROOT_PATH=""
 CMAKE_ARGS=()
 
 info()  { echo -e "${COLOR_BLUE}✨ $*${COLOR_RESET}"; }
@@ -26,6 +27,55 @@ step()  { echo -e "${COLOR_MAGENTA}🚀 $*${COLOR_RESET}"; }
 
 need_cmd() {
     command -v "$1" >/dev/null 2>&1
+}
+
+detect_liboqs() {
+    if need_cmd pkg-config && pkg-config --exists liboqs; then
+        return 0
+    fi
+    if [[ -n "${OPENWRT_USR:-}" ]]; then
+        if [[ -f "${OPENWRT_USR}/include/oqs/oqs.h" ]]; then
+            return 0
+        fi
+        if [[ -f "${OPENWRT_USR}/lib/liboqs.so" ]] || [[ -f "${OPENWRT_USR}/lib/liboqs.a" ]]; then
+            return 0
+        fi
+    fi
+    if [[ -f /usr/include/oqs/oqs.h ]] || [[ -f /usr/local/include/oqs/oqs.h ]]; then
+        return 0
+    fi
+    if [[ -f /usr/lib/x86_64-linux-gnu/liboqs.so ]] || [[ -f /usr/local/lib/liboqs.so ]]; then
+        return 0
+    fi
+    return 1
+}
+
+build_liboqs_openwrt() {
+    if [[ -z "${OPENWRT_SDK:-}" || -z "${YUME_TOOLCHAIN_FILE:-}" || -z "${OPENWRT_USR:-}" ]]; then
+        warn "OpenWRT liboqs build skipped: missing SDK/toolchain info."
+        return 1
+    fi
+    if ! need_cmd git || ! need_cmd cmake; then
+        warn "OpenWRT liboqs build skipped: git/cmake missing."
+        return 1
+    fi
+    step "OpenWRT SDK: building liboqs from source..."
+    local workdir="/tmp/yume-liboqs-openwrt"
+    rm -rf "${workdir}"
+    git clone --depth 1 --branch 0.15.0 https://github.com/open-quantum-safe/liboqs.git "${workdir}"
+    cmake -S "${workdir}" -B "${workdir}/build" \
+        -DCMAKE_TOOLCHAIN_FILE="${YUME_TOOLCHAIN_FILE}" \
+        -DCMAKE_SYSROOT="${SYSROOT_PATH}" \
+        -DCMAKE_INSTALL_PREFIX="${OPENWRT_USR}" \
+        -DOQS_DIST_BUILD=ON \
+        -DOQS_USE_AVX2=OFF \
+        -DOQS_USE_AVX512=OFF \
+        -DOQS_USE_SSE2=OFF \
+        -DOQS_USE_SVE=OFF \
+        -DBUILD_SHARED_LIBS=ON
+    cmake --build "${workdir}/build" -j"$(nproc 2>/dev/null || echo 4)"
+    cmake --install "${workdir}/build"
+    return 0
 }
 
 ensure_basefwx() {
@@ -71,7 +121,11 @@ install_deps_linux() {
         if apt-cache show liboqs-dev >/dev/null 2>&1; then
             sudo apt-get install -y liboqs-dev || warn "liboqs-dev install failed; PQ features will be disabled unless provided."
         else
-            warn "liboqs-dev not available in apt repositories; PQ features will be disabled unless provided."
+            if detect_liboqs; then
+                info "liboqs already installed (non-apt); skipping liboqs-dev warning."
+            else
+                warn "liboqs-dev not available in apt repositories; PQ features will be disabled unless provided."
+            fi
         fi
         ok "Dependencies installed via apt-get."
         return 0
@@ -333,6 +387,21 @@ EOF
                 exit 1
             fi
             CMAKE_ARGS+=("-DBoost_DIR=$(dirname "${OPENWRT_BOOST_CMAKE}")")
+            if ! detect_liboqs; then
+                LIBOQS_MAKEFILE="$(find "${OPENWRT_SDK}/feeds" "${OPENWRT_SDK}/package" -path "*/liboqs/Makefile" 2>/dev/null | head -n 1)"
+                if [[ -n "${LIBOQS_MAKEFILE}" ]]; then
+                    step "OpenWRT SDK: building liboqs from feeds..."
+                    if [[ "${LIBOQS_MAKEFILE}" == *"/feeds/"* ]]; then
+                        FEED_NAME="$(echo "${LIBOQS_MAKEFILE}" | awk -F'/feeds/' '{print $2}' | awk -F'/' '{print $1}')"
+                        make -C "${OPENWRT_SDK}" "package/feeds/${FEED_NAME}/liboqs/compile" V=s || warn "liboqs build failed in SDK; PQ may be disabled."
+                    else
+                        make -C "${OPENWRT_SDK}" "package/liboqs/compile" V=s || warn "liboqs build failed in SDK; PQ may be disabled."
+                    fi
+                else
+                    warn "OpenWRT SDK does not contain liboqs package; attempting source build..."
+                    build_liboqs_openwrt || warn "liboqs source build failed; PQ may be disabled."
+                fi
+            fi
         fi
         # If static libs are missing in the SDK, fall back to dynamic.
         # OpenWRT SDKs often lack full static deps; force dynamic by default.
@@ -385,6 +454,12 @@ EOF
 
     ensure_basefwx
     cleanup_vendor
+    if detect_liboqs; then
+        info "liboqs detected; enabling PQ in BaseFWX."
+        CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=ON")
+    else
+        warn "liboqs not detected; PQ will be disabled unless you install it."
+    fi
     build_project
     info "Done! 🎉"
     echo -e "${COLOR_GREEN}Run:${COLOR_RESET} ./build/bin/yumed --config config/yumed.json"

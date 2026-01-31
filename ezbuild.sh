@@ -50,13 +50,49 @@ detect_liboqs() {
     return 1
 }
 
+liboqs_target_is_mips() {
+    if [[ -z "${OPENWRT_USR:-}" ]]; then
+        return 1
+    fi
+    local lib=""
+    if [[ -f "${OPENWRT_USR}/lib/liboqs.so" ]]; then
+        lib="${OPENWRT_USR}/lib/liboqs.so"
+    elif [[ -f "${OPENWRT_USR}/lib/liboqs.a" ]]; then
+        lib="${OPENWRT_USR}/lib/liboqs.a"
+    else
+        return 1
+    fi
+    if ! need_cmd file; then
+        return 0
+    fi
+    local out=""
+    out="$(file -b "${lib}" 2>/dev/null || true)"
+    echo "${out}" | grep -qi "mips"
+}
+
 detect_liboqs_target() {
     if [[ -n "${OPENWRT_USR:-}" ]]; then
         if [[ -f "${OPENWRT_USR}/include/oqs/oqs.h" ]]; then
-            return 0
+            if liboqs_target_is_mips; then
+                return 0
+            fi
+            warn "OpenWRT liboqs in sysroot is not MIPS; PQ will be disabled."
+            if [[ -n "${YUME_CLEAN_BAD_OQS:-}" ]]; then
+                warn "Removing non-MIPS liboqs from sysroot (YUME_CLEAN_BAD_OQS=1)."
+                rm -f "${OPENWRT_USR}/lib/liboqs.so" "${OPENWRT_USR}/lib/liboqs.a" || true
+            fi
+            return 1
         fi
         if [[ -f "${OPENWRT_USR}/lib/liboqs.so" ]] || [[ -f "${OPENWRT_USR}/lib/liboqs.a" ]]; then
-            return 0
+            if liboqs_target_is_mips; then
+                return 0
+            fi
+            warn "OpenWRT liboqs in sysroot is not MIPS; PQ will be disabled."
+            if [[ -n "${YUME_CLEAN_BAD_OQS:-}" ]]; then
+                warn "Removing non-MIPS liboqs from sysroot (YUME_CLEAN_BAD_OQS=1)."
+                rm -f "${OPENWRT_USR}/lib/liboqs.so" "${OPENWRT_USR}/lib/liboqs.a" || true
+            fi
+            return 1
         fi
     fi
     return 1
@@ -94,9 +130,17 @@ build_liboqs_openwrt() {
     if [[ -d "${OPENWRT_SDK}/staging_dir/toolchain-*/usr/include" ]]; then
         cflags="${cflags} -isystem ${OPENWRT_SDK}/staging_dir/toolchain-*/usr/include"
     fi
+    local toolchain_root=""
+    if [[ -n "${tool_bin:-}" ]]; then
+        toolchain_root="$(dirname "${tool_bin}")"
+    fi
     cmake -S "${workdir}" -B "${workdir}/build" \
         -DCMAKE_TOOLCHAIN_FILE="${YUME_TOOLCHAIN_FILE}" \
         -DCMAKE_SYSROOT="${SYSROOT_PATH}" \
+        -DCMAKE_FIND_ROOT_PATH="${SYSROOT_PATH};${toolchain_root}" \
+        -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
+        -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
+        -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY \
         -DCMAKE_C_COMPILER="${cc_bin}" \
         -DCMAKE_CXX_COMPILER="${cxx_bin}" \
         -DCMAKE_C_FLAGS="${cflags}" \

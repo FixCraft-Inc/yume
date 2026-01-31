@@ -28,6 +28,7 @@
 
 namespace {
 constexpr const char kAnonMsgPrefix[] = "YUME-ANON-V1:";
+constexpr const char kPqMsgPrefix[] = "YUME-PQ-V1:";
 constexpr const char kFixcraftAnonymPubPem[] =
     "-----BEGIN PUBLIC KEY-----\n"
     "MCowBQYDK2VwAyEAtupzLhANnB0VxP51vB/7yYwR+/3/jv4Str9MGLGA+is=\n"
@@ -402,6 +403,83 @@ bool sign_anonym_with_ca(const std::string& hash,
     return ok;
 }
 
+std::string derive_pq_public_path(const std::string& pq_private_path) {
+    if (pq_private_path.empty()) {
+        return "";
+    }
+    std::filesystem::path p(pq_private_path);
+    if (p.has_parent_path()) {
+        return (p.parent_path() / "pq_public.key").string();
+    }
+    return "pq_public.key";
+}
+
+bool load_pq_public_b64(const std::string& pq_public_path, std::string* out_b64) {
+    if (!out_b64 || pq_public_path.empty()) {
+        return false;
+    }
+    try {
+        std::string raw = read_file_bytes(pq_public_path);
+        if (raw.empty()) {
+            return false;
+        }
+        *out_b64 = yume::util::base64_encode(raw);
+        return !out_b64->empty();
+    } catch (...) {
+        return false;
+    }
+}
+
+bool sign_pq_pub_with_key(const std::string& pq_pub_b64,
+                          const std::string& certfp,
+                          const std::string& key_path,
+                          std::string* out_sig_b64,
+                          std::string* out_alg) {
+    if (!out_sig_b64 || !out_alg) {
+        return false;
+    }
+    if (pq_pub_b64.empty() || certfp.empty() || key_path.empty()) {
+        return false;
+    }
+    std::string message = std::string(kPqMsgPrefix) + pq_pub_b64 + ":" + certfp;
+    yume::crypto::Bytes msg_bytes(message.begin(), message.end());
+
+    std::string key_pem;
+    try {
+        key_pem = read_file_bytes(key_path);
+    } catch (...) {
+        return false;
+    }
+    if (key_pem.empty()) {
+        return false;
+    }
+
+    BIO* bio = BIO_new_mem_buf(key_pem.data(), static_cast<int>(key_pem.size()));
+    if (!bio) {
+        return false;
+    }
+    EVP_PKEY* key = PEM_read_bio_PrivateKey(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    if (!key) {
+        return false;
+    }
+
+    bool ok = false;
+    try {
+        auto sig = yume::crypto::sign_message(key, msg_bytes);
+        if (!sig.empty()) {
+            std::string sig_raw(reinterpret_cast<const char*>(sig.data()), sig.size());
+            *out_sig_b64 = yume::util::base64_encode(sig_raw);
+            *out_alg = key_alg_label(key);
+            ok = !out_sig_b64->empty();
+        }
+    } catch (...) {
+        ok = false;
+    }
+    EVP_PKEY_free(key);
+    return ok;
+}
+
 struct AnonymProof {
     std::string hash;
     std::string sig;
@@ -413,6 +491,9 @@ struct AnonymProof {
     std::string sub_sig;
     std::string sub_alg;
     std::string sub_cert_b64;
+    std::string pq_pub_b64;
+    std::string pq_sig;
+    std::string pq_alg;
 };
 
 struct ApiEndpoint {
@@ -452,7 +533,9 @@ AnonymProof fetch_anonym_proof(const std::string& hash,
                                const std::string& token,
                                const std::string& ca_key_path,
                                const std::string& sub_key_path,
-                               const std::string& sub_cert_path) {
+                               const std::string& sub_cert_path,
+                               const std::string& pq_public_path,
+                               const std::string& pq_sign_key_path) {
     AnonymProof proof;
     proof.hash = hash;
     proof.ts = std::to_string(static_cast<long long>(std::time(nullptr)));
@@ -496,6 +579,14 @@ AnonymProof fetch_anonym_proof(const std::string& hash,
         proof.sub_cert_b64 = yume::util::base64_encode(sub_pem);
         if (proof.sub_cert_b64.empty()) {
             throw std::runtime_error("failed to encode anonym_sub_cert");
+        }
+    }
+    if (!pq_public_path.empty() && !pq_sign_key_path.empty() && !proof.certfp.empty()) {
+        if (load_pq_public_b64(pq_public_path, &proof.pq_pub_b64)) {
+            if (!sign_pq_pub_with_key(proof.pq_pub_b64, proof.certfp, pq_sign_key_path,
+                                      &proof.pq_sig, &proof.pq_alg)) {
+                throw std::runtime_error("pq public key signing failed");
+            }
         }
     }
     return proof;
@@ -874,7 +965,10 @@ int main(int argc, char** argv) {
                 std::filesystem::path priv_path = secret_dir / "pq_private.key";
                 std::filesystem::path pub_path = secret_dir / "pq_public.key";
                 std::string err;
-                if (yume::inner::generate_pq_keypair(priv_path.string(), pub_path.string(), &err)) {
+                if (file_readable(priv_path.string())) {
+                    cfg.pq_private_key = priv_path.string();
+                    yume::util::log_info("using pq_private_key from ./.secrets");
+                } else if (yume::inner::generate_pq_keypair(priv_path.string(), pub_path.string(), &err)) {
                     cfg.pq_private_key = priv_path.string();
                     yume::util::log_info("generated PQ keypair at ./.secrets (copy pq_public.key to clients)");
                 } else {
@@ -1158,9 +1252,15 @@ int main(int argc, char** argv) {
             if (!cfg.tls_cert.empty()) {
                 cfg.anonym_certfp = cert_fingerprint_sha256(cfg.tls_cert);
             }
+            std::string pq_public_path;
+            if (cfg.inner_crypto && !cfg.pq_private_key.empty()) {
+                pq_public_path = derive_pq_public_path(cfg.pq_private_key);
+            }
+            std::string pq_sign_key = !cfg.anonym_sub_key.empty() ? cfg.anonym_sub_key : cfg.anonym_ca_key;
             auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_certfp, cfg.anonym_api,
                                             cfg.anonym_token, cfg.anonym_ca_key,
-                                            cfg.anonym_sub_key, cfg.anonym_sub_cert);
+                                            cfg.anonym_sub_key, cfg.anonym_sub_cert,
+                                            pq_public_path, pq_sign_key);
             cfg.anonym_sig = proof.sig;
             cfg.anonym_ts = proof.ts;
             cfg.anonym_nonce = proof.nonce;
@@ -1169,6 +1269,9 @@ int main(int argc, char** argv) {
             cfg.anonym_sub_sig = proof.sub_sig;
             cfg.anonym_sub_alg = proof.sub_alg;
             cfg.anonym_sub_cert_b64 = proof.sub_cert_b64;
+            cfg.pq_pub_b64 = proof.pq_pub_b64;
+            cfg.pq_sig = proof.pq_sig;
+            cfg.pq_alg = proof.pq_alg;
         } catch (const std::exception& ex) {
             std::cerr << "\033[1;31mANONYM PROOF FAILED: " << ex.what() << "\033[0m\n";
             return 1;
@@ -1189,12 +1292,19 @@ int main(int argc, char** argv) {
                     break;
                 }
                 try {
+                    std::string pq_public_path;
+                    if (cfg.inner_crypto && !cfg.pq_private_key.empty()) {
+                        pq_public_path = derive_pq_public_path(cfg.pq_private_key);
+                    }
+                    std::string pq_sign_key = !cfg.anonym_sub_key.empty() ? cfg.anonym_sub_key : cfg.anonym_ca_key;
                     auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_certfp, cfg.anonym_api,
                                                     cfg.anonym_token, cfg.anonym_ca_key,
-                                                    cfg.anonym_sub_key, cfg.anonym_sub_cert);
+                                                    cfg.anonym_sub_key, cfg.anonym_sub_cert,
+                                                    pq_public_path, pq_sign_key);
                     manager.update_anonym_proof(proof.hash, proof.sig, proof.ts, proof.nonce,
                                                 proof.certfp, proof.ca_sig, proof.ca_alg,
-                                                proof.sub_sig, proof.sub_alg, proof.sub_cert_b64);
+                                                proof.sub_sig, proof.sub_alg, proof.sub_cert_b64,
+                                                proof.pq_pub_b64, proof.pq_sig, proof.pq_alg);
                 } catch (const std::exception& ex) {
                     std::cerr << "\033[1;33mANONYM REFRESH FAILED: " << ex.what() << "\033[0m\n";
                 }

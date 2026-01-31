@@ -462,7 +462,10 @@ void Session::handle_frame(const protocol::Frame& frame) {
             {"ca_alg", cfg_.anonym_ca_alg},
             {"sub_sig", cfg_.anonym_sub_sig},
             {"sub_alg", cfg_.anonym_sub_alg},
-            {"sub_cert", cfg_.anonym_sub_cert_b64}
+            {"sub_cert", cfg_.anonym_sub_cert_b64},
+            {"pq_pub", cfg_.pq_pub_b64},
+            {"pq_sig", cfg_.pq_sig},
+            {"pq_alg", cfg_.pq_alg}
         };
         std::string payload_str = anon.dump();
         crypto::Bytes payload(payload_str.begin(), payload_str.end());

@@ -879,10 +879,10 @@ int Cli::run(int argc, char** argv) {
         }
 
             if (args.lport > 0 || !args.rhost.empty() || args.rport > 0) {
-            if (args.lport <= 0 || args.rhost.empty() || args.rport <= 0) {
-                util::log_error("--lport, --rhost, and --rport must be set together");
-                return 1;
-            }
+                if (args.lport <= 0 || args.rhost.empty() || args.rport <= 0) {
+                    util::log_error("--lport, --rhost, and --rport must be set together");
+                    return 1;
+                }
 
             auto forward = std::make_shared<ForwardServer>(io, args.lport, args.rhost, args.rport, tunnel);
             forward->start();
@@ -899,6 +899,15 @@ int Cli::run(int argc, char** argv) {
                 auto socks = std::make_shared<SocksServer>(io, cfg.socks_port, tunnel);
                 socks->start();
                 util::log_info("SOCKS5 listening on 127.0.0.1:" + std::to_string(cfg.socks_port));
+                io.run();
+                if (!close_reason.empty()) {
+                    throw std::runtime_error("tunnel closed: " + close_reason);
+                }
+                return 0;
+            }
+
+            if (use_reverse) {
+                util::log_info("remote forward active; waiting for connections");
                 io.run();
                 if (!close_reason.empty()) {
                     throw std::runtime_error("tunnel closed: " + close_reason);

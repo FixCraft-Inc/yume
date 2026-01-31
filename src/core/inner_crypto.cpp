@@ -170,7 +170,8 @@ bool generate_pq_keypair(const std::string& private_path,
     if (err) *err = "PQ not available (liboqs not enabled in BaseFWX)";
     return false;
 #else
-    const char* algo = basefwx::constants::kMasterPqAlg;
+    std::string algo_str(basefwx::constants::kMasterPqAlg);
+    const char* algo = algo_str.c_str();
     OQS_KEM* kem = OQS_KEM_new(algo);
     if (!kem) {
         if (err) *err = "OQS_KEM_new failed";

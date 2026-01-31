@@ -26,6 +26,11 @@ if(YUME_USE_SPDLOG)
     endif()
 endif()
 
+if(YUME_STATIC AND YUME_USE_SPDLOG)
+    message(WARNING "Static link requested; disabling spdlog to avoid linking shared libspdlog.")
+    set(YUME_USE_SPDLOG OFF CACHE BOOL "Disable spdlog for static builds" FORCE)
+endif()
+
 add_library(yume_core
     core/crypto.cpp
     core/inner_crypto.cpp

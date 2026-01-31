@@ -961,6 +961,10 @@ int Cli::run(int argc, char** argv) {
                         std::cerr << "\033[1;31m🔓⛓️‍💥 YOUR SECURITY IS SUFFERING BECAUSE YOU HAVE DISABLED: PQ\033[0m\n";
                         util::log_warn("PQ public key not configured; inner crypto disabled for this session");
                         inner_disabled_for_session = true;
+                    } else if (msg.find("ML-KEM-768 support is not enabled") != std::string::npos) {
+                        std::cerr << "\033[1;31m🔓⛓️‍💥 YOUR SECURITY IS SUFFERING BECAUSE YOU HAVE DISABLED: PQ\033[0m\n";
+                        util::log_warn("PQ not supported in this build; inner crypto disabled for this session");
+                        inner_disabled_for_session = true;
                     } else {
                         throw;
                     }
@@ -1206,10 +1210,12 @@ int Cli::run(int argc, char** argv) {
                                     } else {
                                         std::string target_path = cfg.pq_public_key;
                                         if (target_path.empty()) {
-                                            std::error_code ec;
-                                            std::filesystem::path runtime_dir = std::filesystem::current_path(ec);
-                                            if (!runtime_dir.empty()) {
-                                                target_path = (runtime_dir / "pq_public.key").string();
+                                            const char* home = std::getenv("HOME");
+                                            if (home && *home) {
+                                                std::filesystem::path p = std::filesystem::path(home) / ".config" / "yume" / "pq_public.key";
+                                                target_path = p.string();
+                                            } else {
+                                                target_path = "/tmp/yume/pq_public.key";
                                             }
                                         }
                                         if (!target_path.empty()) {
@@ -1219,7 +1225,8 @@ int Cli::run(int argc, char** argv) {
                                                     cfg.pq_public_key = target_path;
                                                 }
                                                 util::log_info("stored pq_public.key from server at " + target_path);
-                                                if (inner_disabled_for_session && !pq_reconnect_used) {
+                                                if (inner_disabled_for_session && !pq_reconnect_used &&
+                                                    cfg.inner_crypto) {
                                                     pq_reconnect = true;
                                                     pq_reconnect_used = true;
                                                 }

@@ -35,6 +35,10 @@ bool generate_pq_keypair(const std::string& private_path,
                          const std::string& public_path,
                          std::string* err);
 
+bool validate_pq_keypair(const std::string& private_path,
+                         const std::string& public_path,
+                         std::string* err);
+
 Bytes encrypt_payload(const Bytes& key, std::uint8_t frame_type, std::uint8_t stream_id, const Bytes& plaintext);
 Bytes decrypt_payload(const Bytes& key, std::uint8_t frame_type, std::uint8_t stream_id, const Bytes& blob);
 

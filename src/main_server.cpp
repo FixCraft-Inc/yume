@@ -976,6 +976,20 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        if (cfg.inner_crypto && !cfg.pq_private_key.empty()) {
+            std::string pq_public_path = derive_pq_public_path(cfg.pq_private_key);
+            if (file_readable(cfg.pq_private_key) && file_readable(pq_public_path)) {
+                std::string err;
+                if (!yume::inner::validate_pq_keypair(cfg.pq_private_key, pq_public_path, &err)) {
+                    yume::util::log_warn("PQ keypair mismatch; regenerating: " + err);
+                    if (!yume::inner::generate_pq_keypair(cfg.pq_private_key, pq_public_path, &err)) {
+                        yume::util::log_error("PQ keypair regeneration failed: " + err);
+                        return 1;
+                    }
+                    yume::util::log_info("regenerated PQ keypair at " + pq_public_path);
+                }
+            }
+        }
         if (cfg.tls_cert.empty() || cfg.tls_key.empty()) {
             yume::util::log_error("tls_cert and tls_key must be set in config");
             return 1;

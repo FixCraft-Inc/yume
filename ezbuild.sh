@@ -44,6 +44,9 @@ detect_liboqs() {
     if [[ -f /usr/include/oqs/oqs.h ]] || [[ -f /usr/local/include/oqs/oqs.h ]]; then
         return 0
     fi
+    if [[ -f /usr/lib/x86_64-linux-gnu/liboqs.a ]] || [[ -f /usr/local/lib/liboqs.a ]]; then
+        return 0
+    fi
     if [[ -f /usr/lib/x86_64-linux-gnu/liboqs.so ]] || [[ -f /usr/local/lib/liboqs.so ]] || [[ -f /usr/lib/x86_64-linux-gnu/liboqs.so.* ]] || [[ -f /usr/local/lib/liboqs.so.* ]]; then
         return 0
     fi

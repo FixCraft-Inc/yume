@@ -154,6 +154,35 @@ bool write_file_bytes(const std::string& path, const std::string& data, std::str
     }
 }
 
+bool read_file_bytes(const std::string& path, std::string* out, std::string* err) {
+    try {
+        std::ifstream in(path, std::ios::binary);
+        if (!in) {
+            if (err) *err = "failed to open file: " + path;
+            return false;
+        }
+        in.seekg(0, std::ios::end);
+        std::streamoff size = in.tellg();
+        if (size < 0) {
+            if (err) *err = "failed to read file size: " + path;
+            return false;
+        }
+        in.seekg(0, std::ios::beg);
+        out->assign(static_cast<std::size_t>(size), '\0');
+        if (!out->empty()) {
+            in.read(out->data(), static_cast<std::streamsize>(out->size()));
+            if (!in) {
+                if (err) *err = "failed to read file: " + path;
+                return false;
+            }
+        }
+        return true;
+    } catch (const std::exception& ex) {
+        if (err) *err = ex.what();
+        return false;
+    }
+}
+
 int run_local_command_with_proxy(const std::string& cmd, int socks_port, bool ipv4_only) {
     std::string proxy = "socks5h://127.0.0.1:" + std::to_string(socks_port);
     EnvGuard guard;
@@ -863,12 +892,8 @@ int Cli::run(int argc, char** argv) {
 
 #if !YUME_USE_BASEFWX
     if (cfg.inner_crypto) {
-        warn_security_disabled("BASEFWX / PQ");
+        warn_security_disabled("PQ");
         cfg.inner_crypto = false;
-    }
-#else
-    if (!cfg.inner_crypto) {
-        warn_security_disabled("BASEFWX / PQ");
     }
 #endif
 
@@ -908,6 +933,7 @@ int Cli::run(int argc, char** argv) {
     }
 
     int attempt = 0;
+    bool pq_warned = false;
     bool pq_reconnect_used = false;
     for (;;) {
         try {
@@ -946,6 +972,8 @@ int Cli::run(int argc, char** argv) {
             std::optional<crypto::Bytes> pq_salt;
             std::optional<crypto::Bytes> inner_key;
             bool inner_disabled_for_session = false;
+            bool pq_need_key = false;
+            bool pq_not_supported = false;
             if (inner_cfg.enabled) {
                 try {
                     auto hs = inner::client_prepare(inner_cfg, cfg.inner_heavy);
@@ -958,12 +986,10 @@ int Cli::run(int argc, char** argv) {
                 } catch (const std::exception& ex) {
                     std::string msg = ex.what();
                     if (msg.find("PQ public key not configured") != std::string::npos) {
-                        std::cerr << "\033[1;31m🔓⛓️‍💥 YOUR SECURITY IS SUFFERING BECAUSE YOU HAVE DISABLED: PQ\033[0m\n";
-                        util::log_warn("PQ public key not configured; inner crypto disabled for this session");
+                        pq_need_key = true;
                         inner_disabled_for_session = true;
                     } else if (msg.find("ML-KEM-768 support is not enabled") != std::string::npos) {
-                        std::cerr << "\033[1;31m🔓⛓️‍💥 YOUR SECURITY IS SUFFERING BECAUSE YOU HAVE DISABLED: PQ\033[0m\n";
-                        util::log_warn("PQ not supported in this build; inner crypto disabled for this session");
+                        pq_not_supported = true;
                         inner_disabled_for_session = true;
                     } else {
                         throw;
@@ -1219,14 +1245,22 @@ int Cli::run(int argc, char** argv) {
                                             }
                                         }
                                         if (!target_path.empty()) {
+                                            bool pq_changed = true;
+                                            std::string existing;
+                                            std::string read_err;
+                                            if (read_file_bytes(target_path, &existing, &read_err)) {
+                                                pq_changed = (existing != pq_raw);
+                                            }
                                             std::string err;
-                                            if (write_file_bytes(target_path, pq_raw, &err)) {
+                                            if (!pq_changed || write_file_bytes(target_path, pq_raw, &err)) {
                                                 if (cfg.pq_public_key.empty()) {
                                                     cfg.pq_public_key = target_path;
                                                 }
-                                                util::log_info("stored pq_public.key from server at " + target_path);
-                                                if (inner_disabled_for_session && !pq_reconnect_used &&
-                                                    cfg.inner_crypto) {
+                                                if (pq_changed) {
+                                                    util::log_info("stored pq_public.key from server at " + target_path);
+                                                }
+                                                if (cfg.inner_crypto && !pq_not_supported && !pq_reconnect_used &&
+                                                    (pq_need_key || pq_changed)) {
                                                     pq_reconnect = true;
                                                     pq_reconnect_used = true;
                                                 }
@@ -1268,6 +1302,15 @@ int Cli::run(int argc, char** argv) {
                 util::log_info("PQ public key received; reconnecting to enable inner crypto");
                 attempt++;
                 continue;
+            }
+            if (inner_disabled_for_session && !pq_warned) {
+                warn_security_disabled("PQ");
+                if (pq_not_supported) {
+                    util::log_warn("PQ not supported in this build; inner crypto disabled for this session");
+                } else if (pq_need_key) {
+                    util::log_warn("PQ public key not configured; inner crypto disabled for this session");
+                }
+                pq_warned = true;
             }
 
             auto tunnel = std::make_shared<Tunnel>(std::move(stream));

@@ -18,6 +18,7 @@ build_liboqs_mips() {
     echo "liboqs source not found at ${OQS_SRC}" >&2
     exit 1
   fi
+  export STAGING_DIR="${OPENWRT_SDK}/staging_dir"
   rm -rf "${OQS_BUILD_MIPS}"
   mkdir -p "${OQS_BUILD_MIPS}"
   cmake -S "${OQS_SRC}" -B "${OQS_BUILD_MIPS}" \

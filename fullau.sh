@@ -34,11 +34,17 @@ build_liboqs_mips() {
     -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
     -DCMAKE_INSTALL_PREFIX="${SYSROOT}/usr" \
     -DOQS_PERMIT_UNSUPPORTED_ARCHITECTURE=ON \
-    -DOQS_BUILD_TESTS=OFF \
-    -DOQS_BUILD_EXAMPLES=OFF \
     -DOQS_BUILD_ONLY_LIB=ON \
+    -DOQS_BUILD_TESTS=OFF \
+    -DOQS_BUILD_BENCHMARKS=OFF \
+    -DOQS_BUILD_DEMOS=OFF \
+    -DOQS_BUILD_EXAMPLES=OFF \
     -DOQS_USE_OPENSSL=OFF \
-    -DBUILD_SHARED_LIBS=ON
+    -DOQS_BUILD_SHARED_LIBS=OFF \
+    -DOQS_BUILD_STATIC_LIBS=ON \
+    -DOQS_INSTALL_SHARED=OFF \
+    -DBUILD_SHARED_LIBS=OFF \
+    -DBUILD_TESTING=OFF
   cmake --build "${OQS_BUILD_MIPS}" -j
   cmake --install "${OQS_BUILD_MIPS}"
 }
@@ -48,7 +54,7 @@ build_liboqs_mips
 YUME_CLEAN_BAD_OQS=1 YUME_OQS_STATIC=1 ./ezbuild.sh --openwrt --openwrt-sdk "${OPENWRT_SDK}" --arch mips
 cp -f build/bin/yume "${BIN_DIR}/yume_mips"
 cp -f build/bin/yumed "${BIN_DIR}/yumed_mips"
-mips-linux-gnu-strip --strip-unneeded "${BIN_DIR}/yume_mips" "${BIN_DIR}/yumed_mips"
+"${TOOLCHAIN_BIN}/mips-openwrt-linux-musl-strip" --strip-unneeded "${BIN_DIR}/yume_mips" "${BIN_DIR}/yumed_mips"
 
 rm -rf build basefwx/cpp/build
 YUME_OQS_STATIC=1 ./ezbuild.sh

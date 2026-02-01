@@ -44,7 +44,7 @@ detect_liboqs() {
     if [[ -f /usr/include/oqs/oqs.h ]] || [[ -f /usr/local/include/oqs/oqs.h ]]; then
         return 0
     fi
-    if [[ -f /usr/lib/x86_64-linux-gnu/liboqs.so ]] || [[ -f /usr/local/lib/liboqs.so ]]; then
+    if [[ -f /usr/lib/x86_64-linux-gnu/liboqs.so ]] || [[ -f /usr/local/lib/liboqs.so ]] || [[ -f /usr/lib/x86_64-linux-gnu/liboqs.so.* ]] || [[ -f /usr/local/lib/liboqs.so.* ]]; then
         return 0
     fi
     return 1
@@ -57,6 +57,8 @@ liboqs_target_is_mips() {
     local lib=""
     if [[ -f "${OPENWRT_USR}/lib/liboqs.so" ]]; then
         lib="${OPENWRT_USR}/lib/liboqs.so"
+    elif [[ -n "$(ls -1 "${OPENWRT_USR}/lib/liboqs.so."* 2>/dev/null | head -n 1)" ]]; then
+        lib="$(ls -1 "${OPENWRT_USR}/lib/liboqs.so."* 2>/dev/null | head -n 1)"
     elif [[ -f "${OPENWRT_USR}/lib/liboqs.a" ]]; then
         lib="${OPENWRT_USR}/lib/liboqs.a"
     else
@@ -152,13 +154,15 @@ build_liboqs_openwrt() {
         -DOQS_USE_AVX512=OFF \
         -DOQS_USE_SSE2=OFF \
         -DOQS_USE_SVE=OFF \
+        -DOQS_BUILD_ONLY_LIB=ON \
         -DOQS_BUILD_TESTS=OFF \
         -DOQS_BUILD_BENCHMARKS=OFF \
         -DOQS_BUILD_DEMOS=OFF \
         -DOQS_BUILD_EXAMPLES=OFF \
-        -DOQS_BUILD_SHARED=OFF \
-        -DOQS_BUILD_STATIC=ON \
+        -DOQS_BUILD_SHARED_LIBS=OFF \
+        -DOQS_BUILD_STATIC_LIBS=ON \
         -DOQS_INSTALL_SHARED=OFF \
+        -DOQS_USE_OPENSSL=OFF \
         -DBUILD_SHARED_LIBS=OFF \
         -DBUILD_TESTING=OFF
     cmake --build "${workdir}/build" -j"$(nproc 2>/dev/null || echo 4)"
@@ -166,6 +170,9 @@ build_liboqs_openwrt() {
         sudo cmake --install "${workdir}/build"
     else
         cmake --install "${workdir}/build"
+    fi
+    if [[ -f "${OPENWRT_USR}/lib/liboqs.so.0.15.0" && ! -f "${OPENWRT_USR}/lib/liboqs.so" ]]; then
+        ln -sf liboqs.so.0.15.0 "${OPENWRT_USR}/lib/liboqs.so"
     fi
     return 0
 }
@@ -182,13 +189,15 @@ build_liboqs_host() {
     cmake -S "${workdir}" -B "${workdir}/build" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DOQS_BUILD_ONLY_LIB=ON \
         -DOQS_BUILD_TESTS=OFF \
         -DOQS_BUILD_BENCHMARKS=OFF \
         -DOQS_BUILD_DEMOS=OFF \
         -DOQS_BUILD_EXAMPLES=OFF \
-        -DOQS_BUILD_SHARED=OFF \
-        -DOQS_BUILD_STATIC=ON \
+        -DOQS_BUILD_SHARED_LIBS=OFF \
+        -DOQS_BUILD_STATIC_LIBS=ON \
         -DOQS_INSTALL_SHARED=OFF \
+        -DOQS_USE_OPENSSL=OFF \
         -DBUILD_SHARED_LIBS=OFF \
         -DBUILD_TESTING=OFF
     cmake --build "${workdir}/build" -j"$(nproc 2>/dev/null || echo 4)"

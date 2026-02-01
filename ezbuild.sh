@@ -100,6 +100,47 @@ detect_liboqs_target() {
     return 1
 }
 
+resolve_oqs_sysroot_paths() {
+    local inc=""
+    local lib=""
+    if [[ -n "${OPENWRT_USR:-}" && -f "${OPENWRT_USR}/include/oqs/oqs.h" ]]; then
+        inc="${OPENWRT_USR}/include"
+        if [[ -f "${OPENWRT_USR}/lib/liboqs.a" ]]; then
+            lib="${OPENWRT_USR}/lib/liboqs.a"
+        elif [[ -f "${OPENWRT_USR}/lib/liboqs.so" ]]; then
+            lib="${OPENWRT_USR}/lib/liboqs.so"
+        else
+            lib="$(ls -1 "${OPENWRT_USR}/lib/liboqs.so."* 2>/dev/null | head -n 1 || true)"
+        fi
+    fi
+    echo "${inc}|${lib}"
+}
+
+resolve_oqs_host_paths() {
+    local inc=""
+    local lib=""
+    if [[ -f /usr/local/include/oqs/oqs.h ]]; then
+        inc="/usr/local/include"
+        if [[ -f /usr/local/lib/liboqs.a ]]; then
+            lib="/usr/local/lib/liboqs.a"
+        elif [[ -f /usr/local/lib/liboqs.so ]]; then
+            lib="/usr/local/lib/liboqs.so"
+        else
+            lib="$(ls -1 /usr/local/lib/liboqs.so.* 2>/dev/null | head -n 1 || true)"
+        fi
+    elif [[ -f /usr/include/oqs/oqs.h ]]; then
+        inc="/usr/include"
+        if [[ -f /usr/lib/x86_64-linux-gnu/liboqs.a ]]; then
+            lib="/usr/lib/x86_64-linux-gnu/liboqs.a"
+        elif [[ -f /usr/lib/x86_64-linux-gnu/liboqs.so ]]; then
+            lib="/usr/lib/x86_64-linux-gnu/liboqs.so"
+        else
+            lib="$(ls -1 /usr/lib/x86_64-linux-gnu/liboqs.so.* 2>/dev/null | head -n 1 || true)"
+        fi
+    fi
+    echo "${inc}|${lib}"
+}
+
 build_liboqs_openwrt() {
     if [[ -z "${OPENWRT_SDK:-}" || -z "${YUME_TOOLCHAIN_FILE:-}" || -z "${OPENWRT_USR:-}" ]]; then
         warn "OpenWRT liboqs build skipped: missing SDK/toolchain info."
@@ -593,6 +634,10 @@ EOF
         if detect_liboqs_target; then
             info "OpenWRT liboqs detected in sysroot; enabling PQ in BaseFWX."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=ON")
+            IFS='|' read -r _oqs_inc _oqs_lib < <(resolve_oqs_sysroot_paths)
+            if [[ -n "${_oqs_inc}" && -n "${_oqs_lib}" ]]; then
+                CMAKE_ARGS+=("-DOQS_INCLUDE_DIR=${_oqs_inc}" "-DOQS_LIBRARY=${_oqs_lib}")
+            fi
             if [[ -n "${YUME_OQS_STATIC:-}" ]] || [[ -f "${OPENWRT_USR}/lib/liboqs.a" ]]; then
                 if [[ -f "${OPENWRT_USR}/lib/liboqs.a" ]]; then
                     info "OpenWRT: using static liboqs."
@@ -613,6 +658,10 @@ EOF
         if detect_liboqs; then
             info "liboqs detected; enabling PQ in BaseFWX."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=ON")
+            IFS='|' read -r _oqs_inc _oqs_lib < <(resolve_oqs_host_paths)
+            if [[ -n "${_oqs_inc}" && -n "${_oqs_lib}" ]]; then
+                CMAKE_ARGS+=("-DOQS_INCLUDE_DIR=${_oqs_inc}" "-DOQS_LIBRARY=${_oqs_lib}")
+            fi
             if [[ -n "${YUME_OQS_STATIC:-}" ]]; then
                 if [[ -f /usr/lib/x86_64-linux-gnu/liboqs.a || -f /usr/local/lib/liboqs.a ]]; then
                     info "Using static liboqs."

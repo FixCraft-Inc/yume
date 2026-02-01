@@ -57,6 +57,33 @@ detect_liboqs() {
     return 1
 }
 
+detect_argon2() {
+    if need_cmd pkg-config && pkg-config --exists libargon2; then
+        return 0
+    fi
+    if [[ -n "${OPENWRT_USR:-}" ]]; then
+        if [[ -f "${OPENWRT_USR}/include/argon2.h" ]]; then
+            return 0
+        fi
+        if [[ -f "${OPENWRT_USR}/lib/libargon2.so" ]] || [[ -f "${OPENWRT_USR}/lib/libargon2.a" ]]; then
+            return 0
+        fi
+        if [[ -n "$(ls -1 "${OPENWRT_USR}/lib/libargon2.so."* 2>/dev/null | head -n 1)" ]]; then
+            return 0
+        fi
+    fi
+    if [[ -f /usr/include/argon2.h ]] || [[ -f /usr/local/include/argon2.h ]]; then
+        return 0
+    fi
+    if [[ -f /usr/lib/x86_64-linux-gnu/libargon2.a ]] || [[ -f /usr/lib/libargon2.a ]] || [[ -f /usr/local/lib/libargon2.a ]]; then
+        return 0
+    fi
+    if [[ -f /usr/lib/x86_64-linux-gnu/libargon2.so ]] || [[ -f /usr/lib/libargon2.so ]] || [[ -f /usr/local/lib/libargon2.so ]] || [[ -f /usr/lib/x86_64-linux-gnu/libargon2.so.* ]] || [[ -f /usr/lib/libargon2.so.* ]] || [[ -f /usr/local/lib/libargon2.so.* ]]; then
+        return 0
+    fi
+    return 1
+}
+
 liboqs_target_is_mips() {
     if [[ -z "${OPENWRT_USR:-}" ]]; then
         return 1
@@ -184,15 +211,15 @@ build_liboqs_openwrt() {
     if [[ -d "${sysroot}/usr/include" ]]; then
         cflags="${cflags} -isystem ${sysroot}/usr/include"
     fi
-    if [[ -d "${OPENWRT_SDK}/staging_dir/toolchain-*/include" ]]; then
-        cflags="${cflags} -isystem ${OPENWRT_SDK}/staging_dir/toolchain-*/include"
-    fi
-    if [[ -d "${OPENWRT_SDK}/staging_dir/toolchain-*/usr/include" ]]; then
-        cflags="${cflags} -isystem ${OPENWRT_SDK}/staging_dir/toolchain-*/usr/include"
-    fi
     local toolchain_root=""
     if [[ -n "${tool_bin:-}" ]]; then
         toolchain_root="$(dirname "${tool_bin}")"
+    fi
+    if [[ -n "${toolchain_root}" && -d "${toolchain_root}/include" ]]; then
+        cflags="${cflags} -isystem ${toolchain_root}/include"
+    fi
+    if [[ -n "${toolchain_root}" && -d "${toolchain_root}/usr/include" ]]; then
+        cflags="${cflags} -isystem ${toolchain_root}/usr/include"
     fi
     cmake -S "${workdir}" -B "${workdir}/build" \
         -DCMAKE_TOOLCHAIN_FILE="${YUME_TOOLCHAIN_FILE}" \
@@ -648,6 +675,13 @@ EOF
     ensure_basefwx
     cleanup_vendor
     if [[ $OPENWRT -eq 1 || $BUSYBOX -eq 1 ]]; then
+        if [[ $OPENWRT -eq 1 && -d "${PWD}/vendor/openwrt-mips" ]]; then
+            CMAKE_ARGS+=("-DBASEFWX_VENDOR_DIR=${PWD}/vendor/openwrt-mips")
+        elif [[ $BUSYBOX -eq 1 && -n "${TARGET_ARCH}" ]]; then
+            if [[ -d "${PWD}/vendor/busybox-${TARGET_ARCH}" ]]; then
+                CMAKE_ARGS+=("-DBASEFWX_VENDOR_DIR=${PWD}/vendor/busybox-${TARGET_ARCH}")
+            fi
+        fi
         if detect_liboqs_target; then
             info "OpenWRT liboqs detected in sysroot; enabling PQ in BaseFWX."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=ON")
@@ -676,7 +710,19 @@ EOF
             warn "OpenWRT liboqs not detected in sysroot; PQ will be disabled."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=OFF")
         fi
+        if detect_argon2; then
+            info "OpenWRT libargon2 detected in sysroot; enabling Argon2 in BaseFWX."
+            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=ON")
+        else
+            warn "OpenWRT libargon2 not detected in sysroot; heavy KDF will fall back to HKDF."
+            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=OFF")
+        fi
     else
+        if [[ -n "${TARGET_ARCH}" && -d "${PWD}/vendor/${TARGET_ARCH}" ]]; then
+            CMAKE_ARGS+=("-DBASEFWX_VENDOR_DIR=${PWD}/vendor/${TARGET_ARCH}")
+        elif [[ -d "${PWD}/vendor/linux-x86_64" ]]; then
+            CMAKE_ARGS+=("-DBASEFWX_VENDOR_DIR=${PWD}/vendor/linux-x86_64")
+        fi
         if [[ -n "${YUME_OQS_STATIC:-}" ]] && [[ ! -f /usr/lib/x86_64-linux-gnu/liboqs.a && ! -f /usr/local/lib/liboqs.a ]]; then
             warn "YUME_OQS_STATIC=1 set but liboqs.a missing; building liboqs (static) from source."
             build_liboqs_host || warn "Host liboqs build failed; PQ may fall back to shared."
@@ -708,6 +754,13 @@ EOF
         else
             warn "liboqs not detected; PQ will be disabled unless you install it."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=OFF")
+        fi
+        if detect_argon2; then
+            info "libargon2 detected; enabling Argon2 in BaseFWX."
+            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=ON")
+        else
+            warn "libargon2 not detected; heavy KDF will fall back to HKDF."
+            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=OFF")
         fi
     fi
     build_project

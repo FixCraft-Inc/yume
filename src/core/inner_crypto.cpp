@@ -196,6 +196,36 @@ bool generate_pq_keypair(const std::string& private_path,
 #endif
 }
 
+bool validate_pq_keypair(const std::string& private_path,
+                         const std::string& public_path,
+                         std::string* err) {
+#if !YUME_USE_BASEFWX
+    (void)private_path;
+    (void)public_path;
+    if (err) *err = "inner crypto not available: BaseFWX disabled";
+    return false;
+#else
+    try {
+        if (private_path.empty() || public_path.empty()) {
+            if (err) *err = "missing pq key path";
+            return false;
+        }
+        Bytes pub = basefwx::pq::DecodeKeyBytes(read_file(public_path));
+        Bytes priv = basefwx::pq::DecodeKeyBytes(read_file(private_path));
+        auto kem = basefwx::pq::KemEncrypt(pub);
+        Bytes shared2 = basefwx::pq::KemDecrypt(priv, kem.ciphertext);
+        if (shared2 != kem.shared) {
+            if (err) *err = "pq keypair mismatch";
+            return false;
+        }
+        return true;
+    } catch (const std::exception& ex) {
+        if (err) *err = ex.what();
+        return false;
+    }
+#endif
+}
+
 ClientHandshake client_prepare(const Config& cfg, bool heavy) {
     ClientHandshake result;
     if (!cfg.enabled) {

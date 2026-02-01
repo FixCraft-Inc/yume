@@ -126,16 +126,7 @@ resolve_oqs_sysroot_paths() {
 resolve_oqs_host_paths() {
     local inc=""
     local lib=""
-    if [[ -f /usr/local/include/oqs/oqs.h ]]; then
-        inc="/usr/local/include"
-        if [[ -f /usr/local/lib/liboqs.a ]]; then
-            lib="/usr/local/lib/liboqs.a"
-        elif [[ -f /usr/local/lib/liboqs.so ]]; then
-            lib="/usr/local/lib/liboqs.so"
-        else
-            lib="$(ls -1 /usr/local/lib/liboqs.so.* 2>/dev/null | head -n 1 || true)"
-        fi
-    elif [[ -f /usr/include/oqs/oqs.h ]]; then
+    if [[ -f /usr/include/oqs/oqs.h ]]; then
         inc="/usr/include"
         if [[ -f /usr/lib/x86_64-linux-gnu/liboqs.a ]]; then
             lib="/usr/lib/x86_64-linux-gnu/liboqs.a"
@@ -143,6 +134,15 @@ resolve_oqs_host_paths() {
             lib="/usr/lib/x86_64-linux-gnu/liboqs.so"
         else
             lib="$(ls -1 /usr/lib/x86_64-linux-gnu/liboqs.so.* 2>/dev/null | head -n 1 || true)"
+        fi
+    elif [[ -f /usr/local/include/oqs/oqs.h ]]; then
+        inc="/usr/local/include"
+        if [[ -f /usr/local/lib/liboqs.a ]]; then
+            lib="/usr/local/lib/liboqs.a"
+        elif [[ -f /usr/local/lib/liboqs.so ]]; then
+            lib="/usr/local/lib/liboqs.so"
+        else
+            lib="$(ls -1 /usr/local/lib/liboqs.so.* 2>/dev/null | head -n 1 || true)"
         fi
     fi
     echo "${inc}|${lib}"

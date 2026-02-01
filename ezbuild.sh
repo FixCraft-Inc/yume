@@ -653,7 +653,16 @@ EOF
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=ON")
             IFS='|' read -r _oqs_inc _oqs_lib < <(resolve_oqs_sysroot_paths)
             if [[ -n "${_oqs_inc}" && -n "${_oqs_lib}" ]]; then
-                CMAKE_ARGS+=("-DOQS_INCLUDE_DIR=${_oqs_inc}" "-DOQS_LIBRARY=${_oqs_lib}")
+                CMAKE_ARGS+=(
+                    "-DOQS_INCLUDE_DIR=${_oqs_inc}"
+                    "-DOQS_LIBRARY=${_oqs_lib}"
+                    "-DOQS_INCLUDE_DIRS=${_oqs_inc}"
+                    "-DOQS_LIBRARIES=${_oqs_lib}"
+                    "-DOQS_FOUND=TRUE"
+                )
+                if [[ -n "${_oqs_lib}" && "${_oqs_lib}" == *.a ]]; then
+                    CMAKE_ARGS+=("-DOQS_LIBRARY_STATIC=${_oqs_lib}")
+                fi
             fi
             if [[ -n "${YUME_OQS_STATIC:-}" ]] || [[ -f "${OPENWRT_USR}/lib/liboqs.a" ]]; then
                 if [[ -f "${OPENWRT_USR}/lib/liboqs.a" ]]; then
@@ -677,7 +686,16 @@ EOF
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=ON")
             IFS='|' read -r _oqs_inc _oqs_lib < <(resolve_oqs_host_paths)
             if [[ -n "${_oqs_inc}" && -n "${_oqs_lib}" ]]; then
-                CMAKE_ARGS+=("-DOQS_INCLUDE_DIR=${_oqs_inc}" "-DOQS_LIBRARY=${_oqs_lib}")
+                CMAKE_ARGS+=(
+                    "-DOQS_INCLUDE_DIR=${_oqs_inc}"
+                    "-DOQS_LIBRARY=${_oqs_lib}"
+                    "-DOQS_INCLUDE_DIRS=${_oqs_inc}"
+                    "-DOQS_LIBRARIES=${_oqs_lib}"
+                    "-DOQS_FOUND=TRUE"
+                )
+                if [[ -n "${_oqs_lib}" && "${_oqs_lib}" == *.a ]]; then
+                    CMAKE_ARGS+=("-DOQS_LIBRARY_STATIC=${_oqs_lib}")
+                fi
             fi
             if [[ -n "${YUME_OQS_STATIC:-}" ]]; then
                 if [[ -f /usr/lib/x86_64-linux-gnu/liboqs.a || -f /usr/local/lib/liboqs.a ]]; then

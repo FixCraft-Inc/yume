@@ -3,6 +3,10 @@ set -euo pipefail
 
 # YUME ezbuild: install deps + build with a friendly UI
 
+LOG_FILE="crashed.log"
+: > "${LOG_FILE}"
+exec > >(tee -a "${LOG_FILE}") 2>&1
+
 COLOR_RESET="\033[0m"
 COLOR_RED="\033[0;31m"
 COLOR_GREEN="\033[0;32m"
@@ -44,10 +48,10 @@ detect_liboqs() {
     if [[ -f /usr/include/oqs/oqs.h ]] || [[ -f /usr/local/include/oqs/oqs.h ]]; then
         return 0
     fi
-    if [[ -f /usr/lib/x86_64-linux-gnu/liboqs.a ]] || [[ -f /usr/local/lib/liboqs.a ]]; then
+    if [[ -f /usr/lib/x86_64-linux-gnu/liboqs.a ]] || [[ -f /usr/lib/liboqs.a ]] || [[ -f /usr/local/lib/liboqs.a ]]; then
         return 0
     fi
-    if [[ -f /usr/lib/x86_64-linux-gnu/liboqs.so ]] || [[ -f /usr/local/lib/liboqs.so ]] || [[ -f /usr/lib/x86_64-linux-gnu/liboqs.so.* ]] || [[ -f /usr/local/lib/liboqs.so.* ]]; then
+    if [[ -f /usr/lib/x86_64-linux-gnu/liboqs.so ]] || [[ -f /usr/lib/liboqs.so ]] || [[ -f /usr/local/lib/liboqs.so ]] || [[ -f /usr/lib/x86_64-linux-gnu/liboqs.so.* ]] || [[ -f /usr/lib/liboqs.so.* ]] || [[ -f /usr/local/lib/liboqs.so.* ]]; then
         return 0
     fi
     return 1

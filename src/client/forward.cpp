@@ -8,9 +8,110 @@
 
 #include "util.hpp"
 
+#include <cerrno>
+#include <csignal>
+#include <cstdio>
+#include <fstream>
+#include <stdexcept>
+#include <thread>
+#include <chrono>
+#include <unistd.h>
+
 namespace yume::client {
 
 namespace {
+std::string pid_path_for_port(const char* proto, int port) {
+    return "/tmp/yume-" + std::string(proto) + "-" + std::to_string(port) + ".pid";
+}
+
+bool read_pidfile(const std::string& path, pid_t& pid) {
+    std::ifstream in(path);
+    if (!in) {
+        return false;
+    }
+    long long value = 0;
+    in >> value;
+    if (!in || value <= 0) {
+        return false;
+    }
+    pid = static_cast<pid_t>(value);
+    return true;
+}
+
+bool pid_running(pid_t pid) {
+    if (pid <= 0) {
+        return false;
+    }
+    if (::kill(pid, 0) == 0) {
+        return true;
+    }
+    return errno == EPERM;
+}
+
+bool is_yume_process(pid_t pid) {
+    std::ifstream comm("/proc/" + std::to_string(pid) + "/comm");
+    if (!comm) {
+        return false;
+    }
+    std::string name;
+    std::getline(comm, name);
+    return name == "yume" || name == "fixcraft-yume";
+}
+
+void remove_pidfile(const std::string& path) {
+    if (!path.empty()) {
+        std::remove(path.c_str());
+    }
+}
+
+bool kill_process(pid_t pid) {
+    if (pid <= 0) {
+        return false;
+    }
+    if (::kill(pid, SIGTERM) != 0 && errno != ESRCH) {
+        return false;
+    }
+    for (int i = 0; i < 10; ++i) {
+        if (!pid_running(pid)) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    if (::kill(pid, SIGKILL) != 0 && errno != ESRCH) {
+        return false;
+    }
+    return true;
+}
+
+bool reclaim_pidfile(const std::string& path) {
+    pid_t pid = 0;
+    if (!read_pidfile(path, pid)) {
+        return false;
+    }
+    if (pid == ::getpid()) {
+        return false;
+    }
+    if (!pid_running(pid)) {
+        remove_pidfile(path);
+        return true;
+    }
+    if (!is_yume_process(pid)) {
+        return false;
+    }
+    if (kill_process(pid)) {
+        remove_pidfile(path);
+        return true;
+    }
+    return false;
+}
+
+void write_pidfile(const std::string& path) {
+    std::ofstream out(path, std::ios::trunc);
+    if (out) {
+        out << ::getpid();
+    }
+}
+
 bool is_private_ipv4(const boost::asio::ip::address_v4& addr) {
     const auto bytes = addr.to_bytes();
     const uint8_t a = bytes[0];
@@ -186,15 +287,42 @@ ForwardServer::ForwardServer(boost::asio::io_context& io,
                              std::shared_ptr<Tunnel> tunnel,
                              bool allow_local_ip)
     : acceptor_(io)
+    , listen_port_(listen_port)
+    , pid_path_(pid_path_for_port("tcp", listen_port))
     , target_host_(std::move(target_host))
     , target_port_(target_port)
     , tunnel_(std::move(tunnel))
     , allow_local_ip_(allow_local_ip) {
     boost::asio::ip::tcp::endpoint ep(boost::asio::ip::tcp::v4(), listen_port);
-    acceptor_.open(ep.protocol());
-    acceptor_.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true));
-    acceptor_.bind(ep);
-    acceptor_.listen();
+    boost::system::error_code ec;
+    reclaim_pidfile(pid_path_);
+    acceptor_.open(ep.protocol(), ec);
+    if (ec) {
+        util::log_error("forward listen open failed: " + ec.message());
+        throw std::runtime_error("forward listen open failed: " + ec.message());
+    }
+    acceptor_.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true), ec);
+    acceptor_.bind(ep, ec);
+    if (ec == boost::asio::error::address_in_use) {
+        if (reclaim_pidfile(pid_path_)) {
+            ec.clear();
+            acceptor_.bind(ep, ec);
+        }
+    }
+    if (ec) {
+        util::log_error("forward listen bind failed: " + ec.message());
+        throw std::runtime_error("forward listen bind failed: " + ec.message());
+    }
+    acceptor_.listen(boost::asio::socket_base::max_listen_connections, ec);
+    if (ec) {
+        util::log_error("forward listen failed: " + ec.message());
+        throw std::runtime_error("forward listen failed: " + ec.message());
+    }
+    write_pidfile(pid_path_);
+}
+
+ForwardServer::~ForwardServer() {
+    remove_pidfile(pid_path_);
 }
 
 void ForwardServer::start() {
@@ -234,12 +362,35 @@ UdpForwardServer::UdpForwardServer(boost::asio::io_context& io,
     : socket_(io)
     , strand_(io.get_executor())
     , tunnel_(std::move(tunnel))
+    , listen_port_(listen_port)
+    , pid_path_(pid_path_for_port("udp", listen_port))
     , target_host_(std::move(target_host))
     , target_port_(target_port)
     , allow_local_ip_(allow_local_ip) {
     boost::asio::ip::udp::endpoint ep(boost::asio::ip::udp::v4(), listen_port);
-    socket_.open(ep.protocol());
-    socket_.bind(ep);
+    boost::system::error_code ec;
+    reclaim_pidfile(pid_path_);
+    socket_.open(ep.protocol(), ec);
+    if (ec) {
+        util::log_error("udp forward open failed: " + ec.message());
+        throw std::runtime_error("udp forward open failed: " + ec.message());
+    }
+    socket_.bind(ep, ec);
+    if (ec == boost::asio::error::address_in_use) {
+        if (reclaim_pidfile(pid_path_)) {
+            ec.clear();
+            socket_.bind(ep, ec);
+        }
+    }
+    if (ec) {
+        util::log_error("udp forward bind failed: " + ec.message());
+        throw std::runtime_error("udp forward bind failed: " + ec.message());
+    }
+    write_pidfile(pid_path_);
+}
+
+UdpForwardServer::~UdpForwardServer() {
+    remove_pidfile(pid_path_);
 }
 
 void UdpForwardServer::start() {

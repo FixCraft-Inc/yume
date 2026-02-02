@@ -85,6 +85,56 @@ void Manager::update_anonym_proof(const std::string& hash,
     cfg_.pq_alg = pq_alg;
 }
 
+void Manager::register_reverse_listener(int port, const std::shared_ptr<Session>& session) {
+    std::lock_guard<std::mutex> lock(reverse_mutex_);
+    reverse_port_sessions_[port] = session;
+}
+
+void Manager::unregister_reverse_listener(int port, Session* session) {
+    std::lock_guard<std::mutex> lock(reverse_mutex_);
+    auto it = reverse_port_sessions_.find(port);
+    if (it == reverse_port_sessions_.end()) {
+        return;
+    }
+    auto current = it->second.lock();
+    if (!current || current.get() == session) {
+        reverse_port_sessions_.erase(it);
+    }
+}
+
+bool Manager::reclaim_reverse_listener(int port) {
+    std::shared_ptr<Session> session;
+    {
+        std::lock_guard<std::mutex> lock(reverse_mutex_);
+        auto it = reverse_port_sessions_.find(port);
+        if (it == reverse_port_sessions_.end()) {
+            return false;
+        }
+        session = it->second.lock();
+        if (!session) {
+            reverse_port_sessions_.erase(it);
+            return true;
+        }
+    }
+
+    if (!session->is_stale()) {
+        return false;
+    }
+
+    session->force_close_reverse_port(port);
+    {
+        std::lock_guard<std::mutex> lock(reverse_mutex_);
+        auto it = reverse_port_sessions_.find(port);
+        if (it != reverse_port_sessions_.end()) {
+            auto current = it->second.lock();
+            if (!current || current.get() == session.get()) {
+                reverse_port_sessions_.erase(it);
+            }
+        }
+    }
+    return true;
+}
+
 void Manager::do_accept() {
     acceptor_.async_accept([this](boost::system::error_code ec, boost::asio::ip::tcp::socket socket) {
         if (!ec) {
@@ -94,7 +144,7 @@ void Manager::do_accept() {
                 std::lock_guard<std::mutex> lock(cfg_mutex_);
                 cfg_copy = cfg_;
             }
-            auto session = std::make_shared<Session>(std::move(socket), ssl_ctx_, cfg_copy, authorized_keys_, session_id);
+            auto session = std::make_shared<Session>(std::move(socket), ssl_ctx_, cfg_copy, authorized_keys_, session_id, this);
             session->start();
         } else {
             util::log_warn(std::string("accept failed: ") + ec.message());

@@ -480,6 +480,10 @@ struct ParsedArgs {
     int dest_port{0};
     bool inner_crypto{false};
     bool inner_heavy{true};
+    bool use_udp{false};
+    bool udp_override{false};
+    bool allow_local_ip{false};
+    bool allow_local_ip_override{false};
     std::string pq_public_key;
     std::string anonym_ca_cert;
     std::string tls_ca_cert;
@@ -545,6 +549,15 @@ ParsedArgs parse_args(int argc, char** argv) {
         } else if (arg == "--inner-light") {
             args.inner_crypto = true;
             args.inner_heavy = false;
+        } else if (arg == "--udp") {
+            args.use_udp = true;
+            args.udp_override = true;
+        } else if (arg == "--tcp") {
+            args.use_udp = false;
+            args.udp_override = true;
+        } else if (arg == "--allow-local-ip") {
+            args.allow_local_ip = true;
+            args.allow_local_ip_override = true;
         } else if (arg == "--pq-pub" && i + 1 < argc) {
             args.pq_public_key = argv[++i];
         } else if (arg == "--tls-ca" && i + 1 < argc) {
@@ -676,6 +689,9 @@ void print_help() {
         << "  --lport <port>       (forward local port)\n"
         << "  --rhost <host>       (forward target host)\n"
         << "  --rport <port>       (forward target port)\n"
+        << "  --udp                (enable UDP for forwards/SOCKS5)\n"
+        << "  --tcp                (force TCP only; default)\n"
+        << "  --allow-local-ip     (forward private/loopback targets via server for --lport)\n"
         << "  --inner              (enable inner encryption)\n"
         << "  --inner-heavy        (heavy KDF, default)\n"
         << "  --inner-light        (lighter KDF)\n"
@@ -804,6 +820,12 @@ int Cli::run(int argc, char** argv) {
             if (json.contains("inner_heavy")) {
                 cfg.inner_heavy = json["inner_heavy"].get<bool>();
             }
+            if (json.contains("udp") && !args.udp_override) {
+                cfg.allow_udp = json["udp"].get<bool>();
+            }
+            if (json.contains("allow_local_ip") && !args.allow_local_ip_override) {
+                cfg.allow_local_ip = json["allow_local_ip"].get<bool>();
+            }
             if (json.contains("pq_public_key") && cfg.pq_public_key.empty()) {
                 cfg.pq_public_key = util::expand_user(json["pq_public_key"].get<std::string>());
             }
@@ -860,6 +882,12 @@ int Cli::run(int argc, char** argv) {
     if (args.require_anonym) {
         cfg.require_anonym = true;
     }
+    if (args.udp_override) {
+        cfg.allow_udp = args.use_udp;
+    }
+    if (args.allow_local_ip_override) {
+        cfg.allow_local_ip = args.allow_local_ip;
+    }
 
     if (cfg.inner_crypto && cfg.pq_public_key.empty()) {
         std::error_code ec;
@@ -911,6 +939,8 @@ int Cli::run(int argc, char** argv) {
         if (cfg.socks_port > 0) json["socks_port"] = cfg.socks_port;
         json["inner_crypto"] = cfg.inner_crypto;
         json["inner_heavy"] = cfg.inner_heavy;
+        json["udp"] = cfg.allow_udp;
+        json["allow_local_ip"] = cfg.allow_local_ip;
         if (!cfg.pq_public_key.empty()) json["pq_public_key"] = cfg.pq_public_key;
         if (!cfg.anonym_ca_cert.empty()) json["anonym_ca_cert"] = cfg.anonym_ca_cert;
         if (!cfg.tls_ca_cert.empty()) json["tls_ca_cert"] = cfg.tls_ca_cert;
@@ -1357,7 +1387,7 @@ int Cli::run(int argc, char** argv) {
 
         if (!args.run_cmd.empty()) {
             int port = cfg.socks_port > 0 ? cfg.socks_port : 0;
-            auto socks = std::make_shared<SocksServer>(io, port, tunnel);
+            auto socks = std::make_shared<SocksServer>(io, port, tunnel, cfg.allow_udp);
             socks->start();
             int actual_port = socks->port();
             if (actual_port <= 0) {
@@ -1393,10 +1423,19 @@ int Cli::run(int argc, char** argv) {
                     return 1;
                 }
 
-            auto forward = std::make_shared<ForwardServer>(io, args.lport, args.rhost, args.rport, tunnel);
-            forward->start();
-            util::log_info("forwarding localhost:" + std::to_string(args.lport) + " -> " +
-                           args.rhost + ":" + std::to_string(args.rport));
+                if (cfg.allow_udp) {
+                    auto forward = std::make_shared<UdpForwardServer>(io, args.lport, args.rhost, args.rport, tunnel,
+                                                                      cfg.allow_local_ip);
+                    forward->start();
+                    util::log_info("udp forwarding localhost:" + std::to_string(args.lport) + " -> " +
+                                   args.rhost + ":" + std::to_string(args.rport));
+                } else {
+                    auto forward = std::make_shared<ForwardServer>(io, args.lport, args.rhost, args.rport, tunnel,
+                                                                   cfg.allow_local_ip);
+                    forward->start();
+                    util::log_info("forwarding localhost:" + std::to_string(args.lport) + " -> " +
+                                   args.rhost + ":" + std::to_string(args.rport));
+                }
                 io.run();
                 if (!close_reason.empty()) {
                     throw std::runtime_error("tunnel closed: " + close_reason);
@@ -1405,7 +1444,7 @@ int Cli::run(int argc, char** argv) {
             }
 
             if (cfg.socks_port > 0) {
-                auto socks = std::make_shared<SocksServer>(io, cfg.socks_port, tunnel);
+                auto socks = std::make_shared<SocksServer>(io, cfg.socks_port, tunnel, cfg.allow_udp);
                 socks->start();
                 util::log_info("SOCKS5 listening on 127.0.0.1:" + std::to_string(cfg.socks_port));
                 io.run();

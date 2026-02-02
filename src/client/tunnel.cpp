@@ -68,8 +68,9 @@ void Tunnel::unregister_stream(uint8_t stream_id) {
     pending_open_.erase(stream_id);
 }
 
-void Tunnel::open_stream(uint8_t stream_id, const std::string& host, int port, OpenHandler handler) {
-    nlohmann::json json{{"host", host}, {"port", port}, {"proto", "tcp"}};
+void Tunnel::open_stream(uint8_t stream_id, const std::string& host, int port, OpenHandler handler,
+                         const std::string& proto) {
+    nlohmann::json json{{"host", host}, {"port", port}, {"proto", proto}};
     const std::string payload_str = json.dump();
     Bytes payload(payload_str.begin(), payload_str.end());
     uint16_t flags = 0;

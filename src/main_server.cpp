@@ -52,6 +52,8 @@ void print_help() {
         << "  --inner-light         (lighter KDF)\n"
         << "  --pq-key <path>       (override pq_private_key)\n"
         << "  --allow-exec          (deprecated: EXEC is disabled for safety)\n"
+        << "  --allow-local-ip      (allow private/loopback destinations)\n"
+        << "  --control-full        (allow full server network access)\n"
         << "  --real                (serve real HTTP on non-client requests)\n"
         << "  --real-index <path>   (HTML file for /)\n"
         << "  --real-secret <str>   (secret for hidden metadata)\n"
@@ -83,6 +85,8 @@ void print_help() {
         << "  inner_heavy   (bool)\n"
         << "  pq_private_key (path)\n"
         << "  allow_exec    (bool, deprecated)\n"
+        << "  allow_local_ip (bool)\n"
+        << "  control_full  (bool)\n"
         << "  real_http     (bool)\n"
         << "  real_index_path (path)\n"
         << "  real_secret   (string)\n";
@@ -652,6 +656,10 @@ int main(int argc, char** argv) {
             inner_crypto_override = true;
         } else if (arg == "--allow-exec") {
             cfg.allow_exec = true;
+        } else if (arg == "--allow-local-ip") {
+            cfg.allow_local_ip = true;
+        } else if (arg == "--control-full") {
+            cfg.control_full = true;
         } else if (arg == "--real") {
             cfg.real_http = true;
         } else if (arg == "--real-index" && i + 1 < argc) {
@@ -743,6 +751,12 @@ int main(int argc, char** argv) {
                 if (!cfg.allow_exec) {
                     cfg.allow_exec = json["allow_exec"].get<bool>();
                 }
+            }
+            if (json.contains("allow_local_ip")) {
+                cfg.allow_local_ip = json["allow_local_ip"].get<bool>();
+            }
+            if (json.contains("control_full")) {
+                cfg.control_full = json["control_full"].get<bool>();
             }
             if (json.contains("real_http")) {
                 if (!cfg.real_http) {
@@ -867,6 +881,8 @@ int main(int argc, char** argv) {
             std::string inner_heavy = prompt("inner_heavy (true/false)", cfg.inner_heavy ? "true" : "false");
             std::string pq = prompt("pq_private_key", cfg.pq_private_key);
             std::string allow_exec = prompt("allow_exec (true/false)", cfg.allow_exec ? "true" : "false");
+            std::string allow_local_ip = prompt("allow_local_ip (true/false)", cfg.allow_local_ip ? "true" : "false");
+            std::string control_full = prompt("control_full (true/false)", cfg.control_full ? "true" : "false");
             std::string real_http = prompt("real_http (true/false)", cfg.real_http ? "true" : "false");
             std::string real_index = prompt("real_index_path", cfg.real_index_path);
             std::string real_secret_file = prompt("real_secret_file", cfg.real_secret_file);
@@ -888,6 +904,8 @@ int main(int argc, char** argv) {
             json["inner_heavy"] = (inner_heavy == "true");
             if (!pq.empty()) json["pq_private_key"] = pq;
             json["allow_exec"] = (allow_exec == "true");
+            json["allow_local_ip"] = (allow_local_ip == "true");
+            json["control_full"] = (control_full == "true");
             json["real_http"] = (real_http == "true");
             if (!real_index.empty()) json["real_index_path"] = real_index;
             if (!real_secret_file.empty()) json["real_secret_file"] = real_secret_file;

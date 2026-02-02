@@ -40,7 +40,8 @@ public:
     void register_stream(uint8_t stream_id, DataHandler on_data, CloseHandler on_close);
     void unregister_stream(uint8_t stream_id);
 
-    void open_stream(uint8_t stream_id, const std::string& host, int port, OpenHandler handler);
+    void open_stream(uint8_t stream_id, const std::string& host, int port, OpenHandler handler,
+                     const std::string& proto = "tcp");
     void request_remote_listen(uint8_t listen_id, int port, OpenHandler handler);
     void send_data(uint8_t stream_id, const Bytes& data);
     void send_close(uint8_t stream_id, const std::string& reason);

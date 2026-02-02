@@ -58,6 +58,10 @@ bool is_blocked_literal(const std::string& host) {
     }
     return false;
 }
+
+std::string udp_endpoint_key(const boost::asio::ip::udp::endpoint& ep) {
+    return ep.address().to_string() + ":" + std::to_string(ep.port());
+}
 }  // namespace
 
 ForwardSession::ForwardSession(boost::asio::ip::tcp::socket socket,
@@ -179,11 +183,13 @@ ForwardServer::ForwardServer(boost::asio::io_context& io,
                              int listen_port,
                              std::string target_host,
                              int target_port,
-                             std::shared_ptr<Tunnel> tunnel)
+                             std::shared_ptr<Tunnel> tunnel,
+                             bool allow_local_ip)
     : acceptor_(io)
     , target_host_(std::move(target_host))
     , target_port_(target_port)
-    , tunnel_(std::move(tunnel)) {
+    , tunnel_(std::move(tunnel))
+    , allow_local_ip_(allow_local_ip) {
     boost::asio::ip::tcp::endpoint ep(boost::asio::ip::tcp::v4(), listen_port);
     acceptor_.open(ep.protocol());
     acceptor_.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true));
@@ -196,6 +202,9 @@ void ForwardServer::start() {
 }
 
 bool ForwardServer::is_local_target() const {
+    if (allow_local_ip_) {
+        return false;
+    }
     return is_blocked_literal(target_host_);
 }
 
@@ -214,6 +223,125 @@ void ForwardServer::do_accept() {
         }
         do_accept();
     });
+}
+
+UdpForwardServer::UdpForwardServer(boost::asio::io_context& io,
+                                   int listen_port,
+                                   std::string target_host,
+                                   int target_port,
+                                   std::shared_ptr<Tunnel> tunnel,
+                                   bool allow_local_ip)
+    : socket_(io)
+    , strand_(io.get_executor())
+    , tunnel_(std::move(tunnel))
+    , target_host_(std::move(target_host))
+    , target_port_(target_port)
+    , allow_local_ip_(allow_local_ip) {
+    boost::asio::ip::udp::endpoint ep(boost::asio::ip::udp::v4(), listen_port);
+    socket_.open(ep.protocol());
+    socket_.bind(ep);
+}
+
+void UdpForwardServer::start() {
+    do_receive();
+}
+
+void UdpForwardServer::do_receive() {
+    auto self = shared_from_this();
+    socket_.async_receive_from(boost::asio::buffer(read_buf_), sender_,
+                               boost::asio::bind_executor(strand_,
+                                                          [self](const boost::system::error_code& ec, std::size_t bytes) {
+                                                              if (!ec && bytes > 0) {
+                                                                  Tunnel::Bytes data(self->read_buf_.data(),
+                                                                                     self->read_buf_.data() + bytes);
+                                                                  self->handle_datagram(self->sender_, data);
+                                                              }
+                                                              self->do_receive();
+                                                          }));
+}
+
+void UdpForwardServer::handle_datagram(const boost::asio::ip::udp::endpoint& client, const Tunnel::Bytes& data) {
+    if (!allow_local_ip_ && is_blocked_literal(target_host_)) {
+        if (!blocked_local_warned_) {
+            util::log_warn("udp forward blocked: local target requires --allow-local-ip");
+            blocked_local_warned_ = true;
+        }
+        return;
+    }
+    const std::string key = udp_endpoint_key(client);
+    auto it = by_client_.find(key);
+    if (it == by_client_.end()) {
+        uint8_t stream_id = tunnel_->reserve_stream_id();
+        if (stream_id == 0) {
+            util::log_warn("udp forward: no stream ids available");
+            return;
+        }
+        auto mapping = std::make_shared<UdpMapping>();
+        mapping->client = client;
+        mapping->stream_id = stream_id;
+        by_client_[key] = mapping;
+        by_stream_[stream_id] = mapping;
+
+        tunnel_->register_stream(
+            stream_id,
+            [self = shared_from_this(), stream_id](const Tunnel::Bytes& payload) { self->deliver_from_tunnel(stream_id, payload); },
+            [self = shared_from_this(), stream_id]() { self->close_stream(stream_id, "remote closed"); });
+        tunnel_->open_stream(stream_id, target_host_, target_port_,
+                             [self = shared_from_this(), stream_id](bool ok, const std::string& reason) {
+                                 self->on_open_result(stream_id, ok, reason);
+                             },
+                             "udp");
+        it = by_client_.find(key);
+    }
+
+    auto mapping = it->second;
+    if (mapping->open_confirmed) {
+        tunnel_->send_data(mapping->stream_id, data);
+    } else {
+        mapping->pending.push_back(data);
+    }
+}
+
+void UdpForwardServer::on_open_result(uint8_t stream_id, bool ok, const std::string& reason) {
+    auto it = by_stream_.find(stream_id);
+    if (it == by_stream_.end()) {
+        return;
+    }
+    auto mapping = it->second;
+    if (!ok) {
+        util::log_warn("udp forward open failed: " + reason);
+        close_stream(stream_id, "open failed");
+        return;
+    }
+    mapping->open_confirmed = true;
+    while (!mapping->pending.empty()) {
+        tunnel_->send_data(stream_id, mapping->pending.front());
+        mapping->pending.pop_front();
+    }
+}
+
+void UdpForwardServer::deliver_from_tunnel(uint8_t stream_id, const Tunnel::Bytes& data) {
+    auto it = by_stream_.find(stream_id);
+    if (it == by_stream_.end()) {
+        return;
+    }
+    auto mapping = it->second;
+    auto buffer = std::make_shared<std::vector<uint8_t>>(data.begin(), data.end());
+    auto self = shared_from_this();
+    socket_.async_send_to(boost::asio::buffer(*buffer), mapping->client,
+                          boost::asio::bind_executor(strand_,
+                                                     [self, buffer](const boost::system::error_code&, std::size_t) {}));
+}
+
+void UdpForwardServer::close_stream(uint8_t stream_id, const std::string&) {
+    auto it = by_stream_.find(stream_id);
+    if (it == by_stream_.end()) {
+        return;
+    }
+    auto mapping = it->second;
+    by_stream_.erase(it);
+    by_client_.erase(udp_endpoint_key(mapping->client));
+    tunnel_->unregister_stream(stream_id);
 }
 
 LocalForwardSession::LocalForwardSession(boost::asio::ip::tcp::socket socket,

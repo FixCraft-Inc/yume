@@ -44,6 +44,7 @@ ARMV8_BUSYBOX_SYSROOT=""
 ARMV8_BUSYBOX_TOOLCHAIN_PREFIX=""
 USE_DOCKER_FALLBACK=0
 AUTO_DETECT_TOOLCHAINS=1
+OPENWRT_FEEDS_READY=0
 
 resolve_real_home() {
   local home="${HOME}"
@@ -176,9 +177,17 @@ fetch_url() {
   local url="$1"
   local out="$2"
   if command -v curl >/dev/null 2>&1; then
-    curl -L --fail -o "${out}" "${url}"
+    if [[ -f "${out}" ]]; then
+      curl -L --fail --continue-at - -o "${out}" "${url}"
+    else
+      curl -L --fail -o "${out}" "${url}"
+    fi
   elif command -v wget >/dev/null 2>&1; then
-    wget -O "${out}" "${url}"
+    if [[ -f "${out}" ]]; then
+      wget -c -O "${out}" "${url}"
+    else
+      wget -O "${out}" "${url}"
+    fi
   else
     echo "Missing downloader (curl or wget) for ${url}" >&2
     exit 1
@@ -281,7 +290,15 @@ cleanup_temp_assets() {
 
 openwrt_find_package_makefile() {
   local pkg="$1"
-  find "${OPENWRT_SDK}/package" "${OPENWRT_SDK}/feeds" -path "*/${pkg}/Makefile" 2>/dev/null | head -n 1 || true
+  local makefile=""
+  makefile="$(find "${OPENWRT_SDK}/package/feeds" -path "*/${pkg}/Makefile" 2>/dev/null | head -n 1 || true)"
+  if [[ -z "${makefile}" ]]; then
+    makefile="$(find "${OPENWRT_SDK}/package" -path "*/${pkg}/Makefile" 2>/dev/null | head -n 1 || true)"
+  fi
+  if [[ -z "${makefile}" ]]; then
+    makefile="$(find "${OPENWRT_SDK}/feeds" -path "*/${pkg}/Makefile" 2>/dev/null | head -n 1 || true)"
+  fi
+  echo "${makefile}"
 }
 
 ensure_openwrt_host_deps() {
@@ -302,25 +319,80 @@ ensure_openwrt_host_deps() {
   fi
 }
 
+openwrt_write_minimal_feeds() {
+  local default_conf="${OPENWRT_SDK}/feeds.conf.default"
+  local feeds_conf="${OPENWRT_SDK}/feeds.conf"
+  if [[ ! -f "${default_conf}" ]]; then
+    return 0
+  fi
+  awk '
+    $2 == "base" {
+      gsub(/^src-git-full/, "src-git", $1)
+      print
+      next
+    }
+    $2 == "packages" { print; next }
+  ' "${default_conf}" > "${feeds_conf}"
+}
+
 openwrt_sync_feeds() {
+  if [[ "${OPENWRT_FEEDS_READY}" -eq 1 ]]; then
+    return 0
+  fi
   if [[ ! -x "${OPENWRT_SDK}/scripts/feeds" ]]; then
     return 1
   fi
-  if ! (cd "${OPENWRT_SDK}" && ./scripts/feeds update base packages); then
+  openwrt_write_minimal_feeds
+  local attempt=0
+  local max_attempts=3
+  while [[ ${attempt} -lt ${max_attempts} ]]; do
+    attempt=$((attempt + 1))
+    if (cd "${OPENWRT_SDK}" && GIT_HTTP_VERSION=HTTP/1.1 GIT_TERMINAL_PROMPT=0 ./scripts/feeds update base packages); then
+      OPENWRT_FEEDS_READY=1
+      return 0
+    fi
     rm -rf "${OPENWRT_SDK}/feeds/base" "${OPENWRT_SDK}/feeds/packages"
-    (cd "${OPENWRT_SDK}" && ./scripts/feeds update base packages)
+    sleep 2
+  done
+  echo "OpenWRT feeds update failed (base/packages). Check network and retry." >&2
+  exit 1
+}
+
+openwrt_find_feed_for_pkg() {
+  local pkg="$1"
+  local path=""
+  path="$(find "${OPENWRT_SDK}/feeds" -path "*/${pkg}/Makefile" 2>/dev/null | head -n 1 || true)"
+  if [[ -z "${path}" ]]; then
+    return 1
   fi
-  (cd "${OPENWRT_SDK}" && ./scripts/feeds install -a -p base)
-  (cd "${OPENWRT_SDK}" && ./scripts/feeds install -a -p packages)
+  local rel="${path#${OPENWRT_SDK}/feeds/}"
+  echo "${rel%%/*}"
+}
+
+openwrt_install_feed_pkg() {
+  local feed="$1"
+  local pkg="$2"
+  if [[ -z "${feed}" ]]; then
+    return 1
+  fi
+  if [[ -f "${OPENWRT_SDK}/package/feeds/${feed}/${pkg}/Makefile" ]]; then
+    return 0
+  fi
+  (cd "${OPENWRT_SDK}" && ./scripts/feeds install -p "${feed}" "${pkg}")
 }
 
 openwrt_build_package() {
   local pkg="$1"
   local makefile
   makefile="$(openwrt_find_package_makefile "${pkg}")"
-  if [[ -z "${makefile}" && -x "${OPENWRT_SDK}/scripts/feeds" ]]; then
+  if [[ -z "${makefile}" || "${makefile}" == "${OPENWRT_SDK}/feeds/"* ]]; then
     ensure_openwrt_host_deps
-    openwrt_sync_feeds || true
+    openwrt_sync_feeds
+    local feed=""
+    feed="$(openwrt_find_feed_for_pkg "${pkg}" || true)"
+    if [[ -n "${feed}" ]]; then
+      openwrt_install_feed_pkg "${feed}" "${pkg}" || true
+    fi
     makefile="$(openwrt_find_package_makefile "${pkg}")"
   fi
   if [[ -z "${makefile}" ]]; then
@@ -339,12 +411,9 @@ ensure_openwrt_sysroot_libs() {
   fi
   local has_crypto=0
   compgen -G "${usr}/lib/libcrypto.so."* >/dev/null 2>&1 && has_crypto=1
-  if [[ ! -f "${usr}/lib/libcrypto.so" && ${has_crypto} -eq 0 ]]; then
-    openwrt_build_package "openssl"
-  fi
   local has_ssl=0
   compgen -G "${usr}/lib/libssl.so."* >/dev/null 2>&1 && has_ssl=1
-  if [[ ! -f "${usr}/lib/libssl.so" && ${has_ssl} -eq 0 ]]; then
+  if [[ (! -f "${usr}/lib/libcrypto.so" && ${has_crypto} -eq 0) || (! -f "${usr}/lib/libssl.so" && ${has_ssl} -eq 0) ]]; then
     openwrt_build_package "openssl"
   fi
   local has_zlib=0
@@ -353,13 +422,10 @@ ensure_openwrt_sysroot_libs() {
     openwrt_build_package "zlib"
   fi
   local has_boost_system=0
-  compgen -G "${usr}/lib/libboost_system.so."* >/dev/null 2>&1 && has_boost_system=1
-  if [[ ! -f "${usr}/lib/libboost_system.so" && ${has_boost_system} -eq 0 ]]; then
-    openwrt_build_package "boost"
-  fi
   local has_boost_thread=0
+  compgen -G "${usr}/lib/libboost_system.so."* >/dev/null 2>&1 && has_boost_system=1
   compgen -G "${usr}/lib/libboost_thread.so."* >/dev/null 2>&1 && has_boost_thread=1
-  if [[ ! -f "${usr}/lib/libboost_thread.so" && ${has_boost_thread} -eq 0 ]]; then
+  if [[ (! -f "${usr}/lib/libboost_system.so" && ${has_boost_system} -eq 0) || (! -f "${usr}/lib/libboost_thread.so" && ${has_boost_thread} -eq 0) ]]; then
     openwrt_build_package "boost"
   fi
   return 0

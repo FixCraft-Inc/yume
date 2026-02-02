@@ -389,7 +389,14 @@ openwrt_install_feed_pkg() {
   if [[ -f "${OPENWRT_SDK}/package/feeds/${feed}/${pkg}/Makefile" ]]; then
     return 0
   fi
-  (cd "${OPENWRT_SDK}" && ./scripts/feeds install -p "${feed}" "${pkg}")
+  local log="${OPENWRT_SDK}/.feeds-install-${feed}-${pkg}.log"
+  if ! (cd "${OPENWRT_SDK}" && ./scripts/feeds install -p "${feed}" "${pkg}" >"${log}" 2>&1); then
+    cat "${log}" >&2
+    return 1
+  fi
+  if [[ "${YUME_VERBOSE:-0}" == "1" ]]; then
+    cat "${log}"
+  fi
 }
 
 openwrt_build_package() {
@@ -411,8 +418,25 @@ openwrt_build_package() {
     exit 1
   fi
   ensure_openwrt_config
-  local rel="${makefile#${OPENWRT_SDK}/}"
-  rel="${rel%/Makefile}"
+  local rel=""
+  if [[ "${makefile}" == "${OPENWRT_SDK}/package/feeds/"* ]]; then
+    rel="${makefile#${OPENWRT_SDK}/}"
+    rel="${rel%/Makefile}"
+  elif [[ "${makefile}" == "${OPENWRT_SDK}/feeds/"* ]]; then
+    local feed="${makefile#${OPENWRT_SDK}/feeds/}"
+    feed="${feed%%/*}"
+    local pkg_name="${makefile%/Makefile}"
+    pkg_name="${pkg_name##*/}"
+    if [[ -f "${OPENWRT_SDK}/package/feeds/${feed}/${pkg_name}/Makefile" ]]; then
+      rel="package/feeds/${feed}/${pkg_name}"
+    else
+      rel="${makefile#${OPENWRT_SDK}/}"
+      rel="${rel%/Makefile}"
+    fi
+  else
+    rel="${makefile#${OPENWRT_SDK}/}"
+    rel="${rel%/Makefile}"
+  fi
   make -C "${OPENWRT_SDK}" "${rel}/compile" V=s
 }
 

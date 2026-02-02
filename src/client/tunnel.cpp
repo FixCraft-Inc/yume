@@ -142,7 +142,7 @@ void Tunnel::read_header() {
 
 void Tunnel::on_read_header(const boost::system::error_code& ec, std::size_t) {
     if (ec) {
-        close_all("read header failed");
+        close_all("read header failed: " + ec.message());
         return;
     }
 
@@ -174,7 +174,7 @@ void Tunnel::on_read_header(const boost::system::error_code& ec, std::size_t) {
 
 void Tunnel::on_read_payload(const boost::system::error_code& ec, std::size_t) {
     if (ec) {
-        close_all("read payload failed");
+        close_all("read payload failed: " + ec.message());
         return;
     }
 
@@ -300,7 +300,7 @@ void Tunnel::do_write() {
                                                                 item.handler(ec, bytes);
                                                             }
                                                             if (ec) {
-                                                                self->close_all("write failed");
+                                                                self->close_all("write failed: " + ec.message());
                                                                 return;
                                                             }
                                                             self->do_write();
@@ -308,6 +308,10 @@ void Tunnel::do_write() {
 }
 
 void Tunnel::close_all(const std::string& reason) {
+    if (closed_) {
+        return;
+    }
+    closed_ = true;
     util::log_warn("tunnel closed: " + reason);
     boost::system::error_code ec;
     keepalive_timer_.cancel(ec);

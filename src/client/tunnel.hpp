@@ -88,6 +88,7 @@ private:
     ReverseOpenHandler reverse_handler_;
     TunnelCloseHandler close_handler_;
     uint8_t next_stream_id_{1};
+    bool closed_{false};
     std::optional<Bytes> inner_key_;
 };
 

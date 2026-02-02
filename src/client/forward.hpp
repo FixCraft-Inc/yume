@@ -117,6 +117,7 @@ public:
                   int target_port,
                   std::shared_ptr<Tunnel> tunnel,
                   bool allow_local_ip);
+    ~ForwardServer();
 
     void start();
 
@@ -125,6 +126,8 @@ private:
     bool is_local_target() const;
 
     boost::asio::ip::tcp::acceptor acceptor_;
+    int listen_port_{0};
+    std::string pid_path_;
     std::string target_host_;
     int target_port_{0};
     std::shared_ptr<Tunnel> tunnel_;
@@ -139,6 +142,7 @@ public:
                      int target_port,
                      std::shared_ptr<Tunnel> tunnel,
                      bool allow_local_ip);
+    ~UdpForwardServer();
 
     void start();
 
@@ -159,6 +163,8 @@ private:
     boost::asio::ip::udp::socket socket_;
     boost::asio::strand<boost::asio::any_io_executor> strand_;
     std::shared_ptr<Tunnel> tunnel_;
+    int listen_port_{0};
+    std::string pid_path_;
     std::string target_host_;
     int target_port_{0};
     bool allow_local_ip_{false};

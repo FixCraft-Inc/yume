@@ -4,6 +4,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -15,6 +16,8 @@
 #include "server/config.hpp"
 
 namespace yume::server {
+
+class Session;
 
 class Manager {
 public:
@@ -35,6 +38,9 @@ public:
                              const std::string& pq_pub_b64,
                              const std::string& pq_sig,
                              const std::string& pq_alg);
+    void register_reverse_listener(int port, const std::shared_ptr<Session>& session);
+    void unregister_reverse_listener(int port, Session* session);
+    bool reclaim_reverse_listener(int port);
 
 private:
     void do_accept();
@@ -47,6 +53,8 @@ private:
     std::shared_ptr<std::vector<crypto::Bytes>> authorized_keys_;
 
     std::atomic<uint64_t> next_session_id_{1};
+    std::mutex reverse_mutex_;
+    std::unordered_map<int, std::weak_ptr<Session>> reverse_port_sessions_;
 };
 
 }  // namespace yume::server

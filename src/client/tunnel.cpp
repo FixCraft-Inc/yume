@@ -85,7 +85,7 @@ void Tunnel::open_stream(uint8_t stream_id, const std::string& host, int port, O
 }
 
 void Tunnel::request_remote_listen(uint8_t listen_id, int port, OpenHandler handler) {
-    nlohmann::json json{{"port", port}};
+    nlohmann::json json{{"port", port}, {"reclaim", true}};
     std::string payload_str = json.dump();
     Bytes payload(payload_str.begin(), payload_str.end());
     uint16_t flags = 0;

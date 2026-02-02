@@ -35,6 +35,9 @@ constexpr const char kFixcraftAnonymPubPem[] =
     "-----END PUBLIC KEY-----\n";
 constexpr const char kDefaultSecretPath[] = "./.secrets/html_secret";
 constexpr int kAnonymRefreshSeconds = 300;
+constexpr int kAnonymProofWindowSeconds = 600;
+constexpr int kAnonymRefreshLeadSeconds = 120;
+constexpr int kAnonymRefreshMinSeconds = 30;
 void print_help() {
     std::cout
         << "yumed - YUME server\n\n"
@@ -482,6 +485,17 @@ bool sign_pq_pub_with_key(const std::string& pq_pub_b64,
     }
     EVP_PKEY_free(key);
     return ok;
+}
+
+long long parse_proof_ts(const std::string& ts, long long fallback) {
+    if (ts.empty()) {
+        return fallback;
+    }
+    try {
+        return std::stoll(ts);
+    } catch (...) {
+        return fallback;
+    }
 }
 
 struct AnonymProof {
@@ -1270,6 +1284,8 @@ int main(int argc, char** argv) {
         }
     }
 
+    std::atomic<long long> anonym_last_ts{0};
+
     if (cfg.anonym) {
         if (cfg.anonym_api.empty()) {
             cfg.anonym_api = "https://api.fixcraft.jp/verity";
@@ -1304,6 +1320,8 @@ int main(int argc, char** argv) {
             cfg.pq_pub_b64 = proof.pq_pub_b64;
             cfg.pq_sig = proof.pq_sig;
             cfg.pq_alg = proof.pq_alg;
+            anonym_last_ts.store(parse_proof_ts(proof.ts, static_cast<long long>(std::time(nullptr))),
+                                 std::memory_order_relaxed);
         } catch (const std::exception& ex) {
             std::cerr << "\033[1;31mANONYM PROOF FAILED: " << ex.what() << "\033[0m\n";
             return 1;
@@ -1317,9 +1335,27 @@ int main(int argc, char** argv) {
     std::atomic<bool> stop_refresh{false};
     std::thread refresh_thread;
     if (cfg.anonym) {
-        refresh_thread = std::thread([&manager, &cfg, &stop_refresh]() {
+        refresh_thread = std::thread([&manager, &cfg, &stop_refresh, &anonym_last_ts]() {
+            auto compute_delay = [&]() -> int {
+                const long long now = static_cast<long long>(std::time(nullptr));
+                const long long last = anonym_last_ts.load(std::memory_order_relaxed);
+                if (last <= 0) {
+                    return kAnonymRefreshMinSeconds;
+                }
+                const long long age = now - last;
+                const long long target = static_cast<long long>(kAnonymProofWindowSeconds - kAnonymRefreshLeadSeconds);
+                long long delay = target - age;
+                if (delay < kAnonymRefreshMinSeconds) {
+                    delay = kAnonymRefreshMinSeconds;
+                }
+                if (delay > kAnonymRefreshSeconds) {
+                    delay = kAnonymRefreshSeconds;
+                }
+                return static_cast<int>(delay);
+            };
+
             while (!stop_refresh.load()) {
-                std::this_thread::sleep_for(std::chrono::seconds(kAnonymRefreshSeconds));
+                std::this_thread::sleep_for(std::chrono::seconds(compute_delay()));
                 if (stop_refresh.load()) {
                     break;
                 }
@@ -1333,12 +1369,16 @@ int main(int argc, char** argv) {
                                                     cfg.anonym_token, cfg.anonym_ca_key,
                                                     cfg.anonym_sub_key, cfg.anonym_sub_cert,
                                                     pq_public_path, pq_sign_key);
+                    cfg.anonym_ts = proof.ts;
                     manager.update_anonym_proof(proof.hash, proof.sig, proof.ts, proof.nonce,
                                                 proof.certfp, proof.ca_sig, proof.ca_alg,
                                                 proof.sub_sig, proof.sub_alg, proof.sub_cert_b64,
                                                 proof.pq_pub_b64, proof.pq_sig, proof.pq_alg);
+                    anonym_last_ts.store(parse_proof_ts(proof.ts, static_cast<long long>(std::time(nullptr))),
+                                         std::memory_order_relaxed);
                 } catch (const std::exception& ex) {
                     std::cerr << "\033[1;33mANONYM REFRESH FAILED: " << ex.what() << "\033[0m\n";
+                    anonym_last_ts.store(0, std::memory_order_relaxed);
                 }
             }
         });

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -21,16 +23,21 @@
 
 namespace yume::server {
 
+class Manager;
+
 class Session : public std::enable_shared_from_this<Session> {
 public:
     Session(boost::asio::ip::tcp::socket socket,
             boost::asio::ssl::context& ssl_ctx,
             const ServerConfig& cfg,
             std::shared_ptr<const std::vector<crypto::Bytes>> authorized_keys,
-            uint64_t session_id);
+            uint64_t session_id,
+            Manager* manager);
 
     void start();
     void stop();
+    bool is_stale() const;
+    void force_close_reverse_port(int port);
 
 private:
     void on_handshake(const boost::system::error_code& ec);
@@ -69,11 +76,14 @@ private:
     void do_write();
 
     void close();
+    void touch_activity();
+    void schedule_idle_check();
 
     boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream_;
     ServerConfig cfg_;
     std::shared_ptr<const std::vector<crypto::Bytes>> authorized_keys_;
     uint64_t session_id_{0};
+    Manager* manager_{nullptr};
 
     boost::asio::strand<boost::asio::any_io_executor> strand_;
 
@@ -88,6 +98,8 @@ private:
     crypto::Bytes challenge_;
     bool authenticated_{false};
     std::optional<crypto::Bytes> inner_key_;
+    boost::asio::steady_timer idle_timer_;
+    std::atomic<int64_t> last_activity_ms_{0};
 
     struct RemoteStream {
         boost::asio::ip::tcp::socket socket;
@@ -115,6 +127,8 @@ private:
     std::unordered_map<uint8_t, std::shared_ptr<RemoteStream>> streams_;
     std::unordered_map<uint8_t, std::shared_ptr<UdpStream>> udp_streams_;
     std::unordered_map<uint8_t, std::shared_ptr<boost::asio::ip::tcp::acceptor>> reverse_listeners_;
+    std::unordered_map<uint8_t, int> reverse_listener_ports_;
+    std::unordered_map<int, uint8_t> reverse_port_streams_;
     std::unordered_set<uint8_t> pending_reverse_;
 
     struct PendingWrite {

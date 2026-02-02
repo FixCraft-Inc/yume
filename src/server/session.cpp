@@ -5,12 +5,13 @@
  */
 
 #include "server/session.hpp"
+#include "server/manager.hpp"
 
 #include <openssl/pem.h>
 
+#include <chrono>
 #include <algorithm>
 #include <fstream>
-#include <chrono>
 #include <ctime>
 #include <string>
 
@@ -31,6 +32,14 @@ namespace {
 constexpr uint32_t kMaxFrameSize = 16 * 1024 * 1024;
 constexpr uint8_t kMinFrameType = protocol::AUTH;
 constexpr uint8_t kMaxFrameType = protocol::PONG;
+constexpr int64_t kIdleTimeoutMs = 90 * 1000;
+constexpr int64_t kIdleCheckIntervalMs = 30 * 1000;
+
+int64_t now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
 
 bool is_private_ipv4(const boost::asio::ip::address_v4& addr) {
     const auto bytes = addr.to_bytes();
@@ -109,15 +118,22 @@ Session::Session(boost::asio::ip::tcp::socket socket,
                  boost::asio::ssl::context& ssl_ctx,
                  const ServerConfig& cfg,
                  std::shared_ptr<const std::vector<crypto::Bytes>> authorized_keys,
-                 uint64_t session_id)
+                 uint64_t session_id,
+                 Manager* manager)
     : stream_(std::move(socket), ssl_ctx)
     , cfg_(cfg)
     , authorized_keys_(std::move(authorized_keys))
     , session_id_(session_id)
+    , manager_(manager)
     , strand_(stream_.get_executor())
-    , preface_timer_(stream_.get_executor()) {}
+    , preface_timer_(stream_.get_executor())
+    , idle_timer_(stream_.get_executor()) {
+    last_activity_ms_.store(now_ms(), std::memory_order_relaxed);
+}
 
 void Session::start() {
+    touch_activity();
+    schedule_idle_check();
     auto self = shared_from_this();
     boost::system::error_code keep_ec;
     stream_.lowest_layer().set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
@@ -446,6 +462,7 @@ void Session::on_read_payload(const boost::system::error_code& ec, std::size_t) 
 }
 
 void Session::handle_frame(const protocol::Frame& frame) {
+    touch_activity();
     if (!authenticated_) {
         if (frame.header.type != protocol::AUTH) {
             util::log_warn("session " + std::to_string(session_id_) + ": expected AUTH");
@@ -776,9 +793,11 @@ void Session::handle_rlisten(const protocol::Frame& frame) {
     }
     std::string payload_str(payload.begin(), payload.end());
     int listen_port = 0;
+    bool reclaim = false;
     try {
         auto json = nlohmann::json::parse(payload_str);
         listen_port = json.value("port", 0);
+        reclaim = json.value("reclaim", false);
     } catch (...) {
         send_open_reply(frame.header.stream_id, false, "invalid RLISTEN payload");
         return;
@@ -795,6 +814,11 @@ void Session::handle_rlisten(const protocol::Frame& frame) {
         send_open_reply(frame.header.stream_id, false, "listener exists");
         return;
     }
+
+    bool reclaimed = false;
+    if (reclaim && manager_) {
+        reclaimed = manager_->reclaim_reverse_listener(listen_port);
+    }
     auto acceptor = std::make_shared<boost::asio::ip::tcp::acceptor>(stream_.get_executor());
     boost::system::error_code ec;
     boost::asio::ip::tcp::endpoint ep(boost::asio::ip::tcp::v4(), listen_port);
@@ -805,6 +829,12 @@ void Session::handle_rlisten(const protocol::Frame& frame) {
     }
     acceptor->set_option(boost::asio::ip::tcp::acceptor::reuse_address(true), ec);
     acceptor->bind(ep, ec);
+    if (ec == boost::asio::error::address_in_use && reclaim && manager_ && !reclaimed) {
+        if (manager_->reclaim_reverse_listener(listen_port)) {
+            ec.clear();
+            acceptor->bind(ep, ec);
+        }
+    }
     if (ec) {
         send_open_reply(frame.header.stream_id, false, "bind failed: " + ec.message());
         return;
@@ -815,6 +845,11 @@ void Session::handle_rlisten(const protocol::Frame& frame) {
         return;
     }
     reverse_listeners_[frame.header.stream_id] = acceptor;
+    reverse_listener_ports_[frame.header.stream_id] = listen_port;
+    reverse_port_streams_[listen_port] = frame.header.stream_id;
+    if (manager_) {
+        manager_->register_reverse_listener(listen_port, shared_from_this());
+    }
     send_open_reply(frame.header.stream_id, true, "");
 
     auto self = shared_from_this();
@@ -888,6 +923,16 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
     auto it_listener = reverse_listeners_.find(stream_id);
     if (it_listener != reverse_listeners_.end()) {
         boost::system::error_code ec;
+        int listen_port = 0;
+        auto it_port = reverse_listener_ports_.find(stream_id);
+        if (it_port != reverse_listener_ports_.end()) {
+            listen_port = it_port->second;
+            reverse_listener_ports_.erase(it_port);
+            reverse_port_streams_.erase(listen_port);
+        }
+        if (manager_ && listen_port > 0) {
+            manager_->unregister_reverse_listener(listen_port, this);
+        }
         it_listener->second->close(ec);
         reverse_listeners_.erase(it_listener);
         return;
@@ -1097,24 +1142,67 @@ void Session::do_write() {
                                                         }));
 }
 
+void Session::touch_activity() {
+    last_activity_ms_.store(now_ms(), std::memory_order_relaxed);
+}
+
+bool Session::is_stale() const {
+    const int64_t last = last_activity_ms_.load(std::memory_order_relaxed);
+    return last > 0 && (now_ms() - last) > kIdleTimeoutMs;
+}
+
+void Session::force_close_reverse_port(int port) {
+    boost::asio::post(strand_, [self = shared_from_this(), port]() {
+        auto it = self->reverse_port_streams_.find(port);
+        if (it == self->reverse_port_streams_.end()) {
+            return;
+        }
+        self->handle_close(it->second, "listener reclaimed");
+    });
+}
+
+void Session::schedule_idle_check() {
+    idle_timer_.expires_after(std::chrono::milliseconds(kIdleCheckIntervalMs));
+    auto self = shared_from_this();
+    idle_timer_.async_wait(boost::asio::bind_executor(
+        strand_,
+        [self](const boost::system::error_code& ec) {
+            if (ec) {
+                return;
+            }
+            if (self->is_stale()) {
+                util::log_warn("session " + std::to_string(self->session_id_) + ": idle timeout");
+                self->close();
+                return;
+            }
+            self->schedule_idle_check();
+        }));
+}
+
 void Session::close() {
+    boost::system::error_code ec;
+    idle_timer_.cancel(ec);
+    if (manager_) {
+        for (const auto& entry : reverse_listener_ports_) {
+            manager_->unregister_reverse_listener(entry.second, this);
+        }
+    }
+    reverse_listener_ports_.clear();
+    reverse_port_streams_.clear();
+
     for (auto& entry : streams_) {
-        boost::system::error_code ec;
         entry.second->socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
         entry.second->socket.close(ec);
     }
     for (auto& entry : udp_streams_) {
-        boost::system::error_code ec;
         entry.second->socket.close(ec);
     }
     streams_.clear();
     for (auto& entry : reverse_listeners_) {
-        boost::system::error_code ec;
         entry.second->close(ec);
     }
     reverse_listeners_.clear();
 
-    boost::system::error_code ec;
     stream_.shutdown(ec);
     stream_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
     stream_.lowest_layer().close(ec);

@@ -284,13 +284,43 @@ openwrt_find_package_makefile() {
   find "${OPENWRT_SDK}/package" "${OPENWRT_SDK}/feeds" -path "*/${pkg}/Makefile" 2>/dev/null | head -n 1 || true
 }
 
+ensure_openwrt_host_deps() {
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update || true
+    apt-get install -y gawk unzip || true
+  fi
+  if command -v update-alternatives >/dev/null 2>&1 && command -v gawk >/dev/null 2>&1; then
+    update-alternatives --set awk /usr/bin/gawk >/dev/null 2>&1 || true
+  fi
+  if ! command -v gawk >/dev/null 2>&1; then
+    echo "OpenWRT SDK requires GNU awk (gawk); please install it." >&2
+    exit 1
+  fi
+  if ! command -v unzip >/dev/null 2>&1; then
+    echo "OpenWRT SDK requires unzip; please install it." >&2
+    exit 1
+  fi
+}
+
+openwrt_sync_feeds() {
+  if [[ ! -x "${OPENWRT_SDK}/scripts/feeds" ]]; then
+    return 1
+  fi
+  if ! (cd "${OPENWRT_SDK}" && ./scripts/feeds update base packages); then
+    rm -rf "${OPENWRT_SDK}/feeds/base" "${OPENWRT_SDK}/feeds/packages"
+    (cd "${OPENWRT_SDK}" && ./scripts/feeds update base packages)
+  fi
+  (cd "${OPENWRT_SDK}" && ./scripts/feeds install -a -p base)
+  (cd "${OPENWRT_SDK}" && ./scripts/feeds install -a -p packages)
+}
+
 openwrt_build_package() {
   local pkg="$1"
   local makefile
   makefile="$(openwrt_find_package_makefile "${pkg}")"
   if [[ -z "${makefile}" && -x "${OPENWRT_SDK}/scripts/feeds" ]]; then
-    (cd "${OPENWRT_SDK}" && ./scripts/feeds update -a)
-    (cd "${OPENWRT_SDK}" && ./scripts/feeds install -a)
+    ensure_openwrt_host_deps
+    openwrt_sync_feeds || true
     makefile="$(openwrt_find_package_makefile "${pkg}")"
   fi
   if [[ -z "${makefile}" ]]; then

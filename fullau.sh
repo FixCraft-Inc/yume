@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${YUME_VERBOSE:-0}" == "1" ]]; then
+  export PS4='+${BASH_SOURCE}:${LINENO}: '
+  set -x
+fi
 
 BIN_DIR="/home/f1xgod/bins"
 OPENWRT_SDK="/home/f1xgod/openwrt-sdk-24.10.0-ath79-nand_gcc-13.3.0_musl.Linux-x86_64"

@@ -291,6 +291,14 @@ cleanup_temp_assets() {
 openwrt_find_package_makefile() {
   local pkg="$1"
   local makefile=""
+  if [[ -f "${OPENWRT_SDK}/package/feeds/base/${pkg}/Makefile" ]]; then
+    echo "${OPENWRT_SDK}/package/feeds/base/${pkg}/Makefile"
+    return
+  fi
+  if [[ -f "${OPENWRT_SDK}/package/feeds/packages/${pkg}/Makefile" ]]; then
+    echo "${OPENWRT_SDK}/package/feeds/packages/${pkg}/Makefile"
+    return
+  fi
   makefile="$(find "${OPENWRT_SDK}/package/feeds" -path "*/${pkg}/Makefile" 2>/dev/null | head -n 1 || true)"
   if [[ -z "${makefile}" ]]; then
     makefile="$(find "${OPENWRT_SDK}/package" -path "*/${pkg}/Makefile" 2>/dev/null | head -n 1 || true)"
@@ -342,12 +350,17 @@ openwrt_sync_feeds() {
   openwrt_write_minimal_feeds
   local attempt=0
   local max_attempts=3
+  local log="${OPENWRT_SDK}/.feeds-update.log"
   while [[ ${attempt} -lt ${max_attempts} ]]; do
     attempt=$((attempt + 1))
-    if (cd "${OPENWRT_SDK}" && GIT_HTTP_VERSION=HTTP/1.1 GIT_TERMINAL_PROMPT=0 ./scripts/feeds update base packages); then
+    if (cd "${OPENWRT_SDK}" && GIT_HTTP_VERSION=HTTP/1.1 GIT_TERMINAL_PROMPT=0 ./scripts/feeds update base packages >"${log}" 2>&1); then
+      if [[ "${YUME_VERBOSE:-0}" == "1" ]]; then
+        cat "${log}"
+      fi
       OPENWRT_FEEDS_READY=1
       return 0
     fi
+    cat "${log}" >&2
     rm -rf "${OPENWRT_SDK}/feeds/base" "${OPENWRT_SDK}/feeds/packages"
     sleep 2
   done

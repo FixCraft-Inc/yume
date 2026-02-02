@@ -8,8 +8,8 @@ OPENWRT_SDK_TARGET="ath79-nand"
 OPENWRT_SDK_NAME="openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}_gcc-13.3.0_musl.Linux-x86_64"
 OPENWRT_SDK_URL="https://downloads.openwrt.org/releases/${OPENWRT_SDK_VERSION}/targets/ath79/nand/${OPENWRT_SDK_NAME}.tar.zst"
 OPENWRT_SDK_PREFERRED="${HOME}/openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}_gcc-13.3.0_musl.Linux-x86_64"
-OPENWRT_SDK_USER_PREFERRED="/home/f1xgod/openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}_gcc-13.3.0_musl.Linux-x86_64"
-OPENWRT_SDK_CACHE_DIR="/tmp/yume-openwrt-sdk-cache"
+OPENWRT_SDK_USER_PREFERRED="${OPENWRT_SDK_PREFERRED}"
+OPENWRT_SDK_CACHE_DIR="${HOME}/.cache/yume"
 SYSROOT=""
 TOOLCHAIN_BIN=""
 TOOLCHAIN_STRIP=""
@@ -40,6 +40,23 @@ ARMV8_BUSYBOX_SYSROOT=""
 ARMV8_BUSYBOX_TOOLCHAIN_PREFIX=""
 USE_DOCKER_FALLBACK=0
 AUTO_DETECT_TOOLCHAINS=1
+
+resolve_real_home() {
+  local home="${HOME}"
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    local sudo_home
+    sudo_home="$(getent passwd "${SUDO_USER}" 2>/dev/null | cut -d: -f6 || true)"
+    if [[ -n "${sudo_home}" ]]; then
+      home="${sudo_home}"
+    fi
+  fi
+  echo "${home}"
+}
+
+REAL_HOME="$(resolve_real_home)"
+OPENWRT_SDK_PREFERRED="${REAL_HOME}/openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}_gcc-13.3.0_musl.Linux-x86_64"
+OPENWRT_SDK_USER_PREFERRED="${OPENWRT_SDK_PREFERRED}"
+OPENWRT_SDK_CACHE_DIR="${REAL_HOME}/.cache/yume"
 
 mkdir -p "${BIN_DIR}"/{x86/{linux,busybox},mips/openwrt,armv7/{linux,busybox},armv8/{linux,busybox}}
 rm -f "${BIN_DIR}/x86/linux/"* "${BIN_DIR}/x86/busybox/"* \
@@ -180,8 +197,9 @@ resolve_openwrt_sdk_root() {
 }
 
 ensure_openwrt_sdk() {
-  local base_dir="${HOME}/toolchain-openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}"
-  local sdk_dir="${base_dir}/${OPENWRT_SDK_NAME}"
+  local base_dir
+  base_dir="$(dirname "${OPENWRT_SDK_PREFERRED}")"
+  local sdk_dir="${OPENWRT_SDK_PREFERRED}"
   local candidate=""
   if [[ -n "${OPENWRT_SDK}" ]]; then
     candidate="${OPENWRT_SDK}"
@@ -197,23 +215,19 @@ ensure_openwrt_sdk() {
   fi
   if [[ -n "${candidate}" ]]; then
     OPENWRT_SDK="$(resolve_openwrt_sdk_root "${candidate}" || true)"
-    if [[ -n "${OPENWRT_SDK}" && -d "${OPENWRT_SDK}" ]]; then
-      return 0
-    fi
   fi
   if [[ -z "${OPENWRT_SDK}" ]]; then
-    local temp_base="/tmp/yume-openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}"
-    local temp_dir="${temp_base}/${OPENWRT_SDK_NAME}"
-    mkdir -p "${temp_base}"
+    local temp_dir="${sdk_dir}"
+    mkdir -p "${base_dir}"
     local archive="${OPENWRT_SDK_CACHE_DIR}/${OPENWRT_SDK_NAME}.tar.zst"
     mkdir -p "${OPENWRT_SDK_CACHE_DIR}"
     if [[ ! -s "${archive}" ]]; then
       fetch_url "${OPENWRT_SDK_URL}" "${archive}"
     fi
     if command -v zstd >/dev/null 2>&1; then
-      tar -I zstd -xf "${archive}" -C "${temp_base}"
+      tar -I zstd -xf "${archive}" -C "${base_dir}"
     elif command -v unzstd >/dev/null 2>&1; then
-      unzstd -c "${archive}" | tar -xf - -C "${temp_base}"
+      unzstd -c "${archive}" | tar -xf - -C "${base_dir}"
     else
       echo "Missing zstd or unzstd for ${archive}" >&2
       exit 1
@@ -227,8 +241,6 @@ ensure_openwrt_sdk() {
       echo "OpenWRT SDK not resolved from ${temp_dir}" >&2
       exit 1
     fi
-    OPENWRT_SDK_TEMP=1
-    OPENWRT_SDK_TEMP_DIR="${temp_base}"
   fi
   echo "Using OpenWRT SDK: ${OPENWRT_SDK}"
   SYSROOT="${OPENWRT_SDK}/staging_dir/target-mips_24kc_musl"
@@ -261,9 +273,6 @@ ensure_openwrt_sdk() {
 
 cleanup_temp_assets() {
   vendor_cleanup
-  if [[ "${OPENWRT_SDK_TEMP}" -eq 1 && -n "${OPENWRT_SDK_TEMP_DIR}" ]]; then
-    rm -rf "${OPENWRT_SDK_TEMP_DIR}"
-  fi
 }
 
 openwrt_find_package_makefile() {

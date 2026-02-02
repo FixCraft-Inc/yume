@@ -711,6 +711,8 @@ EOF
     if [[ "${variant}" == "static" ]]; then
       if ! static_libs_ok "${label} busybox" \
         "/usr/lib/i386-linux-gnu/libz.a" \
+        "/usr/lib/i386-linux-gnu/liblzma.a" \
+        "/usr/lib/i386-linux-gnu/libzstd.a" \
         "/usr/lib/i386-linux-gnu/libssl.a" \
         "/usr/lib/i386-linux-gnu/libcrypto.a" \
         "/usr/lib/i386-linux-gnu/libboost_system.a" \
@@ -728,9 +730,17 @@ EOF
       fi
     fi
     local zlib_lib="/usr/lib/i386-linux-gnu/libz.${lib_ext}"
+    local lzma_lib="/usr/lib/i386-linux-gnu/liblzma.${lib_ext}"
+    local zstd_lib="/usr/lib/i386-linux-gnu/libzstd.${lib_ext}"
     local ssl_lib="/usr/lib/i386-linux-gnu/libssl.${lib_ext}"
     local crypto_lib="/usr/lib/i386-linux-gnu/libcrypto.${lib_ext}"
     local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include ${variant_args}"
+    if [[ -f "${lzma_lib}" ]]; then
+      extra_args="${extra_args} -DLZMA_LIBRARY=${lzma_lib} -DLZMA_INCLUDE_DIR=/usr/include"
+    fi
+    if [[ -f "${zstd_lib}" ]]; then
+      extra_args="${extra_args} -DZSTD_LIBRARY=${zstd_lib} -DZSTD_INCLUDE_DIR=/usr/include"
+    fi
     if [[ -n "${boost_dir_env}" ]]; then
       extra_args="${extra_args} -D${boost_dir_env}"
       env ${boost_dir_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
@@ -741,6 +751,8 @@ EOF
     if [[ "${variant}" == "static" ]]; then
       if ! static_libs_ok "${label} busybox" \
         "/usr/lib/arm-linux-gnueabihf/libz.a" \
+        "/usr/lib/arm-linux-gnueabihf/liblzma.a" \
+        "/usr/lib/arm-linux-gnueabihf/libzstd.a" \
         "/usr/lib/arm-linux-gnueabihf/libssl.a" \
         "/usr/lib/arm-linux-gnueabihf/libcrypto.a" \
         "/usr/lib/arm-linux-gnueabihf/libboost_system.a" \
@@ -749,9 +761,17 @@ EOF
       fi
     fi
     local zlib_lib="/usr/lib/arm-linux-gnueabihf/libz.${lib_ext}"
+    local lzma_lib="/usr/lib/arm-linux-gnueabihf/liblzma.${lib_ext}"
+    local zstd_lib="/usr/lib/arm-linux-gnueabihf/libzstd.${lib_ext}"
     local ssl_lib="/usr/lib/arm-linux-gnueabihf/libssl.${lib_ext}"
     local crypto_lib="/usr/lib/arm-linux-gnueabihf/libcrypto.${lib_ext}"
     local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include ${variant_args}"
+    if [[ -f "${lzma_lib}" ]]; then
+      extra_args="${extra_args} -DLZMA_LIBRARY=${lzma_lib} -DLZMA_INCLUDE_DIR=/usr/include"
+    fi
+    if [[ -f "${zstd_lib}" ]]; then
+      extra_args="${extra_args} -DZSTD_LIBRARY=${zstd_lib} -DZSTD_INCLUDE_DIR=/usr/include"
+    fi
     if [[ -n "${boost_dir_env}" ]]; then
       extra_args="${extra_args} -D${boost_dir_env}"
       env ${boost_dir_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
@@ -762,6 +782,8 @@ EOF
     if [[ "${variant}" == "static" ]]; then
       if ! static_libs_ok "${label} busybox" \
         "/usr/lib/aarch64-linux-gnu/libz.a" \
+        "/usr/lib/aarch64-linux-gnu/liblzma.a" \
+        "/usr/lib/aarch64-linux-gnu/libzstd.a" \
         "/usr/lib/aarch64-linux-gnu/libssl.a" \
         "/usr/lib/aarch64-linux-gnu/libcrypto.a" \
         "/usr/lib/aarch64-linux-gnu/libboost_system.a" \
@@ -770,9 +792,17 @@ EOF
       fi
     fi
     local zlib_lib="/usr/lib/aarch64-linux-gnu/libz.${lib_ext}"
+    local lzma_lib="/usr/lib/aarch64-linux-gnu/liblzma.${lib_ext}"
+    local zstd_lib="/usr/lib/aarch64-linux-gnu/libzstd.${lib_ext}"
     local ssl_lib="/usr/lib/aarch64-linux-gnu/libssl.${lib_ext}"
     local crypto_lib="/usr/lib/aarch64-linux-gnu/libcrypto.${lib_ext}"
     local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include ${variant_args}"
+    if [[ -f "${lzma_lib}" ]]; then
+      extra_args="${extra_args} -DLZMA_LIBRARY=${lzma_lib} -DLZMA_INCLUDE_DIR=/usr/include"
+    fi
+    if [[ -f "${zstd_lib}" ]]; then
+      extra_args="${extra_args} -DZSTD_LIBRARY=${zstd_lib} -DZSTD_INCLUDE_DIR=/usr/include"
+    fi
     if [[ -n "${boost_dir_env}" ]]; then
       extra_args="${extra_args} -D${boost_dir_env}"
       env ${boost_dir_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
@@ -844,6 +874,8 @@ EOF
     if [[ "${variant}" == "static" ]]; then
       if ! static_libs_ok "${label} linux" \
         "/usr/lib/arm-linux-gnueabihf/libz.a" \
+        "/usr/lib/arm-linux-gnueabihf/liblzma.a" \
+        "/usr/lib/arm-linux-gnueabihf/libzstd.a" \
         "/usr/lib/arm-linux-gnueabihf/libssl.a" \
         "/usr/lib/arm-linux-gnueabihf/libcrypto.a" \
         "/usr/lib/arm-linux-gnueabihf/libboost_system.a" \
@@ -852,9 +884,17 @@ EOF
       fi
     fi
     local zlib_lib="/usr/lib/arm-linux-gnueabihf/libz.${lib_ext}"
+    local lzma_lib="/usr/lib/arm-linux-gnueabihf/liblzma.${lib_ext}"
+    local zstd_lib="/usr/lib/arm-linux-gnueabihf/libzstd.${lib_ext}"
     local ssl_lib="/usr/lib/arm-linux-gnueabihf/libssl.${lib_ext}"
     local crypto_lib="/usr/lib/arm-linux-gnueabihf/libcrypto.${lib_ext}"
     local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include ${variant_args}"
+    if [[ -f "${lzma_lib}" ]]; then
+      extra_args="${extra_args} -DLZMA_LIBRARY=${lzma_lib} -DLZMA_INCLUDE_DIR=/usr/include"
+    fi
+    if [[ -f "${zstd_lib}" ]]; then
+      extra_args="${extra_args} -DZSTD_LIBRARY=${zstd_lib} -DZSTD_INCLUDE_DIR=/usr/include"
+    fi
     if [[ -n "${boost_dir_env}" ]]; then
       extra_args="${extra_args} -D${boost_dir_env}"
       env ${boost_dir_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
@@ -865,6 +905,8 @@ EOF
     if [[ "${variant}" == "static" ]]; then
       if ! static_libs_ok "${label} linux" \
         "/usr/lib/aarch64-linux-gnu/libz.a" \
+        "/usr/lib/aarch64-linux-gnu/liblzma.a" \
+        "/usr/lib/aarch64-linux-gnu/libzstd.a" \
         "/usr/lib/aarch64-linux-gnu/libssl.a" \
         "/usr/lib/aarch64-linux-gnu/libcrypto.a" \
         "/usr/lib/aarch64-linux-gnu/libboost_system.a" \
@@ -873,9 +915,17 @@ EOF
       fi
     fi
     local zlib_lib="/usr/lib/aarch64-linux-gnu/libz.${lib_ext}"
+    local lzma_lib="/usr/lib/aarch64-linux-gnu/liblzma.${lib_ext}"
+    local zstd_lib="/usr/lib/aarch64-linux-gnu/libzstd.${lib_ext}"
     local ssl_lib="/usr/lib/aarch64-linux-gnu/libssl.${lib_ext}"
     local crypto_lib="/usr/lib/aarch64-linux-gnu/libcrypto.${lib_ext}"
     local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include ${variant_args}"
+    if [[ -f "${lzma_lib}" ]]; then
+      extra_args="${extra_args} -DLZMA_LIBRARY=${lzma_lib} -DLZMA_INCLUDE_DIR=/usr/include"
+    fi
+    if [[ -f "${zstd_lib}" ]]; then
+      extra_args="${extra_args} -DZSTD_LIBRARY=${zstd_lib} -DZSTD_INCLUDE_DIR=/usr/include"
+    fi
     if [[ -n "${boost_dir_env}" ]]; then
       extra_args="${extra_args} -D${boost_dir_env}"
       env ${boost_dir_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
@@ -901,9 +951,15 @@ build_host_linux_target() {
   local outdir="$2"
   local variant_args
   variant_args="$(variant_cmake_args "${variant}")"
+  local lib_ext="so"
+  if [[ "${variant}" == "static" ]]; then
+    lib_ext="a"
+  fi
   if [[ "${variant}" == "static" ]]; then
     if ! static_libs_ok "x86_64 linux" \
       "/usr/lib/x86_64-linux-gnu/libz.a" \
+      "/usr/lib/x86_64-linux-gnu/liblzma.a" \
+      "/usr/lib/x86_64-linux-gnu/libzstd.a" \
       "/usr/lib/x86_64-linux-gnu/libssl.a" \
       "/usr/lib/x86_64-linux-gnu/libcrypto.a" \
       "/usr/lib/x86_64-linux-gnu/libboost_system.a" \
@@ -912,7 +968,16 @@ build_host_linux_target() {
     fi
   fi
   require_vendor_dir "${VENDOR_DIR}/linux-x86_64"
-  YUME_OQS_STATIC=1 YUME_CMAKE_ARGS="${variant_args}" ./ezbuild.sh
+  local lzma_lib="/usr/lib/x86_64-linux-gnu/liblzma.${lib_ext}"
+  local zstd_lib="/usr/lib/x86_64-linux-gnu/libzstd.${lib_ext}"
+  local extra_args="${variant_args}"
+  if [[ -f "${lzma_lib}" ]]; then
+    extra_args="${extra_args} -DLZMA_LIBRARY=${lzma_lib} -DLZMA_INCLUDE_DIR=/usr/include"
+  fi
+  if [[ -f "${zstd_lib}" ]]; then
+    extra_args="${extra_args} -DZSTD_LIBRARY=${zstd_lib} -DZSTD_INCLUDE_DIR=/usr/include"
+  fi
+  YUME_OQS_STATIC=1 YUME_CMAKE_ARGS="${extra_args}" ./ezbuild.sh
   cp -f build/bin/yume "${outdir}/yume"
   cp -f build/bin/yumed "${outdir}/yumed"
   strip "${outdir}/yume" "${outdir}/yumed"

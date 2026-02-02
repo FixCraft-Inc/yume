@@ -358,6 +358,17 @@ openwrt_sync_feeds() {
   exit 1
 }
 
+ensure_openwrt_config() {
+  local cfg="${OPENWRT_SDK}/.config"
+  if [[ ! -f "${cfg}" ]]; then
+    (cd "${OPENWRT_SDK}" && make defconfig)
+    return 0
+  fi
+  if ! grep -q '^CONFIG_TARGET_' "${cfg}"; then
+    (cd "${OPENWRT_SDK}" && make defconfig)
+  fi
+}
+
 openwrt_find_feed_for_pkg() {
   local pkg="$1"
   local path=""
@@ -399,6 +410,7 @@ openwrt_build_package() {
     echo "OpenWRT package ${pkg} not found in SDK" >&2
     exit 1
   fi
+  ensure_openwrt_config
   local rel="${makefile#${OPENWRT_SDK}/}"
   rel="${rel%/Makefile}"
   make -C "${OPENWRT_SDK}" "${rel}/compile" V=s

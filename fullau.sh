@@ -6,6 +6,8 @@ if [[ "${YUME_VERBOSE:-0}" == "1" ]]; then
 fi
 
 BIN_DIR="/home/user/bins"
+BIN_DYNAMIC="${BIN_DIR}/dynamic"
+BIN_STATIC="${BIN_DIR}/static"
 OPENWRT_SDK="/home/user/openwrt-sdk-24.10.0-ath79-nand_gcc-13.3.0_musl.Linux-x86_64"
 OPENWRT_SDK_VERSION="24.10.0"
 OPENWRT_SDK_TARGET="ath79-nand"
@@ -63,11 +65,16 @@ OPENWRT_SDK_PREFERRED="${REAL_HOME}/openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT
 OPENWRT_SDK_USER_PREFERRED="${OPENWRT_SDK_PREFERRED}"
 OPENWRT_SDK_CACHE_DIR="${REAL_HOME}/.cache/yume"
 
-mkdir -p "${BIN_DIR}"/{x86/{linux,busybox},mips/openwrt,armv7/{linux,busybox},armv8/{linux,busybox}}
-rm -f "${BIN_DIR}/x86/linux/"* "${BIN_DIR}/x86/busybox/"* \
-      "${BIN_DIR}/mips/openwrt/"* \
-      "${BIN_DIR}/armv7/linux/"* "${BIN_DIR}/armv7/busybox/"* \
-      "${BIN_DIR}/armv8/linux/"* "${BIN_DIR}/armv8/busybox/"* 2>/dev/null || true
+mkdir -p "${BIN_DYNAMIC}"/{x86/{linux,busybox},mips/openwrt,armv7/{linux,busybox},armv8/{linux,busybox}} \
+         "${BIN_STATIC}"/{x86/{linux,busybox},mips/openwrt,armv7/{linux,busybox},armv8/{linux,busybox}}
+rm -f "${BIN_DYNAMIC}/x86/linux/"* "${BIN_DYNAMIC}/x86/busybox/"* \
+      "${BIN_DYNAMIC}/mips/openwrt/"* \
+      "${BIN_DYNAMIC}/armv7/linux/"* "${BIN_DYNAMIC}/armv7/busybox/"* \
+      "${BIN_DYNAMIC}/armv8/linux/"* "${BIN_DYNAMIC}/armv8/busybox/"* \
+      "${BIN_STATIC}/x86/linux/"* "${BIN_STATIC}/x86/busybox/"* \
+      "${BIN_STATIC}/mips/openwrt/"* \
+      "${BIN_STATIC}/armv7/linux/"* "${BIN_STATIC}/armv7/busybox/"* \
+      "${BIN_STATIC}/armv8/linux/"* "${BIN_STATIC}/armv8/busybox/"* 2>/dev/null || true
 rm -rf build basefwx/cpp/build
 
 ensure_argon2_src() {
@@ -85,6 +92,32 @@ require_var() {
     echo "Missing required config: ${name}" >&2
     exit 1
   fi
+}
+
+variant_cmake_args() {
+  local variant="$1"
+  if [[ "${variant}" == "static" ]]; then
+    echo "-DYUME_STATIC=ON"
+  else
+    echo "-DYUME_STATIC=OFF"
+  fi
+}
+
+static_libs_ok() {
+  local label="$1"
+  shift
+  local missing=()
+  local lib
+  for lib in "$@"; do
+    if [[ ! -f "${lib}" ]]; then
+      missing+=("${lib}")
+    fi
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "Skipping static ${label}; missing: ${missing[*]}" >&2
+    return 1
+  fi
+  return 0
 }
 
 auto_detect_toolchain() {
@@ -506,7 +539,14 @@ docker_build_target() {
   local image="$3"
   local outdir="$4"
   local busybox_flag="${5:-0}"
+  local variant="${6:-dynamic}"
   local script_path="/tmp/dockcross-${label}"
+  local variant_args
+  variant_args="$(variant_cmake_args "${variant}")"
+  local outdir_container="${outdir}"
+  if [[ "${outdir}" == "${BIN_DIR}"* ]]; then
+    outdir_container="/bins/${outdir#${BIN_DIR}/}"
+  fi
   ensure_dockcross "${image}" "${script_path}"
   DOCKCROSS_ARGS="-v ${BIN_DIR}:/bins" "${script_path}" bash -lc "
     set -euo pipefail
@@ -532,14 +572,15 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 EOF
+    mkdir -p \"${outdir_container}\"
     if [[ ${busybox_flag} -eq 1 ]]; then
-      YUME_TOOLCHAIN_FILE=/tmp/yume-toolchain.cmake ./ezbuild.sh --busybox --arch \"${label}\"
+      YUME_CMAKE_ARGS=\"${variant_args}\" YUME_TOOLCHAIN_FILE=/tmp/yume-toolchain.cmake ./ezbuild.sh --busybox --arch \"${label}\"
     else
-      YUME_TOOLCHAIN_FILE=/tmp/yume-toolchain.cmake ./ezbuild.sh --arch \"${label}\"
+      YUME_CMAKE_ARGS=\"${variant_args}\" YUME_TOOLCHAIN_FILE=/tmp/yume-toolchain.cmake ./ezbuild.sh --arch \"${label}\"
     fi
-    cp -f build/bin/yume \"${outdir}/yume\"
-    cp -f build/bin/yumed \"${outdir}/yumed\"
-    \${CROSS_TRIPLE}-strip --strip-unneeded \"${outdir}/yume\" \"${outdir}/yumed\"
+    cp -f build/bin/yume \"${outdir_container}/yume\"
+    cp -f build/bin/yumed \"${outdir_container}/yumed\"
+    \${CROSS_TRIPLE}-strip --strip-unneeded \"${outdir_container}/yume\" \"${outdir_container}/yumed\"
   "
 }
 
@@ -613,12 +654,19 @@ build_busybox_target() {
   local prefix="$3"
   local sysroot="$4"
   local outdir="$5"
+  local variant="${6:-dynamic}"
   local toolchain_file="/tmp/yume-toolchain-busybox-${label}.cmake"
   if [[ -z "${prefix}" || -z "${sysroot}" ]]; then
     echo "Missing toolchain for ${label} busybox; set *_{BUSYBOX}_TOOLCHAIN_PREFIX and *_{BUSYBOX}_SYSROOT" >&2
     exit 1
   fi
   local boost_dir_env=""
+  local variant_args
+  variant_args="$(variant_cmake_args "${variant}")"
+  local lib_ext="so"
+  if [[ "${variant}" == "static" ]]; then
+    lib_ext="a"
+  fi
   if [[ "${label}" == "x86" ]]; then
     ensure_i386_deps
     if [[ -f "/lib/i386-linux-gnu/libc.so.6" || -f "/usr/lib/i386-linux-gnu/libc.so.6" ]]; then
@@ -628,14 +676,6 @@ build_busybox_target() {
     boost_cfg="$(find /usr/lib/i386-linux-gnu/cmake -maxdepth 3 -name 'BoostConfig.cmake' -o -name 'boost-config.cmake' 2>/dev/null | head -n 1)"
     if [[ -z "${boost_cfg}" ]]; then
       echo "i386 BoostConfig.cmake not found. Install: dpkg --add-architecture i386; apt-get update; apt-get install -y libboost-dev:i386 libboost-system-dev:i386" >&2
-      exit 1
-    fi
-    if [[ ! -f "/usr/lib/i386-linux-gnu/libz.so" ]]; then
-      echo "i386 zlib dev not found. Install: apt-get install -y zlib1g-dev:i386" >&2
-      exit 1
-    fi
-    if [[ ! -f "/usr/lib/i386-linux-gnu/libssl.so" || ! -f "/usr/lib/i386-linux-gnu/libcrypto.so" ]]; then
-      echo "i386 OpenSSL dev not found. Install: apt-get install -y libssl-dev:i386" >&2
       exit 1
     fi
     boost_dir_env="Boost_DIR=$(dirname "${boost_cfg}")"
@@ -668,10 +708,29 @@ EOF
   fi
   require_vendor_dir "${VENDOR_DIR}/busybox-${label}"
   if [[ "${label}" == "x86" ]]; then
-    local zlib_lib="/usr/lib/i386-linux-gnu/libz.so"
-    local ssl_lib="/usr/lib/i386-linux-gnu/libssl.so"
-    local crypto_lib="/usr/lib/i386-linux-gnu/libcrypto.so"
-    local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include"
+    if [[ "${variant}" == "static" ]]; then
+      if ! static_libs_ok "${label} busybox" \
+        "/usr/lib/i386-linux-gnu/libz.a" \
+        "/usr/lib/i386-linux-gnu/libssl.a" \
+        "/usr/lib/i386-linux-gnu/libcrypto.a" \
+        "/usr/lib/i386-linux-gnu/libboost_system.a" \
+        "/usr/lib/i386-linux-gnu/libboost_thread.a"; then
+        return 0
+      fi
+    else
+      if [[ ! -f "/usr/lib/i386-linux-gnu/libz.so" ]]; then
+        echo "i386 zlib dev not found. Install: apt-get install -y zlib1g-dev:i386" >&2
+        exit 1
+      fi
+      if [[ ! -f "/usr/lib/i386-linux-gnu/libssl.so" || ! -f "/usr/lib/i386-linux-gnu/libcrypto.so" ]]; then
+        echo "i386 OpenSSL dev not found. Install: apt-get install -y libssl-dev:i386" >&2
+        exit 1
+      fi
+    fi
+    local zlib_lib="/usr/lib/i386-linux-gnu/libz.${lib_ext}"
+    local ssl_lib="/usr/lib/i386-linux-gnu/libssl.${lib_ext}"
+    local crypto_lib="/usr/lib/i386-linux-gnu/libcrypto.${lib_ext}"
+    local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include ${variant_args}"
     if [[ -n "${boost_dir_env}" ]]; then
       extra_args="${extra_args} -D${boost_dir_env}"
       env ${boost_dir_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
@@ -679,10 +738,20 @@ EOF
       env YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
     fi
   elif [[ "${label}" == "armv7" ]]; then
-    local zlib_lib="/usr/lib/arm-linux-gnueabihf/libz.so"
-    local ssl_lib="/usr/lib/arm-linux-gnueabihf/libssl.so"
-    local crypto_lib="/usr/lib/arm-linux-gnueabihf/libcrypto.so"
-    local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include"
+    if [[ "${variant}" == "static" ]]; then
+      if ! static_libs_ok "${label} busybox" \
+        "/usr/lib/arm-linux-gnueabihf/libz.a" \
+        "/usr/lib/arm-linux-gnueabihf/libssl.a" \
+        "/usr/lib/arm-linux-gnueabihf/libcrypto.a" \
+        "/usr/lib/arm-linux-gnueabihf/libboost_system.a" \
+        "/usr/lib/arm-linux-gnueabihf/libboost_thread.a"; then
+        return 0
+      fi
+    fi
+    local zlib_lib="/usr/lib/arm-linux-gnueabihf/libz.${lib_ext}"
+    local ssl_lib="/usr/lib/arm-linux-gnueabihf/libssl.${lib_ext}"
+    local crypto_lib="/usr/lib/arm-linux-gnueabihf/libcrypto.${lib_ext}"
+    local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include ${variant_args}"
     if [[ -n "${boost_dir_env}" ]]; then
       extra_args="${extra_args} -D${boost_dir_env}"
       env ${boost_dir_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
@@ -690,10 +759,20 @@ EOF
       env YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
     fi
   elif [[ "${label}" == "armv8" ]]; then
-    local zlib_lib="/usr/lib/aarch64-linux-gnu/libz.so"
-    local ssl_lib="/usr/lib/aarch64-linux-gnu/libssl.so"
-    local crypto_lib="/usr/lib/aarch64-linux-gnu/libcrypto.so"
-    local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include"
+    if [[ "${variant}" == "static" ]]; then
+      if ! static_libs_ok "${label} busybox" \
+        "/usr/lib/aarch64-linux-gnu/libz.a" \
+        "/usr/lib/aarch64-linux-gnu/libssl.a" \
+        "/usr/lib/aarch64-linux-gnu/libcrypto.a" \
+        "/usr/lib/aarch64-linux-gnu/libboost_system.a" \
+        "/usr/lib/aarch64-linux-gnu/libboost_thread.a"; then
+        return 0
+      fi
+    fi
+    local zlib_lib="/usr/lib/aarch64-linux-gnu/libz.${lib_ext}"
+    local ssl_lib="/usr/lib/aarch64-linux-gnu/libssl.${lib_ext}"
+    local crypto_lib="/usr/lib/aarch64-linux-gnu/libcrypto.${lib_ext}"
+    local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include ${variant_args}"
     if [[ -n "${boost_dir_env}" ]]; then
       extra_args="${extra_args} -D${boost_dir_env}"
       env ${boost_dir_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
@@ -701,9 +780,9 @@ EOF
       env YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
     fi
   elif [[ -n "${boost_dir_env}" ]]; then
-    env ${boost_dir_env} YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
+    env ${boost_dir_env} YUME_CMAKE_ARGS="${variant_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
   else
-    YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
+    YUME_CMAKE_ARGS="${variant_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
   fi
   cp -f build/bin/yume "${outdir}/yume"
   cp -f build/bin/yumed "${outdir}/yumed"
@@ -724,12 +803,19 @@ build_linux_target() {
   local prefix="$3"
   local sysroot="$4"
   local outdir="$5"
+  local variant="${6:-dynamic}"
   local toolchain_file="/tmp/yume-toolchain-linux-${label}.cmake"
   if [[ -z "${prefix}" || -z "${sysroot}" ]]; then
     echo "Missing toolchain for ${label} linux; set *_{LINUX}_TOOLCHAIN_PREFIX and *_{LINUX}_SYSROOT" >&2
     exit 1
   fi
   local boost_dir_env=""
+  local variant_args
+  variant_args="$(variant_cmake_args "${variant}")"
+  local lib_ext="so"
+  if [[ "${variant}" == "static" ]]; then
+    lib_ext="a"
+  fi
   if [[ "${label}" == "armv7" ]]; then
     ensure_armhf_deps
     if [[ -f "/lib/arm-linux-gnueabihf/libc.so.6" || -f "/usr/lib/arm-linux-gnueabihf/libc.so.6" ]]; then
@@ -755,10 +841,20 @@ EOF
   fi
   require_vendor_dir "${VENDOR_DIR}/${label}"
   if [[ "${label}" == "armv7" ]]; then
-    local zlib_lib="/usr/lib/arm-linux-gnueabihf/libz.so"
-    local ssl_lib="/usr/lib/arm-linux-gnueabihf/libssl.so"
-    local crypto_lib="/usr/lib/arm-linux-gnueabihf/libcrypto.so"
-    local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include"
+    if [[ "${variant}" == "static" ]]; then
+      if ! static_libs_ok "${label} linux" \
+        "/usr/lib/arm-linux-gnueabihf/libz.a" \
+        "/usr/lib/arm-linux-gnueabihf/libssl.a" \
+        "/usr/lib/arm-linux-gnueabihf/libcrypto.a" \
+        "/usr/lib/arm-linux-gnueabihf/libboost_system.a" \
+        "/usr/lib/arm-linux-gnueabihf/libboost_thread.a"; then
+        return 0
+      fi
+    fi
+    local zlib_lib="/usr/lib/arm-linux-gnueabihf/libz.${lib_ext}"
+    local ssl_lib="/usr/lib/arm-linux-gnueabihf/libssl.${lib_ext}"
+    local crypto_lib="/usr/lib/arm-linux-gnueabihf/libcrypto.${lib_ext}"
+    local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include ${variant_args}"
     if [[ -n "${boost_dir_env}" ]]; then
       extra_args="${extra_args} -D${boost_dir_env}"
       env ${boost_dir_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
@@ -766,10 +862,20 @@ EOF
       env YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
     fi
   elif [[ "${label}" == "armv8" ]]; then
-    local zlib_lib="/usr/lib/aarch64-linux-gnu/libz.so"
-    local ssl_lib="/usr/lib/aarch64-linux-gnu/libssl.so"
-    local crypto_lib="/usr/lib/aarch64-linux-gnu/libcrypto.so"
-    local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include"
+    if [[ "${variant}" == "static" ]]; then
+      if ! static_libs_ok "${label} linux" \
+        "/usr/lib/aarch64-linux-gnu/libz.a" \
+        "/usr/lib/aarch64-linux-gnu/libssl.a" \
+        "/usr/lib/aarch64-linux-gnu/libcrypto.a" \
+        "/usr/lib/aarch64-linux-gnu/libboost_system.a" \
+        "/usr/lib/aarch64-linux-gnu/libboost_thread.a"; then
+        return 0
+      fi
+    fi
+    local zlib_lib="/usr/lib/aarch64-linux-gnu/libz.${lib_ext}"
+    local ssl_lib="/usr/lib/aarch64-linux-gnu/libssl.${lib_ext}"
+    local crypto_lib="/usr/lib/aarch64-linux-gnu/libcrypto.${lib_ext}"
+    local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include ${variant_args}"
     if [[ -n "${boost_dir_env}" ]]; then
       extra_args="${extra_args} -D${boost_dir_env}"
       env ${boost_dir_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
@@ -777,13 +883,61 @@ EOF
       env YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
     fi
   elif [[ -n "${boost_dir_env}" ]]; then
-    env ${boost_dir_env} YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
+    env ${boost_dir_env} YUME_CMAKE_ARGS="${variant_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
   else
-    YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
+    YUME_CMAKE_ARGS="${variant_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
   fi
   cp -f build/bin/yume "${outdir}/yume"
   cp -f build/bin/yumed "${outdir}/yumed"
   "${prefix}-strip" --strip-unneeded "${outdir}/yume" "${outdir}/yumed"
+}
+
+clean_build_dirs() {
+  rm -rf build basefwx/cpp/build
+}
+
+build_host_linux_target() {
+  local variant="$1"
+  local outdir="$2"
+  local variant_args
+  variant_args="$(variant_cmake_args "${variant}")"
+  if [[ "${variant}" == "static" ]]; then
+    if ! static_libs_ok "x86_64 linux" \
+      "/usr/lib/x86_64-linux-gnu/libz.a" \
+      "/usr/lib/x86_64-linux-gnu/libssl.a" \
+      "/usr/lib/x86_64-linux-gnu/libcrypto.a" \
+      "/usr/lib/x86_64-linux-gnu/libboost_system.a" \
+      "/usr/lib/x86_64-linux-gnu/libboost_thread.a"; then
+      return 0
+    fi
+  fi
+  require_vendor_dir "${VENDOR_DIR}/linux-x86_64"
+  YUME_OQS_STATIC=1 YUME_CMAKE_ARGS="${variant_args}" ./ezbuild.sh
+  cp -f build/bin/yume "${outdir}/yume"
+  cp -f build/bin/yumed "${outdir}/yumed"
+  strip "${outdir}/yume" "${outdir}/yumed"
+}
+
+build_openwrt_target() {
+  local variant="$1"
+  local outdir="$2"
+  if [[ "${variant}" == "static" ]]; then
+    echo "Skipping static mips/openwrt build; ezbuild forces dynamic for OpenWRT." >&2
+    return 0
+  fi
+  require_vendor_dir "${VENDOR_DIR}/openwrt-mips"
+  YUME_CLEAN_BAD_OQS=1 YUME_OQS_STATIC=1 ./ezbuild.sh --openwrt --openwrt-sdk "${OPENWRT_SDK}" --arch mips
+  cp -f build/bin/yume "${outdir}/yume"
+  cp -f build/bin/yumed "${outdir}/yumed"
+  if [[ -z "${TOOLCHAIN_STRIP}" ]]; then
+    if command -v mipsel-linux-gnu-strip >/dev/null 2>&1; then
+      TOOLCHAIN_STRIP="$(command -v mipsel-linux-gnu-strip)"
+    else
+      echo "OpenWRT strip tool not resolved; check toolchain in ${TOOLCHAIN_BIN}" >&2
+      exit 1
+    fi
+  fi
+  "${TOOLCHAIN_STRIP}" --strip-unneeded "${outdir}/yume" "${outdir}/yumed"
 }
 
 vendor_restore_if_missing
@@ -791,75 +945,80 @@ trap cleanup_temp_assets EXIT
 auto_detect_toolchains
 ensure_openwrt_sdk
 ensure_openwrt_sysroot_libs
-require_vendor_dir "${VENDOR_DIR}/openwrt-mips"
-YUME_CLEAN_BAD_OQS=1 YUME_OQS_STATIC=1 ./ezbuild.sh --openwrt --openwrt-sdk "${OPENWRT_SDK}" --arch mips
-cp -f build/bin/yume "${BIN_DIR}/mips/openwrt/yume"
-cp -f build/bin/yumed "${BIN_DIR}/mips/openwrt/yumed"
-if [[ -z "${TOOLCHAIN_STRIP}" ]]; then
-  if command -v mipsel-linux-gnu-strip >/dev/null 2>&1; then
-    TOOLCHAIN_STRIP="$(command -v mipsel-linux-gnu-strip)"
-  else
-    echo "OpenWRT strip tool not resolved; check toolchain in ${TOOLCHAIN_BIN}" >&2
-    exit 1
-  fi
-fi
-"${TOOLCHAIN_STRIP}" --strip-unneeded "${BIN_DIR}/mips/openwrt/yume" "${BIN_DIR}/mips/openwrt/yumed"
 
-rm -rf build basefwx/cpp/build
-require_vendor_dir "${VENDOR_DIR}/linux-x86_64"
-YUME_OQS_STATIC=1 ./ezbuild.sh
-cp -f build/bin/yume "${BIN_DIR}/x86/linux/yume"
-cp -f build/bin/yumed "${BIN_DIR}/x86/linux/yumed"
-strip "${BIN_DIR}/x86/linux/yume" "${BIN_DIR}/x86/linux/yumed"
+clean_build_dirs
+build_openwrt_target "dynamic" "${BIN_DYNAMIC}/mips/openwrt"
+clean_build_dirs
+build_openwrt_target "static" "${BIN_STATIC}/mips/openwrt"
+
+clean_build_dirs
+build_host_linux_target "dynamic" "${BIN_DYNAMIC}/x86/linux"
+clean_build_dirs
+build_host_linux_target "static" "${BIN_STATIC}/x86/linux"
 
 # Busybox x86
-rm -rf build basefwx/cpp/build
+clean_build_dirs
 if [[ -n "${X86_BUSYBOX_SYSROOT}" && -n "${X86_BUSYBOX_TOOLCHAIN_PREFIX}" ]]; then
-build_busybox_target "x86" "i686" "${X86_BUSYBOX_TOOLCHAIN_PREFIX}" "${X86_BUSYBOX_SYSROOT}" "${BIN_DIR}/x86/busybox"
+  build_busybox_target "x86" "i686" "${X86_BUSYBOX_TOOLCHAIN_PREFIX}" "${X86_BUSYBOX_SYSROOT}" "${BIN_DYNAMIC}/x86/busybox" "dynamic"
+  clean_build_dirs
+  build_busybox_target "x86" "i686" "${X86_BUSYBOX_TOOLCHAIN_PREFIX}" "${X86_BUSYBOX_SYSROOT}" "${BIN_STATIC}/x86/busybox" "static"
 elif [[ ${USE_DOCKER_FALLBACK} -eq 1 ]]; then
-  docker_build_target "x86" "i686" "dockcross/linux-x86" "${BIN_DIR}/x86/busybox" 1
+  docker_build_target "x86" "i686" "dockcross/linux-x86" "${BIN_DYNAMIC}/x86/busybox" 1 "dynamic"
+  docker_build_target "x86" "i686" "dockcross/linux-x86" "${BIN_STATIC}/x86/busybox" 1 "static"
 else
   require_var X86_BUSYBOX_SYSROOT
   require_var X86_BUSYBOX_TOOLCHAIN_PREFIX
 fi
 
 # ARMv7
-rm -rf build basefwx/cpp/build
+clean_build_dirs
 if [[ -n "${ARMV7_LINUX_SYSROOT}" && -n "${ARMV7_LINUX_TOOLCHAIN_PREFIX}" ]]; then
-build_linux_target "armv7" "armv7" "${ARMV7_LINUX_TOOLCHAIN_PREFIX}" "${ARMV7_LINUX_SYSROOT}" "${BIN_DIR}/armv7/linux"
+  build_linux_target "armv7" "armv7" "${ARMV7_LINUX_TOOLCHAIN_PREFIX}" "${ARMV7_LINUX_SYSROOT}" "${BIN_DYNAMIC}/armv7/linux" "dynamic"
+  clean_build_dirs
+  build_linux_target "armv7" "armv7" "${ARMV7_LINUX_TOOLCHAIN_PREFIX}" "${ARMV7_LINUX_SYSROOT}" "${BIN_STATIC}/armv7/linux" "static"
 elif [[ ${USE_DOCKER_FALLBACK} -eq 1 ]]; then
-  docker_build_target "armv7" "armv7" "dockcross/linux-armv7" "${BIN_DIR}/armv7/linux" 0
+  docker_build_target "armv7" "armv7" "dockcross/linux-armv7" "${BIN_DYNAMIC}/armv7/linux" 0 "dynamic"
+  docker_build_target "armv7" "armv7" "dockcross/linux-armv7" "${BIN_STATIC}/armv7/linux" 0 "static"
 else
   require_var ARMV7_LINUX_SYSROOT
   require_var ARMV7_LINUX_TOOLCHAIN_PREFIX
 fi
 
-rm -rf build basefwx/cpp/build
+clean_build_dirs
 if [[ -n "${ARMV7_BUSYBOX_SYSROOT}" && -n "${ARMV7_BUSYBOX_TOOLCHAIN_PREFIX}" ]]; then
-build_busybox_target "armv7" "armv7" "${ARMV7_BUSYBOX_TOOLCHAIN_PREFIX}" "${ARMV7_BUSYBOX_SYSROOT}" "${BIN_DIR}/armv7/busybox"
+  build_busybox_target "armv7" "armv7" "${ARMV7_BUSYBOX_TOOLCHAIN_PREFIX}" "${ARMV7_BUSYBOX_SYSROOT}" "${BIN_DYNAMIC}/armv7/busybox" "dynamic"
+  clean_build_dirs
+  build_busybox_target "armv7" "armv7" "${ARMV7_BUSYBOX_TOOLCHAIN_PREFIX}" "${ARMV7_BUSYBOX_SYSROOT}" "${BIN_STATIC}/armv7/busybox" "static"
 elif [[ ${USE_DOCKER_FALLBACK} -eq 1 ]]; then
-  docker_build_target "armv7" "armv7" "dockcross/linux-armv7" "${BIN_DIR}/armv7/busybox" 1
+  docker_build_target "armv7" "armv7" "dockcross/linux-armv7" "${BIN_DYNAMIC}/armv7/busybox" 1 "dynamic"
+  docker_build_target "armv7" "armv7" "dockcross/linux-armv7" "${BIN_STATIC}/armv7/busybox" 1 "static"
 else
   require_var ARMV7_BUSYBOX_SYSROOT
   require_var ARMV7_BUSYBOX_TOOLCHAIN_PREFIX
 fi
 
 # ARMv8 (aarch64)
-rm -rf build basefwx/cpp/build
+clean_build_dirs
 if [[ -n "${ARMV8_LINUX_SYSROOT}" && -n "${ARMV8_LINUX_TOOLCHAIN_PREFIX}" ]]; then
-build_linux_target "armv8" "aarch64" "${ARMV8_LINUX_TOOLCHAIN_PREFIX}" "${ARMV8_LINUX_SYSROOT}" "${BIN_DIR}/armv8/linux"
+  build_linux_target "armv8" "aarch64" "${ARMV8_LINUX_TOOLCHAIN_PREFIX}" "${ARMV8_LINUX_SYSROOT}" "${BIN_DYNAMIC}/armv8/linux" "dynamic"
+  clean_build_dirs
+  build_linux_target "armv8" "aarch64" "${ARMV8_LINUX_TOOLCHAIN_PREFIX}" "${ARMV8_LINUX_SYSROOT}" "${BIN_STATIC}/armv8/linux" "static"
 elif [[ ${USE_DOCKER_FALLBACK} -eq 1 ]]; then
-  docker_build_target "armv8" "aarch64" "dockcross/linux-arm64" "${BIN_DIR}/armv8/linux" 0
+  docker_build_target "armv8" "aarch64" "dockcross/linux-arm64" "${BIN_DYNAMIC}/armv8/linux" 0 "dynamic"
+  docker_build_target "armv8" "aarch64" "dockcross/linux-arm64" "${BIN_STATIC}/armv8/linux" 0 "static"
 else
   require_var ARMV8_LINUX_SYSROOT
   require_var ARMV8_LINUX_TOOLCHAIN_PREFIX
 fi
 
-rm -rf build basefwx/cpp/build
+clean_build_dirs
 if [[ -n "${ARMV8_BUSYBOX_SYSROOT}" && -n "${ARMV8_BUSYBOX_TOOLCHAIN_PREFIX}" ]]; then
-build_busybox_target "armv8" "aarch64" "${ARMV8_BUSYBOX_TOOLCHAIN_PREFIX}" "${ARMV8_BUSYBOX_SYSROOT}" "${BIN_DIR}/armv8/busybox"
+  build_busybox_target "armv8" "aarch64" "${ARMV8_BUSYBOX_TOOLCHAIN_PREFIX}" "${ARMV8_BUSYBOX_SYSROOT}" "${BIN_DYNAMIC}/armv8/busybox" "dynamic"
+  clean_build_dirs
+  build_busybox_target "armv8" "aarch64" "${ARMV8_BUSYBOX_TOOLCHAIN_PREFIX}" "${ARMV8_BUSYBOX_SYSROOT}" "${BIN_STATIC}/armv8/busybox" "static"
 elif [[ ${USE_DOCKER_FALLBACK} -eq 1 ]]; then
-  docker_build_target "armv8" "aarch64" "dockcross/linux-arm64" "${BIN_DIR}/armv8/busybox" 1
+  docker_build_target "armv8" "aarch64" "dockcross/linux-arm64" "${BIN_DYNAMIC}/armv8/busybox" 1 "dynamic"
+  docker_build_target "armv8" "aarch64" "dockcross/linux-arm64" "${BIN_STATIC}/armv8/busybox" 1 "static"
 else
   require_var ARMV8_BUSYBOX_SYSROOT
   require_var ARMV8_BUSYBOX_TOOLCHAIN_PREFIX

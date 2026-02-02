@@ -370,21 +370,23 @@ openwrt_sync_feeds() {
 
 ensure_openwrt_config() {
   local cfg="${OPENWRT_SDK}/.config"
-  if [[ ! -f "${cfg}" ]]; then
-    (cd "${OPENWRT_SDK}" && make defconfig)
-  fi
-  if grep -q '^CONFIG_ALL=y' "${cfg}" || grep -q '^CONFIG_ALL_NONSHARED=y' "${cfg}" || grep -q '^CONFIG_ALL_KMODS=y' "${cfg}"; then
-    sed -i \
-      -e 's/^CONFIG_ALL=.*/# CONFIG_ALL is not set/' \
-      -e 's/^CONFIG_ALL_NONSHARED=.*/# CONFIG_ALL_NONSHARED is not set/' \
-      -e 's/^CONFIG_ALL_KMODS=.*/# CONFIG_ALL_KMODS is not set/' \
-      "${cfg}"
-  fi
-  if ! grep -q '^CONFIG_TARGET_' "${cfg}"; then
-    (cd "${OPENWRT_SDK}" && make defconfig)
+  local min_cfg="/tmp/yume-openwrt-min.config"
+  local target_base="${OPENWRT_SDK_TARGET%%-*}"
+  local target_sub="${OPENWRT_SDK_TARGET//-/_}"
+  if [[ -f "${cfg}" ]]; then
+    rg '^CONFIG_TARGET_' "${cfg}" | rg -v '^CONFIG_TARGET_DEVICE_' | rg -v '^CONFIG_TARGET_ALL_PROFILES' > "${min_cfg}" || true
   else
-    (cd "${OPENWRT_SDK}" && make defconfig)
+    : > "${min_cfg}"
   fi
+  if ! rg -q '^CONFIG_TARGET_' "${min_cfg}" 2>/dev/null; then
+    {
+      echo "CONFIG_TARGET_${target_base}=y"
+      echo "CONFIG_TARGET_${target_sub}=y"
+    } >> "${min_cfg}"
+  fi
+  rm -f "${cfg}" "${cfg}.old"
+  (cd "${OPENWRT_SDK}" && KCONFIG_ALLCONFIG="${min_cfg}" make defconfig)
+  rm -f "${min_cfg}"
 }
 
 openwrt_find_feed_for_pkg() {

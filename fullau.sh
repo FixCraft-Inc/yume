@@ -372,9 +372,17 @@ ensure_openwrt_config() {
   local cfg="${OPENWRT_SDK}/.config"
   if [[ ! -f "${cfg}" ]]; then
     (cd "${OPENWRT_SDK}" && make defconfig)
-    return 0
+  fi
+  if grep -q '^CONFIG_ALL=y' "${cfg}" || grep -q '^CONFIG_ALL_NONSHARED=y' "${cfg}" || grep -q '^CONFIG_ALL_KMODS=y' "${cfg}"; then
+    sed -i \
+      -e 's/^CONFIG_ALL=.*/# CONFIG_ALL is not set/' \
+      -e 's/^CONFIG_ALL_NONSHARED=.*/# CONFIG_ALL_NONSHARED is not set/' \
+      -e 's/^CONFIG_ALL_KMODS=.*/# CONFIG_ALL_KMODS is not set/' \
+      "${cfg}"
   fi
   if ! grep -q '^CONFIG_TARGET_' "${cfg}"; then
+    (cd "${OPENWRT_SDK}" && make defconfig)
+  else
     (cd "${OPENWRT_SDK}" && make defconfig)
   fi
 }

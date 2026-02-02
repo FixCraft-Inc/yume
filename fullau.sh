@@ -328,6 +328,7 @@ ensure_openwrt_sysroot_libs() {
   if [[ ! -f "${usr}/lib/libboost_thread.so" && ${has_boost_thread} -eq 0 ]]; then
     openwrt_build_package "boost"
   fi
+  return 0
 }
 
 ensure_dockcross() {

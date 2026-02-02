@@ -281,7 +281,7 @@ cleanup_temp_assets() {
 
 openwrt_find_package_makefile() {
   local pkg="$1"
-  find "${OPENWRT_SDK}/package" "${OPENWRT_SDK}/feeds" -path "*/${pkg}/Makefile" 2>/dev/null | head -n 1
+  find "${OPENWRT_SDK}/package" "${OPENWRT_SDK}/feeds" -path "*/${pkg}/Makefile" 2>/dev/null | head -n 1 || true
 }
 
 openwrt_build_package() {
@@ -289,8 +289,8 @@ openwrt_build_package() {
   local makefile
   makefile="$(openwrt_find_package_makefile "${pkg}")"
   if [[ -z "${makefile}" && -x "${OPENWRT_SDK}/scripts/feeds" ]]; then
-    (cd "${OPENWRT_SDK}" && ./scripts/feeds update packages >/dev/null)
-    (cd "${OPENWRT_SDK}" && ./scripts/feeds install -a -p packages >/dev/null)
+    (cd "${OPENWRT_SDK}" && ./scripts/feeds update -a)
+    (cd "${OPENWRT_SDK}" && ./scripts/feeds install -a)
     makefile="$(openwrt_find_package_makefile "${pkg}")"
   fi
   if [[ -z "${makefile}" ]]; then

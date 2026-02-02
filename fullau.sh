@@ -9,6 +9,7 @@ OPENWRT_SDK_NAME="openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}_gcc-1
 OPENWRT_SDK_URL="https://downloads.openwrt.org/releases/${OPENWRT_SDK_VERSION}/targets/ath79/nand/${OPENWRT_SDK_NAME}.tar.zst"
 OPENWRT_SDK_PREFERRED="${HOME}/openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}_gcc-13.3.0_musl.Linux-x86_64"
 OPENWRT_SDK_USER_PREFERRED="/home/f1xgod/openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}_gcc-13.3.0_musl.Linux-x86_64"
+OPENWRT_SDK_CACHE_DIR="/tmp/yume-openwrt-sdk-cache"
 SYSROOT=""
 TOOLCHAIN_BIN=""
 TOOLCHAIN_STRIP=""
@@ -204,8 +205,11 @@ ensure_openwrt_sdk() {
     local temp_base="/tmp/yume-openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}"
     local temp_dir="${temp_base}/${OPENWRT_SDK_NAME}"
     mkdir -p "${temp_base}"
-    local archive="/tmp/${OPENWRT_SDK_NAME}.tar.zst"
-    fetch_url "${OPENWRT_SDK_URL}" "${archive}"
+    local archive="${OPENWRT_SDK_CACHE_DIR}/${OPENWRT_SDK_NAME}.tar.zst"
+    mkdir -p "${OPENWRT_SDK_CACHE_DIR}"
+    if [[ ! -s "${archive}" ]]; then
+      fetch_url "${OPENWRT_SDK_URL}" "${archive}"
+    fi
     if command -v zstd >/dev/null 2>&1; then
       tar -I zstd -xf "${archive}" -C "${temp_base}"
     elif command -v unzstd >/dev/null 2>&1; then
@@ -290,19 +294,29 @@ ensure_openwrt_sysroot_libs() {
   if [[ -z "${usr}" || ! -d "${usr}" ]]; then
     return 1
   fi
-  if [[ ! -f "${usr}/lib/libcrypto.so" && -z "$(ls -1 "${usr}/lib/libcrypto.so."* 2>/dev/null | head -n 1)" ]]; then
+  local has_crypto=0
+  compgen -G "${usr}/lib/libcrypto.so."* >/dev/null 2>&1 && has_crypto=1
+  if [[ ! -f "${usr}/lib/libcrypto.so" && ${has_crypto} -eq 0 ]]; then
     openwrt_build_package "openssl"
   fi
-  if [[ ! -f "${usr}/lib/libssl.so" && -z "$(ls -1 "${usr}/lib/libssl.so."* 2>/dev/null | head -n 1)" ]]; then
+  local has_ssl=0
+  compgen -G "${usr}/lib/libssl.so."* >/dev/null 2>&1 && has_ssl=1
+  if [[ ! -f "${usr}/lib/libssl.so" && ${has_ssl} -eq 0 ]]; then
     openwrt_build_package "openssl"
   fi
-  if [[ ! -f "${usr}/lib/libz.so" && -z "$(ls -1 "${usr}/lib/libz.so."* 2>/dev/null | head -n 1)" ]]; then
+  local has_zlib=0
+  compgen -G "${usr}/lib/libz.so."* >/dev/null 2>&1 && has_zlib=1
+  if [[ ! -f "${usr}/lib/libz.so" && ${has_zlib} -eq 0 ]]; then
     openwrt_build_package "zlib"
   fi
-  if [[ ! -f "${usr}/lib/libboost_system.so" && -z "$(ls -1 "${usr}/lib/libboost_system.so."* 2>/dev/null | head -n 1)" ]]; then
+  local has_boost_system=0
+  compgen -G "${usr}/lib/libboost_system.so."* >/dev/null 2>&1 && has_boost_system=1
+  if [[ ! -f "${usr}/lib/libboost_system.so" && ${has_boost_system} -eq 0 ]]; then
     openwrt_build_package "boost"
   fi
-  if [[ ! -f "${usr}/lib/libboost_thread.so" && -z "$(ls -1 "${usr}/lib/libboost_thread.so."* 2>/dev/null | head -n 1)" ]]; then
+  local has_boost_thread=0
+  compgen -G "${usr}/lib/libboost_thread.so."* >/dev/null 2>&1 && has_boost_thread=1
+  if [[ ! -f "${usr}/lib/libboost_thread.so" && ${has_boost_thread} -eq 0 ]]; then
     openwrt_build_package "boost"
   fi
 }

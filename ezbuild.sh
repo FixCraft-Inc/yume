@@ -22,6 +22,7 @@ BUSYBOX=0
 OPENWRT_SDK=""
 SYSROOT_PATH=""
 CMAKE_ARGS=()
+EXTRA_CMAKE_ARGS=()
 
 info()  { echo -e "${COLOR_BLUE}✨ $*${COLOR_RESET}"; }
 warn()  { echo -e "${COLOR_YELLOW}⚠️  $*${COLOR_RESET}"; }
@@ -31,6 +32,46 @@ step()  { echo -e "${COLOR_MAGENTA}🚀 $*${COLOR_RESET}"; }
 
 need_cmd() {
     command -v "$1" >/dev/null 2>&1
+}
+
+vendor_dir_for_build() {
+    if [[ $OPENWRT -eq 1 && -d "${PWD}/vendor/openwrt-mips" ]]; then
+        echo "${PWD}/vendor/openwrt-mips"
+        return
+    fi
+    if [[ $BUSYBOX -eq 1 && -n "${TARGET_ARCH}" && -d "${PWD}/vendor/busybox-${TARGET_ARCH}" ]]; then
+        echo "${PWD}/vendor/busybox-${TARGET_ARCH}"
+        return
+    fi
+    if [[ -n "${TARGET_ARCH}" && -d "${PWD}/vendor/${TARGET_ARCH}" ]]; then
+        echo "${PWD}/vendor/${TARGET_ARCH}"
+        return
+    fi
+    if [[ -d "${PWD}/vendor/linux-x86_64" ]]; then
+        echo "${PWD}/vendor/linux-x86_64"
+        return
+    fi
+    echo ""
+}
+
+vendor_has_liboqs() {
+    local dir="$1"
+    [[ -n "${dir}" ]] || return 1
+    [[ -f "${dir}/include/oqs/oqs.h" ]] || return 1
+    if [[ -f "${dir}/lib/liboqs.a" || -f "${dir}/lib/liboqs.so" ]]; then
+        return 0
+    fi
+    return 1
+}
+
+vendor_has_argon2() {
+    local dir="$1"
+    [[ -n "${dir}" ]] || return 1
+    [[ -f "${dir}/include/argon2.h" ]] || return 1
+    if [[ -f "${dir}/lib/libargon2.a" || -f "${dir}/lib/libargon2.so" ]]; then
+        return 0
+    fi
+    return 1
 }
 
 detect_liboqs() {
@@ -340,8 +381,14 @@ install_deps_linux() {
             fi
         fi
         if [[ -n "${YUME_OQS_STATIC:-}" ]]; then
-            if [[ -f /usr/lib/x86_64-linux-gnu/liboqs.a || -f /usr/local/lib/liboqs.a ]]; then
+            local vendor_dir
+            vendor_dir="$(vendor_dir_for_build)"
+            if vendor_has_liboqs "${vendor_dir}"; then
+                info "Vendored liboqs detected; skipping source build."
+            elif [[ -f /usr/lib/x86_64-linux-gnu/liboqs.a || -f /usr/local/lib/liboqs.a ]]; then
                 info "Static liboqs already available."
+            elif [[ -n "${YUME_VENDOR_ONLY:-}" ]]; then
+                warn "YUME_VENDOR_ONLY=1 set; skipping liboqs source build."
             else
                 warn "YUME_OQS_STATIC=1 set but liboqs.a missing; building liboqs from source."
                 build_liboqs_host || warn "Host liboqs build failed; PQ may fall back to shared."
@@ -537,6 +584,12 @@ main() {
         )
     fi
 
+    if [[ -n "${YUME_CMAKE_ARGS:-}" ]]; then
+        # shellcheck disable=SC2206
+        EXTRA_CMAKE_ARGS=(${YUME_CMAKE_ARGS})
+        CMAKE_ARGS+=("${EXTRA_CMAKE_ARGS[@]}")
+    fi
+
     if [[ $OPENWRT -eq 1 || $BUSYBOX -eq 1 ]]; then
         if [[ -n "$OPENWRT_SDK" ]]; then
             if [[ ! -d "$OPENWRT_SDK" ]]; then
@@ -608,18 +661,26 @@ EOF
             fi
             CMAKE_ARGS+=("-DBoost_DIR=$(dirname "${OPENWRT_BOOST_CMAKE}")")
             if ! detect_liboqs_target; then
-                LIBOQS_MAKEFILE="$(find "${OPENWRT_SDK}/feeds" "${OPENWRT_SDK}/package" -path "*/liboqs/Makefile" 2>/dev/null | head -n 1)"
-                if [[ -n "${LIBOQS_MAKEFILE}" ]]; then
-                    step "OpenWRT SDK: building liboqs from feeds..."
-                    if [[ "${LIBOQS_MAKEFILE}" == *"/feeds/"* ]]; then
-                        FEED_NAME="$(echo "${LIBOQS_MAKEFILE}" | awk -F'/feeds/' '{print $2}' | awk -F'/' '{print $1}')"
-                        make -C "${OPENWRT_SDK}" "package/feeds/${FEED_NAME}/liboqs/compile" V=s || warn "liboqs build failed in SDK; PQ may be disabled."
-                    else
-                        make -C "${OPENWRT_SDK}" "package/liboqs/compile" V=s || warn "liboqs build failed in SDK; PQ may be disabled."
-                    fi
+                local vendor_dir
+                vendor_dir="$(vendor_dir_for_build)"
+                if vendor_has_liboqs "${vendor_dir}"; then
+                    info "Vendored liboqs detected; skipping SDK build."
+                elif [[ -n "${YUME_VENDOR_ONLY:-}" ]]; then
+                    warn "YUME_VENDOR_ONLY=1 set; skipping OpenWRT liboqs build."
                 else
-                    warn "OpenWRT SDK does not contain liboqs package; attempting source build..."
-                    build_liboqs_openwrt || warn "liboqs source build failed; PQ may be disabled."
+                    LIBOQS_MAKEFILE="$(find "${OPENWRT_SDK}/feeds" "${OPENWRT_SDK}/package" -path "*/liboqs/Makefile" 2>/dev/null | head -n 1)"
+                    if [[ -n "${LIBOQS_MAKEFILE}" ]]; then
+                        step "OpenWRT SDK: building liboqs from feeds..."
+                        if [[ "${LIBOQS_MAKEFILE}" == *"/feeds/"* ]]; then
+                            FEED_NAME="$(echo "${LIBOQS_MAKEFILE}" | awk -F'/feeds/' '{print $2}' | awk -F'/' '{print $1}')"
+                            make -C "${OPENWRT_SDK}" "package/feeds/${FEED_NAME}/liboqs/compile" V=s || warn "liboqs build failed in SDK; PQ may be disabled."
+                        else
+                            make -C "${OPENWRT_SDK}" "package/liboqs/compile" V=s || warn "liboqs build failed in SDK; PQ may be disabled."
+                        fi
+                    else
+                        warn "OpenWRT SDK does not contain liboqs package; attempting source build..."
+                        build_liboqs_openwrt || warn "liboqs source build failed; PQ may be disabled."
+                    fi
                 fi
             fi
         fi
@@ -724,8 +785,16 @@ EOF
             CMAKE_ARGS+=("-DBASEFWX_VENDOR_DIR=${PWD}/vendor/linux-x86_64")
         fi
         if [[ -n "${YUME_OQS_STATIC:-}" ]] && [[ ! -f /usr/lib/x86_64-linux-gnu/liboqs.a && ! -f /usr/local/lib/liboqs.a ]]; then
-            warn "YUME_OQS_STATIC=1 set but liboqs.a missing; building liboqs (static) from source."
-            build_liboqs_host || warn "Host liboqs build failed; PQ may fall back to shared."
+            local vendor_dir
+            vendor_dir="$(vendor_dir_for_build)"
+            if vendor_has_liboqs "${vendor_dir}"; then
+                info "Vendored liboqs detected; skipping source build."
+            elif [[ -n "${YUME_VENDOR_ONLY:-}" ]]; then
+                warn "YUME_VENDOR_ONLY=1 set; skipping liboqs source build."
+            else
+                warn "YUME_OQS_STATIC=1 set but liboqs.a missing; building liboqs (static) from source."
+                build_liboqs_host || warn "Host liboqs build failed; PQ may fall back to shared."
+            fi
         fi
         if detect_liboqs; then
             info "liboqs detected; enabling PQ in BaseFWX."

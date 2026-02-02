@@ -2,13 +2,16 @@
 set -euo pipefail
 
 BIN_DIR="/home/f1xgod/bins"
-OPENWRT_SDK=""
+OPENWRT_SDK="/home/f1xgod/openwrt-sdk-24.10.0-ath79-nand_gcc-13.3.0_musl.Linux-x86_64"
 OPENWRT_SDK_VERSION="24.10.0"
 OPENWRT_SDK_TARGET="ath79-nand"
 OPENWRT_SDK_NAME="openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}_gcc-13.3.0_musl.Linux-x86_64"
 OPENWRT_SDK_URL="https://downloads.openwrt.org/releases/${OPENWRT_SDK_VERSION}/targets/ath79/nand/${OPENWRT_SDK_NAME}.tar.zst"
+OPENWRT_SDK_PREFERRED="${HOME}/openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}_gcc-13.3.0_musl.Linux-x86_64"
+OPENWRT_SDK_USER_PREFERRED="/home/f1xgod/openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}_gcc-13.3.0_musl.Linux-x86_64"
 SYSROOT=""
 TOOLCHAIN_BIN=""
+TOOLCHAIN_STRIP=""
 TOOLCHAIN_ROOT=""
 OQS_SRC="/home/f1xgod/liboqs"
 OQS_BUILD_MIPS="/tmp/liboqs-mips-build"
@@ -17,6 +20,9 @@ ARGON2_SRC="/home/f1xgod/argon2"
 VENDOR_BUILDER="./scripts/build_vendor_libs.sh"
 VENDOR_ARCHIVE="./yume-vendor-prebuilt.tar.xz"
 VENDOR_DIR="./vendor"
+export YUME_VENDOR_ONLY=1
+OPENWRT_SDK_TEMP=0
+OPENWRT_SDK_TEMP_DIR=""
 
 # Cross toolchains/sysroots for additional targets (set these before running).
 X86_BUSYBOX_SYSROOT=""
@@ -31,7 +37,8 @@ ARMV8_LINUX_SYSROOT=""
 ARMV8_LINUX_TOOLCHAIN_PREFIX=""
 ARMV8_BUSYBOX_SYSROOT=""
 ARMV8_BUSYBOX_TOOLCHAIN_PREFIX=""
-USE_DOCKER_FALLBACK=1
+USE_DOCKER_FALLBACK=0
+AUTO_DETECT_TOOLCHAINS=1
 
 mkdir -p "${BIN_DIR}"/{x86/{linux,busybox},mips/openwrt,armv7/{linux,busybox},armv8/{linux,busybox}}
 rm -f "${BIN_DIR}/x86/linux/"* "${BIN_DIR}/x86/busybox/"* \
@@ -40,118 +47,12 @@ rm -f "${BIN_DIR}/x86/linux/"* "${BIN_DIR}/x86/busybox/"* \
       "${BIN_DIR}/armv8/linux/"* "${BIN_DIR}/armv8/busybox/"* 2>/dev/null || true
 rm -rf build basefwx/cpp/build
 
-build_liboqs_mips() {
-  if [ ! -d "${OQS_SRC}" ]; then
-    echo "liboqs source not found at ${OQS_SRC}" >&2
-    exit 1
-  fi
-  if [ ! -d "${SYSROOT}/usr" ]; then
-    echo "OpenWRT sysroot not found at ${SYSROOT}" >&2
-    exit 1
-  fi
-  export STAGING_DIR="${OPENWRT_SDK}/staging_dir"
-  rm -rf "${OQS_BUILD_MIPS}"
-  mkdir -p "${OQS_BUILD_MIPS}"
-  cmake -S "${OQS_SRC}" -B "${OQS_BUILD_MIPS}" \
-    -DCMAKE_SYSTEM_NAME=Linux \
-    -DCMAKE_SYSTEM_PROCESSOR=mips \
-    -DCMAKE_C_COMPILER="${TOOLCHAIN_BIN}/mips-openwrt-linux-musl-gcc" \
-    -DCMAKE_CXX_COMPILER="${TOOLCHAIN_BIN}/mips-openwrt-linux-musl-g++" \
-    -DCMAKE_AR="${TOOLCHAIN_BIN}/mips-openwrt-linux-musl-ar" \
-    -DCMAKE_RANLIB="${TOOLCHAIN_BIN}/mips-openwrt-linux-musl-ranlib" \
-    -DCMAKE_STRIP="${TOOLCHAIN_BIN}/mips-openwrt-linux-musl-strip" \
-    -DCMAKE_SYSROOT="${SYSROOT}" \
-    -DCMAKE_FIND_ROOT_PATH="${SYSROOT};${TOOLCHAIN_ROOT}" \
-    -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
-    -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
-    -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
-    -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY \
-    -DCMAKE_INSTALL_PREFIX="${SYSROOT}/usr" \
-    -DCMAKE_PREFIX_PATH="${SYSROOT}/usr" \
-    -DOQS_PERMIT_UNSUPPORTED_ARCHITECTURE=ON \
-    -DOQS_BUILD_ONLY_LIB=ON \
-    -DOQS_BUILD_TESTS=OFF \
-    -DOQS_BUILD_BENCHMARKS=OFF \
-    -DOQS_BUILD_DEMOS=OFF \
-    -DOQS_BUILD_EXAMPLES=OFF \
-    -DOQS_USE_OPENSSL=OFF \
-    -DOQS_BUILD_SHARED_LIBS=OFF \
-    -DOQS_BUILD_STATIC_LIBS=ON \
-    -DOQS_INSTALL_SHARED=OFF \
-    -DBUILD_SHARED_LIBS=OFF \
-    -DBUILD_TESTING=OFF
-  cmake --build "${OQS_BUILD_MIPS}" -j
-  cmake --install "${OQS_BUILD_MIPS}"
-}
-
-build_liboqs_host() {
-  if [ ! -d "${OQS_SRC}" ]; then
-    echo "liboqs source not found at ${OQS_SRC}" >&2
-    exit 1
-  fi
-  rm -rf "${OQS_BUILD_HOST}"
-  mkdir -p "${OQS_BUILD_HOST}"
-  cmake -S "${OQS_SRC}" -B "${OQS_BUILD_HOST}" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX=/usr \
-    -DOQS_BUILD_ONLY_LIB=ON \
-    -DOQS_BUILD_TESTS=OFF \
-    -DOQS_BUILD_BENCHMARKS=OFF \
-    -DOQS_BUILD_DEMOS=OFF \
-    -DOQS_BUILD_EXAMPLES=OFF \
-    -DOQS_USE_OPENSSL=ON \
-    -DOQS_BUILD_SHARED_LIBS=OFF \
-    -DOQS_BUILD_STATIC_LIBS=ON \
-    -DOQS_INSTALL_SHARED=OFF \
-    -DBUILD_SHARED_LIBS=OFF \
-    -DBUILD_TESTING=OFF
-  cmake --build "${OQS_BUILD_HOST}" -j
-  cmake --install "${OQS_BUILD_HOST}"
-}
-
 ensure_argon2_src() {
   if [ -d "${ARGON2_SRC}" ]; then
     return 0
   fi
   echo "Cloning argon2 sources to ${ARGON2_SRC}..."
   git clone --depth 1 https://github.com/P-H-C/phc-winner-argon2.git "${ARGON2_SRC}"
-}
-
-build_argon2_mips() {
-  ensure_argon2_src
-  echo "Building argon2 for MIPS..."
-  make -C "${ARGON2_SRC}" clean || true
-  local argon2_inc="${ARGON2_SRC}/include"
-  make -C "${ARGON2_SRC}" \
-    CC="${TOOLCHAIN_BIN}/mips-openwrt-linux-musl-gcc" \
-    AR="${TOOLCHAIN_BIN}/mips-openwrt-linux-musl-ar" \
-    RANLIB="${TOOLCHAIN_BIN}/mips-openwrt-linux-musl-ranlib" \
-    OPTTARGET=generic \
-    LIBRARY_REL=lib \
-    PKGCONFIG_REL=lib \
-    BINARY_REL=bin \
-    INCLUDE_REL=include \
-    CFLAGS="--sysroot=${SYSROOT} -I${SYSROOT}/usr/include -I${argon2_inc}"
-  make -C "${ARGON2_SRC}" install \
-    DESTDIR="${SYSROOT}" \
-    PREFIX=/usr \
-    LIBRARY_REL=lib \
-    PKGCONFIG_REL=lib \
-    BINARY_REL=bin \
-    INCLUDE_REL=include \
-    CC="${TOOLCHAIN_BIN}/mips-openwrt-linux-musl-gcc" \
-    AR="${TOOLCHAIN_BIN}/mips-openwrt-linux-musl-ar" \
-    RANLIB="${TOOLCHAIN_BIN}/mips-openwrt-linux-musl-ranlib" \
-    OPTTARGET=generic \
-    CFLAGS="--sysroot=${SYSROOT} -I${SYSROOT}/usr/include -I${argon2_inc}"
-}
-
-build_argon2_host() {
-  ensure_argon2_src
-  echo "Building argon2 for host..."
-  make -C "${ARGON2_SRC}" clean || true
-  make -C "${ARGON2_SRC}"
-  make -C "${ARGON2_SRC}" install PREFIX=/usr
 }
 
 require_var() {
@@ -163,6 +64,92 @@ require_var() {
   fi
 }
 
+auto_detect_toolchain() {
+  local triplet="$1"
+  local gcc_path
+  gcc_path="$(command -v "${triplet}-gcc" 2>/dev/null || true)"
+  if [[ -z "${gcc_path}" && -x "/usr/bin/${triplet}-gcc" ]]; then
+    gcc_path="/usr/bin/${triplet}-gcc"
+  fi
+  if [[ -z "${gcc_path}" ]]; then
+    return 1
+  fi
+  local prefix="${gcc_path%-gcc}"
+  local sysroot
+  sysroot="$("${gcc_path}" -print-sysroot 2>/dev/null || true)"
+  if [[ -z "${sysroot}" || "${sysroot}" == "/" ]]; then
+    if [[ -d "/usr/${triplet}" ]]; then
+      sysroot="/usr/${triplet}"
+    fi
+  fi
+  if [[ "${triplet}" == "i686-linux-gnu" ]]; then
+    if [[ -d "/usr/i386-linux-gnu" && -f "/usr/i386-linux-gnu/lib/libc.so.6" ]]; then
+      sysroot="/usr/i386-linux-gnu"
+    fi
+  fi
+  if [[ -z "${sysroot}" ]]; then
+    return 1
+  fi
+  echo "${prefix}|${sysroot}"
+  return 0
+}
+
+auto_detect_toolchains() {
+  if [[ ${AUTO_DETECT_TOOLCHAINS} -ne 1 ]]; then
+    return 0
+  fi
+  local res=""
+  if [[ -z "${X86_BUSYBOX_TOOLCHAIN_PREFIX}" || -z "${X86_BUSYBOX_SYSROOT}" ]]; then
+    res="$(auto_detect_toolchain "i686-linux-gnu" || true)"
+    if [[ -n "${res}" ]]; then
+      X86_BUSYBOX_TOOLCHAIN_PREFIX="${res%%|*}"
+      X86_BUSYBOX_SYSROOT="${res##*|}"
+    fi
+  fi
+  if [[ -x "/usr/bin/i686-linux-gnu-gcc" ]]; then
+    X86_BUSYBOX_TOOLCHAIN_PREFIX="/usr/bin/i686-linux-gnu"
+    if [[ -f "/lib/i386-linux-gnu/libc.so.6" || -f "/usr/lib/i386-linux-gnu/libc.so.6" ]]; then
+      X86_BUSYBOX_SYSROOT="/"
+    elif [[ -d "/usr/i386-linux-gnu" ]]; then
+      X86_BUSYBOX_SYSROOT="/usr/i386-linux-gnu"
+    fi
+  fi
+  if [[ -z "${X86_BUSYBOX_TOOLCHAIN_PREFIX}" && -x "/usr/bin/i686-linux-gnu-gcc" ]]; then
+    X86_BUSYBOX_TOOLCHAIN_PREFIX="/usr/bin/i686-linux-gnu"
+  fi
+  if [[ -z "${ARMV7_LINUX_TOOLCHAIN_PREFIX}" || -z "${ARMV7_LINUX_SYSROOT}" ]]; then
+    res="$(auto_detect_toolchain "arm-linux-gnueabihf" || true)"
+    if [[ -n "${res}" ]]; then
+      ARMV7_LINUX_TOOLCHAIN_PREFIX="${res%%|*}"
+      ARMV7_LINUX_SYSROOT="${res##*|}"
+    fi
+  fi
+  if [[ -f "/lib/arm-linux-gnueabihf/libc.so.6" || -f "/usr/lib/arm-linux-gnueabihf/libc.so.6" ]]; then
+    ARMV7_LINUX_SYSROOT="/"
+  fi
+  if [[ -z "${ARMV7_BUSYBOX_TOOLCHAIN_PREFIX}" || -z "${ARMV7_BUSYBOX_SYSROOT}" ]]; then
+    if [[ -n "${ARMV7_LINUX_TOOLCHAIN_PREFIX}" && -n "${ARMV7_LINUX_SYSROOT}" ]]; then
+      ARMV7_BUSYBOX_TOOLCHAIN_PREFIX="${ARMV7_LINUX_TOOLCHAIN_PREFIX}"
+      ARMV7_BUSYBOX_SYSROOT="${ARMV7_LINUX_SYSROOT}"
+    fi
+  fi
+  if [[ -z "${ARMV8_LINUX_TOOLCHAIN_PREFIX}" || -z "${ARMV8_LINUX_SYSROOT}" ]]; then
+    res="$(auto_detect_toolchain "aarch64-linux-gnu" || true)"
+    if [[ -n "${res}" ]]; then
+      ARMV8_LINUX_TOOLCHAIN_PREFIX="${res%%|*}"
+      ARMV8_LINUX_SYSROOT="${res##*|}"
+    fi
+  fi
+  if [[ -f "/lib/aarch64-linux-gnu/libc.so.6" || -f "/usr/lib/aarch64-linux-gnu/libc.so.6" ]]; then
+    ARMV8_LINUX_SYSROOT="/"
+  fi
+  if [[ -z "${ARMV8_BUSYBOX_TOOLCHAIN_PREFIX}" || -z "${ARMV8_BUSYBOX_SYSROOT}" ]]; then
+    if [[ -n "${ARMV8_LINUX_TOOLCHAIN_PREFIX}" && -n "${ARMV8_LINUX_SYSROOT}" ]]; then
+      ARMV8_BUSYBOX_TOOLCHAIN_PREFIX="${ARMV8_LINUX_TOOLCHAIN_PREFIX}"
+      ARMV8_BUSYBOX_SYSROOT="${ARMV8_LINUX_SYSROOT}"
+    fi
+  fi
+}
 fetch_url() {
   local url="$1"
   local out="$2"
@@ -176,38 +163,147 @@ fetch_url() {
   fi
 }
 
+resolve_openwrt_sdk_root() {
+  local candidate="$1"
+  if [[ -d "${candidate}/staging_dir" ]]; then
+    echo "${candidate}"
+    return 0
+  fi
+  local nested
+  nested="$(find "${candidate}" -maxdepth 2 -type d -name "${OPENWRT_SDK_NAME}" 2>/dev/null | head -n 1)"
+  if [[ -n "${nested}" && -d "${nested}/staging_dir" ]]; then
+    echo "${nested}"
+    return 0
+  fi
+  return 1
+}
+
 ensure_openwrt_sdk() {
   local base_dir="${HOME}/toolchain-openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}"
   local sdk_dir="${base_dir}/${OPENWRT_SDK_NAME}"
-  if [[ -n "${OPENWRT_SDK}" && -d "${OPENWRT_SDK}" ]]; then
-    return 0
+  local candidate=""
+  if [[ -n "${OPENWRT_SDK}" ]]; then
+    candidate="${OPENWRT_SDK}"
   fi
-  if [[ -d "${sdk_dir}" ]]; then
-    OPENWRT_SDK="${sdk_dir}"
-  else
-    mkdir -p "${base_dir}"
+  if [[ -z "${OPENWRT_SDK}" && -d "${OPENWRT_SDK_USER_PREFERRED}" ]]; then
+    candidate="${OPENWRT_SDK_USER_PREFERRED}"
+  fi
+  if [[ -z "${candidate}" && -d "${OPENWRT_SDK_PREFERRED}" ]]; then
+    candidate="${OPENWRT_SDK_PREFERRED}"
+  fi
+  if [[ -z "${candidate}" && -d "${sdk_dir}" ]]; then
+    candidate="${sdk_dir}"
+  fi
+  if [[ -n "${candidate}" ]]; then
+    OPENWRT_SDK="$(resolve_openwrt_sdk_root "${candidate}" || true)"
+    if [[ -n "${OPENWRT_SDK}" && -d "${OPENWRT_SDK}" ]]; then
+      return 0
+    fi
+  fi
+  if [[ -z "${OPENWRT_SDK}" ]]; then
+    local temp_base="/tmp/yume-openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}"
+    local temp_dir="${temp_base}/${OPENWRT_SDK_NAME}"
+    mkdir -p "${temp_base}"
     local archive="/tmp/${OPENWRT_SDK_NAME}.tar.zst"
     fetch_url "${OPENWRT_SDK_URL}" "${archive}"
     if command -v zstd >/dev/null 2>&1; then
-      tar -I zstd -xf "${archive}" -C "${base_dir}"
+      tar -I zstd -xf "${archive}" -C "${temp_base}"
     elif command -v unzstd >/dev/null 2>&1; then
-      unzstd -c "${archive}" | tar -xf - -C "${base_dir}"
+      unzstd -c "${archive}" | tar -xf - -C "${temp_base}"
     else
       echo "Missing zstd or unzstd for ${archive}" >&2
       exit 1
     fi
-    if [[ ! -d "${sdk_dir}" ]]; then
-      echo "OpenWRT SDK extraction failed; expected ${sdk_dir}" >&2
+    if [[ ! -d "${temp_dir}" ]]; then
+      echo "OpenWRT SDK extraction failed; expected ${temp_dir}" >&2
       exit 1
     fi
-    OPENWRT_SDK="${sdk_dir}"
+    OPENWRT_SDK="$(resolve_openwrt_sdk_root "${temp_dir}" || true)"
+    if [[ -z "${OPENWRT_SDK}" ]]; then
+      echo "OpenWRT SDK not resolved from ${temp_dir}" >&2
+      exit 1
+    fi
+    OPENWRT_SDK_TEMP=1
+    OPENWRT_SDK_TEMP_DIR="${temp_base}"
   fi
+  echo "Using OpenWRT SDK: ${OPENWRT_SDK}"
   SYSROOT="${OPENWRT_SDK}/staging_dir/target-mips_24kc_musl"
   TOOLCHAIN_BIN="${OPENWRT_SDK}/staging_dir/toolchain-mips_24kc_gcc-13.3.0_musl/bin"
   TOOLCHAIN_ROOT="${OPENWRT_SDK}/staging_dir/toolchain-mips_24kc_gcc-13.3.0_musl"
+  OPENWRT_USR="${SYSROOT}/usr"
   if [[ ! -d "${SYSROOT}/usr" ]]; then
     echo "OpenWRT sysroot not found at ${SYSROOT}" >&2
     exit 1
+  fi
+  if [[ ! -x "${TOOLCHAIN_BIN}/mips-openwrt-linux-musl-gcc" ]]; then
+    echo "OpenWRT toolchain not found at ${TOOLCHAIN_BIN}" >&2
+    exit 1
+  fi
+  if [[ ! -x "${TOOLCHAIN_BIN}/mips-openwrt-linux-musl-strip" ]]; then
+    local alt_strip
+    alt_strip="$(find "${TOOLCHAIN_BIN}" -maxdepth 1 -type f -name '*-strip' | head -n 1)"
+    if [[ -n "${alt_strip}" ]]; then
+      TOOLCHAIN_STRIP="${alt_strip}"
+    elif command -v mipsel-linux-gnu-strip >/dev/null 2>&1; then
+      TOOLCHAIN_STRIP="$(command -v mipsel-linux-gnu-strip)"
+    else
+      echo "OpenWRT strip not found at ${TOOLCHAIN_BIN}" >&2
+      exit 1
+    fi
+  else
+    TOOLCHAIN_STRIP="${TOOLCHAIN_BIN}/mips-openwrt-linux-musl-strip"
+  fi
+}
+
+cleanup_temp_assets() {
+  vendor_cleanup
+  if [[ "${OPENWRT_SDK_TEMP}" -eq 1 && -n "${OPENWRT_SDK_TEMP_DIR}" ]]; then
+    rm -rf "${OPENWRT_SDK_TEMP_DIR}"
+  fi
+}
+
+openwrt_find_package_makefile() {
+  local pkg="$1"
+  find "${OPENWRT_SDK}/package" "${OPENWRT_SDK}/feeds" -path "*/${pkg}/Makefile" 2>/dev/null | head -n 1
+}
+
+openwrt_build_package() {
+  local pkg="$1"
+  local makefile
+  makefile="$(openwrt_find_package_makefile "${pkg}")"
+  if [[ -z "${makefile}" && -x "${OPENWRT_SDK}/scripts/feeds" ]]; then
+    (cd "${OPENWRT_SDK}" && ./scripts/feeds update packages >/dev/null)
+    (cd "${OPENWRT_SDK}" && ./scripts/feeds install -a -p packages >/dev/null)
+    makefile="$(openwrt_find_package_makefile "${pkg}")"
+  fi
+  if [[ -z "${makefile}" ]]; then
+    echo "OpenWRT package ${pkg} not found in SDK" >&2
+    exit 1
+  fi
+  local rel="${makefile#${OPENWRT_SDK}/}"
+  rel="${rel%/Makefile}"
+  make -C "${OPENWRT_SDK}" "${rel}/compile" V=s
+}
+
+ensure_openwrt_sysroot_libs() {
+  local usr="${OPENWRT_USR}"
+  if [[ -z "${usr}" || ! -d "${usr}" ]]; then
+    return 1
+  fi
+  if [[ ! -f "${usr}/lib/libcrypto.so" && -z "$(ls -1 "${usr}/lib/libcrypto.so."* 2>/dev/null | head -n 1)" ]]; then
+    openwrt_build_package "openssl"
+  fi
+  if [[ ! -f "${usr}/lib/libssl.so" && -z "$(ls -1 "${usr}/lib/libssl.so."* 2>/dev/null | head -n 1)" ]]; then
+    openwrt_build_package "openssl"
+  fi
+  if [[ ! -f "${usr}/lib/libz.so" && -z "$(ls -1 "${usr}/lib/libz.so."* 2>/dev/null | head -n 1)" ]]; then
+    openwrt_build_package "zlib"
+  fi
+  if [[ ! -f "${usr}/lib/libboost_system.so" && -z "$(ls -1 "${usr}/lib/libboost_system.so."* 2>/dev/null | head -n 1)" ]]; then
+    openwrt_build_package "boost"
+  fi
+  if [[ ! -f "${usr}/lib/libboost_thread.so" && -z "$(ls -1 "${usr}/lib/libboost_thread.so."* 2>/dev/null | head -n 1)" ]]; then
+    openwrt_build_package "boost"
   fi
 }
 
@@ -244,7 +340,7 @@ docker_build_target() {
   local busybox_flag="${5:-0}"
   local script_path="/tmp/dockcross-${label}"
   ensure_dockcross "${image}" "${script_path}"
-  DOCKER_ARGS="-v ${BIN_DIR}:/bins" "${script_path}" bash -lc "
+  DOCKCROSS_ARGS="-v ${BIN_DIR}:/bins" "${script_path}" bash -lc "
     set -euo pipefail
     cd /work
     SYSROOT=\"\$(\${CROSS_TRIPLE}-gcc -print-sysroot)\"
@@ -301,6 +397,48 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 EOF
 }
 
+ensure_i386_deps() {
+  if ! command -v dpkg >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! dpkg --print-foreign-architectures | grep -qx i386; then
+    dpkg --add-architecture i386
+    apt-get update || true
+  fi
+  apt-get install -y libc6-dev-i386 zlib1g-dev:i386 libssl-dev:i386 libboost-dev:i386 libboost-system-dev:i386 || true
+}
+
+ensure_armhf_deps() {
+  if ! command -v dpkg >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! dpkg --print-foreign-architectures | grep -qx armhf; then
+    dpkg --add-architecture armhf
+    apt-get update || true
+  fi
+  apt-get install -y libc6-dev:armhf libstdc++-14-dev:armhf zlib1g-dev:armhf libssl-dev:armhf libboost-dev:armhf libboost-system-dev:armhf || true
+}
+
+ensure_arm64_deps() {
+  if ! command -v dpkg >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! dpkg --print-foreign-architectures | grep -qx arm64; then
+    dpkg --add-architecture arm64
+    apt-get update || true
+  fi
+  apt-get install -y libc6-dev:arm64 libstdc++-14-dev:arm64 zlib1g-dev:arm64 libssl-dev:arm64 libboost-dev:arm64 libboost-system-dev:arm64 || true
+}
+
+resolve_boost_dir() {
+  local arch_lib="$1"
+  local cfg
+  cfg="$(find "/usr/lib/${arch_lib}/cmake" -maxdepth 3 -name 'BoostConfig.cmake' -o -name 'boost-config.cmake' 2>/dev/null | head -n 1)"
+  if [[ -n "${cfg}" ]]; then
+    echo "$(dirname "${cfg}")"
+  fi
+}
+
 build_busybox_target() {
   local label="$1"
   local cmake_arch="$2"
@@ -308,14 +446,108 @@ build_busybox_target() {
   local sysroot="$4"
   local outdir="$5"
   local toolchain_file="/tmp/yume-toolchain-busybox-${label}.cmake"
-  make_toolchain_file "${toolchain_file}" "${prefix}" "${sysroot}" "${cmake_arch}"
-  if [[ -x "${VENDOR_BUILDER}" ]]; then
-    "${VENDOR_BUILDER}" --target "busybox-${label}" --toolchain-prefix "${prefix}" --sysroot "${sysroot}"
+  if [[ -z "${prefix}" || -z "${sysroot}" ]]; then
+    echo "Missing toolchain for ${label} busybox; set *_{BUSYBOX}_TOOLCHAIN_PREFIX and *_{BUSYBOX}_SYSROOT" >&2
+    exit 1
   fi
-  YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
+  local boost_dir_env=""
+  if [[ "${label}" == "x86" ]]; then
+    ensure_i386_deps
+    if [[ -f "/lib/i386-linux-gnu/libc.so.6" || -f "/usr/lib/i386-linux-gnu/libc.so.6" ]]; then
+      sysroot="/"
+    fi
+    local boost_cfg
+    boost_cfg="$(find /usr/lib/i386-linux-gnu/cmake -maxdepth 3 -name 'BoostConfig.cmake' -o -name 'boost-config.cmake' 2>/dev/null | head -n 1)"
+    if [[ -z "${boost_cfg}" ]]; then
+      echo "i386 BoostConfig.cmake not found. Install: dpkg --add-architecture i386; apt-get update; apt-get install -y libboost-dev:i386 libboost-system-dev:i386" >&2
+      exit 1
+    fi
+    if [[ ! -f "/usr/lib/i386-linux-gnu/libz.so" ]]; then
+      echo "i386 zlib dev not found. Install: apt-get install -y zlib1g-dev:i386" >&2
+      exit 1
+    fi
+    if [[ ! -f "/usr/lib/i386-linux-gnu/libssl.so" || ! -f "/usr/lib/i386-linux-gnu/libcrypto.so" ]]; then
+      echo "i386 OpenSSL dev not found. Install: apt-get install -y libssl-dev:i386" >&2
+      exit 1
+    fi
+    boost_dir_env="Boost_DIR=$(dirname "${boost_cfg}")"
+  elif [[ "${label}" == "armv7" ]]; then
+    ensure_armhf_deps
+    if [[ -f "/lib/arm-linux-gnueabihf/libc.so.6" || -f "/usr/lib/arm-linux-gnueabihf/libc.so.6" ]]; then
+      sysroot="/"
+    fi
+    boost_dir_env="Boost_DIR=$(resolve_boost_dir arm-linux-gnueabihf)"
+  elif [[ "${label}" == "armv8" ]]; then
+    ensure_arm64_deps
+    if [[ -f "/lib/aarch64-linux-gnu/libc.so.6" || -f "/usr/lib/aarch64-linux-gnu/libc.so.6" ]]; then
+      sysroot="/"
+    fi
+    boost_dir_env="Boost_DIR=$(resolve_boost_dir aarch64-linux-gnu)"
+  fi
+  make_toolchain_file "${toolchain_file}" "${prefix}" "${sysroot}" "${cmake_arch}"
+  if [[ "${label}" == "x86" ]]; then
+    cat >> "${toolchain_file}" <<EOF
+set(CMAKE_LIBRARY_ARCHITECTURE i386-linux-gnu)
+EOF
+  elif [[ "${label}" == "armv7" ]]; then
+    cat >> "${toolchain_file}" <<EOF
+set(CMAKE_LIBRARY_ARCHITECTURE arm-linux-gnueabihf)
+EOF
+  elif [[ "${label}" == "armv8" ]]; then
+    cat >> "${toolchain_file}" <<EOF
+set(CMAKE_LIBRARY_ARCHITECTURE aarch64-linux-gnu)
+EOF
+  fi
+  require_vendor_dir "${VENDOR_DIR}/busybox-${label}"
+  if [[ "${label}" == "x86" ]]; then
+    local zlib_lib="/usr/lib/i386-linux-gnu/libz.so"
+    local ssl_lib="/usr/lib/i386-linux-gnu/libssl.so"
+    local crypto_lib="/usr/lib/i386-linux-gnu/libcrypto.so"
+    local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include"
+    if [[ -n "${boost_dir_env}" ]]; then
+      extra_args="${extra_args} -D${boost_dir_env}"
+      env ${boost_dir_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
+    else
+      env YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
+    fi
+  elif [[ "${label}" == "armv7" ]]; then
+    local zlib_lib="/usr/lib/arm-linux-gnueabihf/libz.so"
+    local ssl_lib="/usr/lib/arm-linux-gnueabihf/libssl.so"
+    local crypto_lib="/usr/lib/arm-linux-gnueabihf/libcrypto.so"
+    local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include"
+    if [[ -n "${boost_dir_env}" ]]; then
+      extra_args="${extra_args} -D${boost_dir_env}"
+      env ${boost_dir_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
+    else
+      env YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
+    fi
+  elif [[ "${label}" == "armv8" ]]; then
+    local zlib_lib="/usr/lib/aarch64-linux-gnu/libz.so"
+    local ssl_lib="/usr/lib/aarch64-linux-gnu/libssl.so"
+    local crypto_lib="/usr/lib/aarch64-linux-gnu/libcrypto.so"
+    local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include"
+    if [[ -n "${boost_dir_env}" ]]; then
+      extra_args="${extra_args} -D${boost_dir_env}"
+      env ${boost_dir_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
+    else
+      env YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
+    fi
+  elif [[ -n "${boost_dir_env}" ]]; then
+    env ${boost_dir_env} YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
+  else
+    YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
+  fi
   cp -f build/bin/yume "${outdir}/yume"
   cp -f build/bin/yumed "${outdir}/yumed"
   "${prefix}-strip" --strip-unneeded "${outdir}/yume" "${outdir}/yumed"
+}
+
+require_vendor_dir() {
+  local dir="$1"
+  if [[ ! -d "${dir}" ]]; then
+    echo "Missing vendor directory: ${dir}. Build vendor libs first." >&2
+    exit 1
+  fi
 }
 
 build_linux_target() {
@@ -325,35 +557,88 @@ build_linux_target() {
   local sysroot="$4"
   local outdir="$5"
   local toolchain_file="/tmp/yume-toolchain-linux-${label}.cmake"
-  make_toolchain_file "${toolchain_file}" "${prefix}" "${sysroot}" "${cmake_arch}"
-  if [[ -x "${VENDOR_BUILDER}" ]]; then
-    "${VENDOR_BUILDER}" --target "${label}" --toolchain-prefix "${prefix}" --sysroot "${sysroot}"
+  if [[ -z "${prefix}" || -z "${sysroot}" ]]; then
+    echo "Missing toolchain for ${label} linux; set *_{LINUX}_TOOLCHAIN_PREFIX and *_{LINUX}_SYSROOT" >&2
+    exit 1
   fi
-  YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
+  local boost_dir_env=""
+  if [[ "${label}" == "armv7" ]]; then
+    ensure_armhf_deps
+    if [[ -f "/lib/arm-linux-gnueabihf/libc.so.6" || -f "/usr/lib/arm-linux-gnueabihf/libc.so.6" ]]; then
+      sysroot="/"
+    fi
+    boost_dir_env="Boost_DIR=$(resolve_boost_dir arm-linux-gnueabihf)"
+  elif [[ "${label}" == "armv8" ]]; then
+    ensure_arm64_deps
+    if [[ -f "/lib/aarch64-linux-gnu/libc.so.6" || -f "/usr/lib/aarch64-linux-gnu/libc.so.6" ]]; then
+      sysroot="/"
+    fi
+    boost_dir_env="Boost_DIR=$(resolve_boost_dir aarch64-linux-gnu)"
+  fi
+  make_toolchain_file "${toolchain_file}" "${prefix}" "${sysroot}" "${cmake_arch}"
+  if [[ "${label}" == "armv7" ]]; then
+    cat >> "${toolchain_file}" <<EOF
+set(CMAKE_LIBRARY_ARCHITECTURE arm-linux-gnueabihf)
+EOF
+  elif [[ "${label}" == "armv8" ]]; then
+    cat >> "${toolchain_file}" <<EOF
+set(CMAKE_LIBRARY_ARCHITECTURE aarch64-linux-gnu)
+EOF
+  fi
+  require_vendor_dir "${VENDOR_DIR}/${label}"
+  if [[ "${label}" == "armv7" ]]; then
+    local zlib_lib="/usr/lib/arm-linux-gnueabihf/libz.so"
+    local ssl_lib="/usr/lib/arm-linux-gnueabihf/libssl.so"
+    local crypto_lib="/usr/lib/arm-linux-gnueabihf/libcrypto.so"
+    local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include"
+    if [[ -n "${boost_dir_env}" ]]; then
+      extra_args="${extra_args} -D${boost_dir_env}"
+      env ${boost_dir_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
+    else
+      env YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
+    fi
+  elif [[ "${label}" == "armv8" ]]; then
+    local zlib_lib="/usr/lib/aarch64-linux-gnu/libz.so"
+    local ssl_lib="/usr/lib/aarch64-linux-gnu/libssl.so"
+    local crypto_lib="/usr/lib/aarch64-linux-gnu/libcrypto.so"
+    local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include"
+    if [[ -n "${boost_dir_env}" ]]; then
+      extra_args="${extra_args} -D${boost_dir_env}"
+      env ${boost_dir_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
+    else
+      env YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
+    fi
+  elif [[ -n "${boost_dir_env}" ]]; then
+    env ${boost_dir_env} YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
+  else
+    YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
+  fi
   cp -f build/bin/yume "${outdir}/yume"
   cp -f build/bin/yumed "${outdir}/yumed"
   "${prefix}-strip" --strip-unneeded "${outdir}/yume" "${outdir}/yumed"
 }
 
 vendor_restore_if_missing
+trap cleanup_temp_assets EXIT
+auto_detect_toolchains
 ensure_openwrt_sdk
-build_liboqs_mips
-
-build_argon2_mips
-if [[ -x "${VENDOR_BUILDER}" ]]; then
-  "${VENDOR_BUILDER}" --target openwrt-mips --openwrt-sdk "${OPENWRT_SDK}"
-fi
+ensure_openwrt_sysroot_libs
+require_vendor_dir "${VENDOR_DIR}/openwrt-mips"
 YUME_CLEAN_BAD_OQS=1 YUME_OQS_STATIC=1 ./ezbuild.sh --openwrt --openwrt-sdk "${OPENWRT_SDK}" --arch mips
 cp -f build/bin/yume "${BIN_DIR}/mips/openwrt/yume"
 cp -f build/bin/yumed "${BIN_DIR}/mips/openwrt/yumed"
-"${TOOLCHAIN_BIN}/mips-openwrt-linux-musl-strip" --strip-unneeded "${BIN_DIR}/mips/openwrt/yume" "${BIN_DIR}/mips/openwrt/yumed"
+if [[ -z "${TOOLCHAIN_STRIP}" ]]; then
+  if command -v mipsel-linux-gnu-strip >/dev/null 2>&1; then
+    TOOLCHAIN_STRIP="$(command -v mipsel-linux-gnu-strip)"
+  else
+    echo "OpenWRT strip tool not resolved; check toolchain in ${TOOLCHAIN_BIN}" >&2
+    exit 1
+  fi
+fi
+"${TOOLCHAIN_STRIP}" --strip-unneeded "${BIN_DIR}/mips/openwrt/yume" "${BIN_DIR}/mips/openwrt/yumed"
 
 rm -rf build basefwx/cpp/build
-build_liboqs_host
-build_argon2_host
-if [[ -x "${VENDOR_BUILDER}" ]]; then
-  "${VENDOR_BUILDER}" --target host
-fi
+require_vendor_dir "${VENDOR_DIR}/linux-x86_64"
 YUME_OQS_STATIC=1 ./ezbuild.sh
 cp -f build/bin/yume "${BIN_DIR}/x86/linux/yume"
 cp -f build/bin/yumed "${BIN_DIR}/x86/linux/yumed"
@@ -405,8 +690,6 @@ fi
 rm -rf build basefwx/cpp/build
 if [[ -n "${ARMV8_BUSYBOX_SYSROOT}" && -n "${ARMV8_BUSYBOX_TOOLCHAIN_PREFIX}" ]]; then
 build_busybox_target "armv8" "aarch64" "${ARMV8_BUSYBOX_TOOLCHAIN_PREFIX}" "${ARMV8_BUSYBOX_SYSROOT}" "${BIN_DIR}/armv8/busybox"
-
-vendor_cleanup
 elif [[ ${USE_DOCKER_FALLBACK} -eq 1 ]]; then
   docker_build_target "armv8" "aarch64" "dockcross/linux-arm64" "${BIN_DIR}/armv8/busybox" 1
 else

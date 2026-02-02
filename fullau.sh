@@ -295,9 +295,6 @@ openwrt_find_package_makefile() {
   if [[ -z "${makefile}" ]]; then
     makefile="$(find "${OPENWRT_SDK}/package" -path "*/${pkg}/Makefile" 2>/dev/null | head -n 1 || true)"
   fi
-  if [[ -z "${makefile}" ]]; then
-    makefile="$(find "${OPENWRT_SDK}/feeds" -path "*/${pkg}/Makefile" 2>/dev/null | head -n 1 || true)"
-  fi
   echo "${makefile}"
 }
 
@@ -397,19 +394,23 @@ openwrt_install_feed_pkg() {
   if [[ "${YUME_VERBOSE:-0}" == "1" ]]; then
     cat "${log}"
   fi
+  if [[ ! -f "${OPENWRT_SDK}/package/feeds/${feed}/${pkg}/Makefile" ]]; then
+    echo "OpenWRT feed install did not stage ${pkg} into package/feeds/${feed}" >&2
+    return 1
+  fi
 }
 
 openwrt_build_package() {
   local pkg="$1"
   local makefile
   makefile="$(openwrt_find_package_makefile "${pkg}")"
-  if [[ -z "${makefile}" || "${makefile}" == "${OPENWRT_SDK}/feeds/"* ]]; then
+  if [[ -z "${makefile}" ]]; then
     ensure_openwrt_host_deps
     openwrt_sync_feeds
     local feed=""
     feed="$(openwrt_find_feed_for_pkg "${pkg}" || true)"
     if [[ -n "${feed}" ]]; then
-      openwrt_install_feed_pkg "${feed}" "${pkg}" || true
+      openwrt_install_feed_pkg "${feed}" "${pkg}"
     fi
     makefile="$(openwrt_find_package_makefile "${pkg}")"
   fi
@@ -419,24 +420,8 @@ openwrt_build_package() {
   fi
   ensure_openwrt_config
   local rel=""
-  if [[ "${makefile}" == "${OPENWRT_SDK}/package/feeds/"* ]]; then
-    rel="${makefile#${OPENWRT_SDK}/}"
-    rel="${rel%/Makefile}"
-  elif [[ "${makefile}" == "${OPENWRT_SDK}/feeds/"* ]]; then
-    local feed="${makefile#${OPENWRT_SDK}/feeds/}"
-    feed="${feed%%/*}"
-    local pkg_name="${makefile%/Makefile}"
-    pkg_name="${pkg_name##*/}"
-    if [[ -f "${OPENWRT_SDK}/package/feeds/${feed}/${pkg_name}/Makefile" ]]; then
-      rel="package/feeds/${feed}/${pkg_name}"
-    else
-      rel="${makefile#${OPENWRT_SDK}/}"
-      rel="${rel%/Makefile}"
-    fi
-  else
-    rel="${makefile#${OPENWRT_SDK}/}"
-    rel="${rel%/Makefile}"
-  fi
+  rel="${makefile#${OPENWRT_SDK}/}"
+  rel="${rel%/Makefile}"
   make -C "${OPENWRT_SDK}" "${rel}/compile" V=s
 }
 

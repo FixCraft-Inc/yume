@@ -61,6 +61,8 @@ private:
     void on_remote_read(uint8_t stream_id, const boost::system::error_code& ec, std::size_t bytes);
     void enqueue_remote_write(uint8_t stream_id, const std::vector<uint8_t>& data);
     void do_remote_write(uint8_t stream_id);
+    void start_udp_read(uint8_t stream_id);
+    void on_udp_read(uint8_t stream_id, const boost::system::error_code& ec, std::size_t bytes);
 
     void async_write_frame(const protocol::Frame& frame,
                            std::function<void(const boost::system::error_code&, std::size_t)> handler = {});
@@ -99,7 +101,19 @@ private:
             , resolver(exec) {}
     };
 
+    struct UdpStream {
+        boost::asio::ip::udp::socket socket;
+        boost::asio::ip::udp::resolver resolver;
+        boost::asio::ip::udp::endpoint remote;
+        std::array<uint8_t, 65535> read_buf{};
+
+        explicit UdpStream(boost::asio::any_io_executor exec)
+            : socket(exec)
+            , resolver(exec) {}
+    };
+
     std::unordered_map<uint8_t, std::shared_ptr<RemoteStream>> streams_;
+    std::unordered_map<uint8_t, std::shared_ptr<UdpStream>> udp_streams_;
     std::unordered_map<uint8_t, std::shared_ptr<boost::asio::ip::tcp::acceptor>> reverse_listeners_;
     std::unordered_set<uint8_t> pending_reverse_;
 

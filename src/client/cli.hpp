@@ -12,6 +12,8 @@ struct ClientConfig {
     bool obfuscation{false};
     bool inner_crypto{true};
     bool inner_heavy{true};
+    bool allow_udp{false};
+    bool allow_local_ip{false};
     std::string pq_public_key;
     std::string anonym_pubkey;
     std::string anonym_ca_cert;

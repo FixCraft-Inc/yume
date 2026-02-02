@@ -15,6 +15,8 @@ struct ServerConfig {
     bool inner_heavy{true};
     std::string pq_private_key;
     bool allow_exec{false};
+    bool allow_local_ip{false};
+    bool control_full{false};
     bool real_http{false};
     std::string real_index_path;
     std::string real_secret;

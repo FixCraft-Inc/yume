@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 #include <boost/asio.hpp>
@@ -114,7 +115,8 @@ public:
                   int listen_port,
                   std::string target_host,
                   int target_port,
-                  std::shared_ptr<Tunnel> tunnel);
+                  std::shared_ptr<Tunnel> tunnel,
+                  bool allow_local_ip);
 
     void start();
 
@@ -126,6 +128,45 @@ private:
     std::string target_host_;
     int target_port_{0};
     std::shared_ptr<Tunnel> tunnel_;
+    bool allow_local_ip_{false};
+};
+
+class UdpForwardServer : public std::enable_shared_from_this<UdpForwardServer> {
+public:
+    UdpForwardServer(boost::asio::io_context& io,
+                     int listen_port,
+                     std::string target_host,
+                     int target_port,
+                     std::shared_ptr<Tunnel> tunnel,
+                     bool allow_local_ip);
+
+    void start();
+
+private:
+    struct UdpMapping {
+        boost::asio::ip::udp::endpoint client;
+        uint8_t stream_id{0};
+        bool open_confirmed{false};
+        std::deque<Tunnel::Bytes> pending;
+    };
+
+    void do_receive();
+    void handle_datagram(const boost::asio::ip::udp::endpoint& client, const Tunnel::Bytes& data);
+    void on_open_result(uint8_t stream_id, bool ok, const std::string& reason);
+    void deliver_from_tunnel(uint8_t stream_id, const Tunnel::Bytes& data);
+    void close_stream(uint8_t stream_id, const std::string& reason);
+
+    boost::asio::ip::udp::socket socket_;
+    boost::asio::strand<boost::asio::any_io_executor> strand_;
+    std::shared_ptr<Tunnel> tunnel_;
+    std::string target_host_;
+    int target_port_{0};
+    bool allow_local_ip_{false};
+    bool blocked_local_warned_{false};
+    std::array<uint8_t, 65535> read_buf_{};
+    boost::asio::ip::udp::endpoint sender_{};
+    std::unordered_map<std::string, std::shared_ptr<UdpMapping>> by_client_;
+    std::unordered_map<uint8_t, std::shared_ptr<UdpMapping>> by_stream_;
 };
 
 }  // namespace yume::client

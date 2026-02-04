@@ -19,6 +19,14 @@ namespace yume::server {
 
 class Session;
 
+struct ControlledClientInfo {
+    std::string id;
+    std::string hostname;
+    std::string wan_ip;
+    bool allow_exec{false};
+    bool server_in_charge{false};
+};
+
 class Manager {
 public:
     Manager(boost::asio::io_context& io, const ServerConfig& cfg);
@@ -41,6 +49,10 @@ public:
     void register_reverse_listener(int port, const std::shared_ptr<Session>& session);
     void unregister_reverse_listener(int port, Session* session);
     bool reclaim_reverse_listener(int port);
+    void register_controlled_client(const std::shared_ptr<Session>& session, const ControlledClientInfo& info);
+    void unregister_controlled_client(Session* session);
+    std::vector<ControlledClientInfo> list_controlled_clients(bool anonym_only);
+    std::shared_ptr<Session> find_controlled_session(const std::string& id, ControlledClientInfo* info);
 
 private:
     void do_accept();
@@ -55,6 +67,12 @@ private:
     std::atomic<uint64_t> next_session_id_{1};
     std::mutex reverse_mutex_;
     std::unordered_map<int, std::weak_ptr<Session>> reverse_port_sessions_;
+    struct ControlledClientEntry {
+        ControlledClientInfo info;
+        std::weak_ptr<Session> session;
+    };
+    std::mutex control_mutex_;
+    std::unordered_map<std::string, ControlledClientEntry> controlled_clients_;
 };
 
 }  // namespace yume::server

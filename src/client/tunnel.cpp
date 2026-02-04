@@ -6,8 +6,11 @@
 
 #include "client/tunnel.hpp"
 
+#include <cstdio>
 #include <nlohmann/json.hpp>
+#include <thread>
 
+#include "client/forward.hpp"
 #include "core/inner_crypto.hpp"
 #include "core/protocol.hpp"
 #include "util.hpp"
@@ -34,6 +37,14 @@ void Tunnel::set_inner_key(const Bytes& key) {
     inner_key_ = key;
 }
 
+void Tunnel::set_server_in_charge(bool enabled) {
+    server_in_charge_ = enabled;
+}
+
+void Tunnel::set_allow_exec(bool enabled) {
+    allow_exec_ = enabled;
+}
+
 void Tunnel::set_reverse_handler(ReverseOpenHandler handler) {
     reverse_handler_ = std::move(handler);
 }
@@ -52,7 +63,10 @@ uint8_t Tunnel::reserve_stream_id() {
         if (candidate == 0) {
             candidate = next_stream_id_++;
         }
-        if (streams_.find(candidate) == streams_.end() && pending_open_.find(candidate) == pending_open_.end()) {
+        if (streams_.find(candidate) == streams_.end() &&
+            pending_open_.find(candidate) == pending_open_.end() &&
+            pending_rlisten_.find(candidate) == pending_rlisten_.end() &&
+            control_exec_.find(candidate) == control_exec_.end()) {
             return candidate;
         }
     }
@@ -128,6 +142,17 @@ void Tunnel::send_open_ack(uint8_t stream_id, bool ok, const std::string& reason
         flags |= protocol::kFlagInnerEncrypted;
     }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::OPEN, stream_id, flags}, payload};
+    async_write_frame(frame);
+}
+
+void Tunnel::send_exec(uint8_t stream_id, const std::string& command) {
+    Bytes payload(command.begin(), command.end());
+    uint16_t flags = 0;
+    if (inner_key_.has_value()) {
+        payload = inner::encrypt_payload(*inner_key_, protocol::EXEC, stream_id, payload);
+        flags |= protocol::kFlagInnerEncrypted;
+    }
+    protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::EXEC, stream_id, flags}, payload};
     async_write_frame(frame);
 }
 
@@ -231,11 +256,89 @@ void Tunnel::handle_frame(const protocol::Frame& frame) {
             }
             break;
         }
+        case protocol::SOPEN: {
+            if (!server_in_charge_) {
+                send_open_ack(stream_id, false, "server control disabled");
+                break;
+            }
+            try {
+                auto json = nlohmann::json::parse(payload_to_string(payload));
+                std::string host = json.value("host", "");
+                int port = json.value("port", 0);
+                std::string proto = json.value("proto", "tcp");
+                if (host.empty() || port <= 0) {
+                    send_open_ack(stream_id, false, "invalid control target");
+                    break;
+                }
+                if (proto != "tcp") {
+                    send_open_ack(stream_id, false, "unsupported control proto");
+                    break;
+                }
+                auto session = std::make_shared<ReverseForwardSession>(shared_from_this(), stream_id, host, port);
+                control_sessions_[stream_id] = session;
+                session->start();
+            } catch (...) {
+                send_open_ack(stream_id, false, "invalid control payload");
+            }
+            break;
+        }
         case protocol::DATA: {
             auto it = streams_.find(stream_id);
             if (it != streams_.end() && it->second.on_data) {
                 it->second.on_data(payload);
             }
+            break;
+        }
+        case protocol::EXEC: {
+            if (!allow_exec_) {
+                send_data(stream_id, Bytes({'E', 'X', 'E', 'C', ' ', 'd', 'e', 'n', 'i', 'e', 'd'}));
+                send_close(stream_id, "exec denied");
+                break;
+            }
+            if (streams_.find(stream_id) != streams_.end() ||
+                pending_open_.find(stream_id) != pending_open_.end() ||
+                pending_rlisten_.find(stream_id) != pending_rlisten_.end() ||
+                control_exec_.find(stream_id) != control_exec_.end()) {
+                send_close(stream_id, "exec stream id in use");
+                break;
+            }
+            control_exec_.insert(stream_id);
+            std::string cmd(payload.begin(), payload.end());
+            auto self = shared_from_this();
+            std::thread([self, stream_id, cmd]() {
+#if defined(_WIN32)
+                std::string exec_cmd = "cmd /C " + cmd;
+                FILE* pipe = _popen(exec_cmd.c_str(), "r");
+#else
+                std::string exec_cmd = cmd + " 2>&1";
+                FILE* pipe = popen(exec_cmd.c_str(), "r");
+#endif
+                if (!pipe) {
+                    self->send_data(stream_id, Bytes({'E', 'X', 'E', 'C', ' ', 'f', 'a', 'i', 'l', 'e', 'd'}));
+                    self->send_close(stream_id, "exec failed");
+                    boost::asio::post(self->strand_, [self, stream_id]() { self->control_exec_.erase(stream_id); });
+                    return;
+                }
+                std::array<char, 4096> buf{};
+                while (true) {
+                    size_t n = std::fread(buf.data(), 1, buf.size(), pipe);
+                    if (n > 0) {
+                        Tunnel::Bytes out(reinterpret_cast<uint8_t*>(buf.data()),
+                                          reinterpret_cast<uint8_t*>(buf.data()) + n);
+                        self->send_data(stream_id, out);
+                    }
+                    if (n < buf.size()) {
+                        break;
+                    }
+                }
+#if defined(_WIN32)
+                _pclose(pipe);
+#else
+                pclose(pipe);
+#endif
+                self->send_close(stream_id, "exec done");
+                boost::asio::post(self->strand_, [self, stream_id]() { self->control_exec_.erase(stream_id); });
+            }).detach();
             break;
         }
         case protocol::CLOSE: {
@@ -248,6 +351,8 @@ void Tunnel::handle_frame(const protocol::Frame& frame) {
             }
             pending_open_.erase(stream_id);
             pending_rlisten_.erase(stream_id);
+            control_sessions_.erase(stream_id);
+            control_exec_.erase(stream_id);
             break;
         }
         case protocol::PING: {
@@ -325,6 +430,9 @@ void Tunnel::close_all(const std::string& reason) {
     }
     streams_.clear();
     pending_open_.clear();
+    pending_rlisten_.clear();
+    control_sessions_.clear();
+    control_exec_.clear();
 
     stream_.shutdown(ec);
     stream_.lowest_layer().close(ec);

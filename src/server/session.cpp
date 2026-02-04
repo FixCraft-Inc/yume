@@ -31,7 +31,7 @@ namespace yume::server {
 namespace {
 constexpr uint32_t kMaxFrameSize = 16 * 1024 * 1024;
 constexpr uint8_t kMinFrameType = protocol::AUTH;
-constexpr uint8_t kMaxFrameType = protocol::PONG;
+constexpr uint8_t kMaxFrameType = protocol::SOPEN;
 constexpr int64_t kIdleTimeoutMs = 90 * 1000;
 constexpr int64_t kIdleCheckIntervalMs = 30 * 1000;
 
@@ -153,6 +153,11 @@ void Session::on_handshake(const boost::system::error_code& ec) {
         util::log_warn("session " + std::to_string(session_id_) + ": TLS handshake failed: " + ec.message());
         close();
         return;
+    }
+    boost::system::error_code ep_ec;
+    auto ep = stream_.lowest_layer().remote_endpoint(ep_ec);
+    if (!ep_ec) {
+        client_wan_ip_ = ep.address().to_string();
     }
 
     if (cfg_.real_http) {
@@ -513,7 +518,7 @@ void Session::handle_frame(const protocol::Frame& frame) {
     if (inner_key_.has_value() &&
         (frame.header.type == protocol::OPEN || frame.header.type == protocol::DATA ||
          frame.header.type == protocol::EXEC || frame.header.type == protocol::CLOSE ||
-         frame.header.type == protocol::RLISTEN)) {
+         frame.header.type == protocol::RLISTEN || frame.header.type == protocol::CONTROL)) {
         if ((frame.header.flags & protocol::kFlagInnerEncrypted) == 0) {
             util::log_warn("session " + std::to_string(session_id_) + ": missing inner encryption flag");
             close();
@@ -523,17 +528,27 @@ void Session::handle_frame(const protocol::Frame& frame) {
 
     switch (frame.header.type) {
         case protocol::OPEN:
-            handle_open(frame);
+            if (!handle_control_open_request(frame) && !handle_control_open_ack(frame)) {
+                handle_open(frame);
+            }
             break;
         case protocol::DATA:
-            handle_data(frame);
+            if (!handle_control_data(frame)) {
+                handle_data(frame);
+            }
             break;
         case protocol::EXEC: {
-            send_open_reply(frame.header.stream_id, false, "EXEC disabled for safety");
+            if (!handle_control_exec(frame)) {
+                handle_exec(frame);
+            }
             break;
         }
         case protocol::RLISTEN: {
             handle_rlisten(frame);
+            break;
+        }
+        case protocol::CONTROL: {
+            handle_control(frame);
             break;
         }
         case protocol::PING: {
@@ -544,7 +559,9 @@ void Session::handle_frame(const protocol::Frame& frame) {
         case protocol::PONG:
             break;
         case protocol::CLOSE:
-            handle_close(frame.header.stream_id, "client closed");
+            if (!handle_control_close(frame)) {
+                handle_close(frame.header.stream_id, "client closed");
+            }
             break;
         default:
             util::log_warn("session " + std::to_string(session_id_) + ": unknown frame");
@@ -581,6 +598,7 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         bool sig_ok = crypto::verify_key(pubkey, challenge_, sig);
         bool auth_ok = authorized_keys_ ? is_authorized(pubkey, *authorized_keys_) : false;
         std::string fingerprint = fingerprint_pubkey(pubkey);
+        client_id_ = fingerprint;
         EVP_PKEY_free(pubkey);
 
         if (!sig_ok || !auth_ok) {
@@ -769,12 +787,15 @@ void Session::handle_open(const protocol::Frame& frame) {
 }
 
 uint8_t Session::reserve_stream_id() {
+    std::lock_guard<std::mutex> lock(control_mutex_);
     for (int i = 1; i < 255; ++i) {
         uint8_t candidate = static_cast<uint8_t>(i);
         if (streams_.find(candidate) == streams_.end() &&
             udp_streams_.find(candidate) == udp_streams_.end() &&
             pending_reverse_.find(candidate) == pending_reverse_.end() &&
-            reverse_listeners_.find(candidate) == reverse_listeners_.end()) {
+            reverse_listeners_.find(candidate) == reverse_listeners_.end() &&
+            control_outbound_.find(candidate) == control_outbound_.end() &&
+            control_inbound_.find(candidate) == control_inbound_.end()) {
             return candidate;
         }
     }
@@ -887,6 +908,378 @@ void Session::handle_rlisten(const protocol::Frame& frame) {
         });
     };
     (*do_accept)();
+}
+
+void Session::handle_control(const protocol::Frame& frame) {
+    crypto::Bytes payload = frame.payload;
+    if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
+        try {
+            payload = inner::decrypt_payload(*inner_key_, protocol::CONTROL, frame.header.stream_id, frame.payload);
+        } catch (...) {
+            util::log_warn("session " + std::to_string(session_id_) + ": CONTROL decrypt failed");
+            return;
+        }
+    }
+
+    nlohmann::json json;
+    try {
+        json = nlohmann::json::parse(std::string(payload.begin(), payload.end()));
+    } catch (...) {
+        util::log_warn("session " + std::to_string(session_id_) + ": invalid CONTROL payload");
+        return;
+    }
+
+    const std::string cmd = json.value("cmd", "");
+    if (cmd == "register") {
+        client_hostname_ = json.value("hostname", "");
+        client_server_in_charge_ = json.value("server_in_charge", false);
+        client_allow_exec_ = json.value("allow_exec", false);
+        const std::string reported_ip = json.value("wan_ip", "");
+        if (!reported_ip.empty()) {
+            client_wan_ip_ = reported_ip;
+        }
+        if (manager_) {
+            ControlledClientInfo info;
+            info.id = client_id_;
+            info.hostname = client_hostname_;
+            info.wan_ip = client_wan_ip_;
+            info.allow_exec = client_allow_exec_;
+            info.server_in_charge = client_server_in_charge_;
+            manager_->register_controlled_client(shared_from_this(), info);
+        }
+        return;
+    }
+
+    auto send_json = [&](const nlohmann::json& resp) {
+        std::string out = resp.dump();
+        crypto::Bytes bytes(out.begin(), out.end());
+        send_control_frame(protocol::CONTROL, frame.header.stream_id, bytes);
+    };
+
+    if (cmd == "list") {
+        nlohmann::json resp;
+        resp["cmd"] = "list";
+        resp["clients"] = nlohmann::json::array();
+        if (manager_) {
+            auto list = manager_->list_controlled_clients(cfg_.anonym);
+            for (const auto& info : list) {
+                nlohmann::json item;
+                item["id"] = info.id;
+                item["hostname"] = info.hostname;
+                item["wan_ip"] = info.wan_ip;
+                item["allow_exec"] = info.allow_exec;
+                item["server_in_charge"] = info.server_in_charge;
+                resp["clients"].push_back(std::move(item));
+            }
+        } else {
+            resp["error"] = "manager unavailable";
+        }
+        send_json(resp);
+        return;
+    }
+
+    if (cmd == "attach") {
+        nlohmann::json resp;
+        resp["cmd"] = "attach";
+        const std::string id = json.value("id", "");
+        if (id.empty()) {
+            resp["ok"] = false;
+            resp["error"] = "missing id";
+            send_json(resp);
+            return;
+        }
+        ControlledClientInfo info;
+        std::shared_ptr<Session> target;
+        if (manager_) {
+            target = manager_->find_controlled_session(id, &info);
+        }
+        if (!target) {
+            resp["ok"] = false;
+            resp["error"] = "client not found";
+            send_json(resp);
+            return;
+        }
+        if (!info.server_in_charge) {
+            resp["ok"] = false;
+            resp["error"] = "client did not grant server-in-charge";
+            send_json(resp);
+            return;
+        }
+        is_controller_ = true;
+        control_target_ = target;
+        control_target_id_ = id;
+        resp["ok"] = true;
+        resp["id"] = info.id;
+        resp["hostname"] = info.hostname;
+        resp["wan_ip"] = info.wan_ip;
+        resp["allow_exec"] = info.allow_exec;
+        resp["server_in_charge"] = info.server_in_charge;
+        send_json(resp);
+        return;
+    }
+
+    nlohmann::json resp;
+    resp["cmd"] = cmd;
+    resp["ok"] = false;
+    resp["error"] = "unknown control command";
+    send_json(resp);
+}
+
+bool Session::handle_control_open_request(const protocol::Frame& frame) {
+    if (!is_controller_) {
+        return false;
+    }
+    auto target = control_target_.lock();
+    if (!target) {
+        send_open_reply(frame.header.stream_id, false, "control target unavailable");
+        return true;
+    }
+
+    crypto::Bytes payload = frame.payload;
+    if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
+        try {
+            payload = inner::decrypt_payload(*inner_key_, protocol::OPEN, frame.header.stream_id, frame.payload);
+        } catch (...) {
+            send_open_reply(frame.header.stream_id, false, "control open decrypt failed");
+            return true;
+        }
+    }
+
+    uint8_t target_stream = target->reserve_stream_id();
+    if (target_stream == 0) {
+        send_open_reply(frame.header.stream_id, false, "no stream ids available");
+        return true;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        control_outbound_[frame.header.stream_id] = ControlLink{target, target_stream, true, false};
+    }
+    {
+        std::lock_guard<std::mutex> lock(target->control_mutex_);
+        target->control_inbound_[target_stream] = ControlLink{shared_from_this(), frame.header.stream_id, true, false};
+    }
+
+    target->send_control_frame(protocol::SOPEN, target_stream, payload);
+    return true;
+}
+
+bool Session::handle_control_open_ack(const protocol::Frame& frame) {
+    ControlLink link;
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        auto it = control_inbound_.find(frame.header.stream_id);
+        if (it == control_inbound_.end()) {
+            return false;
+        }
+        link = it->second;
+    }
+
+    auto peer = link.peer.lock();
+    if (!peer) {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        control_inbound_.erase(frame.header.stream_id);
+        return true;
+    }
+
+    crypto::Bytes payload = frame.payload;
+    if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
+        try {
+            payload = inner::decrypt_payload(*inner_key_, protocol::OPEN, frame.header.stream_id, frame.payload);
+        } catch (...) {
+            if (auto peer = link.peer.lock()) {
+                peer->send_control_close(link.peer_stream_id, "control open decrypt failed");
+            }
+            std::lock_guard<std::mutex> lock(control_mutex_);
+            control_inbound_.erase(frame.header.stream_id);
+            return true;
+        }
+    }
+    const bool ok = (frame.header.flags & protocol::kFlagOpenOk) != 0;
+    const std::string reason(payload.begin(), payload.end());
+
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        auto it = control_inbound_.find(frame.header.stream_id);
+        if (it != control_inbound_.end()) {
+            if (!ok) {
+                control_inbound_.erase(it);
+            } else {
+                it->second.pending = false;
+            }
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(peer->control_mutex_);
+        auto it = peer->control_outbound_.find(link.peer_stream_id);
+        if (it != peer->control_outbound_.end()) {
+            if (!ok) {
+                peer->control_outbound_.erase(it);
+            } else {
+                it->second.pending = false;
+            }
+        }
+    }
+
+    peer->send_open_reply(link.peer_stream_id, ok, reason);
+    return true;
+}
+
+bool Session::handle_control_data(const protocol::Frame& frame) {
+    ControlLink link;
+    bool found = false;
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        auto it = control_outbound_.find(frame.header.stream_id);
+        if (it != control_outbound_.end()) {
+            link = it->second;
+            found = true;
+        } else {
+            auto it_in = control_inbound_.find(frame.header.stream_id);
+            if (it_in != control_inbound_.end()) {
+                link = it_in->second;
+                found = true;
+            }
+        }
+    }
+    if (!found) {
+        return false;
+    }
+
+    auto peer = link.peer.lock();
+    if (!peer) {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        control_outbound_.erase(frame.header.stream_id);
+        control_inbound_.erase(frame.header.stream_id);
+        return true;
+    }
+
+    crypto::Bytes payload = frame.payload;
+    if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
+        try {
+            payload = inner::decrypt_payload(*inner_key_, protocol::DATA, frame.header.stream_id, frame.payload);
+        } catch (...) {
+            if (auto peer = link.peer.lock()) {
+                peer->send_control_close(link.peer_stream_id, "control data decrypt failed");
+            }
+            std::lock_guard<std::mutex> lock(control_mutex_);
+            control_outbound_.erase(frame.header.stream_id);
+            control_inbound_.erase(frame.header.stream_id);
+            return true;
+        }
+    }
+
+    peer->send_control_frame(protocol::DATA, link.peer_stream_id, payload);
+    return true;
+}
+
+bool Session::handle_control_close(const protocol::Frame& frame) {
+    ControlLink link;
+    bool found = false;
+    bool outbound = false;
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        auto it = control_outbound_.find(frame.header.stream_id);
+        if (it != control_outbound_.end()) {
+            link = it->second;
+            found = true;
+            outbound = true;
+        } else {
+            auto it_in = control_inbound_.find(frame.header.stream_id);
+            if (it_in != control_inbound_.end()) {
+                link = it_in->second;
+                found = true;
+            }
+        }
+    }
+    if (!found) {
+        return false;
+    }
+
+    crypto::Bytes payload = frame.payload;
+    if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
+        try {
+            payload = inner::decrypt_payload(*inner_key_, protocol::CLOSE, frame.header.stream_id, frame.payload);
+        } catch (...) {
+            payload.clear();
+        }
+    }
+    const std::string reason(payload.begin(), payload.end());
+
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        if (outbound) {
+            control_outbound_.erase(frame.header.stream_id);
+        } else {
+            control_inbound_.erase(frame.header.stream_id);
+        }
+    }
+    if (auto peer = link.peer.lock()) {
+        peer->send_control_close(link.peer_stream_id, reason);
+    }
+    return true;
+}
+
+bool Session::handle_control_exec(const protocol::Frame& frame) {
+    if (!is_controller_) {
+        return false;
+    }
+    auto target = control_target_.lock();
+    if (!target) {
+        send_control_close(frame.header.stream_id, "control target unavailable");
+        return true;
+    }
+    if (!target->client_allow_exec_) {
+        const std::string msg = "EXEC not allowed by client";
+        crypto::Bytes payload(msg.begin(), msg.end());
+        send_control_frame(protocol::DATA, frame.header.stream_id, payload);
+        send_control_close(frame.header.stream_id, "exec denied");
+        return true;
+    }
+
+    crypto::Bytes payload = frame.payload;
+    if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
+        try {
+            payload = inner::decrypt_payload(*inner_key_, protocol::EXEC, frame.header.stream_id, frame.payload);
+        } catch (...) {
+            send_control_close(frame.header.stream_id, "control exec decrypt failed");
+            return true;
+        }
+    }
+
+    uint8_t target_stream = target->reserve_stream_id();
+    if (target_stream == 0) {
+        send_control_close(frame.header.stream_id, "no stream ids available");
+        return true;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        control_outbound_[frame.header.stream_id] = ControlLink{target, target_stream, false, true};
+    }
+    {
+        std::lock_guard<std::mutex> lock(target->control_mutex_);
+        target->control_inbound_[target_stream] = ControlLink{shared_from_this(), frame.header.stream_id, false, true};
+    }
+
+    target->send_control_frame(protocol::EXEC, target_stream, payload);
+    return true;
+}
+
+void Session::send_control_frame(protocol::FrameType type, uint8_t stream_id, const crypto::Bytes& payload, uint16_t extra_flags) {
+    crypto::Bytes out = payload;
+    uint16_t flags = extra_flags;
+    if (inner_key_.has_value()) {
+        out = inner::encrypt_payload(*inner_key_, type, stream_id, out);
+        flags |= protocol::kFlagInnerEncrypted;
+    }
+    protocol::Frame frame{{static_cast<uint32_t>(out.size()), type, stream_id, flags}, out};
+    async_write_frame(frame);
+}
+
+void Session::send_control_close(uint8_t stream_id, const std::string& reason) {
+    crypto::Bytes payload(reason.begin(), reason.end());
+    send_control_frame(protocol::CLOSE, stream_id, payload);
 }
 
 void Session::handle_data(const protocol::Frame& frame) {
@@ -1186,9 +1579,30 @@ void Session::close() {
         for (const auto& entry : reverse_listener_ports_) {
             manager_->unregister_reverse_listener(entry.second, this);
         }
+        manager_->unregister_controlled_client(this);
     }
     reverse_listener_ports_.clear();
     reverse_port_streams_.clear();
+
+    std::vector<std::pair<std::shared_ptr<Session>, uint8_t>> control_peers;
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        for (const auto& entry : control_outbound_) {
+            if (auto peer = entry.second.peer.lock()) {
+                control_peers.emplace_back(peer, entry.second.peer_stream_id);
+            }
+        }
+        for (const auto& entry : control_inbound_) {
+            if (auto peer = entry.second.peer.lock()) {
+                control_peers.emplace_back(peer, entry.second.peer_stream_id);
+            }
+        }
+        control_outbound_.clear();
+        control_inbound_.clear();
+    }
+    for (const auto& entry : control_peers) {
+        entry.first->send_control_close(entry.second, "control peer closed");
+    }
 
     for (auto& entry : streams_) {
         entry.second->socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);

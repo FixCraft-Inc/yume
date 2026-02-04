@@ -7,6 +7,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -61,6 +62,14 @@ private:
     void handle_close(uint8_t stream_id, const std::string& reason);
     void handle_exec(const protocol::Frame& frame);
     void handle_rlisten(const protocol::Frame& frame);
+    void handle_control(const protocol::Frame& frame);
+    bool handle_control_open_request(const protocol::Frame& frame);
+    bool handle_control_open_ack(const protocol::Frame& frame);
+    bool handle_control_data(const protocol::Frame& frame);
+    bool handle_control_close(const protocol::Frame& frame);
+    bool handle_control_exec(const protocol::Frame& frame);
+    void send_control_frame(protocol::FrameType type, uint8_t stream_id, const crypto::Bytes& payload, uint16_t extra_flags = 0);
+    void send_control_close(uint8_t stream_id, const std::string& reason);
     uint8_t reserve_stream_id();
 
     void send_open_reply(uint8_t stream_id, bool ok, const std::string& message);
@@ -130,6 +139,25 @@ private:
     std::unordered_map<uint8_t, int> reverse_listener_ports_;
     std::unordered_map<int, uint8_t> reverse_port_streams_;
     std::unordered_set<uint8_t> pending_reverse_;
+
+    struct ControlLink {
+        std::weak_ptr<Session> peer;
+        uint8_t peer_stream_id{0};
+        bool pending{false};
+        bool is_exec{false};
+    };
+
+    std::mutex control_mutex_;
+    std::unordered_map<uint8_t, ControlLink> control_outbound_;
+    std::unordered_map<uint8_t, ControlLink> control_inbound_;
+    std::weak_ptr<Session> control_target_;
+    std::string control_target_id_;
+    bool is_controller_{false};
+    bool client_allow_exec_{false};
+    bool client_server_in_charge_{false};
+    std::string client_id_;
+    std::string client_hostname_;
+    std::string client_wan_ip_;
 
     struct PendingWrite {
         std::shared_ptr<std::vector<uint8_t>> data;

@@ -31,6 +31,7 @@
 #include <chrono>
 #include <cstring>
 #include <vector>
+#include <atomic>
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
@@ -86,6 +87,23 @@ std::string get_self_path(const char* argv0) {
         std::error_code ec;
         return std::filesystem::absolute(argv0, ec).string();
     }
+    return {};
+}
+
+std::string get_system_hostname() {
+#if defined(_WIN32)
+    char buf[MAX_COMPUTERNAME_LENGTH + 1];
+    DWORD size = sizeof(buf);
+    if (GetComputerNameA(buf, &size) && size > 0) {
+        return std::string(buf, size);
+    }
+#else
+    char buf[256];
+    if (::gethostname(buf, sizeof(buf)) == 0) {
+        buf[sizeof(buf) - 1] = '\0';
+        return std::string(buf);
+    }
+#endif
     return {};
 }
 
@@ -522,6 +540,14 @@ struct ParsedArgs {
     bool boring{false};
     bool boring_override{false};
     bool io_threads_override{false};
+    bool server_in_charge{false};
+    bool server_in_charge_override{false};
+    bool allow_exec{false};
+    bool allow_exec_override{false};
+    bool control_mode{false};
+    bool list_controlled{false};
+    std::string control_id;
+    std::string exec_cmd;
     std::string ssh_L;
     std::string ssh_R;
 };
@@ -591,6 +617,28 @@ ParsedArgs parse_args(int argc, char** argv) {
         } else if (arg == "--allow-local-ip") {
             args.allow_local_ip = true;
             args.allow_local_ip_override = true;
+        } else if (arg == "--server-in-charge") {
+            args.server_in_charge = true;
+            args.server_in_charge_override = true;
+        } else if (arg == "--allow-exec") {
+            args.allow_exec = true;
+            args.allow_exec_override = true;
+        } else if (arg == "--exec") {
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                args.exec_cmd = argv[++i];
+            } else {
+                args.allow_exec = true;
+                args.allow_exec_override = true;
+            }
+        } else if (arg == "--control") {
+            args.control_mode = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                args.control_id = argv[++i];
+            }
+        } else if (arg == "--id" && i + 1 < argc) {
+            args.control_id = argv[++i];
+        } else if (arg == "--list-controlled") {
+            args.list_controlled = true;
         } else if (arg == "--pq-pub" && i + 1 < argc) {
             args.pq_public_key = argv[++i];
         } else if (arg == "--tls-ca" && i + 1 < argc) {
@@ -729,6 +777,12 @@ void print_help() {
         << "  --udp                (enable UDP for forwards/SOCKS5)\n"
         << "  --tcp                (force TCP only; default)\n"
         << "  --allow-local-ip     (forward private/loopback targets via server for --lport)\n"
+        << "  --server-in-charge   (allow server to control this client network)\n"
+        << "  --allow-exec         (allow server to run commands on this client)\n"
+        << "  --exec <cmd>         (with --control: run command on target; without args enables allow-exec)\n"
+        << "  --control [id]       (control a registered client)\n"
+        << "  --id <id>            (target id for --control)\n"
+        << "  --list-controlled    (list controlled clients)\n"
         << "  --inner              (enable inner encryption)\n"
         << "  --inner-heavy        (heavy KDF, default)\n"
         << "  --inner-light        (lighter KDF)\n"
@@ -900,6 +954,12 @@ int Cli::run(int argc, char** argv) {
             if (json.contains("allow_local_ip") && !args.allow_local_ip_override) {
                 cfg.allow_local_ip = json["allow_local_ip"].get<bool>();
             }
+            if (json.contains("server_in_charge") && !args.server_in_charge_override) {
+                cfg.server_in_charge = json["server_in_charge"].get<bool>();
+            }
+            if (json.contains("allow_exec") && !args.allow_exec_override) {
+                cfg.allow_exec = json["allow_exec"].get<bool>();
+            }
             if (json.contains("pq_public_key") && cfg.pq_public_key.empty()) {
                 cfg.pq_public_key = util::expand_user(json["pq_public_key"].get<std::string>());
             }
@@ -968,8 +1028,17 @@ int Cli::run(int argc, char** argv) {
     if (args.allow_local_ip_override) {
         cfg.allow_local_ip = args.allow_local_ip;
     }
+    if (args.server_in_charge_override) {
+        cfg.server_in_charge = args.server_in_charge;
+    }
+    if (args.allow_exec_override) {
+        cfg.allow_exec = args.allow_exec;
+    }
     if (args.boring_override) {
         cfg.boring = args.boring;
+    }
+    if ((args.control_mode || args.list_controlled) && args.server.empty()) {
+        cfg.server = "127.0.0.1";
     }
 
     if (cfg.inner_crypto && cfg.pq_public_key.empty()) {
@@ -1025,6 +1094,8 @@ int Cli::run(int argc, char** argv) {
         json["inner_heavy"] = cfg.inner_heavy;
         json["udp"] = cfg.allow_udp;
         json["allow_local_ip"] = cfg.allow_local_ip;
+        json["server_in_charge"] = cfg.server_in_charge;
+        json["allow_exec"] = cfg.allow_exec;
         if (!cfg.pq_public_key.empty()) json["pq_public_key"] = cfg.pq_public_key;
         if (!cfg.anonym_ca_cert.empty()) json["anonym_ca_cert"] = cfg.anonym_ca_cert;
         if (!cfg.tls_ca_cert.empty()) json["tls_ca_cert"] = cfg.tls_ca_cert;
@@ -1037,6 +1108,14 @@ int Cli::run(int argc, char** argv) {
         }
     }
 
+    if (args.exec_cmd.size() && !args.control_mode) {
+        util::log_error("--exec requires --control");
+        return 1;
+    }
+    if (args.control_mode && args.control_id.empty()) {
+        util::log_error("--control requires --id");
+        return 1;
+    }
     if (cfg.server.empty() || cfg.identity.empty()) {
         util::log_error("--server and --auth (identity) are required");
         print_help();
@@ -1470,13 +1549,120 @@ int Cli::run(int argc, char** argv) {
                 pq_warned = true;
             }
 
+            auto send_control_frame = [&](const nlohmann::json& req) {
+                std::string payload_str = req.dump();
+                crypto::Bytes payload(payload_str.begin(), payload_str.end());
+                uint16_t flags = 0;
+                if (inner_key.has_value()) {
+                    payload = inner::encrypt_payload(*inner_key, protocol::CONTROL, 0, payload);
+                    flags |= protocol::kFlagInnerEncrypted;
+                }
+                protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::CONTROL, 0, flags}, payload};
+                protocol::send_frame(stream, frame);
+            };
+
+            auto send_control_request = [&](const nlohmann::json& req) -> nlohmann::json {
+                send_control_frame(req);
+                auto resp_frame = protocol::read_frame(stream);
+                if (resp_frame.header.type != protocol::CONTROL) {
+                    throw std::runtime_error("unexpected control response");
+                }
+                crypto::Bytes payload = resp_frame.payload;
+                if (inner_key.has_value()) {
+                    if ((resp_frame.header.flags & protocol::kFlagInnerEncrypted) == 0) {
+                        throw std::runtime_error("control response missing inner encryption");
+                    }
+                    payload = inner::decrypt_payload(*inner_key, protocol::CONTROL, resp_frame.header.stream_id, resp_frame.payload);
+                }
+                nlohmann::json out;
+                out = nlohmann::json::parse(std::string(payload.begin(), payload.end()));
+                return out;
+            };
+
+            if (cfg.server_in_charge || cfg.allow_exec) {
+                nlohmann::json reg;
+                reg["cmd"] = "register";
+                reg["hostname"] = get_system_hostname();
+                reg["wan_ip"] = "";
+                reg["server_in_charge"] = cfg.server_in_charge;
+                reg["allow_exec"] = cfg.allow_exec;
+                send_control_frame(reg);
+            }
+
+            if (args.list_controlled) {
+                nlohmann::json req;
+                req["cmd"] = "list";
+                auto resp = send_control_request(req);
+                if (resp.contains("error")) {
+                    util::log_error(resp["error"].get<std::string>());
+                    return 1;
+                }
+                if (!resp.contains("clients")) {
+                    util::log_error("control list missing clients");
+                    return 1;
+                }
+                const auto& clients = resp["clients"];
+                if (!clients.is_array() || clients.empty()) {
+                    std::cout << "no controlled clients\n";
+                    return 0;
+                }
+                for (const auto& item : clients) {
+                    std::string perms;
+                    const bool allow_exec = item.value("allow_exec", false);
+                    const bool server_in_charge = item.value("server_in_charge", false);
+                    if (server_in_charge) {
+                        perms += "server-in-charge";
+                    }
+                    if (allow_exec) {
+                        if (!perms.empty()) perms += ",";
+                        perms += "exec";
+                    }
+                    if (perms.empty()) {
+                        perms = "none";
+                    }
+                    std::cout << "id=" << item.value("id", "")
+                              << " host=" << item.value("hostname", "")
+                              << " wan=" << item.value("wan_ip", "")
+                              << " perms=" << perms << "\n";
+                }
+                return 0;
+            }
+
+            if (args.control_mode) {
+                nlohmann::json req;
+                req["cmd"] = "attach";
+                req["id"] = args.control_id;
+                auto resp = send_control_request(req);
+                if (!resp.value("ok", false)) {
+                    util::log_error(resp.value("error", "control attach failed"));
+                    return 1;
+                }
+                std::string perms;
+                if (resp.value("server_in_charge", false)) {
+                    perms += "server-in-charge";
+                }
+                if (resp.value("allow_exec", false)) {
+                    if (!perms.empty()) perms += ",";
+                    perms += "exec";
+                }
+                if (perms.empty()) {
+                    perms = "none";
+                }
+                util::log_info("attached to id=" + resp.value("id", "") +
+                               " host=" + resp.value("hostname", "") +
+                               " wan=" + resp.value("wan_ip", "") +
+                               " perms=" + perms);
+            }
+
             auto tunnel = std::make_shared<Tunnel>(std::move(stream));
-        if (inner_key.has_value()) {
-            tunnel->set_inner_key(*inner_key);
-        }
-        std::string close_reason;
-        tunnel->set_close_handler([&close_reason](const std::string& reason) { close_reason = reason; });
-        tunnel->start();
+            if (inner_key.has_value()) {
+                tunnel->set_inner_key(*inner_key);
+            }
+            tunnel->set_server_in_charge(cfg.server_in_charge);
+            tunnel->set_allow_exec(cfg.allow_exec);
+            std::string close_reason;
+            tunnel->set_close_handler([&close_reason](const std::string& reason) { close_reason = reason; });
+            tunnel->start();
 
         struct ReverseTarget {
             std::string host;
@@ -1510,6 +1696,30 @@ int Cli::run(int argc, char** argv) {
                                                   util::log_error("remote listener failed: " + reason);
                                               }
                                           });
+        }
+
+        if (!args.exec_cmd.empty()) {
+            uint8_t stream_id = tunnel->reserve_stream_id();
+            if (stream_id == 0) {
+                util::log_error("no stream ids available for exec");
+                return 1;
+            }
+            auto done = std::make_shared<std::atomic<bool>>(false);
+            tunnel->register_stream(stream_id,
+                                    [stream_id](const Tunnel::Bytes& data) {
+                                        std::cout.write(reinterpret_cast<const char*>(data.data()), data.size());
+                                        std::cout.flush();
+                                    },
+                                    [done, &io]() {
+                                        done->store(true);
+                                        io.stop();
+                                    });
+            tunnel->send_exec(stream_id, args.exec_cmd);
+            run_io_threads(io, cfg.io_threads);
+            if (!close_reason.empty()) {
+                throw std::runtime_error("tunnel closed: " + close_reason);
+            }
+            return 0;
         }
 
         if (!args.run_cmd.empty()) {

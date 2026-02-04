@@ -10,6 +10,7 @@
 #include <string>
 #include <utility>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <boost/asio.hpp>
@@ -18,6 +19,8 @@
 #include "core/protocol.hpp"
 
 namespace yume::client {
+
+class ReverseForwardSession;
 
 class Tunnel : public std::enable_shared_from_this<Tunnel> {
 public:
@@ -32,6 +35,8 @@ public:
 
     void start();
     void set_inner_key(const Bytes& key);
+    void set_server_in_charge(bool enabled);
+    void set_allow_exec(bool enabled);
     void set_reverse_handler(ReverseOpenHandler handler);
     void set_close_handler(TunnelCloseHandler handler);
     boost::asio::any_io_executor get_executor();
@@ -46,6 +51,7 @@ public:
     void send_data(uint8_t stream_id, const Bytes& data);
     void send_close(uint8_t stream_id, const std::string& reason);
     void send_open_ack(uint8_t stream_id, bool ok, const std::string& reason);
+    void send_exec(uint8_t stream_id, const std::string& command);
 
 private:
     struct PendingWrite {
@@ -90,6 +96,10 @@ private:
     uint8_t next_stream_id_{1};
     bool closed_{false};
     std::optional<Bytes> inner_key_;
+    bool server_in_charge_{false};
+    bool allow_exec_{false};
+    std::unordered_map<uint8_t, std::shared_ptr<ReverseForwardSession>> control_sessions_;
+    std::unordered_set<uint8_t> control_exec_;
 };
 
 }  // namespace yume::client

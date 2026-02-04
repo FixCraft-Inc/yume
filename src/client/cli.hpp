@@ -15,6 +15,8 @@ struct ClientConfig {
     bool inner_heavy{true};
     bool allow_udp{false};
     bool allow_local_ip{false};
+    bool server_in_charge{false};
+    bool allow_exec{false};
     std::string pq_public_key;
     std::string anonym_pubkey;
     std::string anonym_ca_cert;

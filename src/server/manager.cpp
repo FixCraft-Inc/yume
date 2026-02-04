@@ -135,6 +135,71 @@ bool Manager::reclaim_reverse_listener(int port) {
     return true;
 }
 
+void Manager::register_controlled_client(const std::shared_ptr<Session>& session, const ControlledClientInfo& info) {
+    if (!session || info.id.empty()) {
+        return;
+    }
+    ControlledClientEntry entry;
+    entry.info = info;
+    entry.session = session;
+    std::lock_guard<std::mutex> lock(control_mutex_);
+    controlled_clients_[info.id] = std::move(entry);
+}
+
+void Manager::unregister_controlled_client(Session* session) {
+    if (!session) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(control_mutex_);
+    for (auto it = controlled_clients_.begin(); it != controlled_clients_.end();) {
+        auto current = it->second.session.lock();
+        if (!current || current.get() == session) {
+            it = controlled_clients_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+std::vector<ControlledClientInfo> Manager::list_controlled_clients(bool anonym_only) {
+    std::vector<ControlledClientInfo> out;
+    std::lock_guard<std::mutex> lock(control_mutex_);
+    for (auto it = controlled_clients_.begin(); it != controlled_clients_.end();) {
+        auto current = it->second.session.lock();
+        if (!current) {
+            it = controlled_clients_.erase(it);
+            continue;
+        }
+        if (anonym_only && !(it->second.info.allow_exec || it->second.info.server_in_charge)) {
+            ++it;
+            continue;
+        }
+        out.push_back(it->second.info);
+        ++it;
+    }
+    return out;
+}
+
+std::shared_ptr<Session> Manager::find_controlled_session(const std::string& id, ControlledClientInfo* info) {
+    if (id.empty()) {
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(control_mutex_);
+    auto it = controlled_clients_.find(id);
+    if (it == controlled_clients_.end()) {
+        return nullptr;
+    }
+    auto session = it->second.session.lock();
+    if (!session) {
+        controlled_clients_.erase(it);
+        return nullptr;
+    }
+    if (info) {
+        *info = it->second.info;
+    }
+    return session;
+}
+
 void Manager::do_accept() {
     acceptor_.async_accept([this](boost::system::error_code ec, boost::asio::ip::tcp::socket socket) {
         if (!ec) {

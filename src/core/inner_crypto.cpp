@@ -9,6 +9,8 @@
 #include <fstream>
 #include <stdexcept>
 #include <filesystem>
+#include <cstdlib>
+#include <limits>
 
 #if !defined(_WIN32)
 #include <sys/stat.h>
@@ -116,6 +118,52 @@ bool write_file_bytes(const std::string& path, const Bytes& data, std::string* e
     }
 }
 
+std::uint32_t read_env_u32(const char* name, std::uint32_t fallback) {
+    const char* raw = std::getenv(name);
+    if (!raw || !*raw) {
+        return fallback;
+    }
+    try {
+        unsigned long long parsed = std::stoull(raw);
+        if (parsed == 0) {
+            return fallback;
+        }
+        if (parsed > std::numeric_limits<std::uint32_t>::max()) {
+            return std::numeric_limits<std::uint32_t>::max();
+        }
+        return static_cast<std::uint32_t>(parsed);
+    } catch (...) {
+        return fallback;
+    }
+}
+
+std::uint32_t argon2_time_cost() {
+    return read_env_u32("YUME_ARGON2_TIME", basefwx::constants::kHeavyArgon2TimeCost);
+}
+
+std::uint32_t argon2_memory_cost() {
+    return read_env_u32("YUME_ARGON2_MEM", basefwx::constants::kHeavyArgon2MemoryCost);
+}
+
+std::uint32_t argon2_parallelism() {
+    const char* raw = std::getenv("YUME_ARGON2_PAR");
+    if (!raw || !*raw) {
+        return basefwx::constants::DefaultHeavyArgon2Parallelism();
+    }
+    try {
+        unsigned long long parsed = std::stoull(raw);
+        if (parsed == 0) {
+            return basefwx::constants::DefaultHeavyArgon2Parallelism();
+        }
+        if (parsed > std::numeric_limits<std::uint32_t>::max()) {
+            return std::numeric_limits<std::uint32_t>::max();
+        }
+        return static_cast<std::uint32_t>(parsed);
+    } catch (...) {
+        return basefwx::constants::DefaultHeavyArgon2Parallelism();
+    }
+}
+
 Bytes derive_key(const Bytes& shared) {
 #if !YUME_USE_BASEFWX
     (void)shared;
@@ -135,9 +183,9 @@ Bytes derive_key_heavy(const Bytes& shared, const Bytes& salt) {
     std::string password(reinterpret_cast<const char*>(shared.data()), shared.size());
     return basefwx::crypto::Argon2idHashRaw(password,
                                            salt,
-                                           basefwx::constants::kHeavyArgon2TimeCost,
-                                           basefwx::constants::kHeavyArgon2MemoryCost,
-                                           basefwx::constants::DefaultHeavyArgon2Parallelism(),
+                                           argon2_time_cost(),
+                                           argon2_memory_cost(),
+                                           argon2_parallelism(),
                                            32);
 #else
     Bytes material = basefwx::crypto::HmacSha256(salt, shared);

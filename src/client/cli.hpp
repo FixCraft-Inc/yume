@@ -9,6 +9,7 @@ struct ClientConfig {
     int port{443};
     std::string identity;
     int socks_port{0};
+    int io_threads{0};
     bool obfuscation{false};
     bool inner_crypto{true};
     bool inner_heavy{true};

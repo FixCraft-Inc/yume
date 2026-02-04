@@ -7,6 +7,7 @@
 #include "client/socks.hpp"
 
 #include <algorithm>
+#include <limits>
 
 #include "util.hpp"
 
@@ -438,7 +439,23 @@ void SocksSession::deliver_udp(uint8_t stream_id, const Tunnel::Bytes& data) {
     }
     auto assoc = it->second;
     std::vector<uint8_t> resp;
-    resp.reserve(4 + assoc->host.size() + data.size() + 8);
+    auto add_size = [](size_t a, size_t b, size_t& out) {
+        if (a > std::numeric_limits<size_t>::max() - b) {
+            return false;
+        }
+        out = a + b;
+        return true;
+    };
+    size_t reserve = 0;
+    if (!add_size(4, assoc->host.size(), reserve) ||
+        !add_size(reserve, data.size(), reserve) ||
+        !add_size(reserve, 8, reserve)) {
+        return;
+    }
+    if (reserve > resp.max_size()) {
+        return;
+    }
+    resp.reserve(reserve);
     resp.push_back(0x00);
     resp.push_back(0x00);
     resp.push_back(0x00);

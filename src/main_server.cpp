@@ -54,7 +54,7 @@ void print_help() {
         << "  --cert <path>         (override tls_cert)\n"
         << "  --key <path>          (override tls_key)\n"
         << "  --auth-keys <path>    (override auth_keys)\n"
-        << "  --threads <n>         (override threads)\n"
+        << "  --threads <n>         (0 = auto/all cores)\n"
         << "  --obfs                (enable obfuscation)\n"
         << "  --inner               (enable inner PQ crypto)\n"
         << "  --inner-heavy         (heavy KDF, default)\n"
@@ -771,7 +771,7 @@ int main(int argc, char** argv) {
                 }
             }
             if (json.contains("threads")) {
-                if (cfg.threads == 4) {
+                if (cfg.threads == 0) {
                     cfg.threads = json["threads"].get<int>();
                 }
             }
@@ -1453,7 +1453,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    int threads = cfg.threads > 0 ? cfg.threads : 1;
+    unsigned int hw = std::thread::hardware_concurrency();
+    int threads = cfg.threads > 0 ? cfg.threads : static_cast<int>(hw > 0 ? hw : 1);
     std::vector<std::thread> workers;
     workers.reserve(static_cast<size_t>(threads));
     for (int i = 0; i < threads; ++i) {

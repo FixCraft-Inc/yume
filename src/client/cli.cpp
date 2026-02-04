@@ -496,6 +496,7 @@ struct ParsedArgs {
     int port{0};
     std::string identity;
     int socks_port{0};
+    int io_threads{0};
     int lport{0};
     std::string rhost;
     int rport{0};
@@ -520,6 +521,7 @@ struct ParsedArgs {
     bool require_anonym{false};
     bool boring{false};
     bool boring_override{false};
+    bool io_threads_override{false};
     std::string ssh_L;
     std::string ssh_R;
 };
@@ -543,6 +545,9 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.identity = argv[++i];
         } else if (arg == "--socks" && i + 1 < argc) {
             args.socks_port = std::stoi(argv[++i]);
+        } else if (arg == "--threads" && i + 1 < argc) {
+            args.io_threads = std::stoi(argv[++i]);
+            args.io_threads_override = true;
         } else if (arg == "--lport" && i + 1 < argc) {
             args.lport = std::stoi(argv[++i]);
         } else if (arg == "--rhost" && i + 1 < argc) {
@@ -717,6 +722,7 @@ void print_help() {
         << "Optional:\n"
         << "  --port <port>        (ignored; client always uses 443)\n"
         << "  --socks <port>       (SOCKS5 mode)\n"
+        << "  --threads <n>        (IO threads; 0 = auto/all cores)\n"
         << "  --lport <port>       (forward local port)\n"
         << "  --rhost <host>       (forward target host)\n"
         << "  --rport <port>       (forward target port)\n"
@@ -785,6 +791,39 @@ bool parse_ssh_forward(const std::string& spec, int& lport, std::string& host, i
     return lport > 0 && rport > 0 && !host.empty();
 }
 
+int resolve_io_threads(int requested) {
+    if (requested > 0) {
+        return requested;
+    }
+    unsigned int hw = std::thread::hardware_concurrency();
+    return hw > 0 ? static_cast<int>(hw) : 1;
+}
+
+void run_io_threads(boost::asio::io_context& io, int requested) {
+    int threads = resolve_io_threads(requested);
+    std::vector<std::thread> workers;
+    if (threads > 1) {
+        workers.reserve(static_cast<size_t>(threads - 1));
+    }
+    for (int i = 1; i < threads; ++i) {
+        workers.emplace_back([&io]() { io.run(); });
+    }
+    io.run();
+    for (auto& t : workers) {
+        t.join();
+    }
+}
+
+std::vector<std::thread> start_io_threads(boost::asio::io_context& io, int requested) {
+    int threads = resolve_io_threads(requested);
+    std::vector<std::thread> workers;
+    workers.reserve(static_cast<size_t>(threads));
+    for (int i = 0; i < threads; ++i) {
+        workers.emplace_back([&io]() { io.run(); });
+    }
+    return workers;
+}
+
 }  // namespace
 
 int Cli::run(int argc, char** argv) {
@@ -843,6 +882,9 @@ int Cli::run(int argc, char** argv) {
             if (json.contains("socks_port") && cfg.socks_port == 0) {
                 cfg.socks_port = json["socks_port"].get<int>();
             }
+            if (json.contains("threads") && cfg.io_threads == 0 && !args.io_threads_override) {
+                cfg.io_threads = json["threads"].get<int>();
+            }
             if (json.contains("obfuscation") && !cfg.obfuscation) {
                 cfg.obfuscation = json["obfuscation"].get<bool>();
             }
@@ -895,6 +937,9 @@ int Cli::run(int argc, char** argv) {
     }
     if (args.socks_port > 0) {
         cfg.socks_port = args.socks_port;
+    }
+    if (args.io_threads != 0 || args.io_threads_override) {
+        cfg.io_threads = args.io_threads;
     }
     if (args.inner_crypto) {
         cfg.inner_crypto = true;
@@ -975,6 +1020,7 @@ int Cli::run(int argc, char** argv) {
         if (cfg.port > 0) json["port"] = cfg.port;
         if (!cfg.identity.empty()) json["identity"] = cfg.identity;
         if (cfg.socks_port > 0) json["socks_port"] = cfg.socks_port;
+        if (cfg.io_threads != 0) json["threads"] = cfg.io_threads;
         json["inner_crypto"] = cfg.inner_crypto;
         json["inner_heavy"] = cfg.inner_heavy;
         json["udp"] = cfg.allow_udp;
@@ -1477,7 +1523,7 @@ int Cli::run(int argc, char** argv) {
             }
             util::log_info("running local command via SOCKS5 127.0.0.1:" + std::to_string(actual_port));
             auto work = boost::asio::make_work_guard(io);
-            std::thread io_thread([&io]() { io.run(); });
+            auto workers = start_io_threads(io, cfg.io_threads);
             std::string cmd = maybe_force_ipv4(args.run_cmd, true);
             if (cmd == args.run_cmd) {
                 util::log_warn("IPv4-only enforced; if your command supports IPv4 forcing, add it explicitly.");
@@ -1492,8 +1538,10 @@ int Cli::run(int argc, char** argv) {
             int code = run_local_command_with_proxy(cmd, actual_port, true);
             work.reset();
             io.stop();
-            if (io_thread.joinable()) {
-                io_thread.join();
+            for (auto& t : workers) {
+                if (t.joinable()) {
+                    t.join();
+                }
             }
             return code == 0 ? 0 : 1;
         }
@@ -1517,7 +1565,7 @@ int Cli::run(int argc, char** argv) {
                     util::log_info("forwarding localhost:" + std::to_string(args.lport) + " -> " +
                                    args.rhost + ":" + std::to_string(args.rport));
                 }
-                io.run();
+                run_io_threads(io, cfg.io_threads);
                 if (!close_reason.empty()) {
                     throw std::runtime_error("tunnel closed: " + close_reason);
                 }
@@ -1528,7 +1576,7 @@ int Cli::run(int argc, char** argv) {
                 auto socks = std::make_shared<SocksServer>(io, cfg.socks_port, tunnel, cfg.allow_udp);
                 socks->start();
                 util::log_info("SOCKS5 listening on 127.0.0.1:" + std::to_string(cfg.socks_port));
-                io.run();
+                run_io_threads(io, cfg.io_threads);
                 if (!close_reason.empty()) {
                     throw std::runtime_error("tunnel closed: " + close_reason);
                 }
@@ -1537,7 +1585,7 @@ int Cli::run(int argc, char** argv) {
 
             if (use_reverse) {
                 util::log_info("remote forward active; waiting for connections");
-                io.run();
+                run_io_threads(io, cfg.io_threads);
                 if (!close_reason.empty()) {
                     throw std::runtime_error("tunnel closed: " + close_reason);
                 }

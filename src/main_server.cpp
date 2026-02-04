@@ -12,6 +12,12 @@
 #include <thread>
 #include <vector>
 #include <atomic>
+#include <cstring>
+#if defined(_WIN32)
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 #include <openssl/sha.h>
 #include <openssl/evp.h>
 #include <openssl/x509.h>
@@ -75,6 +81,7 @@ void print_help() {
         << "  --keys-gen <prefix>   (generate Ed25519 keypair at <prefix>.key/.pub)\n"
         << "  --keys-gen-add        (append generated pubkey to auth_keys)\n"
         << "  --ui                  (interactive server manager)\n"
+        << "  --boring              (no emojis; short, color-only output)\n"
         << "  --help                (show help)\n\n"
         << "Required config fields:\n"
         << "  listen_port   (int)\n"
@@ -92,7 +99,8 @@ void print_help() {
         << "  control_full  (bool)\n"
         << "  real_http     (bool)\n"
         << "  real_index_path (path)\n"
-        << "  real_secret   (string)\n";
+        << "  real_secret   (string)\n"
+        << "  boring        (bool)\n";
 }
 
 bool file_readable(const std::string& path) {
@@ -243,11 +251,33 @@ std::string sha256_hex(const std::string& data) {
 }
 
 std::string get_self_path(const char* argv0) {
+#if defined(_WIN32)
+    char buf[MAX_PATH];
+    DWORD len = GetModuleFileNameA(nullptr, buf, MAX_PATH);
+    if (len > 0 && len < MAX_PATH) {
+        return std::string(buf, len);
+    }
+#elif defined(__APPLE__)
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    if (size > 0) {
+        std::string out(size, '\0');
+        if (_NSGetExecutablePath(out.data(), &size) == 0) {
+            auto end = out.find('\0');
+            if (end != std::string::npos) {
+                out.resize(end);
+            }
+            std::error_code ec;
+            return std::filesystem::absolute(out, ec).string();
+        }
+    }
+#else
     std::error_code ec;
     auto p = std::filesystem::read_symlink("/proc/self/exe", ec);
     if (!ec) {
         return p.string();
     }
+#endif
     if (argv0 && argv0[0] != '\0') {
         return std::filesystem::absolute(argv0).string();
     }
@@ -712,6 +742,8 @@ int main(int argc, char** argv) {
             keys_gen_add = true;
         } else if (arg == "--ui") {
             ui_mode = true;
+        } else if (arg == "--boring") {
+            cfg.boring = true;
         }
     }
 
@@ -791,6 +823,9 @@ int main(int argc, char** argv) {
                 if (cfg.real_secret_file.empty()) {
                     cfg.real_secret_file = json["real_secret_file"].get<std::string>();
                 }
+            }
+            if (json.contains("boring")) {
+                cfg.boring = json["boring"].get<bool>();
             }
             if (json.contains("anonym")) {
                 if (!anonym_override) {
@@ -1254,7 +1289,11 @@ int main(int argc, char** argv) {
     }
 
     if (!cfg.inner_crypto) {
-        yume::util::log_warn("🔓⛓️‍💥 YOUR SECURITY IS SUFFERING BECAUSE YOU HAVE DISABLED: BASEFWX / PQ");
+        if (cfg.boring) {
+            yume::util::log_warn("Security warning: BASEFWX / PQ disabled");
+        } else {
+            yume::util::log_warn("🔓⛓️‍💥 YOUR SECURITY IS SUFFERING BECAUSE YOU HAVE DISABLED: BASEFWX / PQ");
+        }
     }
     if (cfg.anonym && cfg.anonym_ca_key.empty() && !cfg.anonym_ca_cert.empty()) {
         yume::util::log_warn("anonym_ca_cert set but anonym_ca_key is missing; no CA signature will be produced");

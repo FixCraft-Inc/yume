@@ -8,23 +8,54 @@
 
 #include "util.hpp"
 
+#include <filesystem>
 #include <cerrno>
 #include <csignal>
 #include <cstdio>
+#include <cctype>
 #include <fstream>
 #include <stdexcept>
 #include <thread>
 #include <chrono>
+#if defined(_WIN32)
+#include <windows.h>
+#include <processthreadsapi.h>
+#else
 #include <unistd.h>
+#endif
+#if defined(__APPLE__)
+#include <libproc.h>
+#endif
 
 namespace yume::client {
 
 namespace {
 std::string pid_path_for_port(const char* proto, int port) {
-    return "/tmp/yume-" + std::string(proto) + "-" + std::to_string(port) + ".pid";
+    std::filesystem::path base;
+    try {
+        base = std::filesystem::temp_directory_path();
+    } catch (...) {
+        base = ".";
+    }
+    std::string name = "yume-" + std::string(proto) + "-" + std::to_string(port) + ".pid";
+    return (base / name).string();
 }
 
-bool read_pidfile(const std::string& path, pid_t& pid) {
+#if defined(_WIN32)
+using pid_type = DWORD;
+#else
+using pid_type = pid_t;
+#endif
+
+pid_type current_pid() {
+#if defined(_WIN32)
+    return GetCurrentProcessId();
+#else
+    return static_cast<pid_type>(::getpid());
+#endif
+}
+
+bool read_pidfile(const std::string& path, pid_type& pid) {
     std::ifstream in(path);
     if (!in) {
         return false;
@@ -34,21 +65,59 @@ bool read_pidfile(const std::string& path, pid_t& pid) {
     if (!in || value <= 0) {
         return false;
     }
-    pid = static_cast<pid_t>(value);
+    pid = static_cast<pid_type>(value);
     return true;
 }
 
-bool pid_running(pid_t pid) {
+bool pid_running(pid_type pid) {
     if (pid <= 0) {
         return false;
     }
+#if defined(_WIN32)
+    HANDLE handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!handle) {
+        return GetLastError() == ERROR_ACCESS_DENIED;
+    }
+    DWORD code = 0;
+    bool running = GetExitCodeProcess(handle, &code) && code == STILL_ACTIVE;
+    CloseHandle(handle);
+    return running;
+#else
     if (::kill(pid, 0) == 0) {
         return true;
     }
     return errno == EPERM;
+#endif
 }
 
-bool is_yume_process(pid_t pid) {
+bool is_yume_process(pid_type pid) {
+#if defined(_WIN32)
+    HANDLE handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!handle) {
+        return false;
+    }
+    char path_buf[MAX_PATH];
+    DWORD size = MAX_PATH;
+    bool ok = QueryFullProcessImageNameA(handle, 0, path_buf, &size);
+    CloseHandle(handle);
+    if (!ok) {
+        return false;
+    }
+    std::string path(path_buf, size);
+    std::string name = std::filesystem::path(path).filename().string();
+    for (auto& c : name) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return name == "yume.exe" || name == "fixcraft-yume.exe" || name == "yume";
+#elif defined(__APPLE__)
+    char path_buf[PROC_PIDPATHINFO_MAXSIZE];
+    int len = proc_pidpath(pid, path_buf, sizeof(path_buf));
+    if (len <= 0) {
+        return false;
+    }
+    std::string name = std::filesystem::path(path_buf).filename().string();
+    return name == "yume" || name == "fixcraft-yume";
+#else
     std::ifstream comm("/proc/" + std::to_string(pid) + "/comm");
     if (!comm) {
         return false;
@@ -56,6 +125,7 @@ bool is_yume_process(pid_t pid) {
     std::string name;
     std::getline(comm, name);
     return name == "yume" || name == "fixcraft-yume";
+#endif
 }
 
 void remove_pidfile(const std::string& path) {
@@ -64,10 +134,19 @@ void remove_pidfile(const std::string& path) {
     }
 }
 
-bool kill_process(pid_t pid) {
+bool kill_process(pid_type pid) {
     if (pid <= 0) {
         return false;
     }
+#if defined(_WIN32)
+    HANDLE handle = OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!handle) {
+        return false;
+    }
+    BOOL ok = TerminateProcess(handle, 1);
+    CloseHandle(handle);
+    return ok == TRUE;
+#else
     if (::kill(pid, SIGTERM) != 0 && errno != ESRCH) {
         return false;
     }
@@ -81,14 +160,15 @@ bool kill_process(pid_t pid) {
         return false;
     }
     return true;
+#endif
 }
 
 bool reclaim_pidfile(const std::string& path) {
-    pid_t pid = 0;
+    pid_type pid = 0;
     if (!read_pidfile(path, pid)) {
         return false;
     }
-    if (pid == ::getpid()) {
+    if (pid == current_pid()) {
         return false;
     }
     if (!pid_running(pid)) {
@@ -108,7 +188,7 @@ bool reclaim_pidfile(const std::string& path) {
 void write_pidfile(const std::string& path) {
     std::ofstream out(path, std::ios::trunc);
     if (out) {
-        out << ::getpid();
+        out << current_pid();
     }
 }
 

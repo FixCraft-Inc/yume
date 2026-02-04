@@ -5,9 +5,9 @@ if [[ "${YUME_VERBOSE:-0}" == "1" ]]; then
   set -x
 fi
 
-BIN_DIR="/home/user/bins"
-BIN_DYNAMIC="${BIN_DIR}/dynamic"
-BIN_STATIC="${BIN_DIR}/static"
+BIN_DIR=""
+BIN_DYNAMIC=""
+BIN_STATIC=""
 OPENWRT_SDK="/home/user/openwrt-sdk-24.10.0-ath79-nand_gcc-13.3.0_musl.Linux-x86_64"
 OPENWRT_SDK_VERSION="24.10.0"
 OPENWRT_SDK_TARGET="ath79-nand"
@@ -64,17 +64,31 @@ REAL_HOME="$(resolve_real_home)"
 OPENWRT_SDK_PREFERRED="${REAL_HOME}/openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}_gcc-13.3.0_musl.Linux-x86_64"
 OPENWRT_SDK_USER_PREFERRED="${OPENWRT_SDK_PREFERRED}"
 OPENWRT_SDK_CACHE_DIR="${REAL_HOME}/.cache/yume"
+BIN_DIR="${REAL_HOME}/bins"
+BIN_DYNAMIC="${BIN_DIR}/dynamic"
+BIN_STATIC="${BIN_DIR}/static"
+HOST_OS="$(uname -s)"
+HOST_ARCH="$(uname -m)"
+case "${HOST_ARCH}" in
+  x86_64|amd64) HOST_ARCH="x86_64" ;;
+  i386|i686) HOST_ARCH="x86" ;;
+  aarch64|arm64) HOST_ARCH="arm64" ;;
+esac
 
 mkdir -p "${BIN_DYNAMIC}"/{x86/{linux,busybox},mips/openwrt,armv7/{linux,busybox},armv8/{linux,busybox}} \
          "${BIN_STATIC}"/{x86/{linux,busybox},mips/openwrt,armv7/{linux,busybox},armv8/{linux,busybox}}
+mkdir -p "${BIN_DYNAMIC}/windows/${HOST_ARCH}" "${BIN_DYNAMIC}/macos/${HOST_ARCH}" \
+         "${BIN_STATIC}/windows/${HOST_ARCH}" "${BIN_STATIC}/macos/${HOST_ARCH}"
 rm -f "${BIN_DYNAMIC}/x86/linux/"* "${BIN_DYNAMIC}/x86/busybox/"* \
       "${BIN_DYNAMIC}/mips/openwrt/"* \
       "${BIN_DYNAMIC}/armv7/linux/"* "${BIN_DYNAMIC}/armv7/busybox/"* \
       "${BIN_DYNAMIC}/armv8/linux/"* "${BIN_DYNAMIC}/armv8/busybox/"* \
+      "${BIN_DYNAMIC}/windows/"*/* "${BIN_DYNAMIC}/macos/"*/* \
       "${BIN_STATIC}/x86/linux/"* "${BIN_STATIC}/x86/busybox/"* \
       "${BIN_STATIC}/mips/openwrt/"* \
       "${BIN_STATIC}/armv7/linux/"* "${BIN_STATIC}/armv7/busybox/"* \
-      "${BIN_STATIC}/armv8/linux/"* "${BIN_STATIC}/armv8/busybox/"* 2>/dev/null || true
+      "${BIN_STATIC}/armv8/linux/"* "${BIN_STATIC}/armv8/busybox/"* \
+      "${BIN_STATIC}/windows/"*/* "${BIN_STATIC}/macos/"*/* 2>/dev/null || true
 rm -rf build basefwx/cpp/build
 
 ensure_argon2_src() {
@@ -983,6 +997,26 @@ build_host_linux_target() {
   strip "${outdir}/yume" "${outdir}/yumed"
 }
 
+build_host_native_target() {
+  local variant="$1"
+  local outdir="$2"
+  local exe_suffix="$3"
+  local variant_args
+  variant_args="$(variant_cmake_args "${variant}")"
+  YUME_CMAKE_ARGS="${variant_args}" ./ezbuild.sh
+  local yume_src="build/bin/yume${exe_suffix}"
+  local yumed_src="build/bin/yumed${exe_suffix}"
+  if [[ ! -f "${yume_src}" || ! -f "${yumed_src}" ]]; then
+    echo "Host build outputs missing: ${yume_src} ${yumed_src}" >&2
+    return 1
+  fi
+  cp -f "${yume_src}" "${outdir}/yume${exe_suffix}"
+  cp -f "${yumed_src}" "${outdir}/yumed${exe_suffix}"
+  if command -v strip >/dev/null 2>&1; then
+    strip "${outdir}/yume${exe_suffix}" "${outdir}/yumed${exe_suffix}" >/dev/null 2>&1 || true
+  fi
+}
+
 build_openwrt_target() {
   local variant="$1"
   local outdir="$2"
@@ -1004,6 +1038,23 @@ build_openwrt_target() {
   fi
   "${TOOLCHAIN_STRIP}" --strip-unneeded "${outdir}/yume" "${outdir}/yumed"
 }
+
+if [[ "${HOST_OS}" != "Linux" ]]; then
+  clean_build_dirs
+  case "${HOST_OS}" in
+    Darwin)
+      build_host_native_target "dynamic" "${BIN_DYNAMIC}/macos/${HOST_ARCH}" ""
+      ;;
+    MINGW*|MSYS*|CYGWIN*)
+      build_host_native_target "dynamic" "${BIN_DYNAMIC}/windows/${HOST_ARCH}" ".exe"
+      ;;
+    *)
+      echo "Unsupported host OS for fullau: ${HOST_OS}" >&2
+      exit 1
+      ;;
+  esac
+  exit 0
+fi
 
 vendor_restore_if_missing
 trap cleanup_temp_assets EXIT

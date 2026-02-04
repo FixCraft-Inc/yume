@@ -21,6 +21,11 @@
 #include <sys/select.h>
 #include <sys/stat.h>
 #endif
+#if defined(_WIN32)
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 #include <unordered_map>
 #include <limits>
 #include <chrono>
@@ -50,8 +55,25 @@ namespace yume::client {
 namespace {
 std::string get_self_path(const char* argv0) {
 #if defined(_WIN32)
-    (void)argv0;
-    return {};
+    char buf[MAX_PATH];
+    DWORD len = GetModuleFileNameA(nullptr, buf, MAX_PATH);
+    if (len > 0 && len < MAX_PATH) {
+        return std::string(buf, len);
+    }
+#elif defined(__APPLE__)
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    if (size > 0) {
+        std::string out(size, '\0');
+        if (_NSGetExecutablePath(out.data(), &size) == 0) {
+            auto end = out.find('\0');
+            if (end != std::string::npos) {
+                out.resize(end);
+            }
+            std::error_code ec;
+            return std::filesystem::absolute(out, ec).string();
+        }
+    }
 #else
     char buf[4096];
     ssize_t len = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
@@ -59,12 +81,12 @@ std::string get_self_path(const char* argv0) {
         buf[len] = '\0';
         return std::string(buf);
     }
+#endif
     if (argv0 && *argv0) {
         std::error_code ec;
         return std::filesystem::absolute(argv0, ec).string();
     }
     return {};
-#endif
 }
 
 constexpr const char kAnonMsgPrefix[] = "YUME-ANON-V1:";
@@ -234,7 +256,11 @@ std::string hex_encode(const unsigned char* data, size_t len) {
     return out;
 }
 
-void warn_security_disabled(const std::string& what) {
+void warn_security_disabled(const std::string& what, bool boring) {
+    if (boring) {
+        std::cerr << "\033[1;31mSecurity warning: " << what << " disabled\033[0m\n";
+        return;
+    }
     std::cerr << "\033[1;31m🔓⛓️‍💥 YOUR SECURITY IS SUFFERING BECAUSE YOU HAVE DISABLED: "
               << what << "\033[0m\n";
 }
@@ -492,6 +518,8 @@ struct ParsedArgs {
     bool accept_monitoring{false};
     bool save_server{false};
     bool require_anonym{false};
+    bool boring{false};
+    bool boring_override{false};
     std::string ssh_L;
     std::string ssh_R;
 };
@@ -568,6 +596,9 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.accept_monitoring = true;
         } else if (arg == "--save-server") {
             args.save_server = true;
+        } else if (arg == "--boring") {
+            args.boring = true;
+            args.boring_override = true;
         }
     }
     return args;
@@ -707,6 +738,7 @@ void print_help() {
         << "  --require-anonym     (abort if server is not in anonym mode)\n"
         << "  -L [bind:]lport:host:port  (SSH-style local forward)\n"
         << "  -R [bind:]rport:host:port  (SSH-style remote forward)\n"
+        << "  --boring             (no emojis; short, color-only output)\n"
         << "  --config <path>      (config file)\n"
         << "  --accept-monitoring  (skip monitoring warning)\n"
         << "  --save-server        (persist server into config)\n";
@@ -844,6 +876,9 @@ int Cli::run(int argc, char** argv) {
             if (json.contains("require_anonym")) {
                 cfg.require_anonym = json["require_anonym"].get<bool>();
             }
+            if (json.contains("boring") && !args.boring_override) {
+                cfg.boring = json["boring"].get<bool>();
+            }
         } catch (const std::exception& ex) {
             util::log_warn(std::string("config load failed: ") + ex.what());
         }
@@ -888,6 +923,9 @@ int Cli::run(int argc, char** argv) {
     if (args.allow_local_ip_override) {
         cfg.allow_local_ip = args.allow_local_ip;
     }
+    if (args.boring_override) {
+        cfg.boring = args.boring;
+    }
 
     if (cfg.inner_crypto && cfg.pq_public_key.empty()) {
         std::error_code ec;
@@ -920,7 +958,7 @@ int Cli::run(int argc, char** argv) {
 
 #if !YUME_USE_BASEFWX
     if (cfg.inner_crypto) {
-        warn_security_disabled("PQ");
+        warn_security_disabled("PQ", cfg.boring);
         cfg.inner_crypto = false;
     }
 #endif
@@ -946,6 +984,7 @@ int Cli::run(int argc, char** argv) {
         if (!cfg.tls_ca_cert.empty()) json["tls_ca_cert"] = cfg.tls_ca_cert;
         if (!cfg.tls_pin_sha256.empty()) json["tls_pin"] = cfg.tls_pin_sha256;
         json["require_anonym"] = cfg.require_anonym;
+        json["boring"] = cfg.boring;
         std::ofstream out(args.config_path);
         if (out) {
             out << json.dump(2);
@@ -965,6 +1004,7 @@ int Cli::run(int argc, char** argv) {
     int attempt = 0;
     bool pq_warned = false;
     bool pq_reconnect_used = false;
+    bool verified_once = false;
     for (;;) {
         try {
             boost::asio::io_context io;
@@ -1050,11 +1090,37 @@ int Cli::run(int argc, char** argv) {
             std::string pq_sig = json.value("pq_sig", "");
             std::string pq_alg = json.value("pq_alg", "");
 
-            auto print_red = [](const std::string& msg) {
-                std::cerr << "\033[1;31m" << msg << "\033[0m" << std::endl;
+            auto sanitize_msg = [&](const std::string& msg) {
+                if (!cfg.boring) {
+                    return msg;
+                }
+                std::string out;
+                out.reserve(msg.size());
+                for (unsigned char c : msg) {
+                    if (c >= 0x20 && c < 0x7f) {
+                        out.push_back(static_cast<char>(c));
+                    }
+                }
+                size_t start = out.find_first_not_of(' ');
+                if (start == std::string::npos) {
+                    return std::string{};
+                }
+                size_t end = out.find_last_not_of(' ');
+                return out.substr(start, end - start + 1);
             };
-            auto print_green = [](const std::string& msg) {
-                std::cout << "\033[1;32m" << msg << "\033[0m" << std::endl;
+            auto print_red = [&](const std::string& msg) {
+                std::string out = sanitize_msg(msg);
+                if (out.empty()) {
+                    return;
+                }
+                std::cerr << "\033[1;31m" << out << "\033[0m" << std::endl;
+            };
+            auto print_green = [&](const std::string& msg) {
+                std::string out = sanitize_msg(msg);
+                if (out.empty()) {
+                    return;
+                }
+                std::cout << "\033[1;32m" << out << "\033[0m" << std::endl;
             };
 
             if (mode == "anonym") {
@@ -1238,7 +1304,16 @@ int Cli::run(int argc, char** argv) {
                 } else if (!ca_sig.empty()) {
                     util::log_warn("anonym CA signature provided but no --anonym-ca-cert set; skipping CA verification");
                 }
-                print_green("✅✒️ This Server Has Cryptographically Correct Signature, and is VERIFIED");
+                if (!verified_once) {
+                    if (cfg.boring) {
+                        print_green("Verified");
+                    } else {
+                        print_green("✅✒️ Verified");
+                    }
+                    verified_once = true;
+                } else {
+                    print_green("Server Verified");
+                }
                 if (!pq_pub_b64.empty()) {
                     if (certfp.empty()) {
                         util::log_warn("pq_pub provided but certfp missing; refusing PQ auto-trust");
@@ -1267,12 +1342,18 @@ int Cli::run(int argc, char** argv) {
                                         std::string target_path = cfg.pq_public_key;
                                         if (target_path.empty()) {
                                             const char* home = std::getenv("HOME");
-                                            if (home && *home) {
-                                                std::filesystem::path p = std::filesystem::path(home) / ".config" / "yume" / "pq_public.key";
-                                                target_path = p.string();
-                                            } else {
-                                                target_path = "/tmp/yume/pq_public.key";
+                                        if (home && *home) {
+                                            std::filesystem::path p = std::filesystem::path(home) / ".config" / "yume" / "pq_public.key";
+                                            target_path = p.string();
+                                        } else {
+                                            std::filesystem::path tmp;
+                                            try {
+                                                tmp = std::filesystem::temp_directory_path();
+                                            } catch (...) {
+                                                tmp = ".";
                                             }
+                                            target_path = (tmp / "yume" / "pq_public.key").string();
+                                        }
                                         }
                                         if (!target_path.empty()) {
                                             bool pq_changed = true;
@@ -1334,7 +1415,7 @@ int Cli::run(int argc, char** argv) {
                 continue;
             }
             if (inner_disabled_for_session && !pq_warned) {
-                warn_security_disabled("PQ");
+                warn_security_disabled("PQ", cfg.boring);
                 if (pq_not_supported) {
                     util::log_warn("PQ not supported in this build; inner crypto disabled for this session");
                 } else if (pq_need_key) {

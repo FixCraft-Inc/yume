@@ -42,6 +42,7 @@ struct ServerConfig {
     std::string pq_sig;
     std::string pq_alg;
     std::string auth_keys_meta;
+    bool boring{false};
 };
 
 }  // namespace yume::server

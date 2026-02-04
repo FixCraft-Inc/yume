@@ -20,6 +20,7 @@ struct ClientConfig {
     std::string tls_ca_cert;
     std::string tls_pin_sha256;
     bool require_anonym{false};
+    bool boring{false};
 };
 
 class Cli {

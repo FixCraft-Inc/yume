@@ -55,6 +55,9 @@ target_link_libraries(yume_core
         Threads::Threads
         nlohmann_json::nlohmann_json
 )
+if(WIN32)
+    target_link_libraries(yume_core PUBLIC ws2_32)
+endif()
 if(CMAKE_CROSSCOMPILING AND ATOMIC_LIBRARY)
     target_link_libraries(yume_core PUBLIC ${ATOMIC_LIBRARY})
 endif()

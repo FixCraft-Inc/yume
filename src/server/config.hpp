@@ -9,7 +9,7 @@ struct ServerConfig {
     std::string tls_cert;
     std::string tls_key;
     std::string auth_keys;
-    int threads{4};
+    int threads{0};
     bool obfuscation{false};
     bool inner_crypto{true};
     bool inner_heavy{true};

@@ -716,22 +716,26 @@ EOF
         warn "CMake not found. Will install build dependencies."
     fi
 
-    uname_out="$(uname -s)"
-    case "${uname_out}" in
-        Linux*)
-            install_deps_linux || { error "Dependency install failed."; exit 1; }
-            ;;
-        Darwin*)
-            install_deps_macos || { error "Dependency install failed."; exit 1; }
-            ;;
-        MINGW*|MSYS*|CYGWIN*)
-            install_deps_windows || { error "Dependency install failed."; exit 1; }
-            ;;
-        *)
-            error "Unsupported OS: ${uname_out}"
-            exit 1
-            ;;
-    esac
+    if [[ "${YUME_SKIP_DEPS:-0}" == "1" ]]; then
+        warn "Skipping dependency install (YUME_SKIP_DEPS=1)."
+    else
+        uname_out="$(uname -s)"
+        case "${uname_out}" in
+            Linux*)
+                install_deps_linux || { error "Dependency install failed."; exit 1; }
+                ;;
+            Darwin*)
+                install_deps_macos || { error "Dependency install failed."; exit 1; }
+                ;;
+            MINGW*|MSYS*|CYGWIN*)
+                install_deps_windows || { error "Dependency install failed."; exit 1; }
+                ;;
+            *)
+                error "Unsupported OS: ${uname_out}"
+                exit 1
+                ;;
+        esac
+    fi
 
     ensure_basefwx
     cleanup_vendor

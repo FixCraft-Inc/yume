@@ -833,9 +833,15 @@ EOF
         fi
     fi
     build_project
+    local exe_suffix=""
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            exe_suffix=".exe"
+            ;;
+    esac
     info "Done! 🎉"
-    echo -e "${COLOR_GREEN}Run:${COLOR_RESET} ./build/bin/yumed --config config/yumed.json"
-    echo -e "${COLOR_GREEN}Then:${COLOR_RESET} ./build/bin/yume --config config/yume.json --socks 1080"
+    echo -e "${COLOR_GREEN}Run:${COLOR_RESET} ./build/bin/yumed${exe_suffix} --config config/yumed.json"
+    echo -e "${COLOR_GREEN}Then:${COLOR_RESET} ./build/bin/yume${exe_suffix} --config config/yume.json --socks 1080"
 }
 
 main "$@"

@@ -49,6 +49,11 @@ nlohmann::json read_json_config(const std::string& path) {
 std::string expand_user(const std::string& path) {
     if (path.rfind("~/", 0) == 0) {
         const char* home = std::getenv("HOME");
+#if defined(_WIN32)
+        if (!home) {
+            home = std::getenv("USERPROFILE");
+        }
+#endif
         if (home) {
             return std::string(home) + path.substr(1);
         }

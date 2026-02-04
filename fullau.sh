@@ -47,6 +47,10 @@ ARMV8_BUSYBOX_TOOLCHAIN_PREFIX=""
 USE_DOCKER_FALLBACK=0
 AUTO_DETECT_TOOLCHAINS=1
 OPENWRT_FEEDS_READY=0
+WINDOWS_CROSS="${YUME_WINDOWS_CROSS:-0}"
+WINDOWS_TOOLCHAIN_PREFIX="${YUME_WINDOWS_TOOLCHAIN_PREFIX:-x86_64-w64-mingw32}"
+WINDOWS_TRIPLET="${YUME_WINDOWS_TRIPLET:-x64-mingw-dynamic}"
+WINDOWS_VCPKG_PACKAGES="${YUME_WINDOWS_VCPKG_PACKAGES:-openssl boost-system boost-thread zlib zstd liblzma spdlog nlohmann-json argon2 liboqs}"
 
 resolve_real_home() {
   local home="${HOME}"
@@ -1017,6 +1021,63 @@ build_host_native_target() {
   fi
 }
 
+build_windows_cross_target() {
+  local variant="$1"
+  local outdir="$2"
+  local tool_prefix="${WINDOWS_TOOLCHAIN_PREFIX}"
+  local triplet="${WINDOWS_TRIPLET}"
+  local vcpkg_root="${VCPKG_ROOT:-}"
+  local vcpkg_bin=""
+  local toolchain_file="/tmp/yume-mingw-toolchain.cmake"
+
+  if [[ "${WINDOWS_CROSS}" -ne 1 ]]; then
+    return 0
+  fi
+  if ! command -v "${tool_prefix}-g++" >/dev/null 2>&1; then
+    echo "Skipping windows cross build; missing ${tool_prefix}-g++" >&2
+    return 0
+  fi
+  if [[ -z "${vcpkg_root}" ]]; then
+    echo "Skipping windows cross build; set VCPKG_ROOT to your vcpkg clone" >&2
+    return 0
+  fi
+  vcpkg_bin="${vcpkg_root}/vcpkg"
+  if [[ ! -x "${vcpkg_bin}" ]]; then
+    echo "Skipping windows cross build; vcpkg not found at ${vcpkg_bin}" >&2
+    return 0
+  fi
+  if [[ ! -f "${vcpkg_root}/scripts/buildsystems/vcpkg.cmake" ]]; then
+    echo "Skipping windows cross build; vcpkg toolchain file missing" >&2
+    return 0
+  fi
+
+  "${vcpkg_bin}" install --triplet "${triplet}" ${WINDOWS_VCPKG_PACKAGES}
+
+  mkdir -p "${outdir}"
+  cat > "${toolchain_file}" <<EOF
+set(CMAKE_SYSTEM_NAME Windows)
+set(CMAKE_SYSTEM_PROCESSOR x86_64)
+set(CMAKE_C_COMPILER ${tool_prefix}-gcc)
+set(CMAKE_CXX_COMPILER ${tool_prefix}-g++)
+set(CMAKE_RC_COMPILER ${tool_prefix}-windres)
+EOF
+
+  local variant_args
+  variant_args="$(variant_cmake_args "${variant}")"
+  YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DCMAKE_SYSTEM_NAME=Windows" \
+    ./ezbuild.sh
+
+  if [[ ! -f build/bin/yume.exe || ! -f build/bin/yumed.exe ]]; then
+    echo "Windows build outputs missing in build/bin" >&2
+    return 1
+  fi
+  cp -f build/bin/yume.exe "${outdir}/yume.exe"
+  cp -f build/bin/yumed.exe "${outdir}/yumed.exe"
+  if [[ "${triplet}" == *"dynamic"* ]]; then
+    cp -f "${vcpkg_root}/installed/${triplet}/bin/"*.dll "${outdir}/" 2>/dev/null || true
+  fi
+}
+
 build_openwrt_target() {
   local variant="$1"
   local outdir="$2"
@@ -1071,6 +1132,12 @@ clean_build_dirs
 build_host_linux_target "dynamic" "${BIN_DYNAMIC}/x86/linux"
 clean_build_dirs
 build_host_linux_target "static" "${BIN_STATIC}/x86/linux"
+
+# Windows cross build (optional; requires mingw-w64 + vcpkg)
+if [[ "${WINDOWS_CROSS}" -eq 1 ]]; then
+  clean_build_dirs
+  build_windows_cross_target "dynamic" "${BIN_DYNAMIC}/windows/x86_64"
+fi
 
 # Busybox x86
 clean_build_dirs

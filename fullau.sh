@@ -47,10 +47,34 @@ ARMV8_BUSYBOX_TOOLCHAIN_PREFIX=""
 USE_DOCKER_FALLBACK=0
 AUTO_DETECT_TOOLCHAINS=1
 OPENWRT_FEEDS_READY=0
-WINDOWS_CROSS="${YUME_WINDOWS_CROSS:-0}"
+WINDOWS_CROSS="${YUME_WINDOWS_CROSS:-}"
+WINDOWS_CROSS_AUTO=0
+if [[ -z "${WINDOWS_CROSS}" ]]; then
+  WINDOWS_CROSS_AUTO=1
+  WINDOWS_CROSS=0
+fi
+if [[ "${WINDOWS_CROSS}" != "0" && "${WINDOWS_CROSS}" != "1" ]]; then
+  WINDOWS_CROSS_AUTO=1
+  WINDOWS_CROSS=0
+fi
 WINDOWS_TOOLCHAIN_PREFIX="${YUME_WINDOWS_TOOLCHAIN_PREFIX:-x86_64-w64-mingw32}"
 WINDOWS_TRIPLET="${YUME_WINDOWS_TRIPLET:-x64-mingw-dynamic}"
 WINDOWS_VCPKG_PACKAGES="${YUME_WINDOWS_VCPKG_PACKAGES:-openssl boost-system boost-thread zlib zstd liblzma spdlog nlohmann-json argon2 liboqs}"
+MACOS_CROSS="${YUME_MACOS_CROSS:-}"
+MACOS_CROSS_AUTO=0
+if [[ -z "${MACOS_CROSS}" ]]; then
+  MACOS_CROSS_AUTO=1
+  MACOS_CROSS=0
+fi
+if [[ "${MACOS_CROSS}" != "0" && "${MACOS_CROSS}" != "1" ]]; then
+  MACOS_CROSS_AUTO=1
+  MACOS_CROSS=0
+fi
+MACOS_TOOLCHAIN_PREFIX="${YUME_MACOS_TOOLCHAIN_PREFIX:-}"
+MACOS_TRIPLET="${YUME_MACOS_TRIPLET:-x64-osx}"
+MACOS_VCPKG_PACKAGES="${YUME_MACOS_VCPKG_PACKAGES:-${WINDOWS_VCPKG_PACKAGES}}"
+MACOS_SDK="${YUME_MACOS_SDK:-${OSXCROSS_SDK:-}}"
+MACOS_DEPLOYMENT_TARGET="${YUME_MACOS_DEPLOYMENT_TARGET:-}"
 
 resolve_real_home() {
   local home="${HOME}"
@@ -65,6 +89,56 @@ resolve_real_home() {
 }
 
 REAL_HOME="$(resolve_real_home)"
+detect_vcpkg_root() {
+  if [[ -n "${VCPKG_ROOT:-}" && -x "${VCPKG_ROOT}/vcpkg" ]]; then
+    echo "${VCPKG_ROOT}"
+    return 0
+  fi
+  local bin
+  bin="$(command -v vcpkg 2>/dev/null || true)"
+  if [[ -n "${bin}" ]]; then
+    local root
+    root="$(cd "$(dirname "${bin}")" && pwd)"
+    if [[ -f "${root}/scripts/buildsystems/vcpkg.cmake" ]]; then
+      echo "${root}"
+      return 0
+    fi
+  fi
+  local candidate
+  for candidate in "${REAL_HOME}/vcpkg" "${REAL_HOME}/.vcpkg"; do
+    if [[ -x "${candidate}/vcpkg" && -f "${candidate}/scripts/buildsystems/vcpkg.cmake" ]]; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+if [[ -z "${VCPKG_ROOT:-}" ]]; then
+  VCPKG_ROOT="$(detect_vcpkg_root || true)"
+fi
+detect_osxcross_root() {
+  if [[ -n "${OSXCROSS_ROOT:-}" && -d "${OSXCROSS_ROOT}" ]]; then
+    echo "${OSXCROSS_ROOT}"
+    return 0
+  fi
+  local candidate
+  for candidate in "${REAL_HOME}/osxcross" "/opt/osxcross"; do
+    if [[ -d "${candidate}" && -d "${candidate}/tarballs" ]]; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+if [[ -z "${OSXCROSS_ROOT:-}" ]]; then
+  OSXCROSS_ROOT="$(detect_osxcross_root || true)"
+fi
+if [[ -z "${MACOS_SDK}" && -n "${OSXCROSS_ROOT:-}" ]]; then
+  mac_sdk_auto="$(ls -d "${OSXCROSS_ROOT}/target/SDK/MacOSX"*.sdk 2>/dev/null | sort -V | tail -n 1 || true)"
+  if [[ -n "${mac_sdk_auto}" ]]; then
+    MACOS_SDK="${mac_sdk_auto}"
+  fi
+fi
 OPENWRT_SDK_PREFERRED="${REAL_HOME}/openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}_gcc-13.3.0_musl.Linux-x86_64"
 OPENWRT_SDK_USER_PREFERRED="${OPENWRT_SDK_PREFERRED}"
 OPENWRT_SDK_CACHE_DIR="${REAL_HOME}/.cache/yume"
@@ -221,6 +295,148 @@ auto_detect_toolchains() {
     if [[ -n "${ARMV8_LINUX_TOOLCHAIN_PREFIX}" && -n "${ARMV8_LINUX_SYSROOT}" ]]; then
       ARMV8_BUSYBOX_TOOLCHAIN_PREFIX="${ARMV8_LINUX_TOOLCHAIN_PREFIX}"
       ARMV8_BUSYBOX_SYSROOT="${ARMV8_LINUX_SYSROOT}"
+    fi
+  fi
+}
+
+resolve_macos_toolchain() {
+  local bin_dir=""
+  if [[ -n "${OSXCROSS_ROOT:-}" && -d "${OSXCROSS_ROOT}/target/bin" ]]; then
+    bin_dir="${OSXCROSS_ROOT}/target/bin"
+  fi
+  local cxx=""
+  if [[ -n "${MACOS_TOOLCHAIN_PREFIX}" ]]; then
+    cxx="$(command -v "${MACOS_TOOLCHAIN_PREFIX}-clang++" 2>/dev/null || true)"
+  fi
+  if [[ -z "${cxx}" && -n "${bin_dir}" ]]; then
+    cxx="$(ls "${bin_dir}"/*-apple-darwin*-clang++ 2>/dev/null | head -n 1 || true)"
+    if [[ -z "${cxx}" ]]; then
+      if [[ -x "${bin_dir}/o64-clang++" ]]; then
+        cxx="${bin_dir}/o64-clang++"
+      elif [[ -x "${bin_dir}/oa64-clang++" ]]; then
+        cxx="${bin_dir}/oa64-clang++"
+      fi
+    fi
+  fi
+  if [[ -z "${cxx}" ]]; then
+    cxx="$(command -v o64-clang++ 2>/dev/null || true)"
+  fi
+  if [[ -z "${cxx}" ]]; then
+    cxx="$(command -v oa64-clang++ 2>/dev/null || true)"
+  fi
+  if [[ -z "${cxx}" ]]; then
+    return 1
+  fi
+  local cc="${cxx/clang++/clang}"
+  if [[ ! -x "${cc}" ]]; then
+    local alt="${cxx%++}"
+    if [[ -x "${alt}" ]]; then
+      cc="${alt}"
+    else
+      return 1
+    fi
+  fi
+  local arch="x86_64"
+  case "${cxx}" in
+    *oa64*|*aarch64*|*arm64*|*armv8*) arch="arm64" ;;
+  esac
+  local sdk=""
+  if [[ -n "${MACOS_SDK}" ]]; then
+    if [[ -d "${MACOS_SDK}" ]]; then
+      sdk="${MACOS_SDK}"
+    elif [[ -n "${OSXCROSS_ROOT:-}" && -d "${OSXCROSS_ROOT}/target/SDK/${MACOS_SDK}" ]]; then
+      sdk="${OSXCROSS_ROOT}/target/SDK/${MACOS_SDK}"
+    fi
+  fi
+  if [[ -z "${sdk}" && -n "${OSXCROSS_ROOT:-}" ]]; then
+    sdk="$(ls -d "${OSXCROSS_ROOT}/target/SDK/MacOSX"*.sdk 2>/dev/null | sort -V | tail -n 1 || true)"
+  fi
+  if [[ -z "${sdk}" ]]; then
+    return 2
+  fi
+  echo "${cc}|${cxx}|${sdk}|${arch}"
+}
+
+maybe_enable_windows_cross() {
+  if [[ "${WINDOWS_CROSS_AUTO}" -ne 1 ]]; then
+    return 0
+  fi
+  if command -v "${WINDOWS_TOOLCHAIN_PREFIX}-g++" >/dev/null 2>&1 && \
+     [[ -n "${VCPKG_ROOT:-}" && -x "${VCPKG_ROOT}/vcpkg" && -f "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" ]]; then
+    WINDOWS_CROSS=1
+  fi
+}
+
+maybe_enable_macos_cross() {
+  if [[ "${MACOS_CROSS_AUTO}" -ne 1 ]]; then
+    return 0
+  fi
+  if resolve_macos_toolchain >/dev/null 2>&1 && \
+     [[ -n "${VCPKG_ROOT:-}" && -x "${VCPKG_ROOT}/vcpkg" && -f "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" ]]; then
+    MACOS_CROSS=1
+  fi
+}
+
+list_macos_sdks() {
+  local out=""
+  local sdk_dir
+  if [[ -n "${OSXCROSS_ROOT:-}" && -d "${OSXCROSS_ROOT}/target/SDK" ]]; then
+    for sdk_dir in "${OSXCROSS_ROOT}/target/SDK"/MacOSX*.sdk; do
+      [ -d "${sdk_dir}" ] || continue
+      out+=$(basename "${sdk_dir}")" "
+    done
+  fi
+  if [[ -z "${out}" && -d "${REAL_HOME}/macos-sdk" ]]; then
+    for sdk_dir in "${REAL_HOME}/macos-sdk"/MacOSX*.sdk; do
+      [ -d "${sdk_dir}" ] || continue
+      out+=$(basename "${sdk_dir}")" "
+    done
+  fi
+  if [[ -z "${out}" ]]; then
+    echo "none"
+  else
+    echo "${out}"
+  fi
+}
+
+print_build_plan() {
+  echo "Building for:"
+  if [[ "${HOST_OS}" == "Linux" ]]; then
+    echo "  - linux x86_64 (dynamic, static)"
+    echo "  - openwrt mips (dynamic)"
+    echo "  - busybox x86 (dynamic, static)"
+    echo "  - armv7 linux/busybox (dynamic, static)"
+    echo "  - armv8 linux/busybox (dynamic, static)"
+  elif [[ "${HOST_OS}" == "Darwin" ]]; then
+    echo "  - macos ${HOST_ARCH} (dynamic)"
+  elif [[ "${HOST_OS}" == MINGW* || "${HOST_OS}" == MSYS* || "${HOST_OS}" == CYGWIN* ]]; then
+    echo "  - windows ${HOST_ARCH} (dynamic)"
+  fi
+  if [[ "${WINDOWS_CROSS}" -eq 1 ]]; then
+    echo "  - windows x86_64 (mingw, ${WINDOWS_TRIPLET})"
+  fi
+  if [[ "${MACOS_CROSS}" -eq 1 ]]; then
+    echo "  - macos $(macos_triplet_arch) (${MACOS_TRIPLET})"
+  fi
+  echo "Detected SDKs/libs:"
+  echo "  - vcpkg: ${VCPKG_ROOT:-not found}"
+  echo "  - osxcross: ${OSXCROSS_ROOT:-not found}"
+  echo "  - macOS SDKs: $(list_macos_sdks)"
+  if [[ -n "${MACOS_SDK}" ]]; then
+    echo "  - macOS SDK selected: ${MACOS_SDK}"
+  fi
+  if [[ -n "${OPENWRT_SDK}" && -d "${OPENWRT_SDK}/staging_dir" ]]; then
+    echo "  - openwrt SDK: ${OPENWRT_SDK}"
+  elif [[ -d "${OPENWRT_SDK_PREFERRED}/staging_dir" ]]; then
+    echo "  - openwrt SDK: ${OPENWRT_SDK_PREFERRED}"
+  else
+    echo "  - openwrt SDK: (will fetch) ${OPENWRT_SDK_PREFERRED}"
+  fi
+  if [[ "${WINDOWS_CROSS}" -ne 1 && "${WINDOWS_CROSS_AUTO}" -eq 1 ]]; then
+    if ! command -v "${WINDOWS_TOOLCHAIN_PREFIX}-g++" >/dev/null 2>&1; then
+      echo "  - windows toolchain: missing ${WINDOWS_TOOLCHAIN_PREFIX}-g++"
+    else
+      echo "  - windows toolchain: ${WINDOWS_TOOLCHAIN_PREFIX}-g++"
     fi
   fi
 }
@@ -1064,7 +1280,7 @@ EOF
 
   local variant_args
   variant_args="$(variant_cmake_args "${variant}")"
-  YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DCMAKE_SYSTEM_NAME=Windows" \
+  YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DCMAKE_SYSTEM_NAME=Windows" \
     ./ezbuild.sh
 
   if [[ ! -f build/bin/yume.exe || ! -f build/bin/yumed.exe ]]; then
@@ -1076,6 +1292,87 @@ EOF
   if [[ "${triplet}" == *"dynamic"* ]]; then
     cp -f "${vcpkg_root}/installed/${triplet}/bin/"*.dll "${outdir}/" 2>/dev/null || true
   fi
+}
+
+build_macos_cross_target() {
+  local variant="$1"
+  local outdir="$2"
+  local triplet="${MACOS_TRIPLET}"
+  local vcpkg_root="${VCPKG_ROOT:-}"
+  local toolchain_file="/tmp/yume-osxcross-toolchain.cmake"
+  local toolchain_info=""
+
+  if [[ "${MACOS_CROSS}" -ne 1 ]]; then
+    return 0
+  fi
+  if [[ -z "${vcpkg_root}" ]]; then
+    echo "Skipping macos cross build; set VCPKG_ROOT to your vcpkg clone" >&2
+    return 0
+  fi
+  if [[ ! -x "${vcpkg_root}/vcpkg" ]]; then
+    echo "Skipping macos cross build; vcpkg not found at ${vcpkg_root}/vcpkg" >&2
+    return 0
+  fi
+  if [[ ! -f "${vcpkg_root}/scripts/buildsystems/vcpkg.cmake" ]]; then
+    echo "Skipping macos cross build; vcpkg toolchain file missing" >&2
+    return 0
+  fi
+
+  toolchain_info="$(resolve_macos_toolchain || true)"
+  if [[ -z "${toolchain_info}" ]]; then
+    echo "Skipping macos cross build; osxcross toolchain not found (set OSXCROSS_ROOT or YUME_MACOS_TOOLCHAIN_PREFIX)" >&2
+    return 0
+  fi
+
+  local cc=""
+  local cxx=""
+  local sdk=""
+  local arch=""
+  IFS='|' read -r cc cxx sdk arch <<< "${toolchain_info}"
+  if [[ -z "${cc}" || -z "${cxx}" || -z "${sdk}" ]]; then
+    echo "Skipping macos cross build; missing osxcross compiler or SDK (set OSXCROSS_ROOT/YUME_MACOS_SDK)" >&2
+    return 0
+  fi
+
+  "${vcpkg_root}/vcpkg" install --triplet "${triplet}" ${MACOS_VCPKG_PACKAGES}
+
+  mkdir -p "${outdir}"
+  cat > "${toolchain_file}" <<EOF
+set(CMAKE_SYSTEM_NAME Darwin)
+set(CMAKE_SYSTEM_PROCESSOR ${arch})
+set(CMAKE_C_COMPILER ${cc})
+set(CMAKE_CXX_COMPILER ${cxx})
+set(CMAKE_OSX_SYSROOT ${sdk})
+set(CMAKE_OSX_ARCHITECTURES ${arch})
+EOF
+  if [[ -n "${MACOS_DEPLOYMENT_TARGET}" ]]; then
+    echo "set(CMAKE_OSX_DEPLOYMENT_TARGET ${MACOS_DEPLOYMENT_TARGET})" >> "${toolchain_file}"
+  fi
+  cat >> "${toolchain_file}" <<EOF
+set(CMAKE_FIND_ROOT_PATH ${sdk})
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+EOF
+
+  local variant_args
+  variant_args="$(variant_cmake_args "${variant}")"
+  YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DCMAKE_SYSTEM_NAME=Darwin" \
+    ./ezbuild.sh
+
+  if [[ ! -f build/bin/yume || ! -f build/bin/yumed ]]; then
+    echo "macOS build outputs missing in build/bin" >&2
+    return 1
+  fi
+  cp -f build/bin/yume "${outdir}/yume"
+  cp -f build/bin/yumed "${outdir}/yumed"
+}
+
+macos_triplet_arch() {
+  case "${MACOS_TRIPLET}" in
+    arm64*|*arm64*) echo "arm64" ;;
+    *) echo "x86_64" ;;
+  esac
 }
 
 build_openwrt_target() {
@@ -1120,6 +1417,9 @@ fi
 vendor_restore_if_missing
 trap cleanup_temp_assets EXIT
 auto_detect_toolchains
+maybe_enable_windows_cross
+maybe_enable_macos_cross
+print_build_plan
 ensure_openwrt_sdk
 ensure_openwrt_sysroot_libs
 
@@ -1137,6 +1437,13 @@ build_host_linux_target "static" "${BIN_STATIC}/x86/linux"
 if [[ "${WINDOWS_CROSS}" -eq 1 ]]; then
   clean_build_dirs
   build_windows_cross_target "dynamic" "${BIN_DYNAMIC}/windows/x86_64"
+fi
+
+# macOS cross build (optional; requires osxcross + vcpkg)
+if [[ "${MACOS_CROSS}" -eq 1 ]]; then
+  clean_build_dirs
+  mac_arch="$(macos_triplet_arch)"
+  build_macos_cross_target "dynamic" "${BIN_DYNAMIC}/macos/${mac_arch}"
 fi
 
 # Busybox x86

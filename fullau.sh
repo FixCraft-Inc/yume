@@ -1245,6 +1245,8 @@ build_windows_cross_target() {
   local vcpkg_root="${VCPKG_ROOT:-}"
   local vcpkg_bin=""
   local toolchain_file="/tmp/yume-mingw-toolchain.cmake"
+  local sysroot=""
+  local vcpkg_prefix=""
 
   if [[ "${WINDOWS_CROSS}" -ne 1 ]]; then
     return 0
@@ -1266,6 +1268,14 @@ build_windows_cross_target() {
     echo "Skipping windows cross build; vcpkg toolchain file missing" >&2
     return 0
   fi
+  vcpkg_prefix="${vcpkg_root}/installed/${triplet}"
+
+  sysroot="$("${tool_prefix}-gcc" -print-sysroot 2>/dev/null || true)"
+  if [[ -z "${sysroot}" || "${sysroot}" == "/" ]]; then
+    if [[ -d "/usr/${tool_prefix}" ]]; then
+      sysroot="/usr/${tool_prefix}"
+    fi
+  fi
 
   "${vcpkg_bin}" install --triplet "${triplet}" ${WINDOWS_VCPKG_PACKAGES}
 
@@ -1277,10 +1287,26 @@ set(CMAKE_C_COMPILER ${tool_prefix}-gcc)
 set(CMAKE_CXX_COMPILER ${tool_prefix}-g++)
 set(CMAKE_RC_COMPILER ${tool_prefix}-windres)
 EOF
+  if [[ -n "${sysroot}" && -d "${sysroot}" ]]; then
+    cat >> "${toolchain_file}" <<EOF
+set(CMAKE_SYSROOT ${sysroot})
+set(CMAKE_FIND_ROOT_PATH ${sysroot} ${vcpkg_prefix})
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+EOF
+  else
+    cat >> "${toolchain_file}" <<EOF
+set(CMAKE_FIND_ROOT_PATH ${vcpkg_prefix})
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+EOF
+  fi
 
   local variant_args
   variant_args="$(variant_cmake_args "${variant}")"
-  YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DCMAKE_SYSTEM_NAME=Windows" \
+  YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF -DOPENSSL_ROOT_DIR=${vcpkg_prefix} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DCMAKE_SYSTEM_NAME=Windows" \
     ./ezbuild.sh
 
   if [[ ! -f build/bin/yume.exe || ! -f build/bin/yumed.exe ]]; then

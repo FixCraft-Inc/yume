@@ -1247,6 +1247,8 @@ build_windows_cross_target() {
   local toolchain_file="/tmp/yume-mingw-toolchain.cmake"
   local sysroot=""
   local vcpkg_prefix=""
+  local oqs_lib=""
+  local oqs_include=""
 
   if [[ "${WINDOWS_CROSS}" -ne 1 ]]; then
     return 0
@@ -1269,6 +1271,12 @@ build_windows_cross_target() {
     return 0
   fi
   vcpkg_prefix="${vcpkg_root}/installed/${triplet}"
+  oqs_include="${vcpkg_prefix}/include"
+  if [[ -f "${vcpkg_prefix}/lib/liboqs.dll.a" ]]; then
+    oqs_lib="${vcpkg_prefix}/lib/liboqs.dll.a"
+  elif [[ -f "${vcpkg_prefix}/lib/liboqs.a" ]]; then
+    oqs_lib="${vcpkg_prefix}/lib/liboqs.a"
+  fi
 
   sysroot="$("${tool_prefix}-gcc" -print-sysroot 2>/dev/null || true)"
   if [[ -z "${sysroot}" || "${sysroot}" == "/" ]]; then
@@ -1306,7 +1314,12 @@ EOF
 
   local variant_args
   variant_args="$(variant_cmake_args "${variant}")"
-  YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF -DOPENSSL_ROOT_DIR=${vcpkg_prefix} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DCMAKE_SYSTEM_NAME=Windows" \
+  local extra_oqs_args=""
+  if [[ -n "${oqs_lib}" && -d "${oqs_include}" ]]; then
+    extra_oqs_args="-DOQS_INCLUDE_DIR=${oqs_include} -DOQS_LIBRARY=${oqs_lib}"
+  fi
+
+  YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF -DOPENSSL_ROOT_DIR=${vcpkg_prefix} ${extra_oqs_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DCMAKE_SYSTEM_NAME=Windows" \
     ./ezbuild.sh
 
   if [[ ! -f build/bin/yume.exe || ! -f build/bin/yumed.exe ]]; then
@@ -1327,6 +1340,8 @@ build_macos_cross_target() {
   local vcpkg_root="${VCPKG_ROOT:-}"
   local toolchain_file="/tmp/yume-osxcross-toolchain.cmake"
   local toolchain_info=""
+  local oqs_lib=""
+  local oqs_include=""
 
   if [[ "${MACOS_CROSS}" -ne 1 ]]; then
     return 0
@@ -1363,6 +1378,13 @@ build_macos_cross_target() {
   "${vcpkg_root}/vcpkg" install --triplet "${triplet}" ${MACOS_VCPKG_PACKAGES}
 
   mkdir -p "${outdir}"
+  oqs_include="${vcpkg_root}/installed/${triplet}/include"
+  if [[ -f "${vcpkg_root}/installed/${triplet}/lib/liboqs.a" ]]; then
+    oqs_lib="${vcpkg_root}/installed/${triplet}/lib/liboqs.a"
+  elif [[ -f "${vcpkg_root}/installed/${triplet}/lib/liboqs.dylib" ]]; then
+    oqs_lib="${vcpkg_root}/installed/${triplet}/lib/liboqs.dylib"
+  fi
+
   cat > "${toolchain_file}" <<EOF
 set(CMAKE_SYSTEM_NAME Darwin)
 set(CMAKE_SYSTEM_PROCESSOR ${arch})
@@ -1383,7 +1405,12 @@ EOF
 
   local variant_args
   variant_args="$(variant_cmake_args "${variant}")"
-  YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DCMAKE_SYSTEM_NAME=Darwin" \
+  local extra_oqs_args=""
+  if [[ -n "${oqs_lib}" && -d "${oqs_include}" ]]; then
+    extra_oqs_args="-DOQS_INCLUDE_DIR=${oqs_include} -DOQS_LIBRARY=${oqs_lib}"
+  fi
+
+  YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF ${extra_oqs_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DCMAKE_SYSTEM_NAME=Darwin" \
     ./ezbuild.sh
 
   if [[ ! -f build/bin/yume || ! -f build/bin/yumed ]]; then

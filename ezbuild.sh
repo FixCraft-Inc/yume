@@ -23,6 +23,12 @@ OPENWRT_SDK=""
 SYSROOT_PATH=""
 CMAKE_ARGS=()
 EXTRA_CMAKE_ARGS=()
+WINDOWS_CROSS="${YUME_WINDOWS_CROSS:-0}"
+WINDOWS_TOOLCHAIN_PREFIX="${YUME_WINDOWS_TOOLCHAIN_PREFIX:-x86_64-w64-mingw32}"
+WINDOWS_TRIPLET="${YUME_WINDOWS_TRIPLET:-x64-mingw-dynamic}"
+VCPKG_ROOT="${VCPKG_ROOT:-}"
+VCPKG_PREFIX=""
+APT_UPDATED_FLAG="${APT_UPDATED_FLAG:-/tmp/yume-apt-updated}"
 
 info()  { echo -e "${COLOR_BLUE}✨ $*${COLOR_RESET}"; }
 warn()  { echo -e "${COLOR_YELLOW}⚠️  $*${COLOR_RESET}"; }
@@ -32,6 +38,31 @@ step()  { echo -e "${COLOR_MAGENTA}🚀 $*${COLOR_RESET}"; }
 
 need_cmd() {
     command -v "$1" >/dev/null 2>&1
+}
+
+apt_update_once() {
+    if ! need_cmd apt-get; then
+        return 0
+    fi
+    if [[ -f "${APT_UPDATED_FLAG}" ]]; then
+        return 0
+    fi
+    sudo apt-get update -y
+    touch "${APT_UPDATED_FLAG}"
+}
+
+detect_vcpkg_root() {
+    if [[ -n "${VCPKG_ROOT:-}" && -x "${VCPKG_ROOT}/vcpkg" ]]; then
+        echo "${VCPKG_ROOT}"
+        return 0
+    fi
+    for candidate in "${HOME}/vcpkg" "${HOME}/src/vcpkg" "/opt/vcpkg"; do
+        if [[ -x "${candidate}/vcpkg" ]]; then
+            echo "${candidate}"
+            return 0
+        fi
+    done
+    return 1
 }
 
 vendor_dir_for_build() {
@@ -355,12 +386,22 @@ cleanup_vendor() {
 install_deps_linux() {
     if need_cmd apt-get; then
         step "Detected apt-get (Debian/Ubuntu). Installing dependencies..."
-        sudo apt-get update -y
+        apt_update_once
         sudo apt-get install -y \
             build-essential \
             cmake \
             git \
             pkg-config \
+            ninja-build \
+            curl \
+            wget \
+            ca-certificates \
+            unzip \
+            zip \
+            xz-utils \
+            zstd \
+            python3 \
+            perl \
             libssl-dev \
             libboost-all-dev \
             libboost-system-dev \
@@ -371,6 +412,12 @@ install_deps_linux() {
             libzstd-dev \
             libargon2-dev \
             liblzma-dev
+        if [[ "${WINDOWS_CROSS}" == "1" ]]; then
+            sudo apt-get install -y mingw-w64 || warn "mingw-w64 install failed; Windows cross build may fail."
+        fi
+        if [[ "${YUME_MACOS_CROSS:-0}" == "1" ]]; then
+            sudo apt-get install -y clang lld llvm || warn "clang/llvm install failed; macOS cross build may fail."
+        fi
         if apt-cache show liboqs-dev >/dev/null 2>&1; then
             sudo apt-get install -y liboqs-dev || warn "liboqs-dev install failed; PQ features will be disabled unless provided."
         else
@@ -590,6 +637,54 @@ main() {
         CMAKE_ARGS+=("${EXTRA_CMAKE_ARGS[@]}")
     fi
 
+    if [[ "${WINDOWS_CROSS}" == "1" ]]; then
+        if [[ -z "${VCPKG_ROOT}" ]]; then
+            VCPKG_ROOT="$(detect_vcpkg_root || true)"
+        fi
+        if [[ -z "${VCPKG_ROOT}" || ! -x "${VCPKG_ROOT}/vcpkg" ]]; then
+            error "Windows cross build requires VCPKG_ROOT (set to your vcpkg clone)."
+            exit 1
+        fi
+        if [[ ! -x "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" ]]; then
+            error "vcpkg toolchain file missing at ${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+            exit 1
+        fi
+        if ! command -v "${WINDOWS_TOOLCHAIN_PREFIX}-g++" >/dev/null 2>&1; then
+            error "Missing ${WINDOWS_TOOLCHAIN_PREFIX}-g++; install mingw-w64."
+            exit 1
+        fi
+        VCPKG_PREFIX="${VCPKG_ROOT}/installed/${WINDOWS_TRIPLET}"
+        CMAKE_ARGS+=(
+            "-DCMAKE_SYSTEM_NAME=Windows"
+            "-DCMAKE_C_COMPILER=${WINDOWS_TOOLCHAIN_PREFIX}-gcc"
+            "-DCMAKE_CXX_COMPILER=${WINDOWS_TOOLCHAIN_PREFIX}-g++"
+            "-DCMAKE_RC_COMPILER=${WINDOWS_TOOLCHAIN_PREFIX}-windres"
+            "-DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+            "-DVCPKG_TARGET_TRIPLET=${WINDOWS_TRIPLET}"
+            "-DOPENSSL_ROOT_DIR=${VCPKG_PREFIX}"
+            "-DBASEFWX_USE_VENDOR_DEPS=OFF"
+        )
+        if [[ -f "${VCPKG_PREFIX}/include/oqs/oqs.h" ]]; then
+            if [[ -f "${VCPKG_PREFIX}/lib/liboqs.dll.a" ]]; then
+                CMAKE_ARGS+=(
+                    "-DOQS_INCLUDE_DIR=${VCPKG_PREFIX}/include"
+                    "-DOQS_LIBRARY=${VCPKG_PREFIX}/lib/liboqs.dll.a"
+                    "-DOQS_INCLUDE_DIRS=${VCPKG_PREFIX}/include"
+                    "-DOQS_LIBRARIES=${VCPKG_PREFIX}/lib/liboqs.dll.a"
+                    "-DOQS_FOUND=TRUE"
+                )
+            elif [[ -f "${VCPKG_PREFIX}/lib/liboqs.a" ]]; then
+                CMAKE_ARGS+=(
+                    "-DOQS_INCLUDE_DIR=${VCPKG_PREFIX}/include"
+                    "-DOQS_LIBRARY=${VCPKG_PREFIX}/lib/liboqs.a"
+                    "-DOQS_INCLUDE_DIRS=${VCPKG_PREFIX}/include"
+                    "-DOQS_LIBRARIES=${VCPKG_PREFIX}/lib/liboqs.a"
+                    "-DOQS_FOUND=TRUE"
+                )
+            fi
+        fi
+    fi
+
     if [[ $OPENWRT -eq 1 || $BUSYBOX -eq 1 ]]; then
         if [[ -n "$OPENWRT_SDK" ]]; then
             if [[ ! -d "$OPENWRT_SDK" ]]; then
@@ -780,6 +875,21 @@ EOF
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=ON")
         else
             warn "OpenWRT libargon2 not detected in sysroot; heavy KDF will fall back to HKDF."
+            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=OFF")
+        fi
+    elif [[ "${WINDOWS_CROSS}" == "1" ]]; then
+        if [[ -f "${VCPKG_PREFIX}/include/oqs/oqs.h" ]]; then
+            info "Windows cross: liboqs detected in vcpkg; enabling PQ in BaseFWX."
+            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=ON")
+        else
+            warn "Windows cross: liboqs not detected in vcpkg; PQ will be disabled."
+            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=OFF")
+        fi
+        if [[ -f "${VCPKG_PREFIX}/include/argon2.h" ]]; then
+            info "Windows cross: libargon2 detected in vcpkg; enabling Argon2 in BaseFWX."
+            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=ON")
+        else
+            warn "Windows cross: libargon2 not detected in vcpkg; heavy KDF will fall back to HKDF."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=OFF")
         fi
     else

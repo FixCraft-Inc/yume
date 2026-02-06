@@ -75,6 +75,7 @@ MACOS_TRIPLET="${YUME_MACOS_TRIPLET:-x64-osx}"
 MACOS_VCPKG_PACKAGES="${YUME_MACOS_VCPKG_PACKAGES:-${WINDOWS_VCPKG_PACKAGES}}"
 MACOS_SDK="${YUME_MACOS_SDK:-${OSXCROSS_SDK:-}}"
 MACOS_DEPLOYMENT_TARGET="${YUME_MACOS_DEPLOYMENT_TARGET:-}"
+APT_UPDATED_FLAG="${APT_UPDATED_FLAG:-/tmp/yume-apt-updated}"
 
 resolve_real_home() {
   local home="${HOME}"
@@ -89,6 +90,22 @@ resolve_real_home() {
 }
 
 REAL_HOME="$(resolve_real_home)"
+
+apt_update_once() {
+  if ! command -v apt-get >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ -f "${APT_UPDATED_FLAG}" ]]; then
+    return 0
+  fi
+  apt-get update || true
+  touch "${APT_UPDATED_FLAG}" || true
+}
+
+apt_install() {
+  apt_update_once
+  apt-get install -y "$@" || true
+}
 detect_vcpkg_root() {
   if [[ -n "${VCPKG_ROOT:-}" && -x "${VCPKG_ROOT}/vcpkg" ]]; then
     echo "${VCPKG_ROOT}"
@@ -116,6 +133,22 @@ detect_vcpkg_root() {
 if [[ -z "${VCPKG_ROOT:-}" ]]; then
   VCPKG_ROOT="$(detect_vcpkg_root || true)"
 fi
+
+ensure_vcpkg() {
+  if [[ -n "${VCPKG_ROOT:-}" && -x "${VCPKG_ROOT}/vcpkg" ]]; then
+    return 0
+  fi
+  if ! target_enabled windows-x86_64 && ! target_enabled macos-x86_64 && ! target_enabled macos-arm64; then
+    return 0
+  fi
+  VCPKG_ROOT="${REAL_HOME}/vcpkg"
+  if [[ -x "${VCPKG_ROOT}/vcpkg" ]]; then
+    return 0
+  fi
+  echo "Cloning vcpkg into ${VCPKG_ROOT}..."
+  git clone --depth 1 https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}"
+  "${VCPKG_ROOT}/bootstrap-vcpkg.sh" -disableMetrics
+}
 detect_osxcross_root() {
   if [[ -n "${OSXCROSS_ROOT:-}" && -d "${OSXCROSS_ROOT}" ]]; then
     echo "${OSXCROSS_ROOT}"
@@ -133,6 +166,55 @@ detect_osxcross_root() {
 if [[ -z "${OSXCROSS_ROOT:-}" ]]; then
   OSXCROSS_ROOT="$(detect_osxcross_root || true)"
 fi
+
+ensure_macos_sdk_tarball() {
+  local sdk_src="${REAL_HOME}/macos-sdk"
+  local tarballs="${OSXCROSS_ROOT}/tarballs"
+  mkdir -p "${tarballs}"
+  if ls "${tarballs}/MacOSX"*.sdk.tar.* >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ -d "${sdk_src}" ]]; then
+    local sdk_dir
+    sdk_dir="$(ls -d "${sdk_src}/MacOSX"*.sdk 2>/dev/null | sort -V | tail -n 1 || true)"
+    if [[ -n "${sdk_dir}" ]]; then
+      local sdk_name
+      sdk_name="$(basename "${sdk_dir}")"
+      tar -cJf "${tarballs}/${sdk_name}.tar.xz" -C "${sdk_src}" "${sdk_name}"
+      return 0
+    fi
+    local sdk_tar
+    sdk_tar="$(ls "${sdk_src}/MacOSX"*.sdk.tar.* 2>/dev/null | sort -V | tail -n 1 || true)"
+    if [[ -n "${sdk_tar}" ]]; then
+      cp -f "${sdk_tar}" "${tarballs}/"
+      return 0
+    fi
+  fi
+  echo "macOS SDK not found in ${sdk_src}; place MacOSX*.sdk or MacOSX*.sdk.tar.xz there." >&2
+  return 1
+}
+
+ensure_osxcross() {
+  if ! target_enabled macos-x86_64 && ! target_enabled macos-arm64; then
+    return 0
+  fi
+  if [[ -n "${OSXCROSS_ROOT:-}" && -d "${OSXCROSS_ROOT}" ]]; then
+    :
+  else
+    OSXCROSS_ROOT="${REAL_HOME}/osxcross"
+    if [[ ! -d "${OSXCROSS_ROOT}" ]]; then
+      echo "Cloning osxcross into ${OSXCROSS_ROOT}..."
+      git clone --depth 1 https://github.com/tpoechtrager/osxcross.git "${OSXCROSS_ROOT}"
+    fi
+  fi
+  if ! ensure_macos_sdk_tarball; then
+    echo "osxcross requires a macOS SDK tarball; see README for details." >&2
+    exit 1
+  fi
+  if [[ ! -d "${OSXCROSS_ROOT}/target/bin" ]]; then
+    (cd "${OSXCROSS_ROOT}" && UNATTENDED=1 ./build.sh)
+  fi
+}
 if [[ -z "${MACOS_SDK}" && -n "${OSXCROSS_ROOT:-}" ]]; then
   mac_sdk_auto="$(ls -d "${OSXCROSS_ROOT}/target/SDK/MacOSX"*.sdk 2>/dev/null | sort -V | tail -n 1 || true)"
   if [[ -n "${mac_sdk_auto}" ]]; then
@@ -152,21 +234,68 @@ case "${HOST_ARCH}" in
   i386|i686) HOST_ARCH="x86" ;;
   aarch64|arm64) HOST_ARCH="arm64" ;;
 esac
+TARGETS_RAW="${YUME_TARGETS:-all}"
+TARGETS_RAW="${TARGETS_RAW// /}"
+
+target_enabled() {
+  local target="$1"
+  if [[ "${TARGETS_RAW}" == "all" || -z "${TARGETS_RAW}" ]]; then
+    return 0
+  fi
+  local list=",${TARGETS_RAW// /,},"
+  case "${target}" in
+    openwrt-mips)
+      [[ "${list}" == *",openwrt,"* || "${list}" == *",openwrt-mips,"* ]]
+      ;;
+    linux-x86_64)
+      [[ "${list}" == *",linux,"* || "${list}" == *",linux-x86_64,"* || "${list}" == *",host-linux,"* ]]
+      ;;
+    windows-x86_64)
+      [[ "${list}" == *",windows,"* || "${list}" == *",windows-x86_64,"* ]]
+      ;;
+    macos-x86_64)
+      [[ "${list}" == *",macos,"* || "${list}" == *",macos-x86_64,"* || "${list}" == *",macos-x64,"* ]]
+      ;;
+    macos-arm64)
+      [[ "${list}" == *",macos,"* || "${list}" == *",macos-arm64,"* ]]
+      ;;
+    busybox-x86)
+      [[ "${list}" == *",busybox,"* || "${list}" == *",busybox-x86,"* ]]
+      ;;
+    armv7-linux)
+      [[ "${list}" == *",armv7,"* || "${list}" == *",armv7-linux,"* ]]
+      ;;
+    armv7-busybox)
+      [[ "${list}" == *",armv7,"* || "${list}" == *",armv7-busybox,"* ]]
+      ;;
+    armv8-linux)
+      [[ "${list}" == *",armv8,"* || "${list}" == *",armv8-linux,"* || "${list}" == *",aarch64,"* ]]
+      ;;
+    armv8-busybox)
+      [[ "${list}" == *",armv8,"* || "${list}" == *",armv8-busybox,"* || "${list}" == *",aarch64,"* ]]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
 
 mkdir -p "${BIN_DYNAMIC}"/{x86/{linux,busybox},mips/openwrt,armv7/{linux,busybox},armv8/{linux,busybox}} \
          "${BIN_STATIC}"/{x86/{linux,busybox},mips/openwrt,armv7/{linux,busybox},armv8/{linux,busybox}}
 mkdir -p "${BIN_DYNAMIC}/windows/${HOST_ARCH}" "${BIN_DYNAMIC}/macos/${HOST_ARCH}" \
          "${BIN_STATIC}/windows/${HOST_ARCH}" "${BIN_STATIC}/macos/${HOST_ARCH}"
-rm -f "${BIN_DYNAMIC}/x86/linux/"* "${BIN_DYNAMIC}/x86/busybox/"* \
-      "${BIN_DYNAMIC}/mips/openwrt/"* \
-      "${BIN_DYNAMIC}/armv7/linux/"* "${BIN_DYNAMIC}/armv7/busybox/"* \
-      "${BIN_DYNAMIC}/armv8/linux/"* "${BIN_DYNAMIC}/armv8/busybox/"* \
-      "${BIN_DYNAMIC}/windows/"*/* "${BIN_DYNAMIC}/macos/"*/* \
-      "${BIN_STATIC}/x86/linux/"* "${BIN_STATIC}/x86/busybox/"* \
-      "${BIN_STATIC}/mips/openwrt/"* \
-      "${BIN_STATIC}/armv7/linux/"* "${BIN_STATIC}/armv7/busybox/"* \
-      "${BIN_STATIC}/armv8/linux/"* "${BIN_STATIC}/armv8/busybox/"* \
-      "${BIN_STATIC}/windows/"*/* "${BIN_STATIC}/macos/"*/* 2>/dev/null || true
+if [[ "${GITHUB_ACTIONS:-}" == "true" || "${YUME_CLEAN_BINS:-0}" == "1" ]]; then
+  rm -f "${BIN_DYNAMIC}/x86/linux/"* "${BIN_DYNAMIC}/x86/busybox/"* \
+        "${BIN_DYNAMIC}/mips/openwrt/"* \
+        "${BIN_DYNAMIC}/armv7/linux/"* "${BIN_DYNAMIC}/armv7/busybox/"* \
+        "${BIN_DYNAMIC}/armv8/linux/"* "${BIN_DYNAMIC}/armv8/busybox/"* \
+        "${BIN_DYNAMIC}/windows/"*/* "${BIN_DYNAMIC}/macos/"*/* \
+        "${BIN_STATIC}/x86/linux/"* "${BIN_STATIC}/x86/busybox/"* \
+        "${BIN_STATIC}/mips/openwrt/"* \
+        "${BIN_STATIC}/armv7/linux/"* "${BIN_STATIC}/armv7/busybox/"* \
+        "${BIN_STATIC}/armv8/linux/"* "${BIN_STATIC}/armv8/busybox/"* \
+        "${BIN_STATIC}/windows/"*/* "${BIN_STATIC}/macos/"*/* 2>/dev/null || true
+fi
 rm -rf build basefwx/cpp/build
 
 ensure_argon2_src() {
@@ -361,6 +490,9 @@ maybe_enable_windows_cross() {
   if [[ "${WINDOWS_CROSS_AUTO}" -ne 1 ]]; then
     return 0
   fi
+  if ! target_enabled windows-x86_64; then
+    return 0
+  fi
   if command -v "${WINDOWS_TOOLCHAIN_PREFIX}-g++" >/dev/null 2>&1 && \
      [[ -n "${VCPKG_ROOT:-}" && -x "${VCPKG_ROOT}/vcpkg" && -f "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" ]]; then
     WINDOWS_CROSS=1
@@ -369,6 +501,9 @@ maybe_enable_windows_cross() {
 
 maybe_enable_macos_cross() {
   if [[ "${MACOS_CROSS_AUTO}" -ne 1 ]]; then
+    return 0
+  fi
+  if ! target_enabled macos-x86_64 && ! target_enabled macos-arm64; then
     return 0
   fi
   if resolve_macos_toolchain >/dev/null 2>&1 && \
@@ -402,20 +537,30 @@ list_macos_sdks() {
 print_build_plan() {
   echo "Building for:"
   if [[ "${HOST_OS}" == "Linux" ]]; then
-    echo "  - linux x86_64 (dynamic, static)"
-    echo "  - openwrt mips (dynamic)"
-    echo "  - busybox x86 (dynamic, static)"
-    echo "  - armv7 linux/busybox (dynamic, static)"
-    echo "  - armv8 linux/busybox (dynamic, static)"
+    if target_enabled linux-x86_64; then
+      echo "  - linux x86_64 (dynamic, static)"
+    fi
+    if target_enabled openwrt-mips; then
+      echo "  - openwrt mips (dynamic)"
+    fi
+    if target_enabled busybox-x86; then
+      echo "  - busybox x86 (dynamic, static)"
+    fi
+    if target_enabled armv7-linux || target_enabled armv7-busybox; then
+      echo "  - armv7 linux/busybox (dynamic, static)"
+    fi
+    if target_enabled armv8-linux || target_enabled armv8-busybox; then
+      echo "  - armv8 linux/busybox (dynamic, static)"
+    fi
   elif [[ "${HOST_OS}" == "Darwin" ]]; then
     echo "  - macos ${HOST_ARCH} (dynamic)"
   elif [[ "${HOST_OS}" == MINGW* || "${HOST_OS}" == MSYS* || "${HOST_OS}" == CYGWIN* ]]; then
     echo "  - windows ${HOST_ARCH} (dynamic)"
   fi
-  if [[ "${WINDOWS_CROSS}" -eq 1 ]]; then
+  if [[ "${WINDOWS_CROSS}" -eq 1 && target_enabled windows-x86_64 ]]; then
     echo "  - windows x86_64 (mingw, ${WINDOWS_TRIPLET})"
   fi
-  if [[ "${MACOS_CROSS}" -eq 1 ]]; then
+  if [[ "${MACOS_CROSS}" -eq 1 && ( target_enabled macos-x86_64 || target_enabled macos-arm64 ) ]]; then
     echo "  - macos $(macos_triplet_arch) (${MACOS_TRIPLET})"
   fi
   echo "Detected SDKs/libs:"
@@ -575,8 +720,7 @@ openwrt_find_package_makefile() {
 
 ensure_openwrt_host_deps() {
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get update || true
-    apt-get install -y gawk unzip || true
+    apt_install gawk unzip
   fi
   if command -v update-alternatives >/dev/null 2>&1 && command -v gawk >/dev/null 2>&1; then
     update-alternatives --set awk /usr/bin/gawk >/dev/null 2>&1 || true
@@ -588,6 +732,32 @@ ensure_openwrt_host_deps() {
   if ! command -v unzip >/dev/null 2>&1; then
     echo "OpenWRT SDK requires unzip; please install it." >&2
     exit 1
+  fi
+}
+
+ensure_host_deps() {
+  if ! command -v apt-get >/dev/null 2>&1; then
+    return 0
+  fi
+  apt_install \
+    build-essential \
+    cmake \
+    git \
+    pkg-config \
+    curl \
+    wget \
+    ca-certificates \
+    unzip \
+    zip \
+    xz-utils \
+    zstd \
+    python3 \
+    perl
+  if target_enabled windows-x86_64; then
+    apt_install mingw-w64
+  fi
+  if target_enabled macos-x86_64 || target_enabled macos-arm64; then
+    apt_install clang lld llvm
   fi
 }
 
@@ -846,9 +1016,9 @@ ensure_i386_deps() {
   fi
   if ! dpkg --print-foreign-architectures | grep -qx i386; then
     dpkg --add-architecture i386
-    apt-get update || true
+    apt_update_once
   fi
-  apt-get install -y libc6-dev-i386 zlib1g-dev:i386 libssl-dev:i386 libboost-dev:i386 libboost-system-dev:i386 || true
+  apt_install libc6-dev-i386 zlib1g-dev:i386 libssl-dev:i386 libboost-dev:i386 libboost-system-dev:i386
 }
 
 ensure_armhf_deps() {
@@ -857,9 +1027,9 @@ ensure_armhf_deps() {
   fi
   if ! dpkg --print-foreign-architectures | grep -qx armhf; then
     dpkg --add-architecture armhf
-    apt-get update || true
+    apt_update_once
   fi
-  apt-get install -y libc6-dev:armhf libstdc++-14-dev:armhf zlib1g-dev:armhf libssl-dev:armhf libboost-dev:armhf libboost-system-dev:armhf || true
+  apt_install libc6-dev:armhf libstdc++-14-dev:armhf zlib1g-dev:armhf libssl-dev:armhf libboost-dev:armhf libboost-system-dev:armhf
 }
 
 ensure_arm64_deps() {
@@ -868,9 +1038,9 @@ ensure_arm64_deps() {
   fi
   if ! dpkg --print-foreign-architectures | grep -qx arm64; then
     dpkg --add-architecture arm64
-    apt-get update || true
+    apt_update_once
   fi
-  apt-get install -y libc6-dev:arm64 libstdc++-14-dev:arm64 zlib1g-dev:arm64 libssl-dev:arm64 libboost-dev:arm64 libboost-system-dev:arm64 || true
+  apt_install libc6-dev:arm64 libstdc++-14-dev:arm64 zlib1g-dev:arm64 libssl-dev:arm64 libboost-dev:arm64 libboost-system-dev:arm64
 }
 
 resolve_boost_dir() {
@@ -1470,99 +1640,126 @@ fi
 vendor_restore_if_missing
 trap cleanup_temp_assets EXIT
 auto_detect_toolchains
+ensure_vcpkg
+ensure_osxcross
 maybe_enable_windows_cross
 maybe_enable_macos_cross
+if target_enabled windows-x86_64 && [[ "${WINDOWS_CROSS}" -ne 1 ]]; then
+  echo "Windows target requested but toolchain/vcpkg not ready; set VCPKG_ROOT and install ${WINDOWS_TOOLCHAIN_PREFIX}-g++." >&2
+  exit 1
+fi
+if ( target_enabled macos-x86_64 || target_enabled macos-arm64 ) && [[ "${MACOS_CROSS}" -ne 1 ]]; then
+  echo "macOS target requested but osxcross/toolchain not ready; set OSXCROSS_ROOT and macOS SDK." >&2
+  exit 1
+fi
 print_build_plan
-ensure_openwrt_sdk
-ensure_openwrt_sysroot_libs
+ensure_host_deps
+if target_enabled openwrt-mips; then
+  ensure_openwrt_sdk
+  ensure_openwrt_sysroot_libs
+fi
 
-clean_build_dirs
-build_openwrt_target "dynamic" "${BIN_DYNAMIC}/mips/openwrt"
-clean_build_dirs
-build_openwrt_target "static" "${BIN_STATIC}/mips/openwrt"
+if target_enabled openwrt-mips; then
+  clean_build_dirs
+  build_openwrt_target "dynamic" "${BIN_DYNAMIC}/mips/openwrt"
+  clean_build_dirs
+  build_openwrt_target "static" "${BIN_STATIC}/mips/openwrt"
+fi
 
-clean_build_dirs
-build_host_linux_target "dynamic" "${BIN_DYNAMIC}/x86/linux"
-clean_build_dirs
-build_host_linux_target "static" "${BIN_STATIC}/x86/linux"
+if target_enabled linux-x86_64; then
+  clean_build_dirs
+  build_host_linux_target "dynamic" "${BIN_DYNAMIC}/x86/linux"
+  clean_build_dirs
+  build_host_linux_target "static" "${BIN_STATIC}/x86/linux"
+fi
 
 # Windows cross build (optional; requires mingw-w64 + vcpkg)
-if [[ "${WINDOWS_CROSS}" -eq 1 ]]; then
+if [[ "${WINDOWS_CROSS}" -eq 1 && target_enabled windows-x86_64 ]]; then
   clean_build_dirs
-  build_windows_cross_target "dynamic" "${BIN_DYNAMIC}/windows/x86_64"
+  YUME_WINDOWS_CROSS=1 build_windows_cross_target "dynamic" "${BIN_DYNAMIC}/windows/x86_64"
 fi
 
 # macOS cross build (optional; requires osxcross + vcpkg)
-if [[ "${MACOS_CROSS}" -eq 1 ]]; then
+if [[ "${MACOS_CROSS}" -eq 1 && ( target_enabled macos-x86_64 || target_enabled macos-arm64 ) ]]; then
   clean_build_dirs
   mac_arch="$(macos_triplet_arch)"
-  build_macos_cross_target "dynamic" "${BIN_DYNAMIC}/macos/${mac_arch}"
+  YUME_MACOS_CROSS=1 build_macos_cross_target "dynamic" "${BIN_DYNAMIC}/macos/${mac_arch}"
 fi
 
 # Busybox x86
-clean_build_dirs
-if [[ -n "${X86_BUSYBOX_SYSROOT}" && -n "${X86_BUSYBOX_TOOLCHAIN_PREFIX}" ]]; then
-  build_busybox_target "x86" "i686" "${X86_BUSYBOX_TOOLCHAIN_PREFIX}" "${X86_BUSYBOX_SYSROOT}" "${BIN_DYNAMIC}/x86/busybox" "dynamic"
+if target_enabled busybox-x86; then
   clean_build_dirs
-  build_busybox_target "x86" "i686" "${X86_BUSYBOX_TOOLCHAIN_PREFIX}" "${X86_BUSYBOX_SYSROOT}" "${BIN_STATIC}/x86/busybox" "static"
-elif [[ ${USE_DOCKER_FALLBACK} -eq 1 ]]; then
-  docker_build_target "x86" "i686" "dockcross/linux-x86" "${BIN_DYNAMIC}/x86/busybox" 1 "dynamic"
-  docker_build_target "x86" "i686" "dockcross/linux-x86" "${BIN_STATIC}/x86/busybox" 1 "static"
-else
-  require_var X86_BUSYBOX_SYSROOT
-  require_var X86_BUSYBOX_TOOLCHAIN_PREFIX
+  if [[ -n "${X86_BUSYBOX_SYSROOT}" && -n "${X86_BUSYBOX_TOOLCHAIN_PREFIX}" ]]; then
+    build_busybox_target "x86" "i686" "${X86_BUSYBOX_TOOLCHAIN_PREFIX}" "${X86_BUSYBOX_SYSROOT}" "${BIN_DYNAMIC}/x86/busybox" "dynamic"
+    clean_build_dirs
+    build_busybox_target "x86" "i686" "${X86_BUSYBOX_TOOLCHAIN_PREFIX}" "${X86_BUSYBOX_SYSROOT}" "${BIN_STATIC}/x86/busybox" "static"
+  elif [[ ${USE_DOCKER_FALLBACK} -eq 1 ]]; then
+    docker_build_target "x86" "i686" "dockcross/linux-x86" "${BIN_DYNAMIC}/x86/busybox" 1 "dynamic"
+    docker_build_target "x86" "i686" "dockcross/linux-x86" "${BIN_STATIC}/x86/busybox" 1 "static"
+  else
+    require_var X86_BUSYBOX_SYSROOT
+    require_var X86_BUSYBOX_TOOLCHAIN_PREFIX
+  fi
 fi
 
 # ARMv7
-clean_build_dirs
-if [[ -n "${ARMV7_LINUX_SYSROOT}" && -n "${ARMV7_LINUX_TOOLCHAIN_PREFIX}" ]]; then
-  build_linux_target "armv7" "armv7" "${ARMV7_LINUX_TOOLCHAIN_PREFIX}" "${ARMV7_LINUX_SYSROOT}" "${BIN_DYNAMIC}/armv7/linux" "dynamic"
+if target_enabled armv7-linux; then
   clean_build_dirs
-  build_linux_target "armv7" "armv7" "${ARMV7_LINUX_TOOLCHAIN_PREFIX}" "${ARMV7_LINUX_SYSROOT}" "${BIN_STATIC}/armv7/linux" "static"
-elif [[ ${USE_DOCKER_FALLBACK} -eq 1 ]]; then
-  docker_build_target "armv7" "armv7" "dockcross/linux-armv7" "${BIN_DYNAMIC}/armv7/linux" 0 "dynamic"
-  docker_build_target "armv7" "armv7" "dockcross/linux-armv7" "${BIN_STATIC}/armv7/linux" 0 "static"
-else
-  require_var ARMV7_LINUX_SYSROOT
-  require_var ARMV7_LINUX_TOOLCHAIN_PREFIX
+  if [[ -n "${ARMV7_LINUX_SYSROOT}" && -n "${ARMV7_LINUX_TOOLCHAIN_PREFIX}" ]]; then
+    build_linux_target "armv7" "armv7" "${ARMV7_LINUX_TOOLCHAIN_PREFIX}" "${ARMV7_LINUX_SYSROOT}" "${BIN_DYNAMIC}/armv7/linux" "dynamic"
+    clean_build_dirs
+    build_linux_target "armv7" "armv7" "${ARMV7_LINUX_TOOLCHAIN_PREFIX}" "${ARMV7_LINUX_SYSROOT}" "${BIN_STATIC}/armv7/linux" "static"
+  elif [[ ${USE_DOCKER_FALLBACK} -eq 1 ]]; then
+    docker_build_target "armv7" "armv7" "dockcross/linux-armv7" "${BIN_DYNAMIC}/armv7/linux" 0 "dynamic"
+    docker_build_target "armv7" "armv7" "dockcross/linux-armv7" "${BIN_STATIC}/armv7/linux" 0 "static"
+  else
+    require_var ARMV7_LINUX_SYSROOT
+    require_var ARMV7_LINUX_TOOLCHAIN_PREFIX
+  fi
 fi
 
-clean_build_dirs
-if [[ -n "${ARMV7_BUSYBOX_SYSROOT}" && -n "${ARMV7_BUSYBOX_TOOLCHAIN_PREFIX}" ]]; then
-  build_busybox_target "armv7" "armv7" "${ARMV7_BUSYBOX_TOOLCHAIN_PREFIX}" "${ARMV7_BUSYBOX_SYSROOT}" "${BIN_DYNAMIC}/armv7/busybox" "dynamic"
+if target_enabled armv7-busybox; then
   clean_build_dirs
-  build_busybox_target "armv7" "armv7" "${ARMV7_BUSYBOX_TOOLCHAIN_PREFIX}" "${ARMV7_BUSYBOX_SYSROOT}" "${BIN_STATIC}/armv7/busybox" "static"
-elif [[ ${USE_DOCKER_FALLBACK} -eq 1 ]]; then
-  docker_build_target "armv7" "armv7" "dockcross/linux-armv7" "${BIN_DYNAMIC}/armv7/busybox" 1 "dynamic"
-  docker_build_target "armv7" "armv7" "dockcross/linux-armv7" "${BIN_STATIC}/armv7/busybox" 1 "static"
-else
-  require_var ARMV7_BUSYBOX_SYSROOT
-  require_var ARMV7_BUSYBOX_TOOLCHAIN_PREFIX
+  if [[ -n "${ARMV7_BUSYBOX_SYSROOT}" && -n "${ARMV7_BUSYBOX_TOOLCHAIN_PREFIX}" ]]; then
+    build_busybox_target "armv7" "armv7" "${ARMV7_BUSYBOX_TOOLCHAIN_PREFIX}" "${ARMV7_BUSYBOX_SYSROOT}" "${BIN_DYNAMIC}/armv7/busybox" "dynamic"
+    clean_build_dirs
+    build_busybox_target "armv7" "armv7" "${ARMV7_BUSYBOX_TOOLCHAIN_PREFIX}" "${ARMV7_BUSYBOX_SYSROOT}" "${BIN_STATIC}/armv7/busybox" "static"
+  elif [[ ${USE_DOCKER_FALLBACK} -eq 1 ]]; then
+    docker_build_target "armv7" "armv7" "dockcross/linux-armv7" "${BIN_DYNAMIC}/armv7/busybox" 1 "dynamic"
+    docker_build_target "armv7" "armv7" "dockcross/linux-armv7" "${BIN_STATIC}/armv7/busybox" 1 "static"
+  else
+    require_var ARMV7_BUSYBOX_SYSROOT
+    require_var ARMV7_BUSYBOX_TOOLCHAIN_PREFIX
+  fi
 fi
 
 # ARMv8 (aarch64)
-clean_build_dirs
-if [[ -n "${ARMV8_LINUX_SYSROOT}" && -n "${ARMV8_LINUX_TOOLCHAIN_PREFIX}" ]]; then
-  build_linux_target "armv8" "aarch64" "${ARMV8_LINUX_TOOLCHAIN_PREFIX}" "${ARMV8_LINUX_SYSROOT}" "${BIN_DYNAMIC}/armv8/linux" "dynamic"
+if target_enabled armv8-linux; then
   clean_build_dirs
-  build_linux_target "armv8" "aarch64" "${ARMV8_LINUX_TOOLCHAIN_PREFIX}" "${ARMV8_LINUX_SYSROOT}" "${BIN_STATIC}/armv8/linux" "static"
-elif [[ ${USE_DOCKER_FALLBACK} -eq 1 ]]; then
-  docker_build_target "armv8" "aarch64" "dockcross/linux-arm64" "${BIN_DYNAMIC}/armv8/linux" 0 "dynamic"
-  docker_build_target "armv8" "aarch64" "dockcross/linux-arm64" "${BIN_STATIC}/armv8/linux" 0 "static"
-else
-  require_var ARMV8_LINUX_SYSROOT
-  require_var ARMV8_LINUX_TOOLCHAIN_PREFIX
+  if [[ -n "${ARMV8_LINUX_SYSROOT}" && -n "${ARMV8_LINUX_TOOLCHAIN_PREFIX}" ]]; then
+    build_linux_target "armv8" "aarch64" "${ARMV8_LINUX_TOOLCHAIN_PREFIX}" "${ARMV8_LINUX_SYSROOT}" "${BIN_DYNAMIC}/armv8/linux" "dynamic"
+    clean_build_dirs
+    build_linux_target "armv8" "aarch64" "${ARMV8_LINUX_TOOLCHAIN_PREFIX}" "${ARMV8_LINUX_SYSROOT}" "${BIN_STATIC}/armv8/linux" "static"
+  elif [[ ${USE_DOCKER_FALLBACK} -eq 1 ]]; then
+    docker_build_target "armv8" "aarch64" "dockcross/linux-arm64" "${BIN_DYNAMIC}/armv8/linux" 0 "dynamic"
+    docker_build_target "armv8" "aarch64" "dockcross/linux-arm64" "${BIN_STATIC}/armv8/linux" 0 "static"
+  else
+    require_var ARMV8_LINUX_SYSROOT
+    require_var ARMV8_LINUX_TOOLCHAIN_PREFIX
+  fi
 fi
 
-clean_build_dirs
-if [[ -n "${ARMV8_BUSYBOX_SYSROOT}" && -n "${ARMV8_BUSYBOX_TOOLCHAIN_PREFIX}" ]]; then
-  build_busybox_target "armv8" "aarch64" "${ARMV8_BUSYBOX_TOOLCHAIN_PREFIX}" "${ARMV8_BUSYBOX_SYSROOT}" "${BIN_DYNAMIC}/armv8/busybox" "dynamic"
+if target_enabled armv8-busybox; then
   clean_build_dirs
-  build_busybox_target "armv8" "aarch64" "${ARMV8_BUSYBOX_TOOLCHAIN_PREFIX}" "${ARMV8_BUSYBOX_SYSROOT}" "${BIN_STATIC}/armv8/busybox" "static"
-elif [[ ${USE_DOCKER_FALLBACK} -eq 1 ]]; then
-  docker_build_target "armv8" "aarch64" "dockcross/linux-arm64" "${BIN_DYNAMIC}/armv8/busybox" 1 "dynamic"
-  docker_build_target "armv8" "aarch64" "dockcross/linux-arm64" "${BIN_STATIC}/armv8/busybox" 1 "static"
-else
-  require_var ARMV8_BUSYBOX_SYSROOT
-  require_var ARMV8_BUSYBOX_TOOLCHAIN_PREFIX
+  if [[ -n "${ARMV8_BUSYBOX_SYSROOT}" && -n "${ARMV8_BUSYBOX_TOOLCHAIN_PREFIX}" ]]; then
+    build_busybox_target "armv8" "aarch64" "${ARMV8_BUSYBOX_TOOLCHAIN_PREFIX}" "${ARMV8_BUSYBOX_SYSROOT}" "${BIN_DYNAMIC}/armv8/busybox" "dynamic"
+    clean_build_dirs
+    build_busybox_target "armv8" "aarch64" "${ARMV8_BUSYBOX_TOOLCHAIN_PREFIX}" "${ARMV8_BUSYBOX_SYSROOT}" "${BIN_STATIC}/armv8/busybox" "static"
+  elif [[ ${USE_DOCKER_FALLBACK} -eq 1 ]]; then
+    docker_build_target "armv8" "aarch64" "dockcross/linux-arm64" "${BIN_DYNAMIC}/armv8/busybox" 1 "dynamic"
+    docker_build_target "armv8" "aarch64" "dockcross/linux-arm64" "${BIN_STATIC}/armv8/busybox" 1 "static"
+  else
+    require_var ARMV8_BUSYBOX_SYSROOT
+    require_var ARMV8_BUSYBOX_TOOLCHAIN_PREFIX
+  fi
 fi

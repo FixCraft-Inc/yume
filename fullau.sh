@@ -557,10 +557,10 @@ print_build_plan() {
   elif [[ "${HOST_OS}" == MINGW* || "${HOST_OS}" == MSYS* || "${HOST_OS}" == CYGWIN* ]]; then
     echo "  - windows ${HOST_ARCH} (dynamic)"
   fi
-  if [[ "${WINDOWS_CROSS}" -eq 1 && target_enabled windows-x86_64 ]]; then
+  if [[ "${WINDOWS_CROSS}" -eq 1 ]] && target_enabled windows-x86_64; then
     echo "  - windows x86_64 (mingw, ${WINDOWS_TRIPLET})"
   fi
-  if [[ "${MACOS_CROSS}" -eq 1 && ( target_enabled macos-x86_64 || target_enabled macos-arm64 ) ]]; then
+  if [[ "${MACOS_CROSS}" -eq 1 ]] && ( target_enabled macos-x86_64 || target_enabled macos-arm64 ); then
     echo "  - macos $(macos_triplet_arch) (${MACOS_TRIPLET})"
   fi
   echo "Detected SDKs/libs:"
@@ -1674,13 +1674,13 @@ if target_enabled linux-x86_64; then
 fi
 
 # Windows cross build (optional; requires mingw-w64 + vcpkg)
-if [[ "${WINDOWS_CROSS}" -eq 1 && target_enabled windows-x86_64 ]]; then
+if [[ "${WINDOWS_CROSS}" -eq 1 ]] && target_enabled windows-x86_64; then
   clean_build_dirs
   YUME_WINDOWS_CROSS=1 build_windows_cross_target "dynamic" "${BIN_DYNAMIC}/windows/x86_64"
 fi
 
 # macOS cross build (optional; requires osxcross + vcpkg)
-if [[ "${MACOS_CROSS}" -eq 1 && ( target_enabled macos-x86_64 || target_enabled macos-arm64 ) ]]; then
+if [[ "${MACOS_CROSS}" -eq 1 ]] && ( target_enabled macos-x86_64 || target_enabled macos-arm64 ); then
   clean_build_dirs
   mac_arch="$(macos_triplet_arch)"
   YUME_MACOS_CROSS=1 build_macos_cross_target "dynamic" "${BIN_DYNAMIC}/macos/${mac_arch}"

@@ -72,7 +72,10 @@ bool is_private_ipv6(const boost::asio::ip::address_v6& addr) {
         return true;
     }
     if (addr.is_v4_mapped()) {
-        return is_private_ipv4(addr.to_v4());
+        boost::asio::ip::address_v4::bytes_type v4bytes{
+            {bytes[12], bytes[13], bytes[14], bytes[15]}
+        };
+        return is_private_ipv4(boost::asio::ip::address_v4(v4bytes));
     }
     return false;
 }
@@ -1574,7 +1577,7 @@ void Session::schedule_idle_check() {
 
 void Session::close() {
     boost::system::error_code ec;
-    idle_timer_.cancel(ec);
+    idle_timer_.cancel();
     if (manager_) {
         for (const auto& entry : reverse_listener_ports_) {
             manager_->unregister_reverse_listener(entry.second, this);

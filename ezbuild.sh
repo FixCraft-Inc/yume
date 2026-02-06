@@ -222,6 +222,22 @@ resolve_oqs_sysroot_paths() {
     echo "${inc}|${lib}"
 }
 
+resolve_argon2_sysroot_paths() {
+    local inc=""
+    local lib=""
+    if [[ -n "${OPENWRT_USR:-}" && -f "${OPENWRT_USR}/include/argon2.h" ]]; then
+        inc="${OPENWRT_USR}/include"
+        if [[ -f "${OPENWRT_USR}/lib/libargon2.a" ]]; then
+            lib="${OPENWRT_USR}/lib/libargon2.a"
+        elif [[ -f "${OPENWRT_USR}/lib/libargon2.so" ]]; then
+            lib="${OPENWRT_USR}/lib/libargon2.so"
+        else
+            lib="$(ls -1 "${OPENWRT_USR}/lib/libargon2.so."* 2>/dev/null | head -n 1 || true)"
+        fi
+    fi
+    echo "${inc}|${lib}"
+}
+
 resolve_oqs_host_paths() {
     local inc=""
     local lib=""
@@ -645,7 +661,7 @@ main() {
             error "Windows cross build requires VCPKG_ROOT (set to your vcpkg clone)."
             exit 1
         fi
-        if [[ ! -x "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" ]]; then
+        if [[ ! -f "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" ]]; then
             error "vcpkg toolchain file missing at ${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
             exit 1
         fi
@@ -661,9 +677,23 @@ main() {
             "-DCMAKE_RC_COMPILER=${WINDOWS_TOOLCHAIN_PREFIX}-windres"
             "-DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
             "-DVCPKG_TARGET_TRIPLET=${WINDOWS_TRIPLET}"
+            "-DVCPKG_APPLOCAL_DEPS=OFF"
             "-DOPENSSL_ROOT_DIR=${VCPKG_PREFIX}"
             "-DBASEFWX_USE_VENDOR_DEPS=OFF"
         )
+        if [[ -f "${VCPKG_PREFIX}/lib/libzstd.dll.a" ]]; then
+            CMAKE_ARGS+=(
+                "-DZSTD_LIBRARY=${VCPKG_PREFIX}/lib/libzstd.dll.a"
+                "-DZSTD_INCLUDE_DIR=${VCPKG_PREFIX}/include"
+                "-DZSTD_DIR=${VCPKG_PREFIX}/share/zstd"
+            )
+        elif [[ -f "${VCPKG_PREFIX}/lib/libzstd.a" ]]; then
+            CMAKE_ARGS+=(
+                "-DZSTD_LIBRARY=${VCPKG_PREFIX}/lib/libzstd.a"
+                "-DZSTD_INCLUDE_DIR=${VCPKG_PREFIX}/include"
+                "-DZSTD_DIR=${VCPKG_PREFIX}/share/zstd"
+            )
+        fi
         if [[ -f "${VCPKG_PREFIX}/include/oqs/oqs.h" ]]; then
             if [[ -f "${VCPKG_PREFIX}/lib/liboqs.dll.a" ]]; then
                 CMAKE_ARGS+=(
@@ -871,8 +901,21 @@ EOF
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=OFF")
         fi
         if detect_argon2; then
-            info "OpenWRT libargon2 detected in sysroot; enabling Argon2 in BaseFWX."
-            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=ON")
+            IFS='|' read -r _argon2_inc _argon2_lib < <(resolve_argon2_sysroot_paths)
+            if [[ -n "${_argon2_inc}" && -n "${_argon2_lib}" ]]; then
+                info "OpenWRT libargon2 detected in sysroot; enabling Argon2 in BaseFWX."
+                CMAKE_ARGS+=(
+                    "-DBASEFWX_REQUIRE_ARGON2=ON"
+                    "-DARGON2_INCLUDE_DIR=${_argon2_inc}"
+                    "-DARGON2_LIBRARY=${_argon2_lib}"
+                    "-DARGON2_INCLUDE_DIRS=${_argon2_inc}"
+                    "-DARGON2_LIBRARIES=${_argon2_lib}"
+                    "-DARGON2_FOUND=TRUE"
+                )
+            else
+                warn "OpenWRT libargon2 headers found but library missing; disabling Argon2."
+                CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=OFF")
+            fi
         else
             warn "OpenWRT libargon2 not detected in sysroot; heavy KDF will fall back to HKDF."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=OFF")

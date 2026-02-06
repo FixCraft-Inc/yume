@@ -59,7 +59,7 @@ if [[ "${WINDOWS_CROSS}" != "0" && "${WINDOWS_CROSS}" != "1" ]]; then
 fi
 WINDOWS_TOOLCHAIN_PREFIX="${YUME_WINDOWS_TOOLCHAIN_PREFIX:-x86_64-w64-mingw32}"
 WINDOWS_TRIPLET="${YUME_WINDOWS_TRIPLET:-x64-mingw-dynamic}"
-WINDOWS_VCPKG_PACKAGES="${YUME_WINDOWS_VCPKG_PACKAGES:-openssl boost-system boost-thread zlib zstd liblzma spdlog nlohmann-json argon2 liboqs}"
+WINDOWS_VCPKG_PACKAGES="${YUME_WINDOWS_VCPKG_PACKAGES:-openssl boost-asio boost-system boost-thread zlib zstd liblzma spdlog nlohmann-json argon2 liboqs}"
 MACOS_CROSS="${YUME_MACOS_CROSS:-}"
 MACOS_CROSS_AUTO=0
 if [[ -z "${MACOS_CROSS}" ]]; then
@@ -1218,8 +1218,7 @@ EOF
   else
     YUME_CMAKE_ARGS="${variant_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
   fi
-  cp -f build/bin/yume "${outdir}/yume"
-  cp -f build/bin/yumed "${outdir}/yumed"
+  copy_build_outputs "${outdir}" "" || return 1
   "${prefix}-strip" --strip-unneeded "${outdir}/yume" "${outdir}/yumed"
 }
 
@@ -1341,8 +1340,7 @@ EOF
   else
     YUME_CMAKE_ARGS="${variant_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
   fi
-  cp -f build/bin/yume "${outdir}/yume"
-  cp -f build/bin/yumed "${outdir}/yumed"
+  copy_build_outputs "${outdir}" "" || return 1
   "${prefix}-strip" --strip-unneeded "${outdir}/yume" "${outdir}/yumed"
 }
 
@@ -1382,8 +1380,7 @@ build_host_linux_target() {
     extra_args="${extra_args} -DZSTD_LIBRARY=${zstd_lib} -DZSTD_INCLUDE_DIR=/usr/include"
   fi
   YUME_OQS_STATIC=1 YUME_CMAKE_ARGS="${extra_args}" ./ezbuild.sh
-  cp -f build/bin/yume "${outdir}/yume"
-  cp -f build/bin/yumed "${outdir}/yumed"
+  copy_build_outputs "${outdir}" "" || return 1
   strip "${outdir}/yume" "${outdir}/yumed"
 }
 
@@ -1405,6 +1402,28 @@ build_host_native_target() {
   if command -v strip >/dev/null 2>&1; then
     strip "${outdir}/yume${exe_suffix}" "${outdir}/yumed${exe_suffix}" >/dev/null 2>&1 || true
   fi
+}
+
+copy_build_outputs() {
+  local outdir="$1"
+  local exe_suffix="${2:-}"
+  local yume_src="build/bin/yume${exe_suffix}"
+  local yumed_src="build/bin/yumed${exe_suffix}"
+
+  if [[ -z "${exe_suffix}" && -f build/bin/yume.exe ]]; then
+    echo "Build produced Windows executables (.exe); check toolchain/targets before copying Linux outputs." >&2
+    return 1
+  fi
+  if [[ -n "${exe_suffix}" && -f build/bin/yume && ! -f "${yume_src}" ]]; then
+    echo "Build produced non-Windows outputs; expected ${yume_src}." >&2
+    return 1
+  fi
+  if [[ ! -f "${yume_src}" || ! -f "${yumed_src}" ]]; then
+    echo "Build outputs missing: ${yume_src} ${yumed_src}" >&2
+    return 1
+  fi
+  cp -f "${yume_src}" "${outdir}/yume${exe_suffix}"
+  cp -f "${yumed_src}" "${outdir}/yumed${exe_suffix}"
 }
 
 build_windows_cross_target() {
@@ -1489,7 +1508,7 @@ EOF
     extra_oqs_args="-DOQS_INCLUDE_DIR=${oqs_include} -DOQS_LIBRARY=${oqs_lib}"
   fi
 
-  YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF -DOPENSSL_ROOT_DIR=${vcpkg_prefix} ${extra_oqs_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DCMAKE_SYSTEM_NAME=Windows" \
+  YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF -DOPENSSL_ROOT_DIR=${vcpkg_prefix} ${extra_oqs_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DVCPKG_APPLOCAL_DEPS=OFF -DCMAKE_SYSTEM_NAME=Windows" \
     ./ezbuild.sh
 
   if [[ ! -f build/bin/yume.exe || ! -f build/bin/yumed.exe ]]; then
@@ -1583,12 +1602,7 @@ EOF
   YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF ${extra_oqs_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DCMAKE_SYSTEM_NAME=Darwin" \
     ./ezbuild.sh
 
-  if [[ ! -f build/bin/yume || ! -f build/bin/yumed ]]; then
-    echo "macOS build outputs missing in build/bin" >&2
-    return 1
-  fi
-  cp -f build/bin/yume "${outdir}/yume"
-  cp -f build/bin/yumed "${outdir}/yumed"
+  copy_build_outputs "${outdir}" "" || return 1
 }
 
 macos_triplet_arch() {
@@ -1607,8 +1621,7 @@ build_openwrt_target() {
   fi
   require_vendor_dir "${VENDOR_DIR}/openwrt-mips"
   YUME_CLEAN_BAD_OQS=1 YUME_OQS_STATIC=1 ./ezbuild.sh --openwrt --openwrt-sdk "${OPENWRT_SDK}" --arch mips
-  cp -f build/bin/yume "${outdir}/yume"
-  cp -f build/bin/yumed "${outdir}/yumed"
+  copy_build_outputs "${outdir}" "" || return 1
   if [[ -z "${TOOLCHAIN_STRIP}" ]]; then
     if command -v mipsel-linux-gnu-strip >/dev/null 2>&1; then
       TOOLCHAIN_STRIP="$(command -v mipsel-linux-gnu-strip)"

@@ -18,6 +18,14 @@
 #include <thread>
 #include <chrono>
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <processthreadsapi.h>
 #else
@@ -217,7 +225,10 @@ bool is_private_ipv6(const boost::asio::ip::address_v6& addr) {
         return true;
     }
     if (addr.is_v4_mapped()) {
-        return is_private_ipv4(addr.to_v4());
+        boost::asio::ip::address_v4::bytes_type v4bytes{
+            {bytes[12], bytes[13], bytes[14], bytes[15]}
+        };
+        return is_private_ipv4(boost::asio::ip::address_v4(v4bytes));
     }
     return false;
 }

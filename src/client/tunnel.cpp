@@ -419,7 +419,7 @@ void Tunnel::close_all(const std::string& reason) {
     closed_ = true;
     util::log_warn("tunnel closed: " + reason);
     boost::system::error_code ec;
-    keepalive_timer_.cancel(ec);
+    keepalive_timer_.cancel();
     if (close_handler_) {
         close_handler_(reason);
     }

@@ -1,7 +1,19 @@
 include(FetchContent)
 
-find_package(nlohmann_json QUIET)
+set(_nlohmann_vendor "${CMAKE_SOURCE_DIR}/third_party/nlohmann_json")
+if(EXISTS "${_nlohmann_vendor}/nlohmann/json.hpp" AND NOT TARGET nlohmann_json::nlohmann_json)
+    add_library(nlohmann_json::nlohmann_json INTERFACE IMPORTED)
+    target_include_directories(nlohmann_json::nlohmann_json INTERFACE "${_nlohmann_vendor}")
+    set(nlohmann_json_FOUND TRUE)
+endif()
+
 if(NOT nlohmann_json_FOUND)
+    find_package(nlohmann_json QUIET)
+endif()
+if(NOT nlohmann_json_FOUND)
+    if(YUME_OFFLINE)
+        message(FATAL_ERROR "nlohmann_json not found; set YUME_OFFLINE=OFF or provide ${_nlohmann_vendor}")
+    endif()
     message(STATUS "nlohmann_json not found, fetching...")
     FetchContent_Declare(
         nlohmann_json
@@ -55,8 +67,15 @@ target_link_libraries(yume_core
         Threads::Threads
         nlohmann_json::nlohmann_json
 )
+if(TARGET Boost::headers)
+    target_link_libraries(yume_core PUBLIC Boost::headers)
+elseif(TARGET Boost::boost)
+    target_link_libraries(yume_core PUBLIC Boost::boost)
+elseif(Boost_INCLUDE_DIR)
+    target_include_directories(yume_core PUBLIC ${Boost_INCLUDE_DIR})
+endif()
 if(WIN32)
-    target_link_libraries(yume_core PUBLIC ws2_32)
+    target_link_libraries(yume_core PUBLIC ws2_32 mswsock)
 endif()
 if(CMAKE_CROSSCOMPILING AND ATOMIC_LIBRARY)
     target_link_libraries(yume_core PUBLIC ${ATOMIC_LIBRARY})
@@ -89,6 +108,14 @@ if(TARGET basefwxcpp)
     target_compile_definitions(yume_core PUBLIC YUME_USE_BASEFWX=1)
 else()
     target_compile_definitions(yume_core PUBLIC YUME_USE_BASEFWX=0)
+endif()
+
+if(CMAKE_CROSSCOMPILING)
+    get_target_property(_yume_includes yume_core INCLUDE_DIRECTORIES)
+    if(_yume_includes)
+        list(REMOVE_ITEM _yume_includes "/usr/include" "/usr/include/")
+        set_target_properties(yume_core PROPERTIES INCLUDE_DIRECTORIES "${_yume_includes}")
+    endif()
 endif()
 
 add_executable(yumed

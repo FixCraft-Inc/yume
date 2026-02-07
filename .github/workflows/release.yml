@@ -1,0 +1,99 @@
+name: Release builds
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (linux + cross)
+        env:
+          YUME_TARGETS: linux-x86_64,openwrt-mips,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64
+        run: |
+          sudo ./fullau.sh
+      - name: Package artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          pack_one() {
+            local src="$1"
+            local name="$2"
+            if [[ -f "$src" ]]; then
+              tar -cJf "dist/${name}.tar.xz" -C "$(dirname "$src")" "$(basename "$src")"
+            fi
+          }
+          pack_windows() {
+            local exe="$1"
+            local name="$2"
+            if [[ -f "$exe" ]]; then
+              local dir
+              dir="$(dirname "$exe")"
+              local dlls=()
+              while IFS= read -r -d '' f; do
+                dlls+=("$(basename "$f")")
+              done < <(find "$dir" -maxdepth 1 -name "*.dll" -print0)
+              tar -cJf "dist/${name}.tar.xz" -C "$dir" "$(basename "$exe")" "${dlls[@]}"
+            fi
+          }
+          pack_one "${HOME}/bins/dynamic/x86/linux/yume" "yume_x86_64-linux"
+          pack_one "${HOME}/bins/dynamic/x86/linux/yumed" "yumed_x86_64-linux"
+          pack_one "${HOME}/bins/stable/x86/linux/yume" "yume_x86_64-linux-static"
+          pack_one "${HOME}/bins/stable/x86/linux/yumed" "yumed_x86_64-linux-static"
+          pack_one "${HOME}/bins/dynamic/mips/openwrt/yume" "yume_mips-openwrt"
+          pack_one "${HOME}/bins/dynamic/mips/openwrt/yumed" "yumed_mips-openwrt"
+          pack_one "${HOME}/bins/dynamic/armv7/linux/yume" "yume_armv7-linux"
+          pack_one "${HOME}/bins/dynamic/armv7/linux/yumed" "yumed_armv7-linux"
+          pack_one "${HOME}/bins/dynamic/armv7/busybox/yume" "yume_armv7-busybox"
+          pack_one "${HOME}/bins/dynamic/armv7/busybox/yumed" "yumed_armv7-busybox"
+          pack_one "${HOME}/bins/dynamic/armv8/linux/yume" "yume_aarch64-linux"
+          pack_one "${HOME}/bins/dynamic/armv8/linux/yumed" "yumed_aarch64-linux"
+          pack_one "${HOME}/bins/dynamic/armv8/busybox/yume" "yume_aarch64-busybox"
+          pack_one "${HOME}/bins/dynamic/armv8/busybox/yumed" "yumed_aarch64-busybox"
+          pack_one "${HOME}/bins/dynamic/x86/busybox/yume" "yume_x86-busybox"
+          pack_one "${HOME}/bins/dynamic/x86/busybox/yumed" "yumed_x86-busybox"
+          pack_windows "${HOME}/bins/dynamic/windows/x86_64/yume.exe" "yume_x86_64-windows"
+          pack_windows "${HOME}/bins/dynamic/windows/x86_64/yumed.exe" "yumed_x86_64-windows"
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+
+  build-macos:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-13, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (macos native)
+        run: |
+          ./fullau.sh
+      - name: Package artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          arch="$(uname -m)"
+          if [[ "${arch}" == "arm64" ]]; then
+            tag="aarch64"
+          else
+            tag="x86_64"
+          fi
+          pack_one() {
+            local src="$1"
+            local name="$2"
+            if [[ -f "$src" ]]; then
+              tar -cJf "dist/${name}.tar.xz" -C "$(dirname "$src")" "$(basename "$src")"
+            fi
+          }
+          pack_one "${HOME}/bins/dynamic/macos/${arch}/yume" "yume_${tag}-mac"
+          pack_one "${HOME}/bins/dynamic/macos/${arch}/yumed" "yumed_${tag}-mac"
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

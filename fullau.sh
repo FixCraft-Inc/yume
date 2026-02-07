@@ -60,7 +60,7 @@ if [[ "${WINDOWS_CROSS}" != "0" && "${WINDOWS_CROSS}" != "1" ]]; then
 fi
 WINDOWS_TOOLCHAIN_PREFIX="${YUME_WINDOWS_TOOLCHAIN_PREFIX:-x86_64-w64-mingw32}"
 WINDOWS_TRIPLET="${YUME_WINDOWS_TRIPLET:-x64-mingw-dynamic}"
-WINDOWS_VCPKG_PACKAGES="${YUME_WINDOWS_VCPKG_PACKAGES:-openssl boost-asio boost-system boost-thread zlib zstd liblzma spdlog nlohmann-json argon2 liboqs}"
+WINDOWS_VCPKG_PACKAGES="${YUME_WINDOWS_VCPKG_PACKAGES:-openssl boost-headers boost-asio boost-system boost-thread zlib zstd liblzma spdlog nlohmann-json argon2 liboqs}"
 MACOS_CROSS="${YUME_MACOS_CROSS:-}"
 MACOS_CROSS_AUTO=0
 if [[ -z "${MACOS_CROSS}" ]]; then
@@ -73,7 +73,7 @@ if [[ "${MACOS_CROSS}" != "0" && "${MACOS_CROSS}" != "1" ]]; then
 fi
 MACOS_TOOLCHAIN_PREFIX="${YUME_MACOS_TOOLCHAIN_PREFIX:-}"
 MACOS_TRIPLET="${YUME_MACOS_TRIPLET:-x64-osx}"
-MACOS_VCPKG_PACKAGES="${YUME_MACOS_VCPKG_PACKAGES:-${WINDOWS_VCPKG_PACKAGES}}"
+MACOS_VCPKG_PACKAGES="${YUME_MACOS_VCPKG_PACKAGES:-openssl boost-headers boost-asio boost-system boost-thread zlib zstd liblzma fmt spdlog argon2 liboqs}"
 MACOS_SDK="${YUME_MACOS_SDK:-${OSXCROSS_SDK:-}}"
 MACOS_DEPLOYMENT_TARGET="${YUME_MACOS_DEPLOYMENT_TARGET:-}"
 APT_UPDATED_FLAG="${APT_UPDATED_FLAG:-/tmp/yume-apt-updated}"
@@ -149,6 +149,55 @@ ensure_vcpkg() {
   echo "Cloning vcpkg into ${VCPKG_ROOT}..."
   git clone --depth 1 https://github.com/microsoft/vcpkg.git "${VCPKG_ROOT}"
   "${VCPKG_ROOT}/bootstrap-vcpkg.sh" -disableMetrics
+}
+
+patch_vcpkg_boost_ports() {
+  local vcpkg_root="$1"
+  local boost_install="${vcpkg_root}/ports/vcpkg-boost/boost-install.cmake"
+  local include_line=""
+  local include_block=""
+  if [[ -z "${vcpkg_root}" || ! -f "${boost_install}" ]]; then
+    return 0
+  fi
+  include_line="include(\"${boost_install}\")"
+  include_block="# yume-boost-install-patch
+if(NOT COMMAND vcpkg_cmake_configure)
+  include(\"${vcpkg_root}/ports/vcpkg-cmake/vcpkg_cmake_configure.cmake\")
+endif()
+if(NOT COMMAND vcpkg_cmake_install)
+  include(\"${vcpkg_root}/ports/vcpkg-cmake/vcpkg_cmake_install.cmake\")
+endif()
+if(NOT COMMAND vcpkg_cmake_config_fixup)
+  include(\"${vcpkg_root}/ports/vcpkg-cmake-config/vcpkg_cmake_config_fixup.cmake\")
+endif()
+"
+  if ! grep -q "yume-boost-install-patch" "${boost_install}"; then
+    local tmp
+    tmp="$(mktemp)"
+    {
+      IFS= read -r first_line || true
+      if [[ -n "${first_line}" ]]; then
+        echo "${first_line}"
+      fi
+      printf "%s" "${include_block}"
+      cat
+    } < "${boost_install}" > "${tmp}"
+    mv "${tmp}" "${boost_install}"
+  fi
+  local portfile
+  for portfile in "${vcpkg_root}"/ports/boost-*/portfile.cmake; do
+    [[ -f "${portfile}" ]] || continue
+    if grep -q "boost_configure_and_install" "${portfile}" && ! grep -q "boost-install.cmake" "${portfile}"; then
+      local tmp
+      tmp="$(mktemp)"
+      {
+        echo "# Patched by yume build scripts"
+        echo "${include_line}"
+        cat "${portfile}"
+      } > "${tmp}"
+      mv "${tmp}" "${portfile}"
+    fi
+  done
 }
 detect_osxcross_root() {
   if [[ -n "${OSXCROSS_ROOT:-}" && -d "${OSXCROSS_ROOT}" ]]; then
@@ -1470,6 +1519,9 @@ build_windows_cross_target() {
     echo "Skipping windows cross build; vcpkg toolchain file missing" >&2
     return 0
   fi
+
+  patch_vcpkg_boost_ports "${vcpkg_root}"
+
   vcpkg_prefix="${vcpkg_root}/installed/${triplet}"
   oqs_include="${vcpkg_prefix}/include"
   if [[ -f "${vcpkg_prefix}/lib/liboqs.dll.a" ]]; then
@@ -1577,6 +1629,8 @@ build_macos_cross_target() {
     return 0
   fi
 
+  patch_vcpkg_boost_ports "${vcpkg_root}"
+
   toolchain_info="$(resolve_macos_toolchain || true)"
   if [[ -z "${toolchain_info}" ]]; then
     echo "Skipping macos cross build; osxcross toolchain not found (set OSXCROSS_ROOT or YUME_MACOS_TOOLCHAIN_PREFIX)" >&2
@@ -1657,10 +1711,10 @@ build_macos_cross_target() {
         ld_path="$(ls "${bin_dir}"/x86_64-apple-darwin*-ld "${bin_dir}"/x86_64h-apple-darwin*-ld 2>/dev/null | head -n 1 || true)"
       fi
     fi
-    if [[ -n "${ld_path}" ]]; then
-      ln -sf "${ld_path}" "${shim_bin}/ld"
-      ln -sf "${ld_path}" "${shim_bin}/ld64"
-    fi
+  if [[ -n "${ld_path}" ]]; then
+    ln -sf "${ld_path}" "${shim_bin}/ld"
+    ln -sf "${ld_path}" "${shim_bin}/ld64"
+  fi
   fi
 
   mkdir -p "${overlay_triplets_dir}"
@@ -1716,6 +1770,33 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 EOF
+
+  if [[ -d "${vcpkg_prefix}" && ! -f "${vcpkg_prefix}/lib/pkgconfig/liblzma.pc" ]]; then
+    echo "macOS vcpkg liblzma pkgconfig missing; forcing reinstall."
+    PATH="${shim_bin}:${bin_dir}:${PATH}" \
+      "${vcpkg_root}/vcpkg" remove --recurse --triplet "${triplet}" liblzma >/dev/null 2>&1 || true
+  fi
+  if [[ -d "${vcpkg_prefix}" && ! -f "${vcpkg_prefix}/lib/pkgconfig/spdlog.pc" ]]; then
+    echo "macOS vcpkg spdlog pkgconfig missing; forcing reinstall."
+    PATH="${shim_bin}:${bin_dir}:${PATH}" \
+      "${vcpkg_root}/vcpkg" remove --recurse --triplet "${triplet}" spdlog >/dev/null 2>&1 || true
+  fi
+  if [[ -d "${vcpkg_prefix}" && ! -f "${vcpkg_prefix}/lib/pkgconfig/zlib.pc" ]]; then
+    echo "macOS vcpkg zlib pkgconfig missing; forcing reinstall."
+    PATH="${shim_bin}:${bin_dir}:${PATH}" \
+      "${vcpkg_root}/vcpkg" remove --recurse --triplet "${triplet}" zlib >/dev/null 2>&1 || true
+  fi
+  if [[ -d "${vcpkg_prefix}" && ! -f "${vcpkg_prefix}/lib/pkgconfig/libzstd.pc" ]]; then
+    echo "macOS vcpkg zstd pkgconfig missing; forcing reinstall."
+    PATH="${shim_bin}:${bin_dir}:${PATH}" \
+      "${vcpkg_root}/vcpkg" remove --recurse --triplet "${triplet}" zstd >/dev/null 2>&1 || true
+  fi
+  if [[ -d "${vcpkg_prefix}" && ! -f "${vcpkg_prefix}/include/boost/version.hpp" ]]; then
+    echo "macOS vcpkg boost headers missing; forcing reinstall."
+    PATH="${shim_bin}:${bin_dir}:${PATH}" \
+      "${vcpkg_root}/vcpkg" remove --recurse --triplet "${triplet}" \
+      boost-headers boost-asio boost-system boost-thread >/dev/null 2>&1 || true
+  fi
 
   PATH="${shim_bin}:${bin_dir}:${PATH}" \
     OPENSSL_ROOT_DIR="${vcpkg_prefix}" \

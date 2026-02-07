@@ -571,13 +571,22 @@ install_deps_windows() {
 }
 
 build_project() {
+    local build_dir="${YUME_BUILD_DIR:-build}"
+    if need_cmd flock; then
+        local lock_file="/tmp/yume-build-${build_dir//\//_}.lock"
+        exec 9>"${lock_file}"
+        if ! flock -n 9; then
+            error "Build directory '${build_dir}' is busy (lock: ${lock_file}). Stop the other build and retry."
+            exit 1
+        fi
+    fi
     step "Cleaning previous build..."
-    rm -rf build
-    mkdir -p build
+    rm -rf "${build_dir}"
+    mkdir -p "${build_dir}"
     step "Configuring build..."
-    cmake -B build "${CMAKE_ARGS[@]}"
+    cmake -B "${build_dir}" "${CMAKE_ARGS[@]}"
     step "Compiling..."
-    cmake --build build -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu || echo 4)"
+    cmake --build "${build_dir}" -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu || echo 4)"
     ok "Build complete."
 }
 
@@ -631,7 +640,7 @@ main() {
 
     if [[ $CLEAN_ONLY -eq 1 ]]; then
         step "Cleaning build directory..."
-        rm -rf build
+        rm -rf "${YUME_BUILD_DIR:-build}"
         ok "Cleaned."
         exit 0
     fi
@@ -1008,8 +1017,9 @@ EOF
             ;;
     esac
     info "Done! 🎉"
-    echo -e "${COLOR_GREEN}Run:${COLOR_RESET} ./build/bin/yumed${exe_suffix} --config config/yumed.json"
-    echo -e "${COLOR_GREEN}Then:${COLOR_RESET} ./build/bin/yume${exe_suffix} --config config/yume.json --socks 1080"
+    local build_dir="${YUME_BUILD_DIR:-build}"
+    echo -e "${COLOR_GREEN}Run:${COLOR_RESET} ./${build_dir}/bin/yumed${exe_suffix} --config config/yumed.json"
+    echo -e "${COLOR_GREEN}Then:${COLOR_RESET} ./${build_dir}/bin/yume${exe_suffix} --config config/yume.json --socks 1080"
 }
 
 main "$@"

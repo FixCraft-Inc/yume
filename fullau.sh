@@ -1557,6 +1557,9 @@ build_macos_cross_target() {
   local toolchain_info=""
   local oqs_lib=""
   local oqs_include=""
+  if [[ -z "${MACOS_DEPLOYMENT_TARGET}" ]]; then
+    MACOS_DEPLOYMENT_TARGET="10.15"
+  fi
 
   if [[ "${MACOS_CROSS}" -ne 1 ]]; then
     return 0

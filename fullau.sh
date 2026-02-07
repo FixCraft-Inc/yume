@@ -1587,6 +1587,7 @@ build_macos_cross_target() {
   local bin_dir=""
   local tool_prefix=""
   local install_name_tool_path=""
+  local ld_path=""
   local overlay_triplets_dir="/tmp/yume-vcpkg-triplets"
   local shim_bin="/tmp/yume-osxcross-bin"
   local triplet_arch="x64"
@@ -1644,6 +1645,19 @@ build_macos_cross_target() {
     if [[ -x "${bin_dir}/${tool_prefix}-strip" ]]; then
       ln -sf "${bin_dir}/${tool_prefix}-strip" "${shim_bin}/strip"
     fi
+    if [[ -x "${bin_dir}/${tool_prefix}-ld" ]]; then
+      ld_path="${bin_dir}/${tool_prefix}-ld"
+    elif [[ -n "${bin_dir}" ]]; then
+      if [[ "${arch}" == "arm64" ]]; then
+        ld_path="$(ls "${bin_dir}"/arm64-apple-darwin*-ld "${bin_dir}"/aarch64-apple-darwin*-ld 2>/dev/null | head -n 1 || true)"
+      else
+        ld_path="$(ls "${bin_dir}"/x86_64-apple-darwin*-ld "${bin_dir}"/x86_64h-apple-darwin*-ld 2>/dev/null | head -n 1 || true)"
+      fi
+    fi
+    if [[ -n "${ld_path}" ]]; then
+      ln -sf "${ld_path}" "${shim_bin}/ld"
+      ln -sf "${ld_path}" "${shim_bin}/ld64"
+    fi
   fi
 
   mkdir -p "${overlay_triplets_dir}"
@@ -1672,6 +1686,11 @@ set(CMAKE_CXX_COMPILER ${cxx})
 set(CMAKE_OSX_SYSROOT ${sdk})
 set(CMAKE_OSX_ARCHITECTURES ${arch})
 EOF
+  if [[ -n "${ld_path}" ]]; then
+    cat >> "${toolchain_file}" <<EOF
+set(CMAKE_LINKER ${ld_path})
+EOF
+  fi
   if [[ -n "${install_name_tool_path}" ]]; then
     cat >> "${toolchain_file}" <<EOF
 set(CMAKE_INSTALL_NAME_TOOL ${install_name_tool_path})
@@ -1707,7 +1726,8 @@ EOF
     extra_oqs_args="-DOQS_INCLUDE_DIR=${oqs_include} -DOQS_LIBRARY=${oqs_lib}"
   fi
 
-  YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=1 YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF ${extra_oqs_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DVCPKG_OVERLAY_TRIPLETS=${overlay_triplets_dir} -DCMAKE_SYSTEM_NAME=Darwin" \
+  PATH="${shim_bin}:${bin_dir}:${PATH}" \
+    YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=1 YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF ${extra_oqs_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DVCPKG_OVERLAY_TRIPLETS=${overlay_triplets_dir} -DCMAKE_SYSTEM_NAME=Darwin" \
     ./ezbuild.sh
 
   copy_build_outputs "${outdir}" "" || return 1

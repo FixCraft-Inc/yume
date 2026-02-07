@@ -1790,6 +1790,7 @@ EOF
   fi
 
   PATH="${shim_bin}:${bin_dir}:${PATH}" \
+    MACOSX_DEPLOYMENT_TARGET="${MACOS_DEPLOYMENT_TARGET}" \
     OPENSSL_ROOT_DIR="${vcpkg_prefix}" \
     VCPKG_CHAINLOAD_TOOLCHAIN_FILE="${toolchain_file}" \
     VCPKG_OVERLAY_TRIPLETS="${overlay_triplets_dir}" \

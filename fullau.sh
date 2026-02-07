@@ -9,7 +9,7 @@ BIN_DIR=""
 BIN_DYNAMIC=""
 BIN_STATIC=""
 BIN_STABLE=""
-OPENWRT_SDK="/home/f1xgod/openwrt-sdk-24.10.0-ath79-nand_gcc-13.3.0_musl.Linux-x86_64"
+OPENWRT_SDK="${OPENWRT_SDK:-}"
 OPENWRT_SDK_VERSION="24.10.0"
 OPENWRT_SDK_TARGET="ath79-nand"
 OPENWRT_SDK_NAME="openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}_gcc-13.3.0_musl.Linux-x86_64"
@@ -21,10 +21,10 @@ SYSROOT=""
 TOOLCHAIN_BIN=""
 TOOLCHAIN_STRIP=""
 TOOLCHAIN_ROOT=""
-OQS_SRC="/home/f1xgod/liboqs"
+OQS_SRC="${OQS_SRC:-${HOME}/liboqs}"
 OQS_BUILD_MIPS="/tmp/liboqs-mips-build"
 OQS_BUILD_HOST="/tmp/liboqs-host-build"
-ARGON2_SRC="/home/f1xgod/argon2"
+ARGON2_SRC="${ARGON2_SRC:-${HOME}/argon2}"
 VENDOR_BUILDER="./scripts/build_vendor_libs.sh"
 VENDOR_ARCHIVE="./yume-vendor-prebuilt.tar.xz"
 VENDOR_DIR="./vendor"
@@ -48,34 +48,28 @@ ARMV8_BUSYBOX_TOOLCHAIN_PREFIX=""
 USE_DOCKER_FALLBACK=0
 AUTO_DETECT_TOOLCHAINS=1
 OPENWRT_FEEDS_READY=0
-WINDOWS_CROSS="${YUME_WINDOWS_CROSS:-}"
-WINDOWS_CROSS_AUTO=0
-if [[ -z "${WINDOWS_CROSS}" ]]; then
-  WINDOWS_CROSS_AUTO=1
-  WINDOWS_CROSS=0
-fi
-if [[ "${WINDOWS_CROSS}" != "0" && "${WINDOWS_CROSS}" != "1" ]]; then
-  WINDOWS_CROSS_AUTO=1
-  WINDOWS_CROSS=0
-fi
+
+# Helper function to normalize cross-build flags (0 or 1)
+normalize_cross_flag() {
+  local flag_value="$1"
+  if [[ -z "${flag_value}" || ( "${flag_value}" != "0" && "${flag_value}" != "1" ) ]]; then
+    echo "0|1"  # value|auto_detect
+  else
+    echo "${flag_value}|0"
+  fi
+}
+
+IFS='|' read -r WINDOWS_CROSS WINDOWS_CROSS_AUTO <<< "$(normalize_cross_flag "${YUME_WINDOWS_CROSS:-}")"
 WINDOWS_TOOLCHAIN_PREFIX="${YUME_WINDOWS_TOOLCHAIN_PREFIX:-x86_64-w64-mingw32}"
 WINDOWS_TRIPLET="${YUME_WINDOWS_TRIPLET:-x64-mingw-dynamic}"
 WINDOWS_VCPKG_PACKAGES="${YUME_WINDOWS_VCPKG_PACKAGES:-openssl boost-headers boost-asio boost-system boost-thread zlib zstd liblzma spdlog nlohmann-json argon2 liboqs}"
-MACOS_CROSS="${YUME_MACOS_CROSS:-}"
-MACOS_CROSS_AUTO=0
-if [[ -z "${MACOS_CROSS}" ]]; then
-  MACOS_CROSS_AUTO=1
-  MACOS_CROSS=0
-fi
-if [[ "${MACOS_CROSS}" != "0" && "${MACOS_CROSS}" != "1" ]]; then
-  MACOS_CROSS_AUTO=1
-  MACOS_CROSS=0
-fi
+
+IFS='|' read -r MACOS_CROSS MACOS_CROSS_AUTO <<< "$(normalize_cross_flag "${YUME_MACOS_CROSS:-}")"
 MACOS_TOOLCHAIN_PREFIX="${YUME_MACOS_TOOLCHAIN_PREFIX:-}"
 MACOS_TRIPLET="${YUME_MACOS_TRIPLET:-x64-osx}"
 MACOS_VCPKG_PACKAGES="${YUME_MACOS_VCPKG_PACKAGES:-openssl boost-headers boost-asio boost-system boost-thread zlib zstd liblzma fmt spdlog argon2 liboqs}"
 MACOS_SDK="${YUME_MACOS_SDK:-${OSXCROSS_SDK:-}}"
-MACOS_DEPLOYMENT_TARGET="${YUME_MACOS_DEPLOYMENT_TARGET:-}"
+MACOS_DEPLOYMENT_TARGET="${YUME_MACOS_DEPLOYMENT_TARGET:-10.15}"
 APT_UPDATED_FLAG="${APT_UPDATED_FLAG:-/tmp/yume-apt-updated}"
 
 resolve_real_home() {
@@ -1609,9 +1603,6 @@ build_macos_cross_target() {
   local toolchain_info=""
   local oqs_lib=""
   local oqs_include=""
-  if [[ -z "${MACOS_DEPLOYMENT_TARGET}" ]]; then
-    MACOS_DEPLOYMENT_TARGET="10.15"
-  fi
 
   if [[ "${MACOS_CROSS}" -ne 1 ]]; then
     return 0

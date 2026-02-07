@@ -121,7 +121,7 @@ constexpr const char kFixcraftAnonymPubPem[] =
     "-----BEGIN PUBLIC KEY-----\n"
     "MCowBQYDK2VwAyEAtupzLhANnB0VxP51vB/7yYwR+/3/jv4Str9MGLGA+is=\n"
     "-----END PUBLIC KEY-----\n";
-constexpr const char kDefaultAnonymCaCertPath[] = "/home/f1xgod/ca.cert.pem";
+constexpr const char kDefaultAnonymCaCertPath[] = "";
 struct EnvGuard {
     struct Entry {
         std::string key;
@@ -573,9 +573,7 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.server = argv[++i];
         } else if (arg == "--port" && i + 1 < argc) {
             args.port = std::stoi(argv[++i]);
-        } else if (arg == "--auth" && i + 1 < argc) {
-            args.identity = argv[++i];
-        } else if (arg == "-i" && i + 1 < argc) {
+        } else if ((arg == "--auth" || arg == "-i") && i + 1 < argc) {
             args.identity = argv[++i];
         } else if (arg == "--socks" && i + 1 < argc) {
             args.socks_port = std::stoi(argv[++i]);
@@ -588,9 +586,7 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.rhost = argv[++i];
         } else if (arg == "--rport" && i + 1 < argc) {
             args.rport = std::stoi(argv[++i]);
-        } else if (arg == "--run" && i + 1 < argc) {
-            args.run_cmd = argv[++i];
-        } else if ((arg == "-c" || arg == "--cmd") && i + 1 < argc) {
+        } else if ((arg == "--run" || arg == "-c" || arg == "--cmd") && i + 1 < argc) {
             args.run_cmd = argv[++i];
         } else if (arg == "--run-ipv4") {
             args.run_ipv4 = true;

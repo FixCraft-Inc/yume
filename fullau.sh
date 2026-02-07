@@ -8,6 +8,7 @@ fi
 BIN_DIR=""
 BIN_DYNAMIC=""
 BIN_STATIC=""
+BIN_STABLE=""
 OPENWRT_SDK="/home/user/openwrt-sdk-24.10.0-ath79-nand_gcc-13.3.0_musl.Linux-x86_64"
 OPENWRT_SDK_VERSION="24.10.0"
 OPENWRT_SDK_TARGET="ath79-nand"
@@ -226,7 +227,8 @@ OPENWRT_SDK_USER_PREFERRED="${OPENWRT_SDK_PREFERRED}"
 OPENWRT_SDK_CACHE_DIR="${REAL_HOME}/.cache/yume"
 BIN_DIR="${REAL_HOME}/bins"
 BIN_DYNAMIC="${BIN_DIR}/dynamic"
-BIN_STATIC="${BIN_DIR}/static"
+BIN_STABLE="${BIN_DIR}/stable"
+BIN_STATIC="${BIN_STABLE}"
 HOST_OS="$(uname -s)"
 HOST_ARCH="$(uname -m)"
 case "${HOST_ARCH}" in
@@ -280,22 +282,16 @@ target_enabled() {
   esac
 }
 
-mkdir -p "${BIN_DYNAMIC}"/{x86/{linux,busybox},mips/openwrt,armv7/{linux,busybox},armv8/{linux,busybox}} \
-         "${BIN_STATIC}"/{x86/{linux,busybox},mips/openwrt,armv7/{linux,busybox},armv8/{linux,busybox}}
-mkdir -p "${BIN_DYNAMIC}/windows/${HOST_ARCH}" "${BIN_DYNAMIC}/macos/${HOST_ARCH}" \
-         "${BIN_STATIC}/windows/${HOST_ARCH}" "${BIN_STATIC}/macos/${HOST_ARCH}"
-if [[ "${GITHUB_ACTIONS:-}" == "true" || "${YUME_CLEAN_BINS:-0}" == "1" ]]; then
-  rm -f "${BIN_DYNAMIC}/x86/linux/"* "${BIN_DYNAMIC}/x86/busybox/"* \
-        "${BIN_DYNAMIC}/mips/openwrt/"* \
-        "${BIN_DYNAMIC}/armv7/linux/"* "${BIN_DYNAMIC}/armv7/busybox/"* \
-        "${BIN_DYNAMIC}/armv8/linux/"* "${BIN_DYNAMIC}/armv8/busybox/"* \
-        "${BIN_DYNAMIC}/windows/"*/* "${BIN_DYNAMIC}/macos/"*/* \
-        "${BIN_STATIC}/x86/linux/"* "${BIN_STATIC}/x86/busybox/"* \
-        "${BIN_STATIC}/mips/openwrt/"* \
-        "${BIN_STATIC}/armv7/linux/"* "${BIN_STATIC}/armv7/busybox/"* \
-        "${BIN_STATIC}/armv8/linux/"* "${BIN_STATIC}/armv8/busybox/"* \
-        "${BIN_STATIC}/windows/"*/* "${BIN_STATIC}/macos/"*/* 2>/dev/null || true
+CLEAN_BINS="${YUME_CLEAN_BINS:-1}"
+if [[ "${CLEAN_BINS}" == "1" && -d "${BIN_DIR}" ]]; then
+  if [[ "${BIN_DIR}" == "${REAL_HOME}/bins" ]]; then
+    rm -rf "${BIN_DIR}"
+  else
+    echo "Refusing to delete unexpected BIN_DIR: ${BIN_DIR}" >&2
+    exit 1
+  fi
 fi
+mkdir -p "${BIN_DIR}"
 rm -rf build basefwx/cpp/build
 
 ensure_argon2_src() {
@@ -434,24 +430,33 @@ resolve_macos_toolchain() {
     bin_dir="${OSXCROSS_ROOT}/target/bin"
   fi
   local cxx=""
+  local desired_arch="x86_64"
+  if [[ "${MACOS_TRIPLET}" == arm64* || "${MACOS_TRIPLET}" == *arm64* ]]; then
+    desired_arch="arm64"
+  fi
   if [[ -n "${MACOS_TOOLCHAIN_PREFIX}" ]]; then
     cxx="$(command -v "${MACOS_TOOLCHAIN_PREFIX}-clang++" 2>/dev/null || true)"
   fi
   if [[ -z "${cxx}" && -n "${bin_dir}" ]]; then
-    cxx="$(ls "${bin_dir}"/*-apple-darwin*-clang++ 2>/dev/null | head -n 1 || true)"
-    if [[ -z "${cxx}" ]]; then
-      if [[ -x "${bin_dir}/o64-clang++" ]]; then
-        cxx="${bin_dir}/o64-clang++"
-      elif [[ -x "${bin_dir}/oa64-clang++" ]]; then
-        cxx="${bin_dir}/oa64-clang++"
-      fi
+    if [[ "${desired_arch}" == "x86_64" && -x "${bin_dir}/o64-clang++" ]]; then
+      cxx="${bin_dir}/o64-clang++"
+    elif [[ "${desired_arch}" == "arm64" && -x "${bin_dir}/oa64-clang++" ]]; then
+      cxx="${bin_dir}/oa64-clang++"
+    fi
+  fi
+  if [[ -z "${cxx}" && -n "${bin_dir}" ]]; then
+    if [[ "${desired_arch}" == "arm64" ]]; then
+      cxx="$(ls "${bin_dir}"/arm64-apple-darwin*-clang++ "${bin_dir}"/aarch64-apple-darwin*-clang++ 2>/dev/null | head -n 1 || true)"
+    else
+      cxx="$(ls "${bin_dir}"/x86_64-apple-darwin*-clang++ "${bin_dir}"/x86_64h-apple-darwin*-clang++ 2>/dev/null | head -n 1 || true)"
     fi
   fi
   if [[ -z "${cxx}" ]]; then
-    cxx="$(command -v o64-clang++ 2>/dev/null || true)"
-  fi
-  if [[ -z "${cxx}" ]]; then
-    cxx="$(command -v oa64-clang++ 2>/dev/null || true)"
+    if [[ "${desired_arch}" == "x86_64" ]]; then
+      cxx="$(command -v o64-clang++ 2>/dev/null || true)"
+    else
+      cxx="$(command -v oa64-clang++ 2>/dev/null || true)"
+    fi
   fi
   if [[ -z "${cxx}" ]]; then
     return 1
@@ -538,19 +543,19 @@ print_build_plan() {
   echo "Building for:"
   if [[ "${HOST_OS}" == "Linux" ]]; then
     if target_enabled linux-x86_64; then
-      echo "  - linux x86_64 (dynamic, static)"
+      echo "  - linux x86_64 (dynamic, stable)"
     fi
     if target_enabled openwrt-mips; then
       echo "  - openwrt mips (dynamic)"
     fi
     if target_enabled busybox-x86; then
-      echo "  - busybox x86 (dynamic, static)"
+      echo "  - busybox x86 (dynamic, stable)"
     fi
     if target_enabled armv7-linux || target_enabled armv7-busybox; then
-      echo "  - armv7 linux/busybox (dynamic, static)"
+      echo "  - armv7 linux/busybox (dynamic, stable)"
     fi
     if target_enabled armv8-linux || target_enabled armv8-busybox; then
-      echo "  - armv8 linux/busybox (dynamic, static)"
+      echo "  - armv8 linux/busybox (dynamic, stable)"
     fi
   elif [[ "${HOST_OS}" == "Darwin" ]]; then
     echo "  - macos ${HOST_ARCH} (dynamic)"
@@ -558,10 +563,10 @@ print_build_plan() {
     echo "  - windows ${HOST_ARCH} (dynamic)"
   fi
   if [[ "${WINDOWS_CROSS}" -eq 1 ]] && target_enabled windows-x86_64; then
-    echo "  - windows x86_64 (mingw, ${WINDOWS_TRIPLET})"
+    echo "  - windows x86_64 (mingw, ${WINDOWS_TRIPLET}, dynamic)"
   fi
   if [[ "${MACOS_CROSS}" -eq 1 ]] && ( target_enabled macos-x86_64 || target_enabled macos-arm64 ); then
-    echo "  - macos $(macos_triplet_arch) (${MACOS_TRIPLET})"
+    echo "  - macos $(macos_triplet_arch) (${MACOS_TRIPLET}, dynamic, stable)"
   fi
   echo "Detected SDKs/libs:"
   echo "  - vcpkg: ${VCPKG_ROOT:-not found}"
@@ -978,9 +983,9 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 EOF
     mkdir -p \"${outdir_container}\"
     if [[ ${busybox_flag} -eq 1 ]]; then
-      YUME_CMAKE_ARGS=\"${variant_args}\" YUME_TOOLCHAIN_FILE=/tmp/yume-toolchain.cmake ./ezbuild.sh --busybox --arch \"${label}\"
+      YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0 YUME_CMAKE_ARGS=\"${variant_args}\" YUME_TOOLCHAIN_FILE=/tmp/yume-toolchain.cmake ./ezbuild.sh --busybox --arch \"${label}\"
     else
-      YUME_CMAKE_ARGS=\"${variant_args}\" YUME_TOOLCHAIN_FILE=/tmp/yume-toolchain.cmake ./ezbuild.sh --arch \"${label}\"
+      YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0 YUME_CMAKE_ARGS=\"${variant_args}\" YUME_TOOLCHAIN_FILE=/tmp/yume-toolchain.cmake ./ezbuild.sh --arch \"${label}\"
     fi
     cp -f build/bin/yume \"${outdir_container}/yume\"
     cp -f build/bin/yumed \"${outdir_container}/yumed\"
@@ -1067,6 +1072,8 @@ build_busybox_target() {
   local boost_dir_env=""
   local variant_args
   variant_args="$(variant_cmake_args "${variant}")"
+  local cross_env="YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0"
+  local cross_env="YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0"
   local lib_ext="so"
   if [[ "${variant}" == "static" ]]; then
     lib_ext="a"
@@ -1147,9 +1154,9 @@ EOF
     fi
     if [[ -n "${boost_dir_env}" ]]; then
       extra_args="${extra_args} -D${boost_dir_env}"
-      env ${boost_dir_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
+      env ${boost_dir_env} ${cross_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
     else
-      env YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
+      env ${cross_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
     fi
   elif [[ "${label}" == "armv7" ]]; then
     if [[ "${variant}" == "static" ]]; then
@@ -1178,9 +1185,9 @@ EOF
     fi
     if [[ -n "${boost_dir_env}" ]]; then
       extra_args="${extra_args} -D${boost_dir_env}"
-      env ${boost_dir_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
+      env ${boost_dir_env} ${cross_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
     else
-      env YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
+      env ${cross_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
     fi
   elif [[ "${label}" == "armv8" ]]; then
     if [[ "${variant}" == "static" ]]; then
@@ -1209,14 +1216,14 @@ EOF
     fi
     if [[ -n "${boost_dir_env}" ]]; then
       extra_args="${extra_args} -D${boost_dir_env}"
-      env ${boost_dir_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
+      env ${boost_dir_env} ${cross_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
     else
-      env YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
+      env ${cross_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
     fi
   elif [[ -n "${boost_dir_env}" ]]; then
-    env ${boost_dir_env} YUME_CMAKE_ARGS="${variant_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
+    env ${boost_dir_env} ${cross_env} YUME_CMAKE_ARGS="${variant_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
   else
-    YUME_CMAKE_ARGS="${variant_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
+    YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0 YUME_CMAKE_ARGS="${variant_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --busybox --arch "${label}"
   fi
   copy_build_outputs "${outdir}" "" || return 1
   "${prefix}-strip" --strip-unneeded "${outdir}/yume" "${outdir}/yumed"
@@ -1300,9 +1307,9 @@ EOF
     fi
     if [[ -n "${boost_dir_env}" ]]; then
       extra_args="${extra_args} -D${boost_dir_env}"
-      env ${boost_dir_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
+      env ${boost_dir_env} ${cross_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
     else
-      env YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
+      env ${cross_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
     fi
   elif [[ "${label}" == "armv8" ]]; then
     if [[ "${variant}" == "static" ]]; then
@@ -1331,14 +1338,14 @@ EOF
     fi
     if [[ -n "${boost_dir_env}" ]]; then
       extra_args="${extra_args} -D${boost_dir_env}"
-      env ${boost_dir_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
+      env ${boost_dir_env} ${cross_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
     else
-      env YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
+      env ${cross_env} YUME_CMAKE_ARGS="${extra_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
     fi
   elif [[ -n "${boost_dir_env}" ]]; then
-    env ${boost_dir_env} YUME_CMAKE_ARGS="${variant_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
+    env ${boost_dir_env} ${cross_env} YUME_CMAKE_ARGS="${variant_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
   else
-    YUME_CMAKE_ARGS="${variant_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
+    YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0 YUME_CMAKE_ARGS="${variant_args}" YUME_TOOLCHAIN_FILE="${toolchain_file}" ./ezbuild.sh --arch "${label}"
   fi
   copy_build_outputs "${outdir}" "" || return 1
   "${prefix}-strip" --strip-unneeded "${outdir}/yume" "${outdir}/yumed"
@@ -1379,7 +1386,7 @@ build_host_linux_target() {
   if [[ -f "${zstd_lib}" ]]; then
     extra_args="${extra_args} -DZSTD_LIBRARY=${zstd_lib} -DZSTD_INCLUDE_DIR=/usr/include"
   fi
-  YUME_OQS_STATIC=1 YUME_CMAKE_ARGS="${extra_args}" ./ezbuild.sh
+  YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0 YUME_OQS_STATIC=1 YUME_CMAKE_ARGS="${extra_args}" ./ezbuild.sh
   copy_build_outputs "${outdir}" "" || return 1
   strip "${outdir}/yume" "${outdir}/yumed"
 }
@@ -1390,13 +1397,14 @@ build_host_native_target() {
   local exe_suffix="$3"
   local variant_args
   variant_args="$(variant_cmake_args "${variant}")"
-  YUME_CMAKE_ARGS="${variant_args}" ./ezbuild.sh
+  YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0 YUME_CMAKE_ARGS="${variant_args}" ./ezbuild.sh
   local yume_src="build/bin/yume${exe_suffix}"
   local yumed_src="build/bin/yumed${exe_suffix}"
   if [[ ! -f "${yume_src}" || ! -f "${yumed_src}" ]]; then
     echo "Host build outputs missing: ${yume_src} ${yumed_src}" >&2
     return 1
   fi
+  mkdir -p "${outdir}"
   cp -f "${yume_src}" "${outdir}/yume${exe_suffix}"
   cp -f "${yumed_src}" "${outdir}/yumed${exe_suffix}"
   if command -v strip >/dev/null 2>&1; then
@@ -1422,6 +1430,7 @@ copy_build_outputs() {
     echo "Build outputs missing: ${yume_src} ${yumed_src}" >&2
     return 1
   fi
+  mkdir -p "${outdir}"
   cp -f "${yume_src}" "${outdir}/yume${exe_suffix}"
   cp -f "${yumed_src}" "${outdir}/yumed${exe_suffix}"
 }
@@ -1438,6 +1447,8 @@ build_windows_cross_target() {
   local vcpkg_prefix=""
   local oqs_lib=""
   local oqs_include=""
+  local shim_bin="/tmp/yume-windows-shim"
+  local powershell_stub="${shim_bin}/powershell.exe"
 
   if [[ "${WINDOWS_CROSS}" -ne 1 ]]; then
     return 0
@@ -1474,9 +1485,18 @@ build_windows_cross_target() {
     fi
   fi
 
-  "${vcpkg_bin}" install --triplet "${triplet}" ${WINDOWS_VCPKG_PACKAGES}
+  mkdir -p "${shim_bin}"
+  if [[ ! -x "${powershell_stub}" ]]; then
+    cat > "${powershell_stub}" <<'EOS'
+#!/usr/bin/env bash
+exit 0
+EOS
+    chmod +x "${powershell_stub}"
+  fi
 
-  mkdir -p "${outdir}"
+  PATH="${shim_bin}:${PATH}" VCPKG_POWERSHELL_PATH="${powershell_stub}" \
+    "${vcpkg_bin}" install --triplet "${triplet}" ${WINDOWS_VCPKG_PACKAGES}
+
   cat > "${toolchain_file}" <<EOF
 set(CMAKE_SYSTEM_NAME Windows)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
@@ -1508,13 +1528,15 @@ EOF
     extra_oqs_args="-DOQS_INCLUDE_DIR=${oqs_include} -DOQS_LIBRARY=${oqs_lib}"
   fi
 
-  YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF -DOPENSSL_ROOT_DIR=${vcpkg_prefix} ${extra_oqs_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DVCPKG_APPLOCAL_DEPS=OFF -DCMAKE_SYSTEM_NAME=Windows" \
+  PATH="${shim_bin}:${PATH}" VCPKG_POWERSHELL_PATH="${powershell_stub}" \
+    YUME_WINDOWS_CROSS=1 YUME_MACOS_CROSS=0 YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF -DOPENSSL_ROOT_DIR=${vcpkg_prefix} ${extra_oqs_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DVCPKG_APPLOCAL_DEPS=OFF -DCMAKE_SYSTEM_NAME=Windows" \
     ./ezbuild.sh
 
   if [[ ! -f build/bin/yume.exe || ! -f build/bin/yumed.exe ]]; then
     echo "Windows build outputs missing in build/bin" >&2
     return 1
   fi
+  mkdir -p "${outdir}"
   cp -f build/bin/yume.exe "${outdir}/yume.exe"
   cp -f build/bin/yumed.exe "${outdir}/yumed.exe"
   if [[ "${triplet}" == *"dynamic"* ]]; then
@@ -1525,6 +1547,10 @@ EOF
 build_macos_cross_target() {
   local variant="$1"
   local outdir="$2"
+  local lib_linkage="static"
+  if [[ "${variant}" == "dynamic" ]]; then
+    lib_linkage="dynamic"
+  fi
   local triplet="${MACOS_TRIPLET}"
   local vcpkg_root="${VCPKG_ROOT:-}"
   local toolchain_file="/tmp/yume-osxcross-toolchain.cmake"
@@ -1558,16 +1584,80 @@ build_macos_cross_target() {
   local cxx=""
   local sdk=""
   local arch=""
+  local bin_dir=""
+  local tool_prefix=""
+  local install_name_tool_path=""
+  local overlay_triplets_dir="/tmp/yume-vcpkg-triplets"
+  local shim_bin="/tmp/yume-osxcross-bin"
+  local triplet_arch="x64"
+  local vcpkg_prefix=""
   IFS='|' read -r cc cxx sdk arch <<< "${toolchain_info}"
   if [[ -z "${cc}" || -z "${cxx}" || -z "${sdk}" ]]; then
     echo "Skipping macos cross build; missing osxcross compiler or SDK (set OSXCROSS_ROOT/YUME_MACOS_SDK)" >&2
     return 0
   fi
+  if [[ "${arch}" == "arm64" ]]; then
+    triplet_arch="arm64"
+  fi
+  if [[ "${triplet_arch}" == "x64" && "${arch}" != "x86_64" ]]; then
+    echo "Skipping macos cross build; toolchain arch ${arch} does not match ${triplet}." >&2
+    return 0
+  fi
+  if [[ "${triplet_arch}" == "arm64" && "${arch}" != "arm64" ]]; then
+    echo "Skipping macos cross build; toolchain arch ${arch} does not match ${triplet}." >&2
+    return 0
+  fi
 
-  "${vcpkg_root}/vcpkg" install --triplet "${triplet}" ${MACOS_VCPKG_PACKAGES}
+  bin_dir="$(dirname "${cc}")"
+  tool_prefix="${cc##*/}"
+  tool_prefix="${tool_prefix%-clang}"
+  tool_prefix="${tool_prefix%-cc}"
+  tool_prefix="${tool_prefix%-gcc}"
+  if [[ -n "${bin_dir}" && -n "${tool_prefix}" && -x "${bin_dir}/${tool_prefix}-install_name_tool" ]]; then
+    install_name_tool_path="${bin_dir}/${tool_prefix}-install_name_tool"
+  fi
+  if [[ -z "${install_name_tool_path}" && -n "${bin_dir}" ]]; then
+    install_name_tool_path="$(ls "${bin_dir}"/*-install_name_tool 2>/dev/null | head -n 1 || true)"
+  fi
+  if [[ -n "${install_name_tool_path}" && -n "${bin_dir}" ]]; then
+    local prefix_fallback="${install_name_tool_path##*/}"
+    prefix_fallback="${prefix_fallback%-install_name_tool}"
+    if [[ -n "${prefix_fallback}" ]]; then
+      if [[ ! -x "${bin_dir}/${tool_prefix}-ar" && -x "${bin_dir}/${prefix_fallback}-ar" ]]; then
+        tool_prefix="${prefix_fallback}"
+      elif [[ ! -x "${bin_dir}/${tool_prefix}-ranlib" && -x "${bin_dir}/${prefix_fallback}-ranlib" ]]; then
+        tool_prefix="${prefix_fallback}"
+      fi
+    fi
+  fi
+  if [[ -n "${bin_dir}" && -n "${tool_prefix}" ]]; then
+    mkdir -p "${shim_bin}"
+    if [[ -x "${bin_dir}/${tool_prefix}-install_name_tool" ]]; then
+      ln -sf "${bin_dir}/${tool_prefix}-install_name_tool" "${shim_bin}/install_name_tool"
+    fi
+    if [[ -x "${bin_dir}/${tool_prefix}-otool" ]]; then
+      ln -sf "${bin_dir}/${tool_prefix}-otool" "${shim_bin}/otool"
+    fi
+    if [[ -x "${bin_dir}/${tool_prefix}-lipo" ]]; then
+      ln -sf "${bin_dir}/${tool_prefix}-lipo" "${shim_bin}/lipo"
+    fi
+    if [[ -x "${bin_dir}/${tool_prefix}-strip" ]]; then
+      ln -sf "${bin_dir}/${tool_prefix}-strip" "${shim_bin}/strip"
+    fi
+  fi
 
-  mkdir -p "${outdir}"
-  oqs_include="${vcpkg_root}/installed/${triplet}/include"
+  mkdir -p "${overlay_triplets_dir}"
+  cat > "${overlay_triplets_dir}/${triplet}.cmake" <<EOF
+set(VCPKG_TARGET_ARCHITECTURE ${triplet_arch})
+set(VCPKG_CRT_LINKAGE dynamic)
+set(VCPKG_LIBRARY_LINKAGE ${lib_linkage})
+set(VCPKG_CMAKE_SYSTEM_NAME Darwin)
+set(VCPKG_OSX_ARCHITECTURES ${arch})
+set(VCPKG_CHAINLOAD_TOOLCHAIN_FILE "${toolchain_file}")
+EOF
+
+  vcpkg_prefix="${vcpkg_root}/installed/${triplet}"
+  oqs_include="${vcpkg_prefix}/include"
   if [[ -f "${vcpkg_root}/installed/${triplet}/lib/liboqs.a" ]]; then
     oqs_lib="${vcpkg_root}/installed/${triplet}/lib/liboqs.a"
   elif [[ -f "${vcpkg_root}/installed/${triplet}/lib/liboqs.dylib" ]]; then
@@ -1582,15 +1672,33 @@ set(CMAKE_CXX_COMPILER ${cxx})
 set(CMAKE_OSX_SYSROOT ${sdk})
 set(CMAKE_OSX_ARCHITECTURES ${arch})
 EOF
+  if [[ -n "${install_name_tool_path}" ]]; then
+    cat >> "${toolchain_file}" <<EOF
+set(CMAKE_INSTALL_NAME_TOOL ${install_name_tool_path})
+set(CMAKE_RANLIB ${bin_dir}/${tool_prefix}-ranlib)
+set(CMAKE_AR ${bin_dir}/${tool_prefix}-ar)
+set(CMAKE_LIPO ${bin_dir}/${tool_prefix}-lipo)
+set(CMAKE_STRIP ${bin_dir}/${tool_prefix}-strip)
+EOF
+  fi
   if [[ -n "${MACOS_DEPLOYMENT_TARGET}" ]]; then
     echo "set(CMAKE_OSX_DEPLOYMENT_TARGET ${MACOS_DEPLOYMENT_TARGET})" >> "${toolchain_file}"
   fi
   cat >> "${toolchain_file}" <<EOF
-set(CMAKE_FIND_ROOT_PATH ${sdk})
+set(CMAKE_PREFIX_PATH ${vcpkg_prefix})
+set(OPENSSL_ROOT_DIR ${vcpkg_prefix})
+set(CMAKE_FIND_ROOT_PATH ${sdk} ${vcpkg_prefix})
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 EOF
+
+  PATH="${shim_bin}:${bin_dir}:${PATH}" \
+    OPENSSL_ROOT_DIR="${vcpkg_prefix}" \
+    VCPKG_CHAINLOAD_TOOLCHAIN_FILE="${toolchain_file}" \
+    VCPKG_OVERLAY_TRIPLETS="${overlay_triplets_dir}" \
+    "${vcpkg_root}/vcpkg" install --triplet "${triplet}" --overlay-triplets="${overlay_triplets_dir}" ${MACOS_VCPKG_PACKAGES}
 
   local variant_args
   variant_args="$(variant_cmake_args "${variant}")"
@@ -1599,7 +1707,7 @@ EOF
     extra_oqs_args="-DOQS_INCLUDE_DIR=${oqs_include} -DOQS_LIBRARY=${oqs_lib}"
   fi
 
-  YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF ${extra_oqs_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DCMAKE_SYSTEM_NAME=Darwin" \
+  YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=1 YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF ${extra_oqs_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DVCPKG_OVERLAY_TRIPLETS=${overlay_triplets_dir} -DCMAKE_SYSTEM_NAME=Darwin" \
     ./ezbuild.sh
 
   copy_build_outputs "${outdir}" "" || return 1
@@ -1620,7 +1728,7 @@ build_openwrt_target() {
     return 0
   fi
   require_vendor_dir "${VENDOR_DIR}/openwrt-mips"
-  YUME_CLEAN_BAD_OQS=1 YUME_OQS_STATIC=1 ./ezbuild.sh --openwrt --openwrt-sdk "${OPENWRT_SDK}" --arch mips
+  YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0 YUME_CLEAN_BAD_OQS=1 YUME_OQS_STATIC=1 ./ezbuild.sh --openwrt --openwrt-sdk "${OPENWRT_SDK}" --arch mips
   copy_build_outputs "${outdir}" "" || return 1
   if [[ -z "${TOOLCHAIN_STRIP}" ]]; then
     if command -v mipsel-linux-gnu-strip >/dev/null 2>&1; then
@@ -1697,6 +1805,8 @@ if [[ "${MACOS_CROSS}" -eq 1 ]] && ( target_enabled macos-x86_64 || target_enabl
   clean_build_dirs
   mac_arch="$(macos_triplet_arch)"
   YUME_MACOS_CROSS=1 build_macos_cross_target "dynamic" "${BIN_DYNAMIC}/macos/${mac_arch}"
+  clean_build_dirs
+  YUME_MACOS_CROSS=1 build_macos_cross_target "static" "${BIN_STATIC}/macos/${mac_arch}"
 fi
 
 # Busybox x86

@@ -9,6 +9,7 @@ BIN_DIR=""
 BIN_DYNAMIC=""
 BIN_STATIC=""
 BIN_STABLE=""
+# OPENWRT_SDK can be set externally; if empty, script will use OPENWRT_SDK_PREFERRED or download
 OPENWRT_SDK="${OPENWRT_SDK:-}"
 OPENWRT_SDK_VERSION="24.10.0"
 OPENWRT_SDK_TARGET="ath79-nand"
@@ -52,7 +53,7 @@ OPENWRT_FEEDS_READY=0
 # Helper function to normalize cross-build flags (0 or 1)
 normalize_cross_flag() {
   local flag_value="$1"
-  if [[ -z "${flag_value}" || ( "${flag_value}" != "0" && "${flag_value}" != "1" ) ]]; then
+  if [[ -z "${flag_value}" || "${flag_value}" != "0" && "${flag_value}" != "1" ]]; then
     echo "0|1"  # value|auto_detect
   else
     echo "${flag_value}|0"

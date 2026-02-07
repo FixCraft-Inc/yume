@@ -1670,6 +1670,7 @@ set(VCPKG_CRT_LINKAGE dynamic)
 set(VCPKG_LIBRARY_LINKAGE ${lib_linkage})
 set(VCPKG_CMAKE_SYSTEM_NAME Darwin)
 set(VCPKG_OSX_ARCHITECTURES ${arch})
+set(VCPKG_OSX_DEPLOYMENT_TARGET ${MACOS_DEPLOYMENT_TARGET})
 set(VCPKG_CHAINLOAD_TOOLCHAIN_FILE "${toolchain_file}")
 EOF
 
@@ -1704,7 +1705,7 @@ set(CMAKE_STRIP ${bin_dir}/${tool_prefix}-strip)
 EOF
   fi
   if [[ -n "${MACOS_DEPLOYMENT_TARGET}" ]]; then
-    echo "set(CMAKE_OSX_DEPLOYMENT_TARGET ${MACOS_DEPLOYMENT_TARGET})" >> "${toolchain_file}"
+    echo "set(CMAKE_OSX_DEPLOYMENT_TARGET ${MACOS_DEPLOYMENT_TARGET} CACHE STRING \"\" FORCE)" >> "${toolchain_file}"
   fi
   cat >> "${toolchain_file}" <<EOF
 set(CMAKE_PREFIX_PATH ${vcpkg_prefix})
@@ -1730,7 +1731,8 @@ EOF
   fi
 
   PATH="${shim_bin}:${bin_dir}:${PATH}" \
-    YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=1 YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF ${extra_oqs_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DVCPKG_OVERLAY_TRIPLETS=${overlay_triplets_dir} -DCMAKE_SYSTEM_NAME=Darwin" \
+    MACOSX_DEPLOYMENT_TARGET="${MACOS_DEPLOYMENT_TARGET}" \
+    YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=1 YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF ${extra_oqs_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DVCPKG_OVERLAY_TRIPLETS=${overlay_triplets_dir} -DCMAKE_SYSTEM_NAME=Darwin -DCMAKE_OSX_DEPLOYMENT_TARGET=${MACOS_DEPLOYMENT_TARGET}" \
     ./ezbuild.sh
 
   copy_build_outputs "${outdir}" "" || return 1

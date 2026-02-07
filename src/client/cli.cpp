@@ -121,6 +121,7 @@ constexpr const char kFixcraftAnonymPubPem[] =
     "-----BEGIN PUBLIC KEY-----\n"
     "MCowBQYDK2VwAyEAtupzLhANnB0VxP51vB/7yYwR+/3/jv4Str9MGLGA+is=\n"
     "-----END PUBLIC KEY-----\n";
+// Default CA cert path - empty means user must provide via --anonym-ca-cert if needed
 constexpr const char kDefaultAnonymCaCertPath[] = "";
 struct EnvGuard {
     struct Entry {
@@ -769,8 +770,8 @@ void print_help() {
         << "  yume --server <host> -i <id_ed25519> --run \"<command>\"\n"
         << "  yume --help\n\n"
         << "Required:\n"
-        << "  --server <host>      Server address\n"
-        << "  -i, --auth <path>    Identity key file path\n\n"
+        << "  --server <host>       Server address\n"
+        << "  -i, --auth <path>     Identity key file path\n\n"
         << "Optional:\n"
         << "  --socks <port>       Start SOCKS5 proxy on specified port\n"
         << "  --threads <n>        IO thread count (0 = auto-detect)\n"

@@ -520,10 +520,25 @@ EOF
         PATH="${env_path}" VCPKG_POWERSHELL_PATH="${powershell_stub:-}" \
             "${vcpkg_bin}" remove --recurse --triplet "${triplet}" openssl >/dev/null 2>&1 || true
     fi
+    if [[ -d "${VCPKG_ROOT}/installed/${triplet}" && ! -f "${VCPKG_ROOT}/installed/${triplet}/lib/pkgconfig/spdlog.pc" ]]; then
+        echo "spdlog pkgconfig missing for ${triplet}; forcing reinstall."
+        PATH="${env_path}" VCPKG_POWERSHELL_PATH="${powershell_stub:-}" \
+            "${vcpkg_bin}" remove --recurse --triplet "${triplet}" spdlog >/dev/null 2>&1 || true
+    fi
+    if [[ -d "${VCPKG_ROOT}/installed/${triplet}" && ! -f "${VCPKG_ROOT}/installed/${triplet}/lib/pkgconfig/zlib.pc" ]]; then
+        echo "zlib pkgconfig missing for ${triplet}; forcing reinstall."
+        PATH="${env_path}" VCPKG_POWERSHELL_PATH="${powershell_stub:-}" \
+            "${vcpkg_bin}" remove --recurse --triplet "${triplet}" zlib >/dev/null 2>&1 || true
+    fi
+    if [[ -d "${VCPKG_ROOT}/installed/${triplet}" && ! -f "${VCPKG_ROOT}/installed/${triplet}/lib/pkgconfig/libzstd.pc" ]]; then
+        echo "zstd pkgconfig missing for ${triplet}; forcing reinstall."
+        PATH="${env_path}" VCPKG_POWERSHELL_PATH="${powershell_stub:-}" \
+            "${vcpkg_bin}" remove --recurse --triplet "${triplet}" zstd >/dev/null 2>&1 || true
+    fi
 
     PATH="${env_path}" \
         VCPKG_POWERSHELL_PATH="${powershell_stub:-}" \
-        "${vcpkg_bin}" install --triplet "${triplet}" ${overlay_triplets_dir:+--overlay-triplets="${overlay_triplets_dir}"} openssl liboqs argon2
+        "${vcpkg_bin}" install --triplet "${triplet}" ${overlay_triplets_dir:+--overlay-triplets="${overlay_triplets_dir}"} openssl zlib zstd fmt spdlog liboqs argon2
 }
 
 stage_vcpkg_libs() {

@@ -35,7 +35,10 @@ if(CMAKE_CROSSCOMPILING AND YUME_STATIC)
 endif()
 
 find_package(OpenSSL REQUIRED)
-find_package(Boost REQUIRED COMPONENTS system)
+find_package(Boost CONFIG QUIET COMPONENTS system thread)
+if(NOT Boost_FOUND)
+    find_package(Boost REQUIRED COMPONENTS system thread)
+endif()
 find_package(Threads REQUIRED)
 
 if(YUME_MINIMAL)

@@ -680,6 +680,7 @@ main() {
             "-DVCPKG_APPLOCAL_DEPS=OFF"
             "-DOPENSSL_ROOT_DIR=${VCPKG_PREFIX}"
             "-DBASEFWX_USE_VENDOR_DEPS=OFF"
+            "-DYUME_FORCE_CROSS=ON"
         )
         if [[ -f "${VCPKG_PREFIX}/lib/libzstd.dll.a" ]]; then
             CMAKE_ARGS+=(
@@ -716,6 +717,7 @@ main() {
     fi
 
     if [[ $OPENWRT -eq 1 || $BUSYBOX -eq 1 ]]; then
+        CMAKE_ARGS+=("-DYUME_FORCE_CROSS=ON")
         if [[ -n "$OPENWRT_SDK" ]]; then
             if [[ ! -d "$OPENWRT_SDK" ]]; then
                 error "--openwrt-sdk path not found: $OPENWRT_SDK"
@@ -835,6 +837,13 @@ EOF
         fi
     fi
 
+    if [[ $OPENWRT -eq 1 || $BUSYBOX -eq 1 ]]; then
+        CMAKE_ARGS+=(
+            "-DYUME_USE_SPDLOG=OFF"
+            "-DYUME_OFFLINE=ON"
+        )
+    fi
+
     if need_cmd cmake; then
         ok "CMake detected."
     else
@@ -935,6 +944,8 @@ EOF
             warn "Windows cross: libargon2 not detected in vcpkg; heavy KDF will fall back to HKDF."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=OFF")
         fi
+    elif [[ "${YUME_MACOS_CROSS:-0}" == "1" ]]; then
+        CMAKE_ARGS+=("-DYUME_FORCE_CROSS=ON")
     else
         if [[ -n "${TARGET_ARCH}" && -d "${PWD}/vendor/${TARGET_ARCH}" ]]; then
             CMAKE_ARGS+=("-DBASEFWX_VENDOR_DIR=${PWD}/vendor/${TARGET_ARCH}")

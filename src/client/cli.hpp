@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 namespace yume::client {
@@ -13,6 +14,8 @@ struct ClientConfig {
     bool obfuscation{false};
     bool inner_crypto{true};
     bool inner_heavy{true};
+    bool inner_hop{true};
+    std::uint32_t hop_interval_ms{500};
     bool allow_udp{false};
     bool allow_local_ip{false};
     bool server_in_charge{false};
@@ -24,6 +27,7 @@ struct ClientConfig {
     std::string tls_pin_sha256;
     bool require_anonym{false};
     bool boring{false};
+    bool non_interactive{false};
 };
 
 class Cli {

@@ -6,13 +6,16 @@
 
 #include "client/cli.hpp"
 
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 #include <filesystem>
 #include <fstream>
+#include <chrono>
 #include <ctime>
 #include <cstdlib>
 #include <thread>
@@ -410,14 +413,24 @@ std::string describe_openssl_error() {
     return buf;
 }
 
-bool file_exists(const std::string& path);
+bool file_exists(const std::string& path) {
+    if (path.empty()) {
+        return false;
+    }
+    std::error_code ec;
+    auto st = std::filesystem::status(path, ec);
+    if (ec) {
+        return false;
+    }
+    return std::filesystem::is_regular_file(st);
+}
 
 bool require_file(const char* label, const std::string& path) {
     if (path.empty()) {
         return true;
     }
     if (!file_exists(path)) {
-        util::log_error(std::string(label) + " not found: " + path);
+        util::log_error(std::string(label) + " not found or not a file: " + path);
         return false;
     }
     return true;
@@ -585,6 +598,10 @@ struct ParsedArgs {
     int dest_port{0};
     bool inner_crypto{false};
     bool inner_heavy{true};
+    bool inner_hop{true};
+    bool inner_hop_override{false};
+    std::uint32_t hop_interval_ms{0};
+    bool hop_interval_override{false};
     bool use_udp{false};
     bool udp_override{false};
     bool allow_local_ip{false};
@@ -599,6 +616,7 @@ struct ParsedArgs {
     bool require_anonym{false};
     bool boring{false};
     bool boring_override{false};
+    bool non_interactive{false};
     bool io_threads_override{false};
     bool server_in_charge{false};
     bool server_in_charge_override{false};
@@ -664,6 +682,15 @@ ParsedArgs parse_args(int argc, char** argv) {
         } else if (arg == "--inner-light") {
             args.inner_crypto = true;
             args.inner_heavy = false;
+        } else if (arg == "--hop") {
+            args.inner_hop = true;
+            args.inner_hop_override = true;
+        } else if (arg == "--no-hop") {
+            args.inner_hop = false;
+            args.inner_hop_override = true;
+        } else if (arg == "--hop-interval" && i + 1 < argc) {
+            args.hop_interval_ms = static_cast<std::uint32_t>(std::stoul(argv[++i]));
+            args.hop_interval_override = true;
         } else if (arg == "--udp") {
             args.use_udp = true;
             args.udp_override = true;
@@ -708,6 +735,8 @@ ParsedArgs parse_args(int argc, char** argv) {
         } else if (arg == "--boring") {
             args.boring = true;
             args.boring_override = true;
+        } else if (arg == "--non-interactive") {
+            args.non_interactive = true;
         }
     }
     return args;
@@ -716,7 +745,9 @@ ParsedArgs parse_args(int argc, char** argv) {
 crypto::Bytes auth_payload(EVP_PKEY* pubkey,
                            const crypto::Bytes& signature,
                            const std::optional<crypto::Bytes>& pq_ciphertext,
-                           const std::optional<crypto::Bytes>& pq_salt) {
+                           const std::optional<crypto::Bytes>& pq_salt,
+                           const std::optional<std::string>& inner_mode,
+                           const std::optional<bool>& inner_hop) {
     BIO* bio = BIO_new(BIO_s_mem());
     if (!bio) {
         throw std::runtime_error("failed to allocate pubkey bio");
@@ -752,6 +783,15 @@ crypto::Bytes auth_payload(EVP_PKEY* pubkey,
     if (pq_salt && pq_salt->size() > 0xFFFF) {
         throw std::runtime_error("PQ salt too large");
     }
+    if (inner_mode && inner_mode->size() > 0xFFFF) {
+        throw std::runtime_error("inner mode too large");
+    }
+    if (inner_hop && !pq_ciphertext.has_value()) {
+        throw std::runtime_error("inner hop without PQ data");
+    }
+    if (inner_mode && !pq_ciphertext.has_value()) {
+        throw std::runtime_error("inner mode without PQ data");
+    }
 
     size_t total = 0;
     total = checked_add(total, 2 + pub_bytes.size());
@@ -761,6 +801,12 @@ crypto::Bytes auth_payload(EVP_PKEY* pubkey,
     }
     if (pq_salt) {
         total = checked_add(total, 2 + pq_salt->size());
+    }
+    if (inner_mode) {
+        total = checked_add(total, 2 + inner_mode->size());
+    }
+    if (inner_hop) {
+        total = checked_add(total, 2 + 1);
     }
 
     crypto::Bytes payload(total);
@@ -787,6 +833,16 @@ crypto::Bytes auth_payload(EVP_PKEY* pubkey,
             write_len(static_cast<uint16_t>(pq_salt->size()));
             write_bytes(*pq_salt);
         }
+        if (inner_mode) {
+            crypto::Bytes mode_bytes(inner_mode->begin(), inner_mode->end());
+            write_len(static_cast<uint16_t>(mode_bytes.size()));
+            write_bytes(mode_bytes);
+        }
+        if (inner_hop) {
+            crypto::Bytes hop_bytes(1, *inner_hop ? static_cast<uint8_t>('1') : static_cast<uint8_t>('0'));
+            write_len(static_cast<uint16_t>(hop_bytes.size()));
+            write_bytes(hop_bytes);
+        }
     }
 
     return payload;
@@ -795,7 +851,9 @@ crypto::Bytes auth_payload(EVP_PKEY* pubkey,
 void authenticate(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
                   const std::string& identity_path,
                   const std::optional<crypto::Bytes>& pq_ciphertext,
-                  const std::optional<crypto::Bytes>& pq_salt) {
+                  const std::optional<crypto::Bytes>& pq_salt,
+                  const std::optional<std::string>& inner_mode,
+                  const std::optional<bool>& inner_hop) {
     protocol::Frame challenge = protocol::read_frame(stream);
     if (challenge.header.type != protocol::AUTH) {
         throw std::runtime_error("server did not send AUTH challenge");
@@ -806,7 +864,9 @@ void authenticate(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream
     crypto::Bytes payload = auth_payload(kp.public_key.get() ? kp.public_key.get() : kp.private_key.get(),
                                          signature,
                                          pq_ciphertext,
-                                         pq_salt);
+                                         pq_salt,
+                                         inner_mode,
+                                         inner_hop);
 
     protocol::Frame response{{static_cast<uint32_t>(payload.size()), protocol::AUTH, 0, 0}, payload};
     protocol::send_frame(stream, response);
@@ -841,6 +901,9 @@ void print_help() {
         << "  --inner              Enable inner encryption\n"
         << "  --inner-heavy        Use heavy KDF (default with --inner)\n"
         << "  --inner-light        Use lighter KDF\n"
+        << "  --hop                Enable inner key hopping\n"
+        << "  --no-hop             Disable inner key hopping\n"
+        << "  --hop-interval <ms>  Hop interval in ms (250-1000 recommended)\n"
         << "  --pq-pub <path>      Override post-quantum public key\n"
         << "  --anonym-ca-cert <path> CA certificate for anonymity verification\n"
         << "  --tls-ca <path>      Custom CA for TLS verification\n"
@@ -853,18 +916,11 @@ void print_help() {
         << "  -L [bind:]lport:host:port  SSH-style local port forward\n"
         << "  -R [bind:]rport:host:port  SSH-style remote port forward\n"
         << "  --boring             Minimal output without emojis\n"
+        << "  --non-interactive    Disable live status line updates\n"
         << "  --config <path>      Configuration file path\n"
         << "  --accept-monitoring  Accept monitoring without warning\n"
         << "  --save-server        Save server to configuration\n"
         << "  -h, --help           Show this help message\n";
-}
-
-bool file_exists(const std::string& path) {
-    if (path.empty()) {
-        return false;
-    }
-    std::error_code ec;
-    return std::filesystem::exists(path, ec);
 }
 
 bool parse_ssh_forward(const std::string& spec, int& lport, std::string& host, int& rport) {
@@ -1031,6 +1087,12 @@ int Cli::run(int argc, char** argv) {
             if (json.contains("inner_heavy")) {
                 cfg.inner_heavy = json["inner_heavy"].get<bool>();
             }
+            if (json.contains("inner_hop")) {
+                cfg.inner_hop = json["inner_hop"].get<bool>();
+            }
+            if (json.contains("hop_interval_ms")) {
+                cfg.hop_interval_ms = static_cast<std::uint32_t>(json["hop_interval_ms"].get<int>());
+            }
             if (json.contains("udp") && !args.udp_override) {
                 cfg.allow_udp = json["udp"].get<bool>();
             }
@@ -1064,6 +1126,9 @@ int Cli::run(int argc, char** argv) {
             if (json.contains("boring") && !args.boring_override) {
                 cfg.boring = json["boring"].get<bool>();
             }
+            if (json.contains("non_interactive")) {
+                cfg.non_interactive = json["non_interactive"].get<bool>();
+            }
         } catch (const std::exception& ex) {
             util::log_warn(std::string("config load failed: ") + ex.what());
         }
@@ -1089,6 +1154,12 @@ int Cli::run(int argc, char** argv) {
     }
     if (args.inner_crypto) {
         cfg.inner_heavy = args.inner_heavy;
+    }
+    if (args.inner_hop_override) {
+        cfg.inner_hop = args.inner_hop;
+    }
+    if (args.hop_interval_override) {
+        cfg.hop_interval_ms = args.hop_interval_ms;
     }
     if (!args.pq_public_key.empty()) {
         cfg.pq_public_key = util::resolve_path(args.pq_public_key, config_dir, exe_dir);
@@ -1120,11 +1191,27 @@ int Cli::run(int argc, char** argv) {
     if (args.boring_override) {
         cfg.boring = args.boring;
     }
+    if (args.non_interactive) {
+        cfg.non_interactive = true;
+    }
 #if defined(_WIN32) || defined(__APPLE__)
     if (cfg.tls_ca_cert.empty() && !cfg.anonym_ca_cert.empty()) {
         cfg.tls_ca_cert = cfg.anonym_ca_cert;
     }
 #endif
+    if (cfg.inner_hop && !cfg.inner_crypto) {
+        cfg.inner_crypto = true;
+    }
+    if (!cfg.inner_crypto) {
+        cfg.inner_hop = false;
+    }
+    if (cfg.hop_interval_ms > 0) {
+        if (cfg.hop_interval_ms < 250) {
+            cfg.hop_interval_ms = 250;
+        } else if (cfg.hop_interval_ms > 1000) {
+            cfg.hop_interval_ms = 1000;
+        }
+    }
     if (!require_file("identity", cfg.identity)) {
         return 1;
     }
@@ -1192,6 +1279,8 @@ int Cli::run(int argc, char** argv) {
         if (cfg.io_threads != 0) json["threads"] = cfg.io_threads;
         json["inner_crypto"] = cfg.inner_crypto;
         json["inner_heavy"] = cfg.inner_heavy;
+        json["inner_hop"] = cfg.inner_hop;
+        json["hop_interval_ms"] = cfg.hop_interval_ms;
         json["udp"] = cfg.allow_udp;
         json["allow_local_ip"] = cfg.allow_local_ip;
         json["server_in_charge"] = cfg.server_in_charge;
@@ -1202,6 +1291,7 @@ int Cli::run(int argc, char** argv) {
         if (!cfg.tls_pin_sha256.empty()) json["tls_pin"] = cfg.tls_pin_sha256;
         json["require_anonym"] = cfg.require_anonym;
         json["boring"] = cfg.boring;
+        json["non_interactive"] = cfg.non_interactive;
         std::ofstream out(args.config_path);
         if (out) {
             out << json.dump(2);
@@ -1225,6 +1315,7 @@ int Cli::run(int argc, char** argv) {
     bool pq_warned = false;
     bool pq_reconnect_used = false;
     bool verified_once = false;
+    bool summary_once = false;
     for (;;) {
         try {
             boost::asio::io_context io;
@@ -1275,6 +1366,8 @@ int Cli::run(int argc, char** argv) {
             std::optional<crypto::Bytes> pq_ciphertext;
             std::optional<crypto::Bytes> pq_salt;
             std::optional<crypto::Bytes> inner_key;
+            std::optional<std::string> inner_mode;
+            std::optional<bool> inner_hop;
             bool inner_disabled_for_session = false;
             bool pq_need_key = false;
             bool pq_not_supported = false;
@@ -1287,6 +1380,7 @@ int Cli::run(int argc, char** argv) {
                     pq_ciphertext = hs.pq_ciphertext;
                     pq_salt = hs.salt;
                     inner_key = hs.key;
+                    inner_mode = cfg.inner_heavy ? std::optional<std::string>("heavy") : std::optional<std::string>("light");
                 } catch (const std::exception& ex) {
                     std::string msg = ex.what();
                     if (msg.find("PQ public key not configured") != std::string::npos) {
@@ -1300,18 +1394,36 @@ int Cli::run(int argc, char** argv) {
                     }
                 }
             }
+            if (pq_ciphertext.has_value()) {
+                inner_hop = cfg.inner_hop;
+            }
 
-            authenticate(stream, cfg.identity, pq_ciphertext, pq_salt);
+            authenticate(stream, cfg.identity, pq_ciphertext, pq_salt, inner_mode, inner_hop);
             util::log_info("authenticated to server");
 
             protocol::Frame anon_frame = protocol::read_frame(stream);
-        bool pq_reconnect = false;
-        if (anon_frame.header.type == protocol::ANON) {
-            std::string payload(anon_frame.payload.begin(), anon_frame.payload.end());
-            auto json = nlohmann::json::parse(payload);
-            std::string server_version = json.value("version", "UNKNOWN");
-            std::string server_error = json.value("error", "");
-            std::string mode = json.value("mode", "normal");
+            bool pq_reconnect = false;
+            bool have_anon = false;
+            bool verity_ok = false;
+            bool have_inner_caps = false;
+            bool server_inner_supported = false;
+            bool server_inner_required = false;
+            bool server_inner_dual = false;
+            bool server_inner_active = false;
+            std::string server_inner_mode;
+            bool server_cap_pq = false;
+            bool server_cap_argon2 = false;
+            bool server_cap_pbkdf2 = false;
+            bool server_hop_enabled = false;
+            std::uint32_t server_hop_interval_ms = 0;
+            std::int64_t server_time_ms = 0;
+            std::string server_version;
+            if (anon_frame.header.type == protocol::ANON) {
+                std::string payload(anon_frame.payload.begin(), anon_frame.payload.end());
+                auto json = nlohmann::json::parse(payload);
+                server_version = json.value("version", "UNKNOWN");
+                std::string server_error = json.value("error", "");
+                std::string mode = json.value("mode", "normal");
             std::string hash = json.value("hash", "");
             std::string sig = json.value("sig", "");
             std::string ts = json.value("ts", "");
@@ -1325,6 +1437,19 @@ int Cli::run(int argc, char** argv) {
             std::string pq_pub_b64 = json.value("pq_pub", "");
             std::string pq_sig = json.value("pq_sig", "");
             std::string pq_alg = json.value("pq_alg", "");
+            have_inner_caps = json.contains("inner_supported") || json.contains("inner_required") ||
+                              json.contains("inner_dual") || json.contains("inner_mode");
+            server_inner_supported = json.value("inner_supported", false);
+            server_inner_required = json.value("inner_required", false);
+            server_inner_dual = json.value("inner_dual", false);
+            server_inner_active = json.value("inner_active", false);
+            server_inner_mode = json.value("inner_mode", "");
+            server_cap_pq = json.value("cap_pq", false);
+            server_cap_argon2 = json.value("cap_argon2", false);
+            server_cap_pbkdf2 = json.value("cap_pbkdf2", false);
+            server_hop_enabled = json.value("hop_enabled", false);
+            server_hop_interval_ms = static_cast<std::uint32_t>(json.value("hop_interval_ms", 0));
+            server_time_ms = json.value("server_time_ms", 0LL);
 
             auto sanitize_msg = [&](const std::string& msg) {
                 if (!cfg.boring) {
@@ -1367,6 +1492,54 @@ int Cli::run(int argc, char** argv) {
                 print_red("server is version " + server_version + ", you are " + std::string(yume::kVersion) +
                           ", please install a matching version to connect to this server");
                 return 1;
+            }
+            if (have_inner_caps) {
+                if (cfg.inner_crypto) {
+                    if (!server_inner_supported) {
+                        print_red("server does not support inner crypto");
+                        return 1;
+                    }
+                    if (!server_inner_dual && !server_inner_mode.empty() && server_inner_mode != "off") {
+                        if (cfg.inner_heavy && server_inner_mode == "light") {
+                            print_red("server does not support inner-heavy");
+                            return 1;
+                        }
+                        if (!cfg.inner_heavy && server_inner_mode == "heavy") {
+                            print_red("server does not support inner-light");
+                            return 1;
+                        }
+                    }
+                } else if (server_inner_required) {
+                    print_red("server does not support connecting without inner!");
+                    return 1;
+                }
+            }
+            if (server_hop_enabled && !cfg.inner_hop) {
+                print_red("server requires hopping");
+                return 1;
+            }
+            if (!server_hop_enabled && cfg.inner_hop) {
+                print_red("server does not support hopping");
+                return 1;
+            }
+            std::uint32_t hop_interval_ms = cfg.hop_interval_ms;
+            if (server_hop_interval_ms > 0) {
+                hop_interval_ms = server_hop_interval_ms;
+            }
+            if (hop_interval_ms > 0) {
+                if (hop_interval_ms < 250) {
+                    hop_interval_ms = 250;
+                } else if (hop_interval_ms > 1000) {
+                    hop_interval_ms = 1000;
+                }
+            }
+            std::int64_t hop_offset_ms = 0;
+            if (server_time_ms > 0) {
+                hop_offset_ms = server_time_ms - util::now_ms();
+            }
+            bool hop_enabled = (cfg.inner_hop && server_hop_enabled && inner_key.has_value());
+            if (hop_interval_ms == 0) {
+                hop_enabled = false;
             }
 
             if (mode == "anonym") {
@@ -1588,18 +1761,18 @@ int Cli::run(int argc, char** argv) {
                                         std::string target_path = cfg.pq_public_key;
                                         if (target_path.empty()) {
                                             const char* home = std::getenv("HOME");
-                                        if (home && *home) {
-                                            std::filesystem::path p = std::filesystem::path(home) / ".config" / "yume" / "pq_public.key";
-                                            target_path = p.string();
-                                        } else {
-                                            std::filesystem::path tmp;
-                                            try {
-                                                tmp = std::filesystem::temp_directory_path();
-                                            } catch (...) {
-                                                tmp = ".";
+                                            if (home && *home) {
+                                                std::filesystem::path p = std::filesystem::path(home) / ".config" / "yume" / "pq_public.key";
+                                                target_path = p.string();
+                                            } else {
+                                                std::filesystem::path tmp;
+                                                try {
+                                                    tmp = std::filesystem::temp_directory_path();
+                                                } catch (...) {
+                                                    tmp = ".";
+                                                }
+                                                target_path = (tmp / "yume" / "pq_public.key").string();
                                             }
-                                            target_path = (tmp / "yume" / "pq_public.key").string();
-                                        }
                                         }
                                         if (!target_path.empty()) {
                                             bool pq_changed = true;
@@ -1650,7 +1823,9 @@ int Cli::run(int argc, char** argv) {
                     }
                 }
             }
-        }
+                have_anon = true;
+                verity_ok = (mode == "anonym");
+            }
             if (cfg.require_anonym && anon_frame.header.type != protocol::ANON) {
                 util::log_error("server did not provide anonym proof");
                 return 1;
@@ -1669,13 +1844,94 @@ int Cli::run(int argc, char** argv) {
                 }
                 pq_warned = true;
             }
+            if (have_anon && !summary_once) {
+                std::vector<std::string> protections;
+                if (server_cap_pq) protections.push_back("PQ");
+                if (server_cap_argon2) protections.push_back("ARGON2");
+                if (server_cap_pbkdf2) protections.push_back("PBKDF2");
+                if (protections.empty()) protections.push_back("UNKNOWN");
+                std::string protection_line;
+                for (size_t i = 0; i < protections.size(); ++i) {
+                    if (i) protection_line += "/";
+                    protection_line += protections[i];
+                }
+                auto color_wrap = [&](const std::string& text, const char* code) {
+                    return std::string("\033[") + code + "m" + text + "\033[0m";
+                };
+                std::string inner_state = (inner_key.has_value() || server_inner_active) ? "ON" : "OFF";
+                std::string inner_line = color_wrap(inner_state, (inner_state == "ON") ? "1;32" : "1;31");
+                if (inner_key.has_value()) {
+                    inner_line += cfg.inner_heavy ? " (heavy)" : " (light)";
+                    if (have_inner_caps && server_inner_dual) {
+                        inner_line += ", dual";
+                    }
+                }
+                std::string hop_state = hop_enabled ? "ON" : "OFF";
+                std::string hop_line = color_wrap(hop_state, hop_enabled ? "1;32" : "1;31");
+                std::ostringstream hop_freq_stream;
+                hop_freq_stream.setf(std::ios::fixed);
+                hop_freq_stream << std::setprecision(2)
+                                << (hop_enabled && hop_interval_ms > 0
+                                        ? (1000.0 / static_cast<double>(hop_interval_ms))
+                                        : 0.0);
+                std::string hop_freq = color_wrap(hop_freq_stream.str() + "Hz", "1;33");
+                std::int64_t adjusted = util::now_ms() + hop_offset_ms;
+                if (adjusted < 0) {
+                    adjusted = 0;
+                }
+                std::int64_t last_change = (hop_enabled && hop_interval_ms > 0)
+                                               ? (adjusted % static_cast<std::int64_t>(hop_interval_ms))
+                                               : 0;
+                std::string hop_last = color_wrap(std::to_string(last_change) + "ms", "1;34");
+                std::string server_display = color_wrap(cfg.server, "1;33");
+                std::cout
+                    << "Connected to " << server_display << ":\n"
+                    << "VERSION: " << (server_version.empty() ? "UNKNOWN" : server_version) << "\n"
+                    << "Connection: TLS\n"
+                    << "Protection: " << protection_line << "\n"
+                    << "Inner: " << inner_line << "\n"
+                    << "Hopping: " << hop_line << " - " << hop_freq << " | " << hop_last << "\n"
+                    << "FixCraft Verity: " << (verity_ok ? "PASS" : "FAIL") << "\n";
+                summary_once = true;
+            }
+
+            auto derive_hop_key = [&](const crypto::Bytes& key) -> crypto::Bytes {
+                if (!hop_enabled || hop_interval_ms == 0) {
+                    return key;
+                }
+                std::uint64_t hop_id = inner::hop_id_from_time_ms(util::now_ms(), hop_interval_ms, hop_offset_ms);
+                return inner::derive_hop_key(key, hop_id);
+            };
+            auto decrypt_control_payload = [&](const crypto::Bytes& key,
+                                               uint8_t frame_type,
+                                               uint8_t stream_id,
+                                               const crypto::Bytes& blob) -> crypto::Bytes {
+                if (!hop_enabled || hop_interval_ms == 0) {
+                    return inner::decrypt_payload(key, frame_type, stream_id, blob);
+                }
+                std::uint64_t hop_id = inner::hop_id_from_time_ms(util::now_ms(), hop_interval_ms, hop_offset_ms);
+                std::uint64_t candidates[3] = {hop_id, hop_id > 0 ? hop_id - 1 : hop_id, hop_id + 1};
+                for (std::size_t i = 0; i < 3; ++i) {
+                    std::uint64_t id = candidates[i];
+                    if (i == 1 && hop_id == 0) {
+                        continue;
+                    }
+                    crypto::Bytes hop_key = inner::derive_hop_key(key, id);
+                    try {
+                        return inner::decrypt_payload(hop_key, frame_type, stream_id, blob);
+                    } catch (...) {
+                    }
+                }
+                throw std::runtime_error("control decrypt failed");
+            };
 
             auto send_control_frame = [&](const nlohmann::json& req) {
                 std::string payload_str = req.dump();
                 crypto::Bytes payload(payload_str.begin(), payload_str.end());
                 uint16_t flags = 0;
                 if (inner_key.has_value()) {
-                    payload = inner::encrypt_payload(*inner_key, protocol::CONTROL, 0, payload);
+                    crypto::Bytes key = derive_hop_key(*inner_key);
+                    payload = inner::encrypt_payload(key, protocol::CONTROL, 0, payload);
                     flags |= protocol::kFlagInnerEncrypted;
                 }
                 protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::CONTROL, 0, flags}, payload};
@@ -1693,7 +1949,7 @@ int Cli::run(int argc, char** argv) {
                     if ((resp_frame.header.flags & protocol::kFlagInnerEncrypted) == 0) {
                         throw std::runtime_error("control response missing inner encryption");
                     }
-                    payload = inner::decrypt_payload(*inner_key, protocol::CONTROL, resp_frame.header.stream_id, resp_frame.payload);
+                    payload = decrypt_control_payload(*inner_key, protocol::CONTROL, resp_frame.header.stream_id, resp_frame.payload);
                 }
                 nlohmann::json out;
                 out = nlohmann::json::parse(std::string(payload.begin(), payload.end()));
@@ -1779,45 +2035,94 @@ int Cli::run(int argc, char** argv) {
             if (inner_key.has_value()) {
                 tunnel->set_inner_key(*inner_key);
             }
+            tunnel->set_hop(hop_enabled, hop_interval_ms, hop_offset_ms);
             tunnel->set_server_in_charge(cfg.server_in_charge);
             tunnel->set_allow_exec(cfg.allow_exec);
             std::string close_reason;
-            tunnel->set_close_handler([&close_reason](const std::string& reason) { close_reason = reason; });
+            auto hop_status_stop = std::make_shared<std::atomic<bool>>(false);
+            tunnel->set_close_handler([&close_reason, hop_status_stop](const std::string& reason) {
+                close_reason = reason;
+                hop_status_stop->store(true);
+            });
             tunnel->start();
-
-        struct ReverseTarget {
-            std::string host;
-            int port;
-        };
-        auto reverse_targets = std::make_shared<std::unordered_map<uint8_t, ReverseTarget>>();
-        auto reverse_sessions = std::make_shared<std::unordered_map<uint8_t, std::shared_ptr<ReverseForwardSession>>>();
-        tunnel->set_reverse_handler([reverse_targets, reverse_sessions, tunnel](uint8_t listen_id, uint8_t stream_id) {
-            auto it = reverse_targets->find(listen_id);
-            if (it == reverse_targets->end()) {
-                tunnel->send_open_ack(stream_id, false, "unknown reverse listener");
-                return;
+            std::thread hop_status_thread;
+            if (!cfg.non_interactive) {
+                hop_status_thread = std::thread([hop_status_stop, hop_enabled, hop_interval_ms, hop_offset_ms]() {
+                    auto color_wrap = [](const std::string& text, const char* code) {
+                        return std::string("\033[") + code + "m" + text + "\033[0m";
+                    };
+                    while (!hop_status_stop->load()) {
+                        std::string hop_state = hop_enabled ? "ON" : "OFF";
+                        std::string hop_line = color_wrap(hop_state, hop_enabled ? "1;32" : "1;31");
+                        std::ostringstream hop_freq_stream;
+                        hop_freq_stream.setf(std::ios::fixed);
+                        hop_freq_stream << std::setprecision(2)
+                                        << (hop_enabled && hop_interval_ms > 0
+                                                ? (1000.0 / static_cast<double>(hop_interval_ms))
+                                                : 0.0);
+                        std::string hop_freq = color_wrap(hop_freq_stream.str() + "Hz", "1;33");
+                        std::int64_t adjusted = util::now_ms() + hop_offset_ms;
+                        if (adjusted < 0) {
+                            adjusted = 0;
+                        }
+                        std::int64_t last_change = (hop_enabled && hop_interval_ms > 0)
+                                                       ? (adjusted % static_cast<std::int64_t>(hop_interval_ms))
+                                                       : 0;
+                        std::string hop_last = color_wrap(std::to_string(last_change) + "ms", "1;34");
+                        std::cout << "\r\033[2K"
+                                  << "Hopping: " << hop_line << " - " << hop_freq << " | " << hop_last
+                                  << std::flush;
+                        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                    }
+                    std::cout << "\r\033[2K" << std::flush;
+                });
             }
-            auto session = std::make_shared<ReverseForwardSession>(tunnel, stream_id, it->second.host, it->second.port);
-            (*reverse_sessions)[stream_id] = session;
-            session->start();
-        });
+            struct HopStatusGuard {
+                std::shared_ptr<std::atomic<bool>> stop;
+                std::thread* thread{nullptr};
+                ~HopStatusGuard() {
+                    if (stop) {
+                        stop->store(true);
+                    }
+                    if (thread && thread->joinable()) {
+                        thread->join();
+                    }
+                }
+            } hop_guard{hop_status_stop, &hop_status_thread};
 
-        if (use_reverse) {
-            uint8_t listen_id = tunnel->reserve_stream_id();
-            if (listen_id == 0) {
-                util::log_error("no stream ids available for remote forward");
-                return 1;
+            struct ReverseTarget {
+                std::string host;
+                int port;
+            };
+            auto reverse_targets = std::make_shared<std::unordered_map<uint8_t, ReverseTarget>>();
+            auto reverse_sessions = std::make_shared<std::unordered_map<uint8_t, std::shared_ptr<ReverseForwardSession>>>();
+            tunnel->set_reverse_handler([reverse_targets, reverse_sessions, tunnel](uint8_t listen_id, uint8_t stream_id) {
+                auto it = reverse_targets->find(listen_id);
+                if (it == reverse_targets->end()) {
+                    tunnel->send_open_ack(stream_id, false, "unknown reverse listener");
+                    return;
+                }
+                auto session = std::make_shared<ReverseForwardSession>(tunnel, stream_id, it->second.host, it->second.port);
+                (*reverse_sessions)[stream_id] = session;
+                session->start();
+            });
+
+            if (use_reverse) {
+                uint8_t listen_id = tunnel->reserve_stream_id();
+                if (listen_id == 0) {
+                    util::log_error("no stream ids available for remote forward");
+                    return 1;
+                }
+                (*reverse_targets)[listen_id] = ReverseTarget{reverse_host, reverse_port};
+                tunnel->request_remote_listen(listen_id, reverse_listen_port,
+                                              [listen_port = reverse_listen_port](bool ok, const std::string& reason) {
+                                                  if (ok) {
+                                                      util::log_info("remote listener active on port " + std::to_string(listen_port));
+                                                  } else {
+                                                      util::log_error("remote listener failed: " + reason);
+                                                  }
+                                              });
             }
-            (*reverse_targets)[listen_id] = ReverseTarget{reverse_host, reverse_port};
-            tunnel->request_remote_listen(listen_id, reverse_listen_port,
-                                          [listen_port = reverse_listen_port](bool ok, const std::string& reason) {
-                                              if (ok) {
-                                                  util::log_info("remote listener active on port " + std::to_string(listen_port));
-                                              } else {
-                                                  util::log_error("remote listener failed: " + reason);
-                                              }
-                                          });
-        }
 
         if (!args.exec_cmd.empty()) {
             uint8_t stream_id = tunnel->reserve_stream_id();

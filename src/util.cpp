@@ -6,6 +6,7 @@
 
 #include "util.hpp"
 
+#include <chrono>
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
@@ -204,6 +205,12 @@ std::string random_hex(size_t bytes) {
         out[i * 2 + 1] = kHex[buf[i] & 0xF];
     }
     return out;
+}
+
+int64_t now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
 }
 
 std::string base64_decode(const std::string& input) {

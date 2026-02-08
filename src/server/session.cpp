@@ -517,6 +517,23 @@ void Session::handle_frame(const protocol::Frame& frame) {
             {"pq_sig", cfg_.pq_sig},
             {"pq_alg", cfg_.pq_alg}
         };
+        std::string inner_mode = "off";
+        if (inner_key_.has_value()) {
+            inner_mode = inner_mode_.empty() ? (cfg_.inner_heavy ? "heavy" : "light") : inner_mode_;
+        } else if (cfg_.inner_crypto) {
+            inner_mode = cfg_.inner_heavy ? "heavy" : "light";
+        }
+        anon["inner_supported"] = cfg_.inner_crypto;
+        anon["inner_required"] = cfg_.inner_required;
+        anon["inner_dual"] = cfg_.inner_dual;
+        anon["inner_active"] = inner_key_.has_value();
+        anon["inner_mode"] = inner_mode;
+        anon["hop_enabled"] = cfg_.inner_hop;
+        anon["hop_interval_ms"] = cfg_.hop_interval_ms;
+        anon["server_time_ms"] = now_ms();
+        anon["cap_pq"] = inner::pq_supported();
+        anon["cap_argon2"] = inner::argon2_supported();
+        anon["cap_pbkdf2"] = inner::pbkdf2_supported();
         std::string payload_str = anon.dump();
         crypto::Bytes payload(payload_str.begin(), payload_str.end());
         protocol::Frame anon_frame{{static_cast<uint32_t>(payload.size()), protocol::ANON, 0, 0}, payload};
@@ -586,6 +603,82 @@ void Session::handle_frame(const protocol::Frame& frame) {
     read_header();
 }
 
+bool Session::decrypt_inner_payload(uint8_t frame_type,
+                                    uint8_t stream_id,
+                                    const crypto::Bytes& input,
+                                    crypto::Bytes* output) {
+    if (!output) {
+        return false;
+    }
+    if (!inner_key_.has_value()) {
+        *output = input;
+        return true;
+    }
+    auto try_decrypt = [&](const crypto::Bytes& key) -> bool {
+        try {
+            if (!hop_enabled_ || hop_interval_ms_ == 0) {
+                *output = inner::decrypt_payload(key, frame_type, stream_id, input);
+                return true;
+            }
+            std::uint64_t hop_id = current_hop_id();
+            std::uint64_t candidates[3] = {hop_id, hop_id > 0 ? hop_id - 1 : hop_id, hop_id + 1};
+            for (std::size_t i = 0; i < 3; ++i) {
+                std::uint64_t id = candidates[i];
+                if (i == 1 && hop_id == 0) {
+                    continue;
+                }
+                crypto::Bytes hop_key = inner::derive_hop_key(key, id);
+                try {
+                    *output = inner::decrypt_payload(hop_key, frame_type, stream_id, input);
+                    return true;
+                } catch (...) {
+                }
+            }
+            return false;
+        } catch (...) {
+            return false;
+        }
+    };
+
+    if (try_decrypt(*inner_key_)) {
+        return true;
+    }
+    if (!inner_key_alt_.has_value()) {
+        return false;
+    }
+    if (try_decrypt(*inner_key_alt_)) {
+        inner_key_ = inner_key_alt_;
+        inner_key_alt_.reset();
+        if (!inner_alt_mode_.empty()) {
+            inner_mode_ = inner_alt_mode_;
+        }
+        inner_alt_mode_.clear();
+        return true;
+    }
+    return false;
+}
+
+crypto::Bytes Session::encrypt_inner_payload(uint8_t frame_type,
+                                             uint8_t stream_id,
+                                             const crypto::Bytes& input) {
+    if (!inner_key_.has_value()) {
+        return input;
+    }
+    if (!hop_enabled_ || hop_interval_ms_ == 0) {
+        return inner::encrypt_payload(*inner_key_, frame_type, stream_id, input);
+    }
+    std::uint64_t hop_id = current_hop_id();
+    crypto::Bytes hop_key = inner::derive_hop_key(*inner_key_, hop_id);
+    return inner::encrypt_payload(hop_key, frame_type, stream_id, input);
+}
+
+std::uint64_t Session::current_hop_id() const {
+    if (!hop_enabled_ || hop_interval_ms_ == 0) {
+        return 0;
+    }
+    return inner::hop_id_from_time_ms(now_ms(), hop_interval_ms_, hop_offset_ms_);
+}
+
 bool Session::handle_auth(const protocol::Frame& frame) {
     auth_error_.clear();
     try {
@@ -594,11 +687,27 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         crypto::Bytes sig = read_field(frame.payload, offset);
         std::optional<crypto::Bytes> pq_ciphertext;
         std::optional<crypto::Bytes> pq_salt;
+        std::optional<std::string> inner_mode;
+        std::optional<bool> inner_hop;
         if (offset < frame.payload.size()) {
             pq_ciphertext = read_field(frame.payload, offset);
         }
         if (offset < frame.payload.size()) {
             pq_salt = read_field(frame.payload, offset);
+        }
+        if (offset < frame.payload.size()) {
+            crypto::Bytes mode_bytes = read_field(frame.payload, offset);
+            if (!mode_bytes.empty()) {
+                inner_mode.emplace(mode_bytes.begin(), mode_bytes.end());
+            }
+        }
+        if (offset < frame.payload.size()) {
+            crypto::Bytes hop_bytes = read_field(frame.payload, offset);
+            if (!hop_bytes.empty()) {
+                inner_hop = (hop_bytes[0] != static_cast<uint8_t>('0'));
+            } else {
+                inner_hop = false;
+            }
         }
 
         BIO* pub_bio = BIO_new_mem_buf(pub_pem.data(), static_cast<int>(pub_pem.size()));
@@ -630,22 +739,97 @@ bool Session::handle_auth(const protocol::Frame& frame) {
 
         if (cfg_.inner_crypto) {
             if (!pq_ciphertext.has_value() || !pq_salt.has_value()) {
+                if (cfg_.inner_required) {
+                    auth_error_ = "server requires inner crypto";
+                    return false;
+                }
                 util::log_warn("session " + std::to_string(session_id_) + ": missing PQ fields; inner crypto disabled for this session");
             } else if (pq_salt->empty()) {
+                if (cfg_.inner_required) {
+                    auth_error_ = "server requires inner crypto";
+                    return false;
+                }
                 util::log_warn("session " + std::to_string(session_id_) + ": missing PQ salt; inner crypto disabled for this session");
             } else {
+                if (inner_mode.has_value() && !cfg_.inner_dual) {
+                    bool wants_heavy = (*inner_mode == "heavy");
+                    bool wants_light = (*inner_mode == "light");
+                    if ((wants_heavy && !cfg_.inner_heavy) || (wants_light && cfg_.inner_heavy)) {
+                        auth_error_ = "server does not support requested inner mode";
+                        return false;
+                    }
+                }
                 inner::Config inner_cfg;
                 inner_cfg.enabled = cfg_.inner_crypto;
                 inner_cfg.pq_private_key = cfg_.pq_private_key;
-                auto derived = inner::server_derive_key(inner_cfg, *pq_ciphertext, *pq_salt, cfg_.inner_heavy);
-                if (!derived.has_value() || derived->empty()) {
-                    util::log_warn("session " + std::to_string(session_id_) + ": PQ key derivation failed");
-                    auth_error_ = "access denied: pq key derivation failed";
-                    return false;
+                if (cfg_.inner_dual) {
+                    auto heavy = inner::server_derive_key(inner_cfg, *pq_ciphertext, *pq_salt, true);
+                    auto light = inner::server_derive_key(inner_cfg, *pq_ciphertext, *pq_salt, false);
+                    if ((!heavy.has_value() || heavy->empty()) && (!light.has_value() || light->empty())) {
+                        util::log_warn("session " + std::to_string(session_id_) + ": PQ key derivation failed");
+                        auth_error_ = "access denied: pq key derivation failed";
+                        return false;
+                    }
+                    bool prefer_light = (inner_mode.has_value() && *inner_mode == "light");
+                    bool prefer_heavy = (inner_mode.has_value() && *inner_mode == "heavy");
+                    if (prefer_light && light.has_value() && !light->empty()) {
+                        inner_key_ = *light;
+                        inner_mode_ = "light";
+                        if (heavy.has_value() && !heavy->empty()) {
+                            inner_key_alt_ = *heavy;
+                            inner_alt_mode_ = "heavy";
+                        }
+                    } else if (prefer_heavy && heavy.has_value() && !heavy->empty()) {
+                        inner_key_ = *heavy;
+                        inner_mode_ = "heavy";
+                        if (light.has_value() && !light->empty()) {
+                            inner_key_alt_ = *light;
+                            inner_alt_mode_ = "light";
+                        }
+                    } else if (cfg_.inner_heavy && heavy.has_value() && !heavy->empty()) {
+                        inner_key_ = *heavy;
+                        inner_mode_ = "heavy";
+                        if (light.has_value() && !light->empty()) {
+                            inner_key_alt_ = *light;
+                            inner_alt_mode_ = "light";
+                        }
+                    } else if (light.has_value() && !light->empty()) {
+                        inner_key_ = *light;
+                        inner_mode_ = "light";
+                        if (heavy.has_value() && !heavy->empty()) {
+                            inner_key_alt_ = *heavy;
+                            inner_alt_mode_ = "heavy";
+                        }
+                    }
+                } else {
+                    auto derived = inner::server_derive_key(inner_cfg, *pq_ciphertext, *pq_salt, cfg_.inner_heavy);
+                    if (!derived.has_value() || derived->empty()) {
+                        util::log_warn("session " + std::to_string(session_id_) + ": PQ key derivation failed");
+                        auth_error_ = "access denied: pq key derivation failed";
+                        return false;
+                    }
+                    inner_key_ = *derived;
+                    inner_mode_ = cfg_.inner_heavy ? "heavy" : "light";
                 }
-                inner_key_ = *derived;
             }
+        } else if (pq_ciphertext.has_value()) {
+            auth_error_ = "server does not support inner crypto";
+            return false;
         }
+
+        bool client_hop = inner_hop.value_or(false);
+        if (cfg_.inner_hop) {
+            if (!client_hop) {
+                auth_error_ = "server requires hopping";
+                return false;
+            }
+        } else if (client_hop) {
+            auth_error_ = "server does not support hopping";
+            return false;
+        }
+        hop_enabled_ = (cfg_.inner_hop && client_hop && inner_key_.has_value());
+        hop_interval_ms_ = cfg_.hop_interval_ms;
+        hop_offset_ms_ = 0;
 
         if (!cfg_.anonym) {
             update_auth_meta(cfg_.auth_keys_meta, fingerprint);
@@ -662,9 +846,10 @@ void Session::handle_open(const protocol::Frame& frame) {
         bool ok = (frame.header.flags & protocol::kFlagOpenOk) != 0;
         crypto::Bytes payload = frame.payload;
         if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-            try {
-                payload = inner::decrypt_payload(*inner_key_, frame.header.type, frame.header.stream_id, frame.payload);
-            } catch (...) {
+            crypto::Bytes decrypted;
+            if (decrypt_inner_payload(frame.header.type, frame.header.stream_id, frame.payload, &decrypted)) {
+                payload = std::move(decrypted);
+            } else {
                 ok = false;
             }
         }
@@ -685,10 +870,11 @@ void Session::handle_open(const protocol::Frame& frame) {
 
     crypto::Bytes payload = frame.payload;
     if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        try {
-            payload = inner::decrypt_payload(*inner_key_, frame.header.type, frame.header.stream_id, frame.payload);
-        } catch (const std::exception& ex) {
-            util::log_warn("session " + std::to_string(session_id_) + ": OPEN decrypt failed: " + ex.what());
+        crypto::Bytes decrypted;
+        if (decrypt_inner_payload(frame.header.type, frame.header.stream_id, frame.payload, &decrypted)) {
+            payload = std::move(decrypted);
+        } else {
+            util::log_warn("session " + std::to_string(session_id_) + ": OPEN decrypt failed");
             close();
             return;
         }
@@ -830,9 +1016,10 @@ uint8_t Session::reserve_stream_id() {
 void Session::handle_rlisten(const protocol::Frame& frame) {
     crypto::Bytes payload = frame.payload;
     if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        try {
-            payload = inner::decrypt_payload(*inner_key_, frame.header.type, frame.header.stream_id, frame.payload);
-        } catch (...) {
+        crypto::Bytes decrypted;
+        if (decrypt_inner_payload(frame.header.type, frame.header.stream_id, frame.payload, &decrypted)) {
+            payload = std::move(decrypted);
+        } else {
             send_open_reply(frame.header.stream_id, false, "RLISTEN decrypt failed");
             return;
         }
@@ -921,7 +1108,7 @@ void Session::handle_rlisten(const protocol::Frame& frame) {
                     std::vector<uint8_t> payload(payload_str.begin(), payload_str.end());
                     uint16_t flags = 0;
                     if (self->inner_key_.has_value()) {
-                        payload = inner::encrypt_payload(*self->inner_key_, protocol::ROPEN, stream_id, payload);
+                        payload = self->encrypt_inner_payload(protocol::ROPEN, stream_id, payload);
                         flags |= protocol::kFlagInnerEncrypted;
                     }
                     protocol::Frame notify{{static_cast<uint32_t>(payload.size()), protocol::ROPEN, stream_id, flags},
@@ -938,9 +1125,10 @@ void Session::handle_rlisten(const protocol::Frame& frame) {
 void Session::handle_control(const protocol::Frame& frame) {
     crypto::Bytes payload = frame.payload;
     if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        try {
-            payload = inner::decrypt_payload(*inner_key_, protocol::CONTROL, frame.header.stream_id, frame.payload);
-        } catch (...) {
+        crypto::Bytes decrypted;
+        if (decrypt_inner_payload(protocol::CONTROL, frame.header.stream_id, frame.payload, &decrypted)) {
+            payload = std::move(decrypted);
+        } else {
             util::log_warn("session " + std::to_string(session_id_) + ": CONTROL decrypt failed");
             return;
         }
@@ -1062,9 +1250,7 @@ bool Session::handle_control_open_request(const protocol::Frame& frame) {
 
     crypto::Bytes payload = frame.payload;
     if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        try {
-            payload = inner::decrypt_payload(*inner_key_, protocol::OPEN, frame.header.stream_id, frame.payload);
-        } catch (...) {
+        if (!decrypt_inner_payload(protocol::OPEN, frame.header.stream_id, frame.payload, &payload)) {
             send_open_reply(frame.header.stream_id, false, "control open decrypt failed");
             return true;
         }
@@ -1109,9 +1295,7 @@ bool Session::handle_control_open_ack(const protocol::Frame& frame) {
 
     crypto::Bytes payload = frame.payload;
     if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        try {
-            payload = inner::decrypt_payload(*inner_key_, protocol::OPEN, frame.header.stream_id, frame.payload);
-        } catch (...) {
+        if (!decrypt_inner_payload(protocol::OPEN, frame.header.stream_id, frame.payload, &payload)) {
             if (auto peer = link.peer.lock()) {
                 peer->send_control_close(link.peer_stream_id, "control open decrypt failed");
             }
@@ -1181,9 +1365,7 @@ bool Session::handle_control_data(const protocol::Frame& frame) {
 
     crypto::Bytes payload = frame.payload;
     if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        try {
-            payload = inner::decrypt_payload(*inner_key_, protocol::DATA, frame.header.stream_id, frame.payload);
-        } catch (...) {
+        if (!decrypt_inner_payload(protocol::DATA, frame.header.stream_id, frame.payload, &payload)) {
             if (auto peer = link.peer.lock()) {
                 peer->send_control_close(link.peer_stream_id, "control data decrypt failed");
             }
@@ -1223,9 +1405,7 @@ bool Session::handle_control_close(const protocol::Frame& frame) {
 
     crypto::Bytes payload = frame.payload;
     if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        try {
-            payload = inner::decrypt_payload(*inner_key_, protocol::CLOSE, frame.header.stream_id, frame.payload);
-        } catch (...) {
+        if (!decrypt_inner_payload(protocol::CLOSE, frame.header.stream_id, frame.payload, &payload)) {
             payload.clear();
         }
     }
@@ -1264,9 +1444,7 @@ bool Session::handle_control_exec(const protocol::Frame& frame) {
 
     crypto::Bytes payload = frame.payload;
     if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        try {
-            payload = inner::decrypt_payload(*inner_key_, protocol::EXEC, frame.header.stream_id, frame.payload);
-        } catch (...) {
+        if (!decrypt_inner_payload(protocol::EXEC, frame.header.stream_id, frame.payload, &payload)) {
             send_control_close(frame.header.stream_id, "control exec decrypt failed");
             return true;
         }
@@ -1295,7 +1473,7 @@ void Session::send_control_frame(protocol::FrameType type, uint8_t stream_id, co
     crypto::Bytes out = payload;
     uint16_t flags = extra_flags;
     if (inner_key_.has_value()) {
-        out = inner::encrypt_payload(*inner_key_, type, stream_id, out);
+        out = encrypt_inner_payload(type, stream_id, out);
         flags |= protocol::kFlagInnerEncrypted;
     }
     protocol::Frame frame{{static_cast<uint32_t>(out.size()), type, stream_id, flags}, out};
@@ -1310,10 +1488,8 @@ void Session::send_control_close(uint8_t stream_id, const std::string& reason) {
 void Session::handle_data(const protocol::Frame& frame) {
     crypto::Bytes payload = frame.payload;
     if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        try {
-            payload = inner::decrypt_payload(*inner_key_, frame.header.type, frame.header.stream_id, frame.payload);
-        } catch (const std::exception& ex) {
-            util::log_warn("session " + std::to_string(session_id_) + ": DATA decrypt failed: " + ex.what());
+        if (!decrypt_inner_payload(frame.header.type, frame.header.stream_id, frame.payload, &payload)) {
+            util::log_warn("session " + std::to_string(session_id_) + ": DATA decrypt failed");
             close();
             return;
         }
@@ -1380,10 +1556,10 @@ void Session::handle_exec(const protocol::Frame& frame) {
     const std::string msg = "EXEC disabled for safety";
     crypto::Bytes payload(msg.begin(), msg.end());
     uint16_t flags = 0;
-    if (inner_key_.has_value()) {
-        payload = inner::encrypt_payload(*inner_key_, protocol::DATA, frame.header.stream_id, payload);
-        flags |= protocol::kFlagInnerEncrypted;
-    }
+            if (inner_key_.has_value()) {
+                payload = encrypt_inner_payload(protocol::DATA, frame.header.stream_id, payload);
+                flags |= protocol::kFlagInnerEncrypted;
+            }
     protocol::Frame resp{{static_cast<uint32_t>(payload.size()), protocol::DATA, frame.header.stream_id, flags}, payload};
     async_write_frame(resp);
     protocol::Frame close_frame{{0, protocol::CLOSE, frame.header.stream_id, 0}, {}};
@@ -1394,7 +1570,7 @@ void Session::send_open_reply(uint8_t stream_id, bool ok, const std::string& mes
     crypto::Bytes payload(message.begin(), message.end());
     uint16_t flags = ok ? protocol::kFlagOpenOk : 0;
     if (inner_key_.has_value()) {
-        payload = inner::encrypt_payload(*inner_key_, protocol::OPEN, stream_id, payload);
+        payload = encrypt_inner_payload(protocol::OPEN, stream_id, payload);
         flags |= protocol::kFlagInnerEncrypted;
     }
     protocol::Frame resp{{static_cast<uint32_t>(payload.size()), protocol::OPEN, stream_id, flags}, payload};
@@ -1431,7 +1607,7 @@ void Session::on_remote_read(uint8_t stream_id, const boost::system::error_code&
     crypto::Bytes payload(buf.data(), buf.data() + bytes);
     uint16_t flags = 0;
     if (inner_key_.has_value()) {
-        payload = inner::encrypt_payload(*inner_key_, protocol::DATA, stream_id, payload);
+        payload = encrypt_inner_payload(protocol::DATA, stream_id, payload);
         flags |= protocol::kFlagInnerEncrypted;
     }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::DATA, stream_id, flags}, payload};
@@ -1469,7 +1645,7 @@ void Session::on_udp_read(uint8_t stream_id, const boost::system::error_code& ec
     crypto::Bytes payload(buf.data(), buf.data() + bytes);
     uint16_t flags = 0;
     if (inner_key_.has_value()) {
-        payload = inner::encrypt_payload(*inner_key_, protocol::DATA, stream_id, payload);
+        payload = encrypt_inner_payload(protocol::DATA, stream_id, payload);
         flags |= protocol::kFlagInnerEncrypted;
     }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::DATA, stream_id, flags}, payload};

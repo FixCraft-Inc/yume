@@ -67,6 +67,11 @@ void print_help() {
         << "  --inner               (enable inner PQ crypto)\n"
         << "  --inner-heavy         (heavy KDF, default)\n"
         << "  --inner-light         (lighter KDF)\n"
+        << "  --inner-dual          (accept both inner-heavy and inner-light clients)\n"
+        << "  --inner-required      (reject clients without inner crypto)\n"
+        << "  --hop                 (enable inner key hopping)\n"
+        << "  --hop-interval <ms>   (hop interval in ms; 250-1000 recommended)\n"
+        << "  --no-hop              (disable inner key hopping)\n"
         << "  --pq-key <path>       (override pq_private_key)\n"
         << "  --allow-exec          (deprecated: EXEC is disabled for safety)\n"
         << "  --allow-local-ip      (allow private/loopback destinations)\n"
@@ -101,6 +106,10 @@ void print_help() {
         << "  obfuscation   (bool)\n"
         << "  inner_crypto  (bool)\n"
         << "  inner_heavy   (bool)\n"
+        << "  inner_dual    (bool)\n"
+        << "  inner_required (bool)\n"
+        << "  inner_hop     (bool)\n"
+        << "  hop_interval_ms (int)\n"
         << "  pq_private_key (path)\n"
         << "  allow_exec    (bool, deprecated)\n"
         << "  allow_local_ip (bool)\n"
@@ -666,6 +675,11 @@ int main(int argc, char** argv) {
     bool inner_heavy_override = false;
     bool inner_heavy_value = true;
     bool inner_crypto_override = false;
+    bool inner_dual_override = false;
+    bool inner_required_override = false;
+    bool inner_hop_override = false;
+    bool inner_hop_value = true;
+    bool hop_interval_override = false;
     bool anonym_override = false;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -703,6 +717,27 @@ int main(int argc, char** argv) {
             inner_crypto_override = true;
             inner_heavy_override = true;
             inner_heavy_value = false;
+        } else if (arg == "--inner-dual") {
+            cfg.inner_crypto = true;
+            cfg.inner_dual = true;
+            inner_crypto_override = true;
+            inner_dual_override = true;
+        } else if (arg == "--inner-required") {
+            cfg.inner_crypto = true;
+            cfg.inner_required = true;
+            inner_crypto_override = true;
+            inner_required_override = true;
+        } else if (arg == "--hop") {
+            cfg.inner_hop = true;
+            inner_hop_override = true;
+            inner_hop_value = true;
+        } else if (arg == "--no-hop") {
+            cfg.inner_hop = false;
+            inner_hop_override = true;
+            inner_hop_value = false;
+        } else if (arg == "--hop-interval" && i + 1 < argc) {
+            cfg.hop_interval_ms = static_cast<std::uint32_t>(std::stoul(argv[++i]));
+            hop_interval_override = true;
         } else if (arg == "--pq-key" && i + 1 < argc) {
             cfg.pq_private_key = yume::util::expand_user(argv[++i]);
             inner_crypto_override = true;
@@ -823,6 +858,26 @@ int main(int argc, char** argv) {
                     cfg.inner_crypto = json["inner_crypto"].get<bool>();
                 }
             }
+            if (json.contains("inner_dual")) {
+                if (!inner_dual_override) {
+                    cfg.inner_dual = json["inner_dual"].get<bool>();
+                }
+            }
+            if (json.contains("inner_required")) {
+                if (!inner_required_override) {
+                    cfg.inner_required = json["inner_required"].get<bool>();
+                }
+            }
+            if (json.contains("inner_hop")) {
+                if (!inner_hop_override) {
+                    cfg.inner_hop = json["inner_hop"].get<bool>();
+                }
+            }
+            if (json.contains("hop_interval_ms")) {
+                if (!hop_interval_override) {
+                    cfg.hop_interval_ms = static_cast<std::uint32_t>(json["hop_interval_ms"].get<int>());
+                }
+            }
             if (json.contains("inner_heavy")) {
                 cfg.inner_heavy = json["inner_heavy"].get<bool>();
             }
@@ -938,6 +993,26 @@ int main(int argc, char** argv) {
     if (inner_heavy_override) {
         cfg.inner_heavy = inner_heavy_value;
     }
+    if (cfg.inner_dual || cfg.inner_required) {
+        cfg.inner_crypto = true;
+    }
+    if (inner_hop_override) {
+        cfg.inner_hop = inner_hop_value;
+    }
+    if (cfg.inner_hop) {
+        cfg.inner_crypto = true;
+        cfg.inner_required = true;
+        if (cfg.hop_interval_ms == 0) {
+            cfg.hop_interval_ms = 500;
+        }
+    }
+    if (cfg.hop_interval_ms > 0) {
+        if (cfg.hop_interval_ms < 250) {
+            cfg.hop_interval_ms = 250;
+        } else if (cfg.hop_interval_ms > 1000) {
+            cfg.hop_interval_ms = 1000;
+        }
+    }
 
     auto require_readable = [&](const char* label, const std::string& path) {
         if (path.empty()) {
@@ -1038,6 +1113,10 @@ int main(int argc, char** argv) {
             std::string obfs = prompt("obfuscation (true/false)", cfg.obfuscation ? "true" : "false");
             std::string inner = prompt("inner_crypto (true/false)", cfg.inner_crypto ? "true" : "false");
             std::string inner_heavy = prompt("inner_heavy (true/false)", cfg.inner_heavy ? "true" : "false");
+            std::string inner_dual = prompt("inner_dual (true/false)", cfg.inner_dual ? "true" : "false");
+            std::string inner_required = prompt("inner_required (true/false)", cfg.inner_required ? "true" : "false");
+            std::string inner_hop = prompt("inner_hop (true/false)", cfg.inner_hop ? "true" : "false");
+            std::string hop_interval = prompt("hop_interval_ms", std::to_string(cfg.hop_interval_ms));
             std::string pq = prompt("pq_private_key", cfg.pq_private_key);
             std::string allow_exec = prompt("allow_exec (true/false)", cfg.allow_exec ? "true" : "false");
             std::string allow_local_ip = prompt("allow_local_ip (true/false)", cfg.allow_local_ip ? "true" : "false");
@@ -1061,6 +1140,10 @@ int main(int argc, char** argv) {
             json["obfuscation"] = (obfs == "true");
             json["inner_crypto"] = (inner == "true");
             json["inner_heavy"] = (inner_heavy == "true");
+            json["inner_dual"] = (inner_dual == "true");
+            json["inner_required"] = (inner_required == "true");
+            json["inner_hop"] = (inner_hop == "true");
+            json["hop_interval_ms"] = std::stoi(hop_interval);
             if (!pq.empty()) json["pq_private_key"] = pq;
             json["allow_exec"] = (allow_exec == "true");
             json["allow_local_ip"] = (allow_local_ip == "true");

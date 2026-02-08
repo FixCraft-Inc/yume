@@ -20,6 +20,7 @@ void log_error(const std::string& msg);
 void set_logging_enabled(bool enabled);
 bool is_logging_enabled();
 std::string random_hex(size_t bytes);
+int64_t now_ms();
 std::string base64_decode(const std::string& input);
 std::string base64_encode(const std::string& input);
 

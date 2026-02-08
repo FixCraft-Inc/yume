@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 namespace yume::server {
@@ -13,6 +14,10 @@ struct ServerConfig {
     bool obfuscation{false};
     bool inner_crypto{true};
     bool inner_heavy{true};
+    bool inner_dual{false};
+    bool inner_required{false};
+    bool inner_hop{true};
+    std::uint32_t hop_interval_ms{500};
     std::string pq_private_key;
     bool allow_exec{false};
     bool allow_local_ip{false};

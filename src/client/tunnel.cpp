@@ -37,6 +37,12 @@ void Tunnel::set_inner_key(const Bytes& key) {
     inner_key_ = key;
 }
 
+void Tunnel::set_hop(bool enabled, std::uint32_t interval_ms, std::int64_t offset_ms) {
+    hop_enabled_ = enabled;
+    hop_interval_ms_ = interval_ms;
+    hop_offset_ms_ = offset_ms;
+}
+
 void Tunnel::set_server_in_charge(bool enabled) {
     server_in_charge_ = enabled;
 }
@@ -89,7 +95,7 @@ void Tunnel::open_stream(uint8_t stream_id, const std::string& host, int port, O
     Bytes payload(payload_str.begin(), payload_str.end());
     uint16_t flags = 0;
     if (inner_key_.has_value()) {
-        payload = inner::encrypt_payload(*inner_key_, protocol::OPEN, stream_id, payload);
+        payload = encrypt_inner_payload(protocol::OPEN, stream_id, payload);
         flags |= protocol::kFlagInnerEncrypted;
     }
 
@@ -104,7 +110,7 @@ void Tunnel::request_remote_listen(uint8_t listen_id, int port, OpenHandler hand
     Bytes payload(payload_str.begin(), payload_str.end());
     uint16_t flags = 0;
     if (inner_key_.has_value()) {
-        payload = inner::encrypt_payload(*inner_key_, protocol::RLISTEN, listen_id, payload);
+        payload = encrypt_inner_payload(protocol::RLISTEN, listen_id, payload);
         flags |= protocol::kFlagInnerEncrypted;
     }
     pending_rlisten_[listen_id] = std::move(handler);
@@ -116,7 +122,7 @@ void Tunnel::send_data(uint8_t stream_id, const Bytes& data) {
     Bytes payload = data;
     uint16_t flags = 0;
     if (inner_key_.has_value()) {
-        payload = inner::encrypt_payload(*inner_key_, protocol::DATA, stream_id, payload);
+        payload = encrypt_inner_payload(protocol::DATA, stream_id, payload);
         flags |= protocol::kFlagInnerEncrypted;
     }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::DATA, stream_id, flags}, payload};
@@ -127,7 +133,7 @@ void Tunnel::send_close(uint8_t stream_id, const std::string& reason) {
     Bytes payload(reason.begin(), reason.end());
     uint16_t flags = 0;
     if (inner_key_.has_value()) {
-        payload = inner::encrypt_payload(*inner_key_, protocol::CLOSE, stream_id, payload);
+        payload = encrypt_inner_payload(protocol::CLOSE, stream_id, payload);
         flags |= protocol::kFlagInnerEncrypted;
     }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::CLOSE, stream_id, flags}, payload};
@@ -138,7 +144,7 @@ void Tunnel::send_open_ack(uint8_t stream_id, bool ok, const std::string& reason
     Bytes payload(reason.begin(), reason.end());
     uint16_t flags = ok ? protocol::kFlagOpenOk : 0;
     if (inner_key_.has_value()) {
-        payload = inner::encrypt_payload(*inner_key_, protocol::OPEN, stream_id, payload);
+        payload = encrypt_inner_payload(protocol::OPEN, stream_id, payload);
         flags |= protocol::kFlagInnerEncrypted;
     }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::OPEN, stream_id, flags}, payload};
@@ -149,7 +155,7 @@ void Tunnel::send_exec(uint8_t stream_id, const std::string& command) {
     Bytes payload(command.begin(), command.end());
     uint16_t flags = 0;
     if (inner_key_.has_value()) {
-        payload = inner::encrypt_payload(*inner_key_, protocol::EXEC, stream_id, payload);
+        payload = encrypt_inner_payload(protocol::EXEC, stream_id, payload);
         flags |= protocol::kFlagInnerEncrypted;
     }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::EXEC, stream_id, flags}, payload};
@@ -211,12 +217,12 @@ void Tunnel::handle_frame(const protocol::Frame& frame) {
     const uint8_t stream_id = frame.header.stream_id;
     Bytes payload = frame.payload;
     if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        try {
-            payload = inner::decrypt_payload(*inner_key_, frame.header.type, stream_id, frame.payload);
-        } catch (const std::exception& ex) {
-            close_all(std::string("decrypt failed: ") + ex.what());
+        Bytes decrypted;
+        if (!decrypt_inner_payload(frame.header.type, stream_id, frame.payload, &decrypted)) {
+            close_all("decrypt failed");
             return;
         }
+        payload = std::move(decrypted);
     }
     switch (frame.header.type) {
         case protocol::OPEN: {
@@ -369,6 +375,57 @@ void Tunnel::handle_frame(const protocol::Frame& frame) {
     }
 
     read_header();
+}
+
+Tunnel::Bytes Tunnel::encrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const Bytes& input) {
+    if (!inner_key_.has_value()) {
+        return input;
+    }
+    if (!hop_enabled_ || hop_interval_ms_ == 0) {
+        return inner::encrypt_payload(*inner_key_, frame_type, stream_id, input);
+    }
+    std::uint64_t hop_id = current_hop_id();
+    Bytes hop_key = inner::derive_hop_key(*inner_key_, hop_id);
+    return inner::encrypt_payload(hop_key, frame_type, stream_id, input);
+}
+
+bool Tunnel::decrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const Bytes& input, Bytes* output) {
+    if (!output) {
+        return false;
+    }
+    if (!inner_key_.has_value()) {
+        *output = input;
+        return true;
+    }
+    try {
+        if (!hop_enabled_ || hop_interval_ms_ == 0) {
+            *output = inner::decrypt_payload(*inner_key_, frame_type, stream_id, input);
+            return true;
+        }
+        std::uint64_t hop_id = current_hop_id();
+        std::uint64_t candidates[3] = {hop_id, hop_id > 0 ? hop_id - 1 : hop_id, hop_id + 1};
+        for (std::size_t i = 0; i < 3; ++i) {
+            std::uint64_t id = candidates[i];
+            if (i == 1 && hop_id == 0) {
+                continue;
+            }
+            Bytes hop_key = inner::derive_hop_key(*inner_key_, id);
+            try {
+                *output = inner::decrypt_payload(hop_key, frame_type, stream_id, input);
+                return true;
+            } catch (...) {
+            }
+        }
+    } catch (...) {
+    }
+    return false;
+}
+
+std::uint64_t Tunnel::current_hop_id() const {
+    if (!hop_enabled_ || hop_interval_ms_ == 0) {
+        return 0;
+    }
+    return inner::hop_id_from_time_ms(util::now_ms(), hop_interval_ms_, hop_offset_ms_);
 }
 
 void Tunnel::async_write_frame(const protocol::Frame& frame,

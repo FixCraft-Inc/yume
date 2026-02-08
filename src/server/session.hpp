@@ -71,6 +71,14 @@ private:
     void send_control_frame(protocol::FrameType type, uint8_t stream_id, const crypto::Bytes& payload, uint16_t extra_flags = 0);
     void send_control_close(uint8_t stream_id, const std::string& reason);
     uint8_t reserve_stream_id();
+    bool decrypt_inner_payload(uint8_t frame_type,
+                               uint8_t stream_id,
+                               const crypto::Bytes& input,
+                               crypto::Bytes* output);
+    crypto::Bytes encrypt_inner_payload(uint8_t frame_type,
+                                        uint8_t stream_id,
+                                        const crypto::Bytes& input);
+    std::uint64_t current_hop_id() const;
 
     void send_open_reply(uint8_t stream_id, bool ok, const std::string& message);
     void start_remote_read(uint8_t stream_id);
@@ -108,6 +116,12 @@ private:
     bool authenticated_{false};
     std::string auth_error_;
     std::optional<crypto::Bytes> inner_key_;
+    std::optional<crypto::Bytes> inner_key_alt_;
+    std::string inner_mode_;
+    std::string inner_alt_mode_;
+    bool hop_enabled_{false};
+    std::uint32_t hop_interval_ms_{0};
+    std::int64_t hop_offset_ms_{0};
     boost::asio::steady_timer idle_timer_;
     std::atomic<int64_t> last_activity_ms_{0};
 

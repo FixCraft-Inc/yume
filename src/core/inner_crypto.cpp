@@ -31,6 +31,7 @@ namespace yume::inner {
 
 namespace {
 constexpr const char kHkdfInfo[] = "yume-inner-v1";
+constexpr const char kHopInfoPrefix[] = "yume-hop-v1:";
 
 Bytes read_file(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
@@ -344,6 +345,48 @@ std::optional<Bytes> server_derive_key(const Config& cfg, const Bytes& pq_cipher
     Bytes priv = load_pq_private_key(cfg.pq_private_key);
     Bytes shared = basefwx::pq::KemDecrypt(priv, pq_ciphertext);
     return heavy ? derive_key_heavy(shared, salt) : derive_key(shared);
+#endif
+}
+
+bool pq_supported() {
+#if YUME_USE_BASEFWX && defined(BASEFWX_HAS_OQS) && BASEFWX_HAS_OQS
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool argon2_supported() {
+#if YUME_USE_BASEFWX && defined(BASEFWX_HAS_ARGON2) && BASEFWX_HAS_ARGON2
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool pbkdf2_supported() {
+    return true;
+}
+
+std::uint64_t hop_id_from_time_ms(std::int64_t now_ms, std::uint32_t interval_ms, std::int64_t offset_ms) {
+    if (interval_ms == 0) {
+        return 0;
+    }
+    std::int64_t adjusted = now_ms + offset_ms;
+    if (adjusted < 0) {
+        adjusted = 0;
+    }
+    return static_cast<std::uint64_t>(adjusted / static_cast<std::int64_t>(interval_ms));
+}
+
+Bytes derive_hop_key(const Bytes& base_key, std::uint64_t hop_id) {
+#if !YUME_USE_BASEFWX
+    (void)base_key;
+    (void)hop_id;
+    throw std::runtime_error("inner crypto not available: BaseFWX disabled");
+#else
+    std::string info = std::string(kHopInfoPrefix) + std::to_string(hop_id);
+    return basefwx::crypto::HkdfSha256(base_key, info, 32);
 #endif
 }
 

@@ -31,6 +31,13 @@ struct ClientHandshake {
 ClientHandshake client_prepare(const Config& cfg, bool heavy);
 std::optional<Bytes> server_derive_key(const Config& cfg, const Bytes& pq_ciphertext, const Bytes& salt, bool heavy);
 
+bool pq_supported();
+bool argon2_supported();
+bool pbkdf2_supported();
+
+std::uint64_t hop_id_from_time_ms(std::int64_t now_ms, std::uint32_t interval_ms, std::int64_t offset_ms);
+Bytes derive_hop_key(const Bytes& base_key, std::uint64_t hop_id);
+
 bool generate_pq_keypair(const std::string& private_path,
                          const std::string& public_path,
                          std::string* err);

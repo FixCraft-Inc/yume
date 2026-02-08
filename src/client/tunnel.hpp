@@ -35,6 +35,7 @@ public:
 
     void start();
     void set_inner_key(const Bytes& key);
+    void set_hop(bool enabled, std::uint32_t interval_ms, std::int64_t offset_ms);
     void set_server_in_charge(bool enabled);
     void set_allow_exec(bool enabled);
     void set_reverse_handler(ReverseOpenHandler handler);
@@ -68,6 +69,9 @@ private:
     void on_read_header(const boost::system::error_code& ec, std::size_t bytes);
     void on_read_payload(const boost::system::error_code& ec, std::size_t bytes);
     void handle_frame(const protocol::Frame& frame);
+    Bytes encrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const Bytes& input);
+    bool decrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const Bytes& input, Bytes* output);
+    std::uint64_t current_hop_id() const;
 
     void async_write_frame(const protocol::Frame& frame,
                            std::function<void(const boost::system::error_code&, std::size_t)> handler = {});
@@ -96,6 +100,9 @@ private:
     uint8_t next_stream_id_{1};
     bool closed_{false};
     std::optional<Bytes> inner_key_;
+    bool hop_enabled_{false};
+    std::uint32_t hop_interval_ms_{0};
+    std::int64_t hop_offset_ms_{0};
     bool server_in_charge_{false};
     bool allow_exec_{false};
     std::unordered_map<uint8_t, std::shared_ptr<ReverseForwardSession>> control_sessions_;

@@ -121,7 +121,8 @@ constexpr const char kFixcraftAnonymPubPem[] =
     "-----BEGIN PUBLIC KEY-----\n"
     "MCowBQYDK2VwAyEAtupzLhANnB0VxP51vB/7yYwR+/3/jv4Str9MGLGA+is=\n"
     "-----END PUBLIC KEY-----\n";
-constexpr const char kDefaultAnonymCaCertPath[] = "/home/user/ca.cert.pem";
+// Default CA cert path - empty means user must provide via --anonym-ca-cert if needed
+constexpr const char kDefaultAnonymCaCertPath[] = "";
 struct EnvGuard {
     struct Entry {
         std::string key;
@@ -573,9 +574,7 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.server = argv[++i];
         } else if (arg == "--port" && i + 1 < argc) {
             args.port = std::stoi(argv[++i]);
-        } else if (arg == "--auth" && i + 1 < argc) {
-            args.identity = argv[++i];
-        } else if (arg == "-i" && i + 1 < argc) {
+        } else if ((arg == "--auth" || arg == "-i") && i + 1 < argc) {
             args.identity = argv[++i];
         } else if (arg == "--socks" && i + 1 < argc) {
             args.socks_port = std::stoi(argv[++i]);
@@ -588,9 +587,7 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.rhost = argv[++i];
         } else if (arg == "--rport" && i + 1 < argc) {
             args.rport = std::stoi(argv[++i]);
-        } else if (arg == "--run" && i + 1 < argc) {
-            args.run_cmd = argv[++i];
-        } else if ((arg == "-c" || arg == "--cmd") && i + 1 < argc) {
+        } else if ((arg == "--run" || arg == "-c" || arg == "--cmd") && i + 1 < argc) {
             args.run_cmd = argv[++i];
         } else if (arg == "--run-ipv4") {
             args.run_ipv4 = true;
@@ -768,48 +765,47 @@ void print_help() {
     std::cout
         << "yume - YUME client\n\n"
         << "Usage:\n"
-        << "  yume --server <host> --auth <id_ed25519> [--socks 1080]\n"
-        << "  yume --server <host> --auth <id_ed25519> --lport <local> --rhost <host> --rport <port>\n"
-        << "  yume --server <host> --auth <id_ed25519> --run \"<command>\"\n"
+        << "  yume --server <host> -i <id_ed25519> [--socks 1080]\n"
+        << "  yume --server <host> -i <id_ed25519> --lport <local> --rhost <host> --rport <port>\n"
+        << "  yume --server <host> -i <id_ed25519> --run \"<command>\"\n"
         << "  yume --help\n\n"
         << "Required:\n"
-        << "  --server <host>\n"
-        << "  --auth <identity key>  (or -i)\n\n"
+        << "  --server <host>       Server address\n"
+        << "  -i, --auth <path>     Identity key file path\n\n"
         << "Optional:\n"
-        << "  --port <port>        (ignored; client always uses 443)\n"
-        << "  --socks <port>       (SOCKS5 mode)\n"
-        << "  --threads <n>        (IO threads; 0 = auto/all cores)\n"
-        << "  --lport <port>       (forward local port)\n"
-        << "  --rhost <host>       (forward target host)\n"
-        << "  --rport <port>       (forward target port)\n"
-        << "  --udp                (enable UDP for forwards/SOCKS5)\n"
-        << "  --tcp                (force TCP only; default)\n"
-        << "  --allow-local-ip     (forward private/loopback targets via server for --lport)\n"
-        << "  --server-in-charge   (allow server to control this client network)\n"
-        << "  --allow-exec         (allow server to run commands on this client)\n"
-        << "  --exec <cmd>         (with --control: run command on target; without args enables allow-exec)\n"
-        << "  --control [id]       (control a registered client)\n"
-        << "  --id <id>            (target id for --control)\n"
-        << "  --list-controlled    (list controlled clients)\n"
-        << "  --inner              (enable inner encryption)\n"
-        << "  --inner-heavy        (heavy KDF, default)\n"
-        << "  --inner-light        (lighter KDF)\n"
-        << "  --pq-pub <path>      (override pq_public_key)\n"
-        << "  --anonym-ca-cert <path> (verify extra CA signature for anonym proof)\n"
-        << "  --tls-ca <path>      (verify TLS with custom CA)\n"
-        << "  --tls-pin <sha256>   (pin server TLS certificate fingerprint)\n"
-        << "  --run <cmd>          (run locally with YUME proxy)\n"
-        << "  -c, --cmd <cmd>      (run locally with YUME proxy)\n"
-        << "                      (ssh auto-wraps ProxyCommand via local SOCKS)\n"
-        << "  --run-ipv4           (prefer IPv4 for --run; curl gets -4 --http1.1)\n"
-        << "  --proxycmd           (internal: SSH ProxyCommand helper)\n"
-        << "  --require-anonym     (abort if server is not in anonym mode)\n"
-        << "  -L [bind:]lport:host:port  (SSH-style local forward)\n"
-        << "  -R [bind:]rport:host:port  (SSH-style remote forward)\n"
-        << "  --boring             (no emojis; short, color-only output)\n"
-        << "  --config <path>      (config file)\n"
-        << "  --accept-monitoring  (skip monitoring warning)\n"
-        << "  --save-server        (persist server into config)\n";
+        << "  --socks <port>       Start SOCKS5 proxy on specified port\n"
+        << "  --threads <n>        IO thread count (0 = auto-detect)\n"
+        << "  --lport <port>       Local port to forward\n"
+        << "  --rhost <host>       Forward destination host\n"
+        << "  --rport <port>       Forward destination port\n"
+        << "  --udp                Enable UDP for forwards/SOCKS5\n"
+        << "  --tcp                Force TCP only (default)\n"
+        << "  --allow-local-ip     Allow forwarding to private/loopback IPs\n"
+        << "  --server-in-charge   Allow server to control this client\n"
+        << "  --allow-exec         Allow server to execute commands\n"
+        << "  --exec <cmd>         Execute command (with --control) or enable exec\n"
+        << "  --control [id]       Control mode for registered client\n"
+        << "  --id <id>            Target client ID for control mode\n"
+        << "  --list-controlled    List all controlled clients\n"
+        << "  --inner              Enable inner encryption\n"
+        << "  --inner-heavy        Use heavy KDF (default with --inner)\n"
+        << "  --inner-light        Use lighter KDF\n"
+        << "  --pq-pub <path>      Override post-quantum public key\n"
+        << "  --anonym-ca-cert <path> CA certificate for anonymity verification\n"
+        << "  --tls-ca <path>      Custom CA for TLS verification\n"
+        << "  --tls-pin <sha256>   Pin server TLS certificate fingerprint\n"
+        << "  --run, -c, --cmd <cmd>  Run command locally with YUME proxy\n"
+        << "                          (SSH auto-wraps ProxyCommand via SOCKS)\n"
+        << "  --run-ipv4           Prefer IPv4 for --run commands\n"
+        << "  --proxycmd           Internal SSH ProxyCommand helper\n"
+        << "  --require-anonym     Abort if server not in anonymous mode\n"
+        << "  -L [bind:]lport:host:port  SSH-style local port forward\n"
+        << "  -R [bind:]rport:host:port  SSH-style remote port forward\n"
+        << "  --boring             Minimal output without emojis\n"
+        << "  --config <path>      Configuration file path\n"
+        << "  --accept-monitoring  Accept monitoring without warning\n"
+        << "  --save-server        Save server to configuration\n"
+        << "  -h, --help           Show this help message\n";
 }
 
 bool file_exists(const std::string& path) {

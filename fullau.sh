@@ -63,12 +63,12 @@ normalize_cross_flag() {
 IFS='|' read -r WINDOWS_CROSS WINDOWS_CROSS_AUTO <<< "$(normalize_cross_flag "${YUME_WINDOWS_CROSS:-}")"
 WINDOWS_TOOLCHAIN_PREFIX="${YUME_WINDOWS_TOOLCHAIN_PREFIX:-x86_64-w64-mingw32}"
 WINDOWS_TRIPLET="${YUME_WINDOWS_TRIPLET:-x64-mingw-dynamic}"
-WINDOWS_VCPKG_PACKAGES="${YUME_WINDOWS_VCPKG_PACKAGES:-openssl boost-headers boost-asio boost-system boost-thread zlib zstd liblzma spdlog nlohmann-json argon2 liboqs}"
+WINDOWS_VCPKG_PACKAGES="${YUME_WINDOWS_VCPKG_PACKAGES:-openssl boost-cmake boost-headers boost-asio boost-system boost-thread zlib zstd liblzma spdlog nlohmann-json argon2 liboqs}"
 
 IFS='|' read -r MACOS_CROSS MACOS_CROSS_AUTO <<< "$(normalize_cross_flag "${YUME_MACOS_CROSS:-}")"
 MACOS_TOOLCHAIN_PREFIX="${YUME_MACOS_TOOLCHAIN_PREFIX:-}"
 MACOS_TRIPLET="${YUME_MACOS_TRIPLET:-x64-osx}"
-MACOS_VCPKG_PACKAGES="${YUME_MACOS_VCPKG_PACKAGES:-openssl boost-headers boost-asio boost-system boost-thread zlib zstd liblzma fmt spdlog argon2 liboqs}"
+MACOS_VCPKG_PACKAGES="${YUME_MACOS_VCPKG_PACKAGES:-openssl boost-cmake boost-headers boost-asio boost-system boost-thread zlib zstd liblzma fmt spdlog argon2 liboqs}"
 MACOS_SDK="${YUME_MACOS_SDK:-${OSXCROSS_SDK:-}}"
 MACOS_DEPLOYMENT_TARGET="${YUME_MACOS_DEPLOYMENT_TARGET:-10.15}"
 APT_UPDATED_FLAG="${APT_UPDATED_FLAG:-/tmp/yume-apt-updated}"
@@ -178,6 +178,29 @@ endif()
       cat
     } < "${boost_install}" > "${tmp}"
     mv "${tmp}" "${boost_install}"
+  fi
+  local vcpkg_cmake="${vcpkg_root}/ports/vcpkg-cmake/vcpkg_cmake_configure.cmake"
+  if [[ -f "${vcpkg_cmake}" ]] && ! grep -q "yume-disable-parallel-configure" "${vcpkg_cmake}"; then
+    local tmp
+    tmp="$(mktemp)"
+    awk '
+      {
+        print
+        if (!inserted) {
+          if (index($0, "cmake_parse_arguments(PARSE_ARGV") > 0) {
+            in_parse = 1
+          } else if (in_parse && $0 ~ /^\\s*\\)\\s*$/) {
+            print "    # yume-disable-parallel-configure"
+            print "    if(DEFINED ENV{VCPKG_DISABLE_PARALLEL_CONFIGURE} AND NOT \"\\$ENV{VCPKG_DISABLE_PARALLEL_CONFIGURE}\" STREQUAL \"0\")"
+            print "        set(arg_DISABLE_PARALLEL_CONFIGURE ON)"
+            print "    endif()"
+            inserted = 1
+            in_parse = 0
+          }
+        }
+      }
+    ' "${vcpkg_cmake}" > "${tmp}"
+    mv "${tmp}" "${vcpkg_cmake}"
   fi
   local portfile
   for portfile in "${vcpkg_root}"/ports/boost-*/portfile.cmake; do
@@ -1783,6 +1806,11 @@ EOF
     PATH="${shim_bin}:${bin_dir}:${PATH}" \
       "${vcpkg_root}/vcpkg" remove --recurse --triplet "${triplet}" zstd >/dev/null 2>&1 || true
   fi
+  if [[ -d "${vcpkg_prefix}" && ! -f "${vcpkg_prefix}/share/boost/cmake-build/BoostRoot.cmake" ]]; then
+    echo "macOS vcpkg boost-cmake missing; forcing reinstall."
+    PATH="${shim_bin}:${bin_dir}:${PATH}" \
+      "${vcpkg_root}/vcpkg" remove --recurse --triplet "${triplet}" boost-cmake boost-headers >/dev/null 2>&1 || true
+  fi
   if [[ -d "${vcpkg_prefix}" && ! -f "${vcpkg_prefix}/include/boost/version.hpp" ]]; then
     echo "macOS vcpkg boost headers missing; forcing reinstall."
     PATH="${shim_bin}:${bin_dir}:${PATH}" \
@@ -1792,6 +1820,7 @@ EOF
 
   PATH="${shim_bin}:${bin_dir}:${PATH}" \
     MACOSX_DEPLOYMENT_TARGET="${MACOS_DEPLOYMENT_TARGET}" \
+    VCPKG_DISABLE_PARALLEL_CONFIGURE=1 \
     OPENSSL_ROOT_DIR="${vcpkg_prefix}" \
     VCPKG_CHAINLOAD_TOOLCHAIN_FILE="${toolchain_file}" \
     VCPKG_OVERLAY_TRIPLETS="${overlay_triplets_dir}" \

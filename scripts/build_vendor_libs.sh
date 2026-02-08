@@ -157,6 +157,36 @@ ensure_vcpkg() {
     "${VCPKG_ROOT}/bootstrap-vcpkg.sh" -disableMetrics
 }
 
+patch_vcpkg_disable_parallel_configure() {
+    local vcpkg_cmake="${VCPKG_ROOT}/ports/vcpkg-cmake/vcpkg_cmake_configure.cmake"
+    if [[ -z "${VCPKG_ROOT}" || ! -f "${vcpkg_cmake}" ]]; then
+        return 0
+    fi
+    if grep -q "yume-disable-parallel-configure" "${vcpkg_cmake}"; then
+        return 0
+    fi
+    local tmp
+    tmp="$(mktemp)"
+    awk '
+      {
+        print
+        if (!inserted) {
+          if (index($0, "cmake_parse_arguments(PARSE_ARGV") > 0) {
+            in_parse = 1
+          } else if (in_parse && $0 ~ /^\\s*\\)\\s*$/) {
+            print "    # yume-disable-parallel-configure"
+            print "    if(DEFINED ENV{VCPKG_DISABLE_PARALLEL_CONFIGURE} AND NOT \"\\$ENV{VCPKG_DISABLE_PARALLEL_CONFIGURE}\" STREQUAL \"0\")"
+            print "        set(arg_DISABLE_PARALLEL_CONFIGURE ON)"
+            print "    endif()"
+            inserted = 1
+            in_parse = 0
+          }
+        }
+      }
+    ' "${vcpkg_cmake}" > "${tmp}"
+    mv "${tmp}" "${vcpkg_cmake}"
+}
+
 resolve_osxcross_root() {
     if [[ -n "${OSXCROSS_ROOT}" && -d "${OSXCROSS_ROOT}" ]]; then
         echo "${OSXCROSS_ROOT}"
@@ -358,6 +388,7 @@ install_vcpkg_packages() {
         echo "vcpkg not found at ${vcpkg_bin}" >&2
         exit 1
     fi
+    patch_vcpkg_disable_parallel_configure
     if is_windows_target; then
         shim_bin="/tmp/yume-vcpkg-win-shim"
         powershell_stub="${shim_bin}/powershell.exe"
@@ -504,6 +535,7 @@ EOF
         export CC="${cc}"
         export CXX="${cxx}"
         export MACOSX_DEPLOYMENT_TARGET="${MACOS_DEPLOYMENT_TARGET}"
+        export VCPKG_DISABLE_PARALLEL_CONFIGURE=1
     fi
 
     if [[ ! -d "${VCPKG_ROOT}/installed/${triplet}" ]]; then

@@ -119,6 +119,8 @@ private:
     std::optional<crypto::Bytes> inner_key_alt_;
     std::string inner_mode_;
     std::string inner_alt_mode_;
+    std::string inner_kdf_;
+    std::string inner_alt_kdf_;
     bool hop_enabled_{false};
     std::uint32_t hop_interval_ms_{0};
     std::int64_t hop_offset_ms_{0};

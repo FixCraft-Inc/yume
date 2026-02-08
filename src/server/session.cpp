@@ -528,6 +528,9 @@ void Session::handle_frame(const protocol::Frame& frame) {
         anon["inner_dual"] = cfg_.inner_dual;
         anon["inner_active"] = inner_key_.has_value();
         anon["inner_mode"] = inner_mode;
+        if (!inner_kdf_.empty()) {
+            anon["inner_kdf"] = inner_kdf_;
+        }
         anon["hop_enabled"] = cfg_.inner_hop;
         anon["hop_interval_ms"] = cfg_.hop_interval_ms;
         anon["server_time_ms"] = now_ms();
@@ -653,6 +656,10 @@ bool Session::decrypt_inner_payload(uint8_t frame_type,
             inner_mode_ = inner_alt_mode_;
         }
         inner_alt_mode_.clear();
+        if (!inner_alt_kdf_.empty()) {
+            inner_kdf_ = inner_alt_kdf_;
+        }
+        inner_alt_kdf_.clear();
         return true;
     }
     return false;
@@ -689,6 +696,7 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         std::optional<crypto::Bytes> pq_salt;
         std::optional<std::string> inner_mode;
         std::optional<bool> inner_hop;
+        std::optional<inner::KdfParams> inner_kdf;
         if (offset < frame.payload.size()) {
             pq_ciphertext = read_field(frame.payload, offset);
         }
@@ -707,6 +715,32 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                 inner_hop = (hop_bytes[0] != static_cast<uint8_t>('0'));
             } else {
                 inner_hop = false;
+            }
+        }
+        if (offset < frame.payload.size()) {
+            crypto::Bytes kdf_bytes = read_field(frame.payload, offset);
+            if (!kdf_bytes.empty()) {
+                inner::KdfParams params;
+                params.name.assign(kdf_bytes.begin(), kdf_bytes.end());
+                if (offset < frame.payload.size()) {
+                    crypto::Bytes param_bytes = read_field(frame.payload, offset);
+                    if (param_bytes.size() == 16) {
+                        auto read_u32 = [&](size_t off) -> std::uint32_t {
+                            if (off + 4 > param_bytes.size()) {
+                                return 0;
+                            }
+                            return (static_cast<std::uint32_t>(param_bytes[off]) << 24) |
+                                   (static_cast<std::uint32_t>(param_bytes[off + 1]) << 16) |
+                                   (static_cast<std::uint32_t>(param_bytes[off + 2]) << 8) |
+                                   static_cast<std::uint32_t>(param_bytes[off + 3]);
+                        };
+                        params.argon2_time = read_u32(0);
+                        params.argon2_memory = read_u32(4);
+                        params.argon2_parallelism = read_u32(8);
+                        params.pbkdf2_iters = read_u32(12);
+                    }
+                }
+                inner_kdf = params;
             }
         }
 
@@ -759,57 +793,91 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                         return false;
                     }
                 }
+                if (inner_kdf.has_value() && !inner_kdf->name.empty()) {
+                    if (inner_kdf->name == "argon2") {
+                        if (!inner::argon2_supported()) {
+                            auth_error_ = "server does not support argon2";
+                            return false;
+                        }
+                    } else if (inner_kdf->name == "pbkdf2") {
+                        if (!inner::pbkdf2_supported()) {
+                            auth_error_ = "server does not support pbkdf2";
+                            return false;
+                        }
+                    } else if (inner_kdf->name == "hkdf") {
+                        if (!inner_mode.has_value() || *inner_mode != "light") {
+                            auth_error_ = "invalid kdf request";
+                            return false;
+                        }
+                    } else {
+                        auth_error_ = "invalid kdf request";
+                        return false;
+                    }
+                }
                 inner::Config inner_cfg;
                 inner_cfg.enabled = cfg_.inner_crypto;
                 inner_cfg.pq_private_key = cfg_.pq_private_key;
                 if (cfg_.inner_dual) {
-                    auto heavy = inner::server_derive_key(inner_cfg, *pq_ciphertext, *pq_salt, true);
-                    auto light = inner::server_derive_key(inner_cfg, *pq_ciphertext, *pq_salt, false);
-                    if ((!heavy.has_value() || heavy->empty()) && (!light.has_value() || light->empty())) {
+                    std::optional<inner::KdfParams> heavy_kdf;
+                    if (inner_kdf.has_value() && !inner_kdf->name.empty() && inner_kdf->name != "hkdf") {
+                        heavy_kdf = inner_kdf;
+                    }
+                    auto heavy = inner::server_derive_key(inner_cfg, *pq_ciphertext, *pq_salt, true, heavy_kdf);
+                    auto light = inner::server_derive_key(inner_cfg, *pq_ciphertext, *pq_salt, false, std::nullopt);
+                    if ((!heavy.has_value() || heavy->key.empty()) && (!light.has_value() || light->key.empty())) {
                         util::log_warn("session " + std::to_string(session_id_) + ": PQ key derivation failed");
                         auth_error_ = "access denied: pq key derivation failed";
                         return false;
                     }
                     bool prefer_light = (inner_mode.has_value() && *inner_mode == "light");
                     bool prefer_heavy = (inner_mode.has_value() && *inner_mode == "heavy");
-                    if (prefer_light && light.has_value() && !light->empty()) {
-                        inner_key_ = *light;
+                    if (prefer_light && light.has_value() && !light->key.empty()) {
+                        inner_key_ = light->key;
                         inner_mode_ = "light";
-                        if (heavy.has_value() && !heavy->empty()) {
-                            inner_key_alt_ = *heavy;
+                        inner_kdf_ = light->kdf;
+                        if (heavy.has_value() && !heavy->key.empty()) {
+                            inner_key_alt_ = heavy->key;
                             inner_alt_mode_ = "heavy";
+                            inner_alt_kdf_ = heavy->kdf;
                         }
-                    } else if (prefer_heavy && heavy.has_value() && !heavy->empty()) {
-                        inner_key_ = *heavy;
+                    } else if (prefer_heavy && heavy.has_value() && !heavy->key.empty()) {
+                        inner_key_ = heavy->key;
                         inner_mode_ = "heavy";
-                        if (light.has_value() && !light->empty()) {
-                            inner_key_alt_ = *light;
+                        inner_kdf_ = heavy->kdf;
+                        if (light.has_value() && !light->key.empty()) {
+                            inner_key_alt_ = light->key;
                             inner_alt_mode_ = "light";
+                            inner_alt_kdf_ = light->kdf;
                         }
-                    } else if (cfg_.inner_heavy && heavy.has_value() && !heavy->empty()) {
-                        inner_key_ = *heavy;
+                    } else if (cfg_.inner_heavy && heavy.has_value() && !heavy->key.empty()) {
+                        inner_key_ = heavy->key;
                         inner_mode_ = "heavy";
-                        if (light.has_value() && !light->empty()) {
-                            inner_key_alt_ = *light;
+                        inner_kdf_ = heavy->kdf;
+                        if (light.has_value() && !light->key.empty()) {
+                            inner_key_alt_ = light->key;
                             inner_alt_mode_ = "light";
+                            inner_alt_kdf_ = light->kdf;
                         }
-                    } else if (light.has_value() && !light->empty()) {
-                        inner_key_ = *light;
+                    } else if (light.has_value() && !light->key.empty()) {
+                        inner_key_ = light->key;
                         inner_mode_ = "light";
-                        if (heavy.has_value() && !heavy->empty()) {
-                            inner_key_alt_ = *heavy;
+                        inner_kdf_ = light->kdf;
+                        if (heavy.has_value() && !heavy->key.empty()) {
+                            inner_key_alt_ = heavy->key;
                             inner_alt_mode_ = "heavy";
+                            inner_alt_kdf_ = heavy->kdf;
                         }
                     }
                 } else {
-                    auto derived = inner::server_derive_key(inner_cfg, *pq_ciphertext, *pq_salt, cfg_.inner_heavy);
-                    if (!derived.has_value() || derived->empty()) {
+                    auto derived = inner::server_derive_key(inner_cfg, *pq_ciphertext, *pq_salt, cfg_.inner_heavy, inner_kdf);
+                    if (!derived.has_value() || derived->key.empty()) {
                         util::log_warn("session " + std::to_string(session_id_) + ": PQ key derivation failed");
                         auth_error_ = "access denied: pq key derivation failed";
                         return false;
                     }
-                    inner_key_ = *derived;
+                    inner_key_ = derived->key;
                     inner_mode_ = cfg_.inner_heavy ? "heavy" : "light";
+                    inner_kdf_ = derived->kdf;
                 }
             }
         } else if (pq_ciphertext.has_value()) {

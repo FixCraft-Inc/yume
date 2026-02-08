@@ -26,10 +26,32 @@ struct ClientHandshake {
     Bytes pq_ciphertext;
     Bytes salt;
     Bytes key;
+    std::string kdf;
+    std::uint32_t argon2_time{0};
+    std::uint32_t argon2_memory{0};
+    std::uint32_t argon2_parallelism{0};
+    std::uint32_t pbkdf2_iters{0};
 };
 
 ClientHandshake client_prepare(const Config& cfg, bool heavy);
-std::optional<Bytes> server_derive_key(const Config& cfg, const Bytes& pq_ciphertext, const Bytes& salt, bool heavy);
+struct DerivedKey {
+    Bytes key;
+    std::string kdf;
+};
+
+struct KdfParams {
+    std::string name;
+    std::uint32_t argon2_time{0};
+    std::uint32_t argon2_memory{0};
+    std::uint32_t argon2_parallelism{0};
+    std::uint32_t pbkdf2_iters{0};
+};
+
+std::optional<DerivedKey> server_derive_key(const Config& cfg,
+                                            const Bytes& pq_ciphertext,
+                                            const Bytes& salt,
+                                            bool heavy,
+                                            const std::optional<KdfParams>& kdf_params);
 
 bool pq_supported();
 bool argon2_supported();

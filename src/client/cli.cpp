@@ -747,7 +747,8 @@ crypto::Bytes auth_payload(EVP_PKEY* pubkey,
                            const std::optional<crypto::Bytes>& pq_ciphertext,
                            const std::optional<crypto::Bytes>& pq_salt,
                            const std::optional<std::string>& inner_mode,
-                           const std::optional<bool>& inner_hop) {
+                           const std::optional<bool>& inner_hop,
+                           const std::optional<inner::KdfParams>& inner_kdf) {
     BIO* bio = BIO_new(BIO_s_mem());
     if (!bio) {
         throw std::runtime_error("failed to allocate pubkey bio");
@@ -792,6 +793,12 @@ crypto::Bytes auth_payload(EVP_PKEY* pubkey,
     if (inner_mode && !pq_ciphertext.has_value()) {
         throw std::runtime_error("inner mode without PQ data");
     }
+    if (inner_kdf && !pq_ciphertext.has_value()) {
+        throw std::runtime_error("inner kdf without PQ data");
+    }
+    if (inner_kdf && inner_kdf->name.size() > 0xFFFF) {
+        throw std::runtime_error("inner kdf too large");
+    }
 
     size_t total = 0;
     total = checked_add(total, 2 + pub_bytes.size());
@@ -807,6 +814,10 @@ crypto::Bytes auth_payload(EVP_PKEY* pubkey,
     }
     if (inner_hop) {
         total = checked_add(total, 2 + 1);
+    }
+    if (inner_kdf) {
+        total = checked_add(total, 2 + inner_kdf->name.size());
+        total = checked_add(total, 2 + 16);
     }
 
     crypto::Bytes payload(total);
@@ -843,6 +854,24 @@ crypto::Bytes auth_payload(EVP_PKEY* pubkey,
             write_len(static_cast<uint16_t>(hop_bytes.size()));
             write_bytes(hop_bytes);
         }
+        if (inner_kdf) {
+            crypto::Bytes kdf_bytes(inner_kdf->name.begin(), inner_kdf->name.end());
+            write_len(static_cast<uint16_t>(kdf_bytes.size()));
+            write_bytes(kdf_bytes);
+            crypto::Bytes param_bytes(16, 0);
+            auto write_u32 = [&](size_t off, std::uint32_t val) {
+                param_bytes[off] = static_cast<uint8_t>((val >> 24) & 0xFF);
+                param_bytes[off + 1] = static_cast<uint8_t>((val >> 16) & 0xFF);
+                param_bytes[off + 2] = static_cast<uint8_t>((val >> 8) & 0xFF);
+                param_bytes[off + 3] = static_cast<uint8_t>(val & 0xFF);
+            };
+            write_u32(0, inner_kdf->argon2_time);
+            write_u32(4, inner_kdf->argon2_memory);
+            write_u32(8, inner_kdf->argon2_parallelism);
+            write_u32(12, inner_kdf->pbkdf2_iters);
+            write_len(static_cast<uint16_t>(param_bytes.size()));
+            write_bytes(param_bytes);
+        }
     }
 
     return payload;
@@ -853,7 +882,8 @@ void authenticate(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream
                   const std::optional<crypto::Bytes>& pq_ciphertext,
                   const std::optional<crypto::Bytes>& pq_salt,
                   const std::optional<std::string>& inner_mode,
-                  const std::optional<bool>& inner_hop) {
+                  const std::optional<bool>& inner_hop,
+                  const std::optional<inner::KdfParams>& inner_kdf) {
     protocol::Frame challenge = protocol::read_frame(stream);
     if (challenge.header.type != protocol::AUTH) {
         throw std::runtime_error("server did not send AUTH challenge");
@@ -866,7 +896,8 @@ void authenticate(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream
                                          pq_ciphertext,
                                          pq_salt,
                                          inner_mode,
-                                         inner_hop);
+                                         inner_hop,
+                                         inner_kdf);
 
     protocol::Frame response{{static_cast<uint32_t>(payload.size()), protocol::AUTH, 0, 0}, payload};
     protocol::send_frame(stream, response);
@@ -1221,6 +1252,9 @@ int Cli::run(int argc, char** argv) {
     if (!require_file("anonym_ca_cert", cfg.anonym_ca_cert)) {
         return 1;
     }
+    if (!require_file("anonym_pubkey", cfg.anonym_pubkey)) {
+        return 1;
+    }
     if (!require_file("pq_public_key", cfg.pq_public_key)) {
         return 1;
     }
@@ -1315,8 +1349,8 @@ int Cli::run(int argc, char** argv) {
     bool pq_warned = false;
     bool pq_reconnect_used = false;
     bool verified_once = false;
-    bool summary_once = false;
     for (;;) {
+        bool summary_once = false;
         try {
             boost::asio::io_context io;
             auto ctx = obfs::create_client_context();
@@ -1368,6 +1402,7 @@ int Cli::run(int argc, char** argv) {
             std::optional<crypto::Bytes> inner_key;
             std::optional<std::string> inner_mode;
             std::optional<bool> inner_hop;
+            std::optional<inner::KdfParams> inner_kdf;
             bool inner_disabled_for_session = false;
             bool pq_need_key = false;
             bool pq_not_supported = false;
@@ -1381,6 +1416,15 @@ int Cli::run(int argc, char** argv) {
                     pq_salt = hs.salt;
                     inner_key = hs.key;
                     inner_mode = cfg.inner_heavy ? std::optional<std::string>("heavy") : std::optional<std::string>("light");
+                    if (!hs.kdf.empty()) {
+                        inner::KdfParams params;
+                        params.name = hs.kdf;
+                        params.argon2_time = hs.argon2_time;
+                        params.argon2_memory = hs.argon2_memory;
+                        params.argon2_parallelism = hs.argon2_parallelism;
+                        params.pbkdf2_iters = hs.pbkdf2_iters;
+                        inner_kdf = params;
+                    }
                 } catch (const std::exception& ex) {
                     std::string msg = ex.what();
                     if (msg.find("PQ public key not configured") != std::string::npos) {
@@ -1398,10 +1442,14 @@ int Cli::run(int argc, char** argv) {
                 inner_hop = cfg.inner_hop;
             }
 
-            authenticate(stream, cfg.identity, pq_ciphertext, pq_salt, inner_mode, inner_hop);
+            authenticate(stream, cfg.identity, pq_ciphertext, pq_salt, inner_mode, inner_hop, inner_kdf);
             util::log_info("authenticated to server");
 
             protocol::Frame anon_frame = protocol::read_frame(stream);
+            if (anon_frame.header.type != protocol::ANON) {
+                util::log_error("server did not provide runtime info");
+                return 1;
+            }
             bool pq_reconnect = false;
             bool have_anon = false;
             bool verity_ok = false;
@@ -1418,38 +1466,60 @@ int Cli::run(int argc, char** argv) {
             std::uint32_t server_hop_interval_ms = 0;
             std::int64_t server_time_ms = 0;
             std::string server_version;
-            if (anon_frame.header.type == protocol::ANON) {
+            std::string server_error;
+            std::string mode = "normal";
+            std::uint32_t hop_interval_ms = 0;
+            std::int64_t hop_offset_ms = 0;
+            bool hop_enabled = false;
+            std::string hash;
+            std::string sig;
+            std::string ts;
+            std::string nonce;
+            std::string certfp;
+            std::string ca_sig;
+            std::string ca_alg;
+            std::string sub_sig;
+            std::string sub_alg;
+            std::string sub_cert_b64;
+            std::string pq_pub_b64;
+            std::string pq_sig;
+            std::string pq_alg;
+            try {
                 std::string payload(anon_frame.payload.begin(), anon_frame.payload.end());
                 auto json = nlohmann::json::parse(payload);
                 server_version = json.value("version", "UNKNOWN");
-                std::string server_error = json.value("error", "");
-                std::string mode = json.value("mode", "normal");
-            std::string hash = json.value("hash", "");
-            std::string sig = json.value("sig", "");
-            std::string ts = json.value("ts", "");
-            std::string nonce = json.value("nonce", "");
-            std::string certfp = json.value("certfp", "");
-            std::string ca_sig = json.value("ca_sig", "");
-            std::string ca_alg = json.value("ca_alg", "");
-            std::string sub_sig = json.value("sub_sig", "");
-            std::string sub_alg = json.value("sub_alg", "");
-            std::string sub_cert_b64 = json.value("sub_cert", "");
-            std::string pq_pub_b64 = json.value("pq_pub", "");
-            std::string pq_sig = json.value("pq_sig", "");
-            std::string pq_alg = json.value("pq_alg", "");
-            have_inner_caps = json.contains("inner_supported") || json.contains("inner_required") ||
-                              json.contains("inner_dual") || json.contains("inner_mode");
-            server_inner_supported = json.value("inner_supported", false);
-            server_inner_required = json.value("inner_required", false);
-            server_inner_dual = json.value("inner_dual", false);
-            server_inner_active = json.value("inner_active", false);
-            server_inner_mode = json.value("inner_mode", "");
-            server_cap_pq = json.value("cap_pq", false);
-            server_cap_argon2 = json.value("cap_argon2", false);
-            server_cap_pbkdf2 = json.value("cap_pbkdf2", false);
-            server_hop_enabled = json.value("hop_enabled", false);
-            server_hop_interval_ms = static_cast<std::uint32_t>(json.value("hop_interval_ms", 0));
-            server_time_ms = json.value("server_time_ms", 0LL);
+                server_error = json.value("error", "");
+                mode = json.value("mode", "normal");
+                hash = json.value("hash", "");
+                sig = json.value("sig", "");
+                ts = json.value("ts", "");
+                nonce = json.value("nonce", "");
+                certfp = json.value("certfp", "");
+                ca_sig = json.value("ca_sig", "");
+                ca_alg = json.value("ca_alg", "");
+                sub_sig = json.value("sub_sig", "");
+                sub_alg = json.value("sub_alg", "");
+                sub_cert_b64 = json.value("sub_cert", "");
+                pq_pub_b64 = json.value("pq_pub", "");
+                pq_sig = json.value("pq_sig", "");
+                pq_alg = json.value("pq_alg", "");
+                have_inner_caps = json.contains("inner_supported") || json.contains("inner_required") ||
+                                  json.contains("inner_dual") || json.contains("inner_mode");
+                server_inner_supported = json.value("inner_supported", false);
+                server_inner_required = json.value("inner_required", false);
+                server_inner_dual = json.value("inner_dual", false);
+                server_inner_active = json.value("inner_active", false);
+                server_inner_mode = json.value("inner_mode", "");
+                server_cap_pq = json.value("cap_pq", false);
+                server_cap_argon2 = json.value("cap_argon2", false);
+                server_cap_pbkdf2 = json.value("cap_pbkdf2", false);
+                server_hop_enabled = json.value("hop_enabled", false);
+                server_hop_interval_ms = static_cast<std::uint32_t>(json.value("hop_interval_ms", 0));
+                server_time_ms = json.value("server_time_ms", 0LL);
+            } catch (const std::exception& ex) {
+                util::log_error(std::string("failed to parse server runtime info: ") + ex.what());
+                return 1;
+            }
 
             auto sanitize_msg = [&](const std::string& msg) {
                 if (!cfg.boring) {
@@ -1493,8 +1563,9 @@ int Cli::run(int argc, char** argv) {
                           ", please install a matching version to connect to this server");
                 return 1;
             }
+            bool want_inner = cfg.inner_crypto && !inner_disabled_for_session;
             if (have_inner_caps) {
-                if (cfg.inner_crypto) {
+                if (want_inner) {
                     if (!server_inner_supported) {
                         print_red("server does not support inner crypto");
                         return 1;
@@ -1514,15 +1585,31 @@ int Cli::run(int argc, char** argv) {
                     return 1;
                 }
             }
-            if (server_hop_enabled && !cfg.inner_hop) {
-                print_red("server requires hopping");
+            if (want_inner && have_inner_caps && !server_cap_pq) {
+                print_red("server does not support PQ");
                 return 1;
             }
-            if (!server_hop_enabled && cfg.inner_hop) {
-                print_red("server does not support hopping");
-                return 1;
+            if (want_inner && inner_kdf.has_value() && !inner_kdf->name.empty()) {
+                if (inner_kdf->name == "argon2" && !server_cap_argon2) {
+                    print_red("server does not support argon2");
+                    return 1;
+                }
+                if (inner_kdf->name == "pbkdf2" && !server_cap_pbkdf2) {
+                    print_red("server does not support pbkdf2");
+                    return 1;
+                }
             }
-            std::uint32_t hop_interval_ms = cfg.hop_interval_ms;
+            if (want_inner) {
+                if (server_hop_enabled && !cfg.inner_hop) {
+                    print_red("server requires hopping");
+                    return 1;
+                }
+                if (!server_hop_enabled && cfg.inner_hop) {
+                    print_red("server does not support hopping");
+                    return 1;
+                }
+            }
+            hop_interval_ms = cfg.hop_interval_ms;
             if (server_hop_interval_ms > 0) {
                 hop_interval_ms = server_hop_interval_ms;
             }
@@ -1533,11 +1620,11 @@ int Cli::run(int argc, char** argv) {
                     hop_interval_ms = 1000;
                 }
             }
-            std::int64_t hop_offset_ms = 0;
+            hop_offset_ms = 0;
             if (server_time_ms > 0) {
                 hop_offset_ms = server_time_ms - util::now_ms();
             }
-            bool hop_enabled = (cfg.inner_hop && server_hop_enabled && inner_key.has_value());
+            hop_enabled = (want_inner && cfg.inner_hop && server_hop_enabled && inner_key.has_value());
             if (hop_interval_ms == 0) {
                 hop_enabled = false;
             }
@@ -1823,13 +1910,8 @@ int Cli::run(int argc, char** argv) {
                     }
                 }
             }
-                have_anon = true;
-                verity_ok = (mode == "anonym");
-            }
-            if (cfg.require_anonym && anon_frame.header.type != protocol::ANON) {
-                util::log_error("server did not provide anonym proof");
-                return 1;
-            }
+            have_anon = true;
+            verity_ok = (mode == "anonym");
             if (pq_reconnect) {
                 util::log_info("PQ public key received; reconnecting to enable inner crypto");
                 attempt++;
@@ -1845,19 +1927,33 @@ int Cli::run(int argc, char** argv) {
                 pq_warned = true;
             }
             if (have_anon && !summary_once) {
-                std::vector<std::string> protections;
-                if (server_cap_pq) protections.push_back("PQ");
-                if (server_cap_argon2) protections.push_back("ARGON2");
-                if (server_cap_pbkdf2) protections.push_back("PBKDF2");
-                if (protections.empty()) protections.push_back("UNKNOWN");
-                std::string protection_line;
-                for (size_t i = 0; i < protections.size(); ++i) {
-                    if (i) protection_line += "/";
-                    protection_line += protections[i];
-                }
                 auto color_wrap = [&](const std::string& text, const char* code) {
                     return std::string("\033[") + code + "m" + text + "\033[0m";
                 };
+                auto to_upper = [](std::string v) {
+                    for (char& c : v) {
+                        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                    }
+                    return v;
+                };
+                std::string protection_line = "TLS";
+                if (inner_key.has_value()) {
+                    std::vector<std::string> protections;
+                    protections.push_back("PQ");
+                    std::string kdf_name;
+                    if (inner_kdf.has_value()) {
+                        kdf_name = inner_kdf->name;
+                    }
+                    if (kdf_name.empty()) {
+                        kdf_name = cfg.inner_heavy ? "argon2" : "hkdf";
+                    }
+                    protections.push_back(to_upper(kdf_name));
+                    protection_line.clear();
+                    for (size_t i = 0; i < protections.size(); ++i) {
+                        if (i) protection_line += "/";
+                        protection_line += protections[i];
+                    }
+                }
                 std::string inner_state = (inner_key.has_value() || server_inner_active) ? "ON" : "OFF";
                 std::string inner_line = color_wrap(inner_state, (inner_state == "ON") ? "1;32" : "1;31");
                 if (inner_key.has_value()) {
@@ -1884,6 +1980,8 @@ int Cli::run(int argc, char** argv) {
                                                : 0;
                 std::string hop_last = color_wrap(std::to_string(last_change) + "ms", "1;34");
                 std::string server_display = color_wrap(cfg.server, "1;33");
+                std::string verity_state = verity_ok ? "PASS" : "FAIL";
+                std::string verity_line = color_wrap(verity_state, verity_ok ? "1;32" : "1;31");
                 std::cout
                     << "Connected to " << server_display << ":\n"
                     << "VERSION: " << (server_version.empty() ? "UNKNOWN" : server_version) << "\n"
@@ -1891,7 +1989,7 @@ int Cli::run(int argc, char** argv) {
                     << "Protection: " << protection_line << "\n"
                     << "Inner: " << inner_line << "\n"
                     << "Hopping: " << hop_line << " - " << hop_freq << " | " << hop_last << "\n"
-                    << "FixCraft Verity: " << (verity_ok ? "PASS" : "FAIL") << "\n";
+                    << "FixCraft Verity: " << verity_line << "\n";
                 summary_once = true;
             }
 

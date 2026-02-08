@@ -6,16 +6,24 @@
 
 #include "core/inner_crypto.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
 #if !defined(_WIN32)
 #include <sys/stat.h>
+#endif
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#endif
+#if defined(_WIN32)
+#include <windows.h>
 #endif
 
 #if YUME_USE_BASEFWX
@@ -140,31 +148,103 @@ std::uint32_t read_env_u32(const char* name, std::uint32_t fallback) {
     }
 }
 
+std::uint64_t read_meminfo_kib(const char* key) {
+#if defined(_WIN32) || defined(__APPLE__)
+    (void)key;
+    return 0;
+#else
+    std::ifstream meminfo("/proc/meminfo");
+    if (!meminfo) {
+        return 0;
+    }
+    std::string line;
+    while (std::getline(meminfo, line)) {
+        if (line.rfind(key, 0) != 0) {
+            continue;
+        }
+        std::istringstream iss(line);
+        std::string label;
+        std::uint64_t value = 0;
+        std::string unit;
+        if (iss >> label >> value >> unit) {
+            return value;
+        }
+    }
+    return 0;
+#endif
+}
+
+std::uint64_t available_memory_kib() {
+#if defined(_WIN32)
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    if (!GlobalMemoryStatusEx(&status)) {
+        return 0;
+    }
+    return static_cast<std::uint64_t>(status.ullAvailPhys / 1024);
+#elif defined(__APPLE__)
+    std::uint64_t mem = 0;
+    size_t len = sizeof(mem);
+    if (sysctlbyname("hw.memsize", &mem, &len, nullptr, 0) != 0) {
+        return 0;
+    }
+    return static_cast<std::uint64_t>(mem / 1024);
+#else
+    std::uint64_t avail = read_meminfo_kib("MemAvailable:");
+    if (avail == 0) {
+        avail = read_meminfo_kib("MemTotal:");
+    }
+    return avail;
+#endif
+}
+
 std::uint32_t argon2_time_cost() {
     return read_env_u32("YUME_ARGON2_TIME", basefwx::constants::kHeavyArgon2TimeCost);
 }
 
-std::uint32_t argon2_memory_cost() {
-    return read_env_u32("YUME_ARGON2_MEM", basefwx::constants::kHeavyArgon2MemoryCost);
+std::uint32_t argon2_parallelism() {
+    return read_env_u32("YUME_ARGON2_PAR", basefwx::constants::DefaultHeavyArgon2Parallelism());
 }
 
-std::uint32_t argon2_parallelism() {
-    const char* raw = std::getenv("YUME_ARGON2_PAR");
-    if (!raw || !*raw) {
-        return basefwx::constants::kHeavyArgon2Parallelism;
-    }
-    try {
-        unsigned long long parsed = std::stoull(raw);
-        if (parsed == 0) {
-            return basefwx::constants::kHeavyArgon2Parallelism;
+KdfParams select_argon2_params() {
+    KdfParams params;
+    params.name = "argon2";
+    params.argon2_time = argon2_time_cost();
+    params.argon2_parallelism = argon2_parallelism();
+    params.pbkdf2_iters = basefwx::constants::HeavyPbkdf2Iterations();
+
+    std::uint32_t mem = read_env_u32("YUME_ARGON2_MEM", 0);
+    if (mem == 0) {
+        std::uint64_t avail = available_memory_kib();
+        if (avail == 0) {
+            mem = basefwx::constants::kHeavyArgon2MemoryCost;
+        } else {
+            std::uint64_t target = avail;
+            if (target < basefwx::constants::kHeavyArgon2MemoryCost) {
+                target = basefwx::constants::kHeavyArgon2MemoryCost;
+            }
+            if (target > std::numeric_limits<std::uint32_t>::max()) {
+                target = std::numeric_limits<std::uint32_t>::max();
+            }
+            mem = static_cast<std::uint32_t>(target);
         }
-        if (parsed > std::numeric_limits<std::uint32_t>::max()) {
-            return std::numeric_limits<std::uint32_t>::max();
-        }
-        return static_cast<std::uint32_t>(parsed);
-    } catch (...) {
-        return basefwx::constants::DefaultHeavyArgon2Parallelism();
     }
+
+    if (params.argon2_parallelism == 0) {
+        params.argon2_parallelism = 1;
+    }
+    std::uint64_t min_mem = static_cast<std::uint64_t>(params.argon2_parallelism) * 8u;
+    if (mem < min_mem && mem > 0) {
+        std::uint32_t max_par = static_cast<std::uint32_t>(mem / 8u);
+        params.argon2_parallelism = max_par > 0 ? max_par : 1;
+    }
+    min_mem = static_cast<std::uint64_t>(params.argon2_parallelism) * 8u;
+    if (mem < min_mem) {
+        mem = static_cast<std::uint32_t>(
+            std::min<std::uint64_t>(min_mem, std::numeric_limits<std::uint32_t>::max()));
+    }
+    params.argon2_memory = mem;
+    return params;
 }
 
 Bytes derive_key(const Bytes& shared) {
@@ -176,13 +256,17 @@ Bytes derive_key(const Bytes& shared) {
 #endif
 }
 
-Bytes derive_key_heavy(const Bytes& shared, const Bytes& salt) {
+DerivedKey derive_key_heavy(const Bytes& shared,
+                            const Bytes& salt,
+                            const KdfParams& kdf_params,
+                            bool allow_fallback) {
 #if !YUME_USE_BASEFWX
     (void)shared;
     (void)salt;
+    (void)kdf_params;
+    (void)allow_fallback;
     throw std::runtime_error("inner crypto not available: BaseFWX disabled");
 #else
-#if defined(BASEFWX_HAS_ARGON2) && BASEFWX_HAS_ARGON2
     auto is_oom = [](const std::string& msg) {
         std::string lowered;
         lowered.reserve(msg.size());
@@ -205,29 +289,78 @@ Bytes derive_key_heavy(const Bytes& shared, const Bytes& salt) {
     };
 
     std::string password(reinterpret_cast<const char*>(shared.data()), shared.size());
-    try {
-        return basefwx::crypto::Argon2idHashRaw(password,
-                                                salt,
-                                                argon2_time_cost(),
-                                                argon2_memory_cost(),
-                                                argon2_parallelism(),
-                                                32);
-    } catch (const std::exception& ex) {
-        if (!is_oom(ex.what())) {
-            throw;
-        }
-        return basefwx::crypto::Pbkdf2HmacSha256(password,
-                                                 salt,
-                                                 basefwx::constants::HeavyPbkdf2Iterations(),
-                                                 32);
+    KdfParams params = kdf_params;
+    if (params.name.empty()) {
+        params = select_argon2_params();
     }
+    if (params.pbkdf2_iters == 0) {
+        params.pbkdf2_iters = basefwx::constants::HeavyPbkdf2Iterations();
+    }
+
+    if (params.name == "pbkdf2") {
+        DerivedKey out;
+        out.kdf = "pbkdf2";
+        out.key = basefwx::crypto::Pbkdf2HmacSha256(password, salt, params.pbkdf2_iters, 32);
+        return out;
+    }
+
+    if (params.name == "argon2") {
+#if defined(BASEFWX_HAS_ARGON2) && BASEFWX_HAS_ARGON2
+        std::uint32_t time_cost = params.argon2_time ? params.argon2_time : argon2_time_cost();
+        std::uint32_t mem_cost = params.argon2_memory ? params.argon2_memory : basefwx::constants::kHeavyArgon2MemoryCost;
+        std::uint32_t par_cost = params.argon2_parallelism ? params.argon2_parallelism : argon2_parallelism();
+        if (par_cost == 0) {
+            par_cost = 1;
+        }
+        std::uint64_t min_mem = static_cast<std::uint64_t>(par_cost) * 8u;
+        if (mem_cost < min_mem) {
+            mem_cost = static_cast<std::uint32_t>(
+                std::min<std::uint64_t>(min_mem, std::numeric_limits<std::uint32_t>::max()));
+        }
+        try {
+            DerivedKey out;
+            out.kdf = "argon2";
+            out.key = basefwx::crypto::Argon2idHashRaw(password,
+                                                       salt,
+                                                       time_cost,
+                                                       mem_cost,
+                                                       par_cost,
+                                                       32);
+            return out;
+        } catch (const std::exception& ex) {
+            if (!is_oom(ex.what()) || !allow_fallback) {
+                throw;
+            }
+            DerivedKey out;
+            out.kdf = "pbkdf2";
+            out.key = basefwx::crypto::Pbkdf2HmacSha256(password,
+                                                        salt,
+                                                        params.pbkdf2_iters,
+                                                        32);
+            return out;
+        }
 #else
-    std::string password(reinterpret_cast<const char*>(shared.data()), shared.size());
-    return basefwx::crypto::Pbkdf2HmacSha256(password,
-                                             salt,
-                                             basefwx::constants::HeavyPbkdf2Iterations(),
-                                             32);
+        if (!allow_fallback) {
+            throw std::runtime_error("argon2 not supported");
+        }
+        DerivedKey out;
+        out.kdf = "pbkdf2";
+        out.key = basefwx::crypto::Pbkdf2HmacSha256(password,
+                                                    salt,
+                                                    params.pbkdf2_iters,
+                                                    32);
+        return out;
 #endif
+    }
+
+    if (params.name == "hkdf") {
+        DerivedKey out;
+        out.kdf = "hkdf";
+        out.key = derive_key(shared);
+        return out;
+    }
+
+    throw std::runtime_error("invalid kdf request");
 #endif
 }
 
@@ -326,12 +459,30 @@ ClientHandshake client_prepare(const Config& cfg, bool heavy) {
     result.enabled = true;
     result.pq_ciphertext = std::move(kem.ciphertext);
     result.salt = basefwx::crypto::RandomBytes(basefwx::constants::kUserKdfSaltSize);
-    result.key = heavy ? derive_key_heavy(kem.shared, result.salt) : derive_key(kem.shared);
+    if (heavy) {
+        KdfParams params = select_argon2_params();
+        DerivedKey derived = derive_key_heavy(kem.shared, result.salt, params, true);
+        result.key = derived.key;
+        result.kdf = derived.kdf;
+        result.pbkdf2_iters = params.pbkdf2_iters;
+        if (derived.kdf == "argon2") {
+            result.argon2_time = params.argon2_time;
+            result.argon2_memory = params.argon2_memory;
+            result.argon2_parallelism = params.argon2_parallelism;
+        }
+    } else {
+        result.key = derive_key(kem.shared);
+        result.kdf = "hkdf";
+    }
     return result;
 #endif
 }
 
-std::optional<Bytes> server_derive_key(const Config& cfg, const Bytes& pq_ciphertext, const Bytes& salt, bool heavy) {
+std::optional<DerivedKey> server_derive_key(const Config& cfg,
+                                            const Bytes& pq_ciphertext,
+                                            const Bytes& salt,
+                                            bool heavy,
+                                            const std::optional<KdfParams>& kdf_params) {
     if (!cfg.enabled) {
         return std::nullopt;
     }
@@ -340,11 +491,20 @@ std::optional<Bytes> server_derive_key(const Config& cfg, const Bytes& pq_cipher
     (void)pq_ciphertext;
     (void)salt;
     (void)heavy;
+    (void)kdf_params;
     throw std::runtime_error("inner crypto not available: BaseFWX disabled");
 #else
     Bytes priv = load_pq_private_key(cfg.pq_private_key);
     Bytes shared = basefwx::pq::KemDecrypt(priv, pq_ciphertext);
-    return heavy ? derive_key_heavy(shared, salt) : derive_key(shared);
+    if (!heavy) {
+        DerivedKey out;
+        out.kdf = "hkdf";
+        out.key = derive_key(shared);
+        return out;
+    }
+    KdfParams params = kdf_params.value_or(KdfParams{});
+    bool allow_fallback = params.name.empty();
+    return derive_key_heavy(shared, salt, params, allow_fallback);
 #endif
 }
 

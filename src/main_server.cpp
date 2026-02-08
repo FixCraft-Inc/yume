@@ -1561,6 +1561,51 @@ int main(int argc, char** argv) {
         yume::util::set_logging_enabled(false);
         std::cerr << "\033[1;33mANONYM MODE ACTIVE — logging disabled (only critical notices will show)\033[0m\n";
     }
+    if (!cfg.anonym) {
+        if (cfg.anonym_certfp.empty() && !cfg.tls_cert.empty()) {
+            try {
+                cfg.anonym_certfp = cert_fingerprint_sha256(cfg.tls_cert);
+            } catch (const std::exception& ex) {
+                yume::util::log_warn(std::string("failed to compute cert fingerprint for PQ signing: ") + ex.what());
+            }
+        }
+        std::string pq_public_path;
+        if (cfg.inner_crypto && !cfg.pq_private_key.empty()) {
+            pq_public_path = derive_pq_public_path(cfg.pq_private_key);
+        }
+        if (!pq_public_path.empty() && cfg.pq_pub_b64.empty()) {
+            std::string pq_pub_b64;
+            if (load_pq_public_b64(pq_public_path, &pq_pub_b64)) {
+                std::string pq_sign_key;
+                if (!cfg.anonym_sub_key.empty() && !cfg.anonym_sub_cert.empty()) {
+                    pq_sign_key = cfg.anonym_sub_key;
+                    if (cfg.anonym_sub_cert_b64.empty()) {
+                        try {
+                            std::string sub_pem = read_file_bytes(cfg.anonym_sub_cert);
+                            cfg.anonym_sub_cert_b64 = yume::util::base64_encode(sub_pem);
+                        } catch (const std::exception& ex) {
+                            yume::util::log_warn(std::string("failed to read anonym_sub_cert: ") + ex.what());
+                        }
+                    }
+                }
+                if (pq_sign_key.empty() && !cfg.anonym_ca_key.empty()) {
+                    pq_sign_key = cfg.anonym_ca_key;
+                }
+                if (cfg.anonym_certfp.empty()) {
+                    yume::util::log_warn("PQ OTA disabled: TLS cert fingerprint missing");
+                } else if (pq_sign_key.empty()) {
+                    yume::util::log_warn("PQ OTA disabled: anonym_sub_key/anonym_ca_key not set");
+                } else if (!sign_pq_pub_with_key(pq_pub_b64, cfg.anonym_certfp, pq_sign_key,
+                                                 &cfg.pq_sig, &cfg.pq_alg)) {
+                    yume::util::log_warn("PQ OTA disabled: pq public key signing failed");
+                } else {
+                    cfg.pq_pub_b64 = pq_pub_b64;
+                }
+            } else {
+                yume::util::log_warn("PQ public key not readable; OTA PQ disabled");
+            }
+        }
+    }
 
     boost::asio::io_context io;
     yume::server::Manager manager(io, cfg);

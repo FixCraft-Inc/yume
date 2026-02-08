@@ -1406,6 +1406,7 @@ int Cli::run(int argc, char** argv) {
             bool inner_disabled_for_session = false;
             bool pq_need_key = false;
             bool pq_not_supported = false;
+            std::string inner_disable_reason;
             if (inner_cfg.enabled) {
                 try {
                     auto hs = inner::client_prepare(inner_cfg, cfg.inner_heavy);
@@ -1430,9 +1431,13 @@ int Cli::run(int argc, char** argv) {
                     if (msg.find("PQ public key not configured") != std::string::npos) {
                         pq_need_key = true;
                         inner_disabled_for_session = true;
+                        inner_disable_reason =
+                            "inner crypto disabled: PQ public key not configured (use --pq-pub or place pq_public.key next to the executable)";
                     } else if (msg.find("ML-KEM-768 support is not enabled") != std::string::npos) {
                         pq_not_supported = true;
                         inner_disabled_for_session = true;
+                        inner_disable_reason =
+                            "inner crypto disabled: PQ not supported in this build (rebuild with liboqs/BaseFWX PQ enabled)";
                     } else {
                         throw;
                     }
@@ -1453,6 +1458,10 @@ int Cli::run(int argc, char** argv) {
             bool pq_reconnect = false;
             bool have_anon = false;
             bool verity_ok = false;
+            crypto::EVP_PKEY_ptr sub_pub{nullptr, EVP_PKEY_free};
+            crypto::EVP_PKEY_ptr ca_pub{nullptr, EVP_PKEY_free};
+            bool sub_ok = false;
+            bool ca_ok = false;
             bool have_inner_caps = false;
             bool server_inner_supported = false;
             bool server_inner_required = false;
@@ -1553,9 +1562,128 @@ int Cli::run(int argc, char** argv) {
                 }
                 std::cout << "\033[1;32m" << out << "\033[0m" << std::endl;
             };
+            auto maybe_auto_trust_pq = [&](bool allow_bootstrap) {
+                if (!allow_bootstrap || pq_pub_b64.empty()) {
+                    return;
+                }
+                if (certfp.empty()) {
+                    util::log_warn("pq_pub provided but certfp missing; refusing PQ auto-trust");
+                    return;
+                }
+                if (pq_sig.empty()) {
+                    util::log_warn("pq_pub provided but pq_sig missing; refusing PQ auto-trust");
+                    return;
+                }
+                std::string peer_fp = get_peer_cert_fingerprint(nullptr, stream.native_handle());
+                if (!peer_fp.empty() && peer_fp != certfp) {
+                    util::log_warn("pq_pub cert fingerprint mismatch; refusing PQ auto-trust");
+                    return;
+                }
+                if (!sub_ok && !sub_cert_b64.empty()) {
+                    if (cfg.anonym_ca_cert.empty()) {
+                        util::log_warn("pq_pub provided with sub_cert but no --anonym-ca-cert set");
+                    } else {
+                        std::string sub_pem = util::base64_decode(sub_cert_b64);
+                        auto sub_cert = load_cert_from_pem(sub_pem);
+                        auto ca_cert = load_cert_from_file(cfg.anonym_ca_cert);
+                        if (!sub_cert || !ca_cert) {
+                            util::log_warn("pq_pub sub_cert parse failed; refusing PQ auto-trust");
+                        } else if (!is_cert_time_valid(sub_cert.get())) {
+                            util::log_warn("pq_pub sub_cert expired; refusing PQ auto-trust");
+                        } else if (!verify_cert_signed_by_ca(sub_cert.get(), ca_cert.get())) {
+                            util::log_warn("pq_pub sub_cert not signed by CA; refusing PQ auto-trust");
+                        } else {
+                            sub_pub = load_pubkey_from_cert(sub_pem);
+                            sub_ok = static_cast<bool>(sub_pub);
+                        }
+                    }
+                }
+                if (!ca_ok && !cfg.anonym_ca_cert.empty()) {
+                    ca_pub = load_pubkey_from_cert(cfg.anonym_ca_cert);
+                    ca_ok = static_cast<bool>(ca_pub);
+                }
+                EVP_PKEY* pq_key = sub_ok ? sub_pub.get() : (ca_ok ? ca_pub.get() : nullptr);
+                if (!pq_key) {
+                    util::log_warn("pq_pub provided but no verified CA/sub cert available; refusing PQ auto-trust");
+                    return;
+                }
+                std::string pq_msg = std::string(kPqMsgPrefix) + pq_pub_b64 + ":" + certfp;
+                crypto::Bytes pq_msg_bytes(pq_msg.begin(), pq_msg.end());
+                std::string pq_sig_raw = util::base64_decode(pq_sig);
+                if (pq_sig_raw.empty()) {
+                    util::log_warn("pq_sig invalid base64; refusing PQ auto-trust");
+                    return;
+                }
+                crypto::Bytes pq_sig_bytes(pq_sig_raw.begin(), pq_sig_raw.end());
+                bool ok_pq = crypto::verify_key(pq_key, pq_msg_bytes, pq_sig_bytes);
+                if (!ok_pq) {
+                    util::log_warn("pq_pub signature invalid; refusing PQ auto-trust");
+                    return;
+                }
+                std::string pq_raw = util::base64_decode(pq_pub_b64);
+                if (pq_raw.empty()) {
+                    util::log_warn("pq_pub decode failed; refusing PQ auto-trust");
+                    return;
+                }
+                std::string target_path = cfg.pq_public_key;
+                if (target_path.empty()) {
+                    const char* home = std::getenv("HOME");
+                    if (home && *home) {
+                        std::filesystem::path p = std::filesystem::path(home) / ".config" / "yume" / "pq_public.key";
+                        target_path = p.string();
+                    } else {
+                        std::filesystem::path tmp;
+                        try {
+                            tmp = std::filesystem::temp_directory_path();
+                        } catch (...) {
+                            tmp = ".";
+                        }
+                        target_path = (tmp / "yume" / "pq_public.key").string();
+                    }
+                }
+                if (target_path.empty()) {
+                    util::log_warn("pq_pub verified but no output path available");
+                    return;
+                }
+                bool pq_changed = true;
+                std::string existing;
+                std::string read_err;
+                if (read_file_bytes(target_path, &existing, &read_err)) {
+                    pq_changed = (existing != pq_raw);
+                }
+                std::string err;
+                if (!pq_changed || write_file_bytes(target_path, pq_raw, &err)) {
+                    if (cfg.pq_public_key.empty()) {
+                        cfg.pq_public_key = target_path;
+                    }
+                    if (pq_changed) {
+                        util::log_info("stored pq_public.key from server at " + target_path);
+                    }
+                    if (cfg.inner_crypto && !pq_not_supported && !pq_reconnect_used &&
+                        (pq_need_key || pq_changed)) {
+                        pq_reconnect = true;
+                        pq_reconnect_used = true;
+                    }
+                } else {
+                    util::log_warn("failed to store pq_public.key: " + err);
+                }
+            };
+            bool allow_pq_bootstrap = server_error.empty() ||
+                                      server_error.find("requires inner") != std::string::npos;
+            maybe_auto_trust_pq(allow_pq_bootstrap);
 
             if (!server_error.empty()) {
+                if (pq_reconnect) {
+                    util::log_info("PQ public key received; reconnecting to enable inner crypto");
+                    attempt++;
+                    continue;
+                }
                 print_red(server_error);
+                if (inner_disabled_for_session &&
+                    server_error.find("requires inner") != std::string::npos &&
+                    !inner_disable_reason.empty()) {
+                    print_red(inner_disable_reason);
+                }
                 return 1;
             }
             if (server_version != yume::kVersion) {
@@ -1630,10 +1758,6 @@ int Cli::run(int argc, char** argv) {
             }
 
             if (mode == "anonym") {
-                crypto::EVP_PKEY_ptr sub_pub{nullptr, EVP_PKEY_free};
-                crypto::EVP_PKEY_ptr ca_pub{nullptr, EVP_PKEY_free};
-                bool sub_ok = false;
-                bool ca_ok = false;
                 if (hash.empty() || sig.empty() || ts.empty() || nonce.empty()) {
                     print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
                     print_red("ANONYM PROOF IS INCOMPLETE");
@@ -1819,79 +1943,6 @@ int Cli::run(int argc, char** argv) {
                     verified_once = true;
                 } else {
                     print_green("Server Verified");
-                }
-                if (!pq_pub_b64.empty()) {
-                    if (certfp.empty()) {
-                        util::log_warn("pq_pub provided but certfp missing; refusing PQ auto-trust");
-                    } else if (pq_sig.empty()) {
-                        util::log_warn("pq_pub provided but pq_sig missing; refusing PQ auto-trust");
-                    } else {
-                        EVP_PKEY* pq_key = sub_ok ? sub_pub.get() : (ca_ok ? ca_pub.get() : nullptr);
-                        if (!pq_key) {
-                            util::log_warn("pq_pub provided but no verified CA/sub cert available; refusing PQ auto-trust");
-                        } else {
-                            std::string pq_msg = std::string(kPqMsgPrefix) + pq_pub_b64 + ":" + certfp;
-                            crypto::Bytes pq_msg_bytes(pq_msg.begin(), pq_msg.end());
-                            std::string pq_sig_raw = util::base64_decode(pq_sig);
-                            if (pq_sig_raw.empty()) {
-                                util::log_warn("pq_sig invalid base64; refusing PQ auto-trust");
-                            } else {
-                                crypto::Bytes pq_sig_bytes(pq_sig_raw.begin(), pq_sig_raw.end());
-                                bool ok_pq = crypto::verify_key(pq_key, pq_msg_bytes, pq_sig_bytes);
-                                if (!ok_pq) {
-                                    util::log_warn("pq_pub signature invalid; refusing PQ auto-trust");
-                                } else {
-                                    std::string pq_raw = util::base64_decode(pq_pub_b64);
-                                    if (pq_raw.empty()) {
-                                        util::log_warn("pq_pub decode failed; refusing PQ auto-trust");
-                                    } else {
-                                        std::string target_path = cfg.pq_public_key;
-                                        if (target_path.empty()) {
-                                            const char* home = std::getenv("HOME");
-                                            if (home && *home) {
-                                                std::filesystem::path p = std::filesystem::path(home) / ".config" / "yume" / "pq_public.key";
-                                                target_path = p.string();
-                                            } else {
-                                                std::filesystem::path tmp;
-                                                try {
-                                                    tmp = std::filesystem::temp_directory_path();
-                                                } catch (...) {
-                                                    tmp = ".";
-                                                }
-                                                target_path = (tmp / "yume" / "pq_public.key").string();
-                                            }
-                                        }
-                                        if (!target_path.empty()) {
-                                            bool pq_changed = true;
-                                            std::string existing;
-                                            std::string read_err;
-                                            if (read_file_bytes(target_path, &existing, &read_err)) {
-                                                pq_changed = (existing != pq_raw);
-                                            }
-                                            std::string err;
-                                            if (!pq_changed || write_file_bytes(target_path, pq_raw, &err)) {
-                                                if (cfg.pq_public_key.empty()) {
-                                                    cfg.pq_public_key = target_path;
-                                                }
-                                                if (pq_changed) {
-                                                    util::log_info("stored pq_public.key from server at " + target_path);
-                                                }
-                                                if (cfg.inner_crypto && !pq_not_supported && !pq_reconnect_used &&
-                                                    (pq_need_key || pq_changed)) {
-                                                    pq_reconnect = true;
-                                                    pq_reconnect_used = true;
-                                                }
-                                            } else {
-                                                util::log_warn("failed to store pq_public.key: " + err);
-                                            }
-                                        } else {
-                                            util::log_warn("pq_pub verified but no output path available");
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
                 }
             } else {
                 if (cfg.require_anonym) {
@@ -2144,7 +2195,7 @@ int Cli::run(int argc, char** argv) {
             });
             tunnel->start();
             std::thread hop_status_thread;
-            if (!cfg.non_interactive) {
+            if (!cfg.non_interactive && hop_enabled) {
                 hop_status_thread = std::thread([hop_status_stop, hop_enabled, hop_interval_ms, hop_offset_ms]() {
                     auto color_wrap = [](const std::string& text, const char* code) {
                         return std::string("\033[") + code + "m" + text + "\033[0m";

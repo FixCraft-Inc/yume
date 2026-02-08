@@ -479,16 +479,31 @@ void Session::handle_frame(const protocol::Frame& frame) {
             return;
         }
 
-        if (!handle_auth(frame)) {
-            util::log_warn("session " + std::to_string(session_id_) + ": auth failed");
-            std::string reason = auth_error_.empty() ? "access denied: invalid key" : auth_error_;
-            nlohmann::json anon_error = {
-                {"error", reason},
-                {"version", yume::kVersion}
-            };
-            std::string payload_str = anon_error.dump();
-            crypto::Bytes payload(payload_str.begin(), payload_str.end());
-            protocol::Frame anon_frame{{static_cast<uint32_t>(payload.size()), protocol::ANON, 0, 0}, payload};
+            if (!handle_auth(frame)) {
+                util::log_warn("session " + std::to_string(session_id_) + ": auth failed");
+                std::string reason = auth_error_.empty() ? "access denied: invalid key" : auth_error_;
+                nlohmann::json anon_error = {
+                    {"error", reason},
+                    {"version", yume::kVersion}
+                };
+                if (!cfg_.anonym_certfp.empty()) {
+                    anon_error["certfp"] = cfg_.anonym_certfp;
+                }
+                if (!cfg_.anonym_sub_cert_b64.empty()) {
+                    anon_error["sub_cert"] = cfg_.anonym_sub_cert_b64;
+                }
+                if (!cfg_.pq_pub_b64.empty()) {
+                    anon_error["pq_pub"] = cfg_.pq_pub_b64;
+                }
+                if (!cfg_.pq_sig.empty()) {
+                    anon_error["pq_sig"] = cfg_.pq_sig;
+                }
+                if (!cfg_.pq_alg.empty()) {
+                    anon_error["pq_alg"] = cfg_.pq_alg;
+                }
+                std::string payload_str = anon_error.dump();
+                crypto::Bytes payload(payload_str.begin(), payload_str.end());
+                protocol::Frame anon_frame{{static_cast<uint32_t>(payload.size()), protocol::ANON, 0, 0}, payload};
             async_write_frame(anon_frame, [self = shared_from_this()](const boost::system::error_code& ec, std::size_t) {
                 self->close();
             });

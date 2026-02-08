@@ -6,11 +6,13 @@
 
 #include "core/inner_crypto.hpp"
 
-#include <fstream>
-#include <stdexcept>
-#include <filesystem>
+#include <cctype>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <limits>
+#include <stdexcept>
+#include <string>
 
 #if !defined(_WIN32)
 #include <sys/stat.h>
@@ -148,12 +150,12 @@ std::uint32_t argon2_memory_cost() {
 std::uint32_t argon2_parallelism() {
     const char* raw = std::getenv("YUME_ARGON2_PAR");
     if (!raw || !*raw) {
-        return basefwx::constants::DefaultHeavyArgon2Parallelism();
+        return basefwx::constants::kHeavyArgon2Parallelism;
     }
     try {
         unsigned long long parsed = std::stoull(raw);
         if (parsed == 0) {
-            return basefwx::constants::DefaultHeavyArgon2Parallelism();
+            return basefwx::constants::kHeavyArgon2Parallelism;
         }
         if (parsed > std::numeric_limits<std::uint32_t>::max()) {
             return std::numeric_limits<std::uint32_t>::max();
@@ -180,16 +182,50 @@ Bytes derive_key_heavy(const Bytes& shared, const Bytes& salt) {
     throw std::runtime_error("inner crypto not available: BaseFWX disabled");
 #else
 #if defined(BASEFWX_HAS_ARGON2) && BASEFWX_HAS_ARGON2
+    auto is_oom = [](const std::string& msg) {
+        std::string lowered;
+        lowered.reserve(msg.size());
+        for (unsigned char c : msg) {
+            lowered.push_back(static_cast<char>(std::tolower(c)));
+        }
+        if (lowered.find("out of memory") != std::string::npos) {
+            return true;
+        }
+        if (lowered.find("insufficient memory") != std::string::npos) {
+            return true;
+        }
+        if (lowered.find("allocation") != std::string::npos) {
+            return true;
+        }
+        if (lowered.find("memory cost is too large") != std::string::npos) {
+            return true;
+        }
+        return false;
+    };
+
     std::string password(reinterpret_cast<const char*>(shared.data()), shared.size());
-    return basefwx::crypto::Argon2idHashRaw(password,
-                                           salt,
-                                           argon2_time_cost(),
-                                           argon2_memory_cost(),
-                                           argon2_parallelism(),
-                                           32);
+    try {
+        return basefwx::crypto::Argon2idHashRaw(password,
+                                                salt,
+                                                argon2_time_cost(),
+                                                argon2_memory_cost(),
+                                                argon2_parallelism(),
+                                                32);
+    } catch (const std::exception& ex) {
+        if (!is_oom(ex.what())) {
+            throw;
+        }
+        return basefwx::crypto::Pbkdf2HmacSha256(password,
+                                                 salt,
+                                                 basefwx::constants::HeavyPbkdf2Iterations(),
+                                                 32);
+    }
 #else
-    Bytes material = basefwx::crypto::HmacSha256(salt, shared);
-    return basefwx::crypto::HkdfSha256(material, kHkdfInfo, 32);
+    std::string password(reinterpret_cast<const char*>(shared.data()), shared.size());
+    return basefwx::crypto::Pbkdf2HmacSha256(password,
+                                             salt,
+                                             basefwx::constants::HeavyPbkdf2Iterations(),
+                                             32);
 #endif
 #endif
 }

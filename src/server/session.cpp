@@ -17,6 +17,7 @@
 
 #include "core/inner_crypto.hpp"
 #include "core/protocol.hpp"
+#include "core/version.hpp"
 #include "server/auth.hpp"
 #include "util.hpp"
 #include <nlohmann/json.hpp>
@@ -480,7 +481,17 @@ void Session::handle_frame(const protocol::Frame& frame) {
 
         if (!handle_auth(frame)) {
             util::log_warn("session " + std::to_string(session_id_) + ": auth failed");
-            close();
+            std::string reason = auth_error_.empty() ? "access denied: invalid key" : auth_error_;
+            nlohmann::json anon_error = {
+                {"error", reason},
+                {"version", yume::kVersion}
+            };
+            std::string payload_str = anon_error.dump();
+            crypto::Bytes payload(payload_str.begin(), payload_str.end());
+            protocol::Frame anon_frame{{static_cast<uint32_t>(payload.size()), protocol::ANON, 0, 0}, payload};
+            async_write_frame(anon_frame, [self = shared_from_this()](const boost::system::error_code& ec, std::size_t) {
+                self->close();
+            });
             return;
         }
 
@@ -489,6 +500,7 @@ void Session::handle_frame(const protocol::Frame& frame) {
             util::log_info("session " + std::to_string(session_id_) + ": authenticated");
         }
         nlohmann::json anon = {
+            {"version", yume::kVersion},
             {"mode", cfg_.anonym ? "anonym" : "normal"},
             {"hash", cfg_.anonym_hash},
             {"sig", cfg_.anonym_sig},
@@ -575,6 +587,7 @@ void Session::handle_frame(const protocol::Frame& frame) {
 }
 
 bool Session::handle_auth(const protocol::Frame& frame) {
+    auth_error_.clear();
     try {
         size_t offset = 0;
         crypto::Bytes pub_pem = read_field(frame.payload, offset);
@@ -590,11 +603,13 @@ bool Session::handle_auth(const protocol::Frame& frame) {
 
         BIO* pub_bio = BIO_new_mem_buf(pub_pem.data(), static_cast<int>(pub_pem.size()));
         if (!pub_bio) {
+            auth_error_ = "access denied: invalid key";
             return false;
         }
         EVP_PKEY* pubkey = PEM_read_bio_PUBKEY(pub_bio, nullptr, nullptr, nullptr);
         BIO_free(pub_bio);
         if (!pubkey) {
+            auth_error_ = "access denied: invalid key";
             return false;
         }
 
@@ -605,6 +620,11 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         EVP_PKEY_free(pubkey);
 
         if (!sig_ok || !auth_ok) {
+            if (!sig_ok) {
+                auth_error_ = "access denied: bad signature";
+            } else {
+                auth_error_ = "access denied: invalid key";
+            }
             return false;
         }
 
@@ -620,6 +640,7 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                 auto derived = inner::server_derive_key(inner_cfg, *pq_ciphertext, *pq_salt, cfg_.inner_heavy);
                 if (!derived.has_value() || derived->empty()) {
                     util::log_warn("session " + std::to_string(session_id_) + ": PQ key derivation failed");
+                    auth_error_ = "access denied: pq key derivation failed";
                     return false;
                 }
                 inner_key_ = *derived;
@@ -631,6 +652,7 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         }
         return true;
     } catch (const std::exception&) {
+        auth_error_ = "access denied: invalid key";
         return false;
     }
 }

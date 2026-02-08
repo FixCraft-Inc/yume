@@ -1502,6 +1502,87 @@ copy_build_outputs() {
   cp -f "${yumed_src}" "${outdir}/yumed${exe_suffix}"
 }
 
+copy_mingw_runtime_dlls() {
+  local outdir="$1"
+  local gcc_bin="x86_64-w64-mingw32-g++"
+  local thread_model=""
+  if command -v "${gcc_bin}" >/dev/null 2>&1; then
+    thread_model="$("${gcc_bin}" -v 2>&1 | awk -F': ' '/Thread model/ {print $2}')"
+  fi
+  local search_dirs=()
+  if [[ "${thread_model}" == "posix" ]]; then
+    search_dirs=(/usr/lib/gcc/x86_64-w64-mingw32/*-posix /usr/lib/gcc/x86_64-w64-mingw32/*-win32)
+  elif [[ "${thread_model}" == "win32" ]]; then
+    search_dirs=(/usr/lib/gcc/x86_64-w64-mingw32/*-win32 /usr/lib/gcc/x86_64-w64-mingw32/*-posix)
+  else
+    search_dirs=(/usr/lib/gcc/x86_64-w64-mingw32/*)
+  fi
+
+  local dlls=(libgcc_s_seh-1.dll libstdc++-6.dll)
+  for dll in "${dlls[@]}"; do
+    local found=""
+    for dir in "${search_dirs[@]}"; do
+      for path in "${dir}"/"${dll}"; do
+        if [[ -f "${path}" ]]; then
+          found="${path}"
+          break
+        fi
+      done
+      [[ -n "${found}" ]] && break
+    done
+    if [[ -n "${found}" ]]; then
+      cp -f "${found}" "${outdir}/" || true
+    else
+      echo "Warning: ${dll} not found in ${search_dirs[*]}" >&2
+    fi
+  done
+
+  local winpthread="/usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll"
+  if [[ -f "${winpthread}" ]]; then
+    cp -f "${winpthread}" "${outdir}/" || true
+  else
+    echo "Warning: libwinpthread-1.dll not found at ${winpthread}" >&2
+  fi
+}
+
+write_windows_install_cmd() {
+  local outdir="$1"
+  cat > "${outdir}/install.cmd" <<'EOF'
+@echo off
+setlocal enabledelayedexpansion
+
+net session >nul 2>&1
+if not %errorlevel%==0 (
+  echo Please run this as Administrator.
+  pause
+  exit /b 1
+)
+
+set "SRC=%~dp0"
+set "DEST=%ProgramFiles%\Yume\bin"
+
+if not exist "%DEST%" mkdir "%DEST%"
+
+for %%F in ("%SRC%yume.exe" "%SRC%yumed.exe") do (
+  if exist "%%~fF" copy /Y "%%~fF" "%DEST%\" >nul
+)
+
+for %%D in ("%SRC%*.dll") do (
+  copy /Y "%%~fD" "%DEST%\" >nul
+)
+
+for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "[Environment]::GetEnvironmentVariable('Path','Machine')"`) do set "PATHM=%%P"
+echo %PATHM% | find /I "%DEST%" >nul
+if errorlevel 1 (
+  powershell -NoProfile -Command "[Environment]::SetEnvironmentVariable('Path', ($env:Path + ';%DEST%'), 'Machine')"
+)
+
+echo Installed to: %DEST%
+echo If a terminal is already open, restart it to pick up PATH changes.
+pause
+EOF
+}
+
 build_windows_cross_target() {
   local variant="$1"
   local outdir="$2"
@@ -1611,7 +1692,10 @@ EOF
   cp -f build/bin/yumed.exe "${outdir}/yumed.exe"
   if [[ "${triplet}" == *"dynamic"* ]]; then
     cp -f "${vcpkg_root}/installed/${triplet}/bin/"*.dll "${outdir}/" 2>/dev/null || true
+    cp -f "${vcpkg_root}/installed/${triplet}/debug/bin/"*.dll "${outdir}/" 2>/dev/null || true
+    copy_mingw_runtime_dlls "${outdir}"
   fi
+  write_windows_install_cmd "${outdir}"
 }
 
 build_macos_cross_target() {

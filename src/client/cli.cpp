@@ -43,6 +43,7 @@
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
+#include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
@@ -56,6 +57,7 @@
 #include "core/inner_crypto.hpp"
 #include "core/obfs.hpp"
 #include "core/protocol.hpp"
+#include "core/version.hpp"
 #include "util.hpp"
 #include <nlohmann/json.hpp>
 
@@ -367,6 +369,55 @@ bool is_cert_time_valid(X509* cert) {
         return false;
     }
     if (X509_cmp_time(not_after, nullptr) < 0) {
+        return false;
+    }
+    return true;
+}
+
+std::string describe_verify_result(long code, const std::string& host) {
+    if (code == X509_V_OK) {
+        return {};
+    }
+    switch (code) {
+        case X509_V_ERR_HOSTNAME_MISMATCH:
+            return "hostname mismatch (" + host + ")";
+#ifdef X509_V_ERR_IP_ADDRESS_MISMATCH
+        case X509_V_ERR_IP_ADDRESS_MISMATCH:
+            return "IP address mismatch (" + host + ")";
+#endif
+        case X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY:
+            return "issuer CA not found";
+        case X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT:
+            return "self-signed leaf certificate";
+        case X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN:
+            return "self-signed certificate in chain";
+        case X509_V_ERR_CERT_HAS_EXPIRED:
+            return "certificate expired";
+        case X509_V_ERR_CERT_NOT_YET_VALID:
+            return "certificate not yet valid";
+        default:
+            return X509_verify_cert_error_string(code);
+    }
+}
+
+std::string describe_openssl_error() {
+    unsigned long err = ERR_peek_last_error();
+    if (!err) {
+        return {};
+    }
+    char buf[256];
+    ERR_error_string_n(err, buf, sizeof(buf));
+    return buf;
+}
+
+bool file_exists(const std::string& path);
+
+bool require_file(const char* label, const std::string& path) {
+    if (path.empty()) {
+        return true;
+    }
+    if (!file_exists(path)) {
+        util::log_error(std::string(label) + " not found: " + path);
         return false;
     }
     return true;
@@ -896,6 +947,24 @@ int Cli::run(int argc, char** argv) {
         print_help();
         return 0;
     }
+    std::string exe_dir;
+    {
+        std::string self_path = get_self_path(argv[0]);
+        if (!self_path.empty()) {
+            exe_dir = std::filesystem::path(self_path).parent_path().string();
+        }
+    }
+    std::string config_dir;
+    args.config_path = util::expand_user(args.config_path);
+    if (!args.config_specified && !exe_dir.empty()) {
+        std::filesystem::path cfg_path(args.config_path);
+        if (!std::filesystem::exists(cfg_path)) {
+            std::filesystem::path cand = std::filesystem::path(exe_dir) / cfg_path;
+            if (std::filesystem::exists(cand)) {
+                args.config_path = cand.string();
+            }
+        }
+    }
     ClientConfig cfg;
     if (file_exists(kDefaultAnonymCaCertPath)) {
         cfg.anonym_ca_cert = kDefaultAnonymCaCertPath;
@@ -927,6 +996,16 @@ int Cli::run(int argc, char** argv) {
 
     if (args.config_specified || std::filesystem::exists(args.config_path)) {
         try {
+            std::error_code ec;
+            auto cfg_abs = std::filesystem::absolute(args.config_path, ec);
+            if (!ec) {
+                config_dir = cfg_abs.parent_path().string();
+            } else {
+                config_dir = std::filesystem::path(args.config_path).parent_path().string();
+            }
+            auto resolve_cfg_path = [&](const std::string& value) {
+                return util::resolve_path(value, config_dir, exe_dir);
+            };
             auto json = util::read_json_config(args.config_path);
             if (json.contains("server") && cfg.server.empty()) {
                 cfg.server = json["server"].get<std::string>();
@@ -935,7 +1014,7 @@ int Cli::run(int argc, char** argv) {
                 cfg.port = json["port"].get<int>();
             }
             if (json.contains("identity") && cfg.identity.empty()) {
-                cfg.identity = util::expand_user(json["identity"].get<std::string>());
+                cfg.identity = resolve_cfg_path(json["identity"].get<std::string>());
             }
             if (json.contains("socks_port") && cfg.socks_port == 0) {
                 cfg.socks_port = json["socks_port"].get<int>();
@@ -965,16 +1044,16 @@ int Cli::run(int argc, char** argv) {
                 cfg.allow_exec = json["allow_exec"].get<bool>();
             }
             if (json.contains("pq_public_key") && cfg.pq_public_key.empty()) {
-                cfg.pq_public_key = util::expand_user(json["pq_public_key"].get<std::string>());
+                cfg.pq_public_key = resolve_cfg_path(json["pq_public_key"].get<std::string>());
             }
             if (json.contains("anonym_pubkey") && cfg.anonym_pubkey.empty()) {
-                cfg.anonym_pubkey = util::expand_user(json["anonym_pubkey"].get<std::string>());
+                cfg.anonym_pubkey = resolve_cfg_path(json["anonym_pubkey"].get<std::string>());
             }
             if (json.contains("anonym_ca_cert")) {
-                cfg.anonym_ca_cert = util::expand_user(json["anonym_ca_cert"].get<std::string>());
+                cfg.anonym_ca_cert = resolve_cfg_path(json["anonym_ca_cert"].get<std::string>());
             }
             if (json.contains("tls_ca_cert") && cfg.tls_ca_cert.empty()) {
-                cfg.tls_ca_cert = util::expand_user(json["tls_ca_cert"].get<std::string>());
+                cfg.tls_ca_cert = resolve_cfg_path(json["tls_ca_cert"].get<std::string>());
             }
             if (json.contains("tls_pin") && cfg.tls_pin_sha256.empty()) {
                 cfg.tls_pin_sha256 = json["tls_pin"].get<std::string>();
@@ -997,7 +1076,7 @@ int Cli::run(int argc, char** argv) {
         cfg.port = args.port;
     }
     if (!args.identity.empty()) {
-        cfg.identity = util::expand_user(args.identity);
+        cfg.identity = util::resolve_path(args.identity, config_dir, exe_dir);
     }
     if (args.socks_port > 0) {
         cfg.socks_port = args.socks_port;
@@ -1012,13 +1091,13 @@ int Cli::run(int argc, char** argv) {
         cfg.inner_heavy = args.inner_heavy;
     }
     if (!args.pq_public_key.empty()) {
-        cfg.pq_public_key = util::expand_user(args.pq_public_key);
+        cfg.pq_public_key = util::resolve_path(args.pq_public_key, config_dir, exe_dir);
     }
     if (!args.anonym_ca_cert.empty()) {
-        cfg.anonym_ca_cert = util::expand_user(args.anonym_ca_cert);
+        cfg.anonym_ca_cert = util::resolve_path(args.anonym_ca_cert, config_dir, exe_dir);
     }
     if (!args.tls_ca_cert.empty()) {
-        cfg.tls_ca_cert = util::expand_user(args.tls_ca_cert);
+        cfg.tls_ca_cert = util::resolve_path(args.tls_ca_cert, config_dir, exe_dir);
     }
     if (!args.tls_pin_sha256.empty()) {
         cfg.tls_pin_sha256 = args.tls_pin_sha256;
@@ -1040,6 +1119,23 @@ int Cli::run(int argc, char** argv) {
     }
     if (args.boring_override) {
         cfg.boring = args.boring;
+    }
+#if defined(_WIN32) || defined(__APPLE__)
+    if (cfg.tls_ca_cert.empty() && !cfg.anonym_ca_cert.empty()) {
+        cfg.tls_ca_cert = cfg.anonym_ca_cert;
+    }
+#endif
+    if (!require_file("identity", cfg.identity)) {
+        return 1;
+    }
+    if (!require_file("tls_ca_cert", cfg.tls_ca_cert)) {
+        return 1;
+    }
+    if (!require_file("anonym_ca_cert", cfg.anonym_ca_cert)) {
+        return 1;
+    }
+    if (!require_file("pq_public_key", cfg.pq_public_key)) {
+        return 1;
     }
     if ((args.control_mode || args.list_controlled) && args.server.empty()) {
         cfg.server = "127.0.0.1";
@@ -1125,11 +1221,6 @@ int Cli::run(int argc, char** argv) {
         print_help();
         return 1;
     }
-    if (!file_exists(cfg.identity)) {
-        util::log_error("identity key not found: " + cfg.identity);
-        return 1;
-    }
-
     int attempt = 0;
     bool pq_warned = false;
     bool pq_reconnect_used = false;
@@ -1155,7 +1246,21 @@ int Cli::run(int argc, char** argv) {
             }
             SSL_set_tlsext_host_name(stream.native_handle(), cfg.server.c_str());
             SSL_set1_host(stream.native_handle(), cfg.server.c_str());
-            stream.handshake(boost::asio::ssl::stream_base::client);
+            boost::system::error_code hs_ec;
+            stream.handshake(boost::asio::ssl::stream_base::client, hs_ec);
+            if (hs_ec) {
+                long vr = SSL_get_verify_result(stream.native_handle());
+                std::string detail = describe_verify_result(vr, cfg.server);
+                std::string ssl_detail = describe_openssl_error();
+                std::string msg = "TLS handshake failed: " + hs_ec.message();
+                if (!detail.empty()) {
+                    msg += " (" + detail + ")";
+                }
+                if (!ssl_detail.empty()) {
+                    msg += " [" + ssl_detail + "]";
+                }
+                throw std::runtime_error(msg);
+            }
             if (!cfg.tls_pin_sha256.empty()) {
                 std::string fp = get_peer_cert_fingerprint(nullptr, stream.native_handle());
                 if (fp.empty() || fp != cfg.tls_pin_sha256) {
@@ -1204,6 +1309,8 @@ int Cli::run(int argc, char** argv) {
         if (anon_frame.header.type == protocol::ANON) {
             std::string payload(anon_frame.payload.begin(), anon_frame.payload.end());
             auto json = nlohmann::json::parse(payload);
+            std::string server_version = json.value("version", "UNKNOWN");
+            std::string server_error = json.value("error", "");
             std::string mode = json.value("mode", "normal");
             std::string hash = json.value("hash", "");
             std::string sig = json.value("sig", "");
@@ -1251,6 +1358,16 @@ int Cli::run(int argc, char** argv) {
                 }
                 std::cout << "\033[1;32m" << out << "\033[0m" << std::endl;
             };
+
+            if (!server_error.empty()) {
+                print_red(server_error);
+                return 1;
+            }
+            if (server_version != yume::kVersion) {
+                print_red("server is version " + server_version + ", you are " + std::string(yume::kVersion) +
+                          ", please install a matching version to connect to this server");
+                return 1;
+            }
 
             if (mode == "anonym") {
                 crypto::EVP_PKEY_ptr sub_pub{nullptr, EVP_PKEY_free};

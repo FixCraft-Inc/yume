@@ -754,6 +754,36 @@ int main(int argc, char** argv) {
             cfg.boring = true;
         }
     }
+    std::string exe_dir;
+    {
+        std::string self_path = get_self_path(argv[0]);
+        if (!self_path.empty()) {
+            exe_dir = std::filesystem::path(self_path).parent_path().string();
+        }
+    }
+    config_path = yume::util::expand_user(config_path);
+    if (!config_specified && !exe_dir.empty()) {
+        std::filesystem::path cfg_path(config_path);
+        if (!std::filesystem::exists(cfg_path)) {
+            std::filesystem::path cand = std::filesystem::path(exe_dir) / cfg_path;
+            if (std::filesystem::exists(cand)) {
+                config_path = cand.string();
+            }
+        }
+    }
+    std::string config_dir;
+    if (config_specified || std::filesystem::exists(config_path)) {
+        std::error_code ec;
+        auto cfg_abs = std::filesystem::absolute(config_path, ec);
+        if (!ec) {
+            config_dir = cfg_abs.parent_path().string();
+        } else {
+            config_dir = std::filesystem::path(config_path).parent_path().string();
+        }
+    }
+    auto resolve_cfg_path = [&](const std::string& value) {
+        return yume::util::resolve_path(value, config_dir, exe_dir);
+    };
 
     if (config_specified || std::filesystem::exists(config_path)) {
         try {
@@ -765,17 +795,17 @@ int main(int argc, char** argv) {
             }
             if (json.contains("tls_cert")) {
                 if (cfg.tls_cert.empty()) {
-                    cfg.tls_cert = json["tls_cert"].get<std::string>();
+                    cfg.tls_cert = resolve_cfg_path(json["tls_cert"].get<std::string>());
                 }
             }
             if (json.contains("tls_key")) {
                 if (cfg.tls_key.empty()) {
-                    cfg.tls_key = json["tls_key"].get<std::string>();
+                    cfg.tls_key = resolve_cfg_path(json["tls_key"].get<std::string>());
                 }
             }
             if (json.contains("auth_keys")) {
                 if (cfg.auth_keys.empty()) {
-                    cfg.auth_keys = json["auth_keys"].get<std::string>();
+                    cfg.auth_keys = resolve_cfg_path(json["auth_keys"].get<std::string>());
                 }
             }
             if (json.contains("threads")) {
@@ -798,7 +828,7 @@ int main(int argc, char** argv) {
             }
             if (json.contains("pq_private_key")) {
                 if (cfg.pq_private_key.empty()) {
-                    cfg.pq_private_key = yume::util::expand_user(json["pq_private_key"].get<std::string>());
+                    cfg.pq_private_key = resolve_cfg_path(json["pq_private_key"].get<std::string>());
                 }
             }
             if (json.contains("allow_exec")) {
@@ -819,7 +849,7 @@ int main(int argc, char** argv) {
             }
             if (json.contains("real_index_path")) {
                 if (cfg.real_index_path.empty()) {
-                    cfg.real_index_path = json["real_index_path"].get<std::string>();
+                    cfg.real_index_path = resolve_cfg_path(json["real_index_path"].get<std::string>());
                 }
             }
             if (json.contains("real_secret")) {
@@ -829,7 +859,7 @@ int main(int argc, char** argv) {
             }
             if (json.contains("real_secret_file")) {
                 if (cfg.real_secret_file.empty()) {
-                    cfg.real_secret_file = json["real_secret_file"].get<std::string>();
+                    cfg.real_secret_file = resolve_cfg_path(json["real_secret_file"].get<std::string>());
                 }
             }
             if (json.contains("boring")) {
@@ -852,22 +882,22 @@ int main(int argc, char** argv) {
             }
             if (json.contains("anonym_ca_key")) {
                 if (cfg.anonym_ca_key.empty()) {
-                    cfg.anonym_ca_key = yume::util::expand_user(json["anonym_ca_key"].get<std::string>());
+                    cfg.anonym_ca_key = resolve_cfg_path(json["anonym_ca_key"].get<std::string>());
                 }
             }
             if (json.contains("anonym_ca_cert")) {
                 if (cfg.anonym_ca_cert.empty()) {
-                    cfg.anonym_ca_cert = yume::util::expand_user(json["anonym_ca_cert"].get<std::string>());
+                    cfg.anonym_ca_cert = resolve_cfg_path(json["anonym_ca_cert"].get<std::string>());
                 }
             }
             if (json.contains("anonym_sub_key")) {
                 if (cfg.anonym_sub_key.empty()) {
-                    cfg.anonym_sub_key = yume::util::expand_user(json["anonym_sub_key"].get<std::string>());
+                    cfg.anonym_sub_key = resolve_cfg_path(json["anonym_sub_key"].get<std::string>());
                 }
             }
             if (json.contains("anonym_sub_cert")) {
                 if (cfg.anonym_sub_cert.empty()) {
-                    cfg.anonym_sub_cert = yume::util::expand_user(json["anonym_sub_cert"].get<std::string>());
+                    cfg.anonym_sub_cert = resolve_cfg_path(json["anonym_sub_cert"].get<std::string>());
                 }
             }
         } catch (const std::exception& ex) {
@@ -875,8 +905,80 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+    if (!cfg.tls_cert.empty()) {
+        cfg.tls_cert = resolve_cfg_path(cfg.tls_cert);
+    }
+    if (!cfg.tls_key.empty()) {
+        cfg.tls_key = resolve_cfg_path(cfg.tls_key);
+    }
+    if (!cfg.auth_keys.empty()) {
+        cfg.auth_keys = resolve_cfg_path(cfg.auth_keys);
+    }
+    if (!cfg.pq_private_key.empty()) {
+        cfg.pq_private_key = resolve_cfg_path(cfg.pq_private_key);
+    }
+    if (!cfg.real_index_path.empty()) {
+        cfg.real_index_path = resolve_cfg_path(cfg.real_index_path);
+    }
+    if (!cfg.real_secret_file.empty()) {
+        cfg.real_secret_file = resolve_cfg_path(cfg.real_secret_file);
+    }
+    if (!cfg.anonym_ca_key.empty()) {
+        cfg.anonym_ca_key = resolve_cfg_path(cfg.anonym_ca_key);
+    }
+    if (!cfg.anonym_ca_cert.empty()) {
+        cfg.anonym_ca_cert = resolve_cfg_path(cfg.anonym_ca_cert);
+    }
+    if (!cfg.anonym_sub_key.empty()) {
+        cfg.anonym_sub_key = resolve_cfg_path(cfg.anonym_sub_key);
+    }
+    if (!cfg.anonym_sub_cert.empty()) {
+        cfg.anonym_sub_cert = resolve_cfg_path(cfg.anonym_sub_cert);
+    }
     if (inner_heavy_override) {
         cfg.inner_heavy = inner_heavy_value;
+    }
+
+    auto require_readable = [&](const char* label, const std::string& path) {
+        if (path.empty()) {
+            return true;
+        }
+        if (!file_readable(path)) {
+            yume::util::log_error(std::string(label) + " not found: " + path);
+            return false;
+        }
+        return true;
+    };
+
+    if (!require_readable("tls_cert", cfg.tls_cert)) {
+        return 1;
+    }
+    if (!require_readable("tls_key", cfg.tls_key)) {
+        return 1;
+    }
+    if (!require_readable("auth_keys", cfg.auth_keys)) {
+        return 1;
+    }
+    if (!require_readable("pq_private_key", cfg.pq_private_key)) {
+        return 1;
+    }
+    if (!require_readable("real_index_path", cfg.real_index_path)) {
+        return 1;
+    }
+    if (!require_readable("real_secret_file", cfg.real_secret_file)) {
+        return 1;
+    }
+    if (!require_readable("anonym_ca_key", cfg.anonym_ca_key)) {
+        return 1;
+    }
+    if (!require_readable("anonym_ca_cert", cfg.anonym_ca_cert)) {
+        return 1;
+    }
+    if (!require_readable("anonym_sub_key", cfg.anonym_sub_key)) {
+        return 1;
+    }
+    if (!require_readable("anonym_sub_cert", cfg.anonym_sub_cert)) {
+        return 1;
     }
 
     if (ui_mode) {

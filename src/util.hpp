@@ -9,6 +9,9 @@ namespace yume::util {
 
 nlohmann::json read_json_config(const std::string& path);
 std::string expand_user(const std::string& path);
+std::string resolve_path(const std::string& path,
+                         const std::string& base_dir,
+                         const std::string& exe_dir);
 
 void init_logging();
 void log_info(const std::string& msg);

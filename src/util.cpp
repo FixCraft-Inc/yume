@@ -8,6 +8,7 @@
 
 #include <csignal>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <iostream>
@@ -28,6 +29,65 @@ std::function<void(int)> g_signal_handler;
 std::mutex g_signal_mutex;
 bool g_logging_enabled = true;
 
+bool is_env_char(char ch) {
+    return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_';
+}
+
+std::string expand_env_vars(const std::string& input) {
+    std::string out;
+    out.reserve(input.size());
+    for (size_t i = 0; i < input.size();) {
+        if (input[i] == '%') {
+            size_t end = input.find('%', i + 1);
+            if (end != std::string::npos && end > i + 1) {
+                std::string key = input.substr(i + 1, end - i - 1);
+                const char* val = std::getenv(key.c_str());
+                if (val) {
+                    out.append(val);
+                } else {
+                    out.append(input, i, end - i + 1);
+                }
+                i = end + 1;
+                continue;
+            }
+        } else if (input[i] == '$') {
+            if (i + 1 < input.size() && input[i + 1] == '{') {
+                size_t end = input.find('}', i + 2);
+                if (end != std::string::npos && end > i + 2) {
+                    std::string key = input.substr(i + 2, end - i - 2);
+                    const char* val = std::getenv(key.c_str());
+                    if (val) {
+                        out.append(val);
+                    } else {
+                        out.append(input, i, end - i + 1);
+                    }
+                    i = end + 1;
+                    continue;
+                }
+            } else {
+                size_t j = i + 1;
+                while (j < input.size() && is_env_char(input[j])) {
+                    ++j;
+                }
+                if (j > i + 1) {
+                    std::string key = input.substr(i + 1, j - i - 1);
+                    const char* val = std::getenv(key.c_str());
+                    if (val) {
+                        out.append(val);
+                    } else {
+                        out.append(input, i, j - i);
+                    }
+                    i = j;
+                    continue;
+                }
+            }
+        }
+        out.push_back(input[i]);
+        ++i;
+    }
+    return out;
+}
+
 void signal_dispatch(int signum) {
     std::lock_guard<std::mutex> lock(g_signal_mutex);
     if (g_signal_handler) {
@@ -47,7 +107,7 @@ nlohmann::json read_json_config(const std::string& path) {
 }
 
 std::string expand_user(const std::string& path) {
-    if (path.rfind("~/", 0) == 0) {
+    if (path.rfind("~/", 0) == 0 || path.rfind("~\\", 0) == 0) {
         const char* home = std::getenv("HOME");
 #if defined(_WIN32)
         if (!home) {
@@ -59,6 +119,26 @@ std::string expand_user(const std::string& path) {
         }
     }
     return path;
+}
+
+std::string resolve_path(const std::string& path,
+                         const std::string& base_dir,
+                         const std::string& exe_dir) {
+    if (path.empty()) {
+        return {};
+    }
+    std::string expanded = expand_env_vars(expand_user(path));
+    std::filesystem::path p(expanded);
+    if (p.is_absolute() || p.has_root_name()) {
+        return p.lexically_normal().string();
+    }
+    if (!base_dir.empty()) {
+        return (std::filesystem::path(base_dir) / p).lexically_normal().string();
+    }
+    if (!exe_dir.empty()) {
+        return (std::filesystem::path(exe_dir) / p).lexically_normal().string();
+    }
+    return expanded;
 }
 
 void init_logging() {

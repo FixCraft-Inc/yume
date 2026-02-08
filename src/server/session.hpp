@@ -106,6 +106,7 @@ private:
     std::vector<uint8_t> payload_buf_;
     crypto::Bytes challenge_;
     bool authenticated_{false};
+    std::string auth_error_;
     std::optional<crypto::Bytes> inner_key_;
     boost::asio::steady_timer idle_timer_;
     std::atomic<int64_t> last_activity_ms_{0};

@@ -1140,7 +1140,6 @@ build_busybox_target() {
   local variant_args
   variant_args="$(variant_cmake_args "${variant}")"
   local cross_env="YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0"
-  local cross_env="YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0"
   local lib_ext="so"
   if [[ "${variant}" == "static" ]]; then
     lib_ext="a"
@@ -1319,6 +1318,7 @@ build_linux_target() {
   local boost_dir_env=""
   local variant_args
   variant_args="$(variant_cmake_args "${variant}")"
+  local cross_env="YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0"
   local lib_ext="so"
   if [[ "${variant}" == "static" ]]; then
     lib_ext="a"

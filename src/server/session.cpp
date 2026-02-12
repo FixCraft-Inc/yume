@@ -1122,8 +1122,10 @@ void Session::handle_rlisten(const protocol::Frame& frame) {
         send_open_reply(frame.header.stream_id, false, "invalid listen port");
         return;
     }
-    if (listen_port < 4100 || listen_port > 8600) {
-        send_open_reply(frame.header.stream_id, false, "listen port must be 4100-8600");
+    if (listen_port < cfg_.reverse_port_min || listen_port > cfg_.reverse_port_max) {
+        send_open_reply(frame.header.stream_id, false,
+                        "listen port must be " + std::to_string(cfg_.reverse_port_min) + "-" +
+                            std::to_string(cfg_.reverse_port_max));
         return;
     }
     if (reverse_listeners_.find(frame.header.stream_id) != reverse_listeners_.end()) {

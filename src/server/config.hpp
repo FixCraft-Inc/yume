@@ -18,6 +18,8 @@ struct ServerConfig {
     bool inner_required{false};
     bool inner_hop{true};
     std::uint32_t hop_interval_ms{500};
+    int reverse_port_min{4100};
+    int reverse_port_max{8600};
     std::string pq_private_key;
     bool allow_exec{false};
     bool allow_local_ip{false};

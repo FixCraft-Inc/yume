@@ -47,6 +47,88 @@ if(YUME_USE_SPDLOG)
     endif()
 endif()
 
+function(yume_apply_perf_opts target)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(${target} PRIVATE
+            $<$<CONFIG:Release>:-O3>
+            $<$<CONFIG:RelWithDebInfo>:-O3>
+            $<$<CONFIG:MinSizeRel>:-O3>
+            $<$<CONFIG:Release>:-fomit-frame-pointer>
+            $<$<CONFIG:RelWithDebInfo>:-fomit-frame-pointer>
+            $<$<CONFIG:MinSizeRel>:-fomit-frame-pointer>
+            $<$<CONFIG:Release>:-funroll-loops>
+            $<$<CONFIG:RelWithDebInfo>:-funroll-loops>
+            $<$<CONFIG:MinSizeRel>:-funroll-loops>
+            $<$<CONFIG:Release>:-finline-functions>
+            $<$<CONFIG:RelWithDebInfo>:-finline-functions>
+            $<$<CONFIG:MinSizeRel>:-finline-functions>
+        )
+        if(YUME_NATIVE_OPT)
+            target_compile_options(${target} PRIVATE
+                $<$<CONFIG:Release>:-march=native>
+                $<$<CONFIG:RelWithDebInfo>:-march=native>
+                $<$<CONFIG:MinSizeRel>:-march=native>
+                $<$<CONFIG:Release>:-mtune=native>
+                $<$<CONFIG:RelWithDebInfo>:-mtune=native>
+                $<$<CONFIG:MinSizeRel>:-mtune=native>
+            )
+        endif()
+        if(YUME_FAST_MATH)
+            target_compile_options(${target} PRIVATE
+                $<$<CONFIG:Release>:-ffast-math>
+                $<$<CONFIG:RelWithDebInfo>:-ffast-math>
+                $<$<CONFIG:MinSizeRel>:-ffast-math>
+            )
+        endif()
+        if(YUME_LTO)
+            target_compile_options(${target} PRIVATE
+                $<$<CONFIG:Release>:-flto>
+                $<$<CONFIG:RelWithDebInfo>:-flto>
+                $<$<CONFIG:MinSizeRel>:-flto>
+            )
+            target_link_options(${target} PRIVATE
+                $<$<CONFIG:Release>:-flto>
+                $<$<CONFIG:RelWithDebInfo>:-flto>
+                $<$<CONFIG:MinSizeRel>:-flto>
+            )
+        endif()
+    elseif(MSVC)
+        target_compile_options(${target} PRIVATE
+            $<$<CONFIG:Release>:/O2>
+            $<$<CONFIG:RelWithDebInfo>:/O2>
+            $<$<CONFIG:MinSizeRel>:/O2>
+            $<$<CONFIG:Release>:/Oi>
+            $<$<CONFIG:RelWithDebInfo>:/Oi>
+            $<$<CONFIG:MinSizeRel>:/Oi>
+            $<$<CONFIG:Release>:/Ot>
+            $<$<CONFIG:RelWithDebInfo>:/Ot>
+            $<$<CONFIG:MinSizeRel>:/Ot>
+            $<$<CONFIG:Release>:/Oy>
+            $<$<CONFIG:RelWithDebInfo>:/Oy>
+            $<$<CONFIG:MinSizeRel>:/Oy>
+        )
+        if(YUME_FAST_MATH)
+            target_compile_options(${target} PRIVATE
+                $<$<CONFIG:Release>:/fp:fast>
+                $<$<CONFIG:RelWithDebInfo>:/fp:fast>
+                $<$<CONFIG:MinSizeRel>:/fp:fast>
+            )
+        endif()
+        if(YUME_LTO)
+            target_compile_options(${target} PRIVATE
+                $<$<CONFIG:Release>:/GL>
+                $<$<CONFIG:RelWithDebInfo>:/GL>
+                $<$<CONFIG:MinSizeRel>:/GL>
+            )
+            target_link_options(${target} PRIVATE
+                $<$<CONFIG:Release>:/LTCG>
+                $<$<CONFIG:RelWithDebInfo>:/LTCG>
+                $<$<CONFIG:MinSizeRel>:/LTCG>
+            )
+        endif()
+    endif()
+endfunction()
+
 if(YUME_STATIC AND YUME_USE_SPDLOG)
     message(WARNING "Static link requested; disabling spdlog to avoid linking shared libspdlog.")
     set(YUME_USE_SPDLOG OFF CACHE BOOL "Disable spdlog for static builds" FORCE)
@@ -126,6 +208,8 @@ if(CMAKE_CROSSCOMPILING OR YUME_FORCE_CROSS OR CMAKE_SYSTEM_NAME STREQUAL "Windo
     endif()
 endif()
 
+yume_apply_perf_opts(yume_core)
+
 add_executable(yumed
     main_server.cpp
     server/manager.cpp
@@ -134,6 +218,7 @@ add_executable(yumed
 )
 
 target_link_libraries(yumed PRIVATE yume_core)
+yume_apply_perf_opts(yumed)
 if(YUME_STATIC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     target_link_options(yumed PRIVATE -static)
 endif()
@@ -151,6 +236,7 @@ add_executable(yume
 )
 
 target_link_libraries(yume PRIVATE yume_core)
+yume_apply_perf_opts(yume)
 if(YUME_STATIC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     target_link_options(yume PRIVATE -static)
 endif()

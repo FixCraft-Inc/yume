@@ -8,13 +8,19 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
+#include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <mutex>
+#include <system_error>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 #if !defined(_WIN32)
 #include <sys/stat.h>
@@ -67,14 +73,38 @@ Bytes load_pq_public_key(const std::string& path) {
     (void)path;
     throw std::runtime_error("inner crypto not available: BaseFWX disabled");
 #else
+    struct Cache {
+        std::string path;
+        Bytes bytes;
+        bool valid{false};
+    };
+    static std::mutex cache_mutex;
+    static Cache cache;
+    const std::string cache_key = path.empty() ? std::string("<default>") : path;
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        if (cache.valid && cache.path == cache_key) {
+            return cache.bytes;
+        }
+    }
+
+    Bytes loaded;
     if (!path.empty()) {
-        return basefwx::pq::DecodeKeyBytes(read_file(path));
+        loaded = basefwx::pq::DecodeKeyBytes(read_file(path));
+    } else {
+        auto pub = basefwx::pq::LoadMasterPublicKey();
+        if (!pub.has_value()) {
+            throw std::runtime_error("PQ public key not configured");
+        }
+        loaded = *pub;
     }
-    auto pub = basefwx::pq::LoadMasterPublicKey();
-    if (!pub.has_value()) {
-        throw std::runtime_error("PQ public key not configured");
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        cache.path = cache_key;
+        cache.bytes = loaded;
+        cache.valid = true;
     }
-    return *pub;
+    return loaded;
 #endif
 }
 
@@ -83,10 +113,34 @@ Bytes load_pq_private_key(const std::string& path) {
     (void)path;
     throw std::runtime_error("inner crypto not available: BaseFWX disabled");
 #else
-    if (!path.empty()) {
-        return basefwx::pq::DecodeKeyBytes(read_file(path));
+    struct Cache {
+        std::string path;
+        Bytes bytes;
+        bool valid{false};
+    };
+    static std::mutex cache_mutex;
+    static Cache cache;
+    const std::string cache_key = path.empty() ? std::string("<default>") : path;
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        if (cache.valid && cache.path == cache_key) {
+            return cache.bytes;
+        }
     }
-    return basefwx::pq::LoadMasterPrivateKey();
+
+    Bytes loaded;
+    if (!path.empty()) {
+        loaded = basefwx::pq::DecodeKeyBytes(read_file(path));
+    } else {
+        loaded = basefwx::pq::LoadMasterPrivateKey();
+    }
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        cache.path = cache_key;
+        cache.bytes = loaded;
+        cache.valid = true;
+    }
+    return loaded;
 #endif
 }
 
@@ -148,6 +202,56 @@ std::uint32_t read_env_u32(const char* name, std::uint32_t fallback) {
     }
 }
 
+bool read_env_u32_optional(const char* name, std::uint32_t* out) {
+    const char* raw = std::getenv(name);
+    if (!raw || !*raw) {
+        return false;
+    }
+    try {
+        unsigned long long parsed = std::stoull(raw);
+        if (parsed == 0) {
+            return false;
+        }
+        if (parsed > std::numeric_limits<std::uint32_t>::max()) {
+            *out = std::numeric_limits<std::uint32_t>::max();
+        } else {
+            *out = static_cast<std::uint32_t>(parsed);
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+double read_env_ratio(const char* name, double fallback) {
+    const char* raw = std::getenv(name);
+    if (!raw || !*raw) {
+        return fallback;
+    }
+    try {
+        double parsed = std::stod(raw);
+        if (parsed <= 0.0) {
+            return fallback;
+        }
+        if (parsed > 1.0) {
+            parsed /= 100.0;
+        }
+        if (parsed <= 0.0) {
+            return fallback;
+        }
+        if (parsed > 1.0) {
+            parsed = 1.0;
+        }
+        return parsed;
+    } catch (...) {
+        return fallback;
+    }
+}
+
+double resource_cap_ratio() {
+    return read_env_ratio("YUME_RESOURCE_CAP", 0.84);
+}
+
 std::uint64_t read_meminfo_kib(const char* key) {
 #if defined(_WIN32) || defined(__APPLE__)
     (void)key;
@@ -199,11 +303,21 @@ std::uint64_t available_memory_kib() {
 }
 
 std::uint32_t argon2_time_cost() {
-    return read_env_u32("YUME_ARGON2_TIME", basefwx::constants::kHeavyArgon2TimeCost);
+    return read_env_u32("YUME_ARGON2_TIME", basefwx::constants::kArgon2TimeCost);
 }
 
 std::uint32_t argon2_parallelism() {
-    return read_env_u32("YUME_ARGON2_PAR", basefwx::constants::DefaultHeavyArgon2Parallelism());
+    std::uint32_t env_val = 0;
+    if (read_env_u32_optional("YUME_ARGON2_PAR", &env_val)) {
+        return env_val;
+    }
+    const double cap = resource_cap_ratio();
+    auto count = std::thread::hardware_concurrency();
+    if (count == 0) {
+        return basefwx::constants::DefaultHeavyArgon2Parallelism();
+    }
+    std::uint32_t scaled = static_cast<std::uint32_t>(std::floor(static_cast<double>(count) * cap));
+    return scaled > 0 ? scaled : 1u;
 }
 
 KdfParams select_argon2_params() {
@@ -213,21 +327,25 @@ KdfParams select_argon2_params() {
     params.argon2_parallelism = argon2_parallelism();
     params.pbkdf2_iters = basefwx::constants::HeavyPbkdf2Iterations();
 
-    std::uint32_t mem = read_env_u32("YUME_ARGON2_MEM", 0);
-    if (mem == 0) {
-        std::uint64_t avail = available_memory_kib();
-        if (avail == 0) {
-            mem = basefwx::constants::kHeavyArgon2MemoryCost;
-        } else {
-            std::uint64_t target = avail;
-            if (target < basefwx::constants::kHeavyArgon2MemoryCost) {
-                target = basefwx::constants::kHeavyArgon2MemoryCost;
-            }
-            if (target > std::numeric_limits<std::uint32_t>::max()) {
-                target = std::numeric_limits<std::uint32_t>::max();
-            }
-            mem = static_cast<std::uint32_t>(target);
+    std::uint32_t mem = 0;
+    const bool mem_env = read_env_u32_optional("YUME_ARGON2_MEM", &mem);
+    std::uint64_t avail = available_memory_kib();
+    if (avail > 0) {
+        const double cap = resource_cap_ratio();
+        std::uint64_t cap_mem = static_cast<std::uint64_t>(
+            std::floor(static_cast<double>(avail) * cap));
+        if (cap_mem == 0) {
+            cap_mem = avail;
         }
+        if (!mem_env) {
+            mem = static_cast<std::uint32_t>(
+                std::min<std::uint64_t>(cap_mem, std::numeric_limits<std::uint32_t>::max()));
+        } else if (mem > avail) {
+            mem = static_cast<std::uint32_t>(
+                std::min<std::uint64_t>(avail, std::numeric_limits<std::uint32_t>::max()));
+        }
+    } else if (!mem_env) {
+        mem = basefwx::constants::kHeavyArgon2MemoryCost;
     }
 
     if (params.argon2_parallelism == 0) {
@@ -365,14 +483,13 @@ DerivedKey derive_key_heavy(const Bytes& shared,
 }
 
 Bytes build_aad(std::uint8_t frame_type, std::uint8_t stream_id) {
-    Bytes aad;
-    aad.reserve(6);
-    aad.push_back(static_cast<std::uint8_t>('Y'));
-    aad.push_back(static_cast<std::uint8_t>('U'));
-    aad.push_back(static_cast<std::uint8_t>('M'));
-    aad.push_back(static_cast<std::uint8_t>('E'));
-    aad.push_back(frame_type);
-    aad.push_back(stream_id);
+    Bytes aad(6);
+    aad[0] = static_cast<std::uint8_t>('Y');
+    aad[1] = static_cast<std::uint8_t>('U');
+    aad[2] = static_cast<std::uint8_t>('M');
+    aad[3] = static_cast<std::uint8_t>('E');
+    aad[4] = frame_type;
+    aad[5] = stream_id;
     return aad;
 }
 }  // namespace
@@ -545,8 +662,17 @@ Bytes derive_hop_key(const Bytes& base_key, std::uint64_t hop_id) {
     (void)hop_id;
     throw std::runtime_error("inner crypto not available: BaseFWX disabled");
 #else
-    std::string info = std::string(kHopInfoPrefix) + std::to_string(hop_id);
-    return basefwx::crypto::HkdfSha256(base_key, info, 32);
+    std::array<char, 64> info{};
+    constexpr std::string_view prefix(kHopInfoPrefix);
+    std::memcpy(info.data(), prefix.data(), prefix.size());
+    auto [ptr, ec] = std::to_chars(info.data() + prefix.size(),
+                                   info.data() + info.size(),
+                                   hop_id);
+    std::size_t len = prefix.size();
+    if (ec == std::errc()) {
+        len = static_cast<std::size_t>(ptr - info.data());
+    }
+    return basefwx::crypto::HkdfSha256(base_key, std::string_view(info.data(), len), 32);
 #endif
 }
 

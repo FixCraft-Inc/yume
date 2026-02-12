@@ -7,6 +7,7 @@
 #include "util.hpp"
 
 #include <chrono>
+#include <cstdio>
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
@@ -14,6 +15,12 @@
 #include <mutex>
 #include <iostream>
 #include <vector>
+
+#if defined(_WIN32)
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -29,6 +36,65 @@ namespace {
 std::function<void(int)> g_signal_handler;
 std::mutex g_signal_mutex;
 bool g_logging_enabled = true;
+std::mutex g_status_mutex;
+std::string g_status_text;
+std::size_t g_status_lines = 0;
+bool g_status_enabled = true;
+bool g_status_active = false;
+bool g_status_supported = true;
+
+bool is_tty_stdout() {
+#if defined(_WIN32)
+    return _isatty(_fileno(stdout)) != 0;
+#else
+    return isatty(fileno(stdout)) != 0;
+#endif
+}
+
+std::size_t count_status_lines(const std::string& text) {
+    if (text.empty()) {
+        return 0;
+    }
+    std::size_t lines = 1;
+    for (char ch : text) {
+        if (ch == '\n') {
+            ++lines;
+        }
+    }
+    return lines;
+}
+
+void clear_status_line_locked() {
+    if (!g_status_supported || !g_status_enabled) {
+        return;
+    }
+    if (!g_status_active && g_status_text.empty()) {
+        return;
+    }
+    if (g_status_lines == 0) {
+        g_status_active = false;
+        return;
+    }
+    for (std::size_t i = 0; i < g_status_lines; ++i) {
+        std::cout << "\r\033[2K";
+        if (i + 1 < g_status_lines) {
+            std::cout << "\033[1A";
+        }
+    }
+    std::cout << std::flush;
+    g_status_active = false;
+}
+
+void render_status_line_locked() {
+    if (!g_status_supported || !g_status_enabled) {
+        return;
+    }
+    if (g_status_text.empty()) {
+        return;
+    }
+    std::cout << "\r" << g_status_text << "\033[2K" << std::flush;
+    g_status_active = true;
+}
 
 bool is_env_char(char ch) {
     return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_';
@@ -147,39 +213,58 @@ void init_logging() {
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
     spdlog::set_level(spdlog::level::info);
 #endif
+    {
+        std::lock_guard<std::mutex> lock(g_status_mutex);
+        g_status_supported = is_tty_stdout();
+        if (!g_status_supported) {
+            g_status_enabled = false;
+            g_status_text.clear();
+            g_status_lines = 0;
+            g_status_active = false;
+        }
+    }
 }
 
 void log_info(const std::string& msg) {
     if (!g_logging_enabled) {
         return;
     }
+    std::lock_guard<std::mutex> lock(g_status_mutex);
+    clear_status_line_locked();
 #if YUME_USE_SPDLOG
     spdlog::info(msg);
 #else
     std::cerr << "[INFO] " << msg << std::endl;
 #endif
+    render_status_line_locked();
 }
 
 void log_warn(const std::string& msg) {
     if (!g_logging_enabled) {
         return;
     }
+    std::lock_guard<std::mutex> lock(g_status_mutex);
+    clear_status_line_locked();
 #if YUME_USE_SPDLOG
     spdlog::warn(msg);
 #else
     std::cerr << "[WARN] " << msg << std::endl;
 #endif
+    render_status_line_locked();
 }
 
 void log_error(const std::string& msg) {
     if (!g_logging_enabled) {
         return;
     }
+    std::lock_guard<std::mutex> lock(g_status_mutex);
+    clear_status_line_locked();
 #if YUME_USE_SPDLOG
     spdlog::error(msg);
 #else
     std::cerr << "[ERROR] " << msg << std::endl;
 #endif
+    render_status_line_locked();
 }
 
 void set_logging_enabled(bool enabled) {
@@ -188,6 +273,36 @@ void set_logging_enabled(bool enabled) {
 
 bool is_logging_enabled() {
     return g_logging_enabled;
+}
+
+void set_status_enabled(bool enabled) {
+    std::lock_guard<std::mutex> lock(g_status_mutex);
+    g_status_enabled = enabled;
+    if (!g_status_enabled) {
+        clear_status_line_locked();
+        g_status_text.clear();
+        g_status_lines = 0;
+        return;
+    }
+    render_status_line_locked();
+}
+
+void set_status_line(const std::string& line) {
+    std::lock_guard<std::mutex> lock(g_status_mutex);
+    if (!g_status_enabled || !g_status_supported) {
+        return;
+    }
+    if (g_status_active) {
+        clear_status_line_locked();
+    }
+    g_status_text = line;
+    g_status_lines = count_status_lines(line);
+    render_status_line_locked();
+}
+
+void clear_status_line() {
+    std::lock_guard<std::mutex> lock(g_status_mutex);
+    clear_status_line_locked();
 }
 
 std::string random_hex(size_t bytes) {

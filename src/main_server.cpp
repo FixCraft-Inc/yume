@@ -7,6 +7,7 @@
 #include <iostream>
 #include <filesystem>
 #include <fstream>
+#include <algorithm>
 #include <utility>
 #include <ctime>
 #include <thread>
@@ -63,6 +64,8 @@ void print_help() {
         << "  --key <path>          (override tls_key)\n"
         << "  --auth-keys <path>    (override auth_keys)\n"
         << "  --threads <n>         (0 = auto/all cores)\n"
+        << "  --reverse-port-min <port> (remote listen min; default 4100)\n"
+        << "  --reverse-port-max <port> (remote listen max; default 8600)\n"
         << "  --obfs                (enable obfuscation)\n"
         << "  --inner               (enable inner PQ crypto)\n"
         << "  --inner-heavy         (heavy KDF, default)\n"
@@ -103,6 +106,8 @@ void print_help() {
         << "  auth_keys     (path)\n\n"
         << "Optional config fields:\n"
         << "  threads       (int)\n"
+        << "  reverse_port_min (int)\n"
+        << "  reverse_port_max (int)\n"
         << "  obfuscation   (bool)\n"
         << "  inner_crypto  (bool)\n"
         << "  inner_heavy   (bool)\n"
@@ -692,6 +697,10 @@ int main(int argc, char** argv) {
             config_specified = true;
         } else if (arg == "--listen" && i + 1 < argc) {
             cfg.listen_port = std::stoi(argv[++i]);
+        } else if (arg == "--reverse-port-min" && i + 1 < argc) {
+            cfg.reverse_port_min = std::stoi(argv[++i]);
+        } else if (arg == "--reverse-port-max" && i + 1 < argc) {
+            cfg.reverse_port_max = std::stoi(argv[++i]);
         } else if (arg == "--cert" && i + 1 < argc) {
             cfg.tls_cert = argv[++i];
         } else if (arg == "--key" && i + 1 < argc) {
@@ -826,6 +835,16 @@ int main(int argc, char** argv) {
             if (json.contains("listen_port")) {
                 if (cfg.listen_port == 443) {
                     cfg.listen_port = json["listen_port"].get<int>();
+                }
+            }
+            if (json.contains("reverse_port_min")) {
+                if (cfg.reverse_port_min == 4100) {
+                    cfg.reverse_port_min = json["reverse_port_min"].get<int>();
+                }
+            }
+            if (json.contains("reverse_port_max")) {
+                if (cfg.reverse_port_max == 8600) {
+                    cfg.reverse_port_max = json["reverse_port_max"].get<int>();
                 }
             }
             if (json.contains("tls_cert")) {
@@ -1013,6 +1032,12 @@ int main(int argc, char** argv) {
             cfg.hop_interval_ms = 1000;
         }
     }
+    cfg.reverse_port_min = std::clamp(cfg.reverse_port_min, 1, 65535);
+    cfg.reverse_port_max = std::clamp(cfg.reverse_port_max, 1, 65535);
+    if (cfg.reverse_port_min > cfg.reverse_port_max) {
+        std::swap(cfg.reverse_port_min, cfg.reverse_port_max);
+        yume::util::log_warn("reverse_port_min > reverse_port_max; swapped values");
+    }
 
     auto require_readable = [&](const char* label, const std::string& path) {
         if (path.empty()) {
@@ -1106,6 +1131,8 @@ int main(int argc, char** argv) {
                 return v.empty() ? current : v;
             };
             std::string listen = prompt("listen_port", std::to_string(cfg.listen_port));
+            std::string reverse_min = prompt("reverse_port_min", std::to_string(cfg.reverse_port_min));
+            std::string reverse_max = prompt("reverse_port_max", std::to_string(cfg.reverse_port_max));
             std::string cert = prompt("tls_cert", cfg.tls_cert);
             std::string key = prompt("tls_key", cfg.tls_key);
             std::string auth = prompt("auth_keys", cfg.auth_keys);
@@ -1133,6 +1160,8 @@ int main(int argc, char** argv) {
             std::string anonym_sub_cert = prompt("anonym_sub_cert", cfg.anonym_sub_cert);
 
             json["listen_port"] = std::stoi(listen);
+            json["reverse_port_min"] = std::stoi(reverse_min);
+            json["reverse_port_max"] = std::stoi(reverse_max);
             json["tls_cert"] = cert;
             json["tls_key"] = key;
             json["auth_keys"] = auth;
@@ -1607,7 +1636,9 @@ int main(int argc, char** argv) {
         }
     }
 
-    boost::asio::io_context io;
+    unsigned int hw = std::thread::hardware_concurrency();
+    int threads = cfg.threads > 0 ? cfg.threads : static_cast<int>(hw > 0 ? hw : 1);
+    boost::asio::io_context io(threads);
     yume::server::Manager manager(io, cfg);
     std::atomic<bool> stop_refresh{false};
     std::thread refresh_thread;
@@ -1691,8 +1722,6 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    unsigned int hw = std::thread::hardware_concurrency();
-    int threads = cfg.threads > 0 ? cfg.threads : static_cast<int>(hw > 0 ? hw : 1);
     std::vector<std::thread> workers;
     workers.reserve(static_cast<size_t>(threads));
     for (int i = 0; i < threads; ++i) {

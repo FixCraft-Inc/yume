@@ -8,6 +8,7 @@
 
 #include <iomanip>
 #include <iostream>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -347,6 +348,15 @@ X509_ptr load_cert_from_pem(const std::string& pem) {
     X509* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
     BIO_free(bio);
     return {cert, X509_free};
+}
+
+crypto::EVP_PKEY_ptr load_pubkey_from_cert_pem(const std::string& pem) {
+    auto cert = load_cert_from_pem(pem);
+    if (!cert) {
+        return {nullptr, EVP_PKEY_free};
+    }
+    EVP_PKEY* key = X509_get_pubkey(cert.get());
+    return {key, EVP_PKEY_free};
 }
 
 X509_ptr load_cert_from_file(const std::string& path) {
@@ -1243,6 +1253,7 @@ int Cli::run(int argc, char** argv) {
             cfg.hop_interval_ms = 1000;
         }
     }
+    util::set_status_enabled(!cfg.non_interactive);
     if (!require_file("identity", cfg.identity)) {
         return 1;
     }
@@ -1351,8 +1362,9 @@ int Cli::run(int argc, char** argv) {
     bool verified_once = false;
     for (;;) {
         bool summary_once = false;
+        std::function<std::string()> status_block_builder;
         try {
-            boost::asio::io_context io;
+            boost::asio::io_context io(resolve_io_threads(cfg.io_threads));
             auto ctx = obfs::create_client_context();
             ctx.set_verify_mode(boost::asio::ssl::verify_peer);
             ctx.set_default_verify_paths();
@@ -1593,7 +1605,7 @@ int Cli::run(int argc, char** argv) {
                         } else if (!verify_cert_signed_by_ca(sub_cert.get(), ca_cert.get())) {
                             util::log_warn("pq_pub sub_cert not signed by CA; refusing PQ auto-trust");
                         } else {
-                            sub_pub = load_pubkey_from_cert(sub_pem);
+                                    sub_pub = load_pubkey_from_cert_pem(sub_pem);
                             sub_ok = static_cast<bool>(sub_pub);
                         }
                     }
@@ -1977,6 +1989,30 @@ int Cli::run(int argc, char** argv) {
                 }
                 pq_warned = true;
             }
+            auto build_hop_status_line = [hop_enabled, hop_interval_ms, hop_offset_ms]() {
+                auto color_wrap = [](const std::string& text, const char* code) {
+                    return std::string("\033[") + code + "m" + text + "\033[0m";
+                };
+                std::string hop_state = hop_enabled ? "ON" : "OFF";
+                std::string hop_line = color_wrap(hop_state, hop_enabled ? "1;32" : "1;31");
+                std::ostringstream hop_freq_stream;
+                hop_freq_stream.setf(std::ios::fixed);
+                hop_freq_stream << std::setprecision(2)
+                                << (hop_enabled && hop_interval_ms > 0
+                                        ? (1000.0 / static_cast<double>(hop_interval_ms))
+                                        : 0.0);
+                std::string hop_freq = color_wrap(hop_freq_stream.str() + "Hz", "1;33");
+                std::int64_t adjusted = util::now_ms() + hop_offset_ms;
+                if (adjusted < 0) {
+                    adjusted = 0;
+                }
+                std::int64_t last_change = (hop_enabled && hop_interval_ms > 0)
+                                               ? (adjusted % static_cast<std::int64_t>(hop_interval_ms))
+                                               : 0;
+                std::string hop_last = color_wrap(std::to_string(last_change) + "ms", "1;34");
+                return std::string("Hopping: ") + hop_line + " - " + hop_freq + " | " + hop_last;
+            };
+
             if (have_anon && !summary_once) {
                 auto color_wrap = [&](const std::string& text, const char* code) {
                     return std::string("\033[") + code + "m" + text + "\033[0m";
@@ -2013,34 +2049,32 @@ int Cli::run(int argc, char** argv) {
                         inner_line += ", dual";
                     }
                 }
-                std::string hop_state = hop_enabled ? "ON" : "OFF";
-                std::string hop_line = color_wrap(hop_state, hop_enabled ? "1;32" : "1;31");
-                std::ostringstream hop_freq_stream;
-                hop_freq_stream.setf(std::ios::fixed);
-                hop_freq_stream << std::setprecision(2)
-                                << (hop_enabled && hop_interval_ms > 0
-                                        ? (1000.0 / static_cast<double>(hop_interval_ms))
-                                        : 0.0);
-                std::string hop_freq = color_wrap(hop_freq_stream.str() + "Hz", "1;33");
-                std::int64_t adjusted = util::now_ms() + hop_offset_ms;
-                if (adjusted < 0) {
-                    adjusted = 0;
-                }
-                std::int64_t last_change = (hop_enabled && hop_interval_ms > 0)
-                                               ? (adjusted % static_cast<std::int64_t>(hop_interval_ms))
-                                               : 0;
-                std::string hop_last = color_wrap(std::to_string(last_change) + "ms", "1;34");
                 std::string server_display = color_wrap(cfg.server, "1;33");
                 std::string verity_state = verity_ok ? "PASS" : "FAIL";
                 std::string verity_line = color_wrap(verity_state, verity_ok ? "1;32" : "1;31");
-                std::cout
-                    << "Connected to " << server_display << ":\n"
-                    << "VERSION: " << (server_version.empty() ? "UNKNOWN" : server_version) << "\n"
-                    << "Connection: TLS\n"
-                    << "Protection: " << protection_line << "\n"
-                    << "Inner: " << inner_line << "\n"
-                    << "Hopping: " << hop_line << " - " << hop_freq << " | " << hop_last << "\n"
-                    << "FixCraft Verity: " << verity_line << "\n";
+                std::string header =
+                    "Connected to " + server_display + ":\n" +
+                    "VERSION: " + (server_version.empty() ? "UNKNOWN" : server_version) + "\n" +
+                    "Connection: TLS\n" +
+                    "Protection: " + protection_line + "\n" +
+                    "Inner: " + inner_line + "\n";
+                std::string footer = "FixCraft Verity: " + verity_line + "\n";
+                const std::string border = "------------------------------------------";
+                status_block_builder = [header, footer, border, build_hop_status_line]() {
+                    return border + "\n" + header + build_hop_status_line() + "\n" + footer + border;
+                };
+                if (cfg.non_interactive) {
+                    std::cout
+                        << "Connected to " << server_display << ":\n"
+                        << "VERSION: " << (server_version.empty() ? "UNKNOWN" : server_version) << "\n"
+                        << "Connection: TLS\n"
+                        << "Protection: " << protection_line << "\n"
+                        << "Inner: " << inner_line << "\n"
+                        << build_hop_status_line() << "\n"
+                        << "FixCraft Verity: " << verity_line << "\n";
+                } else {
+                    util::set_status_line(status_block_builder());
+                }
                 summary_once = true;
             }
 
@@ -2195,36 +2229,18 @@ int Cli::run(int argc, char** argv) {
             });
             tunnel->start();
             std::thread hop_status_thread;
-            if (!cfg.non_interactive && hop_enabled) {
-                hop_status_thread = std::thread([hop_status_stop, hop_enabled, hop_interval_ms, hop_offset_ms]() {
-                    auto color_wrap = [](const std::string& text, const char* code) {
-                        return std::string("\033[") + code + "m" + text + "\033[0m";
-                    };
-                    while (!hop_status_stop->load()) {
-                        std::string hop_state = hop_enabled ? "ON" : "OFF";
-                        std::string hop_line = color_wrap(hop_state, hop_enabled ? "1;32" : "1;31");
-                        std::ostringstream hop_freq_stream;
-                        hop_freq_stream.setf(std::ios::fixed);
-                        hop_freq_stream << std::setprecision(2)
-                                        << (hop_enabled && hop_interval_ms > 0
-                                                ? (1000.0 / static_cast<double>(hop_interval_ms))
-                                                : 0.0);
-                        std::string hop_freq = color_wrap(hop_freq_stream.str() + "Hz", "1;33");
-                        std::int64_t adjusted = util::now_ms() + hop_offset_ms;
-                        if (adjusted < 0) {
-                            adjusted = 0;
+            if (!cfg.non_interactive) {
+                if (status_block_builder && hop_enabled) {
+                    hop_status_thread = std::thread([hop_status_stop, status_block_builder]() {
+                        while (!hop_status_stop->load()) {
+                            util::set_status_line(status_block_builder());
+                            std::this_thread::sleep_for(std::chrono::milliseconds(250));
                         }
-                        std::int64_t last_change = (hop_enabled && hop_interval_ms > 0)
-                                                       ? (adjusted % static_cast<std::int64_t>(hop_interval_ms))
-                                                       : 0;
-                        std::string hop_last = color_wrap(std::to_string(last_change) + "ms", "1;34");
-                        std::cout << "\r\033[2K"
-                                  << "Hopping: " << hop_line << " - " << hop_freq << " | " << hop_last
-                                  << std::flush;
-                        std::this_thread::sleep_for(std::chrono::milliseconds(250));
-                    }
-                    std::cout << "\r\033[2K" << std::flush;
-                });
+                        util::clear_status_line();
+                    });
+                } else if (status_block_builder) {
+                    util::set_status_line(status_block_builder());
+                }
             }
             struct HopStatusGuard {
                 std::shared_ptr<std::atomic<bool>> stop;
@@ -2236,6 +2252,7 @@ int Cli::run(int argc, char** argv) {
                     if (thread && thread->joinable()) {
                         thread->join();
                     }
+                    util::clear_status_line();
                 }
             } hop_guard{hop_status_stop, &hop_status_thread};
 
@@ -2263,6 +2280,7 @@ int Cli::run(int argc, char** argv) {
                     return 1;
                 }
                 (*reverse_targets)[listen_id] = ReverseTarget{reverse_host, reverse_port};
+                util::log_info("requesting remote listener on port " + std::to_string(reverse_listen_port));
                 tunnel->request_remote_listen(listen_id, reverse_listen_port,
                                               [listen_port = reverse_listen_port](bool ok, const std::string& reason) {
                                                   if (ok) {
@@ -2369,7 +2387,6 @@ int Cli::run(int argc, char** argv) {
             }
 
             if (use_reverse) {
-                util::log_info("remote forward active; waiting for connections");
                 run_io_threads(io, cfg.io_threads);
                 if (!close_reason.empty()) {
                     throw std::runtime_error("tunnel closed: " + close_reason);

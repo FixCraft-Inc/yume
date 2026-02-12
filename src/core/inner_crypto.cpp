@@ -7,6 +7,7 @@
 #include "core/inner_crypto.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <cmath>

@@ -226,8 +226,26 @@ std::string classify_plaintext_prefix(const uint8_t* data, std::size_t len) {
     if (starts_with("HTTP/")) {
         return "HTTP";
     }
+    if (starts_with("PRI * HTTP/2.0")) {
+        return "HTTP/2";
+    }
     if (starts_with("GET ") || starts_with("POST ") || starts_with("HEAD ") || starts_with("PUT ") || starts_with("OPTIONS ")) {
         return "HTTP";
+    }
+    return {};
+}
+
+std::string classify_http2_frame_prefix(const uint8_t* data, std::size_t len) {
+    // HTTP/2 frame header is 9 bytes: len(3) type(1) flags(1) stream_id(4).
+    // We often only have a short prefix; recognize a SETTINGS frame on stream 0.
+    if (!data || len < 8) {
+        return {};
+    }
+    uint8_t type = data[3];
+    uint8_t flags = data[4];
+    bool stream0_prefix = (data[5] == 0x00 && data[6] == 0x00 && data[7] == 0x00);
+    if (type == 0x04 && flags == 0x00 && stream0_prefix) {
+        return "HTTP/2";
     }
     return {};
 }
@@ -235,12 +253,20 @@ std::string classify_plaintext_prefix(const uint8_t* data, std::size_t len) {
 std::string endpoint_hint_tls(bool tls_handshake_succeeded,
                               const uint8_t* prefix,
                               std::size_t prefix_len) {
-    if (tls_handshake_succeeded) {
-        return "TLS (likely HTTPS)";
-    }
     std::string plain = classify_plaintext_prefix(prefix, prefix_len);
     if (!plain.empty()) {
+        if (tls_handshake_succeeded) {
+            return (plain == "HTTP" || plain == "HTTP/2") ? ("HTTPS (" + plain + ")") : ("TLS (" + plain + ")");
+        }
         return plain;
+    }
+
+    if (tls_handshake_succeeded) {
+        std::string h2 = classify_http2_frame_prefix(prefix, prefix_len);
+        if (!h2.empty()) {
+            return "HTTPS (" + h2 + ")";
+        }
+        return "TLS (likely HTTPS)";
     }
     return "unknown";
 }

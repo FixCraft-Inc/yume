@@ -34,20 +34,20 @@ OPENWRT_SDK_TEMP=0
 OPENWRT_SDK_TEMP_DIR=""
 
 # Cross toolchains/sysroots for additional targets (set these before running).
-X86_BUSYBOX_SYSROOT=""
-X86_BUSYBOX_TOOLCHAIN_PREFIX=""
+X86_BUSYBOX_SYSROOT="${X86_BUSYBOX_SYSROOT:-}"
+X86_BUSYBOX_TOOLCHAIN_PREFIX="${X86_BUSYBOX_TOOLCHAIN_PREFIX:-}"
 
-ARMV7_LINUX_SYSROOT=""
-ARMV7_LINUX_TOOLCHAIN_PREFIX=""
-ARMV7_BUSYBOX_SYSROOT=""
-ARMV7_BUSYBOX_TOOLCHAIN_PREFIX=""
+ARMV7_LINUX_SYSROOT="${ARMV7_LINUX_SYSROOT:-}"
+ARMV7_LINUX_TOOLCHAIN_PREFIX="${ARMV7_LINUX_TOOLCHAIN_PREFIX:-}"
+ARMV7_BUSYBOX_SYSROOT="${ARMV7_BUSYBOX_SYSROOT:-}"
+ARMV7_BUSYBOX_TOOLCHAIN_PREFIX="${ARMV7_BUSYBOX_TOOLCHAIN_PREFIX:-}"
 
-ARMV8_LINUX_SYSROOT=""
-ARMV8_LINUX_TOOLCHAIN_PREFIX=""
-ARMV8_BUSYBOX_SYSROOT=""
-ARMV8_BUSYBOX_TOOLCHAIN_PREFIX=""
-USE_DOCKER_FALLBACK=0
-AUTO_DETECT_TOOLCHAINS=1
+ARMV8_LINUX_SYSROOT="${ARMV8_LINUX_SYSROOT:-}"
+ARMV8_LINUX_TOOLCHAIN_PREFIX="${ARMV8_LINUX_TOOLCHAIN_PREFIX:-}"
+ARMV8_BUSYBOX_SYSROOT="${ARMV8_BUSYBOX_SYSROOT:-}"
+ARMV8_BUSYBOX_TOOLCHAIN_PREFIX="${ARMV8_BUSYBOX_TOOLCHAIN_PREFIX:-}"
+USE_DOCKER_FALLBACK="${USE_DOCKER_FALLBACK:-0}"
+AUTO_DETECT_TOOLCHAINS="${AUTO_DETECT_TOOLCHAINS:-1}"
 OPENWRT_FEEDS_READY=0
 
 # Helper function to normalize cross-build flags (0 or 1)
@@ -1123,7 +1123,20 @@ ensure_armhf_deps() {
     dpkg --add-architecture armhf
     apt_update_once
   fi
-  apt_install libc6-dev:armhf libstdc++-14-dev:armhf zlib1g-dev:armhf libssl-dev:armhf libboost-dev:armhf libboost-system-dev:armhf
+  local gcc_major=""
+  gcc_major="$(g++ -dumpversion 2>/dev/null | awk -F. '{print $1}' || true)"
+  if [[ -z "${gcc_major}" || ! "${gcc_major}" =~ ^[0-9]+$ ]]; then
+    gcc_major="$(gcc -dumpversion 2>/dev/null | awk -F. '{print $1}' || true)"
+  fi
+  local stdcpp_pkg="libstdc++-${gcc_major}-dev:armhf"
+  if [[ -z "${gcc_major}" || ! "${gcc_major}" =~ ^[0-9]+$ ]] || ! apt-cache show "${stdcpp_pkg}" >/dev/null 2>&1; then
+    stdcpp_pkg=""
+  fi
+  if [[ -n "${stdcpp_pkg}" ]]; then
+    apt_install libc6-dev:armhf "${stdcpp_pkg}" zlib1g-dev:armhf libssl-dev:armhf libboost-dev:armhf libboost-system-dev:armhf
+  else
+    apt_install libc6-dev:armhf zlib1g-dev:armhf libssl-dev:armhf libboost-dev:armhf libboost-system-dev:armhf
+  fi
 }
 
 ensure_arm64_deps() {
@@ -1134,7 +1147,20 @@ ensure_arm64_deps() {
     dpkg --add-architecture arm64
     apt_update_once
   fi
-  apt_install libc6-dev:arm64 libstdc++-14-dev:arm64 zlib1g-dev:arm64 libssl-dev:arm64 libboost-dev:arm64 libboost-system-dev:arm64
+  local gcc_major=""
+  gcc_major="$(g++ -dumpversion 2>/dev/null | awk -F. '{print $1}' || true)"
+  if [[ -z "${gcc_major}" || ! "${gcc_major}" =~ ^[0-9]+$ ]]; then
+    gcc_major="$(gcc -dumpversion 2>/dev/null | awk -F. '{print $1}' || true)"
+  fi
+  local stdcpp_pkg="libstdc++-${gcc_major}-dev:arm64"
+  if [[ -z "${gcc_major}" || ! "${gcc_major}" =~ ^[0-9]+$ ]] || ! apt-cache show "${stdcpp_pkg}" >/dev/null 2>&1; then
+    stdcpp_pkg=""
+  fi
+  if [[ -n "${stdcpp_pkg}" ]]; then
+    apt_install libc6-dev:arm64 "${stdcpp_pkg}" zlib1g-dev:arm64 libssl-dev:arm64 libboost-dev:arm64 libboost-system-dev:arm64
+  else
+    apt_install libc6-dev:arm64 zlib1g-dev:arm64 libssl-dev:arm64 libboost-dev:arm64 libboost-system-dev:arm64
+  fi
 }
 
 resolve_boost_dir() {

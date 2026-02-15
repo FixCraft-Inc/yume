@@ -151,10 +151,18 @@ target_link_libraries(yume_core
     PUBLIC
         OpenSSL::SSL
         OpenSSL::Crypto
-        Boost::system
         Threads::Threads
         nlohmann_json::nlohmann_json
 )
+if(TARGET Boost::system)
+    target_link_libraries(yume_core PUBLIC Boost::system)
+elseif(DEFINED Boost_SYSTEM_LIBRARY AND EXISTS "${Boost_SYSTEM_LIBRARY}")
+    target_link_libraries(yume_core PUBLIC "${Boost_SYSTEM_LIBRARY}")
+else()
+    # Some Boost distributions (or CMake setups) don't export Boost::system.
+    # Make Boost.System header-only to avoid a link-time dependency.
+    target_compile_definitions(yume_core PUBLIC BOOST_ERROR_CODE_HEADER_ONLY=1)
+endif()
 if(TARGET Boost::headers)
     target_link_libraries(yume_core PUBLIC Boost::headers)
 elseif(TARGET Boost::asio)

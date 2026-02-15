@@ -26,7 +26,6 @@ permissions:
 env:
   OPENWRT_SDK_VERSION: "24.10.0"
   OPENWRT_SDK_TARGET: "ath79-nand"
-  MUSL_CROSS_VERSION: "11.2.1"
 
 jobs:
   build-linux:
@@ -44,6 +43,9 @@ jobs:
             libssl-dev zlib1g-dev liblzma-dev libzstd-dev \
             libboost-all-dev libspdlog-dev nlohmann-json3-dev \
             mingw-w64 g++-mingw-w64-x86-64 \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
+            gcc-i686-linux-gnu g++-i686-linux-gnu \
             zstd curl wget git tar xz-utils \
             qemu-user-static binfmt-support \
             clang lld
@@ -68,53 +70,6 @@ jobs:
           fi
           echo "OPENWRT_SDK=${HOME}/${OPENWRT_SDK_NAME}" >> $GITHUB_ENV
 
-      - name: Setup musl cross-compilers
-        run: |
-          mkdir -p ~/musl-cross
-          cd ~/musl-cross
-          
-          # Helper function for downloading with retries and mirrors
-          download_musl() {
-            local name=$1
-            local output=$2
-            local primary="https://musl.cc/${name}"
-            local mirror1="https://more.musl.cc/11.2.1/x86_64-linux-musl/${name}"
-            local mirror2="https://toolchains.bootlin.com/downloads/releases/toolchains/${name}" || true
-            
-            for url in "$primary" "$mirror1"; do
-              echo "Trying: $url"
-              if curl -L --connect-timeout 30 --max-time 600 --retry 3 --retry-delay 5 -o "$output" "$url"; then
-                echo "Downloaded from: $url"
-                return 0
-              fi
-              echo "Failed: $url"
-            done
-            echo "ERROR: All mirrors failed for $name"
-            return 1
-          }
-          
-          # aarch64-linux-musl (armv8)
-          if [[ ! -d aarch64-linux-musl-cross ]]; then
-            download_musl "aarch64-linux-musl-cross.tgz" aarch64.tgz
-            tar xzf aarch64.tgz && rm aarch64.tgz
-          fi
-          # arm-linux-musleabihf (armv7)
-          if [[ ! -d arm-linux-musleabihf-cross ]]; then
-            download_musl "arm-linux-musleabihf-cross.tgz" armv7.tgz
-            tar xzf armv7.tgz && rm armv7.tgz
-          fi
-          # x86_64-linux-musl (static x86)
-          if [[ ! -d x86_64-linux-musl-cross ]]; then
-            download_musl "x86_64-linux-musl-cross.tgz" x86_64.tgz
-            tar xzf x86_64.tgz && rm x86_64.tgz
-          fi
-          echo "PATH=${HOME}/musl-cross/aarch64-linux-musl-cross/bin:${HOME}/musl-cross/arm-linux-musleabihf-cross/bin:${HOME}/musl-cross/x86_64-linux-musl-cross/bin:${PATH}" >> $GITHUB_ENV
-          # Export sysroot paths for fullau.sh
-          echo "ARMV8_BUSYBOX_SYSROOT=${HOME}/musl-cross/aarch64-linux-musl-cross/aarch64-linux-musl" >> $GITHUB_ENV
-          echo "ARMV8_BUSYBOX_TOOLCHAIN_PREFIX=aarch64-linux-musl" >> $GITHUB_ENV
-          echo "ARMV7_BUSYBOX_SYSROOT=${HOME}/musl-cross/arm-linux-musleabihf-cross/arm-linux-musleabihf" >> $GITHUB_ENV
-          echo "ARMV7_BUSYBOX_TOOLCHAIN_PREFIX=arm-linux-musleabihf" >> $GITHUB_ENV
-
       - name: Extract prebuilt vendor libs
         run: |
           if [[ -f yume-vendor-prebuilt.tar.xz ]]; then
@@ -135,10 +90,6 @@ jobs:
             PATH="${PATH}" \
             VCPKG_ROOT="${VCPKG_ROOT}" \
             OPENWRT_SDK="${OPENWRT_SDK}" \
-            ARMV8_BUSYBOX_SYSROOT="${ARMV8_BUSYBOX_SYSROOT}" \
-            ARMV8_BUSYBOX_TOOLCHAIN_PREFIX="${ARMV8_BUSYBOX_TOOLCHAIN_PREFIX}" \
-            ARMV7_BUSYBOX_SYSROOT="${ARMV7_BUSYBOX_SYSROOT}" \
-            ARMV7_BUSYBOX_TOOLCHAIN_PREFIX="${ARMV7_BUSYBOX_TOOLCHAIN_PREFIX}" \
             YUME_TARGETS="${YUME_TARGETS}" \
             YUME_WINDOWS_CROSS="${YUME_WINDOWS_CROSS}" \
             YUME_MACOS_CROSS="${YUME_MACOS_CROSS}" \

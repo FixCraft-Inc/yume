@@ -26,6 +26,7 @@ permissions:
 env:
   OPENWRT_SDK_VERSION: "24.10.0"
   OPENWRT_SDK_TARGET: "ath79-nand"
+  MUSL_CROSS_VERSION: "11.2.1"
 
 jobs:
   build-linux:
@@ -51,43 +52,47 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/microsoft/vcpkg.git ~/vcpkg
           ~/vcpkg/bootstrap-vcpkg.sh -disableMetrics
-          echo "VCPKG_ROOT=\${HOME}/vcpkg" >> \$GITHUB_ENV
+          echo "VCPKG_ROOT=${HOME}/vcpkg" >> $GITHUB_ENV
 
       - name: Download OpenWRT SDK
         run: |
-          OPENWRT_SDK_NAME="openwrt-sdk-\${OPENWRT_SDK_VERSION}-\${OPENWRT_SDK_TARGET}_gcc-13.3.0_musl.Linux-x86_64"
-          OPENWRT_SDK_URL="https://downloads.openwrt.org/releases/\${OPENWRT_SDK_VERSION}/targets/ath79/nand/\${OPENWRT_SDK_NAME}.tar.zst"
+          OPENWRT_SDK_NAME="openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}_gcc-13.3.0_musl.Linux-x86_64"
+          OPENWRT_SDK_URL="https://downloads.openwrt.org/releases/${OPENWRT_SDK_VERSION}/targets/ath79/nand/${OPENWRT_SDK_NAME}.tar.zst"
           mkdir -p ~/.cache/yume
           cd ~/.cache/yume
-          if [[ ! -d "\${HOME}/\${OPENWRT_SDK_NAME}" ]]; then
-            curl -L --fail -o "\${OPENWRT_SDK_NAME}.tar.zst" "\${OPENWRT_SDK_URL}"
-            zstd -d "\${OPENWRT_SDK_NAME}.tar.zst" -o "\${OPENWRT_SDK_NAME}.tar"
-            tar -xf "\${OPENWRT_SDK_NAME}.tar" -C "\${HOME}"
-            rm -f "\${OPENWRT_SDK_NAME}.tar" "\${OPENWRT_SDK_NAME}.tar.zst"
+          if [[ ! -d "${HOME}/${OPENWRT_SDK_NAME}" ]]; then
+            curl -L --fail -o "${OPENWRT_SDK_NAME}.tar.zst" "${OPENWRT_SDK_URL}"
+            zstd -d "${OPENWRT_SDK_NAME}.tar.zst" -o "${OPENWRT_SDK_NAME}.tar"
+            tar -xf "${OPENWRT_SDK_NAME}.tar" -C "${HOME}"
+            rm -f "${OPENWRT_SDK_NAME}.tar" "${OPENWRT_SDK_NAME}.tar.zst"
           fi
-          echo "OPENWRT_SDK=\${HOME}/\${OPENWRT_SDK_NAME}" >> \$GITHUB_ENV
+          echo "OPENWRT_SDK=${HOME}/${OPENWRT_SDK_NAME}" >> $GITHUB_ENV
 
       - name: Setup musl cross-compilers
         run: |
           mkdir -p ~/musl-cross
           cd ~/musl-cross
+          # aarch64-linux-musl (armv8)
           if [[ ! -d aarch64-linux-musl-cross ]]; then
             curl -L -o aarch64.tgz "https://musl.cc/aarch64-linux-musl-cross.tgz"
             tar xzf aarch64.tgz && rm aarch64.tgz
           fi
+          # arm-linux-musleabihf (armv7)
           if [[ ! -d arm-linux-musleabihf-cross ]]; then
             curl -L -o armv7.tgz "https://musl.cc/arm-linux-musleabihf-cross.tgz"
             tar xzf armv7.tgz && rm armv7.tgz
           fi
+          # x86_64-linux-musl (static x86)
           if [[ ! -d x86_64-linux-musl-cross ]]; then
             curl -L -o x86_64.tgz "https://musl.cc/x86_64-linux-musl-cross.tgz"
             tar xzf x86_64.tgz && rm x86_64.tgz
           fi
-          echo "PATH=\${HOME}/musl-cross/aarch64-linux-musl-cross/bin:\${HOME}/musl-cross/arm-linux-musleabihf-cross/bin:\${HOME}/musl-cross/x86_64-linux-musl-cross/bin:\${PATH}" >> \$GITHUB_ENV
-          echo "ARMV8_BUSYBOX_SYSROOT=\${HOME}/musl-cross/aarch64-linux-musl-cross/aarch64-linux-musl" >> \$GITHUB_ENV
-          echo "ARMV8_BUSYBOX_TOOLCHAIN_PREFIX=aarch64-linux-musl" >> \$GITHUB_ENV
-          echo "ARMV7_BUSYBOX_SYSROOT=\${HOME}/musl-cross/arm-linux-musleabihf-cross/arm-linux-musleabihf" >> \$GITHUB_ENV
-          echo "ARMV7_BUSYBOX_TOOLCHAIN_PREFIX=arm-linux-musleabihf" >> \$GITHUB_ENV
+          echo "PATH=${HOME}/musl-cross/aarch64-linux-musl-cross/bin:${HOME}/musl-cross/arm-linux-musleabihf-cross/bin:${HOME}/musl-cross/x86_64-linux-musl-cross/bin:${PATH}" >> $GITHUB_ENV
+          # Export sysroot paths for fullau.sh
+          echo "ARMV8_BUSYBOX_SYSROOT=${HOME}/musl-cross/aarch64-linux-musl-cross/aarch64-linux-musl" >> $GITHUB_ENV
+          echo "ARMV8_BUSYBOX_TOOLCHAIN_PREFIX=aarch64-linux-musl" >> $GITHUB_ENV
+          echo "ARMV7_BUSYBOX_SYSROOT=${HOME}/musl-cross/arm-linux-musleabihf-cross/arm-linux-musleabihf" >> $GITHUB_ENV
+          echo "ARMV7_BUSYBOX_TOOLCHAIN_PREFIX=arm-linux-musleabihf" >> $GITHUB_ENV
 
       - name: Extract prebuilt vendor libs
         run: |
@@ -97,73 +102,93 @@ jobs:
 
       - name: Build (linux + cross)
         run: |
-          export YUME_TARGETS="\${{ github.event.inputs.targets || 'linux-x86_64,openwrt-mips,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64' }}"
+          # Set targets explicitly (no macos on linux)
+          export YUME_TARGETS="${{ github.event.inputs.targets || 'linux-x86_64,openwrt-mips,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64' }}"
           export YUME_WINDOWS_CROSS=1
           export YUME_MACOS_CROSS=0
-          echo "Building for targets: \${YUME_TARGETS}"
+          
+          # Debug: print targets
+          echo "Building for targets: ${YUME_TARGETS}"
+          
           sudo -E env \
-            PATH="\${PATH}" \
-            VCPKG_ROOT="\${VCPKG_ROOT}" \
-            OPENWRT_SDK="\${OPENWRT_SDK}" \
-            ARMV8_BUSYBOX_SYSROOT="\${ARMV8_BUSYBOX_SYSROOT}" \
-            ARMV8_BUSYBOX_TOOLCHAIN_PREFIX="\${ARMV8_BUSYBOX_TOOLCHAIN_PREFIX}" \
-            ARMV7_BUSYBOX_SYSROOT="\${ARMV7_BUSYBOX_SYSROOT}" \
-            ARMV7_BUSYBOX_TOOLCHAIN_PREFIX="\${ARMV7_BUSYBOX_TOOLCHAIN_PREFIX}" \
-            YUME_TARGETS="\${YUME_TARGETS}" \
-            YUME_WINDOWS_CROSS="\${YUME_WINDOWS_CROSS}" \
-            YUME_MACOS_CROSS="\${YUME_MACOS_CROSS}" \
+            PATH="${PATH}" \
+            VCPKG_ROOT="${VCPKG_ROOT}" \
+            OPENWRT_SDK="${OPENWRT_SDK}" \
+            ARMV8_BUSYBOX_SYSROOT="${ARMV8_BUSYBOX_SYSROOT}" \
+            ARMV8_BUSYBOX_TOOLCHAIN_PREFIX="${ARMV8_BUSYBOX_TOOLCHAIN_PREFIX}" \
+            ARMV7_BUSYBOX_SYSROOT="${ARMV7_BUSYBOX_SYSROOT}" \
+            ARMV7_BUSYBOX_TOOLCHAIN_PREFIX="${ARMV7_BUSYBOX_TOOLCHAIN_PREFIX}" \
+            YUME_TARGETS="${YUME_TARGETS}" \
+            YUME_WINDOWS_CROSS="${YUME_WINDOWS_CROSS}" \
+            YUME_MACOS_CROSS="${YUME_MACOS_CROSS}" \
             ./fullau.sh
 
       - name: Package artifacts
         run: |
           set -euo pipefail
           mkdir -p dist
+          
           pack_one() {
-            local src="\$1"
-            local name="\$2"
-            if [[ -f "\$src" ]]; then
-              cp "\$src" "dist/\${name}"
-              echo "Packaged: \${name}"
+            local src="$1"
+            local name="$2"
+            if [[ -f "$src" ]]; then
+              cp "$src" "dist/${name}"
+              echo "Packaged: ${name}"
             fi
           }
+          
           pack_with_libs() {
-            local exe="\$1"
-            local name="\$2"
-            if [[ -f "\$exe" ]]; then
+            local exe="$1"
+            local name="$2"
+            if [[ -f "$exe" ]]; then
               local dir
-              dir="\$(dirname "\$exe")"
-              local files=("\$(basename "\$exe")")
+              dir="$(dirname "$exe")"
+              local files=("$(basename "$exe")")
+              # Include any DLLs or .so files in same directory
               while IFS= read -r -d '' f; do
-                files+=("\$(basename "\$f")")
-              done < <(find "\$dir" -maxdepth 1 \( -name "*.dll" -o -name "*.so*" \) -print0 2>/dev/null || true)
-              tar -cJf "dist/\${name}.tar.xz" -C "\$dir" "\${files[@]}"
-              echo "Packaged: \${name}.tar.xz"
+                files+=("$(basename "$f")")
+              done < <(find "$dir" -maxdepth 1 \( -name "*.dll" -o -name "*.so*" \) -print0 2>/dev/null || true)
+              tar -cJf "dist/${name}.tar.xz" -C "$dir" "${files[@]}"
+              echo "Packaged: ${name}.tar.xz"
             fi
           }
-          pack_one "\${HOME}/bins/dynamic/x86/linux/yume" "yume-amd64-linux"
-          pack_one "\${HOME}/bins/dynamic/x86/linux/yumed" "yumed-amd64-linux"
-          pack_one "\${HOME}/bins/stable/x86/linux/yume" "yume-amd64-linux-static"
-          pack_one "\${HOME}/bins/stable/x86/linux/yumed" "yumed-amd64-linux-static"
-          pack_one "\${HOME}/bins/dynamic/mips/openwrt/yume" "yume-mips-openwrt"
-          pack_one "\${HOME}/bins/dynamic/mips/openwrt/yumed" "yumed-mips-openwrt"
-          pack_one "\${HOME}/bins/dynamic/armv7/linux/yume" "yume-armv7-linux"
-          pack_one "\${HOME}/bins/dynamic/armv7/linux/yumed" "yumed-armv7-linux"
-          pack_one "\${HOME}/bins/dynamic/armv7/busybox/yume" "yume-armv7-busybox"
-          pack_one "\${HOME}/bins/dynamic/armv7/busybox/yumed" "yumed-armv7-busybox"
-          pack_one "\${HOME}/bins/stable/armv7/busybox/yume" "yume-armv7-busybox-static"
-          pack_one "\${HOME}/bins/stable/armv7/busybox/yumed" "yumed-armv7-busybox-static"
-          pack_one "\${HOME}/bins/dynamic/armv8/linux/yume" "yume-armv8-linux"
-          pack_one "\${HOME}/bins/dynamic/armv8/linux/yumed" "yumed-armv8-linux"
-          pack_one "\${HOME}/bins/dynamic/armv8/busybox/yume" "yume-armv8-busybox"
-          pack_one "\${HOME}/bins/dynamic/armv8/busybox/yumed" "yumed-armv8-busybox"
-          pack_one "\${HOME}/bins/stable/armv8/busybox/yume" "yume-armv8-busybox-static"
-          pack_one "\${HOME}/bins/stable/armv8/busybox/yumed" "yumed-armv8-busybox-static"
-          pack_one "\${HOME}/bins/dynamic/x86/busybox/yume" "yume-x86-busybox"
-          pack_one "\${HOME}/bins/dynamic/x86/busybox/yumed" "yumed-x86-busybox"
-          pack_one "\${HOME}/bins/stable/x86/busybox/yume" "yume-x86-busybox-static"
-          pack_one "\${HOME}/bins/stable/x86/busybox/yumed" "yumed-x86-busybox-static"
-          pack_with_libs "\${HOME}/bins/dynamic/windows/x86_64/yume.exe" "yume-amd64-windows"
-          pack_with_libs "\${HOME}/bins/dynamic/windows/x86_64/yumed.exe" "yumed-amd64-windows"
+          
+          # Linux x86_64
+          pack_one "${HOME}/bins/dynamic/x86/linux/yume" "yume-amd64-linux"
+          pack_one "${HOME}/bins/dynamic/x86/linux/yumed" "yumed-amd64-linux"
+          pack_one "${HOME}/bins/stable/x86/linux/yume" "yume-amd64-linux-static"
+          pack_one "${HOME}/bins/stable/x86/linux/yumed" "yumed-amd64-linux-static"
+          
+          # OpenWRT MIPS
+          pack_one "${HOME}/bins/dynamic/mips/openwrt/yume" "yume-mips-openwrt"
+          pack_one "${HOME}/bins/dynamic/mips/openwrt/yumed" "yumed-mips-openwrt"
+          
+          # ARM v7
+          pack_one "${HOME}/bins/dynamic/armv7/linux/yume" "yume-armv7-linux"
+          pack_one "${HOME}/bins/dynamic/armv7/linux/yumed" "yumed-armv7-linux"
+          pack_one "${HOME}/bins/dynamic/armv7/busybox/yume" "yume-armv7-busybox"
+          pack_one "${HOME}/bins/dynamic/armv7/busybox/yumed" "yumed-armv7-busybox"
+          pack_one "${HOME}/bins/stable/armv7/busybox/yume" "yume-armv7-busybox-static"
+          pack_one "${HOME}/bins/stable/armv7/busybox/yumed" "yumed-armv7-busybox-static"
+          
+          # ARM v8 (aarch64)
+          pack_one "${HOME}/bins/dynamic/armv8/linux/yume" "yume-armv8-linux"
+          pack_one "${HOME}/bins/dynamic/armv8/linux/yumed" "yumed-armv8-linux"
+          pack_one "${HOME}/bins/dynamic/armv8/busybox/yume" "yume-armv8-busybox"
+          pack_one "${HOME}/bins/dynamic/armv8/busybox/yumed" "yumed-armv8-busybox"
+          pack_one "${HOME}/bins/stable/armv8/busybox/yume" "yume-armv8-busybox-static"
+          pack_one "${HOME}/bins/stable/armv8/busybox/yumed" "yumed-armv8-busybox-static"
+          
+          # x86 busybox
+          pack_one "${HOME}/bins/dynamic/x86/busybox/yume" "yume-x86-busybox"
+          pack_one "${HOME}/bins/dynamic/x86/busybox/yumed" "yumed-x86-busybox"
+          pack_one "${HOME}/bins/stable/x86/busybox/yume" "yume-x86-busybox-static"
+          pack_one "${HOME}/bins/stable/x86/busybox/yumed" "yumed-x86-busybox-static"
+          
+          # Windows
+          pack_with_libs "${HOME}/bins/dynamic/windows/x86_64/yume.exe" "yume-amd64-windows"
+          pack_with_libs "${HOME}/bins/dynamic/windows/x86_64/yumed.exe" "yumed-amd64-windows"
+          
           ls -la dist/
 
       - name: Upload artifacts
@@ -177,8 +202,8 @@ jobs:
         if: github.event_name == 'release' || github.event.inputs.tag_name != ''
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: \${{ github.event.inputs.tag_name || github.ref_name }}
-          draft: \${{ github.event.inputs.draft || false }}
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
+          draft: ${{ github.event.inputs.draft || false }}
           files: dist/*
 
   build-macos:
@@ -202,16 +227,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
+          
           pack_one() {
-            local src="\$1"
-            local name="\$2"
-            if [[ -f "\$src" ]]; then
-              cp "\$src" "dist/\${name}"
-              echo "Packaged: \${name}"
+            local src="$1"
+            local name="$2"
+            if [[ -f "$src" ]]; then
+              cp "$src" "dist/${name}"
+              echo "Packaged: ${name}"
             fi
           }
+          
+          # macOS arm64 binaries
           pack_one "build/bin/yume" "yume-armv8-mac"
           pack_one "build/bin/yumed" "yumed-armv8-mac"
+          
           ls -la dist/
 
       - name: Upload artifacts
@@ -225,8 +254,8 @@ jobs:
         if: github.event_name == 'release' || github.event.inputs.tag_name != ''
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: \${{ github.event.inputs.tag_name || github.ref_name }}
-          draft: \${{ github.event.inputs.draft || false }}
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
+          draft: ${{ github.event.inputs.draft || false }}
           files: dist/*
 
   create-checksums:
@@ -249,6 +278,6 @@ jobs:
       - name: Upload checksums to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: \${{ github.event.inputs.tag_name || github.ref_name }}
-          draft: \${{ github.event.inputs.draft || false }}
+          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
+          draft: ${{ github.event.inputs.draft || false }}
           files: artifacts/SHA256SUMS.txt

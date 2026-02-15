@@ -72,19 +72,40 @@ jobs:
         run: |
           mkdir -p ~/musl-cross
           cd ~/musl-cross
+          
+          # Helper function for downloading with retries and mirrors
+          download_musl() {
+            local name=$1
+            local output=$2
+            local primary="https://musl.cc/${name}"
+            local mirror1="https://more.musl.cc/11.2.1/x86_64-linux-musl/${name}"
+            local mirror2="https://toolchains.bootlin.com/downloads/releases/toolchains/${name}" || true
+            
+            for url in "$primary" "$mirror1"; do
+              echo "Trying: $url"
+              if curl -L --connect-timeout 30 --max-time 600 --retry 3 --retry-delay 5 -o "$output" "$url"; then
+                echo "Downloaded from: $url"
+                return 0
+              fi
+              echo "Failed: $url"
+            done
+            echo "ERROR: All mirrors failed for $name"
+            return 1
+          }
+          
           # aarch64-linux-musl (armv8)
           if [[ ! -d aarch64-linux-musl-cross ]]; then
-            curl -L -o aarch64.tgz "https://musl.cc/aarch64-linux-musl-cross.tgz"
+            download_musl "aarch64-linux-musl-cross.tgz" aarch64.tgz
             tar xzf aarch64.tgz && rm aarch64.tgz
           fi
           # arm-linux-musleabihf (armv7)
           if [[ ! -d arm-linux-musleabihf-cross ]]; then
-            curl -L -o armv7.tgz "https://musl.cc/arm-linux-musleabihf-cross.tgz"
+            download_musl "arm-linux-musleabihf-cross.tgz" armv7.tgz
             tar xzf armv7.tgz && rm armv7.tgz
           fi
           # x86_64-linux-musl (static x86)
           if [[ ! -d x86_64-linux-musl-cross ]]; then
-            curl -L -o x86_64.tgz "https://musl.cc/x86_64-linux-musl-cross.tgz"
+            download_musl "x86_64-linux-musl-cross.tgz" x86_64.tgz
             tar xzf x86_64.tgz && rm x86_64.tgz
           fi
           echo "PATH=${HOME}/musl-cross/aarch64-linux-musl-cross/bin:${HOME}/musl-cross/arm-linux-musleabihf-cross/bin:${HOME}/musl-cross/x86_64-linux-musl-cross/bin:${PATH}" >> $GITHUB_ENV

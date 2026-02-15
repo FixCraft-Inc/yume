@@ -20,20 +20,17 @@ option(YUME_FAST_MATH "Enable fast-math (unsafe for crypto)" OFF)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
+# If a fully-static build is requested, ensure a static zlib is available; otherwise
+# fall back to dynamic to avoid confusing link errors like:
+#   "attempted static link of dynamic object `/path/to/libz.so`"
 if(YUME_STATIC)
-    set(BUILD_SHARED_LIBS OFF)
-    set(OPENSSL_USE_STATIC_LIBS TRUE)
-    set(Boost_USE_STATIC_LIBS ON)
-else()
-    set(OPENSSL_USE_STATIC_LIBS FALSE)
-    set(Boost_USE_STATIC_LIBS OFF)
-endif()
-
-if(CMAKE_CROSSCOMPILING AND YUME_STATIC)
     set(_yume_static_zlib_ok OFF)
+
     if(DEFINED ZLIB_LIBRARY AND EXISTS "${ZLIB_LIBRARY}" AND ZLIB_LIBRARY MATCHES "\\.a$")
         set(_yume_static_zlib_ok ON)
     endif()
+
+    # Prefer sysroot zlib for cross builds.
     if(NOT _yume_static_zlib_ok AND DEFINED CMAKE_SYSROOT)
         set(_yume_zlib_candidates
             "${CMAKE_SYSROOT}/usr/lib/libz.a"
@@ -44,16 +41,46 @@ if(CMAKE_CROSSCOMPILING AND YUME_STATIC)
         foreach(_yume_zlib_path IN LISTS _yume_zlib_candidates)
             if(_yume_zlib_path AND EXISTS "${_yume_zlib_path}")
                 set(_yume_static_zlib_ok ON)
+                set(ZLIB_LIBRARY "${_yume_zlib_path}" CACHE FILEPATH "zlib library" FORCE)
+                if((NOT DEFINED ZLIB_INCLUDE_DIR OR ZLIB_INCLUDE_DIR STREQUAL "") AND EXISTS "${CMAKE_SYSROOT}/usr/include/zlib.h")
+                    set(ZLIB_INCLUDE_DIR "${CMAKE_SYSROOT}/usr/include" CACHE PATH "zlib include dir" FORCE)
+                endif()
                 break()
             endif()
         endforeach()
     endif()
+
+    # Host builds: try to locate libz.a via CMake search.
+    if(NOT _yume_static_zlib_ok AND NOT CMAKE_CROSSCOMPILING)
+        set(_yume_saved_suffixes "${CMAKE_FIND_LIBRARY_SUFFIXES}")
+        set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+        find_library(_yume_zlib_static NAMES z zlib)
+        set(CMAKE_FIND_LIBRARY_SUFFIXES "${_yume_saved_suffixes}")
+        if(_yume_zlib_static AND EXISTS "${_yume_zlib_static}")
+            set(_yume_static_zlib_ok ON)
+            set(ZLIB_LIBRARY "${_yume_zlib_static}" CACHE FILEPATH "zlib library" FORCE)
+            if(NOT DEFINED ZLIB_INCLUDE_DIR OR ZLIB_INCLUDE_DIR STREQUAL "" OR NOT EXISTS "${ZLIB_INCLUDE_DIR}/zlib.h")
+                find_path(_yume_zlib_include_dir NAMES zlib.h)
+                if(_yume_zlib_include_dir)
+                    set(ZLIB_INCLUDE_DIR "${_yume_zlib_include_dir}" CACHE PATH "zlib include dir" FORCE)
+                endif()
+            endif()
+        endif()
+    endif()
+
     if(NOT _yume_static_zlib_ok)
         message(WARNING "Static link requested but libz.a not found (set ZLIB_LIBRARY or install static libs); disabling static link.")
         set(YUME_STATIC OFF CACHE BOOL "Attempt static build (requires static deps)" FORCE)
-        set(OPENSSL_USE_STATIC_LIBS FALSE)
-        set(Boost_USE_STATIC_LIBS OFF)
     endif()
+endif()
+
+if(YUME_STATIC)
+    set(BUILD_SHARED_LIBS OFF)
+    set(OPENSSL_USE_STATIC_LIBS TRUE)
+    set(Boost_USE_STATIC_LIBS ON)
+else()
+    set(OPENSSL_USE_STATIC_LIBS FALSE)
+    set(Boost_USE_STATIC_LIBS OFF)
 endif()
 
 if(CMAKE_CROSSCOMPILING)

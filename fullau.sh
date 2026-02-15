@@ -1538,9 +1538,15 @@ build_host_linux_target() {
     fi
   fi
   require_vendor_dir "${VENDOR_DIR}/linux-x86_64"
+  local zlib_lib="/usr/lib/x86_64-linux-gnu/libz.${lib_ext}"
   local lzma_lib="/usr/lib/x86_64-linux-gnu/liblzma.${lib_ext}"
   local zstd_lib="/usr/lib/x86_64-linux-gnu/libzstd.${lib_ext}"
-  local extra_args="${variant_args}"
+  local ssl_lib="/usr/lib/x86_64-linux-gnu/libssl.${lib_ext}"
+  local crypto_lib="/usr/lib/x86_64-linux-gnu/libcrypto.${lib_ext}"
+  local extra_args="${variant_args} -DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include"
+  if [[ -f "${ssl_lib}" && -f "${crypto_lib}" ]]; then
+    extra_args="${extra_args} -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include"
+  fi
   if [[ -f "${lzma_lib}" ]]; then
     extra_args="${extra_args} -DLZMA_LIBRARY=${lzma_lib} -DLZMA_INCLUDE_DIR=/usr/include"
   fi

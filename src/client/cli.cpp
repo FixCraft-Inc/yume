@@ -1373,9 +1373,26 @@ int Cli::run(int argc, char** argv) {
             }
 
             boost::asio::ip::tcp::resolver resolver(io);
-            auto endpoints = resolver.resolve(boost::asio::ip::tcp::v4(), cfg.server, std::to_string(cfg.port));
+            boost::asio::ip::tcp::resolver::results_type endpoints;
+            try {
+                endpoints = resolver.resolve(boost::asio::ip::tcp::v4(), cfg.server, std::to_string(cfg.port));
+            } catch (const boost::system::system_error& ex) {
+                throw std::runtime_error("server offline, unable to establish connection (DNS resolution failed: " + std::string(ex.what()) + ")");
+            }
             boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, ctx);
-            boost::asio::connect(stream.next_layer(), endpoints);
+            try {
+                boost::asio::connect(stream.next_layer(), endpoints);
+            } catch (const boost::system::system_error& ex) {
+                auto code = ex.code();
+                if (code == boost::asio::error::connection_refused ||
+                    code == boost::asio::error::host_unreachable ||
+                    code == boost::asio::error::network_unreachable ||
+                    code == boost::asio::error::timed_out ||
+                    code == boost::asio::error::network_down) {
+                    throw std::runtime_error("server offline, unable to establish connection");
+                }
+                throw std::runtime_error("server offline, unable to establish connection (" + std::string(ex.what()) + ")");
+            }
             boost::system::error_code keep_ec;
             stream.next_layer().set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
             if (keep_ec) {
@@ -1462,10 +1479,14 @@ int Cli::run(int argc, char** argv) {
             authenticate(stream, cfg.identity, pq_ciphertext, pq_salt, inner_mode, inner_hop, inner_kdf);
             util::log_info("authenticated to server");
 
-            protocol::Frame anon_frame = protocol::read_frame(stream);
+            protocol::Frame anon_frame;
+            try {
+                anon_frame = protocol::read_frame(stream);
+            } catch (const std::exception& ex) {
+                throw std::runtime_error("this does not appear to be a yume server (failed to read server info)");
+            }
             if (anon_frame.header.type != protocol::ANON) {
-                util::log_error("server did not provide runtime info");
-                return 1;
+                throw std::runtime_error("this does not appear to be a yume server (unexpected response type)");
             }
             bool pq_reconnect = false;
             bool have_anon = false;
@@ -1538,8 +1559,7 @@ int Cli::run(int argc, char** argv) {
                 server_hop_interval_ms = static_cast<std::uint32_t>(json.value("hop_interval_ms", 0));
                 server_time_ms = json.value("server_time_ms", 0LL);
             } catch (const std::exception& ex) {
-                util::log_error(std::string("failed to parse server runtime info: ") + ex.what());
-                return 1;
+                throw std::runtime_error("this does not appear to be a yume server (invalid server response)");
             }
 
             auto sanitize_msg = [&](const std::string& msg) {

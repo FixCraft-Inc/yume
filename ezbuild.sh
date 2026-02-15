@@ -880,6 +880,33 @@ EOF
         esac
     fi
 
+    # Set macOS CMAKE paths (even when skipping deps)
+    if [[ "$(uname -s)" == "Darwin" ]] && need_cmd brew; then
+        local homebrew_prefix
+        homebrew_prefix="$(brew --prefix)"
+        info "Homebrew prefix: ${homebrew_prefix}"
+        # Only add if not already set via YUME_CMAKE_ARGS
+        if [[ " ${CMAKE_ARGS[*]} " != *"CMAKE_PREFIX_PATH"* ]]; then
+            # Find Boost cmake config directory
+            local boost_cmake_dir=""
+            if [[ -d "${homebrew_prefix}/opt/boost/lib/cmake" ]]; then
+                boost_cmake_dir=$(ls -d "${homebrew_prefix}/opt/boost/lib/cmake/Boost-"* 2>/dev/null | head -1 || true)
+            fi
+            CMAKE_ARGS+=(
+                "-DCMAKE_PREFIX_PATH=${homebrew_prefix};${homebrew_prefix}/opt/openssl@3;${homebrew_prefix}/opt/boost"
+                "-DOPENSSL_ROOT_DIR=${homebrew_prefix}/opt/openssl@3"
+            )
+            # Add Boost hints
+            if [[ -n "${boost_cmake_dir}" ]]; then
+                info "Found Boost cmake config at: ${boost_cmake_dir}"
+                CMAKE_ARGS+=("-DBoost_DIR=${boost_cmake_dir}")
+            else
+                CMAKE_ARGS+=("-DBoost_ROOT=${homebrew_prefix}/opt/boost")
+            fi
+            CMAKE_ARGS+=("-DBoost_NO_SYSTEM_PATHS=ON")
+        fi
+    fi
+
     ensure_basefwx
     cleanup_vendor
     if [[ $OPENWRT -eq 1 || $BUSYBOX -eq 1 ]]; then

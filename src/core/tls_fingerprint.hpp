@@ -1,0 +1,150 @@
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <vector>
+#include <array>
+#include <optional>
+
+namespace yume::tls_fingerprint {
+
+// TLS extension types
+enum class ExtensionType : uint16_t {
+    SERVER_NAME = 0,
+    MAX_FRAGMENT_LENGTH = 1,
+    STATUS_REQUEST = 5,
+    SUPPORTED_GROUPS = 10,
+    EC_POINT_FORMATS = 11,
+    SIGNATURE_ALGORITHMS = 13,
+    ALPN = 16,
+    SIGNED_CERTIFICATE_TIMESTAMP = 18,
+    PADDING = 21,
+    EXTENDED_MASTER_SECRET = 23,
+    SESSION_TICKET = 35,
+    SUPPORTED_VERSIONS = 43,
+    PSK_KEY_EXCHANGE_MODES = 45,
+    KEY_SHARE = 51,
+    RENEGOTIATION_INFO = 65281,
+};
+
+// Browser profile identifiers
+enum class BrowserProfile {
+    CHROME_135,
+    CHROME_123,
+    FIREFOX_126,
+    FIREFOX_115_ESR,
+    SAFARI_17,
+    EDGE_123,
+    UNKNOWN
+};
+
+// JA3 fingerprint components
+struct JA3Components {
+    uint16_t tls_version{0};
+    std::vector<uint16_t> cipher_suites;
+    std::vector<uint16_t> extensions;
+    std::vector<uint16_t> supported_groups;
+    std::vector<uint8_t> ec_point_formats;
+};
+
+// JA4 fingerprint components (simplified)
+struct JA4Components {
+    std::string protocol_version;        // e.g., "t13" for TLS 1.3
+    std::string sni_present;             // "d" or "i"
+    uint8_t cipher_count{0};
+    uint8_t extension_count{0};
+    std::string first_alpn;              // first ALPN value
+    std::vector<uint16_t> cipher_suites;
+    std::vector<uint16_t> extensions;
+    std::vector<uint16_t> signature_algorithms;
+};
+
+// Complete fingerprint data
+struct FingerprintData {
+    std::string ja3_hash;
+    std::string ja4_hash;
+    std::string akamai_hash;
+    std::vector<std::string> alpn_protocols;
+    JA3Components ja3_components;
+    JA4Components ja4_components;
+    bool matches_known_browser{false};
+    BrowserProfile matched_profile{BrowserProfile::UNKNOWN};
+    double similarity_score{0.0};
+    std::string client_hello_hex;  // Raw ClientHello for debugging
+};
+
+// Known browser fingerprint database
+struct BrowserFingerprint {
+    BrowserProfile profile;
+    std::string name;
+    std::string ja3_hash;
+    std::string ja4_hash;
+    std::vector<uint16_t> cipher_suites;
+    std::vector<uint16_t> extensions;
+    std::vector<uint16_t> supported_groups;
+    std::vector<uint8_t> ec_point_formats;
+    std::vector<std::string> alpn_protocols;
+    std::vector<uint16_t> signature_algorithms;
+    uint16_t tls_version{0x0304};  // TLS 1.3
+};
+
+/**
+ * Calculate JA3 hash from ClientHello components
+ * JA3 = MD5(TLSVersion,Ciphers,Extensions,EllipticCurves,EllipticCurvePointFormats)
+ */
+std::string calculate_ja3_hash(const JA3Components& components);
+
+/**
+ * Calculate JA4 hash from ClientHello components
+ * JA4 is more complex and includes ALPN, SNI, cipher ordering
+ */
+std::string calculate_ja4_hash(const JA4Components& components);
+
+/**
+ * Calculate Akamai fingerprint hash
+ * Similar to JA3 but with different format
+ */
+std::string calculate_akamai_hash(const JA3Components& components);
+
+/**
+ * Get all known browser fingerprints
+ */
+std::vector<BrowserFingerprint> get_known_browser_fingerprints();
+
+/**
+ * Compare a fingerprint against known browser profiles
+ * Returns the best matching profile and similarity score
+ */
+std::pair<BrowserProfile, double> match_browser_profile(const FingerprintData& fingerprint);
+
+/**
+ * Get detailed information about a browser profile
+ */
+std::optional<BrowserFingerprint> get_browser_profile_info(BrowserProfile profile);
+
+/**
+ * Get browser profile name as string
+ */
+std::string browser_profile_name(BrowserProfile profile);
+
+/**
+ * Parse ClientHello message to extract fingerprint components
+ * This is called by external code that captures the ClientHello
+ */
+FingerprintData parse_client_hello(const uint8_t* data, size_t length);
+
+/**
+ * Evaluate TLS fingerprint against best practices
+ * Returns recommendations for stealth mode
+ */
+struct FingerprintEvaluation {
+    bool looks_like_browser{false};
+    bool needs_stealth_mode{true};
+    BrowserProfile recommended_profile{BrowserProfile::CHROME_135};
+    std::vector<std::string> warnings;
+    std::vector<std::string> recommendations;
+};
+
+FingerprintEvaluation evaluate_fingerprint(const FingerprintData& fingerprint);
+
+}  // namespace yume::tls_fingerprint

@@ -62,6 +62,9 @@
 #include "core/obfs.hpp"
 #include "core/protocol.hpp"
 #include "core/version.hpp"
+#include "core/tls_fingerprint.hpp"
+#include "core/tls_stealth.hpp"
+#include "core/tls_metrics.hpp"
 #include "util.hpp"
 #include <nlohmann/json.hpp>
 
@@ -620,6 +623,15 @@ struct ParsedArgs {
     std::string anonym_ca_cert;
     std::string tls_ca_cert;
     std::string tls_pin_sha256;
+    bool tls_stealth{true};  // ON by default
+    bool tls_stealth_override{false};
+    std::string tls_stealth_profile{"chrome"};
+    bool tls_stealth_rotate{false};
+    std::uint32_t tls_stealth_rotation_interval{100};
+    bool tls_fingerprint_log{false};
+    std::string tls_fingerprint_log_path{"./logs/fingerprints"};
+    bool tls_fingerprint_verify{false};
+    std::string tls_fingerprint_test_endpoint{"tls.peet.ws"};
     bool help{false};
     bool accept_monitoring{false};
     bool save_server{false};
@@ -738,6 +750,23 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.tls_ca_cert = argv[++i];
         } else if (arg == "--tls-pin" && i + 1 < argc) {
             args.tls_pin_sha256 = argv[++i];
+        } else if (arg == "--no-stealth") {
+            args.tls_stealth = false;
+            args.tls_stealth_override = true;
+        } else if (arg == "--profile" && i + 1 < argc) {
+            args.tls_stealth_profile = argv[++i];
+        } else if (arg == "--tls-stealth-rotate") {
+            args.tls_stealth_rotate = true;
+        } else if (arg == "--tls-stealth-rotation-interval" && i + 1 < argc) {
+            args.tls_stealth_rotation_interval = std::stoul(argv[++i]);
+        } else if (arg == "--tls-fingerprint-log") {
+            args.tls_fingerprint_log = true;
+        } else if (arg == "--tls-fingerprint-log-path" && i + 1 < argc) {
+            args.tls_fingerprint_log_path = argv[++i];
+        } else if (arg == "--tls-fingerprint-verify") {
+            args.tls_fingerprint_verify = true;
+        } else if (arg == "--tls-fingerprint-test-endpoint" && i + 1 < argc) {
+            args.tls_fingerprint_test_endpoint = argv[++i];
         } else if (arg == "--accept-monitoring") {
             args.accept_monitoring = true;
         } else if (arg == "--save-server") {
@@ -949,6 +978,14 @@ void print_help() {
         << "  --anonym-ca-cert <path> CA certificate for anonymity verification\n"
         << "  --tls-ca <path>      Custom CA for TLS verification\n"
         << "  --tls-pin <sha256>   Pin server TLS certificate fingerprint\n"
+        << "  --profile <name>     TLS stealth profile: chrome (default), firefox, safari\n"
+        << "  --no-stealth         Disable TLS stealth mode (ON by default)\n"
+        << "  --tls-stealth-rotate Rotate between stealth profiles\n"
+        << "  --tls-stealth-rotation-interval <n>  Profile rotation interval (connections)\n"
+        << "  --tls-fingerprint-log  Log TLS fingerprint metrics\n"
+        << "  --tls-fingerprint-log-path <path>  Path for fingerprint logs\n"
+        << "  --tls-fingerprint-verify  Verify fingerprint with test endpoint\n"
+        << "  --tls-fingerprint-test-endpoint <host>  Test endpoint for verification\n"
         << "  --run, -c, --cmd <cmd>  Run command locally with YUME proxy\n"
         << "                          (SSH auto-wraps ProxyCommand via SOCKS)\n"
         << "  --run-ipv4           Prefer IPv4 for --run commands\n"
@@ -1235,6 +1272,30 @@ int Cli::run(int argc, char** argv) {
     if (args.non_interactive) {
         cfg.non_interactive = true;
     }
+    if (args.tls_stealth_override) {
+        cfg.tls_stealth_enabled = args.tls_stealth;
+    }
+    if (!args.tls_stealth_profile.empty()) {
+        cfg.tls_stealth_profile = args.tls_stealth_profile;
+    }
+    if (args.tls_stealth_rotate) {
+        cfg.tls_stealth_rotate = true;
+    }
+    if (args.tls_stealth_rotation_interval > 0) {
+        cfg.tls_stealth_rotation_interval = args.tls_stealth_rotation_interval;
+    }
+    if (args.tls_fingerprint_log) {
+        cfg.tls_fingerprint_log = true;
+    }
+    if (!args.tls_fingerprint_log_path.empty()) {
+        cfg.tls_fingerprint_log_path = args.tls_fingerprint_log_path;
+    }
+    if (args.tls_fingerprint_verify) {
+        cfg.tls_fingerprint_verify = true;
+    }
+    if (!args.tls_fingerprint_test_endpoint.empty()) {
+        cfg.tls_fingerprint_test_endpoint = args.tls_fingerprint_test_endpoint;
+    }
 #if defined(_WIN32) || defined(__APPLE__)
     if (cfg.tls_ca_cert.empty() && !cfg.anonym_ca_cert.empty()) {
         cfg.tls_ca_cert = cfg.anonym_ca_cert;
@@ -1365,11 +1426,53 @@ int Cli::run(int argc, char** argv) {
         std::function<std::string()> status_block_builder;
         try {
             boost::asio::io_context io(resolve_io_threads(cfg.io_threads));
-            auto ctx = obfs::create_client_context();
-            ctx.set_verify_mode(boost::asio::ssl::verify_peer);
-            ctx.set_default_verify_paths();
+            
+            // Initialize stealth mode if enabled
+            std::unique_ptr<boost::asio::ssl::context> owned_ctx;
+            boost::asio::ssl::context* ctx = nullptr;
+            if (cfg.tls_stealth_enabled) {
+                // Initialize metrics manager
+                if (cfg.tls_fingerprint_log) {
+                    tls_metrics::MetricsManager::instance().initialize(cfg.tls_fingerprint_log_path);
+                }
+
+                // Parse browser profile
+                tls_fingerprint::BrowserProfile profile = tls_fingerprint::BrowserProfile::CHROME_135;
+                std::string profile_lower = cfg.tls_stealth_profile;
+                std::transform(profile_lower.begin(), profile_lower.end(), profile_lower.begin(), ::tolower);
+
+                if (profile_lower == "chrome" || profile_lower == "chrome135" || profile_lower == "chrome_135") {
+                    profile = tls_fingerprint::BrowserProfile::CHROME_135;
+                } else if (profile_lower == "firefox" || profile_lower == "firefox126" || profile_lower == "firefox_126") {
+                    profile = tls_fingerprint::BrowserProfile::FIREFOX_126;
+                } else if (profile_lower == "safari" || profile_lower == "safari17" || profile_lower == "safari_17") {
+                    profile = tls_fingerprint::BrowserProfile::SAFARI_17;
+                }
+
+                // Create stealth configuration
+                tls_stealth::StealthConfig stealth_config;
+                stealth_config.enabled = true;
+                stealth_config.target_profile = profile;
+                stealth_config.rotate_profiles = cfg.tls_stealth_rotate;
+                stealth_config.rotation_interval_connections = cfg.tls_stealth_rotation_interval;
+                stealth_config.log_fingerprints = cfg.tls_fingerprint_log;
+                stealth_config.log_file_path = cfg.tls_fingerprint_log_path;
+                stealth_config.verify_with_external_api = cfg.tls_fingerprint_verify;
+                stealth_config.test_endpoint = cfg.tls_fingerprint_test_endpoint;
+
+                // Initialize stealth manager
+                tls_stealth::StealthManager::instance().initialize(stealth_config);
+
+                ctx = &tls_stealth::StealthManager::instance().get_context().get_context();
+            } else {
+                owned_ctx = std::make_unique<boost::asio::ssl::context>(obfs::create_client_context());
+                ctx = owned_ctx.get();
+            }
+
+            ctx->set_verify_mode(boost::asio::ssl::verify_peer);
+            ctx->set_default_verify_paths();
             if (!cfg.tls_ca_cert.empty()) {
-                ctx.load_verify_file(cfg.tls_ca_cert);
+                ctx->load_verify_file(cfg.tls_ca_cert);
             }
 
             boost::asio::ip::tcp::resolver resolver(io);
@@ -1379,7 +1482,7 @@ int Cli::run(int argc, char** argv) {
             } catch (const boost::system::system_error& ex) {
                 throw std::runtime_error("server offline, unable to establish connection (DNS resolution failed: " + std::string(ex.what()) + ")");
             }
-            boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, ctx);
+            boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, *ctx);
             try {
                 boost::asio::connect(stream.next_layer(), endpoints);
             } catch (const boost::system::system_error& ex) {
@@ -1400,8 +1503,14 @@ int Cli::run(int argc, char** argv) {
             }
             SSL_set_tlsext_host_name(stream.native_handle(), cfg.server.c_str());
             SSL_set1_host(stream.native_handle(), cfg.server.c_str());
+            
+            auto handshake_start = std::chrono::steady_clock::now();
             boost::system::error_code hs_ec;
             stream.handshake(boost::asio::ssl::stream_base::client, hs_ec);
+            auto handshake_end = std::chrono::steady_clock::now();
+            auto handshake_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+                handshake_end - handshake_start);
+            
             if (hs_ec) {
                 long vr = SSL_get_verify_result(stream.native_handle());
                 std::string detail = describe_verify_result(vr, cfg.server);
@@ -1420,6 +1529,29 @@ int Cli::run(int argc, char** argv) {
                 if (fp.empty() || fp != cfg.tls_pin_sha256) {
                     throw std::runtime_error("TLS pin mismatch");
                 }
+            }
+
+            // Log TLS fingerprint metrics if stealth mode is enabled
+            if (cfg.tls_stealth_enabled && cfg.tls_fingerprint_log) {
+                // Create fingerprint data (simplified - full implementation would parse ClientHello)
+                tls_fingerprint::FingerprintData fingerprint;
+                // In production, you'd capture and parse the actual ClientHello here
+                
+                // Get the current profile being used
+                tls_fingerprint::BrowserProfile profile = 
+                    tls_stealth::StealthManager::instance().get_context().current_profile();
+                
+                // Record the connection
+                tls_metrics::MetricsManager::instance().record_connection_fingerprint(
+                    cfg.server,
+                    static_cast<uint16_t>(cfg.port),
+                    fingerprint,
+                    true,  // stealth_enabled
+                    profile,
+                    true,  // handshake_succeeded
+                    static_cast<uint32_t>(handshake_duration.count()),
+                    ""     // error_message
+                );
             }
 
             inner::Config inner_cfg;
@@ -1558,8 +1690,13 @@ int Cli::run(int argc, char** argv) {
                 server_hop_enabled = json.value("hop_enabled", false);
                 server_hop_interval_ms = static_cast<std::uint32_t>(json.value("hop_interval_ms", 0));
                 server_time_ms = json.value("server_time_ms", 0LL);
-            } catch (const std::exception& ex) {
+            } catch (const nlohmann::json::parse_error&) {
                 throw std::runtime_error("this does not appear to be a yume server (invalid server response)");
+            } catch (const std::exception& ex) {
+                throw std::runtime_error("this does not appear to be a yume server (" + std::string(ex.what()) + ")");
+            }
+            if (server_version.empty() || server_version == "UNKNOWN") {
+                throw std::runtime_error("this does not appear to be a yume server (no version info)");
             }
 
             auto sanitize_msg = [&](const std::string& msg) {

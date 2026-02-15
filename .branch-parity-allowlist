@@ -1,0 +1,10 @@
+# Debug/diagnostics files allowed to differ between main and DEV
+AI_gen/**
+docs/dev/**
+docs/debug/**
+diagnose.log
+test_output.txt
+*.log
+scripts/debug/**
+yumedd
+yumeddd

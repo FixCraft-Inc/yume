@@ -30,8 +30,26 @@ else()
 endif()
 
 if(CMAKE_CROSSCOMPILING AND YUME_STATIC)
-    if(DEFINED CMAKE_SYSROOT AND NOT EXISTS "${CMAKE_SYSROOT}/usr/lib/libz.a")
-        message(WARNING "Static link requested but libz.a not found in sysroot; disabling static link.")
+    set(_yume_static_zlib_ok OFF)
+    if(DEFINED ZLIB_LIBRARY AND EXISTS "${ZLIB_LIBRARY}" AND ZLIB_LIBRARY MATCHES "\\.a$")
+        set(_yume_static_zlib_ok ON)
+    endif()
+    if(NOT _yume_static_zlib_ok AND DEFINED CMAKE_SYSROOT)
+        set(_yume_zlib_candidates
+            "${CMAKE_SYSROOT}/usr/lib/libz.a"
+            "${CMAKE_SYSROOT}/usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}/libz.a"
+            "${CMAKE_SYSROOT}/lib/libz.a"
+            "${CMAKE_SYSROOT}/lib/${CMAKE_LIBRARY_ARCHITECTURE}/libz.a"
+        )
+        foreach(_yume_zlib_path IN LISTS _yume_zlib_candidates)
+            if(_yume_zlib_path AND EXISTS "${_yume_zlib_path}")
+                set(_yume_static_zlib_ok ON)
+                break()
+            endif()
+        endforeach()
+    endif()
+    if(NOT _yume_static_zlib_ok)
+        message(WARNING "Static link requested but libz.a not found (set ZLIB_LIBRARY or install static libs); disabling static link.")
         set(YUME_STATIC OFF CACHE BOOL "Attempt static build (requires static deps)" FORCE)
         set(OPENSSL_USE_STATIC_LIBS FALSE)
         set(Boost_USE_STATIC_LIBS OFF)

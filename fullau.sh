@@ -404,6 +404,24 @@ static_libs_ok() {
   return 0
 }
 
+binary_is_static() {
+  local bin="$1"
+  if [[ ! -f "${bin}" ]]; then
+    return 1
+  fi
+  if command -v readelf >/dev/null 2>&1; then
+    if readelf -l "${bin}" 2>/dev/null | rg -q "INTERP"; then
+      return 1
+    fi
+    return 0
+  fi
+  if command -v file >/dev/null 2>&1; then
+    file "${bin}" 2>/dev/null | rg -qi "statically linked"
+    return $?
+  fi
+  return 0
+}
+
 auto_detect_toolchain() {
   local triplet="$1"
   local gcc_path
@@ -484,7 +502,11 @@ auto_detect_toolchains() {
     ARMV8_LINUX_SYSROOT="/"
   fi
   if [[ -z "${ARMV8_BUSYBOX_TOOLCHAIN_PREFIX}" || -z "${ARMV8_BUSYBOX_SYSROOT}" ]]; then
-    if [[ -n "${ARMV8_LINUX_TOOLCHAIN_PREFIX}" && -n "${ARMV8_LINUX_SYSROOT}" ]]; then
+    res="$(auto_detect_toolchain "aarch64-linux-musl" || true)"
+    if [[ -n "${res}" ]]; then
+      ARMV8_BUSYBOX_TOOLCHAIN_PREFIX="${res%%|*}"
+      ARMV8_BUSYBOX_SYSROOT="${res##*|}"
+    elif [[ -n "${ARMV8_LINUX_TOOLCHAIN_PREFIX}" && -n "${ARMV8_LINUX_SYSROOT}" ]]; then
       ARMV8_BUSYBOX_TOOLCHAIN_PREFIX="${ARMV8_LINUX_TOOLCHAIN_PREFIX}"
       ARMV8_BUSYBOX_SYSROOT="${ARMV8_LINUX_SYSROOT}"
     fi
@@ -1144,6 +1166,10 @@ build_busybox_target() {
   if [[ "${variant}" == "static" ]]; then
     lib_ext="a"
   fi
+  local use_musl=0
+  if [[ "${prefix}" == *"linux-musl"* || "${sysroot}" == *"musl"* ]]; then
+    use_musl=1
+  fi
   if [[ "${label}" == "x86" ]]; then
     ensure_i386_deps
     if [[ -f "/lib/i386-linux-gnu/libc.so.6" || -f "/usr/lib/i386-linux-gnu/libc.so.6" ]]; then
@@ -1164,10 +1190,12 @@ build_busybox_target() {
     boost_dir_env="Boost_DIR=$(resolve_boost_dir arm-linux-gnueabihf)"
   elif [[ "${label}" == "armv8" ]]; then
     ensure_arm64_deps
-    if [[ -f "/lib/aarch64-linux-gnu/libc.so.6" || -f "/usr/lib/aarch64-linux-gnu/libc.so.6" ]]; then
-      sysroot="/"
+    if (( use_musl == 0 )); then
+      if [[ -f "/lib/aarch64-linux-gnu/libc.so.6" || -f "/usr/lib/aarch64-linux-gnu/libc.so.6" ]]; then
+        sysroot="/"
+      fi
+      boost_dir_env="Boost_DIR=$(resolve_boost_dir aarch64-linux-gnu)"
     fi
-    boost_dir_env="Boost_DIR=$(resolve_boost_dir aarch64-linux-gnu)"
   fi
   make_toolchain_file "${toolchain_file}" "${prefix}" "${sysroot}" "${cmake_arch}"
   if [[ "${label}" == "x86" ]]; then
@@ -1179,9 +1207,15 @@ EOF
 set(CMAKE_LIBRARY_ARCHITECTURE arm-linux-gnueabihf)
 EOF
   elif [[ "${label}" == "armv8" ]]; then
-    cat >> "${toolchain_file}" <<EOF
+    if (( use_musl == 1 )); then
+      cat >> "${toolchain_file}" <<EOF
+set(CMAKE_LIBRARY_ARCHITECTURE aarch64-linux-musl)
+EOF
+    else
+      cat >> "${toolchain_file}" <<EOF
 set(CMAKE_LIBRARY_ARCHITECTURE aarch64-linux-gnu)
 EOF
+    fi
   fi
   require_vendor_dir "${VENDOR_DIR}/busybox-${label}"
   if [[ "${label}" == "x86" ]]; then
@@ -1257,28 +1291,56 @@ EOF
     fi
   elif [[ "${label}" == "armv8" ]]; then
     if [[ "${variant}" == "static" ]]; then
+      local inc_dir="/usr/include"
+      local lib_dir="/usr/lib/aarch64-linux-gnu"
+      if (( use_musl == 1 )); then
+        if [[ -d "${sysroot}/usr/lib" ]]; then
+          lib_dir="${sysroot}/usr/lib"
+        elif [[ -d "${sysroot}/lib" ]]; then
+          lib_dir="${sysroot}/lib"
+        fi
+        if [[ -d "${sysroot}/usr/include" ]]; then
+          inc_dir="${sysroot}/usr/include"
+        elif [[ -d "${sysroot}/include" ]]; then
+          inc_dir="${sysroot}/include"
+        fi
+      fi
       if ! static_libs_ok "${label} busybox" \
-        "/usr/lib/aarch64-linux-gnu/libz.a" \
-        "/usr/lib/aarch64-linux-gnu/liblzma.a" \
-        "/usr/lib/aarch64-linux-gnu/libzstd.a" \
-        "/usr/lib/aarch64-linux-gnu/libssl.a" \
-        "/usr/lib/aarch64-linux-gnu/libcrypto.a" \
-        "/usr/lib/aarch64-linux-gnu/libboost_system.a" \
-        "/usr/lib/aarch64-linux-gnu/libboost_thread.a"; then
+        "${lib_dir}/libz.a" \
+        "${lib_dir}/liblzma.a" \
+        "${lib_dir}/libzstd.a" \
+        "${lib_dir}/libssl.a" \
+        "${lib_dir}/libcrypto.a" \
+        "${lib_dir}/libboost_system.a" \
+        "${lib_dir}/libboost_thread.a"; then
         return 0
       fi
     fi
-    local zlib_lib="/usr/lib/aarch64-linux-gnu/libz.${lib_ext}"
-    local lzma_lib="/usr/lib/aarch64-linux-gnu/liblzma.${lib_ext}"
-    local zstd_lib="/usr/lib/aarch64-linux-gnu/libzstd.${lib_ext}"
-    local ssl_lib="/usr/lib/aarch64-linux-gnu/libssl.${lib_ext}"
-    local crypto_lib="/usr/lib/aarch64-linux-gnu/libcrypto.${lib_ext}"
-    local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include ${variant_args}"
+    local inc_dir="/usr/include"
+    local lib_dir="/usr/lib/aarch64-linux-gnu"
+    if (( use_musl == 1 )); then
+      if [[ -d "${sysroot}/usr/lib" ]]; then
+        lib_dir="${sysroot}/usr/lib"
+      elif [[ -d "${sysroot}/lib" ]]; then
+        lib_dir="${sysroot}/lib"
+      fi
+      if [[ -d "${sysroot}/usr/include" ]]; then
+        inc_dir="${sysroot}/usr/include"
+      elif [[ -d "${sysroot}/include" ]]; then
+        inc_dir="${sysroot}/include"
+      fi
+    fi
+    local zlib_lib="${lib_dir}/libz.${lib_ext}"
+    local lzma_lib="${lib_dir}/liblzma.${lib_ext}"
+    local zstd_lib="${lib_dir}/libzstd.${lib_ext}"
+    local ssl_lib="${lib_dir}/libssl.${lib_ext}"
+    local crypto_lib="${lib_dir}/libcrypto.${lib_ext}"
+    local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=${inc_dir} -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=${inc_dir} ${variant_args}"
     if [[ -f "${lzma_lib}" ]]; then
-      extra_args="${extra_args} -DLZMA_LIBRARY=${lzma_lib} -DLZMA_INCLUDE_DIR=/usr/include"
+      extra_args="${extra_args} -DLZMA_LIBRARY=${lzma_lib} -DLZMA_INCLUDE_DIR=${inc_dir}"
     fi
     if [[ -f "${zstd_lib}" ]]; then
-      extra_args="${extra_args} -DZSTD_LIBRARY=${zstd_lib} -DZSTD_INCLUDE_DIR=/usr/include"
+      extra_args="${extra_args} -DZSTD_LIBRARY=${zstd_lib} -DZSTD_INCLUDE_DIR=${inc_dir}"
     fi
     if [[ -n "${boost_dir_env}" ]]; then
       extra_args="${extra_args} -D${boost_dir_env}"
@@ -1293,6 +1355,12 @@ EOF
   fi
   copy_build_outputs "${outdir}" "" || return 1
   "${prefix}-strip" --strip-unneeded "${outdir}/yume" "${outdir}/yumed"
+  if [[ "${variant}" == "static" ]]; then
+    if ! binary_is_static "${outdir}/yume" || ! binary_is_static "${outdir}/yumed"; then
+      echo "Busybox static build produced dynamic binaries. Install static deps or use a musl toolchain for ${label}." >&2
+      exit 1
+    fi
+  fi
 }
 
 require_vendor_dir() {

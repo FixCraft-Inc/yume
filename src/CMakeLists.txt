@@ -139,6 +139,9 @@ add_library(yume_core
     core/inner_crypto.cpp
     core/protocol.cpp
     core/obfs.cpp
+    core/tls_fingerprint.cpp
+    core/tls_stealth.cpp
+    core/tls_metrics.cpp
     util.cpp
 )
 

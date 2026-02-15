@@ -71,6 +71,261 @@
 namespace yume::client {
 
 namespace {
+struct FatalError : public std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
+constexpr std::chrono::milliseconds kConnectTimeout{10000};
+constexpr std::chrono::milliseconds kHandshakeTimeout{12000};
+constexpr std::chrono::milliseconds kAuthChallengeTimeout{6000};
+constexpr std::chrono::milliseconds kServerInfoTimeout{6000};
+
+struct IoOpResult {
+    boost::system::error_code ec;
+    bool timed_out{false};
+    std::size_t bytes{0};
+};
+
+template <typename AsyncStream, typename CancelFn>
+IoOpResult read_exact_with_timeout(AsyncStream& stream,
+                                  boost::asio::io_context& io,
+                                  const boost::asio::mutable_buffer& buf,
+                                  std::chrono::milliseconds timeout,
+                                  CancelFn cancel) {
+    IoOpResult res{};
+    bool done = false;
+
+    boost::asio::steady_timer timer(io);
+    timer.expires_after(timeout);
+    timer.async_wait([&](const boost::system::error_code& ec) {
+        if (!ec && !done) {
+            res.timed_out = true;
+            cancel();
+        }
+    });
+
+    boost::asio::async_read(stream, buf, [&](const boost::system::error_code& ec, std::size_t bytes) {
+        res.ec = ec;
+        res.bytes = bytes;
+        done = true;
+        boost::system::error_code ignored;
+        timer.cancel(ignored);
+    });
+
+    io.restart();
+    io.run();
+    return res;
+}
+
+IoOpResult connect_with_timeout(boost::asio::ip::tcp::socket& sock,
+                                const boost::asio::ip::tcp::resolver::results_type& endpoints,
+                                boost::asio::io_context& io,
+                                std::chrono::milliseconds timeout) {
+    IoOpResult res{};
+    bool done = false;
+
+    boost::asio::steady_timer timer(io);
+    timer.expires_after(timeout);
+    timer.async_wait([&](const boost::system::error_code& ec) {
+        if (!ec && !done) {
+            res.timed_out = true;
+            boost::system::error_code ignored;
+            sock.cancel(ignored);
+            sock.close(ignored);
+        }
+    });
+
+    boost::asio::async_connect(sock, endpoints,
+                               [&](const boost::system::error_code& ec, const boost::asio::ip::tcp::endpoint&) {
+                                   res.ec = ec;
+                                   done = true;
+                                   boost::system::error_code ignored;
+                                   timer.cancel(ignored);
+                               });
+
+    io.restart();
+    io.run();
+    return res;
+}
+
+IoOpResult handshake_with_timeout(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+                                  boost::asio::io_context& io,
+                                  std::chrono::milliseconds timeout) {
+    IoOpResult res{};
+    bool done = false;
+
+    boost::asio::steady_timer timer(io);
+    timer.expires_after(timeout);
+    timer.async_wait([&](const boost::system::error_code& ec) {
+        if (!ec && !done) {
+            res.timed_out = true;
+            boost::system::error_code ignored;
+            stream.lowest_layer().cancel(ignored);
+            stream.lowest_layer().close(ignored);
+        }
+    });
+
+    stream.async_handshake(boost::asio::ssl::stream_base::client,
+                           [&](const boost::system::error_code& ec) {
+                               res.ec = ec;
+                               done = true;
+                               boost::system::error_code ignored;
+                               timer.cancel(ignored);
+                           });
+
+    io.restart();
+    io.run();
+    return res;
+}
+
+std::string hex_preview(const uint8_t* data, std::size_t len, std::size_t max = 16) {
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    std::size_t n = std::min(len, max);
+    for (std::size_t i = 0; i < n; ++i) {
+        if (i) {
+            oss << ' ';
+        }
+        oss << std::setw(2) << static_cast<unsigned int>(data[i]);
+    }
+    if (len > max) {
+        oss << " ...";
+    }
+    return oss.str();
+}
+
+std::string ascii_preview(const uint8_t* data, std::size_t len, std::size_t max = 64) {
+    std::string out;
+    std::size_t n = std::min(len, max);
+    out.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        unsigned char c = data[i];
+        if (c >= 0x20 && c < 0x7f) {
+            out.push_back(static_cast<char>(c));
+        } else {
+            out.push_back('.');
+        }
+    }
+    if (len > max) {
+        out += "...";
+    }
+    return out;
+}
+
+std::string classify_plaintext_prefix(const uint8_t* data, std::size_t len) {
+    if (!data || len == 0) {
+        return {};
+    }
+    const auto starts_with = [&](const char* lit) {
+        std::size_t n = std::strlen(lit);
+        return len >= n && std::memcmp(data, lit, n) == 0;
+    };
+    if (starts_with("SSH-")) {
+        return "SSH";
+    }
+    if (starts_with("HTTP/")) {
+        return "HTTP";
+    }
+    if (starts_with("GET ") || starts_with("POST ") || starts_with("HEAD ") || starts_with("PUT ") || starts_with("OPTIONS ")) {
+        return "HTTP";
+    }
+    return {};
+}
+
+std::string endpoint_hint_tls(bool tls_handshake_succeeded,
+                              const uint8_t* prefix,
+                              std::size_t prefix_len) {
+    if (tls_handshake_succeeded) {
+        return "TLS (likely HTTPS)";
+    }
+    std::string plain = classify_plaintext_prefix(prefix, prefix_len);
+    if (!plain.empty()) {
+        return plain;
+    }
+    return "unknown";
+}
+
+bool looks_like_yume_header(const std::array<uint8_t, 8>& header) {
+    uint32_t len = (static_cast<uint32_t>(header[0]) << 24) |
+                   (static_cast<uint32_t>(header[1]) << 16) |
+                   (static_cast<uint32_t>(header[2]) << 8) |
+                   (static_cast<uint32_t>(header[3]));
+    uint8_t type = header[4];
+    if (len > 16U * 1024U * 1024U) {
+        return false;
+    }
+    if (type < protocol::AUTH || type > protocol::SOPEN) {
+        return false;
+    }
+    return true;
+}
+
+protocol::Frame read_frame_with_timeout(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+                                       boost::asio::io_context& io,
+                                       std::chrono::milliseconds timeout,
+                                       const char* what,
+                                       const std::string& host,
+                                       int port,
+                                       bool tls_handshake_succeeded) {
+    std::array<uint8_t, 8> header_buf{};
+    auto cancel = [&]() {
+        boost::system::error_code ignored;
+        stream.lowest_layer().cancel(ignored);
+        stream.lowest_layer().close(ignored);
+    };
+
+    IoOpResult hr = read_exact_with_timeout(stream, io, boost::asio::buffer(header_buf), timeout, cancel);
+    if (hr.timed_out) {
+        std::string hint = endpoint_hint_tls(tls_handshake_succeeded, nullptr, 0);
+        throw FatalError(std::string("this endpoint is not a yume server (") + host + ":" + std::to_string(port) +
+                         "; timed out waiting for " + what +
+                         "); please check the origin and try again (endpoint identified as: " + hint + ")");
+    }
+    if (hr.ec) {
+        std::string hint = endpoint_hint_tls(tls_handshake_succeeded, header_buf.data(), header_buf.size());
+        throw FatalError(std::string("this endpoint is not a yume server (") + host + ":" + std::to_string(port) +
+                         "; failed to read " + what +
+                         ": " + hr.ec.message() + "); please check the origin and try again (endpoint identified as: " + hint + ")");
+    }
+    if (!looks_like_yume_header(header_buf)) {
+        std::string hint = endpoint_hint_tls(tls_handshake_succeeded, header_buf.data(), header_buf.size());
+        throw FatalError(std::string("this endpoint is not a yume server (") + host + ":" + std::to_string(port) +
+                         "; unexpected " + what +
+                         " header; ascii=\"" + ascii_preview(header_buf.data(), header_buf.size()) +
+                         "\" hex=" + hex_preview(header_buf.data(), header_buf.size()) +
+                         "); please check the origin and try again (endpoint identified as: " + hint + ")");
+    }
+
+    uint32_t len = (static_cast<uint32_t>(header_buf[0]) << 24) |
+                   (static_cast<uint32_t>(header_buf[1]) << 16) |
+                   (static_cast<uint32_t>(header_buf[2]) << 8) |
+                   (static_cast<uint32_t>(header_buf[3]));
+    protocol::Frame frame{};
+    frame.header.len = len;
+    frame.header.type = header_buf[4];
+    frame.header.stream_id = header_buf[5];
+    frame.header.flags = static_cast<uint16_t>(header_buf[6] << 8) |
+                         static_cast<uint16_t>(header_buf[7]);
+
+    frame.payload.resize(len);
+    if (len > 0) {
+        IoOpResult pr = read_exact_with_timeout(stream, io, boost::asio::buffer(frame.payload), timeout, cancel);
+        if (pr.timed_out) {
+            throw FatalError(std::string("this endpoint is not a yume server (") + host + ":" + std::to_string(port) +
+                             "; timed out reading " + what +
+                             " payload); please check the origin and try again (endpoint identified as: " +
+                             endpoint_hint_tls(tls_handshake_succeeded, nullptr, 0) + ")");
+        }
+        if (pr.ec) {
+            throw FatalError(std::string("this endpoint is not a yume server (") + host + ":" + std::to_string(port) +
+                             "; failed reading " + what +
+                             " payload: " + pr.ec.message() + "); please check the origin and try again (endpoint identified as: " +
+                             endpoint_hint_tls(tls_handshake_succeeded, nullptr, 0) + ")");
+        }
+    }
+    return frame;
+}
+
 std::string get_self_path(const char* argv0) {
 #if defined(_WIN32)
     char buf[MAX_PATH];
@@ -917,15 +1172,18 @@ crypto::Bytes auth_payload(EVP_PKEY* pubkey,
 }
 
 void authenticate(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+                  boost::asio::io_context& io,
+                  const std::string& server_host,
+                  int server_port,
                   const std::string& identity_path,
                   const std::optional<crypto::Bytes>& pq_ciphertext,
                   const std::optional<crypto::Bytes>& pq_salt,
                   const std::optional<std::string>& inner_mode,
                   const std::optional<bool>& inner_hop,
                   const std::optional<inner::KdfParams>& inner_kdf) {
-    protocol::Frame challenge = protocol::read_frame(stream);
+    protocol::Frame challenge = read_frame_with_timeout(stream, io, kAuthChallengeTimeout, "AUTH challenge", server_host, server_port, true);
     if (challenge.header.type != protocol::AUTH) {
-        throw std::runtime_error("server did not send AUTH challenge");
+        throw FatalError("this endpoint is not a yume server (server did not send AUTH challenge); please check the origin and try again");
     }
 
     auto kp = crypto::load_keypair(identity_path, "");
@@ -1043,6 +1301,9 @@ int resolve_io_threads(int requested) {
 }
 
 void run_io_threads(boost::asio::io_context& io, int requested) {
+    // We run the io_context in small synchronous bursts earlier (connect/handshake/probes),
+    // which leaves it in the "stopped" state. Restart before running the main event loop.
+    io.restart();
     int threads = resolve_io_threads(requested);
     std::vector<std::thread> workers;
     if (threads > 1) {
@@ -1058,6 +1319,7 @@ void run_io_threads(boost::asio::io_context& io, int requested) {
 }
 
 std::vector<std::thread> start_io_threads(boost::asio::io_context& io, int requested) {
+    io.restart();
     int threads = resolve_io_threads(requested);
     std::vector<std::thread> workers;
     workers.reserve(static_cast<size_t>(threads));
@@ -1480,11 +1742,17 @@ int Cli::run(int argc, char** argv) {
             try {
                 endpoints = resolver.resolve(boost::asio::ip::tcp::v4(), cfg.server, std::to_string(cfg.port));
             } catch (const boost::system::system_error& ex) {
-                throw std::runtime_error("server offline, unable to establish connection (DNS resolution failed: " + std::string(ex.what()) + ")");
+                throw std::runtime_error("server offline, could not reach endpoint (DNS resolution failed: " + std::string(ex.what()) + ")");
             }
             boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, *ctx);
             try {
-                boost::asio::connect(stream.next_layer(), endpoints);
+                auto cr = connect_with_timeout(stream.next_layer(), endpoints, io, kConnectTimeout);
+                if (cr.timed_out) {
+                    throw std::runtime_error("server offline, could not reach endpoint (connect timeout)");
+                }
+                if (cr.ec) {
+                    throw boost::system::system_error(cr.ec);
+                }
             } catch (const boost::system::system_error& ex) {
                 auto code = ex.code();
                 if (code == boost::asio::error::connection_refused ||
@@ -1492,9 +1760,9 @@ int Cli::run(int argc, char** argv) {
                     code == boost::asio::error::network_unreachable ||
                     code == boost::asio::error::timed_out ||
                     code == boost::asio::error::network_down) {
-                    throw std::runtime_error("server offline, unable to establish connection");
+                    throw std::runtime_error("server offline, could not reach endpoint");
                 }
-                throw std::runtime_error("server offline, unable to establish connection (" + std::string(ex.what()) + ")");
+                throw std::runtime_error("server offline, could not reach endpoint (" + std::string(ex.what()) + ")");
             }
             boost::system::error_code keep_ec;
             stream.next_layer().set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
@@ -1506,7 +1774,13 @@ int Cli::run(int argc, char** argv) {
             
             auto handshake_start = std::chrono::steady_clock::now();
             boost::system::error_code hs_ec;
-            stream.handshake(boost::asio::ssl::stream_base::client, hs_ec);
+            {
+                auto hr = handshake_with_timeout(stream, io, kHandshakeTimeout);
+                if (hr.timed_out) {
+                    throw std::runtime_error("TLS handshake failed: timeout");
+                }
+                hs_ec = hr.ec;
+            }
             auto handshake_end = std::chrono::steady_clock::now();
             auto handshake_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
                 handshake_end - handshake_start);
@@ -1608,17 +1882,19 @@ int Cli::run(int argc, char** argv) {
                 inner_hop = cfg.inner_hop;
             }
 
-            authenticate(stream, cfg.identity, pq_ciphertext, pq_salt, inner_mode, inner_hop, inner_kdf);
+            authenticate(stream, io, cfg.server, cfg.port, cfg.identity, pq_ciphertext, pq_salt, inner_mode, inner_hop, inner_kdf);
             util::log_info("authenticated to server");
 
             protocol::Frame anon_frame;
             try {
-                anon_frame = protocol::read_frame(stream);
-            } catch (const std::exception& ex) {
-                throw std::runtime_error("this does not appear to be a yume server (failed to read server info)");
+                anon_frame = read_frame_with_timeout(stream, io, kServerInfoTimeout, "server info", cfg.server, cfg.port, true);
+            } catch (const FatalError&) {
+                throw;
+            } catch (const std::exception&) {
+                throw FatalError("this endpoint is not a yume server (failed to read server info); please check the origin and try again");
             }
             if (anon_frame.header.type != protocol::ANON) {
-                throw std::runtime_error("this does not appear to be a yume server (unexpected response type)");
+                throw FatalError("this endpoint is not a yume server (unexpected response type); please check the origin and try again");
             }
             bool pq_reconnect = false;
             bool have_anon = false;
@@ -1691,12 +1967,12 @@ int Cli::run(int argc, char** argv) {
                 server_hop_interval_ms = static_cast<std::uint32_t>(json.value("hop_interval_ms", 0));
                 server_time_ms = json.value("server_time_ms", 0LL);
             } catch (const nlohmann::json::parse_error&) {
-                throw std::runtime_error("this does not appear to be a yume server (invalid server response)");
+                throw FatalError("this endpoint is not a yume server (invalid server response); please check the origin and try again");
             } catch (const std::exception& ex) {
-                throw std::runtime_error("this does not appear to be a yume server (" + std::string(ex.what()) + ")");
+                throw FatalError("this endpoint is not a yume server (" + std::string(ex.what()) + "); please check the origin and try again");
             }
             if (server_version.empty() || server_version == "UNKNOWN") {
-                throw std::runtime_error("this does not appear to be a yume server (no version info)");
+                throw FatalError("this endpoint is not a yume server (no version info); please check the origin and try again");
             }
 
             auto sanitize_msg = [&](const std::string& msg) {
@@ -2552,6 +2828,9 @@ int Cli::run(int argc, char** argv) {
             }
 
             util::log_warn("no mode selected");
+            return 1;
+        } catch (const FatalError& ex) {
+            util::log_error(ex.what());
             return 1;
         } catch (const std::exception& ex) {
             attempt++;

@@ -886,7 +886,7 @@ EOF
         homebrew_prefix="$(brew --prefix)"
         info "Homebrew prefix: ${homebrew_prefix}"
         # Only add if not already set via YUME_CMAKE_ARGS
-        if [[ " ${CMAKE_ARGS[*]} " != *"CMAKE_PREFIX_PATH"* ]]; then
+        if [[ " ${CMAKE_ARGS[*]:-} " != *"CMAKE_PREFIX_PATH"* ]]; then
             # Find Boost cmake config directory
             local boost_cmake_dir=""
             if [[ -d "${homebrew_prefix}/opt/boost/lib/cmake" ]]; then

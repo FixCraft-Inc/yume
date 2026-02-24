@@ -1,8 +1,6 @@
 name: Branch parity
 
 on:
-  push:
-    branches: [main, DEV]
   pull_request:
     branches: [main, DEV]
   workflow_dispatch:
@@ -20,10 +18,14 @@ jobs:
           fetch-depth: 0
 
       - name: Fetch compared branches
+        shell: bash
         run: |
+          set -euo pipefail
           git fetch --no-tags origin main DEV || true
 
       - name: Validate main vs DEV parity
+        shell: bash
         run: |
+          set -euo pipefail
           chmod +x scripts/check_branch_parity.sh
           scripts/check_branch_parity.sh main DEV

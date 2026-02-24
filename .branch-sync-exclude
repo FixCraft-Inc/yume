@@ -1,4 +1,4 @@
-# Debug/diagnostics files allowed to differ between main and DEV
+# Paths that should remain branch-specific and must not be auto-synced.
 AI_gen/**
 docs/dev/**
 docs/debug/**

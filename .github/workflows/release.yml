@@ -12,7 +12,7 @@ on:
       targets:
         description: "Targets to build (comma-separated)"
         required: false
-        default: "linux-x86_64,openwrt-mips,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64"
+        default: "linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64"
         type: string
       draft:
         description: "Create/keep release as draft"
@@ -93,7 +93,7 @@ jobs:
 
       - name: Build (Linux + cross)
         run: |
-          export YUME_TARGETS="${{ github.event.inputs.targets || 'linux-x86_64,openwrt-mips,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64' }}"
+          export YUME_TARGETS="${{ github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64' }}"
           export YUME_WINDOWS_CROSS=1
           export YUME_MACOS_CROSS=0
           echo "Building targets: ${YUME_TARGETS}"
@@ -104,6 +104,7 @@ jobs:
             YUME_TARGETS="${YUME_TARGETS}" \
             YUME_WINDOWS_CROSS="${YUME_WINDOWS_CROSS}" \
             YUME_MACOS_CROSS="${YUME_MACOS_CROSS}" \
+            YUME_OPENWRT_FAST=1 \
             ./fullau.sh
 
       - name: Package artifacts

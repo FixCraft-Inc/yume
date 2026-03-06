@@ -49,6 +49,8 @@ ARMV8_BUSYBOX_TOOLCHAIN_PREFIX="${ARMV8_BUSYBOX_TOOLCHAIN_PREFIX:-}"
 USE_DOCKER_FALLBACK="${USE_DOCKER_FALLBACK:-0}"
 AUTO_DETECT_TOOLCHAINS="${AUTO_DETECT_TOOLCHAINS:-1}"
 OPENWRT_FEEDS_READY=0
+OPENWRT_FAST_MODE="${YUME_OPENWRT_FAST:-0}"
+OPENWRT_TARGET_READY=1
 
 # Helper function to normalize cross-build flags (0 or 1)
 normalize_cross_flag() {
@@ -385,6 +387,13 @@ variant_cmake_args() {
   else
     echo "-DYUME_STATIC=OFF"
   fi
+}
+
+is_truthy() {
+  case "${1,,}" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 static_libs_ok() {
@@ -1002,6 +1011,31 @@ ensure_openwrt_sysroot_libs() {
   compgen -G "${usr}/lib/libboost_thread.so."* >/dev/null 2>&1 && has_boost_thread=1
   if [[ (! -f "${usr}/lib/libboost_system.so" && ${has_boost_system} -eq 0) || (! -f "${usr}/lib/libboost_thread.so" && ${has_boost_thread} -eq 0) ]]; then
     openwrt_build_package "boost"
+  fi
+  return 0
+}
+
+openwrt_sysroot_ready() {
+  local usr="${OPENWRT_USR:-}"
+  if [[ -z "${usr}" || ! -d "${usr}" ]]; then
+    return 1
+  fi
+  if [[ ! -d "${usr}/include/openssl" ]]; then
+    return 1
+  fi
+  if ! compgen -G "${usr}/lib/libcrypto.so."* >/dev/null 2>&1 && [[ ! -f "${usr}/lib/libcrypto.so" && ! -f "${usr}/lib/libcrypto.a" ]]; then
+    return 1
+  fi
+  if ! compgen -G "${usr}/lib/libssl.so."* >/dev/null 2>&1 && [[ ! -f "${usr}/lib/libssl.so" && ! -f "${usr}/lib/libssl.a" ]]; then
+    return 1
+  fi
+  if ! compgen -G "${usr}/lib/libz.so."* >/dev/null 2>&1 && [[ ! -f "${usr}/lib/libz.so" && ! -f "${usr}/lib/libz.a" ]]; then
+    return 1
+  fi
+  local boost_cfg=""
+  boost_cfg="$(find "${usr}/lib/cmake" -maxdepth 2 -type f -name 'BoostConfig.cmake' 2>/dev/null | head -n 1 || true)"
+  if [[ -z "${boost_cfg}" ]]; then
+    return 1
   fi
   return 0
 }
@@ -2089,10 +2123,19 @@ print_build_plan
 ensure_host_deps
 if target_enabled openwrt-mips; then
   ensure_openwrt_sdk
-  ensure_openwrt_sysroot_libs
+  if is_truthy "${OPENWRT_FAST_MODE}"; then
+    if openwrt_sysroot_ready; then
+      echo "OpenWRT fast mode: using pre-staged SDK libs."
+    else
+      echo "OpenWRT fast mode: SDK libs not staged; skipping openwrt-mips target to keep release fast."
+      OPENWRT_TARGET_READY=0
+    fi
+  else
+    ensure_openwrt_sysroot_libs
+  fi
 fi
 
-if target_enabled openwrt-mips; then
+if target_enabled openwrt-mips && [[ "${OPENWRT_TARGET_READY}" -eq 1 ]]; then
   clean_build_dirs
   build_openwrt_target "dynamic" "${BIN_DYNAMIC}/mips/openwrt"
   clean_build_dirs

@@ -596,7 +596,7 @@ maybe_enable_windows_cross() {
   if ! target_enabled windows-x86_64; then
     return 0
   fi
-  if command -v "${WINDOWS_TOOLCHAIN_PREFIX}-g++" >/dev/null 2>&1 && \
+  if resolve_windows_mingw_compilers "${WINDOWS_TOOLCHAIN_PREFIX}" >/dev/null 2>&1 && \
      [[ -n "${VCPKG_ROOT:-}" && -x "${VCPKG_ROOT}/vcpkg" && -f "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" ]]; then
     WINDOWS_CROSS=1
   fi
@@ -681,10 +681,12 @@ print_build_plan() {
     echo "  - openwrt SDK: (will fetch) ${OPENWRT_SDK_PREFERRED}"
   fi
   if [[ "${WINDOWS_CROSS}" -ne 1 && "${WINDOWS_CROSS_AUTO}" -eq 1 ]]; then
-    if ! command -v "${WINDOWS_TOOLCHAIN_PREFIX}-g++" >/dev/null 2>&1; then
-      echo "  - windows toolchain: missing ${WINDOWS_TOOLCHAIN_PREFIX}-g++"
+    if ! resolve_windows_mingw_compilers "${WINDOWS_TOOLCHAIN_PREFIX}" >/dev/null 2>&1; then
+      echo "  - windows toolchain: missing MinGW compiler pair for ${WINDOWS_TOOLCHAIN_PREFIX}"
     else
-      echo "  - windows toolchain: ${WINDOWS_TOOLCHAIN_PREFIX}-g++"
+      local tool_info
+      tool_info="$(resolve_windows_mingw_compilers "${WINDOWS_TOOLCHAIN_PREFIX}" || true)"
+      echo "  - windows toolchain: ${tool_info##*|}"
     fi
   fi
 }
@@ -857,7 +859,7 @@ ensure_host_deps() {
     python3 \
     perl
   if target_enabled windows-x86_64; then
-    apt_install mingw-w64
+    apt_install mingw-w64 gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix
   fi
   if target_enabled macos-x86_64 || target_enabled macos-arm64; then
     apt_install clang lld llvm
@@ -1610,20 +1612,46 @@ copy_build_outputs() {
   cp -f "${yumed_src}" "${outdir}/yumed${exe_suffix}"
 }
 
+resolve_windows_mingw_compilers() {
+  local tool_prefix="$1"
+  local cc=""
+  local cxx=""
+  local rc=""
+  if command -v "${tool_prefix}-g++-posix" >/dev/null 2>&1 && \
+     command -v "${tool_prefix}-gcc-posix" >/dev/null 2>&1; then
+    cxx="${tool_prefix}-g++-posix"
+    cc="${tool_prefix}-gcc-posix"
+  elif command -v "${tool_prefix}-g++" >/dev/null 2>&1 && \
+       command -v "${tool_prefix}-gcc" >/dev/null 2>&1; then
+    cxx="${tool_prefix}-g++"
+    cc="${tool_prefix}-gcc"
+  else
+    return 1
+  fi
+  if command -v "${tool_prefix}-windres" >/dev/null 2>&1; then
+    rc="${tool_prefix}-windres"
+  else
+    return 1
+  fi
+  echo "${cc}|${cxx}|${rc}"
+}
+
 copy_mingw_runtime_dlls() {
   local outdir="$1"
-  local gcc_bin="x86_64-w64-mingw32-g++"
+  local gcc_bin="${2:-x86_64-w64-mingw32-g++}"
+  local tool_prefix="${3:-x86_64-w64-mingw32}"
+  local gcc_triplet="${tool_prefix##*/}"
   local thread_model=""
   if command -v "${gcc_bin}" >/dev/null 2>&1; then
     thread_model="$("${gcc_bin}" -v 2>&1 | awk -F': ' '/Thread model/ {print $2}')"
   fi
   local search_dirs=()
   if [[ "${thread_model}" == "posix" ]]; then
-    search_dirs=(/usr/lib/gcc/x86_64-w64-mingw32/*-posix /usr/lib/gcc/x86_64-w64-mingw32/*-win32)
+    search_dirs=(/usr/lib/gcc/${gcc_triplet}/*-posix /usr/lib/gcc/${gcc_triplet}/*-win32)
   elif [[ "${thread_model}" == "win32" ]]; then
-    search_dirs=(/usr/lib/gcc/x86_64-w64-mingw32/*-win32 /usr/lib/gcc/x86_64-w64-mingw32/*-posix)
+    search_dirs=(/usr/lib/gcc/${gcc_triplet}/*-win32 /usr/lib/gcc/${gcc_triplet}/*-posix)
   else
-    search_dirs=(/usr/lib/gcc/x86_64-w64-mingw32/*)
+    search_dirs=(/usr/lib/gcc/${gcc_triplet}/*)
   fi
 
   local dlls=(libgcc_s_seh-1.dll libstdc++-6.dll)
@@ -1645,7 +1673,7 @@ copy_mingw_runtime_dlls() {
     fi
   done
 
-  local winpthread="/usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll"
+  local winpthread="/usr/${gcc_triplet}/lib/libwinpthread-1.dll"
   if [[ -f "${winpthread}" ]]; then
     cp -f "${winpthread}" "${outdir}/" || true
   else
@@ -1696,6 +1724,10 @@ build_windows_cross_target() {
   local outdir="$2"
   local tool_prefix="${WINDOWS_TOOLCHAIN_PREFIX}"
   local triplet="${WINDOWS_TRIPLET}"
+  local tool_info=""
+  local tool_cc=""
+  local tool_cxx=""
+  local tool_rc=""
   local vcpkg_root="${VCPKG_ROOT:-}"
   local vcpkg_bin=""
   local toolchain_file="/tmp/yume-mingw-toolchain.cmake"
@@ -1712,10 +1744,13 @@ build_windows_cross_target() {
   if [[ "${WINDOWS_CROSS}" -ne 1 ]]; then
     return 0
   fi
-  if ! command -v "${tool_prefix}-g++" >/dev/null 2>&1; then
-    echo "Skipping windows cross build; missing ${tool_prefix}-g++" >&2
+  tool_info="$(resolve_windows_mingw_compilers "${tool_prefix}" || true)"
+  if [[ -z "${tool_info}" ]]; then
+    echo "Skipping windows cross build; missing MinGW POSIX/standard compiler pair for ${tool_prefix}" >&2
     return 0
   fi
+  IFS='|' read -r tool_cc tool_cxx tool_rc <<< "${tool_info}"
+  echo "✨ Windows cross compiler: ${tool_cxx}"
   if [[ -z "${vcpkg_root}" ]]; then
     echo "Skipping windows cross build; set VCPKG_ROOT to your vcpkg clone" >&2
     return 0
@@ -1746,7 +1781,7 @@ build_windows_cross_target() {
     oqs_lib="${vcpkg_prefix}/lib/liboqs.a"
   fi
 
-  sysroot="$("${tool_prefix}-gcc" -print-sysroot 2>/dev/null || true)"
+  sysroot="$("${tool_cc}" -print-sysroot 2>/dev/null || true)"
   if [[ -z "${sysroot}" || "${sysroot}" == "/" ]]; then
     if [[ -d "/usr/${tool_prefix}" ]]; then
       sysroot="/usr/${tool_prefix}"
@@ -1773,15 +1808,15 @@ EOF
     vcpkg_triplet_args+=(--overlay-triplets "${overlay_triplets_dir}")
   fi
 
-  PATH="${shim_bin}:${PATH}" VCPKG_POWERSHELL_PATH="${powershell_stub}" \
+  CC="${tool_cc}" CXX="${tool_cxx}" PATH="${shim_bin}:${PATH}" VCPKG_POWERSHELL_PATH="${powershell_stub}" \
     "${vcpkg_bin}" install "${vcpkg_triplet_args[@]}" ${WINDOWS_VCPKG_PACKAGES}
 
   cat > "${toolchain_file}" <<EOF
 set(CMAKE_SYSTEM_NAME Windows)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
-set(CMAKE_C_COMPILER ${tool_prefix}-gcc)
-set(CMAKE_CXX_COMPILER ${tool_prefix}-g++)
-set(CMAKE_RC_COMPILER ${tool_prefix}-windres)
+set(CMAKE_C_COMPILER ${tool_cc})
+set(CMAKE_CXX_COMPILER ${tool_cxx})
+set(CMAKE_RC_COMPILER ${tool_rc})
 EOF
   if [[ -n "${sysroot}" && -d "${sysroot}" ]]; then
     cat >> "${toolchain_file}" <<EOF
@@ -1826,7 +1861,7 @@ EOF
   if [[ "${triplet}" == *"dynamic"* ]]; then
     cp -f "${vcpkg_root}/installed/${triplet}/bin/"*.dll "${outdir}/" 2>/dev/null || true
     cp -f "${vcpkg_root}/installed/${triplet}/debug/bin/"*.dll "${outdir}/" 2>/dev/null || true
-    copy_mingw_runtime_dlls "${outdir}"
+    copy_mingw_runtime_dlls "${outdir}" "${tool_cxx}" "${tool_prefix}"
   fi
   write_windows_install_cmd "${outdir}"
 }
@@ -2111,7 +2146,7 @@ ensure_osxcross
 maybe_enable_windows_cross
 maybe_enable_macos_cross
 if target_enabled windows-x86_64 && [[ "${WINDOWS_CROSS}" -ne 1 ]]; then
-  echo "Windows target requested but toolchain/vcpkg not ready; set VCPKG_ROOT and install ${WINDOWS_TOOLCHAIN_PREFIX}-g++." >&2
+  echo "Windows target requested but toolchain/vcpkg not ready; set VCPKG_ROOT and install MinGW compiler pair for ${WINDOWS_TOOLCHAIN_PREFIX}." >&2
   exit 1
 fi
 if ( target_enabled macos-x86_64 || target_enabled macos-arm64 ) && [[ "${MACOS_CROSS}" -ne 1 ]]; then

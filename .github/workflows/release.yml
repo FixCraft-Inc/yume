@@ -62,7 +62,7 @@ jobs:
             build-essential cmake ninja-build pkg-config \
             libssl-dev zlib1g-dev liblzma-dev libzstd-dev libargon2-dev \
             libboost-all-dev libspdlog-dev nlohmann-json3-dev \
-            mingw-w64 g++-mingw-w64-x86-64 \
+            mingw-w64 gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
             gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
             gcc-i686-linux-gnu g++-i686-linux-gnu \

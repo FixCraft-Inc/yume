@@ -90,10 +90,11 @@ resolve_real_home() {
 REAL_HOME="$(resolve_real_home)"
 
 apt_update_once() {
+  local force_update="${1:-0}"
   if ! command -v apt-get >/dev/null 2>&1; then
     return 0
   fi
-  if [[ -f "${APT_UPDATED_FLAG}" ]]; then
+  if [[ "${force_update}" != "1" && -f "${APT_UPDATED_FLAG}" ]]; then
     return 0
   fi
   apt-get update || true
@@ -1144,7 +1145,8 @@ ensure_i386_deps() {
   fi
   if ! dpkg --print-foreign-architectures | grep -qx i386; then
     dpkg --add-architecture i386
-    apt_update_once
+    rm -f "${APT_UPDATED_FLAG}" || true
+    apt_update_once 1
   fi
   apt_install libc6-dev-i386 zlib1g-dev:i386 libssl-dev:i386 libboost-dev:i386 libboost-system-dev:i386
 }
@@ -1155,7 +1157,8 @@ ensure_armhf_deps() {
   fi
   if ! dpkg --print-foreign-architectures | grep -qx armhf; then
     dpkg --add-architecture armhf
-    apt_update_once
+    rm -f "${APT_UPDATED_FLAG}" || true
+    apt_update_once 1
   fi
   local gcc_major=""
   gcc_major="$(g++ -dumpversion 2>/dev/null | awk -F. '{print $1}' || true)"
@@ -1179,7 +1182,8 @@ ensure_arm64_deps() {
   fi
   if ! dpkg --print-foreign-architectures | grep -qx arm64; then
     dpkg --add-architecture arm64
-    apt_update_once
+    rm -f "${APT_UPDATED_FLAG}" || true
+    apt_update_once 1
   fi
   local gcc_major=""
   gcc_major="$(g++ -dumpversion 2>/dev/null | awk -F. '{print $1}' || true)"

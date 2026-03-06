@@ -181,7 +181,12 @@ elseif(Boost_INCLUDE_DIRS)
 endif()
 if(WIN32)
     target_link_libraries(yume_core PUBLIC ws2_32 mswsock)
-    target_compile_definitions(yume_core PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_definitions(yume_core PUBLIC
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        WINVER=0x0600
+        _WIN32_WINNT=0x0600
+    )
 endif()
 if(CMAKE_CROSSCOMPILING AND ATOMIC_LIBRARY AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     target_link_libraries(yume_core PUBLIC ${ATOMIC_LIBRARY})
@@ -255,7 +260,12 @@ if(YUME_STATIC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_SYSTE
 endif()
 if(WIN32)
     target_link_libraries(yumed PRIVATE ws2_32 mswsock)
-    target_compile_definitions(yumed PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_definitions(yumed PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        WINVER=0x0600
+        _WIN32_WINNT=0x0600
+    )
 endif()
 
 add_executable(yume
@@ -273,5 +283,10 @@ if(YUME_STATIC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_SYSTE
 endif()
 if(WIN32)
     target_link_libraries(yume PRIVATE ws2_32 mswsock)
-    target_compile_definitions(yume PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_definitions(yume PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        WINVER=0x0600
+        _WIN32_WINNT=0x0600
+    )
 endif()

@@ -55,6 +55,7 @@ public:
                                bool reclaim = true,
                                int min_port = 0,
                                int max_port = 0);
+    void stop(const std::string& reason = "client stopping");
     void send_data(uint8_t stream_id, const Bytes& data);
     void send_close(uint8_t stream_id, const std::string& reason);
     void send_open_ack(uint8_t stream_id, bool ok, const std::string& reason);

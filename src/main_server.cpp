@@ -13,6 +13,8 @@
 #include <thread>
 #include <vector>
 #include <atomic>
+#include <condition_variable>
+#include <mutex>
 #include <cstring>
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -1747,9 +1749,11 @@ int main(int argc, char** argv) {
     boost::asio::io_context io(threads);
     yume::server::Manager manager(io, cfg);
     std::atomic<bool> stop_refresh{false};
+    std::mutex refresh_mu;
+    std::condition_variable refresh_cv;
     std::thread refresh_thread;
     if (cfg.anonym) {
-        refresh_thread = std::thread([&manager, &cfg, &stop_refresh, &anonym_last_ts]() {
+        refresh_thread = std::thread([&manager, &cfg, &stop_refresh, &anonym_last_ts, &refresh_mu, &refresh_cv]() {
             auto compute_delay = [&]() -> int {
                 const long long now = static_cast<long long>(std::time(nullptr));
                 const long long last = anonym_last_ts.load(std::memory_order_relaxed);
@@ -1769,10 +1773,14 @@ int main(int argc, char** argv) {
             };
 
             while (!stop_refresh.load()) {
-                std::this_thread::sleep_for(std::chrono::seconds(compute_delay()));
-                if (stop_refresh.load()) {
+                const int delay_s = compute_delay();
+                std::unique_lock<std::mutex> lock(refresh_mu);
+                if (refresh_cv.wait_for(lock, std::chrono::seconds(delay_s), [&stop_refresh]() {
+                        return stop_refresh.load();
+                    })) {
                     break;
                 }
+                lock.unlock();
                 try {
                     std::string pq_public_path;
                     if (cfg.inner_crypto && !cfg.pq_private_key.empty()) {
@@ -1808,13 +1816,14 @@ int main(int argc, char** argv) {
             std::_Exit(1);
         }
         if (yume::util::is_logging_enabled()) {
-            yume::util::log_info("shutdown requested");
+            yume::util::log_info("Stopping...");
         } else {
-            std::cerr << "\033[1;33mshutdown requested\033[0m\n";
+            std::cerr << "\033[1;33mStopping...\033[0m\n";
         }
         manager.stop();
         io.stop();
         stop_refresh.store(true);
+        refresh_cv.notify_all();
     });
 
     try {
@@ -1824,6 +1833,11 @@ int main(int argc, char** argv) {
             yume::util::log_error(std::string("server start failed: ") + ex.what());
         } else {
             std::cerr << "\033[1;31mserver start failed: " << ex.what() << "\033[0m\n";
+        }
+        stop_refresh.store(true);
+        refresh_cv.notify_all();
+        if (refresh_thread.joinable()) {
+            refresh_thread.join();
         }
         return 1;
     }
@@ -1837,6 +1851,7 @@ int main(int argc, char** argv) {
         t.join();
     }
     stop_refresh.store(true);
+    refresh_cv.notify_all();
     if (refresh_thread.joinable()) {
         refresh_thread.join();
     }

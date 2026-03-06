@@ -138,6 +138,12 @@ void Tunnel::request_remote_listen(uint8_t listen_id,
     async_write_frame(frame);
 }
 
+void Tunnel::stop(const std::string& reason) {
+    boost::asio::post(strand_, [self = shared_from_this(), reason]() {
+        self->close_all(reason);
+    });
+}
+
 void Tunnel::send_data(uint8_t stream_id, const Bytes& data) {
     Bytes payload = data;
     uint16_t flags = 0;

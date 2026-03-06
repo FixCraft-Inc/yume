@@ -47,6 +47,7 @@
 #include <cstring>
 #include <vector>
 #include <atomic>
+#include <mutex>
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
@@ -2050,15 +2051,78 @@ int Cli::run(int argc, char** argv) {
         print_help();
         return 1;
     }
+    std::atomic<bool> stop_requested{false};
+    std::atomic<bool> stop_announced{false};
+    std::atomic<bool> force_stop_requested{false};
+    std::mutex runtime_mu;
+    boost::asio::io_context* active_io = nullptr;
+    std::weak_ptr<Tunnel> active_tunnel;
+    auto announce_stopping = [&]() {
+        if (stop_announced.exchange(true)) {
+            return;
+        }
+        util::clear_status_line();
+        std::cerr << "[INFO] Stopping..." << std::endl;
+    };
+    auto set_active_runtime = [&](boost::asio::io_context* io_ptr, const std::shared_ptr<Tunnel>& tunnel_ptr) {
+        std::lock_guard<std::mutex> lock(runtime_mu);
+        active_io = io_ptr;
+        active_tunnel = tunnel_ptr;
+    };
+    auto clear_active_runtime = [&]() {
+        std::lock_guard<std::mutex> lock(runtime_mu);
+        active_io = nullptr;
+        active_tunnel.reset();
+    };
+    util::install_signal_handlers([&](int) {
+        const bool already_requested = force_stop_requested.exchange(true);
+        stop_requested.store(true);
+        announce_stopping();
+        boost::asio::io_context* io_ptr = nullptr;
+        std::shared_ptr<Tunnel> tunnel_ptr;
+        {
+            std::lock_guard<std::mutex> lock(runtime_mu);
+            io_ptr = active_io;
+            tunnel_ptr = active_tunnel.lock();
+        }
+        if (tunnel_ptr) {
+            tunnel_ptr->stop("interrupt");
+        }
+        if (io_ptr) {
+            io_ptr->stop();
+        }
+        if (already_requested) {
+            std::cerr << "[WARN] Force stop requested. Exiting immediately." << std::endl;
+            std::_Exit(1);
+        }
+    });
+    struct SignalHandlerResetGuard {
+        ~SignalHandlerResetGuard() {
+            util::install_signal_handlers({});
+        }
+    } signal_handler_reset_guard;
     int attempt = 0;
     bool pq_warned = false;
     bool pq_reconnect_used = false;
     bool verified_once = false;
     for (;;) {
+        if (stop_requested.load()) {
+            announce_stopping();
+            return 130;
+        }
         bool summary_once = false;
         std::function<std::string()> status_block_builder;
         try {
             boost::asio::io_context io(resolve_io_threads(cfg.io_threads));
+            set_active_runtime(&io, nullptr);
+            struct ActiveRuntimeGuard {
+                std::function<void()> cleanup;
+                ~ActiveRuntimeGuard() {
+                    if (cleanup) {
+                        cleanup();
+                    }
+                }
+            } active_runtime_guard{clear_active_runtime};
             
             // Initialize stealth mode if enabled
             std::unique_ptr<boost::asio::ssl::context> owned_ctx;
@@ -2890,13 +2954,15 @@ int Cli::run(int argc, char** argv) {
                 };
                 if (cfg.non_interactive) {
                     std::cout
+                        << border << "\n"
                         << color_wrap("Connected to", "1;36") << " " << server_display << ":\n"
                         << color_wrap("VERSION", "1;36") << ": " << version_value << "\n"
                         << color_wrap("Connection", "1;36") << ": " << connection_value << "\n"
                         << color_wrap("Protection", "1;36") << ": " << protection_value << "\n"
                         << color_wrap("Inner", "1;36") << ": " << inner_line << "\n"
                         << build_hop_status_line() << "\n"
-                        << color_wrap("FixCraft Verity", "1;36") << ": " << verity_line << "\n";
+                        << color_wrap("FixCraft Verity", "1;36") << ": " << verity_line << "\n"
+                        << border << "\n";
                 } else {
                     util::set_status_line(status_block_builder());
                 }
@@ -3040,6 +3106,7 @@ int Cli::run(int argc, char** argv) {
             }
 
             auto tunnel = std::make_shared<Tunnel>(std::move(stream));
+            set_active_runtime(&io, tunnel);
             if (inner_key.has_value()) {
                 tunnel->set_inner_key(*inner_key);
             }
@@ -3225,6 +3292,10 @@ int Cli::run(int argc, char** argv) {
                                    args.rhost + ":" + std::to_string(args.rport));
                 }
                 run_io_threads(io, cfg.io_threads);
+                if (stop_requested.load()) {
+                    announce_stopping();
+                    return 130;
+                }
                 if (!close_reason.empty()) {
                     throw std::runtime_error("tunnel closed: " + close_reason);
                 }
@@ -3236,6 +3307,10 @@ int Cli::run(int argc, char** argv) {
                 socks->start();
                 util::log_info("SOCKS5 listening on 127.0.0.1:" + std::to_string(cfg.socks_port));
                 run_io_threads(io, cfg.io_threads);
+                if (stop_requested.load()) {
+                    announce_stopping();
+                    return 130;
+                }
                 if (!close_reason.empty()) {
                     throw std::runtime_error("tunnel closed: " + close_reason);
                 }
@@ -3244,6 +3319,10 @@ int Cli::run(int argc, char** argv) {
 
             if (use_reverse) {
                 run_io_threads(io, cfg.io_threads);
+                if (stop_requested.load()) {
+                    announce_stopping();
+                    return 130;
+                }
                 if (!close_reason.empty()) {
                     throw std::runtime_error("tunnel closed: " + close_reason);
                 }
@@ -3253,14 +3332,28 @@ int Cli::run(int argc, char** argv) {
             util::log_warn("no mode selected");
             return 1;
         } catch (const FatalError& ex) {
+            if (stop_requested.load()) {
+                announce_stopping();
+                return 130;
+            }
             util::log_error(ex.what());
             return 1;
         } catch (const std::exception& ex) {
+            if (stop_requested.load()) {
+                announce_stopping();
+                return 130;
+            }
             attempt++;
             int backoff = std::min(30, 1 << std::min(attempt, 5));
             util::log_warn(std::string("connection failed: ") + ex.what());
             util::log_warn("retrying in " + std::to_string(backoff) + "s");
-            std::this_thread::sleep_for(std::chrono::seconds(backoff));
+            for (int i = 0; i < backoff * 10; ++i) {
+                if (stop_requested.load()) {
+                    announce_stopping();
+                    return 130;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
         }
     }
 }

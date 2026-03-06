@@ -9,12 +9,24 @@ on:
 permissions:
   contents: read
 
+env:
+  BASEFWX_REPO: "https://github.com/F1xGOD/basefwx.git"
+  BASEFWX_REF: "main"
+
 jobs:
   build-and-smoke:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Ensure BaseFWX sources
+        run: |
+          if [[ ! -f basefwx/cpp/CMakeLists.txt ]]; then
+            rm -rf basefwx
+            git clone --depth 1 --branch "${BASEFWX_REF}" "${BASEFWX_REPO}" basefwx
+          fi
+          test -f basefwx/cpp/CMakeLists.txt
 
       - name: Install dependencies
         run: |

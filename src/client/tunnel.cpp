@@ -104,8 +104,19 @@ void Tunnel::open_stream(uint8_t stream_id, const std::string& host, int port, O
     async_write_frame(frame);
 }
 
-void Tunnel::request_remote_listen(uint8_t listen_id, int port, OpenHandler handler) {
-    nlohmann::json json{{"port", port}, {"reclaim", true}};
+void Tunnel::request_remote_listen(uint8_t listen_id,
+                                   int port,
+                                   OpenHandler handler,
+                                   bool reclaim,
+                                   int min_port,
+                                   int max_port) {
+    nlohmann::json json{{"port", port}, {"reclaim", reclaim}};
+    if (min_port > 0) {
+        json["min_port"] = min_port;
+    }
+    if (max_port > 0) {
+        json["max_port"] = max_port;
+    }
     std::string payload_str = json.dump();
     Bytes payload(payload_str.begin(), payload_str.end());
     uint16_t flags = 0;

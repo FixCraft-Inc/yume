@@ -19,6 +19,7 @@ struct ClientConfig {
     bool allow_udp{false};
     bool allow_local_ip{false};
     bool server_in_charge{false};
+    int server_in_charge_port{0};
     bool allow_exec{false};
     std::string pq_public_key;
     bool allow_embedded_master{false};

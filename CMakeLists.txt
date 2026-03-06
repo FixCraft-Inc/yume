@@ -89,9 +89,9 @@ if(CMAKE_CROSSCOMPILING)
 endif()
 
 find_package(OpenSSL REQUIRED)
-find_package(Boost CONFIG QUIET COMPONENTS system thread)
+find_package(Boost CONFIG QUIET COMPONENTS system)
 if(NOT Boost_FOUND)
-    find_package(Boost REQUIRED COMPONENTS system thread)
+    find_package(Boost REQUIRED COMPONENTS system)
 endif()
 find_package(Threads REQUIRED)
 

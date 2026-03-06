@@ -65,12 +65,12 @@ normalize_cross_flag() {
 IFS='|' read -r WINDOWS_CROSS WINDOWS_CROSS_AUTO <<< "$(normalize_cross_flag "${YUME_WINDOWS_CROSS:-}")"
 WINDOWS_TOOLCHAIN_PREFIX="${YUME_WINDOWS_TOOLCHAIN_PREFIX:-x86_64-w64-mingw32}"
 WINDOWS_TRIPLET="${YUME_WINDOWS_TRIPLET:-x64-mingw-dynamic}"
-WINDOWS_VCPKG_PACKAGES="${YUME_WINDOWS_VCPKG_PACKAGES:-openssl boost-cmake boost-headers boost-asio boost-system boost-thread zlib zstd liblzma spdlog nlohmann-json argon2 liboqs}"
+WINDOWS_VCPKG_PACKAGES="${YUME_WINDOWS_VCPKG_PACKAGES:-openssl boost-cmake boost-headers boost-system zlib zstd liblzma spdlog nlohmann-json argon2 liboqs}"
 
 IFS='|' read -r MACOS_CROSS MACOS_CROSS_AUTO <<< "$(normalize_cross_flag "${YUME_MACOS_CROSS:-}")"
 MACOS_TOOLCHAIN_PREFIX="${YUME_MACOS_TOOLCHAIN_PREFIX:-}"
 MACOS_TRIPLET="${YUME_MACOS_TRIPLET:-x64-osx}"
-MACOS_VCPKG_PACKAGES="${YUME_MACOS_VCPKG_PACKAGES:-openssl boost-cmake boost-headers boost-asio boost-system boost-thread zlib zstd liblzma fmt spdlog argon2 liboqs}"
+MACOS_VCPKG_PACKAGES="${YUME_MACOS_VCPKG_PACKAGES:-openssl boost-cmake boost-headers boost-system zlib zstd liblzma fmt spdlog argon2 liboqs}"
 MACOS_SDK="${YUME_MACOS_SDK:-${OSXCROSS_SDK:-}}"
 MACOS_DEPLOYMENT_TARGET="${YUME_MACOS_DEPLOYMENT_TARGET:-10.15}"
 APT_UPDATED_FLAG="${APT_UPDATED_FLAG:-/tmp/yume-apt-updated}"
@@ -1006,10 +1006,8 @@ ensure_openwrt_sysroot_libs() {
     openwrt_build_package "zlib"
   fi
   local has_boost_system=0
-  local has_boost_thread=0
   compgen -G "${usr}/lib/libboost_system.so."* >/dev/null 2>&1 && has_boost_system=1
-  compgen -G "${usr}/lib/libboost_thread.so."* >/dev/null 2>&1 && has_boost_thread=1
-  if [[ (! -f "${usr}/lib/libboost_system.so" && ${has_boost_system} -eq 0) || (! -f "${usr}/lib/libboost_thread.so" && ${has_boost_thread} -eq 0) ]]; then
+  if [[ ! -f "${usr}/lib/libboost_system.so" && ${has_boost_system} -eq 0 ]]; then
     openwrt_build_package "boost"
   fi
   return 0
@@ -1286,8 +1284,7 @@ EOF
         "/usr/lib/i386-linux-gnu/libzstd.a" \
         "/usr/lib/i386-linux-gnu/libssl.a" \
         "/usr/lib/i386-linux-gnu/libcrypto.a" \
-        "/usr/lib/i386-linux-gnu/libboost_system.a" \
-        "/usr/lib/i386-linux-gnu/libboost_thread.a"; then
+        "/usr/lib/i386-linux-gnu/libboost_system.a"; then
         return 0
       fi
     else
@@ -1326,8 +1323,7 @@ EOF
         "/usr/lib/arm-linux-gnueabihf/libzstd.a" \
         "/usr/lib/arm-linux-gnueabihf/libssl.a" \
         "/usr/lib/arm-linux-gnueabihf/libcrypto.a" \
-        "/usr/lib/arm-linux-gnueabihf/libboost_system.a" \
-        "/usr/lib/arm-linux-gnueabihf/libboost_thread.a"; then
+        "/usr/lib/arm-linux-gnueabihf/libboost_system.a"; then
         return 0
       fi
     fi
@@ -1371,8 +1367,7 @@ EOF
         "${lib_dir}/libzstd.a" \
         "${lib_dir}/libssl.a" \
         "${lib_dir}/libcrypto.a" \
-        "${lib_dir}/libboost_system.a" \
-        "${lib_dir}/libboost_thread.a"; then
+        "${lib_dir}/libboost_system.a"; then
         return 0
       fi
     fi
@@ -1483,8 +1478,7 @@ EOF
         "/usr/lib/arm-linux-gnueabihf/libzstd.a" \
         "/usr/lib/arm-linux-gnueabihf/libssl.a" \
         "/usr/lib/arm-linux-gnueabihf/libcrypto.a" \
-        "/usr/lib/arm-linux-gnueabihf/libboost_system.a" \
-        "/usr/lib/arm-linux-gnueabihf/libboost_thread.a"; then
+        "/usr/lib/arm-linux-gnueabihf/libboost_system.a"; then
         return 0
       fi
     fi
@@ -1514,8 +1508,7 @@ EOF
         "/usr/lib/aarch64-linux-gnu/libzstd.a" \
         "/usr/lib/aarch64-linux-gnu/libssl.a" \
         "/usr/lib/aarch64-linux-gnu/libcrypto.a" \
-        "/usr/lib/aarch64-linux-gnu/libboost_system.a" \
-        "/usr/lib/aarch64-linux-gnu/libboost_thread.a"; then
+        "/usr/lib/aarch64-linux-gnu/libboost_system.a"; then
         return 0
       fi
     fi
@@ -1566,8 +1559,7 @@ build_host_linux_target() {
       "/usr/lib/x86_64-linux-gnu/libzstd.a" \
       "/usr/lib/x86_64-linux-gnu/libssl.a" \
       "/usr/lib/x86_64-linux-gnu/libcrypto.a" \
-      "/usr/lib/x86_64-linux-gnu/libboost_system.a" \
-      "/usr/lib/x86_64-linux-gnu/libboost_thread.a"; then
+      "/usr/lib/x86_64-linux-gnu/libboost_system.a"; then
       return 0
     fi
   fi
@@ -1731,6 +1723,7 @@ build_windows_cross_target() {
   local oqs_include=""
   local shim_bin="/tmp/yume-windows-shim"
   local powershell_stub="${shim_bin}/powershell.exe"
+  local vcpkg_build_type="${YUME_WINDOWS_VCPKG_BUILD_TYPE:-release}"
 
   if [[ "${WINDOWS_CROSS}" -ne 1 ]]; then
     return 0
@@ -1779,7 +1772,7 @@ EOS
     chmod +x "${powershell_stub}"
   fi
 
-  PATH="${shim_bin}:${PATH}" VCPKG_POWERSHELL_PATH="${powershell_stub}" \
+  PATH="${shim_bin}:${PATH}" VCPKG_POWERSHELL_PATH="${powershell_stub}" VCPKG_BUILD_TYPE="${vcpkg_build_type}" \
     "${vcpkg_bin}" install --triplet "${triplet}" ${WINDOWS_VCPKG_PACKAGES}
 
   cat > "${toolchain_file}" <<EOF
@@ -1813,7 +1806,7 @@ EOF
     extra_oqs_args="-DOQS_INCLUDE_DIR=${oqs_include} -DOQS_LIBRARY=${oqs_lib}"
   fi
 
-  PATH="${shim_bin}:${PATH}" VCPKG_POWERSHELL_PATH="${powershell_stub}" \
+  PATH="${shim_bin}:${PATH}" VCPKG_POWERSHELL_PATH="${powershell_stub}" VCPKG_BUILD_TYPE="${vcpkg_build_type}" \
     YUME_WINDOWS_CROSS=1 YUME_MACOS_CROSS=0 YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF -DOPENSSL_ROOT_DIR=${vcpkg_prefix} ${extra_oqs_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DVCPKG_APPLOCAL_DEPS=OFF -DCMAKE_SYSTEM_NAME=Windows" \
     ./ezbuild.sh
 
@@ -2033,7 +2026,7 @@ EOF
     echo "macOS vcpkg boost headers missing; forcing reinstall."
     PATH="${shim_bin}:${bin_dir}:${PATH}" \
       "${vcpkg_root}/vcpkg" remove --recurse --triplet "${triplet}" \
-      boost-headers boost-asio boost-system boost-thread >/dev/null 2>&1 || true
+      boost-headers boost-system >/dev/null 2>&1 || true
   fi
 
   PATH="${shim_bin}:${bin_dir}:${PATH}" \

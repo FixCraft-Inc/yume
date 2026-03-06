@@ -14,6 +14,8 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <charconv>
+#include <string_view>
 #include <utility>
 #include <filesystem>
 #include <fstream>
@@ -925,6 +927,7 @@ struct ParsedArgs {
     bool tls_fingerprint_verify{false};
     std::string tls_fingerprint_test_endpoint{"tls.peet.ws"};
     bool help{false};
+    bool version{false};
     bool accept_monitoring{false};
     bool save_server{false};
     bool require_anonym{false};
@@ -946,58 +949,180 @@ struct ParsedArgs {
     std::string exec_cmd;
     std::string ssh_L;
     std::string ssh_R;
+    std::string parse_error;
 };
+
+bool parse_int_strict(std::string_view text, int& out) {
+    if (text.empty()) {
+        return false;
+    }
+    int value = 0;
+    auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (ec != std::errc() || ptr != text.data() + text.size()) {
+        return false;
+    }
+    out = value;
+    return true;
+}
+
+bool parse_u32_strict(std::string_view text, std::uint32_t& out) {
+    if (text.empty()) {
+        return false;
+    }
+    unsigned long long value = 0;
+    auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (ec != std::errc() || ptr != text.data() + text.size()) {
+        return false;
+    }
+    if (value > std::numeric_limits<std::uint32_t>::max()) {
+        return false;
+    }
+    out = static_cast<std::uint32_t>(value);
+    return true;
+}
 
 ParsedArgs parse_args(int argc, char** argv) {
     ParsedArgs args;
-    for (int i = 1; i < argc; ++i) {
+    int i = 1;
+    auto take_value = [&](const std::string& flag) -> const char* {
+        if (i + 1 >= argc) {
+            args.parse_error = "missing value for " + flag;
+            return nullptr;
+        }
+        return argv[++i];
+    };
+    auto parse_int_value = [&](const std::string& flag, int& out) -> bool {
+        const char* raw = take_value(flag);
+        if (!raw) {
+            return false;
+        }
+        int parsed = 0;
+        if (!parse_int_strict(raw, parsed)) {
+            args.parse_error = "invalid integer for " + flag + ": " + raw;
+            return false;
+        }
+        out = parsed;
+        return true;
+    };
+    auto parse_u32_value = [&](const std::string& flag, std::uint32_t& out) -> bool {
+        const char* raw = take_value(flag);
+        if (!raw) {
+            return false;
+        }
+        std::uint32_t parsed = 0;
+        if (!parse_u32_strict(raw, parsed)) {
+            args.parse_error = "invalid integer for " + flag + ": " + raw;
+            return false;
+        }
+        out = parsed;
+        return true;
+    };
+    for (; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "completion" && i + 1 < argc) {
+        if (arg == "completion") {
+            const char* shell = take_value("completion");
+            if (!shell) {
+                return args;
+            }
             args.completion = true;
-            args.completion_shell = argv[++i];
-        } else if (arg == "--completion" && i + 1 < argc) {
+            args.completion_shell = shell;
+        } else if (arg == "--completion") {
+            const char* shell = take_value("--completion");
+            if (!shell) {
+                return args;
+            }
             args.completion = true;
-            args.completion_shell = argv[++i];
-        } else if (arg == "--config" && i + 1 < argc) {
-            args.config_path = argv[++i];
+            args.completion_shell = shell;
+        } else if (arg == "--config") {
+            const char* cfg = take_value("--config");
+            if (!cfg) {
+                return args;
+            }
+            args.config_path = cfg;
             args.config_specified = true;
         } else if (arg == "--help" || arg == "-h") {
             args.help = true;
-        } else if (arg == "--server" && i + 1 < argc) {
-            args.server = argv[++i];
-        } else if (arg == "--port" && i + 1 < argc) {
-            args.port = std::stoi(argv[++i]);
-        } else if ((arg == "--auth" || arg == "-i") && i + 1 < argc) {
-            args.identity = argv[++i];
-        } else if (arg == "--socks" && i + 1 < argc) {
-            args.socks_port = std::stoi(argv[++i]);
-        } else if (arg == "--threads" && i + 1 < argc) {
-            args.io_threads = std::stoi(argv[++i]);
+        } else if (arg == "--version") {
+            args.version = true;
+        } else if (arg == "--server") {
+            const char* server = take_value("--server");
+            if (!server) {
+                return args;
+            }
+            args.server = server;
+        } else if (arg == "--port") {
+            if (!parse_int_value("--port", args.port)) {
+                return args;
+            }
+        } else if (arg == "--auth" || arg == "-i") {
+            const char* identity = take_value(arg);
+            if (!identity) {
+                return args;
+            }
+            args.identity = identity;
+        } else if (arg == "--socks") {
+            if (!parse_int_value("--socks", args.socks_port)) {
+                return args;
+            }
+        } else if (arg == "--threads") {
+            if (!parse_int_value("--threads", args.io_threads)) {
+                return args;
+            }
             args.io_threads_override = true;
-        } else if (arg == "--lport" && i + 1 < argc) {
-            args.lport = std::stoi(argv[++i]);
-        } else if (arg == "--rhost" && i + 1 < argc) {
-            args.rhost = argv[++i];
-        } else if (arg == "--rport" && i + 1 < argc) {
-            args.rport = std::stoi(argv[++i]);
-        } else if ((arg == "--run" || arg == "-c" || arg == "--cmd") && i + 1 < argc) {
-            args.run_cmd = argv[++i];
+        } else if (arg == "--lport") {
+            if (!parse_int_value("--lport", args.lport)) {
+                return args;
+            }
+        } else if (arg == "--rhost") {
+            const char* rhost = take_value("--rhost");
+            if (!rhost) {
+                return args;
+            }
+            args.rhost = rhost;
+        } else if (arg == "--rport") {
+            if (!parse_int_value("--rport", args.rport)) {
+                return args;
+            }
+        } else if (arg == "--run" || arg == "-c" || arg == "--cmd") {
+            const char* cmd = take_value(arg);
+            if (!cmd) {
+                return args;
+            }
+            args.run_cmd = cmd;
         } else if (arg == "--run-ipv4") {
             args.run_ipv4 = true;
         } else if (arg == "--proxycmd") {
             args.proxycmd = true;
-        } else if (arg == "--dest" && i + 1 < argc) {
-            args.dest_host = argv[++i];
-        } else if (arg == "--dport" && i + 1 < argc) {
-            args.dest_port = std::stoi(argv[++i]);
+        } else if (arg == "--dest") {
+            const char* dest = take_value("--dest");
+            if (!dest) {
+                return args;
+            }
+            args.dest_host = dest;
+        } else if (arg == "--dport") {
+            if (!parse_int_value("--dport", args.dest_port)) {
+                return args;
+            }
         } else if (arg == "--require-anonym") {
             args.require_anonym = true;
-        } else if (arg == "--anonym-ca-cert" && i + 1 < argc) {
-            args.anonym_ca_cert = argv[++i];
-        } else if (arg == "-L" && i + 1 < argc) {
-            args.ssh_L = argv[++i];
-        } else if (arg == "-R" && i + 1 < argc) {
-            args.ssh_R = argv[++i];
+        } else if (arg == "--anonym-ca-cert") {
+            const char* cert = take_value("--anonym-ca-cert");
+            if (!cert) {
+                return args;
+            }
+            args.anonym_ca_cert = cert;
+        } else if (arg == "-L") {
+            const char* value = take_value("-L");
+            if (!value) {
+                return args;
+            }
+            args.ssh_L = value;
+        } else if (arg == "-R") {
+            const char* value = take_value("-R");
+            if (!value) {
+                return args;
+            }
+            args.ssh_R = value;
         } else if (arg == "--inner") {
             args.inner_crypto = true;
         } else if (arg == "--inner-heavy") {
@@ -1012,8 +1137,10 @@ ParsedArgs parse_args(int argc, char** argv) {
         } else if (arg == "--no-hop") {
             args.inner_hop = false;
             args.inner_hop_override = true;
-        } else if (arg == "--hop-interval" && i + 1 < argc) {
-            args.hop_interval_ms = static_cast<std::uint32_t>(std::stoul(argv[++i]));
+        } else if (arg == "--hop-interval") {
+            if (!parse_u32_value("--hop-interval", args.hop_interval_ms)) {
+                return args;
+            }
             args.hop_interval_override = true;
         } else if (arg == "--udp") {
             args.use_udp = true;
@@ -1030,27 +1157,35 @@ ParsedArgs parse_args(int argc, char** argv) {
             if (i + 1 < argc) {
                 std::string next = argv[i + 1];
                 if (!next.empty() && next[0] != '-') {
-                    try {
-                        args.server_in_charge_port = std::stoi(next);
-                        args.server_in_charge_port_override = true;
-                        ++i;
-                    } catch (...) {
+                    int parsed = 0;
+                    if (!parse_int_strict(next, parsed)) {
+                        args.parse_error = "invalid integer for --server-in-charge: " + next;
+                        return args;
                     }
+                    args.server_in_charge_port = parsed;
+                    args.server_in_charge_port_override = true;
+                    ++i;
                 }
             }
-        } else if (arg == "--server-in-charge-port" && i + 1 < argc) {
+        } else if (arg == "--server-in-charge-port") {
             args.server_in_charge = true;
             args.server_in_charge_override = true;
-            args.server_in_charge_port = std::stoi(argv[++i]);
+            if (!parse_int_value("--server-in-charge-port", args.server_in_charge_port)) {
+                return args;
+            }
             args.server_in_charge_port_override = true;
-        } else if (arg == "--server-in-charge-min-port" && i + 1 < argc) {
+        } else if (arg == "--server-in-charge-min-port") {
             args.server_in_charge = true;
             args.server_in_charge_override = true;
-            args.server_in_charge_min_port = std::stoi(argv[++i]);
-        } else if (arg == "--server-in-charge-max-port" && i + 1 < argc) {
+            if (!parse_int_value("--server-in-charge-min-port", args.server_in_charge_min_port)) {
+                return args;
+            }
+        } else if (arg == "--server-in-charge-max-port") {
             args.server_in_charge = true;
             args.server_in_charge_override = true;
-            args.server_in_charge_max_port = std::stoi(argv[++i]);
+            if (!parse_int_value("--server-in-charge-max-port", args.server_in_charge_max_port)) {
+                return args;
+            }
         } else if (arg == "--allow-exec") {
             args.allow_exec = true;
             args.allow_exec_override = true;
@@ -1066,39 +1201,69 @@ ParsedArgs parse_args(int argc, char** argv) {
             if (i + 1 < argc && argv[i + 1][0] != '-') {
                 args.control_id = argv[++i];
             }
-        } else if (arg == "--id" && i + 1 < argc) {
-            args.control_id = argv[++i];
+        } else if (arg == "--id") {
+            const char* value = take_value("--id");
+            if (!value) {
+                return args;
+            }
+            args.control_id = value;
         } else if (arg == "--list-controlled") {
             args.list_controlled = true;
-        } else if (arg == "--pq-pub" && i + 1 < argc) {
-            args.pq_public_key = argv[++i];
+        } else if (arg == "--pq-pub") {
+            const char* value = take_value("--pq-pub");
+            if (!value) {
+                return args;
+            }
+            args.pq_public_key = value;
         } else if (arg == "--use-embedded-master") {
             args.allow_embedded_master = true;
             args.allow_embedded_master_override = true;
         } else if (arg == "--no-embedded-master") {
             args.allow_embedded_master = false;
             args.allow_embedded_master_override = true;
-        } else if (arg == "--tls-ca" && i + 1 < argc) {
-            args.tls_ca_cert = argv[++i];
-        } else if (arg == "--tls-pin" && i + 1 < argc) {
-            args.tls_pin_sha256 = argv[++i];
+        } else if (arg == "--tls-ca") {
+            const char* value = take_value("--tls-ca");
+            if (!value) {
+                return args;
+            }
+            args.tls_ca_cert = value;
+        } else if (arg == "--tls-pin") {
+            const char* value = take_value("--tls-pin");
+            if (!value) {
+                return args;
+            }
+            args.tls_pin_sha256 = value;
         } else if (arg == "--no-stealth") {
             args.tls_stealth = false;
             args.tls_stealth_override = true;
-        } else if (arg == "--profile" && i + 1 < argc) {
-            args.tls_stealth_profile = argv[++i];
+        } else if (arg == "--profile") {
+            const char* value = take_value("--profile");
+            if (!value) {
+                return args;
+            }
+            args.tls_stealth_profile = value;
         } else if (arg == "--tls-stealth-rotate") {
             args.tls_stealth_rotate = true;
-        } else if (arg == "--tls-stealth-rotation-interval" && i + 1 < argc) {
-            args.tls_stealth_rotation_interval = std::stoul(argv[++i]);
+        } else if (arg == "--tls-stealth-rotation-interval") {
+            if (!parse_u32_value("--tls-stealth-rotation-interval", args.tls_stealth_rotation_interval)) {
+                return args;
+            }
         } else if (arg == "--tls-fingerprint-log") {
             args.tls_fingerprint_log = true;
-        } else if (arg == "--tls-fingerprint-log-path" && i + 1 < argc) {
-            args.tls_fingerprint_log_path = argv[++i];
+        } else if (arg == "--tls-fingerprint-log-path") {
+            const char* value = take_value("--tls-fingerprint-log-path");
+            if (!value) {
+                return args;
+            }
+            args.tls_fingerprint_log_path = value;
         } else if (arg == "--tls-fingerprint-verify") {
             args.tls_fingerprint_verify = true;
-        } else if (arg == "--tls-fingerprint-test-endpoint" && i + 1 < argc) {
-            args.tls_fingerprint_test_endpoint = argv[++i];
+        } else if (arg == "--tls-fingerprint-test-endpoint") {
+            const char* value = take_value("--tls-fingerprint-test-endpoint");
+            if (!value) {
+                return args;
+            }
+            args.tls_fingerprint_test_endpoint = value;
         } else if (arg == "--accept-monitoring") {
             args.accept_monitoring = true;
         } else if (arg == "--save-server") {
@@ -1283,7 +1448,7 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --config --server --port --auth -i --socks --threads --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym -L -R --boring --non-interactive --accept-monitoring --save-server --completion"
+  local opts="--help -h --version --config --server --port --auth -i --socks --threads --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym -L -R --boring --non-interactive --accept-monitoring --save-server --completion"
   local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path"
   case "$prev" in
     --completion)
@@ -1311,13 +1476,20 @@ complete -F _yume_complete yume
 )";
 }
 
+void print_version() {
+    std::cout << "yume " << yume::kVersion << " (using BaseFWX " << yume::kBasefwxVersion << ")\n";
+}
+
 void print_help() {
     std::cout
         << "yume - YUME client\n\n"
         << "Usage:\n"
         << "  yume --server <host> -i <id_ed25519> [mode options]\n"
         << "  yume completion bash\n"
-        << "  yume --help\n\n"
+        << "  yume --help\n"
+        << "  yume --version\n\n"
+        << "Version:\n"
+        << "  yume " << yume::kVersion << " (using BaseFWX " << yume::kBasefwxVersion << ")\n\n"
         << "Required:\n"
         << "  --server <host>          Server address\n"
         << "  -i, --auth <path>        Identity key file path\n\n"
@@ -1374,7 +1546,8 @@ void print_help() {
         << "  completion bash\n"
         << "  --completion bash\n\n"
         << "Other:\n"
-        << "  -h, --help               Show this help message\n";
+        << "  -h, --help               Show this help message\n"
+        << "  --version                Show version information\n";
 }
 
 bool parse_ssh_forward(const std::string& spec, int& lport, std::string& host, int& rport) {
@@ -1453,6 +1626,10 @@ int Cli::run(int argc, char** argv) {
     util::init_logging();
 
     ParsedArgs args = parse_args(argc, argv);
+    if (!args.parse_error.empty()) {
+        util::log_error(args.parse_error);
+        return 1;
+    }
     if (args.completion) {
         if (args.completion_shell == "bash") {
             print_bash_completion();
@@ -1467,6 +1644,10 @@ int Cli::run(int argc, char** argv) {
     }
     if (args.help) {
         print_help();
+        return 0;
+    }
+    if (args.version) {
+        print_version();
         return 0;
     }
     std::string exe_dir;

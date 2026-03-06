@@ -37,6 +37,7 @@
 
 #include "core/crypto.hpp"
 #include "core/inner_crypto.hpp"
+#include "core/version.hpp"
 #include "server/manager.hpp"
 #include "server/auth.hpp"
 #include "util.hpp"
@@ -60,7 +61,7 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --config --listen --cert --key --auth-keys --threads --reverse-port-min --reverse-port-max --obfs --inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --completion"
+  local opts="--help -h --version --config --listen --cert --key --auth-keys --threads --reverse-port-min --reverse-port-max --obfs --inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --completion"
   local file_opts="--config --cert --key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --keys-add --keys-gen"
   case "$prev" in
     --completion)
@@ -84,12 +85,19 @@ complete -F _yumed_complete yumed
 )";
 }
 
+void print_version() {
+    std::cout << "yumed " << yume::kVersion << " (using BaseFWX " << yume::kBasefwxVersion << ")\n";
+}
+
 void print_help() {
     std::cout
         << "yumed - YUME server\n\n"
         << "Usage:\n"
         << "  yumed [--config <path>] [options]\n"
-        << "  yumed completion bash\n\n"
+        << "  yumed completion bash\n"
+        << "  yumed --version\n\n"
+        << "Version:\n"
+        << "  yumed " << yume::kVersion << " (using BaseFWX " << yume::kBasefwxVersion << ")\n\n"
         << "Core Options:\n"
         << "  --config <path>          Configuration file path\n"
         << "  --listen <port>          Override listen_port\n"
@@ -140,7 +148,8 @@ void print_help() {
         << "  --completion bash\n\n"
         << "Other:\n"
         << "  --allow-exec             Deprecated (EXEC is disabled)\n"
-        << "  -h, --help               Show help\n\n"
+        << "  -h, --help               Show help\n"
+        << "  --version                Show version information\n\n"
         << "Required config fields:\n"
         << "  listen_port   (int)\n"
         << "  tls_cert      (path)\n"
@@ -745,6 +754,10 @@ int main(int argc, char** argv) {
         }
         if (arg == "--help" || arg == "-h") {
             print_help();
+            return 0;
+        }
+        if (arg == "--version") {
+            print_version();
             return 0;
         }
         if (arg == "--config" && i + 1 < argc) {

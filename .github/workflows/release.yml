@@ -71,6 +71,7 @@ jobs:
             clang lld
 
       - name: Setup vcpkg
+        if: contains(github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64', 'windows-x86_64')
         run: |
           git clone --depth 1 https://github.com/microsoft/vcpkg.git ~/vcpkg
           ~/vcpkg/bootstrap-vcpkg.sh -disableMetrics
@@ -100,7 +101,13 @@ jobs:
       - name: Build (Linux + cross)
         run: |
           export YUME_TARGETS="${{ github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64' }}"
-          export YUME_WINDOWS_CROSS=1
+          if [[ ",${YUME_TARGETS}," == *",windows-x86_64,"* ]]; then
+            export YUME_WINDOWS_CROSS=1
+            export YUME_WINDOWS_VCPKG_BUILD_TYPE=release
+            export YUME_WINDOWS_VCPKG_PACKAGES="openssl boost-cmake boost-headers boost-system zlib zstd liblzma spdlog nlohmann-json argon2 liboqs"
+          else
+            export YUME_WINDOWS_CROSS=0
+          fi
           export YUME_MACOS_CROSS=0
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             export YUME_OPENWRT_FAST="${{ github.event.inputs.openwrt_fast || 'true' }}"
@@ -115,6 +122,8 @@ jobs:
             OPENWRT_SDK="${OPENWRT_SDK}" \
             YUME_TARGETS="${YUME_TARGETS}" \
             YUME_WINDOWS_CROSS="${YUME_WINDOWS_CROSS}" \
+            YUME_WINDOWS_VCPKG_BUILD_TYPE="${YUME_WINDOWS_VCPKG_BUILD_TYPE:-}" \
+            YUME_WINDOWS_VCPKG_PACKAGES="${YUME_WINDOWS_VCPKG_PACKAGES:-}" \
             YUME_MACOS_CROSS="${YUME_MACOS_CROSS}" \
             YUME_OPENWRT_FAST="${YUME_OPENWRT_FAST}" \
             ./fullau.sh

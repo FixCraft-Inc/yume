@@ -6,6 +6,7 @@
 
 #include "client/cli.hpp"
 
+#include <algorithm>
 #include <iomanip>
 #include <iostream>
 #include <functional>
@@ -51,7 +52,6 @@
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
-#include <openssl/x509.h>
 #include <openssl/sha.h>
 
 #include "client/forward.hpp"
@@ -79,6 +79,12 @@ constexpr std::chrono::milliseconds kConnectTimeout{10000};
 constexpr std::chrono::milliseconds kHandshakeTimeout{12000};
 constexpr std::chrono::milliseconds kAuthChallengeTimeout{6000};
 constexpr std::chrono::milliseconds kServerInfoTimeout{6000};
+constexpr std::chrono::milliseconds kServerInfoTimeoutInner{20000};
+constexpr std::chrono::milliseconds kServerInfoTimeoutInnerHeavy{45000};
+constexpr int kServerInChargeManualMinPort = 3000;
+constexpr int kServerInChargeManualMaxPort = 30000;
+constexpr int kServerInChargeAutoMinPort = 20000;
+constexpr int kServerInChargeAutoMaxPort = 30000;
 
 struct IoOpResult {
     boost::system::error_code ec;
@@ -108,8 +114,7 @@ IoOpResult read_exact_with_timeout(AsyncStream& stream,
         res.ec = ec;
         res.bytes = bytes;
         done = true;
-        boost::system::error_code ignored;
-        timer.cancel(ignored);
+        (void)timer.cancel();
     });
 
     io.restart();
@@ -139,8 +144,7 @@ IoOpResult connect_with_timeout(boost::asio::ip::tcp::socket& sock,
                                [&](const boost::system::error_code& ec, const boost::asio::ip::tcp::endpoint&) {
                                    res.ec = ec;
                                    done = true;
-                                   boost::system::error_code ignored;
-                                   timer.cancel(ignored);
+                                   (void)timer.cancel();
                                });
 
     io.restart();
@@ -169,8 +173,7 @@ IoOpResult handshake_with_timeout(boost::asio::ssl::stream<boost::asio::ip::tcp:
                            [&](const boost::system::error_code& ec) {
                                res.ec = ec;
                                done = true;
-                               boost::system::error_code ignored;
-                               timer.cancel(ignored);
+                               (void)timer.cancel();
                            });
 
     io.restart();
@@ -302,6 +305,10 @@ protocol::Frame read_frame_with_timeout(boost::asio::ssl::stream<boost::asio::ip
 
     IoOpResult hr = read_exact_with_timeout(stream, io, boost::asio::buffer(header_buf), timeout, cancel);
     if (hr.timed_out) {
+        if (what && std::strcmp(what, "server info") == 0) {
+            throw FatalError(std::string("timed out waiting for server confirmation (") + host + ":" + std::to_string(port) +
+                             "; inner crypto negotiation may be overloaded). try again or lower inner KDF cost");
+        }
         std::string hint = endpoint_hint_tls(tls_handshake_succeeded, nullptr, 0);
         throw FatalError(std::string("this endpoint is not a yume server (") + host + ":" + std::to_string(port) +
                          "; timed out waiting for " + what +
@@ -877,6 +884,8 @@ std::string wrap_ssh_with_proxy(const std::string& cmd, int socks_port, const st
 struct ParsedArgs {
     std::string config_path{"config/yume.json"};
     bool config_specified{false};
+    bool completion{false};
+    std::string completion_shell;
     std::string server;
     int port{0};
     std::string identity;
@@ -901,6 +910,8 @@ struct ParsedArgs {
     bool allow_local_ip{false};
     bool allow_local_ip_override{false};
     std::string pq_public_key;
+    bool allow_embedded_master{false};
+    bool allow_embedded_master_override{false};
     std::string anonym_ca_cert;
     std::string tls_ca_cert;
     std::string tls_pin_sha256;
@@ -923,6 +934,10 @@ struct ParsedArgs {
     bool io_threads_override{false};
     bool server_in_charge{false};
     bool server_in_charge_override{false};
+    int server_in_charge_port{0};
+    bool server_in_charge_port_override{false};
+    int server_in_charge_min_port{0};
+    int server_in_charge_max_port{0};
     bool allow_exec{false};
     bool allow_exec_override{false};
     bool control_mode{false};
@@ -937,7 +952,13 @@ ParsedArgs parse_args(int argc, char** argv) {
     ParsedArgs args;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--config" && i + 1 < argc) {
+        if (arg == "completion" && i + 1 < argc) {
+            args.completion = true;
+            args.completion_shell = argv[++i];
+        } else if (arg == "--completion" && i + 1 < argc) {
+            args.completion = true;
+            args.completion_shell = argv[++i];
+        } else if (arg == "--config" && i + 1 < argc) {
             args.config_path = argv[++i];
             args.config_specified = true;
         } else if (arg == "--help" || arg == "-h") {
@@ -1006,6 +1027,30 @@ ParsedArgs parse_args(int argc, char** argv) {
         } else if (arg == "--server-in-charge") {
             args.server_in_charge = true;
             args.server_in_charge_override = true;
+            if (i + 1 < argc) {
+                std::string next = argv[i + 1];
+                if (!next.empty() && next[0] != '-') {
+                    try {
+                        args.server_in_charge_port = std::stoi(next);
+                        args.server_in_charge_port_override = true;
+                        ++i;
+                    } catch (...) {
+                    }
+                }
+            }
+        } else if (arg == "--server-in-charge-port" && i + 1 < argc) {
+            args.server_in_charge = true;
+            args.server_in_charge_override = true;
+            args.server_in_charge_port = std::stoi(argv[++i]);
+            args.server_in_charge_port_override = true;
+        } else if (arg == "--server-in-charge-min-port" && i + 1 < argc) {
+            args.server_in_charge = true;
+            args.server_in_charge_override = true;
+            args.server_in_charge_min_port = std::stoi(argv[++i]);
+        } else if (arg == "--server-in-charge-max-port" && i + 1 < argc) {
+            args.server_in_charge = true;
+            args.server_in_charge_override = true;
+            args.server_in_charge_max_port = std::stoi(argv[++i]);
         } else if (arg == "--allow-exec") {
             args.allow_exec = true;
             args.allow_exec_override = true;
@@ -1027,6 +1072,12 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.list_controlled = true;
         } else if (arg == "--pq-pub" && i + 1 < argc) {
             args.pq_public_key = argv[++i];
+        } else if (arg == "--use-embedded-master") {
+            args.allow_embedded_master = true;
+            args.allow_embedded_master_override = true;
+        } else if (arg == "--no-embedded-master") {
+            args.allow_embedded_master = false;
+            args.allow_embedded_master_override = true;
         } else if (arg == "--tls-ca" && i + 1 < argc) {
             args.tls_ca_cert = argv[++i];
         } else if (arg == "--tls-pin" && i + 1 < argc) {
@@ -1226,63 +1277,104 @@ void authenticate(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream
     protocol::send_frame(stream, response);
 }
 
+void print_bash_completion() {
+    std::cout << R"(# bash completion for yume
+_yume_complete() {
+  local cur prev
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  prev="${COMP_WORDS[COMP_CWORD-1]}"
+  local opts="--help -h --config --server --port --auth -i --socks --threads --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym -L -R --boring --non-interactive --accept-monitoring --save-server --completion"
+  local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path"
+  case "$prev" in
+    --completion)
+      COMPREPLY=( $(compgen -W "bash" -- "$cur") )
+      return 0
+      ;;
+    --profile)
+      COMPREPLY=( $(compgen -W "chrome firefox safari" -- "$cur") )
+      return 0
+      ;;
+  esac
+  for opt in $file_opts; do
+    if [[ "$prev" == "$opt" ]]; then
+      COMPREPLY=( $(compgen -f -- "$cur") )
+      return 0
+    fi
+  done
+  if [[ "$cur" == -* ]]; then
+    COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
+    return 0
+  fi
+  COMPREPLY=()
+}
+complete -F _yume_complete yume
+)";
+}
+
 void print_help() {
     std::cout
         << "yume - YUME client\n\n"
         << "Usage:\n"
-        << "  yume --server <host> -i <id_ed25519> [--socks 1080]\n"
-        << "  yume --server <host> -i <id_ed25519> --lport <local> --rhost <host> --rport <port>\n"
-        << "  yume --server <host> -i <id_ed25519> --run \"<command>\"\n"
+        << "  yume --server <host> -i <id_ed25519> [mode options]\n"
+        << "  yume completion bash\n"
         << "  yume --help\n\n"
         << "Required:\n"
-        << "  --server <host>       Server address\n"
-        << "  -i, --auth <path>     Identity key file path\n\n"
-        << "Optional:\n"
-        << "  --socks <port>       Start SOCKS5 proxy on specified port\n"
-        << "  --threads <n>        IO thread count (0 = auto-detect)\n"
-        << "  --lport <port>       Local port to forward\n"
-        << "  --rhost <host>       Forward destination host\n"
-        << "  --rport <port>       Forward destination port\n"
-        << "  --udp                Enable UDP for forwards/SOCKS5\n"
-        << "  --tcp                Force TCP only (default)\n"
-        << "  --allow-local-ip     Allow forwarding to private/loopback IPs\n"
-        << "  --server-in-charge   Allow server to control this client\n"
-        << "  --allow-exec         Allow server to execute commands\n"
-        << "  --exec <cmd>         Execute command (with --control) or enable exec\n"
-        << "  --control [id]       Control mode for registered client\n"
-        << "  --id <id>            Target client ID for control mode\n"
-        << "  --list-controlled    List all controlled clients\n"
-        << "  --inner              Enable inner encryption\n"
-        << "  --inner-heavy        Use heavy KDF (default with --inner)\n"
-        << "  --inner-light        Use lighter KDF\n"
-        << "  --hop                Enable inner key hopping\n"
-        << "  --no-hop             Disable inner key hopping\n"
-        << "  --hop-interval <ms>  Hop interval in ms (250-1000 recommended)\n"
-        << "  --pq-pub <path>      Override post-quantum public key\n"
-        << "  --anonym-ca-cert <path> CA certificate for anonymity verification\n"
-        << "  --tls-ca <path>      Custom CA for TLS verification\n"
-        << "  --tls-pin <sha256>   Pin server TLS certificate fingerprint\n"
-        << "  --profile <name>     TLS stealth profile: chrome (default), firefox, safari\n"
-        << "  --no-stealth         Disable TLS stealth mode (ON by default)\n"
-        << "  --tls-stealth-rotate Rotate between stealth profiles\n"
-        << "  --tls-stealth-rotation-interval <n>  Profile rotation interval (connections)\n"
-        << "  --tls-fingerprint-log  Log TLS fingerprint metrics\n"
-        << "  --tls-fingerprint-log-path <path>  Path for fingerprint logs\n"
-        << "  --tls-fingerprint-verify  Verify fingerprint with test endpoint\n"
-        << "  --tls-fingerprint-test-endpoint <host>  Test endpoint for verification\n"
-        << "  --run, -c, --cmd <cmd>  Run command locally with YUME proxy\n"
-        << "                          (SSH auto-wraps ProxyCommand via SOCKS)\n"
-        << "  --run-ipv4           Prefer IPv4 for --run commands\n"
-        << "  --proxycmd           Internal SSH ProxyCommand helper\n"
-        << "  --require-anonym     Abort if server not in anonymous mode\n"
-        << "  -L [bind:]lport:host:port  SSH-style local port forward\n"
-        << "  -R [bind:]rport:host:port  SSH-style remote port forward\n"
-        << "  --boring             Minimal output without emojis\n"
-        << "  --non-interactive    Disable live status line updates\n"
-        << "  --config <path>      Configuration file path\n"
-        << "  --accept-monitoring  Accept monitoring without warning\n"
-        << "  --save-server        Save server to configuration\n"
-        << "  -h, --help           Show this help message\n";
+        << "  --server <host>          Server address\n"
+        << "  -i, --auth <path>        Identity key file path\n\n"
+        << "Modes:\n"
+        << "  --socks <port>           Start SOCKS5 proxy\n"
+        << "  --lport <port> --rhost <host> --rport <port>\n"
+        << "                           Local TCP forward\n"
+        << "  -L [bind:]lport:host:port\n"
+        << "                           SSH-style local forward\n"
+        << "  -R [bind:]rport:host:port\n"
+        << "                           SSH-style reverse forward\n"
+        << "  --run, -c, --cmd <cmd>   Run command via YUME proxy\n"
+        << "  --control [id]           Control mode for a registered client\n"
+        << "  --list-controlled        List controlled clients\n\n"
+        << "Core Options:\n"
+        << "  --config <path>          Configuration file\n"
+        << "  --port <n>               Server port (forced to 443)\n"
+        << "  --threads <n>            IO threads (0 = auto)\n"
+        << "  --udp                    Enable UDP forwarding\n"
+        << "  --tcp                    Force TCP only\n"
+        << "  --allow-local-ip         Allow private/loopback destination IPs\n"
+        << "  --run-ipv4               Prefer IPv4 for --run\n"
+        << "  --proxycmd               Internal SSH ProxyCommand helper\n"
+        << "  --accept-monitoring      Accept monitoring prompt\n"
+        << "  --save-server            Save server to config\n"
+        << "  --non-interactive        Disable live status line updates\n"
+        << "  --boring                 Minimal output (no emojis)\n\n"
+        << "Security:\n"
+        << "  --inner                  Enable inner PQ encryption\n"
+        << "  --inner-heavy            Heavy KDF mode (default)\n"
+        << "  --inner-light            Light KDF mode\n"
+        << "  --hop / --no-hop         Inner key hopping on/off\n"
+        << "  --hop-interval <ms>      Hop interval (250-1000 recommended)\n"
+        << "  --pq-pub <path>          PQ public key path\n"
+        << "  --use-embedded-master    Allow embedded BaseFWX master PQ key fallback\n"
+        << "  --no-embedded-master     Disable embedded BaseFWX master fallback\n"
+        << "  --require-anonym         Require anonymous server mode\n"
+        << "  --anonym-ca-cert <path>  CA certificate for anonym proof verification\n"
+        << "  --tls-ca <path>          Custom CA for TLS verification\n"
+        << "  --tls-pin <sha256>       Pin server TLS certificate fingerprint\n\n"
+        << "TLS Stealth:\n"
+        << "  --profile <name>         chrome (default), firefox, safari\n"
+        << "  --no-stealth             Disable TLS stealth mode\n"
+        << "  --tls-stealth-rotate     Rotate stealth profiles\n"
+        << "  --tls-stealth-rotation-interval <n>\n"
+        << "                           Rotation interval in connections\n"
+        << "  --tls-fingerprint-log    Log TLS fingerprint metrics\n"
+        << "  --tls-fingerprint-log-path <path>\n"
+        << "                           Fingerprint log path\n"
+        << "  --tls-fingerprint-verify Verify fingerprints against test endpoint\n"
+        << "  --tls-fingerprint-test-endpoint <host>\n"
+        << "                           Test endpoint for fingerprint verification\n\n"
+        << "Completion:\n"
+        << "  completion bash\n"
+        << "  --completion bash\n\n"
+        << "Other:\n"
+        << "  -h, --help               Show this help message\n";
 }
 
 bool parse_ssh_forward(const std::string& spec, int& lport, std::string& host, int& rport) {
@@ -1361,6 +1453,14 @@ int Cli::run(int argc, char** argv) {
     util::init_logging();
 
     ParsedArgs args = parse_args(argc, argv);
+    if (args.completion) {
+        if (args.completion_shell == "bash") {
+            print_bash_completion();
+            return 0;
+        }
+        util::log_error("unsupported completion shell: " + args.completion_shell);
+        return 1;
+    }
     if (args.proxycmd) {
         int socks_port = args.socks_port > 0 ? args.socks_port : 1080;
         return run_proxycmd(args.dest_host, args.dest_port, socks_port);
@@ -1396,6 +1496,10 @@ int Cli::run(int argc, char** argv) {
     std::string reverse_host;
     int reverse_port = 0;
     bool use_reverse = false;
+    bool reverse_server_in_charge_auto = false;
+    bool reverse_server_in_charge_manual = false;
+    int reverse_auto_min_port = kServerInChargeAutoMinPort;
+    int reverse_auto_max_port = kServerInChargeAutoMaxPort;
     if (!args.ssh_R.empty()) {
         if (!parse_ssh_forward(args.ssh_R, reverse_listen_port, reverse_host, reverse_port)) {
             util::log_error("invalid -R syntax (expected [bind:]rport:host:port)");
@@ -1468,11 +1572,17 @@ int Cli::run(int argc, char** argv) {
             if (json.contains("server_in_charge") && !args.server_in_charge_override) {
                 cfg.server_in_charge = json["server_in_charge"].get<bool>();
             }
+            if (json.contains("server_in_charge_port") && !args.server_in_charge_port_override) {
+                cfg.server_in_charge_port = json["server_in_charge_port"].get<int>();
+            }
             if (json.contains("allow_exec") && !args.allow_exec_override) {
                 cfg.allow_exec = json["allow_exec"].get<bool>();
             }
             if (json.contains("pq_public_key") && cfg.pq_public_key.empty()) {
                 cfg.pq_public_key = resolve_cfg_path(json["pq_public_key"].get<std::string>());
+            }
+            if (json.contains("use_embedded_master") && !args.allow_embedded_master_override) {
+                cfg.allow_embedded_master = json["use_embedded_master"].get<bool>();
             }
             if (json.contains("anonym_pubkey") && cfg.anonym_pubkey.empty()) {
                 cfg.anonym_pubkey = resolve_cfg_path(json["anonym_pubkey"].get<std::string>());
@@ -1530,6 +1640,9 @@ int Cli::run(int argc, char** argv) {
     if (!args.pq_public_key.empty()) {
         cfg.pq_public_key = util::resolve_path(args.pq_public_key, config_dir, exe_dir);
     }
+    if (args.allow_embedded_master_override) {
+        cfg.allow_embedded_master = args.allow_embedded_master;
+    }
     if (!args.anonym_ca_cert.empty()) {
         cfg.anonym_ca_cert = util::resolve_path(args.anonym_ca_cert, config_dir, exe_dir);
     }
@@ -1550,6 +1663,9 @@ int Cli::run(int argc, char** argv) {
     }
     if (args.server_in_charge_override) {
         cfg.server_in_charge = args.server_in_charge;
+    }
+    if (args.server_in_charge_port_override) {
+        cfg.server_in_charge_port = args.server_in_charge_port;
     }
     if (args.allow_exec_override) {
         cfg.allow_exec = args.allow_exec;
@@ -1602,6 +1718,36 @@ int Cli::run(int argc, char** argv) {
             cfg.hop_interval_ms = 1000;
         }
     }
+    if (!use_reverse && cfg.server_in_charge) {
+        reverse_server_in_charge_auto = true;
+        reverse_host = "127.0.0.1";
+        reverse_port = 22;
+        use_reverse = true;
+        if (args.server_in_charge_min_port > 0) {
+            reverse_auto_min_port = args.server_in_charge_min_port;
+        }
+        if (args.server_in_charge_max_port > 0) {
+            reverse_auto_max_port = args.server_in_charge_max_port;
+        }
+        reverse_auto_min_port = std::clamp(reverse_auto_min_port, 1, 65535);
+        reverse_auto_max_port = std::clamp(reverse_auto_max_port, 1, 65535);
+        if (reverse_auto_min_port > reverse_auto_max_port) {
+            std::swap(reverse_auto_min_port, reverse_auto_max_port);
+        }
+        if (cfg.server_in_charge_port > 0) {
+            if (cfg.server_in_charge_port < kServerInChargeManualMinPort ||
+                cfg.server_in_charge_port > kServerInChargeManualMaxPort) {
+                util::log_error("--server-in-charge port must be " +
+                                std::to_string(kServerInChargeManualMinPort) + "-" +
+                                std::to_string(kServerInChargeManualMaxPort));
+                return 1;
+            }
+            reverse_server_in_charge_manual = true;
+            reverse_listen_port = cfg.server_in_charge_port;
+        } else {
+            reverse_listen_port = 0;
+        }
+    }
     util::set_status_enabled(!cfg.non_interactive);
     if (!require_file("identity", cfg.identity)) {
         return 1;
@@ -1621,14 +1767,29 @@ int Cli::run(int argc, char** argv) {
     if ((args.control_mode || args.list_controlled) && args.server.empty()) {
         cfg.server = "127.0.0.1";
     }
+    const bool has_active_mode =
+        (!args.run_cmd.empty()) ||
+        (args.lport > 0) ||
+        (cfg.socks_port > 0) ||
+        use_reverse ||
+        args.control_mode ||
+        args.list_controlled;
+    if (!has_active_mode) {
+        util::log_error("no mode selected (use --socks, -R, --lport/--rhost/--rport, --run, or --server-in-charge)");
+        return 1;
+    }
 
     if (cfg.inner_crypto && cfg.pq_public_key.empty()) {
         std::error_code ec;
         std::filesystem::path runtime_dir = std::filesystem::current_path(ec);
         std::filesystem::path exe_dir;
+        std::filesystem::path user_cfg_dir;
         std::string self_path = get_self_path(argv[0]);
         if (!self_path.empty()) {
             exe_dir = std::filesystem::path(self_path).parent_path();
+        }
+        if (const char* home = std::getenv("HOME"); home && *home) {
+            user_cfg_dir = std::filesystem::path(home) / ".config" / "yume";
         }
         auto try_set = [&](const std::filesystem::path& base) {
             if (!cfg.pq_public_key.empty() || base.empty()) {
@@ -1639,10 +1800,11 @@ int Cli::run(int argc, char** argv) {
                 cfg.pq_public_key = cand.string();
             }
         };
+        try_set(user_cfg_dir);
         try_set(runtime_dir);
         try_set(exe_dir);
         if (!cfg.pq_public_key.empty()) {
-            util::log_info("using pq_public_key from runtime directory");
+            util::log_info("using discovered pq_public_key: " + cfg.pq_public_key);
         }
     }
 
@@ -1678,8 +1840,10 @@ int Cli::run(int argc, char** argv) {
         json["udp"] = cfg.allow_udp;
         json["allow_local_ip"] = cfg.allow_local_ip;
         json["server_in_charge"] = cfg.server_in_charge;
+        if (cfg.server_in_charge_port > 0) json["server_in_charge_port"] = cfg.server_in_charge_port;
         json["allow_exec"] = cfg.allow_exec;
         if (!cfg.pq_public_key.empty()) json["pq_public_key"] = cfg.pq_public_key;
+        json["use_embedded_master"] = cfg.allow_embedded_master;
         if (!cfg.anonym_ca_cert.empty()) json["anonym_ca_cert"] = cfg.anonym_ca_cert;
         if (!cfg.tls_ca_cert.empty()) json["tls_ca_cert"] = cfg.tls_ca_cert;
         if (!cfg.tls_pin_sha256.empty()) json["tls_pin"] = cfg.tls_pin_sha256;
@@ -1857,6 +2021,7 @@ int Cli::run(int argc, char** argv) {
             inner::Config inner_cfg;
             inner_cfg.enabled = cfg.inner_crypto;
             inner_cfg.pq_public_key = cfg.pq_public_key;
+            inner_cfg.allow_embedded_master = cfg.allow_embedded_master;
 
             std::optional<crypto::Bytes> pq_ciphertext;
             std::optional<crypto::Bytes> pq_salt;
@@ -1893,7 +2058,7 @@ int Cli::run(int argc, char** argv) {
                         pq_need_key = true;
                         inner_disabled_for_session = true;
                         inner_disable_reason =
-                            "inner crypto disabled: PQ public key not configured (use --pq-pub or place pq_public.key next to the executable)";
+                            "inner crypto disabled: PQ public key not configured (use --pq-pub, provide pq_public.key, or enable --use-embedded-master)";
                     } else if (msg.find("ML-KEM-768 support is not enabled") != std::string::npos) {
                         pq_not_supported = true;
                         inner_disabled_for_session = true;
@@ -1909,11 +2074,15 @@ int Cli::run(int argc, char** argv) {
             }
 
             authenticate(stream, io, cfg.server, cfg.port, cfg.identity, pq_ciphertext, pq_salt, inner_mode, inner_hop, inner_kdf);
-            util::log_info("authenticated to server");
+            util::log_info("auth response sent; waiting for server confirmation");
 
             protocol::Frame anon_frame;
+            auto server_info_timeout = kServerInfoTimeout;
+            if (pq_ciphertext.has_value() && cfg.inner_crypto) {
+                server_info_timeout = cfg.inner_heavy ? kServerInfoTimeoutInnerHeavy : kServerInfoTimeoutInner;
+            }
             try {
-                anon_frame = read_frame_with_timeout(stream, io, kServerInfoTimeout, "server info", cfg.server, cfg.port, true);
+                anon_frame = read_frame_with_timeout(stream, io, server_info_timeout, "server info", cfg.server, cfg.port, true);
             } catch (const FatalError&) {
                 throw;
             } catch (const std::exception&) {
@@ -2000,6 +2169,7 @@ int Cli::run(int argc, char** argv) {
             if (server_version.empty() || server_version == "UNKNOWN") {
                 throw FatalError("this endpoint is not a yume server (no version info); please check the origin and try again");
             }
+            util::log_info("authenticated to server");
 
             auto sanitize_msg = [&](const std::string& msg) {
                 if (!cfg.boring) {
@@ -2424,10 +2594,22 @@ int Cli::run(int argc, char** argv) {
                 if (!args.accept_monitoring) {
                     print_red("🛑 🔓 CRITICAL WARNING:");
                     print_red("YOUR DATA WILL BE MONITORED BY THE SERVER OPERATOR YOU ARE CONNECTING TO!! ARE YOU ULTIMATELY SURE YOU TRUST THAT PERSON??");
-                    print_red("TYPE: \"THIS MAY COMPROMISE MY PRIVACY\" to contine");
+                    print_red("TYPE: \"THIS MAY COMPROMISE MY PRIVACY\" to continue");
                     std::string line;
                     std::getline(std::cin, line);
-                    if (line != "THIS MAY COMPROMISE MY PRIVACY") {
+                    auto normalize = [](std::string s) {
+                        auto is_space = [](unsigned char ch) { return std::isspace(ch) != 0; };
+                        while (!s.empty() && is_space(static_cast<unsigned char>(s.front()))) {
+                            s.erase(s.begin());
+                        }
+                        while (!s.empty() && is_space(static_cast<unsigned char>(s.back()))) {
+                            s.pop_back();
+                        }
+                        std::transform(s.begin(), s.end(), s.begin(),
+                                       [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+                        return s;
+                    };
+                    if (normalize(line) != "THIS MAY COMPROMISE MY PRIVACY") {
                         return 1;
                     }
                 }
@@ -2469,7 +2651,7 @@ int Cli::run(int argc, char** argv) {
                                                ? (adjusted % static_cast<std::int64_t>(hop_interval_ms))
                                                : 0;
                 std::string hop_last = color_wrap(std::to_string(last_change) + "ms", "1;34");
-                return std::string("Hopping: ") + hop_line + " - " + hop_freq + " | " + hop_last;
+                return color_wrap("Hopping", "1;36") + ": " + hop_line + " - " + hop_freq + " | " + hop_last;
             };
 
             if (have_anon && !summary_once) {
@@ -2503,34 +2685,37 @@ int Cli::run(int argc, char** argv) {
                 std::string inner_state = (inner_key.has_value() || server_inner_active) ? "ON" : "OFF";
                 std::string inner_line = color_wrap(inner_state, (inner_state == "ON") ? "1;32" : "1;31");
                 if (inner_key.has_value()) {
-                    inner_line += cfg.inner_heavy ? " (heavy)" : " (light)";
+                    inner_line += color_wrap(cfg.inner_heavy ? " (heavy)" : " (light)", "1;35");
                     if (have_inner_caps && server_inner_dual) {
-                        inner_line += ", dual";
+                        inner_line += color_wrap(", dual", "1;35");
                     }
                 }
                 std::string server_display = color_wrap(cfg.server, "1;33");
+                std::string version_value = color_wrap(server_version.empty() ? "UNKNOWN" : server_version, "1;35");
+                std::string connection_value = color_wrap("🔒 TLS", "1;32");
+                std::string protection_value = color_wrap(protection_line, "1;35");
                 std::string verity_state = verity_ok ? "PASS" : "FAIL";
                 std::string verity_line = color_wrap(verity_state, verity_ok ? "1;32" : "1;31");
                 std::string header =
-                    "Connected to " + server_display + ":\n" +
-                    "VERSION: " + (server_version.empty() ? "UNKNOWN" : server_version) + "\n" +
-                    "Connection: TLS\n" +
-                    "Protection: " + protection_line + "\n" +
-                    "Inner: " + inner_line + "\n";
-                std::string footer = "FixCraft Verity: " + verity_line + "\n";
-                const std::string border = "------------------------------------------";
+                    color_wrap("Connected to", "1;36") + " " + server_display + ":\n" +
+                    color_wrap("VERSION", "1;36") + ": " + version_value + "\n" +
+                    color_wrap("Connection", "1;36") + ": " + connection_value + "\n" +
+                    color_wrap("Protection", "1;36") + ": " + protection_value + "\n" +
+                    color_wrap("Inner", "1;36") + ": " + inner_line + "\n";
+                std::string footer = color_wrap("FixCraft Verity", "1;36") + ": " + verity_line + "\n";
+                const std::string border = color_wrap("------------------------------------------", "1;34");
                 status_block_builder = [header, footer, border, build_hop_status_line]() {
                     return border + "\n" + header + build_hop_status_line() + "\n" + footer + border;
                 };
                 if (cfg.non_interactive) {
                     std::cout
-                        << "Connected to " << server_display << ":\n"
-                        << "VERSION: " << (server_version.empty() ? "UNKNOWN" : server_version) << "\n"
-                        << "Connection: TLS\n"
-                        << "Protection: " << protection_line << "\n"
-                        << "Inner: " << inner_line << "\n"
+                        << color_wrap("Connected to", "1;36") << " " << server_display << ":\n"
+                        << color_wrap("VERSION", "1;36") << ": " << version_value << "\n"
+                        << color_wrap("Connection", "1;36") << ": " << connection_value << "\n"
+                        << color_wrap("Protection", "1;36") << ": " << protection_value << "\n"
+                        << color_wrap("Inner", "1;36") << ": " << inner_line << "\n"
                         << build_hop_status_line() << "\n"
-                        << "FixCraft Verity: " << verity_line << "\n";
+                        << color_wrap("FixCraft Verity", "1;36") << ": " << verity_line << "\n";
                 } else {
                     util::set_status_line(status_block_builder());
                 }
@@ -2690,10 +2875,13 @@ int Cli::run(int argc, char** argv) {
             std::thread hop_status_thread;
             if (!cfg.non_interactive) {
                 if (status_block_builder && hop_enabled) {
-                    hop_status_thread = std::thread([hop_status_stop, status_block_builder]() {
+                    // Refresh faster than hop interval to avoid aliasing (e.g., 2 Hz looking like 6/256 ms jumps).
+                    const auto refresh_ms = std::chrono::milliseconds(
+                        std::clamp<int>(static_cast<int>(hop_interval_ms / 8), 40, 150));
+                    hop_status_thread = std::thread([hop_status_stop, status_block_builder, refresh_ms]() {
                         while (!hop_status_stop->load()) {
                             util::set_status_line(status_block_builder());
-                            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                            std::this_thread::sleep_for(refresh_ms);
                         }
                         util::clear_status_line();
                     });
@@ -2739,15 +2927,43 @@ int Cli::run(int argc, char** argv) {
                     return 1;
                 }
                 (*reverse_targets)[listen_id] = ReverseTarget{reverse_host, reverse_port};
-                util::log_info("requesting remote listener on port " + std::to_string(reverse_listen_port));
-                tunnel->request_remote_listen(listen_id, reverse_listen_port,
-                                              [listen_port = reverse_listen_port](bool ok, const std::string& reason) {
-                                                  if (ok) {
-                                                      util::log_info("remote listener active on port " + std::to_string(listen_port));
-                                                  } else {
-                                                      util::log_error("remote listener failed: " + reason);
-                                                  }
-                                              });
+                const bool auto_random = reverse_server_in_charge_auto && !reverse_server_in_charge_manual;
+                const bool reclaim = !reverse_server_in_charge_auto;
+                const int min_port = auto_random ? reverse_auto_min_port : 0;
+                const int max_port = auto_random ? reverse_auto_max_port : 0;
+                if (auto_random) {
+                    util::log_info("requesting server-in-charge reverse SSH on random port " +
+                                   std::to_string(min_port) + "-" + std::to_string(max_port));
+                } else {
+                    util::log_info("requesting remote listener on port " + std::to_string(reverse_listen_port));
+                }
+                tunnel->request_remote_listen(
+                    listen_id, reverse_listen_port,
+                    [listen_port = reverse_listen_port,
+                     auto_mode = reverse_server_in_charge_auto](bool ok, const std::string& reason) {
+                        if (ok) {
+                            int active_port = listen_port;
+                            if (!reason.empty()) {
+                                try {
+                                    auto json = nlohmann::json::parse(reason);
+                                    active_port = json.value("port", active_port);
+                                } catch (...) {
+                                    try {
+                                        active_port = std::stoi(reason);
+                                    } catch (...) {
+                                    }
+                                }
+                            }
+                            util::log_info("remote listener active on port " + std::to_string(active_port));
+                            if (auto_mode) {
+                                util::log_info("server-in-charge ready: server can reach client SSH via 127.0.0.1:" +
+                                               std::to_string(active_port) + " -> 127.0.0.1:22");
+                            }
+                        } else {
+                            util::log_error("remote listener failed: " + reason);
+                        }
+                    },
+                    reclaim, min_port, max_port);
             }
 
         if (!args.exec_cmd.empty()) {

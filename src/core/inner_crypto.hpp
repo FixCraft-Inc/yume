@@ -14,10 +14,12 @@ struct Config {
     bool enabled{false};
     std::string pq_public_key;
     std::string pq_private_key;
+    bool allow_embedded_master{false};
 #else
     bool enabled{false};
     std::string pq_public_key;
     std::string pq_private_key;
+    bool allow_embedded_master{false};
 #endif
 };
 

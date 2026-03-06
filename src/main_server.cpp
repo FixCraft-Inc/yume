@@ -53,52 +53,94 @@ constexpr int kAnonymRefreshSeconds = 300;
 constexpr int kAnonymProofWindowSeconds = 600;
 constexpr int kAnonymRefreshLeadSeconds = 120;
 constexpr int kAnonymRefreshMinSeconds = 30;
+
+void print_bash_completion() {
+    std::cout << R"(# bash completion for yumed
+_yumed_complete() {
+  local cur prev
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  prev="${COMP_WORDS[COMP_CWORD-1]}"
+  local opts="--help -h --config --listen --cert --key --auth-keys --threads --reverse-port-min --reverse-port-max --obfs --inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --completion"
+  local file_opts="--config --cert --key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --keys-add --keys-gen"
+  case "$prev" in
+    --completion)
+      COMPREPLY=( $(compgen -W "bash" -- "$cur") )
+      return 0
+      ;;
+  esac
+  for opt in $file_opts; do
+    if [[ "$prev" == "$opt" ]]; then
+      COMPREPLY=( $(compgen -f -- "$cur") )
+      return 0
+    fi
+  done
+  if [[ "$cur" == -* ]]; then
+    COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
+    return 0
+  fi
+  COMPREPLY=()
+}
+complete -F _yumed_complete yumed
+)";
+}
+
 void print_help() {
     std::cout
         << "yumed - YUME server\n\n"
         << "Usage:\n"
-        << "  yumed [--config <path>] [options]\n\n"
-        << "Options:\n"
-        << "  --listen <port>       (override listen_port)\n"
-        << "  --cert <path>         (override tls_cert)\n"
-        << "  --key <path>          (override tls_key)\n"
-        << "  --auth-keys <path>    (override auth_keys)\n"
-        << "  --threads <n>         (0 = auto/all cores)\n"
-        << "  --reverse-port-min <port> (remote listen min; default 4100)\n"
-        << "  --reverse-port-max <port> (remote listen max; default 8600)\n"
-        << "  --obfs                (enable obfuscation)\n"
-        << "  --inner               (enable inner PQ crypto)\n"
-        << "  --inner-heavy         (heavy KDF, default)\n"
-        << "  --inner-light         (lighter KDF)\n"
-        << "  --inner-dual          (accept both inner-heavy and inner-light clients)\n"
-        << "  --inner-required      (reject clients without inner crypto)\n"
-        << "  --hop                 (enable inner key hopping)\n"
-        << "  --hop-interval <ms>   (hop interval in ms; 250-1000 recommended)\n"
-        << "  --no-hop              (disable inner key hopping)\n"
-        << "  --pq-key <path>       (override pq_private_key)\n"
-        << "  --allow-exec          (deprecated: EXEC is disabled for safety)\n"
-        << "  --allow-local-ip      (allow private/loopback destinations)\n"
-        << "  --control-full        (allow full server network access)\n"
-        << "  --real                (serve real HTTP on non-client requests)\n"
-        << "  --real-index <path>   (HTML file for /)\n"
-        << "  --real-secret <str>   (secret for hidden metadata)\n"
-        << "  --real-secret-file <path> (auto-generate/store secret)\n"
-        << "  --anonym              (enable anonym mode + proof)\n"
-        << "  --anonym-api <url>    (verity API endpoint)\n"
-        << "  --anonym-token <str>  (verity API token)\n"
-        << "  --anonym-ca-key <path> (CA private key for extra anonym signature)\n"
-        << "  --anonym-ca-cert <path> (CA cert matching anonym CA key)\n"
-        << "  --anonym-sub-key <path> (sub-CA private key for anonym proof signing)\n"
-        << "  --anonym-sub-cert <path> (sub-CA cert to send to clients)\n"
-        << "  --keys-list           (list authorized keys)\n"
-        << "  --keys-add <pub.pem>  (add authorized key)\n"
-        << "  --keys-remove <id>    (remove by fingerprint or alias)\n"
-        << "  --keys-alias <id> <alias> (set alias)\n"
-        << "  --keys-gen <prefix>   (generate Ed25519 keypair at <prefix>.key/.pub)\n"
-        << "  --keys-gen-add        (append generated pubkey to auth_keys)\n"
-        << "  --ui                  (interactive server manager)\n"
-        << "  --boring              (no emojis; short, color-only output)\n"
-        << "  --help                (show help)\n\n"
+        << "  yumed [--config <path>] [options]\n"
+        << "  yumed completion bash\n\n"
+        << "Core Options:\n"
+        << "  --config <path>          Configuration file path\n"
+        << "  --listen <port>          Override listen_port\n"
+        << "  --cert <path>            Override tls_cert\n"
+        << "  --key <path>             Override tls_key\n"
+        << "  --auth-keys <path>       Override auth_keys\n"
+        << "  --threads <n>            Worker thread count (0 = auto)\n"
+        << "  --reverse-port-min <p>   Reverse listen minimum (default 3000)\n"
+        << "  --reverse-port-max <p>   Reverse listen maximum (default 30000)\n"
+        << "  --obfs                   Enable obfuscation\n"
+        << "  --allow-local-ip         Allow private/loopback destinations\n"
+        << "  --control-full           Allow full server-side network control\n"
+        << "  --boring                 Minimal logs (no emojis)\n\n"
+        << "Inner Crypto:\n"
+        << "  --inner                  Enable inner PQ crypto\n"
+        << "  --inner-heavy            Heavy KDF mode (default)\n"
+        << "  --inner-light            Light KDF mode\n"
+        << "  --inner-dual             Accept heavy and light clients\n"
+        << "  --inner-required         Reject clients without inner crypto\n"
+        << "  --hop / --no-hop         Inner key hopping on/off\n"
+        << "  --hop-interval <ms>      Hop interval (250-1000 recommended)\n"
+        << "  --pq-key <path>          PQ private key path\n"
+        << "  --pq-auto-generate       Generate/regenerate PQ keypair when missing or invalid\n"
+        << "  --use-embedded-master    Allow embedded BaseFWX master PQ key fallback\n"
+        << "  --no-embedded-master     Disable embedded BaseFWX master fallback\n\n"
+        << "HTTP/Anonym:\n"
+        << "  --real                   Serve real HTTP for non-client requests\n"
+        << "  --real-index <path>      HTML file for /\n"
+        << "  --real-secret <str>      Secret for hidden metadata\n"
+        << "  --real-secret-file <path> Load/create secret file\n"
+        << "  --anonym                 Enable anonym mode + proof\n"
+        << "  --anonym-api <url>       Verity API endpoint\n"
+        << "  --anonym-token <str>     Verity API token\n"
+        << "  --anonym-ca-key <path>   CA private key for anonym signature\n"
+        << "  --anonym-ca-cert <path>  CA cert matching anonym CA key\n"
+        << "  --anonym-sub-key <path>  Sub-CA private key for anonym signature\n"
+        << "  --anonym-sub-cert <path> Sub-CA cert sent to clients\n\n"
+        << "Key Management:\n"
+        << "  --keys-list              List authorized keys\n"
+        << "  --keys-add <pub.pem>     Add authorized key\n"
+        << "  --keys-remove <id>       Remove by fingerprint or alias\n"
+        << "  --keys-alias <id> <a>    Set alias\n"
+        << "  --keys-gen <prefix>      Generate Ed25519 keypair (<prefix>.key/.pub)\n"
+        << "  --keys-gen-add           Append generated public key to auth_keys\n"
+        << "  --ui                     Interactive server manager\n\n"
+        << "Completion:\n"
+        << "  completion bash\n"
+        << "  --completion bash\n\n"
+        << "Other:\n"
+        << "  --allow-exec             Deprecated (EXEC is disabled)\n"
+        << "  -h, --help               Show help\n\n"
         << "Required config fields:\n"
         << "  listen_port   (int)\n"
         << "  tls_cert      (path)\n"
@@ -116,6 +158,8 @@ void print_help() {
         << "  inner_hop     (bool)\n"
         << "  hop_interval_ms (int)\n"
         << "  pq_private_key (path)\n"
+        << "  pq_auto_generate (bool)\n"
+        << "  use_embedded_master (bool)\n"
         << "  allow_exec    (bool, deprecated)\n"
         << "  allow_local_ip (bool)\n"
         << "  control_full  (bool)\n"
@@ -686,8 +730,19 @@ int main(int argc, char** argv) {
     bool inner_hop_value = true;
     bool hop_interval_override = false;
     bool anonym_override = false;
+    bool pq_auto_generate_override = false;
+    bool allow_embedded_master_override = false;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
+        if ((arg == "completion" || arg == "--completion") && i + 1 < argc) {
+            std::string shell = argv[++i];
+            if (shell == "bash") {
+                print_bash_completion();
+                return 0;
+            }
+            yume::util::log_error("unsupported completion shell: " + shell);
+            return 1;
+        }
         if (arg == "--help" || arg == "-h") {
             print_help();
             return 0;
@@ -750,6 +805,15 @@ int main(int argc, char** argv) {
         } else if (arg == "--pq-key" && i + 1 < argc) {
             cfg.pq_private_key = yume::util::expand_user(argv[++i]);
             inner_crypto_override = true;
+        } else if (arg == "--pq-auto-generate") {
+            cfg.pq_auto_generate = true;
+            pq_auto_generate_override = true;
+        } else if (arg == "--use-embedded-master") {
+            cfg.allow_embedded_master = true;
+            allow_embedded_master_override = true;
+        } else if (arg == "--no-embedded-master") {
+            cfg.allow_embedded_master = false;
+            allow_embedded_master_override = true;
         } else if (arg == "--allow-exec") {
             cfg.allow_exec = true;
         } else if (arg == "--allow-local-ip") {
@@ -838,12 +902,12 @@ int main(int argc, char** argv) {
                 }
             }
             if (json.contains("reverse_port_min")) {
-                if (cfg.reverse_port_min == 4100) {
+                if (cfg.reverse_port_min == 3000) {
                     cfg.reverse_port_min = json["reverse_port_min"].get<int>();
                 }
             }
             if (json.contains("reverse_port_max")) {
-                if (cfg.reverse_port_max == 8600) {
+                if (cfg.reverse_port_max == 30000) {
                     cfg.reverse_port_max = json["reverse_port_max"].get<int>();
                 }
             }
@@ -903,6 +967,16 @@ int main(int argc, char** argv) {
             if (json.contains("pq_private_key")) {
                 if (cfg.pq_private_key.empty()) {
                     cfg.pq_private_key = resolve_cfg_path(json["pq_private_key"].get<std::string>());
+                }
+            }
+            if (json.contains("pq_auto_generate")) {
+                if (!pq_auto_generate_override) {
+                    cfg.pq_auto_generate = json["pq_auto_generate"].get<bool>();
+                }
+            }
+            if (json.contains("use_embedded_master")) {
+                if (!allow_embedded_master_override) {
+                    cfg.allow_embedded_master = json["use_embedded_master"].get<bool>();
                 }
             }
             if (json.contains("allow_exec")) {
@@ -1145,6 +1219,8 @@ int main(int argc, char** argv) {
             std::string inner_hop = prompt("inner_hop (true/false)", cfg.inner_hop ? "true" : "false");
             std::string hop_interval = prompt("hop_interval_ms", std::to_string(cfg.hop_interval_ms));
             std::string pq = prompt("pq_private_key", cfg.pq_private_key);
+            std::string pq_auto_generate = prompt("pq_auto_generate (true/false)", cfg.pq_auto_generate ? "true" : "false");
+            std::string use_embedded_master = prompt("use_embedded_master (true/false)", cfg.allow_embedded_master ? "true" : "false");
             std::string allow_exec = prompt("allow_exec (true/false)", cfg.allow_exec ? "true" : "false");
             std::string allow_local_ip = prompt("allow_local_ip (true/false)", cfg.allow_local_ip ? "true" : "false");
             std::string control_full = prompt("control_full (true/false)", cfg.control_full ? "true" : "false");
@@ -1174,6 +1250,8 @@ int main(int argc, char** argv) {
             json["inner_hop"] = (inner_hop == "true");
             json["hop_interval_ms"] = std::stoi(hop_interval);
             if (!pq.empty()) json["pq_private_key"] = pq;
+            json["pq_auto_generate"] = (pq_auto_generate == "true");
+            json["use_embedded_master"] = (use_embedded_master == "true");
             json["allow_exec"] = (allow_exec == "true");
             json["allow_local_ip"] = (allow_local_ip == "true");
             json["control_full"] = (control_full == "true");
@@ -1247,21 +1325,20 @@ int main(int argc, char** argv) {
             };
             try_set(cfg.pq_private_key, runtime_dir, "pq_private.key");
             try_set(cfg.pq_private_key, exe_dir, "pq_private.key");
+            std::filesystem::path secret_dir = runtime_dir / ".secrets";
+            try_set(cfg.pq_private_key, secret_dir, "pq_private.key");
             if (!cfg.pq_private_key.empty()) {
-                yume::util::log_info("using pq_private_key from runtime directory");
-            } else {
-                std::filesystem::path secret_dir = runtime_dir / ".secrets";
+                yume::util::log_info("using discovered pq_private_key: " + cfg.pq_private_key);
+            } else if (cfg.pq_auto_generate) {
                 std::filesystem::path priv_path = secret_dir / "pq_private.key";
                 std::filesystem::path pub_path = secret_dir / "pq_public.key";
                 std::string err;
-                if (file_readable(priv_path.string())) {
-                    cfg.pq_private_key = priv_path.string();
-                    yume::util::log_info("using pq_private_key from ./.secrets");
-                } else if (yume::inner::generate_pq_keypair(priv_path.string(), pub_path.string(), &err)) {
+                if (yume::inner::generate_pq_keypair(priv_path.string(), pub_path.string(), &err)) {
                     cfg.pq_private_key = priv_path.string();
                     yume::util::log_info("generated PQ keypair at ./.secrets (copy pq_public.key to clients)");
                 } else {
-                    yume::util::log_warn("PQ keypair generation failed: " + err);
+                    yume::util::log_error("PQ keypair generation failed: " + err);
+                    return 1;
                 }
             }
         }
@@ -1270,6 +1347,11 @@ int main(int argc, char** argv) {
             if (file_readable(cfg.pq_private_key) && file_readable(pq_public_path)) {
                 std::string err;
                 if (!yume::inner::validate_pq_keypair(cfg.pq_private_key, pq_public_path, &err)) {
+                    if (!cfg.pq_auto_generate) {
+                        yume::util::log_error("PQ keypair mismatch: " + err +
+                                              " (run with --pq-auto-generate to regenerate)");
+                        return 1;
+                    }
                     yume::util::log_warn("PQ keypair mismatch; regenerating: " + err);
                     if (!yume::inner::generate_pq_keypair(cfg.pq_private_key, pq_public_path, &err)) {
                         yume::util::log_error("PQ keypair regeneration failed: " + err);
@@ -1297,6 +1379,12 @@ int main(int argc, char** argv) {
         }
         if (!file_readable(cfg.auth_keys)) {
             yume::util::log_error("auth_keys not found: " + cfg.auth_keys);
+            return 1;
+        }
+        if (cfg.inner_crypto && cfg.pq_private_key.empty() && !cfg.allow_embedded_master) {
+            yume::util::log_error(
+                "inner_crypto enabled but pq_private_key is not set "
+                "(set --pq-key, provide pq_private.key, enable --pq-auto-generate, or use --use-embedded-master)");
             return 1;
         }
         if (cfg.inner_crypto && !cfg.pq_private_key.empty() && !file_readable(cfg.pq_private_key)) {
@@ -1516,6 +1604,8 @@ int main(int argc, char** argv) {
         } else {
             yume::util::log_warn("🔓⛓️‍💥 YOUR SECURITY IS SUFFERING BECAUSE YOU HAVE DISABLED: BASEFWX / PQ");
         }
+    } else if (cfg.allow_embedded_master && cfg.pq_private_key.empty()) {
+        yume::util::log_warn("using embedded BaseFWX master PQ key fallback (explicitly enabled)");
     }
     if (cfg.anonym && cfg.anonym_ca_key.empty() && !cfg.anonym_ca_cert.empty()) {
         yume::util::log_warn("anonym_ca_cert set but anonym_ca_key is missing; no CA signature will be produced");
@@ -1528,6 +1618,9 @@ int main(int argc, char** argv) {
     }
     if (cfg.anonym && cfg.anonym_sub_key.empty() && !cfg.anonym_sub_cert.empty()) {
         yume::util::log_warn("anonym_sub_cert set but anonym_sub_key is missing; no sub signature will be produced");
+    }
+    if (!cfg.anonym && (!cfg.anonym_sub_key.empty() || !cfg.anonym_sub_cert.empty())) {
+        yume::util::log_warn("anonym_sub_key/anonym_sub_cert are set but --anonym is disabled; anonym proof mode is OFF");
     }
     if (cfg.listen_port != 443 && !cfg.anonym) {
         yume::util::log_warn("WARNING: running on a port other than 443 reduces stealth and defeats HTTPS disguise.");

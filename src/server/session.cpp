@@ -832,6 +832,7 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                 inner::Config inner_cfg;
                 inner_cfg.enabled = cfg_.inner_crypto;
                 inner_cfg.pq_private_key = cfg_.pq_private_key;
+                inner_cfg.allow_embedded_master = cfg_.allow_embedded_master;
                 if (cfg_.inner_dual) {
                     std::optional<inner::KdfParams> heavy_kdf;
                     if (inner_kdf.has_value() && !inner_kdf->name.empty() && inner_kdf->name != "hkdf") {

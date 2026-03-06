@@ -69,9 +69,10 @@ Bytes read_file(const std::string& path) {
     return data;
 }
 
-Bytes load_pq_public_key(const std::string& path) {
+Bytes load_pq_public_key(const std::string& path, bool allow_embedded_master) {
 #if !YUME_USE_BASEFWX
     (void)path;
+    (void)allow_embedded_master;
     throw std::runtime_error("inner crypto not available: BaseFWX disabled");
 #else
     struct Cache {
@@ -81,7 +82,8 @@ Bytes load_pq_public_key(const std::string& path) {
     };
     static std::mutex cache_mutex;
     static Cache cache;
-    const std::string cache_key = path.empty() ? std::string("<default>") : path;
+    const std::string cache_key = (path.empty() ? std::string("<default>") : path) +
+                                  (allow_embedded_master ? "|embedded=1" : "|embedded=0");
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (cache.valid && cache.path == cache_key) {
@@ -92,12 +94,15 @@ Bytes load_pq_public_key(const std::string& path) {
     Bytes loaded;
     if (!path.empty()) {
         loaded = basefwx::pq::DecodeKeyBytes(read_file(path));
-    } else {
+    } else if (allow_embedded_master) {
         auto pub = basefwx::pq::LoadMasterPublicKey();
         if (!pub.has_value()) {
             throw std::runtime_error("PQ public key not configured");
         }
         loaded = *pub;
+    } else {
+        throw std::runtime_error(
+            "PQ public key not configured (set --pq-pub or enable --use-embedded-master)");
     }
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
@@ -109,9 +114,10 @@ Bytes load_pq_public_key(const std::string& path) {
 #endif
 }
 
-Bytes load_pq_private_key(const std::string& path) {
+Bytes load_pq_private_key(const std::string& path, bool allow_embedded_master) {
 #if !YUME_USE_BASEFWX
     (void)path;
+    (void)allow_embedded_master;
     throw std::runtime_error("inner crypto not available: BaseFWX disabled");
 #else
     struct Cache {
@@ -121,7 +127,8 @@ Bytes load_pq_private_key(const std::string& path) {
     };
     static std::mutex cache_mutex;
     static Cache cache;
-    const std::string cache_key = path.empty() ? std::string("<default>") : path;
+    const std::string cache_key = (path.empty() ? std::string("<default>") : path) +
+                                  (allow_embedded_master ? "|embedded=1" : "|embedded=0");
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         if (cache.valid && cache.path == cache_key) {
@@ -132,8 +139,14 @@ Bytes load_pq_private_key(const std::string& path) {
     Bytes loaded;
     if (!path.empty()) {
         loaded = basefwx::pq::DecodeKeyBytes(read_file(path));
-    } else {
+    } else if (allow_embedded_master) {
         loaded = basefwx::pq::LoadMasterPrivateKey();
+        if (loaded.empty()) {
+            throw std::runtime_error("PQ private key not configured");
+        }
+    } else {
+        throw std::runtime_error(
+            "PQ private key not configured (set --pq-key or enable --use-embedded-master)");
     }
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
@@ -572,7 +585,7 @@ ClientHandshake client_prepare(const Config& cfg, bool heavy) {
     (void)heavy;
     throw std::runtime_error("inner crypto not available: BaseFWX disabled");
 #else
-    Bytes pub = load_pq_public_key(cfg.pq_public_key);
+    Bytes pub = load_pq_public_key(cfg.pq_public_key, cfg.allow_embedded_master);
     auto kem = basefwx::pq::KemEncrypt(pub);
     result.enabled = true;
     result.pq_ciphertext = std::move(kem.ciphertext);
@@ -612,7 +625,7 @@ std::optional<DerivedKey> server_derive_key(const Config& cfg,
     (void)kdf_params;
     throw std::runtime_error("inner crypto not available: BaseFWX disabled");
 #else
-    Bytes priv = load_pq_private_key(cfg.pq_private_key);
+    Bytes priv = load_pq_private_key(cfg.pq_private_key, cfg.allow_embedded_master);
     Bytes shared = basefwx::pq::KemDecrypt(priv, pq_ciphertext);
     if (!heavy) {
         DerivedKey out;

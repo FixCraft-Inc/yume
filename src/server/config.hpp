@@ -21,6 +21,8 @@ struct ServerConfig {
     int reverse_port_min{4100};
     int reverse_port_max{8600};
     std::string pq_private_key;
+    bool pq_auto_generate{false};
+    bool allow_embedded_master{false};
     bool allow_exec{false};
     bool allow_local_ip{false};
     bool control_full{false};

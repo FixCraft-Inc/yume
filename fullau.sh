@@ -65,7 +65,7 @@ normalize_cross_flag() {
 IFS='|' read -r WINDOWS_CROSS WINDOWS_CROSS_AUTO <<< "$(normalize_cross_flag "${YUME_WINDOWS_CROSS:-}")"
 WINDOWS_TOOLCHAIN_PREFIX="${YUME_WINDOWS_TOOLCHAIN_PREFIX:-x86_64-w64-mingw32}"
 WINDOWS_TRIPLET="${YUME_WINDOWS_TRIPLET:-x64-mingw-dynamic}"
-WINDOWS_VCPKG_PACKAGES="${YUME_WINDOWS_VCPKG_PACKAGES:-openssl boost-cmake boost-headers boost-system zlib zstd liblzma spdlog nlohmann-json argon2 liboqs}"
+WINDOWS_VCPKG_PACKAGES="${YUME_WINDOWS_VCPKG_PACKAGES:-openssl boost-cmake boost-headers boost-system zlib zstd liblzma nlohmann-json argon2 liboqs}"
 
 IFS='|' read -r MACOS_CROSS MACOS_CROSS_AUTO <<< "$(normalize_cross_flag "${YUME_MACOS_CROSS:-}")"
 MACOS_TOOLCHAIN_PREFIX="${YUME_MACOS_TOOLCHAIN_PREFIX:-}"
@@ -1303,9 +1303,6 @@ EOF
     local ssl_lib="/usr/lib/i386-linux-gnu/libssl.${lib_ext}"
     local crypto_lib="/usr/lib/i386-linux-gnu/libcrypto.${lib_ext}"
     local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include ${variant_args}"
-    if [[ -f "${lzma_lib}" ]]; then
-      extra_args="${extra_args} -DLZMA_LIBRARY=${lzma_lib} -DLZMA_INCLUDE_DIR=/usr/include"
-    fi
     if [[ -f "${zstd_lib}" ]]; then
       extra_args="${extra_args} -DZSTD_LIBRARY=${zstd_lib} -DZSTD_INCLUDE_DIR=/usr/include"
     fi
@@ -1333,9 +1330,6 @@ EOF
     local ssl_lib="/usr/lib/arm-linux-gnueabihf/libssl.${lib_ext}"
     local crypto_lib="/usr/lib/arm-linux-gnueabihf/libcrypto.${lib_ext}"
     local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include ${variant_args}"
-    if [[ -f "${lzma_lib}" ]]; then
-      extra_args="${extra_args} -DLZMA_LIBRARY=${lzma_lib} -DLZMA_INCLUDE_DIR=/usr/include"
-    fi
     if [[ -f "${zstd_lib}" ]]; then
       extra_args="${extra_args} -DZSTD_LIBRARY=${zstd_lib} -DZSTD_INCLUDE_DIR=/usr/include"
     fi
@@ -1391,9 +1385,6 @@ EOF
     local ssl_lib="${lib_dir}/libssl.${lib_ext}"
     local crypto_lib="${lib_dir}/libcrypto.${lib_ext}"
     local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=${inc_dir} -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=${inc_dir} ${variant_args}"
-    if [[ -f "${lzma_lib}" ]]; then
-      extra_args="${extra_args} -DLZMA_LIBRARY=${lzma_lib} -DLZMA_INCLUDE_DIR=${inc_dir}"
-    fi
     if [[ -f "${zstd_lib}" ]]; then
       extra_args="${extra_args} -DZSTD_LIBRARY=${zstd_lib} -DZSTD_INCLUDE_DIR=${inc_dir}"
     fi
@@ -1488,9 +1479,6 @@ EOF
     local ssl_lib="/usr/lib/arm-linux-gnueabihf/libssl.${lib_ext}"
     local crypto_lib="/usr/lib/arm-linux-gnueabihf/libcrypto.${lib_ext}"
     local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include ${variant_args}"
-    if [[ -f "${lzma_lib}" ]]; then
-      extra_args="${extra_args} -DLZMA_LIBRARY=${lzma_lib} -DLZMA_INCLUDE_DIR=/usr/include"
-    fi
     if [[ -f "${zstd_lib}" ]]; then
       extra_args="${extra_args} -DZSTD_LIBRARY=${zstd_lib} -DZSTD_INCLUDE_DIR=/usr/include"
     fi
@@ -1518,9 +1506,6 @@ EOF
     local ssl_lib="/usr/lib/aarch64-linux-gnu/libssl.${lib_ext}"
     local crypto_lib="/usr/lib/aarch64-linux-gnu/libcrypto.${lib_ext}"
     local extra_args="-DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include ${variant_args}"
-    if [[ -f "${lzma_lib}" ]]; then
-      extra_args="${extra_args} -DLZMA_LIBRARY=${lzma_lib} -DLZMA_INCLUDE_DIR=/usr/include"
-    fi
     if [[ -f "${zstd_lib}" ]]; then
       extra_args="${extra_args} -DZSTD_LIBRARY=${zstd_lib} -DZSTD_INCLUDE_DIR=/usr/include"
     fi
@@ -1572,9 +1557,6 @@ build_host_linux_target() {
   local extra_args="${variant_args} -DZLIB_LIBRARY=${zlib_lib} -DZLIB_INCLUDE_DIR=/usr/include"
   if [[ -f "${ssl_lib}" && -f "${crypto_lib}" ]]; then
     extra_args="${extra_args} -DOPENSSL_SSL_LIBRARY=${ssl_lib} -DOPENSSL_CRYPTO_LIBRARY=${crypto_lib} -DOPENSSL_INCLUDE_DIR=/usr/include"
-  fi
-  if [[ -f "${lzma_lib}" ]]; then
-    extra_args="${extra_args} -DLZMA_LIBRARY=${lzma_lib} -DLZMA_INCLUDE_DIR=/usr/include"
   fi
   if [[ -f "${zstd_lib}" ]]; then
     extra_args="${extra_args} -DZSTD_LIBRARY=${zstd_lib} -DZSTD_INCLUDE_DIR=/usr/include"
@@ -1724,6 +1706,8 @@ build_windows_cross_target() {
   local shim_bin="/tmp/yume-windows-shim"
   local powershell_stub="${shim_bin}/powershell.exe"
   local vcpkg_build_type="${YUME_WINDOWS_VCPKG_BUILD_TYPE:-release}"
+  local overlay_triplets_dir=""
+  local upstream_triplet_file=""
 
   if [[ "${WINDOWS_CROSS}" -ne 1 ]]; then
     return 0
@@ -1744,6 +1728,12 @@ build_windows_cross_target() {
   if [[ ! -f "${vcpkg_root}/scripts/buildsystems/vcpkg.cmake" ]]; then
     echo "Skipping windows cross build; vcpkg toolchain file missing" >&2
     return 0
+  fi
+
+  if [[ -f "${vcpkg_root}/triplets/community/${triplet}.cmake" ]]; then
+    upstream_triplet_file="${vcpkg_root}/triplets/community/${triplet}.cmake"
+  elif [[ -f "${vcpkg_root}/triplets/${triplet}.cmake" ]]; then
+    upstream_triplet_file="${vcpkg_root}/triplets/${triplet}.cmake"
   fi
 
   patch_vcpkg_boost_ports "${vcpkg_root}"
@@ -1772,8 +1762,19 @@ EOS
     chmod +x "${powershell_stub}"
   fi
 
-  PATH="${shim_bin}:${PATH}" VCPKG_POWERSHELL_PATH="${powershell_stub}" VCPKG_BUILD_TYPE="${vcpkg_build_type}" \
-    "${vcpkg_bin}" install --triplet "${triplet}" ${WINDOWS_VCPKG_PACKAGES}
+  local vcpkg_triplet_args=(--triplet "${triplet}")
+  if [[ "${vcpkg_build_type}" == "release" && -n "${upstream_triplet_file}" ]]; then
+    overlay_triplets_dir="/tmp/yume-vcpkg-triplets-windows"
+    mkdir -p "${overlay_triplets_dir}"
+    cat > "${overlay_triplets_dir}/${triplet}.cmake" <<EOF
+include("${upstream_triplet_file}")
+set(VCPKG_BUILD_TYPE release)
+EOF
+    vcpkg_triplet_args+=(--overlay-triplets "${overlay_triplets_dir}")
+  fi
+
+  PATH="${shim_bin}:${PATH}" VCPKG_POWERSHELL_PATH="${powershell_stub}" \
+    "${vcpkg_bin}" install "${vcpkg_triplet_args[@]}" ${WINDOWS_VCPKG_PACKAGES}
 
   cat > "${toolchain_file}" <<EOF
 set(CMAKE_SYSTEM_NAME Windows)
@@ -1806,8 +1807,13 @@ EOF
     extra_oqs_args="-DOQS_INCLUDE_DIR=${oqs_include} -DOQS_LIBRARY=${oqs_lib}"
   fi
 
-  PATH="${shim_bin}:${PATH}" VCPKG_POWERSHELL_PATH="${powershell_stub}" VCPKG_BUILD_TYPE="${vcpkg_build_type}" \
-    YUME_WINDOWS_CROSS=1 YUME_MACOS_CROSS=0 YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF -DOPENSSL_ROOT_DIR=${vcpkg_prefix} ${extra_oqs_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DVCPKG_APPLOCAL_DEPS=OFF -DCMAKE_SYSTEM_NAME=Windows" \
+  local extra_vcpkg_toolchain_args=""
+  if [[ -n "${overlay_triplets_dir}" ]]; then
+    extra_vcpkg_toolchain_args="-DVCPKG_OVERLAY_TRIPLETS=${overlay_triplets_dir}"
+  fi
+
+  PATH="${shim_bin}:${PATH}" VCPKG_POWERSHELL_PATH="${powershell_stub}" \
+    YUME_WINDOWS_CROSS=1 YUME_MACOS_CROSS=0 YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DYUME_USE_SPDLOG=OFF -DBASEFWX_USE_VENDOR_DEPS=OFF -DOPENSSL_ROOT_DIR=${vcpkg_prefix} ${extra_oqs_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} ${extra_vcpkg_toolchain_args} -DVCPKG_APPLOCAL_DEPS=OFF -DCMAKE_SYSTEM_NAME=Windows" \
     ./ezbuild.sh
 
   if [[ ! -f build/bin/yume.exe || ! -f build/bin/yumed.exe ]]; then

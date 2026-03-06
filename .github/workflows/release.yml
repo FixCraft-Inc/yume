@@ -104,7 +104,7 @@ jobs:
           if [[ ",${YUME_TARGETS}," == *",windows-x86_64,"* ]]; then
             export YUME_WINDOWS_CROSS=1
             export YUME_WINDOWS_VCPKG_BUILD_TYPE=release
-            export YUME_WINDOWS_VCPKG_PACKAGES="openssl boost-cmake boost-headers boost-system zlib zstd liblzma spdlog nlohmann-json argon2 liboqs"
+            export YUME_WINDOWS_VCPKG_PACKAGES="openssl boost-cmake boost-headers boost-system zlib zstd liblzma nlohmann-json argon2 liboqs"
           else
             export YUME_WINDOWS_CROSS=0
           fi

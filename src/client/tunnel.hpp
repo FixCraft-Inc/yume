@@ -6,6 +6,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -104,6 +105,7 @@ private:
     TunnelCloseHandler close_handler_;
     uint8_t next_stream_id_{1};
     bool closed_{false};
+    mutable std::mutex state_mu_;
     std::optional<Bytes> inner_key_;
     bool hop_enabled_{false};
     std::uint32_t hop_interval_ms_{0};

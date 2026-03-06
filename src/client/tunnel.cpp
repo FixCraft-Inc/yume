@@ -64,6 +64,7 @@ boost::asio::any_io_executor Tunnel::get_executor() {
 }
 
 uint8_t Tunnel::reserve_stream_id() {
+    std::lock_guard<std::mutex> lock(state_mu_);
     for (int i = 0; i < 255; ++i) {
         uint8_t candidate = next_stream_id_++;
         if (candidate == 0) {
@@ -80,10 +81,12 @@ uint8_t Tunnel::reserve_stream_id() {
 }
 
 void Tunnel::register_stream(uint8_t stream_id, DataHandler on_data, CloseHandler on_close) {
+    std::lock_guard<std::mutex> lock(state_mu_);
     streams_[stream_id] = StreamCallbacks{std::move(on_data), std::move(on_close)};
 }
 
 void Tunnel::unregister_stream(uint8_t stream_id) {
+    std::lock_guard<std::mutex> lock(state_mu_);
     streams_.erase(stream_id);
     pending_open_.erase(stream_id);
 }
@@ -99,7 +102,10 @@ void Tunnel::open_stream(uint8_t stream_id, const std::string& host, int port, O
         flags |= protocol::kFlagInnerEncrypted;
     }
 
-    pending_open_[stream_id] = std::move(handler);
+    {
+        std::lock_guard<std::mutex> lock(state_mu_);
+        pending_open_[stream_id] = std::move(handler);
+    }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::OPEN, stream_id, flags}, payload};
     async_write_frame(frame);
 }
@@ -124,7 +130,10 @@ void Tunnel::request_remote_listen(uint8_t listen_id,
         payload = encrypt_inner_payload(protocol::RLISTEN, listen_id, payload);
         flags |= protocol::kFlagInnerEncrypted;
     }
-    pending_rlisten_[listen_id] = std::move(handler);
+    {
+        std::lock_guard<std::mutex> lock(state_mu_);
+        pending_rlisten_[listen_id] = std::move(handler);
+    }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::RLISTEN, listen_id, flags}, payload};
     async_write_frame(frame);
 }
@@ -237,23 +246,28 @@ void Tunnel::handle_frame(const protocol::Frame& frame) {
     }
     switch (frame.header.type) {
         case protocol::OPEN: {
-            auto it_listen = pending_rlisten_.find(stream_id);
-            if (it_listen != pending_rlisten_.end()) {
-                auto handler = std::move(it_listen->second);
-                pending_rlisten_.erase(it_listen);
-                if (frame.header.flags & protocol::kFlagOpenOk) {
-                    handler(true, "");
+            OpenHandler handler;
+            bool is_remote_listen = false;
+            {
+                std::lock_guard<std::mutex> lock(state_mu_);
+                auto it_listen = pending_rlisten_.find(stream_id);
+                if (it_listen != pending_rlisten_.end()) {
+                    handler = std::move(it_listen->second);
+                    pending_rlisten_.erase(it_listen);
+                    is_remote_listen = true;
                 } else {
-                    handler(false, payload_to_string(payload));
+                    auto it = pending_open_.find(stream_id);
+                    if (it != pending_open_.end()) {
+                        handler = std::move(it->second);
+                        pending_open_.erase(it);
+                    }
                 }
-                break;
             }
-            auto it = pending_open_.find(stream_id);
-            if (it != pending_open_.end()) {
-                auto handler = std::move(it->second);
-                pending_open_.erase(it);
-                if (frame.header.flags & protocol::kFlagOpenOk) {
-                    handler(true, "");
+            if (handler) {
+                const bool ok = (frame.header.flags & protocol::kFlagOpenOk) != 0;
+                if (ok) {
+                    // RLISTEN success can carry selected port details in payload.
+                    handler(true, is_remote_listen ? payload_to_string(payload) : std::string{});
                 } else {
                     handler(false, payload_to_string(payload));
                 }
@@ -292,7 +306,10 @@ void Tunnel::handle_frame(const protocol::Frame& frame) {
                     break;
                 }
                 auto session = std::make_shared<ReverseForwardSession>(shared_from_this(), stream_id, host, port);
-                control_sessions_[stream_id] = session;
+                {
+                    std::lock_guard<std::mutex> lock(state_mu_);
+                    control_sessions_[stream_id] = session;
+                }
                 session->start();
             } catch (...) {
                 send_open_ack(stream_id, false, "invalid control payload");
@@ -300,9 +317,16 @@ void Tunnel::handle_frame(const protocol::Frame& frame) {
             break;
         }
         case protocol::DATA: {
-            auto it = streams_.find(stream_id);
-            if (it != streams_.end() && it->second.on_data) {
-                it->second.on_data(payload);
+            DataHandler on_data;
+            {
+                std::lock_guard<std::mutex> lock(state_mu_);
+                auto it = streams_.find(stream_id);
+                if (it != streams_.end()) {
+                    on_data = it->second.on_data;
+                }
+            }
+            if (on_data) {
+                on_data(payload);
             }
             break;
         }
@@ -312,14 +336,21 @@ void Tunnel::handle_frame(const protocol::Frame& frame) {
                 send_close(stream_id, "exec denied");
                 break;
             }
-            if (streams_.find(stream_id) != streams_.end() ||
-                pending_open_.find(stream_id) != pending_open_.end() ||
-                pending_rlisten_.find(stream_id) != pending_rlisten_.end() ||
-                control_exec_.find(stream_id) != control_exec_.end()) {
+            bool in_use = false;
+            {
+                std::lock_guard<std::mutex> lock(state_mu_);
+                in_use = streams_.find(stream_id) != streams_.end() ||
+                         pending_open_.find(stream_id) != pending_open_.end() ||
+                         pending_rlisten_.find(stream_id) != pending_rlisten_.end() ||
+                         control_exec_.find(stream_id) != control_exec_.end();
+                if (!in_use) {
+                    control_exec_.insert(stream_id);
+                }
+            }
+            if (in_use) {
                 send_close(stream_id, "exec stream id in use");
                 break;
             }
-            control_exec_.insert(stream_id);
             std::string cmd(payload.begin(), payload.end());
             auto self = shared_from_this();
             std::thread([self, stream_id, cmd]() {
@@ -333,7 +364,10 @@ void Tunnel::handle_frame(const protocol::Frame& frame) {
                 if (!pipe) {
                     self->send_data(stream_id, Bytes({'E', 'X', 'E', 'C', ' ', 'f', 'a', 'i', 'l', 'e', 'd'}));
                     self->send_close(stream_id, "exec failed");
-                    boost::asio::post(self->strand_, [self, stream_id]() { self->control_exec_.erase(stream_id); });
+                    boost::asio::post(self->strand_, [self, stream_id]() {
+                        std::lock_guard<std::mutex> lock(self->state_mu_);
+                        self->control_exec_.erase(stream_id);
+                    });
                     return;
                 }
                 std::array<char, 4096> buf{};
@@ -354,22 +388,30 @@ void Tunnel::handle_frame(const protocol::Frame& frame) {
                 pclose(pipe);
 #endif
                 self->send_close(stream_id, "exec done");
-                boost::asio::post(self->strand_, [self, stream_id]() { self->control_exec_.erase(stream_id); });
+                boost::asio::post(self->strand_, [self, stream_id]() {
+                    std::lock_guard<std::mutex> lock(self->state_mu_);
+                    self->control_exec_.erase(stream_id);
+                });
             }).detach();
             break;
         }
         case protocol::CLOSE: {
-            auto it = streams_.find(stream_id);
-            if (it != streams_.end()) {
-                if (it->second.on_close) {
-                    it->second.on_close();
+            CloseHandler on_close;
+            {
+                std::lock_guard<std::mutex> lock(state_mu_);
+                auto it = streams_.find(stream_id);
+                if (it != streams_.end()) {
+                    on_close = std::move(it->second.on_close);
+                    streams_.erase(it);
                 }
-                streams_.erase(it);
+                pending_open_.erase(stream_id);
+                pending_rlisten_.erase(stream_id);
+                control_sessions_.erase(stream_id);
+                control_exec_.erase(stream_id);
             }
-            pending_open_.erase(stream_id);
-            pending_rlisten_.erase(stream_id);
-            control_sessions_.erase(stream_id);
-            control_exec_.erase(stream_id);
+            if (on_close) {
+                on_close();
+            }
             break;
         }
         case protocol::PING: {
@@ -481,26 +523,37 @@ void Tunnel::do_write() {
 }
 
 void Tunnel::close_all(const std::string& reason) {
-    if (closed_) {
-        return;
+    TunnelCloseHandler close_handler;
+    std::vector<CloseHandler> close_callbacks;
+    {
+        std::lock_guard<std::mutex> lock(state_mu_);
+        if (closed_) {
+            return;
+        }
+        closed_ = true;
+        close_handler = close_handler_;
+        close_callbacks.reserve(streams_.size());
+        for (auto& entry : streams_) {
+            if (entry.second.on_close) {
+                close_callbacks.push_back(std::move(entry.second.on_close));
+            }
+        }
+        streams_.clear();
+        pending_open_.clear();
+        pending_rlisten_.clear();
+        control_sessions_.clear();
+        control_exec_.clear();
     }
-    closed_ = true;
+
     util::log_warn("tunnel closed: " + reason);
     boost::system::error_code ec;
     keepalive_timer_.cancel();
-    if (close_handler_) {
-        close_handler_(reason);
+    if (close_handler) {
+        close_handler(reason);
     }
-    for (auto& entry : streams_) {
-        if (entry.second.on_close) {
-            entry.second.on_close();
-        }
+    for (auto& callback : close_callbacks) {
+        callback();
     }
-    streams_.clear();
-    pending_open_.clear();
-    pending_rlisten_.clear();
-    control_sessions_.clear();
-    control_exec_.clear();
 
     stream_.shutdown(ec);
     stream_.lowest_layer().close(ec);

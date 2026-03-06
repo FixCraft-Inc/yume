@@ -341,8 +341,13 @@ KdfParams select_argon2_params() {
     params.argon2_parallelism = argon2_parallelism();
     params.pbkdf2_iters = basefwx::constants::HeavyPbkdf2Iterations();
 
+    const std::uint32_t default_mem =
+        read_env_u32("YUME_ARGON2_HEAVY_MEM_DEFAULT", basefwx::constants::kHeavyArgon2MemoryCost);
     std::uint32_t mem = 0;
     const bool mem_env = read_env_u32_optional("YUME_ARGON2_MEM", &mem);
+    if (!mem_env) {
+        mem = default_mem;
+    }
     std::uint64_t avail = available_memory_kib();
     if (avail > 0) {
         const double cap = resource_cap_ratio();
@@ -351,15 +356,13 @@ KdfParams select_argon2_params() {
         if (cap_mem == 0) {
             cap_mem = avail;
         }
-        if (!mem_env) {
+        std::uint64_t bounded = std::min<std::uint64_t>(cap_mem, avail);
+        if (bounded > 0 && mem > bounded) {
             mem = static_cast<std::uint32_t>(
-                std::min<std::uint64_t>(cap_mem, std::numeric_limits<std::uint32_t>::max()));
-        } else if (mem > avail) {
-            mem = static_cast<std::uint32_t>(
-                std::min<std::uint64_t>(avail, std::numeric_limits<std::uint32_t>::max()));
+                std::min<std::uint64_t>(bounded, std::numeric_limits<std::uint32_t>::max()));
         }
-    } else if (!mem_env) {
-        mem = basefwx::constants::kHeavyArgon2MemoryCost;
+    } else if (mem == 0) {
+        mem = default_mem;
     }
 
     if (params.argon2_parallelism == 0) {

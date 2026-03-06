@@ -209,6 +209,7 @@ jobs:
       - name: Build (macOS arm64)
         env:
           YUME_TARGETS: macos-arm64
+          YUME_CMAKE_ARGS: -DBASEFWX_USE_VENDOR_DEPS=OFF
         run: |
           ./ezbuild.sh
 

@@ -65,6 +65,34 @@ detect_vcpkg_root() {
     return 1
 }
 
+host_default_vendor_key() {
+    local host_os host_arch
+    host_os="$(uname -s)"
+    host_arch="$(uname -m)"
+
+    case "${host_os}" in
+        Linux)
+            case "${host_arch}" in
+                x86_64|amd64) echo "linux-x86_64" ;;
+                i?86) echo "x86" ;;
+                aarch64|arm64) echo "armv8" ;;
+                armv7l|armv7) echo "armv7" ;;
+                *) echo "" ;;
+            esac
+            ;;
+        Darwin)
+            case "${host_arch}" in
+                x86_64|amd64) echo "macos-x86_64" ;;
+                arm64|aarch64) echo "macos-arm64" ;;
+                *) echo "" ;;
+            esac
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
 vendor_dir_for_build() {
     if [[ $OPENWRT -eq 1 && -d "${PWD}/vendor/openwrt-mips" ]]; then
         echo "${PWD}/vendor/openwrt-mips"
@@ -78,8 +106,11 @@ vendor_dir_for_build() {
         echo "${PWD}/vendor/${TARGET_ARCH}"
         return
     fi
-    if [[ -d "${PWD}/vendor/linux-x86_64" ]]; then
-        echo "${PWD}/vendor/linux-x86_64"
+
+    local host_vendor_key=""
+    host_vendor_key="$(host_default_vendor_key)"
+    if [[ -n "${host_vendor_key}" && -d "${PWD}/vendor/${host_vendor_key}" ]]; then
+        echo "${PWD}/vendor/${host_vendor_key}"
         return
     fi
     echo ""
@@ -983,15 +1014,15 @@ EOF
     elif [[ "${YUME_MACOS_CROSS:-0}" == "1" ]]; then
         CMAKE_ARGS+=("-DYUME_FORCE_CROSS=ON")
     else
-        if [[ -n "${TARGET_ARCH}" && -d "${PWD}/vendor/${TARGET_ARCH}" ]]; then
-            CMAKE_ARGS+=("-DBASEFWX_VENDOR_DIR=${PWD}/vendor/${TARGET_ARCH}")
-        elif [[ -d "${PWD}/vendor/linux-x86_64" ]]; then
-            CMAKE_ARGS+=("-DBASEFWX_VENDOR_DIR=${PWD}/vendor/linux-x86_64")
+        local host_vendor_dir=""
+        host_vendor_dir="$(vendor_dir_for_build)"
+        if [[ -n "${host_vendor_dir}" ]]; then
+            CMAKE_ARGS+=("-DBASEFWX_VENDOR_DIR=${host_vendor_dir}")
         fi
         if [[ -n "${YUME_OQS_STATIC:-}" ]] && [[ ! -f /usr/lib/x86_64-linux-gnu/liboqs.a && ! -f /usr/local/lib/liboqs.a ]]; then
-            local vendor_dir
-            vendor_dir="$(vendor_dir_for_build)"
-            if vendor_has_liboqs "${vendor_dir}"; then
+            local oqs_vendor_dir=""
+            oqs_vendor_dir="$(vendor_dir_for_build)"
+            if vendor_has_liboqs "${oqs_vendor_dir}"; then
                 info "Vendored liboqs detected; skipping source build."
             elif [[ -n "${YUME_VENDOR_ONLY:-}" ]]; then
                 warn "YUME_VENDOR_ONLY=1 set; skipping liboqs source build."

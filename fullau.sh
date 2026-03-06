@@ -65,7 +65,7 @@ normalize_cross_flag() {
 IFS='|' read -r WINDOWS_CROSS WINDOWS_CROSS_AUTO <<< "$(normalize_cross_flag "${YUME_WINDOWS_CROSS:-}")"
 WINDOWS_TOOLCHAIN_PREFIX="${YUME_WINDOWS_TOOLCHAIN_PREFIX:-x86_64-w64-mingw32}"
 WINDOWS_TRIPLET="${YUME_WINDOWS_TRIPLET:-x64-mingw-dynamic}"
-WINDOWS_VCPKG_PACKAGES="${YUME_WINDOWS_VCPKG_PACKAGES:-openssl boost-cmake boost-headers boost-system zlib zstd liblzma nlohmann-json argon2 liboqs}"
+WINDOWS_VCPKG_PACKAGES="${YUME_WINDOWS_VCPKG_PACKAGES:-openssl boost-cmake boost-headers boost-system boost-asio zlib zstd liblzma nlohmann-json argon2 liboqs}"
 
 IFS='|' read -r MACOS_CROSS MACOS_CROSS_AUTO <<< "$(normalize_cross_flag "${YUME_MACOS_CROSS:-}")"
 MACOS_TOOLCHAIN_PREFIX="${YUME_MACOS_TOOLCHAIN_PREFIX:-}"
@@ -1808,8 +1808,30 @@ EOF
     vcpkg_triplet_args+=(--overlay-triplets "${overlay_triplets_dir}")
   fi
 
+  local windows_vcpkg_packages="${WINDOWS_VCPKG_PACKAGES//,/ }"
+  if [[ " ${windows_vcpkg_packages} " != *" boost-headers "* ]]; then
+    windows_vcpkg_packages="${windows_vcpkg_packages} boost-headers"
+  fi
+  if [[ " ${windows_vcpkg_packages} " != *" boost-system "* ]]; then
+    windows_vcpkg_packages="${windows_vcpkg_packages} boost-system"
+  fi
+  if [[ " ${windows_vcpkg_packages} " != *" boost-asio "* ]]; then
+    windows_vcpkg_packages="${windows_vcpkg_packages} boost-asio"
+  fi
+
   CC="${tool_cc}" CXX="${tool_cxx}" PATH="${shim_bin}:${PATH}" VCPKG_POWERSHELL_PATH="${powershell_stub}" \
-    "${vcpkg_bin}" install "${vcpkg_triplet_args[@]}" ${WINDOWS_VCPKG_PACKAGES}
+    "${vcpkg_bin}" install "${vcpkg_triplet_args[@]}" ${windows_vcpkg_packages}
+
+  if [[ ! -f "${vcpkg_prefix}/include/boost/asio.hpp" ]]; then
+    echo "Windows vcpkg Boost.Asio headers missing after install; retrying explicit boost-asio/boost-headers."
+    CC="${tool_cc}" CXX="${tool_cxx}" PATH="${shim_bin}:${PATH}" VCPKG_POWERSHELL_PATH="${powershell_stub}" \
+      "${vcpkg_bin}" install "${vcpkg_triplet_args[@]}" boost-headers boost-system boost-asio
+  fi
+  if [[ ! -f "${vcpkg_prefix}/include/boost/asio.hpp" ]]; then
+    echo "Windows cross build cannot continue: boost/asio.hpp not found in ${vcpkg_prefix}/include." >&2
+    echo "Set YUME_WINDOWS_VCPKG_PACKAGES to include boost-headers boost-system boost-asio." >&2
+    return 1
+  fi
 
   cat > "${toolchain_file}" <<EOF
 set(CMAKE_SYSTEM_NAME Windows)

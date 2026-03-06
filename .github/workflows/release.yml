@@ -1,4 +1,4 @@
-name: Release builds
+name: Release
 
 on:
   release:
@@ -6,22 +6,26 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Tag name for the release (e.g., v1.0.0)'
+        description: "Tag name for the release (for example: v1.0.0)"
         required: true
         type: string
       targets:
-        description: 'Targets to build (comma-separated, e.g., linux-x86_64,armv8-linux)'
+        description: "Targets to build (comma-separated)"
         required: false
-        default: 'linux-x86_64,openwrt-mips,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64'
+        default: "linux-x86_64,openwrt-mips,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64"
         type: string
       draft:
-        description: 'Create as draft release'
+        description: "Create/keep release as draft"
         required: false
         default: true
         type: boolean
 
 permissions:
   contents: write
+
+concurrency:
+  group: yume-release-${{ github.event.inputs.tag_name || github.ref_name || github.run_id }}
+  cancel-in-progress: false
 
 env:
   OPENWRT_SDK_VERSION: "24.10.0"
@@ -31,7 +35,8 @@ jobs:
   build-linux:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -54,7 +59,7 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/microsoft/vcpkg.git ~/vcpkg
           ~/vcpkg/bootstrap-vcpkg.sh -disableMetrics
-          echo "VCPKG_ROOT=${HOME}/vcpkg" >> $GITHUB_ENV
+          echo "VCPKG_ROOT=${HOME}/vcpkg" >> "${GITHUB_ENV}"
 
       - name: Download OpenWRT SDK
         run: |
@@ -68,7 +73,7 @@ jobs:
             tar -xf "${OPENWRT_SDK_NAME}.tar" -C "${HOME}"
             rm -f "${OPENWRT_SDK_NAME}.tar" "${OPENWRT_SDK_NAME}.tar.zst"
           fi
-          echo "OPENWRT_SDK=${HOME}/${OPENWRT_SDK_NAME}" >> $GITHUB_ENV
+          echo "OPENWRT_SDK=${HOME}/${OPENWRT_SDK_NAME}" >> "${GITHUB_ENV}"
 
       - name: Extract prebuilt vendor libs
         run: |
@@ -76,16 +81,12 @@ jobs:
             tar -xJf yume-vendor-prebuilt.tar.xz
           fi
 
-      - name: Build (linux + cross)
+      - name: Build (Linux + cross)
         run: |
-          # Set targets explicitly (no macos on linux)
           export YUME_TARGETS="${{ github.event.inputs.targets || 'linux-x86_64,openwrt-mips,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64' }}"
           export YUME_WINDOWS_CROSS=1
           export YUME_MACOS_CROSS=0
-          
-          # Debug: print targets
-          echo "Building for targets: ${YUME_TARGETS}"
-          
+          echo "Building targets: ${YUME_TARGETS}"
           sudo -E env \
             PATH="${PATH}" \
             VCPKG_ROOT="${VCPKG_ROOT}" \
@@ -99,7 +100,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          
+
           pack_one() {
             local src="$1"
             local name="$2"
@@ -108,7 +109,7 @@ jobs:
               echo "Packaged: ${name}"
             fi
           }
-          
+
           pack_with_libs() {
             local exe="$1"
             local name="$2"
@@ -116,7 +117,6 @@ jobs:
               local dir
               dir="$(dirname "$exe")"
               local files=("$(basename "$exe")")
-              # Include any DLLs or .so files in same directory
               while IFS= read -r -d '' f; do
                 files+=("$(basename "$f")")
               done < <(find "$dir" -maxdepth 1 \( -name "*.dll" -o -name "*.so*" \) -print0 2>/dev/null || true)
@@ -124,64 +124,57 @@ jobs:
               echo "Packaged: ${name}.tar.xz"
             fi
           }
-          
-          # Linux x86_64
+
           pack_one "${HOME}/bins/dynamic/x86/linux/yume" "yume-amd64-linux"
           pack_one "${HOME}/bins/dynamic/x86/linux/yumed" "yumed-amd64-linux"
           pack_one "${HOME}/bins/stable/x86/linux/yume" "yume-amd64-linux-static"
           pack_one "${HOME}/bins/stable/x86/linux/yumed" "yumed-amd64-linux-static"
-          
-          # OpenWRT MIPS
+
           pack_one "${HOME}/bins/dynamic/mips/openwrt/yume" "yume-mips-openwrt"
           pack_one "${HOME}/bins/dynamic/mips/openwrt/yumed" "yumed-mips-openwrt"
-          
-          # ARM v7
+
           pack_one "${HOME}/bins/dynamic/armv7/linux/yume" "yume-armv7-linux"
           pack_one "${HOME}/bins/dynamic/armv7/linux/yumed" "yumed-armv7-linux"
           pack_one "${HOME}/bins/dynamic/armv7/busybox/yume" "yume-armv7-busybox"
           pack_one "${HOME}/bins/dynamic/armv7/busybox/yumed" "yumed-armv7-busybox"
           pack_one "${HOME}/bins/stable/armv7/busybox/yume" "yume-armv7-busybox-static"
           pack_one "${HOME}/bins/stable/armv7/busybox/yumed" "yumed-armv7-busybox-static"
-          
-          # ARM v8 (aarch64)
+
           pack_one "${HOME}/bins/dynamic/armv8/linux/yume" "yume-armv8-linux"
           pack_one "${HOME}/bins/dynamic/armv8/linux/yumed" "yumed-armv8-linux"
           pack_one "${HOME}/bins/dynamic/armv8/busybox/yume" "yume-armv8-busybox"
           pack_one "${HOME}/bins/dynamic/armv8/busybox/yumed" "yumed-armv8-busybox"
           pack_one "${HOME}/bins/stable/armv8/busybox/yume" "yume-armv8-busybox-static"
           pack_one "${HOME}/bins/stable/armv8/busybox/yumed" "yumed-armv8-busybox-static"
-          
-          # x86 busybox
+
           pack_one "${HOME}/bins/dynamic/x86/busybox/yume" "yume-x86-busybox"
           pack_one "${HOME}/bins/dynamic/x86/busybox/yumed" "yumed-x86-busybox"
           pack_one "${HOME}/bins/stable/x86/busybox/yume" "yume-x86-busybox-static"
           pack_one "${HOME}/bins/stable/x86/busybox/yumed" "yumed-x86-busybox-static"
-          
-          # Windows
+
           pack_with_libs "${HOME}/bins/dynamic/windows/x86_64/yume.exe" "yume-amd64-windows"
           pack_with_libs "${HOME}/bins/dynamic/windows/x86_64/yumed.exe" "yumed-amd64-windows"
-          
+
+          file_count="$(find dist -maxdepth 1 -type f | wc -l | tr -d ' ')"
+          if [[ "${file_count}" -eq 0 ]]; then
+            echo "No release artifacts were produced." >&2
+            exit 1
+          fi
           ls -la dist/
 
-      - name: Upload artifacts
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: linux-builds
           path: dist/*
+          if-no-files-found: error
           retention-days: 7
-
-      - name: Upload to release
-        if: github.event_name == 'release' || github.event.inputs.tag_name != ''
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
-          draft: ${{ github.event.inputs.draft || false }}
-          files: dist/*
 
   build-macos:
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -189,7 +182,13 @@ jobs:
         run: |
           brew install cmake ninja boost openssl@3 spdlog nlohmann-json zstd xz argon2 liboqs
 
-      - name: Build
+      - name: Extract prebuilt vendor libs
+        run: |
+          if [[ -f yume-vendor-prebuilt.tar.xz ]]; then
+            tar -xJf yume-vendor-prebuilt.tar.xz
+          fi
+
+      - name: Build (macOS arm64)
         env:
           YUME_TARGETS: macos-arm64
         run: |
@@ -199,43 +198,29 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          
-          pack_one() {
-            local src="$1"
-            local name="$2"
-            if [[ -f "$src" ]]; then
-              cp "$src" "dist/${name}"
-              echo "Packaged: ${name}"
-            fi
-          }
-          
-          # macOS arm64 binaries
-          pack_one "build/bin/yume" "yume-armv8-mac"
-          pack_one "build/bin/yumed" "yumed-armv8-mac"
-          
+          if [[ -f build/bin/yume ]]; then cp build/bin/yume dist/yume-armv8-mac; fi
+          if [[ -f build/bin/yumed ]]; then cp build/bin/yumed dist/yumed-armv8-mac; fi
+          file_count="$(find dist -maxdepth 1 -type f | wc -l | tr -d ' ')"
+          if [[ "${file_count}" -eq 0 ]]; then
+            echo "No macOS release artifacts were produced." >&2
+            exit 1
+          fi
           ls -la dist/
 
-      - name: Upload artifacts
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: macos-builds
           path: dist/*
+          if-no-files-found: error
           retention-days: 7
 
-      - name: Upload to release
-        if: github.event_name == 'release' || github.event.inputs.tag_name != ''
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
-          draft: ${{ github.event.inputs.draft || false }}
-          files: dist/*
-
-  create-checksums:
+  publish-release:
     needs: [build-linux, build-macos]
     runs-on: ubuntu-latest
-    if: github.event_name == 'release' || github.event.inputs.tag_name != ''
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     steps:
-      - name: Download all artifacts
+      - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -243,13 +228,15 @@ jobs:
 
       - name: Generate checksums
         run: |
+          set -euo pipefail
           cd artifacts
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      - name: Upload checksums to release
+      - name: Upload to GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
-          draft: ${{ github.event.inputs.draft || false }}
-          files: artifacts/SHA256SUMS.txt
+          draft: ${{ github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.draft || 'false') }}
+          files: artifacts/*
+          fail_on_unmatched_files: true

@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config \
+            libssl-dev zlib1g-dev liblzma-dev libzstd-dev \
+            libboost-all-dev libspdlog-dev nlohmann-json3-dev
+
+      - name: Extract prebuilt vendor libs
+        run: |
+          if [[ -f yume-vendor-prebuilt.tar.xz ]]; then
+            tar -xJf yume-vendor-prebuilt.tar.xz
+          fi
+
+      - name: Configure
+        run: |
+          cmake -S . -B build-ci -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: |
+          cmake --build build-ci --parallel
+
+      - name: Smoke test binaries
+        run: |
+          ./build-ci/bin/yume --help >/dev/null
+          ./build-ci/bin/yumed --help >/dev/null

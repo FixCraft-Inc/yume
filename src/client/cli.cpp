@@ -1518,6 +1518,13 @@ void print_help() {
         << "  --save-server            Save server to config\n"
         << "  --non-interactive        Disable live status line updates\n"
         << "  --boring                 Minimal output (no emojis)\n\n"
+        << "Runtime Console (long-running modes):\n"
+        << "  help                     Show commands\n"
+        << "  status                   Print current connection summary\n"
+        << "  exec <command>           Send EXEC frame to peer\n"
+        << "  quit                     Stop client cleanly\n"
+        << "  env YUME_COMMAND_CONSOLE=0 to disable console\n"
+        << "  env YUME_LIVE_STATUS=1 to re-enable live status redraw\n\n"
         << "Security:\n"
         << "  --inner                  Enable inner PQ encryption\n"
         << "  --inner-heavy            Heavy KDF mode (default)\n"
@@ -1590,6 +1597,53 @@ int resolve_io_threads(int requested) {
     }
     unsigned int hw = std::thread::hardware_concurrency();
     return hw > 0 ? static_cast<int>(hw) : 1;
+}
+
+bool parse_env_bool(const char* name, bool fallback) {
+    const char* raw = std::getenv(name);
+    if (!raw || !*raw) {
+        return fallback;
+    }
+    std::string value(raw);
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (value == "1" || value == "true" || value == "yes" || value == "on") {
+        return true;
+    }
+    if (value == "0" || value == "false" || value == "no" || value == "off") {
+        return false;
+    }
+    return fallback;
+}
+
+bool is_tty_stdin() {
+#if defined(_WIN32)
+    return _isatty(_fileno(stdin)) != 0;
+#else
+    return isatty(fileno(stdin)) != 0;
+#endif
+}
+
+bool read_stdin_line_with_timeout(std::string* out, int timeout_ms) {
+    if (!out) {
+        return false;
+    }
+#if defined(_WIN32)
+    (void)timeout_ms;
+    return false;
+#else
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(STDIN_FILENO, &rfds);
+    timeval tv{};
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = static_cast<suseconds_t>((timeout_ms % 1000) * 1000);
+    int rc = select(STDIN_FILENO + 1, &rfds, nullptr, nullptr, &tv);
+    if (rc <= 0 || !FD_ISSET(STDIN_FILENO, &rfds)) {
+        return false;
+    }
+    return static_cast<bool>(std::getline(std::cin, *out));
+#endif
 }
 
 void run_io_threads(boost::asio::io_context& io, int requested) {
@@ -1930,7 +1984,8 @@ int Cli::run(int argc, char** argv) {
             reverse_listen_port = 0;
         }
     }
-    util::set_status_enabled(!cfg.non_interactive);
+    const bool live_status_enabled = !cfg.non_interactive && parse_env_bool("YUME_LIVE_STATUS", false);
+    util::set_status_enabled(live_status_enabled);
     if (!require_file("identity", cfg.identity)) {
         return 1;
     }
@@ -2950,9 +3005,9 @@ int Cli::run(int argc, char** argv) {
                 std::string footer = color_wrap("FixCraft Verity", "1;36") + ": " + verity_line + "\n";
                 const std::string border = color_wrap("------------------------------------------", "1;34");
                 status_block_builder = [header, footer, border, build_hop_status_line]() {
-                    return border + "\n" + header + build_hop_status_line() + "\n" + footer + border;
+                    return border + "\n" + header + build_hop_status_line() + "\n" + footer + border + "\n";
                 };
-                if (cfg.non_interactive) {
+                if (!live_status_enabled) {
                     std::cout
                         << border << "\n"
                         << color_wrap("Connected to", "1;36") << " " << server_display << ":\n"
@@ -3121,11 +3176,11 @@ int Cli::run(int argc, char** argv) {
             });
             tunnel->start();
             std::thread hop_status_thread;
-            if (!cfg.non_interactive) {
+            if (live_status_enabled) {
                 if (status_block_builder && hop_enabled) {
-                    // Refresh faster than hop interval to avoid aliasing (e.g., 2 Hz looking like 6/256 ms jumps).
+                    // Keep refresh human-readable; fast redraws make terminal selection unusable.
                     const auto refresh_ms = std::chrono::milliseconds(
-                        std::clamp<int>(static_cast<int>(hop_interval_ms / 8), 40, 150));
+                        std::clamp<int>(static_cast<int>(hop_interval_ms), 300, 1200));
                     hop_status_thread = std::thread([hop_status_stop, status_block_builder, refresh_ms]() {
                         while (!hop_status_stop->load()) {
                             util::set_status_line(status_block_builder());
@@ -3150,6 +3205,104 @@ int Cli::run(int argc, char** argv) {
                     util::clear_status_line();
                 }
             } hop_guard{hop_status_stop, &hop_status_thread};
+
+            auto console_stop = std::make_shared<std::atomic<bool>>(false);
+            std::thread console_thread;
+            const bool console_enabled =
+                !cfg.non_interactive &&
+                is_tty_stdin() &&
+                parse_env_bool("YUME_COMMAND_CONSOLE", true) &&
+                args.run_cmd.empty() &&
+                args.exec_cmd.empty() &&
+                !args.list_controlled &&
+                (cfg.socks_port > 0 || use_reverse || args.lport > 0);
+            if (console_enabled) {
+                std::cerr << "[INFO] Console: help | status | exec <cmd> | quit" << std::endl;
+                console_thread = std::thread([console_stop,
+                                              &stop_requested,
+                                              &announce_stopping,
+                                              &io,
+                                              tunnel,
+                                              status_block_builder]() {
+                    auto trim = [](std::string s) {
+                        auto is_space = [](unsigned char ch) { return std::isspace(ch) != 0; };
+                        while (!s.empty() && is_space(static_cast<unsigned char>(s.front()))) {
+                            s.erase(s.begin());
+                        }
+                        while (!s.empty() && is_space(static_cast<unsigned char>(s.back()))) {
+                            s.pop_back();
+                        }
+                        return s;
+                    };
+                    while (!console_stop->load()) {
+                        std::string line;
+                        if (!read_stdin_line_with_timeout(&line, 250)) {
+                            continue;
+                        }
+                        line = trim(line);
+                        if (line.empty()) {
+                            continue;
+                        }
+                        if (line == "help") {
+                            std::cerr << "[INFO] Commands: help | status | exec <cmd> | quit" << std::endl;
+                            continue;
+                        }
+                        if (line == "status") {
+                            if (status_block_builder) {
+                                util::clear_status_line();
+                                std::cout << status_block_builder() << std::flush;
+                            } else {
+                                std::cerr << "[INFO] status is not available yet" << std::endl;
+                            }
+                            continue;
+                        }
+                        if (line == "quit" || line == "exit" || line == "stop") {
+                            stop_requested.store(true);
+                            announce_stopping();
+                            tunnel->stop("console stop");
+                            io.stop();
+                            break;
+                        }
+                        if (line.rfind("exec ", 0) == 0) {
+                            std::string cmd = trim(line.substr(5));
+                            if (cmd.empty()) {
+                                std::cerr << "[WARN] usage: exec <command>" << std::endl;
+                                continue;
+                            }
+                            uint8_t stream_id = tunnel->reserve_stream_id();
+                            if (stream_id == 0) {
+                                std::cerr << "[WARN] no stream id available for exec" << std::endl;
+                                continue;
+                            }
+                            tunnel->register_stream(
+                                stream_id,
+                                [stream_id](const Tunnel::Bytes& data) {
+                                    std::cout.write(reinterpret_cast<const char*>(data.data()), data.size());
+                                    std::cout.flush();
+                                },
+                                [stream_id]() {
+                                    std::cerr << "[INFO] exec stream " << static_cast<int>(stream_id) << " closed" << std::endl;
+                                });
+                            tunnel->send_exec(stream_id, cmd);
+                            std::cerr << "[INFO] exec sent on stream " << static_cast<int>(stream_id) << std::endl;
+                            continue;
+                        }
+                        std::cerr << "[WARN] unknown command: " << line << std::endl;
+                    }
+                });
+            }
+            struct ConsoleGuard {
+                std::shared_ptr<std::atomic<bool>> stop;
+                std::thread* thread{nullptr};
+                ~ConsoleGuard() {
+                    if (stop) {
+                        stop->store(true);
+                    }
+                    if (thread && thread->joinable()) {
+                        thread->join();
+                    }
+                }
+            } console_guard{console_stop, &console_thread};
 
             struct ReverseTarget {
                 std::string host;

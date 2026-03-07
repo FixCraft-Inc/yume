@@ -1148,7 +1148,12 @@ ensure_i386_deps() {
     rm -f "${APT_UPDATED_FLAG}" || true
     apt_update_once 1
   fi
-  apt_install libc6-dev-i386 zlib1g-dev:i386 libssl-dev:i386 libboost-dev:i386 libboost-system-dev:i386
+  # Avoid libc6-dev-i386 here: it can pull gcc-multilib and remove cross compilers.
+  apt_install zlib1g-dev:i386 libssl-dev:i386 libboost-dev:i386 libboost-system-dev:i386
+  # Re-ensure i686 cross compilers are present after i386 dependency changes.
+  if [[ ! -x "/usr/bin/i686-linux-gnu-gcc" || ! -x "/usr/bin/i686-linux-gnu-g++" ]]; then
+    apt_install gcc-i686-linux-gnu g++-i686-linux-gnu
+  fi
 }
 
 ensure_armhf_deps() {

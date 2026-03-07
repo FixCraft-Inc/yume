@@ -625,7 +625,11 @@ bool parse_env_bool(const char* name, bool fallback) {
 }
 
 bool anonym_local_sign_default() {
-#if defined(__aarch64__)
+#if defined(YUME_STATIC_BUILD)
+    // Static builds are more brittle around crypto/network provider glue on some systems.
+    // Keep anonym local signing opt-in there to avoid startup crashes.
+    return false;
+#elif defined(__aarch64__)
     return false;
 #else
     return true;
@@ -1692,7 +1696,7 @@ int main(int argc, char** argv) {
             cfg.anonym_api = "https://api.fixcraft.jp/verity";
         }
         if (!anonym_local_sign && (!cfg.anonym_ca_key.empty() || !cfg.anonym_sub_key.empty())) {
-            yume::util::log_warn("anonym local signing is disabled on this platform (set YUME_ANONYM_LOCAL_SIGN=1 to force)");
+            yume::util::log_warn("anonym local signing is disabled by default on this build/platform (set YUME_ANONYM_LOCAL_SIGN=1 to force)");
         }
         try {
             std::string self_path = get_self_path(argv[0]);

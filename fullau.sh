@@ -105,6 +105,30 @@ apt_install() {
   apt_update_once
   apt-get install -y "$@" || true
 }
+
+ensure_ubuntu_ports_sources() {
+  local arch="$1"
+  if [[ "$(uname -s)" != "Linux" ]] || ! command -v apt-get >/dev/null 2>&1; then
+    return 0
+  fi
+  local codename=""
+  codename="$(. /etc/os-release 2>/dev/null && echo "${VERSION_CODENAME:-}")"
+  if [[ -z "${codename}" ]]; then
+    codename="jammy"
+  fi
+  local list_file="/etc/apt/sources.list.d/yume-ports-${arch}.list"
+  if [[ -f "${list_file}" ]] && grep -q "ports.ubuntu.com/ubuntu-ports" "${list_file}"; then
+    return 0
+  fi
+  cat > "${list_file}" <<EOF
+deb [arch=${arch}] http://ports.ubuntu.com/ubuntu-ports ${codename} main restricted universe multiverse
+deb [arch=${arch}] http://ports.ubuntu.com/ubuntu-ports ${codename}-updates main restricted universe multiverse
+deb [arch=${arch}] http://ports.ubuntu.com/ubuntu-ports ${codename}-security main restricted universe multiverse
+deb [arch=${arch}] http://ports.ubuntu.com/ubuntu-ports ${codename}-backports main restricted universe multiverse
+EOF
+  rm -f "${APT_UPDATED_FLAG}" || true
+}
+
 detect_vcpkg_root() {
   if [[ -n "${VCPKG_ROOT:-}" && -x "${VCPKG_ROOT}/vcpkg" ]]; then
     echo "${VCPKG_ROOT}"
@@ -445,7 +469,12 @@ auto_detect_toolchain() {
   local prefix="${gcc_path%-gcc}"
   local sysroot
   sysroot="$("${gcc_path}" -print-sysroot 2>/dev/null || true)"
-  if [[ -z "${sysroot}" || "${sysroot}" == "/" ]]; then
+  if [[ "${sysroot}" == "/usr/${triplet}" ]]; then
+    # Ubuntu/Debian cross linkers often use absolute /usr/<triplet>/... paths
+    # in linker scripts; using /usr/<triplet> as sysroot can double-prefix them.
+    sysroot="/"
+  fi
+  if [[ -z "${sysroot}" ]]; then
     if [[ -d "/usr/${triplet}" ]]; then
       sysroot="/usr/${triplet}"
     fi
@@ -492,7 +521,7 @@ auto_detect_toolchains() {
       ARMV7_LINUX_SYSROOT="${res##*|}"
     fi
   fi
-  if [[ -f "/lib/arm-linux-gnueabihf/libc.so.6" || -f "/usr/lib/arm-linux-gnueabihf/libc.so.6" ]]; then
+  if [[ -f "/lib/arm-linux-gnueabihf/libc.so.6" || -f "/usr/lib/arm-linux-gnueabihf/libc.so.6" || -f "/usr/arm-linux-gnueabihf/lib/libc.so.6" ]]; then
     ARMV7_LINUX_SYSROOT="/"
   fi
   if [[ -z "${ARMV7_BUSYBOX_TOOLCHAIN_PREFIX}" || -z "${ARMV7_BUSYBOX_SYSROOT}" ]]; then
@@ -508,7 +537,7 @@ auto_detect_toolchains() {
       ARMV8_LINUX_SYSROOT="${res##*|}"
     fi
   fi
-  if [[ -f "/lib/aarch64-linux-gnu/libc.so.6" || -f "/usr/lib/aarch64-linux-gnu/libc.so.6" ]]; then
+  if [[ -f "/lib/aarch64-linux-gnu/libc.so.6" || -f "/usr/lib/aarch64-linux-gnu/libc.so.6" || -f "/usr/aarch64-linux-gnu/lib/libc.so.6" ]]; then
     ARMV8_LINUX_SYSROOT="/"
   fi
   if [[ -z "${ARMV8_BUSYBOX_TOOLCHAIN_PREFIX}" || -z "${ARMV8_BUSYBOX_SYSROOT}" ]]; then
@@ -1160,6 +1189,7 @@ ensure_armhf_deps() {
   if ! command -v dpkg >/dev/null 2>&1; then
     return 0
   fi
+  ensure_ubuntu_ports_sources armhf
   if ! dpkg --print-foreign-architectures | grep -qx armhf; then
     dpkg --add-architecture armhf
     rm -f "${APT_UPDATED_FLAG}" || true
@@ -1179,12 +1209,16 @@ ensure_armhf_deps() {
   else
     apt_install libc6-dev:armhf zlib1g-dev:armhf libssl-dev:armhf libboost-dev:armhf libboost-system-dev:armhf
   fi
+  if [[ ! -x "/usr/bin/arm-linux-gnueabihf-gcc" || ! -x "/usr/bin/arm-linux-gnueabihf-g++" ]]; then
+    apt_install gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+  fi
 }
 
 ensure_arm64_deps() {
   if ! command -v dpkg >/dev/null 2>&1; then
     return 0
   fi
+  ensure_ubuntu_ports_sources arm64
   if ! dpkg --print-foreign-architectures | grep -qx arm64; then
     dpkg --add-architecture arm64
     rm -f "${APT_UPDATED_FLAG}" || true
@@ -1203,6 +1237,9 @@ ensure_arm64_deps() {
     apt_install libc6-dev:arm64 "${stdcpp_pkg}" zlib1g-dev:arm64 libssl-dev:arm64 libboost-dev:arm64 libboost-system-dev:arm64
   else
     apt_install libc6-dev:arm64 zlib1g-dev:arm64 libssl-dev:arm64 libboost-dev:arm64 libboost-system-dev:arm64
+  fi
+  if [[ ! -x "/usr/bin/aarch64-linux-gnu-gcc" || ! -x "/usr/bin/aarch64-linux-gnu-g++" ]]; then
+    apt_install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
   fi
 }
 
@@ -1253,14 +1290,14 @@ build_busybox_target() {
     boost_dir_env="Boost_DIR=$(dirname "${boost_cfg}")"
   elif [[ "${label}" == "armv7" ]]; then
     ensure_armhf_deps
-    if [[ -f "/lib/arm-linux-gnueabihf/libc.so.6" || -f "/usr/lib/arm-linux-gnueabihf/libc.so.6" ]]; then
+    if [[ -f "/lib/arm-linux-gnueabihf/libc.so.6" || -f "/usr/lib/arm-linux-gnueabihf/libc.so.6" || -f "/usr/arm-linux-gnueabihf/lib/libc.so.6" ]]; then
       sysroot="/"
     fi
     boost_dir_env="Boost_DIR=$(resolve_boost_dir arm-linux-gnueabihf)"
   elif [[ "${label}" == "armv8" ]]; then
     ensure_arm64_deps
     if (( use_musl == 0 )); then
-      if [[ -f "/lib/aarch64-linux-gnu/libc.so.6" || -f "/usr/lib/aarch64-linux-gnu/libc.so.6" ]]; then
+      if [[ -f "/lib/aarch64-linux-gnu/libc.so.6" || -f "/usr/lib/aarch64-linux-gnu/libc.so.6" || -f "/usr/aarch64-linux-gnu/lib/libc.so.6" ]]; then
         sysroot="/"
       fi
       boost_dir_env="Boost_DIR=$(resolve_boost_dir aarch64-linux-gnu)"
@@ -1450,13 +1487,13 @@ build_linux_target() {
   fi
   if [[ "${label}" == "armv7" ]]; then
     ensure_armhf_deps
-    if [[ -f "/lib/arm-linux-gnueabihf/libc.so.6" || -f "/usr/lib/arm-linux-gnueabihf/libc.so.6" ]]; then
+    if [[ -f "/lib/arm-linux-gnueabihf/libc.so.6" || -f "/usr/lib/arm-linux-gnueabihf/libc.so.6" || -f "/usr/arm-linux-gnueabihf/lib/libc.so.6" ]]; then
       sysroot="/"
     fi
     boost_dir_env="Boost_DIR=$(resolve_boost_dir arm-linux-gnueabihf)"
   elif [[ "${label}" == "armv8" ]]; then
     ensure_arm64_deps
-    if [[ -f "/lib/aarch64-linux-gnu/libc.so.6" || -f "/usr/lib/aarch64-linux-gnu/libc.so.6" ]]; then
+    if [[ -f "/lib/aarch64-linux-gnu/libc.so.6" || -f "/usr/lib/aarch64-linux-gnu/libc.so.6" || -f "/usr/aarch64-linux-gnu/lib/libc.so.6" ]]; then
       sysroot="/"
     fi
     boost_dir_env="Boost_DIR=$(resolve_boost_dir aarch64-linux-gnu)"

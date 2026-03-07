@@ -15,6 +15,8 @@
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
+#include <cctype>
+#include <cstdlib>
 #include <cstring>
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -603,6 +605,23 @@ long long parse_proof_ts(const std::string& ts, long long fallback) {
     } catch (...) {
         return fallback;
     }
+}
+
+bool parse_env_bool(const char* name, bool fallback) {
+    const char* raw = std::getenv(name);
+    if (!raw || !*raw) {
+        return fallback;
+    }
+    std::string value(raw);
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (value == "1" || value == "true" || value == "yes" || value == "on") {
+        return true;
+    }
+    if (value == "0" || value == "false" || value == "no" || value == "off") {
+        return false;
+    }
+    return fallback;
 }
 
 struct AnonymProof {
@@ -1357,7 +1376,9 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        if (cfg.inner_crypto && !cfg.pq_private_key.empty()) {
+        const bool validate_pq_on_start =
+            parse_env_bool("YUME_VALIDATE_PQ_ON_START", cfg.pq_auto_generate);
+        if (cfg.inner_crypto && !cfg.pq_private_key.empty() && validate_pq_on_start) {
             std::string pq_public_path = derive_pq_public_path(cfg.pq_private_key);
             if (file_readable(cfg.pq_private_key) && file_readable(pq_public_path)) {
                 std::string err;

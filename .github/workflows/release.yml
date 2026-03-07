@@ -19,11 +19,6 @@ on:
         required: false
         default: true
         type: boolean
-      draft:
-        description: "Create/keep release as draft"
-        required: false
-        default: true
-        type: boolean
 
 permissions:
   contents: write
@@ -260,6 +255,8 @@ jobs:
     needs: [build-linux, build-macos]
     runs-on: ubuntu-latest
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
@@ -274,10 +271,22 @@ jobs:
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      - name: Upload to GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.tag_name || github.ref_name }}
-          draft: ${{ github.event_name == 'workflow_dispatch' && fromJSON(github.event.inputs.draft || 'false') }}
-          files: artifacts/*
-          fail_on_unmatched_files: true
+      - name: Resolve release tag
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag_name || github.ref_name }}"
+          if [[ -z "${TAG}" ]]; then
+            echo "Release tag is empty." >&2
+            exit 1
+          fi
+          echo "RELEASE_TAG=${TAG}" >> "${GITHUB_ENV}"
+
+      - name: Ensure release already exists
+        run: |
+          set -euo pipefail
+          gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null
+
+      - name: Attach artifacts to existing release
+        run: |
+          set -euo pipefail
+          gh release upload "${RELEASE_TAG}" artifacts/* --clobber --repo "${GITHUB_REPOSITORY}"

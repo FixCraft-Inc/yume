@@ -624,6 +624,14 @@ bool parse_env_bool(const char* name, bool fallback) {
     return fallback;
 }
 
+bool anonym_local_sign_default() {
+#if defined(__aarch64__)
+    return false;
+#else
+    return true;
+#endif
+}
+
 struct AnonymProof {
     std::string hash;
     std::string sig;
@@ -679,7 +687,8 @@ AnonymProof fetch_anonym_proof(const std::string& hash,
                                const std::string& sub_key_path,
                                const std::string& sub_cert_path,
                                const std::string& pq_public_path,
-                               const std::string& pq_sign_key_path) {
+                               const std::string& pq_sign_key_path,
+                               bool enable_local_sign) {
     AnonymProof proof;
     proof.hash = hash;
     proof.ts = std::to_string(static_cast<long long>(std::time(nullptr)));
@@ -702,13 +711,13 @@ AnonymProof fetch_anonym_proof(const std::string& hash,
     if (!verify_anonym_signature(proof.hash, proof.ts, proof.nonce, proof.certfp, proof.sig)) {
         throw std::runtime_error("anonym signature verification failed (local check)");
     }
-    if (!ca_key_path.empty()) {
+    if (enable_local_sign && !ca_key_path.empty()) {
         if (!sign_anonym_with_ca(proof.hash, proof.ts, proof.nonce, proof.certfp, ca_key_path,
                                  &proof.ca_sig, &proof.ca_alg)) {
             throw std::runtime_error("anonym CA signing failed");
         }
     }
-    if (!sub_key_path.empty()) {
+    if (enable_local_sign && !sub_key_path.empty()) {
         if (sub_cert_path.empty()) {
             throw std::runtime_error("anonym_sub_cert must be set when anonym_sub_key is set");
         }
@@ -725,7 +734,7 @@ AnonymProof fetch_anonym_proof(const std::string& hash,
             throw std::runtime_error("failed to encode anonym_sub_cert");
         }
     }
-    if (!pq_public_path.empty() && !pq_sign_key_path.empty() && !proof.certfp.empty()) {
+    if (enable_local_sign && !pq_public_path.empty() && !pq_sign_key_path.empty() && !proof.certfp.empty()) {
         if (load_pq_public_b64(pq_public_path, &proof.pq_pub_b64)) {
             if (!sign_pq_pub_with_key(proof.pq_pub_b64, proof.certfp, pq_sign_key_path,
                                       &proof.pq_sig, &proof.pq_alg)) {
@@ -1675,10 +1684,15 @@ int main(int argc, char** argv) {
     }
 
     std::atomic<long long> anonym_last_ts{0};
+    const bool anonym_local_sign =
+        parse_env_bool("YUME_ANONYM_LOCAL_SIGN", anonym_local_sign_default());
 
     if (cfg.anonym) {
         if (cfg.anonym_api.empty()) {
             cfg.anonym_api = "https://api.fixcraft.jp/verity";
+        }
+        if (!anonym_local_sign && (!cfg.anonym_ca_key.empty() || !cfg.anonym_sub_key.empty())) {
+            yume::util::log_warn("anonym local signing is disabled on this platform (set YUME_ANONYM_LOCAL_SIGN=1 to force)");
         }
         try {
             std::string self_path = get_self_path(argv[0]);
@@ -1698,7 +1712,7 @@ int main(int argc, char** argv) {
             auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_certfp, cfg.anonym_api,
                                             cfg.anonym_token, cfg.anonym_ca_key,
                                             cfg.anonym_sub_key, cfg.anonym_sub_cert,
-                                            pq_public_path, pq_sign_key);
+                                            pq_public_path, pq_sign_key, anonym_local_sign);
             cfg.anonym_sig = proof.sig;
             cfg.anonym_ts = proof.ts;
             cfg.anonym_nonce = proof.nonce;
@@ -1774,7 +1788,7 @@ int main(int argc, char** argv) {
     std::condition_variable refresh_cv;
     std::thread refresh_thread;
     if (cfg.anonym) {
-        refresh_thread = std::thread([&manager, &cfg, &stop_refresh, &anonym_last_ts, &refresh_mu, &refresh_cv]() {
+        refresh_thread = std::thread([&manager, &cfg, &stop_refresh, &anonym_last_ts, &refresh_mu, &refresh_cv, anonym_local_sign]() {
             auto compute_delay = [&]() -> int {
                 const long long now = static_cast<long long>(std::time(nullptr));
                 const long long last = anonym_last_ts.load(std::memory_order_relaxed);
@@ -1811,7 +1825,7 @@ int main(int argc, char** argv) {
                     auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_certfp, cfg.anonym_api,
                                                     cfg.anonym_token, cfg.anonym_ca_key,
                                                     cfg.anonym_sub_key, cfg.anonym_sub_cert,
-                                                    pq_public_path, pq_sign_key);
+                                                    pq_public_path, pq_sign_key, anonym_local_sign);
                     cfg.anonym_ts = proof.ts;
                     manager.update_anonym_proof(proof.hash, proof.sig, proof.ts, proof.nonce,
                                                 proof.certfp, proof.ca_sig, proof.ca_alg,

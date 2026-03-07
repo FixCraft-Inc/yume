@@ -89,6 +89,18 @@ resolve_real_home() {
 
 REAL_HOME="$(resolve_real_home)"
 
+BASEFWX_REF_FILE="${BASEFWX_REF_FILE:-${PWD}/.basefwx-ref}"
+if [[ -z "${YUME_BASEFWX_REF:-}" && -f "${BASEFWX_REF_FILE}" ]]; then
+  YUME_BASEFWX_REF="$(tr -d '[:space:]' < "${BASEFWX_REF_FILE}")"
+fi
+if [[ -n "${BASEFWX_REF:-}" && -z "${YUME_BASEFWX_REF:-}" ]]; then
+  YUME_BASEFWX_REF="${BASEFWX_REF}"
+fi
+if [[ -n "${YUME_BASEFWX_REF:-}" ]]; then
+  export YUME_BASEFWX_REF
+  export BASEFWX_REF="${YUME_BASEFWX_REF}"
+fi
+
 apt_update_once() {
   local force_update="${1:-0}"
   if ! command -v apt-get >/dev/null 2>&1; then

@@ -29,6 +29,13 @@ WINDOWS_TRIPLET="${YUME_WINDOWS_TRIPLET:-x64-mingw-dynamic}"
 VCPKG_ROOT="${VCPKG_ROOT:-}"
 VCPKG_PREFIX=""
 APT_UPDATED_FLAG="${APT_UPDATED_FLAG:-/tmp/yume-apt-updated}"
+BASEFWX_REPO="${BASEFWX_REPO:-https://github.com/F1xGOD/basefwx.git}"
+BASEFWX_REF="${BASEFWX_REF:-${YUME_BASEFWX_REF:-}}"
+BASEFWX_REF_FILE="${BASEFWX_REF_FILE:-${PWD}/.basefwx-ref}"
+
+if [[ -z "${BASEFWX_REF}" && -f "${BASEFWX_REF_FILE}" ]]; then
+    BASEFWX_REF="$(tr -d '[:space:]' < "${BASEFWX_REF_FILE}")"
+fi
 
 info()  { echo -e "${COLOR_BLUE}✨ $*${COLOR_RESET}"; }
 warn()  { echo -e "${COLOR_YELLOW}⚠️  $*${COLOR_RESET}"; }
@@ -410,17 +417,25 @@ build_liboqs_host() {
 }
 
 ensure_basefwx() {
-    if [[ -d basefwx ]]; then
-        info "BaseFWX already present."
-        return 0
-    fi
-    step "Cloning BaseFWX..."
+    local ref="${BASEFWX_REF:-main}"
     if ! need_cmd git; then
         error "git not found; cannot fetch BaseFWX."
         return 1
     fi
-    git clone https://github.com/F1xGOD/basefwx.git
-    ok "BaseFWX cloned."
+    if [[ -d basefwx && ! -d basefwx/.git ]]; then
+        warn "basefwx exists but is not a git repository; replacing it."
+        rm -rf basefwx
+    fi
+    if [[ ! -d basefwx/.git ]]; then
+        step "Cloning BaseFWX..."
+        git clone --filter=blob:none --no-checkout "${BASEFWX_REPO}" basefwx
+    else
+        info "BaseFWX already present."
+    fi
+    step "Syncing BaseFWX to ${ref}..."
+    git -C basefwx fetch --depth 1 origin "${ref}"
+    git -C basefwx checkout --detach FETCH_HEAD
+    ok "BaseFWX ready at $(git -C basefwx rev-parse --short HEAD)."
 }
 
 cleanup_vendor() {

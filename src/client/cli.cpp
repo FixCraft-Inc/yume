@@ -935,6 +935,7 @@ struct ParsedArgs {
     bool boring{false};
     bool boring_override{false};
     bool non_interactive{false};
+    bool live_status{false};
     bool io_threads_override{false};
     bool server_in_charge{false};
     bool server_in_charge_override{false};
@@ -1020,7 +1021,11 @@ ParsedArgs parse_args(int argc, char** argv) {
     };
     for (; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "completion") {
+        if (arg == "--") {
+            // Service runners sometimes append "--" before application flags.
+            // Treat it as an explicit non-interactive request and continue parsing.
+            args.non_interactive = true;
+        } else if (arg == "completion") {
             const char* shell = take_value("completion");
             if (!shell) {
                 return args;
@@ -1274,6 +1279,8 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.boring_override = true;
         } else if (arg == "--non-interactive") {
             args.non_interactive = true;
+        } else if (arg == "--live-status") {
+            args.live_status = true;
         }
     }
     return args;
@@ -1449,7 +1456,7 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --server --port --auth -i --socks --threads --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym -L -R --boring --non-interactive --accept-monitoring --save-server --completion"
+  local opts="--help -h --version --config --server --port --auth -i --socks --threads --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym -L -R --boring --non-interactive --live-status --accept-monitoring --save-server --completion"
   local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path"
   case "$prev" in
     --completion)
@@ -1517,7 +1524,10 @@ void print_help() {
         << "  --accept-monitoring      Accept monitoring prompt\n"
         << "  --save-server            Save server to config\n"
         << "  --non-interactive        Disable live status line updates\n"
+        << "  --live-status            Enable periodic live hop status updates\n"
         << "  --boring                 Minimal output (no emojis)\n\n"
+        << "Service Launch:\n"
+        << "  --                        Treat launch as non-interactive (systemd/service-safe)\n\n"
         << "Runtime Console (long-running modes):\n"
         << "  help                     Show commands\n"
         << "  status                   Print current connection summary\n"
@@ -1984,7 +1994,9 @@ int Cli::run(int argc, char** argv) {
             reverse_listen_port = 0;
         }
     }
-    const bool live_status_enabled = !cfg.non_interactive && parse_env_bool("YUME_LIVE_STATUS", false);
+    const bool live_status_enabled =
+        !cfg.non_interactive &&
+        (args.live_status || parse_env_bool("YUME_LIVE_STATUS", false));
     util::set_status_enabled(live_status_enabled);
     if (!require_file("identity", cfg.identity)) {
         return 1;
@@ -3018,6 +3030,9 @@ int Cli::run(int argc, char** argv) {
                         << build_hop_status_line() << "\n"
                         << color_wrap("FixCraft Verity", "1;36") << ": " << verity_line << "\n"
                         << border << "\n";
+                    if (hop_enabled) {
+                        util::log_info("live hop updates are disabled; use --live-status (or YUME_LIVE_STATUS=1) to update periodically");
+                    }
                 } else {
                     util::set_status_line(status_block_builder());
                 }
@@ -3178,9 +3193,11 @@ int Cli::run(int argc, char** argv) {
             std::thread hop_status_thread;
             if (live_status_enabled) {
                 if (status_block_builder && hop_enabled) {
-                    // Keep refresh human-readable; fast redraws make terminal selection unusable.
+                    // Avoid aliasing with hop interval (e.g. 500ms hop + 500ms refresh looks frozen).
+                    // Keep cadence human-readable to reduce terminal churn.
+                    const int refresh_raw = static_cast<int>(hop_interval_ms / 2) + 137;
                     const auto refresh_ms = std::chrono::milliseconds(
-                        std::clamp<int>(static_cast<int>(hop_interval_ms), 300, 1200));
+                        std::clamp<int>(refresh_raw, 300, 1200));
                     hop_status_thread = std::thread([hop_status_stop, status_block_builder, refresh_ms]() {
                         while (!hop_status_stop->load()) {
                             util::set_status_line(status_block_builder());

@@ -11,7 +11,7 @@ permissions:
 
 env:
   BASEFWX_REPO: "https://github.com/F1xGOD/basefwx.git"
-  BASEFWX_REF: "main"
+  BASEFWX_REF_FILE: ".basefwx-ref"
 
 jobs:
   build-and-smoke:
@@ -22,11 +22,21 @@ jobs:
 
       - name: Ensure BaseFWX sources
         run: |
-          if [[ ! -f basefwx/cpp/CMakeLists.txt ]]; then
-            rm -rf basefwx
-            git clone --depth 1 --branch "${BASEFWX_REF}" "${BASEFWX_REPO}" basefwx
+          BASEFWX_REF="${BASEFWX_REF:-}"
+          if [[ -z "${BASEFWX_REF}" && -f "${BASEFWX_REF_FILE}" ]]; then
+            BASEFWX_REF="$(tr -d '[:space:]' < "${BASEFWX_REF_FILE}")"
           fi
+          if [[ -z "${BASEFWX_REF}" ]]; then
+            BASEFWX_REF="main"
+          fi
+          if [[ ! -d basefwx/.git ]]; then
+            rm -rf basefwx
+            git clone --filter=blob:none --no-checkout "${BASEFWX_REPO}" basefwx
+          fi
+          git -C basefwx fetch --depth 1 origin "${BASEFWX_REF}"
+          git -C basefwx checkout --detach FETCH_HEAD
           test -f basefwx/cpp/CMakeLists.txt
+          echo "Using BaseFWX ref: $(git -C basefwx rev-parse HEAD)"
 
       - name: Install dependencies
         run: |

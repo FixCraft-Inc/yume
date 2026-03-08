@@ -12,6 +12,7 @@
 #include <ctime>
 #include <thread>
 #include <vector>
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -363,11 +364,179 @@ std::string get_self_path(const char* argv0) {
     return {};
 }
 
+bool parse_env_bool_local(const char* name, bool fallback) {
+    const char* raw = std::getenv(name);
+    if (!raw || !*raw) {
+        return fallback;
+    }
+    std::string value(raw);
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (value == "1" || value == "true" || value == "yes" || value == "on") {
+        return true;
+    }
+    if (value == "0" || value == "false" || value == "no" || value == "off") {
+        return false;
+    }
+    return fallback;
+}
+
+bool use_curl_for_anonym_https() {
+#if defined(YUME_STATIC_BUILD) && defined(__linux__)
+    return parse_env_bool_local("YUME_ANONYM_USE_CURL", true);
+#else
+    return parse_env_bool_local("YUME_ANONYM_USE_CURL", false);
+#endif
+}
+
+std::string shell_quote(const std::string& input) {
+    if (input.empty()) {
+        return "''";
+    }
+    std::string out;
+    out.reserve(input.size() + 8);
+    out.push_back('\'');
+    for (char ch : input) {
+        if (ch == '\'') {
+            out += "'\"'\"'";
+        } else {
+            out.push_back(ch);
+        }
+    }
+    out.push_back('\'');
+    return out;
+}
+
+bool command_exists(const std::string& command) {
+    if (command.empty()) {
+        return false;
+    }
+    std::string cmd = "command -v " + shell_quote(command) + " >/dev/null 2>&1";
+    return std::system(cmd.c_str()) == 0;
+}
+
+std::string run_command_capture(const std::string& command, int* status_out) {
+    if (status_out) {
+        *status_out = -1;
+    }
+#if defined(_WIN32)
+    FILE* pipe = _popen(command.c_str(), "r");
+#else
+    FILE* pipe = popen(command.c_str(), "r");
+#endif
+    if (!pipe) {
+        throw std::runtime_error("failed to launch command");
+    }
+    std::string output;
+    std::array<char, 1024> buf{};
+    while (true) {
+        std::size_t n = std::fread(buf.data(), 1, buf.size(), pipe);
+        if (n > 0) {
+            output.append(buf.data(), n);
+        }
+        if (n < buf.size()) {
+            if (std::feof(pipe) != 0) {
+                break;
+            }
+            if (std::ferror(pipe) != 0) {
+                break;
+            }
+        }
+    }
+#if defined(_WIN32)
+    int status = _pclose(pipe);
+#else
+    int status = pclose(pipe);
+#endif
+    if (status_out) {
+        *status_out = status;
+    }
+    return output;
+}
+
+nlohmann::json post_json_https_via_curl(const std::string& host,
+                                        const std::string& port,
+                                        const std::string& target,
+                                        const nlohmann::json& payload,
+                                        const std::string& token) {
+    if (!command_exists("curl")) {
+        throw std::runtime_error("curl is required for anonym HTTPS transport on this build");
+    }
+
+    std::string url = "https://" + host;
+    if (!port.empty() && port != "443") {
+        url += ":" + port;
+    }
+    if (!target.empty() && target[0] == '/') {
+        url += target;
+    } else if (!target.empty()) {
+        url += "/";
+        url += target;
+    } else {
+        url += "/";
+    }
+
+    std::string nonce = yume::util::random_hex(8);
+    if (nonce.empty()) {
+        nonce = std::to_string(static_cast<long long>(std::time(nullptr)));
+    }
+    auto tmp_path = std::filesystem::temp_directory_path() / ("yume-anonym-" + nonce + ".json");
+    {
+        std::ofstream tmp(tmp_path, std::ios::binary | std::ios::trunc);
+        if (!tmp) {
+            throw std::runtime_error("failed to create curl payload file");
+        }
+        tmp << payload.dump();
+    }
+
+    std::string cmd = "curl --silent --show-error --fail --connect-timeout 10 --max-time 30 "
+                      "--header " + shell_quote("Content-Type: application/json") + " ";
+    if (!token.empty()) {
+        cmd += "--header " + shell_quote("X-FC-VERITY-TOKEN: " + token) + " ";
+    }
+    cmd += "--data-binary @" + shell_quote(tmp_path.string()) + " " + shell_quote(url) + " 2>&1";
+
+    int status = -1;
+    std::string output;
+    try {
+        output = run_command_capture(cmd, &status);
+    } catch (...) {
+        std::error_code ec;
+        std::filesystem::remove(tmp_path, ec);
+        throw;
+    }
+    std::error_code ec;
+    std::filesystem::remove(tmp_path, ec);
+
+    if (status != 0) {
+        if (output.size() > 240) {
+            output.resize(240);
+            output += "...";
+        }
+        throw std::runtime_error("curl request failed: " + output);
+    }
+
+    try {
+        return nlohmann::json::parse(output);
+    } catch (...) {
+        std::string snippet = output;
+        if (snippet.size() > 200) {
+            snippet.resize(200);
+            snippet += "...";
+        }
+        throw std::runtime_error("verity API returned invalid JSON: " + snippet);
+    }
+}
+
 nlohmann::json post_json_https(const std::string& host,
                                const std::string& port,
                                const std::string& target,
                                const nlohmann::json& payload,
                                const std::string& token) {
+    if (use_curl_for_anonym_https()) {
+        return post_json_https_via_curl(host, port, target, payload, token);
+    }
+
     boost::asio::io_context io;
     boost::asio::ssl::context ctx(boost::asio::ssl::context::tls_client);
     ctx.set_verify_mode(boost::asio::ssl::verify_peer);

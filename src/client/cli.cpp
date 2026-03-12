@@ -86,8 +86,8 @@ constexpr std::chrono::milliseconds kServerInfoTimeoutInner{20000};
 constexpr std::chrono::milliseconds kServerInfoTimeoutInnerHeavy{45000};
 constexpr int kServerInChargeManualMinPort = 3000;
 constexpr int kServerInChargeManualMaxPort = 30000;
-constexpr int kServerInChargeAutoMinPort = 20000;
-constexpr int kServerInChargeAutoMaxPort = 30000;
+constexpr int kServerInChargeAutoMinPort = 4100;
+constexpr int kServerInChargeAutoMaxPort = 8600;
 
 struct IoOpResult {
     boost::system::error_code ec;
@@ -2837,31 +2837,35 @@ int Cli::run(int argc, char** argv) {
                 }
                 if (!cfg.anonym_ca_cert.empty() && sub_cert_b64.empty()) {
                     if (ca_sig.empty()) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
-                        print_red("ANONYM CA SIGNATURE MISSING");
-                        return 1;
+                        if (cfg.require_anonym) {
+                            print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                            print_red("ANONYM CA SIGNATURE MISSING");
+                            return 1;
+                        }
+                        util::log_warn("anonym CA signature missing; continuing with FixCraft proof only");
+                    } else {
+                        auto ca_key = load_pubkey_from_cert(cfg.anonym_ca_cert);
+                        if (!ca_key) {
+                            print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                            print_red("FAILED TO LOAD ANONYM CA CERT");
+                            return 1;
+                        }
+                        std::string ca_sig_raw = util::base64_decode(ca_sig);
+                        if (ca_sig_raw.empty()) {
+                            print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                            print_red("INVALID ANONYM CA SIGNATURE FORMAT");
+                            return 1;
+                        }
+                        crypto::Bytes ca_sig_bytes(ca_sig_raw.begin(), ca_sig_raw.end());
+                        bool ok_ca = crypto::verify_key(ca_key.get(), msg_bytes, ca_sig_bytes);
+                        if (!ok_ca) {
+                            print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                            print_red("ANONYM CA SIGNATURE INVALID");
+                            return 1;
+                        }
+                        ca_pub = std::move(ca_key);
+                        ca_ok = true;
                     }
-                    auto ca_key = load_pubkey_from_cert(cfg.anonym_ca_cert);
-                    if (!ca_key) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
-                        print_red("FAILED TO LOAD ANONYM CA CERT");
-                        return 1;
-                    }
-                    std::string ca_sig_raw = util::base64_decode(ca_sig);
-                    if (ca_sig_raw.empty()) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
-                        print_red("INVALID ANONYM CA SIGNATURE FORMAT");
-                        return 1;
-                    }
-                    crypto::Bytes ca_sig_bytes(ca_sig_raw.begin(), ca_sig_raw.end());
-                    bool ok_ca = crypto::verify_key(ca_key.get(), msg_bytes, ca_sig_bytes);
-                    if (!ok_ca) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
-                        print_red("ANONYM CA SIGNATURE INVALID");
-                        return 1;
-                    }
-                    ca_pub = std::move(ca_key);
-                    ca_ok = true;
                 } else if (!cfg.anonym_ca_cert.empty() && !ca_sig.empty()) {
                     auto ca_key = load_pubkey_from_cert(cfg.anonym_ca_cert);
                     if (!ca_key) {
@@ -3234,7 +3238,7 @@ int Cli::run(int argc, char** argv) {
                 !args.list_controlled &&
                 (cfg.socks_port > 0 || use_reverse || args.lport > 0);
             if (console_enabled) {
-                std::cerr << "[INFO] Console: help | status | exec <cmd> | quit" << std::endl;
+                util::log_info("Console: help | status | exec <cmd> | quit");
                 console_thread = std::thread([console_stop,
                                               &stop_requested,
                                               &announce_stopping,
@@ -3261,7 +3265,7 @@ int Cli::run(int argc, char** argv) {
                             continue;
                         }
                         if (line == "help") {
-                            std::cerr << "[INFO] Commands: help | status | exec <cmd> | quit" << std::endl;
+                            util::log_info("Commands: help | status | exec <cmd> | quit");
                             continue;
                         }
                         if (line == "status") {
@@ -3269,7 +3273,7 @@ int Cli::run(int argc, char** argv) {
                                 util::clear_status_line();
                                 std::cout << status_block_builder() << std::flush;
                             } else {
-                                std::cerr << "[INFO] status is not available yet" << std::endl;
+                                util::log_info("status is not available yet");
                             }
                             continue;
                         }
@@ -3283,12 +3287,12 @@ int Cli::run(int argc, char** argv) {
                         if (line.rfind("exec ", 0) == 0) {
                             std::string cmd = trim(line.substr(5));
                             if (cmd.empty()) {
-                                std::cerr << "[WARN] usage: exec <command>" << std::endl;
+                                util::log_warn("usage: exec <command>");
                                 continue;
                             }
                             uint8_t stream_id = tunnel->reserve_stream_id();
                             if (stream_id == 0) {
-                                std::cerr << "[WARN] no stream id available for exec" << std::endl;
+                                util::log_warn("no stream id available for exec");
                                 continue;
                             }
                             tunnel->register_stream(
@@ -3298,13 +3302,13 @@ int Cli::run(int argc, char** argv) {
                                     std::cout.flush();
                                 },
                                 [stream_id]() {
-                                    std::cerr << "[INFO] exec stream " << static_cast<int>(stream_id) << " closed" << std::endl;
+                                    util::log_info("exec stream " + std::to_string(static_cast<int>(stream_id)) + " closed");
                                 });
                             tunnel->send_exec(stream_id, cmd);
-                            std::cerr << "[INFO] exec sent on stream " << static_cast<int>(stream_id) << std::endl;
+                            util::log_info("exec sent on stream " + std::to_string(static_cast<int>(stream_id)));
                             continue;
                         }
-                        std::cerr << "[WARN] unknown command: " << line << std::endl;
+                        util::log_warn("unknown command: " + line);
                     }
                 });
             }

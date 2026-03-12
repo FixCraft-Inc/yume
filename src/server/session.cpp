@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <fstream>
 #include <ctime>
+#include <random>
 #include <string>
 
 #include "core/inner_crypto.hpp"
@@ -114,6 +115,15 @@ bool is_blocked_host_literal(const std::string& host, const ServerConfig& cfg) {
         return !is_allowed_address(addr, cfg);
     }
     return false;
+}
+
+int random_int_inclusive(int min_value, int max_value) {
+    if (min_value >= max_value) {
+        return min_value;
+    }
+    static thread_local std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<int> dist(min_value, max_value);
+    return dist(rng);
 }
 
 }
@@ -1111,23 +1121,41 @@ void Session::handle_rlisten(const protocol::Frame& frame) {
     std::string payload_str(payload.begin(), payload.end());
     int listen_port = 0;
     bool reclaim = false;
+    int min_port = 0;
+    int max_port = 0;
     try {
         auto json = nlohmann::json::parse(payload_str);
         listen_port = json.value("port", 0);
         reclaim = json.value("reclaim", false);
+        min_port = json.value("min_port", 0);
+        max_port = json.value("max_port", 0);
     } catch (...) {
         send_open_reply(frame.header.stream_id, false, "invalid RLISTEN payload");
         return;
     }
-    if (listen_port <= 0) {
-        send_open_reply(frame.header.stream_id, false, "invalid listen port");
-        return;
-    }
-    if (listen_port < cfg_.reverse_port_min || listen_port > cfg_.reverse_port_max) {
-        send_open_reply(frame.header.stream_id, false,
-                        "listen port must be " + std::to_string(cfg_.reverse_port_min) + "-" +
-                            std::to_string(cfg_.reverse_port_max));
-        return;
+    const bool auto_select_port = (listen_port <= 0) && (min_port > 0) && (max_port > 0);
+    if (!auto_select_port) {
+        if (listen_port <= 0) {
+            send_open_reply(frame.header.stream_id, false, "invalid listen port");
+            return;
+        }
+        if (listen_port < cfg_.reverse_port_min || listen_port > cfg_.reverse_port_max) {
+            send_open_reply(frame.header.stream_id, false,
+                            "listen port must be " + std::to_string(cfg_.reverse_port_min) + "-" +
+                                std::to_string(cfg_.reverse_port_max));
+            return;
+        }
+    } else {
+        if (min_port > max_port) {
+            std::swap(min_port, max_port);
+        }
+        min_port = std::max(min_port, cfg_.reverse_port_min);
+        max_port = std::min(max_port, cfg_.reverse_port_max);
+        if (min_port > max_port) {
+            // Client requested a range outside server policy; fall back to server range.
+            min_port = cfg_.reverse_port_min;
+            max_port = cfg_.reverse_port_max;
+        }
     }
     if (reverse_listeners_.find(frame.header.stream_id) != reverse_listeners_.end()) {
         send_open_reply(frame.header.stream_id, false, "listener exists");
@@ -1135,33 +1163,65 @@ void Session::handle_rlisten(const protocol::Frame& frame) {
     }
 
     bool reclaimed = false;
-    if (reclaim && manager_) {
-        reclaimed = manager_->reclaim_reverse_listener(listen_port);
-    }
-    auto acceptor = std::make_shared<boost::asio::ip::tcp::acceptor>(stream_.get_executor());
-    boost::system::error_code ec;
-    boost::asio::ip::tcp::endpoint ep(boost::asio::ip::tcp::v4(), listen_port);
-    acceptor->open(ep.protocol(), ec);
-    if (ec) {
-        send_open_reply(frame.header.stream_id, false, "listen failed: " + ec.message());
-        return;
-    }
-    acceptor->set_option(boost::asio::ip::tcp::acceptor::reuse_address(true), ec);
-    acceptor->bind(ep, ec);
-    if (ec == boost::asio::error::address_in_use && reclaim && manager_ && !reclaimed) {
-        if (manager_->reclaim_reverse_listener(listen_port)) {
-            ec.clear();
-            acceptor->bind(ep, ec);
+    std::string bind_error;
+    auto try_bind_listener = [&](int candidate_port,
+                                 std::shared_ptr<boost::asio::ip::tcp::acceptor>* out_acceptor) -> bool {
+        if (reclaim && manager_) {
+            reclaimed = manager_->reclaim_reverse_listener(candidate_port);
         }
-    }
-    if (ec) {
-        send_open_reply(frame.header.stream_id, false, "bind failed: " + ec.message());
-        return;
-    }
-    acceptor->listen(boost::asio::socket_base::max_listen_connections, ec);
-    if (ec) {
-        send_open_reply(frame.header.stream_id, false, "listen failed: " + ec.message());
-        return;
+        auto candidate = std::make_shared<boost::asio::ip::tcp::acceptor>(stream_.get_executor());
+        boost::system::error_code ec;
+        boost::asio::ip::tcp::endpoint ep(boost::asio::ip::tcp::v4(), candidate_port);
+        candidate->open(ep.protocol(), ec);
+        if (ec) {
+            bind_error = "listen failed: " + ec.message();
+            return false;
+        }
+        candidate->set_option(boost::asio::ip::tcp::acceptor::reuse_address(true), ec);
+        candidate->bind(ep, ec);
+        if (ec == boost::asio::error::address_in_use && reclaim && manager_ && !reclaimed) {
+            if (manager_->reclaim_reverse_listener(candidate_port)) {
+                ec.clear();
+                candidate->bind(ep, ec);
+            }
+        }
+        if (ec) {
+            bind_error = "bind failed: " + ec.message();
+            return false;
+        }
+        candidate->listen(boost::asio::socket_base::max_listen_connections, ec);
+        if (ec) {
+            bind_error = "listen failed: " + ec.message();
+            return false;
+        }
+        *out_acceptor = std::move(candidate);
+        return true;
+    };
+
+    std::shared_ptr<boost::asio::ip::tcp::acceptor> acceptor;
+    if (auto_select_port) {
+        const int range_size = max_port - min_port + 1;
+        const int start_port = random_int_inclusive(min_port, max_port);
+        bool found_port = false;
+        for (int offset = 0; offset < range_size; ++offset) {
+            int candidate = min_port + ((start_port - min_port + offset) % range_size);
+            if (try_bind_listener(candidate, &acceptor)) {
+                listen_port = candidate;
+                found_port = true;
+                break;
+            }
+        }
+        if (!found_port) {
+            send_open_reply(frame.header.stream_id, false,
+                            "no available listen port in range " + std::to_string(min_port) + "-" +
+                                std::to_string(max_port));
+            return;
+        }
+    } else {
+        if (!try_bind_listener(listen_port, &acceptor)) {
+            send_open_reply(frame.header.stream_id, false, bind_error);
+            return;
+        }
     }
     reverse_listeners_[frame.header.stream_id] = acceptor;
     reverse_listener_ports_[frame.header.stream_id] = listen_port;
@@ -1169,7 +1229,7 @@ void Session::handle_rlisten(const protocol::Frame& frame) {
     if (manager_) {
         manager_->register_reverse_listener(listen_port, shared_from_this());
     }
-    send_open_reply(frame.header.stream_id, true, "");
+    send_open_reply(frame.header.stream_id, true, std::to_string(listen_port));
 
     auto self = shared_from_this();
     auto do_accept = std::make_shared<std::function<void()>>();

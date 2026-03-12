@@ -51,6 +51,54 @@ bool is_tty_stdout() {
 #endif
 }
 
+bool is_tty_stderr() {
+#if defined(_WIN32)
+    return _isatty(_fileno(stderr)) != 0;
+#else
+    return isatty(fileno(stderr)) != 0;
+#endif
+}
+
+bool env_var_enabled(const char* name, bool fallback) {
+    const char* raw = std::getenv(name);
+    if (!raw || !*raw) {
+        return fallback;
+    }
+    std::string value(raw);
+    for (char& ch : value) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    if (value == "1" || value == "true" || value == "yes" || value == "on") {
+        return true;
+    }
+    if (value == "0" || value == "false" || value == "no" || value == "off") {
+        return false;
+    }
+    return fallback;
+}
+
+bool log_colors_enabled() {
+    if (!is_tty_stderr()) {
+        return false;
+    }
+    if (std::getenv("NO_COLOR") != nullptr) {
+        return false;
+    }
+    return env_var_enabled("YUME_COLOR", true) && !env_var_enabled("YUME_NO_COLOR", false);
+}
+
+void print_plain_log(const char* level, const std::string& msg) {
+    std::cerr << "[" << level << "] " << msg << std::endl;
+}
+
+void print_colored_log(const char* level, const char* color_code, const std::string& msg) {
+    if (!log_colors_enabled()) {
+        print_plain_log(level, msg);
+        return;
+    }
+    std::cerr << "\033[" << color_code << "m[" << level << "]\033[0m " << msg << std::endl;
+}
+
 std::size_t count_status_lines(const std::string& text) {
     if (text.empty()) {
         return 0;
@@ -234,7 +282,7 @@ void log_info(const std::string& msg) {
 #if YUME_USE_SPDLOG
     spdlog::info(msg);
 #else
-    std::cerr << "[INFO] " << msg << std::endl;
+    print_colored_log("INFO", "1;36", msg);
 #endif
     render_status_line_locked();
 }
@@ -248,7 +296,7 @@ void log_warn(const std::string& msg) {
 #if YUME_USE_SPDLOG
     spdlog::warn(msg);
 #else
-    std::cerr << "[WARN] " << msg << std::endl;
+    print_colored_log("WARN", "1;33", msg);
 #endif
     render_status_line_locked();
 }
@@ -262,7 +310,7 @@ void log_error(const std::string& msg) {
 #if YUME_USE_SPDLOG
     spdlog::error(msg);
 #else
-    std::cerr << "[ERROR] " << msg << std::endl;
+    print_colored_log("ERROR", "1;31", msg);
 #endif
     render_status_line_locked();
 }

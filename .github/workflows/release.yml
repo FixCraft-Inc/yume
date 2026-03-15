@@ -106,6 +106,8 @@ jobs:
       - name: Build (Linux + cross)
         run: |
           export YUME_TARGETS="${{ github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64' }}"
+          export YUME_REQUIRE_ARGON2=1
+          export YUME_REQUIRE_OQS=1
           if [[ ",${YUME_TARGETS}," == *",windows-x86_64,"* ]]; then
             export YUME_WINDOWS_CROSS=1
             export YUME_WINDOWS_VCPKG_BUILD_TYPE=release
@@ -126,6 +128,8 @@ jobs:
             VCPKG_ROOT="${VCPKG_ROOT}" \
             OPENWRT_SDK="${OPENWRT_SDK}" \
             YUME_TARGETS="${YUME_TARGETS}" \
+            YUME_REQUIRE_ARGON2="${YUME_REQUIRE_ARGON2}" \
+            YUME_REQUIRE_OQS="${YUME_REQUIRE_OQS}" \
             YUME_WINDOWS_CROSS="${YUME_WINDOWS_CROSS}" \
             YUME_WINDOWS_VCPKG_BUILD_TYPE="${YUME_WINDOWS_VCPKG_BUILD_TYPE:-}" \
             YUME_WINDOWS_VCPKG_PACKAGES="${YUME_WINDOWS_VCPKG_PACKAGES:-}" \
@@ -246,6 +250,8 @@ jobs:
       - name: Build (macOS arm64)
         env:
           YUME_TARGETS: macos-arm64
+          YUME_REQUIRE_ARGON2: "1"
+          YUME_REQUIRE_OQS: "1"
           YUME_CMAKE_ARGS: -DBASEFWX_USE_VENDOR_DEPS=OFF
         run: |
           ./ezbuild.sh

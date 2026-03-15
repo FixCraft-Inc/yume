@@ -32,6 +32,8 @@ APT_UPDATED_FLAG="${APT_UPDATED_FLAG:-/tmp/yume-apt-updated}"
 BASEFWX_REPO="${BASEFWX_REPO:-https://github.com/F1xGOD/basefwx.git}"
 BASEFWX_REF="${BASEFWX_REF:-${YUME_BASEFWX_REF:-}}"
 BASEFWX_REF_FILE="${BASEFWX_REF_FILE:-${PWD}/.basefwx-ref}"
+YUME_REQUIRE_ARGON2="${YUME_REQUIRE_ARGON2:-0}"
+YUME_REQUIRE_OQS="${YUME_REQUIRE_OQS:-0}"
 
 if [[ -z "${BASEFWX_REF}" && -f "${BASEFWX_REF_FILE}" ]]; then
     BASEFWX_REF="$(tr -d '[:space:]' < "${BASEFWX_REF_FILE}")"
@@ -45,6 +47,24 @@ step()  { echo -e "${COLOR_MAGENTA}🚀 $*${COLOR_RESET}"; }
 
 need_cmd() {
     command -v "$1" >/dev/null 2>&1
+}
+
+env_truthy() {
+    local value="${1:-}"
+    case "${value,,}" in
+        1|true|yes|on) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+require_feature_or_die() {
+    local env_value="${1:-}"
+    local feature_name="$2"
+    local hint="$3"
+    if env_truthy "${env_value}"; then
+        error "${feature_name} is mandatory for this build. ${hint}"
+        exit 1
+    fi
 }
 
 apt_update_once() {
@@ -989,6 +1009,7 @@ EOF
             fi
         else
             warn "OpenWRT liboqs not detected in sysroot; PQ will be disabled."
+            require_feature_or_die "${YUME_REQUIRE_OQS}" "liboqs / PQ support" "Provide a sysroot/vendor liboqs or unset YUME_REQUIRE_OQS."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=OFF")
         fi
         if detect_argon2; then
@@ -1005,10 +1026,12 @@ EOF
                 )
             else
                 warn "OpenWRT libargon2 headers found but library missing; disabling Argon2."
+                require_feature_or_die "${YUME_REQUIRE_ARGON2}" "libargon2 support" "Provide a sysroot/vendor libargon2 or unset YUME_REQUIRE_ARGON2."
                 CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=OFF")
             fi
         else
             warn "OpenWRT libargon2 not detected in sysroot; heavy KDF will fall back to HKDF."
+            require_feature_or_die "${YUME_REQUIRE_ARGON2}" "libargon2 support" "Provide a sysroot/vendor libargon2 or unset YUME_REQUIRE_ARGON2."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=OFF")
         fi
     elif [[ "${WINDOWS_CROSS}" == "1" ]]; then
@@ -1017,6 +1040,7 @@ EOF
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=ON")
         else
             warn "Windows cross: liboqs not detected in vcpkg; PQ will be disabled."
+            require_feature_or_die "${YUME_REQUIRE_OQS}" "liboqs / PQ support" "Ensure the Windows vcpkg triplet installs liboqs."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=OFF")
         fi
         if [[ -f "${VCPKG_PREFIX}/include/argon2.h" ]]; then
@@ -1024,6 +1048,7 @@ EOF
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=ON")
         else
             warn "Windows cross: libargon2 not detected in vcpkg; heavy KDF will fall back to HKDF."
+            require_feature_or_die "${YUME_REQUIRE_ARGON2}" "libargon2 support" "Ensure the Windows vcpkg triplet installs argon2."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=OFF")
         fi
     elif [[ "${YUME_MACOS_CROSS:-0}" == "1" ]]; then
@@ -1072,6 +1097,7 @@ EOF
             fi
         else
             warn "liboqs not detected; PQ will be disabled unless you install it."
+            require_feature_or_die "${YUME_REQUIRE_OQS}" "liboqs / PQ support" "Install liboqs or stage it in vendor/ before building."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=OFF")
         fi
         if detect_argon2; then
@@ -1079,6 +1105,7 @@ EOF
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=ON")
         else
             warn "libargon2 not detected; heavy KDF will fall back to HKDF."
+            require_feature_or_die "${YUME_REQUIRE_ARGON2}" "libargon2 support" "Install libargon2 or stage it in vendor/ before building."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=OFF")
         fi
     fi

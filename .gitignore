@@ -47,8 +47,8 @@ config/*.local.json
 config/*.secrets.json
 config/*.private.json
 
-# BaseFWX builds
-basefwx/cpp/build/
+# BaseFWX dependency checkout
+basefwx/
 
 # Python
 __pycache__/

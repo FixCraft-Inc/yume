@@ -54,7 +54,14 @@ jobs:
 
       - name: Configure
         run: |
-          cmake -S . -B build-ci -DCMAKE_BUILD_TYPE=Release
+          test -d vendor/linux-x86_64
+          cmake -S . -B build-ci \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBASEFWX_USE_VENDOR_DEPS=ON \
+            -DBASEFWX_VENDOR_DIR="${GITHUB_WORKSPACE}/vendor/linux-x86_64" \
+            -DBASEFWX_REQUIRE_ARGON2=ON \
+            -DBASEFWX_REQUIRE_OQS=ON \
+            -DBASEFWX_REQUIRE_LZMA=ON
 
       - name: Build
         run: |

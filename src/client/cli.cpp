@@ -58,12 +58,16 @@
 #include <openssl/sha.h>
 
 #include "client/forward.hpp"
+#include "client/local_runtime.hpp"
+#include "client/relay_runtime.hpp"
 #include "client/socks.hpp"
 #include "client/tunnel.hpp"
 #include "core/crypto.hpp"
+#include "core/identity.hpp"
 #include "core/inner_crypto.hpp"
 #include "core/obfs.hpp"
 #include "core/protocol.hpp"
+#include "core/runtime_policy.hpp"
 #include "core/version.hpp"
 #include "core/tls_fingerprint.hpp"
 #include "core/tls_stealth.hpp"
@@ -84,10 +88,47 @@ constexpr std::chrono::milliseconds kAuthChallengeTimeout{6000};
 constexpr std::chrono::milliseconds kServerInfoTimeout{6000};
 constexpr std::chrono::milliseconds kServerInfoTimeoutInner{20000};
 constexpr std::chrono::milliseconds kServerInfoTimeoutInnerHeavy{45000};
-constexpr int kServerInChargeManualMinPort = 3000;
-constexpr int kServerInChargeManualMaxPort = 30000;
-constexpr int kServerInChargeAutoMinPort = 4100;
-constexpr int kServerInChargeAutoMaxPort = 8600;
+std::string normalize_proof_source(std::string source) {
+    std::transform(source.begin(), source.end(), source.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return source;
+}
+
+void add_verified_source(std::vector<std::string>* out, std::string_view source) {
+    if (!out || source.empty()) {
+        return;
+    }
+    const std::string value(source);
+    if (std::find(out->begin(), out->end(), value) == out->end()) {
+        out->push_back(value);
+    }
+}
+
+std::string format_verified_sources(const std::vector<std::string>& sources) {
+    std::vector<std::string> labels;
+    labels.reserve(sources.size());
+    for (const auto& source : sources) {
+        if (source == yume::policy::kAnonymProofSourceSubCa) {
+            labels.emplace_back("Sub-CA");
+        } else if (source == yume::policy::kAnonymProofSourceCa) {
+            labels.emplace_back("CA");
+        } else if (source == yume::policy::kAnonymProofSourceFixcraft) {
+            labels.emplace_back("FixCraft");
+        }
+    }
+    if (labels.empty()) {
+        return "FAIL";
+    }
+    std::string joined;
+    for (std::size_t i = 0; i < labels.size(); ++i) {
+        if (i != 0) {
+            joined += "+";
+        }
+        joined += labels[i];
+    }
+    return "PASS [" + joined + "]";
+}
 
 struct IoOpResult {
     boost::system::error_code ec;
@@ -948,6 +989,32 @@ struct ParsedArgs {
     bool control_mode{false};
     bool list_controlled{false};
     std::string control_id;
+    std::string preferred_name;
+    std::string preferred_id;
+    std::string relay_mode{"untrusted"};
+    bool allow_inbound_admin{false};
+    bool allow_inbound_admin_override{false};
+    bool allow_outbound_admin{true};
+    bool allow_outbound_admin_override{false};
+    bool allow_chat{true};
+    bool allow_chat_override{false};
+    bool allow_file{true};
+    bool allow_file_override{false};
+    bool allow_bytes{true};
+    bool allow_bytes_override{false};
+    std::string history_dir;
+    bool history_enabled{true};
+    bool history_override{false};
+    std::string instance_name;
+    bool attach_local{false};
+    std::string chat_target;
+    std::string chat_password;
+    std::string file_target;
+    std::string file_path;
+    std::string bytes_target;
+    std::string bytes_path;
+    bool directory_mode{false};
+    std::string admin_target;
     std::string exec_cmd;
     std::string ssh_L;
     std::string ssh_R;
@@ -1215,6 +1282,108 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.control_id = value;
         } else if (arg == "--list-controlled") {
             args.list_controlled = true;
+        } else if (arg == "--name") {
+            const char* value = take_value("--name");
+            if (!value) {
+                return args;
+            }
+            args.preferred_name = value;
+        } else if (arg == "--client-id") {
+            const char* value = take_value("--client-id");
+            if (!value) {
+                return args;
+            }
+            args.preferred_id = value;
+        } else if (arg == "--relay-mode") {
+            const char* value = take_value("--relay-mode");
+            if (!value) {
+                return args;
+            }
+            args.relay_mode = value;
+        } else if (arg == "--allow-inbound-admin") {
+            args.allow_inbound_admin = true;
+            args.allow_inbound_admin_override = true;
+        } else if (arg == "--deny-inbound-admin") {
+            args.allow_inbound_admin = false;
+            args.allow_inbound_admin_override = true;
+        } else if (arg == "--allow-outbound-admin") {
+            args.allow_outbound_admin = true;
+            args.allow_outbound_admin_override = true;
+        } else if (arg == "--deny-outbound-admin") {
+            args.allow_outbound_admin = false;
+            args.allow_outbound_admin_override = true;
+        } else if (arg == "--allow-chat") {
+            args.allow_chat = true;
+            args.allow_chat_override = true;
+        } else if (arg == "--deny-chat") {
+            args.allow_chat = false;
+            args.allow_chat_override = true;
+        } else if (arg == "--allow-file") {
+            args.allow_file = true;
+            args.allow_file_override = true;
+        } else if (arg == "--deny-file") {
+            args.allow_file = false;
+            args.allow_file_override = true;
+        } else if (arg == "--allow-bytes") {
+            args.allow_bytes = true;
+            args.allow_bytes_override = true;
+        } else if (arg == "--deny-bytes") {
+            args.allow_bytes = false;
+            args.allow_bytes_override = true;
+        } else if (arg == "--history-dir") {
+            const char* value = take_value("--history-dir");
+            if (!value) {
+                return args;
+            }
+            args.history_dir = value;
+            args.history_override = true;
+        } else if (arg == "--no-history") {
+            args.history_enabled = false;
+            args.history_override = true;
+        } else if (arg == "--instance") {
+            const char* value = take_value("--instance");
+            if (!value) {
+                return args;
+            }
+            args.instance_name = value;
+        } else if (arg == "--attach-local") {
+            args.attach_local = true;
+        } else if (arg == "--chat") {
+            const char* value = take_value("--chat");
+            if (!value) {
+                return args;
+            }
+            args.chat_target = value;
+        } else if (arg == "--send-file") {
+            const char* peer = take_value("--send-file");
+            if (!peer) {
+                return args;
+            }
+            args.file_target = peer;
+            const char* path = take_value("--send-file");
+            if (!path) {
+                return args;
+            }
+            args.file_path = path;
+        } else if (arg == "--send-bytes") {
+            const char* peer = take_value("--send-bytes");
+            if (!peer) {
+                return args;
+            }
+            args.bytes_target = peer;
+            const char* path = take_value("--send-bytes");
+            if (!path) {
+                return args;
+            }
+            args.bytes_path = path;
+        } else if (arg == "--directory") {
+            args.directory_mode = true;
+        } else if (arg == "--admin-attach" || arg == "--server-attach") {
+            const char* value = take_value(arg);
+            if (!value) {
+                return args;
+            }
+            args.admin_target = value;
         } else if (arg == "--pq-pub") {
             const char* value = take_value("--pq-pub");
             if (!value) {
@@ -1456,7 +1625,7 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --server --port --auth -i --socks --threads --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym -L -R --boring --non-interactive --live-status --accept-monitoring --save-server --completion"
+  local opts="--help -h --version --config --server --port --auth -i --socks --threads --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym -L -R --boring --non-interactive --live-status --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach"
   local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path"
   case "$prev" in
     --completion)
@@ -1492,16 +1661,17 @@ void print_help() {
     std::cout
         << "yume - YUME client\n\n"
         << "Usage:\n"
-        << "  yume --server <host> -i <id_ed25519> [mode options]\n"
+        << "  yume --server <host> -i <id_ed25519> [options]\n"
         << "  yume completion bash\n"
         << "  yume --help\n"
         << "  yume --version\n\n"
         << "Version:\n"
         << "  yume " << yume::kVersion << " (using BaseFWX " << yume::kBasefwxVersion << ")\n\n"
-        << "Required:\n"
+        << "Core Connection:\n"
         << "  --server <host>          Server address\n"
+        << "  --config <path>          Configuration file\n"
         << "  -i, --auth <path>        Identity key file path\n\n"
-        << "Modes:\n"
+        << "Traffic Modes:\n"
         << "  --socks <port>           Start SOCKS5 proxy\n"
         << "  --lport <port> --rhost <host> --rport <port>\n"
         << "                           Local TCP forward\n"
@@ -1512,10 +1682,35 @@ void print_help() {
         << "  --run, -c, --cmd <cmd>   Run command via YUME proxy\n"
         << "  --control [id]           Control mode for a registered client\n"
         << "  --list-controlled        List controlled clients\n\n"
-        << "Core Options:\n"
-        << "  --config <path>          Configuration file\n"
+        << "Relay and Identity:\n"
+        << "  --name <slug>            Preferred display name\n"
+        << "  --client-id <32hex>      Preferred endpoint ID\n"
+        << "  --relay-mode <mode>      untrusted or trusted\n"
+        << "  --allow-inbound-admin    Allow trusted peers to admin-attach\n"
+        << "  --deny-inbound-admin     Deny inbound admin attach\n"
+        << "  --allow-outbound-admin   Allow this client to admin-attach peers\n"
+        << "  --deny-outbound-admin    Deny outbound admin attach\n"
+        << "  --allow-chat / --deny-chat\n"
+        << "                           Allow or deny relay chat\n"
+        << "  --allow-file / --deny-file\n"
+        << "                           Allow or deny relay file transfer\n"
+        << "  --allow-bytes / --deny-bytes\n"
+        << "                           Allow or deny raw byte relay\n"
+        << "  --directory              List visible relay endpoints and exit\n"
+        << "  --chat <id|name>         Open a chat invite\n"
+        << "  --send-file <id|name> <path>\n"
+        << "                           Send a file through relay\n"
+        << "  --send-bytes <id|name> <path>\n"
+        << "                           Send raw bytes through relay\n"
+        << "  --admin-attach <id|name> Open trusted runtime admin channel\n"
+        << "  --server-attach <id>     Alias for trusted admin attach\n\n"
+        << "Runtime and Local Attach:\n"
         << "  --port <n>               Server port (forced to 443)\n"
         << "  --threads <n>            IO threads (0 = auto)\n"
+        << "  --instance <name>        Stable local runtime instance key\n"
+        << "  --attach-local           Attach to an already running local yume\n"
+        << "  --history-dir <path>     Encrypted local chat history directory\n"
+        << "  --no-history             Disable local chat history\n"
         << "  --udp                    Enable UDP forwarding\n"
         << "  --tcp                    Force TCP only\n"
         << "  --allow-local-ip         Allow private/loopback destination IPs\n"
@@ -1528,10 +1723,26 @@ void print_help() {
         << "  --boring                 Minimal output (no emojis)\n\n"
         << "Service Launch:\n"
         << "  --                        Treat launch as non-interactive (systemd/service-safe)\n\n"
-        << "Runtime Console (long-running modes):\n"
+        << "Attached / Interactive Console:\n"
         << "  help                     Show commands\n"
-        << "  status                   Print current connection summary\n"
-        << "  exec <command>           Send EXEC frame to peer\n"
+        << "  whoami                   Show current relay identity\n"
+        << "  status                   Print current runtime status\n"
+        << "  directory                List visible relay endpoints\n"
+        << "  invites                  List pending invites\n"
+        << "  chat <peer>              Open chat invite\n"
+        << "  send <text>              Send chat message on active chat\n"
+        << "  send-file <peer> <path>  Send file invite and data\n"
+        << "  send-bytes <peer> <path> Send raw bytes invite and data\n"
+        << "  accept <invite> <pass>   Accept relay invite\n"
+        << "  reject <invite> [why]    Reject relay invite\n"
+        << "  history [peer]           Show local encrypted history\n"
+        << "  history-delete <peer|all>\n"
+        << "                           Delete local history\n"
+        << "  admin attach <peer>      Open trusted runtime admin channel\n"
+        << "  admin status             Query remote runtime status\n"
+        << "  admin sessions           Query remote runtime sessions\n"
+        << "  admin stop               Stop remote runtime\n"
+        << "  exec <command>           Legacy EXEC compatibility path\n"
         << "  quit                     Stop client cleanly\n"
         << "  env YUME_COMMAND_CONSOLE=0 to disable console\n"
         << "  env YUME_LIVE_STATUS=1 to re-enable live status redraw\n\n"
@@ -1544,7 +1755,7 @@ void print_help() {
         << "  --pq-pub <path>          PQ public key path\n"
         << "  --use-embedded-master    Allow embedded BaseFWX master PQ key fallback\n"
         << "  --no-embedded-master     Disable embedded BaseFWX master fallback\n"
-        << "  --require-anonym         Require anonymous server mode\n"
+        << "  --require-anonym         Require at least one trusted anonym proof source\n"
         << "  --anonym-ca-cert <path>  CA certificate for anonym proof verification\n"
         << "  --tls-ca <path>          Custom CA for TLS verification\n"
         << "  --tls-pin <sha256>       Pin server TLS certificate fingerprint\n\n"
@@ -1563,6 +1774,8 @@ void print_help() {
         << "Completion:\n"
         << "  completion bash\n"
         << "  --completion bash\n\n"
+        << "Compatibility:\n"
+        << "  --control / --list-controlled / --exec stay available for one release cycle\n\n"
         << "Other:\n"
         << "  -h, --help               Show this help message\n"
         << "  --version                Show version information\n";
@@ -1674,6 +1887,326 @@ void run_io_threads(boost::asio::io_context& io, int requested) {
     }
 }
 
+std::string trim_copy(std::string s) {
+    auto is_space = [](unsigned char ch) { return std::isspace(ch) != 0; };
+    while (!s.empty() && is_space(static_cast<unsigned char>(s.front()))) {
+        s.erase(s.begin());
+    }
+    while (!s.empty() && is_space(static_cast<unsigned char>(s.back()))) {
+        s.pop_back();
+    }
+    return s;
+}
+
+bool prompt_attach_existing(const std::string& kind) {
+    if (!is_tty_stdin()) {
+        return true;
+    }
+    util::clear_status_line();
+    std::cout << kind << " is already running. Attach to the existing instance? [Y/n] " << std::flush;
+    std::string answer;
+    if (!std::getline(std::cin, answer)) {
+        return true;
+    }
+    answer = trim_copy(answer);
+    if (answer.empty()) {
+        return true;
+    }
+    std::transform(answer.begin(), answer.end(), answer.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return answer == "y" || answer == "yes";
+}
+
+std::string effective_client_instance_key(const ClientConfig& cfg, const ParsedArgs& args) {
+    if (!cfg.instance_name.empty()) {
+        return cfg.instance_name;
+    }
+    return yume::identity::derive_instance_key(
+        cfg.server + "|" + std::to_string(cfg.port) + "|" + cfg.identity + "|" + args.config_path);
+}
+
+void print_local_client_attach_help() {
+    util::log_info("Attached console: help | whoami | status | directory | invites | chat <peer> | send <text> | send-file <peer> <path> | send-bytes <peer> <path> | accept <invite> <password> | reject <invite> [reason] | history [peer] | history-delete <peer|all> | admin attach <peer> | admin status | admin sessions | admin stop | quit");
+}
+
+nlohmann::json request_local_client_runtime(const std::string& socket_path,
+                                           const std::string& op,
+                                           const nlohmann::json& args,
+                                           std::string* error) {
+    return yume::client::LocalRuntime::request(
+        socket_path,
+        nlohmann::json{{"op", op}, {"args", args}},
+        error,
+        10000);
+}
+
+int run_local_client_attach(const std::string& socket_path, const ParsedArgs& args, const ClientConfig& cfg) {
+    const char* env_pw = std::getenv("YUME_RELAY_PASSWORD");
+    const std::string relay_password = env_pw ? env_pw : "";
+    std::string error;
+
+    if (args.directory_mode) {
+        auto resp = request_local_client_runtime(socket_path, "directory.list", nlohmann::json::object(), &error);
+        if (!error.empty() || !resp.value("ok", false)) {
+            util::log_error(error.empty() ? resp.value("error", "directory request failed") : error);
+            return 1;
+        }
+        for (const auto& entry : resp["result"]) {
+            std::cout << entry.value("endpoint_id", "")
+                      << " " << entry.value("display_name", "")
+                      << " kind=" << entry.value("endpoint_kind", "")
+                      << " relay=" << entry.value("relay_mode", "")
+                      << "\n";
+        }
+        return 0;
+    }
+    if (!args.chat_target.empty()) {
+        auto resp = request_local_client_runtime(socket_path, "chat.open",
+                                                 {{"peer", args.chat_target}, {"password", relay_password}}, &error);
+        if (!error.empty() || !resp.value("ok", false)) {
+            util::log_error(error.empty() ? resp.value("error", "chat open failed") : error);
+            return 1;
+        }
+        return 0;
+    }
+    if (!args.file_target.empty()) {
+        auto resp = request_local_client_runtime(socket_path, "file.send",
+                                                 {{"peer", args.file_target}, {"path", args.file_path}, {"password", relay_password}}, &error);
+        if (!error.empty() || !resp.value("ok", false)) {
+            util::log_error(error.empty() ? resp.value("error", "file send failed") : error);
+            return 1;
+        }
+        return 0;
+    }
+    if (!args.bytes_target.empty()) {
+        auto resp = request_local_client_runtime(socket_path, "bytes.send",
+                                                 {{"peer", args.bytes_target}, {"path", args.bytes_path}, {"password", relay_password}}, &error);
+        if (!error.empty() || !resp.value("ok", false)) {
+            util::log_error(error.empty() ? resp.value("error", "bytes send failed") : error);
+            return 1;
+        }
+        return 0;
+    }
+    if (!args.admin_target.empty()) {
+        auto resp = request_local_client_runtime(socket_path, "admin.attach",
+                                                 {{"peer", args.admin_target}}, &error);
+        if (!error.empty() || !resp.value("ok", false)) {
+            util::log_error(error.empty() ? resp.value("error", "admin attach failed") : error);
+            return 1;
+        }
+        return 0;
+    }
+
+    if (cfg.non_interactive || !is_tty_stdin()) {
+        auto resp = request_local_client_runtime(socket_path, "runtime.status", nlohmann::json::object(), &error);
+        if (!error.empty() || !resp.value("ok", false)) {
+            util::log_error(error.empty() ? resp.value("error", "status failed") : error);
+            return 1;
+        }
+        std::cout << resp["result"].dump(2) << std::endl;
+        return 0;
+    }
+
+    util::log_info("Attached to existing yume runtime");
+    print_local_client_attach_help();
+    for (;;) {
+        std::string line;
+        if (!std::getline(std::cin, line)) {
+            return 0;
+        }
+        line = trim_copy(line);
+        if (line.empty()) {
+            continue;
+        }
+        if (line == "help") {
+            print_local_client_attach_help();
+            continue;
+        }
+        if (line == "quit" || line == "exit") {
+            return 0;
+        }
+        if (line == "whoami") {
+            auto resp = request_local_client_runtime(socket_path, "runtime.info", nlohmann::json::object(), &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                util::log_warn(error.empty() ? resp.value("error", "runtime info failed") : error);
+                error.clear();
+                continue;
+            }
+            std::cout << resp["result"].dump(2) << std::endl;
+            continue;
+        }
+        if (line == "status") {
+            auto resp = request_local_client_runtime(socket_path, "runtime.status", nlohmann::json::object(), &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                util::log_warn(error.empty() ? resp.value("error", "status failed") : error);
+                error.clear();
+                continue;
+            }
+            std::cout << resp["result"].dump(2) << std::endl;
+            continue;
+        }
+        if (line == "directory") {
+            auto resp = request_local_client_runtime(socket_path, "directory.list", nlohmann::json::object(), &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                util::log_warn(error.empty() ? resp.value("error", "directory failed") : error);
+                error.clear();
+                continue;
+            }
+            for (const auto& entry : resp["result"]) {
+                std::cout << entry.value("endpoint_id", "") << " "
+                          << entry.value("display_name", "")
+                          << " kind=" << entry.value("endpoint_kind", "")
+                          << " relay=" << entry.value("relay_mode", "")
+                          << std::endl;
+            }
+            continue;
+        }
+        if (line == "invites") {
+            auto resp = request_local_client_runtime(socket_path, "invite.list", nlohmann::json::object(), &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                util::log_warn(error.empty() ? resp.value("error", "invite list failed") : error);
+                error.clear();
+                continue;
+            }
+            for (const auto& invite : resp["result"]) {
+                std::cout << invite.value("invite_id", "") << " from="
+                          << (invite.value("from_display_name", "").empty()
+                                  ? invite.value("from_endpoint_id", "")
+                                  : invite.value("from_display_name", ""))
+                          << " kind=" << invite.value("channel_kind", "")
+                          << std::endl;
+            }
+            continue;
+        }
+        if (line.rfind("chat ", 0) == 0) {
+            auto resp = request_local_client_runtime(socket_path, "chat.open",
+                                                     {{"peer", trim_copy(line.substr(5))}, {"password", relay_password}}, &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                util::log_warn(error.empty() ? resp.value("error", "chat open failed") : error);
+                error.clear();
+            }
+            continue;
+        }
+        if (line.rfind("send-file ", 0) == 0) {
+            std::istringstream iss(line.substr(10));
+            std::string peer;
+            std::string path;
+            iss >> peer >> path;
+            auto resp = request_local_client_runtime(socket_path, "file.send",
+                                                     {{"peer", peer}, {"path", path}, {"password", relay_password}}, &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                util::log_warn(error.empty() ? resp.value("error", "file send failed") : error);
+                error.clear();
+            }
+            continue;
+        }
+        if (line.rfind("send-bytes ", 0) == 0) {
+            std::istringstream iss(line.substr(11));
+            std::string peer;
+            std::string path;
+            iss >> peer >> path;
+            auto resp = request_local_client_runtime(socket_path, "bytes.send",
+                                                     {{"peer", peer}, {"path", path}, {"password", relay_password}}, &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                util::log_warn(error.empty() ? resp.value("error", "bytes send failed") : error);
+                error.clear();
+            }
+            continue;
+        }
+        if (line.rfind("send ", 0) == 0) {
+            auto resp = request_local_client_runtime(socket_path, "chat.send",
+                                                     {{"text", trim_copy(line.substr(5))}}, &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                util::log_warn(error.empty() ? resp.value("error", "chat send failed") : error);
+                error.clear();
+            }
+            continue;
+        }
+        if (line.rfind("accept ", 0) == 0) {
+            std::istringstream iss(line.substr(7));
+            std::string invite_id;
+            std::string password;
+            iss >> invite_id >> password;
+            auto resp = request_local_client_runtime(socket_path, "invite.accept",
+                                                     {{"invite_id", invite_id}, {"password", password}}, &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                util::log_warn(error.empty() ? resp.value("error", "invite accept failed") : error);
+                error.clear();
+            }
+            continue;
+        }
+        if (line.rfind("reject ", 0) == 0) {
+            std::istringstream iss(line.substr(7));
+            std::string invite_id;
+            iss >> invite_id;
+            std::string reason;
+            std::getline(iss, reason);
+            auto resp = request_local_client_runtime(socket_path, "invite.reject",
+                                                     {{"invite_id", invite_id}, {"reason", trim_copy(reason)}}, &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                util::log_warn(error.empty() ? resp.value("error", "invite reject failed") : error);
+                error.clear();
+            }
+            continue;
+        }
+        if (line.rfind("history-delete ", 0) == 0) {
+            std::string arg = trim_copy(line.substr(15));
+            nlohmann::json req_args = nlohmann::json::object();
+            if (arg != "all" && !arg.empty()) {
+                req_args["peer_id"] = arg;
+            }
+            auto resp = request_local_client_runtime(socket_path, "history.delete", req_args, &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                util::log_warn(error.empty() ? resp.value("error", "history delete failed") : error);
+                error.clear();
+            }
+            continue;
+        }
+        if (line.rfind("history", 0) == 0) {
+            std::string arg = trim_copy(line.substr(7));
+            nlohmann::json req_args = nlohmann::json::object();
+            if (!arg.empty()) {
+                req_args["peer_id"] = arg;
+            }
+            auto resp = request_local_client_runtime(socket_path, "history.list", req_args, &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                util::log_warn(error.empty() ? resp.value("error", "history failed") : error);
+                error.clear();
+                continue;
+            }
+            for (const auto& item : resp["result"]) {
+                std::cout << item.value("direction", "?") << " "
+                          << item.value("peer_name", item.value("peer_id", ""))
+                          << " " << item.value("text", "") << std::endl;
+            }
+            continue;
+        }
+        if (line.rfind("admin attach ", 0) == 0) {
+            auto resp = request_local_client_runtime(socket_path, "admin.attach",
+                                                     {{"peer", trim_copy(line.substr(13))}}, &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                util::log_warn(error.empty() ? resp.value("error", "admin attach failed") : error);
+                error.clear();
+            }
+            continue;
+        }
+        if (line == "admin status" || line == "admin sessions" || line == "admin stop") {
+            const std::string op =
+                (line == "admin stop") ? "admin.stop" :
+                ((line == "admin sessions") ? "admin.sessions" : "admin.status");
+            auto resp = request_local_client_runtime(socket_path, op, nlohmann::json::object(), &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                util::log_warn(error.empty() ? resp.value("error", "admin request failed") : error);
+                error.clear();
+                continue;
+            }
+            std::cout << resp["result"].dump(2) << std::endl;
+            continue;
+        }
+        util::log_warn("unknown command: " + line);
+    }
+}
+
 std::vector<std::thread> start_io_threads(boost::asio::io_context& io, int requested) {
     io.restart();
     int threads = resolve_io_threads(requested);
@@ -1744,8 +2277,8 @@ int Cli::run(int argc, char** argv) {
     bool use_reverse = false;
     bool reverse_server_in_charge_auto = false;
     bool reverse_server_in_charge_manual = false;
-    int reverse_auto_min_port = kServerInChargeAutoMinPort;
-    int reverse_auto_max_port = kServerInChargeAutoMaxPort;
+    int reverse_auto_min_port = yume::policy::kReversePortMinDefault;
+    int reverse_auto_max_port = yume::policy::kReversePortMaxDefault;
     if (!args.ssh_R.empty()) {
         if (!parse_ssh_forward(args.ssh_R, reverse_listen_port, reverse_host, reverse_port)) {
             util::log_error("invalid -R syntax (expected [bind:]rport:host:port)");
@@ -1851,6 +2384,42 @@ int Cli::run(int argc, char** argv) {
             if (json.contains("non_interactive")) {
                 cfg.non_interactive = json["non_interactive"].get<bool>();
             }
+            if (json.contains("instance_name") && cfg.instance_name.empty()) {
+                cfg.instance_name = json["instance_name"].get<std::string>();
+            }
+            if (json.contains("preferred_name") && cfg.preferred_name.empty()) {
+                cfg.preferred_name = json["preferred_name"].get<std::string>();
+            }
+            if (json.contains("preferred_id") && cfg.preferred_id.empty()) {
+                cfg.preferred_id = json["preferred_id"].get<std::string>();
+            }
+            if (json.contains("relay_mode")) {
+                cfg.relay_mode = json["relay_mode"].get<std::string>();
+            }
+            if (json.contains("allow_inbound_admin") && !args.allow_inbound_admin_override) {
+                cfg.allow_inbound_admin = json["allow_inbound_admin"].get<bool>();
+            }
+            if (json.contains("allow_outbound_admin") && !args.allow_outbound_admin_override) {
+                cfg.allow_outbound_admin = json["allow_outbound_admin"].get<bool>();
+            }
+            if (json.contains("allow_chat") && !args.allow_chat_override) {
+                cfg.allow_chat = json["allow_chat"].get<bool>();
+            }
+            if (json.contains("allow_file") && !args.allow_file_override) {
+                cfg.allow_file = json["allow_file"].get<bool>();
+            }
+            if (json.contains("allow_bytes") && !args.allow_bytes_override) {
+                cfg.allow_bytes = json["allow_bytes"].get<bool>();
+            }
+            if (json.contains("history_enabled") && !args.history_override) {
+                cfg.history_enabled = json["history_enabled"].get<bool>();
+            }
+            if (json.contains("history_dir") && cfg.history_dir.empty()) {
+                cfg.history_dir = resolve_cfg_path(json["history_dir"].get<std::string>());
+            }
+            if (json.contains("auto_attach_local")) {
+                cfg.auto_attach_local = json["auto_attach_local"].get<bool>();
+            }
         } catch (const std::exception& ex) {
             util::log_warn(std::string("config load failed: ") + ex.what());
         }
@@ -1912,6 +2481,39 @@ int Cli::run(int argc, char** argv) {
     }
     if (args.server_in_charge_port_override) {
         cfg.server_in_charge_port = args.server_in_charge_port;
+    }
+    if (!args.preferred_name.empty()) {
+        cfg.preferred_name = args.preferred_name;
+    }
+    if (!args.preferred_id.empty()) {
+        cfg.preferred_id = args.preferred_id;
+    }
+    if (!args.relay_mode.empty()) {
+        cfg.relay_mode = args.relay_mode;
+    }
+    if (args.allow_inbound_admin_override) {
+        cfg.allow_inbound_admin = args.allow_inbound_admin;
+    }
+    if (args.allow_outbound_admin_override) {
+        cfg.allow_outbound_admin = args.allow_outbound_admin;
+    }
+    if (args.allow_chat_override) {
+        cfg.allow_chat = args.allow_chat;
+    }
+    if (args.allow_file_override) {
+        cfg.allow_file = args.allow_file;
+    }
+    if (args.allow_bytes_override) {
+        cfg.allow_bytes = args.allow_bytes;
+    }
+    if (!args.history_dir.empty()) {
+        cfg.history_dir = util::resolve_path(args.history_dir, config_dir, exe_dir);
+    }
+    if (args.history_override) {
+        cfg.history_enabled = args.history_enabled;
+    }
+    if (!args.instance_name.empty()) {
+        cfg.instance_name = args.instance_name;
     }
     if (args.allow_exec_override) {
         cfg.allow_exec = args.allow_exec;
@@ -1981,11 +2583,11 @@ int Cli::run(int argc, char** argv) {
             std::swap(reverse_auto_min_port, reverse_auto_max_port);
         }
         if (cfg.server_in_charge_port > 0) {
-            if (cfg.server_in_charge_port < kServerInChargeManualMinPort ||
-                cfg.server_in_charge_port > kServerInChargeManualMaxPort) {
+            if (cfg.server_in_charge_port < yume::policy::kServerInChargeManualMinPort ||
+                cfg.server_in_charge_port > yume::policy::kServerInChargeManualMaxPort) {
                 util::log_error("--server-in-charge port must be " +
-                                std::to_string(kServerInChargeManualMinPort) + "-" +
-                                std::to_string(kServerInChargeManualMaxPort));
+                                std::to_string(yume::policy::kServerInChargeManualMinPort) + "-" +
+                                std::to_string(yume::policy::kServerInChargeManualMaxPort));
                 return 1;
             }
             reverse_server_in_charge_manual = true;
@@ -1993,6 +2595,17 @@ int Cli::run(int argc, char** argv) {
         } else {
             reverse_listen_port = 0;
         }
+    }
+    if (cfg.history_dir.empty()) {
+        const char* xdg = std::getenv("XDG_CONFIG_HOME");
+        const char* home = std::getenv("HOME");
+        std::filesystem::path base = (xdg && *xdg)
+            ? std::filesystem::path(xdg)
+            : ((home && *home) ? (std::filesystem::path(home) / ".config") : std::filesystem::path("."));
+        cfg.history_dir = (base / "yume" / "history").string();
+    }
+    if (cfg.relay_mode != "trusted") {
+        cfg.relay_mode = "untrusted";
     }
     const bool live_status_enabled =
         !cfg.non_interactive &&
@@ -2022,9 +2635,15 @@ int Cli::run(int argc, char** argv) {
         (cfg.socks_port > 0) ||
         use_reverse ||
         args.control_mode ||
-        args.list_controlled;
+        args.list_controlled ||
+        args.directory_mode ||
+        !args.chat_target.empty() ||
+        !args.file_target.empty() ||
+        !args.bytes_target.empty() ||
+        !args.admin_target.empty() ||
+        args.attach_local;
     if (!has_active_mode) {
-        util::log_error("no mode selected (use --socks, -R, --lport/--rhost/--rport, --run, or --server-in-charge)");
+        util::log_error("no mode selected (use --socks, -R, --lport/--rhost/--rport, --run, --directory, --chat, --send-file, --send-bytes, or --server-in-charge)");
         return 1;
     }
 
@@ -2099,6 +2718,18 @@ int Cli::run(int argc, char** argv) {
         json["require_anonym"] = cfg.require_anonym;
         json["boring"] = cfg.boring;
         json["non_interactive"] = cfg.non_interactive;
+        json["instance_name"] = cfg.instance_name;
+        json["preferred_name"] = cfg.preferred_name;
+        json["preferred_id"] = cfg.preferred_id;
+        json["relay_mode"] = cfg.relay_mode;
+        json["allow_inbound_admin"] = cfg.allow_inbound_admin;
+        json["allow_outbound_admin"] = cfg.allow_outbound_admin;
+        json["allow_chat"] = cfg.allow_chat;
+        json["allow_file"] = cfg.allow_file;
+        json["allow_bytes"] = cfg.allow_bytes;
+        json["history_enabled"] = cfg.history_enabled;
+        if (!cfg.history_dir.empty()) json["history_dir"] = cfg.history_dir;
+        json["auto_attach_local"] = cfg.auto_attach_local;
         std::ofstream out(args.config_path);
         if (out) {
             out << json.dump(2);
@@ -2116,6 +2747,22 @@ int Cli::run(int argc, char** argv) {
     if (cfg.server.empty() || cfg.identity.empty()) {
         util::log_error("--server and --auth (identity) are required");
         print_help();
+        return 1;
+    }
+    const std::string local_instance_key = effective_client_instance_key(cfg, args);
+    const std::string local_runtime_path = yume::client::LocalRuntime::socket_path_for(local_instance_key);
+    const bool local_runtime_exists = yume::client::LocalRuntime::available(local_runtime_path);
+    if (local_runtime_exists) {
+        const bool interactive_attach =
+            cfg.auto_attach_local && !cfg.non_interactive && is_tty_stdin() && prompt_attach_existing("yume");
+        const bool should_attach = args.attach_local || interactive_attach;
+        if (should_attach) {
+            return run_local_client_attach(local_runtime_path, args, cfg);
+        }
+        util::log_error("yume is already running for this instance; use --attach-local to interact with it");
+        return 1;
+    } else if (args.attach_local) {
+        util::log_error("no running yume instance was found for this configuration");
         return 1;
     }
     std::atomic<bool> stop_requested{false};
@@ -2406,10 +3053,13 @@ int Cli::run(int argc, char** argv) {
             bool pq_reconnect = false;
             bool have_anon = false;
             bool verity_ok = false;
+            bool fixcraft_ok = false;
             crypto::EVP_PKEY_ptr sub_pub{nullptr, EVP_PKEY_free};
             crypto::EVP_PKEY_ptr ca_pub{nullptr, EVP_PKEY_free};
             bool sub_ok = false;
             bool ca_ok = false;
+            std::vector<std::string> announced_proof_sources;
+            std::vector<std::string> verified_proof_sources;
             bool have_inner_caps = false;
             bool server_inner_supported = false;
             bool server_inner_required = false;
@@ -2457,6 +3107,13 @@ int Cli::run(int argc, char** argv) {
                 sub_sig = json.value("sub_sig", "");
                 sub_alg = json.value("sub_alg", "");
                 sub_cert_b64 = json.value("sub_cert", "");
+                if (json.contains("proof_sources") && json["proof_sources"].is_array()) {
+                    for (const auto& entry : json["proof_sources"]) {
+                        if (entry.is_string()) {
+                            announced_proof_sources.push_back(normalize_proof_source(entry.get<std::string>()));
+                        }
+                    }
+                }
                 pq_pub_b64 = json.value("pq_pub", "");
                 pq_sig = json.value("pq_sig", "");
                 pq_alg = json.value("pq_alg", "");
@@ -2477,6 +3134,17 @@ int Cli::run(int argc, char** argv) {
                 throw FatalError("this endpoint is not a yume server (invalid server response); please check the origin and try again");
             } catch (const std::exception& ex) {
                 throw FatalError("this endpoint is not a yume server (" + std::string(ex.what()) + "); please check the origin and try again");
+            }
+            if (announced_proof_sources.empty()) {
+                if (!sig.empty()) {
+                    add_verified_source(&announced_proof_sources, yume::policy::kAnonymProofSourceFixcraft);
+                }
+                if (!ca_sig.empty()) {
+                    add_verified_source(&announced_proof_sources, yume::policy::kAnonymProofSourceCa);
+                }
+                if (!sub_sig.empty() || !sub_cert_b64.empty()) {
+                    add_verified_source(&announced_proof_sources, yume::policy::kAnonymProofSourceSubCa);
+                }
             }
             if (server_version.empty() || server_version == "UNKNOWN") {
                 throw FatalError("this endpoint is not a yume server (no version info); please check the origin and try again");
@@ -2711,12 +3379,25 @@ int Cli::run(int argc, char** argv) {
             }
 
             if (mode == "anonym") {
-                if (hash.empty() || sig.empty() || ts.empty() || nonce.empty()) {
+                const bool fixcraft_present =
+                    std::find(announced_proof_sources.begin(), announced_proof_sources.end(),
+                              std::string(yume::policy::kAnonymProofSourceFixcraft)) != announced_proof_sources.end() ||
+                    !sig.empty();
+                const bool ca_present =
+                    std::find(announced_proof_sources.begin(), announced_proof_sources.end(),
+                              std::string(yume::policy::kAnonymProofSourceCa)) != announced_proof_sources.end() ||
+                    !ca_sig.empty();
+                const bool sub_present =
+                    std::find(announced_proof_sources.begin(), announced_proof_sources.end(),
+                              std::string(yume::policy::kAnonymProofSourceSubCa)) != announced_proof_sources.end() ||
+                    !sub_sig.empty() || !sub_cert_b64.empty();
+
+                if (hash.empty() || ts.empty() || nonce.empty()) {
                     print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
                     print_red("ANONYM PROOF IS INCOMPLETE");
                     return 1;
                 }
-                if (cfg.require_anonym && certfp.empty()) {
+                if (certfp.empty()) {
                     print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
                     print_red("ANONYM PROOF MISSING CERTIFICATE FINGERPRINT");
                     return 1;
@@ -2730,59 +3411,72 @@ int Cli::run(int argc, char** argv) {
                     return 1;
                 }
                 const long long now = static_cast<long long>(std::time(nullptr));
-                if (std::llabs(now - ts_val) > 600) {
+                if (std::llabs(now - ts_val) > yume::policy::kAnonymProofWindowSeconds) {
                     print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
                     print_red("ANONYM PROOF EXPIRED OR NOT YET VALID");
                     return 1;
                 }
-                crypto::EVP_PKEY_ptr pubkey{nullptr, EVP_PKEY_free};
-                if (!cfg.anonym_pubkey.empty()) {
-                    auto kp = crypto::load_keypair("", cfg.anonym_pubkey);
-                    pubkey.reset(kp.public_key.release());
-                } else {
-                    BIO* bio = BIO_new_mem_buf(kFixcraftAnonymPubPem, -1);
-                    if (!bio) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
-                        print_red("FAILED TO LOAD EMBEDDED ANONYM PUBLIC KEY");
-                        return 1;
-                    }
-                    EVP_PKEY* key = PEM_read_bio_PUBKEY(bio, nullptr, nullptr, nullptr);
-                    BIO_free(bio);
-                    if (!key) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
-                        print_red("FAILED TO LOAD EMBEDDED ANONYM PUBLIC KEY");
-                        return 1;
-                    }
-                    pubkey.reset(key);
-                }
-                std::string peer_fp = get_peer_cert_fingerprint(pubkey.get(), stream.native_handle());
-                if (!certfp.empty() && !peer_fp.empty() && certfp != peer_fp) {
+                const std::string peer_fp = get_peer_cert_fingerprint(nullptr, stream.native_handle());
+                if (!peer_fp.empty() && certfp != peer_fp) {
                     print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
                     print_red("ANONYM CERTIFICATE FINGERPRINT MISMATCH");
                     return 1;
                 }
-                std::string message = std::string(kAnonMsgPrefix) + hash + ":" + ts + ":" + nonce;
-                if (!certfp.empty()) {
-                    message += ":" + certfp;
-                }
+
+                std::string message = std::string(kAnonMsgPrefix) + hash + ":" + ts + ":" + nonce + ":" + certfp;
                 crypto::Bytes msg_bytes(message.begin(), message.end());
-                std::string sig_raw = util::base64_decode(sig);
-                if (sig_raw.empty()) {
-                    print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
-                    print_red("INVALID SIGNATURE FORMAT FROM SERVER");
-                    return 1;
+
+                if (fixcraft_present) {
+                    if (sig.empty()) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("FIXCRAFT SIGNATURE MISSING");
+                        return 1;
+                    }
+                    crypto::EVP_PKEY_ptr pubkey{nullptr, EVP_PKEY_free};
+                    if (!cfg.anonym_pubkey.empty()) {
+                        auto kp = crypto::load_keypair("", cfg.anonym_pubkey);
+                        pubkey.reset(kp.public_key.release());
+                    } else {
+                        BIO* bio = BIO_new_mem_buf(kFixcraftAnonymPubPem, -1);
+                        if (!bio) {
+                            print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                            print_red("FAILED TO LOAD EMBEDDED ANONYM PUBLIC KEY");
+                            return 1;
+                        }
+                        EVP_PKEY* key = PEM_read_bio_PUBKEY(bio, nullptr, nullptr, nullptr);
+                        BIO_free(bio);
+                        if (!key) {
+                            print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                            print_red("FAILED TO LOAD EMBEDDED ANONYM PUBLIC KEY");
+                            return 1;
+                        }
+                        pubkey.reset(key);
+                    }
+                    std::string sig_raw = util::base64_decode(sig);
+                    if (sig_raw.empty()) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("INVALID SIGNATURE FORMAT FROM SERVER");
+                        return 1;
+                    }
+                    crypto::Bytes sig_bytes(sig_raw.begin(), sig_raw.end());
+                    if (!crypto::verify_key(pubkey.get(), msg_bytes, sig_bytes)) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("THIS SERVER IS FORGING SIGNATURES, REPORT IT TO FIXCRAFT, INC. ASAP, ALSO FILE A COMPLAINT TO AN INTERNET AUTHORITY");
+                        return 1;
+                    }
+                    fixcraft_ok = true;
+                    add_verified_source(&verified_proof_sources, yume::policy::kAnonymProofSourceFixcraft);
                 }
-                crypto::Bytes sig_bytes(sig_raw.begin(), sig_raw.end());
-                bool ok_sig = crypto::verify_key(pubkey.get(), msg_bytes, sig_bytes);
-                if (!ok_sig) {
-                    print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
-                    print_red("THIS SERVER IS FORGING SIGNATURES, REPORT IT TO FIXCRAFT, INC. ASAP, ALSO FILE A COMPLAINT TO AN INTERNET AUTHORITY");
-                    return 1;
-                }
-                if (!sub_cert_b64.empty()) {
+
+                if (sub_present) {
                     if (cfg.anonym_ca_cert.empty()) {
                         print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
                         print_red("ANONYM SUB CERT PROVIDED BUT NO --anonym-ca-cert SET");
+                        return 1;
+                    }
+                    if (sub_cert_b64.empty()) {
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("ANONYM SUB CERT MISSING");
                         return 1;
                     }
                     if (sub_sig.empty()) {
@@ -2826,23 +3520,24 @@ int Cli::run(int argc, char** argv) {
                         return 1;
                     }
                     crypto::Bytes sub_sig_bytes(sub_sig_raw.begin(), sub_sig_raw.end());
-                    bool ok_sub = crypto::verify_key(sub_key.get(), msg_bytes, sub_sig_bytes);
-                    if (!ok_sub) {
+                    if (!crypto::verify_key(sub_key.get(), msg_bytes, sub_sig_bytes)) {
                         print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
                         print_red("ANONYM SUB SIGNATURE INVALID");
                         return 1;
                     }
                     sub_pub = std::move(sub_key);
                     sub_ok = true;
+                    add_verified_source(&verified_proof_sources, yume::policy::kAnonymProofSourceSubCa);
                 }
-                if (!cfg.anonym_ca_cert.empty() && sub_cert_b64.empty()) {
+
+                if (ca_present) {
                     if (ca_sig.empty()) {
-                        if (cfg.require_anonym) {
-                            print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
-                            print_red("ANONYM CA SIGNATURE MISSING");
-                            return 1;
-                        }
-                        util::log_warn("anonym CA signature missing; continuing with FixCraft proof only");
+                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("ANONYM CA SIGNATURE MISSING");
+                        return 1;
+                    }
+                    if (cfg.anonym_ca_cert.empty()) {
+                        util::log_warn("anonym CA signature provided but no --anonym-ca-cert set; skipping CA verification");
                     } else {
                         auto ca_key = load_pubkey_from_cert(cfg.anonym_ca_cert);
                         if (!ca_key) {
@@ -2857,39 +3552,22 @@ int Cli::run(int argc, char** argv) {
                             return 1;
                         }
                         crypto::Bytes ca_sig_bytes(ca_sig_raw.begin(), ca_sig_raw.end());
-                        bool ok_ca = crypto::verify_key(ca_key.get(), msg_bytes, ca_sig_bytes);
-                        if (!ok_ca) {
+                        if (!crypto::verify_key(ca_key.get(), msg_bytes, ca_sig_bytes)) {
                             print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
                             print_red("ANONYM CA SIGNATURE INVALID");
                             return 1;
                         }
                         ca_pub = std::move(ca_key);
                         ca_ok = true;
+                        add_verified_source(&verified_proof_sources, yume::policy::kAnonymProofSourceCa);
                     }
-                } else if (!cfg.anonym_ca_cert.empty() && !ca_sig.empty()) {
-                    auto ca_key = load_pubkey_from_cert(cfg.anonym_ca_cert);
-                    if (!ca_key) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
-                        print_red("FAILED TO LOAD ANONYM CA CERT");
-                        return 1;
-                    }
-                    std::string ca_sig_raw = util::base64_decode(ca_sig);
-                    if (ca_sig_raw.empty()) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
-                        print_red("INVALID ANONYM CA SIGNATURE FORMAT");
-                        return 1;
-                    }
-                    crypto::Bytes ca_sig_bytes(ca_sig_raw.begin(), ca_sig_raw.end());
-                    bool ok_ca = crypto::verify_key(ca_key.get(), msg_bytes, ca_sig_bytes);
-                    if (!ok_ca) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
-                        print_red("ANONYM CA SIGNATURE INVALID");
-                        return 1;
-                    }
-                    ca_pub = std::move(ca_key);
-                    ca_ok = true;
-                } else if (!ca_sig.empty()) {
-                    util::log_warn("anonym CA signature provided but no --anonym-ca-cert set; skipping CA verification");
+                }
+
+                verity_ok = fixcraft_ok || ca_ok || sub_ok;
+                if (!verity_ok) {
+                    print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                    print_red("NO TRUSTED ANONYM PROOF SOURCE COULD BE VERIFIED");
+                    return 1;
                 }
                 if (!verified_once) {
                     if (cfg.boring) {
@@ -2931,7 +3609,7 @@ int Cli::run(int argc, char** argv) {
                 }
             }
             have_anon = true;
-            verity_ok = (mode == "anonym");
+            verity_ok = (mode == "anonym") && (fixcraft_ok || ca_ok || sub_ok);
             if (pq_reconnect) {
                 util::log_info("PQ public key received; reconnecting to enable inner crypto");
                 attempt++;
@@ -3010,7 +3688,7 @@ int Cli::run(int argc, char** argv) {
                 std::string version_value = color_wrap(server_version.empty() ? "UNKNOWN" : server_version, "1;35");
                 std::string connection_value = color_wrap("🔒 TLS", "1;32");
                 std::string protection_value = color_wrap(protection_line, "1;35");
-                std::string verity_state = verity_ok ? "PASS" : "FAIL";
+                std::string verity_state = format_verified_sources(verified_proof_sources);
                 std::string verity_line = color_wrap(verity_state, verity_ok ? "1;32" : "1;31");
                 std::string header =
                     color_wrap("Connected to", "1;36") + " " + server_display + ":\n" +
@@ -3018,7 +3696,7 @@ int Cli::run(int argc, char** argv) {
                     color_wrap("Connection", "1;36") + ": " + connection_value + "\n" +
                     color_wrap("Protection", "1;36") + ": " + protection_value + "\n" +
                     color_wrap("Inner", "1;36") + ": " + inner_line + "\n";
-                std::string footer = color_wrap("FixCraft Verity", "1;36") + ": " + verity_line + "\n";
+                std::string footer = color_wrap("Verity", "1;36") + ": " + verity_line + "\n";
                 const std::string border = color_wrap("------------------------------------------", "1;34");
                 status_block_builder = [header, footer, border, build_hop_status_line]() {
                     return border + "\n" + header + build_hop_status_line() + "\n" + footer + border + "\n";
@@ -3032,7 +3710,7 @@ int Cli::run(int argc, char** argv) {
                         << color_wrap("Protection", "1;36") << ": " << protection_value << "\n"
                         << color_wrap("Inner", "1;36") << ": " << inner_line << "\n"
                         << build_hop_status_line() << "\n"
-                        << color_wrap("FixCraft Verity", "1;36") << ": " << verity_line << "\n"
+                        << color_wrap("Verity", "1;36") << ": " << verity_line << "\n"
                         << border << "\n";
                     if (hop_enabled) {
                         util::log_info("live hop updates are disabled; use --live-status (or YUME_LIVE_STATUS=1) to update periodically");
@@ -3193,7 +3871,86 @@ int Cli::run(int argc, char** argv) {
                 close_reason = reason;
                 hop_status_stop->store(true);
             });
+            RelayRuntime::Options relay_opts;
+            relay_opts.identity_path = cfg.identity;
+            relay_opts.hostname = get_system_hostname();
+            relay_opts.preferred_name = cfg.preferred_name;
+            relay_opts.preferred_id = cfg.preferred_id;
+            relay_opts.instance_name = cfg.instance_name.empty()
+                ? yume::identity::derive_instance_key(cfg.server + ":" + cfg.identity)
+                : cfg.instance_name;
+            relay_opts.relay_mode = control::relay_mode_from_string(cfg.relay_mode);
+            relay_opts.allow_inbound_admin = cfg.allow_inbound_admin;
+            relay_opts.allow_outbound_admin = cfg.allow_outbound_admin;
+            relay_opts.allow_chat = cfg.allow_chat;
+            relay_opts.allow_file = cfg.allow_file;
+            relay_opts.allow_bytes = cfg.allow_bytes;
+            relay_opts.history_enabled = cfg.history_enabled;
+            relay_opts.history_dir = util::expand_user(cfg.history_dir);
+            auto relay_runtime = std::make_shared<RelayRuntime>(tunnel, cfg, relay_opts);
+            relay_runtime->set_stop_callback([&]() {
+                stop_requested.store(true);
+                announce_stopping();
+                tunnel->stop("runtime stop");
+                io.stop();
+            });
+            std::string relay_error;
+            auto local_runtime = std::make_shared<yume::client::LocalRuntime>(local_runtime_path, relay_runtime);
+            if (!local_runtime->start(&relay_error)) {
+                util::log_warn("local attach disabled: " + relay_error);
+                relay_error.clear();
+            }
+            tunnel->set_control_handler([relay_runtime](const nlohmann::json& json) {
+                relay_runtime->on_control_message(json);
+            });
+            tunnel->set_inbound_open_handler([relay_runtime](uint8_t stream_id, const nlohmann::json& json) {
+                relay_runtime->on_inbound_open(stream_id, json);
+            });
             tunnel->start();
+            if (!relay_runtime->announce_presence(&relay_error)) {
+                util::log_warn("relay presence unavailable: " + relay_error);
+            }
+            if (args.directory_mode) {
+                auto endpoints = relay_runtime->request_directory(&relay_error);
+                if (!relay_error.empty()) {
+                    util::log_error(relay_error);
+                    return 1;
+                }
+                for (const auto& endpoint : endpoints) {
+                    std::cout << endpoint.endpoint_id
+                              << " " << endpoint.display_name
+                              << " kind=" << control::to_string(endpoint.endpoint_kind)
+                              << " relay=" << control::to_string(endpoint.relay_mode)
+                              << "\n";
+                }
+                return 0;
+            }
+            const char* relay_password_env = std::getenv("YUME_RELAY_PASSWORD");
+            const std::string relay_password = relay_password_env ? relay_password_env : "";
+            if (!args.chat_target.empty()) {
+                if (!relay_runtime->open_chat(args.chat_target, relay_password, &relay_error)) {
+                    util::log_error("chat open failed: " + relay_error);
+                    return 1;
+                }
+            }
+            if (!args.file_target.empty()) {
+                if (!relay_runtime->send_file(args.file_target, args.file_path, relay_password, &relay_error)) {
+                    util::log_error("file send failed: " + relay_error);
+                    return 1;
+                }
+            }
+            if (!args.bytes_target.empty()) {
+                if (!relay_runtime->send_bytes_path(args.bytes_target, args.bytes_path, relay_password, &relay_error)) {
+                    util::log_error("bytes send failed: " + relay_error);
+                    return 1;
+                }
+            }
+            if (!args.admin_target.empty()) {
+                if (!relay_runtime->admin_attach(args.admin_target, &relay_error)) {
+                    util::log_error("admin attach failed: " + relay_error);
+                    return 1;
+                }
+            }
             std::thread hop_status_thread;
             if (live_status_enabled) {
                 if (status_block_builder && hop_enabled) {
@@ -3236,36 +3993,36 @@ int Cli::run(int argc, char** argv) {
                 args.run_cmd.empty() &&
                 args.exec_cmd.empty() &&
                 !args.list_controlled &&
-                (cfg.socks_port > 0 || use_reverse || args.lport > 0);
+                (cfg.socks_port > 0 || use_reverse || args.lport > 0 ||
+                 args.directory_mode || !args.chat_target.empty() ||
+                 !args.file_target.empty() || !args.bytes_target.empty() ||
+                 !args.admin_target.empty());
             if (console_enabled) {
-                util::log_info("Console: help | status | exec <cmd> | quit");
+                util::log_info("Console: help | whoami | status | directory | invites | chat <peer> | send <text> | send-file <peer> <path> | send-bytes <peer> <path> | accept <invite> <password> | reject <invite> [reason] | history [peer] | history-delete <peer|all> | admin attach <peer> | exec <cmd> | quit");
                 console_thread = std::thread([console_stop,
                                               &stop_requested,
                                               &announce_stopping,
                                               &io,
                                               tunnel,
-                                              status_block_builder]() {
-                    auto trim = [](std::string s) {
-                        auto is_space = [](unsigned char ch) { return std::isspace(ch) != 0; };
-                        while (!s.empty() && is_space(static_cast<unsigned char>(s.front()))) {
-                            s.erase(s.begin());
-                        }
-                        while (!s.empty() && is_space(static_cast<unsigned char>(s.back()))) {
-                            s.pop_back();
-                        }
-                        return s;
-                    };
+                                              local_runtime,
+                                              status_block_builder,
+                                              relay_runtime]() {
                     while (!console_stop->load()) {
                         std::string line;
                         if (!read_stdin_line_with_timeout(&line, 250)) {
                             continue;
                         }
-                        line = trim(line);
+                        line = trim_copy(line);
                         if (line.empty()) {
                             continue;
                         }
                         if (line == "help") {
-                            util::log_info("Commands: help | status | exec <cmd> | quit");
+                            util::log_info("Commands: help | whoami | status | directory | invites | chat <peer> | send <text> | send-file <peer> <path> | send-bytes <peer> <path> | accept <invite> <password> | reject <invite> [reason] | history [peer] | history-delete <peer|all> | admin attach <peer> | admin status | admin sessions | admin stop | exec <cmd> | quit");
+                            continue;
+                        }
+                        if (line == "whoami") {
+                            auto self = relay_runtime->self_info();
+                            util::log_info("id=" + self.endpoint_id + " name=" + self.display_name + " relay=" + control::to_string(self.relay_mode));
                             continue;
                         }
                         if (line == "status") {
@@ -3274,6 +4031,167 @@ int Cli::run(int argc, char** argv) {
                                 std::cout << status_block_builder() << std::flush;
                             } else {
                                 util::log_info("status is not available yet");
+                            }
+                            std::cout << "\n" << relay_runtime->status_json().dump(2) << std::endl;
+                            continue;
+                        }
+                        if (line == "directory") {
+                            std::string error;
+                            auto entries = relay_runtime->request_directory(&error);
+                            if (!error.empty()) {
+                                util::log_warn(error);
+                                continue;
+                            }
+                            for (const auto& entry : entries) {
+                                std::cout << entry.endpoint_id << " " << entry.display_name
+                                          << " kind=" << control::to_string(entry.endpoint_kind)
+                                          << " relay=" << control::to_string(entry.relay_mode)
+                                          << std::endl;
+                            }
+                            continue;
+                        }
+                        if (line == "invites") {
+                            auto invites = relay_runtime->pending_invites();
+                            if (invites.empty()) {
+                                util::log_info("no pending invites");
+                                continue;
+                            }
+                            for (const auto& invite : invites) {
+                                std::cout << invite.invite_id << " from="
+                                          << (invite.from_display_name.empty() ? invite.from_endpoint_id : invite.from_display_name)
+                                          << " kind=" << control::to_string(invite.channel_kind) << std::endl;
+                            }
+                            continue;
+                        }
+                        if (line.rfind("chat ", 0) == 0) {
+                            auto rest = trim_copy(line.substr(5));
+                            const char* env_pw = std::getenv("YUME_RELAY_PASSWORD");
+                            std::string password = env_pw ? env_pw : "";
+                            if (password.empty()) {
+                                util::log_warn("set YUME_RELAY_PASSWORD before opening a chat");
+                                continue;
+                            }
+                            std::string error;
+                            if (!relay_runtime->open_chat(rest, password, &error)) {
+                                util::log_warn(error);
+                            } else {
+                                util::log_info("chat invite sent to " + rest);
+                            }
+                            continue;
+                        }
+                        if (line.rfind("send-file ", 0) == 0) {
+                            std::istringstream iss(line.substr(10));
+                            std::string peer;
+                            std::string path;
+                            iss >> peer >> path;
+                            const char* env_pw = std::getenv("YUME_RELAY_PASSWORD");
+                            std::string password = env_pw ? env_pw : "";
+                            if (peer.empty() || path.empty() || password.empty()) {
+                                util::log_warn("usage: send-file <peer> <path> with YUME_RELAY_PASSWORD set");
+                                continue;
+                            }
+                            std::string error;
+                            if (!relay_runtime->send_file(peer, path, password, &error)) {
+                                util::log_warn(error);
+                            }
+                            continue;
+                        }
+                        if (line.rfind("send-bytes ", 0) == 0) {
+                            std::istringstream iss(line.substr(11));
+                            std::string peer;
+                            std::string path;
+                            iss >> peer >> path;
+                            const char* env_pw = std::getenv("YUME_RELAY_PASSWORD");
+                            std::string password = env_pw ? env_pw : "";
+                            if (peer.empty() || path.empty() || password.empty()) {
+                                util::log_warn("usage: send-bytes <peer> <path> with YUME_RELAY_PASSWORD set");
+                                continue;
+                            }
+                            std::string error;
+                            if (!relay_runtime->send_bytes_path(peer, path, password, &error)) {
+                                util::log_warn(error);
+                            }
+                            continue;
+                        }
+                        if (line.rfind("send ", 0) == 0) {
+                            std::string error;
+                            if (!relay_runtime->send_chat(trim_copy(line.substr(5)), &error)) {
+                                util::log_warn(error);
+                            }
+                            continue;
+                        }
+                        if (line.rfind("accept ", 0) == 0) {
+                            std::istringstream iss(line.substr(7));
+                            std::string invite_id;
+                            std::string password;
+                            iss >> invite_id >> password;
+                            if (invite_id.empty() || password.empty()) {
+                                util::log_warn("usage: accept <invite> <password>");
+                                continue;
+                            }
+                            std::string error;
+                            if (!relay_runtime->accept_invite(invite_id, password, &error)) {
+                                util::log_warn(error);
+                            }
+                            continue;
+                        }
+                        if (line.rfind("reject ", 0) == 0) {
+                            std::istringstream iss(line.substr(7));
+                            std::string invite_id;
+                            iss >> invite_id;
+                            std::string reason;
+                            std::getline(iss, reason);
+                            std::string error;
+                            if (!relay_runtime->reject_invite(invite_id, trim_copy(reason), &error)) {
+                                util::log_warn(error);
+                            }
+                            continue;
+                        }
+                        if (line.rfind("history-delete ", 0) == 0) {
+                            std::string arg = trim_copy(line.substr(15));
+                            nlohmann::json req{{"op", "history.delete"}, {"args", nlohmann::json::object()}};
+                            if (arg != "all" && !arg.empty()) {
+                                req["args"]["peer_id"] = arg;
+                            }
+                            relay_runtime->handle_local_request(req);
+                            util::log_info("history deleted");
+                            continue;
+                        }
+                        if (line.rfind("history", 0) == 0) {
+                            std::string arg = trim_copy(line.substr(7));
+                            nlohmann::json req{{"op", "history.list"}, {"args", nlohmann::json::object()}};
+                            if (!arg.empty()) {
+                                req["args"]["peer_id"] = arg;
+                            }
+                            auto resp = relay_runtime->handle_local_request(req);
+                            if (!resp.value("ok", false)) {
+                                util::log_warn(resp.value("error", "history failed"));
+                                continue;
+                            }
+                            for (const auto& item : resp["result"]) {
+                                std::cout << item.value("direction", "?") << " "
+                                          << item.value("peer_name", item.value("peer_id", "")) << " "
+                                          << item.value("text", "") << std::endl;
+                            }
+                            continue;
+                        }
+                        if (line.rfind("admin attach ", 0) == 0) {
+                            std::string peer = trim_copy(line.substr(13));
+                            std::string error;
+                            if (!relay_runtime->admin_attach(peer, &error)) {
+                                util::log_warn(error);
+                            }
+                            continue;
+                        }
+                        if (line == "admin status" || line == "admin sessions" || line == "admin stop") {
+                            const std::string local_op =
+                                (line == "admin stop") ? "admin.stop" :
+                                ((line == "admin sessions") ? "admin.sessions" : "admin.status");
+                            auto resp = relay_runtime->handle_local_request({{"op", local_op}, {"args", nlohmann::json::object()}});
+                            if (!resp.value("ok", false)) {
+                                util::log_warn(resp.value("error", "admin request failed"));
+                            } else {
+                                std::cout << resp["result"].dump(2) << std::endl;
                             }
                             continue;
                         }
@@ -3285,7 +4203,7 @@ int Cli::run(int argc, char** argv) {
                             break;
                         }
                         if (line.rfind("exec ", 0) == 0) {
-                            std::string cmd = trim(line.substr(5));
+                            std::string cmd = trim_copy(line.substr(5));
                             if (cmd.empty()) {
                                 util::log_warn("usage: exec <command>");
                                 continue;

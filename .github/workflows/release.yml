@@ -34,7 +34,20 @@ env:
   BASEFWX_REF_FILE: ".basefwx-ref"
 
 jobs:
+  preflight:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release inputs
+        run: |
+          python3 ./scripts/release_preflight.py
+
   build-linux:
+    needs: [preflight]
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -137,6 +150,42 @@ jobs:
             YUME_OPENWRT_FAST="${YUME_OPENWRT_FAST}" \
             ./fullau.sh
 
+      - name: Inspect built artifacts
+        run: |
+          set -euo pipefail
+
+          inspect_elf() {
+            local path="$1"
+            [[ -f "$path" ]] || return 0
+            echo "Inspecting $path"
+            file "$path"
+            readelf -h "$path" >/dev/null
+            if file "$path" | grep -qi 'dynamically linked'; then
+              ldd "$path"
+            fi
+          }
+
+          inspect_pe() {
+            local path="$1"
+            [[ -f "$path" ]] || return 0
+            echo "Inspecting $path"
+            file "$path"
+            x86_64-w64-mingw32-objdump -p "$path" | grep 'DLL Name' || true
+          }
+
+          inspect_elf "${HOME}/bins/dynamic/x86/linux/yume"
+          inspect_elf "${HOME}/bins/dynamic/x86/linux/yumed"
+          inspect_elf "${HOME}/bins/stable/x86/linux/yume"
+          inspect_elf "${HOME}/bins/stable/x86/linux/yumed"
+          inspect_elf "${HOME}/bins/dynamic/armv7/linux/yume"
+          inspect_elf "${HOME}/bins/dynamic/armv7/linux/yumed"
+          inspect_elf "${HOME}/bins/dynamic/armv8/linux/yume"
+          inspect_elf "${HOME}/bins/dynamic/armv8/linux/yumed"
+          inspect_elf "${HOME}/bins/dynamic/x86/busybox/yume"
+          inspect_elf "${HOME}/bins/dynamic/x86/busybox/yumed"
+          inspect_pe "${HOME}/bins/dynamic/windows/x86_64/yume.exe"
+          inspect_pe "${HOME}/bins/dynamic/windows/x86_64/yumed.exe"
+
       - name: Package artifacts
         run: |
           set -euo pipefail
@@ -212,6 +261,7 @@ jobs:
           retention-days: 7
 
   build-macos:
+    needs: [preflight]
     runs-on: macos-14
     steps:
       - name: Checkout
@@ -256,6 +306,16 @@ jobs:
         run: |
           ./ezbuild.sh
 
+      - name: Inspect built artifacts
+        run: |
+          set -euo pipefail
+          for path in build/bin/yume build/bin/yumed; do
+            [[ -f "$path" ]] || continue
+            echo "Inspecting $path"
+            file "$path"
+            otool -L "$path"
+          done
+
       - name: Package artifacts
         run: |
           set -euo pipefail
@@ -278,12 +338,17 @@ jobs:
           retention-days: 7
 
   publish-release:
-    needs: [build-linux, build-macos]
+    needs: [preflight, build-linux, build-macos]
     runs-on: ubuntu-latest
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -296,6 +361,12 @@ jobs:
           cd artifacts
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
+
+      - name: Generate release manifest
+        run: |
+          set -euo pipefail
+          python3 ./scripts/release_manifest.py artifacts "${{ github.event.inputs.tag_name || github.ref_name }}"
+          cat artifacts/release-manifest.json
 
       - name: Resolve release tag
         run: |

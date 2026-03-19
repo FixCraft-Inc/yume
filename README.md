@@ -26,7 +26,9 @@ cmake -B build -DCMAKE_TOOLCHAIN_FILE=/path/to/toolchain.cmake -DYUME_MINIMAL=ON
 
 Notes:
 - Requires OpenSSL and Boost.System (or Boost from your SDK).
-- BaseFWX is still used in minimal mode; PQ is enabled only if liboqs is available.
+- BaseFWX is still used in minimal mode.
+- Release and CI builds are expected to fail if mandatory BaseFWX crypto support is missing.
+- Full releases require Argon2, PQ/OQS, and LZMA support in the bundled BaseFWX dependency path.
 - For privileged port 443 on Linux, run with `sudo` or set `cap_net_bind_service`.
 - For Cloudflare, use a TCP passthrough product (e.g., Spectrum) or disable HTTP proxying. HTTP-mode proxies terminate TLS and will break YUME.
 
@@ -54,10 +56,24 @@ sudo ./build/bin/yumed --listen 443 --cert certs/server.crt --key certs/server.k
 ### Anonym mode (no server logging)
 
 ```bash
-sudo ./build/bin/yumed --listen 443 --cert certs/server.crt --key certs/server.key --auth-keys /etc/yume/authorized_keys --anonym --anonym-api https://api.fixcraft.jp/verity
+sudo ./build/bin/yumed --listen 443 --cert certs/server.crt --key certs/server.key --auth-keys /etc/yume/authorized_keys --anonym
 ```
 
-Client should set the FixCraft anonym public key:
+YUME supports three anonym proof policies:
+
+- `auto`: use every available proof source; startup fails only if none are usable
+- `local`: use CA/Sub-CA local proof only; never call a remote API
+- `fixcraft`: require remote FixCraft proof; local proofs may also be attached
+
+Set it with `--anonym-proof-mode <auto|local|fixcraft>` or `anonym_proof_mode` in config.
+
+If you want FixCraft-backed proof explicitly, configure it directly:
+
+```bash
+sudo ./build/bin/yumed --listen 443 --cert certs/server.crt --key certs/server.key --auth-keys /etc/yume/authorized_keys --anonym --anonym-proof-mode fixcraft --anonym-api https://api.fixcraft.jp/verity
+```
+
+Client trust options:
 
 ```json
 {
@@ -66,9 +82,11 @@ Client should set the FixCraft anonym public key:
 }
 ```
 
+`require_anonym` now means: require at least one trusted anonym proof source. It is not FixCraft-only anymore.
+
 #### Optional: CA-backed sub-signature for anonym proof
 
-You can add a CA-signed sub-certificate so clients can verify an extra signature chain.
+You can add a CA-signed sub-certificate so clients can verify a local proof chain without any remote API dependency.
 
 Generate a sub key + cert signed by your CA:
 
@@ -79,7 +97,7 @@ Generate a sub key + cert signed by your CA:
 Start yumed with the sub key + cert:
 
 ```bash
-sudo ./build/bin/yumed --anonym --anonym-sub-key /etc/yume/anonym_sub.key --anonym-sub-cert /etc/yume/anonym_sub.pem
+sudo ./build/bin/yumed --anonym --anonym-proof-mode local --anonym-sub-key /etc/yume/anonym_sub.key --anonym-sub-cert /etc/yume/anonym_sub.pem
 ```
 
 Clients must trust the CA cert to accept the sub signature:
@@ -90,6 +108,15 @@ Clients must trust the CA cert to accept the sub signature:
   "require_anonym": true
 }
 ```
+
+Client verity now passes if any trusted proof source verifies:
+
+- `Verity: PASS [FixCraft]`
+- `Verity: PASS [CA]`
+- `Verity: PASS [Sub-CA]`
+- `Verity: PASS [Sub-CA+FixCraft]`
+
+If the server provides a valid local CA/Sub-CA proof and the client has the matching CA cert, `api.fixcraft.jp` is unnecessary.
 
 ## Modes
 
@@ -164,6 +191,12 @@ Server config:
 ```
 
 Requires liboqs for PQ support.
+
+## Release Guarantees
+
+- Release workflows run preflight validation against the pinned BaseFWX commit.
+- Release artifacts are inspected after build for linkage/runtime expectations.
+- Missing mandatory BaseFWX crypto support is treated as a release failure, not a degraded release.
 
 ## Scalability Notes
 

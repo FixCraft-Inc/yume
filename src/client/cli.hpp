@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 
 namespace yume::client {
@@ -30,6 +31,18 @@ struct ClientConfig {
     bool require_anonym{false};
     bool boring{false};
     bool non_interactive{false};
+    std::string instance_name;
+    std::string preferred_name;
+    std::string preferred_id;
+    std::string relay_mode{"untrusted"};
+    bool allow_inbound_admin{false};
+    bool allow_outbound_admin{true};
+    bool allow_chat{true};
+    bool allow_file{true};
+    bool allow_bytes{true};
+    bool history_enabled{true};
+    std::string history_dir;
+    bool auto_attach_local{true};
     
     // TLS Stealth Mode settings
     bool tls_stealth_enabled{true};  // ON by default

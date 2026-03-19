@@ -207,6 +207,94 @@ Bytes generate_session_key(EVP_PKEY* ecdh_local, EVP_PKEY* ecdh_remote, size_t o
     return out;
 }
 
+EVP_PKEY_ptr generate_x25519_key() {
+    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_X25519, nullptr);
+    if (!ctx) {
+        throw ssl_error("x25519 ctx alloc failed");
+    }
+    if (EVP_PKEY_keygen_init(ctx) != 1) {
+        EVP_PKEY_CTX_free(ctx);
+        throw ssl_error("x25519 keygen init failed");
+    }
+    EVP_PKEY* key = nullptr;
+    if (EVP_PKEY_keygen(ctx, &key) != 1) {
+        EVP_PKEY_CTX_free(ctx);
+        throw ssl_error("x25519 keygen failed");
+    }
+    EVP_PKEY_CTX_free(ctx);
+    return EVP_PKEY_ptr(key, EVP_PKEY_free);
+}
+
+EVP_PKEY_ptr import_x25519_public_key(const Bytes& raw_public_key) {
+    EVP_PKEY* key = EVP_PKEY_new_raw_public_key(
+        EVP_PKEY_X25519,
+        nullptr,
+        raw_public_key.data(),
+        raw_public_key.size());
+    if (!key) {
+        throw ssl_error("x25519 raw public key import failed");
+    }
+    return EVP_PKEY_ptr(key, EVP_PKEY_free);
+}
+
+Bytes export_raw_public_key(EVP_PKEY* key) {
+    if (!key) {
+        throw std::runtime_error("export_raw_public_key: missing key");
+    }
+    size_t len = 0;
+    if (EVP_PKEY_get_raw_public_key(key, nullptr, &len) != 1) {
+        throw ssl_error("x25519 public key size query failed");
+    }
+    Bytes out(len);
+    if (EVP_PKEY_get_raw_public_key(key, out.data(), &len) != 1) {
+        throw ssl_error("x25519 public key export failed");
+    }
+    out.resize(len);
+    return out;
+}
+
+Bytes hkdf_sha256(const Bytes& key_material,
+                  std::string_view info,
+                  size_t out_len,
+                  const Bytes& salt) {
+    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, nullptr);
+    if (!ctx) {
+        throw ssl_error("hkdf ctx alloc failed");
+    }
+    if (EVP_PKEY_derive_init(ctx) != 1) {
+        EVP_PKEY_CTX_free(ctx);
+        throw ssl_error("hkdf init failed");
+    }
+    if (EVP_PKEY_CTX_set_hkdf_md(ctx, EVP_sha256()) != 1) {
+        EVP_PKEY_CTX_free(ctx);
+        throw ssl_error("hkdf set md failed");
+    }
+    if (!salt.empty() && EVP_PKEY_CTX_set1_hkdf_salt(ctx, salt.data(), static_cast<int>(salt.size())) != 1) {
+        EVP_PKEY_CTX_free(ctx);
+        throw ssl_error("hkdf set salt failed");
+    }
+    if (EVP_PKEY_CTX_set1_hkdf_key(ctx, key_material.data(), static_cast<int>(key_material.size())) != 1) {
+        EVP_PKEY_CTX_free(ctx);
+        throw ssl_error("hkdf set key failed");
+    }
+    if (!info.empty() &&
+        EVP_PKEY_CTX_add1_hkdf_info(ctx,
+                                    reinterpret_cast<const unsigned char*>(info.data()),
+                                    static_cast<int>(info.size())) != 1) {
+        EVP_PKEY_CTX_free(ctx);
+        throw ssl_error("hkdf set info failed");
+    }
+    Bytes out(out_len);
+    size_t derived_len = out_len;
+    if (EVP_PKEY_derive(ctx, out.data(), &derived_len) != 1) {
+        EVP_PKEY_CTX_free(ctx);
+        throw ssl_error("hkdf derive failed");
+    }
+    EVP_PKEY_CTX_free(ctx);
+    out.resize(derived_len);
+    return out;
+}
+
 Bytes encrypt_chacha20(const Bytes& data, const Bytes& key, const Bytes& nonce) {
     if (key.size() != 32) {
         throw std::runtime_error("encrypt_chacha20: key must be 32 bytes");

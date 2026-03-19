@@ -140,8 +140,11 @@ if(YUME_STATIC AND YUME_USE_SPDLOG)
 endif()
 
 add_library(yume_core
+    core/control_protocol.cpp
     core/crypto.cpp
+    core/identity.cpp
     core/inner_crypto.cpp
+    core/local_runtime.cpp
     core/protocol.cpp
     core/obfs.cpp
     core/tls_fingerprint.cpp
@@ -248,6 +251,7 @@ yume_apply_perf_opts(yume_core)
 
 add_executable(yumed
     main_server.cpp
+    server/local_runtime.cpp
     server/manager.cpp
     server/auth.cpp
     server/session.cpp
@@ -271,6 +275,9 @@ endif()
 add_executable(yume
     main_client.cpp
     client/cli.cpp
+    client/history.cpp
+    client/local_runtime.cpp
+    client/relay_runtime.cpp
     client/tunnel.cpp
     client/socks.cpp
     client/forward.cpp

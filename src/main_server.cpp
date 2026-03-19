@@ -29,8 +29,12 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <io.h>
 #elif defined(__APPLE__)
 #include <mach-o/dyld.h>
+#include <unistd.h>
+#else
+#include <unistd.h>
 #endif
 #include <openssl/sha.h>
 #include <openssl/evp.h>
@@ -41,10 +45,13 @@
 #include <nlohmann/json.hpp>
 
 #include "core/crypto.hpp"
+#include "core/identity.hpp"
 #include "core/inner_crypto.hpp"
+#include "core/runtime_policy.hpp"
 #include "core/version.hpp"
 #include "server/manager.hpp"
 #include "server/auth.hpp"
+#include "server/local_runtime.hpp"
 #include "util.hpp"
 
 namespace {
@@ -55,10 +62,6 @@ constexpr const char kFixcraftAnonymPubPem[] =
     "MCowBQYDK2VwAyEAtupzLhANnB0VxP51vB/7yYwR+/3/jv4Str9MGLGA+is=\n"
     "-----END PUBLIC KEY-----\n";
 constexpr const char kDefaultSecretPath[] = "./.secrets/html_secret";
-constexpr int kAnonymRefreshSeconds = 300;
-constexpr int kAnonymProofWindowSeconds = 600;
-constexpr int kAnonymRefreshLeadSeconds = 120;
-constexpr int kAnonymRefreshMinSeconds = 30;
 
 void print_bash_completion() {
     std::cout << R"(# bash completion for yumed
@@ -66,7 +69,7 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --listen --cert --key --auth-keys --threads --reverse-port-min --reverse-port-max --obfs --inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --completion"
+  local opts="--help -h --version --config --listen --cert --key --auth-keys --threads --reverse-port-min --reverse-port-max --obfs --inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --allow-remote-server-admin --operator-keys --federation-enable --peer --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --completion"
   local file_opts="--config --cert --key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --keys-add --keys-gen"
   case "$prev" in
     --completion)
@@ -110,8 +113,10 @@ void print_help() {
         << "  --key <path>             Override tls_key\n"
         << "  --auth-keys <path>       Override auth_keys\n"
         << "  --threads <n>            Worker thread count (0 = auto)\n"
-        << "  --reverse-port-min <p>   Reverse listen minimum (default 3000)\n"
-        << "  --reverse-port-max <p>   Reverse listen maximum (default 30000)\n"
+        << "  --reverse-port-min <p>   Reverse listen minimum (default "
+        << yume::policy::kReversePortMinDefault << ")\n"
+        << "  --reverse-port-max <p>   Reverse listen maximum (default "
+        << yume::policy::kReversePortMaxDefault << ")\n"
         << "  --obfs                   Enable obfuscation\n"
         << "  --allow-local-ip         Allow private/loopback destinations\n"
         << "  --control-full           Allow full server-side network control\n"
@@ -134,12 +139,25 @@ void print_help() {
         << "  --real-secret <str>      Secret for hidden metadata\n"
         << "  --real-secret-file <path> Load/create secret file\n"
         << "  --anonym                 Enable anonym mode + proof\n"
+        << "  --anonym-proof-mode <m>  auto, local, or fixcraft\n"
         << "  --anonym-api <url>       Verity API endpoint\n"
         << "  --anonym-token <str>     Verity API token\n"
         << "  --anonym-ca-key <path>   CA private key for anonym signature\n"
         << "  --anonym-ca-cert <path>  CA cert matching anonym CA key\n"
         << "  --anonym-sub-key <path>  Sub-CA private key for anonym signature\n"
         << "  --anonym-sub-cert <path> Sub-CA cert sent to clients\n\n"
+        << "Relay and Runtime:\n"
+        << "  --server-name <name>     Human-friendly server name\n"
+        << "  --server-id <32hex>      Stable server endpoint ID\n"
+        << "  --relay-enable           Enable client relay features\n"
+        << "  --relay-disable          Disable client relay features\n"
+        << "  --directory-enable       Enable endpoint directory\n"
+        << "  --directory-disable      Disable endpoint directory\n"
+        << "  --allow-remote-server-admin Allow trusted remote server admin\n"
+        << "  --operator-keys <path>   Operator key metadata path\n"
+        << "  --federation-enable      Enable static federation mode\n"
+        << "  --peer <json>            Add a federation peer JSON blob\n"
+        << "  --attach-local           Attach to an already running local yumed\n\n"
         << "Key Management:\n"
         << "  --keys-list              List authorized keys\n"
         << "  --keys-add <pub.pem>     Add authorized key\n"
@@ -180,7 +198,188 @@ void print_help() {
         << "  real_http     (bool)\n"
         << "  real_index_path (path)\n"
         << "  real_secret   (string)\n"
+        << "  anonym       (bool)\n"
+        << "  anonym_proof_mode (string)\n"
+        << "  anonym_api   (string)\n"
+        << "  anonym_token (string)\n"
+        << "  anonym_ca_key (path)\n"
+        << "  anonym_ca_cert (path)\n"
+        << "  anonym_sub_key (path)\n"
+        << "  anonym_sub_cert (path)\n"
+        << "  server_name (string)\n"
+        << "  server_id (string)\n"
+        << "  relay_enable (bool)\n"
+        << "  directory_enable (bool)\n"
+        << "  allow_remote_server_admin (bool)\n"
+        << "  ipc_enable (bool)\n"
+        << "  ipc_path (string)\n"
+        << "  federation_enable (bool)\n"
+        << "  federation_peers (array)\n"
+        << "  operator_keys (path)\n"
+        << "  operator_keys_meta (path)\n"
         << "  boring        (bool)\n";
+}
+
+std::string trim_copy(std::string s) {
+    auto is_space = [](unsigned char ch) { return std::isspace(ch) != 0; };
+    while (!s.empty() && is_space(static_cast<unsigned char>(s.front()))) {
+        s.erase(s.begin());
+    }
+    while (!s.empty() && is_space(static_cast<unsigned char>(s.back()))) {
+        s.pop_back();
+    }
+    return s;
+}
+
+bool prompt_attach_existing(const std::string& kind) {
+    #if defined(_WIN32)
+    if (_isatty(_fileno(stdin)) == 0) {
+        return false;
+    }
+    #else
+    if (isatty(fileno(stdin)) == 0) {
+        return false;
+    }
+    #endif
+    std::cout << kind << " is already running. Attach to the existing instance? [Y/n] " << std::flush;
+    std::string answer;
+    if (!std::getline(std::cin, answer)) {
+        return true;
+    }
+    answer = trim_copy(answer);
+    if (answer.empty()) {
+        return true;
+    }
+    std::transform(answer.begin(), answer.end(), answer.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return answer == "y" || answer == "yes";
+}
+
+bool stdin_is_tty() {
+#if defined(_WIN32)
+    return _isatty(_fileno(stdin)) != 0;
+#else
+    return isatty(fileno(stdin)) != 0;
+#endif
+}
+
+std::string effective_server_instance_key(const yume::server::ServerConfig& cfg, const std::string& config_path) {
+    if (!cfg.ipc_path.empty()) {
+        return cfg.ipc_path;
+    }
+    if (!cfg.server_id.empty()) {
+        return cfg.server_id;
+    }
+    return yume::identity::derive_instance_key(
+        std::to_string(cfg.listen_port) + "|" + cfg.tls_cert + "|" + cfg.auth_keys + "|" + config_path);
+}
+
+nlohmann::json request_local_server_runtime(const std::string& socket_path,
+                                           const std::string& op,
+                                           const nlohmann::json& args,
+                                           std::string* error) {
+    return yume::server::LocalRuntime::request(
+        socket_path,
+        nlohmann::json{{"op", op}, {"args", args}},
+        error,
+        10000);
+}
+
+int run_local_server_attach(const std::string& socket_path, bool non_interactive) {
+    std::string error;
+    if (non_interactive) {
+        auto resp = request_local_server_runtime(socket_path, "runtime.status", nlohmann::json::object(), &error);
+        if (!error.empty() || !resp.value("ok", false)) {
+            yume::util::log_error(error.empty() ? resp.value("error", "status failed") : error);
+            return 1;
+        }
+        std::cout << resp["result"].dump(2) << std::endl;
+        return 0;
+    }
+
+    yume::util::log_info("Attached to existing yumed runtime");
+    yume::util::log_info("Attached console: help | status | sessions | directory | peers | federation | disconnect <endpoint-id> | stop | quit");
+    for (;;) {
+        std::string line;
+        if (!std::getline(std::cin, line)) {
+            return 0;
+        }
+        line = trim_copy(line);
+        if (line.empty()) {
+            continue;
+        }
+        if (line == "help") {
+            yume::util::log_info("Commands: help | status | sessions | directory | peers | federation | disconnect <endpoint-id> | stop | quit");
+            continue;
+        }
+        if (line == "quit" || line == "exit") {
+            return 0;
+        }
+        if (line == "status") {
+            auto resp = request_local_server_runtime(socket_path, "runtime.status", nlohmann::json::object(), &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                yume::util::log_warn(error.empty() ? resp.value("error", "status failed") : error);
+                error.clear();
+            } else {
+                std::cout << resp["result"].dump(2) << std::endl;
+            }
+            continue;
+        }
+        if (line == "sessions") {
+            auto resp = request_local_server_runtime(socket_path, "runtime.sessions", nlohmann::json::object(), &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                yume::util::log_warn(error.empty() ? resp.value("error", "sessions failed") : error);
+                error.clear();
+            } else {
+                std::cout << resp["result"].dump(2) << std::endl;
+            }
+            continue;
+        }
+        if (line == "directory") {
+            auto resp = request_local_server_runtime(socket_path, "directory.list", nlohmann::json::object(), &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                yume::util::log_warn(error.empty() ? resp.value("error", "directory failed") : error);
+                error.clear();
+                continue;
+            }
+            for (const auto& entry : resp["result"]) {
+                std::cout << entry.value("endpoint_id", "") << " "
+                          << entry.value("display_name", "")
+                          << " kind=" << entry.value("endpoint_kind", "")
+                          << " relay=" << entry.value("relay_mode", "")
+                          << std::endl;
+            }
+            continue;
+        }
+        if (line == "peers" || line == "federation") {
+            auto resp = request_local_server_runtime(socket_path, "federation.status", nlohmann::json::object(), &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                yume::util::log_warn(error.empty() ? resp.value("error", "federation failed") : error);
+                error.clear();
+            } else {
+                std::cout << resp["result"].dump(2) << std::endl;
+            }
+            continue;
+        }
+        if (line.rfind("disconnect ", 0) == 0) {
+            auto resp = request_local_server_runtime(socket_path, "runtime.disconnect",
+                                                     {{"endpoint_id", trim_copy(line.substr(11))}}, &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                yume::util::log_warn(error.empty() ? resp.value("error", "disconnect failed") : error);
+                error.clear();
+            }
+            continue;
+        }
+        if (line == "stop") {
+            auto resp = request_local_server_runtime(socket_path, "runtime.stop", nlohmann::json::object(), &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                yume::util::log_warn(error.empty() ? resp.value("error", "stop failed") : error);
+                error.clear();
+            }
+            return 0;
+        }
+        yume::util::log_warn("unknown command: " + line);
+    }
 }
 
 bool file_readable(const std::string& path) {
@@ -794,12 +993,7 @@ bool parse_env_bool(const char* name, bool fallback) {
 }
 
 bool anonym_local_sign_default() {
-#if defined(__aarch64__)
-    // Keep opt-in on arm64 until wider validation across target distros.
-    return false;
-#else
     return true;
-#endif
 }
 
 struct AnonymProof {
@@ -813,6 +1007,8 @@ struct AnonymProof {
     std::string sub_sig;
     std::string sub_alg;
     std::string sub_cert_b64;
+    std::string proof_policy;
+    std::vector<std::string> proof_sources;
     std::string pq_pub_b64;
     std::string pq_sig;
     std::string pq_alg;
@@ -849,8 +1045,23 @@ ApiEndpoint parse_api_url(const std::string& url) {
     return {host, port, target};
 }
 
+void add_proof_source(std::vector<std::string>* sources, std::string_view source) {
+    if (!sources || source.empty()) {
+        return;
+    }
+    const std::string value(source);
+    if (std::find(sources->begin(), sources->end(), value) == sources->end()) {
+        sources->push_back(value);
+    }
+}
+
+bool has_any_anonym_proof(const AnonymProof& proof) {
+    return !proof.sig.empty() || !proof.ca_sig.empty() || !proof.sub_sig.empty();
+}
+
 AnonymProof fetch_anonym_proof(const std::string& hash,
                                const std::string& certfp,
+                               const std::string& proof_mode,
                                const std::string& api_url,
                                const std::string& token,
                                const std::string& ca_key_path,
@@ -864,6 +1075,7 @@ AnonymProof fetch_anonym_proof(const std::string& hash,
     proof.ts = std::to_string(static_cast<long long>(std::time(nullptr)));
     proof.nonce = yume::util::random_hex(16);
     proof.certfp = certfp;
+    proof.proof_policy = yume::policy::normalize_anonym_proof_mode(proof_mode);
     nlohmann::json req{{"hash", proof.hash},
                        {"ts", proof.ts},
                        {"nonce", proof.nonce},
@@ -871,21 +1083,35 @@ AnonymProof fetch_anonym_proof(const std::string& hash,
     if (!proof.certfp.empty()) {
         req["certfp"] = proof.certfp;
     }
-    ApiEndpoint ep = parse_api_url(api_url);
-    auto resp = post_json_https(ep.host, ep.port, ep.target, req, token);
-    proof.sig = resp.value("sig", "");
-    if (proof.sig.empty()) {
-        std::string err = resp.value("error", "unknown");
-        throw std::runtime_error("anonym signature missing (api error: " + err + ")");
+    const bool allow_remote = yume::policy::anonym_proof_mode_allows_remote(proof.proof_policy);
+    const bool require_remote = yume::policy::anonym_proof_mode_requires_remote(proof.proof_policy);
+    const bool require_local = yume::policy::anonym_proof_mode_requires_local(proof.proof_policy);
+
+    if (allow_remote && !api_url.empty()) {
+        ApiEndpoint ep = parse_api_url(api_url);
+        auto resp = post_json_https(ep.host, ep.port, ep.target, req, token);
+        proof.sig = resp.value("sig", "");
+        if (proof.sig.empty()) {
+            std::string err = resp.value("error", "unknown");
+            throw std::runtime_error("anonym signature missing (api error: " + err + ")");
+        }
+        if (!verify_anonym_signature(proof.hash, proof.ts, proof.nonce, proof.certfp, proof.sig)) {
+            throw std::runtime_error("anonym signature verification failed (local check)");
+        }
+        add_proof_source(&proof.proof_sources, yume::policy::kAnonymProofSourceFixcraft);
+    } else if (require_remote) {
+        if (api_url.empty()) {
+            throw std::runtime_error("anonym proof mode fixcraft requires --anonym-api");
+        }
+        throw std::runtime_error("fixcraft proof transport is disabled by policy");
     }
-    if (!verify_anonym_signature(proof.hash, proof.ts, proof.nonce, proof.certfp, proof.sig)) {
-        throw std::runtime_error("anonym signature verification failed (local check)");
-    }
+
     if (enable_local_sign && !ca_key_path.empty()) {
         if (!sign_anonym_with_ca(proof.hash, proof.ts, proof.nonce, proof.certfp, ca_key_path,
                                  &proof.ca_sig, &proof.ca_alg)) {
             throw std::runtime_error("anonym CA signing failed");
         }
+        add_proof_source(&proof.proof_sources, yume::policy::kAnonymProofSourceCa);
     }
     if (enable_local_sign && !sub_key_path.empty()) {
         if (sub_cert_path.empty()) {
@@ -903,6 +1129,7 @@ AnonymProof fetch_anonym_proof(const std::string& hash,
         if (proof.sub_cert_b64.empty()) {
             throw std::runtime_error("failed to encode anonym_sub_cert");
         }
+        add_proof_source(&proof.proof_sources, yume::policy::kAnonymProofSourceSubCa);
     }
     if (enable_local_sign && !pq_public_path.empty() && !pq_sign_key_path.empty() && !proof.certfp.empty()) {
         if (load_pq_public_b64(pq_public_path, &proof.pq_pub_b64)) {
@@ -911,6 +1138,12 @@ AnonymProof fetch_anonym_proof(const std::string& hash,
                 throw std::runtime_error("pq public key signing failed");
             }
         }
+    }
+    if (require_local && proof.ca_sig.empty() && proof.sub_sig.empty()) {
+        throw std::runtime_error("anonym proof mode local requires CA or Sub-CA signing");
+    }
+    if (!has_any_anonym_proof(proof)) {
+        throw std::runtime_error("no anonym proof source is available");
     }
     return proof;
 }
@@ -939,8 +1172,12 @@ int main(int argc, char** argv) {
     bool inner_hop_value = true;
     bool hop_interval_override = false;
     bool anonym_override = false;
+    bool anonym_proof_mode_override = false;
     bool pq_auto_generate_override = false;
     bool allow_embedded_master_override = false;
+    bool relay_enable_override = false;
+    bool directory_enable_override = false;
+    bool attach_local = false;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if ((arg == "completion" || arg == "--completion") && i + 1 < argc) {
@@ -1044,6 +1281,9 @@ int main(int argc, char** argv) {
         } else if (arg == "--anonym") {
             cfg.anonym = true;
             anonym_override = true;
+        } else if (arg == "--anonym-proof-mode" && i + 1 < argc) {
+            cfg.anonym_proof_mode = argv[++i];
+            anonym_proof_mode_override = true;
         } else if (arg == "--anonym-api" && i + 1 < argc) {
             cfg.anonym_api = argv[++i];
         } else if (arg == "--anonym-token" && i + 1 < argc) {
@@ -1056,6 +1296,32 @@ int main(int argc, char** argv) {
             cfg.anonym_sub_key = yume::util::expand_user(argv[++i]);
         } else if (arg == "--anonym-sub-cert" && i + 1 < argc) {
             cfg.anonym_sub_cert = yume::util::expand_user(argv[++i]);
+        } else if (arg == "--server-name" && i + 1 < argc) {
+            cfg.server_name = argv[++i];
+        } else if (arg == "--server-id" && i + 1 < argc) {
+            cfg.server_id = argv[++i];
+        } else if (arg == "--relay-enable") {
+            cfg.relay_enable = true;
+            relay_enable_override = true;
+        } else if (arg == "--relay-disable") {
+            cfg.relay_enable = false;
+            relay_enable_override = true;
+        } else if (arg == "--directory-enable") {
+            cfg.directory_enable = true;
+            directory_enable_override = true;
+        } else if (arg == "--directory-disable") {
+            cfg.directory_enable = false;
+            directory_enable_override = true;
+        } else if (arg == "--allow-remote-server-admin") {
+            cfg.allow_remote_server_admin = true;
+        } else if (arg == "--operator-keys" && i + 1 < argc) {
+            cfg.operator_keys = yume::util::expand_user(argv[++i]);
+        } else if (arg == "--federation-enable") {
+            cfg.federation_enable = true;
+        } else if (arg == "--peer" && i + 1 < argc) {
+            cfg.federation_peers.push_back(argv[++i]);
+        } else if (arg == "--attach-local") {
+            attach_local = true;
         } else if (arg == "--keys-add" && i + 1 < argc) {
             keys_add = argv[++i];
         } else if (arg == "--keys-remove" && i + 1 < argc) {
@@ -1115,12 +1381,12 @@ int main(int argc, char** argv) {
                 }
             }
             if (json.contains("reverse_port_min")) {
-                if (cfg.reverse_port_min == 3000) {
+                if (cfg.reverse_port_min == yume::policy::kReversePortMinDefault) {
                     cfg.reverse_port_min = json["reverse_port_min"].get<int>();
                 }
             }
             if (json.contains("reverse_port_max")) {
-                if (cfg.reverse_port_max == 30000) {
+                if (cfg.reverse_port_max == yume::policy::kReversePortMaxDefault) {
                     cfg.reverse_port_max = json["reverse_port_max"].get<int>();
                 }
             }
@@ -1231,6 +1497,9 @@ int main(int argc, char** argv) {
                     cfg.anonym = json["anonym"].get<bool>();
                 }
             }
+            if (json.contains("anonym_proof_mode") && !anonym_proof_mode_override) {
+                cfg.anonym_proof_mode = json["anonym_proof_mode"].get<std::string>();
+            }
             if (json.contains("anonym_api")) {
                 if (cfg.anonym_api.empty()) {
                     cfg.anonym_api = json["anonym_api"].get<std::string>();
@@ -1260,6 +1529,41 @@ int main(int argc, char** argv) {
                 if (cfg.anonym_sub_cert.empty()) {
                     cfg.anonym_sub_cert = resolve_cfg_path(json["anonym_sub_cert"].get<std::string>());
                 }
+            }
+            if (json.contains("server_name") && cfg.server_name.empty()) {
+                cfg.server_name = json["server_name"].get<std::string>();
+            }
+            if (json.contains("server_id") && cfg.server_id.empty()) {
+                cfg.server_id = json["server_id"].get<std::string>();
+            }
+            if (json.contains("relay_enable") && !relay_enable_override) {
+                cfg.relay_enable = json["relay_enable"].get<bool>();
+            }
+            if (json.contains("directory_enable") && !directory_enable_override) {
+                cfg.directory_enable = json["directory_enable"].get<bool>();
+            }
+            if (json.contains("allow_remote_server_admin") && !cfg.allow_remote_server_admin) {
+                cfg.allow_remote_server_admin = json["allow_remote_server_admin"].get<bool>();
+            }
+            if (json.contains("ipc_enable")) {
+                cfg.ipc_enable = json["ipc_enable"].get<bool>();
+            }
+            if (json.contains("ipc_path") && cfg.ipc_path.empty()) {
+                cfg.ipc_path = resolve_cfg_path(json["ipc_path"].get<std::string>());
+            }
+            if (json.contains("federation_enable") && !cfg.federation_enable) {
+                cfg.federation_enable = json["federation_enable"].get<bool>();
+            }
+            if (json.contains("federation_peers") && cfg.federation_peers.empty()) {
+                for (const auto& peer : json["federation_peers"]) {
+                    cfg.federation_peers.push_back(peer.dump());
+                }
+            }
+            if (json.contains("operator_keys") && cfg.operator_keys.empty()) {
+                cfg.operator_keys = resolve_cfg_path(json["operator_keys"].get<std::string>());
+            }
+            if (json.contains("operator_keys_meta") && cfg.operator_keys_meta.empty()) {
+                cfg.operator_keys_meta = resolve_cfg_path(json["operator_keys_meta"].get<std::string>());
             }
         } catch (const std::exception& ex) {
             yume::util::log_error(std::string("config load failed: ") + ex.what());
@@ -1296,6 +1600,12 @@ int main(int argc, char** argv) {
     if (!cfg.anonym_sub_cert.empty()) {
         cfg.anonym_sub_cert = resolve_cfg_path(cfg.anonym_sub_cert);
     }
+    if (!cfg.operator_keys.empty()) {
+        cfg.operator_keys = resolve_cfg_path(cfg.operator_keys);
+    }
+    if (!cfg.operator_keys_meta.empty()) {
+        cfg.operator_keys_meta = resolve_cfg_path(cfg.operator_keys_meta);
+    }
     if (inner_heavy_override) {
         cfg.inner_heavy = inner_heavy_value;
     }
@@ -1325,6 +1635,7 @@ int main(int argc, char** argv) {
         std::swap(cfg.reverse_port_min, cfg.reverse_port_max);
         yume::util::log_warn("reverse_port_min > reverse_port_max; swapped values");
     }
+    cfg.anonym_proof_mode = yume::policy::normalize_anonym_proof_mode(cfg.anonym_proof_mode);
 
     auto require_readable = [&](const char* label, const std::string& path) {
         if (path.empty()) {
@@ -1441,6 +1752,7 @@ int main(int argc, char** argv) {
             std::string real_index = prompt("real_index_path", cfg.real_index_path);
             std::string real_secret_file = prompt("real_secret_file", cfg.real_secret_file);
             std::string anonym = prompt("anonym (true/false)", cfg.anonym ? "true" : "false");
+            std::string anonym_proof_mode = prompt("anonym_proof_mode", cfg.anonym_proof_mode);
             std::string anonym_api = prompt("anonym_api", cfg.anonym_api);
             std::string anonym_token = prompt("anonym_token", cfg.anonym_token);
             std::string anonym_ca_key = prompt("anonym_ca_key", cfg.anonym_ca_key);
@@ -1472,6 +1784,7 @@ int main(int argc, char** argv) {
             if (!real_index.empty()) json["real_index_path"] = real_index;
             if (!real_secret_file.empty()) json["real_secret_file"] = real_secret_file;
             json["anonym"] = (anonym == "true");
+            json["anonym_proof_mode"] = yume::policy::normalize_anonym_proof_mode(anonym_proof_mode);
             if (!anonym_api.empty()) json["anonym_api"] = anonym_api;
             if (!anonym_token.empty()) json["anonym_token"] = anonym_token;
             if (!anonym_ca_key.empty()) json["anonym_ca_key"] = anonym_ca_key;
@@ -1834,6 +2147,13 @@ int main(int argc, char** argv) {
     if (cfg.anonym && cfg.anonym_sub_key.empty() && !cfg.anonym_sub_cert.empty()) {
         yume::util::log_warn("anonym_sub_cert set but anonym_sub_key is missing; no sub signature will be produced");
     }
+    if (cfg.anonym && yume::policy::anonym_proof_mode_requires_remote(cfg.anonym_proof_mode) && cfg.anonym_api.empty()) {
+        yume::util::log_warn("anonym proof mode is fixcraft but anonym_api is not set");
+    }
+    if (cfg.anonym && yume::policy::anonym_proof_mode_requires_local(cfg.anonym_proof_mode) &&
+        cfg.anonym_ca_key.empty() && cfg.anonym_sub_key.empty()) {
+        yume::util::log_warn("anonym proof mode is local but no anonym_ca_key or anonym_sub_key is configured");
+    }
     if (!cfg.anonym && (!cfg.anonym_sub_key.empty() || !cfg.anonym_sub_cert.empty())) {
         yume::util::log_warn("anonym_sub_key/anonym_sub_cert are set but --anonym is disabled; anonym proof mode is OFF");
     }
@@ -1859,9 +2179,6 @@ int main(int argc, char** argv) {
         parse_env_bool("YUME_ANONYM_LOCAL_SIGN", anonym_local_sign_default());
 
     if (cfg.anonym) {
-        if (cfg.anonym_api.empty()) {
-            cfg.anonym_api = "https://api.fixcraft.jp/verity";
-        }
         if (!anonym_local_sign && (!cfg.anonym_ca_key.empty() || !cfg.anonym_sub_key.empty())) {
             if (anonym_local_sign_env && *anonym_local_sign_env) {
                 yume::util::log_warn("anonym local signing is disabled by YUME_ANONYM_LOCAL_SIGN=0");
@@ -1884,13 +2201,15 @@ int main(int argc, char** argv) {
                 pq_public_path = derive_pq_public_path(cfg.pq_private_key);
             }
             std::string pq_sign_key = !cfg.anonym_sub_key.empty() ? cfg.anonym_sub_key : cfg.anonym_ca_key;
-            auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_certfp, cfg.anonym_api,
+            auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_certfp, cfg.anonym_proof_mode, cfg.anonym_api,
                                             cfg.anonym_token, cfg.anonym_ca_key,
                                             cfg.anonym_sub_key, cfg.anonym_sub_cert,
                                             pq_public_path, pq_sign_key, anonym_local_sign);
             cfg.anonym_sig = proof.sig;
             cfg.anonym_ts = proof.ts;
             cfg.anonym_nonce = proof.nonce;
+            cfg.anonym_proof_mode = proof.proof_policy;
+            cfg.anonym_proof_sources = proof.proof_sources;
             cfg.anonym_ca_sig = proof.ca_sig;
             cfg.anonym_ca_alg = proof.ca_alg;
             cfg.anonym_sub_sig = proof.sub_sig;
@@ -1954,6 +2273,24 @@ int main(int argc, char** argv) {
         }
     }
 
+    const std::string local_instance_key = effective_server_instance_key(cfg, config_path);
+    const std::string local_runtime_path = cfg.ipc_path.empty()
+        ? yume::server::LocalRuntime::socket_path_for(local_instance_key)
+        : cfg.ipc_path;
+    const bool local_runtime_exists =
+        cfg.ipc_enable && yume::server::LocalRuntime::available(local_runtime_path);
+    if (cfg.ipc_enable && local_runtime_exists) {
+        const bool should_attach = attach_local || prompt_attach_existing("yumed");
+        if (should_attach) {
+            return run_local_server_attach(local_runtime_path, !stdin_is_tty());
+        }
+        yume::util::log_error("yumed is already running for this instance; use --attach-local to interact with it");
+        return 1;
+    } else if (attach_local) {
+        yume::util::log_error("no running yumed instance was found for this configuration");
+        return 1;
+    }
+
     unsigned int hw = std::thread::hardware_concurrency();
     int threads = cfg.threads > 0 ? cfg.threads : static_cast<int>(hw > 0 ? hw : 1);
     boost::asio::io_context io(threads);
@@ -1962,22 +2299,32 @@ int main(int argc, char** argv) {
     std::mutex refresh_mu;
     std::condition_variable refresh_cv;
     std::thread refresh_thread;
+    auto local_runtime = std::make_shared<yume::server::LocalRuntime>(
+        local_runtime_path,
+        &manager,
+        [&]() {
+            manager.stop();
+            io.stop();
+            stop_refresh.store(true);
+            refresh_cv.notify_all();
+        });
     if (cfg.anonym) {
         refresh_thread = std::thread([&manager, &cfg, &stop_refresh, &anonym_last_ts, &refresh_mu, &refresh_cv, anonym_local_sign]() {
             auto compute_delay = [&]() -> int {
                 const long long now = static_cast<long long>(std::time(nullptr));
                 const long long last = anonym_last_ts.load(std::memory_order_relaxed);
                 if (last <= 0) {
-                    return kAnonymRefreshMinSeconds;
+                    return yume::policy::kAnonymRefreshMinSeconds;
                 }
                 const long long age = now - last;
-                const long long target = static_cast<long long>(kAnonymProofWindowSeconds - kAnonymRefreshLeadSeconds);
+                const long long target = static_cast<long long>(
+                    yume::policy::kAnonymProofWindowSeconds - yume::policy::kAnonymRefreshLeadSeconds);
                 long long delay = target - age;
-                if (delay < kAnonymRefreshMinSeconds) {
-                    delay = kAnonymRefreshMinSeconds;
+                if (delay < yume::policy::kAnonymRefreshMinSeconds) {
+                    delay = yume::policy::kAnonymRefreshMinSeconds;
                 }
-                if (delay > kAnonymRefreshSeconds) {
-                    delay = kAnonymRefreshSeconds;
+                if (delay > yume::policy::kAnonymRefreshSeconds) {
+                    delay = yume::policy::kAnonymRefreshSeconds;
                 }
                 return static_cast<int>(delay);
             };
@@ -1997,13 +2344,14 @@ int main(int argc, char** argv) {
                         pq_public_path = derive_pq_public_path(cfg.pq_private_key);
                     }
                     std::string pq_sign_key = !cfg.anonym_sub_key.empty() ? cfg.anonym_sub_key : cfg.anonym_ca_key;
-                    auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_certfp, cfg.anonym_api,
+                    auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_certfp, cfg.anonym_proof_mode, cfg.anonym_api,
                                                     cfg.anonym_token, cfg.anonym_ca_key,
                                                     cfg.anonym_sub_key, cfg.anonym_sub_cert,
                                                     pq_public_path, pq_sign_key, anonym_local_sign);
                     cfg.anonym_ts = proof.ts;
                     manager.update_anonym_proof(proof.hash, proof.sig, proof.ts, proof.nonce,
-                                                proof.certfp, proof.ca_sig, proof.ca_alg,
+                                                proof.certfp, proof.proof_policy, proof.proof_sources,
+                                                proof.ca_sig, proof.ca_alg,
                                                 proof.sub_sig, proof.sub_alg, proof.sub_cert_b64,
                                                 proof.pq_pub_b64, proof.pq_sig, proof.pq_alg);
                     anonym_last_ts.store(parse_proof_ts(proof.ts, static_cast<long long>(std::time(nullptr))),
@@ -2030,6 +2378,7 @@ int main(int argc, char** argv) {
         } else {
             std::cerr << "\033[1;33mStopping...\033[0m\n";
         }
+        local_runtime->stop();
         manager.stop();
         io.stop();
         stop_refresh.store(true);
@@ -2037,6 +2386,10 @@ int main(int argc, char** argv) {
     });
 
     try {
+        std::string ipc_error;
+        if (cfg.ipc_enable && !local_runtime->start(&ipc_error)) {
+            yume::util::log_warn("local attach disabled: " + ipc_error);
+        }
         manager.start();
     } catch (const std::exception& ex) {
         if (yume::util::is_logging_enabled()) {
@@ -2065,6 +2418,7 @@ int main(int argc, char** argv) {
     if (refresh_thread.joinable()) {
         refresh_thread.join();
     }
+    local_runtime->stop();
 
     return 0;
 }

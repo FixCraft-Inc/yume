@@ -18,6 +18,7 @@
 
 #include "core/inner_crypto.hpp"
 #include "core/protocol.hpp"
+#include "core/runtime_policy.hpp"
 #include "core/version.hpp"
 #include "server/auth.hpp"
 #include "util.hpp"
@@ -533,6 +534,8 @@ void Session::handle_frame(const protocol::Frame& frame) {
             {"nonce", cfg_.anonym_nonce},
             {"certfp", cfg_.anonym_certfp},
             {"algo", "ed25519"},
+            {"proof_policy", cfg_.anonym_proof_mode},
+            {"proof_sources", cfg_.anonym_proof_sources},
             {"ca_sig", cfg_.anonym_ca_sig},
             {"ca_alg", cfg_.anonym_ca_alg},
             {"sub_sig", cfg_.anonym_sub_sig},
@@ -785,6 +788,7 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         bool auth_ok = authorized_keys_ ? is_authorized(pubkey, *authorized_keys_) : false;
         std::string fingerprint = fingerprint_pubkey(pubkey);
         client_id_ = fingerprint;
+        client_auth_pubkey_b64_ = yume::util::base64_encode(std::string(pub_pem.begin(), pub_pem.end()));
         EVP_PKEY_free(pubkey);
 
         if (!sig_ok || !auth_ok) {
@@ -980,6 +984,92 @@ void Session::handle_open(const protocol::Frame& frame) {
 
     try {
         auto json = nlohmann::json::parse(payload_str);
+        if (json.contains("target_id") && json.contains("channel_kind") && json.contains("channel_id")) {
+            const std::string target_id = json.value("target_id", "");
+            const std::string from_id = json.value("from_id", client_id_);
+            const std::string channel_id = json.value("channel_id", "");
+            const auto channel_kind = control::channel_kind_from_string(json.value("channel_kind", "chat"));
+            if (!cfg_.relay_enable) {
+                send_open_reply(frame.header.stream_id, false, "relay disabled");
+                return;
+            }
+            if (target_id.empty() || channel_id.empty() || from_id.empty()) {
+                send_open_reply(frame.header.stream_id, false, "invalid relay open");
+                return;
+            }
+            std::shared_ptr<Session> target;
+            control::PendingInvite invite;
+            std::string error;
+            if (!manager_ || !manager_->can_open_channel(channel_id, from_id, target_id, channel_kind, &target, &invite, &error)) {
+                send_open_reply(frame.header.stream_id, false, error.empty() ? "invite invalid" : error);
+                return;
+            }
+            if (channel_kind == control::ChannelKind::admin && client_relay_mode_ != control::RelayMode::trusted) {
+                send_open_reply(frame.header.stream_id, false, "admin requires trusted relay mode");
+                return;
+            }
+            if (channel_kind == control::ChannelKind::chat && !client_allow_chat_) {
+                send_open_reply(frame.header.stream_id, false, "chat disabled");
+                return;
+            }
+            if (channel_kind == control::ChannelKind::file && !client_allow_file_) {
+                send_open_reply(frame.header.stream_id, false, "file relay disabled");
+                return;
+            }
+            if (channel_kind == control::ChannelKind::bytes && !client_allow_bytes_) {
+                send_open_reply(frame.header.stream_id, false, "byte relay disabled");
+                return;
+            }
+            if (frame.header.stream_id == 0 || target.get() == this) {
+                send_open_reply(frame.header.stream_id, false, "invalid relay target");
+                return;
+            }
+            uint8_t target_stream = target->reserve_stream_id();
+            if (target_stream == 0) {
+                send_open_reply(frame.header.stream_id, false, "no stream ids available");
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lock(control_mutex_);
+                control_outbound_[frame.header.stream_id] = ControlLink{
+                    target,
+                    target_stream,
+                    true,
+                    false,
+                    channel_kind,
+                    channel_id,
+                    from_id,
+                    target_id};
+            }
+            {
+                std::lock_guard<std::mutex> lock(target->control_mutex_);
+                target->control_inbound_[target_stream] = ControlLink{
+                    shared_from_this(),
+                    frame.header.stream_id,
+                    true,
+                    false,
+                    channel_kind,
+                    channel_id,
+                    from_id,
+                    target_id};
+            }
+            if (manager_) {
+                control::ActiveRelayChannel channel;
+                channel.channel_id = channel_id;
+                channel.channel_kind = channel_kind;
+                channel.left_endpoint_id = from_id;
+                channel.right_endpoint_id = target_id;
+                channel.left_stream_id = frame.header.stream_id;
+                channel.right_stream_id = target_stream;
+                channel.pending = true;
+                manager_->register_active_channel(channel);
+                if (channel_kind == control::ChannelKind::admin) {
+                    manager_->add_admin_relationship(from_id, target_id);
+                }
+            }
+            target->send_control_frame(protocol::SOPEN, target_stream, payload);
+            return;
+        }
         host = json.value("host", "");
         port = json.value("port", 0);
         proto = json.value("proto", "");
@@ -1310,29 +1400,191 @@ void Session::handle_control(const protocol::Frame& frame) {
     }
 
     auto send_json = [&](const nlohmann::json& resp) {
-        std::string out = resp.dump();
+        nlohmann::json payload_json = resp;
+        if (json.contains("request_id") && !payload_json.contains("request_id")) {
+            payload_json["request_id"] = json["request_id"];
+        }
+        std::string out = payload_json.dump();
         crypto::Bytes bytes(out.begin(), out.end());
         send_control_frame(protocol::CONTROL, frame.header.stream_id, bytes);
     };
 
-    if (cmd == "list") {
+    if (cmd == "presence.announce") {
+        if (!manager_) {
+            send_json({{"cmd", cmd}, {"ok", false}, {"error", "manager unavailable"}});
+            return;
+        }
+        control::PresenceAnnouncement announce;
+        announce.endpoint_kind = control::endpoint_kind_from_string(json.value("endpoint_kind", "client"));
+        announce.preferred_id = json.value("preferred_id", "");
+        announce.preferred_name = json.value("preferred_name", "");
+        announce.hostname = json.value("hostname", client_hostname_);
+        announce.relay_mode = control::relay_mode_from_string(json.value("relay_mode", "untrusted"));
+        announce.allow_chat = json.value("allow_chat", true);
+        announce.allow_file = json.value("allow_file", true);
+        announce.allow_bytes = json.value("allow_bytes", true);
+        announce.allow_inbound_admin = json.value("allow_inbound_admin", false);
+        announce.allow_outbound_admin = json.value("allow_outbound_admin", true);
+        auto result = manager_->register_endpoint(shared_from_this(), announce, client_auth_pubkey_b64_);
+        client_id_ = result.endpoint.endpoint_id;
+        client_display_name_ = result.endpoint.display_name;
+        client_hostname_ = result.endpoint.hostname;
+        client_relay_mode_ = result.endpoint.relay_mode;
+        client_allow_chat_ = result.endpoint.allow_chat;
+        client_allow_file_ = result.endpoint.allow_file;
+        client_allow_bytes_ = result.endpoint.allow_bytes;
+        client_allow_inbound_admin_ = result.endpoint.allow_inbound_admin;
+        client_allow_outbound_admin_ = result.endpoint.allow_outbound_admin;
         nlohmann::json resp;
-        resp["cmd"] = "list";
-        resp["clients"] = nlohmann::json::array();
+        resp["cmd"] = cmd;
+        resp["ok"] = true;
+        resp["assigned_id"] = result.endpoint.endpoint_id;
+        resp["assigned_name"] = result.endpoint.display_name;
+        resp["preferred_id_accepted"] = result.preferred_id_accepted;
+        resp["preferred_name_accepted"] = result.preferred_name_accepted;
+        resp["server_id"] = result.server_id;
+        resp["server_name"] = result.server_name;
+        resp["endpoint"] = control::endpoint_to_json(result.endpoint, true);
+        send_json(resp);
+        return;
+    }
+
+    if (cmd == "directory.list" || cmd == "list") {
+        nlohmann::json resp;
+        resp["cmd"] = cmd;
+        resp["ok"] = true;
+        resp["server_id"] = manager_ ? manager_->config_snapshot().server_id : "";
+        resp["server_name"] = manager_ ? manager_->config_snapshot().server_name : "";
+        resp["endpoints"] = nlohmann::json::array();
         if (manager_) {
-            auto list = manager_->list_controlled_clients(cfg_.anonym);
-            for (const auto& info : list) {
-                nlohmann::json item;
-                item["id"] = info.id;
-                item["hostname"] = info.hostname;
-                item["wan_ip"] = info.wan_ip;
-                item["allow_exec"] = info.allow_exec;
-                item["server_in_charge"] = info.server_in_charge;
-                resp["clients"].push_back(std::move(item));
+            auto endpoints = manager_->list_endpoints();
+            for (const auto& endpoint : endpoints) {
+                resp["endpoints"].push_back(control::endpoint_to_json(endpoint, true));
             }
         } else {
+            resp["ok"] = false;
             resp["error"] = "manager unavailable";
         }
+        if (cmd == "list") {
+            resp["clients"] = nlohmann::json::array();
+            if (manager_) {
+                auto list = manager_->list_controlled_clients(cfg_.anonym);
+                for (const auto& info : list) {
+                    nlohmann::json item;
+                    item["id"] = info.id;
+                    item["hostname"] = info.hostname;
+                    item["wan_ip"] = info.wan_ip;
+                    item["allow_exec"] = info.allow_exec;
+                    item["server_in_charge"] = info.server_in_charge;
+                    resp["clients"].push_back(std::move(item));
+                }
+            }
+        }
+        send_json(resp);
+        return;
+    }
+
+    if (cmd == "directory.lookup") {
+        nlohmann::json resp;
+        resp["cmd"] = cmd;
+        const std::string query = json.value("query", "");
+        control::EndpointInfo endpoint;
+        auto target = manager_ ? manager_->find_endpoint_session(query, &endpoint) : nullptr;
+        if (!target) {
+            resp["ok"] = false;
+            resp["error"] = "endpoint not found";
+        } else {
+            resp["ok"] = true;
+            resp["endpoint"] = control::endpoint_to_json(endpoint, true);
+        }
+        send_json(resp);
+        return;
+    }
+
+    if (cmd == "invite.request") {
+        nlohmann::json resp;
+        resp["cmd"] = cmd;
+        control::PendingInvite invite = control::invite_from_json(json);
+        invite.from_endpoint_id = client_id_;
+        invite.from_display_name = client_display_name_;
+        invite.from_auth_pubkey_b64 = client_auth_pubkey_b64_;
+        invite.created_ms = now_ms();
+        std::string error;
+        if (!manager_ || !manager_->route_invite(shared_from_this(), invite, &error)) {
+            resp["ok"] = false;
+            resp["error"] = error.empty() ? "invite routing failed" : error;
+            send_json(resp);
+            return;
+        }
+        control::EndpointInfo target_info;
+        auto target = manager_->find_endpoint_session(invite.to_endpoint_id, &target_info);
+        if (!target) {
+            resp["ok"] = false;
+            resp["error"] = "target unavailable";
+            send_json(resp);
+            return;
+        }
+        nlohmann::json notify = control::invite_to_json(invite, false);
+        notify["cmd"] = "invite.request";
+        std::string out = notify.dump();
+        target->send_control_frame(protocol::CONTROL, 0, crypto::Bytes(out.begin(), out.end()));
+        resp["ok"] = true;
+        resp["queued"] = true;
+        send_json(resp);
+        return;
+    }
+
+    if (cmd == "invite.reply") {
+        nlohmann::json resp;
+        resp["cmd"] = cmd;
+        control::PendingInvite reply = control::invite_from_json(json);
+        reply.from_endpoint_id = client_id_;
+        std::shared_ptr<Session> initiator;
+        control::PendingInvite resolved_invite;
+        std::string error;
+        if (!manager_ || !manager_->respond_invite(shared_from_this(), reply, &initiator, &resolved_invite, &error)) {
+            resp["ok"] = false;
+            resp["error"] = error.empty() ? "invite response failed" : error;
+            send_json(resp);
+            return;
+        }
+        if (initiator) {
+            nlohmann::json notify = control::invite_to_json(resolved_invite, true);
+            notify["cmd"] = "invite.reply";
+            std::string out = notify.dump();
+            initiator->send_control_frame(protocol::CONTROL, 0, crypto::Bytes(out.begin(), out.end()));
+        }
+        resp["ok"] = true;
+        send_json(resp);
+        return;
+    }
+
+    if (cmd == "admin.attach") {
+        nlohmann::json resp;
+        resp["cmd"] = cmd;
+        const std::string target_id = json.value("id", "");
+        control::EndpointInfo target_info;
+        auto target = manager_ ? manager_->find_endpoint_session(target_id, &target_info) : nullptr;
+        if (!target) {
+            resp["ok"] = false;
+            resp["error"] = "endpoint not found";
+            send_json(resp);
+            return;
+        }
+        if (client_relay_mode_ != control::RelayMode::trusted) {
+            resp["ok"] = false;
+            resp["error"] = "admin attach requires trusted relay mode";
+            send_json(resp);
+            return;
+        }
+        if (!target_info.allow_inbound_admin || !target_info.allow_outbound_admin) {
+            resp["ok"] = false;
+            resp["error"] = "target does not allow inbound admin";
+            send_json(resp);
+            return;
+        }
+        resp["ok"] = true;
+        resp["endpoint"] = control::endpoint_to_json(target_info, true);
         send_json(resp);
         return;
     }
@@ -1476,6 +1728,18 @@ bool Session::handle_control_open_ack(const protocol::Frame& frame) {
         }
     }
 
+    if (ok && manager_ && !link.channel_id.empty()) {
+        control::ActiveRelayChannel channel;
+        channel.channel_id = link.channel_id;
+        channel.channel_kind = link.channel_kind;
+        channel.left_endpoint_id = link.left_endpoint_id;
+        channel.right_endpoint_id = link.right_endpoint_id;
+        channel.left_stream_id = link.peer_stream_id;
+        channel.right_stream_id = frame.header.stream_id;
+        channel.pending = false;
+        manager_->register_active_channel(channel);
+    }
+
     peer->send_open_reply(link.peer_stream_id, ok, reason);
     return true;
 }
@@ -1564,6 +1828,12 @@ bool Session::handle_control_close(const protocol::Frame& frame) {
         } else {
             control_inbound_.erase(frame.header.stream_id);
         }
+    }
+    if (manager_ && !link.channel_id.empty()) {
+        if (link.channel_kind == control::ChannelKind::admin) {
+            manager_->remove_admin_relationship(link.left_endpoint_id, link.right_endpoint_id);
+        }
+        manager_->unregister_active_channel(link.channel_id);
     }
     if (auto peer = link.peer.lock()) {
         peer->send_control_close(link.peer_stream_id, reason);
@@ -1927,6 +2197,7 @@ void Session::close() {
             manager_->unregister_reverse_listener(entry.second, this);
         }
         manager_->unregister_controlled_client(this);
+        manager_->unregister_endpoint(this);
     }
     reverse_listener_ports_.clear();
     reverse_port_streams_.clear();

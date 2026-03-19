@@ -14,7 +14,18 @@ env:
   BASEFWX_REF_FILE: ".basefwx-ref"
 
 jobs:
+  preflight:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate pinned BaseFWX ref and crypto guards
+        run: |
+          python3 ./scripts/release_preflight.py
+
   build-and-smoke:
+    needs: [preflight]
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -71,3 +82,10 @@ jobs:
         run: |
           ./build-ci/bin/yume --help >/dev/null
           ./build-ci/bin/yumed --help >/dev/null
+
+      - name: Inspect binaries
+        run: |
+          set -euo pipefail
+          file ./build-ci/bin/yume ./build-ci/bin/yumed
+          ldd ./build-ci/bin/yume
+          ldd ./build-ci/bin/yumed

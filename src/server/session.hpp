@@ -18,6 +18,7 @@
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 
+#include "core/control_protocol.hpp"
 #include "core/crypto.hpp"
 #include "core/protocol.hpp"
 #include "server/config.hpp"
@@ -39,6 +40,8 @@ public:
     void stop();
     bool is_stale() const;
     void force_close_reverse_port(int port);
+    std::string endpoint_id() const { return client_id_; }
+    std::string endpoint_name() const { return client_display_name_; }
 
 private:
     void on_handshake(const boost::system::error_code& ec);
@@ -162,6 +165,10 @@ private:
         uint8_t peer_stream_id{0};
         bool pending{false};
         bool is_exec{false};
+        control::ChannelKind channel_kind{control::ChannelKind::chat};
+        std::string channel_id;
+        std::string left_endpoint_id;
+        std::string right_endpoint_id;
     };
 
     std::mutex control_mutex_;
@@ -173,6 +180,14 @@ private:
     bool client_allow_exec_{false};
     bool client_server_in_charge_{false};
     std::string client_id_;
+    std::string client_display_name_;
+    std::string client_auth_pubkey_b64_;
+    control::RelayMode client_relay_mode_{control::RelayMode::untrusted};
+    bool client_allow_chat_{true};
+    bool client_allow_file_{true};
+    bool client_allow_bytes_{true};
+    bool client_allow_inbound_admin_{false};
+    bool client_allow_outbound_admin_{true};
     std::string client_hostname_;
     std::string client_wan_ip_;
 

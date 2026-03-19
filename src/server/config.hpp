@@ -2,6 +2,9 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
+
+#include "core/runtime_policy.hpp"
 
 namespace yume::server {
 
@@ -18,8 +21,8 @@ struct ServerConfig {
     bool inner_required{false};
     bool inner_hop{true};
     std::uint32_t hop_interval_ms{500};
-    int reverse_port_min{4100};
-    int reverse_port_max{8600};
+    int reverse_port_min{yume::policy::kReversePortMinDefault};
+    int reverse_port_max{yume::policy::kReversePortMaxDefault};
     std::string pq_private_key;
     bool pq_auto_generate{false};
     bool allow_embedded_master{false};
@@ -31,6 +34,7 @@ struct ServerConfig {
     std::string real_secret;
     std::string real_secret_file;
     bool anonym{false};
+    std::string anonym_proof_mode{std::string(yume::policy::kAnonymProofModeAuto)};
     std::string anonym_api;
     std::string anonym_token;
     std::string anonym_hash;
@@ -47,10 +51,22 @@ struct ServerConfig {
     std::string anonym_sub_cert_b64;
     std::string anonym_sub_sig;
     std::string anonym_sub_alg;
+    std::vector<std::string> anonym_proof_sources;
     std::string pq_pub_b64;
     std::string pq_sig;
     std::string pq_alg;
     std::string auth_keys_meta;
+    std::string server_name;
+    std::string server_id;
+    bool relay_enable{true};
+    bool directory_enable{true};
+    bool allow_remote_server_admin{false};
+    bool ipc_enable{true};
+    std::string ipc_path;
+    bool federation_enable{false};
+    std::vector<std::string> federation_peers;
+    std::string operator_keys;
+    std::string operator_keys_meta;
     bool boring{false};
 };
 

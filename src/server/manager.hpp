@@ -1,17 +1,22 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 
+#include "core/control_protocol.hpp"
 #include "core/crypto.hpp"
+#include "core/identity.hpp"
 #include "core/obfs.hpp"
 #include "server/config.hpp"
 
@@ -27,6 +32,14 @@ struct ControlledClientInfo {
     bool server_in_charge{false};
 };
 
+struct EndpointRegistrationResult {
+    control::EndpointInfo endpoint;
+    bool preferred_id_accepted{false};
+    bool preferred_name_accepted{false};
+    std::string server_id;
+    std::string server_name;
+};
+
 class Manager {
 public:
     Manager(boost::asio::io_context& io, const ServerConfig& cfg);
@@ -38,6 +51,8 @@ public:
                              const std::string& ts,
                              const std::string& nonce,
                              const std::string& certfp,
+                             const std::string& proof_policy,
+                             const std::vector<std::string>& proof_sources,
                              const std::string& ca_sig,
                              const std::string& ca_alg,
                              const std::string& sub_sig,
@@ -53,6 +68,29 @@ public:
     void unregister_controlled_client(Session* session);
     std::vector<ControlledClientInfo> list_controlled_clients(bool anonym_only);
     std::shared_ptr<Session> find_controlled_session(const std::string& id, ControlledClientInfo* info);
+    EndpointRegistrationResult register_endpoint(const std::shared_ptr<Session>& session,
+                                                 const control::PresenceAnnouncement& announce,
+                                                 const std::string& auth_pubkey_b64);
+    void unregister_endpoint(Session* session);
+    std::vector<control::EndpointInfo> list_endpoints() const;
+    std::shared_ptr<Session> find_endpoint_session(const std::string& query, control::EndpointInfo* info);
+    bool route_invite(const std::shared_ptr<Session>& from_session, const control::PendingInvite& invite, std::string* error);
+    bool respond_invite(const std::shared_ptr<Session>& from_session, const control::PendingInvite& response,
+                        std::shared_ptr<Session>* initiator_session, control::PendingInvite* invite_out, std::string* error);
+    bool can_open_channel(const std::string& channel_id,
+                          const std::string& from_id,
+                          const std::string& to_id,
+                          control::ChannelKind channel_kind,
+                          std::shared_ptr<Session>* target_session,
+                          control::PendingInvite* invite_out,
+                          std::string* error);
+    void register_active_channel(const control::ActiveRelayChannel& channel);
+    void unregister_active_channel(const std::string& channel_id);
+    std::vector<control::ActiveRelayChannel> list_active_channels() const;
+    bool disconnect_endpoint(const std::string& query, std::string* error);
+    void add_admin_relationship(const std::string& controller_id, const std::string& target_id);
+    void remove_admin_relationship(const std::string& controller_id, const std::string& target_id);
+    const ServerConfig& config_snapshot() const;
 
 private:
     void do_accept();
@@ -73,6 +111,23 @@ private:
     };
     std::mutex control_mutex_;
     std::unordered_map<std::string, ControlledClientEntry> controlled_clients_;
+    struct EndpointEntry {
+        control::EndpointInfo info;
+        std::weak_ptr<Session> session;
+    };
+    struct InviteEntry {
+        control::PendingInvite invite;
+        std::weak_ptr<Session> from_session;
+        std::weak_ptr<Session> to_session;
+    };
+    mutable std::mutex endpoint_mutex_;
+    std::unordered_map<std::string, EndpointEntry> endpoints_;
+    std::unordered_map<Session*, std::string> session_endpoints_;
+    std::unordered_map<std::string, std::string> endpoint_names_;
+    std::unordered_map<std::string, InviteEntry> invites_;
+    std::unordered_map<std::string, control::ActiveRelayChannel> active_channels_;
+    std::string server_id_;
+    std::string server_name_;
 };
 
 }  // namespace yume::server

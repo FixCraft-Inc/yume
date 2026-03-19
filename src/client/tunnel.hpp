@@ -17,6 +17,8 @@
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 
+#include <nlohmann/json.hpp>
+
 #include "core/protocol.hpp"
 
 namespace yume::client {
@@ -31,6 +33,8 @@ public:
     using CloseHandler = std::function<void()>;
     using TunnelCloseHandler = std::function<void(const std::string&)>;
     using ReverseOpenHandler = std::function<void(uint8_t listen_id, uint8_t stream_id)>;
+    using ControlHandler = std::function<void(const nlohmann::json&)>;
+    using InboundOpenHandler = std::function<void(uint8_t stream_id, const nlohmann::json&)>;
 
     explicit Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream);
 
@@ -41,6 +45,8 @@ public:
     void set_allow_exec(bool enabled);
     void set_reverse_handler(ReverseOpenHandler handler);
     void set_close_handler(TunnelCloseHandler handler);
+    void set_control_handler(ControlHandler handler);
+    void set_inbound_open_handler(InboundOpenHandler handler);
     boost::asio::any_io_executor get_executor();
 
     uint8_t reserve_stream_id();
@@ -49,6 +55,7 @@ public:
 
     void open_stream(uint8_t stream_id, const std::string& host, int port, OpenHandler handler,
                      const std::string& proto = "tcp");
+    void open_relay_stream(uint8_t stream_id, const nlohmann::json& payload, OpenHandler handler);
     void request_remote_listen(uint8_t listen_id,
                                int port,
                                OpenHandler handler,
@@ -60,6 +67,7 @@ public:
     void send_close(uint8_t stream_id, const std::string& reason);
     void send_open_ack(uint8_t stream_id, bool ok, const std::string& reason);
     void send_exec(uint8_t stream_id, const std::string& command);
+    void send_control_json(const nlohmann::json& json);
 
 private:
     struct PendingWrite {
@@ -104,6 +112,8 @@ private:
     std::unordered_map<uint8_t, OpenHandler> pending_rlisten_;
     ReverseOpenHandler reverse_handler_;
     TunnelCloseHandler close_handler_;
+    ControlHandler control_handler_;
+    InboundOpenHandler inbound_open_handler_;
     uint8_t next_stream_id_{1};
     bool closed_{false};
     mutable std::mutex state_mu_;

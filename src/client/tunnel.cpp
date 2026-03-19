@@ -59,6 +59,14 @@ void Tunnel::set_close_handler(TunnelCloseHandler handler) {
     close_handler_ = std::move(handler);
 }
 
+void Tunnel::set_control_handler(ControlHandler handler) {
+    control_handler_ = std::move(handler);
+}
+
+void Tunnel::set_inbound_open_handler(InboundOpenHandler handler) {
+    inbound_open_handler_ = std::move(handler);
+}
+
 boost::asio::any_io_executor Tunnel::get_executor() {
     return stream_.get_executor();
 }
@@ -102,6 +110,22 @@ void Tunnel::open_stream(uint8_t stream_id, const std::string& host, int port, O
         flags |= protocol::kFlagInnerEncrypted;
     }
 
+    {
+        std::lock_guard<std::mutex> lock(state_mu_);
+        pending_open_[stream_id] = std::move(handler);
+    }
+    protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::OPEN, stream_id, flags}, payload};
+    async_write_frame(frame);
+}
+
+void Tunnel::open_relay_stream(uint8_t stream_id, const nlohmann::json& json, OpenHandler handler) {
+    const std::string payload_str = json.dump();
+    Bytes payload(payload_str.begin(), payload_str.end());
+    uint16_t flags = 0;
+    if (inner_key_.has_value()) {
+        payload = encrypt_inner_payload(protocol::OPEN, stream_id, payload);
+        flags |= protocol::kFlagInnerEncrypted;
+    }
     {
         std::lock_guard<std::mutex> lock(state_mu_);
         pending_open_[stream_id] = std::move(handler);
@@ -185,6 +209,18 @@ void Tunnel::send_exec(uint8_t stream_id, const std::string& command) {
         flags |= protocol::kFlagInnerEncrypted;
     }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::EXEC, stream_id, flags}, payload};
+    async_write_frame(frame);
+}
+
+void Tunnel::send_control_json(const nlohmann::json& json) {
+    const std::string payload_str = json.dump();
+    Bytes payload(payload_str.begin(), payload_str.end());
+    uint16_t flags = 0;
+    if (inner_key_.has_value()) {
+        payload = encrypt_inner_payload(protocol::CONTROL, 0, payload);
+        flags |= protocol::kFlagInnerEncrypted;
+    }
+    protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::CONTROL, 0, flags}, payload};
     async_write_frame(frame);
 }
 
@@ -294,12 +330,16 @@ void Tunnel::handle_frame(const protocol::Frame& frame) {
             break;
         }
         case protocol::SOPEN: {
-            if (!server_in_charge_) {
-                send_open_ack(stream_id, false, "server control disabled");
-                break;
-            }
             try {
                 auto json = nlohmann::json::parse(payload_to_string(payload));
+                if (json.contains("channel_kind") && inbound_open_handler_) {
+                    inbound_open_handler_(stream_id, json);
+                    break;
+                }
+                if (!server_in_charge_) {
+                    send_open_ack(stream_id, false, "server control disabled");
+                    break;
+                }
                 std::string host = json.value("host", "");
                 int port = json.value("port", 0);
                 std::string proto = json.value("proto", "tcp");
@@ -319,6 +359,16 @@ void Tunnel::handle_frame(const protocol::Frame& frame) {
                 session->start();
             } catch (...) {
                 send_open_ack(stream_id, false, "invalid control payload");
+            }
+            break;
+        }
+        case protocol::CONTROL: {
+            if (control_handler_) {
+                try {
+                    auto json = nlohmann::json::parse(payload_to_string(payload));
+                    control_handler_(json);
+                } catch (...) {
+                }
             }
             break;
         }

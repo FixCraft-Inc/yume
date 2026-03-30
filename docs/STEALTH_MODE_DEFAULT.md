@@ -13,7 +13,7 @@
 Your server command remains the same:
 ```bash
 sudo ./build/bin/yumed --real --anonym --inner --inner-dual --control-full \
-  --tls_cert ../fullchain.pem --tls_key ../privkey.pem --hop
+  --cert ../fullchain.pem --key ../privkey.pem --hop
 ```
 
 ### Client - Basic (Stealth Mode ON by Default)
@@ -223,7 +223,7 @@ make
 Server:
 ```bash
 sudo ./build/bin/yumed --real --anonym --inner --inner-dual --control-full \
-  --tls_cert ../fullchain.pem --tls_key ../privkey.pem --hop
+  --cert ../fullchain.pem --key ../privkey.pem --hop
 ```
 
 Client:

@@ -10,9 +10,12 @@
 #include <openssl/sha.h>
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
 #include <iomanip>
 #include <sstream>
 #include <cstring>
+#include <vector>
 
 namespace yume::tls_fingerprint {
 
@@ -48,6 +51,262 @@ std::string join_numbers(const std::vector<T>& nums, const std::string& sep = "-
         oss << static_cast<uint32_t>(nums[i]);
     }
     return oss.str();
+}
+
+bool is_grease_value(uint16_t value) {
+    return ((value & 0x0f0fU) == 0x0a0aU) && ((value >> 8) == (value & 0x00ffU));
+}
+
+struct Cursor {
+    const uint8_t* ptr;
+    const uint8_t* end;
+
+    size_t remaining() const {
+        return static_cast<size_t>(end - ptr);
+    }
+};
+
+bool read_u8(Cursor& cursor, uint8_t& value) {
+    if (cursor.remaining() < 1) {
+        return false;
+    }
+    value = *cursor.ptr++;
+    return true;
+}
+
+bool read_u16(Cursor& cursor, uint16_t& value) {
+    if (cursor.remaining() < 2) {
+        return false;
+    }
+    value = static_cast<uint16_t>(cursor.ptr[0] << 8)
+        | static_cast<uint16_t>(cursor.ptr[1]);
+    cursor.ptr += 2;
+    return true;
+}
+
+bool read_u24(Cursor& cursor, uint32_t& value) {
+    if (cursor.remaining() < 3) {
+        return false;
+    }
+    value = (static_cast<uint32_t>(cursor.ptr[0]) << 16)
+        | (static_cast<uint32_t>(cursor.ptr[1]) << 8)
+        | static_cast<uint32_t>(cursor.ptr[2]);
+    cursor.ptr += 3;
+    return true;
+}
+
+bool skip_bytes(Cursor& cursor, size_t count) {
+    if (cursor.remaining() < count) {
+        return false;
+    }
+    cursor.ptr += count;
+    return true;
+}
+
+std::optional<Cursor> take_block(Cursor& cursor, size_t count) {
+    if (cursor.remaining() < count) {
+        return std::nullopt;
+    }
+    Cursor block{cursor.ptr, cursor.ptr + count};
+    cursor.ptr += count;
+    return block;
+}
+
+std::string tls_version_token(uint16_t version) {
+    switch (version) {
+        case 0x0304: return "t13";
+        case 0x0303: return "t12";
+        case 0x0302: return "t11";
+        case 0x0301: return "t10";
+        default: return "t00";
+    }
+}
+
+void append_extension_id(std::vector<uint16_t>& extensions, uint16_t type) {
+    if (!is_grease_value(type)) {
+        extensions.push_back(type);
+    }
+}
+
+void parse_server_name_extension(Cursor ext_cursor, JA4Components& ja4) {
+    uint16_t list_len = 0;
+    if (!read_u16(ext_cursor, list_len)) {
+        return;
+    }
+    auto list_block = take_block(ext_cursor, list_len);
+    if (!list_block.has_value()) {
+        return;
+    }
+    Cursor names = *list_block;
+    while (names.remaining() > 0) {
+        uint8_t name_type = 0;
+        uint16_t name_len = 0;
+        if (!read_u8(names, name_type) || !read_u16(names, name_len)) {
+            return;
+        }
+        auto name_block = take_block(names, name_len);
+        if (!name_block.has_value()) {
+            return;
+        }
+        if (name_type == 0 && name_len > 0) {
+            ja4.sni_present = "d";
+            return;
+        }
+    }
+}
+
+void parse_supported_groups_extension(Cursor ext_cursor, JA3Components& ja3) {
+    uint16_t list_len = 0;
+    if (!read_u16(ext_cursor, list_len)) {
+        return;
+    }
+    auto list_block = take_block(ext_cursor, list_len);
+    if (!list_block.has_value()) {
+        return;
+    }
+    Cursor groups = *list_block;
+    while (groups.remaining() >= 2) {
+        uint16_t group = 0;
+        if (!read_u16(groups, group)) {
+            return;
+        }
+        if (!is_grease_value(group)) {
+            ja3.supported_groups.push_back(group);
+        }
+    }
+}
+
+void parse_ec_point_formats_extension(Cursor ext_cursor, JA3Components& ja3) {
+    uint8_t list_len = 0;
+    if (!read_u8(ext_cursor, list_len)) {
+        return;
+    }
+    auto list_block = take_block(ext_cursor, list_len);
+    if (!list_block.has_value()) {
+        return;
+    }
+    Cursor formats = *list_block;
+    while (formats.remaining() > 0) {
+        uint8_t format = 0;
+        if (!read_u8(formats, format)) {
+            return;
+        }
+        ja3.ec_point_formats.push_back(format);
+    }
+}
+
+void parse_signature_algorithms_extension(Cursor ext_cursor, JA4Components& ja4) {
+    uint16_t list_len = 0;
+    if (!read_u16(ext_cursor, list_len)) {
+        return;
+    }
+    auto list_block = take_block(ext_cursor, list_len);
+    if (!list_block.has_value()) {
+        return;
+    }
+    Cursor algorithms = *list_block;
+    while (algorithms.remaining() >= 2) {
+        uint16_t algorithm = 0;
+        if (!read_u16(algorithms, algorithm)) {
+            return;
+        }
+        if (!is_grease_value(algorithm)) {
+            ja4.signature_algorithms.push_back(algorithm);
+        }
+    }
+}
+
+void parse_alpn_extension(Cursor ext_cursor,
+                          std::vector<std::string>& alpn_protocols,
+                          JA4Components& ja4) {
+    uint16_t list_len = 0;
+    if (!read_u16(ext_cursor, list_len)) {
+        return;
+    }
+    auto list_block = take_block(ext_cursor, list_len);
+    if (!list_block.has_value()) {
+        return;
+    }
+    Cursor protocols = *list_block;
+    while (protocols.remaining() > 0) {
+        uint8_t proto_len = 0;
+        if (!read_u8(protocols, proto_len)) {
+            return;
+        }
+        auto proto_block = take_block(protocols, proto_len);
+        if (!proto_block.has_value()) {
+            return;
+        }
+        std::string proto(reinterpret_cast<const char*>(proto_block->ptr), proto_len);
+        alpn_protocols.push_back(proto);
+    }
+    if (!alpn_protocols.empty()) {
+        ja4.first_alpn = alpn_protocols.front();
+    }
+}
+
+std::optional<uint16_t> parse_supported_versions_extension(Cursor ext_cursor) {
+    uint8_t list_len = 0;
+    if (!read_u8(ext_cursor, list_len)) {
+        return std::nullopt;
+    }
+    auto list_block = take_block(ext_cursor, list_len);
+    if (!list_block.has_value()) {
+        return std::nullopt;
+    }
+    Cursor versions = *list_block;
+    uint16_t best = 0;
+    while (versions.remaining() >= 2) {
+        uint16_t version = 0;
+        if (!read_u16(versions, version)) {
+            return std::nullopt;
+        }
+        if (!is_grease_value(version)) {
+            best = std::max(best, version);
+        }
+    }
+    if (best == 0) {
+        return std::nullopt;
+    }
+    return best;
+}
+
+std::vector<uint8_t> extract_handshake_bytes(const uint8_t* data, size_t length) {
+    if (!data || length == 0) {
+        return {};
+    }
+    if (length >= 5 && data[0] == 22) {
+        std::vector<uint8_t> handshake;
+        size_t offset = 0;
+        while (offset + 5 <= length) {
+            const uint8_t record_type = data[offset];
+            const uint16_t record_len = static_cast<uint16_t>(data[offset + 3] << 8)
+                | static_cast<uint16_t>(data[offset + 4]);
+            offset += 5;
+            if (offset + record_len > length) {
+                break;
+            }
+            if (record_type != 22) {
+                break;
+            }
+            handshake.insert(handshake.end(), data + offset, data + offset + record_len);
+            offset += record_len;
+            if (!handshake.empty() && handshake[0] == 1) {
+                if (handshake.size() >= 4) {
+                    const uint32_t message_len = (static_cast<uint32_t>(handshake[1]) << 16)
+                        | (static_cast<uint32_t>(handshake[2]) << 8)
+                        | static_cast<uint32_t>(handshake[3]);
+                    if (handshake.size() >= 4 + message_len) {
+                        break;
+                    }
+                }
+            }
+        }
+        if (!handshake.empty()) {
+            return handshake;
+        }
+    }
+    return std::vector<uint8_t>(data, data + length);
 }
 
 }  // namespace
@@ -385,21 +644,141 @@ std::string browser_profile_name(BrowserProfile profile) {
 
 FingerprintData parse_client_hello(const uint8_t* data, size_t length) {
     FingerprintData result;
-    
-    // This is a simplified parser - in production you'd want full TLS parsing
-    // For now, we'll just store the raw data and set empty components
-    
-    // Convert to hex string for debugging
+
     std::ostringstream oss;
     for (size_t i = 0; i < std::min(length, size_t(256)); ++i) {
         oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(data[i]);
     }
     result.client_hello_hex = oss.str();
-    
-    // TODO: Parse actual ClientHello message
-    // This would involve parsing TLS handshake protocol
-    // For now, return empty fingerprint
-    
+
+    if (!data || length == 0) {
+        return result;
+    }
+
+    std::vector<uint8_t> handshake = extract_handshake_bytes(data, length);
+    if (handshake.size() < 4) {
+        return result;
+    }
+
+    Cursor cursor{handshake.data(), handshake.data() + handshake.size()};
+    uint8_t handshake_type = 0;
+    uint32_t hello_len = 0;
+    if (!read_u8(cursor, handshake_type) || !read_u24(cursor, hello_len) || handshake_type != 1) {
+        return result;
+    }
+
+    auto hello_block = take_block(cursor, hello_len);
+    if (!hello_block.has_value()) {
+        return result;
+    }
+
+    Cursor hello = *hello_block;
+    uint16_t legacy_version = 0;
+    if (!read_u16(hello, legacy_version)) {
+        return result;
+    }
+    result.ja3_components.tls_version = legacy_version;
+    result.ja4_components.protocol_version = tls_version_token(legacy_version);
+    result.ja4_components.sni_present = "i";
+
+    if (!skip_bytes(hello, 32)) {
+        return result;
+    }
+
+    uint8_t session_id_len = 0;
+    if (!read_u8(hello, session_id_len) || !skip_bytes(hello, session_id_len)) {
+        return result;
+    }
+
+    uint16_t cipher_len = 0;
+    if (!read_u16(hello, cipher_len) || (cipher_len % 2) != 0) {
+        return result;
+    }
+    auto cipher_block = take_block(hello, cipher_len);
+    if (!cipher_block.has_value()) {
+        return result;
+    }
+    Cursor ciphers = *cipher_block;
+    while (ciphers.remaining() >= 2) {
+        uint16_t suite = 0;
+        if (!read_u16(ciphers, suite)) {
+            return result;
+        }
+        if (!is_grease_value(suite)) {
+            result.ja3_components.cipher_suites.push_back(suite);
+        }
+    }
+
+    uint8_t compression_len = 0;
+    if (!read_u8(hello, compression_len) || !skip_bytes(hello, compression_len)) {
+        return result;
+    }
+
+    if (hello.remaining() >= 2) {
+        uint16_t extensions_len = 0;
+        if (!read_u16(hello, extensions_len)) {
+            return result;
+        }
+        auto extensions_block = take_block(hello, extensions_len);
+        if (!extensions_block.has_value()) {
+            return result;
+        }
+        Cursor extensions = *extensions_block;
+        std::optional<uint16_t> supported_version;
+        while (extensions.remaining() >= 4) {
+            uint16_t ext_type = 0;
+            uint16_t ext_len = 0;
+            if (!read_u16(extensions, ext_type) || !read_u16(extensions, ext_len)) {
+                return result;
+            }
+            auto ext_block = take_block(extensions, ext_len);
+            if (!ext_block.has_value()) {
+                return result;
+            }
+            append_extension_id(result.ja3_components.extensions, ext_type);
+            Cursor ext_cursor = *ext_block;
+            switch (ext_type) {
+                case static_cast<uint16_t>(ExtensionType::SERVER_NAME):
+                    parse_server_name_extension(ext_cursor, result.ja4_components);
+                    break;
+                case static_cast<uint16_t>(ExtensionType::SUPPORTED_GROUPS):
+                    parse_supported_groups_extension(ext_cursor, result.ja3_components);
+                    break;
+                case static_cast<uint16_t>(ExtensionType::EC_POINT_FORMATS):
+                    parse_ec_point_formats_extension(ext_cursor, result.ja3_components);
+                    break;
+                case static_cast<uint16_t>(ExtensionType::SIGNATURE_ALGORITHMS):
+                    parse_signature_algorithms_extension(ext_cursor, result.ja4_components);
+                    break;
+                case static_cast<uint16_t>(ExtensionType::ALPN):
+                    parse_alpn_extension(ext_cursor, result.alpn_protocols, result.ja4_components);
+                    break;
+                case static_cast<uint16_t>(ExtensionType::SUPPORTED_VERSIONS):
+                    supported_version = parse_supported_versions_extension(ext_cursor);
+                    break;
+                default:
+                    break;
+            }
+        }
+        if (supported_version.has_value()) {
+            result.ja4_components.protocol_version = tls_version_token(*supported_version);
+        }
+    }
+
+    result.ja4_components.cipher_suites = result.ja3_components.cipher_suites;
+    result.ja4_components.extensions = result.ja3_components.extensions;
+    result.ja4_components.cipher_count = static_cast<uint8_t>(result.ja4_components.cipher_suites.size());
+    result.ja4_components.extension_count = static_cast<uint8_t>(result.ja4_components.extensions.size());
+
+    result.ja3_hash = calculate_ja3_hash(result.ja3_components);
+    result.ja4_hash = calculate_ja4_hash(result.ja4_components);
+    result.akamai_hash = calculate_akamai_hash(result.ja3_components);
+
+    auto [profile, score] = match_browser_profile(result);
+    result.matched_profile = profile;
+    result.similarity_score = score;
+    result.matches_known_browser = (profile != BrowserProfile::UNKNOWN) && (score >= 80.0);
+
     return result;
 }
 

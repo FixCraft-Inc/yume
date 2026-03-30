@@ -69,8 +69,8 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --listen --cert --key --auth-keys --threads --reverse-port-min --reverse-port-max --obfs --inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --allow-remote-server-admin --operator-keys --federation-enable --peer --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --completion"
-  local file_opts="--config --cert --key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --keys-add --keys-gen"
+  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --obfs --inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --allow-remote-server-admin --operator-keys --federation-enable --peer --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --completion"
+  local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --keys-add --keys-gen"
   case "$prev" in
     --completion)
       COMPREPLY=( $(compgen -W "bash" -- "$cur") )
@@ -109,8 +109,8 @@ void print_help() {
         << "Core Options:\n"
         << "  --config <path>          Configuration file path\n"
         << "  --listen <port>          Override listen_port\n"
-        << "  --cert <path>            Override tls_cert\n"
-        << "  --key <path>             Override tls_key\n"
+        << "  --cert <path>            Override tls_cert (alias: --tls_cert)\n"
+        << "  --key <path>             Override tls_key (alias: --tls_key)\n"
         << "  --auth-keys <path>       Override auth_keys\n"
         << "  --threads <n>            Worker thread count (0 = auto)\n"
         << "  --reverse-port-min <p>   Reverse listen minimum (default "
@@ -1153,6 +1153,17 @@ int main(int argc, char** argv) {
     yume::util::init_logging();
 
     yume::server::ServerConfig cfg;
+    std::string cli_cwd;
+    {
+        std::error_code ec;
+        auto cwd = std::filesystem::current_path(ec);
+        if (!ec) {
+            cli_cwd = cwd.string();
+        }
+    }
+    auto resolve_cli_path = [&](const std::string& value) {
+        return yume::util::resolve_path(value, cli_cwd, "");
+    };
     std::string config_path = "config/yumed.json";
     bool config_specified = false;
     std::string keys_add;
@@ -1206,12 +1217,12 @@ int main(int argc, char** argv) {
             cfg.reverse_port_min = std::stoi(argv[++i]);
         } else if (arg == "--reverse-port-max" && i + 1 < argc) {
             cfg.reverse_port_max = std::stoi(argv[++i]);
-        } else if (arg == "--cert" && i + 1 < argc) {
-            cfg.tls_cert = argv[++i];
-        } else if (arg == "--key" && i + 1 < argc) {
-            cfg.tls_key = argv[++i];
+        } else if ((arg == "--cert" || arg == "--tls_cert") && i + 1 < argc) {
+            cfg.tls_cert = resolve_cli_path(argv[++i]);
+        } else if ((arg == "--key" || arg == "--tls_key") && i + 1 < argc) {
+            cfg.tls_key = resolve_cli_path(argv[++i]);
         } else if (arg == "--auth-keys" && i + 1 < argc) {
-            cfg.auth_keys = argv[++i];
+            cfg.auth_keys = resolve_cli_path(argv[++i]);
         } else if (arg == "--threads" && i + 1 < argc) {
             cfg.threads = std::stoi(argv[++i]);
         } else if (arg == "--obfs") {
@@ -1253,7 +1264,7 @@ int main(int argc, char** argv) {
             cfg.hop_interval_ms = static_cast<std::uint32_t>(std::stoul(argv[++i]));
             hop_interval_override = true;
         } else if (arg == "--pq-key" && i + 1 < argc) {
-            cfg.pq_private_key = yume::util::expand_user(argv[++i]);
+            cfg.pq_private_key = resolve_cli_path(argv[++i]);
             inner_crypto_override = true;
         } else if (arg == "--pq-auto-generate") {
             cfg.pq_auto_generate = true;
@@ -1273,11 +1284,11 @@ int main(int argc, char** argv) {
         } else if (arg == "--real") {
             cfg.real_http = true;
         } else if (arg == "--real-index" && i + 1 < argc) {
-            cfg.real_index_path = argv[++i];
+            cfg.real_index_path = resolve_cli_path(argv[++i]);
         } else if (arg == "--real-secret" && i + 1 < argc) {
             cfg.real_secret = argv[++i];
         } else if (arg == "--real-secret-file" && i + 1 < argc) {
-            cfg.real_secret_file = argv[++i];
+            cfg.real_secret_file = resolve_cli_path(argv[++i]);
         } else if (arg == "--anonym") {
             cfg.anonym = true;
             anonym_override = true;
@@ -1289,13 +1300,13 @@ int main(int argc, char** argv) {
         } else if (arg == "--anonym-token" && i + 1 < argc) {
             cfg.anonym_token = argv[++i];
         } else if (arg == "--anonym-ca-key" && i + 1 < argc) {
-            cfg.anonym_ca_key = yume::util::expand_user(argv[++i]);
+            cfg.anonym_ca_key = resolve_cli_path(argv[++i]);
         } else if (arg == "--anonym-ca-cert" && i + 1 < argc) {
-            cfg.anonym_ca_cert = yume::util::expand_user(argv[++i]);
+            cfg.anonym_ca_cert = resolve_cli_path(argv[++i]);
         } else if (arg == "--anonym-sub-key" && i + 1 < argc) {
-            cfg.anonym_sub_key = yume::util::expand_user(argv[++i]);
+            cfg.anonym_sub_key = resolve_cli_path(argv[++i]);
         } else if (arg == "--anonym-sub-cert" && i + 1 < argc) {
-            cfg.anonym_sub_cert = yume::util::expand_user(argv[++i]);
+            cfg.anonym_sub_cert = resolve_cli_path(argv[++i]);
         } else if (arg == "--server-name" && i + 1 < argc) {
             cfg.server_name = argv[++i];
         } else if (arg == "--server-id" && i + 1 < argc) {
@@ -1315,7 +1326,7 @@ int main(int argc, char** argv) {
         } else if (arg == "--allow-remote-server-admin") {
             cfg.allow_remote_server_admin = true;
         } else if (arg == "--operator-keys" && i + 1 < argc) {
-            cfg.operator_keys = yume::util::expand_user(argv[++i]);
+            cfg.operator_keys = resolve_cli_path(argv[++i]);
         } else if (arg == "--federation-enable") {
             cfg.federation_enable = true;
         } else if (arg == "--peer" && i + 1 < argc) {
@@ -1339,6 +1350,9 @@ int main(int argc, char** argv) {
             ui_mode = true;
         } else if (arg == "--boring") {
             cfg.boring = true;
+        } else {
+            yume::util::log_error("unknown or incomplete option: " + arg);
+            return 1;
         }
     }
     std::string exe_dir;

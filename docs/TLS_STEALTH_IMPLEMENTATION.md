@@ -239,10 +239,10 @@ cat ./logs/fingerprints/fingerprints-latest.json | jq '.'
 
 ## Performance Impact
 
-Based on design (actual benchmarks pending):
-- **CPU**: <1% additional overhead
-- **Memory**: ~100KB per connection
-- **Latency**: <5ms additional handshake time
+Operational expectations:
+- **CPU**: low relative overhead during normal handshakes
+- **Memory**: modest per-connection profile and metrics state
+- **Latency**: explicit fingerprint verification adds extra network round trips; normal stealth connections use the regular TLS path
 
 ## Security Considerations
 
@@ -256,13 +256,13 @@ Based on design (actual benchmarks pending):
 - Not 100% indistinguishable from real browsers
 - Requires regular updates as browsers evolve
 - Advanced DPI may still detect differences
-- HTTP/2 layer fingerprinting not yet implemented
+- Observed JA3/JA4 output can still diverge from the target browser profile and should be verified against external endpoints
 
 ## Future Enhancements
 
 Recommended next steps:
 1. Add more browser profiles (Edge, Brave, Opera)
-2. Implement HTTP/2 fingerprint matching
+2. Tighten HTTP/2/browser parity to reduce observed JA3/JA4 mismatches
 3. Add automatic profile updates
 4. Integrate with BoringSSL for deeper TLS customization
 5. Add machine learning-based profile selection
@@ -281,11 +281,11 @@ No new external dependencies required. Uses existing:
 - [x] New modules follow YUME coding style
 - [x] Command-line options parse correctly
 - [x] Help text displays properly
-- [ ] Stealth mode creates valid SSL context
+- [x] Stealth mode creates valid SSL context
 - [ ] Fingerprints match target browser profiles
-- [ ] Metrics export to JSON/CSV
+- [x] Metrics export to JSON/CSV
 - [ ] Profile rotation works correctly
-- [ ] Integration with existing YUME features
+- [x] Integration with existing YUME features
 
 ## Documentation Files
 
@@ -302,7 +302,7 @@ No new external dependencies required. Uses existing:
 
 ## Notes for Review
 
-1. The implementation is complete but untested in production
+1. The implementation is compiled and validated against live YUME connections plus external fingerprint test endpoints; browser-profile parity still requires ongoing verification
 2. Browser fingerprints are based on 2026 browser versions
 3. Metrics logging creates logs/ directory automatically
 4. Profile rotation is connection-based, not time-based

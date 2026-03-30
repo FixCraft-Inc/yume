@@ -2218,6 +2218,42 @@ std::vector<std::thread> start_io_threads(boost::asio::io_context& io, int reque
     return workers;
 }
 
+class IoThreadGroup {
+public:
+    IoThreadGroup(boost::asio::io_context& io, std::vector<std::thread>&& workers)
+        : io_(io)
+        , workers_(std::move(workers)) {}
+
+    ~IoThreadGroup() {
+        stop_and_wait();
+    }
+
+    void wait() {
+        if (joined_) {
+            return;
+        }
+        for (auto& worker : workers_) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
+        joined_ = true;
+    }
+
+    void stop_and_wait() {
+        if (joined_) {
+            return;
+        }
+        io_.stop();
+        wait();
+    }
+
+private:
+    boost::asio::io_context& io_;
+    std::vector<std::thread> workers_;
+    bool joined_{false};
+};
+
 }  // namespace
 
 int Cli::run(int argc, char** argv) {
@@ -2248,6 +2284,17 @@ int Cli::run(int argc, char** argv) {
         print_version();
         return 0;
     }
+    std::string cli_cwd;
+    {
+        std::error_code ec;
+        auto cwd = std::filesystem::current_path(ec);
+        if (!ec) {
+            cli_cwd = cwd.string();
+        }
+    }
+    auto resolve_cli_path = [&](const std::string& value) {
+        return util::resolve_path(value, cli_cwd, "");
+    };
     std::string exe_dir;
     {
         std::string self_path = get_self_path(argv[0]);
@@ -2432,7 +2479,7 @@ int Cli::run(int argc, char** argv) {
         cfg.port = args.port;
     }
     if (!args.identity.empty()) {
-        cfg.identity = util::resolve_path(args.identity, config_dir, exe_dir);
+        cfg.identity = resolve_cli_path(args.identity);
     }
     if (args.socks_port > 0) {
         cfg.socks_port = args.socks_port;
@@ -2453,16 +2500,16 @@ int Cli::run(int argc, char** argv) {
         cfg.hop_interval_ms = args.hop_interval_ms;
     }
     if (!args.pq_public_key.empty()) {
-        cfg.pq_public_key = util::resolve_path(args.pq_public_key, config_dir, exe_dir);
+        cfg.pq_public_key = resolve_cli_path(args.pq_public_key);
     }
     if (args.allow_embedded_master_override) {
         cfg.allow_embedded_master = args.allow_embedded_master;
     }
     if (!args.anonym_ca_cert.empty()) {
-        cfg.anonym_ca_cert = util::resolve_path(args.anonym_ca_cert, config_dir, exe_dir);
+        cfg.anonym_ca_cert = resolve_cli_path(args.anonym_ca_cert);
     }
     if (!args.tls_ca_cert.empty()) {
-        cfg.tls_ca_cert = util::resolve_path(args.tls_ca_cert, config_dir, exe_dir);
+        cfg.tls_ca_cert = resolve_cli_path(args.tls_ca_cert);
     }
     if (!args.tls_pin_sha256.empty()) {
         cfg.tls_pin_sha256 = args.tls_pin_sha256;
@@ -2507,7 +2554,7 @@ int Cli::run(int argc, char** argv) {
         cfg.allow_bytes = args.allow_bytes;
     }
     if (!args.history_dir.empty()) {
-        cfg.history_dir = util::resolve_path(args.history_dir, config_dir, exe_dir);
+        cfg.history_dir = resolve_cli_path(args.history_dir);
     }
     if (args.history_override) {
         cfg.history_enabled = args.history_enabled;
@@ -2819,6 +2866,8 @@ int Cli::run(int argc, char** argv) {
     bool pq_warned = false;
     bool pq_reconnect_used = false;
     bool verified_once = false;
+    bool tls_fingerprint_verification_attempted = false;
+    std::optional<tls_fingerprint::FingerprintData> verified_tls_fingerprint;
     for (;;) {
         if (stop_requested.load()) {
             announce_stopping();
@@ -2841,6 +2890,7 @@ int Cli::run(int argc, char** argv) {
             // Initialize stealth mode if enabled
             std::unique_ptr<boost::asio::ssl::context> owned_ctx;
             boost::asio::ssl::context* ctx = nullptr;
+            tls_fingerprint::BrowserProfile active_tls_profile = tls_fingerprint::BrowserProfile::UNKNOWN;
             if (cfg.tls_stealth_enabled) {
                 // Initialize metrics manager
                 if (cfg.tls_fingerprint_log) {
@@ -2859,6 +2909,7 @@ int Cli::run(int argc, char** argv) {
                 } else if (profile_lower == "safari" || profile_lower == "safari17" || profile_lower == "safari_17") {
                     profile = tls_fingerprint::BrowserProfile::SAFARI_17;
                 }
+                active_tls_profile = profile;
 
                 // Create stealth configuration
                 tls_stealth::StealthConfig stealth_config;
@@ -2954,23 +3005,68 @@ int Cli::run(int argc, char** argv) {
                 }
             }
 
-            // Log TLS fingerprint metrics if stealth mode is enabled
+            tls_fingerprint::FingerprintData fingerprint_for_metrics;
+            if (cfg.tls_stealth_enabled) {
+                if (cfg.tls_fingerprint_verify && !tls_fingerprint_verification_attempted) {
+                    auto verification = tls_stealth::evaluate_tls_fingerprint(
+                        cfg.tls_fingerprint_test_endpoint,
+                        443,
+                        active_tls_profile);
+                    tls_fingerprint_verification_attempted = true;
+                    if (verification.success) {
+                        verified_tls_fingerprint = verification.detected_fingerprint;
+                        util::log_info("TLS fingerprint verified via " + cfg.tls_fingerprint_test_endpoint
+                            + ": JA3=" + verification.ja3_from_server
+                            + " JA4=" + verification.ja4_from_server);
+                        if (!verification.matches_target_profile) {
+                            const std::string observed_profile =
+                                tls_fingerprint::browser_profile_name(verification.detected_fingerprint.matched_profile);
+                            util::log_warn("TLS fingerprint mismatch: expected "
+                                + tls_fingerprint::browser_profile_name(active_tls_profile)
+                                + ", observed " + observed_profile);
+                        }
+                    } else {
+                        util::log_warn("TLS fingerprint verification failed: " + verification.error_message);
+                    }
+                }
+
+                if (verified_tls_fingerprint.has_value()) {
+                    fingerprint_for_metrics = *verified_tls_fingerprint;
+                } else if (auto profile_info = tls_fingerprint::get_browser_profile_info(active_tls_profile);
+                           profile_info.has_value()) {
+                    fingerprint_for_metrics.ja3_hash = profile_info->ja3_hash;
+                    fingerprint_for_metrics.ja4_hash = profile_info->ja4_hash;
+                    fingerprint_for_metrics.alpn_protocols = profile_info->alpn_protocols;
+                    fingerprint_for_metrics.ja3_components.tls_version = profile_info->tls_version;
+                    fingerprint_for_metrics.ja3_components.cipher_suites = profile_info->cipher_suites;
+                    fingerprint_for_metrics.ja3_components.extensions = profile_info->extensions;
+                    fingerprint_for_metrics.ja3_components.supported_groups = profile_info->supported_groups;
+                    fingerprint_for_metrics.ja3_components.ec_point_formats = profile_info->ec_point_formats;
+                    fingerprint_for_metrics.ja4_components.protocol_version = "t13";
+                    fingerprint_for_metrics.ja4_components.sni_present = "d";
+                    fingerprint_for_metrics.ja4_components.cipher_count =
+                        static_cast<uint8_t>(profile_info->cipher_suites.size());
+                    fingerprint_for_metrics.ja4_components.extension_count =
+                        static_cast<uint8_t>(profile_info->extensions.size());
+                    fingerprint_for_metrics.ja4_components.first_alpn = profile_info->alpn_protocols.empty()
+                        ? ""
+                        : profile_info->alpn_protocols.front();
+                    fingerprint_for_metrics.ja4_components.cipher_suites = profile_info->cipher_suites;
+                    fingerprint_for_metrics.ja4_components.extensions = profile_info->extensions;
+                    fingerprint_for_metrics.ja4_components.signature_algorithms = profile_info->signature_algorithms;
+                    fingerprint_for_metrics.matched_profile = active_tls_profile;
+                    fingerprint_for_metrics.matches_known_browser = true;
+                    fingerprint_for_metrics.similarity_score = 100.0;
+                }
+            }
+
             if (cfg.tls_stealth_enabled && cfg.tls_fingerprint_log) {
-                // Create fingerprint data (simplified - full implementation would parse ClientHello)
-                tls_fingerprint::FingerprintData fingerprint;
-                // In production, you'd capture and parse the actual ClientHello here
-                
-                // Get the current profile being used
-                tls_fingerprint::BrowserProfile profile = 
-                    tls_stealth::StealthManager::instance().get_context().current_profile();
-                
-                // Record the connection
                 tls_metrics::MetricsManager::instance().record_connection_fingerprint(
                     cfg.server,
                     static_cast<uint16_t>(cfg.port),
-                    fingerprint,
+                    fingerprint_for_metrics,
                     true,  // stealth_enabled
-                    profile,
+                    active_tls_profile,
                     true,  // handshake_succeeded
                     static_cast<uint32_t>(handshake_duration.count()),
                     ""     // error_message
@@ -3867,9 +3963,10 @@ int Cli::run(int argc, char** argv) {
             tunnel->set_allow_exec(cfg.allow_exec);
             std::string close_reason;
             auto hop_status_stop = std::make_shared<std::atomic<bool>>(false);
-            tunnel->set_close_handler([&close_reason, hop_status_stop](const std::string& reason) {
+            tunnel->set_close_handler([&close_reason, &io, hop_status_stop](const std::string& reason) {
                 close_reason = reason;
                 hop_status_stop->store(true);
+                io.stop();
             });
             RelayRuntime::Options relay_opts;
             relay_opts.identity_path = cfg.identity;
@@ -3907,6 +4004,7 @@ int Cli::run(int argc, char** argv) {
                 relay_runtime->on_inbound_open(stream_id, json);
             });
             tunnel->start();
+            IoThreadGroup io_threads(io, start_io_threads(io, cfg.io_threads));
             if (!relay_runtime->announce_presence(&relay_error)) {
                 util::log_warn("relay presence unavailable: " + relay_error);
             }
@@ -4306,63 +4404,58 @@ int Cli::run(int argc, char** argv) {
                     reclaim, min_port, max_port);
             }
 
-        if (!args.exec_cmd.empty()) {
-            uint8_t stream_id = tunnel->reserve_stream_id();
-            if (stream_id == 0) {
-                util::log_error("no stream ids available for exec");
-                return 1;
-            }
-            auto done = std::make_shared<std::atomic<bool>>(false);
-            tunnel->register_stream(stream_id,
-                                    [stream_id](const Tunnel::Bytes& data) {
-                                        std::cout.write(reinterpret_cast<const char*>(data.data()), data.size());
-                                        std::cout.flush();
-                                    },
-                                    [done, &io]() {
-                                        done->store(true);
-                                        io.stop();
-                                    });
-            tunnel->send_exec(stream_id, args.exec_cmd);
-            run_io_threads(io, cfg.io_threads);
-            if (!close_reason.empty()) {
-                throw std::runtime_error("tunnel closed: " + close_reason);
-            }
-            return 0;
-        }
-
-        if (!args.run_cmd.empty()) {
-            int port = cfg.socks_port > 0 ? cfg.socks_port : 0;
-            auto socks = std::make_shared<SocksServer>(io, port, tunnel, cfg.allow_udp);
-            socks->start();
-            int actual_port = socks->port();
-            if (actual_port <= 0) {
-                util::log_error("failed to start local SOCKS5 proxy for --run");
-                return 1;
-            }
-            util::log_info("running local command via SOCKS5 127.0.0.1:" + std::to_string(actual_port));
-            auto work = boost::asio::make_work_guard(io);
-            auto workers = start_io_threads(io, cfg.io_threads);
-            std::string cmd = maybe_force_ipv4(args.run_cmd, true);
-            if (cmd == args.run_cmd) {
-                util::log_warn("IPv4-only enforced; if your command supports IPv4 forcing, add it explicitly.");
-            }
-            std::string self_path;
-            try {
-                self_path = std::filesystem::absolute(argv[0]).string();
-            } catch (...) {
-                self_path.clear();
-            }
-            cmd = wrap_ssh_with_proxy(cmd, actual_port, self_path);
-            int code = run_local_command_with_proxy(cmd, actual_port, true);
-            work.reset();
-            io.stop();
-            for (auto& t : workers) {
-                if (t.joinable()) {
-                    t.join();
+            if (!args.exec_cmd.empty()) {
+                uint8_t stream_id = tunnel->reserve_stream_id();
+                if (stream_id == 0) {
+                    util::log_error("no stream ids available for exec");
+                    return 1;
                 }
+                auto done = std::make_shared<std::atomic<bool>>(false);
+                tunnel->register_stream(stream_id,
+                                        [stream_id](const Tunnel::Bytes& data) {
+                                            std::cout.write(reinterpret_cast<const char*>(data.data()), data.size());
+                                            std::cout.flush();
+                                        },
+                                        [done, &io]() {
+                                            done->store(true);
+                                            io.stop();
+                                        });
+                tunnel->send_exec(stream_id, args.exec_cmd);
+                io_threads.wait();
+                if (!close_reason.empty()) {
+                    throw std::runtime_error("tunnel closed: " + close_reason);
+                }
+                return 0;
             }
-            return code == 0 ? 0 : 1;
-        }
+
+            if (!args.run_cmd.empty()) {
+                int port = cfg.socks_port > 0 ? cfg.socks_port : 0;
+                auto socks = std::make_shared<SocksServer>(io, port, tunnel, cfg.allow_udp);
+                socks->start();
+                int actual_port = socks->port();
+                if (actual_port <= 0) {
+                    util::log_error("failed to start local SOCKS5 proxy for --run");
+                    return 1;
+                }
+                util::log_info("running local command via SOCKS5 127.0.0.1:" + std::to_string(actual_port));
+                auto work = boost::asio::make_work_guard(io);
+                std::string cmd = maybe_force_ipv4(args.run_cmd, true);
+                if (cmd == args.run_cmd) {
+                    util::log_warn("IPv4-only enforced; if your command supports IPv4 forcing, add it explicitly.");
+                }
+                std::string self_path;
+                try {
+                    self_path = std::filesystem::absolute(argv[0]).string();
+                } catch (...) {
+                    self_path.clear();
+                }
+                cmd = wrap_ssh_with_proxy(cmd, actual_port, self_path);
+                int code = run_local_command_with_proxy(cmd, actual_port, true);
+                work.reset();
+                io.stop();
+                io_threads.wait();
+                return code == 0 ? 0 : 1;
+            }
 
             if (args.lport > 0 || !args.rhost.empty() || args.rport > 0) {
                 if (args.lport <= 0 || args.rhost.empty() || args.rport <= 0) {
@@ -4383,7 +4476,7 @@ int Cli::run(int argc, char** argv) {
                     util::log_info("forwarding localhost:" + std::to_string(args.lport) + " -> " +
                                    args.rhost + ":" + std::to_string(args.rport));
                 }
-                run_io_threads(io, cfg.io_threads);
+                io_threads.wait();
                 if (stop_requested.load()) {
                     announce_stopping();
                     return 130;
@@ -4398,7 +4491,7 @@ int Cli::run(int argc, char** argv) {
                 auto socks = std::make_shared<SocksServer>(io, cfg.socks_port, tunnel, cfg.allow_udp);
                 socks->start();
                 util::log_info("SOCKS5 listening on 127.0.0.1:" + std::to_string(cfg.socks_port));
-                run_io_threads(io, cfg.io_threads);
+                io_threads.wait();
                 if (stop_requested.load()) {
                     announce_stopping();
                     return 130;
@@ -4410,7 +4503,20 @@ int Cli::run(int argc, char** argv) {
             }
 
             if (use_reverse) {
-                run_io_threads(io, cfg.io_threads);
+                io_threads.wait();
+                if (stop_requested.load()) {
+                    announce_stopping();
+                    return 130;
+                }
+                if (!close_reason.empty()) {
+                    throw std::runtime_error("tunnel closed: " + close_reason);
+                }
+                return 0;
+            }
+
+            if (!args.chat_target.empty() || !args.file_target.empty() ||
+                !args.bytes_target.empty() || !args.admin_target.empty()) {
+                io_threads.wait();
                 if (stop_requested.load()) {
                     announce_stopping();
                     return 130;

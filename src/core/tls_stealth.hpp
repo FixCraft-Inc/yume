@@ -73,7 +73,6 @@ private:
     void configure_supported_groups(const std::vector<uint16_t>& groups);
     void configure_signature_algorithms(const std::vector<uint16_t>& algorithms);
     void configure_alpn(const std::vector<std::string>& protocols);
-    void configure_extensions(const std::vector<uint16_t>& extensions);
 
     StealthConfig config_;
     boost::asio::ssl::context ssl_context_;

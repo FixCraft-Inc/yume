@@ -17,6 +17,7 @@ namespace yume::local_runtime {
 namespace {
 
 constexpr size_t kMaxMessageBytes = 1024 * 1024;
+constexpr int kDefaultSocketTimeoutMs = 5000;
 
 std::string home_dir() {
     const char* home = std::getenv("HOME");
@@ -27,7 +28,11 @@ std::string home_dir() {
 bool send_all(int fd, const char* data, size_t size) {
     size_t sent = 0;
     while (sent < size) {
-        const ssize_t rc = ::send(fd, data + sent, size - sent, 0);
+        int send_flags = 0;
+#ifdef MSG_NOSIGNAL
+        send_flags |= MSG_NOSIGNAL;
+#endif
+        const ssize_t rc = ::send(fd, data + sent, size - sent, send_flags);
         if (rc < 0) {
             if (errno == EINTR) {
                 continue;
@@ -67,6 +72,17 @@ bool recv_line(int fd, std::string* out) {
     return false;
 }
 
+void set_socket_timeouts(int fd, int timeout_ms) {
+    if (fd < 0 || timeout_ms <= 0) {
+        return;
+    }
+    timeval tv{};
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = static_cast<suseconds_t>((timeout_ms % 1000) * 1000);
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+}
+
 bool connect_socket(const std::string& path, int* fd_out) {
     if (!fd_out) {
         return false;
@@ -90,6 +106,15 @@ bool connect_socket(const std::string& path, int* fd_out) {
     }
     *fd_out = fd;
     return true;
+}
+
+void wake_listener(const std::string& path) {
+    int fd = -1;
+    if (!connect_socket(path, &fd)) {
+        return;
+    }
+    set_socket_timeouts(fd, 100);
+    ::close(fd);
 }
 #endif
 
@@ -199,6 +224,8 @@ void Server::stop() {
 #if !defined(_WIN32)
     stopping_ = true;
     if (server_fd_ >= 0) {
+        wake_listener(path_);
+        ::shutdown(server_fd_, SHUT_RDWR);
         ::close(server_fd_);
         server_fd_ = -1;
     }
@@ -252,11 +279,7 @@ nlohmann::json Server::request(const std::string& path,
         }
         return nlohmann::json::object();
     }
-    timeval tv{};
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = static_cast<suseconds_t>((timeout_ms % 1000) * 1000);
-    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    set_socket_timeouts(fd, timeout_ms);
 
     std::string payload = request_json.dump();
     payload.push_back('\n');
@@ -303,6 +326,7 @@ void Server::serve_loop() {
             }
             continue;
         }
+        set_socket_timeouts(client_fd, kDefaultSocketTimeoutMs);
 
         std::string line;
         nlohmann::json response;

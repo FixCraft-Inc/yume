@@ -39,8 +39,48 @@ if(CMAKE_CROSSCOMPILING AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     find_library(ATOMIC_LIBRARY atomic)
 endif()
 
+set(YUME_SPDLOG_TARGET "")
 if(YUME_USE_SPDLOG)
-    find_package(spdlog QUIET)
+    set(_fmt_vendor_candidates
+        "${CMAKE_SOURCE_DIR}/third_party/fmt/include"
+        "${CMAKE_CURRENT_LIST_DIR}/../third_party/fmt/include"
+        "/usr/include"
+    )
+    set(_spdlog_vendor_candidates
+        "${CMAKE_SOURCE_DIR}/third_party/spdlog/include"
+        "${CMAKE_CURRENT_LIST_DIR}/../third_party/spdlog/include"
+        "/usr/include"
+    )
+    foreach(_spdlog_vendor IN LISTS _spdlog_vendor_candidates)
+        if(EXISTS "${_spdlog_vendor}/spdlog/spdlog.h")
+            if(NOT TARGET spdlog::spdlog_header_only)
+                add_library(spdlog::spdlog_header_only INTERFACE IMPORTED)
+                target_include_directories(spdlog::spdlog_header_only INTERFACE "${_spdlog_vendor}")
+                if(EXISTS "${_spdlog_vendor}/spdlog/tweakme.h")
+                    file(READ "${_spdlog_vendor}/spdlog/tweakme.h" _spdlog_tweakme)
+                    if(_spdlog_tweakme MATCHES "#define[ \t]+SPDLOG_FMT_EXTERNAL[ \t]+1")
+                        foreach(_fmt_vendor IN LISTS _fmt_vendor_candidates)
+                            if(EXISTS "${_fmt_vendor}/fmt/format.h")
+                                if(NOT TARGET fmt::fmt-header-only)
+                                    add_library(fmt::fmt-header-only INTERFACE IMPORTED)
+                                    target_include_directories(fmt::fmt-header-only INTERFACE "${_fmt_vendor}")
+                                    target_compile_definitions(fmt::fmt-header-only INTERFACE FMT_HEADER_ONLY=1)
+                                endif()
+                                target_link_libraries(spdlog::spdlog_header_only INTERFACE fmt::fmt-header-only)
+                                break()
+                            endif()
+                        endforeach()
+                    endif()
+                endif()
+            endif()
+            set(spdlog_FOUND TRUE)
+            set(YUME_SPDLOG_TARGET spdlog::spdlog_header_only)
+            break()
+        endif()
+    endforeach()
+    if(NOT spdlog_FOUND)
+        find_package(spdlog QUIET)
+    endif()
     if(NOT spdlog_FOUND)
         message(STATUS "spdlog not found, fetching...")
         FetchContent_Declare(
@@ -50,11 +90,19 @@ if(YUME_USE_SPDLOG)
         )
         FetchContent_MakeAvailable(spdlog)
     endif()
+    if(YUME_SPDLOG_TARGET STREQUAL "")
+        if(TARGET spdlog::spdlog_header_only)
+            set(YUME_SPDLOG_TARGET spdlog::spdlog_header_only)
+        elseif(TARGET spdlog::spdlog)
+            set(YUME_SPDLOG_TARGET spdlog::spdlog)
+        endif()
+    endif()
 endif()
 
 function(yume_apply_perf_opts target)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(${target} PRIVATE
+            $<$<CXX_COMPILER_ID:GNU>:-Wno-psabi>
             $<$<CONFIG:Release>:-O3>
             $<$<CONFIG:RelWithDebInfo>:-O3>
             $<$<CONFIG:MinSizeRel>:-O3>
@@ -134,8 +182,8 @@ function(yume_apply_perf_opts target)
     endif()
 endfunction()
 
-if(YUME_STATIC AND YUME_USE_SPDLOG)
-    message(WARNING "Static link requested; disabling spdlog to avoid linking shared libspdlog.")
+if(YUME_STATIC AND YUME_USE_SPDLOG AND NOT YUME_SPDLOG_TARGET STREQUAL "spdlog::spdlog_header_only")
+    message(WARNING "Static link requested but only compiled spdlog was found; disabling spdlog.")
     set(YUME_USE_SPDLOG OFF CACHE BOOL "Disable spdlog for static builds" FORCE)
 endif()
 
@@ -222,7 +270,7 @@ elseif(YUME_STATIC)
 endif()
 
 if(YUME_USE_SPDLOG)
-    target_link_libraries(yume_core PUBLIC spdlog::spdlog)
+    target_link_libraries(yume_core PUBLIC ${YUME_SPDLOG_TARGET})
     target_compile_definitions(yume_core PUBLIC YUME_USE_SPDLOG=1)
 else()
     target_compile_definitions(yume_core PUBLIC YUME_USE_SPDLOG=0)
@@ -277,6 +325,7 @@ add_executable(yume
     client/cli.cpp
     client/history.cpp
     client/local_runtime.cpp
+    client/relay_secret.cpp
     client/relay_runtime.cpp
     client/tunnel.cpp
     client/socks.cpp

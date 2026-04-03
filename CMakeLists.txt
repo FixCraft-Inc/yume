@@ -113,7 +113,10 @@ if(YUME_USE_BASEFWX)
         add_subdirectory(basefwx/cpp EXCLUDE_FROM_ALL)
         if(TARGET basefwxcpp)
             if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-                target_compile_options(basefwxcpp PRIVATE -Wno-deprecated-declarations)
+                target_compile_options(basefwxcpp PRIVATE
+                    -Wno-deprecated-declarations
+                    $<$<CXX_COMPILER_ID:GNU>:-Wno-psabi>
+                )
             elseif(MSVC)
                 target_compile_options(basefwxcpp PRIVATE /wd4996)
             endif()

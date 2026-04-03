@@ -28,12 +28,55 @@ WINDOWS_TOOLCHAIN_PREFIX="${YUME_WINDOWS_TOOLCHAIN_PREFIX:-x86_64-w64-mingw32}"
 WINDOWS_TRIPLET="${YUME_WINDOWS_TRIPLET:-x64-mingw-dynamic}"
 VCPKG_ROOT="${VCPKG_ROOT:-}"
 VCPKG_PREFIX=""
-APT_UPDATED_FLAG="${APT_UPDATED_FLAG:-/tmp/yume-apt-updated}"
 BASEFWX_REPO="${BASEFWX_REPO:-https://github.com/F1xGOD/basefwx.git}"
 BASEFWX_REF="${BASEFWX_REF:-${YUME_BASEFWX_REF:-}}"
 BASEFWX_REF_FILE="${BASEFWX_REF_FILE:-${PWD}/.basefwx-ref}"
 YUME_REQUIRE_ARGON2="${YUME_REQUIRE_ARGON2:-0}"
 YUME_REQUIRE_OQS="${YUME_REQUIRE_OQS:-0}"
+
+resolve_real_home() {
+    local home="${HOME}"
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        local sudo_home
+        sudo_home="$(getent passwd "${SUDO_USER}" 2>/dev/null | cut -d: -f6 || true)"
+        if [[ -n "${sudo_home}" ]]; then
+            home="${sudo_home}"
+        fi
+    fi
+    echo "${home}"
+}
+
+resolve_real_uid() {
+    local uid
+    uid="$(id -u)"
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        local sudo_uid
+        sudo_uid="$(id -u "${SUDO_USER}" 2>/dev/null || true)"
+        if [[ -n "${sudo_uid}" ]]; then
+            uid="${sudo_uid}"
+        fi
+    fi
+    echo "${uid}"
+}
+
+init_tmp_root() {
+    local requested="${YUME_TMP_ROOT:-}"
+    if [[ -n "${requested}" ]]; then
+        mkdir -p "${requested}"
+        echo "${requested}|0"
+        return 0
+    fi
+    local created
+    created="$(mktemp -d "${TMPDIR:-/tmp}/yume-ezbuild-${REAL_UID}-XXXXXX")"
+    echo "${created}|1"
+}
+
+REAL_HOME="$(resolve_real_home)"
+REAL_UID="$(resolve_real_uid)"
+YUME_CACHE_ROOT="${YUME_CACHE_ROOT:-${REAL_HOME}/.cache/yume}"
+mkdir -p "${YUME_CACHE_ROOT}"
+IFS='|' read -r YUME_TMP_ROOT YUME_TMP_ROOT_AUTO <<< "$(init_tmp_root)"
+APT_UPDATED_FLAG="${APT_UPDATED_FLAG:-${YUME_CACHE_ROOT}/apt-updated}"
 
 if [[ -z "${BASEFWX_REF}" && -f "${BASEFWX_REF_FILE}" ]]; then
     BASEFWX_REF="$(tr -d '[:space:]' < "${BASEFWX_REF_FILE}")"
@@ -48,6 +91,38 @@ step()  { echo -e "${COLOR_MAGENTA}🚀 $*${COLOR_RESET}"; }
 need_cmd() {
     command -v "$1" >/dev/null 2>&1
 }
+
+init_lock_root() {
+    local requested="${YUME_LOCK_ROOT:-${YUME_CACHE_ROOT}/locks}"
+    if mkdir -p "${requested}" 2>/dev/null && [[ -w "${requested}" ]]; then
+        echo "${requested}"
+        return 0
+    fi
+    mkdir -p "${YUME_TMP_ROOT}/locks"
+    echo "${YUME_TMP_ROOT}/locks"
+}
+
+hash_string() {
+    local input="$1"
+    if need_cmd sha256sum; then
+        printf '%s' "${input}" | sha256sum | awk '{print $1}'
+        return 0
+    fi
+    if need_cmd shasum; then
+        printf '%s' "${input}" | shasum -a 256 | awk '{print $1}'
+        return 0
+    fi
+    printf '%s' "${input}" | cksum | awk '{print $1}'
+}
+
+cleanup_temp_assets() {
+    if [[ "${YUME_TMP_ROOT_AUTO:-0}" == "1" && -n "${YUME_TMP_ROOT:-}" ]]; then
+        rm -rf "${YUME_TMP_ROOT}"
+    fi
+}
+
+YUME_LOCK_ROOT="$(init_lock_root)"
+trap cleanup_temp_assets EXIT
 
 env_truthy() {
     local value="${1:-}"
@@ -83,12 +158,22 @@ detect_vcpkg_root() {
         echo "${VCPKG_ROOT}"
         return 0
     fi
-    for candidate in "${HOME}/vcpkg" "${HOME}/src/vcpkg" "/opt/vcpkg"; do
+    for candidate in "${REAL_HOME}/vcpkg" "${REAL_HOME}/src/vcpkg" "${REAL_HOME}/.vcpkg" "/opt/vcpkg"; do
         if [[ -x "${candidate}/vcpkg" ]]; then
             echo "${candidate}"
             return 0
         fi
     done
+    local bin
+    bin="$(command -v vcpkg 2>/dev/null || true)"
+    if [[ -n "${bin}" ]]; then
+        local root
+        root="$(cd "$(dirname "${bin}")" && pwd)"
+        if [[ -f "${root}/scripts/buildsystems/vcpkg.cmake" ]]; then
+            echo "${root}"
+            return 0
+        fi
+    fi
     return 1
 }
 
@@ -341,7 +426,7 @@ build_liboqs_openwrt() {
         return 1
     fi
     step "OpenWRT SDK: building liboqs from source..."
-    local workdir="/tmp/yume-liboqs-openwrt"
+    local workdir="${YUME_TMP_ROOT}/liboqs-openwrt"
     rm -rf "${workdir}"
     git clone --depth 1 --branch 0.15.0 https://github.com/open-quantum-safe/liboqs.git "${workdir}"
     local cc_bin="${CC_PATH:-}"
@@ -414,7 +499,7 @@ build_liboqs_host() {
         return 1
     fi
     step "Host: building liboqs (static) from source..."
-    local workdir="/tmp/yume-liboqs-host"
+    local workdir="${YUME_TMP_ROOT}/liboqs-host"
     rm -rf "${workdir}"
     git clone --depth 1 --branch 0.15.0 https://github.com/open-quantum-safe/liboqs.git "${workdir}"
     cmake -S "${workdir}" -B "${workdir}/build" \
@@ -639,7 +724,12 @@ install_deps_windows() {
 build_project() {
     local build_dir="${YUME_BUILD_DIR:-build}"
     if need_cmd flock; then
-        local lock_file="/tmp/yume-build-${build_dir//\//_}.lock"
+        local build_root
+        local lock_key
+        local lock_file
+        build_root="$(pwd -P)"
+        lock_key="$(hash_string "${build_root}/${build_dir}")"
+        lock_file="${YUME_LOCK_ROOT}/build-${lock_key}.lock"
         exec 9>"${lock_file}"
         if ! flock -n 9; then
             error "Build directory '${build_dir}' is busy (lock: ${lock_file}). Stop the other build and retry."
@@ -815,7 +905,7 @@ main() {
                 error "OpenWRT SDK compilers not found in $TOOLCHAIN_BIN"
                 exit 1
             fi
-            TOOLCHAIN_FILE="/tmp/yume-openwrt-toolchain.cmake"
+            TOOLCHAIN_FILE="${YUME_TMP_ROOT}/openwrt-toolchain.cmake"
             SYSROOT_PATH="$TOOLCHAIN_DIR"
             if [[ -n "$TARGET_DIR" ]]; then
                 SYSROOT_PATH="$TARGET_DIR"

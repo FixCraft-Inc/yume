@@ -27,6 +27,7 @@
 #include <unistd.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <termios.h>
 #endif
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -38,6 +39,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <conio.h>
 #elif defined(__APPLE__)
 #include <mach-o/dyld.h>
 #endif
@@ -59,6 +61,7 @@
 
 #include "client/forward.hpp"
 #include "client/local_runtime.hpp"
+#include "client/relay_secret.hpp"
 #include "client/relay_runtime.hpp"
 #include "client/socks.hpp"
 #include "client/tunnel.hpp"
@@ -78,6 +81,45 @@
 namespace yume::client {
 
 namespace {
+constexpr std::uint64_t kHopDecryptWindow = 6;
+
+#if !defined(_WIN32)
+std::mutex g_terminal_mode_mutex;
+bool g_terminal_mode_saved = false;
+std::size_t g_terminal_mode_depth = 0;
+termios g_terminal_mode_original{};
+
+void push_terminal_mode(const termios& original) {
+    std::lock_guard<std::mutex> lock(g_terminal_mode_mutex);
+    if (g_terminal_mode_depth == 0) {
+        g_terminal_mode_original = original;
+        g_terminal_mode_saved = true;
+    }
+    ++g_terminal_mode_depth;
+}
+
+void pop_terminal_mode() {
+    std::lock_guard<std::mutex> lock(g_terminal_mode_mutex);
+    if (g_terminal_mode_depth == 0) {
+        return;
+    }
+    --g_terminal_mode_depth;
+    if (g_terminal_mode_depth == 0) {
+        g_terminal_mode_saved = false;
+    }
+}
+
+void restore_tracked_terminal_mode() {
+    std::lock_guard<std::mutex> lock(g_terminal_mode_mutex);
+    if (!g_terminal_mode_saved) {
+        return;
+    }
+    tcsetattr(STDIN_FILENO, TCSANOW, &g_terminal_mode_original);
+    g_terminal_mode_depth = 0;
+    g_terminal_mode_saved = false;
+}
+#endif
+
 struct FatalError : public std::runtime_error {
     using std::runtime_error::runtime_error;
 };
@@ -93,6 +135,20 @@ std::string normalize_proof_source(std::string source) {
         return static_cast<char>(std::tolower(c));
     });
     return source;
+}
+
+std::string detect_client_platform() {
+#if defined(_WIN32)
+    return "windows";
+#elif defined(__APPLE__)
+    return "macos";
+#elif defined(__ANDROID__)
+    return "android";
+#elif defined(__linux__)
+    return "linux";
+#else
+    return "unknown";
+#endif
 }
 
 void add_verified_source(std::vector<std::string>* out, std::string_view source) {
@@ -944,6 +1000,7 @@ struct ParsedArgs {
     std::string dest_host;
     int dest_port{0};
     bool inner_crypto{false};
+    bool inner_crypto_override{false};
     bool inner_heavy{true};
     bool inner_hop{true};
     bool inner_hop_override{false};
@@ -1005,6 +1062,7 @@ struct ParsedArgs {
     std::string history_dir;
     bool history_enabled{true};
     bool history_override{false};
+    std::string relay_key_file;
     std::string instance_name;
     bool attach_local{false};
     std::string chat_target;
@@ -1198,11 +1256,19 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.ssh_R = value;
         } else if (arg == "--inner") {
             args.inner_crypto = true;
+            args.inner_crypto_override = true;
+        } else if (arg == "--no-inner") {
+            args.inner_crypto = false;
+            args.inner_crypto_override = true;
+            args.inner_hop = false;
+            args.inner_hop_override = true;
         } else if (arg == "--inner-heavy") {
             args.inner_crypto = true;
+            args.inner_crypto_override = true;
             args.inner_heavy = true;
         } else if (arg == "--inner-light") {
             args.inner_crypto = true;
+            args.inner_crypto_override = true;
             args.inner_heavy = false;
         } else if (arg == "--hop") {
             args.inner_hop = true;
@@ -1340,6 +1406,12 @@ ParsedArgs parse_args(int argc, char** argv) {
         } else if (arg == "--no-history") {
             args.history_enabled = false;
             args.history_override = true;
+        } else if (arg == "--relay-key-file") {
+            const char* value = take_value("--relay-key-file");
+            if (!value) {
+                return args;
+            }
+            args.relay_key_file = value;
         } else if (arg == "--instance") {
             const char* value = take_value("--instance");
             if (!value) {
@@ -1625,8 +1697,8 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --server --port --auth -i --socks --threads --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym -L -R --boring --non-interactive --live-status --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach"
-  local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path"
+  local opts="--help -h --version --config --server --port --auth -i --socks --threads --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym -L -R --boring --non-interactive --live-status --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach"
+  local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path --relay-key-file"
   case "$prev" in
     --completion)
       COMPREPLY=( $(compgen -W "bash" -- "$cur") )
@@ -1710,6 +1782,7 @@ void print_help() {
         << "  --instance <name>        Stable local runtime instance key\n"
         << "  --attach-local           Attach to an already running local yume\n"
         << "  --history-dir <path>     Encrypted local chat history directory\n"
+        << "  --relay-key-file <path>  Load/store local relay key derived from password\n"
         << "  --no-history             Disable local chat history\n"
         << "  --udp                    Enable UDP forwarding\n"
         << "  --tcp                    Force TCP only\n"
@@ -1733,8 +1806,10 @@ void print_help() {
         << "  send <text>              Send chat message on active chat\n"
         << "  send-file <peer> <path>  Send file invite and data\n"
         << "  send-bytes <peer> <path> Send raw bytes invite and data\n"
-        << "  accept <invite> <pass>   Accept relay invite\n"
-        << "  reject <invite> [why]    Reject relay invite\n"
+        << "  accept <invite|from> [password]\n"
+        << "                           Accept relay invite with stored key, env password, or prompt\n"
+        << "  reject <invite|from> [why]\n"
+        << "                           Reject relay invite\n"
         << "  history [peer]           Show local encrypted history\n"
         << "  history-delete <peer|all>\n"
         << "                           Delete local history\n"
@@ -1747,8 +1822,9 @@ void print_help() {
         << "  env YUME_COMMAND_CONSOLE=0 to disable console\n"
         << "  env YUME_LIVE_STATUS=1 to re-enable live status redraw\n\n"
         << "Security:\n"
-        << "  --inner                  Enable inner PQ encryption\n"
-        << "  --inner-heavy            Heavy KDF mode (default)\n"
+        << "  --inner                  Enable inner PQ encryption (enabled by default)\n"
+        << "  --no-inner               Disable inner PQ encryption and hopping\n"
+        << "  --inner-heavy            Heavy KDF mode when inner crypto is enabled (default)\n"
         << "  --inner-light            Light KDF mode\n"
         << "  --hop / --no-hop         Inner key hopping on/off\n"
         << "  --hop-interval <ms>      Hop interval (250-1000 recommended)\n"
@@ -1847,27 +1923,21 @@ bool is_tty_stdin() {
 #endif
 }
 
+#if defined(_WIN32)
 bool read_stdin_line_with_timeout(std::string* out, int timeout_ms) {
     if (!out) {
         return false;
     }
-#if defined(_WIN32)
-    (void)timeout_ms;
-    return false;
-#else
-    fd_set rfds;
-    FD_ZERO(&rfds);
-    FD_SET(STDIN_FILENO, &rfds);
-    timeval tv{};
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = static_cast<suseconds_t>((timeout_ms % 1000) * 1000);
-    int rc = select(STDIN_FILENO + 1, &rfds, nullptr, nullptr, &tv);
-    if (rc <= 0 || !FD_ISSET(STDIN_FILENO, &rfds)) {
-        return false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (_kbhit()) {
+            return static_cast<bool>(std::getline(std::cin, *out));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    return static_cast<bool>(std::getline(std::cin, *out));
-#endif
+    return false;
 }
+#endif
 
 void run_io_threads(boost::asio::io_context& io, int requested) {
     // We run the io_context in small synchronous bursts earlier (connect/handshake/probes),
@@ -1898,6 +1968,444 @@ std::string trim_copy(std::string s) {
     return s;
 }
 
+std::string ltrim_copy(std::string s) {
+    auto is_space = [](unsigned char ch) { return std::isspace(ch) != 0; };
+    while (!s.empty() && is_space(static_cast<unsigned char>(s.front()))) {
+        s.erase(s.begin());
+    }
+    return s;
+}
+
+bool split_first_token(std::string input, std::string* token, std::string* rest) {
+    if (!token || !rest) {
+        return false;
+    }
+    input = ltrim_copy(std::move(input));
+    if (input.empty()) {
+        token->clear();
+        rest->clear();
+        return false;
+    }
+    std::size_t pos = 0;
+    while (pos < input.size() && !std::isspace(static_cast<unsigned char>(input[pos]))) {
+        ++pos;
+    }
+    *token = input.substr(0, pos);
+    while (pos < input.size() && std::isspace(static_cast<unsigned char>(input[pos]))) {
+        ++pos;
+    }
+    *rest = input.substr(pos);
+    return !token->empty();
+}
+
+#if !defined(_WIN32)
+class InteractiveLineReader {
+public:
+    InteractiveLineReader() {
+        enabled_ = enable_raw_mode();
+        if (enabled_) {
+            redraw_line();
+        }
+    }
+
+    ~InteractiveLineReader() {
+        if (enabled_) {
+            restore_raw_mode();
+        }
+    }
+
+    bool read_line(std::string* out, int timeout_ms) {
+        if (!out) {
+            return false;
+        }
+        if (!enabled_) {
+            return fallback_read_line(out, timeout_ms);
+        }
+
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(STDIN_FILENO, &rfds);
+        timeval tv{};
+        tv.tv_sec = timeout_ms / 1000;
+        tv.tv_usec = static_cast<suseconds_t>((timeout_ms % 1000) * 1000);
+        const int rc = select(STDIN_FILENO + 1, &rfds, nullptr, nullptr, &tv);
+        if (rc <= 0 || !FD_ISSET(STDIN_FILENO, &rfds)) {
+            return false;
+        }
+
+        char buf[32];
+        const ssize_t bytes = ::read(STDIN_FILENO, buf, sizeof(buf));
+        if (bytes <= 0) {
+            return false;
+        }
+
+        for (ssize_t i = 0; i < bytes; ++i) {
+            if (process_char(buf[i], out)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+private:
+    enum class EscapeState {
+        none,
+        esc,
+        bracket,
+    };
+
+    bool fallback_read_line(std::string* out, int timeout_ms) {
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(STDIN_FILENO, &rfds);
+        timeval tv{};
+        tv.tv_sec = timeout_ms / 1000;
+        tv.tv_usec = static_cast<suseconds_t>((timeout_ms % 1000) * 1000);
+        const int rc = select(STDIN_FILENO + 1, &rfds, nullptr, nullptr, &tv);
+        if (rc <= 0 || !FD_ISSET(STDIN_FILENO, &rfds)) {
+            return false;
+        }
+        return static_cast<bool>(std::getline(std::cin, *out));
+    }
+
+    bool enable_raw_mode() {
+        if (!is_tty_stdin()) {
+            return false;
+        }
+        if (tcgetattr(STDIN_FILENO, &original_termios_) != 0) {
+            return false;
+        }
+        termios raw = original_termios_;
+        raw.c_lflag &= static_cast<unsigned int>(~(ICANON | ECHO));
+        raw.c_iflag &= static_cast<unsigned int>(~(IXON | ICRNL));
+        raw.c_cc[VMIN] = 0;
+        raw.c_cc[VTIME] = 0;
+        if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0) {
+            return false;
+        }
+        push_terminal_mode(original_termios_);
+        raw_active_ = true;
+        return true;
+    }
+
+    void restore_raw_mode() {
+        if (!raw_active_) {
+            return;
+        }
+        tcsetattr(STDIN_FILENO, TCSANOW, &original_termios_);
+        pop_terminal_mode();
+        raw_active_ = false;
+    }
+
+    void redraw_line() {
+        util::clear_status_line();
+        std::cout << "\r\033[2K" << kPrompt << buffer_ << std::flush;
+    }
+
+    void commit_history(const std::string& line) {
+        if (line.empty()) {
+            return;
+        }
+        if (history_.empty() || history_.back() != line) {
+            history_.push_back(line);
+        }
+        history_index_ = history_.size();
+        browsing_history_ = false;
+        draft_buffer_.clear();
+    }
+
+    void browse_history_up() {
+        if (history_.empty()) {
+            return;
+        }
+        if (!browsing_history_) {
+            draft_buffer_ = buffer_;
+            browsing_history_ = true;
+            history_index_ = history_.size();
+        }
+        if (history_index_ == 0) {
+            return;
+        }
+        --history_index_;
+        buffer_ = history_[history_index_];
+        redraw_line();
+    }
+
+    void browse_history_down() {
+        if (!browsing_history_) {
+            return;
+        }
+        if (history_index_ + 1 < history_.size()) {
+            ++history_index_;
+            buffer_ = history_[history_index_];
+        } else {
+            browsing_history_ = false;
+            history_index_ = history_.size();
+            buffer_ = draft_buffer_;
+        }
+        redraw_line();
+    }
+
+    bool process_char(char ch, std::string* out) {
+        if (escape_state_ == EscapeState::esc) {
+            escape_state_ = (ch == '[') ? EscapeState::bracket : EscapeState::none;
+            return false;
+        }
+        if (escape_state_ == EscapeState::bracket) {
+            escape_state_ = EscapeState::none;
+            if (ch == 'A') {
+                browse_history_up();
+            } else if (ch == 'B') {
+                browse_history_down();
+            }
+            return false;
+        }
+        if (ch == '\x1b') {
+            escape_state_ = EscapeState::esc;
+            return false;
+        }
+        if (ch == '\r' || ch == '\n') {
+            std::cout << "\r\033[2K" << kPrompt << buffer_ << std::endl;
+            *out = buffer_;
+            commit_history(*out);
+            buffer_.clear();
+            return true;
+        }
+        if (ch == 0x7f || ch == '\b') {
+            if (!buffer_.empty()) {
+                buffer_.pop_back();
+                redraw_line();
+            }
+            return false;
+        }
+        if (ch == 0x04) {
+            return false;
+        }
+        if (std::isprint(static_cast<unsigned char>(ch)) || ch == '\t') {
+            buffer_.push_back(ch);
+            redraw_line();
+        }
+        return false;
+    }
+
+    termios original_termios_{};
+    bool enabled_{false};
+    bool raw_active_{false};
+    static constexpr const char* kPrompt = "yume> ";
+    EscapeState escape_state_{EscapeState::none};
+    std::vector<std::string> history_;
+    std::size_t history_index_{0};
+    bool browsing_history_{false};
+    std::string draft_buffer_;
+    std::string buffer_;
+};
+#endif
+
+bool prompt_hidden_input(const std::string& prompt, std::string* out, std::string* error) {
+    if (!out) {
+        if (error) {
+            *error = "password output is null";
+        }
+        return false;
+    }
+    if (!is_tty_stdin()) {
+        if (error) {
+            *error = "interactive password prompt requires a TTY";
+        }
+        return false;
+    }
+
+    util::clear_status_line();
+    std::cout << prompt << std::flush;
+
+#if defined(_WIN32)
+    out->clear();
+    for (;;) {
+        const int ch = _getch();
+        if (ch == '\r' || ch == '\n') {
+            break;
+        }
+        if (ch == 0 || ch == 224) {
+            (void)_getch();
+            continue;
+        }
+        if (ch == '\b') {
+            if (!out->empty()) {
+                out->pop_back();
+            }
+            continue;
+        }
+        if (ch == 3) {
+            if (error) {
+                *error = "password prompt cancelled";
+            }
+            std::cout << std::endl;
+            return false;
+        }
+        if (ch >= 0 && std::isprint(static_cast<unsigned char>(ch))) {
+            out->push_back(static_cast<char>(ch));
+        }
+    }
+    std::cout << std::endl;
+    return true;
+#else
+    termios original{};
+    if (tcgetattr(STDIN_FILENO, &original) != 0) {
+        if (error) {
+            *error = "failed to read terminal settings";
+        }
+        std::cout << std::endl;
+        return false;
+    }
+    termios prompt_mode = original;
+    prompt_mode.c_lflag |= ICANON;
+    prompt_mode.c_lflag &= static_cast<unsigned int>(~ECHO);
+    prompt_mode.c_iflag |= ICRNL;
+    prompt_mode.c_cc[VMIN] = 1;
+    prompt_mode.c_cc[VTIME] = 0;
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &prompt_mode) != 0) {
+        if (error) {
+            *error = "failed to enable hidden password prompt";
+        }
+        std::cout << std::endl;
+        return false;
+    }
+    push_terminal_mode(original);
+
+    std::string value;
+    for (;;) {
+        char ch = '\0';
+        const ssize_t n = ::read(STDIN_FILENO, &ch, 1);
+        if (n <= 0) {
+            tcsetattr(STDIN_FILENO, TCSANOW, &original);
+            pop_terminal_mode();
+            std::cout << std::endl;
+            if (error) {
+                *error = "password prompt interrupted";
+            }
+            return false;
+        }
+        if (ch == '\n') {
+            break;
+        }
+        if (ch != '\r') {
+            value.push_back(ch);
+        }
+    }
+    std::cout << std::endl;
+    tcsetattr(STDIN_FILENO, TCSANOW, &original);
+    pop_terminal_mode();
+    *out = std::move(value);
+    return true;
+#endif
+}
+
+bool prompt_relay_password(const std::string& purpose,
+                           bool confirm,
+                           std::string* password,
+                           std::string* error) {
+    const std::string prompt = purpose.empty()
+        ? "Relay password: "
+        : "Relay password for " + purpose + ": ";
+    std::string first;
+    if (!prompt_hidden_input(prompt, &first, error)) {
+        return false;
+    }
+    if (first.empty()) {
+        if (error) {
+            *error = "relay password cannot be empty";
+        }
+        return false;
+    }
+    if (!confirm) {
+        if (password) {
+            *password = std::move(first);
+        }
+        return true;
+    }
+    std::string second;
+    if (!prompt_hidden_input("Confirm relay password: ", &second, error)) {
+        return false;
+    }
+    if (first != second) {
+        if (error) {
+            *error = "relay password confirmation did not match";
+        }
+        return false;
+    }
+    if (password) {
+        *password = std::move(first);
+    }
+    return true;
+}
+
+bool resolve_relay_secret(const ClientConfig& cfg,
+                          const std::string& explicit_password,
+                          const std::string& purpose,
+                          std::string* relay_secret_b64,
+                          std::string* error) {
+    if (!relay_secret_b64) {
+        if (error) {
+            *error = "relay secret output is null";
+        }
+        return false;
+    }
+
+    const std::string relay_key_file = cfg.relay_key_file.empty()
+        ? std::string()
+        : util::expand_user(cfg.relay_key_file);
+    const bool has_key_file = !relay_key_file.empty();
+    const bool key_file_exists = has_key_file && file_exists(relay_key_file);
+
+    auto persist_secret = [&](const std::string& secret_b64) -> bool {
+        if (!has_key_file || key_file_exists) {
+            return true;
+        }
+        std::string persist_error;
+        if (!write_relay_secret_file(relay_key_file, secret_b64, &persist_error)) {
+            if (error) {
+                *error = persist_error;
+            }
+            return false;
+        }
+        util::log_info("stored relay key at " + relay_key_file);
+        return true;
+    };
+
+    if (!explicit_password.empty()) {
+        *relay_secret_b64 = derive_relay_secret_b64(explicit_password);
+        return persist_secret(*relay_secret_b64);
+    }
+
+    if (key_file_exists) {
+        return load_relay_secret_file(relay_key_file, relay_secret_b64, error);
+    }
+
+    const char* env_pw = std::getenv("YUME_RELAY_PASSWORD");
+    if (env_pw && *env_pw) {
+        *relay_secret_b64 = derive_relay_secret_b64(env_pw);
+        return persist_secret(*relay_secret_b64);
+    }
+
+    if (cfg.non_interactive || !is_tty_stdin()) {
+        if (error) {
+            if (has_key_file) {
+                *error = "relay key file not found: " + relay_key_file;
+            } else {
+                *error = "relay password required (set YUME_RELAY_PASSWORD or configure relay_key_file)";
+            }
+        }
+        return false;
+    }
+
+    std::string password;
+    if (!prompt_relay_password(purpose, has_key_file && !key_file_exists, &password, error)) {
+        return false;
+    }
+    *relay_secret_b64 = derive_relay_secret_b64(password);
+    return persist_secret(*relay_secret_b64);
+}
+
 bool prompt_attach_existing(const std::string& kind) {
     if (!is_tty_stdin()) {
         return true;
@@ -1926,7 +2434,7 @@ std::string effective_client_instance_key(const ClientConfig& cfg, const ParsedA
 }
 
 void print_local_client_attach_help() {
-    util::log_info("Attached console: help | whoami | status | directory | invites | chat <peer> | send <text> | send-file <peer> <path> | send-bytes <peer> <path> | accept <invite> <password> | reject <invite> [reason] | history [peer] | history-delete <peer|all> | admin attach <peer> | admin status | admin sessions | admin stop | quit");
+    util::log_info("Attached console: help | whoami | status | directory | invites | chat <peer> | send <text> | send-file <peer> <path> | send-bytes <peer> <path> | accept <invite|from> [password] | reject <invite|from> [reason] | history [peer] | history-delete <peer|all> | admin attach <peer> | admin status | admin sessions | admin stop | quit");
 }
 
 nlohmann::json request_local_client_runtime(const std::string& socket_path,
@@ -1941,8 +2449,6 @@ nlohmann::json request_local_client_runtime(const std::string& socket_path,
 }
 
 int run_local_client_attach(const std::string& socket_path, const ParsedArgs& args, const ClientConfig& cfg) {
-    const char* env_pw = std::getenv("YUME_RELAY_PASSWORD");
-    const std::string relay_password = env_pw ? env_pw : "";
     std::string error;
 
     if (args.directory_mode) {
@@ -1956,13 +2462,23 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
                       << " " << entry.value("display_name", "")
                       << " kind=" << entry.value("endpoint_kind", "")
                       << " relay=" << entry.value("relay_mode", "")
+                      << " platform=" << entry.value("client_platform", "unknown")
+                      << " variant=" << entry.value("client_variant", "unknown")
+                      << " chat=" << (entry.value("allow_chat", true) ? "yes" : "no")
+                      << " file=" << (entry.value("allow_file", true) ? "yes" : "no")
+                      << " bytes=" << (entry.value("allow_bytes", true) ? "yes" : "no")
                       << "\n";
         }
         return 0;
     }
     if (!args.chat_target.empty()) {
+        std::string relay_secret_b64;
+        if (!resolve_relay_secret(cfg, "", "chat with " + args.chat_target, &relay_secret_b64, &error)) {
+            util::log_error(error);
+            return 1;
+        }
         auto resp = request_local_client_runtime(socket_path, "chat.open",
-                                                 {{"peer", args.chat_target}, {"password", relay_password}}, &error);
+                                                 {{"peer", args.chat_target}, {"relay_secret", relay_secret_b64}}, &error);
         if (!error.empty() || !resp.value("ok", false)) {
             util::log_error(error.empty() ? resp.value("error", "chat open failed") : error);
             return 1;
@@ -1970,8 +2486,13 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
         return 0;
     }
     if (!args.file_target.empty()) {
+        std::string relay_secret_b64;
+        if (!resolve_relay_secret(cfg, "", "file send to " + args.file_target, &relay_secret_b64, &error)) {
+            util::log_error(error);
+            return 1;
+        }
         auto resp = request_local_client_runtime(socket_path, "file.send",
-                                                 {{"peer", args.file_target}, {"path", args.file_path}, {"password", relay_password}}, &error);
+                                                 {{"peer", args.file_target}, {"path", args.file_path}, {"relay_secret", relay_secret_b64}}, &error);
         if (!error.empty() || !resp.value("ok", false)) {
             util::log_error(error.empty() ? resp.value("error", "file send failed") : error);
             return 1;
@@ -1979,8 +2500,13 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
         return 0;
     }
     if (!args.bytes_target.empty()) {
+        std::string relay_secret_b64;
+        if (!resolve_relay_secret(cfg, "", "bytes send to " + args.bytes_target, &relay_secret_b64, &error)) {
+            util::log_error(error);
+            return 1;
+        }
         auto resp = request_local_client_runtime(socket_path, "bytes.send",
-                                                 {{"peer", args.bytes_target}, {"path", args.bytes_path}, {"password", relay_password}}, &error);
+                                                 {{"peer", args.bytes_target}, {"path", args.bytes_path}, {"relay_secret", relay_secret_b64}}, &error);
         if (!error.empty() || !resp.value("ok", false)) {
             util::log_error(error.empty() ? resp.value("error", "bytes send failed") : error);
             return 1;
@@ -2009,8 +2535,26 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
 
     util::log_info("Attached to existing yume runtime");
     print_local_client_attach_help();
+#if !defined(_WIN32)
+    std::optional<InteractiveLineReader> line_reader;
+    if (is_tty_stdin()) {
+        line_reader.emplace();
+    }
+#endif
     for (;;) {
         std::string line;
+#if !defined(_WIN32)
+        if (line_reader.has_value()) {
+            for (;;) {
+                if (line_reader->read_line(&line, 250)) {
+                    break;
+                }
+                if (!std::cin.good() && std::cin.eof()) {
+                    return 0;
+                }
+            }
+        } else
+#endif
         if (!std::getline(std::cin, line)) {
             return 0;
         }
@@ -2057,6 +2601,11 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
                           << entry.value("display_name", "")
                           << " kind=" << entry.value("endpoint_kind", "")
                           << " relay=" << entry.value("relay_mode", "")
+                          << " platform=" << entry.value("client_platform", "unknown")
+                          << " variant=" << entry.value("client_variant", "unknown")
+                          << " chat=" << (entry.value("allow_chat", true) ? "yes" : "no")
+                          << " file=" << (entry.value("allow_file", true) ? "yes" : "no")
+                          << " bytes=" << (entry.value("allow_bytes", true) ? "yes" : "no")
                           << std::endl;
             }
             continue;
@@ -2078,35 +2627,76 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
             }
             continue;
         }
+        if (line == "chat") {
+            util::log_warn("usage: chat <peer>");
+            continue;
+        }
         if (line.rfind("chat ", 0) == 0) {
+            const std::string peer = trim_copy(line.substr(5));
+            if (peer.empty()) {
+                util::log_warn("usage: chat <peer>");
+                continue;
+            }
+            std::string relay_secret_b64;
+            if (!resolve_relay_secret(cfg, "", "chat with " + peer, &relay_secret_b64, &error)) {
+                util::log_warn(error);
+                error.clear();
+                continue;
+            }
             auto resp = request_local_client_runtime(socket_path, "chat.open",
-                                                     {{"peer", trim_copy(line.substr(5))}, {"password", relay_password}}, &error);
+                                                     {{"peer", peer}, {"relay_secret", relay_secret_b64}}, &error);
             if (!error.empty() || !resp.value("ok", false)) {
                 util::log_warn(error.empty() ? resp.value("error", "chat open failed") : error);
                 error.clear();
             }
             continue;
         }
+        if (line == "send-file") {
+            util::log_warn("usage: send-file <peer> <path>");
+            continue;
+        }
         if (line.rfind("send-file ", 0) == 0) {
-            std::istringstream iss(line.substr(10));
             std::string peer;
             std::string path;
-            iss >> peer >> path;
+            split_first_token(line.substr(10), &peer, &path);
+            if (peer.empty() || path.empty()) {
+                util::log_warn("usage: send-file <peer> <path>");
+                continue;
+            }
+            std::string relay_secret_b64;
+            if (!resolve_relay_secret(cfg, "", "file send to " + peer, &relay_secret_b64, &error)) {
+                util::log_warn(error);
+                error.clear();
+                continue;
+            }
             auto resp = request_local_client_runtime(socket_path, "file.send",
-                                                     {{"peer", peer}, {"path", path}, {"password", relay_password}}, &error);
+                                                     {{"peer", peer}, {"path", path}, {"relay_secret", relay_secret_b64}}, &error);
             if (!error.empty() || !resp.value("ok", false)) {
                 util::log_warn(error.empty() ? resp.value("error", "file send failed") : error);
                 error.clear();
             }
             continue;
         }
+        if (line == "send-bytes") {
+            util::log_warn("usage: send-bytes <peer> <path>");
+            continue;
+        }
         if (line.rfind("send-bytes ", 0) == 0) {
-            std::istringstream iss(line.substr(11));
             std::string peer;
             std::string path;
-            iss >> peer >> path;
+            split_first_token(line.substr(11), &peer, &path);
+            if (peer.empty() || path.empty()) {
+                util::log_warn("usage: send-bytes <peer> <path>");
+                continue;
+            }
+            std::string relay_secret_b64;
+            if (!resolve_relay_secret(cfg, "", "bytes send to " + peer, &relay_secret_b64, &error)) {
+                util::log_warn(error);
+                error.clear();
+                continue;
+            }
             auto resp = request_local_client_runtime(socket_path, "bytes.send",
-                                                     {{"peer", peer}, {"path", path}, {"password", relay_password}}, &error);
+                                                     {{"peer", peer}, {"path", path}, {"relay_secret", relay_secret_b64}}, &error);
             if (!error.empty() || !resp.value("ok", false)) {
                 util::log_warn(error.empty() ? resp.value("error", "bytes send failed") : error);
                 error.clear();
@@ -2122,17 +2712,34 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
             }
             continue;
         }
+        if (line == "accept") {
+            util::log_warn("usage: accept <invite|from> [password]");
+            continue;
+        }
         if (line.rfind("accept ", 0) == 0) {
-            std::istringstream iss(line.substr(7));
             std::string invite_id;
             std::string password;
-            iss >> invite_id >> password;
+            split_first_token(line.substr(7), &invite_id, &password);
+            if (invite_id.empty()) {
+                util::log_warn("usage: accept <invite|from> [password]");
+                continue;
+            }
+            std::string relay_secret_b64;
+            if (!resolve_relay_secret(cfg, password, "accept invite " + invite_id, &relay_secret_b64, &error)) {
+                util::log_warn(error);
+                error.clear();
+                continue;
+            }
             auto resp = request_local_client_runtime(socket_path, "invite.accept",
-                                                     {{"invite_id", invite_id}, {"password", password}}, &error);
+                                                     {{"invite_id", invite_id}, {"relay_secret", relay_secret_b64}}, &error);
             if (!error.empty() || !resp.value("ok", false)) {
                 util::log_warn(error.empty() ? resp.value("error", "invite accept failed") : error);
                 error.clear();
             }
+            continue;
+        }
+        if (line == "reject") {
+            util::log_warn("usage: reject <invite|from> [reason]");
             continue;
         }
         if (line.rfind("reject ", 0) == 0) {
@@ -2377,7 +2984,7 @@ int Cli::run(int argc, char** argv) {
             if (json.contains("obfuscation") && !cfg.obfuscation) {
                 cfg.obfuscation = json["obfuscation"].get<bool>();
             }
-            if (json.contains("inner_crypto")) {
+            if (json.contains("inner_crypto") && !args.inner_crypto_override) {
                 cfg.inner_crypto = json["inner_crypto"].get<bool>();
             }
             if (json.contains("inner_heavy")) {
@@ -2464,6 +3071,9 @@ int Cli::run(int argc, char** argv) {
             if (json.contains("history_dir") && cfg.history_dir.empty()) {
                 cfg.history_dir = resolve_cfg_path(json["history_dir"].get<std::string>());
             }
+            if (json.contains("relay_key_file") && cfg.relay_key_file.empty()) {
+                cfg.relay_key_file = resolve_cfg_path(json["relay_key_file"].get<std::string>());
+            }
             if (json.contains("auto_attach_local")) {
                 cfg.auto_attach_local = json["auto_attach_local"].get<bool>();
             }
@@ -2487,8 +3097,8 @@ int Cli::run(int argc, char** argv) {
     if (args.io_threads != 0 || args.io_threads_override) {
         cfg.io_threads = args.io_threads;
     }
-    if (args.inner_crypto) {
-        cfg.inner_crypto = true;
+    if (args.inner_crypto_override) {
+        cfg.inner_crypto = args.inner_crypto;
     }
     if (args.inner_crypto) {
         cfg.inner_heavy = args.inner_heavy;
@@ -2555,6 +3165,9 @@ int Cli::run(int argc, char** argv) {
     }
     if (!args.history_dir.empty()) {
         cfg.history_dir = resolve_cli_path(args.history_dir);
+    }
+    if (!args.relay_key_file.empty()) {
+        cfg.relay_key_file = resolve_cli_path(args.relay_key_file);
     }
     if (args.history_override) {
         cfg.history_enabled = args.history_enabled;
@@ -2776,6 +3389,7 @@ int Cli::run(int argc, char** argv) {
         json["allow_bytes"] = cfg.allow_bytes;
         json["history_enabled"] = cfg.history_enabled;
         if (!cfg.history_dir.empty()) json["history_dir"] = cfg.history_dir;
+        if (!cfg.relay_key_file.empty()) json["relay_key_file"] = cfg.relay_key_file;
         json["auto_attach_local"] = cfg.auto_attach_local;
         std::ofstream out(args.config_path);
         if (out) {
@@ -2815,9 +3429,14 @@ int Cli::run(int argc, char** argv) {
     std::atomic<bool> stop_requested{false};
     std::atomic<bool> stop_announced{false};
     std::atomic<bool> force_stop_requested{false};
+#if !defined(_WIN32)
+    std::atomic<bool> stdin_closed_for_stop{false};
+#endif
     std::mutex runtime_mu;
     boost::asio::io_context* active_io = nullptr;
     std::weak_ptr<Tunnel> active_tunnel;
+    std::weak_ptr<RelayRuntime> active_relay_runtime;
+    std::function<void(const std::string&)> active_disconnect;
     auto announce_stopping = [&]() {
         if (stop_announced.exchange(true)) {
             return;
@@ -2825,15 +3444,22 @@ int Cli::run(int argc, char** argv) {
         util::clear_status_line();
         std::cerr << "[INFO] Stopping..." << std::endl;
     };
-    auto set_active_runtime = [&](boost::asio::io_context* io_ptr, const std::shared_ptr<Tunnel>& tunnel_ptr) {
+    auto set_active_runtime = [&](boost::asio::io_context* io_ptr,
+                                  const std::shared_ptr<Tunnel>& tunnel_ptr,
+                                  const std::shared_ptr<RelayRuntime>& relay_ptr = nullptr,
+                                  std::function<void(const std::string&)> disconnect_fn = {}) {
         std::lock_guard<std::mutex> lock(runtime_mu);
         active_io = io_ptr;
         active_tunnel = tunnel_ptr;
+        active_relay_runtime = relay_ptr;
+        active_disconnect = std::move(disconnect_fn);
     };
     auto clear_active_runtime = [&]() {
         std::lock_guard<std::mutex> lock(runtime_mu);
         active_io = nullptr;
         active_tunnel.reset();
+        active_relay_runtime.reset();
+        active_disconnect = {};
     };
     util::install_signal_handlers([&](int) {
         const bool already_requested = force_stop_requested.exchange(true);
@@ -2841,17 +3467,29 @@ int Cli::run(int argc, char** argv) {
         announce_stopping();
         boost::asio::io_context* io_ptr = nullptr;
         std::shared_ptr<Tunnel> tunnel_ptr;
+        std::function<void(const std::string&)> disconnect_fn;
         {
             std::lock_guard<std::mutex> lock(runtime_mu);
             io_ptr = active_io;
             tunnel_ptr = active_tunnel.lock();
+            disconnect_fn = active_disconnect;
         }
-        if (tunnel_ptr) {
-            tunnel_ptr->stop("interrupt");
+        if (disconnect_fn) {
+            disconnect_fn("interrupt");
+        } else {
+            if (tunnel_ptr) {
+                tunnel_ptr->stop("interrupt");
+            }
+            if (io_ptr) {
+                io_ptr->stop();
+            }
         }
-        if (io_ptr) {
-            io_ptr->stop();
+#if !defined(_WIN32)
+        restore_tracked_terminal_mode();
+        if (!stdin_closed_for_stop.exchange(true)) {
+            ::close(STDIN_FILENO);
         }
+#endif
         if (already_requested) {
             std::cerr << "[WARN] Force stop requested. Exiting immediately." << std::endl;
             std::_Exit(1);
@@ -3832,12 +4470,17 @@ int Cli::run(int argc, char** argv) {
                     return inner::decrypt_payload(key, frame_type, stream_id, blob);
                 }
                 std::uint64_t hop_id = inner::hop_id_from_time_ms(util::now_ms(), hop_interval_ms, hop_offset_ms);
-                std::uint64_t candidates[3] = {hop_id, hop_id > 0 ? hop_id - 1 : hop_id, hop_id + 1};
-                for (std::size_t i = 0; i < 3; ++i) {
-                    std::uint64_t id = candidates[i];
-                    if (i == 1 && hop_id == 0) {
-                        continue;
+                std::uint64_t candidates[1 + (kHopDecryptWindow * 2)];
+                std::size_t candidate_count = 0;
+                candidates[candidate_count++] = hop_id;
+                for (std::uint64_t delta = 1; delta <= kHopDecryptWindow; ++delta) {
+                    if (hop_id >= delta) {
+                        candidates[candidate_count++] = hop_id - delta;
                     }
+                    candidates[candidate_count++] = hop_id + delta;
+                }
+                for (std::size_t i = 0; i < candidate_count; ++i) {
+                    std::uint64_t id = candidates[i];
                     crypto::Bytes hop_key = inner::derive_hop_key(key, id);
                     try {
                         return inner::decrypt_payload(hop_key, frame_type, stream_id, blob);
@@ -3976,6 +4619,9 @@ int Cli::run(int argc, char** argv) {
             relay_opts.instance_name = cfg.instance_name.empty()
                 ? yume::identity::derive_instance_key(cfg.server + ":" + cfg.identity)
                 : cfg.instance_name;
+            relay_opts.client_platform = detect_client_platform();
+            relay_opts.client_variant = "cli";
+            relay_opts.client_version = yume::kVersion;
             relay_opts.relay_mode = control::relay_mode_from_string(cfg.relay_mode);
             relay_opts.allow_inbound_admin = cfg.allow_inbound_admin;
             relay_opts.allow_outbound_admin = cfg.allow_outbound_admin;
@@ -3985,11 +4631,54 @@ int Cli::run(int argc, char** argv) {
             relay_opts.history_enabled = cfg.history_enabled;
             relay_opts.history_dir = util::expand_user(cfg.history_dir);
             auto relay_runtime = std::make_shared<RelayRuntime>(tunnel, cfg, relay_opts);
-            relay_runtime->set_stop_callback([&]() {
-                stop_requested.store(true);
+            const auto effective_protection_summary = [&]() {
+                if (!inner_key.has_value() && !server_inner_active) {
+                    return std::string("TLS over 443");
+                }
+                std::string protection = (have_inner_caps && server_inner_dual)
+                    ? "Inner dual"
+                    : (std::string("Inner ") + (cfg.inner_heavy ? "heavy" : "light"));
+                if (hop_enabled) {
+                    protection += " + hop";
+                }
+                protection += " over 443";
+                std::string kdf_name;
+                if (inner_kdf.has_value()) {
+                    kdf_name = inner_kdf->name;
+                }
+                if (kdf_name.empty()) {
+                    kdf_name = cfg.inner_heavy ? "argon2" : "hkdf";
+                }
+                if (!kdf_name.empty()) {
+                    protection += " (" + kdf_name + ")";
+                }
+                return protection;
+            }();
+            auto disconnect_once = std::make_shared<std::atomic<bool>>(false);
+            auto request_disconnect = [disconnect_once,
+                                       relay_runtime,
+                                       tunnel,
+                                       &io,
+                                       &stop_requested,
+                                       &announce_stopping](const std::string& reason,
+                                                           const std::string& lifecycle_message,
+                                                           bool mark_stop_requested) {
+                if (disconnect_once->exchange(true)) {
+                    return;
+                }
+                if (mark_stop_requested) {
+                    stop_requested.store(true);
+                }
                 announce_stopping();
-                tunnel->stop("runtime stop");
+                std::string lifecycle_error;
+                relay_runtime->notify_disconnecting(lifecycle_message, &lifecycle_error);
+                tunnel->stop(reason);
                 io.stop();
+            };
+            relay_runtime->set_stop_callback([request_disconnect]() {
+                std::thread([request_disconnect]() {
+                    request_disconnect("runtime stop", "im disconnecting", true);
+                }).detach();
             });
             std::string relay_error;
             auto local_runtime = std::make_shared<yume::client::LocalRuntime>(local_runtime_path, relay_runtime);
@@ -4003,10 +4692,26 @@ int Cli::run(int argc, char** argv) {
             tunnel->set_inbound_open_handler([relay_runtime](uint8_t stream_id, const nlohmann::json& json) {
                 relay_runtime->on_inbound_open(stream_id, json);
             });
+            auto traffic_lifecycle_started = std::make_shared<std::atomic<bool>>(false);
+            tunnel->set_activity_handler([relay_runtime, effective_protection_summary, traffic_lifecycle_started]() {
+                if (traffic_lifecycle_started->exchange(true)) {
+                    return;
+                }
+                std::thread([relay_runtime, effective_protection_summary]() {
+                    std::string ignored_error;
+                    relay_runtime->notify_traffic_flow(effective_protection_summary, &ignored_error);
+                }).detach();
+            });
+            set_active_runtime(&io, tunnel, relay_runtime, [request_disconnect](const std::string& reason) {
+                request_disconnect(reason, "im disconnecting", true);
+            });
             tunnel->start();
             IoThreadGroup io_threads(io, start_io_threads(io, cfg.io_threads));
             if (!relay_runtime->announce_presence(&relay_error)) {
                 util::log_warn("relay presence unavailable: " + relay_error);
+            } else {
+                std::string lifecycle_error;
+                relay_runtime->notify_authenticated(effective_protection_summary, &lifecycle_error);
             }
             if (args.directory_mode) {
                 auto endpoints = relay_runtime->request_directory(&relay_error);
@@ -4019,26 +4724,44 @@ int Cli::run(int argc, char** argv) {
                               << " " << endpoint.display_name
                               << " kind=" << control::to_string(endpoint.endpoint_kind)
                               << " relay=" << control::to_string(endpoint.relay_mode)
+                              << " platform=" << endpoint.client_platform
+                              << " variant=" << endpoint.client_variant
+                              << " chat=" << (endpoint.allow_chat ? "yes" : "no")
+                              << " file=" << (endpoint.allow_file ? "yes" : "no")
+                              << " bytes=" << (endpoint.allow_bytes ? "yes" : "no")
                               << "\n";
                 }
                 return 0;
             }
-            const char* relay_password_env = std::getenv("YUME_RELAY_PASSWORD");
-            const std::string relay_password = relay_password_env ? relay_password_env : "";
             if (!args.chat_target.empty()) {
-                if (!relay_runtime->open_chat(args.chat_target, relay_password, &relay_error)) {
+                std::string relay_secret_b64;
+                if (!resolve_relay_secret(cfg, "", "chat with " + args.chat_target, &relay_secret_b64, &relay_error)) {
+                    util::log_error("chat open failed: " + relay_error);
+                    return 1;
+                }
+                if (!relay_runtime->open_chat(args.chat_target, relay_secret_b64, &relay_error)) {
                     util::log_error("chat open failed: " + relay_error);
                     return 1;
                 }
             }
             if (!args.file_target.empty()) {
-                if (!relay_runtime->send_file(args.file_target, args.file_path, relay_password, &relay_error)) {
+                std::string relay_secret_b64;
+                if (!resolve_relay_secret(cfg, "", "file send to " + args.file_target, &relay_secret_b64, &relay_error)) {
+                    util::log_error("file send failed: " + relay_error);
+                    return 1;
+                }
+                if (!relay_runtime->send_file(args.file_target, args.file_path, relay_secret_b64, &relay_error)) {
                     util::log_error("file send failed: " + relay_error);
                     return 1;
                 }
             }
             if (!args.bytes_target.empty()) {
-                if (!relay_runtime->send_bytes_path(args.bytes_target, args.bytes_path, relay_password, &relay_error)) {
+                std::string relay_secret_b64;
+                if (!resolve_relay_secret(cfg, "", "bytes send to " + args.bytes_target, &relay_secret_b64, &relay_error)) {
+                    util::log_error("bytes send failed: " + relay_error);
+                    return 1;
+                }
+                if (!relay_runtime->send_bytes_path(args.bytes_target, args.bytes_path, relay_secret_b64, &relay_error)) {
                     util::log_error("bytes send failed: " + relay_error);
                     return 1;
                 }
@@ -4092,11 +4815,16 @@ int Cli::run(int argc, char** argv) {
                 args.exec_cmd.empty() &&
                 !args.list_controlled &&
                 (cfg.socks_port > 0 || use_reverse || args.lport > 0 ||
+                 args.control_mode ||
                  args.directory_mode || !args.chat_target.empty() ||
                  !args.file_target.empty() || !args.bytes_target.empty() ||
                  !args.admin_target.empty());
             if (console_enabled) {
-                util::log_info("Console: help | whoami | status | directory | invites | chat <peer> | send <text> | send-file <peer> <path> | send-bytes <peer> <path> | accept <invite> <password> | reject <invite> [reason] | history [peer] | history-delete <peer|all> | admin attach <peer> | exec <cmd> | quit");
+                util::log_info("Interactive console ready. Type help + Enter.");
+                util::log_info("Console: help | whoami | status | directory | invites | chat <peer> | send <text> | send-file <peer> <path> | send-bytes <peer> <path> | accept <invite|from> [password] | reject <invite|from> [reason] | history [peer] | history-delete <peer|all> | admin attach <peer> | exec <cmd> | quit");
+#if !defined(_WIN32)
+                auto line_reader = std::make_shared<InteractiveLineReader>();
+#endif
                 console_thread = std::thread([console_stop,
                                               &stop_requested,
                                               &announce_stopping,
@@ -4104,18 +4832,42 @@ int Cli::run(int argc, char** argv) {
                                               tunnel,
                                               local_runtime,
                                               status_block_builder,
-                                              relay_runtime]() {
+                                              relay_runtime,
+                                              request_disconnect,
+                                              cfg
+#if !defined(_WIN32)
+                                              , line_reader
+#endif
+                                              ]() {
                     while (!console_stop->load()) {
                         std::string line;
-                        if (!read_stdin_line_with_timeout(&line, 250)) {
+#if !defined(_WIN32)
+                        if (!line_reader->read_line(&line, 250)) {
+                            if (stop_requested.load()) {
+                                break;
+                            }
+                            if (!std::cin.good() && std::cin.eof()) {
+                                break;
+                            }
                             continue;
                         }
+#else
+                        if (!read_stdin_line_with_timeout(&line, 250)) {
+                            if (stop_requested.load()) {
+                                break;
+                            }
+                            if (!std::cin.good() && std::cin.eof()) {
+                                break;
+                            }
+                            continue;
+                        }
+#endif
                         line = trim_copy(line);
                         if (line.empty()) {
                             continue;
                         }
                         if (line == "help") {
-                            util::log_info("Commands: help | whoami | status | directory | invites | chat <peer> | send <text> | send-file <peer> <path> | send-bytes <peer> <path> | accept <invite> <password> | reject <invite> [reason] | history [peer] | history-delete <peer|all> | admin attach <peer> | admin status | admin sessions | admin stop | exec <cmd> | quit");
+                            util::log_info("Commands: help | whoami | status | directory | invites | chat <peer> | send <text> | send-file <peer> <path> | send-bytes <peer> <path> | accept <invite|from> [password] | reject <invite|from> [reason] | history [peer] | history-delete <peer|all> | admin attach <peer> | admin status | admin sessions | admin stop | exec <cmd> | quit");
                             continue;
                         }
                         if (line == "whoami") {
@@ -4144,6 +4896,11 @@ int Cli::run(int argc, char** argv) {
                                 std::cout << entry.endpoint_id << " " << entry.display_name
                                           << " kind=" << control::to_string(entry.endpoint_kind)
                                           << " relay=" << control::to_string(entry.relay_mode)
+                                          << " platform=" << entry.client_platform
+                                          << " variant=" << entry.client_variant
+                                          << " chat=" << (entry.allow_chat ? "yes" : "no")
+                                          << " file=" << (entry.allow_file ? "yes" : "no")
+                                          << " bytes=" << (entry.allow_bytes ? "yes" : "no")
                                           << std::endl;
                             }
                             continue;
@@ -4161,52 +4918,71 @@ int Cli::run(int argc, char** argv) {
                             }
                             continue;
                         }
+                        if (line == "chat") {
+                            util::log_warn("usage: chat <peer>");
+                            continue;
+                        }
                         if (line.rfind("chat ", 0) == 0) {
                             auto rest = trim_copy(line.substr(5));
-                            const char* env_pw = std::getenv("YUME_RELAY_PASSWORD");
-                            std::string password = env_pw ? env_pw : "";
-                            if (password.empty()) {
-                                util::log_warn("set YUME_RELAY_PASSWORD before opening a chat");
+                            if (rest.empty()) {
+                                util::log_warn("usage: chat <peer>");
                                 continue;
                             }
+                            std::string relay_secret_b64;
                             std::string error;
-                            if (!relay_runtime->open_chat(rest, password, &error)) {
+                            if (!resolve_relay_secret(cfg, "", "chat with " + rest, &relay_secret_b64, &error)) {
+                                util::log_warn(error);
+                                continue;
+                            }
+                            if (!relay_runtime->open_chat(rest, relay_secret_b64, &error)) {
                                 util::log_warn(error);
                             } else {
                                 util::log_info("chat invite sent to " + rest);
                             }
                             continue;
                         }
+                        if (line == "send-file") {
+                            util::log_warn("usage: send-file <peer> <path>");
+                            continue;
+                        }
                         if (line.rfind("send-file ", 0) == 0) {
-                            std::istringstream iss(line.substr(10));
                             std::string peer;
                             std::string path;
-                            iss >> peer >> path;
-                            const char* env_pw = std::getenv("YUME_RELAY_PASSWORD");
-                            std::string password = env_pw ? env_pw : "";
-                            if (peer.empty() || path.empty() || password.empty()) {
-                                util::log_warn("usage: send-file <peer> <path> with YUME_RELAY_PASSWORD set");
+                            split_first_token(line.substr(10), &peer, &path);
+                            if (peer.empty() || path.empty()) {
+                                util::log_warn("usage: send-file <peer> <path>");
                                 continue;
                             }
+                            std::string relay_secret_b64;
                             std::string error;
-                            if (!relay_runtime->send_file(peer, path, password, &error)) {
+                            if (!resolve_relay_secret(cfg, "", "file send to " + peer, &relay_secret_b64, &error)) {
+                                util::log_warn(error);
+                                continue;
+                            }
+                            if (!relay_runtime->send_file(peer, path, relay_secret_b64, &error)) {
                                 util::log_warn(error);
                             }
                             continue;
                         }
+                        if (line == "send-bytes") {
+                            util::log_warn("usage: send-bytes <peer> <path>");
+                            continue;
+                        }
                         if (line.rfind("send-bytes ", 0) == 0) {
-                            std::istringstream iss(line.substr(11));
                             std::string peer;
                             std::string path;
-                            iss >> peer >> path;
-                            const char* env_pw = std::getenv("YUME_RELAY_PASSWORD");
-                            std::string password = env_pw ? env_pw : "";
-                            if (peer.empty() || path.empty() || password.empty()) {
-                                util::log_warn("usage: send-bytes <peer> <path> with YUME_RELAY_PASSWORD set");
+                            split_first_token(line.substr(11), &peer, &path);
+                            if (peer.empty() || path.empty()) {
+                                util::log_warn("usage: send-bytes <peer> <path>");
                                 continue;
                             }
+                            std::string relay_secret_b64;
                             std::string error;
-                            if (!relay_runtime->send_bytes_path(peer, path, password, &error)) {
+                            if (!resolve_relay_secret(cfg, "", "bytes send to " + peer, &relay_secret_b64, &error)) {
+                                util::log_warn(error);
+                                continue;
+                            }
+                            if (!relay_runtime->send_bytes_path(peer, path, relay_secret_b64, &error)) {
                                 util::log_warn(error);
                             }
                             continue;
@@ -4218,19 +4994,31 @@ int Cli::run(int argc, char** argv) {
                             }
                             continue;
                         }
+                        if (line == "accept") {
+                            util::log_warn("usage: accept <invite|from> [password]");
+                            continue;
+                        }
                         if (line.rfind("accept ", 0) == 0) {
-                            std::istringstream iss(line.substr(7));
                             std::string invite_id;
                             std::string password;
-                            iss >> invite_id >> password;
-                            if (invite_id.empty() || password.empty()) {
-                                util::log_warn("usage: accept <invite> <password>");
+                            split_first_token(line.substr(7), &invite_id, &password);
+                            if (invite_id.empty()) {
+                                util::log_warn("usage: accept <invite|from> [password]");
                                 continue;
                             }
+                            std::string relay_secret_b64;
                             std::string error;
-                            if (!relay_runtime->accept_invite(invite_id, password, &error)) {
+                            if (!resolve_relay_secret(cfg, password, "accept invite " + invite_id, &relay_secret_b64, &error)) {
+                                util::log_warn(error);
+                                continue;
+                            }
+                            if (!relay_runtime->accept_invite(invite_id, relay_secret_b64, &error)) {
                                 util::log_warn(error);
                             }
+                            continue;
+                        }
+                        if (line == "reject") {
+                            util::log_warn("usage: reject <invite|from> [reason]");
                             continue;
                         }
                         if (line.rfind("reject ", 0) == 0) {
@@ -4294,10 +5082,7 @@ int Cli::run(int argc, char** argv) {
                             continue;
                         }
                         if (line == "quit" || line == "exit" || line == "stop") {
-                            stop_requested.store(true);
-                            announce_stopping();
-                            tunnel->stop("console stop");
-                            io.stop();
+                            request_disconnect("console stop", "im disconnecting", true);
                             break;
                         }
                         if (line.rfind("exec ", 0) == 0) {
@@ -4317,8 +5102,12 @@ int Cli::run(int argc, char** argv) {
                                     std::cout.write(reinterpret_cast<const char*>(data.data()), data.size());
                                     std::cout.flush();
                                 },
-                                [stream_id]() {
-                                    util::log_info("exec stream " + std::to_string(static_cast<int>(stream_id)) + " closed");
+                                [stream_id](const std::string& reason) {
+                                    std::string message = "exec stream " + std::to_string(static_cast<int>(stream_id)) + " closed";
+                                    if (!reason.empty()) {
+                                        message += ": " + reason;
+                                    }
+                                    util::log_info(message);
                                 });
                             tunnel->send_exec(stream_id, cmd);
                             util::log_info("exec sent on stream " + std::to_string(static_cast<int>(stream_id)));
@@ -4416,14 +5205,15 @@ int Cli::run(int argc, char** argv) {
                                             std::cout.write(reinterpret_cast<const char*>(data.data()), data.size());
                                             std::cout.flush();
                                         },
-                                        [done, &io]() {
+                                        [done, &io](const std::string&) {
                                             done->store(true);
                                             io.stop();
                                         });
                 tunnel->send_exec(stream_id, args.exec_cmd);
                 io_threads.wait();
                 if (!close_reason.empty()) {
-                    throw std::runtime_error("tunnel closed: " + close_reason);
+                    util::log_error("tunnel closed: " + close_reason);
+                    return 1;
                 }
                 return 0;
             }
@@ -4482,7 +5272,8 @@ int Cli::run(int argc, char** argv) {
                     return 130;
                 }
                 if (!close_reason.empty()) {
-                    throw std::runtime_error("tunnel closed: " + close_reason);
+                    util::log_error("tunnel closed: " + close_reason);
+                    return 1;
                 }
                 return 0;
             }
@@ -4497,7 +5288,8 @@ int Cli::run(int argc, char** argv) {
                     return 130;
                 }
                 if (!close_reason.empty()) {
-                    throw std::runtime_error("tunnel closed: " + close_reason);
+                    util::log_error("tunnel closed: " + close_reason);
+                    return 1;
                 }
                 return 0;
             }
@@ -4509,7 +5301,8 @@ int Cli::run(int argc, char** argv) {
                     return 130;
                 }
                 if (!close_reason.empty()) {
-                    throw std::runtime_error("tunnel closed: " + close_reason);
+                    util::log_error("tunnel closed: " + close_reason);
+                    return 1;
                 }
                 return 0;
             }
@@ -4522,7 +5315,8 @@ int Cli::run(int argc, char** argv) {
                     return 130;
                 }
                 if (!close_reason.empty()) {
-                    throw std::runtime_error("tunnel closed: " + close_reason);
+                    util::log_error("tunnel closed: " + close_reason);
+                    return 1;
                 }
                 return 0;
             }
@@ -4540,6 +5334,15 @@ int Cli::run(int argc, char** argv) {
             if (stop_requested.load()) {
                 announce_stopping();
                 return 130;
+            }
+            std::shared_ptr<RelayRuntime> relay_ptr;
+            {
+                std::lock_guard<std::mutex> lock(runtime_mu);
+                relay_ptr = active_relay_runtime.lock();
+            }
+            if (relay_ptr) {
+                std::string lifecycle_error;
+                relay_ptr->notify_error(ex.what(), "connection_failed", &lifecycle_error);
             }
             attempt++;
             int backoff = std::min(30, 1 << std::min(attempt, 5));

@@ -69,7 +69,7 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --obfs --inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --allow-remote-server-admin --operator-keys --federation-enable --peer --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --completion"
+  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --obfs --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --allow-remote-server-admin --operator-keys --federation-enable --peer --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --completion"
   local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --keys-add --keys-gen"
   case "$prev" in
     --completion)
@@ -122,8 +122,9 @@ void print_help() {
         << "  --control-full           Allow full server-side network control\n"
         << "  --boring                 Minimal logs (no emojis)\n\n"
         << "Inner Crypto:\n"
-        << "  --inner                  Enable inner PQ crypto\n"
-        << "  --inner-heavy            Heavy KDF mode (default)\n"
+        << "  --inner                  Enable inner PQ crypto (enabled by default)\n"
+        << "  --no-inner               Disable inner PQ crypto, requirements, and hopping\n"
+        << "  --inner-heavy            Heavy KDF mode when inner crypto is enabled (default)\n"
         << "  --inner-light            Light KDF mode\n"
         << "  --inner-dual             Accept heavy and light clients\n"
         << "  --inner-required         Reject clients without inner crypto\n"
@@ -1232,6 +1233,16 @@ int main(int argc, char** argv) {
             inner_crypto_override = true;
             inner_heavy_override = true;
             inner_heavy_value = true;
+        } else if (arg == "--no-inner") {
+            cfg.inner_crypto = false;
+            cfg.inner_dual = false;
+            cfg.inner_required = false;
+            cfg.inner_hop = false;
+            inner_crypto_override = true;
+            inner_dual_override = true;
+            inner_required_override = true;
+            inner_hop_override = true;
+            inner_hop_value = false;
         } else if (arg == "--inner-heavy") {
             cfg.inner_crypto = true;
             inner_crypto_override = true;
@@ -2174,6 +2185,17 @@ int main(int argc, char** argv) {
     if (cfg.listen_port != 443 && !cfg.anonym) {
         yume::util::log_warn("WARNING: running on a port other than 443 reduces stealth and defeats HTTPS disguise.");
     }
+    const std::string effective_inner_mode =
+        !cfg.inner_crypto ? "off"
+        : cfg.inner_dual ? "dual"
+        : cfg.inner_heavy ? "heavy"
+        : "light";
+    const std::string hop_state =
+        cfg.inner_hop ? "on (" + std::to_string(cfg.hop_interval_ms) + "ms)"
+                      : "off";
+    yume::util::log_info("effective inner mode: " + effective_inner_mode +
+                         "; hopping: " + hop_state +
+                         "; required: " + (cfg.inner_required ? "yes" : "no"));
 
     if (cfg.real_http) {
         if (cfg.real_secret.empty()) {
@@ -2394,9 +2416,12 @@ int main(int argc, char** argv) {
         }
         local_runtime->stop();
         manager.stop();
-        io.stop();
         stop_refresh.store(true);
         refresh_cv.notify_all();
+        std::thread([&io]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+            io.stop();
+        }).detach();
     });
 
     try {

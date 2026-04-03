@@ -18,6 +18,8 @@
 namespace yume::client {
 
 namespace {
+constexpr std::uint64_t kHopDecryptWindow = 6;
+
 std::string payload_to_string(const std::vector<uint8_t>& payload) {
     return std::string(payload.begin(), payload.end());
 }
@@ -65,6 +67,10 @@ void Tunnel::set_control_handler(ControlHandler handler) {
 
 void Tunnel::set_inbound_open_handler(InboundOpenHandler handler) {
     inbound_open_handler_ = std::move(handler);
+}
+
+void Tunnel::set_activity_handler(ActivityHandler handler) {
+    activity_handler_ = std::move(handler);
 }
 
 boost::asio::any_io_executor Tunnel::get_executor() {
@@ -177,6 +183,9 @@ void Tunnel::send_data(uint8_t stream_id, const Bytes& data) {
     }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::DATA, stream_id, flags}, payload};
     async_write_frame(frame);
+    if (!data.empty() && activity_handler_) {
+        activity_handler_();
+    }
 }
 
 void Tunnel::send_close(uint8_t stream_id, const std::string& reason) {
@@ -308,6 +317,9 @@ void Tunnel::handle_frame(const protocol::Frame& frame) {
             if (handler) {
                 const bool ok = (frame.header.flags & protocol::kFlagOpenOk) != 0;
                 if (ok) {
+                    if (!is_remote_listen && activity_handler_) {
+                        activity_handler_();
+                    }
                     // RLISTEN success can carry selected port details in payload.
                     handler(true, is_remote_listen ? payload_to_string(payload) : std::string{});
                 } else {
@@ -382,6 +394,9 @@ void Tunnel::handle_frame(const protocol::Frame& frame) {
                 }
             }
             if (on_data) {
+                if (!payload.empty() && activity_handler_) {
+                    activity_handler_();
+                }
                 on_data(payload);
             }
             break;
@@ -453,6 +468,7 @@ void Tunnel::handle_frame(const protocol::Frame& frame) {
         }
         case protocol::CLOSE: {
             CloseHandler on_close;
+            const std::string reason = payload_to_string(payload);
             {
                 std::lock_guard<std::mutex> lock(state_mu_);
                 auto it = streams_.find(stream_id);
@@ -466,7 +482,7 @@ void Tunnel::handle_frame(const protocol::Frame& frame) {
                 control_exec_.erase(stream_id);
             }
             if (on_close) {
-                on_close();
+                on_close(reason);
             }
             break;
         }
@@ -512,12 +528,17 @@ bool Tunnel::decrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const 
             return true;
         }
         std::uint64_t hop_id = current_hop_id();
-        std::uint64_t candidates[3] = {hop_id, hop_id > 0 ? hop_id - 1 : hop_id, hop_id + 1};
-        for (std::size_t i = 0; i < 3; ++i) {
-            std::uint64_t id = candidates[i];
-            if (i == 1 && hop_id == 0) {
-                continue;
+        std::uint64_t candidates[1 + (kHopDecryptWindow * 2)];
+        std::size_t candidate_count = 0;
+        candidates[candidate_count++] = hop_id;
+        for (std::uint64_t delta = 1; delta <= kHopDecryptWindow; ++delta) {
+            if (hop_id >= delta) {
+                candidates[candidate_count++] = hop_id - delta;
             }
+            candidates[candidate_count++] = hop_id + delta;
+        }
+        for (std::size_t i = 0; i < candidate_count; ++i) {
+            std::uint64_t id = candidates[i];
             Bytes hop_key = inner::derive_hop_key(*inner_key_, id);
             try {
                 *output = inner::decrypt_payload(hop_key, frame_type, stream_id, input);
@@ -608,7 +629,7 @@ void Tunnel::close_all(const std::string& reason) {
         close_handler(reason);
     }
     for (auto& callback : close_callbacks) {
-        callback();
+        callback(reason);
     }
 
     stream_.shutdown(ec);

@@ -2,6 +2,8 @@
 
 #include "server/manager.hpp"
 
+#include <algorithm>
+
 namespace yume::server {
 
 LocalRuntime::LocalRuntime(std::string path, Manager* manager, std::function<void()> stop_callback)
@@ -58,6 +60,10 @@ nlohmann::json LocalRuntime::handle_request(const nlohmann::json& request) {
             {"endpoints", manager_->list_endpoints().size()},
             {"channels", manager_->list_active_channels().size()},
         };
+        result["endpoint_statuses"] = nlohmann::json::array();
+        for (const auto& status : manager_->list_endpoint_statuses()) {
+            result["endpoint_statuses"].push_back(control::endpoint_runtime_status_to_json(status, true));
+        }
         return {{"ok", true}, {"result", result}};
     }
     if (op == "directory.list") {
@@ -82,6 +88,14 @@ nlohmann::json LocalRuntime::handle_request(const nlohmann::json& request) {
                 {"federated", channel.federated},
                 {"route_hops", channel.route_hops},
             });
+        }
+        return {{"ok", true}, {"result", result}};
+    }
+    if (op == "runtime.events") {
+        const auto limit = std::max(0, args.value("limit", 200));
+        nlohmann::json result = nlohmann::json::array();
+        for (const auto& event : manager_->list_recent_lifecycle_events(static_cast<std::size_t>(limit))) {
+            result.push_back(control::lifecycle_event_to_json(event));
         }
         return {{"ok", true}, {"result", result}};
     }

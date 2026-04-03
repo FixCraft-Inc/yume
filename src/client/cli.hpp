@@ -42,6 +42,7 @@ struct ClientConfig {
     bool allow_bytes{true};
     bool history_enabled{true};
     std::string history_dir;
+    std::string relay_key_file;
     bool auto_attach_local{true};
     
     // TLS Stealth Mode settings

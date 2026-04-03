@@ -38,6 +38,7 @@ public:
 
     void start();
     void stop();
+    void notify_server_shutdown(const std::string& reason);
     bool is_stale() const;
     void force_close_reverse_port(int port);
     std::string endpoint_id() const { return client_id_; }
@@ -90,11 +91,20 @@ private:
     void do_remote_write(uint8_t stream_id);
     void start_udp_read(uint8_t stream_id);
     void on_udp_read(uint8_t stream_id, const boost::system::error_code& ec, std::size_t bytes);
+    void enqueue_udp_write(uint8_t stream_id, const crypto::Bytes& data);
+    void do_udp_write(uint8_t stream_id);
 
     void async_write_frame(const protocol::Frame& frame,
                            std::function<void(const boost::system::error_code&, std::size_t)> handler = {});
+    void queue_encoded_write_on_strand(
+        std::shared_ptr<std::vector<uint8_t>> data,
+        std::function<void(const boost::system::error_code&, std::size_t)> handler = {});
     void do_write();
 
+    void close_with_reason(const std::string& reason);
+    void begin_close();
+    void maybe_finish_close();
+    void shutdown_transport();
     void close();
     void touch_activity();
     void schedule_idle_check();
@@ -133,7 +143,7 @@ private:
     struct RemoteStream {
         boost::asio::ip::tcp::socket socket;
         boost::asio::ip::tcp::resolver resolver;
-        std::array<uint8_t, 4096> read_buf{};
+        std::array<uint8_t, 16384> read_buf{};
         std::deque<std::vector<uint8_t>> write_queue;
         bool write_in_flight{false};
 
@@ -147,6 +157,8 @@ private:
         boost::asio::ip::udp::resolver resolver;
         boost::asio::ip::udp::endpoint remote;
         std::array<uint8_t, 65535> read_buf{};
+        std::deque<crypto::Bytes> write_queue;
+        bool write_in_flight{false};
 
         explicit UdpStream(boost::asio::any_io_executor exec)
             : socket(exec)
@@ -182,6 +194,9 @@ private:
     std::string client_id_;
     std::string client_display_name_;
     std::string client_auth_pubkey_b64_;
+    std::string client_platform_{"unknown"};
+    std::string client_variant_{"unknown"};
+    std::string client_version_;
     control::RelayMode client_relay_mode_{control::RelayMode::untrusted};
     bool client_allow_chat_{true};
     bool client_allow_file_{true};
@@ -198,6 +213,15 @@ private:
 
     std::deque<PendingWrite> write_queue_;
     bool write_in_flight_{false};
+    enum class CloseState {
+        Open,
+        Closing,
+        Closed,
+    };
+    CloseState close_state_{CloseState::Open};
+    bool transport_shutdown_in_flight_{false};
+    bool closed_{false};
+    std::string close_reason_;
 };
 
 }  // namespace yume::server

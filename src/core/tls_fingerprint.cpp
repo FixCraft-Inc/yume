@@ -6,14 +6,14 @@
 
 #include "core/tls_fingerprint.hpp"
 
-#include <openssl/md5.h>
-#include <openssl/sha.h>
+#include <openssl/evp.h>
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <iomanip>
 #include <sstream>
+#include <stdexcept>
 #include <cstring>
 #include <vector>
 
@@ -21,26 +21,31 @@ namespace yume::tls_fingerprint {
 
 namespace {
 
-std::string md5_hash(const std::string& input) {
-    unsigned char digest[MD5_DIGEST_LENGTH];
-    MD5(reinterpret_cast<const unsigned char*>(input.data()), input.size(), digest);
-    
+std::string digest_hex(const std::string& input, const EVP_MD* algorithm) {
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digest_len = 0;
+    if (EVP_Digest(input.data(),
+                   input.size(),
+                   digest,
+                   &digest_len,
+                   algorithm,
+                   nullptr) != 1) {
+        throw std::runtime_error("EVP_Digest failed");
+    }
     std::ostringstream oss;
-    for (int i = 0; i < MD5_DIGEST_LENGTH; ++i) {
+    for (unsigned int i = 0; i < digest_len; ++i) {
         oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(digest[i]);
     }
     return oss.str();
 }
 
+std::string md5_hash(const std::string& input) {
+    // JA3 is defined as an MD5 of the normalized ClientHello string.
+    return digest_hex(input, EVP_md5());
+}
+
 std::string sha256_hash(const std::string& input) {
-    unsigned char digest[SHA256_DIGEST_LENGTH];
-    SHA256(reinterpret_cast<const unsigned char*>(input.data()), input.size(), digest);
-    
-    std::ostringstream oss;
-    for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
-        oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(digest[i]);
-    }
-    return oss.str();
+    return digest_hex(input, EVP_sha256());
 }
 
 template<typename T>

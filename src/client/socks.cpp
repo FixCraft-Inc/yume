@@ -261,7 +261,7 @@ void SocksSession::start_tunnel() {
     tunnel_->register_stream(
         stream_id_,
         [self = shared_from_this()](const Tunnel::Bytes& data) { self->deliver_from_tunnel(data); },
-        [self = shared_from_this()]() { self->close_from_tunnel(); });
+        [self = shared_from_this()](const std::string&) { self->close_from_tunnel(); });
 
     tunnel_->open_stream(stream_id_, target_host_, target_port_,
                          [self = shared_from_this()](bool ok, const std::string& reason) {
@@ -397,7 +397,9 @@ void SocksSession::on_udp_read(const boost::system::error_code& ec, std::size_t 
         tunnel_->register_stream(
             stream_id,
             [self = shared_from_this(), stream_id](const Tunnel::Bytes& data) { self->deliver_udp(stream_id, data); },
-            [self = shared_from_this(), stream_id]() { self->close_udp_assoc(stream_id, "remote closed"); });
+            [self = shared_from_this(), stream_id](const std::string& reason) {
+                self->close_udp_assoc(stream_id, reason.empty() ? "remote closed" : reason);
+            });
         tunnel_->open_stream(stream_id, host, port,
                              [self = shared_from_this(), stream_id](bool ok, const std::string& reason) {
                                  auto it_assoc = self->udp_assoc_by_stream_.find(stream_id);

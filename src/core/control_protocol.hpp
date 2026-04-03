@@ -18,6 +18,9 @@ struct EndpointInfo {
     EndpointKind endpoint_kind{EndpointKind::client};
     std::string display_name;
     std::string hostname;
+    std::string client_platform{"unknown"};
+    std::string client_variant{"unknown"};
+    std::string client_version;
     std::string server_id;
     RelayMode relay_mode{RelayMode::untrusted};
     bool allow_inbound_admin{false};
@@ -36,12 +39,36 @@ struct PresenceAnnouncement {
     std::string preferred_id;
     std::string preferred_name;
     std::string hostname;
+    std::string client_platform{"unknown"};
+    std::string client_variant{"unknown"};
+    std::string client_version;
     RelayMode relay_mode{RelayMode::untrusted};
     bool allow_chat{true};
     bool allow_file{true};
     bool allow_bytes{true};
     bool allow_inbound_admin{false};
     bool allow_outbound_admin{true};
+};
+
+struct ClientLifecycleEvent {
+    std::string endpoint_id;
+    std::string display_name;
+    std::string state{"unknown"};
+    std::string message;
+    std::string detail;
+    std::string client_platform{"unknown"};
+    std::string client_variant{"unknown"};
+    std::string client_version;
+    std::string effective_protection;
+    bool traffic_verified{false};
+    std::string exit_ip;
+    std::string error_code;
+    std::int64_t server_time_ms{0};
+};
+
+struct EndpointRuntimeStatus {
+    EndpointInfo endpoint;
+    std::optional<ClientLifecycleEvent> latest_lifecycle;
 };
 
 struct PresenceReply {
@@ -108,6 +135,10 @@ ChannelKind channel_kind_from_string(const std::string& value);
 
 nlohmann::json endpoint_to_json(const EndpointInfo& endpoint, bool include_auth_pubkey = false);
 EndpointInfo endpoint_from_json(const nlohmann::json& json);
+nlohmann::json lifecycle_event_to_json(const ClientLifecycleEvent& event);
+ClientLifecycleEvent lifecycle_event_from_json(const nlohmann::json& json);
+nlohmann::json endpoint_runtime_status_to_json(const EndpointRuntimeStatus& status,
+                                               bool include_auth_pubkey = false);
 
 nlohmann::json invite_to_json(const PendingInvite& invite, bool include_response = true);
 PendingInvite invite_from_json(const nlohmann::json& json);

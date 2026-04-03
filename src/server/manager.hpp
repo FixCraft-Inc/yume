@@ -1,7 +1,9 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -46,6 +48,8 @@ public:
 
     void start();
     void stop();
+    void register_session(const std::shared_ptr<Session>& session);
+    void unregister_session(Session* session);
     void update_anonym_proof(const std::string& hash,
                              const std::string& sig,
                              const std::string& ts,
@@ -71,8 +75,13 @@ public:
     EndpointRegistrationResult register_endpoint(const std::shared_ptr<Session>& session,
                                                  const control::PresenceAnnouncement& announce,
                                                  const std::string& auth_pubkey_b64);
+    bool update_endpoint_lifecycle(Session* session,
+                                   control::ClientLifecycleEvent event,
+                                   control::ClientLifecycleEvent* stored_event = nullptr);
     void unregister_endpoint(Session* session);
     std::vector<control::EndpointInfo> list_endpoints() const;
+    std::vector<control::EndpointRuntimeStatus> list_endpoint_statuses() const;
+    std::vector<control::ClientLifecycleEvent> list_recent_lifecycle_events(std::size_t limit = 200) const;
     std::shared_ptr<Session> find_endpoint_session(const std::string& query, control::EndpointInfo* info);
     bool route_invite(const std::shared_ptr<Session>& from_session, const control::PendingInvite& invite, std::string* error);
     bool respond_invite(const std::shared_ptr<Session>& from_session, const control::PendingInvite& response,
@@ -93,7 +102,10 @@ public:
     const ServerConfig& config_snapshot() const;
 
 private:
+    static constexpr std::size_t kMaxLifecycleEvents = 512;
+
     void do_accept();
+    void append_lifecycle_event_locked(const control::ClientLifecycleEvent& event);
 
     boost::asio::io_context& io_;
     ServerConfig cfg_;
@@ -103,6 +115,8 @@ private:
     std::shared_ptr<std::vector<crypto::Bytes>> authorized_keys_;
 
     std::atomic<uint64_t> next_session_id_{1};
+    std::mutex sessions_mutex_;
+    std::unordered_map<Session*, std::weak_ptr<Session>> live_sessions_;
     std::mutex reverse_mutex_;
     std::unordered_map<int, std::weak_ptr<Session>> reverse_port_sessions_;
     struct ControlledClientEntry {
@@ -113,6 +127,7 @@ private:
     std::unordered_map<std::string, ControlledClientEntry> controlled_clients_;
     struct EndpointEntry {
         control::EndpointInfo info;
+        std::optional<control::ClientLifecycleEvent> latest_lifecycle;
         std::weak_ptr<Session> session;
     };
     struct InviteEntry {
@@ -126,6 +141,7 @@ private:
     std::unordered_map<std::string, std::string> endpoint_names_;
     std::unordered_map<std::string, InviteEntry> invites_;
     std::unordered_map<std::string, control::ActiveRelayChannel> active_channels_;
+    std::deque<control::ClientLifecycleEvent> lifecycle_events_;
     std::string server_id_;
     std::string server_name_;
 };

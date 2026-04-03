@@ -60,6 +60,39 @@ void Manager::start() {
 void Manager::stop() {
     boost::system::error_code ec;
     acceptor_.close(ec);
+
+    std::vector<std::shared_ptr<Session>> sessions;
+    {
+        std::lock_guard<std::mutex> lock(sessions_mutex_);
+        for (auto it = live_sessions_.begin(); it != live_sessions_.end();) {
+            auto session = it->second.lock();
+            if (!session) {
+                it = live_sessions_.erase(it);
+                continue;
+            }
+            sessions.push_back(std::move(session));
+            ++it;
+        }
+    }
+    for (const auto& session : sessions) {
+        session->notify_server_shutdown("server closed, kicked");
+    }
+}
+
+void Manager::register_session(const std::shared_ptr<Session>& session) {
+    if (!session) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    live_sessions_[session.get()] = session;
+}
+
+void Manager::unregister_session(Session* session) {
+    if (!session) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    live_sessions_.erase(session);
 }
 
 void Manager::update_anonym_proof(const std::string& hash,
@@ -218,6 +251,9 @@ EndpointRegistrationResult Manager::register_endpoint(const std::shared_ptr<Sess
     result.server_name = server_name_;
     result.endpoint.endpoint_kind = announce.endpoint_kind;
     result.endpoint.hostname = announce.hostname;
+    result.endpoint.client_platform = announce.client_platform;
+    result.endpoint.client_variant = announce.client_variant;
+    result.endpoint.client_version = announce.client_version;
     result.endpoint.server_id = server_id_;
     result.endpoint.relay_mode = announce.relay_mode;
     result.endpoint.allow_chat = announce.allow_chat;
@@ -281,6 +317,41 @@ EndpointRegistrationResult Manager::register_endpoint(const std::shared_ptr<Sess
     return result;
 }
 
+bool Manager::update_endpoint_lifecycle(Session* session,
+                                        control::ClientLifecycleEvent event,
+                                        control::ClientLifecycleEvent* stored_event) {
+    if (!session) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(endpoint_mutex_);
+    auto it_session = session_endpoints_.find(session);
+    if (it_session == session_endpoints_.end()) {
+        return false;
+    }
+    auto it = endpoints_.find(it_session->second);
+    if (it == endpoints_.end()) {
+        return false;
+    }
+    event.endpoint_id = it->second.info.endpoint_id;
+    event.display_name = it->second.info.display_name;
+    if (event.client_platform.empty() || event.client_platform == "unknown") {
+        event.client_platform = it->second.info.client_platform;
+    }
+    if (event.client_variant.empty() || event.client_variant == "unknown") {
+        event.client_variant = it->second.info.client_variant;
+    }
+    if (event.client_version.empty()) {
+        event.client_version = it->second.info.client_version;
+    }
+    event.server_time_ms = yume::util::now_ms();
+    it->second.latest_lifecycle = event;
+    append_lifecycle_event_locked(event);
+    if (stored_event) {
+        *stored_event = event;
+    }
+    return true;
+}
+
 void Manager::unregister_endpoint(Session* session) {
     if (!session) {
         return;
@@ -292,6 +363,22 @@ void Manager::unregister_endpoint(Session* session) {
     }
     auto it = endpoints_.find(it_session->second);
     if (it != endpoints_.end()) {
+        const auto latest_state = it->second.latest_lifecycle.has_value()
+            ? it->second.latest_lifecycle->state
+            : std::string();
+        if (latest_state != "disconnecting") {
+            control::ClientLifecycleEvent event;
+            event.endpoint_id = it->second.info.endpoint_id;
+            event.display_name = it->second.info.display_name;
+            event.state = "disconnecting";
+            event.message = "disconnecting";
+            event.detail = "session ended without graceful disconnect";
+            event.client_platform = it->second.info.client_platform;
+            event.client_variant = it->second.info.client_variant;
+            event.client_version = it->second.info.client_version;
+            event.server_time_ms = yume::util::now_ms();
+            append_lifecycle_event_locked(event);
+        }
         endpoint_names_.erase(it->second.info.display_name);
         const std::string removed_id = it->second.info.endpoint_id;
         endpoints_.erase(it);
@@ -328,6 +415,39 @@ std::vector<control::EndpointInfo> Manager::list_endpoints() const {
     std::sort(out.begin(), out.end(), [](const control::EndpointInfo& a, const control::EndpointInfo& b) {
         return a.display_name < b.display_name;
     });
+    return out;
+}
+
+std::vector<control::EndpointRuntimeStatus> Manager::list_endpoint_statuses() const {
+    std::vector<control::EndpointRuntimeStatus> out;
+    std::lock_guard<std::mutex> lock(endpoint_mutex_);
+    out.reserve(endpoints_.size());
+    for (const auto& entry : endpoints_) {
+        if (entry.second.session.expired()) {
+            continue;
+        }
+        control::EndpointRuntimeStatus status;
+        status.endpoint = entry.second.info;
+        status.latest_lifecycle = entry.second.latest_lifecycle;
+        out.push_back(std::move(status));
+    }
+    std::sort(out.begin(), out.end(), [](const control::EndpointRuntimeStatus& a,
+                                         const control::EndpointRuntimeStatus& b) {
+        return a.endpoint.display_name < b.endpoint.display_name;
+    });
+    return out;
+}
+
+std::vector<control::ClientLifecycleEvent> Manager::list_recent_lifecycle_events(std::size_t limit) const {
+    std::vector<control::ClientLifecycleEvent> out;
+    std::lock_guard<std::mutex> lock(endpoint_mutex_);
+    const std::size_t count = std::min<std::size_t>(limit, lifecycle_events_.size());
+    out.reserve(count);
+    auto begin = lifecycle_events_.end();
+    std::advance(begin, -static_cast<std::ptrdiff_t>(count));
+    for (auto it = begin; it != lifecycle_events_.end(); ++it) {
+        out.push_back(*it);
+    }
     return out;
 }
 
@@ -539,7 +659,17 @@ const ServerConfig& Manager::config_snapshot() const {
     return cfg_;
 }
 
+void Manager::append_lifecycle_event_locked(const control::ClientLifecycleEvent& event) {
+    lifecycle_events_.push_back(event);
+    while (lifecycle_events_.size() > kMaxLifecycleEvents) {
+        lifecycle_events_.pop_front();
+    }
+}
+
 void Manager::do_accept() {
+    if (!acceptor_.is_open()) {
+        return;
+    }
     acceptor_.async_accept([this](boost::system::error_code ec, boost::asio::ip::tcp::socket socket) {
         if (!ec) {
             uint64_t session_id = next_session_id_.fetch_add(1);
@@ -549,11 +679,14 @@ void Manager::do_accept() {
                 cfg_copy = cfg_;
             }
             auto session = std::make_shared<Session>(std::move(socket), ssl_ctx_, cfg_copy, authorized_keys_, session_id, this);
+            register_session(session);
             session->start();
-        } else {
+        } else if (ec != boost::asio::error::operation_aborted && acceptor_.is_open()) {
             util::log_warn(std::string("accept failed: ") + ec.message());
         }
-        do_accept();
+        if (acceptor_.is_open()) {
+            do_accept();
+        }
     });
 }
 

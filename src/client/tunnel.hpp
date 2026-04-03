@@ -30,11 +30,12 @@ public:
     using Bytes = std::vector<uint8_t>;
     using OpenHandler = std::function<void(bool, const std::string&)>;
     using DataHandler = std::function<void(const Bytes&)>;
-    using CloseHandler = std::function<void()>;
+    using CloseHandler = std::function<void(const std::string&)>;
     using TunnelCloseHandler = std::function<void(const std::string&)>;
     using ReverseOpenHandler = std::function<void(uint8_t listen_id, uint8_t stream_id)>;
     using ControlHandler = std::function<void(const nlohmann::json&)>;
     using InboundOpenHandler = std::function<void(uint8_t stream_id, const nlohmann::json&)>;
+    using ActivityHandler = std::function<void()>;
 
     explicit Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream);
 
@@ -47,6 +48,7 @@ public:
     void set_close_handler(TunnelCloseHandler handler);
     void set_control_handler(ControlHandler handler);
     void set_inbound_open_handler(InboundOpenHandler handler);
+    void set_activity_handler(ActivityHandler handler);
     boost::asio::any_io_executor get_executor();
 
     uint8_t reserve_stream_id();
@@ -114,6 +116,7 @@ private:
     TunnelCloseHandler close_handler_;
     ControlHandler control_handler_;
     InboundOpenHandler inbound_open_handler_;
+    ActivityHandler activity_handler_;
     uint8_t next_stream_id_{1};
     bool closed_{false};
     mutable std::mutex state_mu_;

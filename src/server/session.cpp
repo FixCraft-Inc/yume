@@ -11,8 +11,10 @@
 
 #include <chrono>
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <ctime>
+#include <iostream>
 #include <random>
 #include <string>
 
@@ -37,6 +39,7 @@ constexpr uint8_t kMinFrameType = protocol::AUTH;
 constexpr uint8_t kMaxFrameType = protocol::SOPEN;
 constexpr int64_t kIdleTimeoutMs = 90 * 1000;
 constexpr int64_t kIdleCheckIntervalMs = 30 * 1000;
+constexpr std::uint64_t kHopDecryptWindow = 6;
 
 int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -88,7 +91,7 @@ bool is_public_address(const boost::asio::ip::address& addr) {
         return !is_private_ipv4(addr.to_v4());
     }
     if (addr.is_v6()) {
-        return false;
+        return !is_private_ipv6(addr.to_v6());
     }
     return false;
 }
@@ -118,6 +121,90 @@ bool is_blocked_host_literal(const std::string& host, const ServerConfig& cfg) {
     return false;
 }
 
+boost::asio::ip::address canonical_endpoint_address(const boost::asio::ip::address& addr) {
+    if (addr.is_v6()) {
+        const auto v6 = addr.to_v6();
+        if (v6.is_v4_mapped()) {
+            const auto bytes = v6.to_bytes();
+            boost::asio::ip::address_v4::bytes_type v4bytes{
+                {bytes[12], bytes[13], bytes[14], bytes[15]}
+            };
+            return boost::asio::ip::address_v4(v4bytes);
+        }
+    }
+    return addr;
+}
+
+bool addresses_match(const boost::asio::ip::address& lhs, const boost::asio::ip::address& rhs) {
+    return canonical_endpoint_address(lhs) == canonical_endpoint_address(rhs);
+}
+
+template <typename Endpoint>
+bool is_active_server_endpoint(const Endpoint& endpoint,
+                               const ServerConfig& cfg,
+                               const std::optional<boost::asio::ip::address>& local_addr) {
+    return local_addr.has_value() &&
+           endpoint.port() == static_cast<unsigned short>(cfg.listen_port) &&
+           addresses_match(endpoint.address(), *local_addr);
+}
+
+template <typename Endpoint>
+void prefer_ipv4_endpoints(std::vector<Endpoint>* endpoints) {
+    if (!endpoints) {
+        return;
+    }
+    std::stable_sort(endpoints->begin(), endpoints->end(),
+                     [](const Endpoint& lhs, const Endpoint& rhs) {
+                         return lhs.address().is_v4() && !rhs.address().is_v4();
+                     });
+}
+
+std::optional<boost::asio::ip::address> session_local_address(
+    boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream) {
+    boost::system::error_code ec;
+    auto local = stream.lowest_layer().local_endpoint(ec);
+    if (ec) {
+        return std::nullopt;
+    }
+    return local.address();
+}
+
+std::string endpoint_to_string(const boost::asio::ip::tcp::endpoint& endpoint) {
+    return endpoint.address().to_string() + ":" + std::to_string(endpoint.port());
+}
+
+std::string describe_stream_endpoint(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+                                     bool local) {
+    boost::system::error_code ec;
+    auto endpoint = local ? stream.lowest_layer().local_endpoint(ec)
+                          : stream.lowest_layer().remote_endpoint(ec);
+    if (ec) {
+        return "unknown";
+    }
+    return endpoint_to_string(endpoint);
+}
+
+std::string summarize_header_prefix(const std::array<uint8_t, 8>& header) {
+    static constexpr char kHexDigits[] = "0123456789abcdef";
+    std::string hex;
+    hex.reserve((header.size() * 2) + (header.size() - 1));
+    for (std::size_t index = 0; index < header.size(); ++index) {
+        if (index > 0) {
+            hex.push_back(' ');
+        }
+        const auto byte = header[index];
+        hex.push_back(kHexDigits[(byte >> 4) & 0x0F]);
+        hex.push_back(kHexDigits[byte & 0x0F]);
+    }
+
+    std::string ascii;
+    ascii.reserve(header.size());
+    for (const auto byte : header) {
+        ascii.push_back((byte >= 32 && byte <= 126) ? static_cast<char>(byte) : '.');
+    }
+    return "header=" + hex + " ascii=" + ascii;
+}
+
 int random_int_inclusive(int min_value, int max_value) {
     if (min_value >= max_value) {
         return min_value;
@@ -125,6 +212,29 @@ int random_int_inclusive(int min_value, int max_value) {
     static thread_local std::mt19937 rng(std::random_device{}());
     std::uniform_int_distribution<int> dist(min_value, max_value);
     return dist(rng);
+}
+
+bool is_expected_close_ec(const boost::system::error_code& ec) {
+    return ec == boost::asio::error::eof ||
+           ec == boost::asio::error::operation_aborted ||
+           ec == boost::asio::ssl::error::stream_truncated;
+}
+
+bool is_expected_close_reason(const std::string& reason) {
+    return reason == "authentication rejected" ||
+           reason == "peer closed the TLS session" ||
+           reason == "served HTTP disguise response" ||
+           reason == "server closed, kicked" ||
+           reason == "session closed";
+}
+
+std::string describe_error_code(const boost::system::error_code& ec) {
+    std::string description = ec.message();
+    const std::string category = ec.category().name();
+    if (!category.empty()) {
+        description += " [category=" + category + " value=" + std::to_string(ec.value()) + "]";
+    }
+    return description;
 }
 
 }
@@ -163,10 +273,39 @@ void Session::stop() {
     boost::asio::post(strand_, [self = shared_from_this()]() { self->close(); });
 }
 
+void Session::notify_server_shutdown(const std::string& reason) {
+    boost::asio::post(strand_, [self = shared_from_this(), reason]() {
+        if (self->close_state_ != CloseState::Open) {
+            return;
+        }
+        if (self->authenticated_) {
+            nlohmann::json notice{
+                {"cmd", "server.closing"},
+                {"reason", reason},
+                {"message", reason},
+            };
+            std::string payload_text = notice.dump();
+            crypto::Bytes payload(payload_text.begin(), payload_text.end());
+            uint16_t flags = 0;
+            if (self->inner_key_.has_value()) {
+                payload = self->encrypt_inner_payload(protocol::CONTROL, 0, payload);
+                flags |= protocol::kFlagInnerEncrypted;
+            }
+            auto data = std::make_shared<std::vector<uint8_t>>(protocol::encode_frame(
+                protocol::CONTROL,
+                0,
+                flags,
+                payload));
+            self->queue_encoded_write_on_strand(data);
+        }
+        self->close_with_reason(reason);
+    });
+}
+
 void Session::on_handshake(const boost::system::error_code& ec) {
     if (ec) {
         util::log_warn("session " + std::to_string(session_id_) + ": TLS handshake failed: " + ec.message());
-        close();
+        close_with_reason("TLS handshake failed: " + ec.message());
         return;
     }
     boost::system::error_code ep_ec;
@@ -202,7 +341,7 @@ void Session::start_preface_read() {
 void Session::on_preface_read(const boost::system::error_code& ec, std::size_t bytes) {
     if (ec) {
         if (ec != boost::asio::error::operation_aborted) {
-            close();
+            close_with_reason("preface read failed: " + ec.message());
         }
         return;
     }
@@ -252,7 +391,7 @@ void Session::on_preface_read(const boost::system::error_code& ec, std::size_t b
     }
     if (preface_accum_.size() > header_buf_.size()) {
         util::log_warn("session " + std::to_string(session_id_) + ": unexpected preface data");
-        close();
+        close_with_reason("unexpected preface data");
         return;
     }
 
@@ -291,7 +430,7 @@ bool Session::handle_http_preface(const std::string& preface) {
                                   boost::asio::bind_executor(strand_,
                                                              [self, request](const boost::system::error_code& e, std::size_t) {
                                                                  if (e) {
-                                                                     self->close();
+                                                                     self->close_with_reason("HTTP preface read failed: " + e.message());
                                                                      return;
                                                                  }
                                                                  std::string line;
@@ -400,7 +539,7 @@ void Session::send_real_http_response(const std::string& path) {
     boost::asio::async_write(stream_, boost::asio::buffer(*resp),
                              boost::asio::bind_executor(strand_,
                                                         [self, resp](const boost::system::error_code&, std::size_t) {
-                                                            self->close();
+                                                            self->close_with_reason("served HTTP disguise response");
                                                         }));
 }
 
@@ -410,7 +549,7 @@ void Session::send_auth_challenge() {
     auto self = shared_from_this();
     async_write_frame(frame, [self](const boost::system::error_code& ec, std::size_t) {
         if (ec) {
-            self->close();
+            self->close_with_reason("AUTH challenge write failed: " + ec.message());
             return;
         }
         self->read_header();
@@ -418,6 +557,9 @@ void Session::send_auth_challenge() {
 }
 
 void Session::read_header() {
+    if (close_state_ != CloseState::Open) {
+        return;
+    }
     if (header_prefetched_) {
         header_prefetched_ = false;
         on_read_header({}, header_buf_.size());
@@ -434,7 +576,16 @@ void Session::read_header() {
 
 void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
     if (ec) {
-        close();
+        if (close_state_ != CloseState::Open && is_expected_close_ec(ec)) {
+            maybe_finish_close();
+            return;
+        }
+        if (authenticated_ &&
+            (ec == boost::asio::error::eof || ec == boost::asio::ssl::error::stream_truncated)) {
+            close_with_reason("peer closed the TLS session");
+            return;
+        }
+        close_with_reason("read header failed: " + describe_error_code(ec));
         return;
     }
 
@@ -444,8 +595,14 @@ void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
                    (static_cast<uint32_t>(header_buf_[3]));
 
     if (len > kMaxFrameSize) {
-        util::log_warn("session " + std::to_string(session_id_) + ": frame too large");
-        close();
+        const std::string detail =
+            "session " + std::to_string(session_id_) + ": frame too large (" + summarize_header_prefix(header_buf_) + ")";
+        if (util::is_logging_enabled()) {
+            util::log_warn(detail);
+        } else {
+            std::cerr << "[critical] " << detail << std::endl;
+        }
+        close_with_reason("frame too large");
         return;
     }
 
@@ -473,7 +630,11 @@ void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
 
 void Session::on_read_payload(const boost::system::error_code& ec, std::size_t) {
     if (ec) {
-        close();
+        if (close_state_ != CloseState::Open && is_expected_close_ec(ec)) {
+            maybe_finish_close();
+            return;
+        }
+        close_with_reason("read payload failed: " + describe_error_code(ec));
         return;
     }
 
@@ -482,11 +643,14 @@ void Session::on_read_payload(const boost::system::error_code& ec, std::size_t) 
 }
 
 void Session::handle_frame(const protocol::Frame& frame) {
+    if (close_state_ != CloseState::Open) {
+        return;
+    }
     touch_activity();
     if (!authenticated_) {
         if (frame.header.type != protocol::AUTH) {
             util::log_warn("session " + std::to_string(session_id_) + ": expected AUTH");
-            close();
+            close_with_reason("expected AUTH frame before authentication");
             return;
         }
 
@@ -516,7 +680,8 @@ void Session::handle_frame(const protocol::Frame& frame) {
                 crypto::Bytes payload(payload_str.begin(), payload_str.end());
                 protocol::Frame anon_frame{{static_cast<uint32_t>(payload.size()), protocol::ANON, 0, 0}, payload};
             async_write_frame(anon_frame, [self = shared_from_this()](const boost::system::error_code& ec, std::size_t) {
-                self->close();
+                self->close_with_reason(ec ? "auth rejection ANON write failed: " + ec.message()
+                                           : "authentication rejected");
             });
             return;
         }
@@ -559,7 +724,7 @@ void Session::handle_frame(const protocol::Frame& frame) {
         if (!inner_kdf_.empty()) {
             anon["inner_kdf"] = inner_kdf_;
         }
-        anon["hop_enabled"] = cfg_.inner_hop;
+        anon["hop_enabled"] = hop_enabled_;
         anon["hop_interval_ms"] = cfg_.hop_interval_ms;
         anon["server_time_ms"] = now_ms();
         anon["cap_pq"] = inner::pq_supported();
@@ -570,7 +735,7 @@ void Session::handle_frame(const protocol::Frame& frame) {
         protocol::Frame anon_frame{{static_cast<uint32_t>(payload.size()), protocol::ANON, 0, 0}, payload};
         async_write_frame(anon_frame, [self = shared_from_this()](const boost::system::error_code& ec, std::size_t) {
             if (ec) {
-                self->close();
+                self->close_with_reason("ANON write failed: " + ec.message());
                 return;
             }
             self->read_header();
@@ -584,7 +749,8 @@ void Session::handle_frame(const protocol::Frame& frame) {
          frame.header.type == protocol::RLISTEN || frame.header.type == protocol::CONTROL)) {
         if ((frame.header.flags & protocol::kFlagInnerEncrypted) == 0) {
             util::log_warn("session " + std::to_string(session_id_) + ": missing inner encryption flag");
-            close();
+            close_with_reason("missing inner encryption flag on authenticated frame type " +
+                              std::to_string(frame.header.type));
             return;
         }
     }
@@ -631,7 +797,9 @@ void Session::handle_frame(const protocol::Frame& frame) {
             break;
     }
 
-    read_header();
+    if (close_state_ == CloseState::Open) {
+        read_header();
+    }
 }
 
 bool Session::decrypt_inner_payload(uint8_t frame_type,
@@ -652,12 +820,17 @@ bool Session::decrypt_inner_payload(uint8_t frame_type,
                 return true;
             }
             std::uint64_t hop_id = current_hop_id();
-            std::uint64_t candidates[3] = {hop_id, hop_id > 0 ? hop_id - 1 : hop_id, hop_id + 1};
-            for (std::size_t i = 0; i < 3; ++i) {
-                std::uint64_t id = candidates[i];
-                if (i == 1 && hop_id == 0) {
-                    continue;
+            std::uint64_t candidates[1 + (kHopDecryptWindow * 2)];
+            std::size_t candidate_count = 0;
+            candidates[candidate_count++] = hop_id;
+            for (std::uint64_t delta = 1; delta <= kHopDecryptWindow; ++delta) {
+                if (hop_id >= delta) {
+                    candidates[candidate_count++] = hop_id - delta;
                 }
+                candidates[candidate_count++] = hop_id + delta;
+            }
+            for (std::size_t i = 0; i < candidate_count; ++i) {
+                std::uint64_t id = candidates[i];
                 crypto::Bytes hop_key = inner::derive_hop_key(key, id);
                 try {
                     *output = inner::decrypt_payload(hop_key, frame_type, stream_id, input);
@@ -972,8 +1145,9 @@ void Session::handle_open(const protocol::Frame& frame) {
         if (decrypt_inner_payload(frame.header.type, frame.header.stream_id, frame.payload, &decrypted)) {
             payload = std::move(decrypted);
         } else {
-            util::log_warn("session " + std::to_string(session_id_) + ": OPEN decrypt failed");
-            close();
+            util::log_warn("session " + std::to_string(session_id_) + ": OPEN decrypt failed for stream " +
+                           std::to_string(frame.header.stream_id));
+            close_with_reason("OPEN decrypt failed for stream " + std::to_string(frame.header.stream_id));
             return;
         }
     }
@@ -1096,38 +1270,51 @@ void Session::handle_open(const protocol::Frame& frame) {
     }
 
     if (proto == "udp") {
+        util::log_info("session " + std::to_string(session_id_) + ": OPEN udp stream " +
+                       std::to_string(frame.header.stream_id) + " -> " + host + ":" + std::to_string(port));
         auto udp = std::make_shared<UdpStream>(stream_.get_executor());
-        boost::system::error_code open_ec;
-        udp->socket.open(boost::asio::ip::udp::v4(), open_ec);
-        if (open_ec) {
-            send_open_reply(frame.header.stream_id, false, "udp open failed: " + open_ec.message());
-            return;
-        }
         udp_streams_[frame.header.stream_id] = udp;
 
         auto self = shared_from_this();
-        udp->resolver.async_resolve(boost::asio::ip::udp::v4(), host, std::to_string(port),
+        const auto self_local_addr = session_local_address(stream_);
+        udp->resolver.async_resolve(host, std::to_string(port),
                                     boost::asio::bind_executor(strand_,
-                                                               [self, stream_id = frame.header.stream_id, udp](const boost::system::error_code& ec,
-                                                                                                              const boost::asio::ip::udp::resolver::results_type& results) {
+                                                               [self, stream_id = frame.header.stream_id, udp, self_local_addr](const boost::system::error_code& ec,
+                                                                                                                               const boost::asio::ip::udp::resolver::results_type& results) {
                                                                    if (ec) {
                                                                        self->send_open_reply(stream_id, false, "resolve failed: " + ec.message());
                                                                        self->udp_streams_.erase(stream_id);
                                                                        return;
                                                                    }
                                                                    std::vector<boost::asio::ip::udp::endpoint> allowed;
+                                                                   bool blocked_active_server = false;
                                                                    for (const auto& entry : results) {
+                                                                       if (is_active_server_endpoint(entry.endpoint(), self->cfg_, self_local_addr)) {
+                                                                           blocked_active_server = true;
+                                                                           continue;
+                                                                       }
                                                                        if (is_allowed_address(entry.endpoint().address(), self->cfg_)) {
                                                                            allowed.push_back(entry.endpoint());
                                                                        }
                                                                    }
                                                                    if (allowed.empty()) {
-                                                                       self->send_open_reply(stream_id, false, "blocked destination");
+                                                                       self->send_open_reply(stream_id,
+                                                                                            false,
+                                                                                            blocked_active_server
+                                                                                                ? "blocked destination: active server endpoint"
+                                                                                                : "blocked destination");
                                                                        self->udp_streams_.erase(stream_id);
                                                                        return;
                                                                    }
+                                                                   prefer_ipv4_endpoints(&allowed);
                                                                    udp->remote = allowed.front();
                                                                    boost::system::error_code ec2;
+                                                                   udp->socket.open(udp->remote.protocol(), ec2);
+                                                                   if (ec2) {
+                                                                       self->send_open_reply(stream_id, false, "udp open failed: " + ec2.message());
+                                                                       self->udp_streams_.erase(stream_id);
+                                                                       return;
+                                                                   }
                                                                    udp->socket.connect(udp->remote, ec2);
                                                                    if (ec2) {
                                                                        self->send_open_reply(stream_id, false, "connect failed: " + ec2.message());
@@ -1140,32 +1327,45 @@ void Session::handle_open(const protocol::Frame& frame) {
         return;
     }
 
+    util::log_info("session " + std::to_string(session_id_) + ": OPEN tcp stream " +
+                   std::to_string(frame.header.stream_id) + " -> " + host + ":" + std::to_string(port));
     auto remote = std::make_shared<RemoteStream>(stream_.get_executor());
     boost::system::error_code keep_ec;
     remote->socket.set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
     streams_[frame.header.stream_id] = remote;
 
     auto self = shared_from_this();
-    remote->resolver.async_resolve(boost::asio::ip::tcp::v4(), host, std::to_string(port),
+    const auto self_local_addr = session_local_address(stream_);
+    remote->resolver.async_resolve(host, std::to_string(port),
                                    boost::asio::bind_executor(strand_,
-                                                              [self, stream_id = frame.header.stream_id, remote](const boost::system::error_code& ec,
-                                                                                                                 const boost::asio::ip::tcp::resolver::results_type& results) {
+                                                              [self, stream_id = frame.header.stream_id, remote, self_local_addr](const boost::system::error_code& ec,
+                                                                                                                                  const boost::asio::ip::tcp::resolver::results_type& results) {
                                                                   if (ec) {
                                                                       self->send_open_reply(stream_id, false, "resolve failed: " + ec.message());
                                                                       self->streams_.erase(stream_id);
                                                                       return;
                                                                   }
                                                                   std::vector<boost::asio::ip::tcp::endpoint> allowed;
+                                                                  bool blocked_active_server = false;
                                                                   for (const auto& entry : results) {
+                                                                      if (is_active_server_endpoint(entry.endpoint(), self->cfg_, self_local_addr)) {
+                                                                          blocked_active_server = true;
+                                                                          continue;
+                                                                      }
                                                                       if (is_allowed_address(entry.endpoint().address(), self->cfg_)) {
                                                                           allowed.push_back(entry.endpoint());
                                                                       }
                                                                   }
                                                                   if (allowed.empty()) {
-                                                                      self->send_open_reply(stream_id, false, "blocked destination");
+                                                                      self->send_open_reply(stream_id,
+                                                                                           false,
+                                                                                           blocked_active_server
+                                                                                               ? "blocked destination: active server endpoint"
+                                                                                               : "blocked destination");
                                                                       self->streams_.erase(stream_id);
                                                                       return;
                                                                   }
+                                                                  prefer_ipv4_endpoints(&allowed);
                                                                   boost::asio::async_connect(remote->socket, allowed,
                                                                                              boost::asio::bind_executor(self->strand_,
                                                                                                                         [self, stream_id, remote](const boost::system::error_code& ec2,
@@ -1410,6 +1610,7 @@ void Session::handle_control(const protocol::Frame& frame) {
     };
 
     if (cmd == "presence.announce") {
+        util::log_info("session " + std::to_string(session_id_) + ": CONTROL cmd=presence.announce");
         if (!manager_) {
             send_json({{"cmd", cmd}, {"ok", false}, {"error", "manager unavailable"}});
             return;
@@ -1419,6 +1620,9 @@ void Session::handle_control(const protocol::Frame& frame) {
         announce.preferred_id = json.value("preferred_id", "");
         announce.preferred_name = json.value("preferred_name", "");
         announce.hostname = json.value("hostname", client_hostname_);
+        announce.client_platform = json.value("client_platform", "unknown");
+        announce.client_variant = json.value("client_variant", "unknown");
+        announce.client_version = json.value("client_version", "");
         announce.relay_mode = control::relay_mode_from_string(json.value("relay_mode", "untrusted"));
         announce.allow_chat = json.value("allow_chat", true);
         announce.allow_file = json.value("allow_file", true);
@@ -1429,6 +1633,9 @@ void Session::handle_control(const protocol::Frame& frame) {
         client_id_ = result.endpoint.endpoint_id;
         client_display_name_ = result.endpoint.display_name;
         client_hostname_ = result.endpoint.hostname;
+        client_platform_ = result.endpoint.client_platform;
+        client_variant_ = result.endpoint.client_variant;
+        client_version_ = result.endpoint.client_version;
         client_relay_mode_ = result.endpoint.relay_mode;
         client_allow_chat_ = result.endpoint.allow_chat;
         client_allow_file_ = result.endpoint.allow_file;
@@ -1445,6 +1652,52 @@ void Session::handle_control(const protocol::Frame& frame) {
         resp["server_id"] = result.server_id;
         resp["server_name"] = result.server_name;
         resp["endpoint"] = control::endpoint_to_json(result.endpoint, true);
+        util::log_info("session " + std::to_string(session_id_) + ": CONTROL presence.announce assigned " +
+                       result.endpoint.endpoint_id + " (" + result.endpoint.display_name + ")");
+        send_json(resp);
+        return;
+    }
+
+    if (cmd == "client.lifecycle") {
+        util::log_info("session " + std::to_string(session_id_) + ": CONTROL cmd=client.lifecycle state=" +
+                       json.value("state", std::string{}));
+        nlohmann::json resp;
+        resp["cmd"] = cmd;
+        if (!manager_) {
+            resp["ok"] = false;
+            resp["error"] = "manager unavailable";
+            send_json(resp);
+            return;
+        }
+        const std::string state = json.value("state", "");
+        const std::string message = json.value("message", "");
+        if (state.empty() || message.empty()) {
+            resp["ok"] = false;
+            resp["error"] = "missing state/message";
+            send_json(resp);
+            return;
+        }
+        control::ClientLifecycleEvent event;
+        event.state = state;
+        event.message = message;
+        event.detail = json.value("detail", "");
+        event.client_platform = json.value("client_platform", client_platform_);
+        event.client_variant = json.value("client_variant", client_variant_);
+        event.client_version = json.value("client_version", client_version_);
+        event.effective_protection = json.value("effective_protection", "");
+        event.traffic_verified = json.value("traffic_verified", false);
+        event.exit_ip = json.value("exit_ip", "");
+        event.error_code = json.value("error_code", "");
+        control::ClientLifecycleEvent stored_event;
+        if (!manager_->update_endpoint_lifecycle(this, event, &stored_event)) {
+            resp["ok"] = false;
+            resp["error"] = "presence announce required before lifecycle";
+            send_json(resp);
+            return;
+        }
+        resp["ok"] = true;
+        resp["accepted_state"] = stored_event.state;
+        resp["server_time_ms"] = stored_event.server_time_ms;
         send_json(resp);
         return;
     }
@@ -1905,25 +2158,15 @@ void Session::handle_data(const protocol::Frame& frame) {
     crypto::Bytes payload = frame.payload;
     if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
         if (!decrypt_inner_payload(frame.header.type, frame.header.stream_id, frame.payload, &payload)) {
-            util::log_warn("session " + std::to_string(session_id_) + ": DATA decrypt failed");
-            close();
+            util::log_warn("session " + std::to_string(session_id_) + ": DATA decrypt failed for stream " +
+                           std::to_string(frame.header.stream_id));
+            close_with_reason("DATA decrypt failed for stream " + std::to_string(frame.header.stream_id));
             return;
         }
     }
     auto it_udp = udp_streams_.find(frame.header.stream_id);
     if (it_udp != udp_streams_.end()) {
-        auto udp = it_udp->second;
-        auto buffer = std::make_shared<crypto::Bytes>(std::move(payload));
-        auto self = shared_from_this();
-        udp->socket.async_send(boost::asio::buffer(*buffer),
-                               boost::asio::bind_executor(strand_,
-                                                          [self, buffer, stream_id = frame.header.stream_id](const boost::system::error_code& ec, std::size_t) {
-                                                              if (ec) {
-                                                                  self->handle_close(stream_id, "udp send failed");
-                                                                  protocol::Frame close_frame{{0, protocol::CLOSE, stream_id, 0}, {}};
-                                                                  self->async_write_frame(close_frame);
-                                                              }
-                                                          }));
+        enqueue_udp_write(frame.header.stream_id, payload);
         return;
     }
     enqueue_remote_write(frame.header.stream_id, payload);
@@ -1978,8 +2221,7 @@ void Session::handle_exec(const protocol::Frame& frame) {
             }
     protocol::Frame resp{{static_cast<uint32_t>(payload.size()), protocol::DATA, frame.header.stream_id, flags}, payload};
     async_write_frame(resp);
-    protocol::Frame close_frame{{0, protocol::CLOSE, frame.header.stream_id, 0}, {}};
-    async_write_frame(close_frame);
+    send_control_close(frame.header.stream_id, "");
 }
 
 void Session::send_open_reply(uint8_t stream_id, bool ok, const std::string& message) {
@@ -2014,8 +2256,7 @@ void Session::on_remote_read(uint8_t stream_id, const boost::system::error_code&
     }
     if (ec) {
         handle_close(stream_id, "remote closed");
-        protocol::Frame close_frame{{0, protocol::CLOSE, stream_id, 0}, {}};
-        async_write_frame(close_frame);
+        send_control_close(stream_id, "");
         return;
     }
 
@@ -2052,8 +2293,7 @@ void Session::on_udp_read(uint8_t stream_id, const boost::system::error_code& ec
     }
     if (ec) {
         handle_close(stream_id, "udp remote closed");
-        protocol::Frame close_frame{{0, protocol::CLOSE, stream_id, 0}, {}};
-        async_write_frame(close_frame);
+        send_control_close(stream_id, "");
         return;
     }
 
@@ -2067,6 +2307,48 @@ void Session::on_udp_read(uint8_t stream_id, const boost::system::error_code& ec
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::DATA, stream_id, flags}, payload};
     async_write_frame(frame);
     start_udp_read(stream_id);
+}
+
+void Session::enqueue_udp_write(uint8_t stream_id, const crypto::Bytes& data) {
+    auto it = udp_streams_.find(stream_id);
+    if (it == udp_streams_.end()) {
+        return;
+    }
+    auto udp = it->second;
+    udp->write_queue.push_back(data);
+    if (!udp->write_in_flight) {
+        do_udp_write(stream_id);
+    }
+}
+
+void Session::do_udp_write(uint8_t stream_id) {
+    auto it = udp_streams_.find(stream_id);
+    if (it == udp_streams_.end()) {
+        return;
+    }
+    auto udp = it->second;
+    if (udp->write_queue.empty()) {
+        udp->write_in_flight = false;
+        return;
+    }
+    udp->write_in_flight = true;
+
+    auto data = std::move(udp->write_queue.front());
+    udp->write_queue.pop_front();
+    auto buffer = std::make_shared<crypto::Bytes>(std::move(data));
+    auto self = shared_from_this();
+    udp->socket.async_send(
+        boost::asio::buffer(*buffer),
+        boost::asio::bind_executor(
+            strand_,
+            [self, buffer, stream_id](const boost::system::error_code& ec, std::size_t) {
+                if (ec) {
+                    self->handle_close(stream_id, "udp send failed");
+                    self->send_control_close(stream_id, "");
+                    return;
+                }
+                self->do_udp_write(stream_id);
+            }));
 }
 
 void Session::enqueue_remote_write(uint8_t stream_id, const std::vector<uint8_t>& data) {
@@ -2102,8 +2384,7 @@ void Session::do_remote_write(uint8_t stream_id) {
                                                         [self, buffer, stream_id](const boost::system::error_code& ec, std::size_t) {
                                                             if (ec) {
                                                                 self->handle_close(stream_id, "remote write failed");
-                                                                protocol::Frame close_frame{{0, protocol::CLOSE, stream_id, 0}, {}};
-                                                                self->async_write_frame(close_frame);
+                                                                self->send_control_close(stream_id, "");
                                                                 return;
                                                             }
                                                             self->do_remote_write(stream_id);
@@ -2119,16 +2400,31 @@ void Session::async_write_frame(const protocol::Frame& frame,
         frame.payload));
 
     boost::asio::post(strand_, [self = shared_from_this(), data, handler = std::move(handler)]() mutable {
-        self->write_queue_.push_back({data, std::move(handler)});
-        if (!self->write_in_flight_) {
-            self->do_write();
-        }
+        self->queue_encoded_write_on_strand(data, std::move(handler));
     });
+}
+
+void Session::queue_encoded_write_on_strand(
+    std::shared_ptr<std::vector<uint8_t>> data,
+    std::function<void(const boost::system::error_code&, std::size_t)> handler) {
+    if (close_state_ != CloseState::Open) {
+        if (handler) {
+            handler(boost::asio::error::operation_aborted, 0);
+        }
+        return;
+    }
+    write_queue_.push_back({std::move(data), std::move(handler)});
+    if (!write_in_flight_) {
+        do_write();
+    }
 }
 
 void Session::do_write() {
     if (write_queue_.empty()) {
         write_in_flight_ = false;
+        if (close_state_ != CloseState::Open) {
+            maybe_finish_close();
+        }
         return;
     }
     write_in_flight_ = true;
@@ -2145,7 +2441,11 @@ void Session::do_write() {
                                                                 item.handler(ec, bytes);
                                                             }
                                                             if (ec) {
-                                                                self->close();
+                                                                if (self->close_state_ != CloseState::Open && is_expected_close_ec(ec)) {
+                                                                    self->shutdown_transport();
+                                                                    return;
+                                                                }
+                                                                self->close_with_reason("frame write failed: " + ec.message());
                                                                 return;
                                                             }
                                                             self->do_write();
@@ -2182,17 +2482,51 @@ void Session::schedule_idle_check() {
             }
             if (self->is_stale()) {
                 util::log_warn("session " + std::to_string(self->session_id_) + ": idle timeout");
-                self->close();
+                self->close_with_reason("idle timeout");
                 return;
             }
             self->schedule_idle_check();
         }));
 }
 
-void Session::close() {
+void Session::close_with_reason(const std::string& reason) {
+    if (!reason.empty() && close_reason_.empty()) {
+        close_reason_ = reason;
+    }
+    if (close_state_ == CloseState::Open) {
+        begin_close();
+        return;
+    }
+    maybe_finish_close();
+}
+
+void Session::begin_close() {
+    if (close_state_ != CloseState::Open) {
+        maybe_finish_close();
+        return;
+    }
+    close_state_ = CloseState::Closing;
+    if (close_reason_.empty()) {
+        close_reason_ = "session closed";
+    }
+    const std::string closing_message =
+        "session " + std::to_string(session_id_) +
+        (authenticated_ ? " [auth]" : " [pre-auth]") +
+        " peer=" + describe_stream_endpoint(stream_, false) +
+        " local=" + describe_stream_endpoint(stream_, true) +
+        " closing: " + close_reason_;
+    if (is_expected_close_reason(close_reason_)) {
+        util::log_info(closing_message);
+    } else if (util::is_logging_enabled()) {
+        util::log_warn(closing_message);
+    } else {
+        std::cerr << "[critical] " << closing_message << std::endl;
+    }
     boost::system::error_code ec;
     idle_timer_.cancel();
+    preface_timer_.cancel();
     if (manager_) {
+        manager_->unregister_session(this);
         for (const auto& entry : reverse_listener_ports_) {
             manager_->unregister_reverse_listener(entry.second, this);
         }
@@ -2235,9 +2569,38 @@ void Session::close() {
     }
     reverse_listeners_.clear();
 
-    stream_.shutdown(ec);
-    stream_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
-    stream_.lowest_layer().close(ec);
+    maybe_finish_close();
+}
+
+void Session::maybe_finish_close() {
+    if (close_state_ != CloseState::Closing || transport_shutdown_in_flight_) {
+        return;
+    }
+    if (write_in_flight_ || !write_queue_.empty()) {
+        return;
+    }
+    shutdown_transport();
+}
+
+void Session::shutdown_transport() {
+    if (transport_shutdown_in_flight_ || close_state_ == CloseState::Closed) {
+        return;
+    }
+    transport_shutdown_in_flight_ = true;
+    auto self = shared_from_this();
+    stream_.async_shutdown(boost::asio::bind_executor(
+        strand_,
+        [self](const boost::system::error_code&) {
+            boost::system::error_code ec;
+            self->closed_ = true;
+            self->close_state_ = CloseState::Closed;
+            self->stream_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
+            self->stream_.lowest_layer().close(ec);
+        }));
+}
+
+void Session::close() {
+    close_with_reason("");
 }
 
 }  // namespace yume::server

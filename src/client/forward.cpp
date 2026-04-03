@@ -287,7 +287,7 @@ void ForwardSession::start_tunnel() {
     tunnel_->register_stream(
         stream_id_,
         [self = shared_from_this()](const Tunnel::Bytes& data) { self->deliver_from_tunnel(data); },
-        [self = shared_from_this()]() { self->close_from_tunnel(); });
+        [self = shared_from_this()](const std::string&) { self->close_from_tunnel(); });
 
     tunnel_->open_stream(stream_id_, target_host_, target_port_,
                          [self = shared_from_this()](bool ok, const std::string& reason) {
@@ -533,7 +533,9 @@ void UdpForwardServer::handle_datagram(const boost::asio::ip::udp::endpoint& cli
         tunnel_->register_stream(
             stream_id,
             [self = shared_from_this(), stream_id](const Tunnel::Bytes& payload) { self->deliver_from_tunnel(stream_id, payload); },
-            [self = shared_from_this(), stream_id]() { self->close_stream(stream_id, "remote closed"); });
+            [self = shared_from_this(), stream_id](const std::string& reason) {
+                self->close_stream(stream_id, reason.empty() ? "remote closed" : reason);
+            });
         tunnel_->open_stream(stream_id, target_host_, target_port_,
                              [self = shared_from_this(), stream_id](bool ok, const std::string& reason) {
                                  self->on_open_result(stream_id, ok, reason);
@@ -708,7 +710,7 @@ void ReverseForwardSession::start() {
     tunnel_->register_stream(
         stream_id_,
         [self = shared_from_this()](const Tunnel::Bytes& data) { self->deliver_from_tunnel(data); },
-        [self = shared_from_this()]() { self->close_from_tunnel(); });
+        [self = shared_from_this()](const std::string&) { self->close_from_tunnel(); });
     start_connect();
 }
 

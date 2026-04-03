@@ -12,6 +12,33 @@ std::string lower_copy(std::string value) {
     });
     return value;
 }
+
+std::string normalize_client_platform(const std::string& value) {
+    const std::string normalized = lower_copy(value);
+    if (normalized == "linux" || normalized == "windows" || normalized == "macos" ||
+        normalized == "android") {
+        return normalized;
+    }
+    return "unknown";
+}
+
+std::string normalize_client_variant(const std::string& value) {
+    const std::string normalized = lower_copy(value);
+    if (normalized == "cli" || normalized == "android_vpn") {
+        return normalized;
+    }
+    return "unknown";
+}
+
+std::string normalize_lifecycle_state(const std::string& value) {
+    const std::string normalized = lower_copy(value);
+    if (normalized == "connecting" || normalized == "authenticated" ||
+        normalized == "traffic_flowing" || normalized == "disconnecting" ||
+        normalized == "error") {
+        return normalized;
+    }
+    return "unknown";
+}
 }  // namespace
 
 std::string to_string(EndpointKind value) {
@@ -76,6 +103,9 @@ nlohmann::json endpoint_to_json(const EndpointInfo& endpoint, bool include_auth_
     json["endpoint_kind"] = to_string(endpoint.endpoint_kind);
     json["display_name"] = endpoint.display_name;
     json["hostname"] = endpoint.hostname;
+    json["client_platform"] = normalize_client_platform(endpoint.client_platform);
+    json["client_variant"] = normalize_client_variant(endpoint.client_variant);
+    json["client_version"] = endpoint.client_version;
     json["server_id"] = endpoint.server_id;
     json["relay_mode"] = to_string(endpoint.relay_mode);
     json["allow_inbound_admin"] = endpoint.allow_inbound_admin;
@@ -98,6 +128,9 @@ EndpointInfo endpoint_from_json(const nlohmann::json& json) {
     endpoint.endpoint_kind = endpoint_kind_from_string(json.value("endpoint_kind", "client"));
     endpoint.display_name = json.value("display_name", "");
     endpoint.hostname = json.value("hostname", "");
+    endpoint.client_platform = normalize_client_platform(json.value("client_platform", "unknown"));
+    endpoint.client_variant = normalize_client_variant(json.value("client_variant", "unknown"));
+    endpoint.client_version = json.value("client_version", "");
     endpoint.server_id = json.value("server_id", "");
     endpoint.relay_mode = relay_mode_from_string(json.value("relay_mode", "untrusted"));
     endpoint.allow_inbound_admin = json.value("allow_inbound_admin", false);
@@ -114,6 +147,52 @@ EndpointInfo endpoint_from_json(const nlohmann::json& json) {
         endpoint.controlled_target_ids = json["controlled_target_ids"].get<std::vector<std::string>>();
     }
     return endpoint;
+}
+
+nlohmann::json lifecycle_event_to_json(const ClientLifecycleEvent& event) {
+    nlohmann::json json;
+    json["endpoint_id"] = event.endpoint_id;
+    json["display_name"] = event.display_name;
+    json["state"] = normalize_lifecycle_state(event.state);
+    json["message"] = event.message;
+    json["detail"] = event.detail;
+    json["client_platform"] = normalize_client_platform(event.client_platform);
+    json["client_variant"] = normalize_client_variant(event.client_variant);
+    json["client_version"] = event.client_version;
+    json["effective_protection"] = event.effective_protection;
+    json["traffic_verified"] = event.traffic_verified;
+    json["exit_ip"] = event.exit_ip;
+    json["error_code"] = event.error_code;
+    json["server_time_ms"] = event.server_time_ms;
+    return json;
+}
+
+ClientLifecycleEvent lifecycle_event_from_json(const nlohmann::json& json) {
+    ClientLifecycleEvent event;
+    event.endpoint_id = json.value("endpoint_id", "");
+    event.display_name = json.value("display_name", "");
+    event.state = normalize_lifecycle_state(json.value("state", "unknown"));
+    event.message = json.value("message", "");
+    event.detail = json.value("detail", "");
+    event.client_platform = normalize_client_platform(json.value("client_platform", "unknown"));
+    event.client_variant = normalize_client_variant(json.value("client_variant", "unknown"));
+    event.client_version = json.value("client_version", "");
+    event.effective_protection = json.value("effective_protection", "");
+    event.traffic_verified = json.value("traffic_verified", false);
+    event.exit_ip = json.value("exit_ip", "");
+    event.error_code = json.value("error_code", "");
+    event.server_time_ms = json.value("server_time_ms", 0LL);
+    return event;
+}
+
+nlohmann::json endpoint_runtime_status_to_json(const EndpointRuntimeStatus& status,
+                                               bool include_auth_pubkey) {
+    nlohmann::json json;
+    json["endpoint"] = endpoint_to_json(status.endpoint, include_auth_pubkey);
+    if (status.latest_lifecycle.has_value()) {
+        json["latest_lifecycle"] = lifecycle_event_to_json(*status.latest_lifecycle);
+    }
+    return json;
 }
 
 nlohmann::json invite_to_json(const PendingInvite& invite, bool include_response) {

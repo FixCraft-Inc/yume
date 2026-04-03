@@ -3,9 +3,10 @@
 #include <array>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
 
+#include <openssl/evp.h>
 #include <openssl/pem.h>
-#include <openssl/sha.h>
 
 #include "core/identity.hpp"
 #include "util.hpp"
@@ -76,25 +77,51 @@ std::string sha256_file_hex(const std::filesystem::path& path) {
     if (!in) {
         return {};
     }
-    SHA256_CTX ctx;
-    SHA256_Init(&ctx);
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (!ctx) {
+        throw std::runtime_error("failed to allocate EVP_MD_CTX");
+    }
+    if (EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr) != 1) {
+        EVP_MD_CTX_free(ctx);
+        throw std::runtime_error("EVP_DigestInit_ex failed");
+    }
     std::array<char, 65536> buf{};
     while (in) {
         in.read(buf.data(), static_cast<std::streamsize>(buf.size()));
         if (in.gcount() > 0) {
-            SHA256_Update(&ctx, buf.data(), static_cast<size_t>(in.gcount()));
+            if (EVP_DigestUpdate(ctx, buf.data(), static_cast<size_t>(in.gcount())) != 1) {
+                EVP_MD_CTX_free(ctx);
+                throw std::runtime_error("EVP_DigestUpdate failed");
+            }
         }
     }
-    unsigned char digest[SHA256_DIGEST_LENGTH] = {0};
-    SHA256_Final(digest, &ctx);
+    unsigned char digest[EVP_MAX_MD_SIZE] = {0};
+    unsigned int digest_len = 0;
+    if (EVP_DigestFinal_ex(ctx, digest, &digest_len) != 1) {
+        EVP_MD_CTX_free(ctx);
+        throw std::runtime_error("EVP_DigestFinal_ex failed");
+    }
+    EVP_MD_CTX_free(ctx);
     static constexpr char kHex[] = "0123456789abcdef";
     std::string out;
-    out.reserve(SHA256_DIGEST_LENGTH * 2);
-    for (unsigned char byte : digest) {
+    out.reserve(digest_len * 2);
+    for (unsigned int i = 0; i < digest_len; ++i) {
+        const unsigned char byte = digest[i];
         out.push_back(kHex[(byte >> 4) & 0xF]);
         out.push_back(kHex[byte & 0xF]);
     }
     return out;
+}
+
+std::string relay_secret_from_args(const nlohmann::json& args) {
+    std::string relay_secret_b64 = args.value("relay_secret", "");
+    if (relay_secret_b64.empty()) {
+        const std::string password = args.value("password", "");
+        if (!password.empty()) {
+            relay_secret_b64 = derive_relay_secret_b64(password);
+        }
+    }
+    return relay_secret_b64;
 }
 
 }  // namespace
@@ -107,6 +134,9 @@ RelayRuntime::RelayRuntime(std::shared_ptr<Tunnel> tunnel, ClientConfig cfg, Opt
                options_.instance_name.empty() ? "default" : options_.instance_name) {
     self_.endpoint_kind = control::EndpointKind::client;
     self_.hostname = options_.hostname;
+    self_.client_platform = options_.client_platform;
+    self_.client_variant = options_.client_variant;
+    self_.client_version = options_.client_version;
     self_.relay_mode = options_.relay_mode;
     self_.allow_inbound_admin = options_.allow_inbound_admin;
     self_.allow_outbound_admin = options_.allow_outbound_admin;
@@ -129,6 +159,9 @@ bool RelayRuntime::announce_presence(std::string* error) {
     req["preferred_id"] = options_.preferred_id;
     req["preferred_name"] = options_.preferred_name;
     req["hostname"] = options_.hostname;
+    req["client_platform"] = options_.client_platform;
+    req["client_variant"] = options_.client_variant;
+    req["client_version"] = options_.client_version;
     req["relay_mode"] = control::to_string(options_.relay_mode);
     req["allow_chat"] = options_.allow_chat;
     req["allow_file"] = options_.allow_file;
@@ -146,6 +179,18 @@ bool RelayRuntime::announce_presence(std::string* error) {
     self_ = control::endpoint_from_json(resp.value("endpoint", nlohmann::json::object()));
     server_id_ = resp.value("server_id", "");
     server_name_ = resp.value("server_name", "");
+    const std::string name = self_.display_name.empty() ? self_.endpoint_id : self_.display_name;
+    std::string ignored_error;
+    notify_lifecycle("connecting",
+                     "connecting now, im " + name,
+                     "client registered with relay directory",
+                     "",
+                     false,
+                     "",
+                     "",
+                     &ignored_error,
+                     1500,
+                     true);
     return true;
 }
 
@@ -187,7 +232,16 @@ std::vector<control::PendingInvite> RelayRuntime::pending_invites() const {
     return out;
 }
 
-bool RelayRuntime::open_chat(const std::string& peer, const std::string& password, std::string* error) {
+bool RelayRuntime::open_chat(const std::string& peer, const std::string& relay_secret_b64, std::string* error) {
+    if (relay_secret_b64.empty()) {
+        if (error) {
+            *error = "relay password is required";
+        }
+        return false;
+    }
+    if (!validate_relay_secret_b64(relay_secret_b64, error)) {
+        return false;
+    }
     auto peer_list = request_directory(error);
     (void)peer_list;
     std::lock_guard<std::mutex> lock(mutex_);
@@ -222,7 +276,7 @@ bool RelayRuntime::open_chat(const std::string& peer, const std::string& passwor
                                           crypto::Bytes(signed_payload.begin(), signed_payload.end())));
     PendingOutgoingInvite outgoing;
     outgoing.invite = invite;
-    outgoing.password = password;
+    outgoing.relay_secret_b64 = relay_secret_b64;
     outgoing.ephemeral_key = std::move(ephemeral);
     outgoing.peer = *peer_info;
     outgoing.channel_kind = control::ChannelKind::chat;
@@ -255,11 +309,20 @@ bool RelayRuntime::send_chat(const std::string& text, std::string* error) {
     return true;
 }
 
-bool RelayRuntime::send_file(const std::string& peer, const std::filesystem::path& path, const std::string& password, std::string* error) {
+bool RelayRuntime::send_file(const std::string& peer, const std::filesystem::path& path, const std::string& relay_secret_b64, std::string* error) {
     if (!std::filesystem::exists(path)) {
         if (error) {
             *error = "file not found";
         }
+        return false;
+    }
+    if (relay_secret_b64.empty()) {
+        if (error) {
+            *error = "relay password is required";
+        }
+        return false;
+    }
+    if (!validate_relay_secret_b64(relay_secret_b64, error)) {
         return false;
     }
     auto peer_list = request_directory(error);
@@ -296,7 +359,7 @@ bool RelayRuntime::send_file(const std::string& peer, const std::filesystem::pat
                                           crypto::Bytes(signed_payload.begin(), signed_payload.end())));
     PendingOutgoingInvite outgoing;
     outgoing.invite = invite;
-    outgoing.password = password;
+    outgoing.relay_secret_b64 = relay_secret_b64;
     outgoing.ephemeral_key = std::move(ephemeral);
     outgoing.peer = *peer_info;
     outgoing.payload_path = path;
@@ -308,11 +371,20 @@ bool RelayRuntime::send_file(const std::string& peer, const std::filesystem::pat
     return true;
 }
 
-bool RelayRuntime::send_bytes_path(const std::string& peer, const std::filesystem::path& path, const std::string& password, std::string* error) {
+bool RelayRuntime::send_bytes_path(const std::string& peer, const std::filesystem::path& path, const std::string& relay_secret_b64, std::string* error) {
     if (!std::filesystem::exists(path)) {
         if (error) {
             *error = "path not found";
         }
+        return false;
+    }
+    if (relay_secret_b64.empty()) {
+        if (error) {
+            *error = "relay password is required";
+        }
+        return false;
+    }
+    if (!validate_relay_secret_b64(relay_secret_b64, error)) {
         return false;
     }
     auto peer_list = request_directory(error);
@@ -344,7 +416,7 @@ bool RelayRuntime::send_bytes_path(const std::string& peer, const std::filesyste
                                           crypto::Bytes(signed_payload.begin(), signed_payload.end())));
     PendingOutgoingInvite outgoing;
     outgoing.invite = invite;
-    outgoing.password = password;
+    outgoing.relay_secret_b64 = relay_secret_b64;
     outgoing.ephemeral_key = std::move(ephemeral);
     outgoing.peer = *peer_info;
     outgoing.payload_path = path;
@@ -356,17 +428,46 @@ bool RelayRuntime::send_bytes_path(const std::string& peer, const std::filesyste
     return true;
 }
 
-bool RelayRuntime::accept_invite(const std::string& invite_id, const std::string& password, std::string* error) {
+bool RelayRuntime::accept_invite(const std::string& invite_id, const std::string& relay_secret_b64, std::string* error) {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = incoming_invites_.find(invite_id);
+    bool ambiguous = false;
+    auto find_invite = [&](const std::string& selector) {
+        auto direct = incoming_invites_.find(selector);
+        if (direct != incoming_invites_.end()) {
+            return direct;
+        }
+        auto match = incoming_invites_.end();
+        for (auto it = incoming_invites_.begin(); it != incoming_invites_.end(); ++it) {
+            const auto& invite = it->second.invite;
+            if (invite.from_endpoint_id != selector && invite.from_display_name != selector) {
+                continue;
+            }
+            if (match != incoming_invites_.end()) {
+                ambiguous = true;
+                return incoming_invites_.end();
+            }
+            match = it;
+        }
+        return match;
+    };
+    auto it = find_invite(invite_id);
     if (it == incoming_invites_.end()) {
         if (error) {
-            *error = "invite not found";
+            *error = ambiguous ? "invite selector is ambiguous" : "invite not found";
         }
         return false;
     }
     auto& pending = it->second;
-    pending.password = password;
+    if (pending.invite.requires_password && relay_secret_b64.empty()) {
+        if (error) {
+            *error = "invite password is required";
+        }
+        return false;
+    }
+    if (pending.invite.requires_password && !validate_relay_secret_b64(relay_secret_b64, error)) {
+        return false;
+    }
+    pending.relay_secret_b64 = relay_secret_b64;
     pending.ephemeral_key = crypto::generate_x25519_key();
     pending.invite.accepted = true;
     pending.invite.response_reason.clear();
@@ -384,10 +485,30 @@ bool RelayRuntime::accept_invite(const std::string& invite_id, const std::string
 
 bool RelayRuntime::reject_invite(const std::string& invite_id, const std::string& reason, std::string* error) {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = incoming_invites_.find(invite_id);
+    bool ambiguous = false;
+    auto find_invite = [&](const std::string& selector) {
+        auto direct = incoming_invites_.find(selector);
+        if (direct != incoming_invites_.end()) {
+            return direct;
+        }
+        auto match = incoming_invites_.end();
+        for (auto it = incoming_invites_.begin(); it != incoming_invites_.end(); ++it) {
+            const auto& invite = it->second.invite;
+            if (invite.from_endpoint_id != selector && invite.from_display_name != selector) {
+                continue;
+            }
+            if (match != incoming_invites_.end()) {
+                ambiguous = true;
+                return incoming_invites_.end();
+            }
+            match = it;
+        }
+        return match;
+    };
+    auto it = find_invite(invite_id);
     if (it == incoming_invites_.end()) {
         if (error) {
-            *error = "invite not found";
+            *error = ambiguous ? "invite selector is ambiguous" : "invite not found";
         }
         return false;
     }
@@ -435,7 +556,7 @@ bool RelayRuntime::admin_attach(const std::string& peer, std::string* error) {
                                           crypto::Bytes(signed_payload.begin(), signed_payload.end())));
     PendingOutgoingInvite outgoing;
     outgoing.invite = invite;
-    outgoing.password.clear();
+    outgoing.relay_secret_b64.clear();
     outgoing.ephemeral_key = std::move(ephemeral);
     outgoing.peer = *peer_info;
     outgoing.channel_kind = control::ChannelKind::admin;
@@ -460,6 +581,9 @@ nlohmann::json RelayRuntime::status_json() const {
     }
     if (active_admin_stream_.has_value()) {
         json["active_admin_stream"] = *active_admin_stream_;
+    }
+    if (latest_lifecycle_.has_value()) {
+        json["latest_lifecycle"] = control::lifecycle_event_to_json(*latest_lifecycle_);
     }
     return json;
 }
@@ -510,7 +634,7 @@ nlohmann::json RelayRuntime::handle_local_request(const nlohmann::json& request)
     }
     if (op == "invite.accept") {
         std::string error;
-        if (!accept_invite(args.value("invite_id", ""), args.value("password", ""), &error)) {
+        if (!accept_invite(args.value("invite_id", ""), relay_secret_from_args(args), &error)) {
             return {{"ok", false}, {"error", error}};
         }
         return {{"ok", true}, {"result", true}};
@@ -524,7 +648,7 @@ nlohmann::json RelayRuntime::handle_local_request(const nlohmann::json& request)
     }
     if (op == "chat.open") {
         std::string error;
-        if (!open_chat(args.value("peer", ""), args.value("password", ""), &error)) {
+        if (!open_chat(args.value("peer", ""), relay_secret_from_args(args), &error)) {
             return {{"ok", false}, {"error", error}};
         }
         return {{"ok", true}, {"result", true}};
@@ -538,14 +662,14 @@ nlohmann::json RelayRuntime::handle_local_request(const nlohmann::json& request)
     }
     if (op == "file.send") {
         std::string error;
-        if (!send_file(args.value("peer", ""), args.value("path", ""), args.value("password", ""), &error)) {
+        if (!send_file(args.value("peer", ""), args.value("path", ""), relay_secret_from_args(args), &error)) {
             return {{"ok", false}, {"error", error}};
         }
         return {{"ok", true}, {"result", true}};
     }
     if (op == "bytes.send") {
         std::string error;
-        if (!send_bytes_path(args.value("peer", ""), args.value("path", ""), args.value("password", ""), &error)) {
+        if (!send_bytes_path(args.value("peer", ""), args.value("path", ""), relay_secret_from_args(args), &error)) {
             return {{"ok", false}, {"error", error}};
         }
         return {{"ok", true}, {"result", true}};
@@ -581,6 +705,69 @@ void RelayRuntime::set_stop_callback(std::function<void()> callback) {
     stop_callback_ = std::move(callback);
 }
 
+bool RelayRuntime::notify_authenticated(const std::string& effective_protection, std::string* error) {
+    return notify_lifecycle("authenticated",
+                            "authenticated",
+                            "authenticated control path is active",
+                            effective_protection,
+                            false,
+                            "",
+                            "",
+                            error,
+                            2000,
+                            true);
+}
+
+bool RelayRuntime::notify_traffic_flow(const std::string& effective_protection, std::string* error) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (traffic_flow_announced_) {
+            return true;
+        }
+    }
+    const bool ok = notify_lifecycle("traffic_flowing",
+                                     "success, traffic flowing",
+                                     "first usable traffic observed",
+                                     effective_protection,
+                                     true,
+                                     "",
+                                     "",
+                                     error,
+                                     2000,
+                                     true);
+    if (ok) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        traffic_flow_announced_ = true;
+    }
+    return ok;
+}
+
+bool RelayRuntime::notify_disconnecting(const std::string& message, std::string* error) {
+    return notify_lifecycle("disconnecting",
+                            message,
+                            "client requested shutdown",
+                            "",
+                            false,
+                            "",
+                            "",
+                            error,
+                            1200,
+                            true);
+}
+
+bool RelayRuntime::notify_error(const std::string& message, const std::string& error_code, std::string* error) {
+    return notify_lifecycle("error",
+                            "error, disconnect",
+                            message,
+                            "",
+                            false,
+                            "",
+                            error_code,
+                            error,
+                            1200,
+                            true);
+}
+
 void RelayRuntime::on_control_message(const nlohmann::json& json) {
     const std::string request_id = json.value("request_id", "");
     if (!request_id.empty()) {
@@ -595,6 +782,10 @@ void RelayRuntime::on_control_message(const nlohmann::json& json) {
     }
     const std::string cmd = json.value("cmd", "");
     if (cmd == "invite.request") {
+        const std::string invite_id = json.value("invite_id", "");
+        if (invite_id.empty()) {
+            return;
+        }
         control::PendingInvite invite = control::invite_from_json(json);
         if (!verify_invite_signature(invite, false)) {
             util::log_warn("relay invite signature verification failed for " + invite.invite_id);
@@ -610,6 +801,10 @@ void RelayRuntime::on_control_message(const nlohmann::json& json) {
         return;
     }
     if (cmd == "invite.reply") {
+        const std::string invite_id = json.value("invite_id", "");
+        if (invite_id.empty()) {
+            return;
+        }
         control::PendingInvite invite = control::invite_from_json(json);
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = outgoing_invites_.find(invite.invite_id);
@@ -629,6 +824,97 @@ void RelayRuntime::on_control_message(const nlohmann::json& json) {
             outgoing_invites_.erase(it);
         }
         return;
+    }
+}
+
+bool RelayRuntime::notify_lifecycle(const std::string& state,
+                                    const std::string& message,
+                                    const std::string& detail,
+                                    const std::string& effective_protection,
+                                    bool traffic_verified,
+                                    const std::string& exit_ip,
+                                    const std::string& error_code,
+                                    std::string* error,
+                                    int timeout_ms,
+                                    bool quiet_unsupported) {
+    control::ClientLifecycleEvent accepted;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (self_.endpoint_id.empty()) {
+            if (error) {
+                *error = "presence announce required";
+            }
+            return false;
+        }
+        accepted.endpoint_id = self_.endpoint_id;
+        accepted.display_name = self_.display_name;
+        accepted.client_platform = self_.client_platform;
+        accepted.client_variant = self_.client_variant;
+        accepted.client_version = self_.client_version;
+    }
+
+    nlohmann::json req;
+    req["cmd"] = "client.lifecycle";
+    req["state"] = state;
+    req["message"] = message;
+    req["detail"] = detail;
+    req["client_platform"] = accepted.client_platform;
+    req["client_variant"] = accepted.client_variant;
+    req["client_version"] = accepted.client_version;
+    req["effective_protection"] = effective_protection;
+    req["traffic_verified"] = traffic_verified;
+    req["exit_ip"] = exit_ip;
+    req["error_code"] = error_code;
+
+    std::string request_error;
+    auto resp = send_control_request(std::move(req), &request_error, timeout_ms);
+    if (!request_error.empty()) {
+        if (!quiet_unsupported) {
+            log_lifecycle_unsupported_once(request_error);
+        }
+        if (error) {
+            *error = request_error;
+        }
+        return false;
+    }
+    if (!resp.value("ok", false)) {
+        const std::string server_error = resp.value("error", "lifecycle update failed");
+        if (server_error == "unknown control command") {
+            if (!quiet_unsupported) {
+                log_lifecycle_unsupported_once(server_error);
+            }
+        } else if (error) {
+            *error = server_error;
+        }
+        return false;
+    }
+
+    accepted.state = resp.value("accepted_state", state);
+    accepted.message = message;
+    accepted.detail = detail;
+    accepted.effective_protection = effective_protection;
+    accepted.traffic_verified = traffic_verified;
+    accepted.exit_ip = exit_ip;
+    accepted.error_code = error_code;
+    accepted.server_time_ms = resp.value("server_time_ms", 0LL);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        latest_lifecycle_ = accepted;
+    }
+    return true;
+}
+
+void RelayRuntime::log_lifecycle_unsupported_once(const std::string& reason) {
+    bool should_log = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!lifecycle_unsupported_logged_) {
+            lifecycle_unsupported_logged_ = true;
+            should_log = true;
+        }
+    }
+    if (should_log) {
+        util::log_warn("relay lifecycle notifications unavailable: " + reason);
     }
 }
 
@@ -656,7 +942,7 @@ void RelayRuntime::on_inbound_open(uint8_t stream_id, const nlohmann::json& json
     auto keys = derive_channel_keys(false,
                                     it->second.ephemeral_key.get(),
                                     it->second.invite.ephemeral_pubkey_b64,
-                                    it->second.password,
+                                    it->second.relay_secret_b64,
                                     it->second.invite.nonce_b64);
     channel.send_key = std::move(keys.send_key);
     channel.recv_key = std::move(keys.recv_key);
@@ -827,12 +1113,13 @@ bool RelayRuntime::verify_invite_signature(const control::PendingInvite& invite,
 RelayRuntime::DerivedChannelKeys RelayRuntime::derive_channel_keys(bool initiator,
                                                                    EVP_PKEY* local_ephemeral,
                                                                    const std::string& peer_ephemeral_b64,
-                                                                   const std::string& password,
+                                                                   const std::string& relay_secret_b64,
                                                                    const std::string& nonce_b64) const {
     auto peer = crypto::import_x25519_public_key(b64_to_bytes(peer_ephemeral_b64));
     auto shared = crypto::generate_session_key(local_ephemeral, peer.get(), 32);
     crypto::Bytes material = shared;
-    material.insert(material.end(), password.begin(), password.end());
+    auto relay_secret = b64_to_bytes(relay_secret_b64);
+    material.insert(material.end(), relay_secret.begin(), relay_secret.end());
     auto nonce = b64_to_bytes(nonce_b64);
     material.insert(material.end(), nonce.begin(), nonce.end());
     auto master = crypto::hkdf_sha256(material, "yume-relay-master", 32);
@@ -861,7 +1148,7 @@ bool RelayRuntime::open_channel_from_reply(const PendingOutgoingInvite& outgoing
     const auto keys = derive_channel_keys(true,
                                           outgoing.ephemeral_key.get(),
                                           reply.response_ephemeral_pubkey_b64,
-                                          outgoing.password,
+                                          outgoing.relay_secret_b64,
                                           reply.nonce_b64);
     uint8_t stream_id = tunnel_->reserve_stream_id();
     if (stream_id == 0) {
@@ -972,9 +1259,9 @@ void RelayRuntime::register_channel(uint8_t stream_id, ChannelState channel) {
                 handle_channel_data(&it->second, payload);
             }
         },
-        [this, stream_id]() {
+        [this, stream_id](const std::string& reason) {
             std::lock_guard<std::mutex> lock(mutex_);
-            handle_channel_close(stream_id);
+            handle_channel_close(stream_id, reason);
         });
 }
 
@@ -1036,15 +1323,27 @@ void RelayRuntime::handle_channel_data(ChannelState* channel, const Tunnel::Byte
             util::log_info("admin: " + json.value("payload", nlohmann::json::object()).dump());
         }
     } catch (const std::exception& ex) {
-        util::log_warn(std::string("channel decode failed: ") + ex.what());
+        const std::string detail = ex.what();
+        if (detail.find("authentication check failed") != std::string::npos) {
+            const std::string reason = "relay password mismatch or channel authentication failed";
+            util::log_warn("communication with " +
+                           (channel->peer_name.empty() ? channel->peer_id : channel->peer_name) +
+                           " failed: " + reason);
+            tunnel_->send_close(channel->stream_id, reason);
+            tunnel_->unregister_stream(channel->stream_id);
+            handle_channel_close(channel->stream_id, reason);
+            return;
+        }
+        util::log_warn(std::string("channel decode failed: ") + detail);
     }
 }
 
-void RelayRuntime::handle_channel_close(uint8_t stream_id) {
+void RelayRuntime::handle_channel_close(uint8_t stream_id, const std::string& reason) {
     auto it = channels_.find(stream_id);
     if (it == channels_.end()) {
         return;
     }
+    const std::string peer_label = it->second.peer_name.empty() ? it->second.peer_id : it->second.peer_name;
     if (it->second.receive_stream.is_open()) {
         it->second.receive_stream.close();
     }
@@ -1053,6 +1352,9 @@ void RelayRuntime::handle_channel_close(uint8_t stream_id) {
     }
     if (active_admin_stream_ == stream_id) {
         active_admin_stream_.reset();
+    }
+    if (!reason.empty()) {
+        util::log_warn("channel with " + peer_label + " closed: " + reason);
     }
     channels_.erase(it);
 }

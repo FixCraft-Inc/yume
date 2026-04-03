@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "${YUME_VERBOSE:-0}" == "1" ]]; then
-  export PS4='+${BASH_SOURCE}:${LINENO}: '
-  set -x
-fi
 
 BIN_DIR=""
 BIN_DYNAMIC=""
 BIN_STATIC=""
 BIN_STABLE=""
+LOG_FILE=""
 # OPENWRT_SDK can be set externally; if empty, script will use OPENWRT_SDK_PREFERRED or download
 OPENWRT_SDK="${OPENWRT_SDK:-}"
 OPENWRT_SDK_VERSION="24.10.0"
@@ -23,8 +20,6 @@ TOOLCHAIN_BIN=""
 TOOLCHAIN_STRIP=""
 TOOLCHAIN_ROOT=""
 OQS_SRC="${OQS_SRC:-${HOME}/liboqs}"
-OQS_BUILD_MIPS="/tmp/liboqs-mips-build"
-OQS_BUILD_HOST="/tmp/liboqs-host-build"
 ARGON2_SRC="${ARGON2_SRC:-${HOME}/argon2}"
 VENDOR_BUILDER="./scripts/build_vendor_libs.sh"
 VENDOR_ARCHIVE="./yume-vendor-prebuilt.tar.xz"
@@ -70,10 +65,9 @@ WINDOWS_VCPKG_PACKAGES="${YUME_WINDOWS_VCPKG_PACKAGES:-openssl boost-cmake boost
 IFS='|' read -r MACOS_CROSS MACOS_CROSS_AUTO <<< "$(normalize_cross_flag "${YUME_MACOS_CROSS:-}")"
 MACOS_TOOLCHAIN_PREFIX="${YUME_MACOS_TOOLCHAIN_PREFIX:-}"
 MACOS_TRIPLET="${YUME_MACOS_TRIPLET:-x64-osx}"
-MACOS_VCPKG_PACKAGES="${YUME_MACOS_VCPKG_PACKAGES:-openssl boost-cmake boost-headers boost-system zlib zstd liblzma fmt spdlog argon2 liboqs}"
+MACOS_VCPKG_PACKAGES="${YUME_MACOS_VCPKG_PACKAGES:-openssl boost-cmake boost-headers boost-system boost-asio zlib zstd liblzma fmt spdlog argon2 liboqs}"
 MACOS_SDK="${YUME_MACOS_SDK:-${OSXCROSS_SDK:-}}"
 MACOS_DEPLOYMENT_TARGET="${YUME_MACOS_DEPLOYMENT_TARGET:-10.15}"
-APT_UPDATED_FLAG="${APT_UPDATED_FLAG:-/tmp/yume-apt-updated}"
 
 resolve_real_home() {
   local home="${HOME}"
@@ -87,7 +81,90 @@ resolve_real_home() {
   echo "${home}"
 }
 
+resolve_real_uid() {
+  local uid
+  uid="$(id -u)"
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    local sudo_uid
+    sudo_uid="$(id -u "${SUDO_USER}" 2>/dev/null || true)"
+    if [[ -n "${sudo_uid}" ]]; then
+      uid="${sudo_uid}"
+    fi
+  fi
+  echo "${uid}"
+}
+
+init_tmp_root() {
+  local requested="${YUME_TMP_ROOT:-}"
+  if [[ -n "${requested}" ]]; then
+    mkdir -p "${requested}"
+    echo "${requested}|0"
+    return 0
+  fi
+  local created
+  created="$(mktemp -d "${TMPDIR:-/tmp}/yume-fullau-${REAL_UID}-XXXXXX")"
+  echo "${created}|1"
+}
+
 REAL_HOME="$(resolve_real_home)"
+REAL_UID="$(resolve_real_uid)"
+YUME_CACHE_ROOT="${YUME_CACHE_ROOT:-${REAL_HOME}/.cache/yume}"
+mkdir -p "${YUME_CACHE_ROOT}"
+IFS='|' read -r YUME_TMP_ROOT YUME_TMP_ROOT_AUTO <<< "$(init_tmp_root)"
+
+init_fullau_logging() {
+  local requested="${YUME_LOG_FILE:-}"
+  local log_dir="${YUME_LOG_DIR:-${YUME_CACHE_ROOT}/logs}"
+  mkdir -p "${log_dir}"
+  if [[ -n "${requested}" ]]; then
+    local requested_parent
+    local requested_dir
+    requested_parent="$(dirname "${requested}")"
+    mkdir -p "${requested_parent}"
+    requested_dir="$(cd "${requested_parent}" && pwd)"
+    LOG_FILE="${requested_dir}/$(basename "${requested}")"
+  else
+    LOG_FILE="${log_dir}/fullau-$(date +%Y%m%d-%H%M%S).log"
+  fi
+  : > "${LOG_FILE}"
+  ln -sfn "${LOG_FILE}" "${log_dir}/fullau-latest.log" 2>/dev/null || true
+  exec > >(tee -a "${LOG_FILE}") 2>&1
+}
+
+fullau_on_err() {
+  local exit_code="$1"
+  local line_no="$2"
+  local command_text="${FULLAU_ERR_COMMAND:-unknown}"
+  echo "[fullau] FAILED at line ${line_no}: ${command_text} (exit ${exit_code})" >&2
+}
+
+fullau_on_exit() {
+  local exit_code="$1"
+  if declare -F cleanup_temp_assets >/dev/null 2>&1; then
+    cleanup_temp_assets
+  fi
+  if [[ -n "${LOG_FILE}" ]]; then
+    if [[ "${exit_code}" -eq 0 ]]; then
+      echo "[fullau] Completed successfully. Log: ${LOG_FILE}"
+    else
+      echo "[fullau] Exited with status ${exit_code}. Log: ${LOG_FILE}" >&2
+    fi
+  fi
+}
+
+init_fullau_logging
+trap 'FULLAU_ERR_COMMAND="${BASH_COMMAND}"; fullau_on_err $? $LINENO' ERR
+trap 'fullau_on_exit $?' EXIT
+
+echo "[fullau] Logging to ${LOG_FILE}"
+if [[ "${YUME_VERBOSE:-0}" == "1" ]]; then
+  export PS4='+${BASH_SOURCE}:${LINENO}: '
+  set -x
+fi
+
+APT_UPDATED_FLAG="${APT_UPDATED_FLAG:-${YUME_CACHE_ROOT}/apt-updated}"
+OQS_BUILD_MIPS="${OQS_BUILD_MIPS:-${YUME_TMP_ROOT}/liboqs-mips-build}"
+OQS_BUILD_HOST="${OQS_BUILD_HOST:-${YUME_TMP_ROOT}/liboqs-host-build}"
 
 BASEFWX_REF_FILE="${BASEFWX_REF_FILE:-${PWD}/.basefwx-ref}"
 if [[ -z "${YUME_BASEFWX_REF:-}" && -f "${BASEFWX_REF_FILE}" ]]; then
@@ -109,13 +186,49 @@ apt_update_once() {
   if [[ "${force_update}" != "1" && -f "${APT_UPDATED_FLAG}" ]]; then
     return 0
   fi
-  apt-get update || true
-  touch "${APT_UPDATED_FLAG}" || true
+  local apt_cmd=(apt-get)
+  if [[ "$(id -u)" -ne 0 ]]; then
+    if ! command -v sudo >/dev/null 2>&1; then
+      return 0
+    fi
+    apt_cmd=(sudo apt-get)
+  fi
+  if "${apt_cmd[@]}" update; then
+    touch "${APT_UPDATED_FLAG}" || true
+  fi
+}
+
+dpkg_pkg_installed() {
+  local pkg="$1"
+  if ! command -v dpkg-query >/dev/null 2>&1; then
+    return 1
+  fi
+  dpkg-query -W -f='${Status}' "${pkg}" 2>/dev/null | grep -q '^install ok installed$'
 }
 
 apt_install() {
+  local missing=()
+  local pkg=""
+  if command -v dpkg-query >/dev/null 2>&1; then
+    for pkg in "$@"; do
+      if ! dpkg_pkg_installed "${pkg}"; then
+        missing+=("${pkg}")
+      fi
+    done
+    if [[ ${#missing[@]} -eq 0 ]]; then
+      return 0
+    fi
+    set -- "${missing[@]}"
+  fi
   apt_update_once
-  apt-get install -y "$@" || true
+  local apt_cmd=(apt-get)
+  if [[ "$(id -u)" -ne 0 ]]; then
+    if ! command -v sudo >/dev/null 2>&1; then
+      return 0
+    fi
+    apt_cmd=(sudo apt-get)
+  fi
+  "${apt_cmd[@]}" install -y "$@" || true
 }
 
 ensure_ubuntu_ports_sources() {
@@ -146,6 +259,13 @@ detect_vcpkg_root() {
     echo "${VCPKG_ROOT}"
     return 0
   fi
+  local candidate
+  for candidate in "${REAL_HOME}/vcpkg" "${REAL_HOME}/.vcpkg"; do
+    if [[ -x "${candidate}/vcpkg" && -f "${candidate}/scripts/buildsystems/vcpkg.cmake" ]]; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
   local bin
   bin="$(command -v vcpkg 2>/dev/null || true)"
   if [[ -n "${bin}" ]]; then
@@ -156,13 +276,6 @@ detect_vcpkg_root() {
       return 0
     fi
   fi
-  local candidate
-  for candidate in "${REAL_HOME}/vcpkg" "${REAL_HOME}/.vcpkg"; do
-    if [[ -x "${candidate}/vcpkg" && -f "${candidate}/scripts/buildsystems/vcpkg.cmake" ]]; then
-      echo "${candidate}"
-      return 0
-    fi
-  done
   return 1
 }
 if [[ -z "${VCPKG_ROOT:-}" ]]; then
@@ -331,10 +444,6 @@ fi
 OPENWRT_SDK_PREFERRED="${REAL_HOME}/openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}_gcc-13.3.0_musl.Linux-x86_64"
 OPENWRT_SDK_USER_PREFERRED="${OPENWRT_SDK_PREFERRED}"
 OPENWRT_SDK_CACHE_DIR="${REAL_HOME}/.cache/yume"
-BIN_DIR="${REAL_HOME}/bins"
-BIN_DYNAMIC="${BIN_DIR}/dynamic"
-BIN_STABLE="${BIN_DIR}/stable"
-BIN_STATIC="${BIN_STABLE}"
 HOST_OS="$(uname -s)"
 HOST_ARCH="$(uname -m)"
 case "${HOST_ARCH}" in
@@ -388,9 +497,30 @@ target_enabled() {
   esac
 }
 
+resolve_bin_dir() {
+  local requested="${YUME_BIN_DIR:-${REAL_HOME}/bins}"
+  local source="default-home"
+  if [[ -n "${YUME_BIN_DIR:-}" ]]; then
+    source="user-requested"
+  fi
+  if mkdir -p "${requested}" 2>/dev/null && [[ -w "${requested}" ]]; then
+    echo "${requested}|${source}"
+    return 0
+  fi
+  local fallback="${PWD}/bins"
+  mkdir -p "${fallback}"
+  echo "BIN_DIR ${requested} is not writable; using ${fallback} instead." >&2
+  echo "${fallback}|fallback-worktree"
+}
+
+IFS='|' read -r BIN_DIR BIN_DIR_SOURCE <<< "$(resolve_bin_dir)"
+BIN_DYNAMIC="${BIN_DIR}/dynamic"
+BIN_STABLE="${BIN_DIR}/stable"
+BIN_STATIC="${BIN_STABLE}"
+
 CLEAN_BINS="${YUME_CLEAN_BINS:-1}"
 if [[ "${CLEAN_BINS}" == "1" && -d "${BIN_DIR}" ]]; then
-  if [[ "${BIN_DIR}" == "${REAL_HOME}/bins" ]]; then
+  if [[ "${BIN_DIR_SOURCE}" == "default-home" || "${BIN_DIR_SOURCE}" == "fallback-worktree" ]]; then
     rm -rf "${BIN_DIR}"
   else
     echo "Refusing to delete unexpected BIN_DIR: ${BIN_DIR}" >&2
@@ -468,6 +598,18 @@ binary_is_static() {
   return 0
 }
 
+ensure_static_outputs_or_skip() {
+  local label="$1"
+  local kind="$2"
+  local outdir="$3"
+  if binary_is_static "${outdir}/yume" && binary_is_static "${outdir}/yumed"; then
+    return 0
+  fi
+  rm -f "${outdir}/yume" "${outdir}/yumed"
+  echo "Skipping static ${label} ${kind}; build produced dynamic binaries. Use a musl toolchain or install complete static deps." >&2
+  return 1
+}
+
 auto_detect_toolchain() {
   local triplet="$1"
   local gcc_path
@@ -537,6 +679,20 @@ auto_detect_toolchains() {
     ARMV7_LINUX_SYSROOT="/"
   fi
   if [[ -z "${ARMV7_BUSYBOX_TOOLCHAIN_PREFIX}" || -z "${ARMV7_BUSYBOX_SYSROOT}" ]]; then
+    res="$(auto_detect_toolchain "arm-linux-musleabihf" || true)"
+    if [[ -n "${res}" ]]; then
+      ARMV7_BUSYBOX_TOOLCHAIN_PREFIX="${res%%|*}"
+      ARMV7_BUSYBOX_SYSROOT="${res##*|}"
+    fi
+  fi
+  if [[ -z "${ARMV7_BUSYBOX_TOOLCHAIN_PREFIX}" || -z "${ARMV7_BUSYBOX_SYSROOT}" ]]; then
+    res="$(auto_detect_toolchain "armv7l-linux-musleabihf" || true)"
+    if [[ -n "${res}" ]]; then
+      ARMV7_BUSYBOX_TOOLCHAIN_PREFIX="${res%%|*}"
+      ARMV7_BUSYBOX_SYSROOT="${res##*|}"
+    fi
+  fi
+  if [[ -z "${ARMV7_BUSYBOX_TOOLCHAIN_PREFIX}" || -z "${ARMV7_BUSYBOX_SYSROOT}" ]]; then
     if [[ -n "${ARMV7_LINUX_TOOLCHAIN_PREFIX}" && -n "${ARMV7_LINUX_SYSROOT}" ]]; then
       ARMV7_BUSYBOX_TOOLCHAIN_PREFIX="${ARMV7_LINUX_TOOLCHAIN_PREFIX}"
       ARMV7_BUSYBOX_SYSROOT="${ARMV7_LINUX_SYSROOT}"
@@ -565,13 +721,14 @@ auto_detect_toolchains() {
 }
 
 resolve_macos_toolchain() {
+  local triplet="${1:-${MACOS_TRIPLET}}"
   local bin_dir=""
   if [[ -n "${OSXCROSS_ROOT:-}" && -d "${OSXCROSS_ROOT}/target/bin" ]]; then
     bin_dir="${OSXCROSS_ROOT}/target/bin"
   fi
   local cxx=""
   local desired_arch="x86_64"
-  if [[ "${MACOS_TRIPLET}" == arm64* || "${MACOS_TRIPLET}" == *arm64* ]]; then
+  if [[ "${triplet}" == arm64* || "${triplet}" == *arm64* ]]; then
     desired_arch="arm64"
   fi
   if [[ -n "${MACOS_TOOLCHAIN_PREFIX}" ]]; then
@@ -651,8 +808,11 @@ maybe_enable_macos_cross() {
   if ! target_enabled macos-x86_64 && ! target_enabled macos-arm64; then
     return 0
   fi
-  if resolve_macos_toolchain >/dev/null 2>&1 && \
-     [[ -n "${VCPKG_ROOT:-}" && -x "${VCPKG_ROOT}/vcpkg" && -f "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" ]]; then
+  if [[ -z "${VCPKG_ROOT:-}" || ! -x "${VCPKG_ROOT}/vcpkg" || ! -f "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" ]]; then
+    return 0
+  fi
+  if { target_enabled macos-x86_64 && resolve_macos_toolchain "x64-osx" >/dev/null 2>&1; } || \
+     { target_enabled macos-arm64 && resolve_macos_toolchain "arm64-osx" >/dev/null 2>&1; }; then
     MACOS_CROSS=1
   fi
 }
@@ -705,8 +865,13 @@ print_build_plan() {
   if [[ "${WINDOWS_CROSS}" -eq 1 ]] && target_enabled windows-x86_64; then
     echo "  - windows x86_64 (mingw, ${WINDOWS_TRIPLET}, dynamic)"
   fi
-  if [[ "${MACOS_CROSS}" -eq 1 ]] && ( target_enabled macos-x86_64 || target_enabled macos-arm64 ); then
-    echo "  - macos $(macos_triplet_arch) (${MACOS_TRIPLET}, dynamic, stable)"
+  if [[ "${MACOS_CROSS}" -eq 1 ]]; then
+    if target_enabled macos-x86_64; then
+      echo "  - macos x86_64 (x64-osx, dynamic, stable)"
+    fi
+    if target_enabled macos-arm64; then
+      echo "  - macos arm64 (arm64-osx, dynamic, stable)"
+    fi
   fi
   echo "Detected SDKs/libs:"
   echo "  - vcpkg: ${VCPKG_ROOT:-not found}"
@@ -845,6 +1010,9 @@ ensure_openwrt_sdk() {
 
 cleanup_temp_assets() {
   vendor_cleanup
+  if [[ "${YUME_TMP_ROOT_AUTO:-0}" == "1" && -n "${YUME_TMP_ROOT:-}" ]]; then
+    rm -rf "${YUME_TMP_ROOT}"
+  fi
 }
 
 openwrt_find_package_makefile() {
@@ -899,7 +1067,10 @@ ensure_host_deps() {
     xz-utils \
     zstd \
     python3 \
-    perl
+    perl \
+    liblzma-dev \
+    libzstd-dev \
+    libspdlog-dev
   if target_enabled windows-x86_64; then
     apt_install mingw-w64 gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix
   fi
@@ -954,7 +1125,7 @@ openwrt_sync_feeds() {
 
 ensure_openwrt_config() {
   local cfg="${OPENWRT_SDK}/.config"
-  local min_cfg="/tmp/yume-openwrt-min.config"
+  local min_cfg="${YUME_TMP_ROOT}/openwrt-min.config"
   local target_base="${OPENWRT_SDK_TARGET%%-*}"
   local target_sub="${OPENWRT_SDK_TARGET//-/_}"
   if [[ -f "${cfg}" ]]; then
@@ -1114,7 +1285,8 @@ docker_build_target() {
   local outdir="$4"
   local busybox_flag="${5:-0}"
   local variant="${6:-dynamic}"
-  local script_path="/tmp/dockcross-${label}"
+  local script_path="${YUME_TMP_ROOT}/dockcross-${label}"
+  local container_toolchain_file="/tmp/yume-toolchain-${label}.cmake"
   local variant_args
   variant_args="$(variant_cmake_args "${variant}")"
   local outdir_container="${outdir}"
@@ -1131,7 +1303,7 @@ docker_build_target() {
     else
       ./scripts/build_vendor_libs.sh --target \"${label}\" --toolchain-prefix \"\${CROSS_TRIPLE}\" --sysroot \"\${SYSROOT}\"
     fi
-    cat > /tmp/yume-toolchain.cmake <<EOF
+    cat > ${container_toolchain_file} <<EOF
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR ${cmake_arch})
 set(CMAKE_C_COMPILER \${CROSS_TRIPLE}-gcc)
@@ -1148,9 +1320,9 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 EOF
     mkdir -p \"${outdir_container}\"
     if [[ ${busybox_flag} -eq 1 ]]; then
-      YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0 YUME_CMAKE_ARGS=\"${variant_args}\" YUME_TOOLCHAIN_FILE=/tmp/yume-toolchain.cmake ./ezbuild.sh --busybox --arch \"${label}\"
+      YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0 YUME_CMAKE_ARGS=\"${variant_args}\" YUME_TOOLCHAIN_FILE=${container_toolchain_file} ./ezbuild.sh --busybox --arch \"${label}\"
     else
-      YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0 YUME_CMAKE_ARGS=\"${variant_args}\" YUME_TOOLCHAIN_FILE=/tmp/yume-toolchain.cmake ./ezbuild.sh --arch \"${label}\"
+      YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0 YUME_CMAKE_ARGS=\"${variant_args}\" YUME_TOOLCHAIN_FILE=${container_toolchain_file} ./ezbuild.sh --arch \"${label}\"
     fi
     cp -f build/bin/yume \"${outdir_container}/yume\"
     cp -f build/bin/yumed \"${outdir_container}/yumed\"
@@ -1190,7 +1362,7 @@ ensure_i386_deps() {
     apt_update_once 1
   fi
   # Avoid libc6-dev-i386 here: it can pull gcc-multilib and remove cross compilers.
-  apt_install zlib1g-dev:i386 libssl-dev:i386 libboost-dev:i386 libboost-system-dev:i386
+  apt_install zlib1g-dev:i386 libssl-dev:i386 libboost-dev:i386 libboost-system-dev:i386 liblzma-dev:i386 libzstd-dev:i386
   # Re-ensure i686 cross compilers are present after i386 dependency changes.
   if [[ ! -x "/usr/bin/i686-linux-gnu-gcc" || ! -x "/usr/bin/i686-linux-gnu-g++" ]]; then
     apt_install gcc-i686-linux-gnu g++-i686-linux-gnu
@@ -1217,9 +1389,9 @@ ensure_armhf_deps() {
     stdcpp_pkg=""
   fi
   if [[ -n "${stdcpp_pkg}" ]]; then
-    apt_install libc6-dev:armhf "${stdcpp_pkg}" zlib1g-dev:armhf libssl-dev:armhf libboost-dev:armhf libboost-system-dev:armhf
+    apt_install libc6-dev:armhf "${stdcpp_pkg}" zlib1g-dev:armhf libssl-dev:armhf libboost-dev:armhf libboost-system-dev:armhf liblzma-dev:armhf libzstd-dev:armhf
   else
-    apt_install libc6-dev:armhf zlib1g-dev:armhf libssl-dev:armhf libboost-dev:armhf libboost-system-dev:armhf
+    apt_install libc6-dev:armhf zlib1g-dev:armhf libssl-dev:armhf libboost-dev:armhf libboost-system-dev:armhf liblzma-dev:armhf libzstd-dev:armhf
   fi
   if [[ ! -x "/usr/bin/arm-linux-gnueabihf-gcc" || ! -x "/usr/bin/arm-linux-gnueabihf-g++" ]]; then
     apt_install gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
@@ -1246,9 +1418,9 @@ ensure_arm64_deps() {
     stdcpp_pkg=""
   fi
   if [[ -n "${stdcpp_pkg}" ]]; then
-    apt_install libc6-dev:arm64 "${stdcpp_pkg}" zlib1g-dev:arm64 libssl-dev:arm64 libboost-dev:arm64 libboost-system-dev:arm64
+    apt_install libc6-dev:arm64 "${stdcpp_pkg}" zlib1g-dev:arm64 libssl-dev:arm64 libboost-dev:arm64 libboost-system-dev:arm64 liblzma-dev:arm64 libzstd-dev:arm64
   else
-    apt_install libc6-dev:arm64 zlib1g-dev:arm64 libssl-dev:arm64 libboost-dev:arm64 libboost-system-dev:arm64
+    apt_install libc6-dev:arm64 zlib1g-dev:arm64 libssl-dev:arm64 libboost-dev:arm64 libboost-system-dev:arm64 liblzma-dev:arm64 libzstd-dev:arm64
   fi
   if [[ ! -x "/usr/bin/aarch64-linux-gnu-gcc" || ! -x "/usr/bin/aarch64-linux-gnu-g++" ]]; then
     apt_install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
@@ -1271,7 +1443,7 @@ build_busybox_target() {
   local sysroot="$4"
   local outdir="$5"
   local variant="${6:-dynamic}"
-  local toolchain_file="/tmp/yume-toolchain-busybox-${label}.cmake"
+  local toolchain_file="${YUME_TMP_ROOT}/toolchain-busybox-${label}.cmake"
   if [[ -z "${prefix}" || -z "${sysroot}" ]]; then
     echo "Missing toolchain for ${label} busybox; set *_{BUSYBOX}_TOOLCHAIN_PREFIX and *_{BUSYBOX}_SYSROOT" >&2
     exit 1
@@ -1287,6 +1459,10 @@ build_busybox_target() {
   local use_musl=0
   if [[ "${prefix}" == *"linux-musl"* || "${sysroot}" == *"musl"* ]]; then
     use_musl=1
+  fi
+  if [[ "${variant}" == "static" && "${label}" != "x86" && "${use_musl}" -ne 1 ]]; then
+    echo "Skipping static ${label} busybox; glibc toolchains do not produce reliable busybox-style static binaries. Use a musl toolchain." >&2
+    return 0
   fi
   if [[ "${label}" == "x86" ]]; then
     ensure_i386_deps
@@ -1462,9 +1638,8 @@ EOF
   copy_build_outputs "${outdir}" "" || return 1
   "${prefix}-strip" --strip-unneeded "${outdir}/yume" "${outdir}/yumed"
   if [[ "${variant}" == "static" ]]; then
-    if ! binary_is_static "${outdir}/yume" || ! binary_is_static "${outdir}/yumed"; then
-      echo "Busybox static build produced dynamic binaries. Install static deps or use a musl toolchain for ${label}." >&2
-      exit 1
+    if ! ensure_static_outputs_or_skip "${label}" "busybox" "${outdir}"; then
+      return 0
     fi
   fi
 }
@@ -1484,7 +1659,7 @@ build_linux_target() {
   local sysroot="$4"
   local outdir="$5"
   local variant="${6:-dynamic}"
-  local toolchain_file="/tmp/yume-toolchain-linux-${label}.cmake"
+  local toolchain_file="${YUME_TMP_ROOT}/toolchain-linux-${label}.cmake"
   if [[ -z "${prefix}" || -z "${sysroot}" ]]; then
     echo "Missing toolchain for ${label} linux; set *_{LINUX}_TOOLCHAIN_PREFIX and *_{LINUX}_SYSROOT" >&2
     exit 1
@@ -1582,6 +1757,11 @@ EOF
   fi
   copy_build_outputs "${outdir}" "" || return 1
   "${prefix}-strip" --strip-unneeded "${outdir}/yume" "${outdir}/yumed"
+  if [[ "${variant}" == "static" ]]; then
+    if ! ensure_static_outputs_or_skip "${label}" "linux" "${outdir}"; then
+      return 0
+    fi
+  fi
 }
 
 clean_build_dirs() {
@@ -1624,6 +1804,11 @@ build_host_linux_target() {
   YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0 YUME_OQS_STATIC=1 YUME_CMAKE_ARGS="${extra_args}" ./ezbuild.sh
   copy_build_outputs "${outdir}" "" || return 1
   strip "${outdir}/yume" "${outdir}/yumed"
+  if [[ "${variant}" == "static" ]]; then
+    if ! ensure_static_outputs_or_skip "x86_64" "linux" "${outdir}"; then
+      return 0
+    fi
+  fi
 }
 
 build_host_native_target() {
@@ -1788,12 +1973,12 @@ build_windows_cross_target() {
   local tool_rc=""
   local vcpkg_root="${VCPKG_ROOT:-}"
   local vcpkg_bin=""
-  local toolchain_file="/tmp/yume-mingw-toolchain.cmake"
+  local toolchain_file="${YUME_TMP_ROOT}/mingw-toolchain.cmake"
   local sysroot=""
   local vcpkg_prefix=""
   local oqs_lib=""
   local oqs_include=""
-  local shim_bin="/tmp/yume-windows-shim"
+  local shim_bin="${YUME_TMP_ROOT}/windows-shim"
   local powershell_stub="${shim_bin}/powershell.exe"
   local vcpkg_build_type="${YUME_WINDOWS_VCPKG_BUILD_TYPE:-release}"
   local overlay_triplets_dir=""
@@ -1857,7 +2042,7 @@ EOS
 
   local vcpkg_triplet_args=(--triplet "${triplet}")
   if [[ "${vcpkg_build_type}" == "release" && -n "${upstream_triplet_file}" ]]; then
-    overlay_triplets_dir="/tmp/yume-vcpkg-triplets-windows"
+    overlay_triplets_dir="${YUME_TMP_ROOT}/vcpkg-triplets-windows"
     mkdir -p "${overlay_triplets_dir}"
     cat > "${overlay_triplets_dir}/${triplet}.cmake" <<EOF
 include("${upstream_triplet_file}")
@@ -1949,13 +2134,13 @@ EOF
 build_macos_cross_target() {
   local variant="$1"
   local outdir="$2"
+  local triplet="${3:-${MACOS_TRIPLET}}"
   local lib_linkage="static"
   if [[ "${variant}" == "dynamic" ]]; then
     lib_linkage="dynamic"
   fi
-  local triplet="${MACOS_TRIPLET}"
   local vcpkg_root="${VCPKG_ROOT:-}"
-  local toolchain_file="/tmp/yume-osxcross-toolchain.cmake"
+  local toolchain_file="${YUME_TMP_ROOT}/osxcross-toolchain.cmake"
   local toolchain_info=""
   local oqs_lib=""
   local oqs_include=""
@@ -1978,7 +2163,7 @@ build_macos_cross_target() {
 
   patch_vcpkg_boost_ports "${vcpkg_root}"
 
-  toolchain_info="$(resolve_macos_toolchain || true)"
+  toolchain_info="$(resolve_macos_toolchain "${triplet}" || true)"
   if [[ -z "${toolchain_info}" ]]; then
     echo "Skipping macos cross build; osxcross toolchain not found (set OSXCROSS_ROOT or YUME_MACOS_TOOLCHAIN_PREFIX)" >&2
     return 0
@@ -1992,8 +2177,8 @@ build_macos_cross_target() {
   local tool_prefix=""
   local install_name_tool_path=""
   local ld_path=""
-  local overlay_triplets_dir="/tmp/yume-vcpkg-triplets"
-  local shim_bin="/tmp/yume-osxcross-bin"
+  local overlay_triplets_dir="${YUME_TMP_ROOT}/vcpkg-triplets-macos"
+  local shim_bin="${YUME_TMP_ROOT}/osxcross-bin"
   local triplet_arch="x64"
   local vcpkg_prefix=""
   IFS='|' read -r cc cxx sdk arch <<< "${toolchain_info}"
@@ -2150,13 +2335,39 @@ EOF
       boost-headers boost-system >/dev/null 2>&1 || true
   fi
 
+  local macos_vcpkg_packages="${MACOS_VCPKG_PACKAGES//,/ }"
+  if [[ " ${macos_vcpkg_packages} " != *" boost-headers "* ]]; then
+    macos_vcpkg_packages="${macos_vcpkg_packages} boost-headers"
+  fi
+  if [[ " ${macos_vcpkg_packages} " != *" boost-system "* ]]; then
+    macos_vcpkg_packages="${macos_vcpkg_packages} boost-system"
+  fi
+  if [[ " ${macos_vcpkg_packages} " != *" boost-asio "* ]]; then
+    macos_vcpkg_packages="${macos_vcpkg_packages} boost-asio"
+  fi
+
   PATH="${shim_bin}:${bin_dir}:${PATH}" \
     MACOSX_DEPLOYMENT_TARGET="${MACOS_DEPLOYMENT_TARGET}" \
     VCPKG_DISABLE_PARALLEL_CONFIGURE=1 \
     OPENSSL_ROOT_DIR="${vcpkg_prefix}" \
     VCPKG_CHAINLOAD_TOOLCHAIN_FILE="${toolchain_file}" \
     VCPKG_OVERLAY_TRIPLETS="${overlay_triplets_dir}" \
-    "${vcpkg_root}/vcpkg" install --triplet "${triplet}" --overlay-triplets="${overlay_triplets_dir}" ${MACOS_VCPKG_PACKAGES}
+    "${vcpkg_root}/vcpkg" install --triplet "${triplet}" --overlay-triplets="${overlay_triplets_dir}" ${macos_vcpkg_packages}
+
+  if [[ ! -f "${vcpkg_prefix}/include/boost/asio.hpp" ]]; then
+    echo "macOS vcpkg Boost.Asio headers missing after install; retrying explicit boost-asio/boost-headers."
+    PATH="${shim_bin}:${bin_dir}:${PATH}" \
+      MACOSX_DEPLOYMENT_TARGET="${MACOS_DEPLOYMENT_TARGET}" \
+      VCPKG_DISABLE_PARALLEL_CONFIGURE=1 \
+      VCPKG_CHAINLOAD_TOOLCHAIN_FILE="${toolchain_file}" \
+      VCPKG_OVERLAY_TRIPLETS="${overlay_triplets_dir}" \
+      "${vcpkg_root}/vcpkg" install --triplet "${triplet}" --overlay-triplets="${overlay_triplets_dir}" boost-headers boost-system boost-asio
+  fi
+  if [[ ! -f "${vcpkg_prefix}/include/boost/asio.hpp" ]]; then
+    echo "macOS cross build cannot continue: boost/asio.hpp not found in ${vcpkg_prefix}/include." >&2
+    echo "Set YUME_MACOS_VCPKG_PACKAGES to include boost-headers boost-system boost-asio." >&2
+    return 1
+  fi
 
   local variant_args
   variant_args="$(variant_cmake_args "${variant}")"
@@ -2174,10 +2385,29 @@ EOF
 }
 
 macos_triplet_arch() {
-  case "${MACOS_TRIPLET}" in
+  local triplet="${1:-${MACOS_TRIPLET}}"
+  case "${triplet}" in
     arm64*|*arm64*) echo "arm64" ;;
     *) echo "x86_64" ;;
   esac
+}
+
+build_enabled_macos_targets() {
+  if [[ "${MACOS_CROSS}" -ne 1 ]]; then
+    return 0
+  fi
+  if target_enabled macos-x86_64; then
+    clean_build_dirs
+    YUME_MACOS_CROSS=1 build_macos_cross_target "dynamic" "${BIN_DYNAMIC}/macos/x86_64" "x64-osx"
+    clean_build_dirs
+    YUME_MACOS_CROSS=1 build_macos_cross_target "static" "${BIN_STATIC}/macos/x86_64" "x64-osx"
+  fi
+  if target_enabled macos-arm64; then
+    clean_build_dirs
+    YUME_MACOS_CROSS=1 build_macos_cross_target "dynamic" "${BIN_DYNAMIC}/macos/arm64" "arm64-osx"
+    clean_build_dirs
+    YUME_MACOS_CROSS=1 build_macos_cross_target "static" "${BIN_STATIC}/macos/arm64" "arm64-osx"
+  fi
 }
 
 build_openwrt_target() {
@@ -2219,7 +2449,6 @@ if [[ "${HOST_OS}" != "Linux" ]]; then
 fi
 
 vendor_restore_if_missing
-trap cleanup_temp_assets EXIT
 auto_detect_toolchains
 ensure_vcpkg
 ensure_osxcross
@@ -2270,13 +2499,7 @@ if [[ "${WINDOWS_CROSS}" -eq 1 ]] && target_enabled windows-x86_64; then
 fi
 
 # macOS cross build (optional; requires osxcross + vcpkg)
-if [[ "${MACOS_CROSS}" -eq 1 ]] && ( target_enabled macos-x86_64 || target_enabled macos-arm64 ); then
-  clean_build_dirs
-  mac_arch="$(macos_triplet_arch)"
-  YUME_MACOS_CROSS=1 build_macos_cross_target "dynamic" "${BIN_DYNAMIC}/macos/${mac_arch}"
-  clean_build_dirs
-  YUME_MACOS_CROSS=1 build_macos_cross_target "static" "${BIN_STATIC}/macos/${mac_arch}"
-fi
+build_enabled_macos_targets
 
 # Busybox x86
 if target_enabled busybox-x86; then

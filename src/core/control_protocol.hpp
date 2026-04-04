@@ -27,7 +27,7 @@ struct EndpointInfo {
     bool allow_chat{true};
     bool allow_file{true};
     bool allow_bytes{true};
-    bool allow_outbound_admin{true};
+    bool allow_outbound_admin{false};
     bool online{true};
     std::string auth_pubkey_b64;
     std::vector<std::string> controller_ids;
@@ -47,7 +47,7 @@ struct PresenceAnnouncement {
     bool allow_file{true};
     bool allow_bytes{true};
     bool allow_inbound_admin{false};
-    bool allow_outbound_admin{true};
+    bool allow_outbound_admin{false};
 };
 
 struct ClientLifecycleEvent {

@@ -17,6 +17,7 @@
 #include <iostream>
 #include <random>
 #include <string>
+#include <string_view>
 
 #include "core/inner_crypto.hpp"
 #include "core/protocol.hpp"
@@ -40,6 +41,14 @@ constexpr uint8_t kMaxFrameType = protocol::SOPEN;
 constexpr int64_t kIdleTimeoutMs = 90 * 1000;
 constexpr int64_t kIdleCheckIntervalMs = 30 * 1000;
 constexpr std::uint64_t kHopDecryptWindow = 6;
+
+// Timeout constants for async operations
+constexpr int64_t kResolverTimeoutMs = 8000;   // 8s DNS resolution (prevents cascading timeouts)
+constexpr int64_t kConnectTimeoutMs = 15000;  // 15s TCP connection
+constexpr int64_t kReverseAcceptTimeoutMs = 30000;  // 30s reverse listener acceptance
+constexpr uint32_t kMaxWriteQueueSize = 256;  // Max pending frames before backpressure
+constexpr uint32_t kWriteQueueHighWatermark = 16;  // Pause new inbound reads before the hard fuse trips.
+constexpr uint32_t kWriteQueueLowWatermark = 4;  // Resume paused reads only after the queue drains well below the pause point.
 
 int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -169,19 +178,36 @@ std::optional<boost::asio::ip::address> session_local_address(
     return local.address();
 }
 
-std::string endpoint_to_string(const boost::asio::ip::tcp::endpoint& endpoint) {
-    return endpoint.address().to_string() + ":" + std::to_string(endpoint.port());
+bool starts_with(std::string_view value, std::string_view prefix) {
+    return value.substr(0, prefix.size()) == prefix;
 }
 
-std::string describe_stream_endpoint(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
-                                     bool local) {
-    boost::system::error_code ec;
-    auto endpoint = local ? stream.lowest_layer().local_endpoint(ec)
-                          : stream.lowest_layer().remote_endpoint(ec);
-    if (ec) {
-        return "unknown";
+bool is_background_probe_close_reason(const std::string& reason) {
+    if (reason == "served HTTP disguise response") {
+        return true;
     }
-    return endpoint_to_string(endpoint);
+    if (starts_with(reason, "TLS handshake failed: ")) {
+        return true;
+    }
+    if (starts_with(reason, "preface read failed: ")) {
+        return true;
+    }
+    if (starts_with(reason, "HTTP preface read failed: ")) {
+        return true;
+    }
+    return false;
+}
+
+bool is_server_fault_close_reason(const std::string& reason) {
+    return starts_with(reason, "AUTH challenge write failed: ") ||
+           starts_with(reason, "auth rejection ANON write failed: ") ||
+           starts_with(reason, "ANON write failed: ") ||
+           starts_with(reason, "write queue overrun") ||
+           starts_with(reason, "frame too large") ||
+           starts_with(reason, "invalid frame type") ||
+           starts_with(reason, "OPEN decrypt failed") ||
+           starts_with(reason, "DATA decrypt failed") ||
+           starts_with(reason, "missing inner encryption flag");
 }
 
 std::string summarize_header_prefix(const std::array<uint8_t, 8>& header) {
@@ -304,13 +330,12 @@ void Session::notify_server_shutdown(const std::string& reason) {
 
 void Session::on_handshake(const boost::system::error_code& ec) {
     if (ec) {
-        util::log_warn("session " + std::to_string(session_id_) + ": TLS handshake failed: " + ec.message());
         close_with_reason("TLS handshake failed: " + ec.message());
         return;
     }
     boost::system::error_code ep_ec;
     auto ep = stream_.lowest_layer().remote_endpoint(ep_ec);
-    if (!ep_ec) {
+    if (!ep_ec && !cfg_.anonym) {
         client_wan_ip_ = ep.address().to_string();
     }
 
@@ -325,6 +350,7 @@ void Session::on_handshake(const boost::system::error_code& ec) {
 void Session::start_preface_read() {
     preface_accum_.clear();
     preface_received_ = false;
+    preface_probe_active_ = true;
     preface_timer_.expires_after(std::chrono::milliseconds(200));
     auto self = shared_from_this();
     preface_timer_.async_wait(boost::asio::bind_executor(strand_,
@@ -345,6 +371,9 @@ void Session::on_preface_read(const boost::system::error_code& ec, std::size_t b
         }
         return;
     }
+    if (!preface_probe_active_) {
+        return;
+    }
     if (bytes == 0) {
         return;
     }
@@ -355,6 +384,7 @@ void Session::on_preface_read(const boost::system::error_code& ec, std::size_t b
 
     std::string preface(reinterpret_cast<const char*>(preface_accum_.data()), preface_accum_.size());
     if (handle_http_preface(preface)) {
+        preface_probe_active_ = false;
         return;
     }
 
@@ -390,12 +420,14 @@ void Session::on_preface_read(const boost::system::error_code& ec, std::size_t b
         return;
     }
     if (preface_accum_.size() > header_buf_.size()) {
+        preface_probe_active_ = false;
         util::log_warn("session " + std::to_string(session_id_) + ": unexpected preface data");
         close_with_reason("unexpected preface data");
         return;
     }
 
     std::copy(preface_accum_.begin(), preface_accum_.begin() + header_buf_.size(), header_buf_.begin());
+    preface_probe_active_ = false;
     header_prefetched_ = true;
     read_header();
 }
@@ -404,7 +436,10 @@ void Session::on_preface_timeout(const boost::system::error_code& ec) {
     if (ec == boost::asio::error::operation_aborted) {
         return;
     }
-    if (!preface_received_) {
+    if (!preface_received_ && preface_probe_active_) {
+        preface_probe_active_ = false;
+        boost::system::error_code cancel_ec;
+        stream_.lowest_layer().cancel(cancel_ec);
         send_auth_challenge();
     }
 }
@@ -580,6 +615,13 @@ void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
             maybe_finish_close();
             return;
         }
+        // Handle SSL-specific errors with better logging
+        if (ec == boost::asio::ssl::error::stream_truncated ||
+            ec.category().name() == std::string("ssl")) {
+            close_with_reason("SSL/TLS error: " + describe_error_code(ec) + 
+                            " [client must reconnect]");
+            return;
+        }
         if (authenticated_ &&
             (ec == boost::asio::error::eof || ec == boost::asio::ssl::error::stream_truncated)) {
             close_with_reason("peer closed the TLS session");
@@ -594,6 +636,7 @@ void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
                    (static_cast<uint32_t>(header_buf_[2]) << 8) |
                    (static_cast<uint32_t>(header_buf_[3]));
 
+    // Validate frame size BEFORE any allocations
     if (len > kMaxFrameSize) {
         const std::string detail =
             "session " + std::to_string(session_id_) + ": frame too large (" + summarize_header_prefix(header_buf_) + ")";
@@ -602,12 +645,26 @@ void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
         } else {
             std::cerr << "[critical] " << detail << std::endl;
         }
-        close_with_reason("frame too large");
+        util::log_error("session " + std::to_string(session_id_) + 
+                       ": frame validation failed; likely SSL stream corruption; closing connection");
+        close_with_reason("frame too large - SSL stream may be corrupted; client should reconnect");
+        return;
+    }
+
+    // Validate header type and stream ID range (basic sanity check)
+    uint8_t type = header_buf_[4];
+    if (type < kMinFrameType || type > kMaxFrameType) {
+        const std::string detail =
+            "session " + std::to_string(session_id_) + ": invalid frame type " +
+            std::to_string(static_cast<int>(type)) + " (header=" + summarize_header_prefix(header_buf_) + ")";
+        util::log_warn(detail);
+        // This is likely frame corruption; close and let client reconnect
+        close_with_reason("invalid frame type - SSL stream likely corrupted");
         return;
     }
 
     current_header_.len = len;
-    current_header_.type = header_buf_[4];
+    current_header_.type = type;
     current_header_.stream_id = header_buf_[5];
     current_header_.flags = static_cast<uint16_t>(header_buf_[6] << 8) |
                             static_cast<uint16_t>(header_buf_[7]);
@@ -634,7 +691,15 @@ void Session::on_read_payload(const boost::system::error_code& ec, std::size_t) 
             maybe_finish_close();
             return;
         }
-        close_with_reason("read payload failed: " + describe_error_code(ec));
+        // Enhanced error logging for SSL/TLS issues
+        std::string error_msg = "read payload failed: " + describe_error_code(ec);
+        if (ec.category().name() == std::string("ssl") ||
+            ec == boost::asio::ssl::error::stream_truncated) {
+            error_msg = "SSL/TLS payload read error: " + error_msg + 
+                       " [SSL stream may be corrupted; client must reconnect]";
+            util::log_error("session " + std::to_string(session_id_) + ": " + error_msg);
+        }
+        close_with_reason(error_msg);
         return;
     }
 
@@ -1134,7 +1199,8 @@ void Session::handle_open(const protocol::Frame& frame) {
         pending_reverse_.erase(frame.header.stream_id);
         return;
     }
-    if (streams_.find(frame.header.stream_id) != streams_.end()) {
+    if (streams_.find(frame.header.stream_id) != streams_.end() ||
+        udp_streams_.find(frame.header.stream_id) != udp_streams_.end()) {
         send_open_reply(frame.header.stream_id, false, "stream already exists");
         return;
     }
@@ -1273,57 +1339,91 @@ void Session::handle_open(const protocol::Frame& frame) {
         util::log_info("session " + std::to_string(session_id_) + ": OPEN udp stream " +
                        std::to_string(frame.header.stream_id) + " -> " + host + ":" + std::to_string(port));
         auto udp = std::make_shared<UdpStream>(stream_.get_executor());
-        udp_streams_[frame.header.stream_id] = udp;
+        
+        // Add to map with lock protection
+        {
+            std::lock_guard<std::mutex> lock(streams_mutex_);
+            udp_streams_[frame.header.stream_id] = udp;
+        }
 
         auto self = shared_from_this();
         const auto self_local_addr = session_local_address(stream_);
+        
+        // Wrap resolver with timeout
+        auto resolver_timer = std::make_shared<boost::asio::deadline_timer>(stream_.get_executor());
+        resolver_timer->expires_from_now(boost::posix_time::milliseconds(kResolverTimeoutMs));
+        
+        auto resolver_handler = [self, stream_id = frame.header.stream_id, udp, self_local_addr, resolver_timer](const boost::system::error_code& ec,
+                                                                                                                 const boost::asio::ip::udp::resolver::results_type& results) {
+            // Cancel timer to prevent double-fire
+            resolver_timer->cancel();
+            
+            if (ec) {
+                self->send_open_reply(stream_id, false, "resolve failed: " + ec.message());
+                std::lock_guard<std::mutex> lock(self->streams_mutex_);
+                self->udp_streams_.erase(stream_id);
+                return;
+            }
+            
+            std::vector<boost::asio::ip::udp::endpoint> allowed;
+            bool blocked_active_server = false;
+            for (const auto& entry : results) {
+                if (is_active_server_endpoint(entry.endpoint(), self->cfg_, self_local_addr)) {
+                    blocked_active_server = true;
+                    continue;
+                }
+                if (is_allowed_address(entry.endpoint().address(), self->cfg_)) {
+                    allowed.push_back(entry.endpoint());
+                }
+            }
+            
+            if (allowed.empty()) {
+                self->send_open_reply(stream_id,
+                                     false,
+                                     blocked_active_server
+                                         ? "blocked destination: active server endpoint"
+                                         : "blocked destination");
+                std::lock_guard<std::mutex> lock(self->streams_mutex_);
+                self->udp_streams_.erase(stream_id);
+                return;
+            }
+            
+            prefer_ipv4_endpoints(&allowed);
+            udp->remote = allowed.front();
+            boost::system::error_code ec2;
+            udp->socket.open(udp->remote.protocol(), ec2);
+            if (ec2) {
+                self->send_open_reply(stream_id, false, "udp open failed: " + ec2.message());
+                std::lock_guard<std::mutex> lock(self->streams_mutex_);
+                self->udp_streams_.erase(stream_id);
+                return;
+            }
+            
+            udp->socket.connect(udp->remote, ec2);
+            if (ec2) {
+                self->send_open_reply(stream_id, false, "connect failed: " + ec2.message());
+                std::lock_guard<std::mutex> lock(self->streams_mutex_);
+                self->udp_streams_.erase(stream_id);
+                return;
+            }
+            
+            self->send_open_reply(stream_id, true, "");
+            self->start_udp_read(stream_id);
+        };
+        
         udp->resolver.async_resolve(host, std::to_string(port),
-                                    boost::asio::bind_executor(strand_,
-                                                               [self, stream_id = frame.header.stream_id, udp, self_local_addr](const boost::system::error_code& ec,
-                                                                                                                               const boost::asio::ip::udp::resolver::results_type& results) {
-                                                                   if (ec) {
-                                                                       self->send_open_reply(stream_id, false, "resolve failed: " + ec.message());
-                                                                       self->udp_streams_.erase(stream_id);
-                                                                       return;
-                                                                   }
-                                                                   std::vector<boost::asio::ip::udp::endpoint> allowed;
-                                                                   bool blocked_active_server = false;
-                                                                   for (const auto& entry : results) {
-                                                                       if (is_active_server_endpoint(entry.endpoint(), self->cfg_, self_local_addr)) {
-                                                                           blocked_active_server = true;
-                                                                           continue;
-                                                                       }
-                                                                       if (is_allowed_address(entry.endpoint().address(), self->cfg_)) {
-                                                                           allowed.push_back(entry.endpoint());
-                                                                       }
-                                                                   }
-                                                                   if (allowed.empty()) {
-                                                                       self->send_open_reply(stream_id,
-                                                                                            false,
-                                                                                            blocked_active_server
-                                                                                                ? "blocked destination: active server endpoint"
-                                                                                                : "blocked destination");
-                                                                       self->udp_streams_.erase(stream_id);
-                                                                       return;
-                                                                   }
-                                                                   prefer_ipv4_endpoints(&allowed);
-                                                                   udp->remote = allowed.front();
-                                                                   boost::system::error_code ec2;
-                                                                   udp->socket.open(udp->remote.protocol(), ec2);
-                                                                   if (ec2) {
-                                                                       self->send_open_reply(stream_id, false, "udp open failed: " + ec2.message());
-                                                                       self->udp_streams_.erase(stream_id);
-                                                                       return;
-                                                                   }
-                                                                   udp->socket.connect(udp->remote, ec2);
-                                                                   if (ec2) {
-                                                                       self->send_open_reply(stream_id, false, "connect failed: " + ec2.message());
-                                                                       self->udp_streams_.erase(stream_id);
-                                                                       return;
-                                                                   }
-                                                                   self->send_open_reply(stream_id, true, "");
-                                                                   self->start_udp_read(stream_id);
-                                                               }));
+                                    boost::asio::bind_executor(strand_, resolver_handler));
+        
+        // Setup resolver timeout handler
+        resolver_timer->async_wait(boost::asio::bind_executor(strand_,
+            [self, stream_id = frame.header.stream_id, udp](const boost::system::error_code& ec) {
+                if (ec) {  // Timer was cancelled normally
+                    return;
+                }
+                // Timeout occurred - cancel the resolver
+                udp->resolver.cancel();
+            }));
+        
         return;
     }
 
@@ -1332,65 +1432,111 @@ void Session::handle_open(const protocol::Frame& frame) {
     auto remote = std::make_shared<RemoteStream>(stream_.get_executor());
     boost::system::error_code keep_ec;
     remote->socket.set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
-    streams_[frame.header.stream_id] = remote;
+    
+    // Add to map with lock protection
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        streams_[frame.header.stream_id] = remote;
+    }
 
     auto self = shared_from_this();
     const auto self_local_addr = session_local_address(stream_);
-    remote->resolver.async_resolve(host, std::to_string(port),
-                                   boost::asio::bind_executor(strand_,
-                                                              [self, stream_id = frame.header.stream_id, remote, self_local_addr](const boost::system::error_code& ec,
-                                                                                                                                  const boost::asio::ip::tcp::resolver::results_type& results) {
-                                                                  if (ec) {
-                                                                      self->send_open_reply(stream_id, false, "resolve failed: " + ec.message());
+    
+    // Wrap resolver with timeout
+    auto resolver_timer = std::make_shared<boost::asio::deadline_timer>(stream_.get_executor());
+    resolver_timer->expires_from_now(boost::posix_time::milliseconds(kResolverTimeoutMs));
+    
+    auto resolver_handler = [self, stream_id = frame.header.stream_id, remote, self_local_addr, resolver_timer](const boost::system::error_code& ec,
+                                                                                                               const boost::asio::ip::tcp::resolver::results_type& results) {
+        // Cancel timer to prevent double-fire
+        resolver_timer->cancel();
+        
+        if (ec) {
+            self->send_open_reply(stream_id, false, "resolve failed: " + ec.message());
+            std::lock_guard<std::mutex> lock(self->streams_mutex_);
+            self->streams_.erase(stream_id);
+            return;
+        }
+        
+        std::vector<boost::asio::ip::tcp::endpoint> allowed;
+        bool blocked_active_server = false;
+        for (const auto& entry : results) {
+            if (is_active_server_endpoint(entry.endpoint(), self->cfg_, self_local_addr)) {
+                blocked_active_server = true;
+                continue;
+            }
+            if (is_allowed_address(entry.endpoint().address(), self->cfg_)) {
+                allowed.push_back(entry.endpoint());
+            }
+        }
+        
+        if (allowed.empty()) {
+            self->send_open_reply(stream_id,
+                                 false,
+                                 blocked_active_server
+                                     ? "blocked destination: active server endpoint"
+                                     : "blocked destination");
+            std::lock_guard<std::mutex> lock(self->streams_mutex_);
+            self->streams_.erase(stream_id);
+            return;
+        }
+        
+        prefer_ipv4_endpoints(&allowed);
+        
+        // Connect with timeout
+        auto connect_timer = std::make_shared<boost::asio::deadline_timer>(self->stream_.get_executor());
+        connect_timer->expires_from_now(boost::posix_time::milliseconds(kConnectTimeoutMs));
+        
+        boost::asio::async_connect(remote->socket, allowed,
+                                   boost::asio::bind_executor(self->strand_,
+                                                              [self, stream_id, remote, connect_timer](const boost::system::error_code& ec2,
+                                                                                                       const boost::asio::ip::tcp::endpoint&) {
+                                                                  // Cancel connect timer
+                                                                  connect_timer->cancel();
+                                                                  if (ec2) {
+                                                                      self->send_open_reply(stream_id, false, "connect failed: " + ec2.message());
+                                                                      std::lock_guard<std::mutex> lock(self->streams_mutex_);
                                                                       self->streams_.erase(stream_id);
                                                                       return;
                                                                   }
-                                                                  std::vector<boost::asio::ip::tcp::endpoint> allowed;
-                                                                  bool blocked_active_server = false;
-                                                                  for (const auto& entry : results) {
-                                                                      if (is_active_server_endpoint(entry.endpoint(), self->cfg_, self_local_addr)) {
-                                                                          blocked_active_server = true;
-                                                                          continue;
-                                                                      }
-                                                                      if (is_allowed_address(entry.endpoint().address(), self->cfg_)) {
-                                                                          allowed.push_back(entry.endpoint());
-                                                                      }
-                                                                  }
-                                                                  if (allowed.empty()) {
-                                                                      self->send_open_reply(stream_id,
-                                                                                           false,
-                                                                                           blocked_active_server
-                                                                                               ? "blocked destination: active server endpoint"
-                                                                                               : "blocked destination");
-                                                                      self->streams_.erase(stream_id);
-                                                                      return;
-                                                                  }
-                                                                  prefer_ipv4_endpoints(&allowed);
-                                                                  boost::asio::async_connect(remote->socket, allowed,
-                                                                                             boost::asio::bind_executor(self->strand_,
-                                                                                                                        [self, stream_id, remote](const boost::system::error_code& ec2,
-                                                                                                                                                 const boost::asio::ip::tcp::endpoint&) {
-                                                                                                                            if (ec2) {
-                                                                                                                                self->send_open_reply(stream_id, false, "connect failed: " + ec2.message());
-                                                                                                                                self->streams_.erase(stream_id);
-                                                                                                                                return;
-                                                                                                                            }
-                                                                                                                            self->send_open_reply(stream_id, true, "");
-                                                                                                                            self->start_remote_read(stream_id);
-                                                                                                                        }));
+                                                                  self->send_open_reply(stream_id, true, "");
+                                                                  self->start_remote_read(stream_id);
                                                               }));
+        
+        // Setup connect timeout handler
+        connect_timer->async_wait(boost::asio::bind_executor(self->strand_,
+            [self, stream_id, remote](const boost::system::error_code& ec) {
+                if (ec) {  // Timer was cancelled normally
+                    return;
+                }
+                // Timeout occurred - close the socket to cancel the connect operation
+                boost::system::error_code ignore_ec;
+                remote->socket.close(ignore_ec);
+            }));
+    };
+    
+    remote->resolver.async_resolve(host, std::to_string(port),
+                                   boost::asio::bind_executor(strand_, resolver_handler));
+    
+    // Setup resolver timeout handler
+    resolver_timer->async_wait(boost::asio::bind_executor(strand_,
+        [self, stream_id = frame.header.stream_id, remote](const boost::system::error_code& ec) {
+            if (ec) {  // Timer was cancelled normally
+                return;
+            }
+            // Timeout occurred - cancel the resolver
+            remote->resolver.cancel();
+        }));
 }
 
 uint8_t Session::reserve_stream_id() {
-    std::lock_guard<std::mutex> lock(control_mutex_);
+    std::lock_guard<std::mutex> lock(streams_mutex_);
     for (int i = 1; i < 255; ++i) {
         uint8_t candidate = static_cast<uint8_t>(i);
         if (streams_.find(candidate) == streams_.end() &&
             udp_streams_.find(candidate) == udp_streams_.end() &&
             pending_reverse_.find(candidate) == pending_reverse_.end() &&
-            reverse_listeners_.find(candidate) == reverse_listeners_.end() &&
-            control_outbound_.find(candidate) == control_outbound_.end() &&
-            control_inbound_.find(candidate) == control_inbound_.end()) {
+            reverse_listeners_.find(candidate) == reverse_listeners_.end()) {
             return candidate;
         }
     }
@@ -1580,11 +1726,11 @@ void Session::handle_control(const protocol::Frame& frame) {
 
     const std::string cmd = json.value("cmd", "");
     if (cmd == "register") {
-        client_hostname_ = json.value("hostname", "");
+        client_hostname_ = cfg_.anonym ? std::string{} : json.value("hostname", "");
         client_server_in_charge_ = json.value("server_in_charge", false);
         client_allow_exec_ = json.value("allow_exec", false);
         const std::string reported_ip = json.value("wan_ip", "");
-        if (!reported_ip.empty()) {
+        if (!cfg_.anonym && !reported_ip.empty()) {
             client_wan_ip_ = reported_ip;
         }
         if (manager_) {
@@ -1619,7 +1765,7 @@ void Session::handle_control(const protocol::Frame& frame) {
         announce.endpoint_kind = control::endpoint_kind_from_string(json.value("endpoint_kind", "client"));
         announce.preferred_id = json.value("preferred_id", "");
         announce.preferred_name = json.value("preferred_name", "");
-        announce.hostname = json.value("hostname", client_hostname_);
+        announce.hostname = cfg_.anonym ? std::string{} : json.value("hostname", client_hostname_);
         announce.client_platform = json.value("client_platform", "unknown");
         announce.client_variant = json.value("client_variant", "unknown");
         announce.client_version = json.value("client_version", "");
@@ -1628,7 +1774,7 @@ void Session::handle_control(const protocol::Frame& frame) {
         announce.allow_file = json.value("allow_file", true);
         announce.allow_bytes = json.value("allow_bytes", true);
         announce.allow_inbound_admin = json.value("allow_inbound_admin", false);
-        announce.allow_outbound_admin = json.value("allow_outbound_admin", true);
+        announce.allow_outbound_admin = json.value("allow_outbound_admin", false);
         auto result = manager_->register_endpoint(shared_from_this(), announce, client_auth_pubkey_b64_);
         client_id_ = result.endpoint.endpoint_id;
         client_display_name_ = result.endpoint.display_name;
@@ -2173,42 +2319,49 @@ void Session::handle_data(const protocol::Frame& frame) {
 }
 
 void Session::handle_close(uint8_t stream_id, const std::string& reason) {
-    auto it_listener = reverse_listeners_.find(stream_id);
-    if (it_listener != reverse_listeners_.end()) {
-        boost::system::error_code ec;
-        int listen_port = 0;
-        auto it_port = reverse_listener_ports_.find(stream_id);
-        if (it_port != reverse_listener_ports_.end()) {
-            listen_port = it_port->second;
-            reverse_listener_ports_.erase(it_port);
-            reverse_port_streams_.erase(listen_port);
+    // Use a single lock scope to protect all map operations
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        
+        auto it_listener = reverse_listeners_.find(stream_id);
+        if (it_listener != reverse_listeners_.end()) {
+            boost::system::error_code ec;
+            int listen_port = 0;
+            auto it_port = reverse_listener_ports_.find(stream_id);
+            if (it_port != reverse_listener_ports_.end()) {
+                listen_port = it_port->second;
+                reverse_listener_ports_.erase(it_port);
+                reverse_port_streams_.erase(listen_port);
+            }
+            if (manager_ && listen_port > 0) {
+                manager_->unregister_reverse_listener(listen_port, this);
+            }
+            it_listener->second->close(ec);
+            reverse_listeners_.erase(it_listener);
+            return;
         }
-        if (manager_ && listen_port > 0) {
-            manager_->unregister_reverse_listener(listen_port, this);
+        
+        auto it_udp = udp_streams_.find(stream_id);
+        if (it_udp != udp_streams_.end()) {
+            util::log_info("session " + std::to_string(session_id_) + ": udp stream " + std::to_string(stream_id) +
+                           " closed: " + reason);
+            boost::system::error_code ec;
+            it_udp->second->socket.close(ec);
+            udp_streams_.erase(it_udp);
+            return;
         }
-        it_listener->second->close(ec);
-        reverse_listeners_.erase(it_listener);
-        return;
-    }
-    auto it_udp = udp_streams_.find(stream_id);
-    if (it_udp != udp_streams_.end()) {
-        util::log_info("session " + std::to_string(session_id_) + ": udp stream " + std::to_string(stream_id) +
-                       " closed: " + reason);
-        boost::system::error_code ec;
-        it_udp->second->socket.close(ec);
-        udp_streams_.erase(it_udp);
-        return;
-    }
-    auto it = streams_.find(stream_id);
-    if (it == streams_.end()) {
-        return;
-    }
+        
+        auto it = streams_.find(stream_id);
+        if (it == streams_.end()) {
+            return;
+        }
 
-    util::log_info("session " + std::to_string(session_id_) + ": stream " + std::to_string(stream_id) + " closed: " + reason);
-    boost::system::error_code ec;
-    it->second->socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
-    it->second->socket.close(ec);
-    streams_.erase(it);
+        util::log_info("session " + std::to_string(session_id_) + ": stream " + std::to_string(stream_id) + " closed: " + reason);
+        boost::system::error_code ec;
+        it->second->socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
+        it->second->socket.close(ec);
+        streams_.erase(it);
+    }
 }
 
 void Session::handle_exec(const protocol::Frame& frame) {
@@ -2236,11 +2389,29 @@ void Session::send_open_reply(uint8_t stream_id, bool ok, const std::string& mes
 }
 
 void Session::start_remote_read(uint8_t stream_id) {
-    auto it = streams_.find(stream_id);
-    if (it == streams_.end()) {
-        return;
+    std::shared_ptr<RemoteStream> remote;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        auto it = streams_.find(stream_id);
+        if (it == streams_.end()) {
+            return;
+        }
+        remote = it->second;
+        if (close_state_ != CloseState::Open) {
+            remote->read_paused = true;
+            return;
+        }
+        if (remote->read_in_flight) {
+            return;
+        }
+        if (should_pause_inbound_reads_on_strand()) {
+            remote->read_paused = true;
+            return;
+        }
+        remote->read_paused = false;
+        remote->read_in_flight = true;
     }
-    auto remote = it->second;
+    
     auto self = shared_from_this();
     remote->socket.async_read_some(boost::asio::buffer(remote->read_buf),
                                    boost::asio::bind_executor(strand_,
@@ -2250,34 +2421,59 @@ void Session::start_remote_read(uint8_t stream_id) {
 }
 
 void Session::on_remote_read(uint8_t stream_id, const boost::system::error_code& ec, std::size_t bytes) {
-    auto it = streams_.find(stream_id);
-    if (it == streams_.end()) {
-        return;
+    std::shared_ptr<RemoteStream> remote;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        auto it = streams_.find(stream_id);
+        if (it == streams_.end()) {
+            return;
+        }
+        remote = it->second;
+        remote->read_in_flight = false;
     }
+
     if (ec) {
         handle_close(stream_id, "remote closed");
         send_control_close(stream_id, "");
         return;
     }
-
-    const auto& buf = it->second->read_buf;
-    crypto::Bytes payload(buf.data(), buf.data() + bytes);
+    
+    crypto::Bytes payload(remote->read_buf.data(), remote->read_buf.data() + bytes);
     uint16_t flags = 0;
     if (inner_key_.has_value()) {
         payload = encrypt_inner_payload(protocol::DATA, stream_id, payload);
         flags |= protocol::kFlagInnerEncrypted;
     }
-    protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::DATA, stream_id, flags}, payload};
-    async_write_frame(frame);
+    
+    protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::DATA, stream_id, flags}, std::move(payload)};
+    queue_frame_on_strand(frame);
     start_remote_read(stream_id);
 }
 
 void Session::start_udp_read(uint8_t stream_id) {
-    auto it = udp_streams_.find(stream_id);
-    if (it == udp_streams_.end()) {
-        return;
+    std::shared_ptr<UdpStream> udp;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        auto it = udp_streams_.find(stream_id);
+        if (it == udp_streams_.end()) {
+            return;
+        }
+        udp = it->second;
+        if (close_state_ != CloseState::Open) {
+            udp->read_paused = true;
+            return;
+        }
+        if (udp->read_in_flight) {
+            return;
+        }
+        if (should_pause_inbound_reads_on_strand()) {
+            udp->read_paused = true;
+            return;
+        }
+        udp->read_paused = false;
+        udp->read_in_flight = true;
     }
-    auto udp = it->second;
+    
     auto self = shared_from_this();
     udp->socket.async_receive(boost::asio::buffer(udp->read_buf),
                               boost::asio::bind_executor(strand_,
@@ -2287,34 +2483,45 @@ void Session::start_udp_read(uint8_t stream_id) {
 }
 
 void Session::on_udp_read(uint8_t stream_id, const boost::system::error_code& ec, std::size_t bytes) {
-    auto it = udp_streams_.find(stream_id);
-    if (it == udp_streams_.end()) {
-        return;
+    std::shared_ptr<UdpStream> udp;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        auto it = udp_streams_.find(stream_id);
+        if (it == udp_streams_.end()) {
+            return;
+        }
+        udp = it->second;
+        udp->read_in_flight = false;
     }
+
     if (ec) {
         handle_close(stream_id, "udp remote closed");
         send_control_close(stream_id, "");
         return;
     }
-
-    const auto& buf = it->second->read_buf;
-    crypto::Bytes payload(buf.data(), buf.data() + bytes);
+    
+    crypto::Bytes payload(udp->read_buf.data(), udp->read_buf.data() + bytes);
     uint16_t flags = 0;
     if (inner_key_.has_value()) {
         payload = encrypt_inner_payload(protocol::DATA, stream_id, payload);
         flags |= protocol::kFlagInnerEncrypted;
     }
-    protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::DATA, stream_id, flags}, payload};
-    async_write_frame(frame);
+    
+    protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::DATA, stream_id, flags}, std::move(payload)};
+    queue_frame_on_strand(frame);
     start_udp_read(stream_id);
 }
 
 void Session::enqueue_udp_write(uint8_t stream_id, const crypto::Bytes& data) {
-    auto it = udp_streams_.find(stream_id);
-    if (it == udp_streams_.end()) {
-        return;
+    std::shared_ptr<UdpStream> udp;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        auto it = udp_streams_.find(stream_id);
+        if (it == udp_streams_.end()) {
+            return;
+        }
+        udp = it->second;
     }
-    auto udp = it->second;
     udp->write_queue.push_back(data);
     if (!udp->write_in_flight) {
         do_udp_write(stream_id);
@@ -2322,20 +2529,24 @@ void Session::enqueue_udp_write(uint8_t stream_id, const crypto::Bytes& data) {
 }
 
 void Session::do_udp_write(uint8_t stream_id) {
-    auto it = udp_streams_.find(stream_id);
-    if (it == udp_streams_.end()) {
-        return;
+    std::shared_ptr<UdpStream> udp;
+    crypto::Bytes data_to_write;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        auto it = udp_streams_.find(stream_id);
+        if (it == udp_streams_.end()) {
+            return;
+        }
+        udp = it->second;
+        if (udp->write_queue.empty()) {
+            udp->write_in_flight = false;
+            return;
+        }
+        udp->write_in_flight = true;
+        data_to_write = std::move(udp->write_queue.front());
+        udp->write_queue.pop_front();
     }
-    auto udp = it->second;
-    if (udp->write_queue.empty()) {
-        udp->write_in_flight = false;
-        return;
-    }
-    udp->write_in_flight = true;
-
-    auto data = std::move(udp->write_queue.front());
-    udp->write_queue.pop_front();
-    auto buffer = std::make_shared<crypto::Bytes>(std::move(data));
+    auto buffer = std::make_shared<crypto::Bytes>(std::move(data_to_write));
     auto self = shared_from_this();
     udp->socket.async_send(
         boost::asio::buffer(*buffer),
@@ -2352,11 +2563,15 @@ void Session::do_udp_write(uint8_t stream_id) {
 }
 
 void Session::enqueue_remote_write(uint8_t stream_id, const std::vector<uint8_t>& data) {
-    auto it = streams_.find(stream_id);
-    if (it == streams_.end()) {
-        return;
+    std::shared_ptr<RemoteStream> remote;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        auto it = streams_.find(stream_id);
+        if (it == streams_.end()) {
+            return;
+        }
+        remote = it->second;
     }
-    auto remote = it->second;
     remote->write_queue.push_back(data);
     if (!remote->write_in_flight) {
         do_remote_write(stream_id);
@@ -2364,20 +2579,25 @@ void Session::enqueue_remote_write(uint8_t stream_id, const std::vector<uint8_t>
 }
 
 void Session::do_remote_write(uint8_t stream_id) {
-    auto it = streams_.find(stream_id);
-    if (it == streams_.end()) {
-        return;
+    std::shared_ptr<RemoteStream> remote;
+    std::vector<uint8_t> data_to_write;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        auto it = streams_.find(stream_id);
+        if (it == streams_.end()) {
+            return;
+        }
+        remote = it->second;
+        if (remote->write_queue.empty()) {
+            remote->write_in_flight = false;
+            return;
+        }
+        remote->write_in_flight = true;
+        data_to_write = std::move(remote->write_queue.front());
+        remote->write_queue.pop_front();
     }
-    auto remote = it->second;
-    if (remote->write_queue.empty()) {
-        remote->write_in_flight = false;
-        return;
-    }
-    remote->write_in_flight = true;
-
-    auto data = std::move(remote->write_queue.front());
-    remote->write_queue.pop_front();
-    auto buffer = std::make_shared<std::vector<uint8_t>>(std::move(data));
+    
+    auto buffer = std::make_shared<std::vector<uint8_t>>(std::move(data_to_write));
     auto self = shared_from_this();
     boost::asio::async_write(remote->socket, boost::asio::buffer(*buffer),
                              boost::asio::bind_executor(strand_,
@@ -2404,6 +2624,16 @@ void Session::async_write_frame(const protocol::Frame& frame,
     });
 }
 
+void Session::queue_frame_on_strand(const protocol::Frame& frame,
+                                    std::function<void(const boost::system::error_code&, std::size_t)> handler) {
+    auto data = std::make_shared<std::vector<uint8_t>>(protocol::encode_frame(
+        static_cast<protocol::FrameType>(frame.header.type),
+        frame.header.stream_id,
+        frame.header.flags,
+        frame.payload));
+    queue_encoded_write_on_strand(std::move(data), std::move(handler));
+}
+
 void Session::queue_encoded_write_on_strand(
     std::shared_ptr<std::vector<uint8_t>> data,
     std::function<void(const boost::system::error_code&, std::size_t)> handler) {
@@ -2413,9 +2643,75 @@ void Session::queue_encoded_write_on_strand(
         }
         return;
     }
+    
+    // Backpressure: reject writes if queue exceeds threshold
+    // This prevents memory exhaustion and SSL stream corruption under load
+    if (write_queue_depth_ >= kMaxWriteQueueSize) {
+        util::log_warn("session " + std::to_string(session_id_) + 
+                      ": write queue overflow (" + std::to_string(write_queue_depth_) + 
+                      " pending), closing to prevent SSL corruption");
+        close_with_reason("write queue overrun - too many pending frames");
+        if (handler) {
+            handler(boost::asio::error::operation_aborted, 0);
+        }
+        return;
+    }
+    
     write_queue_.push_back({std::move(data), std::move(handler)});
+    write_queue_depth_++;
     if (!write_in_flight_) {
         do_write();
+    }
+}
+
+bool Session::should_pause_inbound_reads_on_strand() const {
+    return close_state_ != CloseState::Open || write_queue_depth_ >= kWriteQueueHighWatermark;
+}
+
+void Session::maybe_resume_inbound_reads_on_strand() {
+    if (close_state_ != CloseState::Open || write_queue_depth_ > kWriteQueueLowWatermark) {
+        return;
+    }
+
+    std::vector<uint8_t> tcp_to_resume;
+    std::vector<uint8_t> udp_to_resume;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        uint32_t budget = 0;
+        if (write_queue_depth_ < kWriteQueueHighWatermark) {
+            budget = kWriteQueueHighWatermark - write_queue_depth_;
+        }
+        if (budget == 0) {
+            return;
+        }
+
+        for (const auto& [stream_id, remote] : streams_) {
+            if (budget == 0) {
+                break;
+            }
+            if (remote->read_paused && !remote->read_in_flight) {
+                remote->read_paused = false;
+                tcp_to_resume.push_back(stream_id);
+                --budget;
+            }
+        }
+        for (const auto& [stream_id, udp] : udp_streams_) {
+            if (budget == 0) {
+                break;
+            }
+            if (udp->read_paused && !udp->read_in_flight) {
+                udp->read_paused = false;
+                udp_to_resume.push_back(stream_id);
+                --budget;
+            }
+        }
+    }
+
+    for (uint8_t stream_id : tcp_to_resume) {
+        start_remote_read(stream_id);
+    }
+    for (uint8_t stream_id : udp_to_resume) {
+        start_udp_read(stream_id);
     }
 }
 
@@ -2437,6 +2733,13 @@ void Session::do_write() {
                                                                std::size_t bytes) {
                                                             auto item = std::move(self->write_queue_.front());
                                                             self->write_queue_.pop_front();
+                                                            // Decrement queue depth when frame completes
+                                                            if (self->write_queue_depth_ > 0) {
+                                                                self->write_queue_depth_--;
+                                                            }
+                                                            if (!ec) {
+                                                                self->maybe_resume_inbound_reads_on_strand();
+                                                            }
                                                             if (item.handler) {
                                                                 item.handler(ec, bytes);
                                                             }
@@ -2445,7 +2748,13 @@ void Session::do_write() {
                                                                     self->shutdown_transport();
                                                                     return;
                                                                 }
-                                                                self->close_with_reason("frame write failed: " + ec.message());
+                                                                // Enhanced error handling for SSL issues
+                                                                std::string error_msg = "frame write failed: " + describe_error_code(ec);
+                                                                if (ec.category().name() == std::string("ssl") ||
+                                                                    ec == boost::asio::ssl::error::stream_truncated) {
+                                                                    error_msg = "SSL/TLS write error: " + error_msg + " [client must reconnect]";
+                                                                }
+                                                                self->close_with_reason(error_msg);
                                                                 return;
                                                             }
                                                             self->do_write();
@@ -2509,18 +2818,19 @@ void Session::begin_close() {
     if (close_reason_.empty()) {
         close_reason_ = "session closed";
     }
-    const std::string closing_message =
-        "session " + std::to_string(session_id_) +
-        (authenticated_ ? " [auth]" : " [pre-auth]") +
-        " peer=" + describe_stream_endpoint(stream_, false) +
-        " local=" + describe_stream_endpoint(stream_, true) +
-        " closing: " + close_reason_;
-    if (is_expected_close_reason(close_reason_)) {
-        util::log_info(closing_message);
-    } else if (util::is_logging_enabled()) {
-        util::log_warn(closing_message);
-    } else {
-        std::cerr << "[critical] " << closing_message << std::endl;
+    const bool suppress_log =
+        is_expected_close_reason(close_reason_) ||
+        (!authenticated_ && is_background_probe_close_reason(close_reason_));
+    if (!suppress_log) {
+        const std::string closing_message =
+            "session " + std::to_string(session_id_) +
+            (authenticated_ ? " [auth]" : " [pre-auth]") +
+            " closing: " + close_reason_;
+        if (util::is_logging_enabled()) {
+            util::log_warn(closing_message);
+        } else if (is_server_fault_close_reason(close_reason_)) {
+            std::cerr << "[critical] server session issue: " << close_reason_ << std::endl;
+        }
     }
     boost::system::error_code ec;
     idle_timer_.cancel();

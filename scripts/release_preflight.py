@@ -73,6 +73,9 @@ def validate_workflow_guards() -> None:
         require(needle in release_yml, f"release.yml is missing required guard: {needle}")
     for needle in ("-DBASEFWX_REQUIRE_ARGON2=ON", "-DBASEFWX_REQUIRE_OQS=ON", "-DBASEFWX_REQUIRE_LZMA=ON"):
         require(needle in ci_yml, f"ci.yml is missing required guard: {needle}")
+    require("branches: [main, DEV]" in ci_yml, "ci.yml must cover main and DEV")
+    require("workflow_dispatch releases must be started from main." in release_yml,
+            "release.yml is missing the workflow_dispatch main-branch guard")
 
 
 def main() -> None:

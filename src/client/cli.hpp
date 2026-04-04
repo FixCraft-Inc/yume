@@ -36,7 +36,7 @@ struct ClientConfig {
     std::string preferred_id;
     std::string relay_mode{"untrusted"};
     bool allow_inbound_admin{false};
-    bool allow_outbound_admin{true};
+    bool allow_outbound_admin{false};
     bool allow_chat{true};
     bool allow_file{true};
     bool allow_bytes{true};

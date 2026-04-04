@@ -69,7 +69,7 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --obfs --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --allow-remote-server-admin --operator-keys --federation-enable --peer --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --completion"
+  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --obfs --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --allow-remote-server-admin --operator-keys --federation-enable --peer --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --completion --root"
   local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --keys-add --keys-gen"
   case "$prev" in
     --completion)
@@ -120,7 +120,8 @@ void print_help() {
         << "  --obfs                   Enable obfuscation\n"
         << "  --allow-local-ip         Allow private/loopback destinations\n"
         << "  --control-full           Allow full server-side network control\n"
-        << "  --boring                 Minimal logs (no emojis)\n\n"
+        << "  --boring                 Minimal logs (no emojis)\n"
+        << "  --root                   Keep root privileges after bind/listen (not recommended)\n\n"
         << "Inner Crypto:\n"
         << "  --inner                  Enable inner PQ crypto (enabled by default)\n"
         << "  --no-inner               Disable inner PQ crypto, requirements, and hopping\n"
@@ -1190,6 +1191,7 @@ int main(int argc, char** argv) {
     bool relay_enable_override = false;
     bool directory_enable_override = false;
     bool attach_local = false;
+    bool keep_root = false;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if ((arg == "completion" || arg == "--completion") && i + 1 < argc) {
@@ -1344,6 +1346,8 @@ int main(int argc, char** argv) {
             cfg.federation_peers.push_back(argv[++i]);
         } else if (arg == "--attach-local") {
             attach_local = true;
+        } else if (arg == "--root") {
+            keep_root = true;
         } else if (arg == "--keys-add" && i + 1 < argc) {
             keys_add = argv[++i];
         } else if (arg == "--keys-remove" && i + 1 < argc) {
@@ -2261,7 +2265,7 @@ int main(int argc, char** argv) {
             return 1;
         }
         yume::util::set_logging_enabled(false);
-        std::cerr << "\033[1;33mANONYM MODE ACTIVE — logging disabled (only critical notices will show)\033[0m\n";
+        std::cerr << "\033[1;33mANONYM MODE ACTIVE — client metadata logging disabled\033[0m\n";
     }
     if (!cfg.anonym) {
         if (cfg.anonym_certfp.empty() && !cfg.tls_cert.empty()) {
@@ -2430,7 +2434,23 @@ int main(int argc, char** argv) {
             yume::util::log_warn("local attach disabled: " + ipc_error);
         }
         manager.start();
+        if (!keep_root) {
+            std::string drop_error;
+            std::string drop_summary;
+            if (!yume::util::drop_privileges(&drop_error, &drop_summary)) {
+                throw std::runtime_error("failed to drop privileges: " + drop_error);
+            }
+            if (!drop_summary.empty()) {
+                if (yume::util::is_logging_enabled()) {
+                    yume::util::log_info(drop_summary);
+                } else {
+                    std::cerr << "\033[1;33mPrivileges dropped after bind/listen\033[0m\n";
+                }
+            }
+        }
     } catch (const std::exception& ex) {
+        local_runtime->stop();
+        manager.stop();
         if (yume::util::is_logging_enabled()) {
             yume::util::log_error(std::string("server start failed: ") + ex.what());
         } else {

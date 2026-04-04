@@ -96,10 +96,14 @@ private:
 
     void async_write_frame(const protocol::Frame& frame,
                            std::function<void(const boost::system::error_code&, std::size_t)> handler = {});
+    void queue_frame_on_strand(const protocol::Frame& frame,
+                               std::function<void(const boost::system::error_code&, std::size_t)> handler = {});
     void queue_encoded_write_on_strand(
         std::shared_ptr<std::vector<uint8_t>> data,
         std::function<void(const boost::system::error_code&, std::size_t)> handler = {});
     void do_write();
+    bool should_pause_inbound_reads_on_strand() const;
+    void maybe_resume_inbound_reads_on_strand();
 
     void close_with_reason(const std::string& reason);
     void begin_close();
@@ -121,6 +125,7 @@ private:
     std::array<uint8_t, 8> preface_buf_{};
     std::vector<uint8_t> preface_accum_;
     bool preface_received_{false};
+    bool preface_probe_active_{false};
     bool header_prefetched_{false};
     boost::asio::steady_timer preface_timer_;
     protocol::FrameHeader current_header_{};
@@ -146,6 +151,8 @@ private:
         std::array<uint8_t, 16384> read_buf{};
         std::deque<std::vector<uint8_t>> write_queue;
         bool write_in_flight{false};
+        bool read_in_flight{false};
+        bool read_paused{false};
 
         explicit RemoteStream(boost::asio::any_io_executor exec)
             : socket(exec)
@@ -159,6 +166,8 @@ private:
         std::array<uint8_t, 65535> read_buf{};
         std::deque<crypto::Bytes> write_queue;
         bool write_in_flight{false};
+        bool read_in_flight{false};
+        bool read_paused{false};
 
         explicit UdpStream(boost::asio::any_io_executor exec)
             : socket(exec)
@@ -184,6 +193,8 @@ private:
     };
 
     std::mutex control_mutex_;
+    std::mutex streams_mutex_;  // Protects: streams_, udp_streams_, reverse_listeners_, 
+                                // reverse_listener_ports_, reverse_port_streams_, pending_reverse_
     std::unordered_map<uint8_t, ControlLink> control_outbound_;
     std::unordered_map<uint8_t, ControlLink> control_inbound_;
     std::weak_ptr<Session> control_target_;
@@ -202,7 +213,7 @@ private:
     bool client_allow_file_{true};
     bool client_allow_bytes_{true};
     bool client_allow_inbound_admin_{false};
-    bool client_allow_outbound_admin_{true};
+    bool client_allow_outbound_admin_{false};
     std::string client_hostname_;
     std::string client_wan_ip_;
 
@@ -213,6 +224,8 @@ private:
 
     std::deque<PendingWrite> write_queue_;
     bool write_in_flight_{false};
+    uint32_t write_queue_depth_{0};  // Track queue size for backpressure detection
+    
     enum class CloseState {
         Open,
         Closing,
@@ -222,6 +235,8 @@ private:
     bool transport_shutdown_in_flight_{false};
     bool closed_{false};
     std::string close_reason_;
+    std::chrono::steady_clock::time_point close_started_at_{};  // For tracking close duration
+    static constexpr int64_t kCloseTimeoutMs = 5000;  // 5 second hard timeout on close
 };
 
 }  // namespace yume::server

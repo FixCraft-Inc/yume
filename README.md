@@ -91,7 +91,7 @@ You can add a CA-signed sub-certificate so clients can verify a local proof chai
 Generate a sub key + cert signed by your CA:
 
 ```bash
-./scripts/gen_anonym_sub.sh --ca-cert /home/user/ca.cert.pem --ca-key /home/user/ca.key.pem --out-prefix /etc/yume/anonym_sub
+./scripts/gen_anonym_sub.sh --ca-cert /path/to/ca.cert.pem --ca-key /path/to/ca.key.pem --out-prefix /etc/yume/anonym_sub
 ```
 
 Start yumed with the sub key + cert:
@@ -104,7 +104,7 @@ Clients must trust the CA cert to accept the sub signature:
 
 ```json
 {
-  "anonym_ca_cert": "/home/user/ca.cert.pem",
+  "anonym_ca_cert": "/path/to/ca.cert.pem",
   "require_anonym": true
 }
 ```

@@ -527,11 +527,11 @@ ensure_basefwx() {
         error "git not found; cannot fetch BaseFWX."
         return 1
     fi
-    if [[ -d basefwx && ! -d basefwx/.git ]]; then
+    if [[ -d basefwx ]] && ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         warn "basefwx exists but is not a git repository; replacing it."
         rm -rf basefwx
     fi
-    if [[ ! -d basefwx/.git ]]; then
+    if ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         step "Cloning BaseFWX..."
         git clone --filter=blob:none --no-checkout "${BASEFWX_REPO}" basefwx
     else

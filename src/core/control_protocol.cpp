@@ -134,7 +134,7 @@ EndpointInfo endpoint_from_json(const nlohmann::json& json) {
     endpoint.server_id = json.value("server_id", "");
     endpoint.relay_mode = relay_mode_from_string(json.value("relay_mode", "untrusted"));
     endpoint.allow_inbound_admin = json.value("allow_inbound_admin", false);
-    endpoint.allow_outbound_admin = json.value("allow_outbound_admin", true);
+    endpoint.allow_outbound_admin = json.value("allow_outbound_admin", false);
     endpoint.allow_chat = json.value("allow_chat", true);
     endpoint.allow_file = json.value("allow_file", true);
     endpoint.allow_bytes = json.value("allow_bytes", true);

@@ -7,18 +7,23 @@
 #include "util.hpp"
 
 #include <chrono>
+#include <cerrno>
 #include <cstdio>
 #include <csignal>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <iostream>
+#include <optional>
 #include <vector>
 
 #if defined(_WIN32)
 #include <io.h>
 #else
+#include <grp.h>
+#include <pwd.h>
 #include <unistd.h>
 #endif
 
@@ -147,6 +152,84 @@ void render_status_line_locked() {
 bool is_env_char(char ch) {
     return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_';
 }
+
+#if !defined(_WIN32)
+struct DropPrivilegeTarget {
+    uid_t uid{0};
+    gid_t gid{0};
+    std::string name;
+};
+
+bool parse_env_id(const char* name, unsigned long* out) {
+    if (!out) {
+        return false;
+    }
+    const char* raw = std::getenv(name);
+    if (!raw || !*raw) {
+        return false;
+    }
+    char* end = nullptr;
+    errno = 0;
+    unsigned long value = std::strtoul(raw, &end, 10);
+    if (errno != 0 || !end || *end != '\0') {
+        return false;
+    }
+    *out = value;
+    return true;
+}
+
+std::optional<DropPrivilegeTarget> resolve_drop_target(std::string* error) {
+    unsigned long sudo_uid = 0;
+    unsigned long sudo_gid = 0;
+    if (parse_env_id("SUDO_UID", &sudo_uid) &&
+        parse_env_id("SUDO_GID", &sudo_gid) &&
+        sudo_uid != 0) {
+        DropPrivilegeTarget target;
+        target.uid = static_cast<uid_t>(sudo_uid);
+        target.gid = static_cast<gid_t>(sudo_gid);
+        const char* sudo_user = std::getenv("SUDO_USER");
+        if (sudo_user && *sudo_user) {
+            target.name = sudo_user;
+        } else {
+            struct passwd* pwd = getpwuid(target.uid);
+            if (pwd && pwd->pw_name) {
+                target.name = pwd->pw_name;
+            }
+        }
+        return target;
+    }
+
+    unsigned long pkexec_uid = 0;
+    if (parse_env_id("PKEXEC_UID", &pkexec_uid) && pkexec_uid != 0) {
+        struct passwd* pwd = getpwuid(static_cast<uid_t>(pkexec_uid));
+        if (pwd) {
+            DropPrivilegeTarget target;
+            target.uid = pwd->pw_uid;
+            target.gid = pwd->pw_gid;
+            if (pwd->pw_name) {
+                target.name = pwd->pw_name;
+            }
+            return target;
+        }
+    }
+
+    struct passwd* nobody = getpwnam("nobody");
+    if (nobody && nobody->pw_uid != 0) {
+        DropPrivilegeTarget target;
+        target.uid = nobody->pw_uid;
+        target.gid = nobody->pw_gid;
+        if (nobody->pw_name) {
+            target.name = nobody->pw_name;
+        }
+        return target;
+    }
+
+    if (error) {
+        *error = "failed to determine an unprivileged account for privilege drop";
+    }
+    return std::nullopt;
+}
+#endif
 
 std::string expand_env_vars(const std::string& input) {
     std::string out;
@@ -351,6 +434,75 @@ void set_status_line(const std::string& line) {
 void clear_status_line() {
     std::lock_guard<std::mutex> lock(g_status_mutex);
     clear_status_line_locked();
+}
+
+bool drop_privileges(std::string* error, std::string* summary) {
+#if defined(_WIN32)
+    if (summary) {
+        summary->clear();
+    }
+    (void)error;
+    return true;
+#else
+    if (summary) {
+        summary->clear();
+    }
+    if (geteuid() != 0) {
+        return true;
+    }
+
+    auto target = resolve_drop_target(error);
+    if (!target.has_value()) {
+        return false;
+    }
+    if (target->uid == 0) {
+        if (error) {
+            *error = "refusing to keep uid 0 without --root";
+        }
+        return false;
+    }
+
+    if (!target->name.empty()) {
+        if (initgroups(target->name.c_str(), target->gid) != 0) {
+            if (error) {
+                *error = "initgroups failed: " + std::string(std::strerror(errno));
+            }
+            return false;
+        }
+    } else if (setgroups(0, nullptr) != 0) {
+        if (error) {
+            *error = "setgroups failed: " + std::string(std::strerror(errno));
+        }
+        return false;
+    }
+
+    if (setgid(target->gid) != 0) {
+        if (error) {
+            *error = "setgid failed: " + std::string(std::strerror(errno));
+        }
+        return false;
+    }
+    if (setuid(target->uid) != 0) {
+        if (error) {
+            *error = "setuid failed: " + std::string(std::strerror(errno));
+        }
+        return false;
+    }
+    if (geteuid() == 0) {
+        if (error) {
+            *error = "privilege drop did not clear effective uid 0";
+        }
+        return false;
+    }
+
+    if (summary) {
+        std::string label = target->name.empty() ? "unprivileged-user" : target->name;
+        *summary = "dropped privileges to " + label +
+                   " (uid=" + std::to_string(static_cast<unsigned long long>(target->uid)) +
+                   ", gid=" + std::to_string(static_cast<unsigned long long>(target->gid)) + ")";
+    }
+    return true;
+#endif
 }
 
 std::string random_hex(size_t bytes) {

@@ -81,6 +81,18 @@ jobs:
             done < <(git ls-files)
           fi
 
+          # Remove tracked paths that exist only on the target branch.
+          while IFS= read -r path; do
+            [[ -n "${path}" ]] || continue
+            if matches_exclude "${path}"; then
+              continue
+            fi
+            if ! git cat-file -e "origin/${source_branch}:${path}" 2>/dev/null; then
+              git rm -rf --ignore-unmatch -- "${path}" >/dev/null 2>&1 || true
+              rm -rf -- "${path}" >/dev/null 2>&1 || true
+            fi
+          done < <(git ls-tree -r --name-only "origin/${target_branch}")
+
           if [[ -z "$(git status --porcelain)" ]]; then
             echo "No sync changes from ${source_branch} -> ${target_branch}."
             exit 0

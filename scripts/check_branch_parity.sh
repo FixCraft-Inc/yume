@@ -7,12 +7,12 @@ ALLOWLIST_FILE="${ALLOWLIST_FILE:-.branch-parity-allowlist}"
 
 resolve_ref() {
   local ref="$1"
-  if git rev-parse --verify --quiet "${ref}" >/dev/null; then
-    echo "${ref}"
-    return 0
-  fi
   if git rev-parse --verify --quiet "origin/${ref}" >/dev/null; then
     echo "origin/${ref}"
+    return 0
+  fi
+  if git rev-parse --verify --quiet "${ref}" >/dev/null; then
+    echo "${ref}"
     return 0
   fi
   return 1

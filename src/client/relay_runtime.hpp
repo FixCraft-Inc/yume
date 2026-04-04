@@ -36,7 +36,7 @@ public:
         std::string client_version;
         control::RelayMode relay_mode{control::RelayMode::untrusted};
         bool allow_inbound_admin{false};
-        bool allow_outbound_admin{true};
+        bool allow_outbound_admin{false};
         bool allow_chat{true};
         bool allow_file{true};
         bool allow_bytes{true};

@@ -175,11 +175,14 @@ bool RelayRuntime::announce_presence(std::string* error) {
         }
         return false;
     }
-    std::lock_guard<std::mutex> lock(mutex_);
-    self_ = control::endpoint_from_json(resp.value("endpoint", nlohmann::json::object()));
-    server_id_ = resp.value("server_id", "");
-    server_name_ = resp.value("server_name", "");
-    const std::string name = self_.display_name.empty() ? self_.endpoint_id : self_.display_name;
+    std::string name;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        self_ = control::endpoint_from_json(resp.value("endpoint", nlohmann::json::object()));
+        server_id_ = resp.value("server_id", "");
+        server_name_ = resp.value("server_name", "");
+        name = self_.display_name.empty() ? self_.endpoint_id : self_.display_name;
+    }
     std::string ignored_error;
     notify_lifecycle("connecting",
                      "connecting now, im " + name,

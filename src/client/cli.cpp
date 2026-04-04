@@ -1051,8 +1051,9 @@ struct ParsedArgs {
     std::string relay_mode{"untrusted"};
     bool allow_inbound_admin{false};
     bool allow_inbound_admin_override{false};
-    bool allow_outbound_admin{true};
+    bool allow_outbound_admin{false};
     bool allow_outbound_admin_override{false};
+    bool keep_root{false};
     bool allow_chat{true};
     bool allow_chat_override{false};
     bool allow_file{true};
@@ -1378,6 +1379,8 @@ ParsedArgs parse_args(int argc, char** argv) {
         } else if (arg == "--deny-outbound-admin") {
             args.allow_outbound_admin = false;
             args.allow_outbound_admin_override = true;
+        } else if (arg == "--root") {
+            args.keep_root = true;
         } else if (arg == "--allow-chat") {
             args.allow_chat = true;
             args.allow_chat_override = true;
@@ -1697,7 +1700,7 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --server --port --auth -i --socks --threads --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym -L -R --boring --non-interactive --live-status --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach"
+  local opts="--help -h --version --config --server --port --auth -i --socks --threads --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym -L -R --boring --non-interactive --live-status --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
   local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path --relay-key-file"
   case "$prev" in
     --completion)
@@ -1760,7 +1763,7 @@ void print_help() {
         << "  --relay-mode <mode>      untrusted or trusted\n"
         << "  --allow-inbound-admin    Allow trusted peers to admin-attach\n"
         << "  --deny-inbound-admin     Deny inbound admin attach\n"
-        << "  --allow-outbound-admin   Allow this client to admin-attach peers\n"
+        << "  --allow-outbound-admin   Allow this client to admin-attach peers (off by default)\n"
         << "  --deny-outbound-admin    Deny outbound admin attach\n"
         << "  --allow-chat / --deny-chat\n"
         << "                           Allow or deny relay chat\n"
@@ -1784,6 +1787,7 @@ void print_help() {
         << "  --history-dir <path>     Encrypted local chat history directory\n"
         << "  --relay-key-file <path>  Load/store local relay key derived from password\n"
         << "  --no-history             Disable local chat history\n"
+        << "  --root                   Keep root privileges (not recommended)\n"
         << "  --udp                    Enable UDP forwarding\n"
         << "  --tcp                    Force TCP only\n"
         << "  --allow-local-ip         Allow private/loopback destination IPs\n"
@@ -3425,6 +3429,17 @@ int Cli::run(int argc, char** argv) {
     } else if (args.attach_local) {
         util::log_error("no running yume instance was found for this configuration");
         return 1;
+    }
+    if (!args.keep_root) {
+        std::string drop_error;
+        std::string drop_summary;
+        if (!util::drop_privileges(&drop_error, &drop_summary)) {
+            util::log_error("failed to drop privileges: " + drop_error);
+            return 1;
+        }
+        if (!drop_summary.empty()) {
+            util::log_info(drop_summary);
+        }
     }
     std::atomic<bool> stop_requested{false};
     std::atomic<bool> stop_announced{false};

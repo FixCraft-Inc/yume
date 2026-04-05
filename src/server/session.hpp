@@ -193,8 +193,7 @@ private:
     };
 
     std::mutex control_mutex_;
-    std::mutex streams_mutex_;  // Protects: streams_, udp_streams_, reverse_listeners_, 
-                                // reverse_listener_ports_, reverse_port_streams_, pending_reverse_
+    std::mutex streams_mutex_;
     std::unordered_map<uint8_t, ControlLink> control_outbound_;
     std::unordered_map<uint8_t, ControlLink> control_inbound_;
     std::weak_ptr<Session> control_target_;
@@ -224,7 +223,7 @@ private:
 
     std::deque<PendingWrite> write_queue_;
     bool write_in_flight_{false};
-    uint32_t write_queue_depth_{0};  // Track queue size for backpressure detection
+    uint32_t write_queue_depth_{0};
     
     enum class CloseState {
         Open,
@@ -235,8 +234,8 @@ private:
     bool transport_shutdown_in_flight_{false};
     bool closed_{false};
     std::string close_reason_;
-    std::chrono::steady_clock::time_point close_started_at_{};  // For tracking close duration
-    static constexpr int64_t kCloseTimeoutMs = 5000;  // 5 second hard timeout on close
+    std::chrono::steady_clock::time_point close_started_at_{};
+    static constexpr int64_t kCloseTimeoutMs = 5000;
 };
 
 }  // namespace yume::server

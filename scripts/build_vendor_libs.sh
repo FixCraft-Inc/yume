@@ -39,7 +39,7 @@ Examples:
 Notes:
   - Uses LIBOQS_SRC and ARGON2_SRC (defaults: \$HOME/liboqs, \$HOME/argon2).
   - Use --force to rebuild even if vendor outputs exist.
-  - Windows/macOS targets stage liboqs/argon2 from vcpkg.
+  - Windows/macOS targets stage a relocatable dependency prefix from vcpkg.
 EOF
 }
 
@@ -364,15 +364,28 @@ vendor_complete() {
     local base="${VENDOR_DIR}/$(target_dir "${target}")"
     [[ -f "${base}/include/oqs/oqs.h" ]] || return 1
     [[ -f "${base}/include/argon2.h" ]] || return 1
-    if [[ -f "${base}/lib/liboqs.a" || -f "${base}/lib/liboqs.so" ]]; then
-        :
-    else
+    if ! compgen -G "${base}/lib/liboqs*" >/dev/null 2>&1; then
         return 1
     fi
-    if [[ -f "${base}/lib/libargon2.a" || -f "${base}/lib/libargon2.so" ]]; then
-        return 0
+    if ! compgen -G "${base}/lib/libargon2*" >/dev/null 2>&1; then
+        return 1
     fi
-    return 1
+    if is_windows_target || is_macos_target; then
+        [[ -f "${base}/include/boost/asio.hpp" ]] || return 1
+        [[ -f "${base}/include/openssl/ssl.h" ]] || return 1
+        [[ -f "${base}/include/zlib.h" ]] || return 1
+        [[ -d "${base}/share/boost" ]] || return 1
+        [[ -d "${base}/share/zstd" ]] || return 1
+    fi
+    return 0
+}
+
+copy_tree_contents() {
+    local src="$1"
+    local dst="$2"
+    [[ -d "${src}" ]] || return 0
+    mkdir -p "${dst}"
+    cp -a "${src}/." "${dst}/"
 }
 
 install_vcpkg_packages() {
@@ -580,20 +593,12 @@ stage_vcpkg_libs() {
         echo "vcpkg prefix not found: ${vcpkg_prefix}" >&2
         exit 1
     fi
-    mkdir -p "${inc_dir}/oqs" "${lib_dir}"
-    cp -a "${vcpkg_prefix}/include/oqs" "${inc_dir}/" 2>/dev/null || true
-    if [[ -f "${vcpkg_prefix}/include/argon2.h" ]]; then
-        cp -a "${vcpkg_prefix}/include/argon2.h" "${inc_dir}/"
-    fi
-    if compgen -G "${vcpkg_prefix}/lib/liboqs"* >/dev/null 2>&1; then
-        cp -a "${vcpkg_prefix}/lib/liboqs"* "${lib_dir}/"
-    fi
-    if compgen -G "${vcpkg_prefix}/lib/libargon2"* >/dev/null 2>&1; then
-        cp -a "${vcpkg_prefix}/lib/libargon2"* "${lib_dir}/"
-    fi
-    if is_windows_target && compgen -G "${vcpkg_prefix}/bin/"*.dll >/dev/null 2>&1; then
-        cp -a "${vcpkg_prefix}/bin/"*.dll "${lib_dir}/" 2>/dev/null || true
-    fi
+    mkdir -p "${stage_dir}"
+    copy_tree_contents "${vcpkg_prefix}/include" "${stage_dir}/include"
+    copy_tree_contents "${vcpkg_prefix}/lib" "${stage_dir}/lib"
+    copy_tree_contents "${vcpkg_prefix}/share" "${stage_dir}/share"
+    copy_tree_contents "${vcpkg_prefix}/etc" "${stage_dir}/etc"
+    copy_tree_contents "${vcpkg_prefix}/bin" "${stage_dir}/bin"
 }
 
 docker_build_vendor() {
@@ -859,6 +864,11 @@ lib_dir="${stage_dir}/lib"
 mkdir -p "${inc_dir}" "${lib_dir}"
 
 prune_stage_dir() {
+    if is_windows_target || is_macos_target; then
+        rm -rf "${stage_dir}/debug" "${stage_dir}/tools"
+        find "${stage_dir}" -type f \( -name "*.la" -o -name "*.pdb" \) -delete 2>/dev/null || true
+        return 0
+    fi
     rm -rf "${stage_dir}/bin" "${stage_dir}/share"
     rm -rf "${stage_dir}/lib/pkgconfig" "${stage_dir}/lib/cmake"
     find "${stage_dir}" -type f -name "*.la" -delete 2>/dev/null || true

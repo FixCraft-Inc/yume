@@ -41,14 +41,12 @@ constexpr uint8_t kMaxFrameType = protocol::SOPEN;
 constexpr int64_t kIdleTimeoutMs = 90 * 1000;
 constexpr int64_t kIdleCheckIntervalMs = 30 * 1000;
 constexpr std::uint64_t kHopDecryptWindow = 6;
-
-// Timeout constants for async operations
-constexpr int64_t kResolverTimeoutMs = 8000;   // 8s DNS resolution (prevents cascading timeouts)
-constexpr int64_t kConnectTimeoutMs = 15000;  // 15s TCP connection
-constexpr int64_t kReverseAcceptTimeoutMs = 30000;  // 30s reverse listener acceptance
-constexpr uint32_t kMaxWriteQueueSize = 256;  // Max pending frames before backpressure
-constexpr uint32_t kWriteQueueHighWatermark = 16;  // Pause new inbound reads before the hard fuse trips.
-constexpr uint32_t kWriteQueueLowWatermark = 4;  // Resume paused reads only after the queue drains well below the pause point.
+constexpr int64_t kResolverTimeoutMs = 8000;
+constexpr int64_t kConnectTimeoutMs = 15000;
+constexpr int64_t kReverseAcceptTimeoutMs = 30000;
+constexpr uint32_t kMaxWriteQueueSize = 256;
+constexpr uint32_t kWriteQueueHighWatermark = 16;
+constexpr uint32_t kWriteQueueLowWatermark = 4;
 
 int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -66,12 +64,12 @@ bool is_private_ipv4(const boost::asio::ip::address_v4& addr) {
     if (a == 169 && b == 254) return true;
     if (a == 172 && (b >= 16 && b <= 31)) return true;
     if (a == 192 && b == 168) return true;
-    if (a == 100 && (b >= 64 && b <= 127)) return true; // CGNAT
+    if (a == 100 && (b >= 64 && b <= 127)) return true;
     if (a == 192 && b == 0) return true;
     if (a == 198 && (b == 18 || b == 19)) return true;
     if (a == 198 && b == 51) return true;
     if (a == 203 && b == 0) return true;
-    if (a >= 224) return true; // multicast/reserved
+    if (a >= 224) return true;
     return false;
 }
 
@@ -80,10 +78,10 @@ bool is_private_ipv6(const boost::asio::ip::address_v6& addr) {
         return true;
     }
     const auto bytes = addr.to_bytes();
-    if ((bytes[0] & 0xFE) == 0xFC) { // fc00::/7
+    if ((bytes[0] & 0xFE) == 0xFC) {
         return true;
     }
-    if (bytes[0] == 0xFE && (bytes[1] & 0xC0) == 0x80) { // fe80::/10
+    if (bytes[0] == 0xFE && (bytes[1] & 0xC0) == 0x80) {
         return true;
     }
     if (addr.is_v4_mapped()) {
@@ -389,7 +387,6 @@ void Session::on_preface_read(const boost::system::error_code& ec, std::size_t b
     }
 
     if (preface_accum_.size() < preface_buf_.size()) {
-        // need more to decide; read again
         auto self = shared_from_this();
         stream_.async_read_some(boost::asio::buffer(preface_buf_),
                                 boost::asio::bind_executor(strand_,
@@ -615,7 +612,6 @@ void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
             maybe_finish_close();
             return;
         }
-        // Handle SSL-specific errors with better logging
         if (ec == boost::asio::ssl::error::stream_truncated ||
             ec.category().name() == std::string("ssl")) {
             close_with_reason("SSL/TLS error: " + describe_error_code(ec) + 
@@ -636,7 +632,6 @@ void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
                    (static_cast<uint32_t>(header_buf_[2]) << 8) |
                    (static_cast<uint32_t>(header_buf_[3]));
 
-    // Validate frame size BEFORE any allocations
     if (len > kMaxFrameSize) {
         const std::string detail =
             "session " + std::to_string(session_id_) + ": frame too large (" + summarize_header_prefix(header_buf_) + ")";
@@ -651,14 +646,12 @@ void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
         return;
     }
 
-    // Validate header type and stream ID range (basic sanity check)
     uint8_t type = header_buf_[4];
     if (type < kMinFrameType || type > kMaxFrameType) {
         const std::string detail =
             "session " + std::to_string(session_id_) + ": invalid frame type " +
             std::to_string(static_cast<int>(type)) + " (header=" + summarize_header_prefix(header_buf_) + ")";
         util::log_warn(detail);
-        // This is likely frame corruption; close and let client reconnect
         close_with_reason("invalid frame type - SSL stream likely corrupted");
         return;
     }
@@ -691,7 +684,6 @@ void Session::on_read_payload(const boost::system::error_code& ec, std::size_t) 
             maybe_finish_close();
             return;
         }
-        // Enhanced error logging for SSL/TLS issues
         std::string error_msg = "read payload failed: " + describe_error_code(ec);
         if (ec.category().name() == std::string("ssl") ||
             ec == boost::asio::ssl::error::stream_truncated) {
@@ -1340,7 +1332,6 @@ void Session::handle_open(const protocol::Frame& frame) {
                        std::to_string(frame.header.stream_id) + " -> " + host + ":" + std::to_string(port));
         auto udp = std::make_shared<UdpStream>(stream_.get_executor());
         
-        // Add to map with lock protection
         {
             std::lock_guard<std::mutex> lock(streams_mutex_);
             udp_streams_[frame.header.stream_id] = udp;
@@ -1349,13 +1340,11 @@ void Session::handle_open(const protocol::Frame& frame) {
         auto self = shared_from_this();
         const auto self_local_addr = session_local_address(stream_);
         
-        // Wrap resolver with timeout
         auto resolver_timer = std::make_shared<boost::asio::deadline_timer>(stream_.get_executor());
         resolver_timer->expires_from_now(boost::posix_time::milliseconds(kResolverTimeoutMs));
         
         auto resolver_handler = [self, stream_id = frame.header.stream_id, udp, self_local_addr, resolver_timer](const boost::system::error_code& ec,
                                                                                                                  const boost::asio::ip::udp::resolver::results_type& results) {
-            // Cancel timer to prevent double-fire
             resolver_timer->cancel();
             
             if (ec) {
@@ -1414,13 +1403,11 @@ void Session::handle_open(const protocol::Frame& frame) {
         udp->resolver.async_resolve(host, std::to_string(port),
                                     boost::asio::bind_executor(strand_, resolver_handler));
         
-        // Setup resolver timeout handler
         resolver_timer->async_wait(boost::asio::bind_executor(strand_,
             [self, stream_id = frame.header.stream_id, udp](const boost::system::error_code& ec) {
-                if (ec) {  // Timer was cancelled normally
+                if (ec) {
                     return;
                 }
-                // Timeout occurred - cancel the resolver
                 udp->resolver.cancel();
             }));
         
@@ -1433,7 +1420,6 @@ void Session::handle_open(const protocol::Frame& frame) {
     boost::system::error_code keep_ec;
     remote->socket.set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
     
-    // Add to map with lock protection
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
         streams_[frame.header.stream_id] = remote;
@@ -1442,13 +1428,11 @@ void Session::handle_open(const protocol::Frame& frame) {
     auto self = shared_from_this();
     const auto self_local_addr = session_local_address(stream_);
     
-    // Wrap resolver with timeout
     auto resolver_timer = std::make_shared<boost::asio::deadline_timer>(stream_.get_executor());
     resolver_timer->expires_from_now(boost::posix_time::milliseconds(kResolverTimeoutMs));
     
     auto resolver_handler = [self, stream_id = frame.header.stream_id, remote, self_local_addr, resolver_timer](const boost::system::error_code& ec,
                                                                                                                const boost::asio::ip::tcp::resolver::results_type& results) {
-        // Cancel timer to prevent double-fire
         resolver_timer->cancel();
         
         if (ec) {
@@ -1483,7 +1467,6 @@ void Session::handle_open(const protocol::Frame& frame) {
         
         prefer_ipv4_endpoints(&allowed);
         
-        // Connect with timeout
         auto connect_timer = std::make_shared<boost::asio::deadline_timer>(self->stream_.get_executor());
         connect_timer->expires_from_now(boost::posix_time::milliseconds(kConnectTimeoutMs));
         
@@ -1491,7 +1474,6 @@ void Session::handle_open(const protocol::Frame& frame) {
                                    boost::asio::bind_executor(self->strand_,
                                                               [self, stream_id, remote, connect_timer](const boost::system::error_code& ec2,
                                                                                                        const boost::asio::ip::tcp::endpoint&) {
-                                                                  // Cancel connect timer
                                                                   connect_timer->cancel();
                                                                   if (ec2) {
                                                                       self->send_open_reply(stream_id, false, "connect failed: " + ec2.message());
@@ -1503,13 +1485,11 @@ void Session::handle_open(const protocol::Frame& frame) {
                                                                   self->start_remote_read(stream_id);
                                                               }));
         
-        // Setup connect timeout handler
         connect_timer->async_wait(boost::asio::bind_executor(self->strand_,
             [self, stream_id, remote](const boost::system::error_code& ec) {
-                if (ec) {  // Timer was cancelled normally
+                if (ec) {
                     return;
                 }
-                // Timeout occurred - close the socket to cancel the connect operation
                 boost::system::error_code ignore_ec;
                 remote->socket.close(ignore_ec);
             }));
@@ -1518,13 +1498,11 @@ void Session::handle_open(const protocol::Frame& frame) {
     remote->resolver.async_resolve(host, std::to_string(port),
                                    boost::asio::bind_executor(strand_, resolver_handler));
     
-    // Setup resolver timeout handler
     resolver_timer->async_wait(boost::asio::bind_executor(strand_,
         [self, stream_id = frame.header.stream_id, remote](const boost::system::error_code& ec) {
-            if (ec) {  // Timer was cancelled normally
+            if (ec) {
                 return;
             }
-            // Timeout occurred - cancel the resolver
             remote->resolver.cancel();
         }));
 }
@@ -1588,7 +1566,6 @@ void Session::handle_rlisten(const protocol::Frame& frame) {
         min_port = std::max(min_port, cfg_.reverse_port_min);
         max_port = std::min(max_port, cfg_.reverse_port_max);
         if (min_port > max_port) {
-            // Client requested a range outside server policy; fall back to server range.
             min_port = cfg_.reverse_port_min;
             max_port = cfg_.reverse_port_max;
         }
@@ -2319,7 +2296,6 @@ void Session::handle_data(const protocol::Frame& frame) {
 }
 
 void Session::handle_close(uint8_t stream_id, const std::string& reason) {
-    // Use a single lock scope to protect all map operations
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
         
@@ -2644,8 +2620,6 @@ void Session::queue_encoded_write_on_strand(
         return;
     }
     
-    // Backpressure: reject writes if queue exceeds threshold
-    // This prevents memory exhaustion and SSL stream corruption under load
     if (write_queue_depth_ >= kMaxWriteQueueSize) {
         util::log_warn("session " + std::to_string(session_id_) + 
                       ": write queue overflow (" + std::to_string(write_queue_depth_) + 
@@ -2733,7 +2707,6 @@ void Session::do_write() {
                                                                std::size_t bytes) {
                                                             auto item = std::move(self->write_queue_.front());
                                                             self->write_queue_.pop_front();
-                                                            // Decrement queue depth when frame completes
                                                             if (self->write_queue_depth_ > 0) {
                                                                 self->write_queue_depth_--;
                                                             }
@@ -2748,7 +2721,6 @@ void Session::do_write() {
                                                                     self->shutdown_transport();
                                                                     return;
                                                                 }
-                                                                // Enhanced error handling for SSL issues
                                                                 std::string error_msg = "frame write failed: " + describe_error_code(ec);
                                                                 if (ec.category().name() == std::string("ssl") ||
                                                                     ec == boost::asio::ssl::error::stream_truncated) {

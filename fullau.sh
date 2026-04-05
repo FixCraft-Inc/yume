@@ -795,8 +795,10 @@ maybe_enable_windows_cross() {
   if ! target_enabled windows-x86_64; then
     return 0
   fi
+  local vendor_prefix=""
+  vendor_prefix="$(vendor_cross_dir "windows-x86_64" || true)"
   if resolve_windows_mingw_compilers "${WINDOWS_TOOLCHAIN_PREFIX}" >/dev/null 2>&1 && \
-     [[ -n "${VCPKG_ROOT:-}" && -x "${VCPKG_ROOT}/vcpkg" && -f "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" ]]; then
+     { [[ -n "${VCPKG_ROOT:-}" && -x "${VCPKG_ROOT}/vcpkg" && -f "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" ]] || vendor_has_cross_prefix "${vendor_prefix}"; }; then
     WINDOWS_CROSS=1
   fi
 }
@@ -808,7 +810,12 @@ maybe_enable_macos_cross() {
   if ! target_enabled macos-x86_64 && ! target_enabled macos-arm64; then
     return 0
   fi
-  if [[ -z "${VCPKG_ROOT:-}" || ! -x "${VCPKG_ROOT}/vcpkg" || ! -f "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" ]]; then
+  local vendor_x64=""
+  local vendor_arm64=""
+  vendor_x64="$(vendor_cross_dir "macos-x86_64" || true)"
+  vendor_arm64="$(vendor_cross_dir "macos-arm64" || true)"
+  if [[ ( -z "${VCPKG_ROOT:-}" || ! -x "${VCPKG_ROOT}/vcpkg" || ! -f "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" ) && \
+        ! ( vendor_has_cross_prefix "${vendor_x64}" || vendor_has_cross_prefix "${vendor_arm64}" ) ]]; then
     return 0
   fi
   if { target_enabled macos-x86_64 && resolve_macos_toolchain "x64-osx" >/dev/null 2>&1; } || \
@@ -1276,6 +1283,27 @@ vendor_restore_if_missing() {
       VENDOR_TEMP_CREATED=1
     fi
   fi
+}
+
+vendor_cross_dir() {
+  local label="$1"
+  local dir="${VENDOR_DIR}/${label}"
+  if [[ -d "${dir}" ]]; then
+    echo "${dir}"
+    return 0
+  fi
+  return 1
+}
+
+vendor_has_cross_prefix() {
+  local dir="$1"
+  [[ -n "${dir}" ]] || return 1
+  [[ -f "${dir}/include/boost/asio.hpp" ]] || return 1
+  [[ -f "${dir}/include/openssl/ssl.h" ]] || return 1
+  [[ -f "${dir}/include/zlib.h" ]] || return 1
+  [[ -d "${dir}/share/boost" ]] || return 1
+  [[ -d "${dir}/share/zstd" ]] || return 1
+  return 0
 }
 
 docker_build_target() {
@@ -1983,6 +2011,9 @@ build_windows_cross_target() {
   local vcpkg_build_type="${YUME_WINDOWS_VCPKG_BUILD_TYPE:-release}"
   local overlay_triplets_dir=""
   local upstream_triplet_file=""
+  local vendor_prefix=""
+  local dep_prefix=""
+  local use_vcpkg=0
 
   if [[ "${WINDOWS_CROSS}" -ne 1 ]]; then
     return 0
@@ -1994,34 +2025,34 @@ build_windows_cross_target() {
   fi
   IFS='|' read -r tool_cc tool_cxx tool_rc <<< "${tool_info}"
   echo "✨ Windows cross compiler: ${tool_cxx}"
-  if [[ -z "${vcpkg_root}" ]]; then
-    echo "Skipping windows cross build; set VCPKG_ROOT to your vcpkg clone" >&2
-    return 0
-  fi
-  vcpkg_bin="${vcpkg_root}/vcpkg"
-  if [[ ! -x "${vcpkg_bin}" ]]; then
-    echo "Skipping windows cross build; vcpkg not found at ${vcpkg_bin}" >&2
-    return 0
-  fi
-  if [[ ! -f "${vcpkg_root}/scripts/buildsystems/vcpkg.cmake" ]]; then
-    echo "Skipping windows cross build; vcpkg toolchain file missing" >&2
+  vendor_prefix="$(vendor_cross_dir "windows-x86_64" || true)"
+  if [[ -n "${vcpkg_root}" && -x "${vcpkg_root}/vcpkg" && -f "${vcpkg_root}/scripts/buildsystems/vcpkg.cmake" ]]; then
+    use_vcpkg=1
+    vcpkg_bin="${vcpkg_root}/vcpkg"
+    dep_prefix="${vcpkg_root}/installed/${triplet}"
+  elif vendor_has_cross_prefix "${vendor_prefix}"; then
+    dep_prefix="${vendor_prefix}"
+    echo "Using vendored Windows dependency prefix: ${dep_prefix}"
+  else
+    echo "Skipping windows cross build; set VCPKG_ROOT or stage vendor/windows-x86_64." >&2
     return 0
   fi
 
-  if [[ -f "${vcpkg_root}/triplets/community/${triplet}.cmake" ]]; then
-    upstream_triplet_file="${vcpkg_root}/triplets/community/${triplet}.cmake"
-  elif [[ -f "${vcpkg_root}/triplets/${triplet}.cmake" ]]; then
-    upstream_triplet_file="${vcpkg_root}/triplets/${triplet}.cmake"
+  if [[ "${use_vcpkg}" -eq 1 ]]; then
+    if [[ -f "${vcpkg_root}/triplets/community/${triplet}.cmake" ]]; then
+      upstream_triplet_file="${vcpkg_root}/triplets/community/${triplet}.cmake"
+    elif [[ -f "${vcpkg_root}/triplets/${triplet}.cmake" ]]; then
+      upstream_triplet_file="${vcpkg_root}/triplets/${triplet}.cmake"
+    fi
+    patch_vcpkg_boost_ports "${vcpkg_root}"
   fi
 
-  patch_vcpkg_boost_ports "${vcpkg_root}"
-
-  vcpkg_prefix="${vcpkg_root}/installed/${triplet}"
-  oqs_include="${vcpkg_prefix}/include"
-  if [[ -f "${vcpkg_prefix}/lib/liboqs.dll.a" ]]; then
-    oqs_lib="${vcpkg_prefix}/lib/liboqs.dll.a"
-  elif [[ -f "${vcpkg_prefix}/lib/liboqs.a" ]]; then
-    oqs_lib="${vcpkg_prefix}/lib/liboqs.a"
+  vcpkg_prefix="${dep_prefix}"
+  oqs_include="${dep_prefix}/include"
+  if [[ -f "${dep_prefix}/lib/liboqs.dll.a" ]]; then
+    oqs_lib="${dep_prefix}/lib/liboqs.dll.a"
+  elif [[ -f "${dep_prefix}/lib/liboqs.a" ]]; then
+    oqs_lib="${dep_prefix}/lib/liboqs.a"
   fi
 
   sysroot="$("${tool_cc}" -print-sysroot 2>/dev/null || true)"
@@ -2040,39 +2071,40 @@ EOS
     chmod +x "${powershell_stub}"
   fi
 
-  local vcpkg_triplet_args=(--triplet "${triplet}")
-  if [[ "${vcpkg_build_type}" == "release" && -n "${upstream_triplet_file}" ]]; then
-    overlay_triplets_dir="${YUME_TMP_ROOT}/vcpkg-triplets-windows"
-    mkdir -p "${overlay_triplets_dir}"
-    cat > "${overlay_triplets_dir}/${triplet}.cmake" <<EOF
+  if [[ "${use_vcpkg}" -eq 1 ]]; then
+    local vcpkg_triplet_args=(--triplet "${triplet}")
+    if [[ "${vcpkg_build_type}" == "release" && -n "${upstream_triplet_file}" ]]; then
+      overlay_triplets_dir="${YUME_TMP_ROOT}/vcpkg-triplets-windows"
+      mkdir -p "${overlay_triplets_dir}"
+      cat > "${overlay_triplets_dir}/${triplet}.cmake" <<EOF
 include("${upstream_triplet_file}")
 set(VCPKG_BUILD_TYPE release)
 EOF
-    vcpkg_triplet_args+=(--overlay-triplets "${overlay_triplets_dir}")
-  fi
+      vcpkg_triplet_args+=(--overlay-triplets "${overlay_triplets_dir}")
+    fi
 
-  local windows_vcpkg_packages="${WINDOWS_VCPKG_PACKAGES//,/ }"
-  if [[ " ${windows_vcpkg_packages} " != *" boost-headers "* ]]; then
-    windows_vcpkg_packages="${windows_vcpkg_packages} boost-headers"
-  fi
-  if [[ " ${windows_vcpkg_packages} " != *" boost-system "* ]]; then
-    windows_vcpkg_packages="${windows_vcpkg_packages} boost-system"
-  fi
-  if [[ " ${windows_vcpkg_packages} " != *" boost-asio "* ]]; then
-    windows_vcpkg_packages="${windows_vcpkg_packages} boost-asio"
-  fi
+    local windows_vcpkg_packages="${WINDOWS_VCPKG_PACKAGES//,/ }"
+    if [[ " ${windows_vcpkg_packages} " != *" boost-headers "* ]]; then
+      windows_vcpkg_packages="${windows_vcpkg_packages} boost-headers"
+    fi
+    if [[ " ${windows_vcpkg_packages} " != *" boost-system "* ]]; then
+      windows_vcpkg_packages="${windows_vcpkg_packages} boost-system"
+    fi
+    if [[ " ${windows_vcpkg_packages} " != *" boost-asio "* ]]; then
+      windows_vcpkg_packages="${windows_vcpkg_packages} boost-asio"
+    fi
 
-  CC="${tool_cc}" CXX="${tool_cxx}" PATH="${shim_bin}:${PATH}" VCPKG_POWERSHELL_PATH="${powershell_stub}" \
-    "${vcpkg_bin}" install "${vcpkg_triplet_args[@]}" ${windows_vcpkg_packages}
-
-  if [[ ! -f "${vcpkg_prefix}/include/boost/asio.hpp" ]]; then
-    echo "Windows vcpkg Boost.Asio headers missing after install; retrying explicit boost-asio/boost-headers."
     CC="${tool_cc}" CXX="${tool_cxx}" PATH="${shim_bin}:${PATH}" VCPKG_POWERSHELL_PATH="${powershell_stub}" \
-      "${vcpkg_bin}" install "${vcpkg_triplet_args[@]}" boost-headers boost-system boost-asio
+      "${vcpkg_bin}" install "${vcpkg_triplet_args[@]}" ${windows_vcpkg_packages}
+
+    if [[ ! -f "${dep_prefix}/include/boost/asio.hpp" ]]; then
+      echo "Windows vcpkg Boost.Asio headers missing after install; retrying explicit boost-asio/boost-headers."
+      CC="${tool_cc}" CXX="${tool_cxx}" PATH="${shim_bin}:${PATH}" VCPKG_POWERSHELL_PATH="${powershell_stub}" \
+        "${vcpkg_bin}" install "${vcpkg_triplet_args[@]}" boost-headers boost-system boost-asio
+    fi
   fi
-  if [[ ! -f "${vcpkg_prefix}/include/boost/asio.hpp" ]]; then
-    echo "Windows cross build cannot continue: boost/asio.hpp not found in ${vcpkg_prefix}/include." >&2
-    echo "Set YUME_WINDOWS_VCPKG_PACKAGES to include boost-headers boost-system boost-asio." >&2
+  if [[ ! -f "${dep_prefix}/include/boost/asio.hpp" ]]; then
+    echo "Windows cross build cannot continue: boost/asio.hpp not found in ${dep_prefix}/include." >&2
     return 1
   fi
 
@@ -2082,21 +2114,25 @@ set(CMAKE_SYSTEM_PROCESSOR x86_64)
 set(CMAKE_C_COMPILER ${tool_cc})
 set(CMAKE_CXX_COMPILER ${tool_cxx})
 set(CMAKE_RC_COMPILER ${tool_rc})
+set(CMAKE_PREFIX_PATH ${dep_prefix})
+set(OPENSSL_ROOT_DIR ${dep_prefix})
 EOF
   if [[ -n "${sysroot}" && -d "${sysroot}" ]]; then
     cat >> "${toolchain_file}" <<EOF
 set(CMAKE_SYSROOT ${sysroot})
-set(CMAKE_FIND_ROOT_PATH ${sysroot} ${vcpkg_prefix})
+set(CMAKE_FIND_ROOT_PATH ${sysroot} ${dep_prefix})
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 EOF
   else
     cat >> "${toolchain_file}" <<EOF
-set(CMAKE_FIND_ROOT_PATH ${vcpkg_prefix})
+set(CMAKE_FIND_ROOT_PATH ${dep_prefix})
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 EOF
   fi
 
@@ -2106,14 +2142,27 @@ EOF
   if [[ -n "${oqs_lib}" && -d "${oqs_include}" ]]; then
     extra_oqs_args="-DOQS_INCLUDE_DIR=${oqs_include} -DOQS_LIBRARY=${oqs_lib}"
   fi
+  local zstd_args=""
+  if [[ -f "${dep_prefix}/lib/libzstd.dll.a" ]]; then
+    zstd_args="-DZSTD_LIBRARY=${dep_prefix}/lib/libzstd.dll.a -DZSTD_INCLUDE_DIR=${dep_prefix}/include -DZSTD_DIR=${dep_prefix}/share/zstd"
+  elif [[ -f "${dep_prefix}/lib/libzstd.a" ]]; then
+    zstd_args="-DZSTD_LIBRARY=${dep_prefix}/lib/libzstd.a -DZSTD_INCLUDE_DIR=${dep_prefix}/include -DZSTD_DIR=${dep_prefix}/share/zstd"
+  fi
 
   local extra_vcpkg_toolchain_args=""
   if [[ -n "${overlay_triplets_dir}" ]]; then
     extra_vcpkg_toolchain_args="-DVCPKG_OVERLAY_TRIPLETS=${overlay_triplets_dir}"
   fi
 
+  local windows_cmake_args="${variant_args} -DYUME_USE_SPDLOG=OFF -DBASEFWX_USE_VENDOR_DEPS=OFF -DOPENSSL_ROOT_DIR=${dep_prefix} -DCMAKE_PREFIX_PATH=${dep_prefix} -DBoost_DIR=${dep_prefix}/share/boost ${zstd_args} ${extra_oqs_args} -DCMAKE_SYSTEM_NAME=Windows"
+  if [[ "${use_vcpkg}" -eq 1 ]]; then
+    windows_cmake_args="${windows_cmake_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} ${extra_vcpkg_toolchain_args} -DVCPKG_APPLOCAL_DEPS=OFF"
+  else
+    windows_cmake_args="${windows_cmake_args} -DCMAKE_TOOLCHAIN_FILE=${toolchain_file}"
+  fi
+
   PATH="${shim_bin}:${PATH}" VCPKG_POWERSHELL_PATH="${powershell_stub}" \
-    YUME_WINDOWS_CROSS=1 YUME_MACOS_CROSS=0 YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DYUME_USE_SPDLOG=OFF -DBASEFWX_USE_VENDOR_DEPS=OFF -DOPENSSL_ROOT_DIR=${vcpkg_prefix} ${extra_oqs_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} ${extra_vcpkg_toolchain_args} -DVCPKG_APPLOCAL_DEPS=OFF -DCMAKE_SYSTEM_NAME=Windows" \
+    YUME_WINDOWS_CROSS=1 YUME_MACOS_CROSS=0 YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${windows_cmake_args}" \
     ./ezbuild.sh
 
   if [[ ! -f build/bin/yume.exe || ! -f build/bin/yumed.exe ]]; then
@@ -2124,8 +2173,10 @@ EOF
   cp -f build/bin/yume.exe "${outdir}/yume.exe"
   cp -f build/bin/yumed.exe "${outdir}/yumed.exe"
   if [[ "${triplet}" == *"dynamic"* ]]; then
-    cp -f "${vcpkg_root}/installed/${triplet}/bin/"*.dll "${outdir}/" 2>/dev/null || true
-    cp -f "${vcpkg_root}/installed/${triplet}/debug/bin/"*.dll "${outdir}/" 2>/dev/null || true
+    cp -f "${dep_prefix}/bin/"*.dll "${outdir}/" 2>/dev/null || true
+    if [[ "${use_vcpkg}" -eq 1 ]]; then
+      cp -f "${vcpkg_root}/installed/${triplet}/debug/bin/"*.dll "${outdir}/" 2>/dev/null || true
+    fi
     copy_mingw_runtime_dlls "${outdir}" "${tool_cxx}" "${tool_prefix}"
   fi
   write_windows_install_cmd "${outdir}"
@@ -2148,21 +2199,6 @@ build_macos_cross_target() {
   if [[ "${MACOS_CROSS}" -ne 1 ]]; then
     return 0
   fi
-  if [[ -z "${vcpkg_root}" ]]; then
-    echo "Skipping macos cross build; set VCPKG_ROOT to your vcpkg clone" >&2
-    return 0
-  fi
-  if [[ ! -x "${vcpkg_root}/vcpkg" ]]; then
-    echo "Skipping macos cross build; vcpkg not found at ${vcpkg_root}/vcpkg" >&2
-    return 0
-  fi
-  if [[ ! -f "${vcpkg_root}/scripts/buildsystems/vcpkg.cmake" ]]; then
-    echo "Skipping macos cross build; vcpkg toolchain file missing" >&2
-    return 0
-  fi
-
-  patch_vcpkg_boost_ports "${vcpkg_root}"
-
   toolchain_info="$(resolve_macos_toolchain "${triplet}" || true)"
   if [[ -z "${toolchain_info}" ]]; then
     echo "Skipping macos cross build; osxcross toolchain not found (set OSXCROSS_ROOT or YUME_MACOS_TOOLCHAIN_PREFIX)" >&2
@@ -2181,6 +2217,9 @@ build_macos_cross_target() {
   local shim_bin="${YUME_TMP_ROOT}/osxcross-bin"
   local triplet_arch="x64"
   local vcpkg_prefix=""
+  local vendor_prefix=""
+  local dep_prefix=""
+  local use_vcpkg=0
   IFS='|' read -r cc cxx sdk arch <<< "${toolchain_info}"
   if [[ -z "${cc}" || -z "${cxx}" || -z "${sdk}" ]]; then
     echo "Skipping macos cross build; missing osxcross compiler or SDK (set OSXCROSS_ROOT/YUME_MACOS_SDK)" >&2
@@ -2249,8 +2288,22 @@ build_macos_cross_target() {
   fi
   fi
 
-  mkdir -p "${overlay_triplets_dir}"
-  cat > "${overlay_triplets_dir}/${triplet}.cmake" <<EOF
+  vendor_prefix="$(vendor_cross_dir "macos-${arch}" || true)"
+  if [[ -n "${vcpkg_root}" && -x "${vcpkg_root}/vcpkg" && -f "${vcpkg_root}/scripts/buildsystems/vcpkg.cmake" ]]; then
+    use_vcpkg=1
+    patch_vcpkg_boost_ports "${vcpkg_root}"
+    dep_prefix="${vcpkg_root}/installed/${triplet}"
+  elif vendor_has_cross_prefix "${vendor_prefix}"; then
+    dep_prefix="${vendor_prefix}"
+    echo "Using vendored macOS dependency prefix: ${dep_prefix}"
+  else
+    echo "Skipping macos cross build; set VCPKG_ROOT or stage vendor/macos-${arch}." >&2
+    return 0
+  fi
+
+  if [[ "${use_vcpkg}" -eq 1 ]]; then
+    mkdir -p "${overlay_triplets_dir}"
+    cat > "${overlay_triplets_dir}/${triplet}.cmake" <<EOF
 set(VCPKG_TARGET_ARCHITECTURE ${triplet_arch})
 set(VCPKG_CRT_LINKAGE dynamic)
 set(VCPKG_LIBRARY_LINKAGE ${lib_linkage})
@@ -2259,13 +2312,14 @@ set(VCPKG_OSX_ARCHITECTURES ${arch})
 set(VCPKG_OSX_DEPLOYMENT_TARGET ${MACOS_DEPLOYMENT_TARGET})
 set(VCPKG_CHAINLOAD_TOOLCHAIN_FILE "${toolchain_file}")
 EOF
+  fi
 
-  vcpkg_prefix="${vcpkg_root}/installed/${triplet}"
-  oqs_include="${vcpkg_prefix}/include"
-  if [[ -f "${vcpkg_root}/installed/${triplet}/lib/liboqs.a" ]]; then
-    oqs_lib="${vcpkg_root}/installed/${triplet}/lib/liboqs.a"
-  elif [[ -f "${vcpkg_root}/installed/${triplet}/lib/liboqs.dylib" ]]; then
-    oqs_lib="${vcpkg_root}/installed/${triplet}/lib/liboqs.dylib"
+  vcpkg_prefix="${dep_prefix}"
+  oqs_include="${dep_prefix}/include"
+  if [[ -f "${dep_prefix}/lib/liboqs.a" ]]; then
+    oqs_lib="${dep_prefix}/lib/liboqs.a"
+  elif [[ -f "${dep_prefix}/lib/liboqs.dylib" ]]; then
+    oqs_lib="${dep_prefix}/lib/liboqs.dylib"
   fi
 
   cat > "${toolchain_file}" <<EOF
@@ -2294,78 +2348,79 @@ EOF
     echo "set(CMAKE_OSX_DEPLOYMENT_TARGET ${MACOS_DEPLOYMENT_TARGET} CACHE STRING \"\" FORCE)" >> "${toolchain_file}"
   fi
   cat >> "${toolchain_file}" <<EOF
-set(CMAKE_PREFIX_PATH ${vcpkg_prefix})
-set(OPENSSL_ROOT_DIR ${vcpkg_prefix})
-set(CMAKE_FIND_ROOT_PATH ${sdk} ${vcpkg_prefix})
+set(CMAKE_PREFIX_PATH ${dep_prefix})
+set(OPENSSL_ROOT_DIR ${dep_prefix})
+set(CMAKE_FIND_ROOT_PATH ${sdk} ${dep_prefix})
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 EOF
 
-  if [[ -d "${vcpkg_prefix}" && ! -f "${vcpkg_prefix}/lib/pkgconfig/liblzma.pc" ]]; then
+  if [[ "${use_vcpkg}" -eq 1 && -d "${dep_prefix}" && ! -f "${dep_prefix}/lib/pkgconfig/liblzma.pc" ]]; then
     echo "macOS vcpkg liblzma pkgconfig missing; forcing reinstall."
     PATH="${shim_bin}:${bin_dir}:${PATH}" \
       "${vcpkg_root}/vcpkg" remove --recurse --triplet "${triplet}" liblzma >/dev/null 2>&1 || true
   fi
-  if [[ -d "${vcpkg_prefix}" && ! -f "${vcpkg_prefix}/lib/pkgconfig/spdlog.pc" ]]; then
+  if [[ "${use_vcpkg}" -eq 1 && -d "${dep_prefix}" && ! -f "${dep_prefix}/lib/pkgconfig/spdlog.pc" ]]; then
     echo "macOS vcpkg spdlog pkgconfig missing; forcing reinstall."
     PATH="${shim_bin}:${bin_dir}:${PATH}" \
       "${vcpkg_root}/vcpkg" remove --recurse --triplet "${triplet}" spdlog >/dev/null 2>&1 || true
   fi
-  if [[ -d "${vcpkg_prefix}" && ! -f "${vcpkg_prefix}/lib/pkgconfig/zlib.pc" ]]; then
+  if [[ "${use_vcpkg}" -eq 1 && -d "${dep_prefix}" && ! -f "${dep_prefix}/lib/pkgconfig/zlib.pc" ]]; then
     echo "macOS vcpkg zlib pkgconfig missing; forcing reinstall."
     PATH="${shim_bin}:${bin_dir}:${PATH}" \
       "${vcpkg_root}/vcpkg" remove --recurse --triplet "${triplet}" zlib >/dev/null 2>&1 || true
   fi
-  if [[ -d "${vcpkg_prefix}" && ! -f "${vcpkg_prefix}/lib/pkgconfig/libzstd.pc" ]]; then
+  if [[ "${use_vcpkg}" -eq 1 && -d "${dep_prefix}" && ! -f "${dep_prefix}/lib/pkgconfig/libzstd.pc" ]]; then
     echo "macOS vcpkg zstd pkgconfig missing; forcing reinstall."
     PATH="${shim_bin}:${bin_dir}:${PATH}" \
       "${vcpkg_root}/vcpkg" remove --recurse --triplet "${triplet}" zstd >/dev/null 2>&1 || true
   fi
-  if [[ -d "${vcpkg_prefix}" && ! -f "${vcpkg_prefix}/share/boost/cmake-build/BoostRoot.cmake" ]]; then
+  if [[ "${use_vcpkg}" -eq 1 && -d "${dep_prefix}" && ! -f "${dep_prefix}/share/boost/cmake-build/BoostRoot.cmake" ]]; then
     echo "macOS vcpkg boost-cmake missing; forcing reinstall."
     PATH="${shim_bin}:${bin_dir}:${PATH}" \
       "${vcpkg_root}/vcpkg" remove --recurse --triplet "${triplet}" boost-cmake boost-headers >/dev/null 2>&1 || true
   fi
-  if [[ -d "${vcpkg_prefix}" && ! -f "${vcpkg_prefix}/include/boost/version.hpp" ]]; then
+  if [[ "${use_vcpkg}" -eq 1 && -d "${dep_prefix}" && ! -f "${dep_prefix}/include/boost/version.hpp" ]]; then
     echo "macOS vcpkg boost headers missing; forcing reinstall."
     PATH="${shim_bin}:${bin_dir}:${PATH}" \
       "${vcpkg_root}/vcpkg" remove --recurse --triplet "${triplet}" \
       boost-headers boost-system >/dev/null 2>&1 || true
   fi
 
-  local macos_vcpkg_packages="${MACOS_VCPKG_PACKAGES//,/ }"
-  if [[ " ${macos_vcpkg_packages} " != *" boost-headers "* ]]; then
-    macos_vcpkg_packages="${macos_vcpkg_packages} boost-headers"
-  fi
-  if [[ " ${macos_vcpkg_packages} " != *" boost-system "* ]]; then
-    macos_vcpkg_packages="${macos_vcpkg_packages} boost-system"
-  fi
-  if [[ " ${macos_vcpkg_packages} " != *" boost-asio "* ]]; then
-    macos_vcpkg_packages="${macos_vcpkg_packages} boost-asio"
-  fi
+  if [[ "${use_vcpkg}" -eq 1 ]]; then
+    local macos_vcpkg_packages="${MACOS_VCPKG_PACKAGES//,/ }"
+    if [[ " ${macos_vcpkg_packages} " != *" boost-headers "* ]]; then
+      macos_vcpkg_packages="${macos_vcpkg_packages} boost-headers"
+    fi
+    if [[ " ${macos_vcpkg_packages} " != *" boost-system "* ]]; then
+      macos_vcpkg_packages="${macos_vcpkg_packages} boost-system"
+    fi
+    if [[ " ${macos_vcpkg_packages} " != *" boost-asio "* ]]; then
+      macos_vcpkg_packages="${macos_vcpkg_packages} boost-asio"
+    fi
 
-  PATH="${shim_bin}:${bin_dir}:${PATH}" \
-    MACOSX_DEPLOYMENT_TARGET="${MACOS_DEPLOYMENT_TARGET}" \
-    VCPKG_DISABLE_PARALLEL_CONFIGURE=1 \
-    OPENSSL_ROOT_DIR="${vcpkg_prefix}" \
-    VCPKG_CHAINLOAD_TOOLCHAIN_FILE="${toolchain_file}" \
-    VCPKG_OVERLAY_TRIPLETS="${overlay_triplets_dir}" \
-    "${vcpkg_root}/vcpkg" install --triplet "${triplet}" --overlay-triplets="${overlay_triplets_dir}" ${macos_vcpkg_packages}
-
-  if [[ ! -f "${vcpkg_prefix}/include/boost/asio.hpp" ]]; then
-    echo "macOS vcpkg Boost.Asio headers missing after install; retrying explicit boost-asio/boost-headers."
     PATH="${shim_bin}:${bin_dir}:${PATH}" \
       MACOSX_DEPLOYMENT_TARGET="${MACOS_DEPLOYMENT_TARGET}" \
       VCPKG_DISABLE_PARALLEL_CONFIGURE=1 \
+      OPENSSL_ROOT_DIR="${dep_prefix}" \
       VCPKG_CHAINLOAD_TOOLCHAIN_FILE="${toolchain_file}" \
       VCPKG_OVERLAY_TRIPLETS="${overlay_triplets_dir}" \
-      "${vcpkg_root}/vcpkg" install --triplet "${triplet}" --overlay-triplets="${overlay_triplets_dir}" boost-headers boost-system boost-asio
+      "${vcpkg_root}/vcpkg" install --triplet "${triplet}" --overlay-triplets="${overlay_triplets_dir}" ${macos_vcpkg_packages}
+
+    if [[ ! -f "${dep_prefix}/include/boost/asio.hpp" ]]; then
+      echo "macOS vcpkg Boost.Asio headers missing after install; retrying explicit boost-asio/boost-headers."
+      PATH="${shim_bin}:${bin_dir}:${PATH}" \
+        MACOSX_DEPLOYMENT_TARGET="${MACOS_DEPLOYMENT_TARGET}" \
+        VCPKG_DISABLE_PARALLEL_CONFIGURE=1 \
+        VCPKG_CHAINLOAD_TOOLCHAIN_FILE="${toolchain_file}" \
+        VCPKG_OVERLAY_TRIPLETS="${overlay_triplets_dir}" \
+        "${vcpkg_root}/vcpkg" install --triplet "${triplet}" --overlay-triplets="${overlay_triplets_dir}" boost-headers boost-system boost-asio
+    fi
   fi
-  if [[ ! -f "${vcpkg_prefix}/include/boost/asio.hpp" ]]; then
-    echo "macOS cross build cannot continue: boost/asio.hpp not found in ${vcpkg_prefix}/include." >&2
-    echo "Set YUME_MACOS_VCPKG_PACKAGES to include boost-headers boost-system boost-asio." >&2
+  if [[ ! -f "${dep_prefix}/include/boost/asio.hpp" ]]; then
+    echo "macOS cross build cannot continue: boost/asio.hpp not found in ${dep_prefix}/include." >&2
     return 1
   fi
 
@@ -2375,10 +2430,23 @@ EOF
   if [[ -n "${oqs_lib}" && -d "${oqs_include}" ]]; then
     extra_oqs_args="-DOQS_INCLUDE_DIR=${oqs_include} -DOQS_LIBRARY=${oqs_lib}"
   fi
+  local zstd_args=""
+  if [[ -f "${dep_prefix}/lib/libzstd.a" ]]; then
+    zstd_args="-DZSTD_LIBRARY=${dep_prefix}/lib/libzstd.a -DZSTD_INCLUDE_DIR=${dep_prefix}/include -DZSTD_DIR=${dep_prefix}/share/zstd"
+  elif [[ -f "${dep_prefix}/lib/libzstd.dylib" ]]; then
+    zstd_args="-DZSTD_LIBRARY=${dep_prefix}/lib/libzstd.dylib -DZSTD_INCLUDE_DIR=${dep_prefix}/include -DZSTD_DIR=${dep_prefix}/share/zstd"
+  fi
+
+  local macos_cmake_args="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF -DOPENSSL_ROOT_DIR=${dep_prefix} -DCMAKE_PREFIX_PATH=${dep_prefix} -DBoost_DIR=${dep_prefix}/share/boost ${zstd_args} ${extra_oqs_args} -DCMAKE_SYSTEM_NAME=Darwin -DCMAKE_OSX_DEPLOYMENT_TARGET=${MACOS_DEPLOYMENT_TARGET}"
+  if [[ "${use_vcpkg}" -eq 1 ]]; then
+    macos_cmake_args="${macos_cmake_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DVCPKG_OVERLAY_TRIPLETS=${overlay_triplets_dir}"
+  else
+    macos_cmake_args="${macos_cmake_args} -DCMAKE_TOOLCHAIN_FILE=${toolchain_file}"
+  fi
 
   PATH="${shim_bin}:${bin_dir}:${PATH}" \
     MACOSX_DEPLOYMENT_TARGET="${MACOS_DEPLOYMENT_TARGET}" \
-    YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=1 YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF ${extra_oqs_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DVCPKG_OVERLAY_TRIPLETS=${overlay_triplets_dir} -DCMAKE_SYSTEM_NAME=Darwin -DCMAKE_OSX_DEPLOYMENT_TARGET=${MACOS_DEPLOYMENT_TARGET}" \
+    YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=1 YUME_SKIP_DEPS=1 YUME_MACOS_VENDOR_ARCH="${arch}" YUME_CMAKE_ARGS="${macos_cmake_args}" \
     ./ezbuild.sh
 
   copy_build_outputs "${outdir}" "" || return 1
@@ -2455,11 +2523,11 @@ ensure_osxcross
 maybe_enable_windows_cross
 maybe_enable_macos_cross
 if target_enabled windows-x86_64 && [[ "${WINDOWS_CROSS}" -ne 1 ]]; then
-  echo "Windows target requested but toolchain/vcpkg not ready; set VCPKG_ROOT and install MinGW compiler pair for ${WINDOWS_TOOLCHAIN_PREFIX}." >&2
+  echo "Windows target requested but toolchain/deps not ready; set VCPKG_ROOT or stage vendor/windows-x86_64 and install MinGW compiler pair for ${WINDOWS_TOOLCHAIN_PREFIX}." >&2
   exit 1
 fi
 if ( target_enabled macos-x86_64 || target_enabled macos-arm64 ) && [[ "${MACOS_CROSS}" -ne 1 ]]; then
-  echo "macOS target requested but osxcross/toolchain not ready; set OSXCROSS_ROOT and macOS SDK." >&2
+  echo "macOS target requested but osxcross/toolchain not ready; set OSXCROSS_ROOT and macOS SDK, plus VCPKG_ROOT or vendor/macos-{x86_64,arm64}." >&2
   exit 1
 fi
 print_build_plan

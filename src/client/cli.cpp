@@ -339,8 +339,7 @@ std::string classify_plaintext_prefix(const uint8_t* data, std::size_t len) {
 }
 
 std::string classify_http2_frame_prefix(const uint8_t* data, std::size_t len) {
-    // HTTP/2 frame header is 9 bytes: len(3) type(1) flags(1) stream_id(4).
-    // We often only have a short prefix; recognize a SETTINGS frame on stream 0.
+    // Recognize a short HTTP/2 SETTINGS frame prefix.
     if (!data || len < 8) {
         return {};
     }
@@ -518,7 +517,6 @@ constexpr const char kFixcraftAnonymPubPem[] =
     "-----BEGIN PUBLIC KEY-----\n"
     "MCowBQYDK2VwAyEAtupzLhANnB0VxP51vB/7yYwR+/3/jv4Str9MGLGA+is=\n"
     "-----END PUBLIC KEY-----\n";
-// Default CA cert path - empty means user must provide via --anonym-ca-cert if needed
 constexpr const char kDefaultAnonymCaCertPath[] = "";
 struct EnvGuard {
     struct Entry {
@@ -1016,7 +1014,7 @@ struct ParsedArgs {
     std::string anonym_ca_cert;
     std::string tls_ca_cert;
     std::string tls_pin_sha256;
-    bool tls_stealth{true};  // ON by default
+    bool tls_stealth{true};
     bool tls_stealth_override{false};
     std::string tls_stealth_profile{"chrome"};
     bool tls_stealth_rotate{false};
@@ -1148,8 +1146,6 @@ ParsedArgs parse_args(int argc, char** argv) {
     for (; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--") {
-            // Service runners sometimes append "--" before application flags.
-            // Treat it as an explicit non-interactive request and continue parsing.
             args.non_interactive = true;
         } else if (arg == "completion") {
             const char* shell = take_value("completion");
@@ -1736,111 +1732,76 @@ void print_help() {
     std::cout
         << "yume - YUME client\n\n"
         << "Usage:\n"
-        << "  yume --server <host> -i <id_ed25519> [options]\n"
+        << "  yume --server <host> -i <id_ed25519> [mode] [options]\n"
         << "  yume completion bash\n"
         << "  yume --help\n"
         << "  yume --version\n\n"
-        << "Version:\n"
-        << "  yume " << yume::kVersion << " (using BaseFWX " << yume::kBasefwxVersion << ")\n\n"
-        << "Core Connection:\n"
+        << "Connection:\n"
         << "  --server <host>          Server address\n"
-        << "  --config <path>          Configuration file\n"
-        << "  -i, --auth <path>        Identity key file path\n\n"
-        << "Traffic Modes:\n"
-        << "  --socks <port>           Start SOCKS5 proxy\n"
-        << "  --lport <port> --rhost <host> --rport <port>\n"
-        << "                           Local TCP forward\n"
+        << "  --config <path>          Config file\n"
+        << "  -i, --auth <path>        Identity key\n\n"
+        << "Modes:\n"
+        << "  --socks <port>           Start a SOCKS5 proxy\n"
         << "  -L [bind:]lport:host:port\n"
-        << "                           SSH-style local forward\n"
+        << "                           Local forward\n"
         << "  -R [bind:]rport:host:port\n"
-        << "                           SSH-style reverse forward\n"
-        << "  --run, -c, --cmd <cmd>   Run command via YUME proxy\n"
-        << "  --control [id]           Control mode for a registered client\n"
-        << "  --list-controlled        List controlled clients\n\n"
-        << "Relay and Identity:\n"
-        << "  --name <slug>            Preferred display name\n"
-        << "  --client-id <32hex>      Preferred endpoint ID\n"
-        << "  --relay-mode <mode>      untrusted or trusted\n"
-        << "  --allow-inbound-admin    Allow trusted peers to admin-attach\n"
-        << "  --deny-inbound-admin     Deny inbound admin attach\n"
-        << "  --allow-outbound-admin   Allow this client to admin-attach peers (off by default)\n"
-        << "  --deny-outbound-admin    Deny outbound admin attach\n"
-        << "  --allow-chat / --deny-chat\n"
-        << "                           Allow or deny relay chat\n"
-        << "  --allow-file / --deny-file\n"
-        << "                           Allow or deny relay file transfer\n"
-        << "  --allow-bytes / --deny-bytes\n"
-        << "                           Allow or deny raw byte relay\n"
-        << "  --directory              List visible relay endpoints and exit\n"
-        << "  --chat <id|name>         Open a chat invite\n"
+        << "                           Reverse forward\n"
+        << "  --run <cmd>              Run a command through Yume\n"
+        << "  --control [id]           Control a registered client\n"
+        << "  --list-controlled        List controlled clients\n"
+        << "  --directory              List visible relay endpoints\n"
+        << "  --chat <id|name>         Start chat\n"
         << "  --send-file <id|name> <path>\n"
-        << "                           Send a file through relay\n"
+        << "                           Send a file\n"
         << "  --send-bytes <id|name> <path>\n"
-        << "                           Send raw bytes through relay\n"
-        << "  --admin-attach <id|name> Open trusted runtime admin channel\n"
-        << "  --server-attach <id>     Alias for trusted admin attach\n\n"
-        << "Runtime and Local Attach:\n"
-        << "  --port <n>               Server port (forced to 443)\n"
+        << "                           Send raw bytes\n"
+        << "  --admin-attach <id|name> Open trusted admin channel\n"
+        << "  --attach-local           Attach to a local yume\n\n"
+        << "Relay:\n"
+        << "  --name <slug>            Display name\n"
+        << "  --client-id <32hex>      Stable client ID\n"
+        << "  --relay-mode <mode>      untrusted or trusted\n"
+        << "  --allow-inbound-admin / --deny-inbound-admin\n"
+        << "                           Inbound admin attach\n"
+        << "  --allow-outbound-admin / --deny-outbound-admin\n"
+        << "                           Outbound admin attach\n"
+        << "  --allow-chat / --deny-chat\n"
+        << "                           Chat relay\n"
+        << "  --allow-file / --deny-file\n"
+        << "                           File relay\n"
+        << "  --allow-bytes / --deny-bytes\n"
+        << "                           Byte relay\n\n"
+        << "Runtime:\n"
         << "  --threads <n>            IO threads (0 = auto)\n"
-        << "  --instance <name>        Stable local runtime instance key\n"
-        << "  --attach-local           Attach to an already running local yume\n"
-        << "  --history-dir <path>     Encrypted local chat history directory\n"
-        << "  --relay-key-file <path>  Load/store local relay key derived from password\n"
-        << "  --no-history             Disable local chat history\n"
-        << "  --root                   Keep root privileges (not recommended)\n"
+        << "  --instance <name>        Runtime instance name\n"
+        << "  --history-dir <path>     Chat history directory\n"
+        << "  --relay-key-file <path>  Relay key file\n"
+        << "  --no-history             Disable chat history\n"
         << "  --udp                    Enable UDP forwarding\n"
         << "  --tcp                    Force TCP only\n"
-        << "  --allow-local-ip         Allow private/loopback destination IPs\n"
+        << "  --allow-local-ip         Allow private and loopback destinations\n"
         << "  --run-ipv4               Prefer IPv4 for --run\n"
-        << "  --proxycmd               Internal SSH ProxyCommand helper\n"
-        << "  --accept-monitoring      Accept monitoring prompt\n"
-        << "  --save-server            Save server to config\n"
-        << "  --non-interactive        Disable live status line updates\n"
-        << "  --live-status            Enable periodic live hop status updates\n"
-        << "  --boring                 Minimal output (no emojis)\n\n"
-        << "Service Launch:\n"
-        << "  --                        Treat launch as non-interactive (systemd/service-safe)\n\n"
-        << "Attached / Interactive Console:\n"
-        << "  help                     Show commands\n"
-        << "  whoami                   Show current relay identity\n"
-        << "  status                   Print current runtime status\n"
-        << "  directory                List visible relay endpoints\n"
-        << "  invites                  List pending invites\n"
-        << "  chat <peer>              Open chat invite\n"
-        << "  send <text>              Send chat message on active chat\n"
-        << "  send-file <peer> <path>  Send file invite and data\n"
-        << "  send-bytes <peer> <path> Send raw bytes invite and data\n"
-        << "  accept <invite|from> [password]\n"
-        << "                           Accept relay invite with stored key, env password, or prompt\n"
-        << "  reject <invite|from> [why]\n"
-        << "                           Reject relay invite\n"
-        << "  history [peer]           Show local encrypted history\n"
-        << "  history-delete <peer|all>\n"
-        << "                           Delete local history\n"
-        << "  admin attach <peer>      Open trusted runtime admin channel\n"
-        << "  admin status             Query remote runtime status\n"
-        << "  admin sessions           Query remote runtime sessions\n"
-        << "  admin stop               Stop remote runtime\n"
-        << "  exec <command>           Legacy EXEC compatibility path\n"
-        << "  quit                     Stop client cleanly\n"
-        << "  env YUME_COMMAND_CONSOLE=0 to disable console\n"
-        << "  env YUME_LIVE_STATUS=1 to re-enable live status redraw\n\n"
+        << "  --root                   Keep root privileges\n"
+        << "  --non-interactive        Disable live status redraw\n"
+        << "  --live-status            Enable live status redraw\n"
+        << "  --boring                 Minimal output\n"
+        << "  --                        Service-safe launch\n\n"
         << "Security:\n"
-        << "  --inner                  Enable inner PQ encryption (enabled by default)\n"
+        << "  --inner                  Enable inner PQ encryption\n"
         << "  --no-inner               Disable inner PQ encryption and hopping\n"
-        << "  --inner-heavy            Heavy KDF mode when inner crypto is enabled (default)\n"
+        << "  --inner-heavy            Heavy KDF mode\n"
         << "  --inner-light            Light KDF mode\n"
         << "  --hop / --no-hop         Inner key hopping on/off\n"
-        << "  --hop-interval <ms>      Hop interval (250-1000 recommended)\n"
-        << "  --pq-pub <path>          PQ public key path\n"
-        << "  --use-embedded-master    Allow embedded BaseFWX master PQ key fallback\n"
+        << "  --hop-interval <ms>      Hop interval\n"
+        << "  --pq-pub <path>          PQ public key\n"
+        << "  --use-embedded-master    Allow embedded BaseFWX master fallback\n"
         << "  --no-embedded-master     Disable embedded BaseFWX master fallback\n"
-        << "  --require-anonym         Require at least one trusted anonym proof source\n"
-        << "  --anonym-ca-cert <path>  CA certificate for anonym proof verification\n"
-        << "  --tls-ca <path>          Custom CA for TLS verification\n"
-        << "  --tls-pin <sha256>       Pin server TLS certificate fingerprint\n\n"
-        << "TLS Stealth:\n"
-        << "  --profile <name>         chrome (default), firefox, safari\n"
+        << "  --require-anonym         Require anonym proof\n"
+        << "  --anonym-ca-cert <path>  Anonym CA certificate\n"
+        << "  --tls-ca <path>          TLS CA certificate\n"
+        << "  --tls-pin <sha256>       Pin TLS certificate fingerprint\n\n"
+        << "TLS:\n"
+        << "  --profile <name>         chrome, firefox, safari\n"
         << "  --no-stealth             Disable TLS stealth mode\n"
         << "  --tls-stealth-rotate     Rotate stealth profiles\n"
         << "  --tls-stealth-rotation-interval <n>\n"
@@ -1848,17 +1809,17 @@ void print_help() {
         << "  --tls-fingerprint-log    Log TLS fingerprint metrics\n"
         << "  --tls-fingerprint-log-path <path>\n"
         << "                           Fingerprint log path\n"
-        << "  --tls-fingerprint-verify Verify fingerprints against test endpoint\n"
+        << "  --tls-fingerprint-verify Verify fingerprints against a test endpoint\n"
         << "  --tls-fingerprint-test-endpoint <host>\n"
-        << "                           Test endpoint for fingerprint verification\n\n"
-        << "Completion:\n"
-        << "  completion bash\n"
-        << "  --completion bash\n\n"
-        << "Compatibility:\n"
-        << "  --control / --list-controlled / --exec stay available for one release cycle\n\n"
+        << "                           Test endpoint host\n\n"
+        << "Console:\n"
+        << "  help, status, directory, invites, chat, send, send-file, send-bytes,\n"
+        << "  accept, reject, history, history-delete, admin attach, admin status,\n"
+        << "  admin sessions, admin stop, whoami, quit\n\n"
         << "Other:\n"
-        << "  -h, --help               Show this help message\n"
-        << "  --version                Show version information\n";
+        << "  completion bash\n"
+        << "  -h, --help               Show help\n"
+        << "  --version                Show version\n";
 }
 
 bool parse_ssh_forward(const std::string& spec, int& lport, std::string& host, int& rport) {
@@ -1944,8 +1905,6 @@ bool read_stdin_line_with_timeout(std::string* out, int timeout_ms) {
 #endif
 
 void run_io_threads(boost::asio::io_context& io, int requested) {
-    // We run the io_context in small synchronous bursts earlier (connect/handshake/probes),
-    // which leaves it in the "stopped" state. Restart before running the main event loop.
     io.restart();
     int threads = resolve_io_threads(requested);
     std::vector<std::thread> workers;
@@ -3307,7 +3266,7 @@ int Cli::run(int argc, char** argv) {
         !args.admin_target.empty() ||
         args.attach_local;
     if (!has_active_mode) {
-        util::log_error("no mode selected (use --socks, -R, --lport/--rhost/--rport, --run, --directory, --chat, --send-file, --send-bytes, or --server-in-charge)");
+        util::log_error("no mode selected (use --socks, -L, -R, --run, --directory, --chat, --send-file, --send-bytes, --admin-attach, --control, or --attach-local)");
         return 1;
     }
 
@@ -3540,17 +3499,14 @@ int Cli::run(int argc, char** argv) {
                 }
             } active_runtime_guard{clear_active_runtime};
             
-            // Initialize stealth mode if enabled
             std::unique_ptr<boost::asio::ssl::context> owned_ctx;
             boost::asio::ssl::context* ctx = nullptr;
             tls_fingerprint::BrowserProfile active_tls_profile = tls_fingerprint::BrowserProfile::UNKNOWN;
             if (cfg.tls_stealth_enabled) {
-                // Initialize metrics manager
                 if (cfg.tls_fingerprint_log) {
                     tls_metrics::MetricsManager::instance().initialize(cfg.tls_fingerprint_log_path);
                 }
 
-                // Parse browser profile
                 tls_fingerprint::BrowserProfile profile = tls_fingerprint::BrowserProfile::CHROME_135;
                 std::string profile_lower = cfg.tls_stealth_profile;
                 std::transform(profile_lower.begin(), profile_lower.end(), profile_lower.begin(), ::tolower);
@@ -3564,7 +3520,6 @@ int Cli::run(int argc, char** argv) {
                 }
                 active_tls_profile = profile;
 
-                // Create stealth configuration
                 tls_stealth::StealthConfig stealth_config;
                 stealth_config.enabled = true;
                 stealth_config.target_profile = profile;
@@ -3575,7 +3530,6 @@ int Cli::run(int argc, char** argv) {
                 stealth_config.verify_with_external_api = cfg.tls_fingerprint_verify;
                 stealth_config.test_endpoint = cfg.tls_fingerprint_test_endpoint;
 
-                // Initialize stealth manager
                 tls_stealth::StealthManager::instance().initialize(stealth_config);
 
                 ctx = &tls_stealth::StealthManager::instance().get_context().get_context();
@@ -4142,12 +4096,12 @@ int Cli::run(int argc, char** argv) {
                     !sub_sig.empty() || !sub_cert_b64.empty();
 
                 if (hash.empty() || ts.empty() || nonce.empty()) {
-                    print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                    print_red("CRITICAL ERROR");
                     print_red("ANONYM PROOF IS INCOMPLETE");
                     return 1;
                 }
                 if (certfp.empty()) {
-                    print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                    print_red("CRITICAL ERROR");
                     print_red("ANONYM PROOF MISSING CERTIFICATE FINGERPRINT");
                     return 1;
                 }
@@ -4155,19 +4109,19 @@ int Cli::run(int argc, char** argv) {
                 try {
                     ts_val = std::stoll(ts);
                 } catch (...) {
-                    print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                    print_red("CRITICAL ERROR");
                     print_red("INVALID TIMESTAMP IN ANONYM PROOF");
                     return 1;
                 }
                 const long long now = static_cast<long long>(std::time(nullptr));
                 if (std::llabs(now - ts_val) > yume::policy::kAnonymProofWindowSeconds) {
-                    print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                    print_red("CRITICAL ERROR");
                     print_red("ANONYM PROOF EXPIRED OR NOT YET VALID");
                     return 1;
                 }
                 const std::string peer_fp = get_peer_cert_fingerprint(nullptr, stream.native_handle());
                 if (!peer_fp.empty() && certfp != peer_fp) {
-                    print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                    print_red("CRITICAL ERROR");
                     print_red("ANONYM CERTIFICATE FINGERPRINT MISMATCH");
                     return 1;
                 }
@@ -4177,7 +4131,7 @@ int Cli::run(int argc, char** argv) {
 
                 if (fixcraft_present) {
                     if (sig.empty()) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("CRITICAL ERROR");
                         print_red("FIXCRAFT SIGNATURE MISSING");
                         return 1;
                     }
@@ -4188,14 +4142,14 @@ int Cli::run(int argc, char** argv) {
                     } else {
                         BIO* bio = BIO_new_mem_buf(kFixcraftAnonymPubPem, -1);
                         if (!bio) {
-                            print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                            print_red("CRITICAL ERROR");
                             print_red("FAILED TO LOAD EMBEDDED ANONYM PUBLIC KEY");
                             return 1;
                         }
                         EVP_PKEY* key = PEM_read_bio_PUBKEY(bio, nullptr, nullptr, nullptr);
                         BIO_free(bio);
                         if (!key) {
-                            print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                            print_red("CRITICAL ERROR");
                             print_red("FAILED TO LOAD EMBEDDED ANONYM PUBLIC KEY");
                             return 1;
                         }
@@ -4203,14 +4157,14 @@ int Cli::run(int argc, char** argv) {
                     }
                     std::string sig_raw = util::base64_decode(sig);
                     if (sig_raw.empty()) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("CRITICAL ERROR");
                         print_red("INVALID SIGNATURE FORMAT FROM SERVER");
                         return 1;
                     }
                     crypto::Bytes sig_bytes(sig_raw.begin(), sig_raw.end());
                     if (!crypto::verify_key(pubkey.get(), msg_bytes, sig_bytes)) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
-                        print_red("THIS SERVER IS FORGING SIGNATURES, REPORT IT TO FIXCRAFT, INC. ASAP, ALSO FILE A COMPLAINT TO AN INTERNET AUTHORITY");
+                        print_red("CRITICAL ERROR");
+                        print_red("server anonym proof signature verification failed; treat this server as untrusted and report it");
                         return 1;
                     }
                     fixcraft_ok = true;
@@ -4219,58 +4173,58 @@ int Cli::run(int argc, char** argv) {
 
                 if (sub_present) {
                     if (cfg.anonym_ca_cert.empty()) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("CRITICAL ERROR");
                         print_red("ANONYM SUB CERT PROVIDED BUT NO --anonym-ca-cert SET");
                         return 1;
                     }
                     if (sub_cert_b64.empty()) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("CRITICAL ERROR");
                         print_red("ANONYM SUB CERT MISSING");
                         return 1;
                     }
                     if (sub_sig.empty()) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("CRITICAL ERROR");
                         print_red("ANONYM SUB SIGNATURE MISSING");
                         return 1;
                     }
                     std::string sub_pem = util::base64_decode(sub_cert_b64);
                     auto sub_cert = load_cert_from_pem(sub_pem);
                     if (!sub_cert) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("CRITICAL ERROR");
                         print_red("FAILED TO PARSE ANONYM SUB CERT");
                         return 1;
                     }
                     auto ca_cert = load_cert_from_file(cfg.anonym_ca_cert);
                     if (!ca_cert) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("CRITICAL ERROR");
                         print_red("FAILED TO LOAD ANONYM CA CERT");
                         return 1;
                     }
                     if (!is_cert_time_valid(sub_cert.get())) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("CRITICAL ERROR");
                         print_red("ANONYM SUB CERT IS EXPIRED OR NOT YET VALID");
                         return 1;
                     }
                     if (!verify_cert_signed_by_ca(sub_cert.get(), ca_cert.get())) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("CRITICAL ERROR");
                         print_red("ANONYM SUB CERT IS NOT SIGNED BY THE TRUSTED CA");
                         return 1;
                     }
                     crypto::EVP_PKEY_ptr sub_key{X509_get_pubkey(sub_cert.get()), EVP_PKEY_free};
                     if (!sub_key) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("CRITICAL ERROR");
                         print_red("FAILED TO LOAD SUB CERT PUBLIC KEY");
                         return 1;
                     }
                     std::string sub_sig_raw = util::base64_decode(sub_sig);
                     if (sub_sig_raw.empty()) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("CRITICAL ERROR");
                         print_red("INVALID ANONYM SUB SIGNATURE FORMAT");
                         return 1;
                     }
                     crypto::Bytes sub_sig_bytes(sub_sig_raw.begin(), sub_sig_raw.end());
                     if (!crypto::verify_key(sub_key.get(), msg_bytes, sub_sig_bytes)) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("CRITICAL ERROR");
                         print_red("ANONYM SUB SIGNATURE INVALID");
                         return 1;
                     }
@@ -4281,7 +4235,7 @@ int Cli::run(int argc, char** argv) {
 
                 if (ca_present) {
                     if (ca_sig.empty()) {
-                        print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                        print_red("CRITICAL ERROR");
                         print_red("ANONYM CA SIGNATURE MISSING");
                         return 1;
                     }
@@ -4290,19 +4244,19 @@ int Cli::run(int argc, char** argv) {
                     } else {
                         auto ca_key = load_pubkey_from_cert(cfg.anonym_ca_cert);
                         if (!ca_key) {
-                            print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                            print_red("CRITICAL ERROR");
                             print_red("FAILED TO LOAD ANONYM CA CERT");
                             return 1;
                         }
                         std::string ca_sig_raw = util::base64_decode(ca_sig);
                         if (ca_sig_raw.empty()) {
-                            print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                            print_red("CRITICAL ERROR");
                             print_red("INVALID ANONYM CA SIGNATURE FORMAT");
                             return 1;
                         }
                         crypto::Bytes ca_sig_bytes(ca_sig_raw.begin(), ca_sig_raw.end());
                         if (!crypto::verify_key(ca_key.get(), msg_bytes, ca_sig_bytes)) {
-                            print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                            print_red("CRITICAL ERROR");
                             print_red("ANONYM CA SIGNATURE INVALID");
                             return 1;
                         }
@@ -4314,30 +4268,26 @@ int Cli::run(int argc, char** argv) {
 
                 verity_ok = fixcraft_ok || ca_ok || sub_ok;
                 if (!verity_ok) {
-                    print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                    print_red("CRITICAL ERROR");
                     print_red("NO TRUSTED ANONYM PROOF SOURCE COULD BE VERIFIED");
                     return 1;
                 }
                 if (!verified_once) {
-                    if (cfg.boring) {
-                        print_green("Verified");
-                    } else {
-                        print_green("✅✒️ Verified");
-                    }
+                    print_green("Verified");
                     verified_once = true;
                 } else {
                     print_green("Server Verified");
                 }
             } else {
                 if (cfg.require_anonym) {
-                    print_red("🛑🔺🔓 CRITICAL ERROR 🔓🔺🛑");
+                    print_red("CRITICAL ERROR");
                     print_red("SERVER IS NOT IN ANONYM MODE");
                     return 1;
                 }
                 if (!args.accept_monitoring) {
-                    print_red("🛑 🔓 CRITICAL WARNING:");
-                    print_red("YOUR DATA WILL BE MONITORED BY THE SERVER OPERATOR YOU ARE CONNECTING TO!! ARE YOU ULTIMATELY SURE YOU TRUST THAT PERSON??");
-                    print_red("TYPE: \"THIS MAY COMPROMISE MY PRIVACY\" to continue");
+                    print_red("CRITICAL WARNING");
+                    print_red("This server operator can observe your traffic metadata.");
+                    print_red("Type \"I understand the privacy risk\" to continue.");
                     std::string line;
                     std::getline(std::cin, line);
                     auto normalize = [](std::string s) {
@@ -4352,7 +4302,7 @@ int Cli::run(int argc, char** argv) {
                                        [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
                         return s;
                     };
-                    if (normalize(line) != "THIS MAY COMPROMISE MY PRIVACY") {
+                    if (normalize(line) != "I UNDERSTAND THE PRIVACY RISK") {
                         return 1;
                     }
                 }
@@ -4790,8 +4740,7 @@ int Cli::run(int argc, char** argv) {
             std::thread hop_status_thread;
             if (live_status_enabled) {
                 if (status_block_builder && hop_enabled) {
-                    // Avoid aliasing with hop interval (e.g. 500ms hop + 500ms refresh looks frozen).
-                    // Keep cadence human-readable to reduce terminal churn.
+                    // Offset the refresh cadence from the hop interval.
                     const int refresh_raw = static_cast<int>(hop_interval_ms / 2) + 137;
                     const auto refresh_ms = std::chrono::milliseconds(
                         std::clamp<int>(refresh_raw, 300, 1200));

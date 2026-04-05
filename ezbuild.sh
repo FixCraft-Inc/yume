@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# YUME ezbuild: install deps + build with a friendly UI
+# YUME ezbuild: install dependencies and build
 
 LOG_FILE="crashed.log"
 : > "${LOG_FILE}"
@@ -232,7 +232,7 @@ vendor_has_liboqs() {
     local dir="$1"
     [[ -n "${dir}" ]] || return 1
     [[ -f "${dir}/include/oqs/oqs.h" ]] || return 1
-    if [[ -f "${dir}/lib/liboqs.a" || -f "${dir}/lib/liboqs.so" ]]; then
+    if compgen -G "${dir}/lib/liboqs*" >/dev/null 2>&1; then
         return 0
     fi
     return 1
@@ -242,8 +242,48 @@ vendor_has_argon2() {
     local dir="$1"
     [[ -n "${dir}" ]] || return 1
     [[ -f "${dir}/include/argon2.h" ]] || return 1
-    if [[ -f "${dir}/lib/libargon2.a" || -f "${dir}/lib/libargon2.so" ]]; then
+    if compgen -G "${dir}/lib/libargon2*" >/dev/null 2>&1; then
         return 0
+    fi
+    return 1
+}
+
+vendor_has_cross_prefix() {
+    local dir="$1"
+    [[ -n "${dir}" ]] || return 1
+    [[ -f "${dir}/include/boost/asio.hpp" ]] || return 1
+    [[ -f "${dir}/include/openssl/ssl.h" ]] || return 1
+    [[ -f "${dir}/include/zlib.h" ]] || return 1
+    [[ -d "${dir}/share/boost" ]] || return 1
+    [[ -d "${dir}/share/zstd" ]] || return 1
+    return 0
+}
+
+windows_vendor_dir() {
+    local dir="${PWD}/vendor/windows-x86_64"
+    if vendor_has_cross_prefix "${dir}"; then
+        echo "${dir}"
+        return 0
+    fi
+    return 1
+}
+
+macos_vendor_dir() {
+    local arch="${YUME_MACOS_VENDOR_ARCH:-}"
+    local dir=""
+    if [[ "${arch}" == "arm64" ]]; then
+        dir="${PWD}/vendor/macos-arm64"
+        if vendor_has_cross_prefix "${dir}"; then
+            echo "${dir}"
+            return 0
+        fi
+    fi
+    if [[ -z "${arch}" || "${arch}" == "x86_64" ]]; then
+        dir="${PWD}/vendor/macos-x86_64"
+        if vendor_has_cross_prefix "${dir}"; then
+            echo "${dir}"
+            return 0
+        fi
     fi
     return 1
 }
@@ -819,34 +859,48 @@ main() {
     fi
 
     if [[ "${WINDOWS_CROSS}" == "1" ]]; then
+        local windows_vendor_prefix=""
+        local use_vcpkg_toolchain=0
+        windows_vendor_prefix="$(windows_vendor_dir || true)"
         if [[ -z "${VCPKG_ROOT}" ]]; then
             VCPKG_ROOT="$(detect_vcpkg_root || true)"
-        fi
-        if [[ -z "${VCPKG_ROOT}" || ! -x "${VCPKG_ROOT}/vcpkg" ]]; then
-            error "Windows cross build requires VCPKG_ROOT (set to your vcpkg clone)."
-            exit 1
-        fi
-        if [[ ! -f "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" ]]; then
-            error "vcpkg toolchain file missing at ${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
-            exit 1
         fi
         if ! command -v "${WINDOWS_TOOLCHAIN_PREFIX}-g++" >/dev/null 2>&1; then
             error "Missing ${WINDOWS_TOOLCHAIN_PREFIX}-g++; install mingw-w64."
             exit 1
         fi
-        VCPKG_PREFIX="${VCPKG_ROOT}/installed/${WINDOWS_TRIPLET}"
+        if [[ -n "${VCPKG_ROOT}" && -x "${VCPKG_ROOT}/vcpkg" ]]; then
+            if [[ ! -f "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" ]]; then
+                error "vcpkg toolchain file missing at ${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+                exit 1
+            fi
+            use_vcpkg_toolchain=1
+            VCPKG_PREFIX="${VCPKG_ROOT}/installed/${WINDOWS_TRIPLET}"
+        elif [[ -n "${windows_vendor_prefix}" ]]; then
+            VCPKG_PREFIX="${windows_vendor_prefix}"
+            info "Windows cross: using vendored dependency prefix at ${VCPKG_PREFIX}"
+        else
+            error "Windows cross build requires VCPKG_ROOT or vendor/windows-x86_64."
+            exit 1
+        fi
         CMAKE_ARGS+=(
             "-DCMAKE_SYSTEM_NAME=Windows"
             "-DCMAKE_C_COMPILER=${WINDOWS_TOOLCHAIN_PREFIX}-gcc"
             "-DCMAKE_CXX_COMPILER=${WINDOWS_TOOLCHAIN_PREFIX}-g++"
             "-DCMAKE_RC_COMPILER=${WINDOWS_TOOLCHAIN_PREFIX}-windres"
-            "-DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
-            "-DVCPKG_TARGET_TRIPLET=${WINDOWS_TRIPLET}"
-            "-DVCPKG_APPLOCAL_DEPS=OFF"
             "-DOPENSSL_ROOT_DIR=${VCPKG_PREFIX}"
+            "-DCMAKE_PREFIX_PATH=${VCPKG_PREFIX}"
+            "-DBoost_DIR=${VCPKG_PREFIX}/share/boost"
             "-DBASEFWX_USE_VENDOR_DEPS=OFF"
             "-DYUME_FORCE_CROSS=ON"
         )
+        if [[ ${use_vcpkg_toolchain} -eq 1 ]]; then
+            CMAKE_ARGS+=(
+                "-DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+                "-DVCPKG_TARGET_TRIPLET=${WINDOWS_TRIPLET}"
+                "-DVCPKG_APPLOCAL_DEPS=OFF"
+            )
+        fi
         if [[ -f "${VCPKG_PREFIX}/lib/libzstd.dll.a" ]]; then
             CMAKE_ARGS+=(
                 "-DZSTD_LIBRARY=${VCPKG_PREFIX}/lib/libzstd.dll.a"
@@ -1126,23 +1180,41 @@ EOF
         fi
     elif [[ "${WINDOWS_CROSS}" == "1" ]]; then
         if [[ -f "${VCPKG_PREFIX}/include/oqs/oqs.h" ]]; then
-            info "Windows cross: liboqs detected in vcpkg; enabling PQ in BaseFWX."
+            info "Windows cross: liboqs detected in dependency prefix; enabling PQ in BaseFWX."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=ON")
         else
-            warn "Windows cross: liboqs not detected in vcpkg; PQ will be disabled."
-            require_feature_or_die "${YUME_REQUIRE_OQS}" "liboqs / PQ support" "Ensure the Windows vcpkg triplet installs liboqs."
+            warn "Windows cross: liboqs not detected in dependency prefix; PQ will be disabled."
+            require_feature_or_die "${YUME_REQUIRE_OQS}" "liboqs / PQ support" "Ensure the Windows dependency prefix provides liboqs."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=OFF")
         fi
         if [[ -f "${VCPKG_PREFIX}/include/argon2.h" ]]; then
-            info "Windows cross: libargon2 detected in vcpkg; enabling Argon2 in BaseFWX."
+            info "Windows cross: libargon2 detected in dependency prefix; enabling Argon2 in BaseFWX."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=ON")
         else
-            warn "Windows cross: libargon2 not detected in vcpkg; heavy KDF will fall back to HKDF."
-            require_feature_or_die "${YUME_REQUIRE_ARGON2}" "libargon2 support" "Ensure the Windows vcpkg triplet installs argon2."
+            warn "Windows cross: libargon2 not detected in dependency prefix; heavy KDF will fall back to HKDF."
+            require_feature_or_die "${YUME_REQUIRE_ARGON2}" "libargon2 support" "Ensure the Windows dependency prefix provides argon2."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=OFF")
         fi
     elif [[ "${YUME_MACOS_CROSS:-0}" == "1" ]]; then
         CMAKE_ARGS+=("-DYUME_FORCE_CROSS=ON")
+        local macos_vendor_prefix=""
+        macos_vendor_prefix="$(macos_vendor_dir || true)"
+        if [[ -n "${macos_vendor_prefix}" ]]; then
+            info "macOS cross: using vendored dependency prefix at ${macos_vendor_prefix}"
+            CMAKE_ARGS+=(
+                "-DBASEFWX_VENDOR_DIR=${macos_vendor_prefix}"
+                "-DCMAKE_PREFIX_PATH=${macos_vendor_prefix}"
+                "-DOPENSSL_ROOT_DIR=${macos_vendor_prefix}"
+                "-DBoost_DIR=${macos_vendor_prefix}/share/boost"
+                "-DZSTD_DIR=${macos_vendor_prefix}/share/zstd"
+            )
+            if [[ -d "${macos_vendor_prefix}/share/spdlog" ]]; then
+                CMAKE_ARGS+=("-Dspdlog_DIR=${macos_vendor_prefix}/share/spdlog")
+            fi
+            if [[ -d "${macos_vendor_prefix}/share/fmt" ]]; then
+                CMAKE_ARGS+=("-Dfmt_DIR=${macos_vendor_prefix}/share/fmt")
+            fi
+        fi
     else
         local host_vendor_dir=""
         host_vendor_dir="$(vendor_dir_for_build)"

@@ -317,7 +317,12 @@ std::uint64_t available_memory_kib() {
 }
 
 std::uint32_t argon2_time_cost() {
+#if !YUME_USE_BASEFWX
+    constexpr std::uint32_t kDefaultArgon2TimeCost = 4;
+    return read_env_u32("YUME_ARGON2_TIME", kDefaultArgon2TimeCost);
+#else
     return read_env_u32("YUME_ARGON2_TIME", basefwx::constants::kArgon2TimeCost);
+#endif
 }
 
 std::uint32_t argon2_parallelism() {
@@ -328,7 +333,11 @@ std::uint32_t argon2_parallelism() {
     const double cap = resource_cap_ratio();
     auto count = std::thread::hardware_concurrency();
     if (count == 0) {
+#if !YUME_USE_BASEFWX
+        return 4;
+#else
         return basefwx::constants::DefaultHeavyArgon2Parallelism();
+#endif
     }
     std::uint32_t scaled = static_cast<std::uint32_t>(std::floor(static_cast<double>(count) * cap));
     return scaled > 0 ? scaled : 1u;
@@ -339,10 +348,16 @@ KdfParams select_argon2_params() {
     params.name = "argon2";
     params.argon2_time = argon2_time_cost();
     params.argon2_parallelism = argon2_parallelism();
+#if !YUME_USE_BASEFWX
+    params.pbkdf2_iters = 2000000;
+    constexpr std::uint32_t kDefaultHeavyArgon2MemoryCost = 1u << 18;
+#else
     params.pbkdf2_iters = basefwx::constants::HeavyPbkdf2Iterations();
+    constexpr std::uint32_t kDefaultHeavyArgon2MemoryCost = basefwx::constants::kHeavyArgon2MemoryCost;
+#endif
 
     const std::uint32_t default_mem =
-        read_env_u32("YUME_ARGON2_HEAVY_MEM_DEFAULT", basefwx::constants::kHeavyArgon2MemoryCost);
+        read_env_u32("YUME_ARGON2_HEAVY_MEM_DEFAULT", kDefaultHeavyArgon2MemoryCost);
     std::uint32_t mem = 0;
     const bool mem_env = read_env_u32_optional("YUME_ARGON2_MEM", &mem);
     if (!mem_env) {

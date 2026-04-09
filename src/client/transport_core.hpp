@@ -1,0 +1,137 @@
+#pragma once
+
+#include <chrono>
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+#include <nlohmann/json.hpp>
+
+#include "core/protocol.hpp"
+
+namespace yume::client {
+
+class TransportCore {
+public:
+    using Bytes = std::vector<uint8_t>;
+    using WriteCompletion = std::function<void(bool, std::size_t, const std::string&)>;
+    using WriteHandler = std::function<void(std::shared_ptr<Bytes>, WriteCompletion)>;
+    using OpenHandler = std::function<void(bool, const std::string&)>;
+    using DataHandler = std::function<void(const Bytes&)>;
+    using CloseHandler = std::function<void(const std::string&)>;
+    using ReverseOpenHandler = std::function<void(uint8_t listen_id, uint8_t stream_id)>;
+    using ControlHandler = std::function<void(const nlohmann::json&)>;
+    using InboundOpenHandler = std::function<void(uint8_t stream_id, const nlohmann::json&)>;
+    using ActivityHandler = std::function<void()>;
+    using ServerStreamOpenHandler = std::function<bool(uint8_t stream_id,
+                                                       const std::string& host,
+                                                       int port,
+                                                       std::string* reason)>;
+    using ExecHandler = std::function<void(uint8_t stream_id, const std::string& command)>;
+
+    TransportCore() = default;
+    explicit TransportCore(WriteHandler write_handler,
+                           std::function<void(const std::string&)> close_transport_handler);
+
+    void set_write_handler(WriteHandler handler);
+    void set_close_transport_handler(std::function<void(const std::string&)> handler);
+
+    void start(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
+    bool handle_keepalive_tick(std::chrono::steady_clock::time_point now, std::string* close_reason);
+    std::vector<CloseHandler> shutdown();
+    bool is_stopped() const;
+
+    void set_inner_key(const Bytes& key);
+    void set_hop(bool enabled, std::uint32_t interval_ms, std::int64_t offset_ms);
+    void set_server_in_charge(bool enabled);
+    void set_allow_exec(bool enabled);
+    void set_reverse_handler(ReverseOpenHandler handler);
+    void set_control_handler(ControlHandler handler);
+    void set_inbound_open_handler(InboundOpenHandler handler);
+    void set_activity_handler(ActivityHandler handler);
+    void set_server_stream_open_handler(ServerStreamOpenHandler handler);
+    void set_exec_handler(ExecHandler handler);
+
+    uint8_t reserve_stream_id();
+    void register_stream(uint8_t stream_id, DataHandler on_data, CloseHandler on_close);
+    void unregister_stream(uint8_t stream_id);
+    void release_reserved_stream(uint8_t stream_id);
+
+    void open_stream(uint8_t stream_id,
+                     const std::string& host,
+                     int port,
+                     OpenHandler handler,
+                     const std::string& proto = "tcp");
+    void open_relay_stream(uint8_t stream_id, const nlohmann::json& json, OpenHandler handler);
+    void request_remote_listen(uint8_t listen_id,
+                               int port,
+                               OpenHandler handler,
+                               bool reclaim = true,
+                               int min_port = 0,
+                               int max_port = 0);
+    void send_data(uint8_t stream_id, const Bytes& data);
+    void send_close(uint8_t stream_id, const std::string& reason);
+    void send_open_ack(uint8_t stream_id, bool ok, const std::string& reason);
+    void send_exec(uint8_t stream_id, const std::string& command);
+    void send_control_json(const nlohmann::json& json);
+
+    void feed_tls_bytes(const uint8_t* data, std::size_t size);
+    void feed_tls_bytes(const Bytes& data);
+
+private:
+    struct PendingWrite {
+        std::shared_ptr<Bytes> data;
+        WriteCompletion handler;
+    };
+
+    struct StreamCallbacks {
+        DataHandler on_data;
+        CloseHandler on_close;
+    };
+
+    bool has_stream_id_locked(uint8_t stream_id) const;
+    void queue_frame(const protocol::Frame& frame, WriteCompletion handler = {});
+    void dispatch_next_write();
+    void handle_frame(const protocol::Frame& frame);
+    Bytes encrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const Bytes& input);
+    bool decrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const Bytes& input, Bytes* output);
+    std::uint64_t current_hop_id() const;
+    void request_transport_close(const std::string& reason);
+
+    mutable std::mutex state_mu_;
+    std::mutex write_mu_;
+    WriteHandler write_handler_;
+    std::function<void(const std::string&)> close_transport_handler_;
+    std::deque<PendingWrite> write_queue_;
+    bool write_in_flight_{false};
+
+    std::unordered_map<uint8_t, StreamCallbacks> streams_;
+    std::unordered_map<uint8_t, OpenHandler> pending_open_;
+    std::unordered_map<uint8_t, OpenHandler> pending_rlisten_;
+    std::unordered_set<uint8_t> reserved_streams_;
+    ReverseOpenHandler reverse_handler_;
+    ControlHandler control_handler_;
+    InboundOpenHandler inbound_open_handler_;
+    ActivityHandler activity_handler_;
+    ServerStreamOpenHandler server_stream_open_handler_;
+    ExecHandler exec_handler_;
+    uint8_t next_stream_id_{1};
+    bool stopped_{false};
+    std::optional<Bytes> inner_key_;
+    bool hop_enabled_{false};
+    std::uint32_t hop_interval_ms_{0};
+    std::int64_t hop_offset_ms_{0};
+    bool server_in_charge_{false};
+    bool allow_exec_{false};
+    std::chrono::steady_clock::time_point last_pong_{};
+    Bytes incoming_bytes_;
+};
+
+}  // namespace yume::client

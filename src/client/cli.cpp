@@ -70,6 +70,7 @@
 #include "core/inner_crypto.hpp"
 #include "core/obfs.hpp"
 #include "core/protocol.hpp"
+#include "core/protocol_stream.hpp"
 #include "core/runtime_policy.hpp"
 #include "core/version.hpp"
 #include "core/tls_fingerprint.hpp"

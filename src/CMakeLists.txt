@@ -187,162 +187,201 @@ if(YUME_STATIC AND YUME_USE_SPDLOG AND NOT YUME_SPDLOG_TARGET STREQUAL "spdlog::
     set(YUME_USE_SPDLOG OFF CACHE BOOL "Disable spdlog for static builds" FORCE)
 endif()
 
-add_library(yume_core
-    core/control_protocol.cpp
-    core/crypto.cpp
-    core/identity.cpp
+if(NOT YUME_TRANSPORT_CORE_ONLY)
+    add_library(yume_core
+        core/control_protocol.cpp
+        core/crypto.cpp
+        core/identity.cpp
+        core/inner_crypto.cpp
+        core/local_runtime.cpp
+        core/protocol.cpp
+        core/obfs.cpp
+        core/tls_fingerprint.cpp
+        core/tls_stealth.cpp
+        core/tls_metrics.cpp
+        util.cpp
+    )
+
+    target_include_directories(yume_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+    target_link_libraries(yume_core
+        PUBLIC
+            OpenSSL::SSL
+            OpenSSL::Crypto
+            Threads::Threads
+            nlohmann_json::nlohmann_json
+    )
+    if(TARGET Boost::system)
+        target_link_libraries(yume_core PUBLIC Boost::system)
+    elseif(DEFINED Boost_SYSTEM_LIBRARY AND EXISTS "${Boost_SYSTEM_LIBRARY}")
+        target_link_libraries(yume_core PUBLIC "${Boost_SYSTEM_LIBRARY}")
+    else()
+        target_compile_definitions(yume_core PUBLIC BOOST_ERROR_CODE_HEADER_ONLY=1)
+    endif()
+    if(TARGET Boost::headers)
+        target_link_libraries(yume_core PUBLIC Boost::headers)
+    elseif(TARGET Boost::asio)
+        target_link_libraries(yume_core PUBLIC Boost::asio)
+    elseif(TARGET Boost::boost)
+        target_link_libraries(yume_core PUBLIC Boost::boost)
+    elseif(Boost_INCLUDE_DIR)
+        target_include_directories(yume_core PUBLIC ${Boost_INCLUDE_DIR})
+    elseif(Boost_INCLUDE_DIRS)
+        target_include_directories(yume_core PUBLIC ${Boost_INCLUDE_DIRS})
+    endif()
+    if(WIN32)
+        target_link_libraries(yume_core PUBLIC ws2_32 mswsock)
+        target_compile_definitions(yume_core PUBLIC
+            WIN32_LEAN_AND_MEAN
+            NOMINMAX
+            WINVER=0x0600
+            _WIN32_WINNT=0x0600
+        )
+    endif()
+    if(CMAKE_CROSSCOMPILING AND ATOMIC_LIBRARY AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        target_link_libraries(yume_core PUBLIC ${ATOMIC_LIBRARY})
+    endif()
+
+    if(TARGET zstd::libzstd)
+        target_link_libraries(yume_core PUBLIC zstd::libzstd)
+    elseif(TARGET zstd::libzstd_shared)
+        target_link_libraries(yume_core PUBLIC zstd::libzstd_shared)
+    elseif(TARGET zstd::libzstd_static)
+        target_link_libraries(yume_core PUBLIC zstd::libzstd_static)
+    elseif(TARGET ZSTD::ZSTD)
+        target_link_libraries(yume_core PUBLIC ZSTD::ZSTD)
+    elseif(ZSTD_LIBRARY)
+        target_link_libraries(yume_core PUBLIC ${ZSTD_LIBRARY})
+        if(ZSTD_INCLUDE_DIR)
+            target_include_directories(yume_core PUBLIC ${ZSTD_INCLUDE_DIR})
+        elseif(ZSTD_INCLUDE_DIRS)
+            target_include_directories(yume_core PUBLIC ${ZSTD_INCLUDE_DIRS})
+        endif()
+    elseif(ZSTD_LIBRARIES)
+        target_link_libraries(yume_core PUBLIC ${ZSTD_LIBRARIES})
+        if(ZSTD_INCLUDE_DIRS)
+            target_include_directories(yume_core PUBLIC ${ZSTD_INCLUDE_DIRS})
+        elseif(ZSTD_INCLUDE_DIR)
+            target_include_directories(yume_core PUBLIC ${ZSTD_INCLUDE_DIR})
+        endif()
+    elseif(YUME_STATIC)
+        message(WARNING "ZSTD not found; static OpenSSL builds may fail to link")
+    endif()
+
+    if(YUME_USE_SPDLOG)
+        target_link_libraries(yume_core PUBLIC ${YUME_SPDLOG_TARGET})
+        target_compile_definitions(yume_core PUBLIC YUME_USE_SPDLOG=1)
+    else()
+        target_compile_definitions(yume_core PUBLIC YUME_USE_SPDLOG=0)
+    endif()
+
+    if(YUME_USE_BASEFWX AND NOT TARGET basefwxcpp)
+        message(FATAL_ERROR "YUME_USE_BASEFWX is ON but basefwxcpp target was not found")
+    endif()
+
+    if(TARGET basefwxcpp)
+        target_link_libraries(yume_core PUBLIC basefwxcpp)
+        target_compile_definitions(yume_core PUBLIC YUME_USE_BASEFWX=1)
+    else()
+        target_compile_definitions(yume_core PUBLIC YUME_USE_BASEFWX=0)
+    endif()
+
+    if(CMAKE_CROSSCOMPILING OR YUME_FORCE_CROSS OR CMAKE_SYSTEM_NAME STREQUAL "Windows" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        get_target_property(_yume_includes yume_core INCLUDE_DIRECTORIES)
+        if(_yume_includes)
+            list(REMOVE_ITEM _yume_includes "/usr/include" "/usr/include/")
+            set_target_properties(yume_core PROPERTIES INCLUDE_DIRECTORIES "${_yume_includes}")
+        endif()
+    endif()
+
+    yume_apply_perf_opts(yume_core)
+endif()
+
+add_library(yume_transport_core
+    client/transport_core.cpp
     core/inner_crypto.cpp
-    core/local_runtime.cpp
     core/protocol.cpp
-    core/obfs.cpp
-    core/tls_fingerprint.cpp
-    core/tls_stealth.cpp
-    core/tls_metrics.cpp
-    util.cpp
 )
 
-target_include_directories(yume_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-
-target_link_libraries(yume_core
+target_include_directories(yume_transport_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(yume_transport_core
     PUBLIC
-        OpenSSL::SSL
-        OpenSSL::Crypto
-        Threads::Threads
         nlohmann_json::nlohmann_json
 )
-if(TARGET Boost::system)
-    target_link_libraries(yume_core PUBLIC Boost::system)
-elseif(DEFINED Boost_SYSTEM_LIBRARY AND EXISTS "${Boost_SYSTEM_LIBRARY}")
-    target_link_libraries(yume_core PUBLIC "${Boost_SYSTEM_LIBRARY}")
-else()
-    # Some Boost distributions (or CMake setups) don't export Boost::system.
-    # Make Boost.System header-only to avoid a link-time dependency.
-    target_compile_definitions(yume_core PUBLIC BOOST_ERROR_CODE_HEADER_ONLY=1)
-endif()
-if(TARGET Boost::headers)
-    target_link_libraries(yume_core PUBLIC Boost::headers)
-elseif(TARGET Boost::asio)
-    target_link_libraries(yume_core PUBLIC Boost::asio)
-elseif(TARGET Boost::boost)
-    target_link_libraries(yume_core PUBLIC Boost::boost)
-elseif(Boost_INCLUDE_DIR)
-    target_include_directories(yume_core PUBLIC ${Boost_INCLUDE_DIR})
-elseif(Boost_INCLUDE_DIRS)
-    target_include_directories(yume_core PUBLIC ${Boost_INCLUDE_DIRS})
-endif()
-if(WIN32)
-    target_link_libraries(yume_core PUBLIC ws2_32 mswsock)
-    target_compile_definitions(yume_core PUBLIC
-        WIN32_LEAN_AND_MEAN
-        NOMINMAX
-        WINVER=0x0600
-        _WIN32_WINNT=0x0600
-    )
-endif()
-if(CMAKE_CROSSCOMPILING AND ATOMIC_LIBRARY AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    target_link_libraries(yume_core PUBLIC ${ATOMIC_LIBRARY})
-endif()
-
-if(TARGET zstd::libzstd)
-    target_link_libraries(yume_core PUBLIC zstd::libzstd)
-elseif(TARGET zstd::libzstd_shared)
-    target_link_libraries(yume_core PUBLIC zstd::libzstd_shared)
-elseif(TARGET zstd::libzstd_static)
-    target_link_libraries(yume_core PUBLIC zstd::libzstd_static)
-elseif(TARGET ZSTD::ZSTD)
-    target_link_libraries(yume_core PUBLIC ZSTD::ZSTD)
-elseif(ZSTD_LIBRARY)
-    target_link_libraries(yume_core PUBLIC ${ZSTD_LIBRARY})
-    if(ZSTD_INCLUDE_DIR)
-        target_include_directories(yume_core PUBLIC ${ZSTD_INCLUDE_DIR})
-    elseif(ZSTD_INCLUDE_DIRS)
-        target_include_directories(yume_core PUBLIC ${ZSTD_INCLUDE_DIRS})
-    endif()
-elseif(ZSTD_LIBRARIES)
-    target_link_libraries(yume_core PUBLIC ${ZSTD_LIBRARIES})
-    if(ZSTD_INCLUDE_DIRS)
-        target_include_directories(yume_core PUBLIC ${ZSTD_INCLUDE_DIRS})
-    elseif(ZSTD_INCLUDE_DIR)
-        target_include_directories(yume_core PUBLIC ${ZSTD_INCLUDE_DIR})
-    endif()
-elseif(YUME_STATIC)
-    message(WARNING "ZSTD not found; static OpenSSL builds may fail to link")
-endif()
-
 if(YUME_USE_SPDLOG)
-    target_link_libraries(yume_core PUBLIC ${YUME_SPDLOG_TARGET})
-    target_compile_definitions(yume_core PUBLIC YUME_USE_SPDLOG=1)
+    target_link_libraries(yume_transport_core PUBLIC ${YUME_SPDLOG_TARGET})
+    target_compile_definitions(yume_transport_core PUBLIC YUME_USE_SPDLOG=1)
 else()
-    target_compile_definitions(yume_core PUBLIC YUME_USE_SPDLOG=0)
+    target_compile_definitions(yume_transport_core PUBLIC YUME_USE_SPDLOG=0)
 endif()
-
-if(YUME_USE_BASEFWX AND NOT TARGET basefwxcpp)
-    message(FATAL_ERROR "YUME_USE_BASEFWX is ON but basefwxcpp target was not found")
-endif()
-
 if(TARGET basefwxcpp)
-    target_link_libraries(yume_core PUBLIC basefwxcpp)
-    target_compile_definitions(yume_core PUBLIC YUME_USE_BASEFWX=1)
+    target_link_libraries(yume_transport_core PUBLIC basefwxcpp)
+    target_compile_definitions(yume_transport_core PUBLIC YUME_USE_BASEFWX=1)
 else()
-    target_compile_definitions(yume_core PUBLIC YUME_USE_BASEFWX=0)
+    target_compile_definitions(yume_transport_core PUBLIC YUME_USE_BASEFWX=0)
 endif()
+yume_apply_perf_opts(yume_transport_core)
 
-if(CMAKE_CROSSCOMPILING OR YUME_FORCE_CROSS OR CMAKE_SYSTEM_NAME STREQUAL "Windows" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    get_target_property(_yume_includes yume_core INCLUDE_DIRECTORIES)
-    if(_yume_includes)
-        list(REMOVE_ITEM _yume_includes "/usr/include" "/usr/include/")
-        set_target_properties(yume_core PROPERTIES INCLUDE_DIRECTORIES "${_yume_includes}")
+if(NOT YUME_TRANSPORT_CORE_ONLY)
+    add_executable(yumed
+        main_server.cpp
+        server/local_runtime.cpp
+        server/manager.cpp
+        server/auth.cpp
+        server/session.cpp
+    )
+
+    target_link_libraries(yumed PRIVATE yume_core)
+    yume_apply_perf_opts(yumed)
+    if(YUME_STATIC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        target_link_options(yumed PRIVATE -static)
+    endif()
+    if(WIN32)
+        target_link_libraries(yumed PRIVATE ws2_32 mswsock)
+        target_compile_definitions(yumed PRIVATE
+            WIN32_LEAN_AND_MEAN
+            NOMINMAX
+            WINVER=0x0600
+            _WIN32_WINNT=0x0600
+        )
+    endif()
+
+    add_executable(yume
+        main_client.cpp
+        client/cli.cpp
+        client/history.cpp
+        client/local_runtime.cpp
+        client/relay_secret.cpp
+        client/relay_runtime.cpp
+        client/tunnel.cpp
+        client/socks.cpp
+        client/forward.cpp
+    )
+
+    target_link_libraries(yume PRIVATE yume_core)
+    target_link_libraries(yume PRIVATE yume_transport_core)
+    yume_apply_perf_opts(yume)
+    if(YUME_STATIC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        target_link_options(yume PRIVATE -static)
+    endif()
+    if(WIN32)
+        target_link_libraries(yume PRIVATE ws2_32 mswsock)
+        target_compile_definitions(yume PRIVATE
+            WIN32_LEAN_AND_MEAN
+            NOMINMAX
+            WINVER=0x0600
+            _WIN32_WINNT=0x0600
+        )
     endif()
 endif()
 
-yume_apply_perf_opts(yume_core)
+enable_testing()
 
-add_executable(yumed
-    main_server.cpp
-    server/local_runtime.cpp
-    server/manager.cpp
-    server/auth.cpp
-    server/session.cpp
+add_executable(yume_transport_core_test
+    client/transport_core_test.cpp
 )
 
-target_link_libraries(yumed PRIVATE yume_core)
-yume_apply_perf_opts(yumed)
-if(YUME_STATIC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    target_link_options(yumed PRIVATE -static)
-endif()
-if(WIN32)
-    target_link_libraries(yumed PRIVATE ws2_32 mswsock)
-    target_compile_definitions(yumed PRIVATE
-        WIN32_LEAN_AND_MEAN
-        NOMINMAX
-        WINVER=0x0600
-        _WIN32_WINNT=0x0600
-    )
-endif()
+target_link_libraries(yume_transport_core_test PRIVATE yume_transport_core)
+yume_apply_perf_opts(yume_transport_core_test)
 
-add_executable(yume
-    main_client.cpp
-    client/cli.cpp
-    client/history.cpp
-    client/local_runtime.cpp
-    client/relay_secret.cpp
-    client/relay_runtime.cpp
-    client/tunnel.cpp
-    client/socks.cpp
-    client/forward.cpp
-)
-
-target_link_libraries(yume PRIVATE yume_core)
-yume_apply_perf_opts(yume)
-if(YUME_STATIC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    target_link_options(yume PRIVATE -static)
-endif()
-if(WIN32)
-    target_link_libraries(yume PRIVATE ws2_32 mswsock)
-    target_compile_definitions(yume PRIVATE
-        WIN32_LEAN_AND_MEAN
-        NOMINMAX
-        WINVER=0x0600
-        _WIN32_WINNT=0x0600
-    )
-endif()
+add_test(NAME yume_transport_core_test COMMAND yume_transport_core_test)

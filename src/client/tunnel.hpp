@@ -3,15 +3,10 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
-#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
-#include <utility>
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include <boost/asio.hpp>
@@ -19,11 +14,9 @@
 
 #include <nlohmann/json.hpp>
 
-#include "core/protocol.hpp"
+#include "client/transport_core.hpp"
 
 namespace yume::client {
-
-class ReverseForwardSession;
 
 class Tunnel : public std::enable_shared_from_this<Tunnel> {
 public:
@@ -55,7 +48,10 @@ public:
     void register_stream(uint8_t stream_id, DataHandler on_data, CloseHandler on_close);
     void unregister_stream(uint8_t stream_id);
 
-    void open_stream(uint8_t stream_id, const std::string& host, int port, OpenHandler handler,
+    void open_stream(uint8_t stream_id,
+                     const std::string& host,
+                     int port,
+                     OpenHandler handler,
                      const std::string& proto = "tcp");
     void open_relay_stream(uint8_t stream_id, const nlohmann::json& payload, OpenHandler handler);
     void request_remote_listen(uint8_t listen_id,
@@ -72,62 +68,20 @@ public:
     void send_control_json(const nlohmann::json& json);
 
 private:
-    struct PendingWrite {
-        std::shared_ptr<std::vector<uint8_t>> data;
-        std::function<void(const boost::system::error_code&, std::size_t)> handler;
-    };
-
-    struct StreamCallbacks {
-        DataHandler on_data;
-        CloseHandler on_close;
-    };
-
-    void read_header();
-    void on_read_header(const boost::system::error_code& ec, std::size_t bytes);
-    void on_read_payload(const boost::system::error_code& ec, std::size_t bytes);
-    void handle_frame(const protocol::Frame& frame);
-    Bytes encrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const Bytes& input);
-    bool decrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const Bytes& input, Bytes* output);
-    std::uint64_t current_hop_id() const;
-
-    void async_write_frame(const protocol::Frame& frame,
-                           std::function<void(const boost::system::error_code&, std::size_t)> handler = {});
-    void do_write();
-
+    void read_tls();
+    void on_read_tls(const boost::system::error_code& ec, std::size_t bytes);
+    void start_exec(uint8_t stream_id, std::string command);
     void close_all(const std::string& reason);
     void schedule_keepalive();
 
     boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream_;
     boost::asio::strand<boost::asio::any_io_executor> strand_;
     boost::asio::steady_timer keepalive_timer_{stream_.get_executor()};
-    std::chrono::steady_clock::time_point last_pong_{};
-
-    std::array<uint8_t, 8> header_buf_{};
-    protocol::FrameHeader current_header_{};
-    std::vector<uint8_t> payload_buf_;
-
-    std::deque<PendingWrite> write_queue_;
-    bool write_in_flight_{false};
-
-    std::unordered_map<uint8_t, StreamCallbacks> streams_;
-    std::unordered_map<uint8_t, OpenHandler> pending_open_;
-    std::unordered_map<uint8_t, OpenHandler> pending_rlisten_;
-    ReverseOpenHandler reverse_handler_;
+    std::array<uint8_t, 8192> read_buf_{};
+    TransportCore core_;
     TunnelCloseHandler close_handler_;
-    ControlHandler control_handler_;
-    InboundOpenHandler inbound_open_handler_;
-    ActivityHandler activity_handler_;
-    uint8_t next_stream_id_{1};
+    std::mutex close_handler_mu_;
     bool closed_{false};
-    mutable std::mutex state_mu_;
-    std::optional<Bytes> inner_key_;
-    bool hop_enabled_{false};
-    std::uint32_t hop_interval_ms_{0};
-    std::int64_t hop_offset_ms_{0};
-    bool server_in_charge_{false};
-    bool allow_exec_{false};
-    std::unordered_map<uint8_t, std::shared_ptr<ReverseForwardSession>> control_sessions_;
-    std::unordered_set<uint8_t> control_exec_;
 };
 
 }  // namespace yume::client

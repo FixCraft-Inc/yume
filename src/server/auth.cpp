@@ -12,11 +12,40 @@
 #include <mutex>
 #include <fstream>
 #include <ctime>
+#include <sstream>
 #include <stdexcept>
 
 #include <nlohmann/json.hpp>
 
 namespace yume::server {
+
+namespace {
+
+std::optional<bool> read_policy_bool(const nlohmann::json& entry, const char* key) {
+    if (entry.contains("permissions") && entry["permissions"].is_object()) {
+        const auto& permissions = entry["permissions"];
+        if (permissions.contains(key) && permissions[key].is_boolean()) {
+            return permissions[key].get<bool>();
+        }
+    }
+    if (entry.contains(key) && entry[key].is_boolean()) {
+        return entry[key].get<bool>();
+    }
+    return std::nullopt;
+}
+
+}  // namespace
+
+bool AuthKeyPolicy::empty() const {
+    return !allow_exec.has_value() &&
+           !allow_local_ip.has_value() &&
+           !control_full.has_value() &&
+           !allow_inbound_admin.has_value() &&
+           !allow_outbound_admin.has_value() &&
+           !allow_chat.has_value() &&
+           !allow_file.has_value() &&
+           !allow_bytes.has_value();
+}
 
 std::vector<crypto::Bytes> load_authorized_keys(const std::string& path) {
     std::vector<crypto::Bytes> keys;
@@ -46,6 +75,47 @@ std::vector<crypto::Bytes> load_authorized_keys(const std::string& path) {
     BIO_free(bio);
 
     return keys;
+}
+
+AuthKeyPolicyMap load_auth_policies(const std::string& meta_path) {
+    AuthKeyPolicyMap policies;
+    if (meta_path.empty()) {
+        return policies;
+    }
+
+    std::ifstream in(meta_path);
+    if (!in) {
+        return policies;
+    }
+
+    nlohmann::json meta = nlohmann::json::object();
+    try {
+        in >> meta;
+    } catch (const std::exception& ex) {
+        throw std::runtime_error(std::string("failed to parse auth_keys_meta: ") + ex.what());
+    }
+    if (!meta.is_object()) {
+        throw std::runtime_error("auth_keys_meta root must be an object");
+    }
+
+    for (auto it = meta.begin(); it != meta.end(); ++it) {
+        if (!it.value().is_object()) {
+            continue;
+        }
+        AuthKeyPolicy policy;
+        policy.allow_exec = read_policy_bool(it.value(), "allow_exec");
+        policy.allow_local_ip = read_policy_bool(it.value(), "allow_local_ip");
+        policy.control_full = read_policy_bool(it.value(), "control_full");
+        policy.allow_inbound_admin = read_policy_bool(it.value(), "allow_inbound_admin");
+        policy.allow_outbound_admin = read_policy_bool(it.value(), "allow_outbound_admin");
+        policy.allow_chat = read_policy_bool(it.value(), "allow_chat");
+        policy.allow_file = read_policy_bool(it.value(), "allow_file");
+        policy.allow_bytes = read_policy_bool(it.value(), "allow_bytes");
+        if (!policy.empty()) {
+            policies[it.key()] = std::move(policy);
+        }
+    }
+    return policies;
 }
 
 bool is_authorized(EVP_PKEY* pubkey, const std::vector<crypto::Bytes>& authorized) {
@@ -105,6 +175,33 @@ std::string fingerprint_pubkey(EVP_PKEY* pubkey) {
         out.push_back(kHex[hash[i] & 0xF]);
     }
     return out;
+}
+
+std::string summarize_auth_policy(const AuthKeyPolicy& policy) {
+    std::vector<std::string> parts;
+    auto append = [&](const char* key, const std::optional<bool>& value) {
+        if (!value.has_value()) {
+            return;
+        }
+        parts.emplace_back(std::string(key) + "=" + (*value ? "true" : "false"));
+    };
+    append("allow_exec", policy.allow_exec);
+    append("allow_local_ip", policy.allow_local_ip);
+    append("control_full", policy.control_full);
+    append("allow_inbound_admin", policy.allow_inbound_admin);
+    append("allow_outbound_admin", policy.allow_outbound_admin);
+    append("allow_chat", policy.allow_chat);
+    append("allow_file", policy.allow_file);
+    append("allow_bytes", policy.allow_bytes);
+
+    std::ostringstream out;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        if (i > 0) {
+            out << ",";
+        }
+        out << parts[i];
+    }
+    return out.str();
 }
 
 void update_auth_meta(const std::string& meta_path, const std::string& fingerprint, const std::string& alias) {

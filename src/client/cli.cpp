@@ -4633,6 +4633,9 @@ int Cli::run(int argc, char** argv) {
                 std::string version_value = color_wrap(server_version.empty() ? "UNKNOWN" : server_version, "1;35");
                 std::string connection_value = color_wrap("🔒 TLS", "1;32");
                 std::string protection_value = color_wrap(protection_line, "1;35");
+                std::string obfs_value = cfg.obfuscation
+                    ? color_wrap("ON", "1;32") + color_wrap(" (HTTPS mask)", "1;35")
+                    : color_wrap("OFF", "1;31");
                 std::string verity_state = format_verified_sources(verified_proof_sources);
                 std::string verity_line = color_wrap(verity_state, verity_ok ? "1;32" : "1;31");
                 std::string header =
@@ -4640,6 +4643,7 @@ int Cli::run(int argc, char** argv) {
                     color_wrap("VERSION", "1;36") + ": " + version_value + "\n" +
                     color_wrap("Connection", "1;36") + ": " + connection_value + "\n" +
                     color_wrap("Protection", "1;36") + ": " + protection_value + "\n" +
+                    color_wrap("Obfuscation", "1;36") + ": " + obfs_value + "\n" +
                     color_wrap("Inner", "1;36") + ": " + inner_line + "\n";
                 std::string footer = color_wrap("Verity", "1;36") + ": " + verity_line + "\n";
                 const std::string border = color_wrap("------------------------------------------", "1;34");
@@ -4653,6 +4657,7 @@ int Cli::run(int argc, char** argv) {
                         << color_wrap("VERSION", "1;36") << ": " << version_value << "\n"
                         << color_wrap("Connection", "1;36") << ": " << connection_value << "\n"
                         << color_wrap("Protection", "1;36") << ": " << protection_value << "\n"
+                        << color_wrap("Obfuscation", "1;36") << ": " << obfs_value << "\n"
                         << color_wrap("Inner", "1;36") << ": " << inner_line << "\n"
                         << build_hop_status_line() << "\n"
                         << color_wrap("Verity", "1;36") << ": " << verity_line << "\n"

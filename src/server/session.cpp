@@ -109,27 +109,27 @@ bool is_public_address(const boost::asio::ip::address& addr) {
     return false;
 }
 
-bool is_allowed_address(const boost::asio::ip::address& addr, const ServerConfig& cfg) {
-    if (cfg.control_full) {
+bool is_allowed_address(const boost::asio::ip::address& addr, bool allow_local_ip, bool control_full) {
+    if (control_full) {
         return true;
     }
     if (is_public_address(addr)) {
         return true;
     }
-    return cfg.allow_local_ip;
+    return allow_local_ip;
 }
 
-bool is_blocked_host_literal(const std::string& host, const ServerConfig& cfg) {
-    if (cfg.control_full) {
+bool is_blocked_host_literal(const std::string& host, bool allow_local_ip, bool control_full) {
+    if (control_full) {
         return false;
     }
-    if ((host == "localhost" || host == "localhost.localdomain") && !cfg.allow_local_ip) {
+    if ((host == "localhost" || host == "localhost.localdomain") && !allow_local_ip) {
         return true;
     }
     boost::system::error_code ec;
     auto addr = boost::asio::ip::make_address(host, ec);
     if (!ec) {
-        return !is_allowed_address(addr, cfg);
+        return !is_allowed_address(addr, allow_local_ip, control_full);
     }
     return false;
 }
@@ -307,6 +307,9 @@ Session::Session(boost::asio::ip::tcp::socket socket,
     , preface_timer_(stream_.get_executor())
     , idle_timer_(stream_.get_executor()) {
     last_activity_ms_.store(steady_now_ms(), std::memory_order_relaxed);
+    session_allow_exec_policy_ = cfg_.allow_exec;
+    session_allow_local_ip_ = cfg_.allow_local_ip;
+    session_control_full_ = cfg_.control_full;
 }
 
 void Session::start() {
@@ -1104,6 +1107,7 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         bool auth_ok = authorized_keys_ ? is_authorized(pubkey, *authorized_keys_) : false;
         std::string fingerprint = fingerprint_pubkey(pubkey);
         client_id_ = fingerprint;
+        auth_fingerprint_ = fingerprint;
         client_auth_pubkey_b64_ = yume::util::base64_encode(std::string(pub_pem.begin(), pub_pem.end()));
         EVP_PKEY_free(pubkey);
 
@@ -1114,6 +1118,32 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                 auth_error_ = "access denied: invalid key";
             }
             return false;
+        }
+
+        AuthKeyPolicy auth_policy;
+        if (!cfg_.auth_keys_meta.empty()) {
+            try {
+                AuthKeyPolicyMap auth_policies = load_auth_policies(cfg_.auth_keys_meta);
+                auto it = auth_policies.find(fingerprint);
+                if (it != auth_policies.end()) {
+                    auth_policy = std::move(it->second);
+                }
+            } catch (const std::exception& ex) {
+                auth_error_ = std::string("server auth policy load failed: ") + ex.what();
+                return false;
+            }
+        }
+        session_allow_exec_policy_ = auth_policy.allow_exec.value_or(cfg_.allow_exec);
+        session_allow_local_ip_ = auth_policy.allow_local_ip.value_or(cfg_.allow_local_ip);
+        session_control_full_ = auth_policy.control_full.value_or(cfg_.control_full);
+        session_allow_inbound_admin_policy_ = auth_policy.allow_inbound_admin.value_or(true);
+        session_allow_outbound_admin_policy_ = auth_policy.allow_outbound_admin.value_or(true);
+        session_allow_chat_policy_ = auth_policy.allow_chat.value_or(true);
+        session_allow_file_policy_ = auth_policy.allow_file.value_or(true);
+        session_allow_bytes_policy_ = auth_policy.allow_bytes.value_or(true);
+        if (!auth_policy.empty()) {
+            util::log_info("session " + std::to_string(session_id_) + ": auth policy " +
+                           summarize_auth_policy(auth_policy));
         }
 
         if (cfg_.inner_crypto) {
@@ -1400,7 +1430,7 @@ void Session::handle_open(const protocol::Frame& frame) {
         send_open_reply(frame.header.stream_id, false, "missing host/port");
         return;
     }
-    if (is_blocked_host_literal(host, cfg_)) {
+    if (is_blocked_host_literal(host, session_allow_local_ip_, session_control_full_)) {
         send_open_reply(frame.header.stream_id, false, "blocked destination");
         return;
     }
@@ -1447,7 +1477,9 @@ void Session::handle_open(const protocol::Frame& frame) {
                     blocked_active_server = true;
                     continue;
                 }
-                if (is_allowed_address(entry.endpoint().address(), self->cfg_)) {
+                if (is_allowed_address(entry.endpoint().address(),
+                                       self->session_allow_local_ip_,
+                                       self->session_control_full_)) {
                     allowed.push_back(entry.endpoint());
                 }
             }
@@ -1531,14 +1563,16 @@ void Session::handle_open(const protocol::Frame& frame) {
         std::vector<boost::asio::ip::tcp::endpoint> allowed;
         bool blocked_active_server = false;
         for (const auto& entry : results) {
-            if (is_active_server_endpoint(entry.endpoint(), self->cfg_, self_local_addr)) {
-                blocked_active_server = true;
-                continue;
+                if (is_active_server_endpoint(entry.endpoint(), self->cfg_, self_local_addr)) {
+                    blocked_active_server = true;
+                    continue;
+                }
+                if (is_allowed_address(entry.endpoint().address(),
+                                       self->session_allow_local_ip_,
+                                       self->session_control_full_)) {
+                    allowed.push_back(entry.endpoint());
+                }
             }
-            if (is_allowed_address(entry.endpoint().address(), self->cfg_)) {
-                allowed.push_back(entry.endpoint());
-            }
-        }
         
         if (allowed.empty()) {
             self->send_open_reply(stream_id,
@@ -1791,7 +1825,7 @@ void Session::handle_control(const protocol::Frame& frame) {
     if (cmd == "register") {
         client_hostname_ = cfg_.anonym ? std::string{} : json.value("hostname", "");
         client_server_in_charge_ = json.value("server_in_charge", false);
-        client_allow_exec_ = json.value("allow_exec", false);
+        client_allow_exec_ = json.value("allow_exec", false) && session_allow_exec_policy_;
         const std::string reported_ip = json.value("wan_ip", "");
         if (!cfg_.anonym && !reported_ip.empty()) {
             client_wan_ip_ = reported_ip;
@@ -1833,11 +1867,13 @@ void Session::handle_control(const protocol::Frame& frame) {
         announce.client_variant = json.value("client_variant", "unknown");
         announce.client_version = json.value("client_version", "");
         announce.relay_mode = control::relay_mode_from_string(json.value("relay_mode", "untrusted"));
-        announce.allow_chat = json.value("allow_chat", true);
-        announce.allow_file = json.value("allow_file", true);
-        announce.allow_bytes = json.value("allow_bytes", true);
-        announce.allow_inbound_admin = json.value("allow_inbound_admin", false);
-        announce.allow_outbound_admin = json.value("allow_outbound_admin", false);
+        announce.allow_chat = json.value("allow_chat", true) && session_allow_chat_policy_;
+        announce.allow_file = json.value("allow_file", true) && session_allow_file_policy_;
+        announce.allow_bytes = json.value("allow_bytes", true) && session_allow_bytes_policy_;
+        announce.allow_inbound_admin = json.value("allow_inbound_admin", false) &&
+                                       session_allow_inbound_admin_policy_;
+        announce.allow_outbound_admin = json.value("allow_outbound_admin", false) &&
+                                        session_allow_outbound_admin_policy_;
         auto result = manager_->register_endpoint(shared_from_this(), announce, client_auth_pubkey_b64_);
         client_id_ = result.endpoint.endpoint_id;
         client_display_name_ = result.endpoint.display_name;

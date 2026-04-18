@@ -204,7 +204,16 @@ private:
     bool client_server_in_charge_{false};
     std::string client_id_;
     std::string client_display_name_;
+    std::string auth_fingerprint_;
     std::string client_auth_pubkey_b64_;
+    bool session_allow_exec_policy_{false};
+    bool session_allow_local_ip_{false};
+    bool session_control_full_{false};
+    bool session_allow_inbound_admin_policy_{true};
+    bool session_allow_outbound_admin_policy_{true};
+    bool session_allow_chat_policy_{true};
+    bool session_allow_file_policy_{true};
+    bool session_allow_bytes_policy_{true};
     std::string client_platform_{"unknown"};
     std::string client_variant_{"unknown"};
     std::string client_version_;

@@ -166,6 +166,7 @@ void print_help() {
         << "  --keys-alias <id> <a>    Set alias\n"
         << "  --keys-gen <prefix>      Generate Ed25519 keypair (<prefix>.key/.pub)\n"
         << "  --keys-gen-add           Append generated public key to auth_keys\n"
+        << "  auth_keys_meta supports permissions.{allow_local_ip,control_full,allow_exec,allow_chat,allow_file,allow_bytes,allow_inbound_admin,allow_outbound_admin}\n"
         << "  --ui                     Interactive server manager\n\n"
         << "Other:\n"
         << "  completion bash\n"
@@ -1962,18 +1963,32 @@ int main(int argc, char** argv) {
                 return 0;
             }
             nlohmann::json meta = nlohmann::json::object();
+            yume::server::AuthKeyPolicyMap policies;
             std::ifstream in(cfg.auth_keys_meta);
             if (in) {
                 try { in >> meta; } catch (...) { meta = nlohmann::json::object(); }
+            }
+            try {
+                policies = yume::server::load_auth_policies(cfg.auth_keys_meta);
+            } catch (const std::exception& ex) {
+                yume::util::log_error(std::string("failed to parse auth_keys_meta: ") + ex.what());
+                for (auto* free_key : keys) EVP_PKEY_free(free_key);
+                return 1;
             }
             for (auto* key : keys) {
                 std::string fp = yume::server::fingerprint_pubkey(key);
                 auto entry = meta.value(fp, nlohmann::json::object());
                 std::string alias = entry.value("alias", "");
                 long long last_seen = entry.value("last_seen", 0LL);
+                yume::server::AuthKeyPolicy policy;
+                auto it = policies.find(fp);
+                if (it != policies.end()) {
+                    policy = it->second;
+                }
                 std::cout << fp;
                 if (!alias.empty()) std::cout << "  alias=" << alias;
                 if (last_seen > 0) std::cout << "  last_seen=" << last_seen;
+                if (!policy.empty()) std::cout << "  policy=" << yume::server::summarize_auth_policy(policy);
                 std::cout << "\n";
             }
             for (auto* key : keys) EVP_PKEY_free(key);

@@ -39,6 +39,12 @@ if(CMAKE_CROSSCOMPILING AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     find_library(ATOMIC_LIBRARY atomic)
 endif()
 
+function(yume_link_atomic_if_needed target scope)
+    if(CMAKE_CROSSCOMPILING AND ATOMIC_LIBRARY AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        target_link_libraries(${target} ${scope} ${ATOMIC_LIBRARY})
+    endif()
+endfunction()
+
 set(YUME_SPDLOG_TARGET "")
 if(YUME_USE_SPDLOG)
     set(_fmt_vendor_candidates
@@ -238,9 +244,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             _WIN32_WINNT=0x0600
         )
     endif()
-    if(CMAKE_CROSSCOMPILING AND ATOMIC_LIBRARY AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-        target_link_libraries(yume_core PUBLIC ${ATOMIC_LIBRARY})
-    endif()
+    yume_link_atomic_if_needed(yume_core PUBLIC)
 
     if(TARGET zstd::libzstd)
         target_link_libraries(yume_core PUBLIC zstd::libzstd)
@@ -320,6 +324,7 @@ if(TARGET basefwxcpp)
 else()
     target_compile_definitions(yume_transport_core PUBLIC YUME_USE_BASEFWX=0)
 endif()
+yume_link_atomic_if_needed(yume_transport_core PUBLIC)
 yume_apply_perf_opts(yume_transport_core)
 
 if(NOT YUME_TRANSPORT_CORE_ONLY)
@@ -382,6 +387,7 @@ add_executable(yume_transport_core_test
 )
 
 target_link_libraries(yume_transport_core_test PRIVATE yume_transport_core)
+yume_link_atomic_if_needed(yume_transport_core_test PRIVATE)
 yume_apply_perf_opts(yume_transport_core_test)
 
 add_test(NAME yume_transport_core_test COMMAND yume_transport_core_test)

@@ -51,6 +51,7 @@ private:
     void on_preface_timeout(const boost::system::error_code& ec);
     bool handle_http_preface(const std::string& preface);
     void send_real_http_response(const std::string& path);
+    void send_obfs_connect_established(const std::string& authority);
     std::string load_real_index();
     std::string build_hidden_blob();
     void send_auth_challenge();
@@ -213,6 +214,7 @@ private:
     bool client_allow_bytes_{true};
     bool client_allow_inbound_admin_{false};
     bool client_allow_outbound_admin_{false};
+    std::string latest_lifecycle_state_;
     std::string client_hostname_;
     std::string client_wan_ip_;
 

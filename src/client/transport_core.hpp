@@ -87,7 +87,7 @@ public:
 
 private:
     struct PendingWrite {
-        std::shared_ptr<Bytes> data;
+        protocol::Frame frame;
         WriteCompletion handler;
     };
 
@@ -99,6 +99,7 @@ private:
     bool has_stream_id_locked(uint8_t stream_id) const;
     void queue_frame(const protocol::Frame& frame, WriteCompletion handler = {});
     void dispatch_next_write();
+    std::shared_ptr<Bytes> encode_outgoing_frame(const protocol::Frame& frame);
     void handle_frame(const protocol::Frame& frame);
     Bytes encrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const Bytes& input);
     bool decrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const Bytes& input, Bytes* output);

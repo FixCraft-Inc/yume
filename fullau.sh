@@ -94,6 +94,63 @@ resolve_real_uid() {
   echo "${uid}"
 }
 
+resolve_real_gid() {
+  local gid
+  gid="$(id -g)"
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    local sudo_gid
+    sudo_gid="$(id -g "${SUDO_USER}" 2>/dev/null || true)"
+    if [[ -n "${sudo_gid}" ]]; then
+      gid="${sudo_gid}"
+    fi
+  fi
+  echo "${gid}"
+}
+
+ensure_user_owned_dir() {
+  local dir="$1"
+  mkdir -p "${dir}"
+  if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" ]]; then
+    chown "${REAL_UID}:${REAL_GID}" "${dir}" 2>/dev/null || true
+  fi
+}
+
+select_cache_root() {
+  local requested="$1"
+  local fallback="${TMPDIR:-/tmp}/yume-${REAL_UID}/cache"
+  ensure_user_owned_dir "${requested}"
+  if [[ -w "${requested}" ]]; then
+    echo "${requested}"
+    return 0
+  fi
+  ensure_user_owned_dir "${fallback}"
+  if [[ -w "${fallback}" ]]; then
+    echo "[fullau] Cache dir ${requested} is not writable; falling back to ${fallback}" >&2
+    echo "${fallback}"
+    return 0
+  fi
+  echo "Unable to access cache directory: ${requested} or fallback ${fallback}" >&2
+  return 1
+}
+
+select_log_dir() {
+  local requested="$1"
+  local fallback="${TMPDIR:-/tmp}/yume-${REAL_UID}/logs"
+  ensure_user_owned_dir "${requested}"
+  if [[ -w "${requested}" ]]; then
+    echo "${requested}"
+    return 0
+  fi
+  ensure_user_owned_dir "${fallback}"
+  if [[ -w "${fallback}" ]]; then
+    echo "[fullau] Log dir ${requested} is not writable; falling back to ${fallback}" >&2
+    echo "${fallback}"
+    return 0
+  fi
+  echo "Unable to access log directory: ${requested} or fallback ${fallback}" >&2
+  return 1
+}
+
 init_tmp_root() {
   local requested="${YUME_TMP_ROOT:-}"
   if [[ -n "${requested}" ]]; then
@@ -106,27 +163,125 @@ init_tmp_root() {
   echo "${created}|1"
 }
 
+show_fullau_usage() {
+  cat <<'EOF'
+Usage: ./fullau.sh [--help] [--target NAME[,NAME...]] [--targets LIST]
+
+Targets:
+  all
+  linux, linux-x86_64
+  openwrt, openwrt-mips, mips
+  busybox, busybox-x86
+  armv7, armv7-linux, armv7-busybox
+  armv8, aarch64, armv8-linux, armv8-busybox
+  windows, windows-x86_64
+  macos, macos-x86_64, macos-arm64
+
+Notes:
+  - Multiple targets can be passed as a comma-separated list.
+  - The same target selection can also be set via YUME_TARGETS.
+  - With no arguments, all supported targets are considered.
+EOF
+}
+
+normalize_cli_target() {
+  local target="${1// /}"
+  case "${target}" in
+    all|linux|linux-x86_64|host-linux|openwrt|openwrt-mips|busybox|busybox-x86|armv7|armv7-linux|armv7-busybox|armv8|aarch64|armv8-linux|armv8-busybox|windows|windows-x86_64|macos|macos-x86_64|macos-arm64)
+      echo "${target}"
+      ;;
+    mips)
+      echo "openwrt-mips"
+      ;;
+    "")
+      return 1
+      ;;
+    *)
+      echo "Unknown target: ${target}" >&2
+      return 1
+      ;;
+  esac
+}
+
+parse_fullau_args() {
+  local cli_targets=()
+  local raw_targets=""
+  local raw_parts=()
+  local target=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        show_fullau_usage
+        exit 0
+        ;;
+      -t|--target|--targets)
+        if [[ $# -lt 2 ]]; then
+          echo "Missing value for $1" >&2
+          show_fullau_usage >&2
+          exit 2
+        fi
+        raw_targets="$2"
+        shift 2
+        ;;
+      --target=*|--targets=*)
+        raw_targets="${1#*=}"
+        shift
+        ;;
+      --)
+        shift
+        break
+        ;;
+      *)
+        echo "Unknown argument: $1" >&2
+        show_fullau_usage >&2
+        exit 2
+        ;;
+    esac
+    if [[ -n "${raw_targets}" ]]; then
+      IFS=',' read -r -a raw_parts <<< "${raw_targets}"
+      for target in "${raw_parts[@]}"; do
+        cli_targets+=("$(normalize_cli_target "${target}")")
+      done
+      raw_targets=""
+    fi
+  done
+  if [[ ${#cli_targets[@]} -gt 0 ]]; then
+    YUME_TARGETS="$(IFS=,; echo "${cli_targets[*]}")"
+    export YUME_TARGETS
+  fi
+  if [[ $# -gt 0 ]]; then
+    echo "Unexpected positional arguments: $*" >&2
+    show_fullau_usage >&2
+    exit 2
+  fi
+}
+
+parse_fullau_args "$@"
+
 REAL_HOME="$(resolve_real_home)"
 REAL_UID="$(resolve_real_uid)"
-YUME_CACHE_ROOT="${YUME_CACHE_ROOT:-${REAL_HOME}/.cache/yume}"
-mkdir -p "${YUME_CACHE_ROOT}"
+REAL_GID="$(resolve_real_gid)"
+YUME_CACHE_ROOT="$(select_cache_root "${YUME_CACHE_ROOT:-${REAL_HOME}/.cache/yume}")"
 IFS='|' read -r YUME_TMP_ROOT YUME_TMP_ROOT_AUTO <<< "$(init_tmp_root)"
 
 init_fullau_logging() {
   local requested="${YUME_LOG_FILE:-}"
-  local log_dir="${YUME_LOG_DIR:-${YUME_CACHE_ROOT}/logs}"
-  mkdir -p "${log_dir}"
+  local log_dir
+  log_dir="$(select_log_dir "${YUME_LOG_DIR:-${YUME_CACHE_ROOT}/logs}")"
   if [[ -n "${requested}" ]]; then
     local requested_parent
     local requested_dir
     requested_parent="$(dirname "${requested}")"
-    mkdir -p "${requested_parent}"
+    ensure_user_owned_dir "${requested_parent}"
     requested_dir="$(cd "${requested_parent}" && pwd)"
     LOG_FILE="${requested_dir}/$(basename "${requested}")"
   else
     LOG_FILE="${log_dir}/fullau-$(date +%Y%m%d-%H%M%S).log"
   fi
   : > "${LOG_FILE}"
+  if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" ]]; then
+    chown "${REAL_UID}:${REAL_GID}" "${LOG_FILE}" 2>/dev/null || true
+  fi
   ln -sfn "${LOG_FILE}" "${log_dir}/fullau-latest.log" 2>/dev/null || true
   exec > >(tee -a "${LOG_FILE}") 2>&1
 }
@@ -814,8 +969,15 @@ maybe_enable_macos_cross() {
   local vendor_arm64=""
   vendor_x64="$(vendor_cross_dir "macos-x86_64" || true)"
   vendor_arm64="$(vendor_cross_dir "macos-arm64" || true)"
-  if [[ ( -z "${VCPKG_ROOT:-}" || ! -x "${VCPKG_ROOT}/vcpkg" || ! -f "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" ) && \
-        ! ( vendor_has_cross_prefix "${vendor_x64}" || vendor_has_cross_prefix "${vendor_arm64}" ) ]]; then
+  local vcpkg_ready=0
+  local vendor_ready=0
+  if [[ -n "${VCPKG_ROOT:-}" && -x "${VCPKG_ROOT}/vcpkg" && -f "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" ]]; then
+    vcpkg_ready=1
+  fi
+  if vendor_has_cross_prefix "${vendor_x64}" || vendor_has_cross_prefix "${vendor_arm64}"; then
+    vendor_ready=1
+  fi
+  if [[ "${vcpkg_ready}" -ne 1 && "${vendor_ready}" -ne 1 ]]; then
     return 0
   fi
   if { target_enabled macos-x86_64 && resolve_macos_toolchain "x64-osx" >/dev/null 2>&1; } || \

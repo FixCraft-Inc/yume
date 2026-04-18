@@ -82,7 +82,7 @@
 namespace yume::client {
 
 namespace {
-constexpr std::uint64_t kHopDecryptWindow = 6;
+constexpr std::uint64_t kHopDecryptWindow = 24;
 
 #if !defined(_WIN32)
 std::mutex g_terminal_mode_mutex;
@@ -223,6 +223,39 @@ IoOpResult read_exact_with_timeout(AsyncStream& stream,
     return res;
 }
 
+template <typename AsyncStream, typename CancelFn>
+IoOpResult read_exact_with_timeout_prefetched(AsyncStream& stream,
+                                              boost::asio::io_context& io,
+                                              const boost::asio::mutable_buffer& buf,
+                                              std::chrono::milliseconds timeout,
+                                              CancelFn cancel,
+                                              std::vector<uint8_t>* prefetched) {
+    IoOpResult res{};
+    auto* out = static_cast<uint8_t*>(buf.data());
+    const std::size_t target = buf.size();
+    std::size_t copied = 0;
+
+    if (prefetched && !prefetched->empty()) {
+        copied = std::min<std::size_t>(target, prefetched->size());
+        std::copy_n(prefetched->begin(), copied, out);
+        prefetched->erase(prefetched->begin(), prefetched->begin() + static_cast<std::ptrdiff_t>(copied));
+    }
+
+    if (copied == target) {
+        res.bytes = copied;
+        return res;
+    }
+
+    IoOpResult tail = read_exact_with_timeout(
+        stream,
+        io,
+        boost::asio::buffer(out + copied, target - copied),
+        timeout,
+        cancel);
+    tail.bytes += copied;
+    return tail;
+}
+
 IoOpResult connect_with_timeout(boost::asio::ip::tcp::socket& sock,
                                 const boost::asio::ip::tcp::resolver::results_type& endpoints,
                                 boost::asio::io_context& io,
@@ -276,6 +309,73 @@ IoOpResult handshake_with_timeout(boost::asio::ssl::stream<boost::asio::ip::tcp:
                                done = true;
                                (void)timer.cancel();
                            });
+
+    io.restart();
+    io.run();
+    return res;
+}
+
+template <typename AsyncStream, typename CancelFn>
+IoOpResult write_all_with_timeout(AsyncStream& stream,
+                                  boost::asio::io_context& io,
+                                  const boost::asio::const_buffer& buf,
+                                  std::chrono::milliseconds timeout,
+                                  CancelFn cancel) {
+    IoOpResult res{};
+    bool done = false;
+
+    boost::asio::steady_timer timer(io);
+    timer.expires_after(timeout);
+    timer.async_wait([&](const boost::system::error_code& ec) {
+        if (!ec && !done) {
+            res.timed_out = true;
+            cancel();
+        }
+    });
+
+    boost::asio::async_write(stream, buf, [&](const boost::system::error_code& ec, std::size_t bytes) {
+        res.ec = ec;
+        res.bytes = bytes;
+        done = true;
+        (void)timer.cancel();
+    });
+
+    io.restart();
+    io.run();
+    return res;
+}
+
+template <typename AsyncStream, typename CancelFn>
+IoOpResult read_until_with_timeout(AsyncStream& stream,
+                                   boost::asio::io_context& io,
+                                   std::string* data,
+                                   std::string_view delimiter,
+                                   std::chrono::milliseconds timeout,
+                                   CancelFn cancel) {
+    IoOpResult res{};
+    if (!data) {
+        res.ec = boost::asio::error::invalid_argument;
+        return res;
+    }
+
+    bool done = false;
+    const std::string delim(delimiter);
+    boost::asio::steady_timer timer(io);
+    timer.expires_after(timeout);
+    timer.async_wait([&](const boost::system::error_code& ec) {
+        if (!ec && !done) {
+            res.timed_out = true;
+            cancel();
+        }
+    });
+
+    boost::asio::async_read_until(stream, boost::asio::dynamic_buffer(*data), delim,
+                                  [&](const boost::system::error_code& ec, std::size_t bytes) {
+                                      res.ec = ec;
+                                      res.bytes = bytes;
+                                      done = true;
+                                      (void)timer.cancel();
+                                  });
 
     io.restart();
     io.run();
@@ -374,6 +474,23 @@ std::string endpoint_hint_tls(bool tls_handshake_succeeded,
     return "unknown";
 }
 
+int parse_http_status_code(std::string_view line) {
+    if (!(line.rfind("HTTP/1.1 ", 0) == 0 || line.rfind("HTTP/1.0 ", 0) == 0)) {
+        return -1;
+    }
+    std::size_t pos = line.find(' ');
+    if (pos == std::string_view::npos || pos + 4 > line.size()) {
+        return -1;
+    }
+    char d1 = line[pos + 1];
+    char d2 = line[pos + 2];
+    char d3 = line[pos + 3];
+    if (d1 < '0' || d1 > '9' || d2 < '0' || d2 > '9' || d3 < '0' || d3 > '9') {
+        return -1;
+    }
+    return ((d1 - '0') * 100) + ((d2 - '0') * 10) + (d3 - '0');
+}
+
 bool looks_like_yume_header(const std::array<uint8_t, 8>& header) {
     uint32_t len = (static_cast<uint32_t>(header[0]) << 24) |
                    (static_cast<uint32_t>(header[1]) << 16) |
@@ -395,7 +512,8 @@ protocol::Frame read_frame_with_timeout(boost::asio::ssl::stream<boost::asio::ip
                                        const char* what,
                                        const std::string& host,
                                        int port,
-                                       bool tls_handshake_succeeded) {
+                                       bool tls_handshake_succeeded,
+                                       std::vector<uint8_t>* prefetched = nullptr) {
     std::array<uint8_t, 8> header_buf{};
     auto cancel = [&]() {
         boost::system::error_code ignored;
@@ -403,7 +521,13 @@ protocol::Frame read_frame_with_timeout(boost::asio::ssl::stream<boost::asio::ip
         stream.lowest_layer().close(ignored);
     };
 
-    IoOpResult hr = read_exact_with_timeout(stream, io, boost::asio::buffer(header_buf), timeout, cancel);
+    IoOpResult hr = read_exact_with_timeout_prefetched(
+        stream,
+        io,
+        boost::asio::buffer(header_buf),
+        timeout,
+        cancel,
+        prefetched);
     if (hr.timed_out) {
         if (what && std::strcmp(what, "server info") == 0) {
             throw FatalError(std::string("timed out waiting for server confirmation (") + host + ":" + std::to_string(port) +
@@ -442,7 +566,13 @@ protocol::Frame read_frame_with_timeout(boost::asio::ssl::stream<boost::asio::ip
 
     frame.payload.resize(len);
     if (len > 0) {
-        IoOpResult pr = read_exact_with_timeout(stream, io, boost::asio::buffer(frame.payload), timeout, cancel);
+        IoOpResult pr = read_exact_with_timeout_prefetched(
+            stream,
+            io,
+            boost::asio::buffer(frame.payload),
+            timeout,
+            cancel,
+            prefetched);
         if (pr.timed_out) {
             throw FatalError(std::string("this endpoint is not a yume server (") + host + ":" + std::to_string(port) +
                              "; timed out reading " + what +
@@ -990,6 +1120,8 @@ struct ParsedArgs {
     std::string identity;
     int socks_port{0};
     int io_threads{0};
+    bool obfuscation{false};
+    bool obfuscation_override{false};
     int lport{0};
     std::string rhost;
     int rport{0};
@@ -1198,6 +1330,12 @@ ParsedArgs parse_args(int argc, char** argv) {
                 return args;
             }
             args.io_threads_override = true;
+        } else if (arg == "--obfs") {
+            args.obfuscation = true;
+            args.obfuscation_override = true;
+        } else if (arg == "--no-obfs") {
+            args.obfuscation = false;
+            args.obfuscation_override = true;
         } else if (arg == "--lport") {
             if (!parse_int_value("--lport", args.lport)) {
                 return args;
@@ -1671,8 +1809,17 @@ void authenticate(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream
                   const std::optional<crypto::Bytes>& pq_salt,
                   const std::optional<std::string>& inner_mode,
                   const std::optional<bool>& inner_hop,
-                  const std::optional<inner::KdfParams>& inner_kdf) {
-    protocol::Frame challenge = read_frame_with_timeout(stream, io, kAuthChallengeTimeout, "AUTH challenge", server_host, server_port, true);
+                  const std::optional<inner::KdfParams>& inner_kdf,
+                  std::vector<uint8_t>* prefetched = nullptr) {
+    protocol::Frame challenge = read_frame_with_timeout(
+        stream,
+        io,
+        kAuthChallengeTimeout,
+        "AUTH challenge",
+        server_host,
+        server_port,
+        true,
+        prefetched);
     if (challenge.header.type != protocol::AUTH) {
         throw FatalError("this endpoint is not a yume server (server did not send AUTH challenge); please check the origin and try again");
     }
@@ -1691,13 +1838,74 @@ void authenticate(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream
     protocol::send_frame(stream, response);
 }
 
+void perform_obfs_https_tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+                               boost::asio::io_context& io,
+                               const std::string& server_host,
+                               int server_port,
+                               std::vector<uint8_t>* prefetched = nullptr) {
+    const std::string authority = server_host + ":" + std::to_string(server_port);
+    const std::string request =
+        "CONNECT " + authority + " HTTP/1.1\r\n"
+        "Host: " + authority + "\r\n"
+        "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36\r\n"
+        "Proxy-Connection: keep-alive\r\n"
+        "Connection: keep-alive\r\n"
+        "Pragma: no-cache\r\n"
+        "Cache-Control: no-cache\r\n"
+        "\r\n";
+
+    auto cancel = [&]() {
+        boost::system::error_code ignored;
+        stream.lowest_layer().cancel(ignored);
+        stream.lowest_layer().close(ignored);
+    };
+
+    IoOpResult wr = write_all_with_timeout(stream, io, boost::asio::buffer(request), kAuthChallengeTimeout, cancel);
+    if (wr.timed_out) {
+        throw FatalError("this endpoint is not a yume obfs endpoint (" + server_host + ":" +
+                         std::to_string(server_port) + "; CONNECT preface timed out)");
+    }
+    if (wr.ec) {
+        throw FatalError("this endpoint is not a yume obfs endpoint (" + server_host + ":" +
+                         std::to_string(server_port) + "; CONNECT preface failed: " + wr.ec.message() + ")");
+    }
+
+    std::string response;
+    IoOpResult rr = read_until_with_timeout(stream, io, &response, "\r\n\r\n", kAuthChallengeTimeout, cancel);
+    if (rr.timed_out) {
+        throw FatalError("this endpoint is not a yume obfs endpoint (" + server_host + ":" +
+                         std::to_string(server_port) + "; CONNECT response timed out)");
+    }
+    if (rr.ec) {
+        throw FatalError("this endpoint is not a yume obfs endpoint (" + server_host + ":" +
+                         std::to_string(server_port) + "; CONNECT response failed: " + rr.ec.message() + ")");
+    }
+
+    if (prefetched && rr.bytes < response.size()) {
+        prefetched->assign(response.begin() + static_cast<std::ptrdiff_t>(rr.bytes), response.end());
+    }
+
+    std::string_view head(response);
+    std::size_t line_end = head.find("\r\n");
+    if (line_end != std::string_view::npos) {
+        head = head.substr(0, line_end);
+    }
+    int status = parse_http_status_code(head);
+    if (status != 200) {
+        throw FatalError("this endpoint is not a yume obfs endpoint (" + server_host + ":" +
+                         std::to_string(server_port) + "; CONNECT rejected, status " +
+                         (status < 0 ? std::string("invalid") : std::to_string(status)) + ")");
+    }
+}
+
 void print_bash_completion() {
     std::cout << R"(# bash completion for yume
 _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --server --port --auth -i --socks --threads --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym -L -R --boring --non-interactive --live-status --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
+  local opts="--help -h --version --config --server --port --auth -i --socks --threads --obfs --no-obfs --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym -L -R --boring --non-interactive --live-status --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
   local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path --relay-key-file"
   case "$prev" in
     --completion)
@@ -1794,6 +2002,7 @@ void print_help() {
         << "  --inner-light            Light KDF mode\n"
         << "  --hop / --no-hop         Inner key hopping on/off\n"
         << "  --hop-interval <ms>      Hop interval\n"
+        << "  --obfs / --no-obfs       HTTPS masking tunnel preface on/off\n"
         << "  --pq-pub <path>          PQ public key\n"
         << "  --use-embedded-master    Allow embedded BaseFWX master fallback\n"
         << "  --no-embedded-master     Disable embedded BaseFWX master fallback\n"
@@ -2945,7 +3154,7 @@ int Cli::run(int argc, char** argv) {
             if (json.contains("threads") && cfg.io_threads == 0 && !args.io_threads_override) {
                 cfg.io_threads = json["threads"].get<int>();
             }
-            if (json.contains("obfuscation") && !cfg.obfuscation) {
+            if (json.contains("obfuscation") && !args.obfuscation_override) {
                 cfg.obfuscation = json["obfuscation"].get<bool>();
             }
             if (json.contains("inner_crypto") && !args.inner_crypto_override) {
@@ -3060,6 +3269,9 @@ int Cli::run(int argc, char** argv) {
     }
     if (args.io_threads != 0 || args.io_threads_override) {
         cfg.io_threads = args.io_threads;
+    }
+    if (args.obfuscation_override) {
+        cfg.obfuscation = args.obfuscation;
     }
     if (args.inner_crypto_override) {
         cfg.inner_crypto = args.inner_crypto;
@@ -3325,6 +3537,7 @@ int Cli::run(int argc, char** argv) {
         if (!cfg.identity.empty()) json["identity"] = cfg.identity;
         if (cfg.socks_port > 0) json["socks_port"] = cfg.socks_port;
         if (cfg.io_threads != 0) json["threads"] = cfg.io_threads;
+        json["obfuscation"] = cfg.obfuscation;
         json["inner_crypto"] = cfg.inner_crypto;
         json["inner_heavy"] = cfg.inner_heavy;
         json["inner_hop"] = cfg.inner_hop;
@@ -3539,6 +3752,11 @@ int Cli::run(int argc, char** argv) {
                 ctx = owned_ctx.get();
             }
 
+            if (cfg.obfuscation) {
+                // CONNECT masking uses HTTP/1.1 framing, so ALPN must not negotiate h2 here.
+                obfs::configure_alpn(*ctx, false, false);
+            }
+
             ctx->set_verify_mode(boost::asio::ssl::verify_peer);
             ctx->set_default_verify_paths();
             if (!cfg.tls_ca_cert.empty()) {
@@ -3669,6 +3887,10 @@ int Cli::run(int argc, char** argv) {
             }
 
             if (cfg.tls_stealth_enabled && cfg.tls_fingerprint_log) {
+                if (cfg.obfuscation) {
+                    fingerprint_for_metrics.alpn_protocols = {"http/1.1"};
+                    fingerprint_for_metrics.ja4_components.first_alpn = "http/1.1";
+                }
                 tls_metrics::MetricsManager::instance().record_connection_fingerprint(
                     cfg.server,
                     static_cast<uint16_t>(cfg.port),
@@ -3679,6 +3901,12 @@ int Cli::run(int argc, char** argv) {
                     static_cast<uint32_t>(handshake_duration.count()),
                     ""     // error_message
                 );
+            }
+
+            std::vector<uint8_t> prefetched_tls_bytes;
+            if (cfg.obfuscation) {
+                perform_obfs_https_tunnel(stream, io, cfg.server, cfg.port, &prefetched_tls_bytes);
+                util::log_info("HTTPS masking tunnel established");
             }
 
             inner::Config inner_cfg;
@@ -3736,7 +3964,17 @@ int Cli::run(int argc, char** argv) {
                 inner_hop = cfg.inner_hop;
             }
 
-            authenticate(stream, io, cfg.server, cfg.port, cfg.identity, pq_ciphertext, pq_salt, inner_mode, inner_hop, inner_kdf);
+            authenticate(stream,
+                         io,
+                         cfg.server,
+                         cfg.port,
+                         cfg.identity,
+                         pq_ciphertext,
+                         pq_salt,
+                         inner_mode,
+                         inner_hop,
+                         inner_kdf,
+                         &prefetched_tls_bytes);
             util::log_info("auth response sent; waiting for server confirmation");
 
             protocol::Frame anon_frame;
@@ -4315,14 +4553,21 @@ int Cli::run(int argc, char** argv) {
                 attempt++;
                 continue;
             }
-            if (inner_disabled_for_session && !pq_warned) {
-                warn_security_disabled("PQ", cfg.boring);
-                if (pq_not_supported) {
-                    util::log_warn("PQ not supported in this build; inner crypto disabled for this session");
-                } else if (pq_need_key) {
-                    util::log_warn("PQ public key not configured; inner crypto disabled for this session");
+            if (inner_disabled_for_session) {
+                if (!pq_warned) {
+                    warn_security_disabled("PQ", cfg.boring);
+                    if (pq_not_supported) {
+                        util::log_warn("PQ not supported in this build; refusing insecure downgrade");
+                    } else if (pq_need_key) {
+                        util::log_warn("PQ public key not configured; refusing insecure downgrade");
+                    }
+                    pq_warned = true;
                 }
-                pq_warned = true;
+                if (!inner_disable_reason.empty()) {
+                    print_red(inner_disable_reason);
+                }
+                print_red("inner crypto was requested but could not be established; refusing downgraded session");
+                return 1;
             }
             auto build_hop_status_line = [hop_enabled, hop_interval_ms, hop_offset_ms]() {
                 auto color_wrap = [](const std::string& text, const char* code) {
@@ -4624,7 +4869,6 @@ int Cli::run(int argc, char** argv) {
             auto request_disconnect = [disconnect_once,
                                        relay_runtime,
                                        tunnel,
-                                       &io,
                                        &stop_requested,
                                        &announce_stopping](const std::string& reason,
                                                            const std::string& lifecycle_message,
@@ -4639,7 +4883,6 @@ int Cli::run(int argc, char** argv) {
                 std::string lifecycle_error;
                 relay_runtime->notify_disconnecting(lifecycle_message, &lifecycle_error);
                 tunnel->stop(reason);
-                io.stop();
             };
             relay_runtime->set_stop_callback([request_disconnect]() {
                 std::thread([request_disconnect]() {

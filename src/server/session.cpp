@@ -40,7 +40,7 @@ constexpr uint8_t kMinFrameType = protocol::AUTH;
 constexpr uint8_t kMaxFrameType = protocol::SOPEN;
 constexpr int64_t kIdleTimeoutMs = 90 * 1000;
 constexpr int64_t kIdleCheckIntervalMs = 30 * 1000;
-constexpr std::uint64_t kHopDecryptWindow = 6;
+constexpr std::uint64_t kHopDecryptWindow = 24;
 constexpr int64_t kResolverTimeoutMs = 8000;
 constexpr int64_t kConnectTimeoutMs = 15000;
 constexpr int64_t kReverseAcceptTimeoutMs = 30000;
@@ -48,9 +48,15 @@ constexpr uint32_t kMaxWriteQueueSize = 256;
 constexpr uint32_t kWriteQueueHighWatermark = 16;
 constexpr uint32_t kWriteQueueLowWatermark = 4;
 
-int64_t now_ms() {
+int64_t steady_now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+int64_t epoch_now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
         .count();
 }
 
@@ -184,6 +190,9 @@ bool is_background_probe_close_reason(const std::string& reason) {
     if (reason == "served HTTP disguise response") {
         return true;
     }
+    if (reason == "ignored post-TLS HTTP probe") {
+        return true;
+    }
     if (starts_with(reason, "TLS handshake failed: ")) {
         return true;
     }
@@ -200,12 +209,7 @@ bool is_server_fault_close_reason(const std::string& reason) {
     return starts_with(reason, "AUTH challenge write failed: ") ||
            starts_with(reason, "auth rejection ANON write failed: ") ||
            starts_with(reason, "ANON write failed: ") ||
-           starts_with(reason, "write queue overrun") ||
-           starts_with(reason, "frame too large") ||
-           starts_with(reason, "invalid frame type") ||
-           starts_with(reason, "OPEN decrypt failed") ||
-           starts_with(reason, "DATA decrypt failed") ||
-           starts_with(reason, "missing inner encryption flag");
+           starts_with(reason, "write queue overrun");
 }
 
 std::string summarize_header_prefix(const std::array<uint8_t, 8>& header) {
@@ -227,6 +231,31 @@ std::string summarize_header_prefix(const std::array<uint8_t, 8>& header) {
         ascii.push_back((byte >= 32 && byte <= 126) ? static_cast<char>(byte) : '.');
     }
     return "header=" + hex + " ascii=" + ascii;
+}
+
+bool header_starts_with_ascii(const std::array<uint8_t, 8>& header, std::string_view prefix) {
+    if (prefix.size() > header.size()) {
+        return false;
+    }
+    for (std::size_t index = 0; index < prefix.size(); ++index) {
+        if (header[index] != static_cast<std::uint8_t>(prefix[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool is_http_probe_header(const std::array<uint8_t, 8>& header) {
+    return header_starts_with_ascii(header, "GET ") ||
+           header_starts_with_ascii(header, "POST ") ||
+           header_starts_with_ascii(header, "HEAD ") ||
+           header_starts_with_ascii(header, "PUT ") ||
+           header_starts_with_ascii(header, "DELETE ") ||
+           header_starts_with_ascii(header, "OPTIONS ") ||
+           header_starts_with_ascii(header, "CONNECT ") ||
+           header_starts_with_ascii(header, "TRACE ") ||
+           header_starts_with_ascii(header, "PATCH ") ||
+           header_starts_with_ascii(header, "PRI * HT");
 }
 
 int random_int_inclusive(int min_value, int max_value) {
@@ -277,7 +306,7 @@ Session::Session(boost::asio::ip::tcp::socket socket,
     , strand_(stream_.get_executor())
     , preface_timer_(stream_.get_executor())
     , idle_timer_(stream_.get_executor()) {
-    last_activity_ms_.store(now_ms(), std::memory_order_relaxed);
+    last_activity_ms_.store(steady_now_ms(), std::memory_order_relaxed);
 }
 
 void Session::start() {
@@ -337,7 +366,7 @@ void Session::on_handshake(const boost::system::error_code& ec) {
         client_wan_ip_ = ep.address().to_string();
     }
 
-    if (cfg_.real_http) {
+    if (cfg_.real_http || cfg_.obfuscation) {
         start_preface_read();
         return;
     }
@@ -441,8 +470,9 @@ void Session::on_preface_timeout(const boost::system::error_code& ec) {
     }
 }
 bool Session::handle_http_preface(const std::string& preface) {
-    const std::string methods[] = {"GET ", "HEAD ", "POST ", "OPTIONS "};
-    bool is_http = false;
+    const bool is_connect = preface.rfind("CONNECT ", 0) == 0;
+    const std::string methods[] = {"GET ", "HEAD ", "POST ", "OPTIONS ", "PUT ", "DELETE ", "TRACE ", "PATCH "};
+    bool is_http = is_connect;
     for (const auto& m : methods) {
         if (preface.rfind(m, 0) == 0) {
             is_http = true;
@@ -456,11 +486,12 @@ bool Session::handle_http_preface(const std::string& preface) {
         return false;
     }
 
+    const bool is_connect_preface = is_connect;
     auto self = shared_from_this();
     auto request = std::make_shared<std::string>(preface);
     boost::asio::async_read_until(stream_, boost::asio::dynamic_buffer(*request), "\r\n\r\n",
                                   boost::asio::bind_executor(strand_,
-                                                             [self, request](const boost::system::error_code& e, std::size_t) {
+                                                             [self, request, is_connect_preface](const boost::system::error_code& e, std::size_t) {
                                                                  if (e) {
                                                                      self->close_with_reason("HTTP preface read failed: " + e.message());
                                                                      return;
@@ -470,16 +501,33 @@ bool Session::handle_http_preface(const std::string& preface) {
                                                                  if (pos != std::string::npos) {
                                                                      line = request->substr(0, pos);
                                                                  }
-                                                                 std::string path = "/";
+                                                                 std::string target = "/";
                                                                  if (!line.empty()) {
                                                                      auto p1 = line.find(' ');
                                                                      if (p1 != std::string::npos) {
                                                                          auto p2 = line.find(' ', p1 + 1);
-                                                                         if (p2 != std::string::npos) {
-                                                                             path = line.substr(p1 + 1, p2 - p1 - 1);
+                                                                         if (p2 != std::string::npos && p2 > p1 + 1) {
+                                                                             target = line.substr(p1 + 1, p2 - p1 - 1);
                                                                          }
                                                                      }
                                                                  }
+
+                                                                 if (is_connect_preface) {
+                                                                     if (!self->cfg_.obfuscation) {
+                                                                         self->close_with_reason("ignored post-TLS HTTP probe");
+                                                                         return;
+                                                                     }
+                                                                     self->send_obfs_connect_established(target);
+                                                                     return;
+                                                                 }
+
+                                                                 if (!self->cfg_.real_http) {
+                                                                     self->close_with_reason("ignored post-TLS HTTP probe");
+                                                                     return;
+                                                                 }
+
+                                                                 std::string path = "/";
+                                                                 path = target;
                                                                  self->send_real_http_response(path);
                                                              }));
     return true;
@@ -575,6 +623,28 @@ void Session::send_real_http_response(const std::string& path) {
                                                         }));
 }
 
+void Session::send_obfs_connect_established(const std::string& authority) {
+    std::string response =
+        "HTTP/1.1 200 Connection Established\r\n"
+        "Server: nginx\r\n"
+        "Connection: keep-alive\r\n"
+        "Proxy-Agent: chrome\r\n"
+        "\r\n";
+    auto payload = std::make_shared<std::string>(std::move(response));
+    auto self = shared_from_this();
+    boost::asio::async_write(stream_, boost::asio::buffer(*payload),
+                             boost::asio::bind_executor(strand_,
+                                                        [self, payload, authority](const boost::system::error_code& ec, std::size_t) {
+                                                            if (ec) {
+                                                                self->close_with_reason("obfs CONNECT response write failed: " + ec.message());
+                                                                return;
+                                                            }
+                                                            util::log_info("session " + std::to_string(self->session_id_) +
+                                                                           ": obfs CONNECT tunnel established (" + authority + ")");
+                                                            self->send_auth_challenge();
+                                                        }));
+}
+
 void Session::send_auth_challenge() {
     challenge_ = crypto::random_bytes(32);
     protocol::Frame frame{{static_cast<uint32_t>(challenge_.size()), protocol::AUTH, 0, 0}, challenge_};
@@ -612,6 +682,12 @@ void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
             maybe_finish_close();
             return;
         }
+        if (authenticated_ &&
+            latest_lifecycle_state_ == "disconnecting" &&
+            (ec == boost::asio::error::eof || ec == boost::asio::ssl::error::stream_truncated)) {
+            close_with_reason("peer closed the TLS session");
+            return;
+        }
         if (ec == boost::asio::ssl::error::stream_truncated ||
             ec.category().name() == std::string("ssl")) {
             close_with_reason("SSL/TLS error: " + describe_error_code(ec) + 
@@ -633,26 +709,36 @@ void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
                    (static_cast<uint32_t>(header_buf_[3]));
 
     if (len > kMaxFrameSize) {
+        if (!authenticated_ && is_http_probe_header(header_buf_)) {
+            close_with_reason("ignored post-TLS HTTP probe");
+            return;
+        }
         const std::string detail =
             "session " + std::to_string(session_id_) + ": frame too large (" + summarize_header_prefix(header_buf_) + ")";
         if (util::is_logging_enabled()) {
             util::log_warn(detail);
         } else {
-            std::cerr << "[critical] " << detail << std::endl;
+            std::cerr << "[warn] " << detail << std::endl;
         }
-        util::log_error("session " + std::to_string(session_id_) + 
-                       ": frame validation failed; likely SSL stream corruption; closing connection");
-        close_with_reason("frame too large - SSL stream may be corrupted; client should reconnect");
+        close_with_reason("frame too large");
         return;
     }
 
     uint8_t type = header_buf_[4];
     if (type < kMinFrameType || type > kMaxFrameType) {
+        if (!authenticated_ && is_http_probe_header(header_buf_)) {
+            close_with_reason("ignored post-TLS HTTP probe");
+            return;
+        }
         const std::string detail =
             "session " + std::to_string(session_id_) + ": invalid frame type " +
             std::to_string(static_cast<int>(type)) + " (header=" + summarize_header_prefix(header_buf_) + ")";
-        util::log_warn(detail);
-        close_with_reason("invalid frame type - SSL stream likely corrupted");
+        if (util::is_logging_enabled()) {
+            util::log_warn(detail);
+        } else {
+            std::cerr << "[warn] " << detail << std::endl;
+        }
+        close_with_reason("invalid frame type");
         return;
     }
 
@@ -783,7 +869,7 @@ void Session::handle_frame(const protocol::Frame& frame) {
         }
         anon["hop_enabled"] = hop_enabled_;
         anon["hop_interval_ms"] = cfg_.hop_interval_ms;
-        anon["server_time_ms"] = now_ms();
+        anon["server_time_ms"] = epoch_now_ms();
         anon["cap_pq"] = inner::pq_supported();
         anon["cap_argon2"] = inner::argon2_supported();
         anon["cap_pbkdf2"] = inner::pbkdf2_supported();
@@ -941,7 +1027,7 @@ std::uint64_t Session::current_hop_id() const {
     if (!hop_enabled_ || hop_interval_ms_ == 0) {
         return 0;
     }
-    return inner::hop_id_from_time_ms(now_ms(), hop_interval_ms_, hop_offset_ms_);
+    return inner::hop_id_from_time_ms(epoch_now_ms(), hop_interval_ms_, hop_offset_ms_);
 }
 
 bool Session::handle_auth(const protocol::Frame& frame) {
@@ -1811,6 +1897,7 @@ void Session::handle_control(const protocol::Frame& frame) {
         event.traffic_verified = json.value("traffic_verified", false);
         event.exit_ip = json.value("exit_ip", "");
         event.error_code = json.value("error_code", "");
+        latest_lifecycle_state_ = state;
         control::ClientLifecycleEvent stored_event;
         if (!manager_->update_endpoint_lifecycle(this, event, &stored_event)) {
             resp["ok"] = false;
@@ -1884,7 +1971,7 @@ void Session::handle_control(const protocol::Frame& frame) {
         invite.from_endpoint_id = client_id_;
         invite.from_display_name = client_display_name_;
         invite.from_auth_pubkey_b64 = client_auth_pubkey_b64_;
-        invite.created_ms = now_ms();
+        invite.created_ms = epoch_now_ms();
         std::string error;
         if (!manager_ || !manager_->route_invite(shared_from_this(), invite, &error)) {
             resp["ok"] = false;
@@ -2734,12 +2821,12 @@ void Session::do_write() {
 }
 
 void Session::touch_activity() {
-    last_activity_ms_.store(now_ms(), std::memory_order_relaxed);
+    last_activity_ms_.store(steady_now_ms(), std::memory_order_relaxed);
 }
 
 bool Session::is_stale() const {
     const int64_t last = last_activity_ms_.load(std::memory_order_relaxed);
-    return last > 0 && (now_ms() - last) > kIdleTimeoutMs;
+    return last > 0 && (steady_now_ms() - last) > kIdleTimeoutMs;
 }
 
 void Session::force_close_reverse_port(int port) {

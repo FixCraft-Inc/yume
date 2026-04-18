@@ -20,7 +20,7 @@ Manager::Manager(boost::asio::io_context& io, const ServerConfig& cfg)
     : io_(io)
     , cfg_(cfg)
     , acceptor_(io)
-    , ssl_ctx_(obfs::create_server_context(cfg.tls_cert, cfg.tls_key, !cfg.real_http))
+    , ssl_ctx_(obfs::create_server_context(cfg.tls_cert, cfg.tls_key, !(cfg.real_http || cfg.obfuscation)))
     , authorized_keys_(std::make_shared<std::vector<crypto::Bytes>>())
     , server_id_(cfg.server_id.empty() ? yume::identity::generate_endpoint_id() : cfg.server_id)
     , server_name_(cfg.server_name.empty() ? std::string("yumed") : cfg.server_name) {

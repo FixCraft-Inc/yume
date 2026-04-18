@@ -29,18 +29,21 @@ Tunnel::Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream)
                     }
                     return;
                 }
+                auto write_data = std::move(data);
+                auto write_handler = boost::asio::bind_executor(
+                    self->strand_,
+                    [self, write_data, completion = std::move(completion)](
+                        const boost::system::error_code& ec,
+                        std::size_t bytes) mutable {
+                        (void)self;
+                        if (completion) {
+                            completion(!ec, bytes, ec ? ec.message() : std::string{});
+                        }
+                    });
                 boost::asio::async_write(
                     self->stream_,
-                    boost::asio::buffer(*data),
-                    boost::asio::bind_executor(
-                        self->strand_,
-                        [data = std::move(data), completion = std::move(completion)](
-                            const boost::system::error_code& ec,
-                            std::size_t bytes) mutable {
-                            if (completion) {
-                                completion(!ec, bytes, ec ? ec.message() : std::string{});
-                            }
-                        }));
+                    boost::asio::buffer(*write_data),
+                    std::move(write_handler));
             });
     });
     core_.set_close_transport_handler([this](const std::string& reason) {

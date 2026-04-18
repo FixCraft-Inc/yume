@@ -14,7 +14,7 @@
 namespace yume::client {
 
 namespace {
-constexpr std::uint64_t kHopDecryptWindow = 6;
+constexpr std::uint64_t kHopDecryptWindow = 24;
 constexpr std::size_t kMaxFramePayloadBytes = 16U * 1024U * 1024U;
 
 std::string payload_to_string(const std::vector<uint8_t>& payload) {
@@ -238,9 +238,6 @@ void TransportCore::open_stream(uint8_t stream_id,
         }
         return;
     }
-    if ((flags & protocol::kFlagInnerEncrypted) != 0) {
-        payload = encrypt_inner_payload(protocol::OPEN, stream_id, payload);
-    }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::OPEN, stream_id, flags}, payload};
     queue_frame(frame);
 }
@@ -272,9 +269,6 @@ void TransportCore::open_relay_stream(uint8_t stream_id, const nlohmann::json& j
             failed_handler(false, "transport stopped");
         }
         return;
-    }
-    if ((flags & protocol::kFlagInnerEncrypted) != 0) {
-        payload = encrypt_inner_payload(protocol::OPEN, stream_id, payload);
     }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::OPEN, stream_id, flags}, payload};
     queue_frame(frame);
@@ -320,9 +314,6 @@ void TransportCore::request_remote_listen(uint8_t listen_id,
         }
         return;
     }
-    if ((flags & protocol::kFlagInnerEncrypted) != 0) {
-        payload = encrypt_inner_payload(protocol::RLISTEN, listen_id, payload);
-    }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::RLISTEN, listen_id, flags}, payload};
     queue_frame(frame);
 }
@@ -343,9 +334,6 @@ void TransportCore::send_data(uint8_t stream_id, const Bytes& data) {
             activity_handler = activity_handler_;
         }
     }
-    if ((flags & protocol::kFlagInnerEncrypted) != 0) {
-        payload = encrypt_inner_payload(protocol::DATA, stream_id, payload);
-    }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::DATA, stream_id, flags}, payload};
     queue_frame(frame);
     if (activity_handler) {
@@ -365,9 +353,6 @@ void TransportCore::send_close(uint8_t stream_id, const std::string& reason) {
             flags |= protocol::kFlagInnerEncrypted;
         }
     }
-    if ((flags & protocol::kFlagInnerEncrypted) != 0) {
-        payload = encrypt_inner_payload(protocol::CLOSE, stream_id, payload);
-    }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::CLOSE, stream_id, flags}, payload};
     queue_frame(frame);
 }
@@ -383,9 +368,6 @@ void TransportCore::send_open_ack(uint8_t stream_id, bool ok, const std::string&
         if (inner_key_.has_value()) {
             flags |= protocol::kFlagInnerEncrypted;
         }
-    }
-    if ((flags & protocol::kFlagInnerEncrypted) != 0) {
-        payload = encrypt_inner_payload(protocol::OPEN, stream_id, payload);
     }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::OPEN, stream_id, flags}, payload};
     queue_frame(frame);
@@ -403,9 +385,6 @@ void TransportCore::send_exec(uint8_t stream_id, const std::string& command) {
             flags |= protocol::kFlagInnerEncrypted;
         }
     }
-    if ((flags & protocol::kFlagInnerEncrypted) != 0) {
-        payload = encrypt_inner_payload(protocol::EXEC, stream_id, payload);
-    }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::EXEC, stream_id, flags}, payload};
     queue_frame(frame);
 }
@@ -422,9 +401,6 @@ void TransportCore::send_control_json(const nlohmann::json& json) {
         if (inner_key_.has_value()) {
             flags |= protocol::kFlagInnerEncrypted;
         }
-    }
-    if ((flags & protocol::kFlagInnerEncrypted) != 0) {
-        payload = encrypt_inner_payload(protocol::CONTROL, 0, payload);
     }
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::CONTROL, 0, flags}, payload};
     queue_frame(frame);
@@ -490,12 +466,6 @@ void TransportCore::feed_tls_bytes(const uint8_t* data, std::size_t size) {
 }
 
 void TransportCore::queue_frame(const protocol::Frame& frame, WriteCompletion handler) {
-    auto data = std::make_shared<Bytes>(protocol::encode_frame(
-        static_cast<protocol::FrameType>(frame.header.type),
-        frame.header.stream_id,
-        frame.header.flags,
-        frame.payload));
-
     bool dispatch = false;
     {
         std::lock_guard<std::mutex> state_lock(state_mu_);
@@ -508,7 +478,7 @@ void TransportCore::queue_frame(const protocol::Frame& frame, WriteCompletion ha
     }
     {
         std::lock_guard<std::mutex> write_lock(write_mu_);
-        write_queue_.push_back({data, std::move(handler)});
+        write_queue_.push_back({frame, std::move(handler)});
         if (!write_in_flight_) {
             write_in_flight_ = true;
             dispatch = true;
@@ -517,6 +487,18 @@ void TransportCore::queue_frame(const protocol::Frame& frame, WriteCompletion ha
     if (dispatch) {
         dispatch_next_write();
     }
+}
+
+std::shared_ptr<TransportCore::Bytes> TransportCore::encode_outgoing_frame(const protocol::Frame& frame) {
+    Bytes payload = frame.payload;
+    if ((frame.header.flags & protocol::kFlagInnerEncrypted) != 0) {
+        payload = encrypt_inner_payload(frame.header.type, frame.header.stream_id, payload);
+    }
+    return std::make_shared<Bytes>(protocol::encode_frame(
+        static_cast<protocol::FrameType>(frame.header.type),
+        frame.header.stream_id,
+        frame.header.flags,
+        payload));
 }
 
 void TransportCore::dispatch_next_write() {
@@ -542,7 +524,24 @@ void TransportCore::dispatch_next_write() {
         return;
     }
 
-    writer(item.data, [this, item](bool ok, std::size_t bytes, const std::string& error) mutable {
+    std::shared_ptr<Bytes> encoded;
+    try {
+        encoded = encode_outgoing_frame(item.frame);
+    } catch (const std::exception& ex) {
+        if (item.handler) {
+            item.handler(false, 0, ex.what());
+        }
+        request_transport_close("frame encode failed: " + std::string(ex.what()));
+        return;
+    } catch (...) {
+        if (item.handler) {
+            item.handler(false, 0, "unknown error");
+        }
+        request_transport_close("frame encode failed: unknown error");
+        return;
+    }
+
+    writer(encoded, [this, item](bool ok, std::size_t bytes, const std::string& error) mutable {
         bool dispatch = false;
         bool queue_empty = true;
         {

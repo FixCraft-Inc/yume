@@ -1,0 +1,25 @@
+title: YUME
+markdown: kramdown
+theme: null
+exclude:
+  - basefwx
+  - cpp
+  - tests
+  - scripts
+  - src
+  - .github
+  - .venv
+  - build
+  - build-user
+  - dist
+  - vendor
+  - third_party
+  - AI_gen
+  - CMakeLists.txt
+  - ezbuild.sh
+  - fullau.sh
+  - LICENSE
+  - README.md
+  - crashed.log
+  - example.log
+  - yume-vendor-prebuilt.tar.xz

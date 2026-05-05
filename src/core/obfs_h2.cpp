@@ -424,6 +424,7 @@ void H2InboundDecoder::process_inbound() {
     }
 
     while (true) {
+        if (headers_seen_ && state_ == State::kAwaitingHeaders) break;
         std::size_t consumed = 0;
         if (!parse_one_frame(&consumed)) break;
         if (consumed == 0) break;

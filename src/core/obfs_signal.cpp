@@ -78,7 +78,7 @@ bool verify_path_token(const std::vector<crypto::Bytes>& signal_keys,
     std::string_view received_token = path.substr(1, kH2TokenHexLen);
     std::int64_t hour = now_seconds / kHourSeconds;
     int matched = 0;
-    for (std::int64_t bucket : {hour, hour - 1}) {
+    for (std::int64_t bucket : {hour - 1, hour, hour + 1}) {
         for (const auto& key : signal_keys) {
             std::string expected = derive_path_token(key, sni, bucket);
             if (expected.size() == received_token.size() &&

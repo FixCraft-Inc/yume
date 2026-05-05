@@ -480,9 +480,8 @@ bool Session::handle_http_preface(const std::string& preface) {
         return true;
     }
 
-    const bool is_connect = preface.rfind("CONNECT ", 0) == 0;
-    const std::string methods[] = {"GET ", "HEAD ", "POST ", "OPTIONS ", "PUT ", "DELETE ", "TRACE ", "PATCH "};
-    bool is_http = is_connect;
+    const std::string methods[] = {"GET ", "HEAD ", "POST ", "OPTIONS ", "PUT ", "DELETE ", "TRACE ", "PATCH ", "CONNECT "};
+    bool is_http = false;
     for (const auto& m : methods) {
         if (preface.rfind(m, 0) == 0) {
             is_http = true;
@@ -496,12 +495,11 @@ bool Session::handle_http_preface(const std::string& preface) {
         return false;
     }
 
-    const bool is_connect_preface = is_connect;
     auto self = shared_from_this();
     auto request = std::make_shared<std::string>(preface);
     boost::asio::async_read_until(stream_, boost::asio::dynamic_buffer(*request), "\r\n\r\n",
                                   boost::asio::bind_executor(strand_,
-                                                             [self, request, is_connect_preface](const boost::system::error_code& e, std::size_t) {
+                                                             [self, request](const boost::system::error_code& e, std::size_t) {
                                                                  if (e) {
                                                                      self->close_with_reason("HTTP preface read failed: " + e.message());
                                                                      return;
@@ -520,15 +518,6 @@ bool Session::handle_http_preface(const std::string& preface) {
                                                                              target = line.substr(p1 + 1, p2 - p1 - 1);
                                                                          }
                                                                      }
-                                                                 }
-
-                                                                 if (is_connect_preface) {
-                                                                     if (!self->cfg_.obfuscation) {
-                                                                         self->close_with_reason("ignored post-TLS HTTP probe");
-                                                                         return;
-                                                                     }
-                                                                     self->send_obfs_connect_established(target);
-                                                                     return;
                                                                  }
 
                                                                  if (!self->cfg_.real_http) {
@@ -633,28 +622,6 @@ void Session::send_real_http_response(const std::string& path) {
                                                         }));
 }
 
-void Session::send_obfs_connect_established(const std::string& authority) {
-    std::string response =
-        "HTTP/1.1 200 Connection Established\r\n"
-        "Server: nginx\r\n"
-        "Connection: keep-alive\r\n"
-        "Proxy-Agent: chrome\r\n"
-        "\r\n";
-    auto payload = std::make_shared<std::string>(std::move(response));
-    auto self = shared_from_this();
-    boost::asio::async_write(stream_, boost::asio::buffer(*payload),
-                             boost::asio::bind_executor(strand_,
-                                                        [self, payload, authority](const boost::system::error_code& ec, std::size_t) {
-                                                            if (ec) {
-                                                                self->close_with_reason("obfs CONNECT response write failed: " + ec.message());
-                                                                return;
-                                                            }
-                                                            util::log_info("session " + std::to_string(self->session_id_) +
-                                                                           ": obfs CONNECT tunnel established (" + authority + ")");
-                                                            self->send_auth_challenge();
-                                                        }));
-}
-
 void Session::start_h2_carrier_probe() {
     carrier_probe_active_ = true;
     carrier_decoder_ = std::make_unique<obfs::H2InboundDecoder>(true);
@@ -698,11 +665,11 @@ void Session::on_h2_probe_read(const boost::system::error_code& ec, std::size_t 
     }
 
     if (carrier_decoder_->headers_seen()) {
-        const std::string& path = carrier_decoder_->extracted_path();
-        const std::string& authority = carrier_decoder_->extracted_authority();
+        std::string path = carrier_decoder_->extracted_path();
+        std::string authority = carrier_decoder_->extracted_authority();
         std::vector<crypto::Bytes> keys;
-        if (!cfg_.real_secret.empty()) {
-            keys.push_back(obfs::derive_signal_key(cfg_.real_secret));
+        if (!cfg_.obfs_secret.empty()) {
+            keys.push_back(obfs::derive_signal_key(cfg_.obfs_secret));
         }
         std::int64_t now_s = static_cast<std::int64_t>(std::time(nullptr));
         bool token_ok = false;
@@ -720,8 +687,14 @@ void Session::on_h2_probe_read(const boost::system::error_code& ec, std::size_t 
         carrier_decoder_.reset();
 
         if (!token_ok) {
+            std::string sanitized;
+            sanitized.reserve(path.size());
+            for (unsigned char c : path) {
+                sanitized.push_back((c >= 0x20 && c < 0x7f) ? static_cast<char>(c) : '?');
+            }
             util::log_warn("session " + std::to_string(session_id_) +
-                          ": h2 carrier path token rejected (path=" + path + ")");
+                          ": h2 carrier path token rejected (size=" +
+                          std::to_string(path.size()) + ", path=" + sanitized + ")");
             serve_fake_h2_real_index();
             return;
         }

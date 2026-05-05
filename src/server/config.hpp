@@ -33,6 +33,7 @@ struct ServerConfig {
     std::string real_index_path;
     std::string real_secret;
     std::string real_secret_file;
+    std::string obfs_secret;
     bool anonym{false};
     std::string anonym_proof_mode{std::string(yume::policy::kAnonymProofModeAuto)};
     std::string anonym_api;

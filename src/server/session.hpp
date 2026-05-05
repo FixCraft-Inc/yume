@@ -52,7 +52,6 @@ private:
     void on_preface_timeout(const boost::system::error_code& ec);
     bool handle_http_preface(const std::string& preface);
     void send_real_http_response(const std::string& path);
-    void send_obfs_connect_established(const std::string& authority);
     std::string load_real_index();
     std::string build_hidden_blob();
     void send_auth_challenge();

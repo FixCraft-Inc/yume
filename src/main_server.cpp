@@ -1183,6 +1183,8 @@ int main(int argc, char** argv) {
             cfg.obfuscation = true;
         } else if (arg == "--no-obfs") {
             cfg.obfuscation = false;
+        } else if (arg == "--obfs-secret" && i + 1 < argc) {
+            cfg.obfs_secret = argv[++i];
         } else if (arg == "--inner") {
             yume::util::log_warn("--inner is deprecated; use --inner-heavy or --inner-light");
             cfg.inner_crypto = true;
@@ -1470,6 +1472,11 @@ int main(int argc, char** argv) {
             if (json.contains("real_secret_file")) {
                 if (cfg.real_secret_file.empty()) {
                     cfg.real_secret_file = resolve_cfg_path(json["real_secret_file"].get<std::string>());
+                }
+            }
+            if (json.contains("obfs_secret")) {
+                if (cfg.obfs_secret.empty()) {
+                    cfg.obfs_secret = json["obfs_secret"].get<std::string>();
                 }
             }
             if (json.contains("boring")) {

@@ -69,6 +69,8 @@
 #include "core/identity.hpp"
 #include "core/inner_crypto.hpp"
 #include "core/obfs.hpp"
+#include "core/obfs_h2.hpp"
+#include "core/obfs_signal.hpp"
 #include "core/protocol.hpp"
 #include "core/protocol_stream.hpp"
 #include "core/runtime_policy.hpp"
@@ -1849,22 +1851,21 @@ void authenticate(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream
     protocol::send_frame(stream, response);
 }
 
-void perform_obfs_https_tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
-                               boost::asio::io_context& io,
-                               const std::string& server_host,
-                               int server_port,
-                               std::vector<uint8_t>* prefetched = nullptr) {
-    const std::string authority = server_host + ":" + std::to_string(server_port);
-    const std::string request =
-        "CONNECT " + authority + " HTTP/1.1\r\n"
-        "Host: " + authority + "\r\n"
-        "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36\r\n"
-        "Proxy-Connection: keep-alive\r\n"
-        "Connection: keep-alive\r\n"
-        "Pragma: no-cache\r\n"
-        "Cache-Control: no-cache\r\n"
-        "\r\n";
+void perform_h2_carrier_handshake(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+                                  boost::asio::io_context& io,
+                                  const std::string& server_host,
+                                  int server_port,
+                                  const std::string& obfs_secret,
+                                  std::vector<uint8_t>* prefetched = nullptr) {
+    crypto::Bytes signal = obfs::derive_signal_key(obfs_secret);
+    std::int64_t hour = static_cast<std::int64_t>(std::time(nullptr)) / 3600;
+    std::string token = obfs::derive_path_token(signal, server_host, hour);
+    std::string nonce = obfs::random_nonce_hex();
+    std::string path = obfs::build_path(token, nonce);
+    static const std::string kUserAgent =
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
+    crypto::Bytes hello = obfs::encode_client_handshake(server_host, path, kUserAgent);
 
     auto cancel = [&]() {
         boost::system::error_code ignored;
@@ -1872,41 +1873,72 @@ void perform_obfs_https_tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::so
         stream.lowest_layer().close(ignored);
     };
 
-    IoOpResult wr = write_all_with_timeout(stream, io, boost::asio::buffer(request), kAuthChallengeTimeout, cancel);
+    IoOpResult wr = write_all_with_timeout(stream, io, boost::asio::buffer(hello.data(), hello.size()),
+                                           kAuthChallengeTimeout, cancel);
     if (wr.timed_out) {
         throw FatalError("this endpoint is not a yume obfs endpoint (" + server_host + ":" +
-                         std::to_string(server_port) + "; CONNECT preface timed out)");
+                         std::to_string(server_port) + "; h2 preface timed out)");
     }
     if (wr.ec) {
         throw FatalError("this endpoint is not a yume obfs endpoint (" + server_host + ":" +
-                         std::to_string(server_port) + "; CONNECT preface failed: " + wr.ec.message() + ")");
+                         std::to_string(server_port) + "; h2 preface failed: " + wr.ec.message() + ")");
     }
 
-    std::string response;
-    IoOpResult rr = read_until_with_timeout(stream, io, &response, "\r\n\r\n", kAuthChallengeTimeout, cancel);
-    if (rr.timed_out) {
-        throw FatalError("this endpoint is not a yume obfs endpoint (" + server_host + ":" +
-                         std::to_string(server_port) + "; CONNECT response timed out)");
-    }
-    if (rr.ec) {
-        throw FatalError("this endpoint is not a yume obfs endpoint (" + server_host + ":" +
-                         std::to_string(server_port) + "; CONNECT response failed: " + rr.ec.message() + ")");
+    obfs::H2InboundDecoder decoder(false);
+    std::array<std::uint8_t, 4096> scratch{};
+    auto read_some_with_timeout = [&](std::size_t* bytes_out) -> IoOpResult {
+        IoOpResult r;
+        bool done = false;
+        boost::asio::steady_timer timer(io);
+        timer.expires_after(kAuthChallengeTimeout);
+        timer.async_wait([&](const boost::system::error_code& ec) {
+            if (ec) return;
+            r.timed_out = true;
+            cancel();
+        });
+        stream.async_read_some(boost::asio::buffer(scratch),
+                               [&](const boost::system::error_code& ec, std::size_t n) {
+                                   r.ec = ec;
+                                   r.bytes = n;
+                                   *bytes_out = n;
+                                   timer.cancel();
+                                   done = true;
+                               });
+        while (!done) {
+            io.run_one();
+        }
+        io.restart();
+        return r;
+    };
+
+    while (!decoder.headers_seen()) {
+        std::size_t n = 0;
+        IoOpResult rr = read_some_with_timeout(&n);
+        if (rr.timed_out) {
+            throw FatalError("this endpoint is not a yume obfs endpoint (" + server_host + ":" +
+                             std::to_string(server_port) + "; h2 server reply timed out)");
+        }
+        if (rr.ec) {
+            throw FatalError("this endpoint is not a yume obfs endpoint (" + server_host + ":" +
+                             std::to_string(server_port) + "; h2 server reply failed: " + rr.ec.message() + ")");
+        }
+        if (n == 0) {
+            throw FatalError("this endpoint is not a yume obfs endpoint (" + server_host + ":" +
+                             std::to_string(server_port) + "; h2 server reply was empty)");
+        }
+        decoder.feed(scratch.data(), n);
+        if (decoder.failed()) {
+            throw FatalError("this endpoint is not a yume obfs endpoint (" + server_host + ":" +
+                             std::to_string(server_port) + "; h2 decode failed: " + decoder.error() + ")");
+        }
     }
 
-    if (prefetched && rr.bytes < response.size()) {
-        prefetched->assign(response.begin() + static_cast<std::ptrdiff_t>(rr.bytes), response.end());
-    }
-
-    std::string_view head(response);
-    std::size_t line_end = head.find("\r\n");
-    if (line_end != std::string_view::npos) {
-        head = head.substr(0, line_end);
-    }
-    int status = parse_http_status_code(head);
-    if (status != 200) {
-        throw FatalError("this endpoint is not a yume obfs endpoint (" + server_host + ":" +
-                         std::to_string(server_port) + "; CONNECT rejected, status " +
-                         (status < 0 ? std::string("invalid") : std::to_string(status)) + ")");
+    if (prefetched) {
+        std::vector<std::uint8_t> leftover;
+        decoder.drain_inbound_buffer(&leftover);
+        if (!leftover.empty()) {
+            prefetched->insert(prefetched->end(), leftover.begin(), leftover.end());
+        }
     }
 }
 
@@ -3922,8 +3954,9 @@ int Cli::run(int argc, char** argv) {
 
             std::vector<uint8_t> prefetched_tls_bytes;
             if (cfg.obfuscation) {
-                perform_obfs_https_tunnel(stream, io, cfg.server, cfg.port, &prefetched_tls_bytes);
-                util::log_info("HTTPS masking tunnel established");
+                perform_h2_carrier_handshake(stream, io, cfg.server, cfg.port,
+                                             cfg.obfs_secret, &prefetched_tls_bytes);
+                util::log_info("HTTPS h2 carrier handshake established");
             }
 
             inner::Config inner_cfg;
@@ -4831,9 +4864,6 @@ int Cli::run(int argc, char** argv) {
 
             auto tunnel = std::make_shared<Tunnel>(std::move(stream));
             set_active_runtime(&io, tunnel);
-            if (cfg.obfuscation) {
-                tunnel->enable_h2_carrier(cfg.server, cfg.obfs_secret, std::string());
-            }
             if (cfg.allow_embedded_master) {
                 util::log_warn(
                     "embedded master PQ keypair enabled; connection security depends on basefwx-bundled keys "

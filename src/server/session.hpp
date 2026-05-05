@@ -219,8 +219,8 @@ private:
     bool session_allow_exec_policy_{false};
     bool session_allow_local_ip_{false};
     bool session_control_full_{false};
-    bool session_allow_inbound_admin_policy_{true};
-    bool session_allow_outbound_admin_policy_{true};
+    bool session_allow_inbound_admin_policy_{false};
+    bool session_allow_outbound_admin_policy_{false};
     bool session_allow_chat_policy_{true};
     bool session_allow_file_policy_{true};
     bool session_allow_bytes_policy_{true};

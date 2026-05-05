@@ -5,7 +5,7 @@ YUME splits authentication from authorization the way SSH does:
 - `authorized_keys` lists the Ed25519 public keys that may **connect**. Holding one of these is the audience-with-the-king — you get past the door.
 - `auth_keys.meta` (a JSON file) lists what each connected key is **allowed to do** once inside. Without an entry here, a key can talk to the server but cannot exec, cannot reach LAN addresses, cannot administer other clients.
 
-The current revision uses one Ed25519 key per identity. A second physical key (the "noble's seal" for stronger permission control) is a planned wire-protocol change for v2.x; in the meantime, the SSH-style split below gives you the same operational separation: connection rights vs. action rights live in different files, can be edited independently, and can be revoked independently.
+The current revision uses one Ed25519 key per identity. A second physical key (the "noble's seal" for stronger permission control) is a planned wire-protocol change for a post-1.0 release; in the meantime, the SSH-style split below gives you the same operational separation: connection rights vs. action rights live in different files, can be edited independently, and can be revoked independently.
 
 ## The three-layer gate for dangerous features
 
@@ -104,7 +104,7 @@ Two relationships are independent:
 ## Operational tips
 
 - **Editing auth_keys.meta is the recommended way to manage permissions.** The server's interactive `--ui` mode is brittle around per-key permissions; it's documented but you'll have a smoother time with a JSON editor.
-- **Reload after edits** — the meta file is read at server startup. Changes take effect on `systemctl restart yumed`. Hot reload is on the v2.x roadmap.
+- **Reload after edits** — the meta file is read at server startup. Changes take effect on `systemctl restart yumed`. Hot reload is on the post-1.0 roadmap.
 - **Revoke a key** — remove the public-key block from `authorized_keys`. The meta entry can stay; it'll be ignored.
 - **Audit** — startup logs `auth policy <permissions summary>` for any key that has a non-empty meta entry. Run `yumed --auth-keys ... --keys-list` to dump all configured keys with their aliases.
 - **CI/scripted setup** — generate fingerprints with `openssl pkey -pubin -in user.pub -outform DER | sha256sum | cut -d' ' -f1`. The same fingerprint format is used by `yumed --keys-list`.

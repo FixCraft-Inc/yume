@@ -1656,35 +1656,41 @@ int main(int argc, char** argv) {
         return true;
     };
 
-    if (!require_readable("tls_cert", cfg.tls_cert)) {
-        return 1;
-    }
-    if (!require_readable("tls_key", cfg.tls_key)) {
-        return 1;
-    }
-    if (!require_readable("auth_keys", cfg.auth_keys)) {
-        return 1;
-    }
-    if (!require_readable("pq_private_key", cfg.pq_private_key)) {
-        return 1;
-    }
-    if (!require_readable("real_index_path", cfg.real_index_path)) {
-        return 1;
-    }
-    if (!require_readable("real_secret_file", cfg.real_secret_file)) {
-        return 1;
-    }
-    if (!require_readable("anonym_ca_key", cfg.anonym_ca_key)) {
-        return 1;
-    }
-    if (!require_readable("anonym_ca_cert", cfg.anonym_ca_cert)) {
-        return 1;
-    }
-    if (!require_readable("anonym_sub_key", cfg.anonym_sub_key)) {
-        return 1;
-    }
-    if (!require_readable("anonym_sub_cert", cfg.anonym_sub_cert)) {
-        return 1;
+    const bool key_management_only =
+        keys_list || !keys_add.empty() || !keys_remove.empty()
+        || !keys_alias.empty() || !keys_gen.empty();
+
+    if (!key_management_only) {
+        if (!require_readable("tls_cert", cfg.tls_cert)) {
+            return 1;
+        }
+        if (!require_readable("tls_key", cfg.tls_key)) {
+            return 1;
+        }
+        if (!require_readable("auth_keys", cfg.auth_keys)) {
+            return 1;
+        }
+        if (!require_readable("pq_private_key", cfg.pq_private_key)) {
+            return 1;
+        }
+        if (!require_readable("real_index_path", cfg.real_index_path)) {
+            return 1;
+        }
+        if (!require_readable("real_secret_file", cfg.real_secret_file)) {
+            return 1;
+        }
+        if (!require_readable("anonym_ca_key", cfg.anonym_ca_key)) {
+            return 1;
+        }
+        if (!require_readable("anonym_ca_cert", cfg.anonym_ca_cert)) {
+            return 1;
+        }
+        if (!require_readable("anonym_sub_key", cfg.anonym_sub_key)) {
+            return 1;
+        }
+        if (!require_readable("anonym_sub_cert", cfg.anonym_sub_cert)) {
+            return 1;
+        }
     }
 
     if (ui_mode) {

@@ -1,14 +1,18 @@
 # YUME
 
-Yume Universal Multiprotocol Engine — an open-source post-quantum stealth transport.
+Yume Universal Multiprotocol Engine. An open-source post-quantum stealth transport.
 
-YUME tunnels TCP and UDP through TLS 1.3 sessions that look like ordinary Chrome HTTPS to a deep-packet-inspection box, with hybrid ML-KEM-768 + AES-GCM inner crypto, optional Argon2id heavy KDF, and 1–4 Hz live key hopping. Both the client (`yume`) and the daemon (`yumed`) are GPL-v3 and build from this tree. They run on x86, ARMv7/8, MIPS OpenWRT, busybox, macOS, and Windows; the minimal build has been exercised on routers with as little as 128 MiB of RAM.
+YUME tunnels TCP and UDP through TLS 1.3 sessions that look like ordinary Chrome HTTPS to a DPI box, with hybrid ML-KEM-768 + AES-GCM inner crypto, an optional Argon2id heavy KDF, and 1–4 Hz live key hopping. Both the client (`yume`) and the daemon (`yumed`) are GPL-v3 and build from this tree. They run on x86, ARMv7/8, MIPS OpenWRT, BusyBox, macOS, and Windows; the minimal build runs on routers with as little as 128 MiB of RAM.
+
+- Website: https://yume.fixcraft.jp
+- Source: https://github.com/F1xGOD/yume
+- Issues: https://github.com/F1xGOD/yume/issues
 
 ## Why YUME
 
-VPN protocols built for performance (WireGuard, OpenVPN) are also built to be recognisable. Their handshakes have static byte signatures that ISPs and national firewalls can match in milliseconds. Commercial VPN services then resell that same recognisable transport for $20/month — bandwidth that costs them pennies — and run it from cheap KVMs that any user could rent directly.
+VPN protocols built for performance (WireGuard, OpenVPN) are also built to be recognisable. Their handshakes have static byte signatures that ISPs and national firewalls can match in milliseconds. Commercial VPN services then resell that same recognisable transport for $20/month, bandwidth that costs them pennies, and run it from cheap KVMs that any user could rent directly.
 
-YUME tries to do the opposite: a transport that looks like the most boring traffic on the internet (Chrome talking HTTPS to a CDN), with crypto that survives the move to post-quantum, with both ends fully open-source so anyone can audit, build, and self-host. FixCraft will run a fleet of free public endpoints — no signup, no payment — but the endpoints run the same `yumed` you can build right here.
+YUME tries to do the opposite: a transport that looks like the most boring traffic on the internet (Chrome talking HTTPS to a CDN), with crypto that survives the move to post-quantum, with both ends fully open-source so anyone can audit, build, and self-host. FixCraft will run a fleet of free public endpoints (no signup, no payment), but the endpoints run the same `yumed` you can build right here.
 
 ## Compared to other tools
 
@@ -24,7 +28,7 @@ YUME tries to do the opposite: a transport that looks like the most boring traff
 | Steady-state CPU/byte overhead | <1 % typical, <5 % always | ~0 % | a few %                  | high               | low             |
 | License                     | GPL-v3          | GPL-v2         | GPL-v2                   | BSD-3              | Apache-2        |
 
-YUME's row numbers come from the live measurement at [AI_gen/PERFORMANCE_BASELINE.md](AI_gen/PERFORMANCE_BASELINE.md) on the `DEV` branch. Other rows are kept conservative.
+YUME's row comes from the live measurement reported in [docs/PERFORMANCE.md](docs/PERFORMANCE.md). The other rows are conservative; anything contested is left blank or hedged.
 
 ## Quick start
 
@@ -53,7 +57,7 @@ Client:
     --socks 1080
 ```
 
-For a privileged port 443 on Linux, run `yumed` with `sudo` or grant `cap_net_bind_service`. Cloudflare HTTP-mode proxies will terminate TLS and break YUME — use Spectrum or another TCP passthrough if you front the daemon with Cloudflare.
+For a privileged port 443 on Linux, run `yumed` with `sudo` or grant `cap_net_bind_service`. Cloudflare HTTP-mode proxies will terminate TLS and break YUME. Use Spectrum or another TCP passthrough if you front the daemon with Cloudflare.
 
 ### Embedded build
 
@@ -64,7 +68,7 @@ cmake --build build -j$(nproc)
 
 `ezbuild.sh` cross-compiles for Linux x86_64 / x86 / ARMv7 / ARMv8, MIPS OpenWRT, BusyBox flavours, macOS x86_64 / arm64, and Windows x86_64. Prebuilt vendor toolchains live in [`vendor/`](vendor/).
 
-## Free public endpoints — coming soon
+## Free public endpoints (coming soon)
 
 FixCraft will operate a small fleet of public `yumed` endpoints. They will:
 
@@ -79,19 +83,19 @@ Specific hostnames will land here once the fleet is up.
 
 YUME stacks three independent layers of byte-shape camouflage:
 
-1. **TLS 1.3 with browser fingerprint.** `--profile chrome|firefox|safari` configures cipher suites, supported groups, signature algorithms, and ALPN to match Chrome 135 / Firefox 126 / Safari 17. The handshake is a real TLS 1.3 handshake — OpenSSL emits the ClientHello against the configured profile — so JA3/JA4 fall in the browser cluster. Source: [src/core/tls_stealth.cpp](src/core/tls_stealth.cpp), [src/core/tls_fingerprint.cpp](src/core/tls_fingerprint.cpp).
+1. **TLS 1.3 with browser fingerprint.** `--profile chrome|firefox|safari` configures cipher suites, supported groups, signature algorithms, and ALPN to match Chrome 135 / Firefox 126 / Safari 17. The handshake is a real TLS 1.3 handshake (OpenSSL emits the ClientHello against the configured profile), so JA3/JA4 fall in the browser cluster. Source: [src/core/tls_stealth.cpp](src/core/tls_stealth.cpp), [src/core/tls_fingerprint.cpp](src/core/tls_fingerprint.cpp).
 2. **HTTP/2 carrier handshake (`--obfs`, default on).** After the TLS handshake the client emits a real HTTP/2 connection preface (`PRI * HTTP/2.0…`), Chrome-shaped SETTINGS, a WINDOW_UPDATE, and a HEADERS frame for `POST /<token>/<nonce>` with realistic Chrome request headers. The server validates the token (HMAC-SHA256 over `(SNI || hour || "yume-obfs-v2")` keyed by `--obfs-secret`), replies with canned SETTINGS / SETTINGS-ACK / HEADERS `:status=200`, and the YUME tunnel resumes underneath. To a stateless DPI box the first ~150 cleartext bytes of every connection look exactly like a Chrome → CDN gRPC-web request. The codec lives in [src/core/obfs_h2.cpp](src/core/obfs_h2.cpp); the token derivation in [src/core/obfs_signal.cpp](src/core/obfs_signal.cpp). Disable with `--no-obfs`. Per-frame DATA wrapping with PADDED frames and PING keepalive is implemented in the codec and is on the post-1.0 roadmap to enable by default.
 3. **Real HTML facade (`--real --real-index <html>`).** A browser that hits the same port with `GET / HTTP/1.1` is served the configured HTML page (or a Wikipedia redirect by default). YUME clients and browsers cohabit on port 443.
 
-Honest limits: this defends against stateless DPI, classifier-based ISP filters, and active probes that complete TLS and dump the first kilobyte. It does not defend against fully-stateful HTTP/2 middleboxes that track stream and HPACK state, or against ML traffic classifiers trained on joint inter-arrival × size distributions.
+Limits: this defends against stateless DPI, classifier-based ISP filters, and active probes that complete TLS and inspect the first kilobyte. It does not defend against fully-stateful HTTP/2 middleboxes that track stream and HPACK state, or against ML traffic classifiers trained on joint inter-arrival × size distributions.
 
 ## Anonym mode
 
 `--anonym` strips identifying logs (no client hostname, no IP, no authentication line). `--anonym-proof-mode {auto|local|fixcraft}` selects how the server proves no-log compliance to the client:
 
-- `auto` — use every available proof source; only fail to start if none are usable
-- `local` — CA / Sub-CA-signed proof only, no remote API
-- `fixcraft` — require a remote FixCraft Verity API call; local proofs may also be attached
+- `auto`: use every available proof source; only fail to start if none are usable
+- `local`: CA / Sub-CA-signed proof only, no remote API
+- `fixcraft`: require a remote FixCraft Verity API call; local proofs may also be attached
 
 Local proof setup is in [scripts/gen_anonym_sub.sh](scripts/gen_anonym_sub.sh). Clients trust a server's anonym claim by holding the matching CA cert (`anonym_ca_cert`) and setting `require_anonym: true`.
 
@@ -129,7 +133,7 @@ The embedded BaseFWX master PQ keypair is **off by default** ([src/core/inner_cr
 
 ## Performance
 
-Numbers below are from a live run reported at [AI_gen/PERFORMANCE_BASELINE.md](AI_gen/PERFORMANCE_BASELINE.md) on the `DEV` branch — client in the United States, relay in Japan, fixed endpoint for fair RTT.
+Numbers below are from a live run reported in [docs/PERFORMANCE.md](docs/PERFORMANCE.md). Client in the United States, relay in Japan, fixed endpoint for fair RTT.
 
 | Metric                                | 0 Hz hopping | 2 Hz hopping |
 | ------------------------------------- | ------------ | ------------ |
@@ -159,7 +163,7 @@ Reverse forward (server listens, tunnels back to the client's local port):
 yume -R 7437:127.0.0.1:22
 ```
 
-Local run — every TCP/UDP socket the command opens is routed through YUME:
+Local run. Every TCP/UDP socket the command opens is routed through YUME:
 
 ```bash
 yume --server fixcraft.net --auth id_ed25519 --run "curl https://1.1.1.1"
@@ -188,9 +192,9 @@ Authentication and authorization live in two files, the way SSH splits `authoriz
 
 Dangerous server features (server-side exec, LAN bridging, unrestricted address bridging) sit behind a **three-layer gate** that all must agree:
 
-1. **Build switch** — `cmake -DYUME_FEATURE_EXEC=ON` (also `_LAN_BRIDGE`, `_FULL_CONTROL`). Stock builds ship with all three OFF; the runtime CLI flag still parses but logs a warning and stays disabled.
-2. **Runtime flag** — `--allow-exec`, `--allow-local-ip`, `--control-full` on `yumed`.
-3. **Per-key meta** — `"allow_exec": true` (etc.) in `auth_keys.meta` for the specific key.
+1. **Build switch**: `cmake -DYUME_FEATURE_EXEC=ON` (also `_LAN_BRIDGE`, `_FULL_CONTROL`). Stock builds ship with all three OFF; the runtime CLI flag still parses but logs a warning and stays disabled.
+2. **Runtime flag**: `--allow-exec`, `--allow-local-ip`, `--control-full` on `yumed`.
+3. **Per-key meta**: `"allow_exec": true` (etc.) in `auth_keys.meta` for the specific key.
 
 Removing any one layer is enough to keep the feature off. The bridge / admin matrix (server-controls-client × client-controls-server, four quadrants) and the full meta JSON schema are documented in [docs/PERMISSIONS.md](docs/PERMISSIONS.md).
 
@@ -227,7 +231,7 @@ sudo ./build/bin/yumed \
     --real-secret-file ./.secrets/html_secret
 ```
 
-`--real` and `--obfs` may be set together — they share port 443 and are demuxed by the first cleartext bytes after TLS.
+`--real` and `--obfs` may be set together; they share port 443 and are demuxed by the first cleartext bytes after TLS.
 
 ## Security posture
 
@@ -236,11 +240,11 @@ sudo ./build/bin/yumed \
 - Authorized keys verified with constant-time `EVP_DigestVerify` ([src/server/auth.cpp:78–99](src/server/auth.cpp#L78-L99))
 - Inner-frame AEAD verified before plaintext is delivered (OpenSSL `EVP_DecryptFinal_ex`)
 - Master PQ keypair off by default; explicit `--use-embedded-master` required and warned about at startup on both ends
-- Server-side exec / LAN bridging / unrestricted bridging are off at compile time by default ([CMakeLists.txt](CMakeLists.txt) `YUME_FEATURE_EXEC` / `_LAN_BRIDGE` / `_FULL_CONTROL`); enabling them requires opting in at build, runtime flag, AND per-key meta — see [docs/PERMISSIONS.md](docs/PERMISSIONS.md)
+- Server-side exec / LAN bridging / unrestricted bridging are off at compile time by default ([CMakeLists.txt](CMakeLists.txt) `YUME_FEATURE_EXEC` / `_LAN_BRIDGE` / `_FULL_CONTROL`); enabling them requires opting in at build, runtime flag, AND per-key meta (see [docs/PERMISSIONS.md](docs/PERMISSIONS.md))
 - Per-key admin permissions (`allow_inbound_admin`, `allow_outbound_admin`) default to deny
 - Frame size capped at 16 MiB across all read paths
 - New obfs path-token verifier uses `CRYPTO_memcmp` ([src/core/obfs_signal.cpp](src/core/obfs_signal.cpp))
-- No security-by-obscurity: every fingerprint claim, every comparison row, every default is grounded in code referenced above. The codebase contains no placeholder protections — features are either implemented or absent.
+- No security-by-obscurity: every claim above points at code. Features are either implemented or absent; no placeholders that pretend to protect anything.
 
 ## Scalability notes
 

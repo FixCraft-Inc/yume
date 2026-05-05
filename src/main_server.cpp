@@ -2276,7 +2276,7 @@ int main(int argc, char** argv) {
             return 1;
         }
         yume::util::set_logging_enabled(false);
-        std::cerr << "\033[1;33mANONYM MODE ACTIVE — client metadata logging disabled\033[0m\n";
+        std::cerr << "\033[1;33mANONYM MODE ACTIVE: client metadata logging disabled\033[0m\n";
     }
     if (!cfg.anonym) {
         if (cfg.anonym_certfp.empty() && !cfg.tls_cert.empty()) {

@@ -2,18 +2,18 @@
 
 YUME splits authentication from authorization the way SSH does:
 
-- `authorized_keys` lists the Ed25519 public keys that may **connect**. Holding one of these is the audience-with-the-king — you get past the door.
+- `authorized_keys` lists the Ed25519 public keys that may **connect**. Holding one of these is the audience-with-the-king; you get past the door.
 - `auth_keys.meta` (a JSON file) lists what each connected key is **allowed to do** once inside. Without an entry here, a key can talk to the server but cannot exec, cannot reach LAN addresses, cannot administer other clients.
 
 The current revision uses one Ed25519 key per identity. A second physical key (the "noble's seal" for stronger permission control) is a planned wire-protocol change for a post-1.0 release; in the meantime, the SSH-style split below gives you the same operational separation: connection rights vs. action rights live in different files, can be edited independently, and can be revoked independently.
 
 ## The three-layer gate for dangerous features
 
-Any of these features — server-side command execution, LAN/private-IP bridging, unrestricted address bridging — is gated by **all three** of:
+Any of these features (server-side command execution, LAN/private-IP bridging, unrestricted address bridging) is gated by **all three** of:
 
-1. **Build switch** — `cmake -DYUME_FEATURE_EXEC=ON` (or `_LAN_BRIDGE`, `_FULL_CONTROL`). Stock builds ship with all three OFF. The runtime CLI flag still parses but logs a warning and stays disabled.
-2. **Server flag** — `--allow-exec`, `--allow-local-ip`, `--control-full` (or the equivalent JSON config field). This is the global "feature is allowed on this server" upper bound.
-3. **Per-key meta entry** — `"allow_exec": true` (or `"allow_local_ip"`, `"control_full"`) in `auth_keys.meta`. Default is deny. The server flag never grants permission to a key that does not opt in.
+1. **Build switch.** `cmake -DYUME_FEATURE_EXEC=ON` (or `_LAN_BRIDGE`, `_FULL_CONTROL`). Stock builds ship with all three OFF. The runtime CLI flag still parses but logs a warning and stays disabled.
+2. **Server flag.** `--allow-exec`, `--allow-local-ip`, `--control-full` (or the equivalent JSON config field). This is the global "feature is allowed on this server" upper bound.
+3. **Per-key meta entry.** `"allow_exec": true` (or `"allow_local_ip"`, `"control_full"`) in `auth_keys.meta`. Default is deny. The server flag never grants permission to a key that does not opt in.
 
 A request is allowed only when all three layers say yes. Removing the build switch is the cleanest way to make a server physically incapable of running shell commands for clients, regardless of any operator misconfiguration later.
 
@@ -64,7 +64,7 @@ MCowBQYDK2VwAyEA...visitor...
       "allow_file": true
     }
   }
-  // visitor key omitted — connects only, no extra permissions
+  // visitor key omitted (connects only, no extra permissions)
 }
 ```
 
@@ -85,7 +85,7 @@ Generate fingerprints with `yumed --auth-keys /etc/yume/authorized_keys --keys-l
 
 `alias` is a free-form label used in logs.
 
-## Bridge / admin modes — the four quadrants
+## Bridge / admin modes: the four quadrants
 
 Two relationships are independent:
 
@@ -99,15 +99,15 @@ Two relationships are independent:
 | **C→S only** | normal flags, key `allow_local_ip` etc. as needed | `--socks` / `-L` / `-R` (no `--accept-server-control`) | Most common: user wants a SOCKS proxy / port forward, server cannot push commands back |
 | **neither (pure transport)** | no `--allow-exec`, no `--control-full`, no `--allow-local-ip`; key has no per-key permissions | no `--accept-server-control`, no SOCKS | Probe / handshake test only; useful for smoke-testing the tunnel without exposing either side |
 
-`--accept-server-control` is the new, intuitive name for what was previously `--server-in-charge` (the old name still works as a deprecated alias). The "admin attach" channel between two relayed clients is governed independently by `allow_inbound_admin` / `allow_outbound_admin` on the per-key meta — neither of these ever defaults to true.
+`--accept-server-control` is the new, intuitive name for what was previously `--server-in-charge` (the old name still works as a deprecated alias). The "admin attach" channel between two relayed clients is governed independently by `allow_inbound_admin` / `allow_outbound_admin` on the per-key meta. Neither of these ever defaults to true.
 
 ## Operational tips
 
 - **Editing auth_keys.meta is the recommended way to manage permissions.** The server's interactive `--ui` mode is brittle around per-key permissions; it's documented but you'll have a smoother time with a JSON editor.
-- **Reload after edits** — the meta file is read at server startup. Changes take effect on `systemctl restart yumed`. Hot reload is on the post-1.0 roadmap.
-- **Revoke a key** — remove the public-key block from `authorized_keys`. The meta entry can stay; it'll be ignored.
-- **Audit** — startup logs `auth policy <permissions summary>` for any key that has a non-empty meta entry. Run `yumed --auth-keys ... --keys-list` to dump all configured keys with their aliases.
-- **CI/scripted setup** — generate fingerprints with `openssl pkey -pubin -in user.pub -outform DER | sha256sum | cut -d' ' -f1`. The same fingerprint format is used by `yumed --keys-list`.
+- **Reload after edits.** The meta file is read at server startup. Changes take effect on `systemctl restart yumed`. Hot reload is on the post-1.0 roadmap.
+- **Revoke a key.** Remove the public-key block from `authorized_keys`. The meta entry can stay; it'll be ignored.
+- **Audit.** Startup logs `auth policy <permissions summary>` for any key that has a non-empty meta entry. Run `yumed --auth-keys ... --keys-list` to dump all configured keys with their aliases.
+- **CI/scripted setup.** Generate fingerprints with `openssl pkey -pubin -in user.pub -outform DER | sha256sum | cut -d' ' -f1`. The same fingerprint format is used by `yumed --keys-list`.
 
 ## Security posture summary
 

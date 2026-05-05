@@ -354,7 +354,13 @@ jobs:
   publish-release:
     needs: [preflight, build-linux, build-macos]
     runs-on: ubuntu-latest
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    # Publish whenever Linux built. macOS is optional: a transient brew or
+    # liboqs failure on macos-14 should not block a Linux-only release.
+    if: |
+      always()
+      && (github.event_name == 'release' || github.event_name == 'workflow_dispatch')
+      && needs.preflight.result == 'success'
+      && needs.build-linux.result == 'success'
     env:
       GH_TOKEN: ${{ github.token }}
     steps:

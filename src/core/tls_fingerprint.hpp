@@ -88,55 +88,15 @@ struct BrowserFingerprint {
     uint16_t tls_version{0x0304};  // TLS 1.3
 };
 
-/**
- * Calculate JA3 hash from ClientHello components
- * JA3 = MD5(TLSVersion,Ciphers,Extensions,EllipticCurves,EllipticCurvePointFormats)
- */
 std::string calculate_ja3_hash(const JA3Components& components);
-
-/**
- * Calculate JA4 hash from ClientHello components
- * JA4 is more complex and includes ALPN, SNI, cipher ordering
- */
 std::string calculate_ja4_hash(const JA4Components& components);
-
-/**
- * Calculate Akamai fingerprint hash
- * Similar to JA3 but with different format
- */
 std::string calculate_akamai_hash(const JA3Components& components);
-
-/**
- * Get all known browser fingerprints
- */
 std::vector<BrowserFingerprint> get_known_browser_fingerprints();
-
-/**
- * Compare a fingerprint against known browser profiles
- * Returns the best matching profile and similarity score
- */
 std::pair<BrowserProfile, double> match_browser_profile(const FingerprintData& fingerprint);
-
-/**
- * Get detailed information about a browser profile
- */
 std::optional<BrowserFingerprint> get_browser_profile_info(BrowserProfile profile);
-
-/**
- * Get browser profile name as string
- */
 std::string browser_profile_name(BrowserProfile profile);
-
-/**
- * Parse ClientHello message to extract fingerprint components
- * This is called by external code that captures the ClientHello
- */
 FingerprintData parse_client_hello(const uint8_t* data, size_t length);
 
-/**
- * Evaluate TLS fingerprint against best practices
- * Returns recommendations for stealth mode
- */
 struct FingerprintEvaluation {
     bool looks_like_browser{false};
     bool needs_stealth_mode{true};

@@ -20,6 +20,8 @@
 #include <string_view>
 
 #include "core/inner_crypto.hpp"
+#include "core/obfs_h2.hpp"
+#include "core/obfs_signal.hpp"
 #include "core/protocol.hpp"
 #include "core/runtime_policy.hpp"
 #include "core/version.hpp"
@@ -307,9 +309,9 @@ Session::Session(boost::asio::ip::tcp::socket socket,
     , preface_timer_(stream_.get_executor())
     , idle_timer_(stream_.get_executor()) {
     last_activity_ms_.store(steady_now_ms(), std::memory_order_relaxed);
-    session_allow_exec_policy_ = cfg_.allow_exec;
-    session_allow_local_ip_ = cfg_.allow_local_ip;
-    session_control_full_ = cfg_.control_full;
+    session_allow_exec_policy_ = false;
+    session_allow_local_ip_ = false;
+    session_control_full_ = false;
 }
 
 void Session::start() {
@@ -473,6 +475,11 @@ void Session::on_preface_timeout(const boost::system::error_code& ec) {
     }
 }
 bool Session::handle_http_preface(const std::string& preface) {
+    if (cfg_.obfuscation && preface.rfind("PRI * HT", 0) == 0) {
+        start_h2_carrier_probe();
+        return true;
+    }
+
     const bool is_connect = preface.rfind("CONNECT ", 0) == 0;
     const std::string methods[] = {"GET ", "HEAD ", "POST ", "OPTIONS ", "PUT ", "DELETE ", "TRACE ", "PATCH "};
     bool is_http = is_connect;
@@ -645,6 +652,135 @@ void Session::send_obfs_connect_established(const std::string& authority) {
                                                             util::log_info("session " + std::to_string(self->session_id_) +
                                                                            ": obfs CONNECT tunnel established (" + authority + ")");
                                                             self->send_auth_challenge();
+                                                        }));
+}
+
+void Session::start_h2_carrier_probe() {
+    carrier_probe_active_ = true;
+    carrier_decoder_ = std::make_unique<obfs::H2InboundDecoder>(true);
+    if (!preface_accum_.empty()) {
+        carrier_decoder_->feed(preface_accum_.data(), preface_accum_.size());
+        preface_accum_.clear();
+    }
+    auto replies = carrier_decoder_->take_outbound_replies();
+    if (!replies.empty()) {
+        auto data = std::make_shared<std::vector<uint8_t>>(std::move(replies));
+        queue_encoded_write_on_strand(std::move(data));
+    }
+    auto self = shared_from_this();
+    stream_.async_read_some(
+        boost::asio::buffer(carrier_scratch_),
+        boost::asio::bind_executor(strand_,
+                                   [self](const boost::system::error_code& ec, std::size_t bytes) {
+                                       self->on_h2_probe_read(ec, bytes);
+                                   }));
+}
+
+void Session::on_h2_probe_read(const boost::system::error_code& ec, std::size_t bytes) {
+    if (ec) {
+        close_with_reason("h2 carrier probe read failed: " + ec.message());
+        return;
+    }
+    if (!carrier_probe_active_ || !carrier_decoder_) {
+        return;
+    }
+    if (bytes > 0) {
+        carrier_decoder_->feed(carrier_scratch_.data(), bytes);
+    }
+    if (carrier_decoder_->failed()) {
+        close_with_reason("h2 carrier decode failed: " + carrier_decoder_->error());
+        return;
+    }
+    auto replies = carrier_decoder_->take_outbound_replies();
+    if (!replies.empty()) {
+        auto data = std::make_shared<std::vector<uint8_t>>(std::move(replies));
+        queue_encoded_write_on_strand(std::move(data));
+    }
+
+    if (carrier_decoder_->headers_seen()) {
+        const std::string& path = carrier_decoder_->extracted_path();
+        const std::string& authority = carrier_decoder_->extracted_authority();
+        std::vector<crypto::Bytes> keys;
+        if (!cfg_.real_secret.empty()) {
+            keys.push_back(obfs::derive_signal_key(cfg_.real_secret));
+        }
+        std::int64_t now_s = static_cast<std::int64_t>(std::time(nullptr));
+        bool token_ok = false;
+        if (path.size() == obfs::kH2PathLen) {
+            if (!keys.empty()) {
+                token_ok = obfs::verify_path_token(keys, authority, path, now_s);
+            } else {
+                token_ok = (path[0] == '/' && path[1 + obfs::kH2TokenHexLen] == '/');
+            }
+        }
+
+        std::vector<uint8_t> leftover;
+        carrier_decoder_->drain_inbound_buffer(&leftover);
+        carrier_probe_active_ = false;
+        carrier_decoder_.reset();
+
+        if (!token_ok) {
+            util::log_warn("session " + std::to_string(session_id_) +
+                          ": h2 carrier path token rejected (path=" + path + ")");
+            serve_fake_h2_real_index();
+            return;
+        }
+
+        send_h2_server_handshake_then_continue();
+        if (!leftover.empty()) {
+            preface_accum_.assign(leftover.begin(), leftover.end());
+            if (preface_accum_.size() >= header_buf_.size()) {
+                std::copy(preface_accum_.begin(),
+                          preface_accum_.begin() + header_buf_.size(),
+                          header_buf_.begin());
+                preface_accum_.erase(preface_accum_.begin(),
+                                     preface_accum_.begin() + header_buf_.size());
+                header_prefetched_ = true;
+            }
+        }
+        return;
+    }
+
+    if (carrier_decoder_->inbound_buffered() > 32768) {
+        close_with_reason("h2 carrier handshake too large");
+        return;
+    }
+
+    auto self = shared_from_this();
+    stream_.async_read_some(
+        boost::asio::buffer(carrier_scratch_),
+        boost::asio::bind_executor(strand_,
+                                   [self](const boost::system::error_code& e, std::size_t n) {
+                                       self->on_h2_probe_read(e, n);
+                                   }));
+}
+
+void Session::send_h2_server_handshake_then_continue() {
+    crypto::Bytes hello = obfs::encode_server_handshake();
+    auto data = std::make_shared<std::vector<uint8_t>>(hello.begin(), hello.end());
+    queue_encoded_write_on_strand(std::move(data));
+    util::log_info("session " + std::to_string(session_id_) + ": h2 carrier handshake established");
+    send_auth_challenge();
+}
+
+void Session::serve_fake_h2_real_index() {
+    std::string body = load_real_index();
+    crypto::Bytes hello = obfs::encode_server_handshake();
+    obfs::H2EncodeParams params;
+    params.padding_mean = 0;
+    params.padding_max = 0;
+    crypto::Bytes data_frames = obfs::encode_data_frames(
+        reinterpret_cast<const uint8_t*>(body.data()), body.size(), params);
+    std::vector<uint8_t> combined;
+    combined.reserve(hello.size() + data_frames.size());
+    combined.insert(combined.end(), hello.begin(), hello.end());
+    combined.insert(combined.end(), data_frames.begin(), data_frames.end());
+    auto buf = std::make_shared<std::vector<uint8_t>>(std::move(combined));
+    auto self = shared_from_this();
+    boost::asio::async_write(stream_, boost::asio::buffer(*buf),
+                             boost::asio::bind_executor(strand_,
+                                                        [self, buf](const boost::system::error_code&, std::size_t) {
+                                                            self->close_with_reason("served fake h2 page to non-yume probe");
                                                         }));
 }
 
@@ -1133,11 +1269,38 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                 return false;
             }
         }
-        session_allow_exec_policy_ = auth_policy.allow_exec.value_or(cfg_.allow_exec);
-        session_allow_local_ip_ = auth_policy.allow_local_ip.value_or(cfg_.allow_local_ip);
-        session_control_full_ = auth_policy.control_full.value_or(cfg_.control_full);
-        session_allow_inbound_admin_policy_ = auth_policy.allow_inbound_admin.value_or(true);
-        session_allow_outbound_admin_policy_ = auth_policy.allow_outbound_admin.value_or(true);
+        const bool key_exec = auth_policy.allow_exec.value_or(false);
+        const bool key_local_ip = auth_policy.allow_local_ip.value_or(false);
+        const bool key_control_full = auth_policy.control_full.value_or(false);
+#if YUME_FEATURE_EXEC
+        session_allow_exec_policy_ = key_exec && cfg_.allow_exec;
+#else
+        session_allow_exec_policy_ = false;
+        if (key_exec || cfg_.allow_exec) {
+            util::log_warn("session " + std::to_string(session_id_) +
+                          ": exec requested but YUME_FEATURE_EXEC is OFF at build time");
+        }
+#endif
+#if YUME_FEATURE_LAN_BRIDGE
+        session_allow_local_ip_ = key_local_ip && cfg_.allow_local_ip;
+#else
+        session_allow_local_ip_ = false;
+        if (key_local_ip || cfg_.allow_local_ip) {
+            util::log_warn("session " + std::to_string(session_id_) +
+                          ": LAN bridging requested but YUME_FEATURE_LAN_BRIDGE is OFF at build time");
+        }
+#endif
+#if YUME_FEATURE_FULL_CONTROL
+        session_control_full_ = key_control_full && cfg_.control_full;
+#else
+        session_control_full_ = false;
+        if (key_control_full || cfg_.control_full) {
+            util::log_warn("session " + std::to_string(session_id_) +
+                          ": full control requested but YUME_FEATURE_FULL_CONTROL is OFF at build time");
+        }
+#endif
+        session_allow_inbound_admin_policy_ = auth_policy.allow_inbound_admin.value_or(false);
+        session_allow_outbound_admin_policy_ = auth_policy.allow_outbound_admin.value_or(false);
         session_allow_chat_policy_ = auth_policy.allow_chat.value_or(true);
         session_allow_file_policy_ = auth_policy.allow_file.value_or(true);
         session_allow_bytes_policy_ = auth_policy.allow_bytes.value_or(true);

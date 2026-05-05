@@ -60,7 +60,6 @@ struct ServerConfig {
     std::string server_id;
     bool relay_enable{true};
     bool directory_enable{true};
-    bool allow_remote_server_admin{false};
     bool ipc_enable{true};
     std::string ipc_path;
     bool federation_enable{false};

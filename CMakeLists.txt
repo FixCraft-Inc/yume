@@ -21,6 +21,14 @@ option(YUME_LTO "Enable link-time optimization for yume builds" ON)
 option(YUME_FAST_MATH "Enable fast-math (unsafe for crypto)" OFF)
 option(YUME_TRANSPORT_CORE_ONLY "Build only the shared transport core target" OFF)
 
+# Dangerous-feature build gates. Each gate must be explicitly turned ON at
+# configure time to compile the feature. The runtime CLI flag and the per-key
+# meta entry are the second and third locks. Stock builds ship with all three
+# OFF; the corresponding flags are still recognised but warn and stay disabled.
+option(YUME_FEATURE_EXEC "Compile in server-side command execution path" OFF)
+option(YUME_FEATURE_LAN_BRIDGE "Compile in LAN/private-IP bridging path" OFF)
+option(YUME_FEATURE_FULL_CONTROL "Compile in unrestricted address bridging" OFF)
+
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 # If a fully-static build is requested, ensure a static zlib is available; otherwise

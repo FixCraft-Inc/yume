@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include "client/transport_core.hpp"
+#include "core/obfs_h2.hpp"
 
 namespace yume::client {
 
@@ -33,6 +34,9 @@ public:
     explicit Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream);
 
     void start();
+    void enable_h2_carrier(const std::string& sni,
+                           const std::string& secret,
+                           const std::string& user_agent);
     void set_inner_key(const Bytes& key);
     void set_hop(bool enabled, std::uint32_t interval_ms, std::int64_t offset_ms);
     void set_server_in_charge(bool enabled);
@@ -73,6 +77,7 @@ private:
     void start_exec(uint8_t stream_id, std::string command);
     void close_all(const std::string& reason);
     void schedule_keepalive();
+    void send_h2_client_handshake_then_start();
 
     boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream_;
     boost::asio::strand<boost::asio::any_io_executor> strand_;
@@ -82,6 +87,12 @@ private:
     TunnelCloseHandler close_handler_;
     std::mutex close_handler_mu_;
     bool closed_{false};
+    bool h2_carrier_enabled_{false};
+    std::string h2_sni_;
+    std::string h2_secret_;
+    std::string h2_user_agent_;
+    std::unique_ptr<obfs::H2InboundDecoder> h2_decoder_;
+    bool h2_handshake_done_{false};
 };
 
 }  // namespace yume::client

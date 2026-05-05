@@ -56,7 +56,6 @@ nlohmann::json LocalRuntime::handle_request(const nlohmann::json& request) {
             {"listen_port", cfg.listen_port},
             {"relay_enable", cfg.relay_enable},
             {"directory_enable", cfg.directory_enable},
-            {"allow_remote_server_admin", cfg.allow_remote_server_admin},
             {"endpoints", manager_->list_endpoints().size()},
             {"channels", manager_->list_active_channels().size()},
         };

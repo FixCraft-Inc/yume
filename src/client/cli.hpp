@@ -12,7 +12,8 @@ struct ClientConfig {
     std::string identity;
     int socks_port{0};
     int io_threads{0};
-    bool obfuscation{false};
+    bool obfuscation{true};
+    std::string obfs_secret;
     bool inner_crypto{true};
     bool inner_heavy{true};
     bool inner_hop{true};

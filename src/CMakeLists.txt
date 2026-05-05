@@ -202,6 +202,8 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         core/local_runtime.cpp
         core/protocol.cpp
         core/obfs.cpp
+        core/obfs_h2.cpp
+        core/obfs_signal.cpp
         core/tls_fingerprint.cpp
         core/tls_stealth.cpp
         core/tls_metrics.cpp
@@ -288,6 +290,22 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         target_compile_definitions(yume_core PUBLIC YUME_USE_BASEFWX=1)
     else()
         target_compile_definitions(yume_core PUBLIC YUME_USE_BASEFWX=0)
+    endif()
+
+    if(YUME_FEATURE_EXEC)
+        target_compile_definitions(yume_core PUBLIC YUME_FEATURE_EXEC=1)
+    else()
+        target_compile_definitions(yume_core PUBLIC YUME_FEATURE_EXEC=0)
+    endif()
+    if(YUME_FEATURE_LAN_BRIDGE)
+        target_compile_definitions(yume_core PUBLIC YUME_FEATURE_LAN_BRIDGE=1)
+    else()
+        target_compile_definitions(yume_core PUBLIC YUME_FEATURE_LAN_BRIDGE=0)
+    endif()
+    if(YUME_FEATURE_FULL_CONTROL)
+        target_compile_definitions(yume_core PUBLIC YUME_FEATURE_FULL_CONTROL=1)
+    else()
+        target_compile_definitions(yume_core PUBLIC YUME_FEATURE_FULL_CONTROL=0)
     endif()
 
     if(CMAKE_CROSSCOMPILING OR YUME_FORCE_CROSS OR CMAKE_SYSTEM_NAME STREQUAL "Windows" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
@@ -391,3 +409,11 @@ yume_link_atomic_if_needed(yume_transport_core_test PRIVATE)
 yume_apply_perf_opts(yume_transport_core_test)
 
 add_test(NAME yume_transport_core_test COMMAND yume_transport_core_test)
+
+if(NOT YUME_TRANSPORT_CORE_ONLY)
+    add_executable(yume_obfs_test core/obfs_test.cpp)
+    target_link_libraries(yume_obfs_test PRIVATE yume_core)
+    yume_link_atomic_if_needed(yume_obfs_test PRIVATE)
+    yume_apply_perf_opts(yume_obfs_test)
+    add_test(NAME yume_obfs_test COMMAND yume_obfs_test)
+endif()

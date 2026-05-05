@@ -20,6 +20,7 @@
 
 #include "core/control_protocol.hpp"
 #include "core/crypto.hpp"
+#include "core/obfs_h2.hpp"
 #include "core/protocol.hpp"
 #include "server/config.hpp"
 
@@ -55,6 +56,11 @@ private:
     std::string load_real_index();
     std::string build_hidden_blob();
     void send_auth_challenge();
+
+    void start_h2_carrier_probe();
+    void on_h2_probe_read(const boost::system::error_code& ec, std::size_t bytes);
+    void send_h2_server_handshake_then_continue();
+    void serve_fake_h2_real_index();
 
     void read_header();
     void on_read_header(const boost::system::error_code& ec, std::size_t bytes);
@@ -128,6 +134,10 @@ private:
     bool preface_received_{false};
     bool preface_probe_active_{false};
     bool header_prefetched_{false};
+
+    bool carrier_probe_active_{false};
+    std::unique_ptr<obfs::H2InboundDecoder> carrier_decoder_;
+    std::array<uint8_t, 4096> carrier_scratch_{};
     boost::asio::steady_timer preface_timer_;
     protocol::FrameHeader current_header_{};
     std::vector<uint8_t> payload_buf_;

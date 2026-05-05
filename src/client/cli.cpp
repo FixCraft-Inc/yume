@@ -1120,8 +1120,10 @@ struct ParsedArgs {
     std::string identity;
     int socks_port{0};
     int io_threads{0};
-    bool obfuscation{false};
+    bool obfuscation{true};
     bool obfuscation_override{false};
+    std::string obfs_secret;
+    bool obfs_secret_override{false};
     int lport{0};
     std::string rhost;
     int rport{0};
@@ -1336,6 +1338,11 @@ ParsedArgs parse_args(int argc, char** argv) {
         } else if (arg == "--no-obfs") {
             args.obfuscation = false;
             args.obfuscation_override = true;
+        } else if (arg == "--obfs-secret") {
+            const char* v = take_value("--obfs-secret");
+            if (!v) return args;
+            args.obfs_secret = v;
+            args.obfs_secret_override = true;
         } else if (arg == "--lport") {
             if (!parse_int_value("--lport", args.lport)) {
                 return args;
@@ -1391,6 +1398,7 @@ ParsedArgs parse_args(int argc, char** argv) {
             }
             args.ssh_R = value;
         } else if (arg == "--inner") {
+            util::log_warn("--inner is deprecated; use --inner-heavy or --inner-light");
             args.inner_crypto = true;
             args.inner_crypto_override = true;
         } else if (arg == "--no-inner") {
@@ -1426,7 +1434,10 @@ ParsedArgs parse_args(int argc, char** argv) {
         } else if (arg == "--allow-local-ip") {
             args.allow_local_ip = true;
             args.allow_local_ip_override = true;
-        } else if (arg == "--server-in-charge") {
+        } else if (arg == "--accept-server-control" || arg == "--server-in-charge") {
+            if (arg == "--server-in-charge") {
+                util::log_warn("--server-in-charge is deprecated; use --accept-server-control");
+            }
             args.server_in_charge = true;
             args.server_in_charge_override = true;
             if (i + 1 < argc) {
@@ -1434,7 +1445,7 @@ ParsedArgs parse_args(int argc, char** argv) {
                 if (!next.empty() && next[0] != '-') {
                     int parsed = 0;
                     if (!parse_int_strict(next, parsed)) {
-                        args.parse_error = "invalid integer for --server-in-charge: " + next;
+                        args.parse_error = "invalid integer for --accept-server-control: " + next;
                         return args;
                     }
                     args.server_in_charge_port = parsed;
@@ -3157,6 +3168,9 @@ int Cli::run(int argc, char** argv) {
             if (json.contains("obfuscation") && !args.obfuscation_override) {
                 cfg.obfuscation = json["obfuscation"].get<bool>();
             }
+            if (json.contains("obfs_secret") && !args.obfs_secret_override) {
+                cfg.obfs_secret = json["obfs_secret"].get<std::string>();
+            }
             if (json.contains("inner_crypto") && !args.inner_crypto_override) {
                 cfg.inner_crypto = json["inner_crypto"].get<bool>();
             }
@@ -3272,6 +3286,9 @@ int Cli::run(int argc, char** argv) {
     }
     if (args.obfuscation_override) {
         cfg.obfuscation = args.obfuscation;
+    }
+    if (args.obfs_secret_override) {
+        cfg.obfs_secret = args.obfs_secret;
     }
     if (args.inner_crypto_override) {
         cfg.inner_crypto = args.inner_crypto;
@@ -4814,6 +4831,14 @@ int Cli::run(int argc, char** argv) {
 
             auto tunnel = std::make_shared<Tunnel>(std::move(stream));
             set_active_runtime(&io, tunnel);
+            if (cfg.obfuscation) {
+                tunnel->enable_h2_carrier(cfg.server, cfg.obfs_secret, std::string());
+            }
+            if (cfg.allow_embedded_master) {
+                util::log_warn(
+                    "embedded master PQ keypair enabled; connection security depends on basefwx-bundled keys "
+                    "(disable with --no-embedded-master)");
+            }
             if (inner_key.has_value()) {
                 tunnel->set_inner_key(*inner_key);
             }

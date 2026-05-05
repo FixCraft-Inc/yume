@@ -11,11 +11,22 @@
 
 namespace yume::obfs {
 
+enum class Mode {
+    kOff,
+    kLegacyJitter,
+    kH2Carrier,
+};
+
 struct ObfsConfig {
     bool enabled{false};
+    Mode mode{Mode::kH2Carrier};
     size_t max_padding{32};
     int max_jitter_ms{15};
     bool send_dummy_http{false};
+    std::uint32_t padding_mean{24};
+    std::uint32_t padding_max{200};
+    std::uint32_t ping_interval_s{25};
+    std::string secret;
 };
 
 boost::asio::ssl::context create_server_context(const std::string& cert_path,

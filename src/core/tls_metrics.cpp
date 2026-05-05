@@ -73,12 +73,10 @@ void MetricsEndpoint::update_statistics(const FingerprintMetric& metric) {
         stats_.failed_connections++;
     }
     
-    // Update profile usage
     if (metric.stealth_enabled) {
         stats_.profile_usage[metric.stealth_profile]++;
     }
     
-    // Update profile matches
     if (metric.matches_browser) {
         stats_.profile_matches[metric.matched_profile]++;
         stats_.browser_like_fingerprints++;
@@ -86,7 +84,6 @@ void MetricsEndpoint::update_statistics(const FingerprintMetric& metric) {
         stats_.non_browser_fingerprints++;
     }
     
-    // Update performance metrics
     if (metric.handshake_succeeded) {
         if (stats_.min_handshake_duration_ms == 0 || 
             metric.handshake_duration_ms < stats_.min_handshake_duration_ms) {
@@ -102,12 +99,10 @@ void MetricsEndpoint::update_statistics(const FingerprintMetric& metric) {
         stats_.avg_handshake_duration_ms = total_duration / stats_.successful_connections;
     }
     
-    // Update similarity score
     double total_similarity = stats_.avg_similarity_score * (stats_.total_connections - 1);
     total_similarity += metric.similarity_score;
     stats_.avg_similarity_score = total_similarity / stats_.total_connections;
     
-    // Update time range
     if (stats_.first_connection_time.empty()) {
         stats_.first_connection_time = metric.timestamp;
     }
@@ -194,7 +189,6 @@ bool MetricsEndpoint::export_to_csv(const std::string& filepath) const {
             << "stealth_enabled,stealth_profile,"
             << "handshake_succeeded,handshake_duration_ms,error_message\n";
         
-        // Data rows
         for (const auto& m : metrics_) {
             out << m.id << ","
                 << m.timestamp << ","
@@ -241,11 +235,9 @@ void MetricsManager::initialize(const std::string& log_dir) {
     std::lock_guard<std::mutex> lock(mutex_);
     log_dir_ = log_dir;
     
-    // Create log directory if it doesn't exist
     try {
         std::filesystem::create_directories(log_dir);
     } catch (...) {
-        // Ignore errors
     }
     
     if (!endpoint_) {
@@ -314,7 +306,6 @@ void MetricsManager::flush() {
         return;
     }
     
-    // Export to JSON
     auto timestamp = std::chrono::system_clock::now();
     auto time_t = std::chrono::system_clock::to_time_t(timestamp);
     std::tm tm;
@@ -331,11 +322,9 @@ void MetricsManager::flush() {
     
     endpoint_->export_to_file(filename.str());
     
-    // Also export latest to a standard filename
     std::string latest_path = log_dir_ + "/fingerprints-latest.json";
     endpoint_->export_to_file(latest_path);
     
-    // Export CSV
     std::string csv_path = log_dir_ + "/fingerprints-latest.csv";
     endpoint_->export_to_csv(csv_path);
 }
@@ -372,7 +361,7 @@ bool MetricsManager::generate_report(const std::string& output_path) const {
     }
 }
 
-// Helper functions
+
 
 std::string metric_to_json(const FingerprintMetric& metric) {
     nlohmann::json j;
@@ -436,14 +425,12 @@ ComparisonReport compare_fingerprints(
     
     ComparisonReport report;
     
-    // Compare JA3 hashes
     if (fp1.ja3_hash == fp2.ja3_hash) {
         report.overall_similarity += 50.0;
     } else {
         report.differences.push_back("JA3 hashes differ");
     }
     
-    // Compare JA4 hashes
     if (fp1.ja4_hash == fp2.ja4_hash) {
         report.overall_similarity += 50.0;
     } else {
@@ -452,12 +439,10 @@ ComparisonReport compare_fingerprints(
     
     report.fingerprints_match = (report.overall_similarity >= 100.0);
     
-    // Check for warnings
     if (!report.fingerprints_match) {
         report.warnings.push_back("Fingerprints do not match exactly");
     }
     
-    // Compare ALPN
     if (fp1.alpn_protocols != fp2.alpn_protocols) {
         report.differences.push_back("ALPN protocols differ");
     }

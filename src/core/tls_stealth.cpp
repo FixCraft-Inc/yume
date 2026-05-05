@@ -397,7 +397,6 @@ tls_fingerprint::FingerprintData parse_tls_verify_response(const std::string& bo
 
 }  // namespace
 
-// Cipher suite mappings
 std::map<uint16_t, std::string> cipher_name_map = {
     {0x1301, "TLS_AES_128_GCM_SHA256"},
     {0x1302, "TLS_AES_256_GCM_SHA384"},
@@ -458,29 +457,23 @@ std::string groups_to_openssl_string(const std::vector<uint16_t>& groups) {
     return oss.str();
 }
 
-// StealthContext implementation
-
 StealthContext::StealthContext(const StealthConfig& config)
     : config_(config)
     , ssl_context_(boost::asio::ssl::context::tls_client)
     , current_profile_(config.target_profile) {
-    
-    // Set up available profiles for rotation
     available_profiles_ = {
         tls_fingerprint::BrowserProfile::CHROME_135,
         tls_fingerprint::BrowserProfile::FIREFOX_126,
         tls_fingerprint::BrowserProfile::SAFARI_17,
     };
-    
-    // Initialize SSL context with basic settings
+
     ssl_context_.set_options(
         boost::asio::ssl::context::default_workarounds |
         boost::asio::ssl::context::no_sslv2 |
         boost::asio::ssl::context::no_sslv3 |
         boost::asio::ssl::context::no_tlsv1 |
         boost::asio::ssl::context::no_tlsv1_1);
-    
-    // Apply initial stealth profile
+
     if (config_.enabled) {
         apply_stealth_profile(current_profile_);
     }
@@ -494,30 +487,19 @@ boost::asio::ssl::context& StealthContext::get_context() {
 
 void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profile) {
     current_profile_ = profile;
-    
+
     auto profile_info = tls_fingerprint::get_browser_profile_info(profile);
     if (!profile_info) {
-        // Fallback to Chrome 135 if profile not found
         profile_info = tls_fingerprint::get_browser_profile_info(
             tls_fingerprint::BrowserProfile::CHROME_135);
-        if (!profile_info) {
-            return;  // Should not happen
-        }
+        if (!profile_info) return;
     }
-    
-    // Configure cipher suites
+
     configure_cipher_suites(profile_info->cipher_suites);
-    
-    // Configure supported groups (curves)
     configure_supported_groups(profile_info->supported_groups);
-    
-    // Configure signature algorithms
     configure_signature_algorithms(profile_info->signature_algorithms);
-    
-    // Configure ALPN
     configure_alpn(profile_info->alpn_protocols);
-    
-    // Set TLS version constraints
+
     SSL_CTX* ctx = ssl_context_.native_handle();
     SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
     SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
@@ -526,12 +508,8 @@ void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profi
 void StealthContext::configure_cipher_suites(const std::vector<uint16_t>& suites) {
     std::string cipher_string = cipher_list_to_openssl_string(suites);
     SSL_CTX* ctx = ssl_context_.native_handle();
-    
-    // Set TLS 1.3 cipher suites
     std::string tls13_ciphers = "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256";
     SSL_CTX_set_ciphersuites(ctx, tls13_ciphers.c_str());
-    
-    // Set TLS 1.2 cipher suites (for compatibility)
     SSL_CTX_set_cipher_list(ctx, cipher_string.c_str());
 }
 
@@ -551,16 +529,15 @@ void StealthContext::configure_signature_algorithms(const std::vector<uint16_t>&
 }
 
 void StealthContext::configure_alpn(const std::vector<std::string>& protocols) {
-    // Build ALPN protocol list in wire format
     std::vector<unsigned char> alpn_data;
     for (const auto& proto : protocols) {
         alpn_data.push_back(static_cast<unsigned char>(proto.size()));
         alpn_data.insert(alpn_data.end(), proto.begin(), proto.end());
     }
-    
+
     SSL_CTX* ctx = ssl_context_.native_handle();
-    SSL_CTX_set_alpn_protos(ctx, alpn_data.data(), 
-                           static_cast<unsigned int>(alpn_data.size()));
+    SSL_CTX_set_alpn_protos(ctx, alpn_data.data(),
+                            static_cast<unsigned int>(alpn_data.size()));
 }
 
 void StealthContext::rotate_profile() {
@@ -596,28 +573,24 @@ void StealthContext::log_connection_metrics(const ConnectionMetrics& metrics) {
     if (log_file) {
         log_file << j.dump() << "\n";
     }
-    
-    // Check for profile rotation
+
     connection_counter_++;
-    if (config_.rotate_profiles && 
+    if (config_.rotate_profiles &&
         connection_counter_ >= config_.rotation_interval_connections) {
         connection_counter_ = 0;
         rotate_profile();
     }
 }
 
-// Standalone functions
-
 boost::asio::ssl::context generate_stealth_tls_config(
     tls_fingerprint::BrowserProfile profile,
     bool verbose) {
-    
     StealthConfig config;
     config.enabled = true;
     config.target_profile = profile;
-    
+
     StealthContext stealth_ctx(config);
-    
+
     if (verbose) {
         std::cout << "Generated stealth TLS configuration for: "
                   << tls_fingerprint::browser_profile_name(profile) << "\n";
@@ -632,55 +605,41 @@ StealthConnectionResult connect_with_stealth_mode(
     uint16_t port,
     tls_fingerprint::BrowserProfile profile,
     const StealthConfig& config) {
-    
     StealthConnectionResult result;
     result.metrics.server_host = server_host;
     result.metrics.server_port = port;
     result.metrics.used_profile = profile;
     result.metrics.timestamp = current_timestamp();
-    
+
     auto start_time = std::chrono::steady_clock::now();
-    
+
     try {
-        // Create stealth context
         StealthContext stealth_ctx(config);
-        
-        // Resolve endpoint
         boost::asio::ip::tcp::resolver resolver(io_context);
         auto endpoints = resolver.resolve(server_host, std::to_string(port));
-        
-        // Create SSL stream
         boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(
             io_context, stealth_ctx.get_context());
-        
-        // Set SNI hostname
         SSL_set_tlsext_host_name(stream.native_handle(), server_host.c_str());
-        
-        // Connect
         boost::asio::connect(stream.lowest_layer(), endpoints);
-        
-        // Perform TLS handshake
         stream.handshake(boost::asio::ssl::stream_base::client);
-        
+
         auto end_time = std::chrono::steady_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
             end_time - start_time);
-        
+
         result.success = true;
         result.metrics.handshake_succeeded = true;
         result.metrics.handshake_duration_ms = static_cast<uint32_t>(duration.count());
-        
-        // Close connection
+
         boost::system::error_code ec;
         stream.lowest_layer().close(ec);
-        
     } catch (const std::exception& e) {
         result.success = false;
         result.error_message = e.what();
         result.metrics.handshake_succeeded = false;
         result.metrics.error_message = e.what();
     }
-    
+
     return result;
 }
 
@@ -743,8 +702,6 @@ FingerprintTestResult evaluate_tls_fingerprint(
     return result;
 }
 
-// MetricsLogger implementation
-
 MetricsLogger::MetricsLogger(const std::string& log_file_path)
     : log_file_path_(log_file_path) {
     
@@ -787,8 +744,6 @@ void MetricsLogger::flush() {
     }
 }
 
-// StealthManager implementation
-
 StealthManager& StealthManager::instance() {
     static StealthManager instance;
     return instance;
@@ -807,7 +762,6 @@ void StealthManager::initialize(const StealthConfig& config) {
 StealthContext& StealthManager::get_context() {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!context_) {
-        // Initialize with default config if not already initialized
         StealthConfig default_config;
         default_config.enabled = true;
         context_ = std::make_unique<StealthContext>(default_config);
@@ -817,22 +771,21 @@ StealthContext& StealthManager::get_context() {
 
 void StealthManager::log_connection(const ConnectionMetrics& metrics) {
     std::lock_guard<std::mutex> lock(mutex_);
-    
+
     stats_.total_connections++;
     if (metrics.handshake_succeeded) {
         stats_.successful_connections++;
     } else {
         stats_.failed_connections++;
     }
-    
+
     stats_.profile_usage[metrics.used_profile]++;
-    
-    // Update average handshake duration
-    double total_duration = stats_.average_handshake_duration_ms * 
-                           (stats_.total_connections - 1);
+
+    double total_duration = stats_.average_handshake_duration_ms *
+                            (stats_.total_connections - 1);
     total_duration += metrics.handshake_duration_ms;
     stats_.average_handshake_duration_ms = total_duration / stats_.total_connections;
-    
+
     if (logger_) {
         logger_->log_metrics(metrics);
     }

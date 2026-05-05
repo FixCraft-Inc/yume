@@ -339,24 +339,20 @@ std::string calculate_ja4_hash(const JA4Components& components) {
     ja4_string << std::setw(2) << std::setfill('0') << static_cast<int>(components.extension_count);
     ja4_string << "_";
     
-    // Hash cipher suites (first 12 chars of SHA256)
     std::string cipher_str = join_numbers(components.cipher_suites, ",");
     std::string cipher_hash = sha256_hash(cipher_str).substr(0, 12);
     ja4_string << cipher_hash << "_";
     
-    // Hash extensions (first 12 chars of SHA256)
     std::string ext_str = join_numbers(components.extensions, ",");
     std::string ext_hash = sha256_hash(ext_str).substr(0, 12);
     ja4_string << ext_hash << "_";
     
-    // First ALPN
     ja4_string << (components.first_alpn.empty() ? "00" : components.first_alpn);
     
     return ja4_string.str();
 }
 
 std::string calculate_akamai_hash(const JA3Components& components) {
-    // Akamai uses similar to JA3 but different separator and format
     std::ostringstream akamai_string;
     
     akamai_string << std::hex << components.tls_version << "|";
@@ -426,7 +422,6 @@ std::vector<BrowserFingerprint> get_known_browser_fingerprints() {
             0x0601,  // rsa_pkcs1_sha512
         };
         
-        // Calculate hashes
         JA3Components ja3;
         ja3.tls_version = fp.tls_version;
         ja3.cipher_suites = fp.cipher_suites;
@@ -610,7 +605,6 @@ std::pair<BrowserProfile, double> match_browser_profile(const FingerprintData& f
         }
         total_checks += 1;
         
-        // Normalize score
         if (total_checks > 0) {
             score = (score / (total_checks * 50.0)) * 100.0;
         }
@@ -805,7 +799,6 @@ FingerprintEvaluation evaluate_fingerprint(const FingerprintData& fingerprint) {
         eval.recommendations.push_back("Recommended profile: " + browser_profile_name(eval.recommended_profile));
     }
     
-    // Check for common suspicious patterns
     if (fingerprint.ja3_components.cipher_suites.size() < 5) {
         eval.warnings.push_back("Too few cipher suites (looks like automation)");
     }

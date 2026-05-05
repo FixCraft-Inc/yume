@@ -69,7 +69,7 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --obfs --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --allow-remote-server-admin --operator-keys --federation-enable --peer --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --completion --root"
+  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --obfs --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --peer --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --completion --root"
   local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --keys-add --keys-gen"
   case "$prev" in
     --completion)
@@ -154,7 +154,6 @@ void print_help() {
         << "  --relay-disable          Disable client relay features\n"
         << "  --directory-enable       Enable endpoint directory\n"
         << "  --directory-disable      Disable endpoint directory\n"
-        << "  --allow-remote-server-admin Allow trusted remote server admin\n"
         << "  --operator-keys <path>   Operator key metadata\n"
         << "  --federation-enable      Enable static federation mode\n"
         << "  --peer <json>            Add a federation peer\n"
@@ -1182,7 +1181,10 @@ int main(int argc, char** argv) {
             cfg.threads = std::stoi(argv[++i]);
         } else if (arg == "--obfs") {
             cfg.obfuscation = true;
+        } else if (arg == "--no-obfs") {
+            cfg.obfuscation = false;
         } else if (arg == "--inner") {
+            yume::util::log_warn("--inner is deprecated; use --inner-heavy or --inner-light");
             cfg.inner_crypto = true;
             inner_crypto_override = true;
             inner_heavy_override = true;
@@ -1289,7 +1291,7 @@ int main(int argc, char** argv) {
             cfg.directory_enable = false;
             directory_enable_override = true;
         } else if (arg == "--allow-remote-server-admin") {
-            cfg.allow_remote_server_admin = true;
+            yume::util::log_warn("--allow-remote-server-admin was never wired to a check; flag removed (ignored)");
         } else if (arg == "--operator-keys" && i + 1 < argc) {
             cfg.operator_keys = resolve_cli_path(argv[++i]);
         } else if (arg == "--federation-enable") {
@@ -1523,9 +1525,6 @@ int main(int argc, char** argv) {
             if (json.contains("directory_enable") && !directory_enable_override) {
                 cfg.directory_enable = json["directory_enable"].get<bool>();
             }
-            if (json.contains("allow_remote_server_admin") && !cfg.allow_remote_server_admin) {
-                cfg.allow_remote_server_admin = json["allow_remote_server_admin"].get<bool>();
-            }
             if (json.contains("ipc_enable")) {
                 cfg.ipc_enable = json["ipc_enable"].get<bool>();
             }
@@ -1617,6 +1616,34 @@ int main(int argc, char** argv) {
         yume::util::log_warn("reverse_port_min > reverse_port_max; swapped values");
     }
     cfg.anonym_proof_mode = yume::policy::normalize_anonym_proof_mode(cfg.anonym_proof_mode);
+
+#if !YUME_FEATURE_EXEC
+    if (cfg.allow_exec) {
+        yume::util::log_warn(
+            "--allow-exec ignored: build was configured without -DYUME_FEATURE_EXEC=ON; "
+            "rebuild with that option to enable server-side command execution");
+    }
+#endif
+#if !YUME_FEATURE_LAN_BRIDGE
+    if (cfg.allow_local_ip) {
+        yume::util::log_warn(
+            "--allow-local-ip ignored: build was configured without -DYUME_FEATURE_LAN_BRIDGE=ON; "
+            "rebuild with that option to enable LAN/private-IP bridging");
+    }
+#endif
+#if !YUME_FEATURE_FULL_CONTROL
+    if (cfg.control_full) {
+        yume::util::log_warn(
+            "--control-full ignored: build was configured without -DYUME_FEATURE_FULL_CONTROL=ON; "
+            "rebuild with that option to enable unrestricted address bridging");
+    }
+#endif
+    if ((cfg.allow_exec || cfg.allow_local_ip || cfg.control_full) && cfg.auth_keys_meta.empty()) {
+        yume::util::log_warn(
+            "dangerous server feature enabled but no auth_keys_meta is configured; "
+            "no key will inherit these permissions until you create the meta file and grant per-key access "
+            "(see docs/PERMISSIONS.md)");
+    }
 
     auto require_readable = [&](const char* label, const std::string& path) {
         if (path.empty()) {
@@ -2129,7 +2156,12 @@ int main(int argc, char** argv) {
         }
     } else if (cfg.allow_embedded_master && cfg.pq_private_key.empty()) {
         yume::util::log_warn("using embedded BaseFWX master PQ key fallback (explicitly enabled)");
+    } else if (cfg.allow_embedded_master) {
+        yume::util::log_warn(
+            "embedded BaseFWX master PQ keypair enabled; connection security depends on basefwx-bundled keys "
+            "(disable with --no-embedded-master if you also provide --pq-key)");
     }
+
     if (cfg.anonym && cfg.anonym_ca_key.empty() && !cfg.anonym_ca_cert.empty()) {
         yume::util::log_warn("anonym_ca_cert set but anonym_ca_key is missing; no CA signature will be produced");
     }

@@ -8,9 +8,12 @@
 
 #include <array>
 #include <cstdio>
+#include <ctime>
 #include <thread>
 
 #include "client/forward.hpp"
+#include "core/obfs_h2.hpp"
+#include "core/obfs_signal.hpp"
 #include "util.hpp"
 
 namespace yume::client {
@@ -68,7 +71,44 @@ Tunnel::Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream)
 void Tunnel::start() {
     core_.start();
     schedule_keepalive();
-    read_tls();
+    if (h2_carrier_enabled_) {
+        send_h2_client_handshake_then_start();
+    } else {
+        read_tls();
+    }
+}
+
+void Tunnel::enable_h2_carrier(const std::string& sni,
+                               const std::string& secret,
+                               const std::string& user_agent) {
+    h2_carrier_enabled_ = true;
+    h2_sni_ = sni;
+    h2_secret_ = secret;
+    h2_user_agent_ = user_agent.empty()
+        ? std::string("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36")
+        : user_agent;
+}
+
+void Tunnel::send_h2_client_handshake_then_start() {
+    crypto::Bytes signal = obfs::derive_signal_key(h2_secret_);
+    std::int64_t hour = static_cast<std::int64_t>(std::time(nullptr)) / 3600;
+    std::string token = obfs::derive_path_token(signal, h2_sni_, hour);
+    std::string nonce = obfs::random_nonce_hex();
+    std::string path = obfs::build_path(token, nonce);
+    crypto::Bytes hello = obfs::encode_client_handshake(h2_sni_, path, h2_user_agent_);
+    h2_decoder_ = std::make_unique<obfs::H2InboundDecoder>(false);
+    auto buf = std::make_shared<std::vector<uint8_t>>(hello.begin(), hello.end());
+    auto self = shared_from_this();
+    boost::asio::async_write(stream_, boost::asio::buffer(*buf),
+                             boost::asio::bind_executor(strand_,
+                                                        [self, buf](const boost::system::error_code& ec, std::size_t) {
+                                                            if (ec) {
+                                                                self->close_all("h2 carrier client write failed: " + ec.message());
+                                                                return;
+                                                            }
+                                                            self->read_tls();
+                                                        }));
 }
 
 void Tunnel::set_inner_key(const Bytes& key) {
@@ -189,7 +229,32 @@ void Tunnel::on_read_tls(const boost::system::error_code& ec, std::size_t bytes)
         return;
     }
     if (bytes > 0) {
-        core_.feed_tls_bytes(read_buf_.data(), bytes);
+        if (h2_carrier_enabled_ && !h2_handshake_done_ && h2_decoder_) {
+            h2_decoder_->feed(read_buf_.data(), bytes);
+            if (h2_decoder_->failed()) {
+                close_all("h2 carrier server response decode failed: " + h2_decoder_->error());
+                return;
+            }
+            auto replies = h2_decoder_->take_outbound_replies();
+            if (!replies.empty()) {
+                auto buf = std::make_shared<std::vector<uint8_t>>(std::move(replies));
+                auto self = shared_from_this();
+                boost::asio::async_write(stream_, boost::asio::buffer(*buf),
+                                         boost::asio::bind_executor(strand_,
+                                                                    [self, buf](const boost::system::error_code&, std::size_t) {}));
+            }
+            if (h2_decoder_->headers_seen()) {
+                std::vector<uint8_t> leftover;
+                h2_decoder_->drain_inbound_buffer(&leftover);
+                h2_handshake_done_ = true;
+                h2_decoder_.reset();
+                if (!leftover.empty()) {
+                    core_.feed_tls_bytes(leftover.data(), leftover.size());
+                }
+            }
+        } else {
+            core_.feed_tls_bytes(read_buf_.data(), bytes);
+        }
     }
     if (!closed_) {
         read_tls();

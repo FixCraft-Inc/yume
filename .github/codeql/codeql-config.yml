@@ -1,0 +1,12 @@
+name: yume-codeql
+
+queries:
+  - uses: security-extended
+  - uses: security-and-quality
+
+paths-ignore:
+  - basefwx/**
+  - vendor/**
+  - third_party/**
+  - build*/**
+  - website/**

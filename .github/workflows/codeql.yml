@@ -1,0 +1,94 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main, DEV]
+  pull_request:
+    branches: [main, DEV]
+  schedule:
+    - cron: "17 9 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+env:
+  BASEFWX_REPO: "https://github.com/F1xGOD/basefwx.git"
+  BASEFWX_REF_FILE: ".basefwx-ref"
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+          - language: c-cpp
+            build-mode: manual
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Ensure BaseFWX sources
+        if: matrix.language == 'c-cpp'
+        run: |
+          set -euo pipefail
+          BASEFWX_REF="${BASEFWX_REF:-}"
+          if [[ -z "${BASEFWX_REF}" && -f "${BASEFWX_REF_FILE}" ]]; then
+            BASEFWX_REF="$(tr -d '[:space:]' < "${BASEFWX_REF_FILE}")"
+          fi
+          if [[ -z "${BASEFWX_REF}" ]]; then
+            BASEFWX_REF="main"
+          fi
+          rm -rf basefwx
+          git clone --filter=blob:none --no-checkout "${BASEFWX_REPO}" basefwx
+          git -C basefwx fetch --depth 1 origin "${BASEFWX_REF}"
+          git -C basefwx checkout --detach FETCH_HEAD
+          test -f basefwx/cpp/CMakeLists.txt
+          echo "Using BaseFWX ref: $(git -C basefwx rev-parse HEAD)"
+
+      - name: Install C++ dependencies
+        if: matrix.language == 'c-cpp'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config \
+            libssl-dev zlib1g-dev liblzma-dev libzstd-dev libargon2-dev \
+            libboost-all-dev libspdlog-dev nlohmann-json3-dev
+
+      - name: Extract prebuilt vendor libs
+        if: matrix.language == 'c-cpp'
+        run: |
+          if [[ -f yume-vendor-prebuilt.tar.xz ]]; then
+            tar -xJf yume-vendor-prebuilt.tar.xz
+          fi
+
+      - name: Build C++ for analysis
+        if: matrix.language == 'c-cpp'
+        run: |
+          test -d vendor/linux-x86_64
+          cmake -S . -B build-codeql \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBASEFWX_USE_VENDOR_DEPS=ON \
+            -DBASEFWX_VENDOR_DIR="${GITHUB_WORKSPACE}/vendor/linux-x86_64" \
+            -DBASEFWX_REQUIRE_ARGON2=ON \
+            -DBASEFWX_REQUIRE_OQS=ON \
+            -DBASEFWX_REQUIRE_LZMA=ON
+          cmake --build build-codeql --parallel
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"

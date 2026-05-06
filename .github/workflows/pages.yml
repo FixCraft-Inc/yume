@@ -32,7 +32,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p website/docs
-          for src in docs/STEALTH.md docs/PERMISSIONS.md docs/PERFORMANCE.md; do
+          for src in docs/*.md; do
             [[ -f "$src" ]] || continue
             name="$(basename "$src")"
             dst="website/docs/$name"

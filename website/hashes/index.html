@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en" data-asset-base="../assets/" data-results-base="../results/">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>YUME Hashes</title>
+    <meta name="description" content="SHA256, MD5, signatures, and manifest links for YUME release artifacts.">
+    <link rel="icon" type="image/svg+xml" href="../assets/yume-white.svg">
+    <link rel="stylesheet" href="../assets/site.css">
+    <script src="../assets/site.js" defer></script>
+  </head>
+  <body>
+    <div class="container">
+      <header class="site-header">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <span class="brand-icon" aria-hidden="true"></span>
+            <span class="brand-cutout" aria-hidden="true"></span>
+          </div>
+          <div>
+            <div class="brand-name">FixCraft</div>
+            <div class="brand-sub">YUME stealth transport</div>
+          </div>
+        </div>
+        <nav>
+          <a href="../#downloads">Downloads</a>
+          <a href="./">Hashes</a>
+          <a href="../#integrity">Integrity</a>
+          <a href="../#workflows">Workflows</a>
+          <a href="../#docs">Docs</a>
+          <a href="../#support">Support</a>
+        </nav>
+      </header>
+
+      <section class="hero">
+        <div>
+          <div class="chip">Release manifest</div>
+          <h1>SHA256 + MD5 Hashes</h1>
+          <p>
+            Use this page to verify every YUME artifact before running it. Values are fetched from the latest
+            GitHub release hash sidecars. Machine-readable metadata is published as
+            <a data-asset-link="release-manifest.json" href="#">release-manifest.json</a>.
+          </p>
+          <div class="link-row">
+            <a class="btn secondary" href="../#downloads">Back to downloads</a>
+            <a class="btn secondary" id="release-link" href="https://github.com/F1xGOD/yume/releases" target="_blank" rel="noopener">View release</a>
+            <a class="btn secondary" data-asset-link="SHA256SUMS.txt" href="#">SHA256SUMS.txt</a>
+            <a class="btn secondary" data-asset-link="MD5SUMS.txt" href="#">MD5SUMS.txt</a>
+          </div>
+        </div>
+        <div class="hero-panel">
+          <div>
+            <div class="meta">Latest release</div>
+            <div class="panel-title" id="release-version">Loading...</div>
+            <div class="meta-row">
+              <span id="release-date">Fetching date</span>
+              <span id="release-assets">0 assets</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="linux">
+        <div class="section-title">Linux</div>
+        <div class="table-scroll">
+          <table class="artifact-table hash-manifest-table">
+            <thead>
+              <tr>
+                <th>Artifact</th>
+                <th>SHA256</th>
+                <th>MD5</th>
+                <th>Sidecars</th>
+                <th>Download</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="mono">yume-amd64-linux</td>
+                <td class="mono hash-digest" data-hash-file="yume-amd64-linux.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yume-amd64-linux.md5">Loading...</td>
+                <td class="mono"><a data-asset="yume-linux-amd64.sha256" href="#">sha256</a> / <a data-asset="yume-linux-amd64.md5" href="#">md5</a> / <a data-asset="yume-linux-amd64.sig" href="#">sig</a></td>
+                <td><a data-download="yume-linux-amd64" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yumed-amd64-linux</td>
+                <td class="mono hash-digest" data-hash-file="yumed-amd64-linux.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yumed-amd64-linux.md5">Loading...</td>
+                <td class="mono"><a data-asset="yumed-linux-amd64.sha256" href="#">sha256</a> / <a data-asset="yumed-linux-amd64.md5" href="#">md5</a> / <a data-asset="yumed-linux-amd64.sig" href="#">sig</a></td>
+                <td><a data-download="yumed-linux-amd64" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yume-amd64-linux-static</td>
+                <td class="mono hash-digest" data-hash-file="yume-amd64-linux-static.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yume-amd64-linux-static.md5">Loading...</td>
+                <td class="mono"><a data-asset="yume-linux-amd64-static.sha256" href="#">sha256</a> / <a data-asset="yume-linux-amd64-static.md5" href="#">md5</a> / <a data-asset="yume-linux-amd64-static.sig" href="#">sig</a></td>
+                <td><a data-download="yume-linux-amd64-static" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yumed-amd64-linux-static</td>
+                <td class="mono hash-digest" data-hash-file="yumed-amd64-linux-static.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yumed-amd64-linux-static.md5">Loading...</td>
+                <td class="mono"><a data-asset="yumed-linux-amd64-static.sha256" href="#">sha256</a> / <a data-asset="yumed-linux-amd64-static.md5" href="#">md5</a> / <a data-asset="yumed-linux-amd64-static.sig" href="#">sig</a></td>
+                <td><a data-download="yumed-linux-amd64-static" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yume-armv7-linux</td>
+                <td class="mono hash-digest" data-hash-file="yume-armv7-linux.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yume-armv7-linux.md5">Loading...</td>
+                <td class="mono"><a data-asset="yume-linux-armv7.sha256" href="#">sha256</a> / <a data-asset="yume-linux-armv7.md5" href="#">md5</a> / <a data-asset="yume-linux-armv7.sig" href="#">sig</a></td>
+                <td><a data-download="yume-linux-armv7" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yumed-armv7-linux</td>
+                <td class="mono hash-digest" data-hash-file="yumed-armv7-linux.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yumed-armv7-linux.md5">Loading...</td>
+                <td class="mono"><a data-asset="yumed-linux-armv7.sha256" href="#">sha256</a> / <a data-asset="yumed-linux-armv7.md5" href="#">md5</a> / <a data-asset="yumed-linux-armv7.sig" href="#">sig</a></td>
+                <td><a data-download="yumed-linux-armv7" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yume-armv8-linux</td>
+                <td class="mono hash-digest" data-hash-file="yume-armv8-linux.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yume-armv8-linux.md5">Loading...</td>
+                <td class="mono"><a data-asset="yume-linux-armv8.sha256" href="#">sha256</a> / <a data-asset="yume-linux-armv8.md5" href="#">md5</a> / <a data-asset="yume-linux-armv8.sig" href="#">sig</a></td>
+                <td><a data-download="yume-linux-armv8" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yumed-armv8-linux</td>
+                <td class="mono hash-digest" data-hash-file="yumed-armv8-linux.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yumed-armv8-linux.md5">Loading...</td>
+                <td class="mono"><a data-asset="yumed-linux-armv8.sha256" href="#">sha256</a> / <a data-asset="yumed-linux-armv8.md5" href="#">md5</a> / <a data-asset="yumed-linux-armv8.sig" href="#">sig</a></td>
+                <td><a data-download="yumed-linux-armv8" href="#">download</a></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="embedded">
+        <div class="section-title">Embedded</div>
+        <div class="table-scroll">
+          <table class="artifact-table hash-manifest-table">
+            <thead>
+              <tr>
+                <th>Artifact</th>
+                <th>SHA256</th>
+                <th>MD5</th>
+                <th>Sidecars</th>
+                <th>Download</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="mono">yume-mips-openwrt</td>
+                <td class="mono hash-digest" data-hash-file="yume-mips-openwrt.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yume-mips-openwrt.md5">Loading...</td>
+                <td class="mono"><a data-asset="yume-openwrt-mips.sha256" href="#">sha256</a> / <a data-asset="yume-openwrt-mips.md5" href="#">md5</a> / <a data-asset="yume-openwrt-mips.sig" href="#">sig</a></td>
+                <td><a data-download="yume-openwrt-mips" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yumed-mips-openwrt</td>
+                <td class="mono hash-digest" data-hash-file="yumed-mips-openwrt.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yumed-mips-openwrt.md5">Loading...</td>
+                <td class="mono"><a data-asset="yumed-openwrt-mips.sha256" href="#">sha256</a> / <a data-asset="yumed-openwrt-mips.md5" href="#">md5</a> / <a data-asset="yumed-openwrt-mips.sig" href="#">sig</a></td>
+                <td><a data-download="yumed-openwrt-mips" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yume-x86-busybox</td>
+                <td class="mono hash-digest" data-hash-file="yume-x86-busybox.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yume-x86-busybox.md5">Loading...</td>
+                <td class="mono"><a data-asset="yume-busybox-amd64.sha256" href="#">sha256</a> / <a data-asset="yume-busybox-amd64.md5" href="#">md5</a> / <a data-asset="yume-busybox-amd64.sig" href="#">sig</a></td>
+                <td><a data-download="yume-busybox-amd64" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yumed-x86-busybox</td>
+                <td class="mono hash-digest" data-hash-file="yumed-x86-busybox.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yumed-x86-busybox.md5">Loading...</td>
+                <td class="mono"><a data-asset="yumed-busybox-amd64.sha256" href="#">sha256</a> / <a data-asset="yumed-busybox-amd64.md5" href="#">md5</a> / <a data-asset="yumed-busybox-amd64.sig" href="#">sig</a></td>
+                <td><a data-download="yumed-busybox-amd64" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yume-x86-busybox-static</td>
+                <td class="mono hash-digest" data-hash-file="yume-x86-busybox-static.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yume-x86-busybox-static.md5">Loading...</td>
+                <td class="mono"><a data-asset="yume-busybox-amd64-static.sha256" href="#">sha256</a> / <a data-asset="yume-busybox-amd64-static.md5" href="#">md5</a> / <a data-asset="yume-busybox-amd64-static.sig" href="#">sig</a></td>
+                <td><a data-download="yume-busybox-amd64-static" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yumed-x86-busybox-static</td>
+                <td class="mono hash-digest" data-hash-file="yumed-x86-busybox-static.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yumed-x86-busybox-static.md5">Loading...</td>
+                <td class="mono"><a data-asset="yumed-busybox-amd64-static.sha256" href="#">sha256</a> / <a data-asset="yumed-busybox-amd64-static.md5" href="#">md5</a> / <a data-asset="yumed-busybox-amd64-static.sig" href="#">sig</a></td>
+                <td><a data-download="yumed-busybox-amd64-static" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yume-armv7-busybox</td>
+                <td class="mono hash-digest" data-hash-file="yume-armv7-busybox.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yume-armv7-busybox.md5">Loading...</td>
+                <td class="mono"><a data-asset="yume-busybox-armv7.sha256" href="#">sha256</a> / <a data-asset="yume-busybox-armv7.md5" href="#">md5</a> / <a data-asset="yume-busybox-armv7.sig" href="#">sig</a></td>
+                <td><a data-download="yume-busybox-armv7" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yumed-armv7-busybox</td>
+                <td class="mono hash-digest" data-hash-file="yumed-armv7-busybox.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yumed-armv7-busybox.md5">Loading...</td>
+                <td class="mono"><a data-asset="yumed-busybox-armv7.sha256" href="#">sha256</a> / <a data-asset="yumed-busybox-armv7.md5" href="#">md5</a> / <a data-asset="yumed-busybox-armv7.sig" href="#">sig</a></td>
+                <td><a data-download="yumed-busybox-armv7" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yume-armv7-busybox-static</td>
+                <td class="mono hash-digest" data-hash-file="yume-armv7-busybox-static.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yume-armv7-busybox-static.md5">Loading...</td>
+                <td class="mono"><a data-asset="yume-busybox-armv7-static.sha256" href="#">sha256</a> / <a data-asset="yume-busybox-armv7-static.md5" href="#">md5</a> / <a data-asset="yume-busybox-armv7-static.sig" href="#">sig</a></td>
+                <td><a data-download="yume-busybox-armv7-static" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yumed-armv7-busybox-static</td>
+                <td class="mono hash-digest" data-hash-file="yumed-armv7-busybox-static.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yumed-armv7-busybox-static.md5">Loading...</td>
+                <td class="mono"><a data-asset="yumed-busybox-armv7-static.sha256" href="#">sha256</a> / <a data-asset="yumed-busybox-armv7-static.md5" href="#">md5</a> / <a data-asset="yumed-busybox-armv7-static.sig" href="#">sig</a></td>
+                <td><a data-download="yumed-busybox-armv7-static" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yume-armv8-busybox</td>
+                <td class="mono hash-digest" data-hash-file="yume-armv8-busybox.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yume-armv8-busybox.md5">Loading...</td>
+                <td class="mono"><a data-asset="yume-busybox-armv8.sha256" href="#">sha256</a> / <a data-asset="yume-busybox-armv8.md5" href="#">md5</a> / <a data-asset="yume-busybox-armv8.sig" href="#">sig</a></td>
+                <td><a data-download="yume-busybox-armv8" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yumed-armv8-busybox</td>
+                <td class="mono hash-digest" data-hash-file="yumed-armv8-busybox.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yumed-armv8-busybox.md5">Loading...</td>
+                <td class="mono"><a data-asset="yumed-busybox-armv8.sha256" href="#">sha256</a> / <a data-asset="yumed-busybox-armv8.md5" href="#">md5</a> / <a data-asset="yumed-busybox-armv8.sig" href="#">sig</a></td>
+                <td><a data-download="yumed-busybox-armv8" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yume-armv8-busybox-static</td>
+                <td class="mono hash-digest" data-hash-file="yume-armv8-busybox-static.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yume-armv8-busybox-static.md5">Loading...</td>
+                <td class="mono"><a data-asset="yume-busybox-armv8-static.sha256" href="#">sha256</a> / <a data-asset="yume-busybox-armv8-static.md5" href="#">md5</a> / <a data-asset="yume-busybox-armv8-static.sig" href="#">sig</a></td>
+                <td><a data-download="yume-busybox-armv8-static" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yumed-armv8-busybox-static</td>
+                <td class="mono hash-digest" data-hash-file="yumed-armv8-busybox-static.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yumed-armv8-busybox-static.md5">Loading...</td>
+                <td class="mono"><a data-asset="yumed-busybox-armv8-static.sha256" href="#">sha256</a> / <a data-asset="yumed-busybox-armv8-static.md5" href="#">md5</a> / <a data-asset="yumed-busybox-armv8-static.sig" href="#">sig</a></td>
+                <td><a data-download="yumed-busybox-armv8-static" href="#">download</a></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="macos">
+        <div class="section-title">macOS</div>
+        <div class="table-scroll">
+          <table class="artifact-table hash-manifest-table">
+            <thead>
+              <tr>
+                <th>Artifact</th>
+                <th>SHA256</th>
+                <th>MD5</th>
+                <th>Sidecars</th>
+                <th>Download</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="mono">yume-armv8-mac</td>
+                <td class="mono hash-digest" data-hash-file="yume-armv8-mac.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yume-armv8-mac.md5">Loading...</td>
+                <td class="mono"><a data-asset="yume-macos-arm64.sha256" href="#">sha256</a> / <a data-asset="yume-macos-arm64.md5" href="#">md5</a> / <a data-asset="yume-macos-arm64.sig" href="#">sig</a></td>
+                <td><a data-download="yume-macos-arm64" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yumed-armv8-mac</td>
+                <td class="mono hash-digest" data-hash-file="yumed-armv8-mac.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yumed-armv8-mac.md5">Loading...</td>
+                <td class="mono"><a data-asset="yumed-macos-arm64.sha256" href="#">sha256</a> / <a data-asset="yumed-macos-arm64.md5" href="#">md5</a> / <a data-asset="yumed-macos-arm64.sig" href="#">sig</a></td>
+                <td><a data-download="yumed-macos-arm64" href="#">download</a></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="windows">
+        <div class="section-title">Windows</div>
+        <div class="table-scroll">
+          <table class="artifact-table hash-manifest-table">
+            <thead>
+              <tr>
+                <th>Artifact</th>
+                <th>SHA256</th>
+                <th>MD5</th>
+                <th>Sidecars</th>
+                <th>Download</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="mono">yume-amd64-windows.tar.xz</td>
+                <td class="mono hash-digest" data-hash-file="yume-amd64-windows.tar.xz.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yume-amd64-windows.tar.xz.md5">Loading...</td>
+                <td class="mono"><a data-asset="yume-windows-amd64.sha256" href="#">sha256</a> / <a data-asset="yume-windows-amd64.md5" href="#">md5</a> / <a data-asset="yume-windows-amd64.sig" href="#">sig</a></td>
+                <td><a data-download="yume-windows-amd64" href="#">download</a></td>
+              </tr>
+              <tr>
+                <td class="mono">yumed-amd64-windows.tar.xz</td>
+                <td class="mono hash-digest" data-hash-file="yumed-amd64-windows.tar.xz.sha256">Loading...</td>
+                <td class="mono hash-digest" data-hash-file="yumed-amd64-windows.tar.xz.md5">Loading...</td>
+                <td class="mono"><a data-asset="yumed-windows-amd64.sha256" href="#">sha256</a> / <a data-asset="yumed-windows-amd64.md5" href="#">md5</a> / <a data-asset="yumed-windows-amd64.sig" href="#">sig</a></td>
+                <td><a data-download="yumed-windows-amd64" href="#">download</a></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <footer>
+        FixCraft YUME documentation and release portal
+      </footer>
+    </div>
+  </body>
+</html>

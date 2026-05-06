@@ -379,14 +379,101 @@ jobs:
         run: |
           set -euo pipefail
           cd artifacts
-          sha256sum * > SHA256SUMS.txt
+          rm -f SHA256SUMS.txt MD5SUMS.txt release-manifest.json
+          for file in *; do
+            [[ -f "$file" ]] || continue
+            case "$file" in
+              *.sha256|*.md5|*.sig|SHA256SUMS.txt|MD5SUMS.txt|release-manifest.json)
+                continue
+                ;;
+            esac
+            sha256sum "$file" > "$file.sha256"
+            md5sum "$file" > "$file.md5"
+          done
+          find . -maxdepth 1 -type f \
+            ! -name '*.sha256' \
+            ! -name '*.md5' \
+            ! -name '*.sig' \
+            ! -name 'SHA256SUMS.txt' \
+            ! -name 'MD5SUMS.txt' \
+            ! -name 'release-manifest.json' \
+            -printf '%f\n' | sort | xargs -r sha256sum > SHA256SUMS.txt
+          find . -maxdepth 1 -type f \
+            ! -name '*.sha256' \
+            ! -name '*.md5' \
+            ! -name '*.sig' \
+            ! -name 'SHA256SUMS.txt' \
+            ! -name 'MD5SUMS.txt' \
+            ! -name 'release-manifest.json' \
+            -printf '%f\n' | sort | xargs -r md5sum > MD5SUMS.txt
           cat SHA256SUMS.txt
+          cat MD5SUMS.txt
+
+      - name: Import GPG key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${GPG_PRIVATE_KEY:-}" ]]; then
+            echo "No GPG_PRIVATE_KEY secret configured; signatures will be skipped."
+            echo "YUME_GPG_AVAILABLE=0" >> "${GITHUB_ENV}"
+            exit 0
+          fi
+          keyfile="$(mktemp)"
+          export GNUPGHOME="${HOME}/.gnupg"
+          mkdir -p "${GNUPGHOME}"
+          chmod 700 "${GNUPGHOME}"
+          printf '%s' "${GPG_PRIVATE_KEY}" > "${keyfile}"
+          gpg --batch --import "${keyfile}"
+          rm -f "${keyfile}"
+          echo "YUME_GPG_AVAILABLE=1" >> "${GITHUB_ENV}"
+
+      - name: Sign release artifacts
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          if [[ "${YUME_GPG_AVAILABLE:-0}" != "1" ]]; then
+            echo "Skipping detached signatures."
+            exit 0
+          fi
+          cd artifacts
+          for file in *; do
+            [[ -f "$file" ]] || continue
+            case "$file" in
+              *.sha256|*.md5|*.sig|SHA256SUMS.txt|MD5SUMS.txt|release-manifest.json)
+                continue
+                ;;
+            esac
+            gpg --batch --yes --pinentry-mode loopback --passphrase "${GPG_PASSPHRASE:-}" \
+              --detach-sign --armor --output "${file}.sig" "$file"
+          done
 
       - name: Generate release manifest
         run: |
           set -euo pipefail
           python3 ./scripts/release_manifest.py artifacts "${{ github.event.inputs.tag_name || github.ref_name }}"
           cat artifacts/release-manifest.json
+
+      - name: Verify release metadata
+        run: |
+          set -euo pipefail
+          cd artifacts
+          sha256sum -c SHA256SUMS.txt
+          md5sum -c MD5SUMS.txt
+          for file in *; do
+            [[ -f "$file" ]] || continue
+            case "$file" in
+              *.sha256|*.md5|*.sig|SHA256SUMS.txt|MD5SUMS.txt|release-manifest.json)
+                continue
+                ;;
+            esac
+            sha256sum -c "${file}.sha256"
+            md5sum -c "${file}.md5"
+            if [[ -f "${file}.sig" ]]; then
+              gpg --batch --verify "${file}.sig" "$file"
+            fi
+          done
 
       - name: Resolve release tag
         run: |

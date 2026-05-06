@@ -71,6 +71,8 @@ def validate_workflow_guards() -> None:
     ci_yml = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     for needle in ("export YUME_REQUIRE_ARGON2=1", "export YUME_REQUIRE_OQS=1"):
         require(needle in release_yml, f"release.yml is missing required guard: {needle}")
+    for needle in ("SHA256SUMS.txt", "MD5SUMS.txt", "release-manifest.json", "gpg --batch --verify"):
+        require(needle in release_yml, f"release.yml is missing release-integrity step: {needle}")
     for needle in ("-DBASEFWX_REQUIRE_ARGON2=ON", "-DBASEFWX_REQUIRE_OQS=ON", "-DBASEFWX_REQUIRE_LZMA=ON"):
         require(needle in ci_yml, f"ci.yml is missing required guard: {needle}")
     require("branches: [main, DEV]" in ci_yml, "ci.yml must cover main and DEV")

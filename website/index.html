@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="en" data-asset-base="assets/">
+<html lang="en" data-asset-base="assets/" data-results-base="results/">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>YUME · post-quantum stealth transport</title>
-    <meta name="description" content="YUME is an open-source post-quantum stealth transport. TCP and UDP through TLS 1.3 sessions that look like Chrome HTTPS, with hybrid ML-KEM-768 + AES-GCM inner crypto and live key hopping.">
+    <title>YUME post-quantum stealth transport</title>
+    <meta name="description" content="YUME is an open-source post-quantum stealth transport: browser-shaped TLS 1.3, HTTP/2 carrier camouflage, hybrid ML-KEM-768 inner crypto, and release integrity metadata.">
     <link rel="icon" type="image/svg+xml" href="assets/yume-white.svg">
     <link rel="stylesheet" href="assets/site.css">
     <script src="assets/site.js" defer></script>
@@ -24,9 +24,9 @@
         </div>
         <nav>
           <a href="#downloads">Downloads</a>
-          <a href="#endpoints">Public endpoints</a>
-          <a href="#how">How it works</a>
-          <a href="#compare">Compared</a>
+          <a href="hashes/">Hashes</a>
+          <a href="#integrity">Integrity</a>
+          <a href="#workflows">Workflows</a>
           <a href="#docs">Docs</a>
           <a href="#support">Support</a>
         </nav>
@@ -34,24 +34,42 @@
 
       <section class="hero" id="top">
         <div>
-          <div class="chip">Post-quantum stealth transport · GPL-v3</div>
+          <div class="chip">Post-quantum stealth transport - GPL-v3</div>
           <h1>YUME</h1>
           <p>
-            An open-source transport that carries TCP and UDP through TLS 1.3 sessions shaped like
-            ordinary Chrome HTTPS, with hybrid ML-KEM-768 + AES-GCM inner crypto and optional live
-            key hopping. Both client (<code>yume</code>) and daemon (<code>yumed</code>) build from
-            one tree and run on hardware from a 128 MiB OpenWRT router up to a server.
+            YUME carries TCP and UDP through real TLS 1.3 sessions shaped like ordinary browser HTTPS.
+            It layers a Chrome-style HTTP/2 carrier handshake, a real HTML facade for browser probes,
+            hybrid ML-KEM-768 + AES-GCM inner crypto, and optional live key hopping into one buildable
+            client and daemon pair.
           </p>
           <div class="cta-row">
-            <a class="btn" id="download-cta" href="https://github.com/F1xGOD/yume/releases" target="_blank" rel="noopener">Download CLI</a>
-            <a class="btn secondary" href="https://github.com/F1xGOD/yume#readme" target="_blank" rel="noopener">Read README</a>
-            <a class="btn secondary" href="docs/STEALTH/">How stealth works</a>
+            <a class="btn" id="download-cta" href="https://github.com/F1xGOD/yume/releases" target="_blank" rel="noopener">Download latest</a>
+            <a class="btn secondary" href="docs/QUICKSTART/">Quick start</a>
+            <a class="btn secondary" href="docs/STEALTH/">Stealth model</a>
+          </div>
+          <div class="release-strip" aria-label="Project scope">
+            <div class="release-stat">
+              <strong>2 binaries</strong>
+              <span><code>yume</code> client and <code>yumed</code> daemon</span>
+            </div>
+            <div class="release-stat">
+              <strong>26 artifacts</strong>
+              <span>Linux, BusyBox, OpenWRT, macOS, Windows</span>
+            </div>
+            <div class="release-stat">
+              <strong>PQ inner crypto</strong>
+              <span>ML-KEM-768 plus AES-256-GCM</span>
+            </div>
+            <div class="release-stat">
+              <strong>128 MiB target</strong>
+              <span>Minimal builds for small routers</span>
+            </div>
           </div>
         </div>
         <div class="hero-panel" id="release-card">
           <div>
             <div class="meta">Latest release</div>
-            <div class="panel-title" id="release-version">Loading…</div>
+            <div class="panel-title" id="release-version">Loading...</div>
             <div class="meta-row">
               <span id="release-date">Fetching date</span>
               <span id="release-assets">0 assets</span>
@@ -65,123 +83,209 @@
 
       <section id="downloads">
         <div class="section-title">Download</div>
-        <p class="section-lead">Architecture-specific binaries packaged as <code>.tar.xz</code>. Static-linked variants are available where listed.</p>
+        <p class="section-lead">Every target publishes both the client and daemon where that build is available. Hashes and optional detached signatures are listed on the hashes page.</p>
         <div class="download-grid">
           <article class="download-card">
-            <span class="chip">Linux</span>
-            <h3>Linux CLI</h3>
-            <p class="section-lead">Dynamic and static builds for amd64, ARMv7, and ARMv8.</p>
+            <span class="chip">Linux amd64</span>
+            <h3>Server and desktop</h3>
+            <p class="section-lead">Dynamic and static Linux builds for common x86_64 hosts.</p>
             <div class="link-row">
-              <a class="btn" data-download="linux-amd64" data-variant="bin" href="#">amd64</a>
-              <a class="btn secondary" data-download="linux-amd64" data-variant="static" href="#">amd64 static</a>
+              <a class="btn" data-download="yume-linux-amd64" href="#">yume</a>
+              <a class="btn secondary" data-download="yumed-linux-amd64" href="#">yumed</a>
             </div>
             <div class="link-row">
-              <a class="btn secondary" data-download="linux-armv7" href="#">armv7</a>
-              <a class="btn secondary" data-download="linux-armv8" href="#">armv8</a>
+              <a data-download="yume-linux-amd64-static" href="#">yume static</a>
+              <a data-download="yumed-linux-amd64-static" href="#">yumed static</a>
+              <a href="hashes/#linux">hashes</a>
             </div>
           </article>
+
+          <article class="download-card">
+            <span class="chip">Linux ARM</span>
+            <h3>ARMv7 and ARMv8</h3>
+            <p class="section-lead">Builds for small boards and ARM servers using the same release pipeline.</p>
+            <div class="link-row">
+              <a class="btn" data-download="yume-linux-armv7" href="#">armv7 client</a>
+              <a class="btn secondary" data-download="yumed-linux-armv7" href="#">armv7 daemon</a>
+            </div>
+            <div class="link-row">
+              <a class="btn secondary" data-download="yume-linux-armv8" href="#">armv8 client</a>
+              <a class="btn secondary" data-download="yumed-linux-armv8" href="#">armv8 daemon</a>
+            </div>
+            <div class="link-row"><a href="hashes/#linux">hashes</a></div>
+          </article>
+
           <article class="download-card">
             <span class="chip">Embedded</span>
-            <h3>OpenWRT &amp; BusyBox</h3>
-            <p class="section-lead">For routers and minimal Linux. Static builds run with no shared-library dependencies.</p>
+            <h3>OpenWRT and BusyBox</h3>
+            <p class="section-lead">Router and minimal userspace builds, including static BusyBox variants.</p>
             <div class="link-row">
-              <a class="btn" data-download="openwrt-mips" href="#">OpenWRT MIPS</a>
+              <a class="btn" data-download="yume-openwrt-mips" href="#">OpenWRT client</a>
+              <a class="btn secondary" data-download="yumed-openwrt-mips" href="#">OpenWRT daemon</a>
             </div>
             <div class="link-row">
-              <a class="btn secondary" data-download="busybox-amd64" data-variant="static" href="#">BusyBox amd64 static</a>
-              <a class="btn secondary" data-download="busybox-armv7" data-variant="static" href="#">BusyBox armv7 static</a>
-              <a class="btn secondary" data-download="busybox-armv8" data-variant="static" href="#">BusyBox armv8 static</a>
+              <a data-download="yume-busybox-amd64-static" href="#">BusyBox amd64 static</a>
+              <a data-download="yume-busybox-armv7-static" href="#">armv7 static</a>
+              <a data-download="yume-busybox-armv8-static" href="#">armv8 static</a>
             </div>
+            <div class="link-row"><a href="hashes/#embedded">all embedded hashes</a></div>
           </article>
+
           <article class="download-card">
             <span class="chip">macOS</span>
-            <h3>macOS CLI</h3>
-            <p class="section-lead">Apple Silicon build. Build from source for Intel using the same tree.</p>
+            <h3>Apple Silicon</h3>
+            <p class="section-lead">arm64 binaries for client and daemon. Intel users can build from source.</p>
             <div class="link-row">
-              <a class="btn" data-download="mac-arm64" href="#">arm64</a>
+              <a class="btn" data-download="yume-macos-arm64" href="#">yume arm64</a>
+              <a class="btn secondary" data-download="yumed-macos-arm64" href="#">yumed arm64</a>
             </div>
+            <div class="link-row"><a href="hashes/#macos">hashes</a></div>
           </article>
+
           <article class="download-card">
             <span class="chip">Windows</span>
-            <h3>Windows CLI</h3>
-            <p class="section-lead">amd64 bundle with the runtime DLLs alongside the executable.</p>
+            <h3>amd64 bundles</h3>
+            <p class="section-lead">Tarballs include the executable and runtime DLLs needed beside it.</p>
             <div class="link-row">
-              <a class="btn" data-download="windows-amd64" href="#">amd64 bundle</a>
+              <a class="btn" data-download="yume-windows-amd64" href="#">client bundle</a>
+              <a class="btn secondary" data-download="yumed-windows-amd64" href="#">daemon bundle</a>
             </div>
+            <div class="link-row"><a href="hashes/#windows">hashes</a></div>
           </article>
+
           <article class="download-card download-card-wide">
             <span class="chip">Source</span>
-            <h3>Build it yourself</h3>
+            <h3>Build from the same tree</h3>
             <p class="section-lead">
-              Clone the repo and run <code>./ezbuild.sh</code> (or
-              <code>cmake -B build &amp;&amp; cmake --build build -j$(nproc)</code>). The build cross-compiles to every
-              target above. Releases are reproducible from the same tree, no proprietary blobs.
+              The release workflow builds from this repository with a pinned BaseFWX commit, required Argon2/OQS guards,
+              and post-build binary inspection before upload.
             </p>
             <div class="link-row">
               <a class="btn secondary" href="https://github.com/F1xGOD/yume" target="_blank" rel="noopener">Source on GitHub</a>
               <a class="btn secondary" href="https://github.com/F1xGOD/yume/blob/main/ezbuild.sh" target="_blank" rel="noopener">ezbuild.sh</a>
+              <a class="btn secondary" href="hashes/">Release manifest</a>
             </div>
           </article>
         </div>
       </section>
 
-      <section id="endpoints">
-        <div class="section-title">Free public endpoints (coming soon)</div>
-        <p class="section-lead">FixCraft is bringing up a small fleet of public <code>yumed</code> endpoints that anyone can connect to.</p>
+      <section id="integrity">
+        <div class="section-title">Integrity and release trail</div>
+        <p class="section-lead">The release workflow publishes a machine-readable manifest plus per-artifact SHA256 and MD5 files. If GPG signing secrets are configured, detached signatures are uploaded and verified before release publication.</p>
         <div class="grid">
           <div class="card">
-            <h4>No signup</h4>
-            <p>Bring your own Ed25519 key or use the published authorised-keys list. No account, no payment, no rate limit beyond fairness.</p>
+            <h4>Checksums</h4>
+            <p>Use the per-artifact <code>.sha256</code> files or the aggregate <code>SHA256SUMS.txt</code> release asset.</p>
+            <div class="hash-block" style="margin-top:12px;">
+              <div class="hash-title">Linux example</div>
+              <div class="hash-value">sha256sum -c yume-amd64-linux.sha256</div>
+            </div>
           </div>
           <div class="card">
-            <h4>Unmodified daemon</h4>
-            <p>The endpoints run the exact <code>yumed</code> binary you can build from the source tree. Nothing private, nothing hidden.</p>
+            <h4>Detached signatures</h4>
+            <p>When signing keys are configured in CI, release assets include <code>.sig</code> sidecars.</p>
+            <div class="hash-block" style="margin-top:12px;">
+              <div class="hash-title">GPG example</div>
+              <div class="hash-value">gpg --verify yume-amd64-linux.sig yume-amd64-linux</div>
+            </div>
           </div>
           <div class="card">
-            <h4>Real HTML on /</h4>
-            <p>Browsers hitting the same hostname see a normal web page. YUME clients tunnel through the same port.</p>
-          </div>
-          <div class="card">
-            <h4>Pinned in advance</h4>
-            <p>Endpoint hostnames, public keys, and authorised-keys fingerprints will be published here so clients can pin them before the fleet goes live.</p>
+            <h4>Manifest</h4>
+            <p><a data-asset-link="release-manifest.json" href="#">release-manifest.json</a> records component, OS, arch, size, SHA256, MD5, and signature sidecar names.</p>
           </div>
         </div>
       </section>
 
-      <section id="how">
-        <div class="section-title">How it works</div>
-        <p class="section-lead">Three independent layers of byte-shape camouflage on top of TLS 1.3, plus end-to-end inner crypto. Each layer is on by default and can be turned off independently.</p>
+      <section id="virustotal">
+        <div class="section-title">VirusTotal status</div>
+        <p class="section-lead">If the release workflow is configured with a VirusTotal API key, the latest scan report appears here and links to the official file report pages.</p>
+        <div style="margin-bottom:16px;" id="vt-summary" class="status-pill ok">Loading VirusTotal results...</div>
+        <div class="link-row" style="margin-bottom:16px;">
+          <a id="vt-results-text" href="https://raw.githubusercontent.com/F1xGOD/yume/DEV/website/results/virustotal-latest.txt" target="_blank" rel="noopener">Download results.txt</a>
+          <a id="vt-results-json" href="https://raw.githubusercontent.com/F1xGOD/yume/DEV/website/results/virustotal-latest.json" target="_blank" rel="noopener">Raw JSON</a>
+        </div>
+        <div class="table-scroll">
+          <table class="vt-table" id="vt-table">
+            <thead>
+              <tr>
+                <th>File</th>
+                <th>Malicious</th>
+                <th>Suspicious</th>
+                <th>Undetected</th>
+                <th>Report</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td colspan="5" class="mono">Waiting for results...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="workflows">
+        <div class="section-title">Operator workflows</div>
+        <p class="section-lead">YUME keeps the normal path small: build, authorize a key, start the daemon, connect a client. The dangerous controls stay behind compile-time, runtime, and per-key gates.</p>
+        <div class="workflow-grid">
+          <div class="workflow-step">
+            <div class="meta">01</div>
+            <h4>Build</h4>
+            <p class="section-lead">Full builds require BaseFWX, Argon2, OQS, OpenSSL, and LZMA. Minimal builds keep the router path small.</p>
+          </div>
+          <div class="workflow-step">
+            <div class="meta">02</div>
+            <h4>Authorize</h4>
+            <p class="section-lead"><code>authorized_keys</code> controls who can connect. <code>auth_keys.meta</code> controls what each key can do.</p>
+          </div>
+          <div class="workflow-step">
+            <div class="meta">03</div>
+            <h4>Serve</h4>
+            <p class="section-lead"><code>yumed</code> can share port 443 with a real HTML facade while YUME clients use the HTTP/2 carrier.</p>
+          </div>
+          <div class="workflow-step">
+            <div class="meta">04</div>
+            <h4>Connect</h4>
+            <p class="section-lead">Clients use SOCKS, local forward, reverse forward, or command wrapping depending on the job.</p>
+          </div>
+        </div>
+        <div class="command-stack" style="margin-top:18px;">
+          <div class="command-block">
+            <h4>Build</h4>
+            <pre><code>cmake -B build
+cmake --build build -j$(nproc)</code></pre>
+          </div>
+          <div class="command-block">
+            <h4>Server</h4>
+            <pre><code>sudo ./build/bin/yumed --listen 443 --cert certs/server.crt --key certs/server.key --auth-keys /etc/yume/authorized_keys --real --real-index certs/index.html</code></pre>
+          </div>
+          <div class="command-block">
+            <h4>Client</h4>
+            <pre><code>./build/bin/yume --server example.com --auth ~/.yume/id_ed25519 --socks 1080</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="endpoints">
+        <div class="section-title">Free public endpoints</div>
+        <p class="section-lead">FixCraft plans to run public <code>yumed</code> endpoints that use the same daemon release published here. Hostnames, public keys, and fingerprints will be published before the fleet goes live.</p>
         <div class="grid">
           <div class="card">
-            <h4>Real TLS 1.3, browser fingerprint</h4>
-            <p>OpenSSL emits a real ClientHello configured to match Chrome 135 / Firefox 126 / Safari 17, so JA3 / JA4 fall in the browser cluster. Switch profiles with <code>--profile</code>.</p>
+            <h4>No signup</h4>
+            <p>Bring your own Ed25519 key. Endpoint policy will be published with the same auth-key fingerprint format used by the daemon.</p>
           </div>
           <div class="card">
-            <h4>HTTP/2 carrier handshake</h4>
-            <p>After TLS the client emits a real <code>PRI * HTTP/2.0</code> preface, Chrome-shaped <code>SETTINGS</code>, and a HEADERS frame for a <code>POST /&lt;token&gt;/&lt;nonce&gt;</code> with a Chrome user-agent. To stateless DPI it's a Chrome → CDN gRPC-web request.</p>
+            <h4>Unmodified daemon</h4>
+            <p>Endpoints run release builds from this tree so operators and users can audit the exact code path.</p>
           </div>
           <div class="card">
-            <h4>Real HTML facade</h4>
-            <p>A browser hitting the same hostname with <code>GET /</code> gets back the configured HTML page. YUME clients and browsers cohabit on port 443.</p>
-          </div>
-          <div class="card">
-            <h4>Hybrid post-quantum inner crypto</h4>
-            <p>ML-KEM-768 KEM + AES-256-GCM AEAD via BaseFWX, with optional Argon2id heavy KDF and 1–4 Hz live key hopping. End-to-end inside the TLS tunnel.</p>
-          </div>
-          <div class="card">
-            <h4>Anonym mode</h4>
-            <p><code>--anonym</code> strips logs (no client hostname, no IP, no auth line). The server can prove no-log compliance to the client via local CA-signed chain or a remote API.</p>
-          </div>
-          <div class="card">
-            <h4>Three-layer permission gate</h4>
-            <p>Dangerous features (LAN bridging, server-side exec, unrestricted control) need a build switch <em>and</em> a runtime flag <em>and</em> a per-key allow entry. Stock builds physically can't do them.</p>
+            <h4>Browser facade</h4>
+            <p>A normal browser sees a normal page on the same hostname and port that YUME clients tunnel through.</p>
           </div>
         </div>
       </section>
 
       <section id="compare">
         <div class="section-title">Compared to other tools</div>
-        <p class="section-lead">Conservative pass; YUME's row from the live measurement on the same network as a typical relay deployment.</p>
+        <p class="section-lead">YUME's row is based on the live measurement documented in the performance page. Other rows are conservative and intentionally avoid provider-specific claims.</p>
         <div class="table-scroll">
           <table class="compare-table">
             <thead>
@@ -190,14 +294,14 @@
                 <th>YUME</th>
                 <th>WireGuard</th>
                 <th>OpenVPN</th>
-                <th>Tor (bridges)</th>
+                <th>Tor bridges</th>
                 <th>Shadowsocks</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td>Hybrid post-quantum (ML-KEM-768)</td>
-                <td class="yes">yes</td>
+                <td>Hybrid post-quantum</td>
+                <td class="yes">ML-KEM-768</td>
                 <td class="no">no</td>
                 <td class="no">no</td>
                 <td class="no">no</td>
@@ -205,38 +309,22 @@
               </tr>
               <tr>
                 <td>Live key hopping</td>
-                <td class="yes">1–4 Hz</td>
+                <td class="yes">1-4 Hz</td>
                 <td class="no">no</td>
                 <td class="no">no</td>
                 <td class="no">no</td>
                 <td class="no">no</td>
               </tr>
               <tr>
-                <td>Looks like real HTTPS to DPI</td>
-                <td class="yes">Chrome JA3 + H/2 carrier</td>
+                <td>Looks like HTTPS to DPI</td>
+                <td class="yes">browser TLS + H2 carrier</td>
                 <td class="no">UDP signature</td>
-                <td class="no">TLS-on-OpenVPN-port signature</td>
+                <td class="no">protocol signature</td>
                 <td class="yes">obfs4 bridge</td>
-                <td class="yes">random-prefix</td>
+                <td class="yes">random prefix</td>
               </tr>
               <tr>
-                <td>Anonym / no-log mode</td>
-                <td class="yes">built in</td>
-                <td class="no">n/a</td>
-                <td class="no">per-provider</td>
-                <td class="yes">yes</td>
-                <td class="no">n/a</td>
-              </tr>
-              <tr>
-                <td>Free public endpoints</td>
-                <td class="yes">planned (FixCraft)</td>
-                <td class="no">none</td>
-                <td class="no">none</td>
-                <td class="yes">yes</td>
-                <td class="no">none</td>
-              </tr>
-              <tr>
-                <td>Embedded / 128 MiB hardware</td>
+                <td>Embedded hardware</td>
                 <td class="yes">yes</td>
                 <td class="yes">yes</td>
                 <td class="yes">yes</td>
@@ -245,9 +333,9 @@
               </tr>
               <tr>
                 <td>Steady-state overhead</td>
-                <td class="yes">&lt; 1 % typical</td>
-                <td class="yes">~0 %</td>
-                <td class="no">a few %</td>
+                <td class="yes">&lt; 1% typical</td>
+                <td class="yes">near zero</td>
+                <td class="no">a few percent</td>
                 <td class="no">high</td>
                 <td class="yes">low</td>
               </tr>
@@ -267,21 +355,29 @@
       <section id="docs">
         <div class="section-title">Docs</div>
         <div class="grid">
+          <a class="card" href="docs/QUICKSTART/">
+            <h4>Quick start</h4>
+            <p>Build, authorize keys, start <code>yumed</code>, and connect with SOCKS or forwarding.</p>
+          </a>
           <a class="card" href="docs/STEALTH/">
             <h4>Stealth and obfuscation</h4>
-            <p>The three layers, every flag, what they defend against and what they don't.</p>
+            <p>TLS profiles, HTTP/2 carrier handshake, and real-page facade limits.</p>
           </a>
           <a class="card" href="docs/PERMISSIONS/">
-            <h4>Permissions and bridge modes</h4>
-            <p>Authorised keys vs. per-key meta. The three-layer gate. The four bridge quadrants.</p>
+            <h4>Permissions</h4>
+            <p>Authorized keys, per-key metadata, and the three-layer dangerous-feature gate.</p>
+          </a>
+          <a class="card" href="docs/OPERATIONS/">
+            <h4>Operations</h4>
+            <p>Release verification, public endpoint policy, service deployment, and troubleshooting.</p>
           </a>
           <a class="card" href="docs/PERFORMANCE/">
-            <h4>Performance baseline</h4>
-            <p>One fair benchmark run. Honest framing of what the relay path costs vs. what YUME costs.</p>
+            <h4>Performance</h4>
+            <p>Measured overhead and fair comparisons against the relay path.</p>
           </a>
           <a class="card" href="https://github.com/F1xGOD/yume#readme" target="_blank" rel="noopener">
             <h4>README</h4>
-            <p>Quick start, modes (SOCKS, port-forward, reverse), configuration examples.</p>
+            <p>Full project overview, config snippets, and mode examples.</p>
           </a>
         </div>
       </section>
@@ -305,7 +401,7 @@
       </section>
 
       <footer>
-        FixCraft YUME · documentation and release portal
+        FixCraft YUME documentation and release portal
       </footer>
     </div>
   </body>

@@ -343,7 +343,40 @@ std::uint32_t argon2_parallelism() {
     return scaled > 0 ? scaled : 1u;
 }
 
-KdfParams select_argon2_params() {
+void apply_argon2_limits_to_values(std::uint32_t* time_cost,
+                                   std::uint32_t* mem_cost,
+                                   std::uint32_t* par_cost,
+                                   const Argon2Limits& limits) {
+    if (time_cost && limits.time_max > 0 && *time_cost > limits.time_max) {
+        *time_cost = limits.time_max;
+    }
+    if (mem_cost && limits.memory_max > 0 && *mem_cost > limits.memory_max) {
+        *mem_cost = limits.memory_max;
+    }
+    if (par_cost && limits.parallelism_max > 0 && *par_cost > limits.parallelism_max) {
+        *par_cost = limits.parallelism_max;
+    }
+
+    if (par_cost && *par_cost == 0) {
+        *par_cost = 1;
+    }
+    if (!mem_cost || !par_cost) {
+        return;
+    }
+
+    std::uint64_t min_mem = static_cast<std::uint64_t>(*par_cost) * 8u;
+    if (*mem_cost > 0 && *mem_cost < min_mem) {
+        std::uint32_t max_par_for_mem = static_cast<std::uint32_t>(*mem_cost / 8u);
+        *par_cost = max_par_for_mem > 0 ? max_par_for_mem : 1u;
+    }
+    min_mem = static_cast<std::uint64_t>(*par_cost) * 8u;
+    if (*mem_cost < min_mem) {
+        *mem_cost = static_cast<std::uint32_t>(
+            std::min<std::uint64_t>(min_mem, std::numeric_limits<std::uint32_t>::max()));
+    }
+}
+
+KdfParams select_argon2_params(const Argon2Limits& remote_limits = Argon2Limits{}) {
     KdfParams params;
     params.name = "argon2";
     params.argon2_time = argon2_time_cost();
@@ -380,20 +413,15 @@ KdfParams select_argon2_params() {
         mem = default_mem;
     }
 
-    if (params.argon2_parallelism == 0) {
-        params.argon2_parallelism = 1;
-    }
-    std::uint64_t min_mem = static_cast<std::uint64_t>(params.argon2_parallelism) * 8u;
-    if (mem < min_mem && mem > 0) {
-        std::uint32_t max_par = static_cast<std::uint32_t>(mem / 8u);
-        params.argon2_parallelism = max_par > 0 ? max_par : 1;
-    }
-    min_mem = static_cast<std::uint64_t>(params.argon2_parallelism) * 8u;
-    if (mem < min_mem) {
-        mem = static_cast<std::uint32_t>(
-            std::min<std::uint64_t>(min_mem, std::numeric_limits<std::uint32_t>::max()));
-    }
     params.argon2_memory = mem;
+    apply_argon2_limits_to_values(&params.argon2_time,
+                                  &params.argon2_memory,
+                                  &params.argon2_parallelism,
+                                  argon2_env_limits());
+    apply_argon2_limits_to_values(&params.argon2_time,
+                                  &params.argon2_memory,
+                                  &params.argon2_parallelism,
+                                  remote_limits);
     return params;
 }
 
@@ -526,6 +554,45 @@ Bytes build_aad(std::uint8_t frame_type, std::uint8_t stream_id) {
 }
 }  // namespace
 
+Argon2Limits argon2_env_limits() {
+    Argon2Limits limits;
+    (void)read_env_u32_optional("YUME_ARGON2_TIME_MAX", &limits.time_max);
+    (void)read_env_u32_optional("YUME_ARGON2_MEM_MAX", &limits.memory_max);
+    (void)read_env_u32_optional("YUME_ARGON2_PAR_MAX", &limits.parallelism_max);
+    return limits;
+}
+
+bool has_argon2_limits(const Argon2Limits& limits) {
+    return limits.time_max > 0 || limits.memory_max > 0 || limits.parallelism_max > 0;
+}
+
+bool argon2_params_exceed_limits(const KdfParams& params,
+                                 const Argon2Limits& limits,
+                                 std::string* reason) {
+    auto fail = [&](const std::string& msg) {
+        if (reason) {
+            *reason = msg;
+        }
+        return true;
+    };
+    if (limits.time_max > 0 && params.argon2_time > limits.time_max) {
+        return fail("time=" + std::to_string(params.argon2_time) +
+                    " > max=" + std::to_string(limits.time_max));
+    }
+    if (limits.memory_max > 0 && params.argon2_memory > limits.memory_max) {
+        return fail("mem=" + std::to_string(params.argon2_memory) +
+                    " > max=" + std::to_string(limits.memory_max));
+    }
+    if (limits.parallelism_max > 0 && params.argon2_parallelism > limits.parallelism_max) {
+        return fail("par=" + std::to_string(params.argon2_parallelism) +
+                    " > max=" + std::to_string(limits.parallelism_max));
+    }
+    if (reason) {
+        reason->clear();
+    }
+    return false;
+}
+
 bool generate_pq_keypair(const std::string& private_path,
                          const std::string& public_path,
                          std::string* err) {
@@ -609,7 +676,7 @@ ClientHandshake client_prepare(const Config& cfg, bool heavy) {
     result.pq_ciphertext = std::move(kem.ciphertext);
     result.salt = basefwx::crypto::RandomBytes(basefwx::constants::kUserKdfSaltSize);
     if (heavy) {
-        KdfParams params = select_argon2_params();
+        KdfParams params = select_argon2_params(cfg.argon2_limits);
         DerivedKey derived = derive_key_heavy(kem.shared, result.salt, params, true);
         result.key = derived.key;
         result.kdf = derived.kdf;

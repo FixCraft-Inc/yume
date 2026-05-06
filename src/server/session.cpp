@@ -278,6 +278,7 @@ bool is_expected_close_ec(const boost::system::error_code& ec) {
 bool is_expected_close_reason(const std::string& reason) {
     return reason == "authentication rejected" ||
            reason == "peer closed the TLS session" ||
+           starts_with(reason, "client disconnected before AUTH") ||
            reason == "served HTTP disguise response" ||
            reason == "server closed, kicked" ||
            reason == "session closed";
@@ -759,6 +760,25 @@ void Session::serve_fake_h2_real_index() {
 
 void Session::send_auth_challenge() {
     challenge_ = crypto::random_bytes(32);
+    if (cfg_.inner_crypto) {
+        inner::Argon2Limits limits = inner::argon2_env_limits();
+        if (inner::has_argon2_limits(limits)) {
+            nlohmann::json meta{
+                {"challenge_meta", 1}
+            };
+            if (limits.time_max > 0) {
+                meta["argon2_time_max"] = limits.time_max;
+            }
+            if (limits.memory_max > 0) {
+                meta["argon2_mem_max"] = limits.memory_max;
+            }
+            if (limits.parallelism_max > 0) {
+                meta["argon2_par_max"] = limits.parallelism_max;
+            }
+            std::string meta_text = meta.dump();
+            challenge_.insert(challenge_.end(), meta_text.begin(), meta_text.end());
+        }
+    }
     protocol::Frame frame{{static_cast<uint32_t>(challenge_.size()), protocol::AUTH, 0, 0}, challenge_};
     auto self = shared_from_this();
     async_write_frame(frame, [self](const boost::system::error_code& ec, std::size_t) {
@@ -809,6 +829,13 @@ void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
         if (authenticated_ &&
             (ec == boost::asio::error::eof || ec == boost::asio::ssl::error::stream_truncated)) {
             close_with_reason("peer closed the TLS session");
+            return;
+        }
+        if (!authenticated_ &&
+            (ec == boost::asio::error::eof ||
+             ec == boost::asio::error::connection_reset ||
+             ec == boost::asio::error::operation_aborted)) {
+            close_with_reason("client disconnected before AUTH: " + describe_error_code(ec));
             return;
         }
         close_with_reason("read header failed: " + describe_error_code(ec));
@@ -1308,6 +1335,12 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                     if (inner_kdf->name == "argon2") {
                         if (!inner::argon2_supported()) {
                             auth_error_ = "server does not support argon2";
+                            return false;
+                        }
+                        std::string cap_reason;
+                        if (inner::argon2_params_exceed_limits(
+                                *inner_kdf, inner::argon2_env_limits(), &cap_reason)) {
+                            auth_error_ = "client argon2 params exceed server cap: " + cap_reason;
                             return false;
                         }
                     } else if (inner_kdf->name == "pbkdf2") {

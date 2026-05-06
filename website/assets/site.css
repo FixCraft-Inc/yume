@@ -1,29 +1,36 @@
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
 
 :root {
-  --bg: #0b1014;
-  --panel: #151922;
-  --panel-2: #10151d;
-  --panel-3: #0d1218;
+  --bg: #0e0a10;
+  --panel: #1c1620;
+  --panel-2: #16111a;
+  --panel-3: #110d14;
   --accent: #ff7eaa;
-  --accent-2: #7dd3fc;
+  --accent-2: #ffc1d6;
   --text: #f4eef2;
-  --muted: #aeb6c3;
-  --border: #26303a;
+  --muted: #b8a6b1;
+  --border: #2c2230;
   --shadow: rgba(0, 0, 0, 0.4);
   --green: #6fe1a8;
   --orange: #f2a14a;
   --amber: #f4c04f;
   --red: #f08a4b;
   --burnt: #c74848;
-  --blue: #5cc5ff;
+  --rose-deep: #7f2b4c;
 }
 
 * { box-sizing: border-box; }
 
+*,
+*::before,
+*::after {
+  min-width: 0;
+}
+
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  overflow-x: hidden;
 }
 
 img,
@@ -37,11 +44,12 @@ body {
   font-family: "Space Grotesk", "Sora", "IBM Plex Sans", sans-serif;
   color: var(--text);
   background:
-    linear-gradient(135deg, rgba(255, 126, 170, 0.14), transparent 38%),
-    linear-gradient(225deg, rgba(125, 211, 252, 0.12), transparent 44%),
-    linear-gradient(180deg, rgba(16, 21, 29, 0.85), rgba(11, 16, 20, 1) 46%),
+    radial-gradient(1100px 700px at 10% -10%, rgba(255, 126, 170, 0.2), transparent 55%),
+    radial-gradient(1000px 600px at 90% 5%, rgba(255, 193, 214, 0.18), transparent 60%),
+    linear-gradient(180deg, rgba(28, 22, 32, 0.4), rgba(14, 10, 16, 1) 52%),
     var(--bg);
   line-height: 1.6;
+  overflow-x: hidden;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 126, 170, 0.5) rgba(255, 255, 255, 0.1);
 }
@@ -76,16 +84,33 @@ body::before {
 a { color: inherit; text-decoration: none; }
 a:visited { color: inherit; }
 
+p,
+h1,
+h2,
+h3,
+h4,
+li,
+td,
+th,
+a,
+span,
+code {
+  overflow-wrap: anywhere;
+}
+
 .container {
+  width: 100%;
   max-width: 1120px;
   margin: 0 auto;
   padding: 28px 24px 96px;
+  overflow-x: hidden;
 }
 
 .site-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 24px;
   padding: 12px 0 32px;
 }
@@ -93,6 +118,7 @@ a:visited { color: inherit; }
 .brand {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
   gap: 14px;
   font-weight: 600;
   letter-spacing: 0.6px;
@@ -102,7 +128,7 @@ a:visited { color: inherit; }
   width: 44px;
   height: 44px;
   border-radius: 10px;
-  background: linear-gradient(135deg, rgba(255, 126, 170, 0.95), rgba(125, 211, 252, 0.6));
+  background: linear-gradient(135deg, rgba(255, 126, 170, 0.95), rgba(255, 193, 214, 0.64));
   box-shadow: 0 14px 35px rgba(255, 126, 170, 0.35);
   position: relative;
   overflow: hidden;
@@ -117,23 +143,23 @@ a:visited { color: inherit; }
   background-image: url("yume-plain.svg");
   background-position: center;
   background-repeat: no-repeat;
-  background-size: 78%;
+  background-size: 88%;
   opacity: 1;
   transition: opacity 0.2s ease;
 }
 
 .brand-cutout {
   position: absolute;
-  inset: 2px;
+  inset: 0;
   background: var(--bg);
   -webkit-mask-image: url("yume-white.svg");
   -webkit-mask-repeat: no-repeat;
   -webkit-mask-position: center;
-  -webkit-mask-size: 94%;
+  -webkit-mask-size: 88%;
   mask-image: url("yume-white.svg");
   mask-repeat: no-repeat;
   mask-position: center;
-  mask-size: 94%;
+  mask-size: 88%;
   opacity: 0;
   transition: opacity 0.2s ease;
 }
@@ -166,11 +192,13 @@ nav a:hover {
 .hero {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  width: 100%;
+  max-width: 100%;
   gap: 28px;
   align-items: stretch;
   padding: 32px;
   border-radius: 12px;
-  background: linear-gradient(140deg, rgba(21, 25, 34, 0.96), rgba(13, 18, 24, 0.92));
+  background: linear-gradient(140deg, rgba(28, 22, 32, 0.96), rgba(14, 10, 16, 0.92));
   border: 1px solid var(--border);
   box-shadow: 0 25px 60px var(--shadow);
   animation: rise 0.7s ease both;
@@ -203,6 +231,9 @@ nav a:hover {
   background: var(--accent);
   color: #ffffff;
   font-weight: 600;
+  min-width: 0;
+  text-align: center;
+  white-space: normal;
   box-shadow: 0 12px 30px rgba(255, 126, 170, 0.35);
   transition: transform 0.2s ease, box-shadow 0.2s ease, color 0.2s ease;
 }
@@ -284,6 +315,7 @@ section {
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  max-width: 100%;
   gap: 18px;
 }
 
@@ -313,7 +345,8 @@ section {
 
 .download-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+  max-width: 100%;
   gap: 18px;
 }
 
@@ -376,7 +409,7 @@ section {
 .hash-value {
   font-family: "JetBrains Mono", "Fira Code", monospace;
   font-size: 12px;
-  color: #d8eefb;
+  color: #ffd0e0;
   word-break: break-all;
   overflow-wrap: anywhere;
 }
@@ -415,7 +448,8 @@ section {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  white-space: nowrap;
+  min-width: 0;
+  white-space: normal;
 }
 
 .link-row a:not(.btn) {
@@ -447,6 +481,7 @@ section {
 .release-strip {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
+  max-width: 100%;
   gap: 12px;
   margin-top: 18px;
 }
@@ -472,6 +507,7 @@ section {
 .workflow-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  max-width: 100%;
   gap: 14px;
 }
 
@@ -483,7 +519,7 @@ section {
 }
 
 .workflow-step .meta {
-  color: var(--accent-2);
+  color: var(--accent);
 }
 
 .command-stack {
@@ -505,12 +541,14 @@ section {
 
 .command-block pre {
   margin: 0;
-  overflow-x: auto;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .command-block code {
   font-family: "JetBrains Mono", "Fira Code", monospace;
-  color: #d8eefb;
+  color: #ffd0e0;
 }
 
 .mono {
@@ -519,17 +557,19 @@ section {
 }
 
 .table-scroll {
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+  overflow-x: visible;
 }
 
 .artifact-table,
 .vt-table {
   width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0 8px;
   font-size: 13px;
-  min-width: 760px;
+  min-width: 0;
 }
 
 .artifact-table th,
@@ -539,7 +579,9 @@ section {
   padding: 11px 13px;
   text-align: left;
   vertical-align: middle;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .artifact-table th,
@@ -592,7 +634,8 @@ section {
   display: flex;
   align-items: center;
   gap: 10px;
-  white-space: nowrap;
+  min-width: 0;
+  white-space: normal;
 }
 
 .status-mark {
@@ -621,19 +664,21 @@ section {
   justify-content: center;
   padding: 6px 12px;
   border-radius: 999px;
-  border: 1px solid rgba(125, 211, 252, 0.35);
-  background: rgba(125, 211, 252, 0.12);
-  color: #d8eefb;
+  border: 1px solid rgba(255, 126, 170, 0.35);
+  background: rgba(255, 126, 170, 0.12);
+  color: #ffd0e0;
   font-size: 12px;
   font-weight: 600;
 }
 
 .compare-table {
   width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0 8px;
   font-size: 13px;
-  min-width: 820px;
+  min-width: 0;
 }
 
 .compare-table th,
@@ -641,6 +686,8 @@ section {
   padding: 10px 14px;
   text-align: left;
   vertical-align: middle;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .compare-table th {
@@ -688,9 +735,11 @@ footer {
 }
 
 .doc-container {
+  width: 100%;
   max-width: 960px;
   margin: 0 auto;
   padding: 32px 24px 96px;
+  overflow-x: hidden;
 }
 
 .doc-header {
@@ -770,8 +819,10 @@ footer {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 16px;
-  overflow-x: auto;
+  overflow-x: hidden;
   max-width: 100%;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .doc-article pre::-webkit-scrollbar { height: 8px; }
@@ -794,6 +845,7 @@ footer {
 
 .doc-article table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   margin-top: 16px;
   margin-bottom: 16px;
@@ -804,6 +856,7 @@ footer {
   border-bottom: 1px solid var(--border);
   padding: 10px 12px;
   text-align: left;
+  overflow-wrap: anywhere;
 }
 
 @keyframes rise {
@@ -822,10 +875,9 @@ footer {
   .site-header { padding-bottom: 20px; }
   nav {
     width: 100%;
-    overflow-x: auto;
     padding-bottom: 6px;
   }
-  nav a { white-space: nowrap; }
+  nav a { white-space: normal; }
   .hero { padding: 24px; }
   section { margin-top: 56px; }
 }
@@ -874,7 +926,7 @@ footer {
   .artifact-table,
   .vt-table,
   .compare-table {
-    min-width: 640px;
+    min-width: 0;
   }
 }
 

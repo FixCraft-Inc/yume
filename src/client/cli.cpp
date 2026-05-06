@@ -1379,7 +1379,7 @@ ParsedArgs parse_args(int argc, char** argv) {
             if (!parse_int_value("--dport", args.dest_port)) {
                 return args;
             }
-        } else if (arg == "--require-anonym") {
+        } else if (arg == "--require-anonym" || arg == "--anonym") {
             args.require_anonym = true;
         } else if (arg == "--anonym-ca-cert") {
             const char* cert = take_value("--anonym-ca-cert");
@@ -1813,17 +1813,11 @@ crypto::Bytes auth_payload(EVP_PKEY* pubkey,
     return payload;
 }
 
-void authenticate(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
-                  boost::asio::io_context& io,
-                  const std::string& server_host,
-                  int server_port,
-                  const std::string& identity_path,
-                  const std::optional<crypto::Bytes>& pq_ciphertext,
-                  const std::optional<crypto::Bytes>& pq_salt,
-                  const std::optional<std::string>& inner_mode,
-                  const std::optional<bool>& inner_hop,
-                  const std::optional<inner::KdfParams>& inner_kdf,
-                  std::vector<uint8_t>* prefetched = nullptr) {
+protocol::Frame read_auth_challenge(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+                                    boost::asio::io_context& io,
+                                    const std::string& server_host,
+                                    int server_port,
+                                    std::vector<uint8_t>* prefetched = nullptr) {
     protocol::Frame challenge = read_frame_with_timeout(
         stream,
         io,
@@ -1836,7 +1830,64 @@ void authenticate(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream
     if (challenge.header.type != protocol::AUTH) {
         throw FatalError("this endpoint is not a yume server (server did not send AUTH challenge); please check the origin and try again");
     }
+    return challenge;
+}
 
+inner::Argon2Limits parse_auth_challenge_argon2_limits(const protocol::Frame& challenge) {
+    inner::Argon2Limits limits;
+    if (challenge.payload.size() <= 32 || challenge.payload[32] != static_cast<std::uint8_t>('{')) {
+        return limits;
+    }
+
+    try {
+        std::string meta_text(challenge.payload.begin() + 32, challenge.payload.end());
+        auto meta = nlohmann::json::parse(meta_text);
+        auto read_u32 = [&](const char* key) -> std::uint32_t {
+            if (!meta.contains(key) || !meta[key].is_number()) {
+                return 0;
+            }
+            std::uint64_t value = meta[key].get<std::uint64_t>();
+            return static_cast<std::uint32_t>(
+                std::min<std::uint64_t>(value, std::numeric_limits<std::uint32_t>::max()));
+        };
+        limits.time_max = read_u32("argon2_time_max");
+        limits.memory_max = read_u32("argon2_mem_max");
+        limits.parallelism_max = read_u32("argon2_par_max");
+    } catch (...) {
+        return inner::Argon2Limits{};
+    }
+    return limits;
+}
+
+std::string describe_argon2_limits(const inner::Argon2Limits& limits) {
+    std::vector<std::string> parts;
+    if (limits.time_max > 0) {
+        parts.push_back("time<=" + std::to_string(limits.time_max));
+    }
+    if (limits.memory_max > 0) {
+        parts.push_back("mem<=" + std::to_string(limits.memory_max));
+    }
+    if (limits.parallelism_max > 0) {
+        parts.push_back("par<=" + std::to_string(limits.parallelism_max));
+    }
+    std::string out;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        if (i > 0) {
+            out += ", ";
+        }
+        out += parts[i];
+    }
+    return out;
+}
+
+void send_auth_response(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+                        const std::string& identity_path,
+                        const protocol::Frame& challenge,
+                        const std::optional<crypto::Bytes>& pq_ciphertext,
+                        const std::optional<crypto::Bytes>& pq_salt,
+                        const std::optional<std::string>& inner_mode,
+                        const std::optional<bool>& inner_hop,
+                        const std::optional<inner::KdfParams>& inner_kdf) {
     auto kp = crypto::load_keypair(identity_path, "");
     crypto::Bytes signature = crypto::sign_message(kp.private_key.get(), challenge.payload);
     crypto::Bytes payload = auth_payload(kp.public_key.get() ? kp.public_key.get() : kp.private_key.get(),
@@ -1892,9 +1943,10 @@ void perform_h2_carrier_handshake(boost::asio::ssl::stream<boost::asio::ip::tcp:
         boost::asio::steady_timer timer(io);
         timer.expires_after(kAuthChallengeTimeout);
         timer.async_wait([&](const boost::system::error_code& ec) {
-            if (ec) return;
-            r.timed_out = true;
-            cancel();
+            if (!ec && !done) {
+                r.timed_out = true;
+                cancel();
+            }
         });
         stream.async_read_some(boost::asio::buffer(scratch),
                                [&](const boost::system::error_code& ec, std::size_t n) {
@@ -1904,10 +1956,8 @@ void perform_h2_carrier_handshake(boost::asio::ssl::stream<boost::asio::ip::tcp:
                                    timer.cancel();
                                    done = true;
                                });
-        while (!done) {
-            io.run_one();
-        }
         io.restart();
+        io.run();
         return r;
     };
 
@@ -1948,7 +1998,7 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --server --port --auth -i --socks --threads --obfs --no-obfs --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym -L -R --boring --non-interactive --live-status --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
+  local opts="--help -h --version --config --server --port --auth -i --socks --threads --obfs --no-obfs --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
   local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path --relay-key-file"
   case "$prev" in
     --completion)
@@ -2049,7 +2099,8 @@ void print_help() {
         << "  --pq-pub <path>          PQ public key\n"
         << "  --use-embedded-master    Allow embedded BaseFWX master fallback\n"
         << "  --no-embedded-master     Disable embedded BaseFWX master fallback\n"
-        << "  --require-anonym         Require anonym proof\n"
+        << "  --require-anonym, --anonym\n"
+        << "                           Require anonym proof\n"
         << "  --anonym-ca-cert <path>  Anonym CA certificate\n"
         << "  --tls-ca <path>          TLS CA certificate\n"
         << "  --tls-pin <sha256>       Pin TLS certificate fingerprint\n\n"
@@ -3562,8 +3613,7 @@ int Cli::run(int argc, char** argv) {
     }
 
     if (cfg.port != 443) {
-        util::log_warn("forcing server port to 443 for HTTPS-only transport");
-        cfg.port = 443;
+        util::log_warn("using non-443 server port; HTTPS disguise is weaker");
     }
 
 #if !YUME_USE_BASEFWX
@@ -3954,15 +4004,30 @@ int Cli::run(int argc, char** argv) {
 
             std::vector<uint8_t> prefetched_tls_bytes;
             if (cfg.obfuscation) {
+                util::log_info("starting HTTPS h2 carrier handshake");
                 perform_h2_carrier_handshake(stream, io, cfg.server, cfg.port,
                                              cfg.obfs_secret, &prefetched_tls_bytes);
                 util::log_info("HTTPS h2 carrier handshake established");
+            }
+            util::log_info("waiting for AUTH challenge");
+            protocol::Frame auth_challenge = read_auth_challenge(
+                stream,
+                io,
+                cfg.server,
+                cfg.port,
+                &prefetched_tls_bytes);
+            util::log_info("AUTH challenge received");
+            inner::Argon2Limits server_argon2_limits =
+                parse_auth_challenge_argon2_limits(auth_challenge);
+            if (inner::has_argon2_limits(server_argon2_limits)) {
+                util::log_info("server Argon2 caps: " + describe_argon2_limits(server_argon2_limits));
             }
 
             inner::Config inner_cfg;
             inner_cfg.enabled = cfg.inner_crypto;
             inner_cfg.pq_public_key = cfg.pq_public_key;
             inner_cfg.allow_embedded_master = cfg.allow_embedded_master;
+            inner_cfg.argon2_limits = server_argon2_limits;
 
             std::optional<crypto::Bytes> pq_ciphertext;
             std::optional<crypto::Bytes> pq_salt;
@@ -3976,6 +4041,11 @@ int Cli::run(int argc, char** argv) {
             std::string inner_disable_reason;
             if (inner_cfg.enabled) {
                 try {
+                    if (cfg.inner_heavy) {
+                        util::log_info("preparing inner crypto (heavy KDF); this can take a few seconds");
+                    } else {
+                        util::log_info("preparing inner crypto");
+                    }
                     auto hs = inner::client_prepare(inner_cfg, cfg.inner_heavy);
                     if (!hs.enabled || hs.key.empty()) {
                         throw std::runtime_error("inner crypto init failed");
@@ -3993,6 +4063,17 @@ int Cli::run(int argc, char** argv) {
                         params.pbkdf2_iters = hs.pbkdf2_iters;
                         inner_kdf = params;
                     }
+                    std::string prepared = "inner crypto prepared: mode=" +
+                                           std::string(cfg.inner_heavy ? "heavy" : "light") +
+                                           ", kdf=" + (hs.kdf.empty() ? std::string("unknown") : hs.kdf);
+                    if (hs.kdf == "argon2") {
+                        prepared += " time=" + std::to_string(hs.argon2_time) +
+                                    " mem=" + std::to_string(hs.argon2_memory) +
+                                    " par=" + std::to_string(hs.argon2_parallelism);
+                    } else if (hs.kdf == "pbkdf2") {
+                        prepared += " iters=" + std::to_string(hs.pbkdf2_iters);
+                    }
+                    util::log_info(prepared);
                 } catch (const std::exception& ex) {
                     std::string msg = ex.what();
                     if (msg.find("PQ public key not configured") != std::string::npos) {
@@ -4014,17 +4095,15 @@ int Cli::run(int argc, char** argv) {
                 inner_hop = cfg.inner_hop;
             }
 
-            authenticate(stream,
-                         io,
-                         cfg.server,
-                         cfg.port,
-                         cfg.identity,
-                         pq_ciphertext,
-                         pq_salt,
-                         inner_mode,
-                         inner_hop,
-                         inner_kdf,
-                         &prefetched_tls_bytes);
+            util::log_info("sending auth response");
+            send_auth_response(stream,
+                               cfg.identity,
+                               auth_challenge,
+                               pq_ciphertext,
+                               pq_salt,
+                               inner_mode,
+                               inner_hop,
+                               inner_kdf);
             util::log_info("auth response sent; waiting for server confirmation");
 
             protocol::Frame anon_frame;

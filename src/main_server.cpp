@@ -2195,7 +2195,9 @@ int main(int argc, char** argv) {
         yume::util::log_warn("anonym proof mode is local but no anonym_ca_key or anonym_sub_key is configured");
     }
     if (!cfg.anonym && (!cfg.anonym_sub_key.empty() || !cfg.anonym_sub_cert.empty())) {
-        yume::util::log_warn("anonym_sub_key/anonym_sub_cert are set but --anonym is disabled; anonym proof mode is OFF");
+        yume::util::log_warn(
+            "anonym_sub_key/anonym_sub_cert are set but --anonym is disabled; server mode is normal "
+            "and anonym proof mode is OFF. Add --anonym if clients require anonym proof");
     }
     if (cfg.listen_port != 443 && !cfg.anonym) {
         yume::util::log_warn("WARNING: running on a port other than 443 reduces stealth and defeats HTTPS disguise.");

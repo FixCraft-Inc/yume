@@ -9,17 +9,25 @@ namespace yume::inner {
 
 using Bytes = std::vector<std::uint8_t>;
 
+struct Argon2Limits {
+    std::uint32_t time_max{0};
+    std::uint32_t memory_max{0};
+    std::uint32_t parallelism_max{0};
+};
+
 struct Config {
 #if YUME_USE_BASEFWX
     bool enabled{false};
     std::string pq_public_key;
     std::string pq_private_key;
     bool allow_embedded_master{false};
+    Argon2Limits argon2_limits;
 #else
     bool enabled{false};
     std::string pq_public_key;
     std::string pq_private_key;
     bool allow_embedded_master{false};
+    Argon2Limits argon2_limits;
 #endif
 };
 
@@ -58,6 +66,11 @@ std::optional<DerivedKey> server_derive_key(const Config& cfg,
 bool pq_supported();
 bool argon2_supported();
 bool pbkdf2_supported();
+Argon2Limits argon2_env_limits();
+bool has_argon2_limits(const Argon2Limits& limits);
+bool argon2_params_exceed_limits(const KdfParams& params,
+                                 const Argon2Limits& limits,
+                                 std::string* reason);
 
 std::uint64_t hop_id_from_time_ms(std::int64_t now_ms, std::uint32_t interval_ms, std::int64_t offset_ms);
 Bytes derive_hop_key(const Bytes& base_key, std::uint64_t hop_id);

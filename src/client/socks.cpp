@@ -62,7 +62,10 @@ SocksSession::SocksSession(boost::asio::ip::tcp::socket socket, std::shared_ptr<
     , tunnel_(std::move(tunnel))
     , strand_(socket_.get_executor())
     , allow_udp_(allow_udp)
-    , udp_socket_(socket_.get_executor()) {}
+    , udp_socket_(socket_.get_executor()) {
+    boost::system::error_code ec;
+    socket_.set_option(boost::asio::ip::tcp::no_delay(true), ec);
+}
 
 void SocksSession::start() {
     read_greeting();
@@ -257,6 +260,11 @@ void SocksSession::start_tunnel() {
         send_reply(kReplyGeneralFailure, [self = shared_from_this()]() { self->close(); });
         return;
     }
+    opened_started_ms_ = util::now_ms();
+    util::log_timing("client.socks",
+                     "open_start",
+                     "stream=" + std::to_string(stream_id_) +
+                         " target=" + target_host_ + ":" + std::to_string(target_port_));
 
     tunnel_->register_stream(
         stream_id_,
@@ -265,6 +273,17 @@ void SocksSession::start_tunnel() {
 
     tunnel_->open_stream(stream_id_, target_host_, target_port_,
                          [self = shared_from_this()](bool ok, const std::string& reason) {
+                             const int64_t elapsed = self->opened_started_ms_ > 0
+                                 ? (util::now_ms() - self->opened_started_ms_)
+                                 : 0;
+                             util::log_timing("client.socks",
+                                              "open_done",
+                                              "stream=" + std::to_string(self->stream_id_) +
+                                                  " ok=" + std::string(ok ? "1" : "0") +
+                                                  " ms=" + std::to_string(elapsed) +
+                                                  " target=" + self->target_host_ + ":" +
+                                                  std::to_string(self->target_port_) +
+                                                  (reason.empty() ? std::string{} : " reason=" + reason));
                              if (!ok) {
                                  util::log_warn("SOCKS open failed: " + reason);
                                  self->send_reply(kReplyGeneralFailure, [self]() { self->close(); });
@@ -514,6 +533,16 @@ void SocksSession::on_client_read(const boost::system::error_code& ec, std::size
     }
 
     Tunnel::Bytes payload(read_buf_.data(), read_buf_.data() + bytes);
+    upload_bytes_ += static_cast<std::uint64_t>(bytes);
+    if (first_upload_ms_ == 0) {
+        first_upload_ms_ = util::now_ms();
+        const int64_t open_to_first = opened_started_ms_ > 0 ? (first_upload_ms_ - opened_started_ms_) : 0;
+        util::log_timing("client.socks",
+                         "first_upload",
+                         "stream=" + std::to_string(stream_id_) +
+                             " ms=" + std::to_string(open_to_first) +
+                             " bytes=" + std::to_string(bytes));
+    }
     tunnel_->send_data(stream_id_, payload);
     start_client_read();
 }
@@ -521,6 +550,18 @@ void SocksSession::on_client_read(const boost::system::error_code& ec, std::size
 void SocksSession::deliver_from_tunnel(const Tunnel::Bytes& data) {
     auto self = shared_from_this();
     boost::asio::post(strand_, [self, data]() {
+        self->download_bytes_ += static_cast<std::uint64_t>(data.size());
+        if (self->first_download_ms_ == 0) {
+            self->first_download_ms_ = util::now_ms();
+            const int64_t open_to_first = self->opened_started_ms_ > 0
+                ? (self->first_download_ms_ - self->opened_started_ms_)
+                : 0;
+            util::log_timing("client.socks",
+                             "first_download",
+                             "stream=" + std::to_string(self->stream_id_) +
+                                 " ms=" + std::to_string(open_to_first) +
+                                 " bytes=" + std::to_string(data.size()));
+        }
         auto buf = std::make_shared<std::vector<uint8_t>>(data.begin(), data.end());
         self->enqueue_write(buf);
     });
@@ -568,6 +609,17 @@ void SocksSession::do_write() {
 }
 
 void SocksSession::close() {
+    if (!close_summary_logged_ && (opened_started_ms_ > 0 || upload_bytes_ > 0 || download_bytes_ > 0)) {
+        close_summary_logged_ = true;
+        const int64_t elapsed = opened_started_ms_ > 0 ? (util::now_ms() - opened_started_ms_) : 0;
+        util::log_timing("client.socks",
+                         "stream_summary",
+                         "stream=" + std::to_string(stream_id_) +
+                             " ms=" + std::to_string(elapsed) +
+                             " up=" + std::to_string(upload_bytes_) +
+                             " down=" + std::to_string(download_bytes_) +
+                             " target=" + target_host_ + ":" + std::to_string(target_port_));
+    }
     if (stream_id_ != 0) {
         tunnel_->send_close(stream_id_, "client closed");
         tunnel_->unregister_stream(stream_id_);

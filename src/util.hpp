@@ -19,6 +19,11 @@ void log_warn(const std::string& msg);
 void log_error(const std::string& msg);
 void set_logging_enabled(bool enabled);
 bool is_logging_enabled();
+void set_timing_enabled(bool enabled);
+bool timing_enabled();
+void log_timing(const std::string& component,
+                const std::string& event,
+                const std::string& details = {});
 void set_status_enabled(bool enabled);
 void set_status_line(const std::string& line);
 void clear_status_line();

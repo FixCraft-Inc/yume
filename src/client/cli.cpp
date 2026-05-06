@@ -1169,6 +1169,7 @@ struct ParsedArgs {
     bool boring_override{false};
     bool non_interactive{false};
     bool live_status{false};
+    bool timing{false};
     bool io_threads_override{false};
     bool server_in_charge{false};
     bool server_in_charge_override{false};
@@ -1673,6 +1674,8 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.non_interactive = true;
         } else if (arg == "--live-status") {
             args.live_status = true;
+        } else if (arg == "--timing") {
+            args.timing = true;
         }
     }
     return args;
@@ -1998,7 +2001,7 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --server --port --auth -i --socks --threads --obfs --no-obfs --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
+  local opts="--help -h --version --config --server --port --auth -i --socks --threads --obfs --no-obfs --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
   local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path --relay-key-file"
   case "$prev" in
     --completion)
@@ -2086,6 +2089,7 @@ void print_help() {
         << "  --root                   Keep root privileges\n"
         << "  --non-interactive        Disable live status redraw\n"
         << "  --live-status            Enable live status redraw\n"
+        << "  --timing                 Emit lightweight timing diagnostics\n"
         << "  --boring                 Minimal output\n"
         << "  --                        Service-safe launch\n\n"
         << "Security:\n"
@@ -3138,6 +3142,9 @@ int Cli::run(int argc, char** argv) {
         util::log_error(args.parse_error);
         return 1;
     }
+    if (args.timing) {
+        util::set_timing_enabled(true);
+    }
     if (args.completion) {
         if (args.completion_shell == "bash") {
             print_bash_completion();
@@ -3864,12 +3871,27 @@ int Cli::run(int argc, char** argv) {
 
             boost::asio::ip::tcp::resolver resolver(io);
             boost::asio::ip::tcp::resolver::results_type endpoints;
+            auto resolve_start = std::chrono::steady_clock::now();
             try {
                 endpoints = resolver.resolve(boost::asio::ip::tcp::v4(), cfg.server, std::to_string(cfg.port));
             } catch (const boost::system::system_error& ex) {
                 throw std::runtime_error("server offline, could not reach endpoint (DNS resolution failed: " + std::string(ex.what()) + ")");
             }
+            auto resolve_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - resolve_start).count();
+            std::size_t endpoint_count = 0;
+            for (const auto& endpoint : endpoints) {
+                (void)endpoint;
+                ++endpoint_count;
+            }
+            util::log_timing("client.connect",
+                             "resolve",
+                             "ms=" + std::to_string(resolve_ms) +
+                                 " endpoints=" + std::to_string(endpoint_count) +
+                                 " host=" + cfg.server +
+                                 " port=" + std::to_string(cfg.port));
             boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, *ctx);
+            auto connect_start = std::chrono::steady_clock::now();
             try {
                 auto cr = connect_with_timeout(stream.next_layer(), endpoints, io, kConnectTimeout);
                 if (cr.timed_out) {
@@ -3889,11 +3911,20 @@ int Cli::run(int argc, char** argv) {
                 }
                 throw std::runtime_error("server offline, could not reach endpoint (" + std::string(ex.what()) + ")");
             }
+            auto connect_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - connect_start).count();
+            util::log_timing("client.connect",
+                             "tcp",
+                             "ms=" + std::to_string(connect_ms) +
+                                 " host=" + cfg.server +
+                                 " port=" + std::to_string(cfg.port));
             boost::system::error_code keep_ec;
             stream.next_layer().set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
             if (keep_ec) {
                 util::log_warn(std::string("keepalive set failed: ") + keep_ec.message());
             }
+            boost::system::error_code nodelay_ec;
+            stream.next_layer().set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
             SSL_set_tlsext_host_name(stream.native_handle(), cfg.server.c_str());
             SSL_set1_host(stream.native_handle(), cfg.server.c_str());
             
@@ -3909,6 +3940,11 @@ int Cli::run(int argc, char** argv) {
             auto handshake_end = std::chrono::steady_clock::now();
             auto handshake_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
                 handshake_end - handshake_start);
+            util::log_timing("client.connect",
+                             "tls",
+                             "ms=" + std::to_string(handshake_duration.count()) +
+                                 " host=" + cfg.server +
+                                 " port=" + std::to_string(cfg.port));
             
             if (hs_ec) {
                 long vr = SSL_get_verify_result(stream.native_handle());
@@ -4005,17 +4041,31 @@ int Cli::run(int argc, char** argv) {
             std::vector<uint8_t> prefetched_tls_bytes;
             if (cfg.obfuscation) {
                 util::log_info("starting HTTPS h2 carrier handshake");
+                auto h2_start = std::chrono::steady_clock::now();
                 perform_h2_carrier_handshake(stream, io, cfg.server, cfg.port,
                                              cfg.obfs_secret, &prefetched_tls_bytes);
+                auto h2_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - h2_start).count();
+                util::log_timing("client.connect",
+                                 "h2_carrier",
+                                 "ms=" + std::to_string(h2_ms) +
+                                     " prefetched=" + std::to_string(prefetched_tls_bytes.size()));
                 util::log_info("HTTPS h2 carrier handshake established");
             }
             util::log_info("waiting for AUTH challenge");
+            auto auth_challenge_start = std::chrono::steady_clock::now();
             protocol::Frame auth_challenge = read_auth_challenge(
                 stream,
                 io,
                 cfg.server,
                 cfg.port,
                 &prefetched_tls_bytes);
+            auto auth_challenge_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - auth_challenge_start).count();
+            util::log_timing("client.auth",
+                             "challenge",
+                             "ms=" + std::to_string(auth_challenge_ms) +
+                                 " bytes=" + std::to_string(auth_challenge.payload.size()));
             util::log_info("AUTH challenge received");
             inner::Argon2Limits server_argon2_limits =
                 parse_auth_challenge_argon2_limits(auth_challenge);
@@ -4046,10 +4096,18 @@ int Cli::run(int argc, char** argv) {
                     } else {
                         util::log_info("preparing inner crypto");
                     }
+                    auto inner_start = std::chrono::steady_clock::now();
                     auto hs = inner::client_prepare(inner_cfg, cfg.inner_heavy);
+                    auto inner_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - inner_start).count();
                     if (!hs.enabled || hs.key.empty()) {
                         throw std::runtime_error("inner crypto init failed");
                     }
+                    util::log_timing("client.auth",
+                                     "inner_prepare",
+                                     "ms=" + std::to_string(inner_ms) +
+                                         " mode=" + std::string(cfg.inner_heavy ? "heavy" : "light") +
+                                         " kdf=" + (hs.kdf.empty() ? std::string("unknown") : hs.kdf));
                     pq_ciphertext = hs.pq_ciphertext;
                     pq_salt = hs.salt;
                     inner_key = hs.key;
@@ -4096,6 +4154,7 @@ int Cli::run(int argc, char** argv) {
             }
 
             util::log_info("sending auth response");
+            auto auth_send_start = std::chrono::steady_clock::now();
             send_auth_response(stream,
                                cfg.identity,
                                auth_challenge,
@@ -4104,6 +4163,11 @@ int Cli::run(int argc, char** argv) {
                                inner_mode,
                                inner_hop,
                                inner_kdf);
+            auto auth_send_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - auth_send_start).count();
+            util::log_timing("client.auth",
+                             "send_response",
+                             "ms=" + std::to_string(auth_send_ms));
             util::log_info("auth response sent; waiting for server confirmation");
 
             protocol::Frame anon_frame;
@@ -4112,7 +4176,14 @@ int Cli::run(int argc, char** argv) {
                 server_info_timeout = cfg.inner_heavy ? kServerInfoTimeoutInnerHeavy : kServerInfoTimeoutInner;
             }
             try {
+                auto server_info_start = std::chrono::steady_clock::now();
                 anon_frame = read_frame_with_timeout(stream, io, server_info_timeout, "server info", cfg.server, cfg.port, true);
+                auto server_info_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - server_info_start).count();
+                util::log_timing("client.auth",
+                                 "server_info",
+                                 "ms=" + std::to_string(server_info_ms) +
+                                     " bytes=" + std::to_string(anon_frame.payload.size()));
             } catch (const FatalError&) {
                 throw;
             } catch (const std::exception&) {

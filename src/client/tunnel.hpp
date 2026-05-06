@@ -77,7 +77,7 @@ private:
     boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream_;
     boost::asio::strand<boost::asio::any_io_executor> strand_;
     boost::asio::steady_timer keepalive_timer_{stream_.get_executor()};
-    std::array<uint8_t, 8192> read_buf_{};
+    std::array<uint8_t, 65536> read_buf_{};
     TransportCore core_;
     TunnelCloseHandler close_handler_;
     std::mutex close_handler_mu_;

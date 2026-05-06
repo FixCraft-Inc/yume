@@ -69,7 +69,7 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --obfs --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --peer --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --completion --root"
+  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --obfs --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --peer --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
   local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --keys-add --keys-gen"
   case "$prev" in
     --completion)
@@ -116,11 +116,13 @@ void print_help() {
         << yume::policy::kReversePortMinDefault << ")\n"
         << "  --reverse-port-max <p>   Reverse listen maximum (default "
         << yume::policy::kReversePortMaxDefault << ")\n"
+        << "  --dns-server <ip>        Direct DNS resolver for outbound opens\n"
         << "  --obfs                   Enable obfuscation\n"
         << "  --allow-local-ip         Allow private/loopback destinations\n"
         << "  --control-full           Allow full server-side network control\n"
         << "  --root                   Keep root privileges after bind/listen\n"
-        << "  --boring                 Minimal logs\n\n"
+        << "  --boring                 Minimal logs\n"
+        << "  --timing                 Emit lightweight timing diagnostics\n\n"
         << "Security:\n"
         << "  --inner                  Enable inner PQ crypto\n"
         << "  --no-inner               Disable inner PQ crypto and hopping\n"
@@ -1171,6 +1173,8 @@ int main(int argc, char** argv) {
             cfg.reverse_port_min = std::stoi(argv[++i]);
         } else if (arg == "--reverse-port-max" && i + 1 < argc) {
             cfg.reverse_port_max = std::stoi(argv[++i]);
+        } else if (arg == "--dns-server" && i + 1 < argc) {
+            cfg.dns_server = argv[++i];
         } else if ((arg == "--cert" || arg == "--tls_cert") && i + 1 < argc) {
             cfg.tls_cert = resolve_cli_path(argv[++i]);
         } else if ((arg == "--key" || arg == "--tls_key") && i + 1 < argc) {
@@ -1321,6 +1325,8 @@ int main(int argc, char** argv) {
             ui_mode = true;
         } else if (arg == "--boring") {
             cfg.boring = true;
+        } else if (arg == "--timing") {
+            yume::util::set_timing_enabled(true);
         } else {
             yume::util::log_error("unknown or incomplete option: " + arg);
             return 1;
@@ -1373,6 +1379,11 @@ int main(int argc, char** argv) {
             if (json.contains("reverse_port_max")) {
                 if (cfg.reverse_port_max == yume::policy::kReversePortMaxDefault) {
                     cfg.reverse_port_max = json["reverse_port_max"].get<int>();
+                }
+            }
+            if (json.contains("dns_server")) {
+                if (cfg.dns_server.empty()) {
+                    cfg.dns_server = json["dns_server"].get<std::string>();
                 }
             }
             if (json.contains("tls_cert")) {
@@ -1593,6 +1604,22 @@ int main(int argc, char** argv) {
     if (!cfg.operator_keys_meta.empty()) {
         cfg.operator_keys_meta = resolve_cfg_path(cfg.operator_keys_meta);
     }
+    if (cfg.dns_server.empty()) {
+        const char* dns_env = std::getenv("YUME_DNS_SERVER");
+        if (dns_env && *dns_env) {
+            cfg.dns_server = dns_env;
+        }
+    }
+    if (!cfg.dns_server.empty()) {
+        yume::util::log_info("server outbound DNS override: " + cfg.dns_server);
+    }
+#if !defined(_WIN32)
+    if (cfg.dns_server.empty() && !std::filesystem::exists("/etc/resolv.conf")) {
+        yume::util::log_warn(
+            "/etc/resolv.conf is missing; server-side DNS may be slow. "
+            "Use --dns-server 1.1.1.1 or set YUME_DNS_SERVER=1.1.1.1 to bypass system DNS.");
+    }
+#endif
     if (inner_heavy_override) {
         cfg.inner_heavy = inner_heavy_value;
     }

@@ -158,8 +158,18 @@ private:
     struct RemoteStream {
         boost::asio::ip::tcp::socket socket;
         boost::asio::ip::tcp::resolver resolver;
-        std::array<uint8_t, 16384> read_buf{};
+        std::array<uint8_t, 65536> read_buf{};
         std::deque<std::vector<uint8_t>> write_queue;
+        std::string host;
+        int port{0};
+        int64_t open_started_ms{0};
+        int64_t resolve_started_ms{0};
+        int64_t connect_started_ms{0};
+        int64_t first_upstream_ms{0};
+        int64_t first_downstream_ms{0};
+        std::uint64_t upstream_bytes{0};
+        std::uint64_t downstream_bytes{0};
+        bool close_summary_logged{false};
         bool write_in_flight{false};
         bool read_in_flight{false};
         bool read_paused{false};
@@ -175,6 +185,15 @@ private:
         boost::asio::ip::udp::endpoint remote;
         std::array<uint8_t, 65535> read_buf{};
         std::deque<crypto::Bytes> write_queue;
+        std::string host;
+        int port{0};
+        int64_t open_started_ms{0};
+        int64_t resolve_started_ms{0};
+        int64_t first_upstream_ms{0};
+        int64_t first_downstream_ms{0};
+        std::uint64_t upstream_bytes{0};
+        std::uint64_t downstream_bytes{0};
+        bool close_summary_logged{false};
         bool write_in_flight{false};
         bool read_in_flight{false};
         bool read_paused{false};

@@ -7,6 +7,7 @@
 #include "util.hpp"
 
 #include <chrono>
+#include <atomic>
 #include <cerrno>
 #include <cstdio>
 #include <csignal>
@@ -41,6 +42,8 @@ namespace {
 std::function<void(int)> g_signal_handler;
 std::mutex g_signal_mutex;
 bool g_logging_enabled = true;
+std::atomic<bool> g_timing_forced{false};
+std::atomic<bool> g_timing_enabled{false};
 std::mutex g_status_mutex;
 std::string g_status_text;
 std::size_t g_status_lines = 0;
@@ -80,6 +83,12 @@ bool env_var_enabled(const char* name, bool fallback) {
         return false;
     }
     return fallback;
+}
+
+bool timing_env_enabled() {
+    return env_var_enabled("YUME_TIMING", false) ||
+           env_var_enabled("YUME_TRACE_TIMING", false) ||
+           env_var_enabled("YUME_PROFILE", false);
 }
 
 bool log_colors_enabled() {
@@ -404,6 +413,32 @@ void set_logging_enabled(bool enabled) {
 
 bool is_logging_enabled() {
     return g_logging_enabled;
+}
+
+void set_timing_enabled(bool enabled) {
+    g_timing_enabled.store(enabled, std::memory_order_relaxed);
+    g_timing_forced.store(true, std::memory_order_relaxed);
+}
+
+bool timing_enabled() {
+    if (g_timing_forced.load(std::memory_order_relaxed)) {
+        return g_timing_enabled.load(std::memory_order_relaxed);
+    }
+    return timing_env_enabled();
+}
+
+void log_timing(const std::string& component,
+                const std::string& event,
+                const std::string& details) {
+    if (!timing_enabled()) {
+        return;
+    }
+    std::string msg = "timing component=" + component + " event=" + event;
+    if (!details.empty()) {
+        msg += " ";
+        msg += details;
+    }
+    log_info(msg);
 }
 
 void set_status_enabled(bool enabled) {

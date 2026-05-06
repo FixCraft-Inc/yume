@@ -23,6 +23,7 @@ struct ServerConfig {
     std::uint32_t hop_interval_ms{500};
     int reverse_port_min{yume::policy::kReversePortMinDefault};
     int reverse_port_max{yume::policy::kReversePortMaxDefault};
+    std::string dns_server;
     std::string pq_private_key;
     bool pq_auto_generate{false};
     bool allow_embedded_master{false};

@@ -12,6 +12,8 @@
 #include <chrono>
 #include <algorithm>
 #include <array>
+#include <cctype>
+#include <cstdlib>
 #include <fstream>
 #include <ctime>
 #include <iostream>
@@ -293,6 +295,306 @@ std::string describe_error_code(const boost::system::error_code& ec) {
     return description;
 }
 
+bool env_value_enabled(const char* raw) {
+    if (!raw || !*raw) {
+        return false;
+    }
+    std::string value(raw);
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value == "1" || value == "true" || value == "yes" || value == "on" ||
+           value == "any" || value == "all" || value == "ipv6";
+}
+
+bool server_resolve_any_family_enabled() {
+    return env_value_enabled(std::getenv("YUME_RESOLVE_ANY")) ||
+           env_value_enabled(std::getenv("YUME_RESOLVE_IPV6")) ||
+           env_value_enabled(std::getenv("YUME_RESOLVE_FAMILY"));
+}
+
+constexpr int64_t kDirectDnsTimeoutMs = 1500;
+
+void append_u16(std::vector<uint8_t>* out, std::uint16_t value) {
+    out->push_back(static_cast<uint8_t>((value >> 8) & 0xff));
+    out->push_back(static_cast<uint8_t>(value & 0xff));
+}
+
+std::uint16_t read_u16(const uint8_t* data, std::size_t offset) {
+    return static_cast<std::uint16_t>((static_cast<std::uint16_t>(data[offset]) << 8) |
+                                      static_cast<std::uint16_t>(data[offset + 1]));
+}
+
+bool append_dns_name(std::vector<uint8_t>* out, std::string host) {
+    if (!out || host.empty()) {
+        return false;
+    }
+    if (!host.empty() && host.back() == '.') {
+        host.pop_back();
+    }
+    if (host.empty() || host.size() > 253) {
+        return false;
+    }
+    std::size_t start = 0;
+    while (start < host.size()) {
+        const std::size_t dot = host.find('.', start);
+        const std::size_t end = dot == std::string::npos ? host.size() : dot;
+        const std::size_t label_len = end - start;
+        if (label_len == 0 || label_len > 63) {
+            return false;
+        }
+        out->push_back(static_cast<uint8_t>(label_len));
+        out->insert(out->end(), host.begin() + static_cast<std::ptrdiff_t>(start),
+                    host.begin() + static_cast<std::ptrdiff_t>(end));
+        if (dot == std::string::npos) {
+            break;
+        }
+        start = dot + 1;
+    }
+    out->push_back(0);
+    return true;
+}
+
+bool skip_dns_name(const uint8_t* data, std::size_t len, std::size_t* offset) {
+    if (!data || !offset) {
+        return false;
+    }
+    std::size_t pos = *offset;
+    for (int depth = 0; depth < 128; ++depth) {
+        if (pos >= len) {
+            return false;
+        }
+        const uint8_t label_len = data[pos++];
+        if ((label_len & 0xc0) == 0xc0) {
+            if (pos >= len) {
+                return false;
+            }
+            ++pos;
+            *offset = pos;
+            return true;
+        }
+        if ((label_len & 0xc0) != 0) {
+            return false;
+        }
+        if (label_len == 0) {
+            *offset = pos;
+            return true;
+        }
+        if (pos + label_len > len) {
+            return false;
+        }
+        pos += label_len;
+    }
+    return false;
+}
+
+bool parse_dns_a_response(const uint8_t* data,
+                          std::size_t len,
+                          std::uint16_t expected_id,
+                          std::vector<boost::asio::ip::address_v4>* out,
+                          std::string* error) {
+    if (!data || len < 12 || !out) {
+        if (error) {
+            *error = "short DNS response";
+        }
+        return false;
+    }
+    if (read_u16(data, 0) != expected_id) {
+        if (error) {
+            *error = "DNS response id mismatch";
+        }
+        return false;
+    }
+    const std::uint16_t flags = read_u16(data, 2);
+    if ((flags & 0x8000) == 0) {
+        if (error) {
+            *error = "not a DNS response";
+        }
+        return false;
+    }
+    const std::uint16_t rcode = static_cast<std::uint16_t>(flags & 0x000f);
+    if (rcode != 0) {
+        if (error) {
+            *error = "DNS rcode " + std::to_string(rcode);
+        }
+        return false;
+    }
+    const std::uint16_t qdcount = read_u16(data, 4);
+    const std::uint16_t ancount = read_u16(data, 6);
+    std::size_t offset = 12;
+    for (std::uint16_t i = 0; i < qdcount; ++i) {
+        if (!skip_dns_name(data, len, &offset) || offset + 4 > len) {
+            if (error) {
+                *error = "bad DNS question";
+            }
+            return false;
+        }
+        offset += 4;
+    }
+    for (std::uint16_t i = 0; i < ancount; ++i) {
+        if (!skip_dns_name(data, len, &offset) || offset + 10 > len) {
+            if (error) {
+                *error = "bad DNS answer";
+            }
+            return false;
+        }
+        const std::uint16_t type = read_u16(data, offset);
+        const std::uint16_t klass = read_u16(data, offset + 2);
+        const std::uint16_t rdlen = read_u16(data, offset + 8);
+        offset += 10;
+        if (offset + rdlen > len) {
+            if (error) {
+                *error = "bad DNS rdata";
+            }
+            return false;
+        }
+        if (type == 1 && klass == 1 && rdlen == 4) {
+            boost::asio::ip::address_v4::bytes_type bytes{
+                {data[offset], data[offset + 1], data[offset + 2], data[offset + 3]}
+            };
+            out->push_back(boost::asio::ip::address_v4(bytes));
+        }
+        offset += rdlen;
+    }
+    if (out->empty()) {
+        if (error) {
+            *error = "DNS response contained no A records";
+        }
+        return false;
+    }
+    return true;
+}
+
+class DirectDnsAQuery : public std::enable_shared_from_this<DirectDnsAQuery> {
+public:
+    using Handler = std::function<void(bool,
+                                       const std::vector<boost::asio::ip::address_v4>&,
+                                       const std::string&,
+                                       int64_t)>;
+
+    DirectDnsAQuery(boost::asio::any_io_executor exec,
+                    std::string dns_server,
+                    std::string host,
+                    Handler handler)
+        : socket_(exec)
+        , timer_(exec)
+        , dns_server_(std::move(dns_server))
+        , host_(std::move(host))
+        , handler_(std::move(handler))
+        , started_ms_(util::now_ms()) {}
+
+    void start() {
+        boost::system::error_code address_ec;
+        const auto dns_address = boost::asio::ip::make_address(dns_server_, address_ec);
+        if (address_ec || !dns_address.is_v4()) {
+            finish(false, {}, "direct DNS server must be an IPv4 address", 0);
+            return;
+        }
+        dns_endpoint_ = boost::asio::ip::udp::endpoint(dns_address.to_v4(), 53);
+
+        boost::system::error_code literal_ec;
+        const auto literal_addr = boost::asio::ip::make_address(host_, literal_ec);
+        if (!literal_ec) {
+            if (literal_addr.is_v4()) {
+                finish(true, {literal_addr.to_v4()}, "", 0);
+            } else {
+                finish(false, {}, "direct DNS resolver is IPv4-only; enable YUME_RESOLVE_FAMILY=any for IPv6 literals", 0);
+            }
+            return;
+        }
+
+        query_id_ = static_cast<std::uint16_t>(random_int_inclusive(1, 65535));
+        query_.reserve(512);
+        append_u16(&query_, query_id_);
+        append_u16(&query_, 0x0100);
+        append_u16(&query_, 1);
+        append_u16(&query_, 0);
+        append_u16(&query_, 0);
+        append_u16(&query_, 0);
+        if (!append_dns_name(&query_, host_)) {
+            finish(false, {}, "invalid DNS host name", 0);
+            return;
+        }
+        append_u16(&query_, 1);
+        append_u16(&query_, 1);
+
+        boost::system::error_code open_ec;
+        socket_.open(boost::asio::ip::udp::v4(), open_ec);
+        if (open_ec) {
+            finish(false, {}, "direct DNS socket open failed: " + open_ec.message(), 0);
+            return;
+        }
+
+        timer_.expires_from_now(boost::posix_time::milliseconds(kDirectDnsTimeoutMs));
+        auto self = shared_from_this();
+        timer_.async_wait([self](const boost::system::error_code& ec) {
+            if (ec) {
+                return;
+            }
+            boost::system::error_code close_ec;
+            self->socket_.close(close_ec);
+            self->finish(false, {}, "direct DNS timeout", 0);
+        });
+
+        socket_.async_send_to(boost::asio::buffer(query_), dns_endpoint_,
+                              [self](const boost::system::error_code& ec, std::size_t) {
+                                  if (ec) {
+                                      self->finish(false, {}, "direct DNS send failed: " + ec.message(), 0);
+                                      return;
+                                  }
+                                  self->receive();
+                              });
+    }
+
+private:
+    void receive() {
+        auto self = shared_from_this();
+        socket_.async_receive_from(boost::asio::buffer(response_), sender_,
+                                   [self](const boost::system::error_code& ec, std::size_t bytes) {
+                                       if (ec) {
+                                           self->finish(false, {}, "direct DNS receive failed: " + ec.message(), 0);
+                                           return;
+                                       }
+                                       std::vector<boost::asio::ip::address_v4> addresses;
+                                       std::string parse_error;
+                                       if (!parse_dns_a_response(self->response_.data(), bytes,
+                                                                 self->query_id_, &addresses, &parse_error)) {
+                                           self->finish(false, {}, parse_error, 0);
+                                           return;
+                                       }
+                                       self->finish(true, addresses, "", 0);
+                                   });
+    }
+
+    void finish(bool ok,
+                std::vector<boost::asio::ip::address_v4> addresses,
+                std::string reason,
+                int64_t elapsed_override) {
+        if (finished_) {
+            return;
+        }
+        finished_ = true;
+        boost::system::error_code ignored;
+        timer_.cancel(ignored);
+        socket_.close(ignored);
+        const int64_t elapsed = elapsed_override > 0 ? elapsed_override : (util::now_ms() - started_ms_);
+        handler_(ok, addresses, reason, elapsed);
+    }
+
+    boost::asio::ip::udp::socket socket_;
+    boost::asio::deadline_timer timer_;
+    boost::asio::ip::udp::endpoint dns_endpoint_;
+    boost::asio::ip::udp::endpoint sender_;
+    std::string dns_server_;
+    std::string host_;
+    Handler handler_;
+    int64_t started_ms_{0};
+    std::uint16_t query_id_{0};
+    bool finished_{false};
+    std::vector<uint8_t> query_;
+    std::array<uint8_t, 1500> response_{};
+};
+
 }
 
 Session::Session(boost::asio::ip::tcp::socket socket,
@@ -371,6 +673,8 @@ void Session::on_handshake(const boost::system::error_code& ec) {
     if (!ep_ec && !cfg_.anonym) {
         client_wan_ip_ = ep.address().to_string();
     }
+    boost::system::error_code nodelay_ec;
+    stream_.lowest_layer().set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
 
     if (cfg_.real_http || cfg_.obfuscation) {
         start_preface_read();
@@ -822,7 +1126,7 @@ void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
         }
         if (ec == boost::asio::ssl::error::stream_truncated ||
             ec.category().name() == std::string("ssl")) {
-            close_with_reason("SSL/TLS error: " + describe_error_code(ec) + 
+            close_with_reason("SSL/TLS error: " + describe_error_code(ec) +
                             " [client must reconnect]");
             return;
         }
@@ -912,7 +1216,7 @@ void Session::on_read_payload(const boost::system::error_code& ec, std::size_t) 
         std::string error_msg = "read payload failed: " + describe_error_code(ec);
         if (ec.category().name() == std::string("ssl") ||
             ec == boost::asio::ssl::error::stream_truncated) {
-            error_msg = "SSL/TLS payload read error: " + error_msg + 
+            error_msg = "SSL/TLS payload read error: " + error_msg +
                        " [SSL stream may be corrupted; client must reconnect]";
             util::log_error("session " + std::to_string(session_id_) + ": " + error_msg);
         }
@@ -1362,6 +1666,7 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                 inner_cfg.enabled = cfg_.inner_crypto;
                 inner_cfg.pq_private_key = cfg_.pq_private_key;
                 inner_cfg.allow_embedded_master = cfg_.allow_embedded_master;
+                auto server_inner_start = std::chrono::steady_clock::now();
                 if (cfg_.inner_dual) {
                     std::optional<inner::KdfParams> heavy_kdf;
                     if (inner_kdf.has_value() && !inner_kdf->name.empty() && inner_kdf->name != "hkdf") {
@@ -1424,6 +1729,16 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                     inner_mode_ = cfg_.inner_heavy ? "heavy" : "light";
                     inner_kdf_ = derived->kdf;
                 }
+                auto server_inner_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - server_inner_start).count();
+                util::log_timing("server.auth",
+                                 "inner_prepare",
+                                 "session=" + std::to_string(session_id_) +
+                                     " ms=" + std::to_string(server_inner_ms) +
+                                     " mode=" + (inner_mode_.empty() ? std::string("none") : inner_mode_) +
+                                     " kdf=" + (inner_kdf_.empty() ? std::string("unknown") : inner_kdf_) +
+                                     " alt_mode=" + (inner_alt_mode_.empty() ? std::string("none") : inner_alt_mode_) +
+                                     " alt_kdf=" + (inner_alt_kdf_.empty() ? std::string("none") : inner_alt_kdf_));
             }
         } else if (pq_ciphertext.has_value()) {
             auth_error_ = "server does not support inner crypto";
@@ -1616,7 +1931,19 @@ void Session::handle_open(const protocol::Frame& frame) {
         util::log_info("session " + std::to_string(session_id_) + ": OPEN udp stream " +
                        std::to_string(frame.header.stream_id) + " -> " + host + ":" + std::to_string(port));
         auto udp = std::make_shared<UdpStream>(stream_.get_executor());
-        
+        udp->host = host;
+        udp->port = port;
+        udp->open_started_ms = util::now_ms();
+        udp->resolve_started_ms = udp->open_started_ms;
+        const bool resolve_any_family = server_resolve_any_family_enabled();
+        const std::string resolve_family = resolve_any_family ? "any" : "ipv4";
+        util::log_timing("server.open",
+                         "start",
+                         "session=" + std::to_string(session_id_) +
+                             " stream=" + std::to_string(frame.header.stream_id) +
+                             " proto=udp family=" + resolve_family +
+                             " target=" + host + ":" + std::to_string(port));
+
         {
             std::lock_guard<std::mutex> lock(streams_mutex_);
             udp_streams_[frame.header.stream_id] = udp;
@@ -1624,21 +1951,53 @@ void Session::handle_open(const protocol::Frame& frame) {
 
         auto self = shared_from_this();
         const auto self_local_addr = session_local_address(stream_);
-        
+
         auto resolver_timer = std::make_shared<boost::asio::deadline_timer>(stream_.get_executor());
+        auto resolve_timed_out = std::make_shared<bool>(false);
         resolver_timer->expires_from_now(boost::posix_time::milliseconds(kResolverTimeoutMs));
-        
-        auto resolver_handler = [self, stream_id = frame.header.stream_id, udp, self_local_addr, resolver_timer](const boost::system::error_code& ec,
-                                                                                                                 const boost::asio::ip::udp::resolver::results_type& results) {
+
+        auto resolver_handler = [self, stream_id = frame.header.stream_id, udp, self_local_addr, resolver_timer, resolve_timed_out](const boost::system::error_code& ec,
+                                                                                                                                   const boost::asio::ip::udp::resolver::results_type& results) {
             resolver_timer->cancel();
-            
+            const int64_t resolve_ms = udp->resolve_started_ms > 0 ? (util::now_ms() - udp->resolve_started_ms) : 0;
+            {
+                std::lock_guard<std::mutex> lock(self->streams_mutex_);
+                if (self->udp_streams_.find(stream_id) == self->udp_streams_.end()) {
+                    return;
+                }
+            }
+
             if (ec) {
-                self->send_open_reply(stream_id, false, "resolve failed: " + ec.message());
+                if (ec == boost::asio::error::operation_aborted &&
+                    self->close_state_ != CloseState::Open) {
+                    return;
+                }
+                const std::string reason = *resolve_timed_out
+                    ? "resolve timeout"
+                    : ("resolve failed: " + ec.message());
+                util::log_timing("server.open",
+                                 "resolve_failed",
+                                 "session=" + std::to_string(self->session_id_) +
+                                     " stream=" + std::to_string(stream_id) +
+                                     " proto=udp ms=" + std::to_string(resolve_ms) +
+                                     " reason=" + reason);
+                self->send_open_reply(stream_id, false, reason);
                 std::lock_guard<std::mutex> lock(self->streams_mutex_);
                 self->udp_streams_.erase(stream_id);
                 return;
             }
-            
+            std::size_t result_count = 0;
+            for (const auto& result : results) {
+                (void)result;
+                ++result_count;
+            }
+            util::log_timing("server.open",
+                             "resolve_ok",
+                             "session=" + std::to_string(self->session_id_) +
+                                 " stream=" + std::to_string(stream_id) +
+                                 " proto=udp ms=" + std::to_string(resolve_ms) +
+                                 " results=" + std::to_string(result_count));
+
             std::vector<boost::asio::ip::udp::endpoint> allowed;
             bool blocked_active_server = false;
             for (const auto& entry : results) {
@@ -1652,7 +2011,7 @@ void Session::handle_open(const protocol::Frame& frame) {
                     allowed.push_back(entry.endpoint());
                 }
             }
-            
+
             if (allowed.empty()) {
                 self->send_open_reply(stream_id,
                                      false,
@@ -1663,7 +2022,7 @@ void Session::handle_open(const protocol::Frame& frame) {
                 self->udp_streams_.erase(stream_id);
                 return;
             }
-            
+
             prefer_ipv4_endpoints(&allowed);
             udp->remote = allowed.front();
             boost::system::error_code ec2;
@@ -1674,7 +2033,7 @@ void Session::handle_open(const protocol::Frame& frame) {
                 self->udp_streams_.erase(stream_id);
                 return;
             }
-            
+
             udp->socket.connect(udp->remote, ec2);
             if (ec2) {
                 self->send_open_reply(stream_id, false, "connect failed: " + ec2.message());
@@ -1682,31 +2041,152 @@ void Session::handle_open(const protocol::Frame& frame) {
                 self->udp_streams_.erase(stream_id);
                 return;
             }
-            
+
             self->send_open_reply(stream_id, true, "");
+            util::log_timing("server.open",
+                             "done",
+                             "session=" + std::to_string(self->session_id_) +
+                                 " stream=" + std::to_string(stream_id) +
+                                 " proto=udp ok=1 ms=" +
+                                 std::to_string(util::now_ms() - udp->open_started_ms));
             self->start_udp_read(stream_id);
         };
-        
-        udp->resolver.async_resolve(host, std::to_string(port),
-                                    boost::asio::bind_executor(strand_, resolver_handler));
-        
-        resolver_timer->async_wait(boost::asio::bind_executor(strand_,
-            [self, stream_id = frame.header.stream_id, udp](const boost::system::error_code& ec) {
-                if (ec) {
-                    return;
-                }
-                udp->resolver.cancel();
-            }));
-        
+
+        const auto resolver_flags = boost::asio::ip::resolver_base::numeric_service;
+        if (!cfg_.dns_server.empty() && !resolve_any_family) {
+            auto direct_dns = std::make_shared<DirectDnsAQuery>(
+                strand_,
+                cfg_.dns_server,
+                host,
+                [self, stream_id = frame.header.stream_id, udp, self_local_addr, port](
+                    bool ok,
+                    const std::vector<boost::asio::ip::address_v4>& addresses,
+                    const std::string& reason,
+                    int64_t resolve_ms) {
+                    {
+                        std::lock_guard<std::mutex> lock(self->streams_mutex_);
+                        if (self->udp_streams_.find(stream_id) == self->udp_streams_.end()) {
+                            return;
+                        }
+                    }
+                    if (!ok) {
+                        util::log_timing("server.open",
+                                         "resolve_failed",
+                                         "session=" + std::to_string(self->session_id_) +
+                                             " stream=" + std::to_string(stream_id) +
+                                             " proto=udp direct_dns=1 ms=" + std::to_string(resolve_ms) +
+                                             " reason=" + reason);
+                        self->send_open_reply(stream_id, false, "resolve failed: " + reason);
+                        std::lock_guard<std::mutex> lock(self->streams_mutex_);
+                        self->udp_streams_.erase(stream_id);
+                        return;
+                    }
+                    util::log_timing("server.open",
+                                     "resolve_ok",
+                                     "session=" + std::to_string(self->session_id_) +
+                                         " stream=" + std::to_string(stream_id) +
+                                         " proto=udp direct_dns=1 ms=" + std::to_string(resolve_ms) +
+                                         " results=" + std::to_string(addresses.size()));
+
+                    std::vector<boost::asio::ip::udp::endpoint> allowed;
+                    bool blocked_active_server = false;
+                    for (const auto& address : addresses) {
+                        boost::asio::ip::udp::endpoint endpoint(address, static_cast<unsigned short>(port));
+                        if (is_active_server_endpoint(endpoint, self->cfg_, self_local_addr)) {
+                            blocked_active_server = true;
+                            continue;
+                        }
+                        if (is_allowed_address(endpoint.address(),
+                                               self->session_allow_local_ip_,
+                                               self->session_control_full_)) {
+                            allowed.push_back(endpoint);
+                        }
+                    }
+
+                    if (allowed.empty()) {
+                        self->send_open_reply(stream_id,
+                                             false,
+                                             blocked_active_server
+                                                 ? "blocked destination: active server endpoint"
+                                                 : "blocked destination");
+                        std::lock_guard<std::mutex> lock(self->streams_mutex_);
+                        self->udp_streams_.erase(stream_id);
+                        return;
+                    }
+
+                    udp->remote = allowed.front();
+                    boost::system::error_code ec2;
+                    udp->socket.open(udp->remote.protocol(), ec2);
+                    if (ec2) {
+                        self->send_open_reply(stream_id, false, "udp open failed: " + ec2.message());
+                        std::lock_guard<std::mutex> lock(self->streams_mutex_);
+                        self->udp_streams_.erase(stream_id);
+                        return;
+                    }
+
+                    udp->socket.connect(udp->remote, ec2);
+                    if (ec2) {
+                        self->send_open_reply(stream_id, false, "connect failed: " + ec2.message());
+                        std::lock_guard<std::mutex> lock(self->streams_mutex_);
+                        self->udp_streams_.erase(stream_id);
+                        return;
+                    }
+
+                    self->send_open_reply(stream_id, true, "");
+                    util::log_timing("server.open",
+                                     "done",
+                                     "session=" + std::to_string(self->session_id_) +
+                                         " stream=" + std::to_string(stream_id) +
+                                         " proto=udp ok=1 ms=" +
+                                         std::to_string(util::now_ms() - udp->open_started_ms));
+                    self->start_udp_read(stream_id);
+                });
+            direct_dns->start();
+        } else if (resolve_any_family) {
+            udp->resolver.async_resolve(host, std::to_string(port), resolver_flags,
+                                        boost::asio::bind_executor(strand_, resolver_handler));
+            resolver_timer->async_wait(boost::asio::bind_executor(strand_,
+                [udp, resolve_timed_out](const boost::system::error_code& ec) {
+                    if (ec) {
+                        return;
+                    }
+                    *resolve_timed_out = true;
+                    udp->resolver.cancel();
+                }));
+        } else {
+            udp->resolver.async_resolve(boost::asio::ip::udp::v4(), host, std::to_string(port), resolver_flags,
+                                        boost::asio::bind_executor(strand_, resolver_handler));
+            resolver_timer->async_wait(boost::asio::bind_executor(strand_,
+                [udp, resolve_timed_out](const boost::system::error_code& ec) {
+                    if (ec) {
+                        return;
+                    }
+                    *resolve_timed_out = true;
+                    udp->resolver.cancel();
+                }));
+        }
+
         return;
     }
 
     util::log_info("session " + std::to_string(session_id_) + ": OPEN tcp stream " +
                    std::to_string(frame.header.stream_id) + " -> " + host + ":" + std::to_string(port));
     auto remote = std::make_shared<RemoteStream>(stream_.get_executor());
+    remote->host = host;
+    remote->port = port;
+    remote->open_started_ms = util::now_ms();
+    remote->resolve_started_ms = remote->open_started_ms;
+    const bool resolve_any_family = server_resolve_any_family_enabled();
+    const std::string resolve_family = resolve_any_family ? "any" : "ipv4";
+    util::log_timing("server.open",
+                     "start",
+                     "session=" + std::to_string(session_id_) +
+                         " stream=" + std::to_string(frame.header.stream_id) +
+                         " proto=tcp family=" + resolve_family +
+                         " target=" + host + ":" + std::to_string(port));
     boost::system::error_code keep_ec;
     remote->socket.set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
-    
+
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
         streams_[frame.header.stream_id] = remote;
@@ -1714,86 +2194,216 @@ void Session::handle_open(const protocol::Frame& frame) {
 
     auto self = shared_from_this();
     const auto self_local_addr = session_local_address(stream_);
-    
+
     auto resolver_timer = std::make_shared<boost::asio::deadline_timer>(stream_.get_executor());
+    auto resolve_timed_out = std::make_shared<bool>(false);
     resolver_timer->expires_from_now(boost::posix_time::milliseconds(kResolverTimeoutMs));
-    
-    auto resolver_handler = [self, stream_id = frame.header.stream_id, remote, self_local_addr, resolver_timer](const boost::system::error_code& ec,
-                                                                                                               const boost::asio::ip::tcp::resolver::results_type& results) {
-        resolver_timer->cancel();
-        
-        if (ec) {
-            self->send_open_reply(stream_id, false, "resolve failed: " + ec.message());
-            std::lock_guard<std::mutex> lock(self->streams_mutex_);
-            self->streams_.erase(stream_id);
-            return;
-        }
-        
+
+    auto continue_tcp_open = [self,
+                              stream_id = frame.header.stream_id,
+                              remote,
+                              self_local_addr](std::vector<boost::asio::ip::tcp::endpoint> resolved,
+                                               std::size_t result_count,
+                                               int64_t resolve_ms,
+                                               bool direct_dns) {
+        util::log_timing("server.open",
+                         "resolve_ok",
+                         "session=" + std::to_string(self->session_id_) +
+                             " stream=" + std::to_string(stream_id) +
+                             " proto=tcp" +
+                             (direct_dns ? std::string(" direct_dns=1") : std::string{}) +
+                             " ms=" + std::to_string(resolve_ms) +
+                             " results=" + std::to_string(result_count));
+
         std::vector<boost::asio::ip::tcp::endpoint> allowed;
         bool blocked_active_server = false;
-        for (const auto& entry : results) {
-                if (is_active_server_endpoint(entry.endpoint(), self->cfg_, self_local_addr)) {
-                    blocked_active_server = true;
-                    continue;
-                }
-                if (is_allowed_address(entry.endpoint().address(),
-                                       self->session_allow_local_ip_,
-                                       self->session_control_full_)) {
-                    allowed.push_back(entry.endpoint());
-                }
+        for (const auto& endpoint : resolved) {
+            if (is_active_server_endpoint(endpoint, self->cfg_, self_local_addr)) {
+                blocked_active_server = true;
+                continue;
             }
-        
+            if (is_allowed_address(endpoint.address(),
+                                   self->session_allow_local_ip_,
+                                   self->session_control_full_)) {
+                allowed.push_back(endpoint);
+            }
+        }
+
         if (allowed.empty()) {
             self->send_open_reply(stream_id,
-                                 false,
-                                 blocked_active_server
-                                     ? "blocked destination: active server endpoint"
-                                     : "blocked destination");
+                                  false,
+                                  blocked_active_server
+                                      ? "blocked destination: active server endpoint"
+                                      : "blocked destination");
             std::lock_guard<std::mutex> lock(self->streams_mutex_);
             self->streams_.erase(stream_id);
             return;
         }
-        
+
         prefer_ipv4_endpoints(&allowed);
-        
+
         auto connect_timer = std::make_shared<boost::asio::deadline_timer>(self->stream_.get_executor());
+        auto connect_timed_out = std::make_shared<bool>(false);
+        remote->connect_started_ms = util::now_ms();
         connect_timer->expires_from_now(boost::posix_time::milliseconds(kConnectTimeoutMs));
-        
+
         boost::asio::async_connect(remote->socket, allowed,
                                    boost::asio::bind_executor(self->strand_,
-                                                              [self, stream_id, remote, connect_timer](const boost::system::error_code& ec2,
-                                                                                                       const boost::asio::ip::tcp::endpoint&) {
+                                                              [self, stream_id, remote, connect_timer, connect_timed_out](const boost::system::error_code& ec2,
+                                                                                                                          const boost::asio::ip::tcp::endpoint&) {
                                                                   connect_timer->cancel();
+                                                                  const int64_t connect_ms = remote->connect_started_ms > 0
+                                                                      ? (util::now_ms() - remote->connect_started_ms)
+                                                                      : 0;
+                                                                  {
+                                                                      std::lock_guard<std::mutex> lock(self->streams_mutex_);
+                                                                      if (self->streams_.find(stream_id) == self->streams_.end()) {
+                                                                          return;
+                                                                      }
+                                                                  }
                                                                   if (ec2) {
-                                                                      self->send_open_reply(stream_id, false, "connect failed: " + ec2.message());
+                                                                      if (ec2 == boost::asio::error::operation_aborted &&
+                                                                          self->close_state_ != CloseState::Open) {
+                                                                          return;
+                                                                      }
+                                                                      const std::string reason = *connect_timed_out
+                                                                          ? "connect timeout"
+                                                                          : ("connect failed: " + ec2.message());
+                                                                      util::log_timing("server.open",
+                                                                                       "connect_failed",
+                                                                                       "session=" + std::to_string(self->session_id_) +
+                                                                                           " stream=" + std::to_string(stream_id) +
+                                                                                           " proto=tcp ms=" + std::to_string(connect_ms) +
+                                                                                           " reason=" + reason);
+                                                                      self->send_open_reply(stream_id, false, reason);
                                                                       std::lock_guard<std::mutex> lock(self->streams_mutex_);
                                                                       self->streams_.erase(stream_id);
                                                                       return;
                                                                   }
+                                                                  boost::system::error_code nodelay_ec;
+                                                                  remote->socket.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
                                                                   self->send_open_reply(stream_id, true, "");
+                                                                  util::log_timing("server.open",
+                                                                                   "done",
+                                                                                   "session=" + std::to_string(self->session_id_) +
+                                                                                       " stream=" + std::to_string(stream_id) +
+                                                                                       " proto=tcp ok=1 connect_ms=" +
+                                                                                       std::to_string(connect_ms) +
+                                                                                       " total_ms=" +
+                                                                                       std::to_string(util::now_ms() - remote->open_started_ms));
                                                                   self->start_remote_read(stream_id);
                                                               }));
-        
+
         connect_timer->async_wait(boost::asio::bind_executor(self->strand_,
-            [self, stream_id, remote](const boost::system::error_code& ec) {
+            [self, stream_id, remote, connect_timed_out](const boost::system::error_code& ec) {
                 if (ec) {
                     return;
                 }
+                *connect_timed_out = true;
                 boost::system::error_code ignore_ec;
                 remote->socket.close(ignore_ec);
             }));
     };
-    
-    remote->resolver.async_resolve(host, std::to_string(port),
-                                   boost::asio::bind_executor(strand_, resolver_handler));
-    
-    resolver_timer->async_wait(boost::asio::bind_executor(strand_,
-        [self, stream_id = frame.header.stream_id, remote](const boost::system::error_code& ec) {
-            if (ec) {
+
+    auto resolver_handler = [self, stream_id = frame.header.stream_id, remote, resolver_timer, resolve_timed_out, continue_tcp_open](const boost::system::error_code& ec,
+                                                                                                                                    const boost::asio::ip::tcp::resolver::results_type& results) {
+        resolver_timer->cancel();
+        const int64_t resolve_ms = remote->resolve_started_ms > 0 ? (util::now_ms() - remote->resolve_started_ms) : 0;
+        {
+            std::lock_guard<std::mutex> lock(self->streams_mutex_);
+            if (self->streams_.find(stream_id) == self->streams_.end()) {
                 return;
             }
-            remote->resolver.cancel();
-        }));
+        }
+
+        if (ec) {
+            if (ec == boost::asio::error::operation_aborted &&
+                self->close_state_ != CloseState::Open) {
+                return;
+            }
+            const std::string reason = *resolve_timed_out
+                ? "resolve timeout"
+                : ("resolve failed: " + ec.message());
+            util::log_timing("server.open",
+                             "resolve_failed",
+                             "session=" + std::to_string(self->session_id_) +
+                                 " stream=" + std::to_string(stream_id) +
+                                 " proto=tcp ms=" + std::to_string(resolve_ms) +
+                                 " reason=" + reason);
+            self->send_open_reply(stream_id, false, reason);
+            std::lock_guard<std::mutex> lock(self->streams_mutex_);
+            self->streams_.erase(stream_id);
+            return;
+        }
+        std::size_t result_count = 0;
+        std::vector<boost::asio::ip::tcp::endpoint> resolved;
+        for (const auto& result : results) {
+            resolved.push_back(result.endpoint());
+            ++result_count;
+        }
+        continue_tcp_open(std::move(resolved), result_count, resolve_ms, false);
+    };
+
+    const auto resolver_flags = boost::asio::ip::resolver_base::numeric_service;
+    if (!cfg_.dns_server.empty() && !resolve_any_family) {
+        auto direct_dns = std::make_shared<DirectDnsAQuery>(
+            strand_,
+            cfg_.dns_server,
+            host,
+            [self, stream_id = frame.header.stream_id, remote, port, continue_tcp_open](
+                bool ok,
+                const std::vector<boost::asio::ip::address_v4>& addresses,
+                const std::string& reason,
+                int64_t resolve_ms) {
+                {
+                    std::lock_guard<std::mutex> lock(self->streams_mutex_);
+                    if (self->streams_.find(stream_id) == self->streams_.end()) {
+                        return;
+                    }
+                }
+                if (!ok) {
+                    util::log_timing("server.open",
+                                     "resolve_failed",
+                                     "session=" + std::to_string(self->session_id_) +
+                                         " stream=" + std::to_string(stream_id) +
+                                         " proto=tcp direct_dns=1 ms=" + std::to_string(resolve_ms) +
+                                         " reason=" + reason);
+                    self->send_open_reply(stream_id, false, "resolve failed: " + reason);
+                    std::lock_guard<std::mutex> lock(self->streams_mutex_);
+                    self->streams_.erase(stream_id);
+                    return;
+                }
+                std::vector<boost::asio::ip::tcp::endpoint> resolved;
+                resolved.reserve(addresses.size());
+                for (const auto& address : addresses) {
+                    resolved.emplace_back(address, static_cast<unsigned short>(port));
+                }
+                continue_tcp_open(std::move(resolved), addresses.size(), resolve_ms, true);
+            });
+        direct_dns->start();
+    } else if (resolve_any_family) {
+        remote->resolver.async_resolve(host, std::to_string(port), resolver_flags,
+                                       boost::asio::bind_executor(strand_, resolver_handler));
+        resolver_timer->async_wait(boost::asio::bind_executor(strand_,
+            [self, stream_id = frame.header.stream_id, remote, resolve_timed_out](const boost::system::error_code& ec) {
+                if (ec) {
+                    return;
+                }
+                *resolve_timed_out = true;
+                remote->resolver.cancel();
+            }));
+    } else {
+        remote->resolver.async_resolve(boost::asio::ip::tcp::v4(), host, std::to_string(port), resolver_flags,
+                                       boost::asio::bind_executor(strand_, resolver_handler));
+        resolver_timer->async_wait(boost::asio::bind_executor(strand_,
+            [self, stream_id = frame.header.stream_id, remote, resolve_timed_out](const boost::system::error_code& ec) {
+                if (ec) {
+                    return;
+                }
+                *resolve_timed_out = true;
+                remote->resolver.cancel();
+            }));
+    }
 }
 
 uint8_t Session::reserve_stream_id() {
@@ -2590,7 +3200,7 @@ void Session::handle_data(const protocol::Frame& frame) {
 void Session::handle_close(uint8_t stream_id, const std::string& reason) {
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
-        
+
         auto it_listener = reverse_listeners_.find(stream_id);
         if (it_listener != reverse_listeners_.end()) {
             boost::system::error_code ec;
@@ -2608,26 +3218,56 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
             reverse_listeners_.erase(it_listener);
             return;
         }
-        
+
         auto it_udp = udp_streams_.find(stream_id);
         if (it_udp != udp_streams_.end()) {
             util::log_info("session " + std::to_string(session_id_) + ": udp stream " + std::to_string(stream_id) +
                            " closed: " + reason);
+            auto udp = it_udp->second;
+            if (!udp->close_summary_logged) {
+                udp->close_summary_logged = true;
+                const int64_t elapsed = udp->open_started_ms > 0 ? (util::now_ms() - udp->open_started_ms) : 0;
+                util::log_timing("server.stream",
+                                 "summary",
+                                 "session=" + std::to_string(session_id_) +
+                                     " stream=" + std::to_string(stream_id) +
+                                     " proto=udp ms=" + std::to_string(elapsed) +
+                                     " upstream=" + std::to_string(udp->upstream_bytes) +
+                                     " downstream=" + std::to_string(udp->downstream_bytes) +
+                                     " target=" + udp->host + ":" + std::to_string(udp->port) +
+                                     " reason=" + reason);
+            }
             boost::system::error_code ec;
-            it_udp->second->socket.close(ec);
+            udp->resolver.cancel();
+            udp->socket.close(ec);
             udp_streams_.erase(it_udp);
             return;
         }
-        
+
         auto it = streams_.find(stream_id);
         if (it == streams_.end()) {
             return;
         }
 
         util::log_info("session " + std::to_string(session_id_) + ": stream " + std::to_string(stream_id) + " closed: " + reason);
+        auto remote = it->second;
+        if (!remote->close_summary_logged) {
+            remote->close_summary_logged = true;
+            const int64_t elapsed = remote->open_started_ms > 0 ? (util::now_ms() - remote->open_started_ms) : 0;
+            util::log_timing("server.stream",
+                             "summary",
+                             "session=" + std::to_string(session_id_) +
+                                 " stream=" + std::to_string(stream_id) +
+                                 " proto=tcp ms=" + std::to_string(elapsed) +
+                                 " upstream=" + std::to_string(remote->upstream_bytes) +
+                                 " downstream=" + std::to_string(remote->downstream_bytes) +
+                                 " target=" + remote->host + ":" + std::to_string(remote->port) +
+                                 " reason=" + reason);
+        }
         boost::system::error_code ec;
-        it->second->socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
-        it->second->socket.close(ec);
+        remote->resolver.cancel();
+        remote->socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
+        remote->socket.close(ec);
         streams_.erase(it);
     }
 }
@@ -2679,7 +3319,7 @@ void Session::start_remote_read(uint8_t stream_id) {
         remote->read_paused = false;
         remote->read_in_flight = true;
     }
-    
+
     auto self = shared_from_this();
     remote->socket.async_read_some(boost::asio::buffer(remote->read_buf),
                                    boost::asio::bind_executor(strand_,
@@ -2705,14 +3345,25 @@ void Session::on_remote_read(uint8_t stream_id, const boost::system::error_code&
         send_control_close(stream_id, "");
         return;
     }
-    
+    remote->downstream_bytes += static_cast<std::uint64_t>(bytes);
+    if (remote->first_downstream_ms == 0) {
+        remote->first_downstream_ms = util::now_ms();
+        util::log_timing("server.stream",
+                         "first_downstream",
+                         "session=" + std::to_string(session_id_) +
+                             " stream=" + std::to_string(stream_id) +
+                             " proto=tcp ms=" +
+                             std::to_string(remote->first_downstream_ms - remote->open_started_ms) +
+                             " bytes=" + std::to_string(bytes));
+    }
+
     crypto::Bytes payload(remote->read_buf.data(), remote->read_buf.data() + bytes);
     uint16_t flags = 0;
     if (inner_key_.has_value()) {
         payload = encrypt_inner_payload(protocol::DATA, stream_id, payload);
         flags |= protocol::kFlagInnerEncrypted;
     }
-    
+
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::DATA, stream_id, flags}, std::move(payload)};
     queue_frame_on_strand(frame);
     start_remote_read(stream_id);
@@ -2741,7 +3392,7 @@ void Session::start_udp_read(uint8_t stream_id) {
         udp->read_paused = false;
         udp->read_in_flight = true;
     }
-    
+
     auto self = shared_from_this();
     udp->socket.async_receive(boost::asio::buffer(udp->read_buf),
                               boost::asio::bind_executor(strand_,
@@ -2767,14 +3418,25 @@ void Session::on_udp_read(uint8_t stream_id, const boost::system::error_code& ec
         send_control_close(stream_id, "");
         return;
     }
-    
+    udp->downstream_bytes += static_cast<std::uint64_t>(bytes);
+    if (udp->first_downstream_ms == 0) {
+        udp->first_downstream_ms = util::now_ms();
+        util::log_timing("server.stream",
+                         "first_downstream",
+                         "session=" + std::to_string(session_id_) +
+                             " stream=" + std::to_string(stream_id) +
+                             " proto=udp ms=" +
+                             std::to_string(udp->first_downstream_ms - udp->open_started_ms) +
+                             " bytes=" + std::to_string(bytes));
+    }
+
     crypto::Bytes payload(udp->read_buf.data(), udp->read_buf.data() + bytes);
     uint16_t flags = 0;
     if (inner_key_.has_value()) {
         payload = encrypt_inner_payload(protocol::DATA, stream_id, payload);
         flags |= protocol::kFlagInnerEncrypted;
     }
-    
+
     protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::DATA, stream_id, flags}, std::move(payload)};
     queue_frame_on_strand(frame);
     start_udp_read(stream_id);
@@ -2789,6 +3451,17 @@ void Session::enqueue_udp_write(uint8_t stream_id, const crypto::Bytes& data) {
             return;
         }
         udp = it->second;
+    }
+    udp->upstream_bytes += static_cast<std::uint64_t>(data.size());
+    if (udp->first_upstream_ms == 0) {
+        udp->first_upstream_ms = util::now_ms();
+        util::log_timing("server.stream",
+                         "first_upstream",
+                         "session=" + std::to_string(session_id_) +
+                             " stream=" + std::to_string(stream_id) +
+                             " proto=udp ms=" +
+                             std::to_string(udp->first_upstream_ms - udp->open_started_ms) +
+                             " bytes=" + std::to_string(data.size()));
     }
     udp->write_queue.push_back(data);
     if (!udp->write_in_flight) {
@@ -2840,6 +3513,17 @@ void Session::enqueue_remote_write(uint8_t stream_id, const std::vector<uint8_t>
         }
         remote = it->second;
     }
+    remote->upstream_bytes += static_cast<std::uint64_t>(data.size());
+    if (remote->first_upstream_ms == 0) {
+        remote->first_upstream_ms = util::now_ms();
+        util::log_timing("server.stream",
+                         "first_upstream",
+                         "session=" + std::to_string(session_id_) +
+                             " stream=" + std::to_string(stream_id) +
+                             " proto=tcp ms=" +
+                             std::to_string(remote->first_upstream_ms - remote->open_started_ms) +
+                             " bytes=" + std::to_string(data.size()));
+    }
     remote->write_queue.push_back(data);
     if (!remote->write_in_flight) {
         do_remote_write(stream_id);
@@ -2864,7 +3548,7 @@ void Session::do_remote_write(uint8_t stream_id) {
         data_to_write = std::move(remote->write_queue.front());
         remote->write_queue.pop_front();
     }
-    
+
     auto buffer = std::make_shared<std::vector<uint8_t>>(std::move(data_to_write));
     auto self = shared_from_this();
     boost::asio::async_write(remote->socket, boost::asio::buffer(*buffer),
@@ -2911,10 +3595,10 @@ void Session::queue_encoded_write_on_strand(
         }
         return;
     }
-    
+
     if (write_queue_depth_ >= kMaxWriteQueueSize) {
-        util::log_warn("session " + std::to_string(session_id_) + 
-                      ": write queue overflow (" + std::to_string(write_queue_depth_) + 
+        util::log_warn("session " + std::to_string(session_id_) +
+                      ": write queue overflow (" + std::to_string(write_queue_depth_) +
                       " pending), closing to prevent SSL corruption");
         close_with_reason("write queue overrun - too many pending frames");
         if (handler) {
@@ -2922,7 +3606,7 @@ void Session::queue_encoded_write_on_strand(
         }
         return;
     }
-    
+
     write_queue_.push_back({std::move(data), std::move(handler)});
     write_queue_depth_++;
     if (!write_in_flight_) {

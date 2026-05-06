@@ -67,7 +67,7 @@ private:
     std::vector<uint8_t> addr_buf_;
     std::array<uint8_t, 2> port_buf_{};
 
-    std::array<uint8_t, 4096> read_buf_{};
+    std::array<uint8_t, 32768> read_buf_{};
 
     std::deque<std::pair<std::shared_ptr<std::vector<uint8_t>>, std::function<void()>>> write_queue_;
     bool write_in_flight_{false};
@@ -78,6 +78,12 @@ private:
     bool open_confirmed_{false};
     bool awaiting_domain_len_{false};
     uint8_t pending_cmd_{0};
+    int64_t opened_started_ms_{0};
+    int64_t first_upload_ms_{0};
+    int64_t first_download_ms_{0};
+    std::uint64_t upload_bytes_{0};
+    std::uint64_t download_bytes_{0};
+    bool close_summary_logged_{false};
 
     struct UdpAssoc {
         std::string host;

@@ -51,6 +51,8 @@ constexpr int64_t kReverseAcceptTimeoutMs = 30000;
 constexpr uint32_t kMaxWriteQueueSize = 256;
 constexpr uint32_t kWriteQueueHighWatermark = 16;
 constexpr uint32_t kWriteQueueLowWatermark = 4;
+constexpr uint32_t kMaxWriteBatchFrames = 16;
+constexpr std::size_t kMaxWriteBatchBytes = 64 * 1024;
 
 int64_t steady_now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -2282,6 +2284,7 @@ void Session::handle_open(const protocol::Frame& frame) {
                                                                   }
                                                                   boost::system::error_code nodelay_ec;
                                                                   remote->socket.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
+                                                                  remote->connected = true;
                                                                   self->send_open_reply(stream_id, true, "");
                                                                   util::log_timing("server.open",
                                                                                    "done",
@@ -2292,7 +2295,8 @@ void Session::handle_open(const protocol::Frame& frame) {
                                                                                        " total_ms=" +
                                                                                        std::to_string(util::now_ms() - remote->open_started_ms));
                                                                   self->start_remote_read(stream_id);
-                                                              }));
+                                                                  self->do_remote_write(stream_id);
+                                                                  }));
 
         connect_timer->async_wait(boost::asio::bind_executor(self->strand_,
             [self, stream_id, remote, connect_timed_out](const boost::system::error_code& ec) {
@@ -3540,6 +3544,10 @@ void Session::do_remote_write(uint8_t stream_id) {
             return;
         }
         remote = it->second;
+        if (!remote->connected) {
+            remote->write_in_flight = false;
+            return;
+        }
         if (remote->write_queue.empty()) {
             remote->write_in_flight = false;
             return;
@@ -3675,22 +3683,61 @@ void Session::do_write() {
     }
     write_in_flight_ = true;
 
-    auto& item = write_queue_.front();
+    std::size_t batch_count = 0;
+    std::size_t total_bytes = 0;
+    for (auto it = write_queue_.begin();
+         it != write_queue_.end() &&
+         batch_count < kMaxWriteBatchFrames &&
+         total_bytes < kMaxWriteBatchBytes;
+         ++it) {
+        total_bytes += it->data ? it->data->size() : 0;
+        ++batch_count;
+    }
+    if (batch_count == 0) {
+        write_in_flight_ = false;
+        return;
+    }
+
+    std::shared_ptr<std::vector<uint8_t>> batch_data;
+    if (batch_count == 1) {
+        batch_data = write_queue_.front().data;
+    } else {
+        batch_data = std::make_shared<std::vector<uint8_t>>();
+        batch_data->reserve(total_bytes);
+        std::size_t copied = 0;
+        for (auto it = write_queue_.begin(); it != write_queue_.end() && copied < batch_count; ++it, ++copied) {
+            if (it->data && !it->data->empty()) {
+                batch_data->insert(batch_data->end(), it->data->begin(), it->data->end());
+            }
+        }
+    }
+
     auto self = shared_from_this();
-    boost::asio::async_write(stream_, boost::asio::buffer(*item.data),
+    boost::asio::async_write(stream_, boost::asio::buffer(*batch_data),
                              boost::asio::bind_executor(strand_,
-                                                        [self](const boost::system::error_code& ec,
+                                                        [self, batch_data, batch_count](const boost::system::error_code& ec,
                                                                std::size_t bytes) {
-                                                            auto item = std::move(self->write_queue_.front());
-                                                            self->write_queue_.pop_front();
-                                                            if (self->write_queue_depth_ > 0) {
-                                                                self->write_queue_depth_--;
+                                                            std::vector<PendingWrite> completed;
+                                                            completed.reserve(batch_count);
+                                                            std::size_t popped = 0;
+                                                            while (popped < batch_count && !self->write_queue_.empty()) {
+                                                                completed.push_back(std::move(self->write_queue_.front()));
+                                                                self->write_queue_.pop_front();
+                                                                ++popped;
+                                                            }
+                                                            if (self->write_queue_depth_ >= popped) {
+                                                                self->write_queue_depth_ -= static_cast<uint32_t>(popped);
+                                                            } else {
+                                                                self->write_queue_depth_ = 0;
                                                             }
                                                             if (!ec) {
                                                                 self->maybe_resume_inbound_reads_on_strand();
                                                             }
-                                                            if (item.handler) {
-                                                                item.handler(ec, bytes);
+                                                            for (auto& item : completed) {
+                                                                if (item.handler) {
+                                                                    const std::size_t item_bytes = (!ec && item.data) ? item.data->size() : bytes;
+                                                                    item.handler(ec, item_bytes);
+                                                                }
                                                             }
                                                             if (ec) {
                                                                 if (self->close_state_ != CloseState::Open && is_expected_close_ec(ec)) {

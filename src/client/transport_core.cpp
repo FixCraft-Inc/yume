@@ -16,6 +16,8 @@ namespace yume::client {
 namespace {
 constexpr std::uint64_t kHopDecryptWindow = 24;
 constexpr std::size_t kMaxFramePayloadBytes = 16U * 1024U * 1024U;
+constexpr std::size_t kMaxWriteBatchFrames = 16;
+constexpr std::size_t kMaxWriteBatchBytes = 64U * 1024U;
 
 std::string payload_to_string(const std::vector<uint8_t>& payload) {
     return std::string(payload.begin(), payload.end());
@@ -502,7 +504,7 @@ std::shared_ptr<TransportCore::Bytes> TransportCore::encode_outgoing_frame(const
 }
 
 void TransportCore::dispatch_next_write() {
-    PendingWrite item;
+    std::vector<PendingWrite> batch;
     WriteHandler writer;
     {
         std::lock_guard<std::mutex> write_lock(write_mu_);
@@ -510,7 +512,15 @@ void TransportCore::dispatch_next_write() {
             write_in_flight_ = false;
             return;
         }
-        item = write_queue_.front();
+        std::size_t total_bytes = 0;
+        for (auto it = write_queue_.begin();
+             it != write_queue_.end() &&
+             batch.size() < kMaxWriteBatchFrames &&
+             total_bytes < kMaxWriteBatchBytes;
+             ++it) {
+            batch.push_back(*it);
+            total_bytes += it->frame.payload.size() + 8;
+        }
     }
     {
         std::lock_guard<std::mutex> state_lock(state_mu_);
@@ -525,29 +535,51 @@ void TransportCore::dispatch_next_write() {
     }
 
     std::shared_ptr<Bytes> encoded;
+    std::vector<std::size_t> encoded_sizes;
     try {
-        encoded = encode_outgoing_frame(item.frame);
+        encoded_sizes.reserve(batch.size());
+        if (batch.size() == 1) {
+            encoded = encode_outgoing_frame(batch.front().frame);
+            encoded_sizes.push_back(encoded->size());
+        } else {
+            encoded = std::make_shared<Bytes>();
+            encoded->reserve(kMaxWriteBatchBytes);
+            for (const auto& item : batch) {
+                auto part = encode_outgoing_frame(item.frame);
+                encoded_sizes.push_back(part->size());
+                encoded->insert(encoded->end(), part->begin(), part->end());
+            }
+        }
     } catch (const std::exception& ex) {
-        if (item.handler) {
-            item.handler(false, 0, ex.what());
+        for (auto& item : batch) {
+            if (item.handler) {
+                item.handler(false, 0, ex.what());
+            }
         }
         request_transport_close("frame encode failed: " + std::string(ex.what()));
         return;
     } catch (...) {
-        if (item.handler) {
-            item.handler(false, 0, "unknown error");
+        for (auto& item : batch) {
+            if (item.handler) {
+                item.handler(false, 0, "unknown error");
+            }
         }
         request_transport_close("frame encode failed: unknown error");
         return;
     }
 
-    writer(encoded, [this, item](bool ok, std::size_t bytes, const std::string& error) mutable {
+    writer(encoded, [this, batch = std::move(batch), encoded_sizes = std::move(encoded_sizes)](
+                        bool ok,
+                        std::size_t bytes,
+                        const std::string& error) mutable {
         bool dispatch = false;
         bool queue_empty = true;
         {
             std::lock_guard<std::mutex> write_lock(write_mu_);
-            if (!write_queue_.empty()) {
+            std::size_t popped = 0;
+            while (popped < batch.size() && !write_queue_.empty()) {
                 write_queue_.pop_front();
+                ++popped;
             }
             queue_empty = write_queue_.empty();
             write_in_flight_ = !queue_empty;
@@ -559,8 +591,12 @@ void TransportCore::dispatch_next_write() {
         } else {
             dispatch = true;
         }
-        if (item.handler) {
-            item.handler(ok, bytes, error);
+        for (std::size_t i = 0; i < batch.size(); ++i) {
+            auto& item = batch[i];
+            if (item.handler) {
+                const std::size_t item_bytes = ok && i < encoded_sizes.size() ? encoded_sizes[i] : bytes;
+                item.handler(ok, item_bytes, error);
+            }
         }
         if (!ok) {
             request_transport_close("write failed: " + error);

@@ -286,12 +286,12 @@ void SocksSession::start_tunnel() {
                                                   (reason.empty() ? std::string{} : " reason=" + reason));
                              if (!ok) {
                                  util::log_warn("SOCKS open failed: " + reason);
-                                 self->send_reply(kReplyGeneralFailure, [self]() { self->close(); });
+                                 self->close();
                                  return;
                              }
                              self->open_confirmed_ = true;
-                             self->send_reply(kReplySuccess, [self]() { self->start_client_read(); });
                          });
+    send_reply(kReplySuccess, [self = shared_from_this()]() { self->start_client_read(); });
 }
 
 void SocksSession::start_udp_associate() {

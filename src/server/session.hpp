@@ -170,6 +170,7 @@ private:
         std::uint64_t upstream_bytes{0};
         std::uint64_t downstream_bytes{0};
         bool close_summary_logged{false};
+        bool connected{false};
         bool write_in_flight{false};
         bool read_in_flight{false};
         bool read_paused{false};

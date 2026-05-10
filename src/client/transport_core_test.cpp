@@ -56,6 +56,7 @@ void test_open_round_trip() {
 }
 
 void test_inner_crypto_round_trip() {
+#if defined(YUME_USE_BASEFWX) && YUME_USE_BASEFWX
     Recorder recorder;
     yume::client::TransportCore core(recorder.writer(), recorder.closer());
     core.start();
@@ -82,6 +83,7 @@ void test_inner_crypto_round_trip() {
     core.feed_tls_bytes(recorder.writes.back());
     assert(delivered);
     assert(received == payload);
+#endif
 }
 
 void test_shutdown_closes_registered_streams() {

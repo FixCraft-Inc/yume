@@ -1,0 +1,26 @@
+YUME Debian source package notes
+================================
+
+The upstream repository can contain bundled or generated dependency trees used
+for portable upstream builds:
+
+* basefwx/
+* vendor/
+* third_party/
+
+These are excluded from the Debian source package through Files-Excluded in
+debian/copyright. Debian builds must not download dependencies during package
+builds and should use Debian-packaged libraries.
+
+Use scripts/make_debian_orig.sh from the upstream checkout to create the
+matching ../yume_<version>.orig.tar.xz before running dpkg-buildpackage -S.
+
+The current Debian packaging configures YUME with:
+
+    -DYUME_USE_BASEFWX=OFF
+    -DYUME_USE_BUNDLED_NLOHMANN=OFF
+
+This keeps the package suitable for the Debian archive while BaseFWX is not yet
+packaged as a separate Debian library. To ship the full BaseFWX-backed inner
+crypto feature set in Debian main, package BaseFWX separately first, then update
+YUME to build against that packaged development library.

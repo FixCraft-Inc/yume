@@ -17,6 +17,7 @@ COLOR_MAGENTA="\033[0;35m"
 MINIMAL=0
 TARGET_ARCH=""
 CLEAN_ONLY=0
+BUILD_DEB=0
 OPENWRT=0
 BUSYBOX=0
 OPENWRT_SDK=""
@@ -82,11 +83,34 @@ if [[ -z "${BASEFWX_REF}" && -f "${BASEFWX_REF_FILE}" ]]; then
     BASEFWX_REF="$(tr -d '[:space:]' < "${BASEFWX_REF_FILE}")"
 fi
 
-info()  { echo -e "${COLOR_BLUE}✨ $*${COLOR_RESET}"; }
-warn()  { echo -e "${COLOR_YELLOW}⚠️  $*${COLOR_RESET}"; }
-error() { echo -e "${COLOR_RED}❌ $*${COLOR_RESET}"; }
-ok()    { echo -e "${COLOR_GREEN}✅ $*${COLOR_RESET}"; }
-step()  { echo -e "${COLOR_MAGENTA}🚀 $*${COLOR_RESET}"; }
+info()  { echo -e "${COLOR_BLUE}[info] $*${COLOR_RESET}"; }
+warn()  { echo -e "${COLOR_YELLOW}[warn] $*${COLOR_RESET}"; }
+error() { echo -e "${COLOR_RED}[error] $*${COLOR_RESET}"; }
+ok()    { echo -e "${COLOR_GREEN}[ok] $*${COLOR_RESET}"; }
+step()  { echo -e "${COLOR_MAGENTA}[step] $*${COLOR_RESET}"; }
+
+usage() {
+    cat <<'EOF'
+Usage: ./ezbuild.sh [options]
+
+Options:
+  --clean                 Remove the build directory and exit
+  --minimal               Build a minimal/static YUME
+  --deb, --package-deb    Build a Debian package with CPack
+  --arch <arch>           Target arch metadata/toolchain hint
+                          examples: x86_64, aarch64, armv8, armv7, mips
+  --openwrt               OpenWRT/minimal build mode
+  --busybox               BusyBox/minimal build mode
+  --openwrt-sdk <path>    OpenWRT SDK path
+  -h, --help              Show this help
+
+Useful environment variables:
+  YUME_BUILD_DIR          Build directory (default: build)
+  YUME_CMAKE_ARGS         Extra CMake arguments
+  YUME_TOOLCHAIN_FILE     CMake toolchain file for cross builds
+  YUME_TMP_ROOT           Temporary work directory
+EOF
+}
 
 need_cmd() {
     command -v "$1" >/dev/null 2>&1
@@ -786,17 +810,55 @@ build_project() {
     ok "Build complete."
 }
 
-main() {
-    info "YUME ezbuild starting..."
+debian_arch_for_target() {
+    local arch="${1:-}"
+    case "${arch}" in
+        "" ) echo "" ;;
+        x86_64|amd64|linux-x86_64) echo "amd64" ;;
+        x86|i386|i486|i586|i686) echo "i386" ;;
+        aarch64|arm64|armv8) echo "arm64" ;;
+        armv7|armv7l|armhf) echo "armhf" ;;
+        armv6|armel) echo "armel" ;;
+        mipsel) echo "mipsel" ;;
+        mips64el) echo "mips64el" ;;
+        mips) echo "mips" ;;
+        *) echo "${arch}" ;;
+    esac
+}
 
+package_deb() {
+    local build_dir="${YUME_BUILD_DIR:-build}"
+    if ! need_cmd cpack; then
+        error "cpack not found; install cmake/cpack and retry."
+        exit 1
+    fi
+    if [[ ! -f "${build_dir}/CPackConfig.cmake" ]]; then
+        error "CPackConfig.cmake not found in ${build_dir}; configure failed or packaging is disabled."
+        exit 1
+    fi
+    step "Building Debian package..."
+    (cd "${build_dir}" && cpack -G DEB)
+    ok "Debian package output:"
+    find "${build_dir}" -maxdepth 1 -type f -name '*.deb' -print
+}
+
+main() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            -h|--help)
+                usage
+                exit 0
+                ;;
             --clean)
                 CLEAN_ONLY=1
                 shift
                 ;;
             --minimal)
                 MINIMAL=1
+                shift
+                ;;
+            --deb|--package-deb)
+                BUILD_DEB=1
                 shift
                 ;;
             --openwrt)
@@ -835,11 +897,14 @@ main() {
     done
 
     if [[ $CLEAN_ONLY -eq 1 ]]; then
+        info "YUME ezbuild starting..."
         step "Cleaning build directory..."
         rm -rf "${YUME_BUILD_DIR:-build}"
         ok "Cleaned."
         exit 0
     fi
+
+    info "YUME ezbuild starting..."
 
     if [[ $MINIMAL -eq 1 ]]; then
         warn "Minimal mode: enabling static build and BaseFWX."
@@ -856,6 +921,13 @@ main() {
         # shellcheck disable=SC2206
         EXTRA_CMAKE_ARGS=(${YUME_CMAKE_ARGS})
         CMAKE_ARGS+=("${EXTRA_CMAKE_ARGS[@]}")
+    fi
+
+    if [[ $BUILD_DEB -eq 1 && -n "${TARGET_ARCH}" ]]; then
+        CMAKE_ARGS+=(
+            "-DCPACK_DEBIAN_PACKAGE_ARCHITECTURE=$(debian_arch_for_target "${TARGET_ARCH}")"
+            "-DYUME_DEB_SHLIBDEPS=OFF"
+        )
     fi
 
     if [[ "${WINDOWS_CROSS}" == "1" ]]; then
@@ -1272,13 +1344,16 @@ EOF
         fi
     fi
     build_project
+    if [[ $BUILD_DEB -eq 1 ]]; then
+        package_deb
+    fi
     local exe_suffix=""
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*)
             exe_suffix=".exe"
             ;;
     esac
-    info "Done! 🎉"
+    info "Done."
     local build_dir="${YUME_BUILD_DIR:-build}"
     echo -e "${COLOR_GREEN}Run:${COLOR_RESET} ./${build_dir}/bin/yumed${exe_suffix} --config config/yumed.json"
     echo -e "${COLOR_GREEN}Then:${COLOR_RESET} ./${build_dir}/bin/yume${exe_suffix} --config config/yume.json --socks 1080"

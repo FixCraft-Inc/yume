@@ -4,14 +4,14 @@ This document explains how YUME traffic is carried, where it can be
 routed, and what each protection layer does. The diagrams are plain ASCII
 so they can be reused in `man yume`.
 
-YUME is a stealth transport and relay. It is not a magic anonymity
-switch. The route you choose decides who can see the client, who can see
+YUME is a stealth transport and relay. It does not provide anonymity by
+itself. The route you choose decides who can see the client, who can see
 the target, and how much trust is placed in the YUME server.
 
 ## Diagram Style
 
-Every diagram uses the same fixed-width box shape. This is less fancy
-than Mermaid, but it is stable in terminals, Markdown, and man pages.
+Every diagram uses the same fixed-width box shape. The format is stable
+in terminals, Markdown, and man pages.
 
 ```text
 +--------------------------------+
@@ -618,7 +618,7 @@ HTML page while YUME clients use the obfs path.
         v
 +--------------------------------+
 |  REAL HTML PAGE                |
-|  boring public site            |
+|  normal public site            |
 +--------------------------------+
 
 +--------------------------------+
@@ -639,9 +639,9 @@ HTML page while YUME clients use the obfs path.
 +--------------------------------+
 ```
 
-This is mainly for active probes and boring first impressions. It is not
-a replacement for correct TLS certificates, private obfs secrets, or
-server hardening.
+This is mainly for active probes and normal browser visits. It is not a
+replacement for correct TLS certificates, private obfs secrets, or server
+hardening.
 
 ## What Each Layer Protects
 

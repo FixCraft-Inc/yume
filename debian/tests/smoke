@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+test -x /usr/bin/yume
+test -x /usr/bin/yumed
+
+yume --version
+yumed --version
+
+man -w yume >/dev/null
+man -w yumed >/dev/null

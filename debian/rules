@@ -1,0 +1,14 @@
+#!/usr/bin/make -f
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@ --buildsystem=cmake
+
+override_dh_auto_configure:
+	dh_auto_configure -- \
+		-DYUME_USE_BASEFWX=OFF \
+		-DYUME_USE_BUNDLED_NLOHMANN=OFF \
+		-DYUME_NATIVE_OPT=OFF \
+		-DYUME_LTO=OFF \
+		-DYUME_DEB_SHLIBDEPS=ON

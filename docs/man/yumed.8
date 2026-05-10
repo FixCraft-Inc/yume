@@ -1,0 +1,319 @@
+.TH YUMED 8 "2026-05-09" "YUME 1.0" "YUME Manual"
+.SH NAME
+yumed \- YUME server daemon
+.SH SYNOPSIS
+.B yumed
+[
+.B --config
+.I path
+]
+[
+.I options
+]
+.PP
+.B yumed
+.B completion
+.B bash
+.PP
+.B yumed
+.B --help
+.br
+.B yumed
+.B --version
+.SH DESCRIPTION
+.B yumed
+is the YUME server. It listens for authenticated YUME clients, validates
+their auth keys, negotiates transport capabilities, and opens outbound
+target sockets for allowed streams. It can also serve a real HTTP facade
+for non-YUME requests, enforce anonym/no-log mode, manage authorized
+keys, and expose relay/directory features when enabled.
+.SH BASIC SETUP
+.PP
+.nf
+sudo yumed \
+    --listen 443 \
+    --cert /etc/yume/server.crt \
+    --key /etc/yume/server.key \
+    --auth-keys /etc/yume/authorized_keys
+.fi
+.PP
+Port 443 requires root or
+.BR cap_net_bind_service .
+After binding, the daemon can drop privileges unless
+.B --root
+is used.
+.SH CORE OPTIONS
+.TP
+.BI "--config " path
+Read server configuration from a JSON file.
+.TP
+.BI "--listen " port
+Listen port.
+.TP
+.BI "--cert " path
+TLS certificate.
+.TP
+.BI "--key " path
+TLS private key.
+.TP
+.BI "--auth-keys " path
+Authorized client public keys.
+.TP
+.BI "--threads " n
+Worker thread count. Use
+.B 0
+for automatic selection.
+.TP
+.BI "--reverse-port-min " port
+Minimum port for reverse forwards.
+.TP
+.BI "--reverse-port-max " port
+Maximum port for reverse forwards.
+.TP
+.BI "--dns-server " ip
+Resolver for outbound opens.
+.TP
+.B --obfs
+Enable HTTP/2 carrier obfuscation.
+.TP
+.BI "--obfs-secret " string
+Secret used to validate obfs path tokens.
+.TP
+.B --allow-local-ip
+Allow private and loopback destinations when key policy permits it.
+.TP
+.B --control-full
+Allow unrestricted server-side network control when compile-time and
+key-policy gates also permit it.
+.TP
+.B --root
+Keep root privileges.
+.TP
+.B --boring
+Use minimal logs.
+.TP
+.B --timing
+Emit lightweight timing diagnostics.
+.SH SECURITY OPTIONS
+.TP
+.B --inner
+Enable inner PQ crypto. Kept for compatibility; prefer
+.B --inner-heavy
+or
+.BR --inner-light .
+.TP
+.B --no-inner
+Disable inner crypto and hopping.
+.TP
+.B --inner-heavy
+Use the heavy KDF path when available.
+.TP
+.B --inner-light
+Use the light KDF path.
+.TP
+.B --inner-dual
+Accept heavy and light clients.
+.TP
+.B --inner-required
+Reject clients that do not negotiate inner crypto.
+.TP
+.B --hop
+Enable live inner key hopping.
+.TP
+.B --no-hop
+Disable live inner key hopping.
+.TP
+.BI "--hop-interval " ms
+Set key hopping interval in milliseconds.
+.TP
+.BI "--pq-key " path
+PQ private key for inner crypto.
+.TP
+.B --pq-auto-generate
+Generate a PQ keypair when needed.
+.TP
+.B --use-embedded-master
+Allow the embedded BaseFWX master fallback. This is for explicit
+test/development use, not production.
+.TP
+.B --no-embedded-master
+Disable the embedded BaseFWX master fallback.
+.SH HTTP FACADE AND ANONYM OPTIONS
+.TP
+.B --real
+Serve real HTTP for non-YUME requests on the same port.
+.TP
+.BI "--real-index " path
+HTML file served for
+.BR / .
+.TP
+.BI "--real-secret " string
+Hidden metadata secret used by YUME tooling.
+.TP
+.BI "--real-secret-file " path
+Load or create a real-facade secret file.
+.TP
+.B --anonym
+Enable anonym mode. This removes identifying log fields where supported.
+.TP
+.BI "--anonym-proof-mode " mode
+Proof policy:
+.BR auto ,
+.BR local ,
+or
+.BR fixcraft .
+.TP
+.BI "--anonym-api " url
+Verity API URL.
+.TP
+.BI "--anonym-token " string
+Verity API token.
+.TP
+.BI "--anonym-ca-key " path
+Anonym CA private key.
+.TP
+.BI "--anonym-ca-cert " path
+Anonym CA certificate.
+.TP
+.BI "--anonym-sub-key " path
+Anonym sub-CA private key.
+.TP
+.BI "--anonym-sub-cert " path
+Anonym sub-CA certificate.
+.SH RELAY AND DIRECTORY OPTIONS
+.TP
+.BI "--server-name " name
+Display name for this server.
+.TP
+.BI "--server-id " 32hex
+Stable server endpoint ID.
+.TP
+.B --relay-enable
+Enable client relay features.
+.TP
+.B --relay-disable
+Disable client relay features.
+.TP
+.B --directory-enable
+Enable endpoint directory.
+.TP
+.B --directory-disable
+Disable endpoint directory.
+.TP
+.BI "--operator-keys " path
+Operator key metadata file.
+.TP
+.B --federation-enable
+Enable static federation mode.
+.TP
+.BI "--peer " json
+Add a federation peer.
+.TP
+.B --attach-local
+Attach to a local running
+.B yumed
+instance.
+.SH KEY MANAGEMENT
+.TP
+.B --keys-list
+List authorized keys.
+.TP
+.BI "--keys-add " pub.pem
+Add an authorized public key.
+.TP
+.BI "--keys-remove " id
+Remove an authorized key by fingerprint or alias.
+.TP
+.BI "--keys-alias " id " " alias
+Set or update a key alias.
+.TP
+.BI "--keys-gen " prefix
+Generate an Ed25519 keypair as
+.IR prefix .key
+and
+.IR prefix .pub .
+.TP
+.B --keys-gen-add
+Append the generated public key to
+.BR auth_keys .
+.TP
+.B --ui
+Open the interactive server manager.
+.SH AUTHORIZATION MODEL
+Dangerous server features are behind three gates:
+.IP 1. 4
+compile-time feature switches, such as
+.BR YUME_FEATURE_EXEC ;
+.IP 2. 4
+runtime server flags, such as
+.BR --allow-local-ip ;
+.IP 3. 4
+per-key metadata in
+.BR auth_keys.meta .
+.PP
+A key without metadata can authenticate, but dangerous permissions default
+to deny.
+.SH EXAMPLES
+.TP
+Start a basic server:
+.nf
+sudo yumed --listen 443 --cert /etc/yume/server.crt \
+    --key /etc/yume/server.key --auth-keys /etc/yume/authorized_keys
+.fi
+.TP
+Require inner crypto:
+.nf
+sudo yumed --listen 443 --cert server.crt --key server.key \
+    --auth-keys authorized_keys --inner-heavy --inner-required \
+    --pq-key /etc/yume/master_pq.sk
+.fi
+.TP
+Enable obfs and real HTTP facade on the same port:
+.nf
+sudo yumed --listen 443 --cert server.crt --key server.key \
+    --auth-keys authorized_keys --obfs --obfs-secret shared \
+    --real --real-index /var/www/yume/index.html
+.fi
+.TP
+Generate and add a client key:
+.nf
+yumed --auth-keys /etc/yume/authorized_keys --keys-gen /tmp/alice --keys-gen-add
+.fi
+.SH FILES
+.TP
+.I /etc/yume/authorized_keys
+Authorized client public keys.
+.TP
+.I /etc/yume/auth_keys.meta
+Per-key permissions and metadata.
+.TP
+.I /etc/yume/
+Common system configuration directory.
+.TP
+.I config/yumed.json
+Example local server configuration.
+.TP
+.I /usr/share/doc/yume/
+Installed documentation in packaged builds.
+.SH INSTALLATION
+From a build tree:
+.PP
+.nf
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+sudo cmake --install build
+.fi
+.PP
+Manual man-page install:
+.PP
+.nf
+sudo install -Dm644 docs/man/yumed.8 /usr/local/share/man/man8/yumed.8
+sudo mandb
+.fi
+.PP
+Debian package builds produced by CPack install this page automatically.
+.SH SEE ALSO
+.BR yume (1),
+.BR ssh (1),
+.BR tor (1),
+.BR systemd.service (5)

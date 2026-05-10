@@ -1,0 +1,674 @@
+.TH YUME 1 "2026-05-09" "YUME 1.0" "YUME Manual"
+.SH NAME
+yume \- stealth post-quantum transport client
+.SH SYNOPSIS
+.B yume
+.B --server
+.I host
+.B -i
+.I id_ed25519
+[
+.I mode
+]
+[
+.I options
+]
+.PP
+.B yume
+.B --config
+.I path
+[
+.I mode
+]
+.PP
+.B yume
+.B completion
+.B bash
+.PP
+.B yume
+.B --help
+.br
+.B yume
+.B --version
+.SH DESCRIPTION
+.B yume
+is the YUME client. It opens an authenticated carrier to
+.BR yumed (8)
+and sends local application streams through that carrier. The carrier is
+TLS 1.3, can use an HTTP/2 camouflage preface, and can carry an
+additional BaseFWX-backed inner encryption layer with ML-KEM key
+agreement, AES-256-GCM frame encryption, Argon2id or HKDF key derivation,
+and live key hopping.
+.PP
+The client can expose a local SOCKS5 proxy, run one command through the
+tunnel, create local or reverse forwards, attach to relay clients, or
+use the directory and chat/file control features when the server permits
+them.
+.SH ROUTING MODEL
+The common direct route is:
+.PP
+.nf
++--------------------------------+
+|  HUMAN APP                     |
+|  browser / curl                |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  YUME CLIENT                   |
+|  TLS / H2 / YUME frames        |
++--------------------------------+
+        |
+        | ==YUME==>
+        v
++--------------------------------+
+|  YUMED SERVER                  |
+|  direct egress                 |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  TARGET SITE                   |
+|  sees server IP                |
++--------------------------------+
+.fi
+.PP
+The client network normally sees an HTTPS-looking connection to the YUME
+server. The target normally sees the YUME server's egress IP. The server
+process receives target metadata because it must open the outbound target
+socket unless the application itself routes through another layer such as
+Tor.
+.SS Server-side Tor egress
+.nf
++--------------------------------+
+|  HUMAN APP                     |
+|  normal app                    |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  YUME CLIENT                   |
+|  YUME carrier                  |
++--------------------------------+
+        |
+        | ==YUME==>
+        v
++--------------------------------+
+|  YUMED SERVER                  |
+|  receives target request       |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  SERVER TOR                    |
+|  SOCKS / transparent route     |
++--------------------------------+
+        |
+        | ...>
+        v
++--------------------------------+
+|  TOR ENTRY                     |
+|  obfs4 bridge or guard         |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  TOR MIDDLE                    |
+|  relay nodes                   |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  TOR EXIT                      |
+|  target sees this IP           |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  TARGET SITE                   |
+|  website / API                 |
++--------------------------------+
+.fi
+.PP
+This makes the target see a Tor exit instead of the YUME server, but the
+.B yumed
+process still receives the requested target unless the application itself
+is only asking the server to connect to a Tor entry.
+.SS Tor over YUME
+.nf
++--------------------------------+
+|  TOR BROWSER                   |
+|  or app configured for Tor     |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  LOCAL TOR                     |
+|  builds circuit                |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  YUME CLIENT                   |
+|  relays Tor TCP                |
++--------------------------------+
+        |
+        | ==YUME==>
+        v
++--------------------------------+
+|  YUMED SERVER                  |
+|  opens Tor entry only          |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  TOR ENTRY                     |
+|  guard or obfs4 bridge         |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  TOR NETWORK                   |
+|  middle relays + exit          |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  TARGET SITE                   |
+|  sees Tor exit                 |
++--------------------------------+
+.fi
+.PP
+For target anonymity from the YUME server, prefer this route. The YUME
+server usually sees only a Tor guard or bridge, not the final website.
+.SS YUME over Tor
+.nf
++--------------------------------+
+|  HUMAN APP                     |
+|  normal app                    |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  YUME CLIENT                   |
+|  carrier source                |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  CLIENT TOR                    |
+|  carries YUME carrier          |
++--------------------------------+
+        |
+        | ...>
+        v
++--------------------------------+
+|  TOR EXIT                      |
+|  client-side edge              |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  YUMED SERVER                  |
+|  sees Tor exit                 |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  TARGET SITE                   |
+|  sees server IP                |
++--------------------------------+
+.fi
+.PP
+This hides the client's real IP from the YUME server, but it is slower
+and the Tor exit can see that a connection is being made to the YUME
+server.
+.SS Tor -> YUME -> Tor
+.nf
++--------------------------------+
+|  HUMAN APP                     |
+|  normal app                    |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  YUME CLIENT                   |
+|  carrier source                |
++--------------------------------+
+        |
+        | YUME carrier through client Tor
+        v
++--------------------------------+
+|  CLIENT TOR                    |
+|  obfs4 optional                |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  TOR EXIT A                    |
+|  client-side edge              |
++--------------------------------+
+        |
+        | YUME carrier reaches server
+        v
++--------------------------------+
+|  YUMED SERVER                  |
+|  sees Tor exit A               |
++--------------------------------+
+        |
+        | target stream through server Tor
+        v
++--------------------------------+
+|  SERVER TOR                    |
+|  obfs4 optional                |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  TOR EXIT B                    |
+|  target-side edge              |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  TARGET SITE                   |
+|  sees exit B                   |
++--------------------------------+
+.fi
+.PP
+This can reduce linkability for passive observers because neither edge
+sees both the real client and the final target. It is also much slower
+and does not hide the requested target from
+.B yumed
+unless the application itself uses Tor over YUME.
+.SS Common routes summary
+.nf
+Fast path:
+  app -> yume ==YUME==> yumed -> target
+
+Server-side Tor egress:
+  app -> yume ==YUME==> yumed -> server Tor ...> target
+
+Tor over YUME:
+  Tor Browser -> local Tor -> yume ==YUME==> yumed -> Tor entry ...> target
+
+YUME over Tor:
+  app -> yume -> client Tor ...> yumed -> target
+
+Tor -> YUME -> Tor:
+  app -> yume -> client Tor ...> yumed -> server Tor ...> target
+
+VPN/proxy after YUME:
+  app -> yume ==YUME==> yumed -> VPN/proxy -> target
+.fi
+.SH TRANSPORT LAYERS
+.SS Carrier frame shape
+.nf
++----------------------------------------------------------------------+
+|  OUTER TLS 1.3 CARRIER                                               |
+|                                                                      |
+|  YUME frame header                                                   |
+|    type, flags, stream id                                            |
+|                                                                      |
+|  INNER PAYLOAD                                                       |
+|    encrypted with BaseFWX / AES-256-GCM                              |
+|    authenticated with frame context                                  |
++----------------------------------------------------------------------+
+.fi
+.PP
+Inner encryption protects YUME frame payloads between the client and
+server. It does not replace application HTTPS and does not hide target
+metadata from a server that is asked to open the target directly.
+.SS HTTP/2 obfs sequence
+.nf
++--------------------------------+
+|  TLS HANDSHAKE                 |
+|  real TLS 1.3                  |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  HTTP/2 PREFACE                |
+|  PRI * HTTP/2.0                |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  CHROME-LIKE H2                |
+|  SETTINGS + WINDOW_UPDATE      |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  OBFUSCATED REQUEST            |
+|  POST /token/nonce HEADERS     |
++--------------------------------+
+        |
+        v
++--------------------------------+
+|  YUME FRAMES                   |
+|  carrier data begins           |
++--------------------------------+
+.fi
+.PP
+The obfs path helps the post-TLS byte shape look like normal HTTP/2
+browser traffic before the YUME carrier begins.
+.SS Stream multiplexing
+.nf
++----------------------------------------------------------------------+
+|  ONE AUTHENTICATED CARRIER                                           |
+|                                                                      |
+|  stream 1  OPEN ifconfig.me:80  -> DATA -> DATA <- CLOSE             |
+|  stream 2  OPEN 1.1.1.1:443   -> app TLS bytes <-> target bytes      |
+|  stream 3  OPEN api.site:443  -> another independent connection      |
++----------------------------------------------------------------------+
+.fi
+.SH MODES
+.TP
+.BI "--socks " port
+Start a local SOCKS5 proxy. Use
+.B socks5h://
+in clients that support it so DNS is resolved through YUME.
+.TP
+.BI "-L " [bind:]lport:host:port
+Open an SSH-style local forward. Local connections to
+.I lport
+are relayed through YUME to
+.IR host : port .
+.TP
+.BI "-R " [bind:]rport:host:port
+Open a reverse forward. The server listens on
+.I rport
+and relays accepted connections back to the client's
+.IR host : port .
+.TP
+.BI "--run " command
+Run a local command with its TCP/UDP sockets routed through YUME.
+.TP
+.B --directory
+List visible relay endpoints from the authenticated server.
+.TP
+.BI "--chat " id-or-name
+Start a chat with a relay endpoint when allowed by policy.
+.TP
+.BI "--send-file " id-or-name " " path
+Send a file through the relay channel when allowed by policy.
+.TP
+.BI "--send-bytes " id-or-name " " path
+Send raw bytes through the relay channel when allowed by policy.
+.TP
+.BI "--admin-attach " id-or-name
+Open a trusted admin channel to a relay endpoint when both sides permit it.
+.TP
+.BI "--control " [id]
+Attach to a controlled client.
+.TP
+.B --attach-local
+Attach to a local running YUME instance.
+.SH CONNECTION OPTIONS
+.TP
+.BI "--server " host
+Server hostname or IP address.
+.TP
+.BI "--port " port
+Server port. If omitted, the client uses the configured/default server
+port.
+.TP
+.BI "-i, --auth " path
+Client identity key used for server authentication.
+.TP
+.BI "--config " path
+Read client configuration from a JSON file.
+.TP
+.BI "--threads " n
+I/O thread count. Use
+.B 0
+for automatic selection.
+.TP
+.B --udp
+Enable UDP forwarding.
+.TP
+.B --tcp
+Force TCP-only behavior.
+.TP
+.B --allow-local-ip
+Allow private, loopback, and link-local destinations where policy permits.
+.TP
+.B --run-ipv4
+Prefer IPv4 behavior for
+.BR --run .
+.TP
+.B --root
+Keep root privileges instead of dropping them where supported.
+.SH SECURITY OPTIONS
+.TP
+.B --inner
+Enable inner encryption. This option is kept for compatibility; prefer
+.B --inner-heavy
+or
+.BR --inner-light .
+.TP
+.B --no-inner
+Disable inner encryption and hopping.
+.TP
+.B --inner-heavy
+Use the heavy inner KDF path when available.
+.TP
+.B --inner-light
+Use the light inner KDF path.
+.TP
+.B --hop
+Enable live inner key hopping.
+.TP
+.B --no-hop
+Disable live inner key hopping.
+.TP
+.BI "--hop-interval " ms
+Set key hopping interval in milliseconds. The usual default is 500 ms.
+.TP
+.B --obfs
+Enable the HTTP/2 carrier handshake.
+.TP
+.B --no-obfs
+Disable the HTTP/2 carrier handshake. This is useful for diagnostics but
+is more recognizable.
+.TP
+.BI "--obfs-secret " string
+Shared secret used to bind the obfs path token to the expected peer.
+.TP
+.BI "--pq-pub " path
+Server PQ public key for inner crypto.
+.TP
+.B --use-embedded-master
+Allow the embedded BaseFWX master fallback. This is intended for explicit
+test/development use, not production deployments.
+.TP
+.B --no-embedded-master
+Disable the embedded BaseFWX master fallback.
+.TP
+.B "--require-anonym, --anonym"
+Require the server to provide an accepted anonym proof.
+.TP
+.BI "--anonym-ca-cert " path
+CA certificate used to verify anonym proof material.
+.TP
+.BI "--tls-ca " path
+TLS CA certificate.
+.TP
+.BI "--tls-pin " sha256
+Pin the server TLS certificate fingerprint.
+.SH TLS STEALTH OPTIONS
+.TP
+.BI "--profile " name
+Select a TLS browser profile:
+.BR chrome ,
+.BR firefox ,
+or
+.BR safari .
+.TP
+.B --no-stealth
+Disable TLS stealth profile shaping.
+.TP
+.B --tls-stealth-rotate
+Rotate stealth profiles over repeated connections.
+.TP
+.BI "--tls-stealth-rotation-interval " n
+Number of connections between stealth profile rotations.
+.TP
+.B --tls-fingerprint-log
+Log TLS fingerprint metrics.
+.TP
+.BI "--tls-fingerprint-log-path " path
+Path for TLS fingerprint log output.
+.TP
+.B --tls-fingerprint-verify
+Verify fingerprints against a test endpoint.
+.TP
+.BI "--tls-fingerprint-test-endpoint " host
+Host used for fingerprint verification tests.
+.SH RELAY OPTIONS
+.TP
+.BI "--name " slug
+Display name for this relay endpoint.
+.TP
+.BI "--client-id " 32hex
+Stable client endpoint ID.
+.TP
+.BI "--relay-mode " mode
+Relay trust mode:
+.B untrusted
+or
+.BR trusted .
+.TP
+.B "--allow-inbound-admin, --deny-inbound-admin"
+Allow or deny inbound admin attach requests.
+.TP
+.B "--allow-outbound-admin, --deny-outbound-admin"
+Allow or deny outbound admin attach requests.
+.TP
+.B "--allow-chat, --deny-chat"
+Allow or deny chat relay features.
+.TP
+.B "--allow-file, --deny-file"
+Allow or deny file relay features.
+.TP
+.B "--allow-bytes, --deny-bytes"
+Allow or deny byte relay features.
+.TP
+.BI "--relay-key-file " path
+Relay key file.
+.SH RUNTIME OPTIONS
+.TP
+.BI "--instance " name
+Runtime instance name.
+.TP
+.BI "--history-dir " path
+Chat history directory.
+.TP
+.B --no-history
+Disable chat history.
+.TP
+.B --non-interactive
+Disable live status redraw.
+.TP
+.B --live-status
+Enable live status redraw.
+.TP
+.B --timing
+Emit lightweight timing diagnostics.
+.TP
+.B --boring
+Use minimal output.
+.TP
+.B --
+Service-safe launch separator.
+.SH INTERACTIVE CONSOLE
+When a session stays attached, the console accepts commands such as:
+.PP
+.nf
+    help, status, directory, invites, chat, send, send-file, send-bytes,
+    accept, reject, history, history-delete, admin attach, admin status,
+    admin sessions, admin stop, whoami, quit
+.fi
+.SH EXAMPLES
+.TP
+Start a local SOCKS5 proxy:
+.nf
+yume --server origin.example.net -i ~/.yume/id_ed25519 --socks 1080
+.fi
+.TP
+Use curl with remote DNS through the proxy:
+.nf
+curl -x socks5h://127.0.0.1:1080 https://ifconfig.me
+.fi
+.TP
+Run one command through YUME:
+.nf
+yume --server origin.example.net -i ~/.yume/id_ed25519 --run "curl https://1.1.1.1"
+.fi
+.TP
+Create a local forward:
+.nf
+yume --server origin.example.net -i ~/.yume/id_ed25519 -L 2222:127.0.0.1:22
+.fi
+.TP
+Require anonym proof and keep obfs enabled:
+.nf
+yume --server origin.example.net -i ~/.yume/id_ed25519 --socks 1080 \
+     --require-anonym --anonym-ca-cert /etc/yume/anonym-ca.pem --obfs
+.fi
+.SH SECURITY NOTES
+Inner encryption protects YUME frame payloads between the client and
+server. It is not browser-to-target end-to-end encryption; HTTPS in the
+application still provides that layer.
+.PP
+The YUME server needs enough target metadata to open outbound sockets.
+If the server must not learn final targets, run Tor locally and route Tor
+through YUME.
+.PP
+Avoid
+.B --use-embedded-master
+for production. Use deployment-specific PQ key files.
+.PP
+Anonym mode and anonym proof reduce server-side logging exposure, but
+they do not remove hosting logs, payment records, DNS records, browser
+fingerprints, logged-in accounts, or time-correlation risks.
+.SH FILES
+.TP
+.I config/yume.json
+Example local client configuration.
+.TP
+.I ~/.yume/id_ed25519
+Common client identity key location.
+.TP
+.I /etc/yume/
+Common system configuration directory.
+.TP
+.I /usr/share/doc/yume/
+Installed documentation in packaged builds.
+.SH INSTALLATION
+From a build tree:
+.PP
+.nf
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+sudo cmake --install build
+.fi
+.PP
+Manual man-page install:
+.PP
+.nf
+sudo install -Dm644 docs/man/yume.1 /usr/local/share/man/man1/yume.1
+sudo mandb
+.fi
+.PP
+Debian package builds produced by CPack install this page automatically.
+.SH SEE ALSO
+.BR yumed (8),
+.BR ssh (1),
+.BR curl (1),
+.BR tor (1)
+.PP
+Project documentation is installed under
+.I /usr/share/doc/yume/
+when built as a package.

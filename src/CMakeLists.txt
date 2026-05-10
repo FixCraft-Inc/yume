@@ -4,14 +4,16 @@ set(_nlohmann_vendor_candidates
     "${CMAKE_SOURCE_DIR}/third_party/nlohmann_json"
     "${CMAKE_CURRENT_LIST_DIR}/../third_party/nlohmann_json"
 )
-foreach(_nlohmann_vendor IN LISTS _nlohmann_vendor_candidates)
-    if(EXISTS "${_nlohmann_vendor}/nlohmann/json.hpp" AND NOT TARGET nlohmann_json::nlohmann_json)
-        add_library(nlohmann_json::nlohmann_json INTERFACE IMPORTED)
-        target_include_directories(nlohmann_json::nlohmann_json INTERFACE "${_nlohmann_vendor}")
-        set(nlohmann_json_FOUND TRUE)
-        break()
-    endif()
-endforeach()
+if(YUME_USE_BUNDLED_NLOHMANN)
+    foreach(_nlohmann_vendor IN LISTS _nlohmann_vendor_candidates)
+        if(EXISTS "${_nlohmann_vendor}/nlohmann/json.hpp" AND NOT TARGET nlohmann_json::nlohmann_json)
+            add_library(nlohmann_json::nlohmann_json INTERFACE IMPORTED)
+            target_include_directories(nlohmann_json::nlohmann_json INTERFACE "${_nlohmann_vendor}")
+            set(nlohmann_json_FOUND TRUE)
+            break()
+        endif()
+    endforeach()
+endif()
 
 if(NOT nlohmann_json_FOUND)
     find_package(nlohmann_json QUIET)
@@ -248,10 +250,10 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     endif()
     yume_link_atomic_if_needed(yume_core PUBLIC)
 
-    if(TARGET zstd::libzstd)
-        target_link_libraries(yume_core PUBLIC zstd::libzstd)
-    elseif(TARGET zstd::libzstd_shared)
+    if(NOT YUME_STATIC AND TARGET zstd::libzstd_shared)
         target_link_libraries(yume_core PUBLIC zstd::libzstd_shared)
+    elseif(TARGET zstd::libzstd)
+        target_link_libraries(yume_core PUBLIC zstd::libzstd)
     elseif(TARGET zstd::libzstd_static)
         target_link_libraries(yume_core PUBLIC zstd::libzstd_static)
     elseif(TARGET ZSTD::ZSTD)
@@ -396,6 +398,10 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             _WIN32_WINNT=0x0600
         )
     endif()
+
+    install(TARGETS yume yumed
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    )
 endif()
 
 enable_testing()

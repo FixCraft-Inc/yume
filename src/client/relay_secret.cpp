@@ -2,12 +2,18 @@
 
 #include <cctype>
 #include <fstream>
+#include <stdexcept>
+#include <vector>
 
 #if !defined(_WIN32)
 #include <sys/stat.h>
 #endif
 
+#if defined(YUME_USE_BASEFWX) && YUME_USE_BASEFWX
 #include <basefwx/crypto.hpp>
+#else
+#include <openssl/evp.h>
+#endif
 #include <nlohmann/json.hpp>
 
 #include "util.hpp"
@@ -32,9 +38,31 @@ std::string trim_copy(std::string value) {
     return value;
 }
 
+#if !(defined(YUME_USE_BASEFWX) && YUME_USE_BASEFWX)
+std::vector<unsigned char> pbkdf2_hmac_sha256(const std::string& password,
+                                              const unsigned char* salt,
+                                              std::size_t salt_len,
+                                              int iterations,
+                                              std::size_t out_len) {
+    std::vector<unsigned char> out(out_len);
+    if (PKCS5_PBKDF2_HMAC(password.data(),
+                          static_cast<int>(password.size()),
+                          salt,
+                          static_cast<int>(salt_len),
+                          iterations,
+                          EVP_sha256(),
+                          static_cast<int>(out.size()),
+                          out.data()) != 1) {
+        throw std::runtime_error("failed to derive relay secret with PBKDF2-HMAC-SHA256");
+    }
+    return out;
+}
+#endif
+
 }  // namespace
 
 std::string derive_relay_secret_b64(const std::string& password) {
+#if defined(YUME_USE_BASEFWX) && YUME_USE_BASEFWX
     basefwx::crypto::Bytes salt(kRelaySecretSalt, kRelaySecretSalt + sizeof(kRelaySecretSalt) - 1);
     const auto secret = basefwx::crypto::Pbkdf2HmacSha256(
         password,
@@ -42,6 +70,15 @@ std::string derive_relay_secret_b64(const std::string& password) {
         kRelayPasswordPbkdf2Iterations,
         kRelaySecretBytes);
     return yume::util::base64_encode(std::string(secret.begin(), secret.end()));
+#else
+    const auto secret = pbkdf2_hmac_sha256(
+        password,
+        reinterpret_cast<const unsigned char*>(kRelaySecretSalt),
+        sizeof(kRelaySecretSalt) - 1,
+        static_cast<int>(kRelayPasswordPbkdf2Iterations),
+        kRelaySecretBytes);
+    return yume::util::base64_encode(std::string(secret.begin(), secret.end()));
+#endif
 }
 
 bool validate_relay_secret_b64(const std::string& relay_secret_b64, std::string* error) {

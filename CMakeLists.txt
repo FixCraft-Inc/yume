@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+include(GNUInstallDirs)
 include(CTest)
 
 if(POLICY CMP0167)
@@ -14,12 +15,14 @@ endif()
 
 option(YUME_USE_BASEFWX "Enable BaseFWX inner crypto support" ON)
 option(YUME_USE_SPDLOG "Enable spdlog logging backend" ON)
+option(YUME_USE_BUNDLED_NLOHMANN "Allow bundled nlohmann_json fallback" ON)
 option(YUME_MINIMAL "Build for minimal systems (disable heavy deps/features)" OFF)
 option(YUME_STATIC "Attempt static build (requires static deps)" OFF)
 option(YUME_NATIVE_OPT "Enable native CPU tuning for yume builds" ON)
 option(YUME_LTO "Enable link-time optimization for yume builds" ON)
 option(YUME_FAST_MATH "Enable fast-math (unsafe for crypto)" OFF)
 option(YUME_TRANSPORT_CORE_ONLY "Build only the shared transport core target" OFF)
+option(YUME_DEB_SHLIBDEPS "Use dpkg-shlibdeps when building Debian packages" ON)
 
 # Dangerous-feature build gates. Each gate must be explicitly turned ON at
 # configure time to compile the feature. The runtime CLI flag and the per-key
@@ -28,6 +31,15 @@ option(YUME_TRANSPORT_CORE_ONLY "Build only the shared transport core target" OF
 option(YUME_FEATURE_EXEC "Compile in server-side command execution path" OFF)
 option(YUME_FEATURE_LAN_BRIDGE "Compile in LAN/private-IP bridging path" OFF)
 option(YUME_FEATURE_FULL_CONTROL "Compile in unrestricted address bridging" OFF)
+
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/src/core/version.hpp" _yume_version_line
+    REGEX "constexpr const char kVersion\\[\\]")
+string(REGEX MATCH "\"([^\"]+)\"" _yume_version_match "${_yume_version_line}")
+if(CMAKE_MATCH_1)
+    set(YUME_PACKAGE_VERSION "${CMAKE_MATCH_1}")
+else()
+    set(YUME_PACKAGE_VERSION "0.0.0")
+endif()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
@@ -140,3 +152,68 @@ if(YUME_USE_BASEFWX)
 endif()
 
 add_subdirectory(src)
+
+if(NOT YUME_TRANSPORT_CORE_ONLY)
+    set(YUME_DOC_INSTALL_DIR "${CMAKE_INSTALL_DATAROOTDIR}/doc/yume")
+
+    install(FILES
+        README.md
+        docs/EXPLAINED.md
+        docs/OPERATIONS.md
+        docs/PACKAGING.md
+        docs/PERFORMANCE.md
+        docs/PERMISSIONS.md
+        docs/QUICKSTART.md
+        docs/STEALTH.md
+        DESTINATION "${YUME_DOC_INSTALL_DIR}"
+    )
+
+    install(DIRECTORY config/
+        DESTINATION "${YUME_DOC_INSTALL_DIR}/examples"
+        FILES_MATCHING PATTERN "*.json"
+    )
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/debian/copyright")
+        install(FILES debian/copyright
+            DESTINATION "${YUME_DOC_INSTALL_DIR}"
+            RENAME copyright
+        )
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/debian/changelog")
+        install(FILES debian/changelog
+            DESTINATION "${YUME_DOC_INSTALL_DIR}"
+            RENAME changelog.Debian
+        )
+    endif()
+
+    install(FILES docs/man/yume.1
+        DESTINATION "${CMAKE_INSTALL_MANDIR}/man1"
+    )
+    install(FILES docs/man/yumed.8
+        DESTINATION "${CMAKE_INSTALL_MANDIR}/man8"
+    )
+
+    set(CPACK_PACKAGE_NAME "yume")
+    set(CPACK_PACKAGE_VENDOR "FixCraft")
+    set(CPACK_PACKAGE_CONTACT "https://github.com/F1xGOD/yume/issues")
+    set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/F1xGOD/yume")
+    set(CPACK_PACKAGE_VERSION "${YUME_PACKAGE_VERSION}")
+    set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Post-quantum stealth transport client and server")
+    set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+    set(CPACK_PACKAGE_INSTALL_DIRECTORY "yume")
+    if(UNIX AND NOT APPLE)
+        set(CPACK_GENERATOR "TGZ;DEB")
+        set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+        set(CPACK_DEBIAN_PACKAGE_SECTION "net")
+        set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+        set(CPACK_DEBIAN_PACKAGE_MAINTAINER "FixCraft")
+        set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ${YUME_DEB_SHLIBDEPS})
+        set(CPACK_DEBIAN_PACKAGE_DESCRIPTION
+"YUME is a TLS 1.3 stealth transport with optional HTTP/2 masking,
+BaseFWX-backed inner crypto, live key hopping, SOCKS, forwarding,
+relay, and server daemon modes.")
+    else()
+        set(CPACK_GENERATOR "TGZ")
+    endif()
+    include(CPack)
+endif()

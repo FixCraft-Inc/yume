@@ -12,7 +12,7 @@ YUME tunnels TCP and UDP through TLS 1.3 sessions that look like ordinary Chrome
 
 VPN protocols built for performance (WireGuard, OpenVPN) are also built to be recognisable. Their handshakes have static byte signatures that ISPs and national firewalls can match in milliseconds. Commercial VPN services then resell that same recognisable transport for $20/month, bandwidth that costs them pennies, and run it from cheap KVMs that any user could rent directly.
 
-YUME tries to do the opposite: a transport that looks like the most boring traffic on the internet (Chrome talking HTTPS to a CDN), with crypto that survives the move to post-quantum, with both ends fully open-source so anyone can audit, build, and self-host. FixCraft will run a fleet of free public endpoints (no signup, no payment), but the endpoints run the same `yumed` you can build right here.
+YUME tries to do the opposite: a transport that looks like ordinary Chrome HTTPS to a CDN, with crypto that survives the move to post-quantum, with both ends fully open-source so anyone can audit, build, and self-host. FixCraft will run a fleet of free public endpoints (no signup, no payment), but the endpoints run the same `yumed` you can build right here.
 
 ## Compared to other tools
 
@@ -58,6 +58,35 @@ Client:
 ```
 
 For a privileged port 443 on Linux, run `yumed` with `sudo` or grant `cap_net_bind_service`. Cloudflare HTTP-mode proxies will terminate TLS and break YUME. Use Spectrum or another TCP passthrough if you front the daemon with Cloudflare.
+
+## Install, man pages, and Debian packages
+
+Install from a build tree:
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+sudo cmake --install build
+sudo mandb
+```
+
+Build a Debian package:
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+cmake --build build -j$(nproc)
+(cd build && cpack -G DEB)
+```
+
+Or use the helper:
+
+```bash
+./ezbuild.sh --deb
+```
+
+The package installs `yume(1)`, `yumed(8)`, and the Markdown docs. See
+[docs/PACKAGING.md](docs/PACKAGING.md) for cross-architecture package
+notes and manual man-page installation.
 
 ### Embedded build
 

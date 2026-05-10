@@ -1,0 +1,5 @@
+yume (1.0-1) unstable; urgency=medium
+
+  * Initial Debian packaging. (Closes: #nnnnnn)
+
+ -- FixCraft Maintainers <debian@fixcraft.jp>  Sat, 09 May 2026 21:10:00 -0700

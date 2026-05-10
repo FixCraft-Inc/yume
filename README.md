@@ -86,7 +86,7 @@ Or use the helper:
 
 The package installs `yume(1)`, `yumed(8)`, and the Markdown docs. See
 [docs/PACKAGING.md](docs/PACKAGING.md) for cross-architecture package
-notes and manual man-page installation.
+notes, BaseFWX package dependency details, and manual man-page installation.
 
 ### Embedded build
 

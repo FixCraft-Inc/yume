@@ -14,6 +14,7 @@ if(POLICY CMP0167)
 endif()
 
 option(YUME_USE_BASEFWX "Enable BaseFWX inner crypto support" ON)
+option(YUME_USE_SYSTEM_BASEFWX "Prefer a system-installed BaseFWX (find_package basefwx CONFIG) over the bundled tree" OFF)
 option(YUME_USE_SPDLOG "Enable spdlog logging backend" ON)
 option(YUME_USE_BUNDLED_NLOHMANN "Allow bundled nlohmann_json fallback" ON)
 option(YUME_MINIMAL "Build for minimal systems (disable heavy deps/features)" OFF)
@@ -133,21 +134,40 @@ if(YUME_USE_BASEFWX)
     if(CMAKE_CROSSCOMPILING)
         set(BASEFWX_NATIVE_OPT OFF CACHE BOOL "Disable native tuning for cross builds" FORCE)
     endif()
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/basefwx/cpp/CMakeLists.txt")
-        set(BASEFWX_BUILD_CLI OFF CACHE BOOL "Disable BaseFWX CLI build" FORCE)
-        add_subdirectory(basefwx/cpp EXCLUDE_FROM_ALL)
-        if(TARGET basefwxcpp)
-            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-                target_compile_options(basefwxcpp PRIVATE
-                    -Wno-deprecated-declarations
-                    $<$<CXX_COMPILER_ID:GNU>:-Wno-psabi>
-                )
-            elseif(MSVC)
-                target_compile_options(basefwxcpp PRIVATE /wd4996)
+
+    set(_yume_basefwx_via_system OFF)
+    if(YUME_USE_SYSTEM_BASEFWX)
+        find_package(basefwx CONFIG QUIET)
+        if(basefwx_FOUND)
+            if(NOT TARGET basefwxcpp)
+                add_library(basefwxcpp ALIAS basefwx::basefwxcpp)
             endif()
+            set(_yume_basefwx_via_system ON)
+            message(STATUS "Using system BaseFWX ${basefwx_VERSION}")
+        elseif(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/basefwx/cpp/CMakeLists.txt")
+            message(FATAL_ERROR
+                "YUME_USE_SYSTEM_BASEFWX=ON but find_package(basefwx CONFIG) failed "
+                "and no bundled basefwx/cpp tree is available")
         endif()
-    else()
-        message(FATAL_ERROR "BaseFWX sources not found at basefwx/cpp")
+    endif()
+
+    if(NOT _yume_basefwx_via_system)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/basefwx/cpp/CMakeLists.txt")
+            set(BASEFWX_BUILD_CLI OFF CACHE BOOL "Disable BaseFWX CLI build" FORCE)
+            add_subdirectory(basefwx/cpp EXCLUDE_FROM_ALL)
+            if(TARGET basefwxcpp)
+                if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                    target_compile_options(basefwxcpp PRIVATE
+                        -Wno-deprecated-declarations
+                        $<$<CXX_COMPILER_ID:GNU>:-Wno-psabi>
+                    )
+                elseif(MSVC)
+                    target_compile_options(basefwxcpp PRIVATE /wd4996)
+                endif()
+            endif()
+        else()
+            message(FATAL_ERROR "BaseFWX sources not found at basefwx/cpp")
+        endif()
     endif()
 endif()
 

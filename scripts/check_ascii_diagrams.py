@@ -61,6 +61,9 @@ def main(argv: list[str]) -> int:
     if not paths:
         paths = [
             Path("docs/EXPLAINED.md"),
+            Path("basefwx/docs/EXPLAINED.md"),
+            Path("basefwx/docs/man/basefwx.1"),
+            Path("basefwx/docs/man/basefwx.7"),
             Path("docs/man/yume.1"),
             Path("docs/man/yumed.8"),
         ]

@@ -17,10 +17,14 @@ matching ../yume_<version>.orig.tar.xz before running dpkg-buildpackage -S.
 
 The current Debian packaging configures YUME with:
 
-    -DYUME_USE_BASEFWX=OFF
+    -DYUME_USE_BASEFWX=ON
+    -DYUME_USE_SYSTEM_BASEFWX=ON
     -DYUME_USE_BUNDLED_NLOHMANN=OFF
 
-This keeps the package suitable for the Debian archive while BaseFWX is not yet
-packaged as a separate Debian library. To ship the full BaseFWX-backed inner
-crypto feature set in Debian main, package BaseFWX separately first, then update
-YUME to build against that packaged development library.
+YUME now expects BaseFWX to be packaged separately and provided through
+libbasefwx-dev. The BaseFWX source package can also build a basefwx CLI
+package, but YUME only needs libbasefwx-dev at build time and libbasefwx3 at
+runtime. Do not build Debian packages against the bundled basefwx/ tree or
+against vendor/; both are excluded from the Debian source tarball.
+dpkg-shlibdeps should then produce the runtime dependency on libbasefwx3
+from the linked yume binaries.

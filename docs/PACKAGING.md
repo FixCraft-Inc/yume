@@ -156,17 +156,52 @@ dependency trees, vendored binaries, build directories, logs, bytecode, and
 the `debian/` directory. The source package then contains the upstream
 tarball plus Debian packaging metadata as a separate Debian tarball.
 
-Important: the Debian package currently builds with:
+The Debian package builds with:
 
 ```text
--DYUME_USE_BASEFWX=OFF
+-DYUME_USE_BASEFWX=ON
+-DYUME_USE_SYSTEM_BASEFWX=ON
 -DYUME_USE_BUNDLED_NLOHMANN=OFF
 ```
 
-This avoids bundled dependency trees and network fetches during the Debian
-build. For full BaseFWX-backed inner crypto in Debian main, BaseFWX should
-be packaged separately first, then YUME should build against that packaged
-development library.
+That means YUME must build against a separately packaged BaseFWX development
+library. The intended package chain is:
+
+```text
+basefwx          optional command-line frontend
+libbasefwx3      runtime shared library
+libbasefwx-dev   headers, CMake config, pkg-config metadata
+yume             client/server binaries linked to libbasefwx3
+```
+
+For local testing, build BaseFWX first:
+
+```bash
+(cd basefwx && dpkg-buildpackage -us -uc -b)
+sudo apt install ./libbasefwx3_*.deb ./libbasefwx-dev_*.deb ./basefwx_*.deb
+dpkg-buildpackage -us -uc -b
+```
+
+If you cannot install packages on the build machine, extract the BaseFWX
+packages and point the YUME build at that prefix:
+
+```bash
+rm -rf /tmp/yume-basefwx-prefix
+mkdir -p /tmp/yume-basefwx-prefix
+dpkg-deb -x libbasefwx3_*.deb /tmp/yume-basefwx-prefix
+dpkg-deb -x libbasefwx-dev_*.deb /tmp/yume-basefwx-prefix
+printf 'libbasefwx 3 libbasefwx3 (>= 3.6.4-1)\n' > debian/shlibs.local
+BASEFWX_PREFIX=/tmp/yume-basefwx-prefix/usr \
+BASEFWX_LIBDIR=/tmp/yume-basefwx-prefix/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH) \
+dpkg-buildpackage -d -us -uc -b
+rm -f debian/shlibs.local
+```
+
+For Debian main, BaseFWX itself must not hide a vendored or prebuilt liboqs.
+If liboqs is not already available as a Debian package, it needs to be
+packaged separately first. The local BaseFWX packaging can use
+`../vendor/linux-x86_64` for ML-KEM-768 while testing, but that mode is not
+the final archive-ready form.
 
 Before asking for sponsorship:
 
@@ -177,15 +212,17 @@ Before asking for sponsorship:
   `pbuilder`.
 - Confirm the upstream tarball produced by `uscan` excludes `basefwx/`,
   `vendor/`, `third_party/`, build outputs, logs, and bytecode.
+- Package liboqs separately or build against an existing Debian liboqs-dev
+  package before claiming BaseFWX is Debian-main ready.
 
 Typical new-package path:
 
-1. File an ITP bug against Debian WNPP.
-2. Build a clean source package.
-3. Upload it to mentors.debian.net.
-4. File an RFS bug or contact `debian-mentors`.
-5. A Debian Developer reviews and sponsors the upload.
-6. Because this is a new package, it goes through the NEW queue before it
+1. File ITP bugs against Debian WNPP for the new source packages.
+2. Build clean source packages for BaseFWX and YUME.
+3. Upload them to mentors.debian.net.
+4. File RFS bugs or contact `debian-mentors`.
+5. A Debian Developer reviews and sponsors the uploads.
+6. Because these are new packages, they go through the NEW queue before they
    can enter Debian.
 
 ## Validate ASCII Diagrams

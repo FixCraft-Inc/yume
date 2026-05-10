@@ -12,7 +12,8 @@ Build-Depends:
  nlohmann-json3-dev,
  libspdlog-dev,
  libzstd-dev,
- zlib1g-dev
+ zlib1g-dev,
+ libbasefwx-dev
 Standards-Version: 4.7.4.1
 Rules-Requires-Root: no
 Homepage: https://github.com/F1xGOD/yume
@@ -32,6 +33,5 @@ Description: stealth transport client and server
  daemon, SOCKS mode, local and reverse forwarding, relay features, and
  optional routing through external anonymity networks such as Tor.
  .
- The Debian archive build disables the bundled BaseFWX copy. Package BaseFWX
- separately and enable YUME_USE_BASEFWX when Debian-packaged BaseFWX
- development files are available.
+ This Debian build links against the system-installed libbasefwx, which
+ provides AES, Argon2id, and ML-KEM-768 post-quantum inner crypto.

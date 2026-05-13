@@ -82,6 +82,38 @@ std::filesystem::path default_server_config_path() {
     return default_data_dir() / "server.json";
 }
 
+std::filesystem::path default_gui_preferences_path() {
+    return default_data_dir() / "gui.json";
+}
+
+GuiPreferences load_gui_preferences() {
+    GuiPreferences out;
+    std::ifstream in(default_gui_preferences_path());
+    if (!in) return out;
+    try {
+        json j;
+        in >> j;
+        if (j.is_object()) {
+            read_opt(j, "dark_mode", out.dark_mode);
+        }
+    } catch (...) {
+        // Malformed JSON: fall back to defaults silently — the next save
+        // will rewrite the file cleanly.
+    }
+    return out;
+}
+
+bool save_gui_preferences(GuiPreferences const& prefs) {
+    const auto path = default_gui_preferences_path();
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    json j = {{"dark_mode", prefs.dark_mode}};
+    std::ofstream out(path);
+    if (!out) return false;
+    out << j.dump(2);
+    return out.good();
+}
+
 // --------------------------------------------------------------------
 // ClientConfig
 // --------------------------------------------------------------------

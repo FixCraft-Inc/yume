@@ -62,7 +62,7 @@ public:
         ImGui::SameLine();
         ui::checkbox("Live tail", &live_tail_);
         ImGui::SameLine();
-        if (ImGui::Button("Clear")) {
+        if (ui::secondary_button("Clear", ImVec2(0, 0))) {
             facade::LogSink::instance().clear();
         }
 

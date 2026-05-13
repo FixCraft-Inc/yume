@@ -70,7 +70,7 @@ public:
             ImGui::SetNextItemWidth(-110);
             ImGui::InputText("##input", input_, sizeof(input_));
             ImGui::SameLine();
-            if (ImGui::Button("Send", ImVec2(100, 0))) {
+            if (ui::primary_button("Send", ImVec2(100, 0))) {
                 std::string err;
                 if (!ctx.client->send_chat(active_channel_, input_, &err)) {
                     last_error_ = err;

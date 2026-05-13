@@ -29,6 +29,10 @@ public:
             ctx.dark_mode = dark;
             theme::apply_material3(dark ? theme::Mode::Dark : theme::Mode::Light);
             ui::apply_style(ui::scale(), dark);
+            // Persist so the next launch opens in the same mode.
+            facade::config_io::GuiPreferences prefs;
+            prefs.dark_mode = dark;
+            facade::config_io::save_gui_preferences(prefs);
         }
 
         ui::section_label("Window");

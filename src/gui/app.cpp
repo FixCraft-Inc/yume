@@ -33,8 +33,19 @@ bool mode_button(char const* label, bool selected, ImVec2 size) {
     auto const& c = ui::colors();
     ImGui::PushStyleColor(ImGuiCol_Button, selected ? c.accent : c.surface_high);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, selected ? c.accent_hover : c.surface_high);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, selected ? c.accent_hover : c.accent);
-    ImGui::PushStyleColor(ImGuiCol_Text, selected ? c.text : c.muted);
+    // When NOT selected, "active" must NOT swap to the full accent —
+    // that would briefly flash a pink-bg + light-text combo. Use a
+    // soft accent tint instead so the text colour we push below stays
+    // legible across all three button states.
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                          selected ? c.accent_hover
+                                   : ImVec4(c.accent.x, c.accent.y, c.accent.z, 0.22f));
+    // Selected → on_accent (dark wine on pink in dark mode, white on
+    // plum in light mode). Unselected → muted, with full text colour on
+    // hover so it doesn't pop on press. Matches Android's tab indicator
+    // logic where the active tab has on_primary text and inactive tabs
+    // are on_surface_variant.
+    ImGui::PushStyleColor(ImGuiCol_Text, selected ? c.on_accent : c.muted);
     if (ui::fonts().strong) ImGui::PushFont(ui::fonts().strong);
     bool pressed = ImGui::Button(label, size);
     if (ui::fonts().strong) ImGui::PopFont();
@@ -50,6 +61,11 @@ App::App(Options opts) : opts_(std::move(opts)) {
     (void)facade::LogSink::instance();
 
     load_configs();
+
+    // Restore the persisted dark/light preference before the theme is
+    // applied, so the very first frame paints with the user's choice
+    // instead of flashing the default and then re-applying.
+    dark_mode_ = facade::config_io::load_gui_preferences().dark_mode;
 
     window_ = std::make_unique<Window>("Yume", 1280, 800);
     install_imgui();

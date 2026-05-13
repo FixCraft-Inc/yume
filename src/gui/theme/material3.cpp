@@ -159,17 +159,28 @@ void apply_material3(Mode m) {
     c[ImGuiCol_CheckMark]             = p.primary;
     c[ImGuiCol_SliderGrab]            = p.primary;
     c[ImGuiCol_SliderGrabActive]      = p.primary_container;
-    c[ImGuiCol_Button]                = p.primary_container;
-    c[ImGuiCol_ButtonHovered]         = ImVec4(p.primary.x, p.primary.y, p.primary.z, 0.85f);
-    c[ImGuiCol_ButtonActive]          = p.primary;
+    // Default ImGui::Button uses neutral surface tones so any raw button
+    // (e.g. "Clear" in Logs, "Send" in Chat) keeps its label readable
+    // with the global on_surface text colour in BOTH dark and light
+    // themes. Premium accented buttons go through ui::primary_button,
+    // which pushes its own ImGuiCol_Button + ImGuiCol_Text stack and
+    // doesn't depend on these defaults.
+    c[ImGuiCol_Button]                = p.surface_container_high;
+    c[ImGuiCol_ButtonHovered]         = p.surface_container_highest;
+    c[ImGuiCol_ButtonActive]          = p.primary_container;
     c[ImGuiCol_Header]                = p.surface_container_high;
     c[ImGuiCol_HeaderHovered]         = p.surface_container_highest;
     c[ImGuiCol_HeaderActive]          = p.primary_container;
     c[ImGuiCol_Separator]             = p.outline_variant;
     c[ImGuiCol_SeparatorHovered]      = p.outline;
     c[ImGuiCol_SeparatorActive]       = p.primary;
-    c[ImGuiCol_ResizeGrip]            = rgba(0xFFFFFF, 0.06f);
-    c[ImGuiCol_ResizeGripHovered]     = rgba(0xFFFFFF, 0.12f);
+    // Resize grip + zebra rows: derive alpha overlays from on_surface so
+    // they actually show up on a light background. Hardcoded white worked
+    // on dark mode only.
+    c[ImGuiCol_ResizeGrip]            = ImVec4(p.on_surface.x, p.on_surface.y,
+                                               p.on_surface.z, 0.08f);
+    c[ImGuiCol_ResizeGripHovered]     = ImVec4(p.on_surface.x, p.on_surface.y,
+                                               p.on_surface.z, 0.18f);
     c[ImGuiCol_ResizeGripActive]      = p.primary;
     c[ImGuiCol_Tab]                   = p.surface_container;
     c[ImGuiCol_TabHovered]            = p.surface_container_high;
@@ -184,7 +195,10 @@ void apply_material3(Mode m) {
     c[ImGuiCol_TableBorderStrong]     = p.outline_variant;
     c[ImGuiCol_TableBorderLight]      = p.outline_variant;
     c[ImGuiCol_TableRowBg]            = ImVec4(0, 0, 0, 0);
-    c[ImGuiCol_TableRowBgAlt]         = rgba(0xFFFFFF, 0.02f);
+    // Zebra-stripe tint derived from on_surface so it's a subtle dark
+    // overlay on light tables and a subtle light overlay on dark ones.
+    c[ImGuiCol_TableRowBgAlt]         = ImVec4(p.on_surface.x, p.on_surface.y,
+                                               p.on_surface.z, 0.04f);
     c[ImGuiCol_TextSelectedBg]        = ImVec4(p.primary.x, p.primary.y, p.primary.z, 0.35f);
     c[ImGuiCol_DragDropTarget]        = p.tertiary;
     c[ImGuiCol_NavHighlight]          = p.primary;

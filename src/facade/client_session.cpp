@@ -98,7 +98,16 @@ struct ClientSession::Impl {
     ChatCallback chat_cb;
     std::unordered_map<std::string, std::vector<ChatMessage>> history;
 
+    // Worker thread for the blocking start/stop dance. Owned here so the
+    // destructor can join it deterministically.
+    std::thread worker;
+    std::atomic<bool> worker_busy{false};
+
     StatusCallback status_callback() const { return status_cb; }
+
+    void join_previous_worker() {
+        if (worker.joinable()) worker.join();
+    }
 };
 
 ClientSession::ClientSession(client::ClientConfig cfg)
@@ -128,6 +137,9 @@ ClientSession::ClientSession(client::ClientConfig cfg)
 
 ClientSession::~ClientSession() {
     stop();
+    // Wait for any in-flight async start/stop worker to settle so we don't
+    // tear down impl_ while a worker thread is still touching it.
+    impl_->join_previous_worker();
 }
 
 bool ClientSession::start(std::string* err) {
@@ -136,7 +148,7 @@ bool ClientSession::start(std::string* err) {
     ClientStatus snapshot;
     {
         std::lock_guard<std::mutex> lock(impl_->mtx);
-        if (impl_->runtime.running()) {
+        if (impl_->runtime.running() || impl_->worker_busy.load()) {
             if (err) *err = "client runtime is already running";
             return false;
         }
@@ -146,110 +158,125 @@ bool ClientSession::start(std::string* err) {
         snapshot = impl_->status;
         cb = impl_->status_callback();
     }
+    // Fire the status callback BEFORE spawning the worker so the GUI sees
+    // an immediate "Connecting" state on the same frame the user clicked.
     if (cb) cb(snapshot);
 
-    std::string material_error;
-    if (!resolve_secure_materials(cfg, &material_error)) {
-        if (err) *err = material_error;
-        StatusCallback failed_cb;
-        ClientStatus failed_snapshot;
-        {
-            std::lock_guard<std::mutex> lock(impl_->mtx);
-            impl_->status.state = ConnectionState::Failed;
-            impl_->status.message = material_error;
-            failed_snapshot = impl_->status;
-            failed_cb = impl_->status_callback();
-        }
-        if (failed_cb) failed_cb(failed_snapshot);
-        return false;
-    }
+    // Reap any previous worker (start/stop alternation).
+    impl_->join_previous_worker();
+    impl_->worker_busy.store(true);
 
-    std::string save_error;
-    if (!config_io::save_client(cfg, config_io::default_client_config_path(), &save_error)) {
-        if (err) *err = "client config save before start failed: " + save_error;
-        StatusCallback failed_cb;
-        ClientStatus failed_snapshot;
-        {
-            std::lock_guard<std::mutex> lock(impl_->mtx);
-            impl_->status.state = ConnectionState::Failed;
-            impl_->status.message = "client config save before start failed: " + save_error;
-            failed_snapshot = impl_->status;
-            failed_cb = impl_->status_callback();
-        }
-        LogEntry e;
-        e.ts = std::chrono::system_clock::now();
-        e.level = LogLevel::Error;
-        e.component = "facade.client";
-        e.message = failed_snapshot.message;
-        LogSink::instance().push(std::move(e));
-        if (failed_cb) failed_cb(failed_snapshot);
-        return false;
-    }
+    // Hand the blocking material-resolve + config-save + runtime.start
+    // (which polls the IPC socket for up to ~1.5s) off to a worker thread
+    // so the GUI thread never stalls on click.
+    impl_->worker = std::thread([this, cfg = std::move(cfg)]() mutable {
+        auto fail = [this](std::string msg) {
+            StatusCallback fcb;
+            ClientStatus fsnap;
+            {
+                std::lock_guard<std::mutex> lock(impl_->mtx);
+                impl_->status.state = ConnectionState::Failed;
+                impl_->status.message = msg;
+                fsnap = impl_->status;
+                fcb = impl_->status_callback();
+            }
+            LogEntry e;
+            e.ts = std::chrono::system_clock::now();
+            e.level = LogLevel::Error;
+            e.component = "facade.client";
+            e.message = msg;
+            LogSink::instance().push(std::move(e));
+            if (fcb) fcb(fsnap);
+        };
 
-    client::RuntimeController::StartOptions opts;
-    opts.config_path = config_io::default_client_config_path();
-    std::string start_error;
-    if (!impl_->runtime.start(std::move(cfg), opts, &start_error)) {
-        if (err) *err = start_error;
-        StatusCallback failed_cb;
-        ClientStatus failed_snapshot;
+        std::string mat_err;
+        if (!resolve_secure_materials(cfg, &mat_err)) {
+            fail(mat_err.empty() ? "secure materials not ready" : mat_err);
+            impl_->worker_busy.store(false);
+            return;
+        }
+
+        std::string save_err;
+        if (!config_io::save_client(cfg, config_io::default_client_config_path(), &save_err)) {
+            fail("client config save before start failed: " + save_err);
+            impl_->worker_busy.store(false);
+            return;
+        }
+
+        client::RuntimeController::StartOptions opts;
+        opts.config_path = config_io::default_client_config_path();
+        std::string start_err;
+        if (!impl_->runtime.start(std::move(cfg), opts, &start_err)) {
+            fail(start_err.empty() ? "client start failed" : start_err);
+            impl_->worker_busy.store(false);
+            return;
+        }
+
+        auto runtime_status = impl_->runtime.status();
+        StatusCallback ok_cb;
+        ClientStatus ok_snap;
         {
             std::lock_guard<std::mutex> lock(impl_->mtx);
-            impl_->status.state = ConnectionState::Failed;
-            impl_->status.message = start_error.empty() ? "client start failed" : start_error;
-            failed_snapshot = impl_->status;
-            failed_cb = impl_->status_callback();
+            impl_->status.state = runtime_status.ipc_available
+                                      ? ConnectionState::Connected
+                                      : ConnectionState::Authenticating;
+            impl_->status.message = runtime_status.message;
+            if (runtime_status.ipc_available &&
+                impl_->status.connected_since.time_since_epoch().count() == 0) {
+                impl_->status.connected_since = std::chrono::system_clock::now();
+            }
+            ok_snap = impl_->status;
+            ok_cb = impl_->status_callback();
         }
         LogEntry entry;
         entry.ts = std::chrono::system_clock::now();
-        entry.level = LogLevel::Error;
+        entry.level = LogLevel::Info;
         entry.component = "facade.client";
-        entry.message = failed_snapshot.message;
+        entry.message = "client runtime started";
         LogSink::instance().push(std::move(entry));
-        if (failed_cb) failed_cb(failed_snapshot);
-        return false;
-    }
+        if (ok_cb) ok_cb(ok_snap);
 
-    auto runtime_status = impl_->runtime.status();
-    StatusCallback started_cb;
-    ClientStatus started_snapshot;
-    {
-        std::lock_guard<std::mutex> lock(impl_->mtx);
-        impl_->status.state = runtime_status.ipc_available
-                                  ? ConnectionState::Connected
-                                  : ConnectionState::Authenticating;
-        impl_->status.message = runtime_status.message;
-        if (runtime_status.ipc_available && impl_->status.connected_since.time_since_epoch().count() == 0) {
-            impl_->status.connected_since = std::chrono::system_clock::now();
-        }
-        started_snapshot = impl_->status;
-        started_cb = impl_->status_callback();
-    }
-    if (started_cb) started_cb(started_snapshot);
-    LogEntry entry;
-    entry.ts = std::chrono::system_clock::now();
-    entry.level = LogLevel::Info;
-    entry.component = "facade.client";
-    entry.message = "client runtime started";
-    LogSink::instance().push(std::move(entry));
+        impl_->worker_busy.store(false);
+    });
+
     return true;
 }
 
 void ClientSession::stop() {
-    if (!impl_->runtime.running()) return;
-    std::string stop_error;
-    impl_->runtime.stop(&stop_error);
+    if (!impl_->runtime.running() && !impl_->worker_busy.load()) return;
+
+    // Mark intent immediately so the UI shows "Disconnecting".
     StatusCallback cb;
-    ClientStatus snapshot;
+    ClientStatus snap;
     {
         std::lock_guard<std::mutex> lock(impl_->mtx);
         impl_->status.state = ConnectionState::Disconnected;
-        impl_->status.message = stop_error.empty() ? "stopped" : stop_error;
-        impl_->status.connected_since = {};
-        snapshot = impl_->status;
+        impl_->status.message = "stopping client";
+        snap = impl_->status;
         cb = impl_->status_callback();
     }
-    if (cb) cb(snapshot);
+    if (cb) cb(snap);
+
+    // Reap any previous worker, then run the blocking stop on a new one.
+    impl_->join_previous_worker();
+    impl_->worker_busy.store(true);
+
+    impl_->worker = std::thread([this]() {
+        std::string stop_error;
+        impl_->runtime.stop(&stop_error);
+        StatusCallback done_cb;
+        ClientStatus done_snap;
+        {
+            std::lock_guard<std::mutex> lock(impl_->mtx);
+            impl_->status.state = ConnectionState::Disconnected;
+            impl_->status.message = stop_error.empty() ? "stopped" : stop_error;
+            impl_->status.connected_since = {};
+            done_snap = impl_->status;
+            done_cb = impl_->status_callback();
+        }
+        if (done_cb) done_cb(done_snap);
+        impl_->worker_busy.store(false);
+    });
 }
 
 bool ClientSession::running() const noexcept {

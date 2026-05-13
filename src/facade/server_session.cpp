@@ -6,7 +6,9 @@
 
 #include "facade/server_session.hpp"
 
+#include <atomic>
 #include <mutex>
+#include <thread>
 #include <utility>
 
 #include "facade/keys.hpp"
@@ -23,7 +25,15 @@ struct ServerSession::Impl {
     TrafficMeter traffic;
     StatusCallback status_cb;
 
+    // Worker for blocking start/stop; same pattern as ClientSession::Impl.
+    std::thread worker;
+    std::atomic<bool> worker_busy{false};
+
     StatusCallback status_callback() const { return status_cb; }
+
+    void join_previous_worker() {
+        if (worker.joinable()) worker.join();
+    }
 };
 
 namespace {
@@ -67,56 +77,103 @@ ServerSession::ServerSession(server::ServerConfig cfg)
 
 ServerSession::~ServerSession() {
     stop();
+    impl_->join_previous_worker();
 }
 
 bool ServerSession::start(std::string* err) {
     server::ServerConfig cfg;
     {
         std::lock_guard<std::mutex> lock(impl_->mtx);
+        if (impl_->runtime.running() || impl_->worker_busy.load()) {
+            if (err) *err = "server runtime is already running";
+            return false;
+        }
         cfg = impl_->cfg;
     }
 
-    std::string local_error;
-    const bool ok = impl_->runtime.start(cfg, &local_error);
-    if (err) *err = local_error;
-
-    StatusCallback cb;
-    ServerStatus snapshot;
+    // Optimistic immediate status update so the UI shows "Starting" right away.
     {
-        std::lock_guard<std::mutex> lock(impl_->mtx);
-        snapshot = to_facade_status(impl_->runtime.status(), impl_->traffic, impl_->cfg);
-        if (!ok) {
-            snapshot.running = false;
-            snapshot.message = local_error.empty() ? "server start failed" : local_error;
+        StatusCallback cb;
+        ServerStatus snap;
+        {
+            std::lock_guard<std::mutex> lock(impl_->mtx);
+            snap = to_facade_status(impl_->runtime.status(), impl_->traffic, impl_->cfg);
+            snap.message = "starting server";
+            cb = impl_->status_callback();
         }
-        cb = impl_->status_callback();
+        if (cb) cb(snap);
     }
 
-    if (ok) {
-        push_server_log(LogLevel::Info,
-                        "server started on " + snapshot.listen_endpoint);
-    } else {
-        push_server_log(LogLevel::Error,
-                        "server start failed: " + snapshot.message);
-    }
-    if (cb) cb(snapshot);
-    return ok;
+    impl_->join_previous_worker();
+    impl_->worker_busy.store(true);
+
+    // Run the blocking yumed spawn + IPC wait on a worker so the GUI thread
+    // doesn't stall. The optional out-param err can't carry async failures;
+    // callers should poll status() or subscribe via set_status_callback().
+    impl_->worker = std::thread([this, cfg = std::move(cfg)]() {
+        std::string local_error;
+        const bool ok = impl_->runtime.start(cfg, &local_error);
+
+        StatusCallback cb;
+        ServerStatus snap;
+        {
+            std::lock_guard<std::mutex> lock(impl_->mtx);
+            snap = to_facade_status(impl_->runtime.status(), impl_->traffic, impl_->cfg);
+            if (!ok) {
+                snap.running = false;
+                snap.message = local_error.empty() ? "server start failed" : local_error;
+            }
+            cb = impl_->status_callback();
+        }
+        if (ok) {
+            push_server_log(LogLevel::Info,
+                            "server started on " + snap.listen_endpoint);
+        } else {
+            push_server_log(LogLevel::Error,
+                            "server start failed: " + snap.message);
+        }
+        if (cb) cb(snap);
+        impl_->worker_busy.store(false);
+    });
+
+    if (err) err->clear();
+    return true;  // kickoff succeeded; outcome arrives via status callback
 }
 
 void ServerSession::stop() {
-    if (!impl_->runtime.stop()) return;
+    if (!impl_->runtime.running() && !impl_->worker_busy.load()) return;
 
-    StatusCallback cb;
-    ServerStatus snapshot;
+    // Immediate optimistic status flip so the UI shows "stopping".
     {
-        std::lock_guard<std::mutex> lock(impl_->mtx);
-        snapshot = to_facade_status(impl_->runtime.status(), impl_->traffic, impl_->cfg);
-        snapshot.running = false;
-        snapshot.message = "stopped";
-        cb = impl_->status_callback();
+        StatusCallback cb;
+        ServerStatus snap;
+        {
+            std::lock_guard<std::mutex> lock(impl_->mtx);
+            snap = to_facade_status(impl_->runtime.status(), impl_->traffic, impl_->cfg);
+            snap.message = "stopping server";
+            cb = impl_->status_callback();
+        }
+        if (cb) cb(snap);
     }
-    push_server_log(LogLevel::Info, "server stopped");
-    if (cb) cb(snapshot);
+
+    impl_->join_previous_worker();
+    impl_->worker_busy.store(true);
+
+    impl_->worker = std::thread([this]() {
+        impl_->runtime.stop();
+        StatusCallback cb;
+        ServerStatus snap;
+        {
+            std::lock_guard<std::mutex> lock(impl_->mtx);
+            snap = to_facade_status(impl_->runtime.status(), impl_->traffic, impl_->cfg);
+            snap.running = false;
+            snap.message = "stopped";
+            cb = impl_->status_callback();
+        }
+        push_server_log(LogLevel::Info, "server stopped");
+        if (cb) cb(snap);
+        impl_->worker_busy.store(false);
+    });
 }
 
 bool ServerSession::running() const noexcept {

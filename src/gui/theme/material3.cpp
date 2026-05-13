@@ -35,56 +35,58 @@ Palette g_palette = material3_dark();
 
 }  // namespace
 
+// Palette mirrors the Android YUME Material 3 theme (Color.kt + Theme.kt):
+// dusty plum, rose-pink, lavender tonal palette on a near-black night surface.
 Palette material3_dark() {
     Palette p{};
-    p.primary                   = rgb(0xF26822);
-    p.on_primary                = rgb(0xFFFFFF);
-    p.primary_container         = rgb(0x3A241B);
-    p.on_primary_container      = rgb(0xFFD9C2);
-    p.secondary                 = rgb(0x8EA7FF);
-    p.on_secondary              = rgb(0x111827);
-    p.tertiary                  = rgb(0xD4AF37);
-    p.surface                   = rgb(0x101114);
-    p.surface_dim               = rgb(0x101114);
-    p.surface_bright            = rgb(0x2A2E37);
-    p.surface_container_lowest  = rgb(0x0B0C0F);
-    p.surface_container_low     = rgb(0x15171C);
-    p.surface_container         = rgb(0x181A20);
-    p.surface_container_high    = rgb(0x20232B);
-    p.surface_container_highest = rgb(0x292D36);
-    p.on_surface                = rgb(0xF4F1EA);
-    p.on_surface_variant        = rgb(0xA8ADB8);
-    p.outline                   = rgb(0x545A66);
-    p.outline_variant           = rgb(0x343843);
-    p.error                     = rgb(0xFF6F6B);
-    p.on_error                  = rgb(0x240604);
-    p.success                   = rgb(0x53D17C);
-    p.warning                   = rgb(0xF2B950);
+    p.primary                   = rgb(0xE8BECC);   // soft rose-pink
+    p.on_primary                = rgb(0x3A1F2E);
+    p.primary_container         = rgb(0x563E53);   // YumePlumDeep
+    p.on_primary_container      = rgb(0xF4DDEA);
+    p.secondary                 = rgb(0xD9BFD4);   // lavender
+    p.on_secondary              = rgb(0x281A28);
+    p.tertiary                  = rgb(0xE0BCCF);   // rose
+    p.surface                   = rgb(0x101014);   // YumeNight
+    p.surface_dim               = rgb(0x0B0B0F);
+    p.surface_bright            = rgb(0x2A252D);
+    p.surface_container_lowest  = rgb(0x07070A);
+    p.surface_container_low     = rgb(0x141318);
+    p.surface_container         = rgb(0x17171C);   // YumeNightSurface
+    p.surface_container_high    = rgb(0x222129);   // YumeNightRaised
+    p.surface_container_highest = rgb(0x2A2A33);
+    p.on_surface                = rgb(0xEAE3EA);
+    p.on_surface_variant        = rgb(0xB5ABB3);
+    p.outline                   = rgb(0x605466);
+    p.outline_variant           = rgb(0x3A3340);
+    p.error                     = rgb(0xFFB1BD);
+    p.on_error                  = rgb(0x4B1F27);   // YumeErrorContainer
+    p.success                   = rgb(0x86E0A8);
+    p.warning                   = rgb(0xFFE7A6);   // YumeVerifyContent
     return p;
 }
 
 Palette material3_light() {
     Palette p{};
-    p.primary                   = rgb(0xD95A16);
-    p.on_primary                = rgb(0xFFFFFF);
-    p.primary_container         = rgb(0xFFE1CC);
-    p.on_primary_container      = rgb(0x3B1603);
-    p.secondary                 = rgb(0x405DAD);
-    p.on_secondary              = rgb(0xFFFFFF);
-    p.tertiary                  = rgb(0x866600);
-    p.surface                   = rgb(0xF5F5F7);
-    p.surface_dim               = rgb(0xE4E7EC);
+    p.primary                   = rgb(0x70536B);   // YumePlum
+    p.on_primary                = rgb(0xFFFBFF);
+    p.primary_container         = rgb(0xEDE3EF);   // YumeLilac
+    p.on_primary_container      = rgb(0x281A28);
+    p.secondary                 = rgb(0x7D5867);   // YumeBerry
+    p.on_secondary              = rgb(0xFFFBFF);
+    p.tertiary                  = rgb(0x5F607B);   // YumeIris
+    p.surface                   = rgb(0xFFFBFE);   // YumePaper
+    p.surface_dim               = rgb(0xE8E1E8);   // YumeMist
     p.surface_bright            = rgb(0xFFFFFF);
     p.surface_container_lowest  = rgb(0xFFFFFF);
-    p.surface_container_low     = rgb(0xFFFFFF);
-    p.surface_container         = rgb(0xF0F2F5);
-    p.surface_container_high    = rgb(0xE8EBF0);
-    p.surface_container_highest = rgb(0xDCE1E8);
-    p.on_surface                = rgb(0x17191F);
-    p.on_surface_variant        = rgb(0x5E6673);
-    p.outline                   = rgb(0x808896);
-    p.outline_variant           = rgb(0xD6DAE1);
-    p.error                     = rgb(0xC9332B);
+    p.surface_container_low     = rgb(0xF5F1F6);   // YumeFog
+    p.surface_container         = rgb(0xEDE3EF);   // YumeLilac
+    p.surface_container_high    = rgb(0xE6E0EB);   // YumeCloud
+    p.surface_container_highest = rgb(0xDED5DF);
+    p.on_surface                = rgb(0x201A21);   // YumeInk
+    p.on_surface_variant        = rgb(0x6D6570);   // YumeSlate
+    p.outline                   = rgb(0x9A8E97);
+    p.outline_variant           = rgb(0xD9CFDA);
+    p.error                     = rgb(0xB72E5C);
     p.on_error                  = rgb(0xFFFFFF);
     p.success                   = rgb(0x2E7D32);
     p.warning                   = rgb(0xB26A00);

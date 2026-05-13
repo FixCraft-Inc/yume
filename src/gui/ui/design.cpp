@@ -187,30 +187,33 @@ void install_fonts(float content_scale) {
 
 void apply_style(float content_scale, bool dark_mode) {
     g_scale = std::clamp(content_scale, 1.0f, 2.0f);
+    // Palette mirrors the Android YUME theme (Color.kt + Theme.kt) — dusty
+    // plum / lavender / rose with a soft pink accent, deepened slightly for
+    // desktop contrast on larger surfaces.
     if (dark_mode) {
-        g_colors.background = rgb(0x101114);
-        g_colors.surface = rgb(0x181A20);
-        g_colors.surface_high = rgb(0x20232B);
-        g_colors.outline = rgb(0x343843);
-        g_colors.text = rgb(0xF4F1EA);
-        g_colors.muted = rgb(0xA8ADB8);
-        g_colors.accent = rgb(0xF26822);
-        g_colors.accent_hover = rgb(0xFF7A35);
-        g_colors.success = rgb(0x53D17C);
-        g_colors.warning = rgb(0xF2B950);
-        g_colors.error = rgb(0xFF6F6B);
+        g_colors.background  = rgb(0x101014);   // YumeNight
+        g_colors.surface     = rgb(0x17171C);   // YumeNightSurface
+        g_colors.surface_high= rgb(0x222129);   // YumeNightRaised
+        g_colors.outline     = rgb(0x3A3340);
+        g_colors.text        = rgb(0xEAE3EA);
+        g_colors.muted       = rgb(0xB5ABB3);
+        g_colors.accent      = rgb(0xE8BECC);   // soft pink (Android tertiary dark)
+        g_colors.accent_hover= rgb(0xF4D2DC);   // lighter rose for hover
+        g_colors.success     = rgb(0x86E0A8);
+        g_colors.warning     = rgb(0xF2C56B);
+        g_colors.error       = rgb(0xFFB1BD);
     } else {
-        g_colors.background = rgb(0xF5F5F7);
-        g_colors.surface = rgb(0xFFFFFF);
-        g_colors.surface_high = rgb(0xECEFF3);
-        g_colors.outline = rgb(0xD6DAE1);
-        g_colors.text = rgb(0x17191F);
-        g_colors.muted = rgb(0x5E6673);
-        g_colors.accent = rgb(0xD95A16);
-        g_colors.accent_hover = rgb(0xF26822);
-        g_colors.success = rgb(0x168A45);
-        g_colors.warning = rgb(0xA86500);
-        g_colors.error = rgb(0xC9332B);
+        g_colors.background  = rgb(0xFFFBFE);   // YumePaper
+        g_colors.surface     = rgb(0xFFFFFF);
+        g_colors.surface_high= rgb(0xEDE3EF);   // YumeLilac
+        g_colors.outline     = rgb(0xD9CFDA);
+        g_colors.text        = rgb(0x201A21);   // YumeInk
+        g_colors.muted       = rgb(0x6D6570);   // YumeSlate
+        g_colors.accent      = rgb(0x70536B);   // YumePlum
+        g_colors.accent_hover= rgb(0x563E53);   // YumePlumDeep
+        g_colors.success     = rgb(0x2E7D32);
+        g_colors.warning     = rgb(0xB26A00);
+        g_colors.error       = rgb(0xB72E5C);
     }
 
     ImGuiStyle& s = ImGui::GetStyle();

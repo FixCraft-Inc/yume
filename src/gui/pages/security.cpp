@@ -227,9 +227,9 @@ private:
                               ImGuiChildFlags_AutoResizeY,
                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         if (ImGui::BeginTable("##material_row_cols", 3, ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("Main", ImGuiTableColumnFlags_WidthStretch, 0.50f);
-            ImGui::TableSetupColumn("Meta", ImGuiTableColumnFlags_WidthStretch, 0.28f);
-            ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthStretch, 0.22f);
+            ImGui::TableSetupColumn("Main", ImGuiTableColumnFlags_WidthStretch, 0.46f);
+            ImGui::TableSetupColumn("Meta", ImGuiTableColumnFlags_WidthStretch, 0.24f);
+            ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthStretch, 0.30f);
             ImGui::TableNextColumn();
             if (ui::fonts().strong) ImGui::PushFont(ui::fonts().strong);
             ImGui::TextUnformatted(item.display_name.c_str());
@@ -249,15 +249,17 @@ private:
             ImGui::TableNextColumn();
             ui::status_pill(selected ? "Selected" : "Ready",
                             selected ? c.success : c.muted);
-            ImGui::Dummy(ImVec2(0, 4 * sc));
+            ImGui::Dummy(ImVec2(0, 6 * sc));
+            // Stack the action buttons vertically and let each take the
+            // full column width so neither clips at the right edge.
             if (!selected) {
-                if (ui::secondary_button("Use", ImVec2(78 * sc, 38 * sc))) {
+                if (ui::secondary_button("Use", ImVec2(-1, 36 * sc))) {
                     select_material(ctx, item);
                 }
             }
             if (!item.is_default) {
-                if (!selected) ImGui::SameLine(0.0f, 8 * sc);
-                if (ui::quiet_button("Delete", ImVec2(92 * sc, 38 * sc))) {
+                if (!selected) ImGui::Dummy(ImVec2(0, 4 * sc));
+                if (ui::danger_button("Delete", ImVec2(-1, 36 * sc))) {
                     std::string err;
                     if (sm::remove(item.id, &err)) {
                         last_message_ = "Deleted.";

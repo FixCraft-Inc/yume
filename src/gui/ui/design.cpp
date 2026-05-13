@@ -429,6 +429,22 @@ bool secondary_button(char const* label, ImVec2 size) {
     return pressed;
 }
 
+bool danger_button(char const* label, ImVec2 size) {
+    const ImVec4 base = g_colors.error;
+    ImGui::PushStyleColor(ImGuiCol_Button, alpha(base, 0.00f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, alpha(base, 0.16f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, alpha(base, 0.28f));
+    ImGui::PushStyleColor(ImGuiCol_Border, base);
+    ImGui::PushStyleColor(ImGuiCol_Text, base);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.4f);
+    if (g_fonts.strong) ImGui::PushFont(g_fonts.strong);
+    bool pressed = ImGui::Button(label, size);
+    if (g_fonts.strong) ImGui::PopFont();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(5);
+    return pressed;
+}
+
 bool quiet_button(char const* label, ImVec2 size) {
     ImGui::PushStyleColor(ImGuiCol_Button, alpha(g_colors.surface_high, 0.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, alpha(g_colors.surface_high, 0.9f));

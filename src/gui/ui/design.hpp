@@ -60,6 +60,9 @@ float button_width(char const* label, float min_width = 0.0f);
 bool primary_button(char const* label, ImVec2 size = ImVec2(0, 0));
 bool secondary_button(char const* label, ImVec2 size = ImVec2(0, 0));
 bool quiet_button(char const* label, ImVec2 size = ImVec2(0, 0));
+// Destructive action: red outline + red text, transparent fill, with a
+// soft red tint on hover. Used for Delete / Remove / Forget actions.
+bool danger_button(char const* label, ImVec2 size = ImVec2(0, 0));
 bool disclosure_header(char const* label, bool open);
 
 // Modern check control: rounded accent-filled box on the left, label on the

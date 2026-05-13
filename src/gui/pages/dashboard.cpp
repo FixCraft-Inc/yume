@@ -69,7 +69,7 @@ public:
             if (ImGui::BeginTable("##status_table", 2, ImGuiTableFlags_SizingStretchSame)) {
                 ImGui::TableNextColumn();
                 ui::section_label("Client");
-                ui::status_pill(facade::to_string(client.state), state_color(client.state));
+                ui::status_pill(facade::display_label(client.state), state_color(client.state));
                 ui::muted_text("%s", client.server_endpoint.empty() ? "No server configured" : client.server_endpoint.c_str());
                 if (!client.message.empty()) ui::muted_text("%s", client.message.c_str());
 
@@ -164,29 +164,62 @@ public:
 
             float plot_h = traffic_h - 190 * sc;
             if (plot_h < 160 * sc) plot_h = 160 * sc;
-            if (ImPlot::BeginPlot("##traffic_plot", ImVec2(-1, plot_h),
-                                  ImPlotFlags_NoLegend | ImPlotFlags_NoBoxSelect)) {
-                ImPlot::SetupAxis(ImAxis_X1, "s",
-                                  ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels);
-                ImPlot::SetupAxis(ImAxis_Y1, "B/s", ImPlotAxisFlags_AutoFit);
 
-                if (ctx.client) {
-                    auto samples = ctx.client->traffic().history();
-                    if (!samples.empty()) {
-                        const auto t0 = samples.front().t;
-                        std::vector<double> xs(samples.size());
-                        std::vector<double> tx(samples.size());
-                        std::vector<double> rx(samples.size());
-                        for (std::size_t i = 0; i < samples.size(); ++i) {
-                            xs[i] = std::chrono::duration<double>(samples[i].t - t0).count();
-                            tx[i] = samples[i].tx_bps;
-                            rx[i] = samples[i].rx_bps;
-                        }
-                        ImPlot::PlotLine("tx", xs.data(), tx.data(), (int)xs.size());
-                        ImPlot::PlotLine("rx", xs.data(), rx.data(), (int)xs.size());
+            // Plot when we have samples; otherwise show a centred note
+            // explaining why. The yume runtime doesn't yet expose byte
+            // counters over IPC — they'll start showing up automatically
+            // once the runtime gains a stats op.
+            bool have_samples = false;
+            std::vector<double> xs, tx, rx;
+            if (ctx.client) {
+                auto samples = ctx.client->traffic().history();
+                if (!samples.empty()) {
+                    have_samples = true;
+                    const auto t0 = samples.front().t;
+                    xs.reserve(samples.size());
+                    tx.reserve(samples.size());
+                    rx.reserve(samples.size());
+                    for (auto const& s : samples) {
+                        xs.push_back(std::chrono::duration<double>(s.t - t0).count());
+                        tx.push_back(s.tx_bps);
+                        rx.push_back(s.rx_bps);
                     }
                 }
-                ImPlot::EndPlot();
+            }
+
+            if (have_samples) {
+                if (ImPlot::BeginPlot("##traffic_plot", ImVec2(-1, plot_h),
+                                      ImPlotFlags_NoLegend | ImPlotFlags_NoBoxSelect)) {
+                    ImPlot::SetupAxis(ImAxis_X1, "s",
+                                      ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels);
+                    ImPlot::SetupAxis(ImAxis_Y1, "B/s", ImPlotAxisFlags_AutoFit);
+                    ImPlot::PlotLine("tx", xs.data(), tx.data(), (int)xs.size());
+                    ImPlot::PlotLine("rx", xs.data(), rx.data(), (int)xs.size());
+                    ImPlot::EndPlot();
+                }
+            } else {
+                ImGui::PushStyleColor(ImGuiCol_ChildBg,
+                                      ImVec4(c.surface_high.x, c.surface_high.y,
+                                             c.surface_high.z, 0.35f));
+                ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12 * sc);
+                ImGui::BeginChild("##traffic_placeholder", ImVec2(-1, plot_h),
+                                  ImGuiChildFlags_AlwaysUseWindowPadding,
+                                  ImGuiWindowFlags_NoScrollbar);
+                const float pad = (plot_h - 56 * sc) * 0.5f;
+                if (pad > 0) ImGui::Dummy(ImVec2(0, pad));
+                ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
+                const char* msg = "Live traffic graph arrives in a follow-up release.";
+                ImVec2 ts = ImGui::CalcTextSize(msg);
+                ImGui::SetCursorPosX((ImGui::GetWindowSize().x - ts.x) * 0.5f);
+                ImGui::TextUnformatted(msg);
+                const char* sub = "Connect and route traffic through SOCKS to verify the proxy works.";
+                ts = ImGui::CalcTextSize(sub);
+                ImGui::SetCursorPosX((ImGui::GetWindowSize().x - ts.x) * 0.5f);
+                ImGui::TextUnformatted(sub);
+                ImGui::PopStyleColor();
+                ImGui::EndChild();
+                ImGui::PopStyleVar();
+                ImGui::PopStyleColor();
             }
         }
         ui::end_card();

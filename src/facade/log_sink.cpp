@@ -63,6 +63,21 @@ const char* to_string(ConnectionState s) noexcept {
     return "unknown";
 }
 
+const char* display_label(ConnectionState s) noexcept {
+    switch (s) {
+        case ConnectionState::Idle:           return "Idle";
+        case ConnectionState::Resolving:      return "Resolving";
+        case ConnectionState::Connecting:     return "Connecting";
+        case ConnectionState::TlsHandshake:   return "TLS handshake";
+        case ConnectionState::Authenticating: return "Authenticating";
+        case ConnectionState::Connected:      return "Connected";
+        case ConnectionState::Reconnecting:   return "Reconnecting";
+        case ConnectionState::Failed:         return "Failed";
+        case ConnectionState::Disconnected:   return "Disconnected";
+    }
+    return "Unknown";
+}
+
 const char* to_string(LogLevel lvl) noexcept {
     switch (lvl) {
         case LogLevel::Trace:    return "trace";

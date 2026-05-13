@@ -18,6 +18,7 @@
 #include <imgui_impl_opengl3.h>
 #include <implot.h>
 
+#include "core/version.hpp"
 #include "facade/client_session.hpp"
 #include "facade/config_io.hpp"
 #include "facade/log_sink.hpp"
@@ -94,7 +95,8 @@ App::App(Options opts) : opts_(std::move(opts)) {
     // instead of flashing the default and then re-applying.
     dark_mode_ = facade::config_io::load_gui_preferences().dark_mode;
 
-    window_ = std::make_unique<Window>("Yume", 1280, 800);
+    window_ = std::make_unique<Window>(
+        std::string("Yume ") + yume::kVersion, 1280, 800);
     install_imgui();
 
     // System tray. Constructing it does the GTK init + appindicator

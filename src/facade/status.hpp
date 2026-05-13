@@ -25,6 +25,8 @@ enum class ConnectionState {
 };
 
 const char* to_string(ConnectionState s) noexcept;
+// UI-friendly title-cased form ("Disconnected", "Connecting", ...).
+const char* display_label(ConnectionState s) noexcept;
 
 struct ClientStatus {
     ConnectionState state{ConnectionState::Idle};

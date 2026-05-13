@@ -158,7 +158,7 @@ public:
                     if (ui::fonts().body) ImGui::PopFont();
                     ImGui::TableNextColumn();
                     ImGui::PushID(e.fingerprint.c_str());
-                    if (ui::quiet_button("Remove", ImVec2(ui::button_width("Remove", 104), 36 * sc))) {
+                    if (ui::danger_button("Remove", ImVec2(ui::button_width("Remove", 104), 36 * sc))) {
                         std::string err;
                         if (facade::keys::remove_authorized(
                                 auth_keys_path_, meta_path_, e.fingerprint, &err)) {

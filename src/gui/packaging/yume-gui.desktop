@@ -9,4 +9,4 @@ Terminal=false
 Categories=Network;Security;
 Keywords=vpn;proxy;tls;post-quantum;privacy;
 StartupNotify=true
-StartupWMClass=Yume
+StartupWMClass=yume-gui

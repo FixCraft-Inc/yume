@@ -12,6 +12,8 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
+#include "platform/app_icon.hpp"
+
 #if defined(_WIN32)
 #  include <windows.h>
 #elif defined(__APPLE__)
@@ -32,6 +34,13 @@ void glfw_error_callback(int code, const char* desc) {
 
 Window::Window(std::string title, int width, int height) {
     glfwSetErrorCallback(glfw_error_callback);
+
+    // First-run convenience: drop the SVG + .desktop into the user's XDG
+    // dirs so Wayland compositors actually have an icon to show. No-op
+    // when the files are already there and unchanged. Order doesn't
+    // matter here — it's pure filesystem work.
+    platform::install_to_user_xdg();
+
     if (!glfwInit()) {
         throw std::runtime_error("glfwInit failed");
     }
@@ -46,6 +55,12 @@ Window::Window(std::string title, int width, int height) {
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
     glfwWindowHint(GLFW_DOUBLEBUFFER, GLFW_TRUE);
 
+    // App id / WM class hints set AFTER glfwInit and BEFORE
+    // glfwCreateWindow. On Wayland this is the only way to associate our
+    // window with the .desktop file the compositor uses for icons; on X11
+    // it sets WM_CLASS which most WMs read for the same purpose.
+    platform::install_app_id_hints();
+
     win_ = glfwCreateWindow(width, height, title.c_str(), nullptr, nullptr);
     if (!win_) {
         glfwTerminate();
@@ -53,6 +68,11 @@ Window::Window(std::string title, int width, int height) {
     }
     glfwMakeContextCurrent(win_);
     glfwSwapInterval(1);  // vsync - caps CPU and keeps frame timing stable
+
+    // Push the rasterised SVG into the window. On Wayland this is a no-op
+    // by design (compositor reads our app_id and looks up the icon from
+    // the theme), but the call is safe in either session type.
+    platform::apply_window_icon(win_);
 }
 
 Window::~Window() {

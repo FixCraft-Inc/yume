@@ -20,9 +20,12 @@ set(YUME_GLFW_TAG   "3.4"      CACHE STRING "GLFW git tag")
 set(YUME_IMPLOT_TAG "v0.16"    CACHE STRING "ImPlot git tag")
 
 # ---- GLFW ---------------------------------------------------------------
-find_package(glfw3 3.3 QUIET)
+# 3.4 is the floor: that's the version where glfwInitHintString +
+# GLFW_WAYLAND_APP_ID / GLFW_X11_CLASS_NAME landed, which we need to make
+# the window's app id resolvable for icon lookup.
+find_package(glfw3 3.4 QUIET)
 if(NOT glfw3_FOUND)
-    message(STATUS "[yume-gui] glfw3 not found via find_package; fetching ${YUME_GLFW_TAG}")
+    message(STATUS "[yume-gui] glfw3 >= 3.4 not found via find_package; fetching ${YUME_GLFW_TAG}")
     set(GLFW_BUILD_DOCS     OFF CACHE INTERNAL "")
     set(GLFW_BUILD_TESTS    OFF CACHE INTERNAL "")
     set(GLFW_BUILD_EXAMPLES OFF CACHE INTERNAL "")
@@ -95,10 +98,28 @@ if(YUME_GUI_TRAY)
     endif()
 endif()
 
+# ---- App icon: embed assets/icon.svg as a byte array -------------------
+# We bake the SVG into the binary so the icon is self-contained on every
+# launch (no runtime file dependency); the rasteriser produces RGBA pixel
+# buffers at multiple sizes for glfwSetWindowIcon on X11/Win/Cocoa, and
+# the same SVG is installed into ~/.local/share/icons/.../yume-gui.svg on
+# first run so Wayland compositors can match it to the .desktop entry.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.svg"
+     YUME_ICON_SVG_HEX HEX)
+string(REGEX REPLACE "(..)" "0x\\1," YUME_ICON_SVG_BYTES_RAW
+       "${YUME_ICON_SVG_HEX}")
+# trim trailing comma
+string(REGEX REPLACE ",$" "" YUME_ICON_SVG_BYTES "${YUME_ICON_SVG_BYTES_RAW}")
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/platform/app_icon_data.hpp.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/app_icon_data.hpp"
+    @ONLY)
+
 # ---- yume-gui executable ------------------------------------------------
 set(YUME_GUI_SOURCES
     main.cpp
     app.cpp
+    platform/app_icon.cpp
     platform/file_dialog.cpp
     platform/window.cpp
     theme/material3.cpp
@@ -120,7 +141,10 @@ endif()
 
 add_executable(yume-gui ${YUME_GUI_SOURCES})
 
-target_include_directories(yume-gui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(yume-gui PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nanosvg
+    ${CMAKE_CURRENT_BINARY_DIR}/generated)
 
 target_link_libraries(yume-gui PRIVATE
     yume_facade

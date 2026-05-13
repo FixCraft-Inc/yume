@@ -112,19 +112,18 @@ public:
                 text_input("DNS resolver", cfg_.dns_server, "1.1.1.1");
                 if (ImGui::BeginTable("##server_features", 4, ImGuiTableFlags_SizingStretchSame)) {
                     ImGui::TableNextColumn();
-                    ImGui::Checkbox("Relay", &cfg_.relay_enable);
+                    ui::checkbox("Relay", &cfg_.relay_enable);
                     ImGui::TableNextColumn();
-                    ImGui::Checkbox("Directory", &cfg_.directory_enable);
+                    ui::checkbox("Directory", &cfg_.directory_enable);
                     ImGui::TableNextColumn();
-                    ImGui::Checkbox("IPC", &cfg_.ipc_enable);
+                    ui::checkbox("IPC", &cfg_.ipc_enable);
                     ImGui::TableNextColumn();
-                    ImGui::Checkbox("Anonym", &cfg_.anonym);
+                    ui::checkbox("Anonym", &cfg_.anonym);
                     ImGui::EndTable();
                 }
                 text_input("IPC path", cfg_.ipc_path, "auto");
 
                 if (cfg_.anonym) {
-                    ui::field_label("Anonym proof mode");
                     const char* proof_modes[] = {"auto", "local", "fixcraft"};
                     int proof_idx = 0;
                     for (int i = 0; i < 3; ++i) {
@@ -133,6 +132,7 @@ public:
                             break;
                         }
                     }
+                    ui::field_label("Anonym proof mode");
                     ImGui::SetNextItemWidth(ui::form_width(320));
                     if (ImGui::Combo("##anonym_proof_mode", &proof_idx, proof_modes, 3)) {
                         cfg_.anonym_proof_mode = proof_modes[proof_idx];
@@ -148,16 +148,16 @@ public:
                 ImGui::Separator();
                 if (ImGui::BeginTable("##inner_flags", 4, ImGuiTableFlags_SizingStretchSame)) {
                     ImGui::TableNextColumn();
-                    ImGui::Checkbox("Inner crypto", &cfg_.inner_crypto);
+                    ui::checkbox("Inner crypto", &cfg_.inner_crypto);
                     ImGui::TableNextColumn();
-                    ImGui::Checkbox("Heavy", &cfg_.inner_heavy);
+                    ui::checkbox("Heavy", &cfg_.inner_heavy);
                     ImGui::TableNextColumn();
-                    ImGui::Checkbox("Dual", &cfg_.inner_dual);
+                    ui::checkbox("Dual", &cfg_.inner_dual);
                     ImGui::TableNextColumn();
-                    ImGui::Checkbox("Required", &cfg_.inner_required);
+                    ui::checkbox("Required", &cfg_.inner_required);
                     ImGui::EndTable();
                 }
-                ImGui::Checkbox("Hop keys", &cfg_.inner_hop);
+                ui::checkbox("Hop keys", &cfg_.inner_hop);
                 int hop = (int)cfg_.hop_interval_ms;
                 int_input("Hop interval (ms)", hop);
                 {
@@ -227,26 +227,21 @@ public:
                     ui::section_label("Sessions");
                     if (sessions.empty()) {
                         ui::muted_text("No active client sessions.");
-                    } else if (ImGui::BeginTable("##sessions", 4,
-                                                 ImGuiTableFlags_RowBg |
-                                                     ImGuiTableFlags_BordersInnerH |
-                                                     ImGuiTableFlags_Resizable)) {
-                        ImGui::TableSetupColumn("Endpoint");
-                        ImGui::TableSetupColumn("Name");
-                        ImGui::TableSetupColumn("State");
-                        ImGui::TableSetupColumn("Traffic");
-                        ImGui::TableHeadersRow();
+                    } else if (ui::begin_data_table("##sessions", 4)) {
+                        ui::data_table_headers({"Endpoint", "Name", "State", "Traffic"});
                         for (auto const& s : sessions) {
                             ImGui::TableNextRow();
                             ImGui::TableNextColumn(); ImGui::TextUnformatted(s.endpoint_id.c_str());
                             ImGui::TableNextColumn(); ImGui::TextUnformatted(s.display_name.c_str());
-                            ImGui::TableNextColumn(); ImGui::TextUnformatted(s.authenticated ? "online" : "pending");
+                            ImGui::TableNextColumn();
+                            ui::status_pill(s.authenticated ? "Online" : "Pending",
+                                            s.authenticated ? c.success : c.warning);
                             ImGui::TableNextColumn();
                             ImGui::Text("%llu / %llu",
                                         (unsigned long long)s.bytes_in,
                                         (unsigned long long)s.bytes_out);
                         }
-                        ImGui::EndTable();
+                        ui::end_data_table();
                     }
                 }
             }

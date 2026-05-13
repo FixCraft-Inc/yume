@@ -100,11 +100,11 @@ public:
             ui::section_label("Connection");
             if (ImGui::BeginTable("##security_toggles", 3, ImGuiTableFlags_SizingStretchSame)) {
                 ImGui::TableNextColumn();
-                ImGui::Checkbox("Inner crypto", &cfg_.inner_crypto);
+                ui::checkbox("Inner crypto", &cfg_.inner_crypto);
                 ImGui::TableNextColumn();
-                ImGui::Checkbox("Heavy KDF", &cfg_.inner_heavy);
+                ui::checkbox("Heavy KDF", &cfg_.inner_heavy);
                 ImGui::TableNextColumn();
-                ImGui::Checkbox("Key hopping", &cfg_.inner_hop);
+                ui::checkbox("Key hopping", &cfg_.inner_hop);
                 ImGui::EndTable();
             }
 
@@ -122,7 +122,9 @@ public:
             int_input("SOCKS5 port (0 = auto)", cfg_.socks_port);
 
             ImGui::Dummy(ImVec2(0, 8 * sc));
-            if (ImGui::CollapsingHeader("TLS trust and advanced transport")) {
+            advanced_open_ = ui::disclosure_header("TLS trust and advanced transport",
+                                                   advanced_open_);
+            if (advanced_open_) {
                 text_input("Anonym public key override",
                            cfg_.anonym_pubkey,
                            "optional PEM; built-in key is default");
@@ -136,16 +138,18 @@ public:
                     cfg_.hop_interval_ms = hop < 0 ? 0u : (std::uint32_t)hop;
                 }
                 text_input("PQ public key", cfg_.pq_public_key);
-                ImGui::Checkbox("TLS stealth", &cfg_.tls_stealth_enabled);
+                ui::checkbox("TLS stealth", &cfg_.tls_stealth_enabled);
                 const char* profiles[] = {"chrome", "firefox", "safari"};
                 int prof_idx = 0;
                 for (int i = 0; i < 3; ++i) {
                     if (cfg_.tls_stealth_profile == profiles[i]) { prof_idx = i; break; }
                 }
-                if (ImGui::Combo("TLS profile", &prof_idx, profiles, 3)) {
+                ui::field_label("TLS profile");
+                ImGui::SetNextItemWidth(ui::form_width(320));
+                if (ImGui::Combo("##tls_profile", &prof_idx, profiles, 3)) {
                     cfg_.tls_stealth_profile = profiles[prof_idx];
                 }
-                ImGui::Checkbox("Rotate profile", &cfg_.tls_stealth_rotate);
+                ui::checkbox("Rotate profile", &cfg_.tls_stealth_rotate);
                 int_input("IO threads (0 = auto)", cfg_.io_threads);
 
                 const char* relay_modes[] = {"untrusted", "trusted", "operator"};
@@ -153,16 +157,18 @@ public:
                 for (int i = 0; i < 3; ++i) {
                     if (cfg_.relay_mode == relay_modes[i]) { rm_idx = i; break; }
                 }
-                if (ImGui::Combo("Relay mode", &rm_idx, relay_modes, 3)) {
+                ui::field_label("Relay mode");
+                ImGui::SetNextItemWidth(ui::form_width(320));
+                if (ImGui::Combo("##relay_mode", &rm_idx, relay_modes, 3)) {
                     cfg_.relay_mode = relay_modes[rm_idx];
                 }
                 if (ImGui::BeginTable("##relay_flags", 3, ImGuiTableFlags_SizingStretchSame)) {
                     ImGui::TableNextColumn();
-                    ImGui::Checkbox("Allow chat", &cfg_.allow_chat);
+                    ui::checkbox("Allow chat", &cfg_.allow_chat);
                     ImGui::TableNextColumn();
-                    ImGui::Checkbox("Allow file", &cfg_.allow_file);
+                    ui::checkbox("Allow file", &cfg_.allow_file);
                     ImGui::TableNextColumn();
-                    ImGui::Checkbox("Allow bytes", &cfg_.allow_bytes);
+                    ui::checkbox("Allow bytes", &cfg_.allow_bytes);
                     ImGui::EndTable();
                 }
             }
@@ -231,6 +237,7 @@ public:
 private:
     client::ClientConfig cfg_{};
     bool loaded_{false};
+    bool advanced_open_{false};
     std::string last_message_;
     bool last_error_{false};
 };

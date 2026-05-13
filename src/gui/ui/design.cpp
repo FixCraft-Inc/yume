@@ -483,6 +483,201 @@ void end_card() {
     ImGui::PopStyleColor(2);
 }
 
+bool checkbox(char const* label, bool* value) {
+    if (!value) return false;
+    ImGui::PushID(label);
+
+    ImFont* font = g_fonts.body ? g_fonts.body : ImGui::GetFont();
+    const float font_size = font ? font->FontSize : ImGui::GetFontSize();
+    ImVec2 text_size = font
+        ? font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, label)
+        : ImGui::CalcTextSize(label);
+
+    const float box = px(20);
+    const float gap = px(12);
+    const float row_h = std::max(box, text_size.y) + px(8);
+    const float row_w = box + gap + text_size.x + px(2);
+
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+    bool pressed = ImGui::InvisibleButton("##cb", ImVec2(row_w, row_h));
+    if (pressed) *value = !*value;
+    const bool hovered = ImGui::IsItemHovered();
+    const bool held = ImGui::IsItemActive();
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float by = pos.y + (row_h - box) * 0.5f;
+    const ImVec2 box_a(pos.x, by);
+    const ImVec2 box_b(pos.x + box, by + box);
+    const float r = px(6);
+
+    const ImVec4 accent = held ? rgb(0xC74D13)
+                               : (hovered ? g_colors.accent_hover : g_colors.accent);
+    if (*value) {
+        dl->AddRectFilled(box_a, box_b, color_u32(accent), r);
+        const float w = box;
+        const float t = std::max(1.5f, px(2.1f));
+        // Centred two-segment checkmark.
+        const ImVec2 p0(box_a.x + w * 0.22f, box_a.y + w * 0.55f);
+        const ImVec2 p1(box_a.x + w * 0.43f, box_a.y + w * 0.74f);
+        const ImVec2 p2(box_a.x + w * 0.78f, box_a.y + w * 0.32f);
+        dl->AddLine(p0, p1, IM_COL32_WHITE, t);
+        dl->AddLine(p1, p2, IM_COL32_WHITE, t);
+    } else {
+        if (hovered) {
+            dl->AddRectFilled(box_a, box_b,
+                              color_u32(alpha(g_colors.accent, 0.10f)), r);
+        }
+        const ImVec4 stroke = hovered ? g_colors.accent : g_colors.outline;
+        dl->AddRect(box_a, box_b, color_u32(stroke), r, 0,
+                    std::max(1.0f, px(1.6f)));
+    }
+
+    dl->AddText(font, font_size,
+                ImVec2(box_b.x + gap,
+                       pos.y + (row_h - text_size.y) * 0.5f),
+                color_u32(g_colors.text), label);
+
+    ImGui::PopID();
+    return pressed;
+}
+
+int segmented_control(char const* id,
+                      char const* const* labels,
+                      int count,
+                      int current) {
+    if (count <= 0 || !labels) return current;
+    ImGui::PushID(id);
+
+    ImFont* font = g_fonts.strong ? g_fonts.strong : ImGui::GetFont();
+    const float font_size = font ? font->FontSize : ImGui::GetFontSize();
+    const float seg_h = px(40);
+    const float h_pad = px(20);
+
+    // Width: equally split available area for a balanced look, but ensure
+    // each segment is wide enough to fit its label.
+    float min_seg_w = px(96);
+    for (int i = 0; i < count; ++i) {
+        ImVec2 ts = font
+            ? font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, labels[i])
+            : ImGui::CalcTextSize(labels[i]);
+        min_seg_w = std::max(min_seg_w, ts.x + h_pad * 2.0f);
+    }
+    const float avail = std::max(min_seg_w * count,
+                                 ImGui::GetContentRegionAvail().x);
+    const float seg_w = avail / static_cast<float>(count);
+
+    ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImVec2 size(seg_w * count, seg_h);
+    ImGui::InvisibleButton("##container", size);
+    bool container_hovered = ImGui::IsItemHovered();
+    (void)container_hovered;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float radius = seg_h * 0.5f;
+    // Container background + outline.
+    dl->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + size.y),
+                      color_u32(g_colors.surface_high), radius);
+    dl->AddRect(origin, ImVec2(origin.x + size.x, origin.y + size.y),
+                color_u32(g_colors.outline), radius, 0, 1.0f);
+
+    int new_current = current;
+    for (int i = 0; i < count; ++i) {
+        ImVec2 seg_a(origin.x + seg_w * i, origin.y);
+        ImVec2 seg_b(seg_a.x + seg_w, origin.y + seg_h);
+
+        // Hit-test inside the container's already-consumed area.
+        ImVec2 mouse = ImGui::GetMousePos();
+        const bool in_seg = mouse.x >= seg_a.x && mouse.x < seg_b.x &&
+                            mouse.y >= seg_a.y && mouse.y < seg_b.y;
+        const bool active = (i == current);
+        const bool hovered = container_hovered && in_seg;
+        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            new_current = i;
+        }
+
+        if (active) {
+            // Active pill: rounded fill, slightly inset.
+            const float inset = px(3);
+            ImVec2 pa(seg_a.x + inset, seg_a.y + inset);
+            ImVec2 pb(seg_b.x - inset, seg_b.y - inset);
+            const float pill_r = (pb.y - pa.y) * 0.5f;
+            dl->AddRectFilled(pa, pb,
+                              color_u32(g_colors.accent), pill_r);
+        } else if (hovered) {
+            const float inset = px(3);
+            ImVec2 pa(seg_a.x + inset, seg_a.y + inset);
+            ImVec2 pb(seg_b.x - inset, seg_b.y - inset);
+            const float pill_r = (pb.y - pa.y) * 0.5f;
+            dl->AddRectFilled(pa, pb,
+                              color_u32(alpha(g_colors.accent, 0.10f)),
+                              pill_r);
+        }
+
+        ImVec2 ts = font
+            ? font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, labels[i])
+            : ImGui::CalcTextSize(labels[i]);
+        ImU32 text_color = color_u32(active ? rgb(0xFFFFFF)
+                                            : (hovered ? g_colors.text
+                                                       : g_colors.muted));
+        dl->AddText(font, font_size,
+                    ImVec2(seg_a.x + (seg_w - ts.x) * 0.5f,
+                           seg_a.y + (seg_h - ts.y) * 0.5f),
+                    text_color, labels[i]);
+    }
+
+    ImGui::PopID();
+    return new_current;
+}
+
+bool begin_data_table(char const* id, int columns, ImGuiTableFlags extra_flags) {
+    // Material 3 data tables: no harsh borders, generous row height, subtle
+    // zebra striping, accent on hover. We override a handful of style vars
+    // and colours just for the table scope; end_data_table() pops them.
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(px(14), px(12)));
+    ImGui::PushStyleColor(ImGuiCol_TableHeaderBg,
+                          alpha(g_colors.surface_high, 0.55f));
+    ImGui::PushStyleColor(ImGuiCol_TableBorderStrong,
+                          alpha(g_colors.outline, 0.0f));
+    ImGui::PushStyleColor(ImGuiCol_TableBorderLight,
+                          alpha(g_colors.outline, 0.55f));
+    ImGui::PushStyleColor(ImGuiCol_TableRowBg, alpha(rgb(0x000000), 0.0f));
+    ImGui::PushStyleColor(ImGuiCol_TableRowBgAlt,
+                          alpha(g_colors.surface_high, 0.38f));
+
+    const ImGuiTableFlags base =
+        ImGuiTableFlags_RowBg |
+        ImGuiTableFlags_BordersInnerH |
+        ImGuiTableFlags_NoBordersInBodyUntilResize |
+        ImGuiTableFlags_SizingStretchProp;
+    const bool ok = ImGui::BeginTable(id, columns, base | extra_flags);
+    if (!ok) {
+        ImGui::PopStyleColor(5);
+        ImGui::PopStyleVar();
+    }
+    return ok;
+}
+
+void data_table_header_row() {
+    if (g_fonts.strong) ImGui::PushFont(g_fonts.strong);
+    ImGui::PushStyleColor(ImGuiCol_Text, g_colors.muted);
+    ImGui::TableHeadersRow();
+    ImGui::PopStyleColor();
+    if (g_fonts.strong) ImGui::PopFont();
+}
+
+void data_table_headers(std::initializer_list<char const*> headers) {
+    for (auto const* h : headers) {
+        ImGui::TableSetupColumn(h ? h : "");
+    }
+    data_table_header_row();
+}
+
+void end_data_table() {
+    ImGui::EndTable();
+    ImGui::PopStyleColor(5);
+    ImGui::PopStyleVar();
+}
+
 ImVec2 status_pill(char const* text, ImVec4 color) {
     ImFont* font = g_fonts.strong ? g_fonts.strong : ImGui::GetFont();
     const float font_size = font ? font->FontSize : ImGui::GetFontSize();

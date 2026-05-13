@@ -58,7 +58,7 @@ public:
         ImGui::InputTextWithHint("##filter", "filter text",
                                  text_filter_, sizeof(text_filter_));
         ImGui::SameLine();
-        ImGui::Checkbox("Live tail", &live_tail_);
+        ui::checkbox("Live tail", &live_tail_);
         ImGui::SameLine();
         if (ImGui::Button("Clear")) {
             facade::LogSink::instance().clear();
@@ -70,15 +70,14 @@ public:
 
         ImGui::BeginChild("##log_scroll", ImVec2(0, 0), ImGuiChildFlags_Border);
         if (ui::fonts().mono) ImGui::PushFont(ui::fonts().mono);
-        if (ImGui::BeginTable("##logs", 4,
-                              ImGuiTableFlags_RowBg |
-                              ImGuiTableFlags_Resizable |
-                              ImGuiTableFlags_ScrollY)) {
-            ImGui::TableSetupColumn("time", ImGuiTableColumnFlags_WidthFixed, 100);
-            ImGui::TableSetupColumn("level", ImGuiTableColumnFlags_WidthFixed, 70);
-            ImGui::TableSetupColumn("component", ImGuiTableColumnFlags_WidthFixed, 140);
-            ImGui::TableSetupColumn("message");
-            ImGui::TableHeadersRow();
+        if (ui::begin_data_table("##logs", 4,
+                                  ImGuiTableFlags_Resizable |
+                                  ImGuiTableFlags_ScrollY)) {
+            ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 100);
+            ImGui::TableSetupColumn("Level", ImGuiTableColumnFlags_WidthFixed, 70);
+            ImGui::TableSetupColumn("Component", ImGuiTableColumnFlags_WidthFixed, 140);
+            ImGui::TableSetupColumn("Message");
+            ui::data_table_header_row();
 
             ImGuiListClipper clipper;
             // Build a filtered index first so the clipper sees stable rows.
@@ -115,7 +114,7 @@ public:
                 }
             }
             if (live_tail_) ImGui::SetScrollHereY(1.0f);
-            ImGui::EndTable();
+            ui::end_data_table();
         }
         if (ui::fonts().mono) ImGui::PopFont();
         ImGui::EndChild();

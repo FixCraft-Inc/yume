@@ -55,16 +55,14 @@ public:
 
         ImGui::Dummy(ImVec2(0, 8 * sc));
         if (ui::begin_auto_card("##security_materials")) {
-            if (ImGui::BeginTabBar("##security_tabs", ImGuiTabBarFlags_None)) {
-                if (ImGui::BeginTabItem("Anonym CAs")) {
-                    render_material_tab(ctx, sm::MaterialType::AnonymCa);
-                    ImGui::EndTabItem();
-                }
-                if (ImGui::BeginTabItem("Auth keys")) {
-                    render_material_tab(ctx, sm::MaterialType::AuthKey);
-                    ImGui::EndTabItem();
-                }
-                ImGui::EndTabBar();
+            static char const* const kTabs[] = {"Anonym CAs", "Auth keys"};
+            active_tab_ = ui::segmented_control(
+                "##security_tabs", kTabs, 2, active_tab_);
+            ImGui::Dummy(ImVec2(0, 14 * sc));
+            if (active_tab_ == 0) {
+                render_material_tab(ctx, sm::MaterialType::AnonymCa);
+            } else {
+                render_material_tab(ctx, sm::MaterialType::AuthKey);
             }
             if (!last_message_.empty()) {
                 ImGui::Dummy(ImVec2(0, 6 * sc));
@@ -288,6 +286,7 @@ private:
     client::ClientConfig cfg_{};
     std::vector<sm::MaterialSummary> cas_;
     std::vector<sm::MaterialSummary> keys_;
+    int active_tab_{0};
     char import_name_[160]{};
     char import_path_[512]{};
     char import_text_[8192]{};

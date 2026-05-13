@@ -56,6 +56,31 @@ bool secondary_button(char const* label, ImVec2 size = ImVec2(0, 0));
 bool quiet_button(char const* label, ImVec2 size = ImVec2(0, 0));
 bool disclosure_header(char const* label, bool open);
 
+// Modern check control: rounded accent-filled box on the left, label on the
+// right. Whole row clickable. Returns true on the frame the value flipped.
+bool checkbox(char const* label, bool* value);
+
+// Pill / segmented-button tab control. Returns the (possibly-changed) active
+// index. Renders as a single rounded container with one segment highlighted.
+int segmented_control(char const* id,
+                      char const* const* labels,
+                      int count,
+                      int current);
+
+// Cleaner replacement for ImGui::BeginTable for data tables. Pushes the
+// design-system colours and spacing; pair with end_data_table().
+bool begin_data_table(char const* id,
+                      int columns,
+                      ImGuiTableFlags extra_flags = 0);
+
+// Convenience: setup N columns with the given labels and emit a styled
+// header row. Call inside begin_data_table() / end_data_table().
+void data_table_headers(std::initializer_list<char const*> headers);
+// Emit only the styled header row. Use when the caller wants to set up
+// columns manually (e.g. with fixed widths) before headers.
+void data_table_header_row();
+void end_data_table();
+
 bool begin_card(char const* id, ImVec2 size = ImVec2(0, 0));
 bool begin_auto_card(char const* id, float width = 0.0f);
 void end_card();

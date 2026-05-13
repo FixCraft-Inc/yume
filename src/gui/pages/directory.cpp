@@ -45,22 +45,17 @@ public:
         }
         ImGui::Dummy(ImVec2(0, 8 * sc));
 
-        if (ImGui::BeginTable("##directory", 6,
-                              ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
-                              ImGuiTableFlags_Resizable)) {
-            ImGui::TableSetupColumn("Name");
-            ImGui::TableSetupColumn("Endpoint ID");
-            ImGui::TableSetupColumn("Kind");
-            ImGui::TableSetupColumn("Relay");
-            ImGui::TableSetupColumn("Platform");
-            ImGui::TableSetupColumn("Capabilities");
-            ImGui::TableHeadersRow();
+        if (ui::begin_data_table("##directory", 6)) {
+            ui::data_table_headers({"Name", "Endpoint ID", "Kind",
+                                    "Relay", "Platform", "Capabilities"});
             for (auto const& entry : entries_) {
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
-                ImGui::TextUnformatted(entry.display_name.empty() ? "-" : entry.display_name.c_str());
+                ImGui::TextUnformatted(entry.display_name.empty() ? "—" : entry.display_name.c_str());
                 ImGui::TableNextColumn();
+                if (ui::fonts().mono) ImGui::PushFont(ui::fonts().mono);
                 ImGui::TextUnformatted(entry.endpoint_id.c_str());
+                if (ui::fonts().mono) ImGui::PopFont();
                 ImGui::TableNextColumn();
                 ImGui::TextUnformatted(entry.endpoint_kind.c_str());
                 ImGui::TableNextColumn();
@@ -70,15 +65,15 @@ public:
                 if (!entry.client_variant.empty()) {
                     platform += platform.empty() ? entry.client_variant : "/" + entry.client_variant;
                 }
-                ImGui::TextUnformatted(platform.empty() ? "-" : platform.c_str());
+                ImGui::TextUnformatted(platform.empty() ? "—" : platform.c_str());
                 ImGui::TableNextColumn();
                 std::string caps;
                 if (entry.allow_chat) caps += "chat";
                 if (entry.allow_file) caps += caps.empty() ? "file" : ", file";
                 if (entry.allow_bytes) caps += caps.empty() ? "bytes" : ", bytes";
-                ImGui::TextUnformatted(caps.empty() ? "-" : caps.c_str());
+                ImGui::TextUnformatted(caps.empty() ? "—" : caps.c_str());
             }
-            ImGui::EndTable();
+            ui::end_data_table();
         }
     }
 

@@ -140,27 +140,25 @@ public:
             ImGui::Dummy(ImVec2(0, 6 * sc));
             if (entries_.empty()) {
                 ui::muted_text("No authorized public keys loaded.");
-            } else if (ImGui::BeginTable("##keys_table", 4,
-                                         ImGuiTableFlags_RowBg |
-                                             ImGuiTableFlags_BordersInnerH |
-                                             ImGuiTableFlags_Resizable)) {
-                ImGui::TableSetupColumn("fingerprint");
-                ImGui::TableSetupColumn("alias");
-                ImGui::TableSetupColumn("algorithm");
-                ImGui::TableSetupColumn("action");
-                ImGui::TableHeadersRow();
+            } else if (ui::begin_data_table("##keys_table", 4)) {
+                ui::data_table_headers({"Fingerprint", "Alias", "Algorithm", ""});
+                if (ui::fonts().mono) ImGui::PushFont(ui::fonts().mono);
                 for (auto const& e : entries_) {
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn();
                     // Show short fingerprint (first 16 chars) for readability.
                     ImGui::TextUnformatted(e.fingerprint.substr(0, 16).c_str());
                     ImGui::TableNextColumn();
-                    ImGui::TextUnformatted(e.alias.empty() ? "-" : e.alias.c_str());
+                    if (ui::fonts().body) ImGui::PushFont(ui::fonts().body);
+                    ImGui::TextUnformatted(e.alias.empty() ? "—" : e.alias.c_str());
+                    if (ui::fonts().body) ImGui::PopFont();
                     ImGui::TableNextColumn();
+                    if (ui::fonts().body) ImGui::PushFont(ui::fonts().body);
                     ImGui::TextUnformatted(e.algorithm.c_str());
+                    if (ui::fonts().body) ImGui::PopFont();
                     ImGui::TableNextColumn();
                     ImGui::PushID(e.fingerprint.c_str());
-                    if (ui::quiet_button("Remove", ImVec2(ui::button_width("Remove", 104), 38 * sc))) {
+                    if (ui::quiet_button("Remove", ImVec2(ui::button_width("Remove", 104), 36 * sc))) {
                         std::string err;
                         if (facade::keys::remove_authorized(
                                 auth_keys_path_, meta_path_, e.fingerprint, &err)) {
@@ -176,7 +174,8 @@ public:
                     }
                     ImGui::PopID();
                 }
-                ImGui::EndTable();
+                if (ui::fonts().mono) ImGui::PopFont();
+                ui::end_data_table();
             }
         }
         ui::end_card();

@@ -25,7 +25,7 @@ public:
 
         ui::section_label("Appearance");
         bool dark = ctx.dark_mode;
-        if (ImGui::Checkbox("Use dark theme", &dark)) {
+        if (ui::checkbox("Use dark theme", &dark)) {
             ctx.dark_mode = dark;
             theme::apply_material3(dark ? theme::Mode::Dark : theme::Mode::Light);
             ui::apply_style(ui::scale(), dark);

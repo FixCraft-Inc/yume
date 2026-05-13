@@ -308,12 +308,21 @@ void section_label(char const* label) {
 }
 
 void field_label(char const* label) {
-    if (g_fonts.strong) ImGui::PushFont(g_fonts.strong);
+    // Material 3 outlined-text-field labels are smaller than body text and
+    // sit tight above the input. Using the strong (body-sized) font here
+    // made the label look like its own paragraph and pushed the input
+    // visually below — the gap read as "label is a bit up".
+    if (g_fonts.small) ImGui::PushFont(g_fonts.small);
     ImGui::PushStyleColor(ImGuiCol_Text, g_colors.muted);
-    ImGui::TextWrapped("%s", label);
+    // No-wrap label: TextWrapped silently breaks short labels at narrow
+    // table cells and shifts everything below it by a line.
+    ImGui::TextUnformatted(label);
     ImGui::PopStyleColor();
-    if (g_fonts.strong) ImGui::PopFont();
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - px(2));
+    if (g_fonts.small) ImGui::PopFont();
+    // Subtle negative spacing so the label and input live as one widget.
+    // Keep it small so a row of side-by-side fields stays vertically
+    // aligned even when their labels differ in length.
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - px(4));
 }
 
 void muted_text(char const* fmt, ...) {
@@ -510,9 +519,17 @@ bool checkbox(char const* label, bool* value) {
         ? font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, label)
         : ImGui::CalcTextSize(label);
 
-    const float box = px(20);
+    // Slightly larger box with deeper rounding so it reads as a modern
+    // "rounded square" rather than a sharp Win9x checkbox. The radius is
+    // ~40% of the box edge — between a square and a pill.
+    const float box = px(22);
+    const float r   = px(9);
     const float gap = px(12);
-    const float row_h = std::max(box, text_size.y) + px(8);
+    // Use the font's metric line height (not the bounding box) so the
+    // checkbox row sits on the same baseline as adjacent text inside a
+    // SameLine() group. text_size.y is already the line height for one
+    // line of body font.
+    const float row_h = std::max(box, font_size) + px(4);
     const float row_w = box + gap + text_size.x + px(2);
 
     ImVec2 pos = ImGui::GetCursorScreenPos();
@@ -525,35 +542,46 @@ bool checkbox(char const* label, bool* value) {
     const float by = pos.y + (row_h - box) * 0.5f;
     const ImVec2 box_a(pos.x, by);
     const ImVec2 box_b(pos.x + box, by + box);
-    const float r = px(6);
 
-    const ImVec4 accent = held ? rgb(0xC74D13)
-                               : (hovered ? g_colors.accent_hover : g_colors.accent);
+    // Press state derives from the accent so it stays consistent across
+    // both themes (previously hardcoded orange).
+    const ImVec4 accent_pressed(g_colors.accent.x * 0.85f,
+                                g_colors.accent.y * 0.85f,
+                                g_colors.accent.z * 0.85f, 1.0f);
+    const ImVec4 accent = held ? accent_pressed
+                               : (hovered ? g_colors.accent_hover
+                                          : g_colors.accent);
     if (*value) {
         dl->AddRectFilled(box_a, box_b, color_u32(accent), r);
+        // Two-segment checkmark with a thicker stroke; coordinates moved
+        // slightly so the visual centre of the tick sits in the middle of
+        // the box (the previous coords skewed it bottom-left).
         const float w = box;
-        const float t = std::max(1.5f, px(2.1f));
-        // Centred two-segment checkmark. on_accent reads on pink/plum;
-        // a pure white check blends on the light pink accent.
+        const float t = std::max(1.8f, px(2.4f));
         const ImU32 check = color_u32(g_colors.on_accent);
-        const ImVec2 p0(box_a.x + w * 0.22f, box_a.y + w * 0.55f);
-        const ImVec2 p1(box_a.x + w * 0.43f, box_a.y + w * 0.74f);
-        const ImVec2 p2(box_a.x + w * 0.78f, box_a.y + w * 0.32f);
+        const ImVec2 p0(box_a.x + w * 0.24f, box_a.y + w * 0.52f);
+        const ImVec2 p1(box_a.x + w * 0.44f, box_a.y + w * 0.72f);
+        const ImVec2 p2(box_a.x + w * 0.78f, box_a.y + w * 0.30f);
         dl->AddLine(p0, p1, check, t);
         dl->AddLine(p1, p2, check, t);
     } else {
+        // Subtle accent halo on hover so the checkbox visibly responds
+        // before the click.
         if (hovered) {
             dl->AddRectFilled(box_a, box_b,
-                              color_u32(alpha(g_colors.accent, 0.10f)), r);
+                              color_u32(alpha(g_colors.accent, 0.12f)), r);
         }
         const ImVec4 stroke = hovered ? g_colors.accent : g_colors.outline;
         dl->AddRect(box_a, box_b, color_u32(stroke), r, 0,
-                    std::max(1.0f, px(1.6f)));
+                    std::max(1.2f, px(1.8f)));
     }
 
+    // Centre the label on the box's vertical midpoint. Using font_size as
+    // the height yields a tighter baseline match than using text_size.y
+    // (which includes leading from CalcTextSizeA).
     dl->AddText(font, font_size,
                 ImVec2(box_b.x + gap,
-                       pos.y + (row_h - text_size.y) * 0.5f),
+                       box_a.y + (box - font_size) * 0.5f),
                 color_u32(g_colors.text), label);
 
     ImGui::PopID();
@@ -701,26 +729,70 @@ bool combo(char const* id, int* current,
     bool changed = false;
     if (ImGui::BeginCombo("##combo", items[*current],
                           ImGuiComboFlags_HeightLargest)) {
+        // We render each row ourselves rather than using Selectable so we
+        // can give it a rounded hover/select background, vertically
+        // centred text, and the same body font as the preview — the
+        // default Selectable has square corners, top-aligned text, and
+        // picks up whatever font is active (often the smaller default).
+        ImFont* row_font = g_fonts.body ? g_fonts.body : ImGui::GetFont();
+        const float row_font_size = row_font ? row_font->FontSize : ImGui::GetFontSize();
+        const float row_h     = px(40);
+        const float row_pad_x = px(14);
+        const float row_radius = px(10);
+        const float row_w     = std::max(w, ImGui::GetContentRegionAvail().x);
+
         for (int i = 0; i < count; ++i) {
-            const bool selected = (i == *current);
             ImGui::PushID(i);
-            // Use a Selectable so keyboard nav + hover work cleanly.
-            if (ImGui::Selectable(items[i], selected,
-                                  ImGuiSelectableFlags_None,
-                                  ImVec2(0, px(28)))) {
+            const bool selected = (i == *current);
+            const ImVec2 row_origin = ImGui::GetCursorScreenPos();
+            const bool clicked = ImGui::InvisibleButton("##row",
+                                                        ImVec2(row_w, row_h));
+            const bool hovered = ImGui::IsItemHovered();
+            if (selected) ImGui::SetItemDefaultFocus();
+
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            // Inset the highlight slightly inside the popup so the
+            // rounded corners are visible — without the inset the row
+            // butts up against the popup edge and looks square again.
+            const float inset = px(4);
+            const ImVec2 hl_a(row_origin.x + inset, row_origin.y + px(2));
+            const ImVec2 hl_b(row_origin.x + row_w - inset,
+                              row_origin.y + row_h - px(2));
+            if (selected) {
+                dl->AddRectFilled(hl_a, hl_b,
+                                  color_u32(alpha(g_colors.accent,
+                                                  hovered ? 0.32f : 0.22f)),
+                                  row_radius);
+            } else if (hovered) {
+                dl->AddRectFilled(hl_a, hl_b,
+                                  color_u32(alpha(g_colors.accent, 0.14f)),
+                                  row_radius);
+            }
+
+            // Centre text vertically using font_size (not the bbox), and
+            // left-pad by row_pad_x so it visually aligns with the combo
+            // preview's text.
+            ImVec2 ts = row_font
+                ? row_font->CalcTextSizeA(row_font_size, FLT_MAX, 0.0f, items[i])
+                : ImGui::CalcTextSize(items[i]);
+            (void)ts;  // not used for layout; left for potential right-align
+            dl->AddText(row_font, row_font_size,
+                        ImVec2(row_origin.x + row_pad_x + inset,
+                               row_origin.y + (row_h - row_font_size) * 0.5f),
+                        color_u32(g_colors.text), items[i]);
+
+            // Right-aligned accent dot marker for the selected row.
+            if (selected) {
+                const float cy = row_origin.y + row_h * 0.5f;
+                const float cx = row_origin.x + row_w - inset - px(14);
+                dl->AddCircleFilled(ImVec2(cx, cy), px(3.5f),
+                                    color_u32(g_colors.accent));
+            }
+
+            if (clicked) {
                 *current = i;
                 changed = true;
-            }
-            if (selected) {
-                ImGui::SetItemDefaultFocus();
-                // Draw a tiny accent dot to the right of the selected row.
-                ImDrawList* dl = ImGui::GetWindowDrawList();
-                const ImVec2 r_min = ImGui::GetItemRectMin();
-                const ImVec2 r_max = ImGui::GetItemRectMax();
-                const float cy = (r_min.y + r_max.y) * 0.5f;
-                const float cx = r_max.x - px(14);
-                dl->AddCircleFilled(ImVec2(cx, cy), px(3.0f),
-                                    color_u32(g_colors.accent));
+                ImGui::CloseCurrentPopup();
             }
             ImGui::PopID();
         }

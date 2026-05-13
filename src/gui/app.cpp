@@ -22,12 +22,39 @@
 #include "facade/config_io.hpp"
 #include "facade/log_sink.hpp"
 #include "facade/server_session.hpp"
+#include "facade/status.hpp"
 #include "theme/theme.hpp"
 #include "ui/design.hpp"
 
 namespace yume::gui {
 
 namespace {
+
+// Translate a facade::ConnectionState into the tray overlay's state.
+// Idle/Disconnected map to Off so the tray icon stays clean when nothing
+// is in flight; transient states (Resolving/Connecting/TlsHandshake/etc.)
+// all map to Connecting so the user sees the amber dot until the
+// connection either lands or fails.
+TrayServiceState tray_from_client_state(facade::ConnectionState s) {
+    using S = facade::ConnectionState;
+    switch (s) {
+        case S::Connected:    return TrayServiceState::Connected;
+        case S::Failed:       return TrayServiceState::Error;
+        case S::Idle:
+        case S::Disconnected: return TrayServiceState::Off;
+        // Resolving / Connecting / TlsHandshake / Authenticating /
+        // Reconnecting all read as "Connecting" on the tray.
+        default:              return TrayServiceState::Connecting;
+    }
+}
+
+TrayServiceState tray_from_server(facade::ServerStatus const& s) {
+    if (s.running) return TrayServiceState::Connected;
+    // ServerStatus has no rich state machine yet; treat "not running"
+    // as off. When we add lifecycle events from the runtime controller
+    // we can surface Connecting/Error here.
+    return TrayServiceState::Off;
+}
 
 bool mode_button(char const* label, bool selected, ImVec2 size) {
     auto const& c = ui::colors();
@@ -69,6 +96,45 @@ App::App(Options opts) : opts_(std::move(opts)) {
 
     window_ = std::make_unique<Window>("Yume", 1280, 800);
     install_imgui();
+
+    // System tray. Constructing it does the GTK init + appindicator
+    // setup; if the system has no StatusNotifier host (e.g. raw Sway
+    // without waybar) the tray reports available() == false and the
+    // close-to-tray hook below falls back to plain quit semantics.
+    if (!opts_.no_tray) {
+        tray_ = std::make_unique<Tray>(
+            std::string("Yume"),
+            Tray::Callbacks{
+                /*on_show_window=*/[this]() {
+                    if (window_) {
+                        window_->show();
+                        glfwFocusWindow(window_->raw());
+                    }
+                },
+                /*on_quit=*/[this]() {
+                    quit_requested_ = true;
+                    if (window_) {
+                        glfwSetWindowShouldClose(window_->raw(), GLFW_TRUE);
+                    }
+                },
+            });
+
+        // Intercept the window close button so it hides to tray instead
+        // of quitting. Only installed when the tray actually attached —
+        // otherwise close behaves normally.
+        if (tray_->available() && window_) {
+            glfwSetWindowUserPointer(window_->raw(), this);
+            glfwSetWindowCloseCallback(window_->raw(),
+                [](GLFWwindow* w) {
+                    auto* app = static_cast<App*>(glfwGetWindowUserPointer(w));
+                    if (!app) return;
+                    if (app->quit_requested_) return;  // let close proceed
+                    // Cancel the close and hide instead.
+                    glfwSetWindowShouldClose(w, GLFW_FALSE);
+                    glfwHideWindow(w);
+                });
+        }
+    }
 
     pages_.push_back({make_dashboard_page(), NavScope::Common});
     pages_.push_back({make_connect_page(), NavScope::Client});
@@ -300,15 +366,34 @@ int App::run() {
         window_->hide();
     }
 
+    auto update_tray_status = [this]() {
+        if (!tray_ || !tray_->available()) return;
+        TrayStatus st;
+        if (client_) {
+            st.client = tray_from_client_state(client_->status().state);
+        }
+        if (server_) {
+            st.server = tray_from_server(server_->status());
+        }
+        tray_->set_status(st);
+    };
+
     while (!window_->should_close()) {
+        // GTK side: drain pending events so the user's tray menu clicks
+        // ("Show Yume" / "Quit Yume") fire on this thread. Tray's
+        // pump_events is a cheap no-op when the tray isn't initialised.
+        if (tray_) tray_->pump_events();
+
         if (!window_->visible()) {
-            // No frame work while hidden; wake on events with a long timeout
-            // to keep CPU near zero.
-            window_->wait_events_with_timeout(0.5);
+            // Hidden state — short wait so tray click latency stays under
+            // 100 ms while idle CPU stays near zero.
+            window_->wait_events_with_timeout(0.1);
+            update_tray_status();
             continue;
         }
         window_->poll_events();
 
+        update_tray_status();
         render_frame();
 
         int fbw = 0, fbh = 0;

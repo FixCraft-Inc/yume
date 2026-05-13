@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "pages/page.hpp"
+#include "platform/tray.hpp"
 #include "platform/window.hpp"
 
 namespace yume::facade {
@@ -69,6 +70,7 @@ private:
     std::unique_ptr<Window> window_;
     std::unique_ptr<yume::facade::ClientSession> client_;
     std::unique_ptr<yume::facade::ServerSession> server_;
+    std::unique_ptr<Tray> tray_;
     std::vector<NavPage> pages_;
     Workspace workspace_{Workspace::Client};
     std::size_t active_page_{0};
@@ -77,6 +79,10 @@ private:
     std::size_t shown_page_{static_cast<std::size_t>(-1)};
     bool tray_minimized_{false};
     bool dark_mode_{true};
+    // Set true when the user explicitly chose "Quit Yume" from the tray
+    // menu, so the GLFW close interceptor lets the close go through
+    // instead of hiding to tray.
+    bool quit_requested_{false};
 };
 
 int run_headless(Options const& opts);

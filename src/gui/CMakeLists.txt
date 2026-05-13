@@ -121,6 +121,7 @@ set(YUME_GUI_SOURCES
     app.cpp
     platform/app_icon.cpp
     platform/file_dialog.cpp
+    platform/tray.cpp
     platform/window.cpp
     theme/material3.cpp
     ui/design.cpp
@@ -135,14 +136,16 @@ set(YUME_GUI_SOURCES
     pages/settings.cpp
     pages/tools.cpp
 )
-if(YUME_GUI_TRAY_AVAILABLE)
-    list(APPEND YUME_GUI_SOURCES platform/tray.cpp)
-endif()
+# tray.cpp is always compiled — internally it gates the libayatana-
+# appindicator code path on YUME_GUI_TRAY=1 and falls back to a stub when
+# the dev pkg isn't present, so the Tray class is always available to
+# the App without needing source-level conditionals.
 
 add_executable(yume-gui ${YUME_GUI_SOURCES})
 
 target_include_directories(yume-gui PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nanosvg
     ${CMAKE_CURRENT_BINARY_DIR}/generated)
 

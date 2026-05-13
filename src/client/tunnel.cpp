@@ -35,7 +35,10 @@ Tunnel::Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream)
                     [self, write_data, completion = std::move(completion)](
                         const boost::system::error_code& ec,
                         std::size_t bytes) mutable {
-                        (void)self;
+                        if (!ec && bytes > 0) {
+                            self->bytes_out_.fetch_add(bytes,
+                                std::memory_order_relaxed);
+                        }
                         if (completion) {
                             completion(!ec, bytes, ec ? ec.message() : std::string{});
                         }
@@ -189,6 +192,7 @@ void Tunnel::on_read_tls(const boost::system::error_code& ec, std::size_t bytes)
         return;
     }
     if (bytes > 0) {
+        bytes_in_.fetch_add(bytes, std::memory_order_relaxed);
         core_.feed_tls_bytes(read_buf_.data(), bytes);
     }
     if (!closed_) {

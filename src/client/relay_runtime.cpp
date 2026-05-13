@@ -588,6 +588,10 @@ nlohmann::json RelayRuntime::status_json() const {
     if (latest_lifecycle_.has_value()) {
         json["latest_lifecycle"] = control::lifecycle_event_to_json(*latest_lifecycle_);
     }
+    if (tunnel_) {
+        json["bytes_in"]  = tunnel_->bytes_received();
+        json["bytes_out"] = tunnel_->bytes_sent();
+    }
     return json;
 }
 

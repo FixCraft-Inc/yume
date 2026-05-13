@@ -118,15 +118,29 @@ struct ClientSession::Impl {
     ChatCallback chat_cb;
     std::unordered_map<std::string, std::vector<ChatMessage>> history;
 
-    // Worker thread for the blocking start/stop dance. Owned here so the
-    // destructor can join it deterministically.
     std::thread worker;
     std::atomic<bool> worker_busy{false};
+
+    // Periodic IPC poll task: asks the runtime for bytes_in/bytes_out
+    // every ~500 ms, deltas into the TrafficMeter so the dashboard
+    // graph has live samples to plot. Stopped via stats_stop.
+    std::thread stats_thread;
+    std::atomic<bool> stats_stop{false};
+    std::uint64_t last_bytes_in{0};
+    std::uint64_t last_bytes_out{0};
 
     StatusCallback status_callback() const { return status_cb; }
 
     void join_previous_worker() {
         if (worker.joinable()) worker.join();
+    }
+
+    void stop_stats_thread() {
+        stats_stop.store(true);
+        if (stats_thread.joinable()) stats_thread.join();
+        stats_stop.store(false);
+        last_bytes_in = 0;
+        last_bytes_out = 0;
     }
 };
 
@@ -157,8 +171,7 @@ ClientSession::ClientSession(client::ClientConfig cfg)
 
 ClientSession::~ClientSession() {
     stop();
-    // Wait for any in-flight async start/stop worker to settle so we don't
-    // tear down impl_ while a worker thread is still touching it.
+    impl_->stop_stats_thread();
     impl_->join_previous_worker();
 }
 
@@ -256,6 +269,36 @@ bool ClientSession::start(std::string* err) {
         LogSink::instance().push(std::move(entry));
         if (ok_cb) ok_cb(ok_snap);
 
+        // Spin up the stats-poll thread now that IPC is up. It loops
+        // until stats_stop flips; each pass asks the runtime for
+        // bytes_in/bytes_out and feeds the delta into the meter.
+        if (!impl_->stats_thread.joinable()) {
+            impl_->stats_thread = std::thread([this]() {
+                while (!impl_->stats_stop.load()) {
+                    std::string ipc_err;
+                    auto resp = impl_->runtime.request("runtime.status",
+                        nlohmann::json::object(), &ipc_err, 1500);
+                    if (resp.is_object() && resp.value("ok", false)) {
+                        auto const& r = resp["result"];
+                        const std::uint64_t in  = r.value("bytes_in",  0ULL);
+                        const std::uint64_t out = r.value("bytes_out", 0ULL);
+                        std::uint64_t d_in  = in  > impl_->last_bytes_in
+                            ? in  - impl_->last_bytes_in  : 0ULL;
+                        std::uint64_t d_out = out > impl_->last_bytes_out
+                            ? out - impl_->last_bytes_out : 0ULL;
+                        impl_->last_bytes_in  = in;
+                        impl_->last_bytes_out = out;
+                        if (d_in)  impl_->traffic.record_rx(d_in);
+                        if (d_out) impl_->traffic.record_tx(d_out);
+                    }
+                    impl_->traffic.tick();
+                    for (int i = 0; i < 5 && !impl_->stats_stop.load(); ++i) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    }
+                }
+            });
+        }
+
         impl_->worker_busy.store(false);
     });
 
@@ -277,7 +320,8 @@ void ClientSession::stop() {
     }
     if (cb) cb(snap);
 
-    // Reap any previous worker, then run the blocking stop on a new one.
+    impl_->stop_stats_thread();
+
     impl_->join_previous_worker();
     impl_->worker_busy.store(true);
 

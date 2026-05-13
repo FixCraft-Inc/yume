@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -67,6 +68,13 @@ public:
     void send_exec(uint8_t stream_id, const std::string& command);
     void send_control_json(const nlohmann::json& json);
 
+    // Cumulative wire-level byte counters since this tunnel was opened.
+    // bytes_received() counts TLS reads from the server; bytes_sent()
+    // counts payloads written through async_write. Both are atomic so
+    // the GUI can read them from a polling thread.
+    std::uint64_t bytes_received() const noexcept { return bytes_in_.load(); }
+    std::uint64_t bytes_sent()     const noexcept { return bytes_out_.load(); }
+
 private:
     void read_tls();
     void on_read_tls(const boost::system::error_code& ec, std::size_t bytes);
@@ -81,6 +89,8 @@ private:
     TransportCore core_;
     TunnelCloseHandler close_handler_;
     std::mutex close_handler_mu_;
+    std::atomic<std::uint64_t> bytes_in_{0};
+    std::atomic<std::uint64_t> bytes_out_{0};
     bool closed_{false};
 };
 

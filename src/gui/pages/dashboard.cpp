@@ -130,97 +130,156 @@ public:
         }
         ui::end_card();
 
-        ImGui::Dummy(ImVec2(0, 8 * sc));
-        float traffic_h = ImGui::GetContentRegionAvail().y;
-        traffic_h = traffic_h < 360 * sc ? 360 * sc : traffic_h;
-        if (ui::begin_card("##traffic", ImVec2(0, traffic_h))) {
-            ui::section_label("Traffic");
-            if (ImGui::BeginTable("##stats", 3, ImGuiTableFlags_SizingStretchSame)) {
-                ImGui::TableNextColumn();
-                ui::muted_text("TX");
-                if (ui::fonts().strong) ImGui::PushFont(ui::fonts().strong);
-                ImGui::TextUnformatted(format_bytes(client.bytes_sent).c_str());
-                if (ui::fonts().strong) ImGui::PopFont();
-                ImGui::SameLine(0.0f, 8 * sc);
-                ImGui::TextColored(c.muted, "%s", format_rate(client.tx_rate_bps).c_str());
+        // Per-side traffic card. Only show the ones whose runtime is
+        // running, so the dashboard stays uncluttered when only one
+        // half of the app is active.
+        const bool client_running = ctx.client && ctx.client->running();
+        const bool server_running = ctx.server && ctx.server->running();
 
-                ImGui::TableNextColumn();
-                ui::muted_text("RX");
-                if (ui::fonts().strong) ImGui::PushFont(ui::fonts().strong);
-                ImGui::TextUnformatted(format_bytes(client.bytes_received).c_str());
-                if (ui::fonts().strong) ImGui::PopFont();
-                ImGui::SameLine(0.0f, 8 * sc);
-                ImGui::TextColored(c.muted, "%s", format_rate(client.rx_rate_bps).c_str());
+        if (client_running) {
+            ImGui::Dummy(ImVec2(0, 8 * sc));
+            render_traffic_card(
+                "##traffic_client",
+                "Client traffic",
+                client.bytes_sent, client.bytes_received,
+                client.tx_rate_bps, client.rx_rate_bps,
+                ctx.client ? &ctx.client->traffic() : nullptr,
+                /*show_profile_meta=*/true, client, sc);
+        }
+        if (server_running) {
+            ImGui::Dummy(ImVec2(0, 8 * sc));
+            render_traffic_card(
+                "##traffic_server",
+                "Server traffic",
+                server.bytes_out, server.bytes_in,
+                0.0, 0.0,
+                ctx.server ? &ctx.server->traffic() : nullptr,
+                /*show_profile_meta=*/false, client, sc);
+        }
+        if (!client_running && !server_running) {
+            ImGui::Dummy(ImVec2(0, 8 * sc));
+            if (ui::begin_card("##traffic_idle", ImVec2(0, 200 * sc))) {
+                const float h = 200 * sc;
+                const float pad = (h - 60 * sc) * 0.5f;
+                if (pad > 0) ImGui::Dummy(ImVec2(0, pad));
+                ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
+                const char* msg = "Start the client or server to see live traffic.";
+                ImVec2 ts = ImGui::CalcTextSize(msg);
+                ImGui::SetCursorPosX((ImGui::GetWindowSize().x - ts.x) * 0.5f);
+                ImGui::TextUnformatted(msg);
+                ImGui::PopStyleColor();
+            }
+            ui::end_card();
+        }
+    }
 
+    void render_traffic_card(char const* id,
+                             char const* title,
+                             std::uint64_t bytes_sent,
+                             std::uint64_t bytes_received,
+                             double tx_rate_bps,
+                             double rx_rate_bps,
+                             facade::TrafficMeter const* meter,
+                             bool show_profile_meta,
+                             facade::ClientStatus const& client,
+                             float sc) {
+        auto const& c = ui::colors();
+        const float card_h = 360 * sc;
+        if (!ui::begin_card(id, ImVec2(0, card_h))) { ui::end_card(); return; }
+
+        ui::section_label(title);
+        if (ImGui::BeginTable("##stats", show_profile_meta ? 3 : 2,
+                              ImGuiTableFlags_SizingStretchSame)) {
+            ImGui::TableNextColumn();
+            ui::muted_text("Upload");
+            if (ui::fonts().strong) ImGui::PushFont(ui::fonts().strong);
+            ImGui::PushStyleColor(ImGuiCol_Text, c.accent);
+            ImGui::TextUnformatted(format_bytes(bytes_sent).c_str());
+            ImGui::PopStyleColor();
+            if (ui::fonts().strong) ImGui::PopFont();
+            ImGui::SameLine(0.0f, 8 * sc);
+            ImGui::TextColored(c.muted, "%s", format_rate(tx_rate_bps).c_str());
+
+            ImGui::TableNextColumn();
+            ui::muted_text("Download");
+            if (ui::fonts().strong) ImGui::PushFont(ui::fonts().strong);
+            ImGui::PushStyleColor(ImGuiCol_Text, c.success);
+            ImGui::TextUnformatted(format_bytes(bytes_received).c_str());
+            ImGui::PopStyleColor();
+            if (ui::fonts().strong) ImGui::PopFont();
+            ImGui::SameLine(0.0f, 8 * sc);
+            ImGui::TextColored(c.muted, "%s", format_rate(rx_rate_bps).c_str());
+
+            if (show_profile_meta) {
                 ImGui::TableNextColumn();
                 ui::muted_text("Profile / Inner");
                 if (ui::fonts().strong) ImGui::PushFont(ui::fonts().strong);
                 ImGui::TextWrapped("%s / %s", client.profile.c_str(),
                                    client.inner_mode.empty() ? "off" : client.inner_mode.c_str());
                 if (ui::fonts().strong) ImGui::PopFont();
-                ImGui::EndTable();
             }
-            ImGui::Dummy(ImVec2(0, 6 * sc));
+            ImGui::EndTable();
+        }
+        ImGui::Dummy(ImVec2(0, 6 * sc));
 
-            float plot_h = traffic_h - 190 * sc;
-            if (plot_h < 160 * sc) plot_h = 160 * sc;
-
-            // Plot when we have samples; otherwise show a centred note
-            // explaining why. The yume runtime doesn't yet expose byte
-            // counters over IPC — they'll start showing up automatically
-            // once the runtime gains a stats op.
-            bool have_samples = false;
-            std::vector<double> xs, tx, rx;
-            if (ctx.client) {
-                auto samples = ctx.client->traffic().history();
-                if (!samples.empty()) {
-                    have_samples = true;
-                    const auto t0 = samples.front().t;
-                    xs.reserve(samples.size());
-                    tx.reserve(samples.size());
-                    rx.reserve(samples.size());
-                    for (auto const& s : samples) {
-                        xs.push_back(std::chrono::duration<double>(s.t - t0).count());
-                        tx.push_back(s.tx_bps);
-                        rx.push_back(s.rx_bps);
-                    }
+        const float plot_h = card_h - 170 * sc;
+        bool have_samples = false;
+        std::vector<double> xs, tx, rx;
+        if (meter) {
+            auto samples = meter->history();
+            if (!samples.empty()) {
+                have_samples = true;
+                const auto t0 = samples.front().t;
+                xs.reserve(samples.size());
+                tx.reserve(samples.size());
+                rx.reserve(samples.size());
+                for (auto const& s : samples) {
+                    xs.push_back(std::chrono::duration<double>(s.t - t0).count());
+                    tx.push_back(s.tx_bps);
+                    rx.push_back(s.rx_bps);
                 }
             }
+        }
 
-            if (have_samples) {
-                if (ImPlot::BeginPlot("##traffic_plot", ImVec2(-1, plot_h),
-                                      ImPlotFlags_NoLegend | ImPlotFlags_NoBoxSelect)) {
-                    ImPlot::SetupAxis(ImAxis_X1, "s",
-                                      ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_NoTickLabels);
-                    ImPlot::SetupAxis(ImAxis_Y1, "B/s", ImPlotAxisFlags_AutoFit);
-                    ImPlot::PlotLine("tx", xs.data(), tx.data(), (int)xs.size());
-                    ImPlot::PlotLine("rx", xs.data(), rx.data(), (int)xs.size());
-                    ImPlot::EndPlot();
-                }
-            } else {
-                ImGui::PushStyleColor(ImGuiCol_ChildBg,
-                                      ImVec4(c.surface_high.x, c.surface_high.y,
-                                             c.surface_high.z, 0.35f));
-                ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12 * sc);
-                ImGui::BeginChild("##traffic_placeholder", ImVec2(-1, plot_h),
-                                  ImGuiChildFlags_AlwaysUseWindowPadding,
-                                  ImGuiWindowFlags_NoScrollbar);
-                const float pad = (plot_h - 56 * sc) * 0.5f;
-                if (pad > 0) ImGui::Dummy(ImVec2(0, pad));
-                ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
-                const char* msg = "Live traffic graph arrives in a follow-up release.";
-                ImVec2 ts = ImGui::CalcTextSize(msg);
-                ImGui::SetCursorPosX((ImGui::GetWindowSize().x - ts.x) * 0.5f);
-                ImGui::TextUnformatted(msg);
-                const char* sub = "Connect and route traffic through SOCKS to verify the proxy works.";
-                ts = ImGui::CalcTextSize(sub);
-                ImGui::SetCursorPosX((ImGui::GetWindowSize().x - ts.x) * 0.5f);
-                ImGui::TextUnformatted(sub);
-                ImGui::PopStyleColor();
-                ImGui::EndChild();
-                ImGui::PopStyleVar();
-                ImGui::PopStyleColor();
+        if (have_samples) {
+            if (ImPlot::BeginPlot(id == std::string("##traffic_client")
+                                      ? "##plot_client" : "##plot_server",
+                                  ImVec2(-1, plot_h),
+                                  ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText)) {
+                ImPlot::SetupAxis(ImAxis_X1, "s",
+                                  ImPlotAxisFlags_NoLabel |
+                                      ImPlotAxisFlags_NoTickLabels |
+                                      ImPlotAxisFlags_NoGridLines);
+                ImPlot::SetupAxis(ImAxis_Y1, "B/s",
+                                  ImPlotAxisFlags_AutoFit |
+                                      ImPlotAxisFlags_NoLabel);
+                ImPlot::SetupLegend(ImPlotLocation_NorthEast,
+                                    ImPlotLegendFlags_Horizontal);
+
+                ImPlot::SetNextLineStyle(c.accent, 2.0f);
+                ImPlot::SetNextFillStyle(c.accent, 0.18f);
+                ImPlot::PlotShaded("Upload", xs.data(), tx.data(),
+                                   (int)xs.size(), 0.0);
+                ImPlot::SetNextLineStyle(c.accent, 2.0f);
+                ImPlot::PlotLine("Upload", xs.data(), tx.data(), (int)xs.size());
+
+                ImPlot::SetNextLineStyle(c.success, 2.0f);
+                ImPlot::SetNextFillStyle(c.success, 0.18f);
+                ImPlot::PlotShaded("Download", xs.data(), rx.data(),
+                                   (int)xs.size(), 0.0);
+                ImPlot::SetNextLineStyle(c.success, 2.0f);
+                ImPlot::PlotLine("Download", xs.data(), rx.data(), (int)xs.size());
+
+                ImPlot::EndPlot();
             }
+        } else {
+            ImGui::Dummy(ImVec2(0, plot_h * 0.45f));
+            ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
+            const char* msg = "Waiting for traffic samples...";
+            ImVec2 ts = ImGui::CalcTextSize(msg);
+            ImGui::SetCursorPosX((ImGui::GetWindowSize().x - ts.x) * 0.5f);
+            ImGui::TextUnformatted(msg);
+            ImGui::PopStyleColor();
         }
         ui::end_card();
     }

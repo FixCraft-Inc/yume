@@ -3544,8 +3544,8 @@ int Cli::run(int argc, char** argv) {
         const char* home = std::getenv("HOME");
         std::filesystem::path base = (xdg && *xdg)
             ? std::filesystem::path(xdg)
-            : ((home && *home) ? (std::filesystem::path(home) / ".config") : std::filesystem::path("."));
-        cfg.history_dir = (base / "yume" / "history").string();
+            : ((home && *home) ? std::filesystem::path(home) : std::filesystem::path("."));
+        cfg.history_dir = ((home && *home) ? (base / ".yume" / "history") : (base / "history")).string();
     }
     if (cfg.relay_mode != "trusted") {
         cfg.relay_mode = "untrusted";
@@ -3600,7 +3600,7 @@ int Cli::run(int argc, char** argv) {
             exe_dir = std::filesystem::path(self_path).parent_path();
         }
         if (const char* home = std::getenv("HOME"); home && *home) {
-            user_cfg_dir = std::filesystem::path(home) / ".config" / "yume";
+            user_cfg_dir = std::filesystem::path(home) / ".yume";
         }
         auto try_set = [&](const std::filesystem::path& base) {
             if (!cfg.pq_public_key.empty() || base.empty()) {
@@ -4392,7 +4392,7 @@ int Cli::run(int argc, char** argv) {
                 if (target_path.empty()) {
                     const char* home = std::getenv("HOME");
                     if (home && *home) {
-                        std::filesystem::path p = std::filesystem::path(home) / ".config" / "yume" / "pq_public.key";
+                        std::filesystem::path p = std::filesystem::path(home) / ".yume" / "pq_public.key";
                         target_path = p.string();
                     } else {
                         std::filesystem::path tmp;

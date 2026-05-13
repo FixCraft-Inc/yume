@@ -348,15 +348,36 @@ yume_link_atomic_if_needed(yume_transport_core PUBLIC)
 yume_apply_perf_opts(yume_transport_core)
 
 if(NOT YUME_TRANSPORT_CORE_ONLY)
-    add_executable(yumed
-        main_server.cpp
+    # ------------------------------------------------------------------
+    # Server library
+    # ------------------------------------------------------------------
+    # Extracted so both the yumed executable and the optional yume_facade
+    # library (consumed by yume-gui) can link a single source-of-truth
+    # server implementation. The executable below contains only main().
+    add_library(yume_server STATIC
         server/local_runtime.cpp
         server/manager.cpp
         server/auth.cpp
         server/session.cpp
+        server/runtime_controller.cpp
     )
+    target_include_directories(yume_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(yume_server PUBLIC yume_core)
+    yume_apply_perf_opts(yume_server)
+    if(WIN32)
+        target_link_libraries(yume_server PUBLIC ws2_32 mswsock)
+        target_compile_definitions(yume_server PUBLIC
+            WIN32_LEAN_AND_MEAN
+            NOMINMAX
+            WINVER=0x0600
+            _WIN32_WINNT=0x0600
+        )
+    endif()
 
-    target_link_libraries(yumed PRIVATE yume_core)
+    add_executable(yumed
+        main_server.cpp
+    )
+    target_link_libraries(yumed PRIVATE yume_server)
     yume_apply_perf_opts(yumed)
     if(YUME_STATIC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         target_link_options(yumed PRIVATE -static)
@@ -371,20 +392,42 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         )
     endif()
 
-    add_executable(yume
-        main_client.cpp
-        client/cli.cpp
+    # ------------------------------------------------------------------
+    # Client library
+    # ------------------------------------------------------------------
+    # Mirror of yume_server: every client primitive except the CLI/REPL
+    # entrypoint (cli.cpp) lives here so the facade can construct a
+    # client session without duplicating the transport stack. cli.cpp
+    # stays inside the `yume` executable because it contains argv
+    # parsing and the interactive REPL — neither relevant to the GUI.
+    add_library(yume_client_lib STATIC
         client/history.cpp
         client/local_runtime.cpp
         client/relay_secret.cpp
         client/relay_runtime.cpp
+        client/runtime_controller.cpp
         client/tunnel.cpp
         client/socks.cpp
         client/forward.cpp
     )
+    target_include_directories(yume_client_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(yume_client_lib PUBLIC yume_core yume_transport_core)
+    yume_apply_perf_opts(yume_client_lib)
+    if(WIN32)
+        target_link_libraries(yume_client_lib PUBLIC ws2_32 mswsock)
+        target_compile_definitions(yume_client_lib PUBLIC
+            WIN32_LEAN_AND_MEAN
+            NOMINMAX
+            WINVER=0x0600
+            _WIN32_WINNT=0x0600
+        )
+    endif()
 
-    target_link_libraries(yume PRIVATE yume_core)
-    target_link_libraries(yume PRIVATE yume_transport_core)
+    add_executable(yume
+        main_client.cpp
+        client/cli.cpp
+    )
+    target_link_libraries(yume PRIVATE yume_client_lib)
     yume_apply_perf_opts(yume)
     if(YUME_STATIC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         target_link_options(yume PRIVATE -static)
@@ -402,6 +445,16 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     install(TARGETS yume yumed
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
     )
+
+    # ------------------------------------------------------------------
+    # Optional GUI components
+    # ------------------------------------------------------------------
+    # The facade library has no GUI dependency and is small enough to
+    # build unconditionally; the executable is gated on YUME_BUILD_GUI.
+    add_subdirectory(facade)
+    if(YUME_BUILD_GUI)
+        add_subdirectory(gui)
+    endif()
 endif()
 
 enable_testing()

@@ -59,6 +59,51 @@ Client:
 
 For a privileged port 443 on Linux, run `yumed` with `sudo` or grant `cap_net_bind_service`. Cloudflare HTTP-mode proxies will terminate TLS and break YUME. Use Spectrum or another TCP passthrough if you front the daemon with Cloudflare.
 
+## Optional desktop GUI (`yume-gui`)
+
+A Dear ImGui + GLFW desktop application is available in the same tree and is **off** by default. It uses the shared facade library for local server control and starts the real `yume` client runtime in the background, attaching to it through local IPC. The GUI is intended for desktop users; the CLI remains the supported automation surface.
+
+### Build
+
+```bash
+cmake -B build-gui -DYUME_BUILD_GUI=ON
+cmake --build build-gui -j$(nproc)
+./build-gui/bin/yume-gui          # main window
+./build-gui/bin/yume-gui --help   # CLI options
+./build-gui/bin/yume-gui --headless   # facade-only smoke test
+```
+
+`YUME_BUILD_GUI=ON` pulls Dear ImGui, GLFW, and ImPlot via CMake `FetchContent` (pinned tags). On Linux the system tray (minimise-to-tray) is enabled automatically when `libayatana-appindicator3-dev` is present; without it the GUI builds normally but the tray icon is disabled.
+
+System dev packages (Debian/Ubuntu):
+
+```bash
+sudo apt install libgl-dev libglfw3-dev libxkbcommon-dev \
+                 libfreetype-dev libfontconfig-dev \
+                 libayatana-appindicator3-dev
+```
+
+### What's in it
+
+- **Client** page for the main connect/disconnect workflow and saved server profile
+- **Security** page for trusted anonym CAs and imported client auth keys, with a built-in default CA
+- **Overview** with larger crisp desktop typography, connection status, local server status, byte counters, and a 60-second traffic graph (ImPlot)
+- **Server** page that hosts a local server with the same controls as `yumed`
+- **Tools** area for key generation, authorized-key management, logs, appearance, relay directory, and chat
+
+GUI profile, trust material, generated keys, and runtime data live under `~/.yume/`.
+
+### Debian packaging
+
+`yume-gui` ships as a separate binary package alongside `yume`. The build is gated by the `nogui` build profile — setting `DEB_BUILD_PROFILES=nogui` produces only the CLI .deb (matching the stock GitHub release flow). The default build produces both packages.
+
+### Limitations of the current MVP
+
+- `ServerSession::start()` runs a real in-process `yumed` runtime through the shared server manager. Privileged ports still require root or `cap_net_bind_service`.
+- `ClientSession::start()` currently launches the `yume` binary as a managed background process and communicates with it through the existing local runtime socket. A pure in-process client controller still requires extracting the TLS/auth handshake from `client/cli.cpp`.
+- Chat / directory pages depend on a connected background client and use the live `RelayRuntime` IPC surface.
+- The tray code path is present but only assembles when `libayatana-appindicator3-dev` is installed; the rest of the GUI works without it.
+
 ## Install, man pages, and Debian packages
 
 Install from a build tree:

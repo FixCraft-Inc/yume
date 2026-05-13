@@ -1,0 +1,184 @@
+# ------------------------------------------------------------------------
+# yume-gui - optional Dear ImGui-based desktop application.
+#
+# Pulled in only when YUME_BUILD_GUI=ON. All dependencies (ImGui, GLFW,
+# ImPlot) are either supplied via system packages (find_package) or
+# pinned-tag FetchContent fallbacks. Pinning the tags keeps reproducibility.
+# ------------------------------------------------------------------------
+
+include(FetchContent)
+find_package(OpenGL REQUIRED)
+find_package(Freetype QUIET)
+
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(FONTCONFIG QUIET fontconfig)
+endif()
+
+set(YUME_IMGUI_TAG  "v1.91.5"  CACHE STRING "Dear ImGui git tag")
+set(YUME_GLFW_TAG   "3.4"      CACHE STRING "GLFW git tag")
+set(YUME_IMPLOT_TAG "v0.16"    CACHE STRING "ImPlot git tag")
+
+# ---- GLFW ---------------------------------------------------------------
+find_package(glfw3 3.3 QUIET)
+if(NOT glfw3_FOUND)
+    message(STATUS "[yume-gui] glfw3 not found via find_package; fetching ${YUME_GLFW_TAG}")
+    set(GLFW_BUILD_DOCS     OFF CACHE INTERNAL "")
+    set(GLFW_BUILD_TESTS    OFF CACHE INTERNAL "")
+    set(GLFW_BUILD_EXAMPLES OFF CACHE INTERNAL "")
+    set(GLFW_INSTALL        OFF CACHE INTERNAL "")
+    FetchContent_Declare(glfw
+        GIT_REPOSITORY https://github.com/glfw/glfw.git
+        GIT_TAG        ${YUME_GLFW_TAG})
+    FetchContent_MakeAvailable(glfw)
+endif()
+
+# ---- Dear ImGui ---------------------------------------------------------
+# ImGui does not ship a CMakeLists.txt; we always build it ourselves.
+FetchContent_Declare(imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG        ${YUME_IMGUI_TAG})
+FetchContent_MakeAvailable(imgui)
+
+add_library(yume_imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+)
+if(TARGET Freetype::Freetype)
+    target_sources(yume_imgui PRIVATE
+        ${imgui_SOURCE_DIR}/misc/freetype/imgui_freetype.cpp)
+    target_link_libraries(yume_imgui PUBLIC Freetype::Freetype)
+    target_compile_definitions(yume_imgui PUBLIC IMGUI_ENABLE_FREETYPE=1)
+endif()
+target_include_directories(yume_imgui PUBLIC
+    ${imgui_SOURCE_DIR}
+    ${imgui_SOURCE_DIR}/backends)
+target_link_libraries(yume_imgui PUBLIC glfw)
+
+# ---- ImPlot -------------------------------------------------------------
+FetchContent_Declare(implot
+    GIT_REPOSITORY https://github.com/epezent/implot.git
+    GIT_TAG        ${YUME_IMPLOT_TAG})
+FetchContent_MakeAvailable(implot)
+
+add_library(yume_implot STATIC
+    ${implot_SOURCE_DIR}/implot.cpp
+    ${implot_SOURCE_DIR}/implot_items.cpp
+)
+target_include_directories(yume_implot PUBLIC ${implot_SOURCE_DIR})
+target_link_libraries(yume_implot PUBLIC yume_imgui)
+
+# ---- Tray support (Linux dep optional) ----------------------------------
+option(YUME_GUI_TRAY "Build the system tray integration" ON)
+set(YUME_GUI_TRAY_AVAILABLE OFF)
+if(YUME_GUI_TRAY)
+    if(WIN32 OR APPLE)
+        set(YUME_GUI_TRAY_AVAILABLE ON)
+    else()
+        if(PkgConfig_FOUND)
+            pkg_check_modules(APPINDICATOR QUIET ayatana-appindicator3-0.1)
+            if(NOT APPINDICATOR_FOUND)
+                pkg_check_modules(APPINDICATOR QUIET appindicator3-0.1)
+            endif()
+            if(APPINDICATOR_FOUND)
+                set(YUME_GUI_TRAY_AVAILABLE ON)
+            else()
+                message(STATUS "[yume-gui] libappindicator dev pkg missing; tray disabled")
+            endif()
+        else()
+            message(STATUS "[yume-gui] pkg-config missing; tray disabled")
+        endif()
+    endif()
+endif()
+
+# ---- yume-gui executable ------------------------------------------------
+set(YUME_GUI_SOURCES
+    main.cpp
+    app.cpp
+    platform/file_dialog.cpp
+    platform/window.cpp
+    theme/material3.cpp
+    ui/design.cpp
+    pages/dashboard.cpp
+    pages/connect.cpp
+    pages/security.cpp
+    pages/server.cpp
+    pages/directory.cpp
+    pages/chat.cpp
+    pages/keys.cpp
+    pages/logs.cpp
+    pages/settings.cpp
+    pages/tools.cpp
+)
+if(YUME_GUI_TRAY_AVAILABLE)
+    list(APPEND YUME_GUI_SOURCES platform/tray.cpp)
+endif()
+
+add_executable(yume-gui ${YUME_GUI_SOURCES})
+
+target_include_directories(yume-gui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+target_link_libraries(yume-gui PRIVATE
+    yume_facade
+    yume_imgui
+    yume_implot
+    OpenGL::GL
+)
+
+if(TARGET Freetype::Freetype)
+    target_compile_definitions(yume-gui PRIVATE YUME_GUI_FREETYPE=1)
+else()
+    target_compile_definitions(yume-gui PRIVATE YUME_GUI_FREETYPE=0)
+endif()
+if(FONTCONFIG_FOUND)
+    target_compile_definitions(yume-gui PRIVATE YUME_GUI_FONTCONFIG=1)
+    target_include_directories(yume-gui PRIVATE ${FONTCONFIG_INCLUDE_DIRS})
+    target_link_libraries(yume-gui PRIVATE ${FONTCONFIG_LIBRARIES})
+    target_compile_options(yume-gui PRIVATE ${FONTCONFIG_CFLAGS_OTHER})
+else()
+    target_compile_definitions(yume-gui PRIVATE YUME_GUI_FONTCONFIG=0)
+endif()
+
+if(YUME_GUI_TRAY_AVAILABLE)
+    target_compile_definitions(yume-gui PRIVATE YUME_GUI_TRAY=1)
+    if(UNIX AND NOT APPLE)
+        target_include_directories(yume-gui PRIVATE ${APPINDICATOR_INCLUDE_DIRS})
+        target_link_libraries(yume-gui PRIVATE ${APPINDICATOR_LIBRARIES})
+        target_compile_options(yume-gui PRIVATE ${APPINDICATOR_CFLAGS_OTHER})
+    endif()
+else()
+    target_compile_definitions(yume-gui PRIVATE YUME_GUI_TRAY=0)
+endif()
+
+if(WIN32)
+    target_link_libraries(yume-gui PRIVATE ws2_32 mswsock)
+    target_compile_definitions(yume-gui PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        WINVER=0x0600
+        _WIN32_WINNT=0x0600
+    )
+    # No console window in release builds.
+    set_target_properties(yume-gui PROPERTIES WIN32_EXECUTABLE ON)
+endif()
+if(APPLE)
+    target_link_libraries(yume-gui PRIVATE
+        "-framework Cocoa" "-framework IOKit" "-framework CoreVideo")
+endif()
+
+yume_apply_perf_opts(yume-gui)
+
+install(TARGETS yume-gui RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+
+if(UNIX AND NOT APPLE)
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/packaging/yume-gui.desktop"
+        DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/applications"
+        OPTIONAL)
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/packaging/yume-gui.png"
+        DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/512x512/apps"
+        OPTIONAL)
+endif()

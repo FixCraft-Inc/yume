@@ -197,8 +197,12 @@ void apply_style(float content_scale, bool dark_mode) {
         g_colors.outline     = rgb(0x3A3340);
         g_colors.text        = rgb(0xEAE3EA);
         g_colors.muted       = rgb(0xB5ABB3);
-        g_colors.accent      = rgb(0xE8BECC);   // soft pink (Android tertiary dark)
+        // Soft pink primary; the on_accent dark wine matches Android's
+        // on_primary in dark mode so dark text reads cleanly on the
+        // light pink button instead of blending into it.
+        g_colors.accent      = rgb(0xE8BECC);   // YumeBerry-light / soft pink
         g_colors.accent_hover= rgb(0xF4D2DC);   // lighter rose for hover
+        g_colors.on_accent   = rgb(0x3A1F2E);   // dark wine, ~10:1 contrast on pink
         g_colors.success     = rgb(0x86E0A8);
         g_colors.warning     = rgb(0xF2C56B);
         g_colors.error       = rgb(0xFFB1BD);
@@ -209,8 +213,10 @@ void apply_style(float content_scale, bool dark_mode) {
         g_colors.outline     = rgb(0xD9CFDA);
         g_colors.text        = rgb(0x201A21);   // YumeInk
         g_colors.muted       = rgb(0x6D6570);   // YumeSlate
+        // Dark plum primary in light mode; white reads cleanly on it.
         g_colors.accent      = rgb(0x70536B);   // YumePlum
         g_colors.accent_hover= rgb(0x563E53);   // YumePlumDeep
+        g_colors.on_accent   = rgb(0xFFFBFF);   // near-white, high contrast on plum
         g_colors.success     = rgb(0x2E7D32);
         g_colors.warning     = rgb(0xB26A00);
         g_colors.error       = rgb(0xB72E5C);
@@ -387,11 +393,19 @@ float button_width(char const* label, float min_width) {
 bool primary_button(char const* label, ImVec2 size) {
     ImGui::PushStyleColor(ImGuiCol_Button, g_colors.accent);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, g_colors.accent_hover);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, rgb(0xC74D13));
+    // Slightly darker pressed state, derived from the accent so it works
+    // in both light and dark palettes instead of hardcoding orange.
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                          ImVec4(g_colors.accent.x * 0.85f,
+                                 g_colors.accent.y * 0.85f,
+                                 g_colors.accent.z * 0.85f, 1.0f));
+    // Force dark text on the pink accent button — Android's primary
+    // button uses on_primary for the same reason; white-on-pink blends.
+    ImGui::PushStyleColor(ImGuiCol_Text, g_colors.on_accent);
     if (g_fonts.strong) ImGui::PushFont(g_fonts.strong);
     bool pressed = ImGui::Button(label, size);
     if (g_fonts.strong) ImGui::PopFont();
-    ImGui::PopStyleColor(3);
+    ImGui::PopStyleColor(4);
     return pressed;
 }
 
@@ -519,12 +533,14 @@ bool checkbox(char const* label, bool* value) {
         dl->AddRectFilled(box_a, box_b, color_u32(accent), r);
         const float w = box;
         const float t = std::max(1.5f, px(2.1f));
-        // Centred two-segment checkmark.
+        // Centred two-segment checkmark. on_accent reads on pink/plum;
+        // a pure white check blends on the light pink accent.
+        const ImU32 check = color_u32(g_colors.on_accent);
         const ImVec2 p0(box_a.x + w * 0.22f, box_a.y + w * 0.55f);
         const ImVec2 p1(box_a.x + w * 0.43f, box_a.y + w * 0.74f);
         const ImVec2 p2(box_a.x + w * 0.78f, box_a.y + w * 0.32f);
-        dl->AddLine(p0, p1, IM_COL32_WHITE, t);
-        dl->AddLine(p1, p2, IM_COL32_WHITE, t);
+        dl->AddLine(p0, p1, check, t);
+        dl->AddLine(p1, p2, check, t);
     } else {
         if (hovered) {
             dl->AddRectFilled(box_a, box_b,
@@ -619,7 +635,11 @@ int segmented_control(char const* id,
         ImVec2 ts = font
             ? font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, labels[i])
             : ImGui::CalcTextSize(labels[i]);
-        ImU32 text_color = color_u32(active ? rgb(0xFFFFFF)
+        // Active segment is filled with the accent colour, so use the
+        // matching on_accent (dark wine on pink, or white on plum) for
+        // readability. Inactive segments live on surface_high so the
+        // default text/muted colours apply.
+        ImU32 text_color = color_u32(active ? g_colors.on_accent
                                             : (hovered ? g_colors.text
                                                        : g_colors.muted));
         dl->AddText(font, font_size,

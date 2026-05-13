@@ -30,6 +30,12 @@ struct Colors {
     ImVec4 muted;
     ImVec4 accent;
     ImVec4 accent_hover;
+    // Text/glyph colour to use when painting on top of an accent surface
+    // (primary_button, active segment of segmented_control, checkbox
+    // fill, etc.). Mirrors Android's on_primary: dark wine on light pink
+    // in dark mode; white on dark plum in light mode. Without this the
+    // default text colour blends into the accent.
+    ImVec4 on_accent;
     ImVec4 success;
     ImVec4 warning;
     ImVec4 error;

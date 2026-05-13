@@ -14,12 +14,17 @@
 
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <system_error>
 #include <vector>
+
+#ifdef __linux__
+#  include <unistd.h>     // readlink, ssize_t
+#endif
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -110,22 +115,35 @@ bool write_if_changed(std::filesystem::path const& path,
     return static_cast<bool>(out);
 }
 
-// The .desktop file content we want installed for the user. Keep this in
-// sync with src/gui/packaging/yume-gui.desktop; we duplicate it here so
-// the app can self-install even when run straight out of build/.
-constexpr const char kUserDesktopFile[] =
-    "[Desktop Entry]\n"
-    "Type=Application\n"
-    "Name=Yume\n"
-    "GenericName=Post-quantum Transport\n"
-    "Comment=Manage Yume client connections, server hosting, keys and relay channels\n"
-    "Exec=yume-gui\n"
-    "Icon=yume-gui\n"
-    "Terminal=false\n"
-    "Categories=Network;Security;\n"
-    "Keywords=vpn;proxy;tls;post-quantum;privacy;\n"
-    "StartupNotify=true\n"
-    "StartupWMClass=yume-gui\n";
+// Build a .desktop file body. Exec is set to the actual running binary so
+// the launcher entry matches the process the compositor sees — some
+// compositors will only resolve the icon when the .desktop's Exec target
+// matches the cmdline of the live window's process.
+std::string build_user_desktop_file(std::string const& exec_path) {
+    std::string body =
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=Yume\n"
+        "GenericName=Post-quantum Transport\n"
+        "Comment=Manage Yume client connections, server hosting, keys and relay channels\n";
+    body += "Exec=" + (exec_path.empty() ? std::string("yume-gui") : exec_path) + "\n";
+    body +=
+        "Icon=yume-gui\n"
+        "Terminal=false\n"
+        "Categories=Network;Security;\n"
+        "Keywords=vpn;proxy;tls;post-quantum;privacy;\n"
+        "StartupNotify=true\n"
+        "StartupWMClass=yume-gui\n";
+    return body;
+}
+
+std::string current_exe_path() {
+    char buf[4096];
+    const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) return {};
+    buf[n] = '\0';
+    return std::string(buf);
+}
 #endif
 
 }  // namespace
@@ -151,6 +169,20 @@ void install_app_id_hints() {
 
 void apply_window_icon(GLFWwindow* window) {
     if (!window) return;
+
+    // Wayland intentionally rejects per-window icons (security model:
+    // clients can only set their xdg-toplevel app_id, and the compositor
+    // resolves that to a .desktop entry for the icon). Calling
+    // glfwSetWindowIcon there emits a "platform does not support setting
+    // the window icon" error, which is correct but noisy. Detect Wayland
+    // up-front and skip the call — the XDG install in install_to_user_xdg
+    // is what makes the icon appear on Wayland sessions.
+#ifdef GLFW_PLATFORM_WAYLAND
+    if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) {
+        return;
+    }
+#endif
+
     // Rasterise at a handful of sizes so the compositor / WM can pick the
     // best one for taskbar / titlebar / alt-tab thumbnails.
     constexpr int kSizes[] = {256, 128, 64, 48, 32};
@@ -171,7 +203,6 @@ void apply_window_icon(GLFWwindow* window) {
         img.pixels = r.pixels.data();
         images.push_back(img);
     }
-    // No-op on Wayland by design; the XDG install below covers that case.
     glfwSetWindowIcon(window, static_cast<int>(images.size()), images.data());
 }
 
@@ -186,19 +217,30 @@ void install_to_user_xdg() {
     write_if_changed(icon_path, kIconSvgBytes, kIconSvgSize);
 
     // .desktop: ~/.local/share/applications/yume-gui.desktop
+    // Use the current process's exe path as Exec so compositors that
+    // verify the .desktop "owns" the window by matching Exec to /proc
+    // cmdline succeed even when running out of build/.
     const auto desktop_path = data_home / "applications" / "yume-gui.desktop";
-    write_if_changed(desktop_path, kUserDesktopFile,
-                     std::strlen(kUserDesktopFile));
+    const std::string body = build_user_desktop_file(current_exe_path());
+    write_if_changed(desktop_path, body.data(), body.size());
 
-    // Best-effort icon cache refresh. update-desktop-database is also
-    // useful for app launchers but is not strictly required for the
-    // window icon path to work. We swallow exit codes.
+    // Best-effort cache refresh across the three big DE families. Each
+    // is forked + detached so a missing tool doesn't slow startup.
+    //   * update-desktop-database  — GTK/XDG launcher index
+    //   * gtk-update-icon-cache     — GTK icon theme cache
+    //   * kbuildsycoca6/5           — KDE Plasma's app database
+    // All exit codes are swallowed; the user can re-run them manually if
+    // their compositor still hasn't picked up the new icon.
     (void)std::system("update-desktop-database "
                       "\"$HOME/.local/share/applications\" "
                       ">/dev/null 2>&1 &");
     (void)std::system("gtk-update-icon-cache "
-                      "-q -t \"$HOME/.local/share/icons/hicolor\" "
+                      "-q -t -f \"$HOME/.local/share/icons/hicolor\" "
                       ">/dev/null 2>&1 &");
+    (void)std::system("command -v kbuildsycoca6 >/dev/null 2>&1 && "
+                      "kbuildsycoca6 --noincremental >/dev/null 2>&1 &");
+    (void)std::system("command -v kbuildsycoca5 >/dev/null 2>&1 && "
+                      "kbuildsycoca5 --noincremental >/dev/null 2>&1 &");
 #else
     (void)kIsLinuxLike;  // suppress unused warning on non-Linux
 #endif

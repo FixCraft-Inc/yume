@@ -174,27 +174,28 @@ private:
         ImGui::PushStyleColor(ImGuiCol_Border, selected ? c.accent : c.outline);
         ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12 * sc);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18 * sc, 14 * sc));
-        std::string file_label = item.path.filename().empty()
-            ? item.source_label
-            : item.path.filename().string();
         ImGui::BeginChild("##material_row",
-                          ImVec2(0, 104 * sc),
+                          ImVec2(0, 88 * sc),
                           ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding,
                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         if (ImGui::BeginTable("##material_row_cols", 3, ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("Main", ImGuiTableColumnFlags_WidthStretch, 0.54f);
-            ImGui::TableSetupColumn("Meta", ImGuiTableColumnFlags_WidthStretch, 0.24f);
+            ImGui::TableSetupColumn("Main", ImGuiTableColumnFlags_WidthStretch, 0.50f);
+            ImGui::TableSetupColumn("Meta", ImGuiTableColumnFlags_WidthStretch, 0.28f);
             ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthStretch, 0.22f);
             ImGui::TableNextColumn();
             if (ui::fonts().strong) ImGui::PushFont(ui::fonts().strong);
             ImGui::TextWrapped("%s", item.display_name.c_str());
             if (ui::fonts().strong) ImGui::PopFont();
-            ui::muted_text("%s", file_label.c_str());
+            ui::muted_text("%s", item.source_label.c_str());
 
             ImGui::TableNextColumn();
-            ui::muted_text("%s", item.source_label.c_str());
+            // Short fingerprint in monospace so the eye reads it as a hash,
+            // not as a filename. We drop the on-disk filename entirely —
+            // the display name + source label already identify the entry.
             if (!item.fingerprint.empty()) {
-                ImGui::TextUnformatted(item.fingerprint.c_str());
+                if (ui::fonts().mono) ImGui::PushFont(ui::fonts().mono);
+                ImGui::TextUnformatted(item.fingerprint.substr(0, 16).c_str());
+                if (ui::fonts().mono) ImGui::PopFont();
             }
 
             ImGui::TableNextColumn();

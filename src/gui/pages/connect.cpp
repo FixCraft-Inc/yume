@@ -14,6 +14,7 @@
 
 #include "facade/client_session.hpp"
 #include "facade/config_io.hpp"
+#include "facade/profiles.hpp"
 #include "facade/secure_materials.hpp"
 #include "ui/design.hpp"
 
@@ -49,6 +50,7 @@ public:
     std::string_view title() const override { return "Client"; }
 
     void on_show(AppContext& ctx) override {
+        refresh_profiles();
         if (ctx.client && (!loaded_ || !ctx.client->running())) {
             cfg_ = ctx.client->config();
             loaded_ = true;
@@ -60,10 +62,13 @@ public:
         const float sc = ui::scale();
 
         ui::page_header("Client",
-                        "Choose a server, select trust material, and connect through local IPC.");
+                        "Pick a saved server profile, choose trust material, then connect.");
+
+        render_profile_card(ctx);
+        ImGui::Dummy(ImVec2(0, 8 * sc));
 
         if (ui::begin_auto_card("##connect_essential")) {
-            ui::section_label("Profile");
+            ui::section_label("Server");
             if (ImGui::BeginTable("##profile_cols", 2, ImGuiTableFlags_SizingStretchProp)) {
                 ImGui::TableSetupColumn("Host", ImGuiTableColumnFlags_WidthStretch, 0.72f);
                 ImGui::TableSetupColumn("Port", ImGuiTableColumnFlags_WidthStretch, 0.28f);
@@ -124,12 +129,20 @@ public:
             advanced_open_ = ui::disclosure_header("TLS trust and advanced transport",
                                                    advanced_open_);
             if (advanced_open_) {
-                text_input("Anonym public key override",
-                           cfg_.anonym_pubkey,
-                           "optional PEM; built-in key is default");
-                text_input("TLS CA cert",
-                           cfg_.tls_ca_cert,
-                           "optional custom TLS CA");
+                // Trust material is selected on the Security page, not
+                // pasted inline. Show what's currently selected.
+                auto material_label = [](std::string const& id, char const* dflt) {
+                    if (id.empty()) return std::string(dflt);
+                    if (auto m = sm::get(id)) return m->display_name;
+                    return std::string("unknown (id=") + id + ")";
+                };
+                ui::muted_text("Anonym public key: %s",
+                               material_label(cfg_.anonym_pubkey_material_id,
+                                              "embedded default").c_str());
+                ui::muted_text("TLS CA: %s",
+                               material_label(cfg_.tls_ca_material_id,
+                                              "system trust store").c_str());
+                ui::muted_text("Use Security to import or change either.");
                 text_input("TLS pin SHA-256", cfg_.tls_pin_sha256, "optional certificate pin");
                 int hop = (int)cfg_.hop_interval_ms;
                 int_input("Hop interval (ms)", hop);
@@ -232,7 +245,120 @@ public:
     }
 
 private:
+    void render_profile_card(AppContext& ctx) {
+        const float sc = ui::scale();
+        if (!ui::begin_auto_card("##connect_profile")) { ui::end_card(); return; }
+
+        ui::section_label("Profile");
+        std::vector<char const*> labels;
+        labels.reserve(profiles_.size() + 1);
+        labels.push_back("(unsaved)");
+        for (auto const& p : profiles_) labels.push_back(p.display_name.c_str());
+
+        int chosen = 0;
+        for (std::size_t i = 0; i < profiles_.size(); ++i) {
+            if (profiles_[i].id == active_id_) { chosen = static_cast<int>(i) + 1; break; }
+        }
+        if (ui::combo("##profile_pick", &chosen, labels.data(),
+                      static_cast<int>(labels.size()), 280.f)) {
+            if (chosen == 0) {
+                active_id_.clear();
+                facade::profiles::set_active("");
+            } else {
+                auto const& p = profiles_[chosen - 1];
+                active_id_ = p.id;
+                facade::profiles::set_active(p.id);
+                if (auto loaded = facade::profiles::load(p.id)) {
+                    cfg_ = *loaded;
+                    if (ctx.client) ctx.client->set_config(cfg_);
+                    last_message_ = "Switched to '" + p.display_name + "'.";
+                    last_error_ = false;
+                }
+            }
+        }
+
+        ImGui::SameLine(0.0f, 10 * sc);
+        if (ui::secondary_button("Save as", ImVec2(120 * sc, 40 * sc))) {
+            new_name_[0] = 0;
+            ImGui::OpenPopup("##save_profile");
+        }
+        ImGui::SameLine(0.0f, 6 * sc);
+        ImGui::BeginDisabled(active_id_.empty());
+        if (ui::quiet_button("Delete", ImVec2(100 * sc, 40 * sc))) {
+            std::string err;
+            if (facade::profiles::remove(active_id_, &err)) {
+                last_message_ = "Profile deleted.";
+                last_error_ = false;
+                active_id_.clear();
+            } else {
+                last_message_ = "Delete failed: " + err;
+                last_error_ = true;
+            }
+            refresh_profiles();
+        }
+        ImGui::EndDisabled();
+
+        if (!active_id_.empty()) {
+            ImGui::SameLine(0.0f, 6 * sc);
+            if (ui::quiet_button("Save", ImVec2(96 * sc, 40 * sc))) {
+                std::string display = active_id_;
+                for (auto const& p : profiles_) {
+                    if (p.id == active_id_) { display = p.display_name; break; }
+                }
+                std::string err;
+                if (facade::profiles::save(active_id_, display, cfg_, &err)) {
+                    last_message_ = "Profile saved.";
+                    last_error_ = false;
+                } else {
+                    last_message_ = "Save failed: " + err;
+                    last_error_ = true;
+                }
+                refresh_profiles();
+            }
+        }
+
+        if (ImGui::BeginPopup("##save_profile")) {
+            ui::field_label("Profile name");
+            ImGui::SetNextItemWidth(280 * sc);
+            ImGui::InputText("##new_profile_name", new_name_, sizeof(new_name_));
+            ImGui::Dummy(ImVec2(0, 4 * sc));
+            ImGui::BeginDisabled(new_name_[0] == 0);
+            if (ui::primary_button("Create",
+                                   ImVec2(ui::button_width("Create", 120), 38 * sc))) {
+                std::string err;
+                auto created = facade::profiles::create(new_name_, cfg_, &err);
+                if (created) {
+                    active_id_ = *created;
+                    facade::profiles::set_active(*created);
+                    last_message_ = "Profile created.";
+                    last_error_ = false;
+                    refresh_profiles();
+                    ImGui::CloseCurrentPopup();
+                } else {
+                    last_message_ = "Create failed: " + err;
+                    last_error_ = true;
+                }
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine(0.0f, 8 * sc);
+            if (ui::secondary_button("Cancel",
+                                     ImVec2(ui::button_width("Cancel", 100), 38 * sc))) {
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+        ui::end_card();
+    }
+
+    void refresh_profiles() {
+        profiles_ = facade::profiles::list();
+        active_id_ = facade::profiles::active_id();
+    }
+
     client::ClientConfig cfg_{};
+    std::vector<facade::profiles::ProfileSummary> profiles_;
+    std::string active_id_;
+    char new_name_[160]{};
     bool loaded_{false};
     bool advanced_open_{false};
     std::string last_message_;

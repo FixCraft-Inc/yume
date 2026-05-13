@@ -50,6 +50,9 @@ config/*.private.json
 # BaseFWX dependency checkout
 basefwx/
 
+# Local notes for AI agents — kept out of git deliberately.
+[local-only development file removed]
+
 # Python
 __pycache__/
 *.pyc

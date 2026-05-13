@@ -26,10 +26,12 @@ struct ClientConfig {
     std::string pq_public_key;
     bool allow_embedded_master{false};
     std::string anonym_pubkey;
+    std::string anonym_pubkey_material_id;
     std::string anonym_ca_cert;
     std::string anonym_ca_material_id{"embedded-anonym-ca"};
     std::string auth_key_material_id;
     std::string tls_ca_cert;
+    std::string tls_ca_material_id;
     std::string tls_pin_sha256;
     bool require_anonym{false};
     bool boring{false};

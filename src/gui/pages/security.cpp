@@ -14,6 +14,7 @@
 
 #include "facade/client_session.hpp"
 #include "facade/config_io.hpp"
+#include "facade/log_sink.hpp"
 #include "facade/secure_materials.hpp"
 #include "platform/file_dialog.hpp"
 #include "ui/design.hpp"
@@ -55,14 +56,18 @@ public:
 
         ImGui::Dummy(ImVec2(0, 8 * sc));
         if (ui::begin_auto_card("##security_materials")) {
-            static char const* const kTabs[] = {"Anonym CAs", "Auth keys"};
+            static char const* const kTabs[] = {
+                "Anonym CAs", "Auth keys", "TLS CAs", "Anonym pubkeys"
+            };
             active_tab_ = ui::segmented_control(
-                "##security_tabs", kTabs, 2, active_tab_);
+                "##security_tabs", kTabs, 4, active_tab_);
             ImGui::Dummy(ImVec2(0, 14 * sc));
-            if (active_tab_ == 0) {
-                render_material_tab(ctx, sm::MaterialType::AnonymCa);
-            } else {
-                render_material_tab(ctx, sm::MaterialType::AuthKey);
+            switch (active_tab_) {
+                case 0: render_material_tab(ctx, sm::MaterialType::AnonymCa); break;
+                case 1: render_material_tab(ctx, sm::MaterialType::AuthKey); break;
+                case 2: render_material_tab(ctx, sm::MaterialType::TlsCa); break;
+                case 3: render_material_tab(ctx, sm::MaterialType::AnonymPubkey); break;
+                default: break;
             }
             if (!last_message_.empty()) {
                 ImGui::Dummy(ImVec2(0, 6 * sc));
@@ -77,6 +82,8 @@ private:
         std::string err;
         cas_ = sm::list(sm::MaterialType::AnonymCa, &err);
         keys_ = sm::list(sm::MaterialType::AuthKey, &err);
+        tls_cas_ = sm::list(sm::MaterialType::TlsCa, &err);
+        anon_pubkeys_ = sm::list(sm::MaterialType::AnonymPubkey, &err);
         if (ctx.client) cfg_ = ctx.client->config();
         if (!err.empty()) {
             last_message_ = err;
@@ -105,21 +112,40 @@ private:
         if (!ctx.client) return;
         auto cfg = ctx.client->config();
         std::string err;
-        if (item.type == sm::MaterialType::AnonymCa) {
-            cfg.anonym_ca_material_id = item.id;
-            cfg.anonym_ca_cert = item.path.string();
-        } else {
-            cfg.auth_key_material_id = item.id;
-            cfg.identity = item.path.string();
+        switch (item.type) {
+            case sm::MaterialType::AnonymCa:
+                cfg.anonym_ca_material_id = item.id;
+                cfg.anonym_ca_cert = item.path.string();
+                break;
+            case sm::MaterialType::AuthKey:
+                cfg.auth_key_material_id = item.id;
+                cfg.identity = item.path.string();
+                break;
+            case sm::MaterialType::AnonymPubkey:
+                cfg.anonym_pubkey_material_id = item.id;
+                cfg.anonym_pubkey = item.path.string();
+                break;
+            case sm::MaterialType::TlsCa:
+                cfg.tls_ca_material_id = item.id;
+                cfg.tls_ca_cert = item.path.string();
+                break;
         }
         ctx.client->set_config(cfg);
         if (!facade::config_io::save_client(
                 cfg, facade::config_io::default_client_config_path(), &err)) {
             last_message_ = "Selection saved in memory, but config save failed: " + err;
             last_error_ = true;
+            log_event(facade::LogLevel::Warn,
+                      "select " + std::string(sm::type_label(item.type)) +
+                          " '" + item.display_name +
+                          "' (id=" + item.id + ") — config save failed: " + err);
         } else {
             last_message_ = std::string(sm::type_label(item.type)) + " selected.";
             last_error_ = false;
+            log_event(facade::LogLevel::Info,
+                      "selected " + std::string(sm::type_label(item.type)) +
+                          " '" + item.display_name +
+                          "' (id=" + item.id + ")");
         }
         cfg_ = cfg;
         refresh(ctx);
@@ -128,18 +154,27 @@ private:
     void import_current(sm::MaterialType type, bool from_file, AppContext& ctx) {
         sm::MaterialSummary summary;
         std::string err;
-        bool ok = false;
-        if (from_file) {
-            ok = sm::import_file(type, import_name_, import_path_, &summary, &err);
-        } else {
-            ok = sm::import_text(type, import_name_, import_text_, &summary, &err);
-        }
+        bool ok = from_file
+            ? sm::import_file(type, import_name_, import_path_, &summary, &err)
+            : sm::import_text(type, import_name_, import_text_, &summary, &err);
         if (!ok) {
             last_message_ = err.empty() ? "Import failed." : err;
             last_error_ = true;
+            log_event(facade::LogLevel::Error,
+                      std::string("import failed: ") + last_message_);
             return;
         }
-        last_message_ = "Imported " + summary.display_name + ".";
+        log_event(facade::LogLevel::Info,
+                  "imported " + std::string(sm::type_label(type)) +
+                      " '" + summary.display_name +
+                      "' (id=" + summary.id +
+                      ", path=" + summary.path.string() + ")");
+        // Auto-select the freshly-imported material so the user doesn't
+        // have to click Use as a second step. This is the actual fix for
+        // "imported but yume fails to use it" — without it, a fresh
+        // install would keep the old (often empty) identity active.
+        select_material(ctx, summary);
+        last_message_ = "Imported " + summary.display_name + " and set as active.";
         last_error_ = false;
         import_name_[0] = 0;
         import_path_[0] = 0;
@@ -147,10 +182,19 @@ private:
         refresh(ctx);
     }
 
+    static void log_event(facade::LogLevel level, std::string message) {
+        facade::LogEntry e;
+        e.ts = std::chrono::system_clock::now();
+        e.level = level;
+        e.component = "gui.security";
+        e.message = std::move(message);
+        facade::LogSink::instance().push(std::move(e));
+    }
+
     void choose_file(sm::MaterialType type) {
         std::string err;
         auto picked = platform::open_file_dialog(
-            type == sm::MaterialType::AnonymCa ? "Choose anonym CA" : "Choose auth key",
+            (std::string("Choose ") + sm::type_label(type)).c_str(),
             &err);
         if (!picked) {
             if (!err.empty() && err != "file selection cancelled") {
@@ -174,9 +218,13 @@ private:
         ImGui::PushStyleColor(ImGuiCol_Border, selected ? c.accent : c.outline);
         ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12 * sc);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18 * sc, 14 * sc));
+        // Auto-resize Y so the row hugs its contents — the previous fixed
+        // 88 px left a band of whitespace under the source label.
         ImGui::BeginChild("##material_row",
-                          ImVec2(0, 88 * sc),
-                          ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding,
+                          ImVec2(0, 0),
+                          ImGuiChildFlags_Border |
+                              ImGuiChildFlags_AlwaysUseWindowPadding |
+                              ImGuiChildFlags_AutoResizeY,
                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         if (ImGui::BeginTable("##material_row_cols", 3, ImGuiTableFlags_SizingStretchProp)) {
             ImGui::TableSetupColumn("Main", ImGuiTableColumnFlags_WidthStretch, 0.50f);
@@ -184,18 +232,18 @@ private:
             ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthStretch, 0.22f);
             ImGui::TableNextColumn();
             if (ui::fonts().strong) ImGui::PushFont(ui::fonts().strong);
-            ImGui::TextWrapped("%s", item.display_name.c_str());
+            ImGui::TextUnformatted(item.display_name.c_str());
             if (ui::fonts().strong) ImGui::PopFont();
             ui::muted_text("%s", item.source_label.c_str());
 
             ImGui::TableNextColumn();
-            // Short fingerprint in monospace so the eye reads it as a hash,
-            // not as a filename. We drop the on-disk filename entirely —
-            // the display name + source label already identify the entry.
             if (!item.fingerprint.empty()) {
-                if (ui::fonts().mono) ImGui::PushFont(ui::fonts().mono);
+                // Same font as the rest of the row, just muted. Mono made
+                // the hex look like a different widget; small font made
+                // it disappear.
+                ImGui::PushStyleColor(ImGuiCol_Text, ui::colors().muted);
                 ImGui::TextUnformatted(item.fingerprint.substr(0, 16).c_str());
-                if (ui::fonts().mono) ImGui::PopFont();
+                ImGui::PopStyleColor();
             }
 
             ImGui::TableNextColumn();
@@ -229,33 +277,81 @@ private:
         ImGui::PopID();
     }
 
+    std::vector<sm::MaterialSummary>& items_for(sm::MaterialType type) {
+        switch (type) {
+            case sm::MaterialType::AnonymCa:     return cas_;
+            case sm::MaterialType::AuthKey:      return keys_;
+            case sm::MaterialType::TlsCa:        return tls_cas_;
+            case sm::MaterialType::AnonymPubkey: return anon_pubkeys_;
+        }
+        return cas_;
+    }
+
+    bool is_selected(sm::MaterialSummary const& item) const {
+        switch (item.type) {
+            case sm::MaterialType::AnonymCa: {
+                auto id = cfg_.anonym_ca_material_id.empty()
+                    ? sm::kDefaultAnonymCaId : cfg_.anonym_ca_material_id;
+                return id == item.id;
+            }
+            case sm::MaterialType::AuthKey:
+                return cfg_.auth_key_material_id == item.id;
+            case sm::MaterialType::AnonymPubkey:
+                return cfg_.anonym_pubkey_material_id == item.id;
+            case sm::MaterialType::TlsCa:
+                return cfg_.tls_ca_material_id == item.id;
+        }
+        return false;
+    }
+
     void render_material_tab(AppContext& ctx, sm::MaterialType type) {
-        auto& items = type == sm::MaterialType::AnonymCa ? cas_ : keys_;
+        auto& items = items_for(type);
         const float sc = ui::scale();
 
-        ui::section_label(type == sm::MaterialType::AnonymCa
-                              ? "Trusted anonym certificates"
-                              : "Client authentication keys");
-        ui::muted_text(type == sm::MaterialType::AnonymCa
-                           ? "Select the CA used to verify anonym proof. The embedded CA cannot be removed."
-                           : "Select the private key used when the desktop client connects.");
+        char const* section = "";
+        char const* hint = "";
+        char const* empty = "";
+        char const* import_title = "";
+        switch (type) {
+            case sm::MaterialType::AnonymCa:
+                section = "Trusted anonym certificates";
+                hint = "Select the CA used to verify anonym proof. The embedded CA cannot be removed.";
+                empty = "No trusted CAs are available.";
+                import_title = "Import CA";
+                break;
+            case sm::MaterialType::AuthKey:
+                section = "Client authentication keys";
+                hint = "Select the private key used when the desktop client connects.";
+                empty = "No auth keys imported yet.";
+                import_title = "Import auth key";
+                break;
+            case sm::MaterialType::TlsCa:
+                section = "Extra TLS roots";
+                hint = "Pin a custom root CA for the outer TLS verify chain. Leave none selected to use the system trust store.";
+                empty = "No extra TLS roots imported.";
+                import_title = "Import TLS CA";
+                break;
+            case sm::MaterialType::AnonymPubkey:
+                section = "Anonym signing public keys";
+                hint = "Override the embedded anonym signing public key. Only needed for self-hosted anonym authorities.";
+                empty = "No anonym public keys imported.";
+                import_title = "Import anonym public key";
+                break;
+        }
+        ui::section_label(section);
+        ui::muted_text("%s", hint);
 
         if (items.empty()) {
-            ui::muted_text(type == sm::MaterialType::AnonymCa
-                               ? "No trusted CAs are available."
-                               : "No auth keys imported yet.");
+            ui::muted_text("%s", empty);
         } else {
             for (auto const& item : items) {
-                const bool selected = item.type == sm::MaterialType::AnonymCa
-                    ? ((cfg_.anonym_ca_material_id.empty() ? sm::kDefaultAnonymCaId : cfg_.anonym_ca_material_id) == item.id)
-                    : (cfg_.auth_key_material_id == item.id);
-                render_material_row(ctx, item, selected);
+                render_material_row(ctx, item, is_selected(item));
                 ImGui::Dummy(ImVec2(0, 8 * sc));
             }
         }
 
         ImGui::Dummy(ImVec2(0, 12 * sc));
-        ui::section_label(type == sm::MaterialType::AnonymCa ? "Import CA" : "Import auth key");
+        ui::section_label(import_title);
         ui::field_label("Display name");
         ImGui::SetNextItemWidth(ui::form_width(420));
         ImGui::InputText("##material_name", import_name_, sizeof(import_name_));
@@ -287,6 +383,8 @@ private:
     client::ClientConfig cfg_{};
     std::vector<sm::MaterialSummary> cas_;
     std::vector<sm::MaterialSummary> keys_;
+    std::vector<sm::MaterialSummary> tls_cas_;
+    std::vector<sm::MaterialSummary> anon_pubkeys_;
     int active_tab_{0};
     char import_name_[160]{};
     char import_path_[512]{};

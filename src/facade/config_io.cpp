@@ -153,6 +153,8 @@ std::optional<client::ClientConfig> load_client(
     read_opt(j, "anonym_pubkey", c.anonym_pubkey);
     read_opt(j, "anonym_ca_cert", c.anonym_ca_cert);
     read_opt(j, "anonym_ca_material_id", c.anonym_ca_material_id);
+    read_opt(j, "anonym_pubkey_material_id", c.anonym_pubkey_material_id);
+    read_opt(j, "tls_ca_material_id", c.tls_ca_material_id);
     read_opt(j, "auth_key_material_id", c.auth_key_material_id);
     read_opt(j, "tls_ca_cert", c.tls_ca_cert);
     read_opt(j, "tls_pin_sha256", c.tls_pin_sha256);
@@ -215,6 +217,8 @@ bool save_client(client::ClientConfig const& c,
         {"anonym_pubkey", c.anonym_pubkey},
         {"anonym_ca_cert", c.anonym_ca_cert},
         {"anonym_ca_material_id", c.anonym_ca_material_id},
+        {"anonym_pubkey_material_id", c.anonym_pubkey_material_id},
+        {"tls_ca_material_id", c.tls_ca_material_id},
         {"auth_key_material_id", c.auth_key_material_id},
         {"tls_ca_cert", c.tls_ca_cert},
         {"tls_pin_sha256", c.tls_pin_sha256},

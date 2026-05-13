@@ -82,11 +82,20 @@ std::string normalize_pem(std::string text) {
 }
 
 std::string wire_type(MaterialType type) {
-    return type == MaterialType::AnonymCa ? "anonym_ca" : "auth_key";
+    switch (type) {
+        case MaterialType::AuthKey:      return "auth_key";
+        case MaterialType::AnonymPubkey: return "anonym_pubkey";
+        case MaterialType::TlsCa:        return "tls_ca";
+        case MaterialType::AnonymCa:
+        default:                         return "anonym_ca";
+    }
 }
 
 MaterialType parse_type(std::string const& value) {
-    return value == "auth_key" ? MaterialType::AuthKey : MaterialType::AnonymCa;
+    if (value == "auth_key")      return MaterialType::AuthKey;
+    if (value == "anonym_pubkey") return MaterialType::AnonymPubkey;
+    if (value == "tls_ca")        return MaterialType::TlsCa;
+    return MaterialType::AnonymCa;
 }
 
 std::string hex_lower(unsigned char const* data, std::size_t n) {
@@ -137,14 +146,34 @@ bool validate_auth_key(std::string const& pem, std::string* err) {
     return true;
 }
 
+bool validate_pubkey(std::string const& pem, std::string* err) {
+    std::unique_ptr<BIO, decltype(&BIO_free)> bio(
+        BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())), BIO_free);
+    if (!bio) {
+        if (err) *err = "OpenSSL BIO allocation failed";
+        return false;
+    }
+    std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> key(
+        PEM_read_bio_PUBKEY(bio.get(), nullptr, nullptr, nullptr), EVP_PKEY_free);
+    if (!key) {
+        if (err) *err = "PEM does not contain a readable public key";
+        return false;
+    }
+    return true;
+}
+
 bool validate_material(MaterialType type, std::string const& pem, std::string* err) {
     if (pem.empty()) {
         if (err) *err = std::string(type_label(type)) + " PEM is empty";
         return false;
     }
-    return type == MaterialType::AnonymCa
-        ? validate_ca(pem, err)
-        : validate_auth_key(pem, err);
+    switch (type) {
+        case MaterialType::AnonymCa:
+        case MaterialType::TlsCa:        return validate_ca(pem, err);
+        case MaterialType::AuthKey:      return validate_auth_key(pem, err);
+        case MaterialType::AnonymPubkey: return validate_pubkey(pem, err);
+    }
+    return false;
 }
 
 std::string make_id() {
@@ -326,7 +355,16 @@ bool import_text(MaterialType type,
     if (!validate_material(type, pem, err)) return false;
 
     auto id = make_id();
-    auto path = store_dir() / (id + (type == MaterialType::AnonymCa ? ".ca.pem" : ".key.pem"));
+    auto ext = [&]() -> char const* {
+        switch (type) {
+            case MaterialType::AuthKey:      return ".key.pem";
+            case MaterialType::AnonymPubkey: return ".pub.pem";
+            case MaterialType::TlsCa:        return ".tls.pem";
+            case MaterialType::AnonymCa:
+            default:                         return ".ca.pem";
+        }
+    }();
+    auto path = store_dir() / (id + ext);
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
 
@@ -343,11 +381,18 @@ bool import_text(MaterialType type,
     }
     if (type == MaterialType::AuthKey) chmod_private(path);
 
+    auto default_name = [&]() -> char const* {
+        switch (type) {
+            case MaterialType::AuthKey:      return "Imported auth key";
+            case MaterialType::AnonymPubkey: return "Imported anonym public key";
+            case MaterialType::TlsCa:        return "Imported TLS CA";
+            case MaterialType::AnonymCa:
+            default:                         return "Imported anonym CA";
+        }
+    };
     MaterialSummary s;
     s.id = id;
-    s.display_name = display_name.empty()
-        ? (type == MaterialType::AnonymCa ? "Imported anonym CA" : "Imported auth key")
-        : display_name;
+    s.display_name = display_name.empty() ? default_name() : display_name;
     s.type = type;
     s.source_label = "Imported";
     s.fingerprint = short_fingerprint(pem);
@@ -405,7 +450,13 @@ bool remove(std::string const& id, std::string* err) {
 }
 
 char const* type_label(MaterialType type) {
-    return type == MaterialType::AnonymCa ? "Anonym CA" : "Auth key";
+    switch (type) {
+        case MaterialType::AuthKey:      return "Auth key";
+        case MaterialType::AnonymPubkey: return "Anonym public key";
+        case MaterialType::TlsCa:        return "TLS CA";
+        case MaterialType::AnonymCa:
+        default:                         return "Anonym CA";
+    }
 }
 
 }  // namespace yume::facade::secure_materials

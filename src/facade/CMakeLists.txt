@@ -10,6 +10,7 @@ add_library(yume_facade STATIC
     log_sink.cpp
     config_io.cpp
     secure_materials.cpp
+    profiles.cpp
     keys.cpp
     traffic_meter.cpp
     client_session.cpp

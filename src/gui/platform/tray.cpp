@@ -2,16 +2,6 @@
  * YUME - Yume Universal Multiprotocol Engine
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU General Public License v3.0.
- *
- * Linux system tray via libayatana-appindicator. The icon is the same
- * SVG that ships with the app, rasterised at 64x64 RGBA and composited
- * with up to two small status-overlay dots (client / server) before
- * being written to /tmp/yume-gui-tray-<digest>.png. App-indicator
- * picks the icon up by file path so we don't depend on installing into
- * the system icon theme to update the live tray.
- *
- * Windows / macOS paths are stubs — the public interface stays so the
- * caller can compile regardless of platform.
  */
 
 #include "platform/tray.hpp"
@@ -33,12 +23,10 @@
 #  include <gtk/gtk.h>
 #endif
 
-// NanoSVG's IMPLEMENTATION is emitted exactly once in app_icon.cpp; here
-// we only need the declarations to call its API.
+// NanoSVG IMPLEMENTATION lives in app_icon.cpp; here we just consume.
 #include <nanosvg.h>
 #include <nanosvgrast.h>
 
-// stb_image_write is only used here, so we own its single IMPLEMENTATION.
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb/stb_image_write.h"
 
@@ -50,10 +38,7 @@ namespace {
 
 constexpr int kIconSize = 64;
 
-// One pixel of an 8-bit RGBA buffer.
-struct Px {
-    std::uint8_t r, g, b, a;
-};
+struct Px { std::uint8_t r, g, b, a; };
 
 std::vector<std::uint8_t> rasterise_icon(int size) {
     std::vector<std::uint8_t> pixels(static_cast<size_t>(size) * size * 4, 0);
@@ -75,23 +60,17 @@ std::vector<std::uint8_t> rasterise_icon(int size) {
     return pixels;
 }
 
-// Premultiplied-alpha-ish in-place blend of src over dst. `src` is the
-// dot we're painting; `dst` is the icon buffer we're drawing into. The
-// alpha is straight (NanoSVG output) so we use the standard "over"
-// composite: out = src + dst*(1-src.a).
 void paint_pixel(Px& dst, Px const& src) {
     const float a = src.a / 255.0f;
     const float inv = 1.0f - a;
     dst.r = static_cast<std::uint8_t>(src.r * a + dst.r * inv);
     dst.g = static_cast<std::uint8_t>(src.g * a + dst.g * inv);
     dst.b = static_cast<std::uint8_t>(src.b * a + dst.b * inv);
-    dst.a = std::max<std::uint8_t>(dst.a, src.a);  // keep most opaque
+    dst.a = std::max<std::uint8_t>(dst.a, src.a);
 }
 
-// Paint a filled circle of radius r (px) centred at (cx, cy) into the
-// RGBA buffer `pixels` of `size x size`. Antialiases the rim with a
-// 1.2px feather. Adds a thin dark outline for readability against light
-// tray themes.
+// Filled circle with a soft rim + thin dark outline for readability on
+// light tray themes.
 void paint_dot(std::uint8_t* pixels, int size, int cx, int cy, int r,
                Px fill) {
     const float feather = 1.2f;
@@ -157,8 +136,6 @@ std::string state_tag(TrayServiceState s) {
 }
 
 std::string write_icon_for_status(TrayStatus const& st) {
-    // Cache key by client+server state, so we don't rewrite the file
-    // every frame. The file path itself doubles as the cache key.
     const std::string digest = state_tag(st.client) + state_tag(st.server);
     const std::string path = "/tmp/yume-gui-tray-" + digest + ".png";
     if (std::filesystem::exists(path)) return path;
@@ -166,9 +143,6 @@ std::string write_icon_for_status(TrayStatus const& st) {
     auto pixels = rasterise_icon(kIconSize);
     if (pixels.empty()) return {};
 
-    // Two overlay dots in the lower-right corner so the SVG glyph
-    // stays mostly clear. Client first (slightly higher), server next
-    // to it. Each is ~22% of the icon size — readable at 22 px tray.
     const int dot_r = std::max(6, kIconSize / 7);
     const int gap   = dot_r / 2;
     int next_cx = kIconSize - dot_r - 2;
@@ -176,16 +150,12 @@ std::string write_icon_for_status(TrayStatus const& st) {
 
     auto plot = [&](TrayServiceState s) {
         if (s == TrayServiceState::Off) return;
-        const Px c = state_color(s);
-        paint_dot(pixels.data(), kIconSize, next_cx, next_cy, dot_r, c);
-        // Stack the second dot to the left of the first by 2r + gap.
+        paint_dot(pixels.data(), kIconSize, next_cx, next_cy, dot_r, state_color(s));
         next_cx -= (2 * dot_r + gap);
     };
     plot(st.client);
     plot(st.server);
 
-    // Best-effort write. If /tmp is unwritable for some reason just
-    // return an empty path — the caller falls back to the bare icon.
     if (!stbi_write_png(path.c_str(), kIconSize, kIconSize, 4,
                         pixels.data(), kIconSize * 4)) {
         return {};
@@ -223,6 +193,20 @@ Tray::Tray(std::string app_name, Callbacks cb)
         return;
     }
     impl_->gtk_initialised_by_us = true;
+
+    // libayatana-appindicator prints "libayatana-appindicator is
+    // deprecated, please use libayatana-appindicator-glib" via GLib's
+    // log machinery on every load. Swallow that one domain.
+    g_log_set_handler(
+        "libayatana-appindicator",
+        static_cast<GLogLevelFlags>(G_LOG_LEVEL_WARNING |
+                                    G_LOG_LEVEL_MESSAGE |
+                                    G_LOG_LEVEL_INFO |
+                                    G_LOG_LEVEL_DEBUG |
+                                    G_LOG_FLAG_FATAL |
+                                    G_LOG_FLAG_RECURSION),
+        +[](const gchar*, GLogLevelFlags, const gchar*, gpointer) {},
+        nullptr);
 
     // Initial icon = bare SVG composite with no overlay dots. The
     // app-indicator library expects the icon to be in an icon theme by

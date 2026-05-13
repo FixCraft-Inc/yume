@@ -82,6 +82,26 @@ bool resolve_secure_materials(client::ClientConfig& cfg, std::string* err) {
         }
         cfg.identity = path->string();
     }
+
+    if (!cfg.anonym_pubkey_material_id.empty()) {
+        std::string e;
+        auto path = sm::material_path(cfg.anonym_pubkey_material_id, &e);
+        if (!path) {
+            if (err) *err = e.empty() ? "anonym public key material unavailable" : e;
+            return false;
+        }
+        cfg.anonym_pubkey = path->string();
+    }
+
+    if (!cfg.tls_ca_material_id.empty()) {
+        std::string e;
+        auto path = sm::material_path(cfg.tls_ca_material_id, &e);
+        if (!path) {
+            if (err) *err = e.empty() ? "TLS CA material unavailable" : e;
+            return false;
+        }
+        cfg.tls_ca_cert = path->string();
+    }
     return true;
 }
 

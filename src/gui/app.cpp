@@ -143,10 +143,12 @@ App::App(Options opts) : opts_(std::move(opts)) {
     pages_.push_back({make_security_page(), NavScope::Client});
     pages_.push_back({make_logs_page(), NavScope::Client});
     pages_.push_back({make_settings_page(), NavScope::Client});
+    pages_.push_back({make_credits_page(), NavScope::Client});
     pages_.push_back({make_server_page(), NavScope::Server});
     pages_.push_back({make_keys_page(), NavScope::Server});
     pages_.push_back({make_logs_page(), NavScope::Server});
     pages_.push_back({make_settings_page(), NavScope::Server});
+    pages_.push_back({make_credits_page(), NavScope::Server});
 
     active_page_ = first_page_for(NavScope::Common);
     last_client_page_ = first_page_for(NavScope::Client);

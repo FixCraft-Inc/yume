@@ -710,6 +710,20 @@ install_deps_linux() {
             argon2 \
             liboqs \
             xz
+        if [[ ${BUILD_GUI} -eq 1 ]]; then
+            step "GUI build requested; installing Dear ImGui / GLFW host deps..."
+            sudo pacman -S --noconfirm --needed \
+                glfw \
+                freetype2 \
+                fontconfig \
+                libxkbcommon \
+                libxinerama \
+                libxcursor \
+                libxi \
+                wayland \
+                libayatana-appindicator \
+                || warn "Some GUI dev packages failed to install; tray may be disabled."
+        fi
         ok "Dependencies installed via pacman."
         return 0
     fi
@@ -731,6 +745,21 @@ install_deps_linux() {
             argon2-devel \
             liboqs-devel \
             xz-devel
+        if [[ ${BUILD_GUI} -eq 1 ]]; then
+            step "GUI build requested; installing Dear ImGui / GLFW host deps..."
+            sudo dnf install -y \
+                glfw-devel \
+                freetype-devel \
+                fontconfig-devel \
+                libxkbcommon-devel \
+                libXinerama-devel \
+                libXcursor-devel \
+                libXi-devel \
+                wayland-devel \
+                libayatana-appindicator-gtk3-devel \
+                mesa-libGL-devel \
+                || warn "Some GUI dev packages failed to install; tray may be disabled."
+        fi
         ok "Dependencies installed via dnf."
         return 0
     fi
@@ -753,6 +782,21 @@ install_deps_linux() {
             libargon2-devel \
             liboqs-devel \
             xz-devel
+        if [[ ${BUILD_GUI} -eq 1 ]]; then
+            step "GUI build requested; installing Dear ImGui / GLFW host deps..."
+            sudo zypper install -y \
+                glfw-devel \
+                freetype2-devel \
+                fontconfig-devel \
+                libxkbcommon-devel \
+                libXinerama-devel \
+                libXcursor-devel \
+                libXi-devel \
+                wayland-devel \
+                libayatana-appindicator3-devel \
+                Mesa-libGL-devel \
+                || warn "Some GUI dev packages failed to install; tray may be disabled."
+        fi
         ok "Dependencies installed via zypper."
         return 0
     fi
@@ -781,6 +825,14 @@ install_deps_macos() {
         argon2 \
         liboqs \
         xz
+    if [[ ${BUILD_GUI} -eq 1 ]]; then
+        step "GUI build requested; installing Dear ImGui / GLFW host deps..."
+        brew install \
+            glfw \
+            freetype \
+            fontconfig \
+            || warn "Some GUI dependencies failed to install via Homebrew."
+    fi
     ok "Dependencies installed via Homebrew."
 }
 

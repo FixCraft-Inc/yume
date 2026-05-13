@@ -135,6 +135,7 @@ set(YUME_GUI_SOURCES
     pages/logs.cpp
     pages/settings.cpp
     pages/tools.cpp
+    pages/credits.cpp
 )
 # tray.cpp is always compiled — internally it gates the libayatana-
 # appindicator code path on YUME_GUI_TRAY=1 and falls back to a stub when

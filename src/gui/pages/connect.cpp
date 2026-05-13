@@ -6,6 +6,7 @@
 
 #include "pages/page.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -24,23 +25,27 @@ namespace {
 
 namespace sm = facade::secure_materials;
 
-void text_input(const char* label, std::string& value, const char* hint = nullptr) {
+// width=0 means "take the full content region". Pass an explicit width
+// when these helpers are placed side-by-side (e.g. host + port) so the
+// inputs don't overflow their slice of the row.
+void text_input(const char* label, std::string& value, const char* hint = nullptr,
+                float width = 0.0f) {
     char buf[512];
     std::strncpy(buf, value.c_str(), sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = 0;
     ImGui::PushID(label);
     ui::field_label(label);
-    ImGui::SetNextItemWidth(ui::form_width());
+    ImGui::SetNextItemWidth(width > 0.0f ? width : ui::form_width());
     if (hint) ImGui::InputTextWithHint("##value", hint, buf, sizeof(buf));
     else ImGui::InputText("##value", buf, sizeof(buf));
     value = buf;
     ImGui::PopID();
 }
 
-void int_input(const char* label, int& value) {
+void int_input(const char* label, int& value, float width = 0.0f) {
     ImGui::PushID(label);
     ui::field_label(label);
-    ImGui::SetNextItemWidth(ui::form_width());
+    ImGui::SetNextItemWidth(width > 0.0f ? width : ui::form_width());
     ImGui::InputInt("##value", &value, 0, 0);
     ImGui::PopID();
 }
@@ -69,15 +74,22 @@ public:
 
         if (ui::begin_auto_card("##connect_essential")) {
             ui::section_label("Server");
-            if (ImGui::BeginTable("##profile_cols", 2, ImGuiTableFlags_SizingStretchProp)) {
-                ImGui::TableSetupColumn("Host", ImGuiTableColumnFlags_WidthStretch, 0.72f);
-                ImGui::TableSetupColumn("Port", ImGuiTableColumnFlags_WidthStretch, 0.28f);
-                ImGui::TableNextColumn();
-                text_input("Server host", cfg_.server, "vpn.example.com");
-                ImGui::TableNextColumn();
-                int_input("Port", cfg_.port);
-                ImGui::EndTable();
-            }
+            // Host + Port live on one row. ImGui tables don't reliably
+            // respect SetNextItemWidth-overrides inside their cells, so
+            // we lay it out manually: a wide host group, then SameLine,
+            // then a fixed-width port group. Reserve enough room for the
+            // port label and a 5-digit value.
+            const float row_avail = ImGui::GetContentRegionAvail().x;
+            const float port_w    = 110.0f * sc;
+            const float gap       = 12.0f * sc;
+            const float host_w    = std::max(120.0f * sc, row_avail - port_w - gap);
+            ImGui::BeginGroup();
+            text_input("Server host", cfg_.server, "vpn.example.com", host_w);
+            ImGui::EndGroup();
+            ImGui::SameLine(0, gap);
+            ImGui::BeginGroup();
+            int_input("Port", cfg_.port, port_w);
+            ImGui::EndGroup();
             text_input("Display name", cfg_.preferred_name, "optional");
 
             ImGui::Dummy(ImVec2(0, 8 * sc));

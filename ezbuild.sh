@@ -18,6 +18,7 @@ MINIMAL=0
 TARGET_ARCH=""
 CLEAN_ONLY=0
 BUILD_DEB=0
+BUILD_GUI=0
 OPENWRT=0
 BUSYBOX=0
 OPENWRT_SDK=""
@@ -96,6 +97,8 @@ Usage: ./ezbuild.sh [options]
 Options:
   --clean                 Remove the build directory and exit
   --minimal               Build a minimal/static YUME
+  --gui                   Also build the optional yume-gui desktop app
+                          (installs libgl/libglfw/appindicator dev pkgs)
   --deb, --package-deb    Build a Debian package with CPack
   --arch <arch>           Target arch metadata/toolchain hint
                           examples: x86_64, aarch64, armv8, armv7, mips
@@ -643,6 +646,21 @@ install_deps_linux() {
             libzstd-dev \
             libargon2-dev \
             liblzma-dev
+        if [[ ${BUILD_GUI} -eq 1 ]]; then
+            step "GUI build requested; installing Dear ImGui / GLFW host deps..."
+            sudo apt-get install -y \
+                libgl-dev \
+                libglfw3-dev \
+                libxkbcommon-dev \
+                libfreetype-dev \
+                libfontconfig-dev \
+                libxinerama-dev \
+                libxcursor-dev \
+                libxi-dev \
+                libwayland-dev \
+                libayatana-appindicator3-dev \
+                || warn "Some GUI dev packages failed to install; tray may be disabled."
+        fi
         if [[ "${WINDOWS_CROSS}" == "1" ]]; then
             sudo apt-get install -y mingw-w64 || warn "mingw-w64 install failed; Windows cross build may fail."
         fi
@@ -808,6 +826,9 @@ build_project() {
     step "Compiling..."
     cmake --build "${build_dir}" -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu || echo 4)"
     ok "Build complete."
+    if [[ -x "${build_dir}/bin/yume-gui" ]]; then
+        info "yume-gui built at ${build_dir}/bin/yume-gui"
+    fi
 }
 
 debian_arch_for_target() {
@@ -859,6 +880,10 @@ main() {
                 ;;
             --deb|--package-deb)
                 BUILD_DEB=1
+                shift
+                ;;
+            --gui|--with-gui)
+                BUILD_GUI=1
                 shift
                 ;;
             --openwrt)
@@ -915,6 +940,16 @@ main() {
             -DYUME_USE_SPDLOG=OFF
             -DCMAKE_BUILD_TYPE=Release
         )
+    fi
+
+    if [[ $BUILD_GUI -eq 1 ]]; then
+        if [[ $MINIMAL -eq 1 ]]; then
+            warn "--gui ignored: minimal/static builds do not include the GUI."
+            BUILD_GUI=0
+        else
+            info "GUI build enabled (-DYUME_BUILD_GUI=ON)."
+            CMAKE_ARGS+=( -DYUME_BUILD_GUI=ON )
+        fi
     fi
 
     if [[ -n "${YUME_CMAKE_ARGS:-}" ]]; then

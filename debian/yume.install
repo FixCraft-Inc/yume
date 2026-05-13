@@ -1,0 +1,5 @@
+usr/bin/yume
+usr/bin/yumed
+usr/share/doc/yume/*
+usr/share/man/man1/yume.1
+usr/share/man/man8/yumed.8

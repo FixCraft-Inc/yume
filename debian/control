@@ -13,7 +13,14 @@ Build-Depends:
  libspdlog-dev,
  libzstd-dev,
  zlib1g-dev,
- libbasefwx-dev
+ libbasefwx-dev,
+# GUI build (skipped when DEB_BUILD_PROFILES contains "nogui"):
+ libgl-dev <!nogui>,
+ libglfw3-dev <!nogui>,
+ libxkbcommon-dev <!nogui>,
+ libfreetype-dev <!nogui>,
+ libfontconfig-dev <!nogui>,
+ libayatana-appindicator3-dev <!nogui>
 Standards-Version: 4.7.4.1
 Rules-Requires-Root: no
 Homepage: https://github.com/F1xGOD/yume
@@ -26,7 +33,8 @@ Depends:
  ${shlibs:Depends},
  ${misc:Depends}
 Suggests:
- tor
+ tor,
+ yume-gui
 Description: stealth transport client and server
  YUME tunnels application streams through an authenticated TLS 1.3 carrier
  that can use an HTTP/2 camouflage preface. It provides a client, a server
@@ -35,3 +43,22 @@ Description: stealth transport client and server
  .
  This Debian build links against the system-installed libbasefwx, which
  provides AES, Argon2id, and ML-KEM-768 post-quantum inner crypto.
+
+Package: yume-gui
+Architecture: any
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+ yume (= ${binary:Version})
+Recommends:
+ libayatana-appindicator3-1
+Description: graphical desktop client for the Yume transport
+ yume-gui is an optional Dear ImGui-based desktop application that
+ embeds the yume_core library directly. It provides client connection
+ management, local server hosting, key management (Ed25519 and
+ ML-KEM-768), a relay directory and chat, log inspection, and a
+ system tray icon with minimise-to-tray behaviour.
+ .
+ This package is independent of the CLI binaries and can be installed
+ alongside them. The CLI continues to be the supported automation
+ surface; the GUI is for desktop users.

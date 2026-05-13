@@ -33,6 +33,10 @@ option(YUME_FEATURE_EXEC "Compile in server-side command execution path" OFF)
 option(YUME_FEATURE_LAN_BRIDGE "Compile in LAN/private-IP bridging path" OFF)
 option(YUME_FEATURE_FULL_CONTROL "Compile in unrestricted address bridging" OFF)
 
+# Optional GUI build (Dear ImGui + GLFW + ImPlot). Disabled by default so
+# stock builds and minimal/embedded builds remain unaffected.
+option(YUME_BUILD_GUI "Build the optional Dear ImGui-based yume-gui desktop app" OFF)
+
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/src/core/version.hpp" _yume_version_line
     REGEX "constexpr const char kVersion\\[\\]")
 string(REGEX MATCH "\"([^\"]+)\"" _yume_version_match "${_yume_version_line}")
@@ -212,6 +216,11 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     install(FILES docs/man/yumed.8
         DESTINATION "${CMAKE_INSTALL_MANDIR}/man8"
     )
+    if(YUME_BUILD_GUI)
+        install(FILES docs/man/yume-gui.1
+            DESTINATION "${CMAKE_INSTALL_MANDIR}/man1"
+        )
+    endif()
 
     set(CPACK_PACKAGE_NAME "yume")
     set(CPACK_PACKAGE_VENDOR "FixCraft")

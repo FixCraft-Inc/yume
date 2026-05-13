@@ -1,0 +1,64 @@
+.TH YUME-GUI 1 "May 2026" "yume" "User Commands"
+.SH NAME
+yume-gui \- desktop UI for the Yume post-quantum stealth transport
+.SH SYNOPSIS
+.B yume-gui
+.RI [ options ]
+.SH DESCRIPTION
+.B yume-gui
+is an optional Dear ImGui-based desktop application. It embeds the
+server facade for local
+.BR yumed (8)
+control and starts the real
+.BR yume (1)
+client runtime in the background, attaching to it through local IPC.
+.PP
+The GUI is a thin layer over the same transport stack used by
+.BR yume (1)
+and
+.BR yumed (8).
+Configuration files written by the GUI are compatible with the CLI.
+.SH OPTIONS
+.TP
+.B --headless
+Run a no-window smoke test of the embedded facade. Useful for verifying
+the build on systems without a display server.
+.TP
+.B --start-minimized
+Open the application hidden. The system tray icon (if present) can be
+used to show the window.
+.TP
+.B --no-tray
+Disable the system tray icon at runtime. Equivalent to a build without
+tray support.
+.TP
+.BI --client-config " path"
+Load the client configuration from
+.IR path
+instead of the platform default.
+.TP
+.BI --server-config " path"
+Load the server configuration from
+.IR path
+instead of the platform default.
+.TP
+.B -h, --help
+Print a help summary and exit.
+.SH FILES
+.TP
+.I ~/.yume/client.json
+Default GUI client profile.
+.TP
+.I ~/.yume/server.json
+Default GUI server configuration.
+.TP
+.I ~/.yume/secure-materials/
+Trusted anonym CAs and imported client auth keys.
+.TP
+.I ~/.yume/keys/
+Default key generation directory.
+.SH SEE ALSO
+.BR yume (1),
+.BR yumed (8)
+.SH AUTHOR
+FixCraft Inc.

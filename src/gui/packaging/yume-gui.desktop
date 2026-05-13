@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Yume
+GenericName=Post-quantum Transport
+Comment=Manage Yume client connections, server hosting, keys and relay channels
+Exec=yume-gui
+Icon=yume-gui
+Terminal=false
+Categories=Network;Security;
+Keywords=vpn;proxy;tls;post-quantum;privacy;
+StartupNotify=true
+StartupWMClass=Yume

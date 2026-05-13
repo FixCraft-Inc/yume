@@ -60,3 +60,17 @@ __pycache__/
 *.tgz
 *.txz
 vendor/
+
+# Debian / dpkg build outputs (cpack, dpkg-buildpackage leftovers)
+*.deb
+*.ddeb
+*.buildinfo
+*.changes
+*.dsc
+*.tar.xz
+*.tar.gz
+*.tar.zst
+*-dbgsym_*
+
+# Cloudflare Wrangler dev cache
+.wrangler/

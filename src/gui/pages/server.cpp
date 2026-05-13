@@ -133,8 +133,7 @@ public:
                         }
                     }
                     ui::field_label("Anonym proof mode");
-                    ImGui::SetNextItemWidth(ui::form_width(320));
-                    if (ImGui::Combo("##anonym_proof_mode", &proof_idx, proof_modes, 3)) {
+                    if (ui::combo("##anonym_proof_mode", &proof_idx, proof_modes, 3, 320.f)) {
                         cfg_.anonym_proof_mode = proof_modes[proof_idx];
                     }
                     text_input("Anonym API", cfg_.anonym_api, "optional");

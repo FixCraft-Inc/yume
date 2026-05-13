@@ -113,8 +113,7 @@ public:
             ui::field_label("Server anonym mode");
             const char* anonym_modes[] = {"Optional", "Required"};
             int anonym_idx = cfg_.require_anonym ? 1 : 0;
-            ImGui::SetNextItemWidth(ui::form_width(320));
-            if (ImGui::Combo("##anonym_mode", &anonym_idx, anonym_modes, 2)) {
+            if (ui::combo("##anonym_mode", &anonym_idx, anonym_modes, 2, 320.f)) {
                 cfg_.require_anonym = anonym_idx == 1;
             }
             ui::muted_text(
@@ -145,8 +144,7 @@ public:
                     if (cfg_.tls_stealth_profile == profiles[i]) { prof_idx = i; break; }
                 }
                 ui::field_label("TLS profile");
-                ImGui::SetNextItemWidth(ui::form_width(320));
-                if (ImGui::Combo("##tls_profile", &prof_idx, profiles, 3)) {
+                if (ui::combo("##tls_profile", &prof_idx, profiles, 3, 320.f)) {
                     cfg_.tls_stealth_profile = profiles[prof_idx];
                 }
                 ui::checkbox("Rotate profile", &cfg_.tls_stealth_rotate);
@@ -158,8 +156,7 @@ public:
                     if (cfg_.relay_mode == relay_modes[i]) { rm_idx = i; break; }
                 }
                 ui::field_label("Relay mode");
-                ImGui::SetNextItemWidth(ui::form_width(320));
-                if (ImGui::Combo("##relay_mode", &rm_idx, relay_modes, 3)) {
+                if (ui::combo("##relay_mode", &rm_idx, relay_modes, 3, 320.f)) {
                     cfg_.relay_mode = relay_modes[rm_idx];
                 }
                 if (ImGui::BeginTable("##relay_flags", 3, ImGuiTableFlags_SizingStretchSame)) {

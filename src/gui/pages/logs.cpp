@@ -51,8 +51,10 @@ public:
         ui::page_header("Logs", "Live runtime events and facade messages.");
 
         const char* levels[] = {"trace", "debug", "info", "warn", "error", "critical"};
-        ImGui::SetNextItemWidth(140);
-        ImGui::Combo("Min level", &level_filter_, levels, IM_ARRAYSIZE(levels));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(ui::colors().muted, "Min level");
+        ImGui::SameLine();
+        ui::combo("##min_level", &level_filter_, levels, IM_ARRAYSIZE(levels), 150.f);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(-280);
         ImGui::InputTextWithHint("##filter", "filter text",

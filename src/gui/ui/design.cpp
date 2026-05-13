@@ -629,6 +629,88 @@ int segmented_control(char const* id,
     return new_current;
 }
 
+bool combo(char const* id, int* current,
+           char const* const* items, int count,
+           float min_width) {
+    if (count <= 0 || !current || !items) return false;
+    if (*current < 0 || *current >= count) *current = 0;
+
+    ImGui::PushID(id);
+
+    ImFont* font = g_fonts.body ? g_fonts.body : ImGui::GetFont();
+    const float font_size = font ? font->FontSize : ImGui::GetFontSize();
+
+    // Width: max of caller minimum / widest label + chrome / available.
+    float widest_label = 0.0f;
+    for (int i = 0; i < count; ++i) {
+        ImVec2 ts = font
+            ? font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, items[i])
+            : ImGui::CalcTextSize(items[i]);
+        if (ts.x > widest_label) widest_label = ts.x;
+    }
+    const float chrome = px(58);  // padding + chevron
+    float w = std::max(px(min_width), widest_label + chrome);
+    const float avail = ImGui::GetContentRegionAvail().x;
+    if (avail > 0 && w > avail) w = avail;
+
+    // Push a softer FrameBg specifically for the combo's preview button
+    // (default theme already styles it, but we override Active so the open
+    // state reads as accent-tinted rather than gray).
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, g_colors.surface_high);
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, alpha(g_colors.accent, 0.16f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, alpha(g_colors.accent, 0.22f));
+    ImGui::PushStyleColor(ImGuiCol_Border, g_colors.outline);
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, g_colors.surface_high);
+    ImGui::PushStyleColor(ImGuiCol_Header, alpha(g_colors.accent, 0.18f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, alpha(g_colors.accent, 0.22f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, alpha(g_colors.accent, 0.32f));
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, px(12));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(16), px(11)));
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, px(12));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(8), px(4)));
+
+    ImGui::SetNextItemWidth(w);
+    bool changed = false;
+    if (ImGui::BeginCombo("##combo", items[*current],
+                          ImGuiComboFlags_HeightLargest)) {
+        for (int i = 0; i < count; ++i) {
+            const bool selected = (i == *current);
+            ImGui::PushID(i);
+            // Use a Selectable so keyboard nav + hover work cleanly.
+            if (ImGui::Selectable(items[i], selected,
+                                  ImGuiSelectableFlags_None,
+                                  ImVec2(0, px(28)))) {
+                *current = i;
+                changed = true;
+            }
+            if (selected) {
+                ImGui::SetItemDefaultFocus();
+                // Draw a tiny accent dot to the right of the selected row.
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                const ImVec2 r_min = ImGui::GetItemRectMin();
+                const ImVec2 r_max = ImGui::GetItemRectMax();
+                const float cy = (r_min.y + r_max.y) * 0.5f;
+                const float cx = r_max.x - px(14);
+                dl->AddCircleFilled(ImVec2(cx, cy), px(3.0f),
+                                    color_u32(g_colors.accent));
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+
+    ImGui::PopStyleVar(5);
+    ImGui::PopStyleColor(11);
+
+    ImGui::PopID();
+    return changed;
+}
+
 bool begin_data_table(char const* id, int columns, ImGuiTableFlags extra_flags) {
     // Material 3 data tables: no harsh borders, generous row height, subtle
     // zebra striping, accent on hover. We override a handful of style vars

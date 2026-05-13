@@ -67,6 +67,16 @@ int segmented_control(char const* id,
                       int count,
                       int current);
 
+// Modern dropdown select. Renders as a pill-style filled control with
+// the current value and a chevron; opens a styled popup on click. Returns
+// true on the frame *current changed. Pass min_width = 0 to size to the
+// widest label.
+bool combo(char const* id,
+           int* current,
+           char const* const* items,
+           int count,
+           float min_width = 0.0f);
+
 // Cleaner replacement for ImGui::BeginTable for data tables. Pushes the
 // design-system colours and spacing; pair with end_data_table().
 bool begin_data_table(char const* id,

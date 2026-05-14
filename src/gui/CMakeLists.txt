@@ -184,12 +184,16 @@ else()
 endif()
 
 if(WIN32)
-    target_link_libraries(yume-gui PRIVATE ws2_32 mswsock)
+    # ws2_32/mswsock: ASIO/transport. shell32: Shell_NotifyIcon. user32:
+    # window class + popup menu. gdi32: DIB section / icon bitmap.
+    # comdlg32: GetOpenFileNameW for the file picker.
+    target_link_libraries(yume-gui PRIVATE
+        ws2_32 mswsock shell32 user32 gdi32 comdlg32 ole32)
     target_compile_definitions(yume-gui PRIVATE
         WIN32_LEAN_AND_MEAN
         NOMINMAX
-        WINVER=0x0600
-        _WIN32_WINNT=0x0600
+        WINVER=0x0601
+        _WIN32_WINNT=0x0601
     )
     # No console window in release builds.
     set_target_properties(yume-gui PROPERTIES WIN32_EXECUTABLE ON)
@@ -200,6 +204,26 @@ if(APPLE)
 endif()
 
 yume_apply_perf_opts(yume-gui)
+
+if(YUME_GUI_PORTABLE)
+    if(MSVC)
+        # Static C runtime: /MT and /MTd. Setting the policy CMP0091 lets
+        # CMAKE_MSVC_RUNTIME_LIBRARY apply per-target.
+        set_property(TARGET yume-gui PROPERTY
+            MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        # Static libgcc/libstdc++ so the binary doesn't drag a runtime
+        # symlink with it. On MinGW this also avoids libstdc++-6.dll /
+        # libgcc_s_seh-1.dll alongside the .exe.
+        target_link_options(yume-gui PRIVATE
+            -static-libgcc -static-libstdc++)
+        if(WIN32)
+            # MinGW: also pin winpthread statically so the .exe runs on a
+            # bare Windows install.
+            target_link_options(yume-gui PRIVATE -static)
+        endif()
+    endif()
+endif()
 
 install(TARGETS yume-gui RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 

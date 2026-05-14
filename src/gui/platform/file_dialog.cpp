@@ -14,8 +14,14 @@
 #include <sstream>
 #include <string>
 
-#if !defined(_WIN32)
-#include <unistd.h>
+#if defined(_WIN32)
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+#  include <commdlg.h>
+#else
+#  include <unistd.h>
 #endif
 
 namespace yume::gui::platform {
@@ -79,9 +85,49 @@ std::optional<std::string> run_picker(std::string const& command, std::string* e
 std::optional<std::filesystem::path> open_file_dialog(std::string const& title,
                                                        std::string* err) {
 #if defined(_WIN32)
-    if (err) *err = "native file picker is not implemented on Windows yet";
-    (void)title;
-    return std::nullopt;
+    // Convert UTF-8 title to wide so the picker shows non-ASCII labels.
+    std::wstring wtitle;
+    if (!title.empty()) {
+        int n = MultiByteToWideChar(CP_UTF8, 0, title.c_str(),
+                                    static_cast<int>(title.size()),
+                                    nullptr, 0);
+        if (n > 0) {
+            wtitle.resize(static_cast<std::size_t>(n));
+            MultiByteToWideChar(CP_UTF8, 0, title.c_str(),
+                                static_cast<int>(title.size()),
+                                wtitle.data(), n);
+        }
+    }
+    wchar_t buf[MAX_PATH]{};
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize     = sizeof(ofn);
+    ofn.hwndOwner       = GetForegroundWindow();
+    ofn.lpstrFile       = buf;
+    ofn.nMaxFile        = MAX_PATH;
+    ofn.lpstrFilter     = L"All files\0*.*\0";
+    ofn.lpstrTitle      = wtitle.empty() ? nullptr : wtitle.c_str();
+    ofn.Flags           = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST |
+                          OFN_NOCHANGEDIR | OFN_EXPLORER;
+    if (!GetOpenFileNameW(&ofn)) {
+        DWORD ext = CommDlgExtendedError();
+        if (err && ext != 0) {
+            char msg[64];
+            std::snprintf(msg, sizeof(msg), "file picker error 0x%lx",
+                          static_cast<unsigned long>(ext));
+            *err = msg;
+        }
+        return std::nullopt;
+    }
+    // Back from wide to UTF-8 for the std::filesystem::path constructor.
+    int len = WideCharToMultiByte(CP_UTF8, 0, buf, -1,
+                                  nullptr, 0, nullptr, nullptr);
+    std::string utf8;
+    if (len > 1) {
+        utf8.resize(static_cast<std::size_t>(len - 1));
+        WideCharToMultiByte(CP_UTF8, 0, buf, -1,
+                            utf8.data(), len, nullptr, nullptr);
+    }
+    return std::filesystem::path(utf8);
 #else
     if (auto zenity = path_lookup("zenity")) {
         auto picked = run_picker(

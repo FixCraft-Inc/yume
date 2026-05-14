@@ -12,6 +12,12 @@ include(CTest)
 if(POLICY CMP0167)
     cmake_policy(SET CMP0167 NEW)
 endif()
+# CMP0091: MSVC runtime library selection via CMAKE_MSVC_RUNTIME_LIBRARY
+# and the equivalent per-target property. Required for YUME_GUI_PORTABLE
+# to switch the GUI to /MT(d) without affecting other targets.
+if(POLICY CMP0091)
+    cmake_policy(SET CMP0091 NEW)
+endif()
 
 option(YUME_USE_BASEFWX "Enable BaseFWX inner crypto support" ON)
 option(YUME_USE_SYSTEM_BASEFWX "Prefer a system-installed BaseFWX (find_package basefwx CONFIG) over the bundled tree" OFF)
@@ -36,6 +42,14 @@ option(YUME_FEATURE_FULL_CONTROL "Compile in unrestricted address bridging" OFF)
 # Optional GUI build (Dear ImGui + GLFW + ImPlot). Disabled by default so
 # stock builds and minimal/embedded builds remain unaffected.
 option(YUME_BUILD_GUI "Build the optional Dear ImGui-based yume-gui desktop app" OFF)
+
+# Portable static GUI: link libgcc/libstdc++ statically on g++/clang, and
+# the static MSVC runtime on Windows so the binary runs without a
+# matching redistributable. Does NOT, on its own, make every transitive
+# dep static — that still needs the underlying packages (OpenSSL, Boost,
+# liboqs) to be present in static form on the host (use the vcpkg
+# x64-windows-static triplet, or build static OpenSSL on Linux).
+option(YUME_GUI_PORTABLE "Statically link the C/C++ runtime into yume-gui" OFF)
 
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/src/core/version.hpp" _yume_version_line
     REGEX "constexpr const char kVersion\\[\\]")

@@ -30,20 +30,36 @@ if(NOT glfw3_FOUND)
     set(GLFW_BUILD_TESTS    OFF CACHE INTERNAL "")
     set(GLFW_BUILD_EXAMPLES OFF CACHE INTERNAL "")
     set(GLFW_INSTALL        OFF CACHE INTERNAL "")
-    # GLFW's Wayland backend needs wayland-scanner at configure time. On
-    # Debian/Ubuntu that binary ships in libwayland-bin (NOT libwayland-
-    # dev), so a partial dep install fails with a baffling "Failed to
-    # find wayland-scanner" deep inside FetchContent. Detect it here and
-    # cleanly disable Wayland support if it's not on PATH — the X11
-    # backend still works on any GNOME/KDE/Sway session via Xwayland.
+    # GLFW's Wayland backend needs three things at configure time:
+    #   - wayland-scanner (binary, Debian: libwayland-bin)
+    #   - libwayland-client headers (Debian: libwayland-dev)
+    #   - the wayland-protocols data package (Debian: wayland-protocols),
+    #     exposed to CMake via the wayland-protocols.pc pkg-config file.
+    # Any one missing causes a baffling failure deep inside FetchContent.
+    # Detect them here; if any are absent, build GLFW with X11 only.
+    # Xwayland keeps things working on GNOME/KDE/Sway sessions.
     if(UNIX AND NOT APPLE)
         find_program(YUME_WAYLAND_SCANNER wayland-scanner)
-        if(NOT YUME_WAYLAND_SCANNER)
+        set(YUME_WAYLAND_PROTOCOLS_FOUND OFF)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(YUME_WAYLAND_PROTOCOLS_PC QUIET wayland-protocols)
+            if(YUME_WAYLAND_PROTOCOLS_PC_FOUND)
+                set(YUME_WAYLAND_PROTOCOLS_FOUND ON)
+            endif()
+        endif()
+        if(NOT YUME_WAYLAND_SCANNER OR NOT YUME_WAYLAND_PROTOCOLS_FOUND)
+            set(_missing "")
+            if(NOT YUME_WAYLAND_SCANNER)
+                set(_missing "${_missing} wayland-scanner (libwayland-bin)")
+            endif()
+            if(NOT YUME_WAYLAND_PROTOCOLS_FOUND)
+                set(_missing "${_missing} wayland-protocols")
+            endif()
             message(WARNING
-                "[yume-gui] wayland-scanner not found; building GLFW without "
-                "the Wayland backend (X11 only). Install 'libwayland-bin' and "
-                "'wayland-protocols' on Debian/Ubuntu (or the equivalent for "
-                "your distro) to enable native Wayland.")
+                "[yume-gui] missing for native Wayland:${_missing}. "
+                "Building GLFW with the X11 backend only; the app will run "
+                "under Xwayland on Wayland sessions. Install the listed "
+                "packages and reconfigure to enable native Wayland.")
             set(GLFW_BUILD_WAYLAND OFF CACHE INTERNAL "")
             set(GLFW_BUILD_X11     ON  CACHE INTERNAL "")
         endif()

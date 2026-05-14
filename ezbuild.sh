@@ -705,24 +705,28 @@ install_deps_linux() {
             liblzma-dev
         if [[ ${BUILD_GUI} -eq 1 ]]; then
             step "GUI build requested; installing Dear ImGui / GLFW host deps..."
-            # libwayland-bin holds wayland-scanner (GLFW needs it to
-            # generate protocol bindings); libwayland-dev is just the
-            # headers. wayland-protocols supplies the xml descriptors
-            # scanner reads. Without all three GLFW configure aborts.
-            sudo apt-get install -y \
-                libgl-dev \
-                libglfw3-dev \
-                libxkbcommon-dev \
-                libfreetype-dev \
-                libfontconfig-dev \
-                libxinerama-dev \
-                libxcursor-dev \
-                libxi-dev \
-                libwayland-dev \
-                libwayland-bin \
-                wayland-protocols \
-                libayatana-appindicator3-dev \
-                || warn "Some GUI dev packages failed to install; tray may be disabled."
+            # Install one package at a time so a missing one (e.g.
+            # wayland-protocols on an older or trimmed apt source) is a
+            # warning, not a fatal error that prevents the rest from
+            # being installed. The CMake side then falls back to X11.
+            local gui_packages=(
+                libgl-dev
+                libglfw3-dev
+                libxkbcommon-dev
+                libfreetype-dev
+                libfontconfig-dev
+                libxinerama-dev
+                libxcursor-dev
+                libxi-dev
+                libwayland-dev
+                libwayland-bin
+                wayland-protocols
+                libayatana-appindicator3-dev
+            )
+            for pkg in "${gui_packages[@]}"; do
+                sudo apt-get install -y "$pkg" \
+                    || warn "apt-get could not install '${pkg}'; continuing."
+            done
         fi
         if [[ "${WINDOWS_CROSS}" == "1" ]]; then
             sudo apt-get install -y mingw-w64 || warn "mingw-w64 install failed; Windows cross build may fail."

@@ -19,6 +19,7 @@ TARGET_ARCH=""
 CLEAN_ONLY=0
 BUILD_DEB=0
 BUILD_GUI=0
+SKIP_PULL=0
 OPENWRT=0
 BUSYBOX=0
 OPENWRT_SDK=""
@@ -117,6 +118,62 @@ EOF
 
 need_cmd() {
     command -v "$1" >/dev/null 2>&1
+}
+
+# Fetch the tracking branch and fast-forward if remote is ahead. We never
+# rewrite local commits, never touch a dirty tree, and we only operate on
+# the current branch's tracking remote. Failure is a warning, not fatal,
+# so an offline laptop still builds.
+maybe_sync_repo() {
+    if [[ $SKIP_PULL -eq 1 ]]; then
+        info "Repo sync skipped (--no-pull)."
+        return 0
+    fi
+    if ! need_cmd git; then
+        return 0
+    fi
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        return 0
+    fi
+    local upstream
+    if ! upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null); then
+        info "No upstream tracking branch; skipping repo sync."
+        return 0
+    fi
+    if [[ -n "$(git status --porcelain 2>/dev/null)" ]]; then
+        warn "Working tree is dirty; skipping repo sync."
+        return 0
+    fi
+    step "Checking ${upstream} for newer commits..."
+    if ! git fetch --quiet 2>/dev/null; then
+        warn "git fetch failed; building with the current checkout."
+        return 0
+    fi
+    local local_sha remote_sha base_sha
+    local_sha=$(git rev-parse @ 2>/dev/null || echo "")
+    remote_sha=$(git rev-parse "@{upstream}" 2>/dev/null || echo "")
+    base_sha=$(git merge-base @ "@{upstream}" 2>/dev/null || echo "")
+    if [[ -z "$local_sha" || -z "$remote_sha" ]]; then
+        return 0
+    fi
+    if [[ "$local_sha" == "$remote_sha" ]]; then
+        ok "Repo is up to date with ${upstream}."
+        return 0
+    fi
+    if [[ "$local_sha" == "$base_sha" ]]; then
+        step "Local branch is behind ${upstream}; fast-forwarding..."
+        if git merge --ff-only --quiet "@{upstream}"; then
+            ok "Pulled new commits from ${upstream}."
+        else
+            warn "Fast-forward failed; continuing with the existing checkout."
+        fi
+        return 0
+    fi
+    if [[ "$remote_sha" == "$base_sha" ]]; then
+        info "Local branch has commits not on ${upstream}; nothing to pull."
+        return 0
+    fi
+    warn "Local and ${upstream} have diverged; build will use the local checkout. Resolve manually."
 }
 
 init_lock_root() {
@@ -938,6 +995,10 @@ main() {
                 BUILD_GUI=1
                 shift
                 ;;
+            --no-pull|--skip-pull)
+                SKIP_PULL=1
+                shift
+                ;;
             --openwrt)
                 OPENWRT=1
                 MINIMAL=1
@@ -982,6 +1043,8 @@ main() {
     fi
 
     info "YUME ezbuild starting..."
+
+    maybe_sync_repo
 
     if [[ $MINIMAL -eq 1 ]]; then
         warn "Minimal mode: enabling static build and BaseFWX."

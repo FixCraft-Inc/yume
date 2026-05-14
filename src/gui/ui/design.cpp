@@ -607,7 +607,8 @@ bool checkbox(char const* label, bool* value) {
 int segmented_control(char const* id,
                       char const* const* labels,
                       int count,
-                      int current) {
+                      int current,
+                      float total_width) {
     if (count <= 0 || !labels) return current;
     ImGui::PushID(id);
 
@@ -616,18 +617,26 @@ int segmented_control(char const* id,
     const float seg_h = px(40);
     const float h_pad = px(20);
 
-    // Width: equally split available area for a balanced look, but ensure
-    // each segment is wide enough to fit its label.
-    float min_seg_w = px(96);
-    for (int i = 0; i < count; ++i) {
-        ImVec2 ts = font
-            ? font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, labels[i])
-            : ImGui::CalcTextSize(labels[i]);
-        min_seg_w = std::max(min_seg_w, ts.x + h_pad * 2.0f);
+    // Per-segment minimum that adapts to the actual label.
+    //   - explicit total_width: divide it, no minimum padding inflation
+    //   - implicit (tabs):      96px floor so big buttons read as tabs
+    // Without the explicit branch, a "15s/60s/5m/15m" picker would each
+    // claim 96px and overflow narrow card headers.
+    float seg_w;
+    if (total_width > 0.0f) {
+        seg_w = total_width / static_cast<float>(count);
+    } else {
+        float min_seg_w = px(96);
+        for (int i = 0; i < count; ++i) {
+            ImVec2 ts = font
+                ? font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, labels[i])
+                : ImGui::CalcTextSize(labels[i]);
+            min_seg_w = std::max(min_seg_w, ts.x + h_pad * 2.0f);
+        }
+        const float avail = std::max(min_seg_w * count,
+                                     ImGui::GetContentRegionAvail().x);
+        seg_w = avail / static_cast<float>(count);
     }
-    const float avail = std::max(min_seg_w * count,
-                                 ImGui::GetContentRegionAvail().x);
-    const float seg_w = avail / static_cast<float>(count);
 
     ImVec2 origin = ImGui::GetCursorScreenPos();
     ImVec2 size(seg_w * count, seg_h);

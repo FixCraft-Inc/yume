@@ -71,10 +71,15 @@ bool checkbox(char const* label, bool* value);
 
 // Pill / segmented-button tab control. Returns the (possibly-changed) active
 // index. Renders as a single rounded container with one segment highlighted.
+//
+// total_width=0 fills the available content region (good for tabs).
+// Pass a positive value when you want a compact picker that doesn't push
+// the rest of the row off-screen (e.g. inline next to a card title).
 int segmented_control(char const* id,
                       char const* const* labels,
                       int count,
-                      int current);
+                      int current,
+                      float total_width = 0.0f);
 
 // Modern dropdown select. Renders as a pill-style filled control with
 // the current value and a chevron; opens a styled popup on click. Returns

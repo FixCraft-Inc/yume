@@ -74,7 +74,7 @@ public:
 
         ui::page_header("Overview", "Connection and local daemon status.");
 
-        if (ui::begin_card("##hero", ImVec2(0, 170 * sc))) {
+        if (ui::begin_auto_card("##hero")) {
             if (ImGui::BeginTable("##status_table", 2, ImGuiTableFlags_SizingStretchSame)) {
                 ImGui::TableNextColumn();
                 ui::section_label("Client");
@@ -95,8 +95,7 @@ public:
 
         ImGui::Dummy(ImVec2(0, 8 * sc));
 
-        const float actions_h = last_error_.empty() ? 160 * sc : 204 * sc;
-        if (ui::begin_card("##actions", ImVec2(0, actions_h))) {
+        if (ui::begin_auto_card("##actions")) {
             const bool server_running = ctx.server && ctx.server->running();
             if (server_running) {
                 if (ui::primary_button("Stop local server", ImVec2(190 * sc, 48 * sc))) {
@@ -169,15 +168,15 @@ public:
         }
         if (!client_running && !server_running) {
             ImGui::Dummy(ImVec2(0, 8 * sc));
-            if (ui::begin_card("##traffic_idle", ImVec2(0, 200 * sc))) {
-                const float h = 200 * sc;
-                const float pad = (h - 60 * sc) * 0.5f;
-                if (pad > 0) ImGui::Dummy(ImVec2(0, pad));
+            if (ui::begin_auto_card("##traffic_idle")) {
                 ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
                 const char* msg = "Start the client or server to see live traffic.";
                 ImVec2 ts = ImGui::CalcTextSize(msg);
                 ImGui::SetCursorPosX((ImGui::GetWindowSize().x - ts.x) * 0.5f);
+                ImGui::Dummy(ImVec2(0, 36 * sc));
+                ImGui::SetCursorPosX((ImGui::GetWindowSize().x - ts.x) * 0.5f);
                 ImGui::TextUnformatted(msg);
+                ImGui::Dummy(ImVec2(0, 36 * sc));
                 ImGui::PopStyleColor();
             }
             ui::end_card();
@@ -196,27 +195,33 @@ public:
                              float sc,
                              int& window_idx) {
         auto const& c = ui::colors();
-        const float card_h = 320 * sc;
-        if (!ui::begin_card(id, ImVec2(0, card_h))) { ui::end_card(); return; }
+        // Auto-sizing card: it grows to fit the title row, plot, and stats
+        // row. A fixed height was the source of the inner scrollbar.
+        if (!ui::begin_auto_card(id)) { ui::end_card(); return; }
 
-        // Header row: title left, time-window pill selector right.
-        ImGui::BeginGroup();
+        // Compact picker: each segment hugs its label, ~56px each. Avoids
+        // a 384px selector that overflows narrow card widths.
+        const float seg_min   = 56.0f * sc;
+        const float seg_total = seg_min * 4.0f;
+
+        // Header row: title left, picker right. We don't BeginGroup the
+        // title — we render it inline so SameLine + SetCursorPosX places
+        // the picker at the card's right edge on the same line.
         if (ui::fonts().section) ImGui::PushFont(ui::fonts().section);
         ImGui::TextUnformatted(title);
         if (ui::fonts().section) ImGui::PopFont();
-        ImGui::EndGroup();
+
+        ImGui::SameLine();
+        const float right_edge = ImGui::GetContentRegionMax().x;
+        const float picker_x   = std::max(ImGui::GetCursorPosX(),
+                                          right_edge - seg_total);
+        ImGui::SetCursorPosX(picker_x);
         {
             char const* labels[4];
             for (int i = 0; i < 4; ++i) labels[i] = kTrafficWindows[i].label;
-            // Compute width of the segmented control to right-align it.
-            float seg_w = 0;
-            for (int i = 0; i < 4; ++i) {
-                seg_w += ImGui::CalcTextSize(labels[i]).x + 20.0f * sc;
-            }
-            const float row_w = ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x;
-            ImGui::SameLine(std::max(0.0f, row_w - seg_w - 8.0f * sc));
             int new_idx = ui::segmented_control(
-                (std::string(id) + "_win").c_str(), labels, 4, window_idx);
+                (std::string(id) + "_win").c_str(), labels, 4, window_idx,
+                seg_total);
             if (new_idx != window_idx) window_idx = new_idx;
         }
         ImGui::Dummy(ImVec2(0, 8 * sc));
@@ -233,15 +238,14 @@ public:
             }
         }
 
-        // Plot region.
-        const float plot_h = card_h - 130 * sc;
+        // Plot region — fixed height; the card auto-sizes around it.
+        const float plot_h = 180.0f * sc;
         const ImVec2 plot_origin = ImGui::GetCursorScreenPos();
         const float plot_w = ImGui::GetContentRegionAvail().x;
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        // Background.
         dl->AddRectFilled(plot_origin,
                           ImVec2(plot_origin.x + plot_w, plot_origin.y + plot_h),
-                          ImGui::GetColorU32(c.surface), 12.0f * sc);
+                          ImGui::GetColorU32(c.surface_high), 12.0f * sc);
 
         if (samples.size() >= 2) {
             draw_sparkline(dl, plot_origin, plot_w, plot_h, samples, c.accent, c.success);
@@ -263,7 +267,7 @@ public:
         render_rate_stat("DN", c.success, rx_rate_bps, bytes_received, sc);
         if (show_profile_meta && !client.profile.empty()) {
             ImGui::SameLine(0.0f, 24 * sc);
-            ImGui::TextColored(c.muted, "· %s / %s",
+            ImGui::TextColored(c.muted, "%s / %s",
                                client.profile.c_str(),
                                client.inner_mode.empty() ? "off" : client.inner_mode.c_str());
         }

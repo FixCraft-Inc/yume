@@ -81,8 +81,13 @@ public:
     // No-op if the tray failed to initialise.
     void pump_events();
 
-private:
+    // Opaque per-platform state. Declared public so the Windows tray's
+    // free-function WndProc (tray_wnd_proc in tray.cpp) can reach the
+    // callbacks + cached info without a friend declaration that would
+    // require pulling <windows.h> into this header.
     struct Impl;
+
+private:
     std::unique_ptr<Impl> impl_;
 };
 

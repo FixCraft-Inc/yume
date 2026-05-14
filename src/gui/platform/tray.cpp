@@ -508,8 +508,12 @@ Tray::Tray(std::string app_name, Callbacks cb)
     nid.uID              = static_cast<UINT>(ID_TRAY);
     nid.uFlags           = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_YUME_TRAY;
+    // IDI_APPLICATION expands via MAKEINTRESOURCE; on MinGW (no UNICODE
+    // by default) that resolves to MAKEINTRESOURCEA returning char*,
+    // which the W-suffixed loader rejects. Pin the wide form by hand.
     nid.hIcon            = impl_->hicon ? impl_->hicon
-                                        : LoadIconW(nullptr, IDI_APPLICATION);
+                                        : LoadIconW(nullptr,
+                                                    MAKEINTRESOURCEW(32512));
     {
         std::wstring tip = L"Yume";
         const std::size_t cap = sizeof(nid.szTip) / sizeof(nid.szTip[0]);

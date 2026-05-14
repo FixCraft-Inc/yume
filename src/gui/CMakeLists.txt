@@ -235,9 +235,22 @@ if(WIN32)
     target_compile_definitions(yume-gui PRIVATE
         WIN32_LEAN_AND_MEAN
         NOMINMAX
-        WINVER=0x0601
-        _WIN32_WINNT=0x0601
     )
+    if(MSVC)
+        target_compile_definitions(yume-gui PRIVATE
+            WINVER=0x0601 _WIN32_WINNT=0x0601)
+    else()
+        # MinGW's gcc spec already injects -DWINVER / -D_WIN32_WINNT
+        # via the toolchain's defaults. Re-adding them through
+        # target_compile_definitions triggers "WINVER redefined"
+        # warnings on every TU. Undefine first, then pin the floor
+        # we actually need (Win7 for Shell_NotifyIcon's NOTIFYICONDATAW
+        # flags we use).
+        target_compile_options(yume-gui PRIVATE
+            -UWINVER -DWINVER=0x0601
+            -U_WIN32_WINNT -D_WIN32_WINNT=0x0601
+        )
+    endif()
     # No console window in release builds.
     set_target_properties(yume-gui PROPERTIES WIN32_EXECUTABLE ON)
 endif()

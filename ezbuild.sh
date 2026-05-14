@@ -1276,31 +1276,60 @@ main() {
             error "Windows cross build requires VCPKG_ROOT or vendor/windows-x86_64."
             exit 1
         fi
-        # CMAKE_FIND_ROOT_PATH + MODE_*=ONLY makes find_package /
-        # find_path / pkg_check_modules stop walking into /usr/include
-        # for host packages. Without this, --gui's freetype + fontconfig
-        # probes pull -I/usr/include into every translation unit, which
-        # then chains <linux/errno.h> in and breaks the build because
-        # mingw has no asm/errno.h. Programs (cmake itself, etc.) stay
-        # findable via NEVER on the program-mode knob.
-        local _mingw_sysroot="${WINDOWS_TOOLCHAIN_PREFIX#/}"
-        local _mingw_root="/usr/${WINDOWS_TOOLCHAIN_PREFIX}"
+        # Cross-build isolation. CMAKE_SYSROOT is the one that matters:
+        # it sets gcc's `--sysroot=`, which constrains the C preprocessor
+        # itself, so `#include_next <errno.h>` cannot fall through into
+        # /usr/include/errno.h -> /usr/include/linux/errno.h ->
+        # /usr/include/asm/errno.h (which doesn't exist for cross builds
+        # on Debian). CMAKE_FIND_ROOT_PATH + the four MODE_* knobs do
+        # the same for find_package / pkg_check_modules. Without both,
+        # --gui's freetype/fontconfig probes leak -I/usr/include in.
+        # Probe the sysroot via the compiler itself for robustness;
+        # fall back to the standard Debian path. fullau.sh uses the
+        # same approach.
+        local _mingw_root=""
+        _mingw_root="$(${WINDOWS_TOOLCHAIN_PREFIX}-gcc -print-sysroot 2>/dev/null | sed 's:/*$::' || true)"
+        if [[ -z "${_mingw_root}" || "${_mingw_root}" == "/" ]] \
+           && [[ -d "/usr/${WINDOWS_TOOLCHAIN_PREFIX}" ]]; then
+            _mingw_root="/usr/${WINDOWS_TOOLCHAIN_PREFIX}"
+        fi
         CMAKE_ARGS+=(
             "-DCMAKE_SYSTEM_NAME=Windows"
+            "-DCMAKE_SYSTEM_PROCESSOR=x86_64"
             "-DCMAKE_C_COMPILER=${WINDOWS_TOOLCHAIN_PREFIX}-gcc"
             "-DCMAKE_CXX_COMPILER=${WINDOWS_TOOLCHAIN_PREFIX}-g++"
             "-DCMAKE_RC_COMPILER=${WINDOWS_TOOLCHAIN_PREFIX}-windres"
-            "-DCMAKE_FIND_ROOT_PATH=${_mingw_root};${VCPKG_PREFIX}"
-            "-DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER"
-            "-DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY"
-            "-DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY"
-            "-DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY"
             "-DOPENSSL_ROOT_DIR=${VCPKG_PREFIX}"
             "-DCMAKE_PREFIX_PATH=${VCPKG_PREFIX}"
             "-DBoost_DIR=${VCPKG_PREFIX}/share/boost"
             "-DBASEFWX_USE_VENDOR_DEPS=OFF"
+            "-DYUME_USE_SPDLOG=OFF"
             "-DYUME_FORCE_CROSS=ON"
+            # Force vcpkg's nlohmann_json so every TU sees the same
+            # inline-namespace version tag. With the bundled fallback
+            # left on, yume_transport_core picks third_party/ (3.11.3)
+            # while yume_client_lib picks vcpkg (3.12.0); the mangled
+            # symbols don't match and yume.exe fails to link.
+            "-DYUME_USE_BUNDLED_NLOHMANN=OFF"
         )
+        if [[ -n "${_mingw_root}" && -d "${_mingw_root}" ]]; then
+            CMAKE_ARGS+=(
+                "-DCMAKE_SYSROOT=${_mingw_root}"
+                "-DCMAKE_FIND_ROOT_PATH=${_mingw_root};${VCPKG_PREFIX}"
+                "-DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER"
+                "-DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY"
+                "-DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY"
+                "-DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY"
+            )
+        else
+            CMAKE_ARGS+=(
+                "-DCMAKE_FIND_ROOT_PATH=${VCPKG_PREFIX}"
+                "-DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER"
+                "-DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY"
+                "-DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY"
+                "-DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY"
+            )
+        fi
         if [[ ${use_vcpkg_toolchain} -eq 1 ]]; then
             CMAKE_ARGS+=(
                 "-DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"

@@ -9,6 +9,14 @@
 
 #include <openssl/pem.h>
 
+// vcpkg's modularised Boost (x64-mingw-dynamic) doesn't drag these in
+// via <boost/asio.hpp> the way a system Boost on Debian does. Pull
+// them in explicitly so cross-compiling for Windows doesn't fail with
+// "deadline_timer is not a member" / "posix_time::milliseconds is not
+// a member".
+#include <boost/asio/deadline_timer.hpp>
+#include <boost/date_time/posix_time/posix_time_duration.hpp>
+
 #include <chrono>
 #include <algorithm>
 #include <array>
@@ -2249,9 +2257,15 @@ void Session::handle_open(const protocol::Frame& frame) {
         remote->connect_started_ms = util::now_ms();
         connect_timer->expires_from_now(boost::posix_time::milliseconds(kConnectTimeoutMs));
 
+        // Capture default `=` so mingw gcc 14 can resolve the nested
+        // shared_ptr captures (`connect_timer`, `connect_timed_out`)
+        // from continue_tcp_open's body. With explicit-only captures,
+        // mingw gcc reports "not captured" even though they're listed;
+        // Linux gcc accepts the same source. Same applies to the
+        // resolver_handler below.
         boost::asio::async_connect(remote->socket, allowed,
                                    boost::asio::bind_executor(self->strand_,
-                                                              [self, stream_id, remote, connect_timer, connect_timed_out](const boost::system::error_code& ec2,
+                                                              [=](const boost::system::error_code& ec2,
                                                                                                                           const boost::asio::ip::tcp::endpoint&) {
                                                                   connect_timer->cancel();
                                                                   const int64_t connect_ms = remote->connect_started_ms > 0
@@ -2309,7 +2323,7 @@ void Session::handle_open(const protocol::Frame& frame) {
             }));
     };
 
-    auto resolver_handler = [self, stream_id = frame.header.stream_id, remote, resolver_timer, resolve_timed_out, continue_tcp_open](const boost::system::error_code& ec,
+    auto resolver_handler = [=, stream_id = frame.header.stream_id](const boost::system::error_code& ec,
                                                                                                                                     const boost::asio::ip::tcp::resolver::results_type& results) {
         resolver_timer->cancel();
         const int64_t resolve_ms = remote->resolve_started_ms > 0 ? (util::now_ms() - remote->resolve_started_ms) : 0;

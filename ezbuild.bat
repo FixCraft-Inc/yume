@@ -169,13 +169,23 @@ if "%PORTABLE%"=="1" (
 REM ---------- Install required deps via vcpkg if available -------------------
 if defined VCPKG_ROOT (
     if exist "%VCPKG_ROOT%\vcpkg.exe" (
-        echo [step] Ensuring vcpkg dependencies are present ^(%TRIPLET%^)...
+        echo [step] Ensuring vcpkg dependencies are present ^(%TRIPLET%^).
+        echo [info] First-run heads-up: vcpkg compiles ports from source.
+        echo        OpenSSL ~5 min, Boost ~10-15 min, liboqs ~5 min, plus
+        echo        the smaller ones. 30-60 min for a full first run on
+        echo        a 4-core box is normal. Cached after that.
         set "VCPKG_PKGS=openssl boost-asio boost-system nlohmann-json spdlog zstd liboqs"
         if "%BUILD_GUI%"=="1" (
             set "VCPKG_PKGS=!VCPKG_PKGS! glfw3 freetype"
         )
+        REM Stream vcpkg's own output so the user can see compilation
+        REM progress. Print a per-package banner first so each phase has
+        REM a clear "I'm working on X now" marker even when vcpkg goes
+        REM quiet during long compile steps.
         for %%P in (!VCPKG_PKGS!) do (
-            "%VCPKG_ROOT%\vcpkg.exe" install %%P:%TRIPLET% >nul
+            echo.
+            echo [step] vcpkg install %%P:%TRIPLET%
+            "%VCPKG_ROOT%\vcpkg.exe" install %%P:%TRIPLET%
             if errorlevel 1 (
                 echo [warn] vcpkg install %%P failed; configure may complain.
             )

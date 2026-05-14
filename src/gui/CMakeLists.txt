@@ -8,11 +8,20 @@
 
 include(FetchContent)
 find_package(OpenGL REQUIRED)
-find_package(Freetype QUIET)
 
-find_package(PkgConfig QUIET)
-if(PkgConfig_FOUND)
-    pkg_check_modules(FONTCONFIG QUIET fontconfig)
+# When cross-compiling for Windows from Linux, skip host pkg-config /
+# find_package for freetype + fontconfig. Both helpers happily return
+# the host's /usr/include paths because they don't know to use the
+# mingw sysroot, and that drags <linux/errno.h> into every translation
+# unit on Debian. fontconfig is a Linux/X11 thing anyway; on Windows
+# we use the system font enumeration. Freetype-on-Windows comes through
+# the existing vcpkg/vendor path, not /usr.
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    find_package(Freetype QUIET)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(FONTCONFIG QUIET fontconfig)
+    endif()
 endif()
 
 set(YUME_IMGUI_TAG  "v1.91.5"  CACHE STRING "Dear ImGui git tag")

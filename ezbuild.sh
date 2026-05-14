@@ -1276,11 +1276,25 @@ main() {
             error "Windows cross build requires VCPKG_ROOT or vendor/windows-x86_64."
             exit 1
         fi
+        # CMAKE_FIND_ROOT_PATH + MODE_*=ONLY makes find_package /
+        # find_path / pkg_check_modules stop walking into /usr/include
+        # for host packages. Without this, --gui's freetype + fontconfig
+        # probes pull -I/usr/include into every translation unit, which
+        # then chains <linux/errno.h> in and breaks the build because
+        # mingw has no asm/errno.h. Programs (cmake itself, etc.) stay
+        # findable via NEVER on the program-mode knob.
+        local _mingw_sysroot="${WINDOWS_TOOLCHAIN_PREFIX#/}"
+        local _mingw_root="/usr/${WINDOWS_TOOLCHAIN_PREFIX}"
         CMAKE_ARGS+=(
             "-DCMAKE_SYSTEM_NAME=Windows"
             "-DCMAKE_C_COMPILER=${WINDOWS_TOOLCHAIN_PREFIX}-gcc"
             "-DCMAKE_CXX_COMPILER=${WINDOWS_TOOLCHAIN_PREFIX}-g++"
             "-DCMAKE_RC_COMPILER=${WINDOWS_TOOLCHAIN_PREFIX}-windres"
+            "-DCMAKE_FIND_ROOT_PATH=${_mingw_root};${VCPKG_PREFIX}"
+            "-DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER"
+            "-DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY"
+            "-DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY"
+            "-DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY"
             "-DOPENSSL_ROOT_DIR=${VCPKG_PREFIX}"
             "-DCMAKE_PREFIX_PATH=${VCPKG_PREFIX}"
             "-DBoost_DIR=${VCPKG_PREFIX}/share/boost"

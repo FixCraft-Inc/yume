@@ -78,16 +78,57 @@ if "%SKIP_PULL%"=="0" (
 )
 
 REM ---------- vcpkg discovery -------------------------------------------------
+REM 1. Honour an explicit VCPKG_ROOT (already-set or passed in via env).
+REM 2. Read %LOCALAPPDATA%\vcpkg\vcpkg.path.txt - this file is what
+REM    `vcpkg integrate install` writes, and its single line is the
+REM    absolute path to the vcpkg root. Most reliable signal.
+REM 3. `where vcpkg` (works only when vcpkg is on PATH).
+REM 4. Probe common install locations.
+if defined VCPKG_ROOT (
+    if not exist "%VCPKG_ROOT%\vcpkg.exe" set "VCPKG_ROOT="
+)
 if "%VCPKG_ROOT%"=="" (
-    for /f "delims=" %%a in ('where vcpkg 2^>nul') do (
-        for %%b in ("%%a\..") do set "VCPKG_ROOT=%%~fb"
+    if exist "%LOCALAPPDATA%\vcpkg\vcpkg.path.txt" (
+        for /f "usebackq delims=" %%a in ("%LOCALAPPDATA%\vcpkg\vcpkg.path.txt") do (
+            if exist "%%a\vcpkg.exe" set "VCPKG_ROOT=%%a"
+        )
     )
 )
 if "%VCPKG_ROOT%"=="" (
-    if exist "%USERPROFILE%\vcpkg\vcpkg.exe" set "VCPKG_ROOT=%USERPROFILE%\vcpkg"
+    for /f "delims=" %%a in ('where vcpkg 2^>nul') do (
+        if exist "%%~dpavcpkg.exe" (
+            set "_vcpkg_dir=%%~dpa"
+            REM Strip trailing backslash.
+            if defined _vcpkg_dir set "VCPKG_ROOT=!_vcpkg_dir:~0,-1!"
+        )
+    )
 )
-if "%VCPKG_ROOT%"=="" (
-    if exist "C:\vcpkg\vcpkg.exe" set "VCPKG_ROOT=C:\vcpkg"
+REM Common install locations. Order roughly matches how often each
+REM appears in the wild on Windows dev boxes.
+for %%P in (
+    "%USERPROFILE%\vcpkg"
+    "%USERPROFILE%\source\vcpkg"
+    "%USERPROFILE%\source\repos\vcpkg"
+    "%USERPROFILE%\.vcpkg-root"
+    "C:\vcpkg"
+    "C:\src\vcpkg"
+    "C:\dev\vcpkg"
+    "C:\tools\vcpkg"
+    "D:\vcpkg"
+    "D:\src\vcpkg"
+) do (
+    if "!VCPKG_ROOT!"=="" (
+        if exist "%%~P\vcpkg.exe" set "VCPKG_ROOT=%%~P"
+    )
+)
+if defined VCPKG_ROOT (
+    echo [info] vcpkg found at !VCPKG_ROOT!
+) else (
+    echo [warn] vcpkg not detected. Tried %%LOCALAPPDATA%%\vcpkg\vcpkg.path.txt,
+    echo        where, and the usual install locations. If you have vcpkg
+    echo        somewhere else, run ezbuild.bat with VCPKG_ROOT set:
+    echo            set VCPKG_ROOT=C:\src\vcpkg
+    echo            ezbuild.bat --gui
 )
 
 REM ---------- Triplet selection ----------------------------------------------

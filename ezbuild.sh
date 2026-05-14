@@ -203,6 +203,97 @@ cleanup_temp_assets() {
     if [[ "${YUME_TMP_ROOT_AUTO:-0}" == "1" && -n "${YUME_TMP_ROOT:-}" ]]; then
         rm -rf "${YUME_TMP_ROOT}"
     fi
+    # If we unpacked the vendor archive on demand, drop the marker
+    # file but leave the extracted tree in place when the build
+    # failed — that way the user can inspect what got staged before
+    # rerunning. cleanup_unpacked_vendor() does the actual removal
+    # and is called explicitly on the success path so a hard failure
+    # never wipes the only artifact the user has.
+    :
+}
+
+YUME_VENDOR_UNPACK_MARKER=".ezbuild-vendor-unpacked"
+
+# Where the prebuilt tarball lives. The same archive ships every
+# vendored target (linux-x86_64, macos-arm64, …), so a single tarball
+# covers Linux/macOS native and the WINDOWS_CROSS path.
+YUME_VENDOR_ARCHIVE_DEFAULT="${PWD}/yume-vendor-prebuilt.tar.xz"
+
+# Extracts yume-vendor-prebuilt.tar.xz into ./vendor/ on demand and
+# remembers (in the marker file) exactly which top-level entries we
+# created, so cleanup_unpacked_vendor() removes only those — never a
+# user-staged vendor/<arch>/ that pre-existed.
+ensure_vendor_for_host() {
+    local needed_key="${1:-}"
+    local archive="${YUME_VENDOR_ARCHIVE:-${YUME_VENDOR_ARCHIVE_DEFAULT}}"
+
+    # If the target vendor dir is already there, do nothing — the
+    # repo maintainer either checked it in or unpacked it manually,
+    # and either way we leave it alone.
+    if [[ -n "${needed_key}" && -d "${PWD}/vendor/${needed_key}" ]]; then
+        return 0
+    fi
+    if [[ ! -f "${archive}" ]]; then
+        return 1
+    fi
+    if ! need_cmd tar; then
+        warn "Cannot unpack ${archive}: tar not found."
+        return 1
+    fi
+
+    step "Unpacking ${archive} for the host build..."
+    # List the tar's top-level entries before we extract so the marker
+    # records exactly what we owned. Format: one path per line,
+    # relative to repo root.
+    local marker="${PWD}/vendor/${YUME_VENDOR_UNPACK_MARKER}"
+    local before=""
+    if [[ -d "${PWD}/vendor" ]]; then
+        before="$(ls -A "${PWD}/vendor" 2>/dev/null || true)"
+    fi
+    mkdir -p "${PWD}/vendor"
+    if ! tar -xJf "${archive}" -C "${PWD}"; then
+        warn "Vendor archive extraction failed."
+        return 1
+    fi
+    local after=""
+    after="$(ls -A "${PWD}/vendor" 2>/dev/null || true)"
+    : > "${marker}"
+    local entry
+    while IFS= read -r entry; do
+        [[ -z "${entry}" ]] && continue
+        if ! grep -Fxq -- "${entry}" <<<"${before}"; then
+            printf 'vendor/%s\n' "${entry}" >> "${marker}"
+        fi
+    done <<<"${after}"
+    ok "Vendor archive unpacked."
+    return 0
+}
+
+# Remove only the paths we wrote during ensure_vendor_for_host. Safe
+# to call when no unpack happened — it just returns. Called explicitly
+# at the end of a successful build.
+cleanup_unpacked_vendor() {
+    local marker="${PWD}/vendor/${YUME_VENDOR_UNPACK_MARKER}"
+    if [[ ! -f "${marker}" ]]; then
+        return 0
+    fi
+    if [[ "${YUME_KEEP_VENDOR:-0}" == "1" ]]; then
+        info "YUME_KEEP_VENDOR=1: leaving unpacked vendor tree in place."
+        return 0
+    fi
+    step "Cleaning up vendor artifacts unpacked by ezbuild..."
+    local path
+    while IFS= read -r path; do
+        [[ -z "${path}" ]] && continue
+        # Defensive: only remove paths inside vendor/.
+        case "${path}" in
+            vendor/*) rm -rf -- "${PWD}/${path}" ;;
+            *) warn "Refusing to remove unexpected path '${path}'." ;;
+        esac
+    done <"${marker}"
+    rm -f "${marker}"
+    rmdir "${PWD}/vendor" 2>/dev/null || true
+    ok "Vendor cleanup complete."
 }
 
 YUME_LOCK_ROOT="$(init_lock_root)"
@@ -1113,6 +1204,11 @@ main() {
         info "YUME ezbuild starting..."
         step "Cleaning build directory..."
         rm -rf "${YUME_BUILD_DIR:-build}"
+        # If a previous build left a vendor unpack from a failed run,
+        # the marker file at vendor/.ezbuild-vendor-unpacked tells us
+        # exactly what to remove. A vendor/ tree without the marker
+        # belongs to the user and is not touched.
+        cleanup_unpacked_vendor
         ok "Cleaned."
         exit 0
     fi
@@ -1558,7 +1654,12 @@ EOF
             # System liboqs is missing — try vendor/<host>/ before
             # giving up. vendor/ ships liboqs.a on Linux and a
             # versioned liboqs.dylib on macOS, both of which CMake can
-            # consume the same way as a system install.
+            # consume the same way as a system install. If the
+            # vendor/ tree isn't on disk, unpack
+            # yume-vendor-prebuilt.tar.xz on demand; the marker file
+            # remembers what we created so the post-build cleanup
+            # only removes our artifacts.
+            ensure_vendor_for_host "$(host_default_vendor_key)" || true
             IFS='|' read -r _vendor_oqs_inc _vendor_oqs_lib < <(resolve_vendor_oqs_paths)
             if [[ -n "${_vendor_oqs_inc}" && -n "${_vendor_oqs_lib}" ]]; then
                 info "liboqs not on the system; using vendor copy at ${_vendor_oqs_lib}."
@@ -1586,7 +1687,10 @@ EOF
             info "libargon2 detected; enabling Argon2 in BaseFWX."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=ON")
         else
-            # Same vendor fallback as liboqs above.
+            # Same vendor fallback as liboqs above. ensure_vendor_for_host
+            # may have run already above; calling it again is a no-op
+            # when the tree is in place.
+            ensure_vendor_for_host "$(host_default_vendor_key)" || true
             IFS='|' read -r _vendor_argon2_inc _vendor_argon2_lib < <(resolve_vendor_argon2_paths)
             if [[ -n "${_vendor_argon2_inc}" && -n "${_vendor_argon2_lib}" ]]; then
                 info "libargon2 not on the system; using vendor copy at ${_vendor_argon2_lib}."
@@ -1616,6 +1720,12 @@ EOF
             ;;
     esac
     info "Done."
+    # The build succeeded — drop any vendor tree we extracted on
+    # demand. If the user had a vendor/ checked out, this is a no-op
+    # because the marker file we leave behind never claims paths that
+    # existed before ezbuild ran. YUME_KEEP_VENDOR=1 disables the
+    # cleanup for debugging.
+    cleanup_unpacked_vendor
     local build_dir="${YUME_BUILD_DIR:-build}"
     echo -e "${COLOR_GREEN}Run:${COLOR_RESET} ./${build_dir}/bin/yumed${exe_suffix} --config config/yumed.json"
     echo -e "${COLOR_GREEN}Then:${COLOR_RESET} ./${build_dir}/bin/yume${exe_suffix} --config config/yume.json --socks 1080"

@@ -14,11 +14,6 @@ namespace yume::gui {
 
 namespace {
 
-// Anything that ships with every Yume implementation gets this scope.
-// Anything that only ships with this binary gets the GUI-only scope.
-constexpr char const* kScopeAll = "Used in every implementation of Yume.";
-constexpr char const* kScopeGui = "Used only in the GUI implementation of Yume.";
-
 struct Person {
     char const* name;
     char const* title;
@@ -27,67 +22,134 @@ struct Person {
 
 struct Component {
     char const* name;
-    char const* scope;
     char const* role;
     char const* license;
+};
+
+struct ComponentGroup {
+    char const* heading;
+    char const* blurb;
+    Component const* items;
+    std::size_t count;
 };
 
 constexpr Person kPeople[] = {
     {"F1xGOD",
      "Founder & CEO, FixCraft, Inc.",
-     "Author. Lead developer and designer."},
+     "Author. Lead developer and designer of Yume and BaseFWX."},
+    {"Claude (Anthropic)",
+     "#1 Yume / BaseFWX engineering partner",
+     "Dedicated dev on Yume and BaseFWX. Helps with code review, design,"
+     " refactors, packaging, and tricky bugs."},
     {"ChatGPT / Codex",
-     "#1 Best Employee of the Year",
-     "Debug support and fast implementation help for the author."},
+     "Best Employee of the Year",
+     "Generalist debug and implementation support across many projects."},
 };
 
-// Order: core libraries (used in every implementation) first, then
-// GUI-only ones. Within each group, alphabetical.
-constexpr Component kComponents[] = {
-    {"BaseFWX", kScopeAll,
+constexpr Component kComponentsAll[] = {
+    {"BaseFWX",
      "The core Yume crypto engine - outer auth, inner post-quantum tunnel, key formats.",
      "GPL-3.0"},
-    {"liboqs (Open Quantum Safe)", kScopeAll,
+    {"liboqs (Open Quantum Safe)",
      "Post-quantum primitives (ML-KEM, ML-DSA) consumed through BaseFWX.",
      "MIT"},
-    {"Boost (ASIO, system)", kScopeAll,
-     "Network IO and the async runtime used by the relay and client.",
-     "Boost Software License 1.0"},
-    {"OpenSSL", kScopeAll,
-     "TLS transport, X.509, and the classical crypto primitives.",
+};
+
+// Compiled into every desktop binary (CLI + GUI). Not present on Android,
+// which uses JVM/Conscrypt equivalents.
+constexpr Component kComponentsDesktopCore[] = {
+    {"OpenSSL",
+     "TLS transport, X.509 parsing, and classical crypto primitives.",
      "Apache-2.0"},
-    {"nlohmann/json", kScopeAll,
+    {"Boost (ASIO, system)",
+     "Async network IO that drives the relay, client, and server.",
+     "Boost Software License 1.0"},
+    {"nlohmann/json",
      "JSON parsing and serialization for configs and protocol payloads.",
      "MIT"},
-    {"spdlog", kScopeAll,
-     "Structured logging.",
+    {"spdlog",
+     "Structured logging across the daemon and CLI.",
      "MIT"},
-    {"zstd", kScopeAll,
+    {"zstd",
      "Optional inner-frame compression.",
      "BSD-3-Clause"},
+};
 
-    {"Dear ImGui", kScopeGui,
+// Only ever linked into the yume-gui executable.
+constexpr Component kComponentsGuiOnly[] = {
+    {"Dear ImGui",
      "Immediate-mode UI framework that draws every panel in this app.",
      "MIT"},
-    {"GLFW", kScopeGui,
+    {"GLFW",
      "Window, OpenGL context, and input on Linux / Windows / macOS.",
      "zlib"},
-    {"ImPlot", kScopeGui,
-     "Plotting library (kept available for future charts).",
+    {"ImPlot",
+     "Plotting library kept available for future charts.",
      "MIT"},
-    {"FreeType", kScopeGui,
-     "Font rasterisation used for the UI text.",
+    {"FreeType",
+     "Font rasterisation for the UI text.",
      "FTL or GPLv2"},
-    {"NanoSVG", kScopeGui,
+    {"NanoSVG",
      "Rasterises the app icon SVG to multi-size window icons.",
      "zlib"},
-    {"stb_image_write", kScopeGui,
+    {"stb_image_write",
      "PNG export of the rasterised icon at first launch.",
      "Public domain / MIT"},
-    {"libayatana-appindicator", kScopeGui,
+    {"libayatana-appindicator",
      "Linux system tray indicator (StatusNotifierItem bridge).",
      "LGPL-3.0"},
 };
+
+constexpr ComponentGroup kGroups[] = {
+    {"Used in every implementation of Yume",
+     "Shared by the desktop client, the daemon, and the Android app.",
+     kComponentsAll, std::size(kComponentsAll)},
+    {"Used in the desktop client and daemon",
+     "Linked into the C++ CLI and the desktop GUI. The Android app uses"
+     " JVM/Conscrypt equivalents instead.",
+     kComponentsDesktopCore, std::size(kComponentsDesktopCore)},
+    {"Used only in the desktop GUI",
+     "Linked only into yume-gui.",
+     kComponentsGuiOnly, std::size(kComponentsGuiOnly)},
+};
+
+void license_chip(char const* text) {
+    auto const& c = ui::colors();
+    ImFont* font = ui::fonts().strong ? ui::fonts().strong : ImGui::GetFont();
+    const float font_size = font ? font->FontSize : ImGui::GetFontSize();
+    const ImVec2 ts = font
+        ? font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, text)
+        : ImGui::CalcTextSize(text);
+    const float pad_x = ImGui::GetFontSize() * 0.7f;
+    const float pad_y = ImGui::GetFontSize() * 0.3f;
+    ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImVec2 size(ts.x + pad_x * 2, ts.y + pad_y * 2);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    // Brighter background — surface_high reads as a clear chip on the
+    // card surface; outline-coloured text was barely legible.
+    dl->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + size.y),
+                      ImGui::GetColorU32(c.surface_high),
+                      size.y * 0.5f);
+    dl->AddRect(origin, ImVec2(origin.x + size.x, origin.y + size.y),
+                ImGui::GetColorU32(c.outline),
+                size.y * 0.5f, 0, 1.0f);
+    dl->AddText(font, font_size,
+                ImVec2(origin.x + pad_x, origin.y + pad_y),
+                ImGui::GetColorU32(c.text), text);
+    ImGui::Dummy(size);
+}
+
+void render_component(Component const& comp, float sc) {
+    auto const& c = ui::colors();
+    if (ui::fonts().strong) ImGui::PushFont(ui::fonts().strong);
+    ImGui::TextUnformatted(comp.name);
+    if (ui::fonts().strong) ImGui::PopFont();
+    ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
+    ImGui::TextWrapped("%s", comp.role);
+    ImGui::PopStyleColor();
+    license_chip(comp.license);
+    ImGui::Dummy(ImVec2(0, 12 * sc));
+}
 
 class CreditsPage : public Page {
 public:
@@ -102,7 +164,7 @@ public:
 
         // ---- People ----
         if (ui::begin_auto_card("##credits_people")) {
-            ui::section_label("Author");
+            ui::section_label("Author and contributors");
             for (auto const& p : kPeople) {
                 if (ui::fonts().strong) ImGui::PushFont(ui::fonts().strong);
                 ImGui::TextUnformatted(p.name);
@@ -113,41 +175,34 @@ public:
                 ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
                 ImGui::TextWrapped("%s", p.role);
                 ImGui::PopStyleColor();
-                ImGui::Dummy(ImVec2(0, 8 * sc));
-            }
-        }
-        ui::end_card();
-
-        ImGui::Dummy(ImVec2(0, 8 * sc));
-
-        // ---- Components ----
-        if (ui::begin_auto_card("##credits_components")) {
-            ui::section_label("Open-source components");
-            ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
-            ImGui::TextWrapped(
-                "Third-party code Yume builds on, with licences. "
-                "Each entry says where it actually runs.");
-            ImGui::PopStyleColor();
-            ImGui::Dummy(ImVec2(0, 8 * sc));
-
-            for (auto const& comp : kComponents) {
-                if (ui::fonts().strong) ImGui::PushFont(ui::fonts().strong);
-                ImGui::TextUnformatted(comp.name);
-                if (ui::fonts().strong) ImGui::PopFont();
-
-                ImGui::PushStyleColor(ImGuiCol_Text, c.accent);
-                ImGui::TextUnformatted(comp.scope);
-                ImGui::PopStyleColor();
-
-                ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
-                ImGui::TextWrapped("%s", comp.role);
-                ImGui::PopStyleColor();
-
-                ui::status_pill(comp.license, c.outline);
                 ImGui::Dummy(ImVec2(0, 10 * sc));
             }
         }
         ui::end_card();
+        ImGui::Dummy(ImVec2(0, 8 * sc));
+
+        // ---- Components in three explicit scope groups ----
+        for (auto const& group : kGroups) {
+            // ImGui requires unique child IDs. Use the heading pointer as
+            // a stable, unique discriminator without string allocation.
+            char id[64];
+            std::snprintf(id, sizeof(id), "##group_%p", (void const*)group.heading);
+            if (ui::begin_auto_card(id)) {
+                if (ui::fonts().section) ImGui::PushFont(ui::fonts().section);
+                ImGui::TextUnformatted(group.heading);
+                if (ui::fonts().section) ImGui::PopFont();
+                ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
+                ImGui::TextWrapped("%s", group.blurb);
+                ImGui::PopStyleColor();
+                ImGui::Dummy(ImVec2(0, 12 * sc));
+
+                for (std::size_t i = 0; i < group.count; ++i) {
+                    render_component(group.items[i], sc);
+                }
+            }
+            ui::end_card();
+            ImGui::Dummy(ImVec2(0, 8 * sc));
+        }
     }
 };
 

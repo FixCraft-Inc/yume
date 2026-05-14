@@ -163,6 +163,43 @@ YUME stacks three independent layers of byte-shape camouflage:
 
 Limits: this defends against stateless DPI, classifier-based ISP filters, and active probes that complete TLS and inspect the first kilobyte. It does not defend against fully-stateful HTTP/2 middleboxes that track stream and HPACK state, or against ML traffic classifiers trained on joint inter-arrival × size distributions.
 
+## Routing through Tor (or any SOCKS5 proxy)
+
+The CLI can hide the outbound connection behind a SOCKS5 proxy. Hostnames are sent as ATYP_DOMAIN, so `.onion` targets resolve on the proxy side and direct DNS never leaves the client.
+
+```
+machine A ──► yume CLI ──► Tor SOCKS5 (127.0.0.1:9050)
+                                       │
+                                       ▼
+                              Tor circuit
+                                       │
+                                       ▼
+            HiddenServicePort 443 → 127.0.0.1:443 ──► yumed ──► target site
+                                       (machine B)
+```
+
+**Client side.** Add to `config/yume.json`:
+```json
+{ "outbound_proxy": "socks5://127.0.0.1:9050",
+  "server": "abcdefghijklmnop.onion",
+  "port": 443 }
+```
+Or on the command line:
+```
+yume --tor --server abcdefghijklmnop.onion --port 443 -i id_ed25519
+yume --proxy socks5://user:pass@10.0.0.5:1080 --server gateway.example --port 443 -i id
+yume --no-proxy ...                # one-shot override that ignores config
+```
+
+**Server side.** No code change. Bind `yumed` to loopback and let Tor publish a hidden service. In `/etc/tor/torrc`:
+```
+HiddenServiceDir /var/lib/tor/yume/
+HiddenServicePort 443 127.0.0.1:443
+```
+After Tor starts, `cat /var/lib/tor/yume/hostname` gives you the `.onion` to point clients at. `yumed` doesn't know it's reachable through Tor — it only sees `127.0.0.1` connections.
+
+The proxy applies to the outer transport (TCP → SOCKS5 → TLS → Yume). Inner PQ crypto, anonym proof, HTTP/2 carrier obfuscation, and TLS stealth still apply on top — Tor adds an extra circuit hop, not a replacement for any of those layers.
+
 ## Anonym mode
 
 `--anonym` strips identifying logs (no client hostname, no IP, no authentication line). `--anonym-proof-mode {auto|local|fixcraft}` selects how the server proves no-log compliance to the client:

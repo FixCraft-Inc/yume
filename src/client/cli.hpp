@@ -59,6 +59,15 @@ struct ClientConfig {
     std::string tls_fingerprint_log_path{"./logs/fingerprints"};
     bool tls_fingerprint_verify{false};
     std::string tls_fingerprint_test_endpoint{"tls.peet.ws"};
+
+    // Outbound proxy used to reach the Yume server. When set, the client
+    // doesn't do a direct DNS+TCP connect to `server:port` — it connects
+    // to `outbound_proxy_host:outbound_proxy_port` and asks the proxy to
+    // forward to `server:port` via SOCKS5. The hostname is sent as a
+    // SOCKS5 domain address so .onion targets resolve on the proxy side
+    // (Tor) without leaking DNS. Leave outbound_proxy_url empty to go
+    // direct. Format: "socks5://[user[:pass]@]host:port".
+    std::string outbound_proxy_url;
 };
 
 class Cli {

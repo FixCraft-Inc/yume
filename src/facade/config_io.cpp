@@ -181,6 +181,7 @@ std::optional<client::ClientConfig> load_client(
     read_opt(j, "tls_fingerprint_log_path", c.tls_fingerprint_log_path);
     read_opt(j, "tls_fingerprint_verify", c.tls_fingerprint_verify);
     read_opt(j, "tls_fingerprint_test_endpoint", c.tls_fingerprint_test_endpoint);
+    read_opt(j, "outbound_proxy", c.outbound_proxy_url);
 
     auto const base = path.parent_path();
     resolve_config_path(c.identity, base);
@@ -245,6 +246,7 @@ bool save_client(client::ClientConfig const& c,
         {"tls_fingerprint_log_path", c.tls_fingerprint_log_path},
         {"tls_fingerprint_verify", c.tls_fingerprint_verify},
         {"tls_fingerprint_test_endpoint", c.tls_fingerprint_test_endpoint},
+        {"outbound_proxy", c.outbound_proxy_url},
     };
 
     std::error_code ec;

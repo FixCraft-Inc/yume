@@ -61,6 +61,7 @@
 
 #include "client/forward.hpp"
 #include "client/local_runtime.hpp"
+#include "client/outbound_proxy.hpp"
 #include "client/relay_secret.hpp"
 #include "client/relay_runtime.hpp"
 #include "client/socks.hpp"
@@ -1151,6 +1152,9 @@ struct ParsedArgs {
     std::string anonym_ca_cert;
     std::string tls_ca_cert;
     std::string tls_pin_sha256;
+    // socks5://[user[:pass]@]host:port — see ClientConfig::outbound_proxy_url.
+    std::string outbound_proxy_url;
+    bool outbound_proxy_override{false};
     bool tls_stealth{true};
     bool tls_stealth_override{false};
     std::string tls_stealth_profile{"chrome"};
@@ -1632,6 +1636,23 @@ ParsedArgs parse_args(int argc, char** argv) {
                 return args;
             }
             args.tls_pin_sha256 = value;
+        } else if (arg == "--proxy") {
+            // socks5://[user[:pass]@]host:port. The common case is
+            // `--proxy socks5://127.0.0.1:9050` to route through a
+            // local Tor daemon.
+            const char* value = take_value("--proxy");
+            if (!value) {
+                return args;
+            }
+            args.outbound_proxy_url = value;
+            args.outbound_proxy_override = true;
+        } else if (arg == "--no-proxy") {
+            args.outbound_proxy_url.clear();
+            args.outbound_proxy_override = true;
+        } else if (arg == "--tor") {
+            // Shortcut for the standard Tor SOCKS port.
+            args.outbound_proxy_url = "socks5://127.0.0.1:9050";
+            args.outbound_proxy_override = true;
         } else if (arg == "--no-stealth") {
             args.tls_stealth = false;
             args.tls_stealth_override = true;
@@ -2108,6 +2129,14 @@ void print_help() {
         << "  --anonym-ca-cert <path>  Anonym CA certificate\n"
         << "  --tls-ca <path>          TLS CA certificate\n"
         << "  --tls-pin <sha256>       Pin TLS certificate fingerprint\n\n"
+        << "Proxy:\n"
+        << "  --proxy socks5://[user[:pass]@]host:port\n"
+        << "                           Route the connection to the Yume server\n"
+        << "                           through a SOCKS5 proxy. The hostname is\n"
+        << "                           resolved on the proxy side, so .onion\n"
+        << "                           targets work through Tor.\n"
+        << "  --tor                    Shorthand for --proxy socks5://127.0.0.1:9050\n"
+        << "  --no-proxy               Override config; connect directly\n\n"
         << "TLS:\n"
         << "  --profile <name>         chrome, firefox, safari\n"
         << "  --no-stealth             Disable TLS stealth mode\n"
@@ -3306,6 +3335,9 @@ int Cli::run(int argc, char** argv) {
             if (json.contains("tls_pin") && cfg.tls_pin_sha256.empty()) {
                 cfg.tls_pin_sha256 = json["tls_pin"].get<std::string>();
             }
+            if (json.contains("outbound_proxy") && !args.outbound_proxy_override) {
+                cfg.outbound_proxy_url = json["outbound_proxy"].get<std::string>();
+            }
             if (json.contains("require_anonym")) {
                 cfg.require_anonym = json["require_anonym"].get<bool>();
             }
@@ -3406,6 +3438,9 @@ int Cli::run(int argc, char** argv) {
     }
     if (!args.tls_pin_sha256.empty()) {
         cfg.tls_pin_sha256 = args.tls_pin_sha256;
+    }
+    if (args.outbound_proxy_override) {
+        cfg.outbound_proxy_url = args.outbound_proxy_url;
     }
     if (args.require_anonym) {
         cfg.require_anonym = true;
@@ -3869,55 +3904,94 @@ int Cli::run(int argc, char** argv) {
                 ctx->load_verify_file(cfg.tls_ca_cert);
             }
 
-            boost::asio::ip::tcp::resolver resolver(io);
-            boost::asio::ip::tcp::resolver::results_type endpoints;
-            auto resolve_start = std::chrono::steady_clock::now();
-            try {
-                endpoints = resolver.resolve(boost::asio::ip::tcp::v4(), cfg.server, std::to_string(cfg.port));
-            } catch (const boost::system::system_error& ex) {
-                throw std::runtime_error("server offline, could not reach endpoint (DNS resolution failed: " + std::string(ex.what()) + ")");
+            outbound_proxy::Config proxy_cfg;
+            if (!cfg.outbound_proxy_url.empty()) {
+                std::string parse_err;
+                if (!outbound_proxy::parse_proxy_url(cfg.outbound_proxy_url, proxy_cfg, &parse_err)) {
+                    throw std::runtime_error("outbound proxy: " + parse_err);
+                }
             }
-            auto resolve_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - resolve_start).count();
-            std::size_t endpoint_count = 0;
-            for (const auto& endpoint : endpoints) {
-                (void)endpoint;
-                ++endpoint_count;
-            }
-            util::log_timing("client.connect",
-                             "resolve",
-                             "ms=" + std::to_string(resolve_ms) +
-                                 " endpoints=" + std::to_string(endpoint_count) +
-                                 " host=" + cfg.server +
-                                 " port=" + std::to_string(cfg.port));
+            const bool via_proxy = proxy_cfg.type == outbound_proxy::Type::Socks5;
+
             boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, *ctx);
-            auto connect_start = std::chrono::steady_clock::now();
-            try {
-                auto cr = connect_with_timeout(stream.next_layer(), endpoints, io, kConnectTimeout);
-                if (cr.timed_out) {
-                    throw std::runtime_error("server offline, could not reach endpoint (connect timeout)");
+
+            if (via_proxy) {
+                // Hand the hostname to the proxy verbatim — Tor needs
+                // ATYP_DOMAIN to route .onion, and even for normal hosts
+                // we want DNS to happen on the proxy side, never locally.
+                util::log_info("client.connect: proxying through " +
+                               proxy_cfg.host + ":" + std::to_string(proxy_cfg.port) +
+                               " to " + cfg.server + ":" + std::to_string(cfg.port));
+                auto connect_start = std::chrono::steady_clock::now();
+                auto dr = outbound_proxy::socks5_dial(
+                    stream.next_layer(), io, proxy_cfg,
+                    cfg.server, cfg.port, kConnectTimeout);
+                if (dr.timed_out) {
+                    throw std::runtime_error("server offline, proxy timed out");
                 }
-                if (cr.ec) {
-                    throw boost::system::system_error(cr.ec);
+                if (!dr.ok) {
+                    throw std::runtime_error(dr.error.empty() ? "outbound proxy failed"
+                                                              : "outbound proxy: " + dr.error);
                 }
-            } catch (const boost::system::system_error& ex) {
-                auto code = ex.code();
-                if (code == boost::asio::error::connection_refused ||
-                    code == boost::asio::error::host_unreachable ||
-                    code == boost::asio::error::network_unreachable ||
-                    code == boost::asio::error::timed_out ||
-                    code == boost::asio::error::network_down) {
-                    throw std::runtime_error("server offline, could not reach endpoint");
+                auto connect_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - connect_start).count();
+                util::log_timing("client.connect",
+                                 "proxy",
+                                 "ms=" + std::to_string(connect_ms) +
+                                     " proxy=" + proxy_cfg.host + ":" +
+                                     std::to_string(proxy_cfg.port) +
+                                     " host=" + cfg.server +
+                                     " port=" + std::to_string(cfg.port));
+            } else {
+                boost::asio::ip::tcp::resolver resolver(io);
+                boost::asio::ip::tcp::resolver::results_type endpoints;
+                auto resolve_start = std::chrono::steady_clock::now();
+                try {
+                    endpoints = resolver.resolve(boost::asio::ip::tcp::v4(), cfg.server, std::to_string(cfg.port));
+                } catch (const boost::system::system_error& ex) {
+                    throw std::runtime_error("server offline, could not reach endpoint (DNS resolution failed: " + std::string(ex.what()) + ")");
                 }
-                throw std::runtime_error("server offline, could not reach endpoint (" + std::string(ex.what()) + ")");
+                auto resolve_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - resolve_start).count();
+                std::size_t endpoint_count = 0;
+                for (const auto& endpoint : endpoints) {
+                    (void)endpoint;
+                    ++endpoint_count;
+                }
+                util::log_timing("client.connect",
+                                 "resolve",
+                                 "ms=" + std::to_string(resolve_ms) +
+                                     " endpoints=" + std::to_string(endpoint_count) +
+                                     " host=" + cfg.server +
+                                     " port=" + std::to_string(cfg.port));
+                auto connect_start = std::chrono::steady_clock::now();
+                try {
+                    auto cr = connect_with_timeout(stream.next_layer(), endpoints, io, kConnectTimeout);
+                    if (cr.timed_out) {
+                        throw std::runtime_error("server offline, could not reach endpoint (connect timeout)");
+                    }
+                    if (cr.ec) {
+                        throw boost::system::system_error(cr.ec);
+                    }
+                } catch (const boost::system::system_error& ex) {
+                    auto code = ex.code();
+                    if (code == boost::asio::error::connection_refused ||
+                        code == boost::asio::error::host_unreachable ||
+                        code == boost::asio::error::network_unreachable ||
+                        code == boost::asio::error::timed_out ||
+                        code == boost::asio::error::network_down) {
+                        throw std::runtime_error("server offline, could not reach endpoint");
+                    }
+                    throw std::runtime_error("server offline, could not reach endpoint (" + std::string(ex.what()) + ")");
+                }
+                auto connect_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - connect_start).count();
+                util::log_timing("client.connect",
+                                 "tcp",
+                                 "ms=" + std::to_string(connect_ms) +
+                                     " host=" + cfg.server +
+                                     " port=" + std::to_string(cfg.port));
             }
-            auto connect_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - connect_start).count();
-            util::log_timing("client.connect",
-                             "tcp",
-                             "ms=" + std::to_string(connect_ms) +
-                                 " host=" + cfg.server +
-                                 " port=" + std::to_string(cfg.port));
             boost::system::error_code keep_ec;
             stream.next_layer().set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
             if (keep_ec) {

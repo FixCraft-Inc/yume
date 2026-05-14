@@ -409,6 +409,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/tunnel.cpp
         client/socks.cpp
         client/forward.cpp
+        client/outbound_proxy.cpp
     )
     target_include_directories(yume_client_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(yume_client_lib PUBLIC yume_core yume_transport_core)

@@ -19,6 +19,7 @@ TARGET_ARCH=""
 CLEAN_ONLY=0
 BUILD_DEB=0
 BUILD_GUI=0
+PORTABLE=0
 SKIP_PULL=0
 OPENWRT=0
 BUSYBOX=0
@@ -100,6 +101,11 @@ Options:
   --minimal               Build a minimal/static YUME
   --gui                   Also build the optional yume-gui desktop app
                           (installs libgl/libglfw/appindicator dev pkgs)
+  --portable, --static    Produce single self-contained binaries (no
+                          MinGW/vcpkg DLLs alongside). For the cross
+                          route this pins WINDOWS_TRIPLET to
+                          x64-mingw-static; combine with --gui to get
+                          one portable yume-gui.exe.
   --deb, --package-deb    Build a Debian package with CPack
   --arch <arch>           Target arch metadata/toolchain hint
                           examples: x86_64, aarch64, armv8, armv7, mips
@@ -1161,6 +1167,14 @@ main() {
                 BUILD_GUI=1
                 shift
                 ;;
+            --portable|--static)
+                # Produce one self-contained executable: no MinGW
+                # runtime DLLs, no vcpkg .dlls alongside. Implies
+                # YUME_STATIC + YUME_GUI_PORTABLE + the static vcpkg
+                # mingw triplet for the cross route.
+                PORTABLE=1
+                shift
+                ;;
             --no-pull|--skip-pull)
                 SKIP_PULL=1
                 shift
@@ -1238,6 +1252,20 @@ main() {
         fi
     fi
 
+    if [[ $PORTABLE -eq 1 ]]; then
+        info "Portable build: static deps + embedded MinGW runtime."
+        # YUME_STATIC turns on static linkage flags for yume/yumed (and
+        # transitively their static libs). YUME_GUI_PORTABLE is the
+        # GUI-specific knob for -static-libgcc/-static-libstdc++.
+        # The cross route also needs the static vcpkg triplet so the
+        # dependency libs come in as .a rather than .dll.a.
+        CMAKE_ARGS+=( -DYUME_STATIC=ON -DYUME_GUI_PORTABLE=ON )
+        if [[ "${WINDOWS_CROSS}" == "1" ]]; then
+            WINDOWS_TRIPLET="${YUME_WINDOWS_TRIPLET:-x64-mingw-static}"
+            info "WINDOWS_TRIPLET pinned to ${WINDOWS_TRIPLET} for portable cross."
+        fi
+    fi
+
     if [[ -n "${YUME_CMAKE_ARGS:-}" ]]; then
         # shellcheck disable=SC2206
         EXTRA_CMAKE_ARGS=(${YUME_CMAKE_ARGS})
@@ -1269,6 +1297,30 @@ main() {
             fi
             use_vcpkg_toolchain=1
             VCPKG_PREFIX="${VCPKG_ROOT}/installed/${WINDOWS_TRIPLET}"
+            # If this triplet hasn't been built yet (typical when the
+            # user just switched from x64-mingw-dynamic to mingw-static
+            # for a --portable build), populate it. vcpkg compiles the
+            # ports from source against the MinGW toolchain we already
+            # have; this takes ~20-30 min the first time then caches.
+            if [[ ! -f "${VCPKG_PREFIX}/include/openssl/ssl.h" ]]; then
+                info "vcpkg packages for ${WINDOWS_TRIPLET} not staged yet."
+                local _shim_bin="${YUME_TMP_ROOT:-/tmp}/yume-vcpkg-shim"
+                mkdir -p "${_shim_bin}"
+                if [[ ! -x "${_shim_bin}/powershell.exe" ]]; then
+                    printf '#!/usr/bin/env bash\nexit 0\n' \
+                        > "${_shim_bin}/powershell.exe"
+                    chmod +x "${_shim_bin}/powershell.exe"
+                fi
+                local _pkgs="openssl boost-asio boost-system boost-headers \
+                             nlohmann-json zstd liboqs argon2 zlib"
+                step "Running vcpkg install ${_pkgs} --triplet=${WINDOWS_TRIPLET}"
+                CC="${WINDOWS_TOOLCHAIN_PREFIX}-gcc" \
+                CXX="${WINDOWS_TOOLCHAIN_PREFIX}-g++" \
+                PATH="${_shim_bin}:${PATH}" \
+                VCPKG_POWERSHELL_PATH="${_shim_bin}/powershell.exe" \
+                "${VCPKG_ROOT}/vcpkg" install --triplet="${WINDOWS_TRIPLET}" ${_pkgs} \
+                    || warn "vcpkg install failed; falling back to whatever is present."
+            fi
         elif [[ -n "${windows_vendor_prefix}" ]]; then
             VCPKG_PREFIX="${windows_vendor_prefix}"
             info "Windows cross: using vendored dependency prefix at ${VCPKG_PREFIX}"

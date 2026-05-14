@@ -131,6 +131,33 @@ if defined VCPKG_ROOT (
     echo            ezbuild.bat --gui
 )
 
+REM ---------- Visual Studio toolchain check ----------------------------------
+REM vcpkg needs the MSVC C++ build tools to compile any port from source.
+REM Detect them up front with vswhere so we fail loudly with one clear
+REM message instead of N noisy "Unable to find a valid Visual Studio
+REM instance" errors from each vcpkg install.
+set "MSVC_FOUND="
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if not exist "%VSWHERE%" set "VSWHERE=%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist "%VSWHERE%" (
+    for /f "usebackq tokens=*" %%a in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
+        set "MSVC_FOUND=%%a"
+    )
+)
+if not defined MSVC_FOUND (
+    echo [error] Microsoft Visual C++ build tools were not found.
+    echo         vcpkg can fetch ports but cannot compile them without MSVC.
+    echo         Install one of:
+    echo             - "Build Tools for Visual Studio 2022" with the
+    echo               "Desktop development with C++" workload, or
+    echo             - Visual Studio Community / Pro with the same workload.
+    echo         Download: https://aka.ms/vs/17/release/vs_buildtools.exe
+    echo         After install, open a new Developer Command Prompt and
+    echo         rerun ezbuild.bat.
+    exit /b 1
+)
+echo [info] MSVC C++ tools at !MSVC_FOUND!
+
 REM ---------- Triplet selection ----------------------------------------------
 if "%ARCH%"=="" set "ARCH=x64"
 if "%PORTABLE%"=="1" (
@@ -177,9 +204,12 @@ if exist "%VENDOR_WIN%\include\oqs\oqs.h" (
         set "VENDOR_OQS_INCLUDE=%VENDOR_WIN%\include"
         set "VENDOR_OQS_LIBRARY=%VENDOR_WIN%\lib\oqs.lib"
     ) else if exist "%VENDOR_WIN%\lib\liboqs.dll.a" (
+        REM Parens inside echo blocks confuse cmd's parser when the
+        REM block is wrapped in parentheses - escape with ^^( / ^^) or
+        REM avoid them entirely. Using brackets here.
         echo [warn] vendor\windows-x86_64\lib\liboqs.dll.a is a MinGW import
         echo        library and cannot be linked by MSVC. Either build with
-        echo        ezbuild.sh + YUME_WINDOWS_CROSS=1 (MinGW cross), or drop
+        echo        ezbuild.sh + YUME_WINDOWS_CROSS=1 [MinGW cross], or drop
         echo        a real liboqs.lib next to it.
     )
 )

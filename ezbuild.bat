@@ -120,6 +120,32 @@ if defined VCPKG_ROOT (
     echo        or set VCPKG_ROOT to your existing checkout.
 )
 
+REM ---------- Vendor liboqs fallback -----------------------------------------
+REM If vcpkg is missing or its liboqs install fell over, look in
+REM vendor\windows-x86_64\lib for a pre-staged MSVC-format liboqs.lib.
+REM (The .dll.a shipped for the MinGW cross route is a gcc archive
+REM that the MSVC linker cannot consume; it gets ignored here.)
+set "VENDOR_WIN=%CD%\vendor\windows-x86_64"
+set "VENDOR_OQS_INCLUDE="
+set "VENDOR_OQS_LIBRARY="
+if exist "%VENDOR_WIN%\include\oqs\oqs.h" (
+    if exist "%VENDOR_WIN%\lib\liboqs.lib" (
+        set "VENDOR_OQS_INCLUDE=%VENDOR_WIN%\include"
+        set "VENDOR_OQS_LIBRARY=%VENDOR_WIN%\lib\liboqs.lib"
+    ) else if exist "%VENDOR_WIN%\lib\oqs.lib" (
+        set "VENDOR_OQS_INCLUDE=%VENDOR_WIN%\include"
+        set "VENDOR_OQS_LIBRARY=%VENDOR_WIN%\lib\oqs.lib"
+    ) else if exist "%VENDOR_WIN%\lib\liboqs.dll.a" (
+        echo [warn] vendor\windows-x86_64\lib\liboqs.dll.a is a MinGW import
+        echo        library and cannot be linked by MSVC. Either build with
+        echo        ezbuild.sh + YUME_WINDOWS_CROSS=1 (MinGW cross), or drop
+        echo        a real liboqs.lib next to it.
+    )
+)
+if defined VENDOR_OQS_LIBRARY (
+    echo [info] Using vendored liboqs at %VENDOR_OQS_LIBRARY%.
+)
+
 REM ---------- Generator -------------------------------------------------------
 if "%GENERATOR%"=="" set "GENERATOR=Visual Studio 17 2022"
 
@@ -131,6 +157,14 @@ set "CMAKE_ARGS=%CMAKE_ARGS% -DCMAKE_BUILD_TYPE=%BUILD_TYPE%"
 if defined VCPKG_ROOT (
     set "CMAKE_ARGS=%CMAKE_ARGS% -DCMAKE_TOOLCHAIN_FILE=""%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake"""
     set "CMAKE_ARGS=%CMAKE_ARGS% -DVCPKG_TARGET_TRIPLET=%TRIPLET%"
+)
+if defined VENDOR_OQS_LIBRARY (
+    set "CMAKE_ARGS=%CMAKE_ARGS% -DOQS_INCLUDE_DIR=""%VENDOR_OQS_INCLUDE%"""
+    set "CMAKE_ARGS=%CMAKE_ARGS% -DOQS_LIBRARY=""%VENDOR_OQS_LIBRARY%"""
+    set "CMAKE_ARGS=%CMAKE_ARGS% -DOQS_INCLUDE_DIRS=""%VENDOR_OQS_INCLUDE%"""
+    set "CMAKE_ARGS=%CMAKE_ARGS% -DOQS_LIBRARIES=""%VENDOR_OQS_LIBRARY%"""
+    set "CMAKE_ARGS=%CMAKE_ARGS% -DOQS_FOUND=TRUE"
+    set "CMAKE_ARGS=%CMAKE_ARGS% -DBASEFWX_REQUIRE_OQS=ON"
 )
 if "%BUILD_GUI%"=="1" (
     set "CMAKE_ARGS=%CMAKE_ARGS% -DYUME_BUILD_GUI=ON"

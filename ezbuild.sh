@@ -505,6 +505,46 @@ resolve_argon2_sysroot_paths() {
     echo "${inc}|${lib}"
 }
 
+# Pick liboqs paths out of the vendor/ directory for the host platform.
+# Linux x86_64 ships liboqs.a; macOS ships liboqs.dylib (with versioned
+# symlinks). Returns "<include_dir>|<lib_path>" or an empty pipe pair.
+resolve_vendor_oqs_paths() {
+    local dir=""
+    dir="$(vendor_dir_for_build)"
+    if [[ -z "${dir}" ]] || ! vendor_has_liboqs "${dir}"; then
+        echo "|"
+        return
+    fi
+    local inc="${dir}/include"
+    local lib=""
+    if   [[ -f "${dir}/lib/liboqs.a"     ]]; then lib="${dir}/lib/liboqs.a"
+    elif [[ -f "${dir}/lib/liboqs.dylib" ]]; then lib="${dir}/lib/liboqs.dylib"
+    elif [[ -f "${dir}/lib/liboqs.so"    ]]; then lib="${dir}/lib/liboqs.so"
+    else
+        lib="$(ls -1 ${dir}/lib/liboqs.* 2>/dev/null | head -n 1 || true)"
+    fi
+    echo "${inc}|${lib}"
+}
+
+# Same but for libargon2.
+resolve_vendor_argon2_paths() {
+    local dir=""
+    dir="$(vendor_dir_for_build)"
+    if [[ -z "${dir}" ]] || ! vendor_has_argon2 "${dir}"; then
+        echo "|"
+        return
+    fi
+    local inc="${dir}/include"
+    local lib=""
+    if   [[ -f "${dir}/lib/libargon2.a"     ]]; then lib="${dir}/lib/libargon2.a"
+    elif [[ -f "${dir}/lib/libargon2.dylib" ]]; then lib="${dir}/lib/libargon2.dylib"
+    elif [[ -f "${dir}/lib/libargon2.so"    ]]; then lib="${dir}/lib/libargon2.so"
+    else
+        lib="$(ls -1 ${dir}/lib/libargon2.* 2>/dev/null | head -n 1 || true)"
+    fi
+    echo "${inc}|${lib}"
+}
+
 resolve_oqs_host_paths() {
     local inc=""
     local lib=""
@@ -1515,17 +1555,54 @@ EOF
                 fi
             fi
         else
-            warn "liboqs not detected; PQ will be disabled unless you install it."
-            require_feature_or_die "${YUME_REQUIRE_OQS}" "liboqs / PQ support" "Install liboqs or stage it in vendor/ before building."
-            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=OFF")
+            # System liboqs is missing — try vendor/<host>/ before
+            # giving up. vendor/ ships liboqs.a on Linux and a
+            # versioned liboqs.dylib on macOS, both of which CMake can
+            # consume the same way as a system install.
+            IFS='|' read -r _vendor_oqs_inc _vendor_oqs_lib < <(resolve_vendor_oqs_paths)
+            if [[ -n "${_vendor_oqs_inc}" && -n "${_vendor_oqs_lib}" ]]; then
+                info "liboqs not on the system; using vendor copy at ${_vendor_oqs_lib}."
+                CMAKE_ARGS+=(
+                    "-DBASEFWX_REQUIRE_OQS=ON"
+                    "-DOQS_INCLUDE_DIR=${_vendor_oqs_inc}"
+                    "-DOQS_LIBRARY=${_vendor_oqs_lib}"
+                    "-DOQS_INCLUDE_DIRS=${_vendor_oqs_inc}"
+                    "-DOQS_LIBRARIES=${_vendor_oqs_lib}"
+                    "-DOQS_FOUND=TRUE"
+                )
+                if [[ "${_vendor_oqs_lib}" == *.a ]]; then
+                    CMAKE_ARGS+=(
+                        "-DOQS_LIBRARY_STATIC=${_vendor_oqs_lib}"
+                        "-DBASEFWX_OQS_STATIC=ON"
+                    )
+                fi
+            else
+                warn "liboqs not detected; PQ will be disabled unless you install it."
+                require_feature_or_die "${YUME_REQUIRE_OQS}" "liboqs / PQ support" "Install liboqs or stage it in vendor/ before building."
+                CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=OFF")
+            fi
         fi
         if detect_argon2; then
             info "libargon2 detected; enabling Argon2 in BaseFWX."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=ON")
         else
-            warn "libargon2 not detected; heavy KDF will fall back to HKDF."
-            require_feature_or_die "${YUME_REQUIRE_ARGON2}" "libargon2 support" "Install libargon2 or stage it in vendor/ before building."
-            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=OFF")
+            # Same vendor fallback as liboqs above.
+            IFS='|' read -r _vendor_argon2_inc _vendor_argon2_lib < <(resolve_vendor_argon2_paths)
+            if [[ -n "${_vendor_argon2_inc}" && -n "${_vendor_argon2_lib}" ]]; then
+                info "libargon2 not on the system; using vendor copy at ${_vendor_argon2_lib}."
+                CMAKE_ARGS+=(
+                    "-DBASEFWX_REQUIRE_ARGON2=ON"
+                    "-DARGON2_INCLUDE_DIR=${_vendor_argon2_inc}"
+                    "-DARGON2_LIBRARY=${_vendor_argon2_lib}"
+                    "-DARGON2_INCLUDE_DIRS=${_vendor_argon2_inc}"
+                    "-DARGON2_LIBRARIES=${_vendor_argon2_lib}"
+                    "-DARGON2_FOUND=TRUE"
+                )
+            else
+                warn "libargon2 not detected; heavy KDF will fall back to HKDF."
+                require_feature_or_die "${YUME_REQUIRE_ARGON2}" "libargon2 support" "Install libargon2 or stage it in vendor/ before building."
+                CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=OFF")
+            fi
         fi
     fi
     build_project

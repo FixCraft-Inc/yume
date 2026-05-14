@@ -723,9 +723,31 @@ install_deps_linux() {
                 wayland-protocols
                 libayatana-appindicator3-dev
             )
+            # If the user already has a backports library installed (a
+            # common case on Debian stable), the matching -dev package
+            # from stable won't satisfy the version pin. Retry the
+            # install from <codename>-backports before giving up — same
+            # source that supplied the runtime lib.
+            local codename=""
+            if [[ -r /etc/os-release ]]; then
+                # shellcheck disable=SC1091
+                codename="$(. /etc/os-release && printf '%s' "${VERSION_CODENAME:-}")"
+            fi
+            local backports_suite=""
+            if [[ -n "$codename" ]] \
+                && apt-cache policy 2>/dev/null | grep -q "${codename}-backports"; then
+                backports_suite="${codename}-backports"
+            fi
             for pkg in "${gui_packages[@]}"; do
-                sudo apt-get install -y "$pkg" \
-                    || warn "apt-get could not install '${pkg}'; continuing."
+                if sudo apt-get install -y "$pkg" 2>/dev/null; then
+                    continue
+                fi
+                if [[ -n "$backports_suite" ]] \
+                    && sudo apt-get install -y -t "$backports_suite" "$pkg" 2>/dev/null; then
+                    info "Installed '${pkg}' from ${backports_suite}."
+                    continue
+                fi
+                warn "apt-get could not install '${pkg}'; continuing."
             done
         fi
         if [[ "${WINDOWS_CROSS}" == "1" ]]; then

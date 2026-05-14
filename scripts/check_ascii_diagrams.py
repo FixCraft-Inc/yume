@@ -59,7 +59,11 @@ def check(path: Path) -> list[str]:
 def main(argv: list[str]) -> int:
     paths = [Path(arg) for arg in argv[1:]]
     if not paths:
+        # basefwx/* paths are only present in the meta-repo checkout, not
+        # the standalone yume checkout. Skip them silently when missing
+        # so this script can be wired into CI for the standalone repo.
         paths = [
+            Path("README.md"),
             Path("docs/EXPLAINED.md"),
             Path("basefwx/docs/EXPLAINED.md"),
             Path("basefwx/docs/man/basefwx.1"),
@@ -67,6 +71,7 @@ def main(argv: list[str]) -> int:
             Path("docs/man/yume.1"),
             Path("docs/man/yumed.8"),
         ]
+        paths = [p for p in paths if p.exists()]
 
     errors: list[str] = []
     for path in paths:

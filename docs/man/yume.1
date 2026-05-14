@@ -78,6 +78,67 @@ server. The target normally sees the YUME server's egress IP. The server
 process receives target metadata because it must open the outbound target
 socket unless the application itself routes through another layer such as
 Tor.
+.SS Client through Tor to a hidden\-service yumed
+With
+.B \-\-tor
+or
+.B \-\-proxy socks5://host:port
+the client routes the YUME carrier through a SOCKS5 proxy (typically the
+local Tor daemon). The destination hostname is sent as ATYP_DOMAIN so
+.B .onion
+targets resolve on the proxy side; no DNS leaks. On the server,
+.B yumed
+binds 127.0.0.1 and Tor publishes a HiddenService that forwards onion
+traffic to it.
+.nf
++--------------------------------+
+|  HUMAN APP                     |
+|  browser / curl                |
++--------------------------------+
+        |
+        | SOCKS, --run, or forward
+        v
++--------------------------------+
+|  YUME CLIENT                   |
+|  --tor / --proxy socks5://...  |
++--------------------------------+
+        |
+        | SOCKS5 to <onion>:443
+        v
++--------------------------------+
+|  LOCAL TOR                     |
+|  127.0.0.1:9050                |
++--------------------------------+
+        |
+        | encrypted cells
+        v
++--------------------------------+
+|  TOR CIRCUIT                   |
+|  hidden-service rendezvous     |
++--------------------------------+
+        |
+        | rendezvous on server
+        v
++--------------------------------+
+|  SERVER TOR                    |
+|  hidden service publisher      |
++--------------------------------+
+        |
+        | TLS 1.3 + YUME frames
+        v
++--------------------------------+
+|  YUMED SERVER                  |
+|  binds 127.0.0.1 only          |
++--------------------------------+
+        |
+        | outbound socket
+        v
++--------------------------------+
+|  TARGET SITE                   |
+|  sees yumed egress IP          |
++--------------------------------+
+.fi
+.PP
 .SS Server-side Tor egress
 .nf
 +--------------------------------+

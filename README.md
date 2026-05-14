@@ -167,16 +167,56 @@ Limits: this defends against stateless DPI, classifier-based ISP filters, and ac
 
 The CLI can hide the outbound connection behind a SOCKS5 proxy. Hostnames are sent as ATYP_DOMAIN, so `.onion` targets resolve on the proxy side and direct DNS never leaves the client.
 
+```text
++----------------------------------------------------------------------+
+|  HUMAN APP                                                           |
+|  browser / curl on machine A                                         |
++----------------------------------------------------------------------+
+        |
+        | local SOCKS / --run / forward
+        v
++----------------------------------------------------------------------+
+|  YUME CLIENT                                                         |
+|  --proxy or --tor                                                    |
++----------------------------------------------------------------------+
+        |
+        | SOCKS5 CONNECT to <onion>:443
+        v
++----------------------------------------------------------------------+
+|  LOCAL TOR                                                           |
+|  SOCKS5 on 127.0.0.1:9050                                            |
++----------------------------------------------------------------------+
+        |
+        | encrypted Tor cells
+        v
++----------------------------------------------------------------------+
+|  TOR CIRCUIT                                                         |
+|  3 hops, hidden-service rendezvous                                   |
++----------------------------------------------------------------------+
+        |
+        | rendezvous on machine B
+        v
++----------------------------------------------------------------------+
+|  SERVER TOR                                                          |
+|  HiddenServicePort 443 -> 127.0.0.1:443                              |
++----------------------------------------------------------------------+
+        |
+        | TLS 1.3 + YUME frames
+        v
++----------------------------------------------------------------------+
+|  YUMED SERVER                                                        |
+|  sees a 127.0.0.1 connection                                         |
++----------------------------------------------------------------------+
+        |
+        | outbound TCP/UDP
+        v
++----------------------------------------------------------------------+
+|  TARGET SITE                                                         |
+|  sees yumed egress IP                                                |
++----------------------------------------------------------------------+
 ```
-machine A ──► yume CLI ──► Tor SOCKS5 (127.0.0.1:9050)
-                                       │
-                                       ▼
-                              Tor circuit
-                                       │
-                                       ▼
-            HiddenServicePort 443 → 127.0.0.1:443 ──► yumed ──► target site
-                                       (machine B)
-```
+
+Diagram source: [docs/diagrams/tor_pipeline.spec](docs/diagrams/tor_pipeline.spec) — regenerate with `scripts/draw_pipeline.py docs/diagrams/tor_pipeline.spec`. Widths are enforced by `scripts/check_ascii_diagrams.py`.
 
 **Client side.** Add to `config/yume.json`:
 ```json

@@ -30,6 +30,24 @@ if(NOT glfw3_FOUND)
     set(GLFW_BUILD_TESTS    OFF CACHE INTERNAL "")
     set(GLFW_BUILD_EXAMPLES OFF CACHE INTERNAL "")
     set(GLFW_INSTALL        OFF CACHE INTERNAL "")
+    # GLFW's Wayland backend needs wayland-scanner at configure time. On
+    # Debian/Ubuntu that binary ships in libwayland-bin (NOT libwayland-
+    # dev), so a partial dep install fails with a baffling "Failed to
+    # find wayland-scanner" deep inside FetchContent. Detect it here and
+    # cleanly disable Wayland support if it's not on PATH — the X11
+    # backend still works on any GNOME/KDE/Sway session via Xwayland.
+    if(UNIX AND NOT APPLE)
+        find_program(YUME_WAYLAND_SCANNER wayland-scanner)
+        if(NOT YUME_WAYLAND_SCANNER)
+            message(WARNING
+                "[yume-gui] wayland-scanner not found; building GLFW without "
+                "the Wayland backend (X11 only). Install 'libwayland-bin' and "
+                "'wayland-protocols' on Debian/Ubuntu (or the equivalent for "
+                "your distro) to enable native Wayland.")
+            set(GLFW_BUILD_WAYLAND OFF CACHE INTERNAL "")
+            set(GLFW_BUILD_X11     ON  CACHE INTERNAL "")
+        endif()
+    endif()
     FetchContent_Declare(glfw
         GIT_REPOSITORY https://github.com/glfw/glfw.git
         GIT_TAG        ${YUME_GLFW_TAG})

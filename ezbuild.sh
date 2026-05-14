@@ -705,6 +705,10 @@ install_deps_linux() {
             liblzma-dev
         if [[ ${BUILD_GUI} -eq 1 ]]; then
             step "GUI build requested; installing Dear ImGui / GLFW host deps..."
+            # libwayland-bin holds wayland-scanner (GLFW needs it to
+            # generate protocol bindings); libwayland-dev is just the
+            # headers. wayland-protocols supplies the xml descriptors
+            # scanner reads. Without all three GLFW configure aborts.
             sudo apt-get install -y \
                 libgl-dev \
                 libglfw3-dev \
@@ -715,6 +719,8 @@ install_deps_linux() {
                 libxcursor-dev \
                 libxi-dev \
                 libwayland-dev \
+                libwayland-bin \
+                wayland-protocols \
                 libayatana-appindicator3-dev \
                 || warn "Some GUI dev packages failed to install; tray may be disabled."
         fi
@@ -778,6 +784,7 @@ install_deps_linux() {
                 libxcursor \
                 libxi \
                 wayland \
+                wayland-protocols \
                 libayatana-appindicator \
                 || warn "Some GUI dev packages failed to install; tray may be disabled."
         fi
@@ -813,6 +820,7 @@ install_deps_linux() {
                 libXcursor-devel \
                 libXi-devel \
                 wayland-devel \
+                wayland-protocols-devel \
                 libayatana-appindicator-gtk3-devel \
                 mesa-libGL-devel \
                 || warn "Some GUI dev packages failed to install; tray may be disabled."
@@ -850,6 +858,7 @@ install_deps_linux() {
                 libXcursor-devel \
                 libXi-devel \
                 wayland-devel \
+                wayland-protocols-devel \
                 libayatana-appindicator3-devel \
                 Mesa-libGL-devel \
                 || warn "Some GUI dev packages failed to install; tray may be disabled."

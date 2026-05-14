@@ -6,8 +6,11 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "pages/page.hpp"
@@ -83,6 +86,17 @@ private:
     // menu, so the GLFW close interceptor lets the close go through
     // instead of hiding to tray.
     bool quit_requested_{false};
+
+    // Background-resolved IPv4 of the active server, used by the tray
+    // menu's country line. We resolve on a worker so the frame loop
+    // never blocks on getaddrinfo. The host string we last submitted a
+    // resolve for is held under the same mutex.
+    std::mutex resolve_mtx_;
+    std::string resolved_host_;
+    std::string resolved_ip_;
+    std::atomic<bool> resolve_in_flight_{false};
+
+    void kick_off_resolve_if_needed(std::string const& host);
 };
 
 int run_headless(Options const& opts);

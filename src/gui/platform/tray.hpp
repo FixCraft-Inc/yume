@@ -26,6 +26,21 @@ struct TrayStatus {
     TrayServiceState server{TrayServiceState::Off};
 };
 
+// Free-form, human-readable lines shown in the tray menu so a right-
+// click gives the user the same status surface as the Android
+// notification. Empty strings collapse: any field set to "" simply
+// drops its menu item. Update on every status change; the Tray will
+// rebuild the menu in place.
+struct TrayInfo {
+    std::string client_state;     // "Connected", "Connecting", "Idle"
+    std::string client_server;    // "vpn.example.com:443"
+    std::string client_profile;   // "chrome / off"
+    std::string exit_ip;          // "203.0.113.42"
+    std::string exit_country;     // "Japan 🇯🇵"
+    std::string client_rates;     // "↑ 2.1 MB/s · ↓ 8.4 MB/s"
+    std::string server_state;     // "Running on 0.0.0.0:443" / "Stopped"
+};
+
 // Cross-platform system tray icon. Construction installs the icon and
 // returns immediately; the menu actions fire on the platform's UI
 // thread. On Linux this uses libayatana-appindicator (the modern
@@ -54,6 +69,12 @@ public:
     // frame — internally we cache by status digest and only rebuild the
     // composite PNG when the state actually changes.
     void set_status(TrayStatus const& status);
+
+    // Rebuild the rich-status section of the menu. Called whenever a
+    // displayed line changes (state, exit IP, country, rates). Empty
+    // lines are skipped. Cheap: we hash the joined string and bail
+    // when the menu would render identically.
+    void set_info(TrayInfo const& info);
 
     // Pump GTK events. Must be called from the same thread as
     // construction (typically the GUI main thread), once per frame.

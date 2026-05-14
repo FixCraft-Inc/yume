@@ -24,8 +24,21 @@
 #include "facade/log_sink.hpp"
 #include "facade/server_session.hpp"
 #include "facade/status.hpp"
+#include "geo/country_lookup.hpp"
 #include "theme/theme.hpp"
 #include "ui/design.hpp"
+
+#include <cstring>
+#include <string_view>
+
+#ifdef _WIN32
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+#else
+#  include <arpa/inet.h>
+#  include <netdb.h>
+#  include <sys/socket.h>
+#endif
 
 namespace yume::gui {
 
@@ -55,6 +68,31 @@ TrayServiceState tray_from_server(facade::ServerStatus const& s) {
     // as off. When we add lifecycle events from the runtime controller
     // we can surface Connecting/Error here.
     return TrayServiceState::Off;
+}
+
+// Split "host:port" into just the host. We don't validate; the country
+// lookup will reject anything that doesn't parse as IPv4. Bracketed
+// IPv6 stays bracketed and will simply fall through to no-match.
+std::string host_part_of(std::string const& endpoint) {
+    if (endpoint.empty()) return {};
+    if (endpoint.front() == '[') {
+        auto rb = endpoint.find(']');
+        if (rb == std::string::npos) return endpoint;
+        return endpoint.substr(1, rb - 1);
+    }
+    auto colon = endpoint.rfind(':');
+    if (colon == std::string::npos) return endpoint;
+    return endpoint.substr(0, colon);
+}
+
+std::string format_rate(double bps) {
+    char buf[32];
+    if (bps < 1024.0)              std::snprintf(buf, sizeof(buf), "%.0f B/s", bps);
+    else if (bps < 1024.0 * 1024)  std::snprintf(buf, sizeof(buf), "%.1f KiB/s", bps / 1024.0);
+    else if (bps < 1024.0 * 1024 * 1024)
+                                   std::snprintf(buf, sizeof(buf), "%.2f MiB/s", bps / (1024.0 * 1024));
+    else                           std::snprintf(buf, sizeof(buf), "%.2f GiB/s", bps / (1024.0 * 1024 * 1024));
+    return buf;
 }
 
 bool mode_button(char const* label, bool selected, ImVec2 size) {
@@ -153,6 +191,40 @@ App::App(Options opts) : opts_(std::move(opts)) {
     active_page_ = first_page_for(NavScope::Common);
     last_client_page_ = first_page_for(NavScope::Client);
     last_server_page_ = first_page_for(NavScope::Server);
+}
+
+void App::kick_off_resolve_if_needed(std::string const& host) {
+    if (host.empty()) return;
+    // Already-cached or in-flight for the same host? Bail.
+    {
+        std::lock_guard<std::mutex> g(resolve_mtx_);
+        if (resolved_host_ == host && !resolved_ip_.empty()) return;
+    }
+    bool expected = false;
+    if (!resolve_in_flight_.compare_exchange_strong(expected, true)) {
+        return;  // someone else is already resolving
+    }
+    std::thread([this, host]() {
+        std::string ip;
+        addrinfo hints{};
+        hints.ai_family   = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        addrinfo* res = nullptr;
+        if (getaddrinfo(host.c_str(), nullptr, &hints, &res) == 0 && res) {
+            char buf[INET_ADDRSTRLEN] = {0};
+            sockaddr_in* sa = reinterpret_cast<sockaddr_in*>(res->ai_addr);
+            if (inet_ntop(AF_INET, &sa->sin_addr, buf, sizeof(buf))) {
+                ip = buf;
+            }
+            freeaddrinfo(res);
+        }
+        {
+            std::lock_guard<std::mutex> g(resolve_mtx_);
+            resolved_host_ = host;
+            resolved_ip_   = ip;
+        }
+        resolve_in_flight_.store(false);
+    }).detach();
 }
 
 App::~App() {
@@ -373,13 +445,69 @@ int App::run() {
     auto update_tray_status = [this]() {
         if (!tray_ || !tray_->available()) return;
         TrayStatus st;
+        facade::ClientStatus cs{};
+        facade::ServerStatus ss{};
         if (client_) {
-            st.client = tray_from_client_state(client_->status().state);
+            cs = client_->status();
+            st.client = tray_from_client_state(cs.state);
         }
         if (server_) {
-            st.server = tray_from_server(server_->status());
+            ss = server_->status();
+            st.server = tray_from_server(ss);
         }
         tray_->set_status(st);
+
+        TrayInfo info;
+        if (client_) {
+            info.client_state = facade::display_label(cs.state);
+            if (!cs.server_endpoint.empty()) {
+                info.client_server = cs.server_endpoint;
+            }
+            if (!cs.profile.empty() || !cs.inner_mode.empty()) {
+                info.client_profile = (cs.profile.empty() ? "default" : cs.profile)
+                                    + std::string(" / ")
+                                    + (cs.inner_mode.empty() ? "off" : cs.inner_mode);
+            }
+            std::string host = host_part_of(cs.server_endpoint);
+            kick_off_resolve_if_needed(host);
+            std::string ip;
+            {
+                std::lock_guard<std::mutex> g(resolve_mtx_);
+                if (resolved_host_ == host && !resolved_ip_.empty()) {
+                    ip = resolved_ip_;
+                }
+            }
+            // If the endpoint is already an IPv4 literal, use it directly.
+            if (ip.empty()) {
+                in_addr a{};
+                if (!host.empty() && inet_pton(AF_INET, host.c_str(), &a) == 1) {
+                    ip = host;
+                }
+            }
+            if (!ip.empty()) {
+                info.exit_ip = ip;
+                if (auto match = geo::lookup_ipv4(ip)) {
+                    info.exit_country = match->display_name;
+                    if (!match->flag_emoji.empty()) {
+                        info.exit_country = match->flag_emoji + " " + info.exit_country;
+                    }
+                }
+            }
+            if (cs.state == facade::ConnectionState::Connected) {
+                info.client_rates = std::string("\xE2\x86\x91 ") + format_rate(cs.tx_rate_bps)
+                                  + "   \xE2\x86\x93 " + format_rate(cs.rx_rate_bps);
+            }
+        }
+        if (server_) {
+            if (ss.running) {
+                info.server_state = ss.listen_endpoint.empty()
+                    ? std::string("Running")
+                    : "Running on " + ss.listen_endpoint;
+            } else {
+                info.server_state = "Stopped";
+            }
+        }
+        tray_->set_info(info);
     };
 
     while (!window_->should_close()) {

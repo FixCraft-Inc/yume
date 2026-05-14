@@ -174,7 +174,13 @@ struct Tray::Impl {
     GtkWidget* menu{nullptr};
     GtkWidget* show_item{nullptr};
     GtkWidget* quit_item{nullptr};
+    // Info-line widgets are owned by the menu (gtk_container_add). We
+    // hold raw pointers only so the next set_info() can destroy the
+    // previous batch before adding new lines.
+    std::vector<GtkWidget*> info_items;
     TrayStatus last_status;
+    TrayInfo   last_info;
+    std::string last_info_digest;
     std::string last_icon_path;
     bool available{false};
     bool gtk_initialised_by_us{false};
@@ -249,6 +255,12 @@ Tray::Tray(std::string app_name, Callbacks cb)
                      impl_.get());
     gtk_menu_shell_append(GTK_MENU_SHELL(impl_->menu), impl_->show_item);
 
+    // Secondary activate (middle-click) bound to Show Yume, so users on
+    // desktops that don't open the menu on left-click still have a fast
+    // way back to the window without going through the menu.
+    app_indicator_set_secondary_activate_target(impl_->indicator,
+                                                impl_->show_item);
+
     GtkWidget* sep = gtk_separator_menu_item_new();
     gtk_menu_shell_append(GTK_MENU_SHELL(impl_->menu), sep);
 
@@ -298,6 +310,68 @@ void Tray::set_status(TrayStatus const& status) {
     app_indicator_set_icon_full(impl_->indicator, path.c_str(), "Yume");
 }
 
+void Tray::set_info(TrayInfo const& info) {
+    if (!impl_ || !impl_->available || !impl_->menu) return;
+
+    // Hash via concatenation: cheap and stable, and avoids rebuilding
+    // the menu while the popup might be open if nothing actually
+    // changed.
+    std::string digest;
+    digest.reserve(256);
+    auto add = [&](std::string const& v) { digest.append(v); digest.push_back('\x1f'); };
+    add(info.client_state);
+    add(info.client_server);
+    add(info.client_profile);
+    add(info.exit_ip);
+    add(info.exit_country);
+    add(info.client_rates);
+    add(info.server_state);
+    if (digest == impl_->last_info_digest) return;
+    impl_->last_info_digest = digest;
+    impl_->last_info = info;
+
+    // Drop any info widgets from the previous render. They live between
+    // show_item and the separator/quit pair, owned by the menu shell.
+    for (GtkWidget* w : impl_->info_items) {
+        gtk_widget_destroy(w);
+    }
+    impl_->info_items.clear();
+
+    // Insert info lines right after Show Yume (position 1).
+    int pos = 1;
+    auto append_separator = [&]() {
+        GtkWidget* sep = gtk_separator_menu_item_new();
+        gtk_menu_shell_insert(GTK_MENU_SHELL(impl_->menu), sep, pos++);
+        gtk_widget_set_sensitive(sep, FALSE);
+        gtk_widget_show(sep);
+        impl_->info_items.push_back(sep);
+    };
+    auto append_line = [&](std::string const& text) {
+        if (text.empty()) return;
+        GtkWidget* item = gtk_menu_item_new_with_label(text.c_str());
+        // Insensitive = greyed/non-clickable; we only want these lines
+        // for display. gtk_menu_item_new_with_label uses the system
+        // label widget so it picks up the menu's font.
+        gtk_widget_set_sensitive(item, FALSE);
+        gtk_menu_shell_insert(GTK_MENU_SHELL(impl_->menu), item, pos++);
+        gtk_widget_show(item);
+        impl_->info_items.push_back(item);
+    };
+
+    bool any = false;
+    if (!info.client_state.empty())   { append_separator(); append_line("Yume: " + info.client_state); any = true; }
+    if (!info.client_server.empty())  { append_line("Server: " + info.client_server); }
+    if (!info.client_profile.empty()) { append_line("Profile: " + info.client_profile); }
+    if (!info.exit_country.empty())   { append_line("Exit: " + info.exit_country); }
+    if (!info.exit_ip.empty())        { append_line("Exit IP: " + info.exit_ip); }
+    if (!info.client_rates.empty())   { append_line(info.client_rates); }
+    if (!info.server_state.empty()) {
+        if (any) append_separator();
+        else     append_separator();
+        append_line("Local daemon: " + info.server_state);
+    }
+}
+
 void Tray::pump_events() {
     if (!impl_ || !impl_->available) return;
     // Non-blocking iteration: drain whatever GTK has pending and return.
@@ -326,6 +400,7 @@ Tray::Tray(std::string app_name, Callbacks cb)
 Tray::~Tray() = default;
 bool Tray::available() const { return false; }
 void Tray::set_status(TrayStatus const& /*status*/) {}
+void Tray::set_info(TrayInfo const& /*info*/) {}
 void Tray::pump_events() {}
 
 #endif

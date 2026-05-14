@@ -136,6 +136,7 @@ set(YUME_GUI_SOURCES
     pages/settings.cpp
     pages/tools.cpp
     pages/credits.cpp
+    geo/country_lookup.cpp
 )
 # tray.cpp is always compiled — internally it gates the libayatana-
 # appindicator code path on YUME_GUI_TRAY=1 and falls back to a stub when
@@ -201,6 +202,13 @@ endif()
 yume_apply_perf_opts(yume-gui)
 
 install(TARGETS yume-gui RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+
+# Country-by-IP DB. Installed next to the desktop entry so the lookup
+# code can find it via the prefix-relative candidate paths it walks at
+# runtime. Optional because nothing else hard-fails without it.
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/assets/geoip/"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/yume-gui/geoip"
+    FILES_MATCHING PATTERN "*.db" PATTERN "*.tsv")
 
 if(UNIX AND NOT APPLE)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/packaging/yume-gui.desktop"

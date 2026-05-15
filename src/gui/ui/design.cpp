@@ -181,6 +181,14 @@ ImFont* add_embedded_jost(float size,
 // what the layout was tuned against. If the load fails or no path was
 // found, fall back to the embedded Jost at size * kJostSizeBoost so
 // the optical size matches.
+//
+// synthetic_bold is intentionally NOT applied on the system path: the
+// caller selects the heavy weight via find_strong_font (URWGothic-Demi,
+// seguisb.ttf, etc.), so layering FreeType synthetic bold on top would
+// double-up the strokes and make the font read as "pixely / rigid".
+// synthetic_oblique still applies on the system path because we don't
+// have a find_italic_font helper — body_italic slants the Book weight
+// instead of loading a dedicated *Oblique file.
 ImFont* add_system_or_jost(std::optional<std::string> const& path,
                            float size,
                            float rasterizer_multiply,
@@ -196,10 +204,8 @@ ImFont* add_system_or_jost(std::optional<std::string> const& path,
         cfg.RasterizerDensity = 1.0f;
 #if YUME_GUI_FREETYPE
         cfg.FontBuilderFlags = ImGuiFreeTypeBuilderFlags_LightHinting;
-        if (synthetic_bold)    cfg.FontBuilderFlags |= ImGuiFreeTypeBuilderFlags_Bold;
         if (synthetic_oblique) cfg.FontBuilderFlags |= ImGuiFreeTypeBuilderFlags_Oblique;
 #else
-        (void)synthetic_bold;
         (void)synthetic_oblique;
 #endif
         std::snprintf(cfg.Name, sizeof(cfg.Name), "%s %.0f", path->c_str(), size);

@@ -604,11 +604,9 @@ std::pair<BrowserProfile, double> match_browser_profile(const FingerprintData& f
             score += 50.0;
         }
         total_checks += 1;
-        
-        if (total_checks > 0) {
-            score = (score / (total_checks * 50.0)) * 100.0;
-        }
-        
+
+        score = (score / (total_checks * 50.0)) * 100.0;
+
         if (score > best_score) {
             best_score = score;
             best_profile = known.profile;

@@ -32,13 +32,16 @@ std::string endpoint_for(client::ClientConfig const& cfg) {
 std::string strip_ansi(std::string const& in) {
     std::string out;
     out.reserve(in.size());
-    for (std::size_t i = 0; i < in.size(); ++i) {
+    std::size_t i = 0;
+    while (i < in.size()) {
         if (in[i] == '\x1b' && i + 1 < in.size() && in[i + 1] == '[') {
             i += 2;
             while (i < in.size() && (in[i] < '@' || in[i] > '~')) ++i;
+            if (i < in.size()) ++i;  // skip the CSI terminator
             continue;
         }
         out.push_back(in[i]);
+        ++i;
     }
     return out;
 }

@@ -692,7 +692,11 @@ nlohmann::json post_json_https(const std::string& host,
     }
 
     boost::asio::io_context io;
-    boost::asio::ssl::context ctx(boost::asio::ssl::context::tls_client);
+    // Talking to public HTTPS endpoints (anonym verity push) — TLS 1.2+ keeps
+    // us compatible with the broadest set of well-known CAs/CDNs while still
+    // rejecting SSLv3/TLS1.0/1.1.
+    boost::asio::ssl::context ctx(boost::asio::ssl::context::tlsv12_client);
+    ctx.set_options(boost::asio::ssl::context::default_workarounds);
     ctx.set_verify_mode(boost::asio::ssl::verify_peer);
     ctx.set_default_verify_paths();
 
@@ -1858,10 +1862,10 @@ int main(int argc, char** argv) {
         if (cfg.anonym && (cfg.anonym_sub_key.empty() || cfg.anonym_sub_cert.empty())) {
             std::error_code ec;
             std::filesystem::path runtime_dir = std::filesystem::current_path(ec);
-            std::filesystem::path exe_dir;
+            std::filesystem::path exe_path_dir;
             std::string self_path = get_self_path(argv[0]);
             if (!self_path.empty()) {
-                exe_dir = std::filesystem::path(self_path).parent_path();
+                exe_path_dir = std::filesystem::path(self_path).parent_path();
             }
             auto try_set = [&](std::string& out, const std::filesystem::path& base, const char* name) {
                 if (!out.empty() || base.empty()) {
@@ -1874,8 +1878,8 @@ int main(int argc, char** argv) {
             };
             try_set(cfg.anonym_sub_key, runtime_dir, "anonym_sub.key");
             try_set(cfg.anonym_sub_cert, runtime_dir, "anonym_sub.pem");
-            try_set(cfg.anonym_sub_key, exe_dir, "anonym_sub.key");
-            try_set(cfg.anonym_sub_cert, exe_dir, "anonym_sub.pem");
+            try_set(cfg.anonym_sub_key, exe_path_dir, "anonym_sub.key");
+            try_set(cfg.anonym_sub_cert, exe_path_dir, "anonym_sub.pem");
             if (!cfg.anonym_sub_key.empty() && !cfg.anonym_sub_cert.empty()) {
                 yume::util::log_info("using anonym sub key/cert from runtime directory");
             }
@@ -1883,10 +1887,10 @@ int main(int argc, char** argv) {
         if (cfg.inner_crypto && cfg.pq_private_key.empty()) {
             std::error_code ec;
             std::filesystem::path runtime_dir = std::filesystem::current_path(ec);
-            std::filesystem::path exe_dir;
+            std::filesystem::path exe_path_dir;
             std::string self_path = get_self_path(argv[0]);
             if (!self_path.empty()) {
-                exe_dir = std::filesystem::path(self_path).parent_path();
+                exe_path_dir = std::filesystem::path(self_path).parent_path();
             }
             auto try_set = [&](std::string& out, const std::filesystem::path& base, const char* name) {
                 if (!out.empty() || base.empty()) {
@@ -1898,7 +1902,7 @@ int main(int argc, char** argv) {
                 }
             };
             try_set(cfg.pq_private_key, runtime_dir, "pq_private.key");
-            try_set(cfg.pq_private_key, exe_dir, "pq_private.key");
+            try_set(cfg.pq_private_key, exe_path_dir, "pq_private.key");
             std::filesystem::path secret_dir = runtime_dir / ".secrets";
             try_set(cfg.pq_private_key, secret_dir, "pq_private.key");
             if (!cfg.pq_private_key.empty()) {

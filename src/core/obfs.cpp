@@ -41,14 +41,8 @@ int alpn_select_cb(SSL* /*ssl*/, const unsigned char** out, unsigned char* outle
 boost::asio::ssl::context create_server_context(const std::string& cert_path,
                                                const std::string& key_path,
                                                bool allow_h2) {
-    boost::asio::ssl::context ctx(boost::asio::ssl::context::tls_server);
-    ctx.set_options(boost::asio::ssl::context::default_workarounds |
-                    boost::asio::ssl::context::no_sslv2 |
-                    boost::asio::ssl::context::no_sslv3 |
-                    boost::asio::ssl::context::no_tlsv1 |
-                    boost::asio::ssl::context::no_tlsv1_1 |
-                    boost::asio::ssl::context::no_tlsv1_2);
-
+    boost::asio::ssl::context ctx(boost::asio::ssl::context::tlsv13_server);
+    ctx.set_options(boost::asio::ssl::context::default_workarounds);
     SSL_CTX_set_min_proto_version(ctx.native_handle(), TLS1_3_VERSION);
     SSL_CTX_set_max_proto_version(ctx.native_handle(), TLS1_3_VERSION);
 
@@ -60,14 +54,8 @@ boost::asio::ssl::context create_server_context(const std::string& cert_path,
 }
 
 boost::asio::ssl::context create_client_context() {
-    boost::asio::ssl::context ctx(boost::asio::ssl::context::tls_client);
-    ctx.set_options(boost::asio::ssl::context::default_workarounds |
-                    boost::asio::ssl::context::no_sslv2 |
-                    boost::asio::ssl::context::no_sslv3 |
-                    boost::asio::ssl::context::no_tlsv1 |
-                    boost::asio::ssl::context::no_tlsv1_1 |
-                    boost::asio::ssl::context::no_tlsv1_2);
-
+    boost::asio::ssl::context ctx(boost::asio::ssl::context::tlsv13_client);
+    ctx.set_options(boost::asio::ssl::context::default_workarounds);
     SSL_CTX_set_min_proto_version(ctx.native_handle(), TLS1_3_VERSION);
     SSL_CTX_set_max_proto_version(ctx.native_handle(), TLS1_3_VERSION);
 

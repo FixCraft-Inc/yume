@@ -59,6 +59,7 @@ bool is_tty_stdout() {
 #endif
 }
 
+#if !YUME_USE_SPDLOG
 bool is_tty_stderr() {
 #if defined(_WIN32)
     return _isatty(_fileno(stderr)) != 0;
@@ -66,6 +67,7 @@ bool is_tty_stderr() {
     return isatty(fileno(stderr)) != 0;
 #endif
 }
+#endif
 
 bool env_var_enabled(const char* name, bool fallback) {
     const char* raw = std::getenv(name);
@@ -91,6 +93,7 @@ bool timing_env_enabled() {
            env_var_enabled("YUME_PROFILE", false);
 }
 
+#if !YUME_USE_SPDLOG
 bool log_colors_enabled() {
     if (!is_tty_stderr()) {
         return false;
@@ -112,6 +115,7 @@ void print_colored_log(const char* level, const char* color_code, const std::str
     }
     std::cerr << "\033[" << color_code << "m[" << level << "]\033[0m " << msg << std::endl;
 }
+#endif
 
 std::size_t count_status_lines(const std::string& text) {
     if (text.empty()) {

@@ -7,11 +7,22 @@
 #include "facade/keys.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <fstream>
 #include <memory>
 #include <sstream>
 #include <string_view>
 #include <system_error>
+
+#if defined(_WIN32)
+#  include <io.h>
+#  include <fcntl.h>
+#  include <sys/stat.h>
+#else
+#  include <fcntl.h>
+#  include <sys/stat.h>
+#  include <unistd.h>
+#endif
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -83,7 +94,31 @@ bool write_pem(std::filesystem::path const& path, EVP_PKEY* key, bool is_private
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
 
+    // Open with O_CREAT|O_EXCL not needed for overwrites here, but we MUST set
+    // an explicit mode. The default umask path through std::fopen leaves the
+    // file at 0666 if umask is 0; private keys must be 0600 to keep them out
+    // of group/other readers on shared hosts.
+#if defined(_WIN32)
     FILE_ptr f(std::fopen(path.string().c_str(), "wb"));
+#else
+    int oflags = O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC;
+    mode_t mode = is_private ? S_IRUSR | S_IWUSR                                          // 0600
+                             : S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;                     // 0644
+    int fd = ::open(path.string().c_str(), oflags, mode);
+    if (fd < 0) {
+        if (err) *err = "cannot create " + path.string();
+        return false;
+    }
+    // If the file pre-existed with looser permissions, tighten them — open()
+    // does not chmod() when O_CREAT finds an existing file.
+    ::fchmod(fd, mode);
+    FILE_ptr f(::fdopen(fd, "wb"));
+    if (!f) {
+        ::close(fd);
+        if (err) *err = "cannot create " + path.string();
+        return false;
+    }
+#endif
     if (!f) {
         if (err) *err = "cannot create " + path.string();
         return false;

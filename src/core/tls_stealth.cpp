@@ -124,36 +124,6 @@ VerificationEndpoint parse_verification_endpoint(const std::string& input, uint1
     return endpoint;
 }
 
-tls_fingerprint::FingerprintData fingerprint_from_profile(tls_fingerprint::BrowserProfile profile) {
-    tls_fingerprint::FingerprintData fingerprint;
-    auto profile_info = tls_fingerprint::get_browser_profile_info(profile);
-    if (!profile_info.has_value()) {
-        return fingerprint;
-    }
-    fingerprint.ja3_hash = profile_info->ja3_hash;
-    fingerprint.ja4_hash = profile_info->ja4_hash;
-    fingerprint.alpn_protocols = profile_info->alpn_protocols;
-    fingerprint.ja3_components.tls_version = profile_info->tls_version;
-    fingerprint.ja3_components.cipher_suites = profile_info->cipher_suites;
-    fingerprint.ja3_components.extensions = profile_info->extensions;
-    fingerprint.ja3_components.supported_groups = profile_info->supported_groups;
-    fingerprint.ja3_components.ec_point_formats = profile_info->ec_point_formats;
-    fingerprint.ja4_components.protocol_version = "t13";
-    fingerprint.ja4_components.sni_present = "d";
-    fingerprint.ja4_components.cipher_count = static_cast<uint8_t>(profile_info->cipher_suites.size());
-    fingerprint.ja4_components.extension_count = static_cast<uint8_t>(profile_info->extensions.size());
-    fingerprint.ja4_components.first_alpn = profile_info->alpn_protocols.empty()
-        ? ""
-        : profile_info->alpn_protocols.front();
-    fingerprint.ja4_components.cipher_suites = profile_info->cipher_suites;
-    fingerprint.ja4_components.extensions = profile_info->extensions;
-    fingerprint.ja4_components.signature_algorithms = profile_info->signature_algorithms;
-    fingerprint.matched_profile = profile;
-    fingerprint.matches_known_browser = true;
-    fingerprint.similarity_score = 100.0;
-    return fingerprint;
-}
-
 void hpack_encode_integer(std::vector<uint8_t>& out,
                           uint32_t value,
                           uint8_t prefix_bits,
@@ -459,7 +429,10 @@ std::string groups_to_openssl_string(const std::vector<uint16_t>& groups) {
 
 StealthContext::StealthContext(const StealthConfig& config)
     : config_(config)
-    , ssl_context_(boost::asio::ssl::context::tls_client)
+      // tlsv12_client: enable TLS 1.2 + 1.3. The stealth path mimics browser
+      // handshakes; some CDN destinations still negotiate 1.2, so we keep both
+      // versions enabled while rejecting everything older than 1.2.
+    , ssl_context_(boost::asio::ssl::context::tlsv12_client)
     , current_profile_(config.target_profile) {
     available_profiles_ = {
         tls_fingerprint::BrowserProfile::CHROME_135,
@@ -467,12 +440,7 @@ StealthContext::StealthContext(const StealthConfig& config)
         tls_fingerprint::BrowserProfile::SAFARI_17,
     };
 
-    ssl_context_.set_options(
-        boost::asio::ssl::context::default_workarounds |
-        boost::asio::ssl::context::no_sslv2 |
-        boost::asio::ssl::context::no_sslv3 |
-        boost::asio::ssl::context::no_tlsv1 |
-        boost::asio::ssl::context::no_tlsv1_1);
+    ssl_context_.set_options(boost::asio::ssl::context::default_workarounds);
 
     if (config_.enabled) {
         apply_stealth_profile(current_profile_);

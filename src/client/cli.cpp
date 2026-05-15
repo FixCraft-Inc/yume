@@ -477,23 +477,6 @@ std::string endpoint_hint_tls(bool tls_handshake_succeeded,
     return "unknown";
 }
 
-int parse_http_status_code(std::string_view line) {
-    if (!(line.rfind("HTTP/1.1 ", 0) == 0 || line.rfind("HTTP/1.0 ", 0) == 0)) {
-        return -1;
-    }
-    std::size_t pos = line.find(' ');
-    if (pos == std::string_view::npos || pos + 4 > line.size()) {
-        return -1;
-    }
-    char d1 = line[pos + 1];
-    char d2 = line[pos + 2];
-    char d3 = line[pos + 3];
-    if (d1 < '0' || d1 > '9' || d2 < '0' || d2 > '9' || d3 < '0' || d3 > '9') {
-        return -1;
-    }
-    return ((d1 - '0') * 100) + ((d2 - '0') * 10) + (d3 - '0');
-}
-
 bool looks_like_yume_header(const std::array<uint8_t, 8>& header) {
     uint32_t len = (static_cast<uint32_t>(header[0]) << 24) |
                    (static_cast<uint32_t>(header[1]) << 16) |
@@ -2241,22 +2224,6 @@ bool read_stdin_line_with_timeout(std::string* out, int timeout_ms) {
 }
 #endif
 
-void run_io_threads(boost::asio::io_context& io, int requested) {
-    io.restart();
-    int threads = resolve_io_threads(requested);
-    std::vector<std::thread> workers;
-    if (threads > 1) {
-        workers.reserve(static_cast<size_t>(threads - 1));
-    }
-    for (int i = 1; i < threads; ++i) {
-        workers.emplace_back([&io]() { io.run(); });
-    }
-    io.run();
-    for (auto& t : workers) {
-        t.join();
-    }
-}
-
 std::string trim_copy(std::string s) {
     auto is_space = [](unsigned char ch) { return std::isspace(ch) != 0; };
     while (!s.empty() && is_space(static_cast<unsigned char>(s.front()))) {
@@ -3632,11 +3599,11 @@ int Cli::run(int argc, char** argv) {
     if (cfg.inner_crypto && cfg.pq_public_key.empty()) {
         std::error_code ec;
         std::filesystem::path runtime_dir = std::filesystem::current_path(ec);
-        std::filesystem::path exe_dir;
+        std::filesystem::path exe_path_dir;
         std::filesystem::path user_cfg_dir;
         std::string self_path = get_self_path(argv[0]);
         if (!self_path.empty()) {
-            exe_dir = std::filesystem::path(self_path).parent_path();
+            exe_path_dir = std::filesystem::path(self_path).parent_path();
         }
         if (const char* home = std::getenv("HOME"); home && *home) {
             user_cfg_dir = std::filesystem::path(home) / ".yume";
@@ -3652,7 +3619,7 @@ int Cli::run(int argc, char** argv) {
         };
         try_set(user_cfg_dir);
         try_set(runtime_dir);
-        try_set(exe_dir);
+        try_set(exe_path_dir);
         if (!cfg.pq_public_key.empty()) {
             util::log_info("using discovered pq_public_key: " + cfg.pq_public_key);
         }

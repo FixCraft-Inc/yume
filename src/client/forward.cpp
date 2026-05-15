@@ -241,7 +241,7 @@ bool is_private_ipv6(const boost::asio::ip::address_v6& addr) {
 
 bool is_private_address(const boost::asio::ip::address& addr) {
     if (addr.is_v4()) return is_private_ipv4(addr.to_v4());
-    if (addr.is_v6()) return true;
+    if (addr.is_v6()) return is_private_ipv6(addr.to_v6());
     return false;
 }
 

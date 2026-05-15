@@ -107,7 +107,7 @@ constexpr Component kComponentsGuiOnly[] = {
 };
 
 struct Quote {
-    char const* label;
+    char const* label;   // null = stack under the previous entry's label
     char const* text;
 };
 
@@ -119,6 +119,8 @@ constexpr Quote kQuotes[] = {
     {"Recognition",
      "\"Credit is only fair when everyone has their place, and AI"
      " deserves to be recognized too.\""},
+    {nullptr,
+     "\"Judge the code, not the coder.\""},
     {"From F1xGOD",
      "\"Building on open source is one of the most empowering"
      " experiences in software development. You do not have to wait"
@@ -234,17 +236,24 @@ public:
         if (ui::begin_auto_card("##credits_quotes")) {
             for (std::size_t i = 0; i < std::size(kQuotes); ++i) {
                 auto const& q = kQuotes[i];
-                // Extra top spacing between entries so the two label/quote
-                // pairs read as separate items rather than one paragraph.
-                if (i > 0) ImGui::Dummy(ImVec2(0, 6 * sc));
 
-                if (ui::fonts().small) ImGui::PushFont(ui::fonts().small);
-                ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
-                ImGui::TextUnformatted(q.label);
-                ImGui::PopStyleColor();
-                if (ui::fonts().small) ImGui::PopFont();
+                if (q.label != nullptr) {
+                    // New label starts a new logical group. Add a bit of
+                    // breathing room above it when it isn't the first row.
+                    if (i > 0) ImGui::Dummy(ImVec2(0, 6 * sc));
 
-                ImGui::Dummy(ImVec2(0, 4 * sc));
+                    if (ui::fonts().small) ImGui::PushFont(ui::fonts().small);
+                    ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
+                    ImGui::TextUnformatted(q.label);
+                    ImGui::PopStyleColor();
+                    if (ui::fonts().small) ImGui::PopFont();
+
+                    ImGui::Dummy(ImVec2(0, 4 * sc));
+                } else {
+                    // Continuation quote under the previous label — small
+                    // gap so it reads as the next bullet, not a new section.
+                    ImGui::Dummy(ImVec2(0, 4 * sc));
+                }
 
                 ImFont* quote_font = ui::fonts().body_italic
                                          ? ui::fonts().body_italic

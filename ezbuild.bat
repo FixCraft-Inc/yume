@@ -25,17 +25,21 @@ set "BUILD_GUI=0"
 set "PORTABLE=0"
 set "CLEAN_ONLY=0"
 set "SKIP_PULL=0"
+set "USE_MINGW=0"
 set "BUILD_TYPE=Release"
 set "BUILD_DIR=build-win"
+set "FORWARD_ARGS="
 
 :parse
 if "%~1"=="" goto args_done
-if /I "%~1"=="--gui"      ( set "BUILD_GUI=1" & shift & goto parse )
-if /I "%~1"=="--with-gui" ( set "BUILD_GUI=1" & shift & goto parse )
-if /I "%~1"=="--portable" ( set "PORTABLE=1" & shift & goto parse )
-if /I "%~1"=="--static"   ( set "PORTABLE=1" & shift & goto parse )
+if /I "%~1"=="--gui"      ( set "BUILD_GUI=1" & set "FORWARD_ARGS=!FORWARD_ARGS! --gui" & shift & goto parse )
+if /I "%~1"=="--with-gui" ( set "BUILD_GUI=1" & set "FORWARD_ARGS=!FORWARD_ARGS! --gui" & shift & goto parse )
+if /I "%~1"=="--portable" ( set "PORTABLE=1" & set "FORWARD_ARGS=!FORWARD_ARGS! --portable" & shift & goto parse )
+if /I "%~1"=="--static"   ( set "PORTABLE=1" & set "FORWARD_ARGS=!FORWARD_ARGS! --portable" & shift & goto parse )
+if /I "%~1"=="--mingw"    ( set "USE_MINGW=1" & shift & goto parse )
+if /I "%~1"=="--msys2"    ( set "USE_MINGW=1" & shift & goto parse )
 if /I "%~1"=="--clean"    ( set "CLEAN_ONLY=1" & shift & goto parse )
-if /I "%~1"=="--no-pull"  ( set "SKIP_PULL=1" & shift & goto parse )
+if /I "%~1"=="--no-pull"  ( set "SKIP_PULL=1" & set "FORWARD_ARGS=!FORWARD_ARGS! --no-pull" & shift & goto parse )
 if /I "%~1"=="--debug"    ( set "BUILD_TYPE=Debug" & shift & goto parse )
 if /I "%~1"=="--release"  ( set "BUILD_TYPE=Release" & shift & goto parse )
 if /I "%~1"=="-h"         ( goto usage )
@@ -52,6 +56,55 @@ if "%CLEAN_ONLY%"=="1" (
 )
 
 echo [info] YUME ezbuild (Windows) starting...
+
+REM ---------- Fast path: MSYS2 + MinGW + pacman -------------------------------
+REM MSVC + vcpkg compiles every dependency from source (30-60 min cold).
+REM MSYS2's mingw-w64 packages are prebuilt: install once, build in ~5 min.
+REM Triggered with `--mingw` or auto-detected when MSYS2 mingw64 is on the
+REM box and vcpkg isn't. The dispatch shells out to MSYS2's bash to run
+REM the existing ezbuild.sh - same flow as the Linux cross-build, just
+REM running natively on Windows.
+if "%USE_MINGW%"=="0" (
+    REM Auto-detect: if MSYS2 exists and vcpkg doesn't, prefer MinGW.
+    if not defined VCPKG_ROOT (
+        if exist "C:\msys64\usr\bin\bash.exe" set "USE_MINGW=1"
+        if exist "C:\msys2\usr\bin\bash.exe"  set "USE_MINGW=1"
+        if exist "%USERPROFILE%\msys64\usr\bin\bash.exe" set "USE_MINGW=1"
+    )
+)
+if "%USE_MINGW%"=="1" (
+    set "MSYS2_ROOT="
+    if exist "C:\msys64\usr\bin\bash.exe"               set "MSYS2_ROOT=C:\msys64"
+    if "!MSYS2_ROOT!"=="" if exist "C:\msys2\usr\bin\bash.exe"               set "MSYS2_ROOT=C:\msys2"
+    if "!MSYS2_ROOT!"=="" if exist "%USERPROFILE%\msys64\usr\bin\bash.exe"   set "MSYS2_ROOT=%USERPROFILE%\msys64"
+    if "!MSYS2_ROOT!"=="" (
+        echo [error] --mingw requires MSYS2 ^(not detected at the usual paths^).
+        echo         Install it once with:
+        echo             winget install MSYS2.MSYS2
+        echo         then re-run ezbuild.bat --mingw.
+        echo.
+        echo         First-time MSYS2 setup also needs these packages
+        echo         ^(handled inside the MSYS2 MINGW64 shell^):
+        echo             pacman -S --needed --noconfirm mingw-w64-x86_64-toolchain ^^
+        echo                 mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja ^^
+        echo                 mingw-w64-x86_64-openssl mingw-w64-x86_64-boost ^^
+        echo                 mingw-w64-x86_64-nlohmann-json mingw-w64-x86_64-zstd ^^
+        echo                 mingw-w64-x86_64-spdlog mingw-w64-x86_64-liboqs ^^
+        echo                 mingw-w64-x86_64-libargon2 mingw-w64-x86_64-glfw ^^
+        echo                 mingw-w64-x86_64-freetype git
+        exit /b 1
+    )
+    echo [info] Dispatching to MSYS2 MinGW64 at !MSYS2_ROOT!.
+    echo [info] This delegates to ezbuild.sh - same fast flow as the Linux cross-build.
+    REM MSYSTEM=MINGW64 makes /usr/bin/bash pick up the MinGW gcc toolchain
+    REM and the mingw-w64-x86_64-* packages installed via pacman, instead
+    REM of the MSYS environment which targets cygwin-like binaries we
+    REM don't want to ship.
+    set "MSYSTEM=MINGW64"
+    set "CHERE_INVOKING=1"
+    "!MSYS2_ROOT!\usr\bin\bash.exe" -lc "cd \"$(cygpath -u '%CD%')\" && ./ezbuild.sh !FORWARD_ARGS!"
+    exit /b !ERRORLEVEL!
+)
 
 REM ---------- Auto-pull (best-effort, optional) -------------------------------
 if "%SKIP_PULL%"=="0" (
@@ -274,17 +327,32 @@ echo      Binaries under %BUILD_DIR%\bin\%BUILD_TYPE%\
 exit /b 0
 
 :usage
-echo Usage: ezbuild.bat [--gui] [--portable] [--debug] [--clean] [--no-pull]
+echo Usage: ezbuild.bat [--mingw^|--gui^|--portable^|--debug^|--clean^|--no-pull]
 echo.
-echo   --gui         Also build yume-gui.exe (Dear ImGui frontend).
+echo   --mingw       Fast path: use MSYS2 + MinGW + prebuilt pacman packages
+echo                 ^(~5 min cold vs 30-60 min on vcpkg/MSVC^). Auto-selected
+echo                 when MSYS2 is installed and no VCPKG_ROOT is configured.
+echo   --gui         Also build yume-gui.exe ^(Dear ImGui frontend^).
 echo   --portable    Static C runtime + static-triplet vcpkg.
 echo                 Pair with --gui for a single-file portable .exe.
-echo   --debug       Build Debug configuration (default: Release).
+echo   --debug       Build Debug configuration ^(default: Release^).
 echo   --clean       Remove the build directory and exit.
 echo   --no-pull     Skip the git fast-forward step.
 echo.
 echo Environment:
-echo   VCPKG_ROOT    Path to vcpkg checkout (auto-detected if on PATH).
-echo   GENERATOR     CMake generator override (default: "Visual Studio 17 2022").
-echo   ARCH          Target arch (default: x64).
+echo   VCPKG_ROOT    Path to vcpkg checkout ^(auto-detected if on PATH^).
+echo                 When unset and MSYS2 is present, --mingw is implied.
+echo   GENERATOR     CMake generator override ^(default: "Visual Studio 17 2022"^).
+echo   ARCH          Target arch ^(default: x64^).
+echo.
+echo First-time MSYS2 setup:
+echo     winget install MSYS2.MSYS2
+echo Then in the MSYS2 MINGW64 shell:
+echo     pacman -S --needed --noconfirm mingw-w64-x86_64-toolchain ^^
+echo         mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja git ^^
+echo         mingw-w64-x86_64-openssl mingw-w64-x86_64-boost ^^
+echo         mingw-w64-x86_64-nlohmann-json mingw-w64-x86_64-zstd ^^
+echo         mingw-w64-x86_64-spdlog mingw-w64-x86_64-liboqs ^^
+echo         mingw-w64-x86_64-libargon2 mingw-w64-x86_64-glfw ^^
+echo         mingw-w64-x86_64-freetype
 exit /b 0

@@ -1066,8 +1066,45 @@ install_deps_macos() {
 }
 
 install_deps_windows() {
+    # Running inside MSYS2's MINGW64 environment: use pacman with the
+    # mingw-w64-x86_64-* packages. Those are all prebuilt, so a fresh
+    # box gets to a ready-to-build state in a few minutes instead of
+    # spending 30-60 min letting vcpkg compile everything against MSVC.
+    if [[ "${MSYSTEM:-}" == "MINGW64" || "${MSYSTEM:-}" == "MINGW32" || "${MSYSTEM:-}" == "UCRT64" ]] \
+       && need_cmd pacman; then
+        step "Detected MSYS2 ${MSYSTEM}. Installing mingw-w64 packages..."
+        pacman -S --needed --noconfirm \
+            mingw-w64-x86_64-toolchain \
+            mingw-w64-x86_64-cmake \
+            mingw-w64-x86_64-ninja \
+            mingw-w64-x86_64-openssl \
+            mingw-w64-x86_64-boost \
+            mingw-w64-x86_64-nlohmann-json \
+            mingw-w64-x86_64-zstd \
+            mingw-w64-x86_64-spdlog \
+            mingw-w64-x86_64-liboqs \
+            mingw-w64-x86_64-libargon2 \
+            git
+        if [[ ${BUILD_GUI} -eq 1 ]]; then
+            step "GUI build requested; installing GLFW + Freetype..."
+            pacman -S --needed --noconfirm \
+                mingw-w64-x86_64-glfw \
+                mingw-w64-x86_64-freetype \
+                || warn "Some GUI packages failed; the build may fall back."
+        fi
+        ok "Dependencies installed via pacman (MSYS2)."
+        return 0
+    fi
+
+    # Bare cmd.exe / cygwin path: keep the Chocolatey fallback for
+    # the rare user who really wants MSVC from a shell. The native
+    # MSVC route is what ezbuild.bat drives — this branch is the
+    # last resort.
     if ! need_cmd choco; then
-        error "Chocolatey not found. Please install it from https://chocolatey.org"
+        error "No supported Windows shell setup detected."
+        error "  - For the fast path: install MSYS2 (winget install MSYS2.MSYS2)"
+        error "    and re-run from its MINGW64 shell."
+        error "  - For MSVC builds: run ezbuild.bat from cmd.exe instead."
         return 1
     fi
     step "Detected Windows + Chocolatey. Installing dependencies..."

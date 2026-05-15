@@ -2,9 +2,17 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <memory>
 #include <string>
 
 namespace yume::client {
+
+// Forward declarations so the in-process embedder gets handles to the
+// constructed network primitives without dragging tunnel.hpp /
+// relay_runtime.hpp into every TU that includes cli.hpp.
+class Tunnel;
+class RelayRuntime;
 
 struct ClientConfig {
     std::string server;
@@ -72,7 +80,26 @@ struct ClientConfig {
 
 class Cli {
 public:
+    // Fires exactly once, on Cli's io_context worker thread, immediately
+    // after Tunnel + RelayRuntime are constructed and the tunnel is
+    // authenticated against the server. The in-process embedder
+    // (facade::InProcClient) uses this to capture the two shared_ptrs
+    // and then post requests onto Tunnel's executor — same flow the
+    // local-runtime IPC handler uses, just without the socket round-trip.
+    //
+    // Lifetime: shared_ptrs returned outlive Cli::run, so the callback
+    // recipient is free to keep them until it explicitly stops the
+    // tunnel (which terminates Cli::run's io.run() and lets the thread
+    // join).
+    using RuntimeReadyCallback = std::function<void(
+        std::shared_ptr<Tunnel>,
+        std::shared_ptr<RelayRuntime>)>;
+    void set_runtime_ready_callback(RuntimeReadyCallback cb);
+
     int run(int argc, char** argv);
+
+private:
+    RuntimeReadyCallback runtime_ready_callback_;
 };
 
 }  // namespace yume::client

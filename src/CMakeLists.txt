@@ -410,6 +410,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/socks.cpp
         client/forward.cpp
         client/outbound_proxy.cpp
+        client/cli.cpp
     )
     target_include_directories(yume_client_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(yume_client_lib PUBLIC yume_core yume_transport_core)
@@ -426,7 +427,6 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
 
     add_executable(yume
         main_client.cpp
-        client/cli.cpp
     )
     target_link_libraries(yume PRIVATE yume_client_lib)
     yume_apply_perf_opts(yume)

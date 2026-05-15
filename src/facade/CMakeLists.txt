@@ -13,6 +13,7 @@ add_library(yume_facade STATIC
     profiles.cpp
     keys.cpp
     traffic_meter.cpp
+    inproc_client.cpp
     client_session.cpp
     server_session.cpp
 )

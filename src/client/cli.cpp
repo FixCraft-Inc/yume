@@ -3163,6 +3163,10 @@ private:
 
 }  // namespace
 
+void Cli::set_runtime_ready_callback(RuntimeReadyCallback cb) {
+    runtime_ready_callback_ = std::move(cb);
+}
+
 int Cli::run(int argc, char** argv) {
     util::init_logging();
 
@@ -5126,6 +5130,14 @@ int Cli::run(int argc, char** argv) {
             relay_opts.history_enabled = cfg.history_enabled;
             relay_opts.history_dir = util::expand_user(cfg.history_dir);
             auto relay_runtime = std::make_shared<RelayRuntime>(tunnel, cfg, relay_opts);
+            // Hand the freshly-built tunnel + relay to whichever
+            // in-process embedder set the callback (typically
+            // facade::InProcClient). One-shot — we move the slot to a
+            // local so a re-entrant Cli::run can register a new
+            // callback if it ever needs to.
+            if (auto cb = std::exchange(runtime_ready_callback_, {})) {
+                cb(tunnel, relay_runtime);
+            }
             const auto effective_protection_summary = [&]() {
                 if (!inner_key.has_value() && !server_inner_active) {
                     return std::string("TLS over 443");

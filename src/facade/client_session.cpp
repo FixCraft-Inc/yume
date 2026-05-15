@@ -14,8 +14,8 @@
 
 #include <nlohmann/json.hpp>
 
-#include "client/runtime_controller.hpp"
 #include "facade/config_io.hpp"
+#include "facade/inproc_client.hpp"
 #include "facade/log_sink.hpp"
 #include "facade/secure_materials.hpp"
 #include "facade/traffic_meter.hpp"
@@ -112,7 +112,7 @@ struct ClientSession::Impl {
     client::ClientConfig cfg;
     ClientStatus status;
     TrafficMeter traffic;
-    client::RuntimeController runtime;
+    InProcClient runtime;
 
     StatusCallback status_cb;
     ChatCallback chat_cb;
@@ -236,10 +236,13 @@ bool ClientSession::start(std::string* err) {
             return;
         }
 
-        client::RuntimeController::StartOptions opts;
-        opts.config_path = config_io::default_client_config_path();
         std::string start_err;
-        if (!impl_->runtime.start(std::move(cfg), opts, &start_err)) {
+        // 30 s wait is the same connect/auth budget the IPC-spawn route
+        // used; we inherit it for the in-process route so the GUI's
+        // "Connecting..." spinner doesn't time out before a slow TLS
+        // handshake completes.
+        if (!impl_->runtime.start(std::move(cfg), &start_err,
+                                  std::chrono::seconds(30))) {
             fail(start_err.empty() ? "client start failed" : start_err);
             impl_->worker_busy.store(false);
             return;

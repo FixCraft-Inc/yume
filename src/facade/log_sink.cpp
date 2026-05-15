@@ -105,6 +105,14 @@ void LogSink::install_spdlog_sink() {
     try {
         auto sink = std::make_shared<FacadeSpdSink>(*this);
         if (auto logger = spdlog::default_logger()) {
+            // Replace the spdlog default logger's sinks rather than
+            // append. spdlog ships a stdout colour sink by default;
+            // appending would mean every log line is both shown in
+            // the GUI viewer AND printed to the terminal that
+            // launched yume-gui. yume_facade is only linked into the
+            // GUI binary (the CLI does its own spdlog setup), so
+            // claiming the sink list here is safe.
+            logger->sinks().clear();
             logger->sinks().push_back(sink);
         }
     } catch (...) {

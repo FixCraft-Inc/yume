@@ -87,7 +87,17 @@ public:
                 ui::status_pill(server.running ? "Running" : "Stopped",
                                 server.running ? c.success : c.muted);
                 ui::muted_text("%s", server.listen_endpoint.empty() ? "0.0.0.0:443" : server.listen_endpoint.c_str());
-                if (!server.message.empty()) ui::muted_text("%s", server.message.c_str());
+                if (!server.message.empty()) {
+                    // Display the message in error red when the server
+                    // isn't running so failures (privileged port, port
+                    // in use, missing certs) don't disappear into the
+                    // muted grey under "Stopped".
+                    if (!server.running) {
+                        ui::message_text(c.error, "%s", server.message.c_str());
+                    } else {
+                        ui::muted_text("%s", server.message.c_str());
+                    }
+                }
                 ImGui::EndTable();
             }
         }

@@ -179,6 +179,11 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
 
     impl_->cli_thread = std::thread([this, cfg = std::move(cfg)]() mutable {
         client::Cli cli;
+        // Suppress the colour-coded banner Cli prints after auth — the
+        // same details are surfaced in the GUI's status panes, and we
+        // don't want them duplicated into stdout/stderr of whatever
+        // terminal launched the GUI.
+        cli.set_silent(true);
         cli.set_runtime_ready_callback(
             [this](std::shared_ptr<client::Tunnel> tunnel,
                    std::shared_ptr<client::RelayRuntime> relay) {

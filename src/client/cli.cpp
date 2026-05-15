@@ -4929,17 +4929,24 @@ int Cli::run(int argc, char** argv) {
                     return border + "\n" + header + build_hop_status_line() + "\n" + footer + border + "\n";
                 };
                 if (!live_status_enabled) {
-                    std::cout
-                        << border << "\n"
-                        << color_wrap("Connected to", "1;36") << " " << server_display << ":\n"
-                        << color_wrap("VERSION", "1;36") << ": " << version_value << "\n"
-                        << color_wrap("Connection", "1;36") << ": " << connection_value << "\n"
-                        << color_wrap("Protection", "1;36") << ": " << protection_value << "\n"
-                        << color_wrap("Obfuscation", "1;36") << ": " << obfs_value << "\n"
-                        << color_wrap("Inner", "1;36") << ": " << inner_line << "\n"
-                        << build_hop_status_line() << "\n"
-                        << color_wrap("Verity", "1;36") << ": " << verity_line << "\n"
-                        << border << "\n";
+                    // When embedded via facade::InProcClient the GUI
+                    // sets silent_ to suppress this banner — the same
+                    // information is already surfaced in the GUI's
+                    // status panes via the runtime_ready callback +
+                    // status() polling.
+                    if (!silent_) {
+                        std::cout
+                            << border << "\n"
+                            << color_wrap("Connected to", "1;36") << " " << server_display << ":\n"
+                            << color_wrap("VERSION", "1;36") << ": " << version_value << "\n"
+                            << color_wrap("Connection", "1;36") << ": " << connection_value << "\n"
+                            << color_wrap("Protection", "1;36") << ": " << protection_value << "\n"
+                            << color_wrap("Obfuscation", "1;36") << ": " << obfs_value << "\n"
+                            << color_wrap("Inner", "1;36") << ": " << inner_line << "\n"
+                            << build_hop_status_line() << "\n"
+                            << color_wrap("Verity", "1;36") << ": " << verity_line << "\n"
+                            << border << "\n";
+                    }
                     if (hop_enabled) {
                         util::log_info("live hop updates are disabled; use --live-status (or YUME_LIVE_STATUS=1) to update periodically");
                     }

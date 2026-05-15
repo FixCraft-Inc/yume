@@ -96,10 +96,20 @@ public:
         std::shared_ptr<RelayRuntime>)>;
     void set_runtime_ready_callback(RuntimeReadyCallback cb);
 
+    // When true, Cli skips its colour-coded "Connected to..." banner
+    // and any other unsolicited std::cout writes. spdlog output is
+    // separately routed via the spdlog default logger sinks - if the
+    // embedder wants those silent too it should replace those sinks
+    // (yume_facade does this through LogSink). Default: false, so the
+    // CLI binary keeps its existing console UX.
+    void set_silent(bool silent) noexcept { silent_ = silent; }
+    bool silent() const noexcept { return silent_; }
+
     int run(int argc, char** argv);
 
 private:
     RuntimeReadyCallback runtime_ready_callback_;
+    bool silent_{false};
 };
 
 }  // namespace yume::client

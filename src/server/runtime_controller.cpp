@@ -70,23 +70,35 @@ RuntimeController::~RuntimeController() {
 
 bool RuntimeController::start(ServerConfig cfg, std::string* error) {
     if (error) error->clear();
-    if (privileged_port_requires_elevation(cfg.listen_port)) {
-        if (error) {
-            *error = "listen port " + std::to_string(cfg.listen_port) +
-                     " requires root or cap_net_bind_service";
-        }
+
+    // Record the failure on impl_->status so a subsequent status() poll
+    // returns it — without this, the GUI sees `running=false, message=""`
+    // and the user has no idea why nothing happened.
+    auto fail_with = [&](std::string msg) {
+        if (error) *error = msg;
+        std::lock_guard<std::mutex> lock(impl_->mtx);
+        impl_->status.running = false;
+        impl_->status.message = std::move(msg);
         return false;
+    };
+
+    if (privileged_port_requires_elevation(cfg.listen_port)) {
+        return fail_with("listen port " + std::to_string(cfg.listen_port) +
+                         " requires root or cap_net_bind_service");
     }
 
     {
-        std::lock_guard<std::mutex> lock(impl_->mtx);
-        if (impl_->running.load()) {
-            return true;
+        bool still_unwinding = false;
+        {
+            std::lock_guard<std::mutex> lock(impl_->mtx);
+            if (impl_->running.load()) {
+                return true;
+            }
+            still_unwinding = impl_->io || impl_->manager ||
+                              !impl_->workers.empty();
         }
-        if (impl_->io || impl_->manager || !impl_->workers.empty()) {
-            // A previous run is still unwinding; finish cleanup first.
-            if (error) *error = "server runtime is still stopping";
-            return false;
+        if (still_unwinding) {
+            return fail_with("server runtime is still stopping");
         }
     }
 
@@ -95,8 +107,7 @@ bool RuntimeController::start(ServerConfig cfg, std::string* error) {
     try {
         manager = std::make_unique<Manager>(*io, cfg);
     } catch (std::exception const& ex) {
-        if (error) *error = ex.what();
-        return false;
+        return fail_with(ex.what());
     }
     const std::string ipc_path = local_runtime_path_for(cfg);
 
@@ -117,8 +128,7 @@ bool RuntimeController::start(ServerConfig cfg, std::string* error) {
         runtime->stop();
         manager->stop();
         io->stop();
-        if (error) *error = ex.what();
-        return false;
+        return fail_with(ex.what());
     }
 
     std::vector<std::thread> workers;

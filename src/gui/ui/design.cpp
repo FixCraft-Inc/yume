@@ -11,6 +11,15 @@
 #include <cfloat>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <initializer_list>
+#include <optional>
+#include <string>
+
+#if YUME_GUI_FONTCONFIG
+#include <fontconfig/fontconfig.h>
+#endif
 
 #if YUME_GUI_FREETYPE
 #include <misc/freetype/imgui_freetype.h>
@@ -40,6 +49,98 @@ float px(float v) {
     return v * g_scale;
 }
 
+// Jost has a noticeably smaller x-height than URW Gothic / Segoe UI, so
+// it reads as visually smaller at the same pixel size. Bump every Jost
+// dimension by this factor so the layout depth and balance stays the
+// same regardless of which path we take. Tuned to roughly match URW
+// Gothic's optical size.
+constexpr float kJostSizeBoost   = 1.12f;
+// Slightly heavier strokes on Jost so the bundled font reads with the
+// same visual weight as a hinted system font. Pure aesthetic knob —
+// FreeType applies it during atlas baking.
+constexpr float kJostRasterBoost = 1.18f;
+
+#if YUME_GUI_FONTCONFIG
+std::optional<std::string> fontconfig_match(std::string const& family) {
+    if (!FcInit()) return std::nullopt;
+    FcPattern* pattern = FcNameParse(reinterpret_cast<FcChar8 const*>(family.c_str()));
+    if (!pattern) return std::nullopt;
+    FcConfigSubstitute(nullptr, pattern, FcMatchPattern);
+    FcDefaultSubstitute(pattern);
+
+    FcResult result = FcResultNoMatch;
+    FcPattern* match = FcFontMatch(nullptr, pattern, &result);
+    FcPatternDestroy(pattern);
+    if (!match) return std::nullopt;
+
+    FcChar8* file = nullptr;
+    std::optional<std::string> path;
+    if (FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch && file) {
+        path = reinterpret_cast<char const*>(file);
+    }
+    FcPatternDestroy(match);
+    return path;
+}
+#endif
+
+std::optional<std::string> existing_path(std::initializer_list<char const*> paths) {
+    for (char const* p : paths) {
+        if (p && std::filesystem::exists(p)) return std::string(p);
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> find_ui_font() {
+#if YUME_GUI_FONTCONFIG
+    for (char const* family : {
+             "URW Gothic:style=Book",
+             "URW Gothic",
+             "Inter",
+             "Noto Sans",
+             "Roboto",
+             "DejaVu Sans"}) {
+        if (auto p = fontconfig_match(family)) return p;
+    }
+#endif
+    return existing_path({
+        "/usr/share/fonts/opentype/urw-base35/URWGothic-Book.otf",
+        "/usr/share/fonts/opentype/inter/Inter-Regular.otf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    });
+}
+
+std::optional<std::string> find_strong_font() {
+#if YUME_GUI_FONTCONFIG
+    for (char const* family : {
+             "URW Gothic:style=Demi",
+             "Inter:style=Medium",
+             "Noto Sans:style=SemiBold",
+             "Roboto:style=Medium",
+             "DejaVu Sans:style=Bold"}) {
+        if (auto p = fontconfig_match(family)) return p;
+    }
+#endif
+    return existing_path({
+        "/usr/share/fonts/opentype/urw-base35/URWGothic-Demi.otf",
+        "/usr/share/fonts/opentype/inter/Inter-Medium.otf",
+        "/usr/share/fonts/truetype/noto/NotoSans-SemiBold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    });
+}
+
+std::optional<std::string> find_mono_font() {
+#if YUME_GUI_FONTCONFIG
+    for (char const* family : {"JetBrains Mono", "Noto Sans Mono", "Roboto Mono", "DejaVu Sans Mono"}) {
+        if (auto p = fontconfig_match(family)) return p;
+    }
+#endif
+    return existing_path({
+        "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    });
+}
+
 ImFont* add_embedded_jost(float size,
                           float rasterizer_multiply,
                           bool synthetic_bold,
@@ -57,7 +158,12 @@ ImFont* add_embedded_jost(float size,
     // address and the process aborts at shutdown.
     cfg.FontDataOwnedByAtlas = false;
 #if YUME_GUI_FREETYPE
-    cfg.FontBuilderFlags = ImGuiFreeTypeBuilderFlags_LightHinting;
+    // Jost's built-in TrueType hinting is weaker than a foundry font
+    // like URW Gothic, so LightHinting tends to pixel-snap stems and
+    // gives the font a "rigid / pixely" look. NoHinting lets FreeType
+    // produce continuous subpixel positioning, which reads cleaner at
+    // our 15-30 px sizes — closer to URW Gothic's smooth vector look.
+    cfg.FontBuilderFlags = ImGuiFreeTypeBuilderFlags_NoHinting;
     if (synthetic_bold)    cfg.FontBuilderFlags |= ImGuiFreeTypeBuilderFlags_Bold;
     if (synthetic_oblique) cfg.FontBuilderFlags |= ImGuiFreeTypeBuilderFlags_Oblique;
 #else
@@ -68,6 +174,43 @@ ImFont* add_embedded_jost(float size,
     return io.Fonts->AddFontFromMemoryTTF(
         const_cast<unsigned char*>(jost_regular_ttf),
         static_cast<int>(jost_regular_ttf_len), size, &cfg);
+}
+
+// Try the supplied system font path first. If it loads we honour the
+// caller's original size — system fonts (URW Gothic / Segoe UI) are
+// what the layout was tuned against. If the load fails or no path was
+// found, fall back to the embedded Jost at size * kJostSizeBoost so
+// the optical size matches.
+ImFont* add_system_or_jost(std::optional<std::string> const& path,
+                           float size,
+                           float rasterizer_multiply,
+                           bool synthetic_bold,
+                           bool synthetic_oblique = false) {
+    ImGuiIO& io = ImGui::GetIO();
+    if (path && std::filesystem::exists(*path)) {
+        ImFontConfig cfg;
+        cfg.OversampleH = 4;
+        cfg.OversampleV = 2;
+        cfg.PixelSnapH = false;
+        cfg.RasterizerMultiply = rasterizer_multiply;
+        cfg.RasterizerDensity = 1.0f;
+#if YUME_GUI_FREETYPE
+        cfg.FontBuilderFlags = ImGuiFreeTypeBuilderFlags_LightHinting;
+        if (synthetic_bold)    cfg.FontBuilderFlags |= ImGuiFreeTypeBuilderFlags_Bold;
+        if (synthetic_oblique) cfg.FontBuilderFlags |= ImGuiFreeTypeBuilderFlags_Oblique;
+#else
+        (void)synthetic_bold;
+        (void)synthetic_oblique;
+#endif
+        std::snprintf(cfg.Name, sizeof(cfg.Name), "%s %.0f", path->c_str(), size);
+        if (ImFont* font = io.Fonts->AddFontFromFileTTF(path->c_str(), size, &cfg)) {
+            return font;
+        }
+    }
+    return add_embedded_jost(size * kJostSizeBoost,
+                             rasterizer_multiply * kJostRasterBoost,
+                             synthetic_bold,
+                             synthetic_oblique);
 }
 
 ImU32 color_u32(ImVec4 c) {
@@ -85,20 +228,24 @@ void install_fonts(float content_scale) {
     io.Fonts->FontBuilderFlags = ImGuiFreeTypeBuilderFlags_LightHinting;
 #endif
 
-    // Bundled Jost is the GUI's primary typeface on every OS — same
-    // typeface, same metrics, same look on Linux, Windows, and macOS.
-    // Linux historically resolved URW Gothic via fontconfig; Jost is a
-    // permissively-licensed Futura clone that matches that look closely.
-    // Bold weights are synthesised by FreeType (skipped on builds without
-    // FreeType — the section/title sizes are large enough that the
-    // missing weight isn't visually disruptive).
-    g_fonts.small       = add_embedded_jost(px(15.5f), 1.12f, false);
-    g_fonts.body        = add_embedded_jost(px(18.5f), 1.10f, false);
-    g_fonts.body_italic = add_embedded_jost(px(18.5f), 1.10f, false, true);
-    g_fonts.strong      = add_embedded_jost(px(18.5f), 1.04f, true);
-    g_fonts.section     = add_embedded_jost(px(20.5f), 1.04f, true);
-    g_fonts.title       = add_embedded_jost(px(30.0f), 1.02f, true);
-    g_fonts.mono        = add_embedded_jost(px(15.5f), 1.08f, false);
+    // Prefer the user's system font (URW Gothic via fontconfig on Linux,
+    // Segoe UI etc. on Windows). The layout was tuned against URW Gothic
+    // metrics, so we pass the original sizes when a system font is found.
+    // add_system_or_jost falls back to the embedded Jost with a single
+    // size+raster multiplier (kJost*Boost) so the visual size and weight
+    // match what URW Gothic gave us — no need to edit every size below
+    // when adjusting the Jost path.
+    const auto ui_font = find_ui_font();
+    const auto strong_font = find_strong_font();
+    const auto mono_font = find_mono_font();
+
+    g_fonts.small       = add_system_or_jost(ui_font, px(15.5f), 1.12f, false);
+    g_fonts.body        = add_system_or_jost(ui_font, px(18.5f), 1.10f, false);
+    g_fonts.body_italic = add_system_or_jost(ui_font, px(18.5f), 1.10f, false, true);
+    g_fonts.strong      = add_system_or_jost(strong_font ? strong_font : ui_font, px(18.5f), 1.04f, true);
+    g_fonts.section     = add_system_or_jost(strong_font ? strong_font : ui_font, px(20.5f), 1.04f, true);
+    g_fonts.title       = add_system_or_jost(strong_font ? strong_font : ui_font, px(30.0f), 1.02f, true);
+    g_fonts.mono        = add_system_or_jost(mono_font ? mono_font : ui_font, px(15.5f), 1.08f, false);
 
     io.FontDefault = g_fonts.body ? g_fonts.body : io.Fonts->Fonts[0];
 }

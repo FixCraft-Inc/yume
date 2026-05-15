@@ -11,18 +11,23 @@ find_package(OpenGL REQUIRED)
 
 # Freetype is wanted on every platform - it produces dramatically
 # better text rasterization than ImGui's built-in stb_truetype, and
-# it provides synthetic bold for our embedded Jost font (we ship the
-# Regular weight only). On Windows it comes through vcpkg; the earlier
-# "skip on Windows" guard was a heavy-handed workaround for find_package
-# leaking /usr/include during cross-builds. With CMAKE_FIND_ROOT_PATH +
-# MODE_*=ONLY now set by ezbuild's WINDOWS_CROSS path, find_package
-# is constrained to the mingw sysroot + vcpkg prefix, so it picks
-# the right Freetype without dragging host paths in.
+# it provides synthetic bold/oblique for our embedded Jost font (we
+# ship the Regular weight only). On Windows it comes through vcpkg;
+# the earlier "skip on Windows" guard was a heavy-handed workaround
+# for find_package leaking /usr/include during cross-builds. With
+# CMAKE_FIND_ROOT_PATH + MODE_*=ONLY now set by ezbuild's WINDOWS_CROSS
+# path, find_package is constrained to the mingw sysroot + vcpkg
+# prefix, so it picks the right Freetype without dragging host paths in.
 find_package(Freetype QUIET)
-# pkg-config is still required below for ayatana-appindicator detection
-# on Linux, so probe it here once.
+# Fontconfig is Linux/X11-only — Windows and macOS don't ship it. We
+# use it on Linux to find URW Gothic / Inter / etc. so the GUI uses
+# the user's preferred system font with its original sizes instead of
+# the bundled Jost fallback.
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
     find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(FONTCONFIG QUIET fontconfig)
+    endif()
 endif()
 
 set(YUME_IMGUI_TAG  "v1.91.5"  CACHE STRING "Dear ImGui git tag")
@@ -231,6 +236,14 @@ if(TARGET Freetype::Freetype)
     target_compile_definitions(yume-gui PRIVATE YUME_GUI_FREETYPE=1)
 else()
     target_compile_definitions(yume-gui PRIVATE YUME_GUI_FREETYPE=0)
+endif()
+if(FONTCONFIG_FOUND)
+    target_compile_definitions(yume-gui PRIVATE YUME_GUI_FONTCONFIG=1)
+    target_include_directories(yume-gui PRIVATE ${FONTCONFIG_INCLUDE_DIRS})
+    target_link_libraries(yume-gui PRIVATE ${FONTCONFIG_LIBRARIES})
+    target_compile_options(yume-gui PRIVATE ${FONTCONFIG_CFLAGS_OTHER})
+else()
+    target_compile_definitions(yume-gui PRIVATE YUME_GUI_FONTCONFIG=0)
 endif()
 
 if(YUME_GUI_TRAY_AVAILABLE)

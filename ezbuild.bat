@@ -100,9 +100,15 @@ if "%USE_MINGW%"=="1" (
     REM and the mingw-w64-x86_64-* packages installed via pacman, instead
     REM of the MSYS environment which targets cygwin-like binaries we
     REM don't want to ship.
+    REM
+    REM CHERE_INVOKING=1 tells bash -l to stay in cmd.exe's current dir
+    REM instead of cd'ing to $HOME. That's enough — no $(cygpath ...)
+    REM trickery needed, which kept tripping cmd's parser on the
+    REM backslash-escaped quotes.
     set "MSYSTEM=MINGW64"
     set "CHERE_INVOKING=1"
-    "!MSYS2_ROOT!\usr\bin\bash.exe" -lc "cd \"$(cygpath -u '%CD%')\" && ./ezbuild.sh !FORWARD_ARGS!"
+    set "MSYS2_BASH=!MSYS2_ROOT!\usr\bin\bash.exe"
+    "!MSYS2_BASH!" -lc "./ezbuild.sh!FORWARD_ARGS!"
     exit /b !ERRORLEVEL!
 )
 

@@ -9,15 +9,17 @@
 include(FetchContent)
 find_package(OpenGL REQUIRED)
 
-# When cross-compiling for Windows from Linux, skip host pkg-config /
-# find_package for freetype + fontconfig. Both helpers happily return
-# the host's /usr/include paths because they don't know to use the
-# mingw sysroot, and that drags <linux/errno.h> into every translation
-# unit on Debian. fontconfig is a Linux/X11 thing anyway; on Windows
-# we use the system font enumeration. Freetype-on-Windows comes through
-# the existing vcpkg/vendor path, not /usr.
+# Freetype is wanted on every platform - it produces dramatically
+# better text rasterization than ImGui's built-in stb_truetype.
+# On Windows it comes through vcpkg; the earlier "skip on Windows"
+# guard was a heavy-handed workaround for find_package leaking
+# /usr/include during cross-builds. With CMAKE_FIND_ROOT_PATH +
+# MODE_*=ONLY now set by ezbuild's WINDOWS_CROSS path, find_package
+# is constrained to the mingw sysroot + vcpkg prefix, so it picks
+# the right Freetype without dragging host paths in.
+find_package(Freetype QUIET)
+# Fontconfig is Linux/X11-only. Keep the host-skip there.
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    find_package(Freetype QUIET)
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
         pkg_check_modules(FONTCONFIG QUIET fontconfig)
@@ -230,8 +232,9 @@ if(WIN32)
     # ws2_32/mswsock: ASIO/transport. shell32: Shell_NotifyIcon. user32:
     # window class + popup menu. gdi32: DIB section / icon bitmap.
     # comdlg32: GetOpenFileNameW for the file picker.
+    # dwmapi: DwmSetWindowAttribute for dark mode title bar.
     target_link_libraries(yume-gui PRIVATE
-        ws2_32 mswsock shell32 user32 gdi32 comdlg32 ole32)
+        ws2_32 mswsock shell32 user32 gdi32 comdlg32 ole32 dwmapi)
     target_compile_definitions(yume-gui PRIVATE
         WIN32_LEAN_AND_MEAN
         NOMINMAX

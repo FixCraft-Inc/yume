@@ -16,6 +16,9 @@
 
 #if defined(_WIN32)
 #  include <windows.h>
+#  include <dwmapi.h>
+#  define GLFW_EXPOSE_NATIVE_WIN32
+#  include <GLFW/glfw3native.h>
 #elif defined(__APPLE__)
 #  include <mach-o/dyld.h>
 #  include <climits>
@@ -73,6 +76,29 @@ Window::Window(std::string title, int width, int height) {
     // by design (compositor reads our app_id and looks up the icon from
     // the theme), but the call is safe in either session type.
     platform::apply_window_icon(win_);
+
+#if defined(_WIN32)
+    // Windows 10 1809+: ask the DWM to render the title bar in dark
+    // mode. Without this our dark-themed content sits under a bright
+    // white caption. DWMWA_USE_IMMERSIVE_DARK_MODE = 20 on 1903+ and
+    // 19 on 1809; setting both is harmless (the older value gets
+    // ignored on newer builds and vice versa).
+    HWND hwnd = glfwGetWin32Window(win_);
+    if (hwnd) {
+        BOOL dark = TRUE;
+        // 20 = DWMWA_USE_IMMERSIVE_DARK_MODE (current name)
+        DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(dark));
+        // 19 = older alias used on Windows 10 1809
+        DwmSetWindowAttribute(hwnd, 19, &dark, sizeof(dark));
+        // Force a frame repaint so the change is visible without the
+        // user resizing the window.
+        RECT r{};
+        GetWindowRect(hwnd, &r);
+        SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                     SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE |
+                     SWP_NOZORDER | SWP_NOOWNERZORDER);
+    }
+#endif
 }
 
 Window::~Window() {

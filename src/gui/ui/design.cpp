@@ -10,6 +10,7 @@
 #include <cfloat>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <initializer_list>
 #include <optional>
@@ -77,6 +78,21 @@ std::optional<std::string> existing_path(std::initializer_list<char const*> path
     return std::nullopt;
 }
 
+// Resolve $WINDIR (or fall back to C:\Windows) so the font search can
+// find Segoe UI / Tahoma without hard-coding a drive letter. Returns
+// an empty string on non-Windows builds so the macro below becomes a
+// no-op when the file existence check runs the Linux-side paths.
+std::string windows_fonts_dir() {
+#ifdef _WIN32
+    if (char const* w = std::getenv("WINDIR")) {
+        return std::string(w) + "\\Fonts\\";
+    }
+    return "C:\\Windows\\Fonts\\";
+#else
+    return "";
+#endif
+}
+
 std::optional<std::string> find_ui_font() {
 #if YUME_GUI_FONTCONFIG
     for (char const* family : {
@@ -89,7 +105,18 @@ std::optional<std::string> find_ui_font() {
         if (auto p = fontconfig_match(family)) return p;
     }
 #endif
+    // Windows: Segoe UI is the system UI font from Vista onward; it
+    // looks clean at small sizes and matches every other native
+    // Windows app, which is what users expect. The fallback chain
+    // covers older / stripped Windows installs.
+    std::string const winfonts = windows_fonts_dir();
+    std::string segoe = winfonts + "segoeui.ttf";
+    std::string tahoma = winfonts + "tahoma.ttf";
+    std::string arial = winfonts + "arial.ttf";
     return existing_path({
+        segoe.c_str(),
+        tahoma.c_str(),
+        arial.c_str(),
         "/usr/share/fonts/opentype/urw-base35/URWGothic-Book.otf",
         "/usr/share/fonts/opentype/inter/Inter-Regular.otf",
         "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
@@ -110,7 +137,16 @@ std::optional<std::string> find_strong_font() {
         if (auto p = fontconfig_match(family)) return p;
     }
 #endif
+    std::string const winfonts = windows_fonts_dir();
+    std::string segoesb = winfonts + "seguisb.ttf";  // Segoe UI Semibold
+    std::string segoeb = winfonts + "segoeuib.ttf";  // Segoe UI Bold
+    std::string tahoma_b = winfonts + "tahomabd.ttf";
+    std::string arial_b = winfonts + "arialbd.ttf";
     return existing_path({
+        segoesb.c_str(),
+        segoeb.c_str(),
+        tahoma_b.c_str(),
+        arial_b.c_str(),
         "/usr/share/fonts/opentype/urw-base35/URWGothic-Demi.otf",
         "/usr/share/fonts/opentype/inter/Inter-Medium.otf",
         "/usr/share/fonts/truetype/noto/NotoSans-SemiBold.ttf",
@@ -126,7 +162,12 @@ std::optional<std::string> find_mono_font() {
         if (auto p = fontconfig_match(family)) return p;
     }
 #endif
+    std::string const winfonts = windows_fonts_dir();
+    std::string consola = winfonts + "consola.ttf";
+    std::string courier = winfonts + "cour.ttf";
     return existing_path({
+        consola.c_str(),
+        courier.c_str(),
         "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
     });

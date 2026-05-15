@@ -40,10 +40,23 @@ printf '         %s\n' "${EXES[@]}"
 
 # Candidate locations for DLLs the .exe imports. Add more if your
 # vcpkg or mingw lives elsewhere.
+#
+# Two flavours of build this script handles:
+#   - Linux cross (YUME_WINDOWS_CROSS=1 ./ezbuild.sh): mingw + vcpkg
+#     dirs under /usr/x86_64-w64-mingw32/ and ~/vcpkg.
+#   - Windows native via MSYS2 (ezbuild.bat --mingw, which shells into
+#     MSYS2 bash): everything in /mingw64/. MSYSTEM_PREFIX is set by
+#     MSYS2 to /mingw64 (or /ucrt64, /clang64, etc).
 SEARCH_DIRS=(
     "${HOME}/vcpkg/installed/x64-mingw-dynamic/bin"
     "${HOME}/vcpkg/installed/x64-mingw-dynamic/debug/bin"
     "${PWD}/vendor/windows-x86_64/bin"
+    "${MSYSTEM_PREFIX:-/mingw64}/bin"
+    "${MSYSTEM_PREFIX:-/mingw64}/lib"
+    "/mingw64/bin"
+    "/mingw64/lib"
+    "/ucrt64/bin"
+    "/clang64/bin"
     "/usr/lib/gcc/x86_64-w64-mingw32/14-posix"
     "/usr/lib/gcc/x86_64-w64-mingw32/14-win32"
     "/usr/x86_64-w64-mingw32/lib"

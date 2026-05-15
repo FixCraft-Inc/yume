@@ -147,10 +147,44 @@ while [[ ${#QUEUE[@]} -gt 0 ]]; do
 done
 
 rm -f "${ZIP_PATH}"
-( cd "$(dirname "${WORK_DIR}")" && zip -q -r "${ZIP_PATH}" "$(basename "${WORK_DIR}")" )
+# Pick whichever archiver the host actually has. On a clean Debian
+# install that's `zip`; on MSYS2 (the ezbuild.bat --mingw path) zip
+# isn't installed by default — but `tar -a -cf foo.zip` produces a
+# real zip on bsdtar (Windows 10+ ships it; MSYS2's tar is GNU and
+# needs `--format=zip` plus the file ending in .zip). PowerShell's
+# Compress-Archive is a last resort when nothing else is on PATH.
+made_zip=0
+if command -v zip >/dev/null 2>&1; then
+    ( cd "$(dirname "${WORK_DIR}")" && zip -q -r "${ZIP_PATH}" "$(basename "${WORK_DIR}")" )
+    made_zip=1
+elif tar --help 2>&1 | grep -q -- "--format"; then
+    # GNU tar with --format=zip works when the output ends in .zip.
+    if tar --format=zip -cf "${ZIP_PATH}" \
+           -C "$(dirname "${WORK_DIR}")" "$(basename "${WORK_DIR}")" 2>/dev/null; then
+        made_zip=1
+    fi
+elif command -v 7z >/dev/null 2>&1; then
+    ( cd "$(dirname "${WORK_DIR}")" \
+        && 7z a -tzip "${ZIP_PATH}" "$(basename "${WORK_DIR}")" >/dev/null \
+        && made_zip=1 )
+elif command -v powershell.exe >/dev/null 2>&1; then
+    powershell.exe -NoProfile -Command \
+        "Compress-Archive -Force -Path '$(cygpath -w "${WORK_DIR}" 2>/dev/null || echo "${WORK_DIR}")' -DestinationPath '$(cygpath -w "${ZIP_PATH}" 2>/dev/null || echo "${ZIP_PATH}")'" \
+        && made_zip=1
+fi
 
-echo
-echo "[ok] bundle ready: ${ZIP_PATH}"
-ls -lh "${ZIP_PATH}"
+if [[ $made_zip -ne 1 ]]; then
+    echo
+    echo "[warn] No archiver found (tried zip, tar --format=zip, 7z,"
+    echo "       powershell.exe Compress-Archive). The unpacked tree is"
+    echo "       ready at ${WORK_DIR}/ — copy it as-is or install one of"
+    echo "       these tools first:"
+    echo "           MSYS2:   pacman -S --needed --noconfirm zip"
+    echo "           Debian:  sudo apt-get install -y zip"
+else
+    echo
+    echo "[ok] bundle ready: ${ZIP_PATH}"
+    ls -lh "${ZIP_PATH}"
+fi
 echo "     contents in ${WORK_DIR}/"
 ls -lh "${WORK_DIR}/" | awk 'NR>1 {printf "       %s  %s\n", $5, $NF}'

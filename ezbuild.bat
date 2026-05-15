@@ -90,7 +90,7 @@ if "%USE_MINGW%"=="1" (
         echo                 mingw-w64-x86_64-openssl mingw-w64-x86_64-boost ^^
         echo                 mingw-w64-x86_64-nlohmann-json mingw-w64-x86_64-zstd ^^
         echo                 mingw-w64-x86_64-spdlog mingw-w64-x86_64-liboqs ^^
-        echo                 mingw-w64-x86_64-libargon2 mingw-w64-x86_64-glfw ^^
+        echo                 mingw-w64-x86_64-argon2 mingw-w64-x86_64-glfw ^^
         echo                 mingw-w64-x86_64-freetype git
         exit /b 1
     )
@@ -359,6 +359,6 @@ echo         mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja git ^^
 echo         mingw-w64-x86_64-openssl mingw-w64-x86_64-boost ^^
 echo         mingw-w64-x86_64-nlohmann-json mingw-w64-x86_64-zstd ^^
 echo         mingw-w64-x86_64-spdlog mingw-w64-x86_64-liboqs ^^
-echo         mingw-w64-x86_64-libargon2 mingw-w64-x86_64-glfw ^^
+echo         mingw-w64-x86_64-argon2 mingw-w64-x86_64-glfw ^^
 echo         mingw-w64-x86_64-freetype
 exit /b 0

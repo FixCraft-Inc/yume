@@ -1083,7 +1083,7 @@ install_deps_windows() {
             mingw-w64-x86_64-zstd \
             mingw-w64-x86_64-spdlog \
             mingw-w64-x86_64-liboqs \
-            mingw-w64-x86_64-libargon2 \
+            mingw-w64-x86_64-argon2 \
             git
         if [[ ${BUILD_GUI} -eq 1 ]]; then
             step "GUI build requested; installing GLFW + Freetype..."

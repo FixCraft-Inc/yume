@@ -314,18 +314,17 @@ private:
             }
 
             ImGui::Dummy(ImVec2(0, 6 * sc));
-            // Row of two buttons: "Add from file..." imports a .pub /
-            // pem the user already has; "Generate for new user..." spins
-            // up a fresh keypair where the .key file is what they share
-            // with the friend, and the .pub is appended here automatically.
-            const float btn_w = 200.0f * sc;
+            // Auto-width: pass 0 on the x dimension so ImGui sizes each
+            // button to its label + frame padding. The hardcoded
+            // 200*sc width clipped both labels on Windows where Segoe
+            // UI metrics differ from Linux's URW Gothic.
             if (ui::primary_button("Add from public-key file...",
-                                   ImVec2(btn_w, 40 * sc))) {
+                                   ImVec2(0, 40 * sc))) {
                 add_from_file();
             }
             ImGui::SameLine();
             if (ui::secondary_button("Generate new user keypair...",
-                                     ImVec2(btn_w, 40 * sc))) {
+                                     ImVec2(0, 40 * sc))) {
                 generate_new_user();
             }
 

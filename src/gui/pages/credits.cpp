@@ -98,6 +98,10 @@ constexpr Component kComponentsGuiOnly[] = {
     {"libayatana-appindicator",
      "Linux system tray indicator (StatusNotifierItem bridge).",
      "LGPL-3.0"},
+    {"Roboto",
+     "Bundled UI typeface so the GUI renders consistently on every OS"
+     " without depending on the host font catalogue.",
+     "Apache-2.0"},
 };
 
 constexpr ComponentGroup kGroups[] = {

@@ -160,6 +160,28 @@ configure_file(
     "${CMAKE_CURRENT_BINARY_DIR}/generated/app_icon_data.hpp"
     @ONLY)
 
+# ---- Embed Roboto Regular as a guaranteed fallback font ----------------
+# When system font discovery fails (notably on stripped Windows installs
+# where AddFontFromFileTTF on segoeui.ttf can return null), the GUI falls
+# back to AddFontFromMemoryTTF on this baked-in TTF instead of ImGui's
+# bitmap Proggy Clean default, so users see a clean vector typeface
+# everywhere. ~300 KB Apache-2.0 TTF — small enough to ship in-binary.
+set(YUME_FONT_ROBOTO_INPUT
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/Roboto-Regular.ttf")
+set(YUME_FONT_ROBOTO_OUTPUT
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_roboto_regular.cpp")
+add_custom_command(
+    OUTPUT "${YUME_FONT_ROBOTO_OUTPUT}"
+    COMMAND ${CMAKE_COMMAND}
+        "-DINPUT_FILE=${YUME_FONT_ROBOTO_INPUT}"
+        "-DOUTPUT_FILE=${YUME_FONT_ROBOTO_OUTPUT}"
+        "-DVAR_NAME=roboto_regular_ttf"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2c_impl.cmake"
+    DEPENDS "${YUME_FONT_ROBOTO_INPUT}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2c_impl.cmake"
+    COMMENT "Embedding Roboto-Regular.ttf into the binary"
+    VERBATIM)
+
 # ---- yume-gui executable ------------------------------------------------
 set(YUME_GUI_SOURCES
     main.cpp
@@ -182,6 +204,7 @@ set(YUME_GUI_SOURCES
     pages/tools.cpp
     pages/credits.cpp
     geo/country_lookup.cpp
+    "${YUME_FONT_ROBOTO_OUTPUT}"
 )
 # tray.cpp is always compiled — internally it gates the libayatana-
 # appindicator code path on YUME_GUI_TRAY=1 and falls back to a stub when

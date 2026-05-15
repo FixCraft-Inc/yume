@@ -42,7 +42,8 @@ float px(float v) {
 
 ImFont* add_embedded_jost(float size,
                           float rasterizer_multiply,
-                          bool synthetic_bold) {
+                          bool synthetic_bold,
+                          bool synthetic_oblique = false) {
     ImGuiIO& io = ImGui::GetIO();
     ImFontConfig cfg;
     cfg.OversampleH = 4;
@@ -57,9 +58,11 @@ ImFont* add_embedded_jost(float size,
     cfg.FontDataOwnedByAtlas = false;
 #if YUME_GUI_FREETYPE
     cfg.FontBuilderFlags = ImGuiFreeTypeBuilderFlags_LightHinting;
-    if (synthetic_bold) cfg.FontBuilderFlags |= ImGuiFreeTypeBuilderFlags_Bold;
+    if (synthetic_bold)    cfg.FontBuilderFlags |= ImGuiFreeTypeBuilderFlags_Bold;
+    if (synthetic_oblique) cfg.FontBuilderFlags |= ImGuiFreeTypeBuilderFlags_Oblique;
 #else
     (void)synthetic_bold;
+    (void)synthetic_oblique;
 #endif
     std::snprintf(cfg.Name, sizeof(cfg.Name), "Jost-Regular %.0f", size);
     return io.Fonts->AddFontFromMemoryTTF(
@@ -89,12 +92,13 @@ void install_fonts(float content_scale) {
     // Bold weights are synthesised by FreeType (skipped on builds without
     // FreeType — the section/title sizes are large enough that the
     // missing weight isn't visually disruptive).
-    g_fonts.small   = add_embedded_jost(px(15.5f), 1.12f, false);
-    g_fonts.body    = add_embedded_jost(px(18.5f), 1.10f, false);
-    g_fonts.strong  = add_embedded_jost(px(18.5f), 1.04f, true);
-    g_fonts.section = add_embedded_jost(px(20.5f), 1.04f, true);
-    g_fonts.title   = add_embedded_jost(px(30.0f), 1.02f, true);
-    g_fonts.mono    = add_embedded_jost(px(15.5f), 1.08f, false);
+    g_fonts.small       = add_embedded_jost(px(15.5f), 1.12f, false);
+    g_fonts.body        = add_embedded_jost(px(18.5f), 1.10f, false);
+    g_fonts.body_italic = add_embedded_jost(px(18.5f), 1.10f, false, true);
+    g_fonts.strong      = add_embedded_jost(px(18.5f), 1.04f, true);
+    g_fonts.section     = add_embedded_jost(px(20.5f), 1.04f, true);
+    g_fonts.title       = add_embedded_jost(px(30.0f), 1.02f, true);
+    g_fonts.mono        = add_embedded_jost(px(15.5f), 1.08f, false);
 
     io.FontDefault = g_fonts.body ? g_fonts.body : io.Fonts->Fonts[0];
 }

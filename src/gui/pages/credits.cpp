@@ -106,6 +106,26 @@ constexpr Component kComponentsGuiOnly[] = {
      "SIL OFL 1.1"},
 };
 
+struct Quote {
+    char const* label;
+    char const* text;
+};
+
+// Mirrors the Android Credits screen's "Recognition" + "From F1xGOD"
+// block. Both quotes are authored content and don't get translated by
+// the desktop GUI (the desktop is English-only today; Android handles
+// i18n through AppStrings).
+constexpr Quote kQuotes[] = {
+    {"Recognition",
+     "\"Credit is only fair when everyone has their place, and AI"
+     " deserves to be recognized too.\""},
+    {"From F1xGOD",
+     "\"Building on open source is one of the most empowering"
+     " experiences in software development. You do not have to wait"
+     " for someone else to fix an issue or add a feature — you can"
+     " build the solution yourself.\""},
+};
+
 constexpr ComponentGroup kGroups[] = {
     {"Used in every implementation of Yume",
      "Shared by the desktop client, the daemon, and the Android app.",
@@ -209,6 +229,33 @@ public:
             ui::end_card();
             ImGui::Dummy(ImVec2(0, 8 * sc));
         }
+
+        // ---- Quotes (mirrors Android's CreditsScreen bottom card) ----
+        if (ui::begin_auto_card("##credits_quotes")) {
+            for (std::size_t i = 0; i < std::size(kQuotes); ++i) {
+                auto const& q = kQuotes[i];
+                // Extra top spacing between entries so the two label/quote
+                // pairs read as separate items rather than one paragraph.
+                if (i > 0) ImGui::Dummy(ImVec2(0, 6 * sc));
+
+                if (ui::fonts().small) ImGui::PushFont(ui::fonts().small);
+                ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
+                ImGui::TextUnformatted(q.label);
+                ImGui::PopStyleColor();
+                if (ui::fonts().small) ImGui::PopFont();
+
+                ImGui::Dummy(ImVec2(0, 4 * sc));
+
+                ImFont* quote_font = ui::fonts().body_italic
+                                         ? ui::fonts().body_italic
+                                         : ui::fonts().body;
+                if (quote_font) ImGui::PushFont(quote_font);
+                ImGui::TextWrapped("%s", q.text);
+                if (quote_font) ImGui::PopFont();
+            }
+        }
+        ui::end_card();
+        ImGui::Dummy(ImVec2(0, 8 * sc));
     }
 };
 

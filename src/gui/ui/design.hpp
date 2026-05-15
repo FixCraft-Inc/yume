@@ -14,6 +14,7 @@ namespace yume::gui::ui {
 
 struct Fonts {
     ImFont* body{nullptr};
+    ImFont* body_italic{nullptr};
     ImFont* strong{nullptr};
     ImFont* small{nullptr};
     ImFont* section{nullptr};

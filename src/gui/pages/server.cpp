@@ -404,34 +404,76 @@ private:
             ui::section_label("Inner post-quantum crypto");
             ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
             ImGui::TextWrapped(
-                "Adds an extra cipher layer on top of TLS. Heavy + Hop "
-                "is the default; turn off only if you need to debug.");
+                "Adds an extra cipher layer on top of TLS. Heavy + Both "
+                "is the recommended default; turn off only if you need "
+                "to debug.");
             ImGui::PopStyleColor();
             ImGui::Dummy(ImVec2(0, 4 * sc));
-            if (ImGui::BeginTable("##inner_flags", 4,
-                                  ImGuiTableFlags_SizingStretchSame)) {
-                ImGui::TableNextColumn();
-                ui::checkbox("Enable", &cfg_.inner_crypto);
-                ImGui::TableNextColumn();
-                ui::checkbox("Heavy", &cfg_.inner_heavy);
-                ImGui::TableNextColumn();
-                ui::checkbox("Dual", &cfg_.inner_dual);
-                ImGui::TableNextColumn();
-                ui::checkbox("Required", &cfg_.inner_required);
-                ImGui::EndTable();
+
+            ui::checkbox("Enable inner crypto", &cfg_.inner_crypto);
+
+            // Everything under here only matters if inner crypto is on.
+            // Disable the controls (greyed) rather than hide them so the
+            // user can see what they'd be setting if they re-enabled.
+            ImGui::BeginDisabled(!cfg_.inner_crypto);
+            ImGui::Dummy(ImVec2(0, 4 * sc));
+
+            // Heavy / Dual were two booleans on disk but a single mode
+            // in protocol terms. Collapse to one segmented selector and
+            // map back to the two flags here so the underlying config
+            // file format stays compatible with the CLI.
+            //   Light = HKDF only        → heavy=false, dual=false
+            //   Heavy = Argon2 only      → heavy=true,  dual=false
+            //   Both  = advertise both,  → heavy=true,  dual=true
+            //           client picks
+            ui::field_label("Strength");
+            int mode = 0;  // 0=Light, 1=Heavy, 2=Both
+            if (cfg_.inner_heavy && cfg_.inner_dual) mode = 2;
+            else if (cfg_.inner_heavy)               mode = 1;
+            else                                     mode = 0;
+            char const* mode_labels[] = {"Light", "Heavy", "Both"};
+            int new_mode = ui::segmented_control(
+                "##inner_mode", mode_labels, 3, mode, 280.0f * sc);
+            if (new_mode != mode) {
+                switch (new_mode) {
+                    case 0: cfg_.inner_heavy = false; cfg_.inner_dual = false; break;
+                    case 1: cfg_.inner_heavy = true;  cfg_.inner_dual = false; break;
+                    case 2: cfg_.inner_heavy = true;  cfg_.inner_dual = true;  break;
+                }
             }
+            ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
+            ImGui::TextWrapped(
+                "Light is fast (HKDF). Heavy is slow but stronger (Argon2). "
+                "Both advertises Heavy+Light and lets each client pick.");
+            ImGui::PopStyleColor();
+
+            ImGui::Dummy(ImVec2(0, 4 * sc));
+            ui::checkbox("Require inner crypto (refuse clients without it)",
+                         &cfg_.inner_required);
+
+            ImGui::Dummy(ImVec2(0, 4 * sc));
             ui::checkbox("Rotate inner keys mid-session", &cfg_.inner_hop);
+            ImGui::BeginDisabled(!cfg_.inner_hop);
             int hop = static_cast<int>(cfg_.hop_interval_ms);
             int_input("Rotation interval (ms)", hop);
             cfg_.hop_interval_ms = hop < 0 ? 0u : static_cast<std::uint32_t>(hop);
+            ImGui::EndDisabled();
+
+            ImGui::EndDisabled();  // closes !cfg_.inner_crypto disabled
 
             ImGui::Dummy(ImVec2(0, 8 * sc));
-            ui::section_label("Local control IPC");
-            ui::checkbox("Allow local control socket", &cfg_.ipc_enable);
-            file_picker("IPC socket path",
-                        "Pick IPC socket location",
-                        cfg_.ipc_path,
-                        "(auto)", nullptr);
+            ui::section_label("External CLI control");
+            ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
+            ImGui::TextWrapped(
+                "Lets a separate `yume` command-line tool attach to this "
+                "server for power-user automation. Leave off unless you "
+                "specifically need it - the GUI itself doesn't use it.");
+            ImGui::PopStyleColor();
+            ImGui::Dummy(ImVec2(0, 4 * sc));
+            ui::checkbox("Allow external CLI to attach", &cfg_.ipc_enable);
+            // The path is just plumbing - we pick a sensible default
+            // under XDG_RUNTIME_DIR ourselves; users never need to see
+            // or edit it. cfg_.ipc_path is left as-is (empty means auto).
 
             ImGui::EndDisabled();
         }

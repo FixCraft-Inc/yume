@@ -10,20 +10,19 @@ include(FetchContent)
 find_package(OpenGL REQUIRED)
 
 # Freetype is wanted on every platform - it produces dramatically
-# better text rasterization than ImGui's built-in stb_truetype.
-# On Windows it comes through vcpkg; the earlier "skip on Windows"
-# guard was a heavy-handed workaround for find_package leaking
-# /usr/include during cross-builds. With CMAKE_FIND_ROOT_PATH +
+# better text rasterization than ImGui's built-in stb_truetype, and
+# it provides synthetic bold for our embedded Jost font (we ship the
+# Regular weight only). On Windows it comes through vcpkg; the earlier
+# "skip on Windows" guard was a heavy-handed workaround for find_package
+# leaking /usr/include during cross-builds. With CMAKE_FIND_ROOT_PATH +
 # MODE_*=ONLY now set by ezbuild's WINDOWS_CROSS path, find_package
 # is constrained to the mingw sysroot + vcpkg prefix, so it picks
 # the right Freetype without dragging host paths in.
 find_package(Freetype QUIET)
-# Fontconfig is Linux/X11-only. Keep the host-skip there.
+# pkg-config is still required below for ayatana-appindicator detection
+# on Linux, so probe it here once.
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
     find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(FONTCONFIG QUIET fontconfig)
-    endif()
 endif()
 
 set(YUME_IMGUI_TAG  "v1.91.5"  CACHE STRING "Dear ImGui git tag")
@@ -160,26 +159,28 @@ configure_file(
     "${CMAKE_CURRENT_BINARY_DIR}/generated/app_icon_data.hpp"
     @ONLY)
 
-# ---- Embed Roboto Regular as a guaranteed fallback font ----------------
-# When system font discovery fails (notably on stripped Windows installs
-# where AddFontFromFileTTF on segoeui.ttf can return null), the GUI falls
-# back to AddFontFromMemoryTTF on this baked-in TTF instead of ImGui's
-# bitmap Proggy Clean default, so users see a clean vector typeface
-# everywhere. ~300 KB Apache-2.0 TTF — small enough to ship in-binary.
-set(YUME_FONT_ROBOTO_INPUT
-    "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/Roboto-Regular.ttf")
-set(YUME_FONT_ROBOTO_OUTPUT
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_roboto_regular.cpp")
+# ---- Embed Jost as the GUI's bundled UI font ----------------------------
+# Linux originally used URW Gothic via fontconfig, which we liked, but URW
+# base35 is AGPL-3 with a PostScript-only font exception — embedding it in
+# a C++ binary would force AGPL on yume-gui. Jost is a SIL OFL Futura
+# clone that looks ~95% like URW Gothic, ships freely in any binary, and
+# is small (~90 KB). We bake it into yume-gui via the bin2c helper and
+# use it as the primary UI typeface on every OS so the GUI renders
+# identically on Linux, Windows, and macOS.
+set(YUME_FONT_JOST_INPUT
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/Jost-Regular.ttf")
+set(YUME_FONT_JOST_OUTPUT
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/embedded_jost_regular.cpp")
 add_custom_command(
-    OUTPUT "${YUME_FONT_ROBOTO_OUTPUT}"
+    OUTPUT "${YUME_FONT_JOST_OUTPUT}"
     COMMAND ${CMAKE_COMMAND}
-        "-DINPUT_FILE=${YUME_FONT_ROBOTO_INPUT}"
-        "-DOUTPUT_FILE=${YUME_FONT_ROBOTO_OUTPUT}"
-        "-DVAR_NAME=roboto_regular_ttf"
+        "-DINPUT_FILE=${YUME_FONT_JOST_INPUT}"
+        "-DOUTPUT_FILE=${YUME_FONT_JOST_OUTPUT}"
+        "-DVAR_NAME=jost_regular_ttf"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2c_impl.cmake"
-    DEPENDS "${YUME_FONT_ROBOTO_INPUT}"
+    DEPENDS "${YUME_FONT_JOST_INPUT}"
             "${CMAKE_CURRENT_SOURCE_DIR}/cmake/bin2c_impl.cmake"
-    COMMENT "Embedding Roboto-Regular.ttf into the binary"
+    COMMENT "Embedding Jost-Regular.ttf into the binary"
     VERBATIM)
 
 # ---- yume-gui executable ------------------------------------------------
@@ -204,7 +205,7 @@ set(YUME_GUI_SOURCES
     pages/tools.cpp
     pages/credits.cpp
     geo/country_lookup.cpp
-    "${YUME_FONT_ROBOTO_OUTPUT}"
+    "${YUME_FONT_JOST_OUTPUT}"
 )
 # tray.cpp is always compiled — internally it gates the libayatana-
 # appindicator code path on YUME_GUI_TRAY=1 and falls back to a stub when
@@ -230,14 +231,6 @@ if(TARGET Freetype::Freetype)
     target_compile_definitions(yume-gui PRIVATE YUME_GUI_FREETYPE=1)
 else()
     target_compile_definitions(yume-gui PRIVATE YUME_GUI_FREETYPE=0)
-endif()
-if(FONTCONFIG_FOUND)
-    target_compile_definitions(yume-gui PRIVATE YUME_GUI_FONTCONFIG=1)
-    target_include_directories(yume-gui PRIVATE ${FONTCONFIG_INCLUDE_DIRS})
-    target_link_libraries(yume-gui PRIVATE ${FONTCONFIG_LIBRARIES})
-    target_compile_options(yume-gui PRIVATE ${FONTCONFIG_CFLAGS_OTHER})
-else()
-    target_compile_definitions(yume-gui PRIVATE YUME_GUI_FONTCONFIG=0)
 endif()
 
 if(YUME_GUI_TRAY_AVAILABLE)

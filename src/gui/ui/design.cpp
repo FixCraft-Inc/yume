@@ -11,15 +11,6 @@
 #include <cfloat>
 #include <cstdarg>
 #include <cstdio>
-#include <cstdlib>
-#include <filesystem>
-#include <initializer_list>
-#include <optional>
-#include <string>
-
-#if YUME_GUI_FONTCONFIG
-#include <fontconfig/fontconfig.h>
-#endif
 
 #if YUME_GUI_FREETYPE
 #include <misc/freetype/imgui_freetype.h>
@@ -49,140 +40,9 @@ float px(float v) {
     return v * g_scale;
 }
 
-#if YUME_GUI_FONTCONFIG
-[[maybe_unused]]
-std::optional<std::string> fontconfig_match(std::string const& family) {
-    if (!FcInit()) return std::nullopt;
-    FcPattern* pattern = FcNameParse(reinterpret_cast<FcChar8 const*>(family.c_str()));
-    if (!pattern) return std::nullopt;
-    FcConfigSubstitute(nullptr, pattern, FcMatchPattern);
-    FcDefaultSubstitute(pattern);
-
-    FcResult result = FcResultNoMatch;
-    FcPattern* match = FcFontMatch(nullptr, pattern, &result);
-    FcPatternDestroy(pattern);
-    if (!match) return std::nullopt;
-
-    FcChar8* file = nullptr;
-    std::optional<std::string> path;
-    if (FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch && file) {
-        path = reinterpret_cast<char const*>(file);
-    }
-    FcPatternDestroy(match);
-    return path;
-}
-#endif
-
-[[maybe_unused]]
-std::optional<std::string> existing_path(std::initializer_list<char const*> paths) {
-    for (char const* p : paths) {
-        if (p && std::filesystem::exists(p)) return std::string(p);
-    }
-    return std::nullopt;
-}
-
-// Resolve $WINDIR (or fall back to C:\Windows) so the font search can
-// find Segoe UI / Tahoma without hard-coding a drive letter. Returns
-// an empty string on non-Windows builds so the macro below becomes a
-// no-op when the file existence check runs the Linux-side paths.
-[[maybe_unused]]
-std::string windows_fonts_dir() {
-#ifdef _WIN32
-    if (char const* w = std::getenv("WINDIR")) {
-        return std::string(w) + "\\Fonts\\";
-    }
-    return "C:\\Windows\\Fonts\\";
-#else
-    return "";
-#endif
-}
-
-[[maybe_unused]]
-std::optional<std::string> find_ui_font() {
-#if YUME_GUI_FONTCONFIG
-    for (char const* family : {
-             "URW Gothic:style=Book",
-             "URW Gothic",
-             "Inter",
-             "Noto Sans",
-             "Roboto",
-             "DejaVu Sans"}) {
-        if (auto p = fontconfig_match(family)) return p;
-    }
-#endif
-    // Windows: Segoe UI is the system UI font from Vista onward; it
-    // looks clean at small sizes and matches every other native
-    // Windows app, which is what users expect. The fallback chain
-    // covers older / stripped Windows installs.
-    std::string const winfonts = windows_fonts_dir();
-    std::string segoe = winfonts + "segoeui.ttf";
-    std::string tahoma = winfonts + "tahoma.ttf";
-    std::string arial = winfonts + "arial.ttf";
-    return existing_path({
-        segoe.c_str(),
-        tahoma.c_str(),
-        arial.c_str(),
-        "/usr/share/fonts/opentype/urw-base35/URWGothic-Book.otf",
-        "/usr/share/fonts/opentype/inter/Inter-Regular.otf",
-        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-        "/usr/share/fonts/truetype/roboto/unhinted/RobotoTTF/Roboto-Regular.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    });
-}
-
-[[maybe_unused]]
-std::optional<std::string> find_strong_font() {
-#if YUME_GUI_FONTCONFIG
-    for (char const* family : {
-             "URW Gothic:style=Demi",
-             "Inter:style=Medium",
-             "Noto Sans:style=SemiBold",
-             "Noto Sans:style=Medium",
-             "Roboto:style=Medium",
-             "DejaVu Sans:style=Bold"}) {
-        if (auto p = fontconfig_match(family)) return p;
-    }
-#endif
-    std::string const winfonts = windows_fonts_dir();
-    std::string segoesb = winfonts + "seguisb.ttf";  // Segoe UI Semibold
-    std::string segoeb = winfonts + "segoeuib.ttf";  // Segoe UI Bold
-    std::string tahoma_b = winfonts + "tahomabd.ttf";
-    std::string arial_b = winfonts + "arialbd.ttf";
-    return existing_path({
-        segoesb.c_str(),
-        segoeb.c_str(),
-        tahoma_b.c_str(),
-        arial_b.c_str(),
-        "/usr/share/fonts/opentype/urw-base35/URWGothic-Demi.otf",
-        "/usr/share/fonts/opentype/inter/Inter-Medium.otf",
-        "/usr/share/fonts/truetype/noto/NotoSans-SemiBold.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSans-Medium.ttf",
-        "/usr/share/fonts/truetype/roboto/unhinted/RobotoTTF/Roboto-Medium.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    });
-}
-
-[[maybe_unused]]
-std::optional<std::string> find_mono_font() {
-#if YUME_GUI_FONTCONFIG
-    for (char const* family : {"JetBrains Mono", "Noto Sans Mono", "Roboto Mono", "DejaVu Sans Mono"}) {
-        if (auto p = fontconfig_match(family)) return p;
-    }
-#endif
-    std::string const winfonts = windows_fonts_dir();
-    std::string consola = winfonts + "consola.ttf";
-    std::string courier = winfonts + "cour.ttf";
-    return existing_path({
-        consola.c_str(),
-        courier.c_str(),
-        "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-    });
-}
-
-ImFont* add_embedded_roboto(float size,
-                            float rasterizer_multiply,
-                            bool synthetic_bold) {
+ImFont* add_embedded_jost(float size,
+                          float rasterizer_multiply,
+                          bool synthetic_bold) {
     ImGuiIO& io = ImGui::GetIO();
     ImFontConfig cfg;
     cfg.OversampleH = 4;
@@ -201,43 +61,10 @@ ImFont* add_embedded_roboto(float size,
 #else
     (void)synthetic_bold;
 #endif
-    std::snprintf(cfg.Name, sizeof(cfg.Name), "Roboto-Regular %.0f", size);
+    std::snprintf(cfg.Name, sizeof(cfg.Name), "Jost-Regular %.0f", size);
     return io.Fonts->AddFontFromMemoryTTF(
-        const_cast<unsigned char*>(roboto_regular_ttf),
-        static_cast<int>(roboto_regular_ttf_len), size, &cfg);
-}
-
-[[maybe_unused]]
-ImFont* add_font_or_default(std::optional<std::string> const& path,
-                            float size,
-                            float rasterizer_multiply = 1.0f,
-                            bool synthetic_bold = false) {
-    ImGuiIO& io = ImGui::GetIO();
-    if (path && std::filesystem::exists(*path)) {
-        ImFontConfig cfg;
-        cfg.OversampleH = 4;
-        cfg.OversampleV = 2;
-        cfg.PixelSnapH = false;
-        cfg.RasterizerMultiply = rasterizer_multiply;
-        cfg.RasterizerDensity = 1.0f;
-#if YUME_GUI_FREETYPE
-        cfg.FontBuilderFlags = ImGuiFreeTypeBuilderFlags_LightHinting;
-        if (synthetic_bold) cfg.FontBuilderFlags |= ImGuiFreeTypeBuilderFlags_Bold;
-#else
-        (void)synthetic_bold;
-#endif
-        std::snprintf(cfg.Name, sizeof(cfg.Name), "%s %.0f", path->c_str(), size);
-        if (ImFont* font = io.Fonts->AddFontFromFileTTF(path->c_str(), size, &cfg)) {
-            return font;
-        }
-        // Fall through: AddFontFromFileTTF returned null. This happens on
-        // some Windows installs where C:\Windows\Fonts isn't world-readable
-        // from the user's session, or when the candidate path turned out to
-        // not be a TrueType file. Use the baked-in Roboto instead of
-        // AddFontDefault — proggy clean would otherwise be the visible
-        // breakage the user reports as "fonts COOKED" on Windows.
-    }
-    return add_embedded_roboto(size, rasterizer_multiply, synthetic_bold);
+        const_cast<unsigned char*>(jost_regular_ttf),
+        static_cast<int>(jost_regular_ttf_len), size, &cfg);
 }
 
 ImU32 color_u32(ImVec4 c) {
@@ -255,36 +82,20 @@ void install_fonts(float content_scale) {
     io.Fonts->FontBuilderFlags = ImGuiFreeTypeBuilderFlags_LightHinting;
 #endif
 
-#ifdef _WIN32
-    // Windows: the in-tree report was that segoeui.ttf rendered as ImGui's
-    // bitmap default ("fonts COOKED"), most plausibly because
-    // AddFontFromFileTTF was returning null on this user's session — Segoe
-    // UI ships as a variable font on Windows 10+, the .ttf entries in
-    // C:\Windows\Fonts can be partial/locked, and per-user permission
-    // weirdness is common. We skip system font discovery entirely and use
-    // the baked-in Roboto so the GUI looks identical to the Android client
-    // and to a Linux box that happened to resolve Roboto via fontconfig.
-    // Bold is synthesised by FreeType (or skipped without FreeType, which
-    // still looks fine because the section/title sizes are large).
-    g_fonts.small   = add_embedded_roboto(px(15.5f), 1.12f, false);
-    g_fonts.body    = add_embedded_roboto(px(18.5f), 1.10f, false);
-    g_fonts.strong  = add_embedded_roboto(px(18.5f), 1.04f, true);
-    g_fonts.section = add_embedded_roboto(px(20.5f), 1.04f, true);
-    g_fonts.title   = add_embedded_roboto(px(30.0f), 1.02f, true);
-    // Roboto has decent fixed-width digits, so use it for mono too rather
-    // than trying to find Consolas on a possibly half-stripped install.
-    g_fonts.mono    = add_embedded_roboto(px(15.5f), 1.08f, false);
-#else
-    const auto ui_font = find_ui_font();
-    const auto strong_font = find_strong_font();
-    const auto mono_font = find_mono_font();
-    g_fonts.small = add_font_or_default(ui_font, px(15.5f), 1.12f);
-    g_fonts.body = add_font_or_default(ui_font, px(18.5f), 1.10f);
-    g_fonts.strong = add_font_or_default(strong_font ? strong_font : ui_font, px(18.5f), 1.04f);
-    g_fonts.section = add_font_or_default(strong_font ? strong_font : ui_font, px(20.5f), 1.04f);
-    g_fonts.title = add_font_or_default(strong_font ? strong_font : ui_font, px(30.0f), 1.02f);
-    g_fonts.mono = add_font_or_default(mono_font ? mono_font : ui_font, px(15.5f), 1.08f);
-#endif
+    // Bundled Jost is the GUI's primary typeface on every OS — same
+    // typeface, same metrics, same look on Linux, Windows, and macOS.
+    // Linux historically resolved URW Gothic via fontconfig; Jost is a
+    // permissively-licensed Futura clone that matches that look closely.
+    // Bold weights are synthesised by FreeType (skipped on builds without
+    // FreeType — the section/title sizes are large enough that the
+    // missing weight isn't visually disruptive).
+    g_fonts.small   = add_embedded_jost(px(15.5f), 1.12f, false);
+    g_fonts.body    = add_embedded_jost(px(18.5f), 1.10f, false);
+    g_fonts.strong  = add_embedded_jost(px(18.5f), 1.04f, true);
+    g_fonts.section = add_embedded_jost(px(20.5f), 1.04f, true);
+    g_fonts.title   = add_embedded_jost(px(30.0f), 1.02f, true);
+    g_fonts.mono    = add_embedded_jost(px(15.5f), 1.08f, false);
+
     io.FontDefault = g_fonts.body ? g_fonts.body : io.Fonts->Fonts[0];
 }
 

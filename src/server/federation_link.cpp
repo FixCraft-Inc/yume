@@ -301,8 +301,12 @@ void FederationLink::run_loop() {
         try {
             set_state("dialing");
             boost::asio::io_context io;
-            boost::asio::ssl::context ctx(boost::asio::ssl::context::tls_client);
+            // Both endpoints are Yume servers we control, so TLS 1.3 only.
+            // Consistent with the obfs / tls_stealth contexts elsewhere.
+            boost::asio::ssl::context ctx(boost::asio::ssl::context::tlsv13_client);
             ctx.set_options(boost::asio::ssl::context::default_workarounds);
+            SSL_CTX_set_min_proto_version(ctx.native_handle(), TLS1_3_VERSION);
+            SSL_CTX_set_max_proto_version(ctx.native_handle(), TLS1_3_VERSION);
             ctx.set_verify_mode(boost::asio::ssl::verify_peer);
             ctx.set_default_verify_paths();
             if (!cfg_.federation_anonym_ca.empty()) {

@@ -30,16 +30,27 @@ case "${LIBOQS_TARGET}" in
     host)
         prefix_default="/usr/local"
         toolchain_file=""
+        # x86_64 is in liboqs's supported-arch whitelist.
+        permit_unsupported_arch=0
         ;;
     armv7)
         prefix_default="/usr/arm-linux-gnueabihf"
         cross_prefix="arm-linux-gnueabihf"
         cmake_processor="arm"
+        # liboqs 0.11.x doesn't ship hand-tuned assembly for 32-bit
+        # ARM; the configure step refuses to proceed unless we set
+        # OQS_PERMIT_UNSUPPORTED_ARCHITECTURE=ON. That flag does not
+        # disable any cryptographic invariants — it just allows the
+        # portable-C fallbacks (which exist for every primitive) to
+        # be compiled instead of arch-specific intrinsics.
+        permit_unsupported_arch=1
         ;;
     armv8)
         prefix_default="/usr/aarch64-linux-gnu"
         cross_prefix="aarch64-linux-gnu"
         cmake_processor="aarch64"
+        # aarch64 IS in liboqs's whitelist (with NEON intrinsics).
+        permit_unsupported_arch=0
         ;;
     i386)
         # busybox-x86 is the only consumer; ezbuild looks under
@@ -47,6 +58,9 @@ case "${LIBOQS_TARGET}" in
         prefix_default="$(pwd)/vendor/busybox-x86"
         cross_prefix="i686-linux-gnu"
         cmake_processor="x86"
+        # 32-bit x86 is also not in the whitelist — same rationale
+        # as armv7. Portable C fallbacks compile cleanly under i686.
+        permit_unsupported_arch=1
         ;;
     *)
         echo "Unsupported LIBOQS_TARGET: ${LIBOQS_TARGET}" >&2
@@ -99,6 +113,10 @@ cmake_args=(
     -DOQS_USE_OPENSSL=ON
     -DCMAKE_INSTALL_LIBDIR=lib
 )
+
+if [[ "${permit_unsupported_arch:-0}" -eq 1 ]]; then
+    cmake_args+=( -DOQS_PERMIT_UNSUPPORTED_ARCHITECTURE=ON )
+fi
 
 if [[ -n "${toolchain_file:-}" ]]; then
     cmake_args+=( "-DCMAKE_TOOLCHAIN_FILE=${toolchain_file}" )

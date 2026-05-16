@@ -567,6 +567,21 @@ detect_liboqs_target() {
             return 1
         fi
     fi
+    # Non-OpenWRT cross builds (BusyBox / cross-Linux) stage their
+    # liboqs into ${PWD}/vendor/<target>/ via scripts/build-liboqs-target.sh.
+    # ezbuild already passes -DBASEFWX_VENDOR_DIR=${PWD}/vendor/busybox-<arch>
+    # below (line ~1652) when that dir exists; we also want PQ flagged on
+    # so basefwx's CMake actually emits -DBASEFWX_REQUIRE_OQS=ON for the
+    # build. Without this hook, the BUSYBOX branch fell straight through
+    # to "PQ will be disabled" even when a properly cross-built
+    # liboqs.a was sitting at the expected vendor path.
+    if [[ "${BUSYBOX:-0}" -eq 1 && -n "${TARGET_ARCH:-}" ]]; then
+        local _vendor="${PWD}/vendor/busybox-${TARGET_ARCH}"
+        if [[ -f "${_vendor}/include/oqs/oqs.h" \
+              && ( -f "${_vendor}/lib/liboqs.a" || -f "${_vendor}/lib/liboqs.so" ) ]]; then
+            return 0
+        fi
+    fi
     return 1
 }
 
@@ -581,6 +596,16 @@ resolve_oqs_sysroot_paths() {
             lib="${OPENWRT_USR}/lib/liboqs.so"
         else
             lib="$(ls -1 "${OPENWRT_USR}/lib/liboqs.so."* 2>/dev/null | head -n 1 || true)"
+        fi
+    elif [[ "${BUSYBOX:-0}" -eq 1 && -n "${TARGET_ARCH:-}" ]]; then
+        local _vendor="${PWD}/vendor/busybox-${TARGET_ARCH}"
+        if [[ -f "${_vendor}/include/oqs/oqs.h" ]]; then
+            inc="${_vendor}/include"
+            if [[ -f "${_vendor}/lib/liboqs.a" ]]; then
+                lib="${_vendor}/lib/liboqs.a"
+            elif [[ -f "${_vendor}/lib/liboqs.so" ]]; then
+                lib="${_vendor}/lib/liboqs.so"
+            fi
         fi
     fi
     echo "${inc}|${lib}"

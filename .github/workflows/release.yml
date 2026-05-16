@@ -185,21 +185,48 @@ jobs:
             tar -xJf yume-vendor-prebuilt.tar.xz
           fi
 
+      - name: Provision liboqs for every reachable target
+        # Build static liboqs.a for host + the three cross-Linux targets
+        # that have an apt-installable GCC cross toolchain. The resulting
+        # binaries on all of those targets will static-link OQS (no
+        # runtime liboqs.so dependency on the user's system).
+        #
+        # The matrix mirrors `Install system dependencies` above:
+        #   host  / amd64           -> /usr/local            (linux-amd64 dynamic + static)
+        #   armv7 / arm-linux-gnueabihf -> /usr/arm-linux-gnueabihf  (linux-armv7)
+        #   armv8 / aarch64-linux-gnu  -> /usr/aarch64-linux-gnu     (linux-armv8)
+        #   i386  / i686-linux-gnu      -> vendor/busybox-x86         (busybox-x86)
+        #
+        # Targets we deliberately skip:
+        #   - busybox-armv7-static / busybox-armv8-static: need a musl
+        #     toolchain we don't install on the runner, and those
+        #     targets are skipped by fullau in that case anyway.
+        #   - openwrt-mips: skipped via YUME_OPENWRT_FAST=1 below.
+        #   - windows-x86_64: vcpkg installs liboqs (see YUME_WINDOWS_VCPKG_PACKAGES).
+        #   - macos-arm64: brew installs liboqs (separate macos job).
+        run: |
+          set -euo pipefail
+          chmod +x scripts/build-liboqs-target.sh
+          LIBOQS_TARGET=host  ./scripts/build-liboqs-target.sh
+          LIBOQS_TARGET=armv7 ./scripts/build-liboqs-target.sh
+          LIBOQS_TARGET=armv8 ./scripts/build-liboqs-target.sh
+          LIBOQS_TARGET=i386  ./scripts/build-liboqs-target.sh
+          sudo ldconfig || true
+
       - name: Build (Linux + cross)
         run: |
           export YUME_TARGETS="${{ github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64' }}"
           export YUME_REQUIRE_ARGON2=1
-          # YUME_REQUIRE_OQS=0 because the build matrix includes static
-          # BusyBox / cross-arch targets (musl-static armv7/armv8,
-          # static-glibc busybox-x86) where liboqs is not provisioned in
-          # the sysroot. Forcing the requirement aborted the run as soon
-          # as fullau hit the first non-amd64 target. ezbuild emits
-          # `-DBASEFWX_REQUIRE_OQS=ON` for the linux-x86_64 / Windows /
-          # macOS desktop paths (vcpkg/brew/apt provide liboqs there) and
-          # `-DBASEFWX_REQUIRE_OQS=OFF` for the embedded ones, so PQ is
-          # still enforced where it can be while embedded builds
-          # gracefully fall back to symmetric-only crypto.
-          export YUME_REQUIRE_OQS=0
+          # Strict PQ enforcement is back on now that the previous step
+          # provisions liboqs for every target the CI runner can build
+          # against: host amd64, the three apt-installable GCC cross
+          # triplets (armhf, aarch64, i686), the vcpkg static triplet
+          # for Windows, and brew on macOS (in build-macos). The
+          # remaining musl-only targets (armv7-busybox-static,
+          # armv8-busybox-static) get skipped by fullau on a glibc
+          # runner, and openwrt-mips is skipped via OPENWRT_FAST=1,
+          # so the strict guard no longer trips on missing OQS.
+          export YUME_REQUIRE_OQS=1
           if [[ ",${YUME_TARGETS}," == *",windows-x86_64,"* ]]; then
             export YUME_WINDOWS_CROSS=1
             export YUME_WINDOWS_VCPKG_BUILD_TYPE=release

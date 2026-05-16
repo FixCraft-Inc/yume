@@ -80,15 +80,12 @@ def validate_expected_artifacts() -> None:
 def validate_workflow_guards() -> None:
     release_yml = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     ci_yml = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    # YUME_REQUIRE_ARGON2 is always 1 because every supported target
-    # ships with libargon2. YUME_REQUIRE_OQS is intentionally relaxed:
-    # the build matrix includes static BusyBox / cross-arch targets
-    # whose sysroots don't ship a liboqs and aren't expected to engage
-    # PQ at runtime. ezbuild selectively enables BASEFWX_REQUIRE_OQS=ON
-    # for the desktop linux/windows/macOS paths. As long as the
-    # `YUME_REQUIRE_OQS=` line is present (in either 1 or 0 state),
-    # we're fine — only the missing-line case would be a regression.
-    for needle in ("export YUME_REQUIRE_ARGON2=1", "export YUME_REQUIRE_OQS="):
+    # YUME_REQUIRE_ARGON2 and YUME_REQUIRE_OQS are both strict (=1) in
+    # release builds. PQ is provisioned for every reachable target via
+    # scripts/build-liboqs-target.sh (host + armv7 + armv8 + i386 cross
+    # before fullau runs); musl-only busybox-armv7/armv8 and openwrt-mips
+    # are skipped at build time, not by relaxing the guard.
+    for needle in ("export YUME_REQUIRE_ARGON2=1", "export YUME_REQUIRE_OQS=1"):
         require(needle in release_yml, f"release.yml is missing required guard: {needle}")
     for needle in ("SHA256SUMS.txt", "MD5SUMS.txt", "release-manifest.json", "gpg --batch --verify"):
         require(needle in release_yml, f"release.yml is missing release-integrity step: {needle}")

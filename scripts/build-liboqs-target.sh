@@ -32,6 +32,9 @@ case "${LIBOQS_TARGET}" in
         toolchain_file=""
         # x86_64 is in liboqs's supported-arch whitelist.
         permit_unsupported_arch=0
+        # Host build uses system OpenSSL for its AES-NI / SHA-NI
+        # backends. Cross builds disable it (see below).
+        use_openssl=1
         ;;
     armv7)
         prefix_default="/usr/arm-linux-gnueabihf"
@@ -44,6 +47,7 @@ case "${LIBOQS_TARGET}" in
         # portable-C fallbacks (which exist for every primitive) to
         # be compiled instead of arch-specific intrinsics.
         permit_unsupported_arch=1
+        use_openssl=0
         ;;
     armv8)
         prefix_default="/usr/aarch64-linux-gnu"
@@ -51,6 +55,7 @@ case "${LIBOQS_TARGET}" in
         cmake_processor="aarch64"
         # aarch64 IS in liboqs's whitelist (with NEON intrinsics).
         permit_unsupported_arch=0
+        use_openssl=0
         ;;
     i386)
         # busybox-x86 is the only consumer; ezbuild looks under
@@ -61,12 +66,44 @@ case "${LIBOQS_TARGET}" in
         # 32-bit x86 is also not in the whitelist — same rationale
         # as armv7. Portable C fallbacks compile cleanly under i686.
         permit_unsupported_arch=1
+        use_openssl=0
         ;;
     *)
         echo "Unsupported LIBOQS_TARGET: ${LIBOQS_TARGET}" >&2
         exit 2
         ;;
 esac
+
+# Why use_openssl=0 for cross builds:
+#
+# When we cross-compile liboqs with -DOQS_USE_OPENSSL=ON, its CMake
+# config picks up the HOST (amd64) OpenSSL headers from /usr/include/
+# even though we're targeting another arch. The compile then fails:
+#
+#   /usr/include/openssl/macros.h:14: fatal error: openssl/opensslconf.h:
+#   No such file or directory
+#
+# because `opensslconf.h` is arch-specific and lives under
+# /usr/include/<triplet>/openssl/ in Debian/Ubuntu multiarch layout —
+# but the version that exists at build time is the HOST triplet, not
+# the target.
+#
+# We could instead install libssl-dev:<target> via dpkg --add-architecture
+# and rebuild liboqs against the cross-arch OpenSSL. But:
+#   - That requires multiarch setup before this script runs.
+#   - The static liboqs.a we ship doesn't NEED OpenSSL — every PQ
+#     primitive has a portable-C fallback inside liboqs itself; OpenSSL
+#     is purely an optional hardware-accelerated backend for the
+#     SHA-2 / SHA-3 / AES helpers that the PQ algorithms call.
+#   - yume / yumed link against their own cross-arch OpenSSL anyway for
+#     TLS; liboqs's internal helpers are separate.
+#
+# So for cross targets we ship liboqs.a built with portable C only —
+# slightly slower SHA/AES inside liboqs but no real overall impact
+# (PQ KEM is a few-microsecond operation; the SHA inside it isn't a
+# hot loop). For the host build we keep OpenSSL on because the runner
+# definitely has matching headers and the AES-NI / SHA-NI paths are
+# free wins on amd64.
 
 LIBOQS_PREFIX="${LIBOQS_PREFIX_OVERRIDE:-${prefix_default}}"
 LIBOQS_BUILD_DIR="${LIBOQS_BUILD_DIR:-${TMPDIR:-/tmp}/liboqs-${LIBOQS_TARGET}-build}"
@@ -101,6 +138,11 @@ if [[ ! -d "${src_dir}/CMakeLists.txt" && ! -f "${src_dir}/CMakeLists.txt" ]]; t
     tar -xzf "${tarball}" --strip-components=1 -C "${src_dir}"
 fi
 
+_use_openssl_flag="ON"
+if [[ "${use_openssl:-1}" -eq 0 ]]; then
+    _use_openssl_flag="OFF"
+fi
+
 cmake_args=(
     -S "${src_dir}"
     -B "${build_dir}"
@@ -110,7 +152,7 @@ cmake_args=(
     -DBUILD_SHARED_LIBS=OFF        # always static .a
     -DOQS_BUILD_ONLY_LIB=ON
     -DOQS_DIST_BUILD=ON
-    -DOQS_USE_OPENSSL=ON
+    -DOQS_USE_OPENSSL="${_use_openssl_flag}"
     -DCMAKE_INSTALL_LIBDIR=lib
 )
 

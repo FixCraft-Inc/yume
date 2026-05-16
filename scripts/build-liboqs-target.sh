@@ -3,10 +3,11 @@
 # to a target-appropriate prefix so yume's CMake build can find it.
 #
 # Usage:
-#   LIBOQS_TARGET=host       ./scripts/build-liboqs-target.sh   # /usr/local
-#   LIBOQS_TARGET=armv7      ./scripts/build-liboqs-target.sh   # /usr/arm-linux-gnueabihf
-#   LIBOQS_TARGET=armv8      ./scripts/build-liboqs-target.sh   # /usr/aarch64-linux-gnu
-#   LIBOQS_TARGET=i386       ./scripts/build-liboqs-target.sh   # vendor/busybox-x86
+#   LIBOQS_TARGET=host           ./scripts/build-liboqs-target.sh  # /usr/local
+#   LIBOQS_TARGET=armv7          ./scripts/build-liboqs-target.sh  # /usr/arm-linux-gnueabihf
+#   LIBOQS_TARGET=armv8          ./scripts/build-liboqs-target.sh  # /usr/aarch64-linux-gnu
+#   LIBOQS_TARGET=i386           ./scripts/build-liboqs-target.sh  # vendor/busybox-x86
+#   LIBOQS_TARGET=openwrt-mips   ./scripts/build-liboqs-target.sh  # $OPENWRT_SDK/staging_dir/target-mips_*/usr
 #
 # Always builds a static archive (`liboqs.a`). yume's release pipeline
 # static-links liboqs into every binary anyway because the binary then
@@ -67,6 +68,45 @@ case "${LIBOQS_TARGET}" in
         # as armv7. Portable C fallbacks compile cleanly under i686.
         permit_unsupported_arch=1
         use_openssl=0
+        ;;
+    openwrt-mips)
+        # OpenWRT MIPS build via the SDK toolchain. We expect either
+        # OPENWRT_SDK (the workflow sets this after `Download OpenWRT
+        # SDK`) or a SDK already pre-staged under $HOME/openwrt-sdk-*.
+        # Installing into the SDK's target-*/usr means ezbuild's
+        # OPENWRT_USR auto-detection finds the .a immediately without
+        # any vendor-dir gymnastics.
+        if [[ -z "${OPENWRT_SDK:-}" ]]; then
+            # Look for an existing local SDK extraction.
+            OPENWRT_SDK="$(find "${HOME}" -maxdepth 1 -type d \
+                -name "openwrt-sdk-*-musl.Linux-x86_64" 2>/dev/null | head -1)"
+        fi
+        if [[ -z "${OPENWRT_SDK}" || ! -d "${OPENWRT_SDK}" ]]; then
+            echo "OpenWRT SDK not found. Set OPENWRT_SDK or stage one at ~/openwrt-sdk-*-musl.Linux-x86_64" >&2
+            exit 2
+        fi
+        # SDK naming for ath79-nand 24.10.0:
+        #   staging_dir/toolchain-mips_24kc_gcc-13.3.0_musl/
+        #   staging_dir/target-mips_24kc_musl/
+        openwrt_tc_dir="$(find "${OPENWRT_SDK}/staging_dir" -maxdepth 1 \
+            -type d -name "toolchain-mips_*musl*" 2>/dev/null | head -1)"
+        openwrt_target_dir="$(find "${OPENWRT_SDK}/staging_dir" -maxdepth 1 \
+            -type d -name "target-mips_*musl*" 2>/dev/null | head -1)"
+        if [[ -z "${openwrt_tc_dir}" || -z "${openwrt_target_dir}" ]]; then
+            echo "OpenWRT MIPS toolchain or sysroot missing under ${OPENWRT_SDK}/staging_dir" >&2
+            exit 2
+        fi
+        prefix_default="${openwrt_target_dir}/usr"
+        cmake_processor="mips"
+        # MIPS is not in liboqs's whitelist; portable C fallbacks
+        # compile fine. liboqs has no MIPS-specific intrinsics anyway.
+        permit_unsupported_arch=1
+        # Don't link against the SDK's host OpenSSL. Sysroot may have a
+        # musl-mips libopenssl but its arch/ABI matching is fragile;
+        # portable C inside liboqs is the safe choice and matches what
+        # we do for the other cross targets.
+        use_openssl=0
+        is_openwrt=1
         ;;
     *)
         echo "Unsupported LIBOQS_TARGET: ${LIBOQS_TARGET}" >&2
@@ -165,9 +205,27 @@ if [[ -n "${toolchain_file:-}" ]]; then
 fi
 
 # For cross targets, write a tiny toolchain file inline and pass it to
-# CMake. We don't ship a separate file per arch because the GCC cross
-# triplets are all installable from apt with a stable naming scheme.
-if [[ "${LIBOQS_TARGET}" != "host" ]]; then
+# CMake. The apt-installable GCC cross triplets (armv7/armv8/i386) use
+# the prefix naming convention `${cross_prefix}-gcc`. The OpenWRT path
+# uses the SDK's bundled musl toolchain at a fully-qualified path and
+# additionally pins CMAKE_SYSROOT to the SDK's target dir so library
+# / header lookups stay inside the sysroot.
+if [[ "${is_openwrt:-0}" -eq 1 ]]; then
+    tc="${LIBOQS_BUILD_DIR}/toolchain.cmake"
+    cat > "${tc}" <<EOF
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_SYSTEM_PROCESSOR ${cmake_processor})
+set(CMAKE_C_COMPILER ${openwrt_tc_dir}/bin/mips-openwrt-linux-musl-gcc)
+set(CMAKE_CXX_COMPILER ${openwrt_tc_dir}/bin/mips-openwrt-linux-musl-g++)
+set(CMAKE_SYSROOT ${openwrt_target_dir})
+set(CMAKE_FIND_ROOT_PATH ${openwrt_target_dir};${openwrt_tc_dir})
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+EOF
+    cmake_args+=( "-DCMAKE_TOOLCHAIN_FILE=${tc}" )
+elif [[ "${LIBOQS_TARGET}" != "host" ]]; then
     tc="${LIBOQS_BUILD_DIR}/toolchain.cmake"
     cat > "${tc}" <<EOF
 set(CMAKE_SYSTEM_NAME Linux)

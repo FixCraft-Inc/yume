@@ -1,4 +1,4 @@
-const repo = "F1xGOD/yume";
+const repo = "FixCraft-Inc/yume";
 const releaseApi = `https://api.github.com/repos/${repo}/releases/latest`;
 let latestReleaseTag = "";
 let latestReleaseData = null;

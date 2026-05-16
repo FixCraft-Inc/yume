@@ -12,7 +12,7 @@ on:
       targets:
         description: "Targets to build (comma-separated)"
         required: false
-        default: "linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64"
+        default: "linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,openwrt-mips,windows-x86_64"
         type: string
       openwrt_fast:
         description: "Skip OpenWRT SDK package compilation (faster, may skip openwrt-mips artifact if SDK not pre-staged)"
@@ -158,7 +158,7 @@ jobs:
             clang lld
 
       - name: Restore vcpkg binary cache
-        if: contains(github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64', 'windows-x86_64')
+        if: contains(github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,openwrt-mips,windows-x86_64', 'windows-x86_64')
         uses: actions/cache@v4
         with:
           # vcpkg's default binary-cache location. Restoring this dir
@@ -176,7 +176,7 @@ jobs:
             ${{ runner.os }}-vcpkg-
 
       - name: Setup vcpkg
-        if: contains(github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64', 'windows-x86_64')
+        if: contains(github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,openwrt-mips,windows-x86_64', 'windows-x86_64')
         run: |
           git clone --depth 1 https://github.com/microsoft/vcpkg.git ~/vcpkg
           ~/vcpkg/bootstrap-vcpkg.sh -disableMetrics
@@ -190,7 +190,7 @@ jobs:
           } >> "${GITHUB_ENV}"
 
       - name: Download OpenWRT SDK
-        if: contains(github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64', 'openwrt')
+        if: contains(github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,openwrt-mips,windows-x86_64', 'openwrt')
         run: |
           OPENWRT_SDK_NAME="openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}_gcc-13.3.0_musl.Linux-x86_64"
           OPENWRT_SDK_URL="https://downloads.openwrt.org/releases/${OPENWRT_SDK_VERSION}/targets/ath79/nand/${OPENWRT_SDK_NAME}.tar.zst"
@@ -211,24 +211,25 @@ jobs:
           fi
 
       - name: Provision liboqs for every reachable target
-        # Build static liboqs.a for host + the three cross-Linux targets
-        # that have an apt-installable GCC cross toolchain. The resulting
-        # binaries on all of those targets will static-link OQS (no
-        # runtime liboqs.so dependency on the user's system).
+        # Build static liboqs.a for host + every cross target where it
+        # is feasible. The resulting binaries static-link OQS so they
+        # have no runtime liboqs.so dependency.
         #
-        # The matrix mirrors `Install system dependencies` above:
-        #   host  / amd64           -> /usr/local            (linux-amd64 dynamic + static)
-        #   armv7 / arm-linux-gnueabihf -> /usr/arm-linux-gnueabihf  (linux-armv7)
-        #   armv8 / aarch64-linux-gnu  -> /usr/aarch64-linux-gnu     (linux-armv8)
-        #   i386  / i686-linux-gnu      -> vendor/busybox-x86         (busybox-x86)
+        # Targets covered:
+        #   host  / amd64                  -> /usr/local                       (linux-amd64 dynamic + static)
+        #   armv7 / arm-linux-gnueabihf    -> /usr/arm-linux-gnueabihf         (linux-armv7)
+        #   armv8 / aarch64-linux-gnu      -> /usr/aarch64-linux-gnu           (linux-armv8)
+        #   i386  / i686-linux-gnu         -> vendor/busybox-x86               (busybox-x86)
+        #   openwrt-mips (SDK toolchain)   -> $OPENWRT_SDK/.../target-mips_*/usr (openwrt-mips, only when openwrt is in targets)
         #
         # Targets we deliberately skip:
         #   - busybox-armv7-static / busybox-armv8-static: need a musl
         #     toolchain we don't install on the runner, and those
         #     targets are skipped by fullau in that case anyway.
-        #   - openwrt-mips: skipped via YUME_OPENWRT_FAST=1 below.
         #   - windows-x86_64: vcpkg installs liboqs (see YUME_WINDOWS_VCPKG_PACKAGES).
         #   - macos-arm64: brew installs liboqs (separate macos job).
+        env:
+          YUME_TARGETS_RAW: ${{ github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,openwrt-mips,windows-x86_64' }}
         run: |
           set -euo pipefail
           chmod +x scripts/build-liboqs-target.sh
@@ -236,11 +237,25 @@ jobs:
           LIBOQS_TARGET=armv7 ./scripts/build-liboqs-target.sh
           LIBOQS_TARGET=armv8 ./scripts/build-liboqs-target.sh
           LIBOQS_TARGET=i386  ./scripts/build-liboqs-target.sh
+          # Only attempt OpenWRT MIPS when the targets list explicitly
+          # requests it AND the prior Download OpenWRT SDK step has set
+          # OPENWRT_SDK in the env. If either is missing, skip with a
+          # warning so the rest of the matrix isn't blocked by an
+          # OpenWRT-specific failure.
+          if [[ ",${YUME_TARGETS_RAW}," == *",openwrt-mips,"* ]] || [[ ",${YUME_TARGETS_RAW}," == *",openwrt,"* ]]; then
+            if [[ -n "${OPENWRT_SDK:-}" && -d "${OPENWRT_SDK}" ]]; then
+              LIBOQS_TARGET=openwrt-mips ./scripts/build-liboqs-target.sh || {
+                echo "::warning::OpenWRT MIPS liboqs build failed; the openwrt-mips yume build will be skipped or fail downstream."
+              }
+            else
+              echo "::warning::OpenWRT MIPS liboqs build skipped: OPENWRT_SDK is unset or path missing. Did the SDK download step run?"
+            fi
+          fi
           sudo ldconfig || true
 
       - name: Build (Linux + cross)
         run: |
-          export YUME_TARGETS="${{ github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64' }}"
+          export YUME_TARGETS="${{ github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,openwrt-mips,windows-x86_64' }}"
           export YUME_REQUIRE_ARGON2=1
           # Strict PQ enforcement is back on now that the previous step
           # provisions liboqs for every target the CI runner can build
@@ -306,7 +321,7 @@ jobs:
           test -x build-gui-linux/bin/yume-gui
 
       - name: Pre-stage vcpkg GUI deps for Windows cross (freetype + glfw3 static)
-        if: contains(github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64', 'windows-x86_64')
+        if: contains(github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,openwrt-mips,windows-x86_64', 'windows-x86_64')
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -324,7 +339,7 @@ jobs:
               freetype glfw3 || true
 
       - name: Build yume-gui.exe (windows-amd64, portable, MinGW + vcpkg static)
-        if: contains(github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64', 'windows-x86_64')
+        if: contains(github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,openwrt-mips,windows-x86_64', 'windows-x86_64')
         # Best-effort, see linux-amd64 GUI rationale above.
         continue-on-error: true
         run: |

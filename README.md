@@ -5,8 +5,8 @@ Yume Universal Multiprotocol Engine. An open-source post-quantum stealth transpo
 YUME tunnels TCP and UDP through TLS 1.3 sessions that look like ordinary Chrome HTTPS to a DPI box, with hybrid ML-KEM-768 + AES-GCM inner crypto, an optional Argon2id heavy KDF, and 1–4 Hz live key hopping. Both the client (`yume`) and the daemon (`yumed`) are GPL-v3 and build from this tree. They run on x86, ARMv7/8, MIPS OpenWRT, BusyBox, macOS, and Windows; the minimal build runs on routers with as little as 128 MiB of RAM.
 
 - Website: https://yume.fixcraft.jp
-- Source: https://github.com/F1xGOD/yume
-- Issues: https://github.com/F1xGOD/yume/issues
+- Source: https://github.com/FixCraft-Inc/yume
+- Issues: https://github.com/FixCraft-Inc/yume/issues
 
 ## Why YUME
 

@@ -6,7 +6,7 @@ YUME stacks three independent layers of byte-shape camouflage on top of TLS 1.3.
 
 The TLS handshake is real, not forged. OpenSSL emits a genuine ClientHello, but its cipher suites, supported groups, signature algorithms, and ALPN list are configured to match a specific browser profile. JA3 / JA4 hashes fall in the browser cluster, and a passive TLS-fingerprint observer sees the same handshake shape they'd see from the configured browser.
 
-Source: [src/core/tls_stealth.cpp](https://github.com/F1xGOD/yume/blob/main/src/core/tls_stealth.cpp), [src/core/tls_fingerprint.cpp](https://github.com/F1xGOD/yume/blob/main/src/core/tls_fingerprint.cpp).
+Source: [src/core/tls_stealth.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/tls_stealth.cpp), [src/core/tls_fingerprint.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/tls_fingerprint.cpp).
 
 | Profile flag | Mimics |
 | --- | --- |
@@ -23,7 +23,7 @@ After TLS handshake, the client emits the bytes a real Chrome would: an HTTP/2 c
 
 To a stateless DPI box, the first ~150 cleartext bytes of every YUME connection look exactly like a Chrome → CDN gRPC-web request.
 
-Source: [src/core/obfs_h2.cpp](https://github.com/F1xGOD/yume/blob/main/src/core/obfs_h2.cpp), [src/core/obfs_signal.cpp](https://github.com/F1xGOD/yume/blob/main/src/core/obfs_signal.cpp).
+Source: [src/core/obfs_h2.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/obfs_h2.cpp), [src/core/obfs_signal.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/obfs_signal.cpp).
 
 | Flag | Effect |
 | --- | --- |

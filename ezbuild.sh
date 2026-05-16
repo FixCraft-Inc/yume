@@ -1678,7 +1678,7 @@ EOF
             fi
         fi
         if detect_liboqs_target; then
-            info "OpenWRT liboqs detected in sysroot; enabling PQ in BaseFWX."
+            info "liboqs detected; enabling PQ in BaseFWX."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=ON")
             IFS='|' read -r _oqs_inc _oqs_lib < <(resolve_oqs_sysroot_paths)
             if [[ -n "${_oqs_inc}" && -n "${_oqs_lib}" ]]; then
@@ -1693,16 +1693,28 @@ EOF
                     CMAKE_ARGS+=("-DOQS_LIBRARY_STATIC=${_oqs_lib}")
                 fi
             fi
-            if [[ -n "${YUME_OQS_STATIC:-}" ]] || [[ -f "${OPENWRT_USR}/lib/liboqs.a" ]]; then
-                if [[ -f "${OPENWRT_USR}/lib/liboqs.a" ]]; then
-                    info "OpenWRT: using static liboqs."
+            # Static-link selection. Old code only checked OPENWRT_USR
+            # so this branch tripped over `unbound variable` for the
+            # BUSYBOX vendor path now that detect_liboqs_target returns
+            # success there too. Probe both, with the resolved .a from
+            # resolve_oqs_sysroot_paths as the canonical source of truth.
+            _oqs_static_path=""
+            if [[ -n "${OPENWRT_USR:-}" && -f "${OPENWRT_USR}/lib/liboqs.a" ]]; then
+                _oqs_static_path="${OPENWRT_USR}/lib/liboqs.a"
+            elif [[ "${BUSYBOX:-0}" -eq 1 && -n "${TARGET_ARCH:-}" \
+                    && -f "${PWD}/vendor/busybox-${TARGET_ARCH}/lib/liboqs.a" ]]; then
+                _oqs_static_path="${PWD}/vendor/busybox-${TARGET_ARCH}/lib/liboqs.a"
+            fi
+            if [[ -n "${YUME_OQS_STATIC:-}" ]] || [[ -n "${_oqs_static_path}" ]]; then
+                if [[ -n "${_oqs_static_path}" ]]; then
+                    info "Using static liboqs."
                     CMAKE_ARGS+=("-DBASEFWX_OQS_STATIC=ON")
                 else
-                    warn "OpenWRT: YUME_OQS_STATIC=1 set but liboqs.a missing; falling back to shared."
+                    warn "YUME_OQS_STATIC=1 set but no static liboqs.a found; falling back to shared."
                 fi
             fi
         else
-            warn "OpenWRT liboqs not detected in sysroot; PQ will be disabled."
+            warn "liboqs not detected for this target; PQ will be disabled."
             require_feature_or_die "${YUME_REQUIRE_OQS}" "liboqs / PQ support" "Provide a sysroot/vendor liboqs or unset YUME_REQUIRE_OQS."
             CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=OFF")
         fi

@@ -157,12 +157,37 @@ jobs:
             qemu-user-static binfmt-support \
             clang lld
 
+      - name: Restore vcpkg binary cache
+        if: contains(github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64', 'windows-x86_64')
+        uses: actions/cache@v4
+        with:
+          # vcpkg's default binary-cache location. Restoring this dir
+          # turns the ~60-90 min "compile 63 packages from source" cold
+          # path into a ~5 min "rehydrate prebuilt .zip" warm path on
+          # every release after the first one. The key is partitioned
+          # by the Windows vcpkg package list so changes to that list
+          # invalidate cleanly; the restore-keys fall through to any
+          # cache from the same OS so we benefit even when the package
+          # list changes by one entry.
+          path: ${{ github.workspace }}/vcpkg-binary-cache
+          key: ${{ runner.os }}-vcpkg-windows-${{ hashFiles('.github/workflows/release.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-vcpkg-windows-
+            ${{ runner.os }}-vcpkg-
+
       - name: Setup vcpkg
         if: contains(github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64', 'windows-x86_64')
         run: |
           git clone --depth 1 https://github.com/microsoft/vcpkg.git ~/vcpkg
           ~/vcpkg/bootstrap-vcpkg.sh -disableMetrics
-          echo "VCPKG_ROOT=${HOME}/vcpkg" >> "${GITHUB_ENV}"
+          mkdir -p "${GITHUB_WORKSPACE}/vcpkg-binary-cache"
+          {
+            echo "VCPKG_ROOT=${HOME}/vcpkg"
+            # Point vcpkg's binary cache at the dir actions/cache
+            # restored (or created empty) above. `files,rw` = read from
+            # and write to that directory.
+            echo "VCPKG_BINARY_SOURCES=clear;files,${GITHUB_WORKSPACE}/vcpkg-binary-cache,readwrite"
+          } >> "${GITHUB_ENV}"
 
       - name: Download OpenWRT SDK
         if: contains(github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,windows-x86_64', 'openwrt')

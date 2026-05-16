@@ -210,6 +210,36 @@ jobs:
             tar -xJf yume-vendor-prebuilt.tar.xz
           fi
 
+      - name: Provision libargon2 for every reachable target
+        # Cross-build static libargon2.a for every target where the
+        # build matrix actually needs it. Same target list as the
+        # liboqs step below and the same install layout, so ezbuild
+        # finds both without further wiring.
+        #
+        # libargon2 is much simpler than liboqs — a single Makefile,
+        # no CMake. Total wall time across all five targets is about
+        # 1-2 minutes.
+        env:
+          YUME_TARGETS_RAW: ${{ github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,openwrt-mips,windows-x86_64' }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/build-libargon2-target.sh
+          # Host is already covered by libargon2-dev (apt). Re-running
+          # the host build is harmless (idempotent skip) but skipped
+          # here to save 30s.
+          LIBARGON2_TARGET=armv7 ./scripts/build-libargon2-target.sh
+          LIBARGON2_TARGET=armv8 ./scripts/build-libargon2-target.sh
+          LIBARGON2_TARGET=i386  ./scripts/build-libargon2-target.sh
+          if [[ ",${YUME_TARGETS_RAW}," == *",openwrt-mips,"* ]] || [[ ",${YUME_TARGETS_RAW}," == *",openwrt,"* ]]; then
+            if [[ -n "${OPENWRT_SDK:-}" && -d "${OPENWRT_SDK}" ]]; then
+              LIBARGON2_TARGET=openwrt-mips ./scripts/build-libargon2-target.sh || {
+                echo "::warning::OpenWRT MIPS libargon2 build failed; openwrt-mips yume build will fail downstream at YUME_REQUIRE_ARGON2."
+              }
+            else
+              echo "::warning::OpenWRT MIPS libargon2 build skipped: OPENWRT_SDK is unset or path missing."
+            fi
+          fi
+
       - name: Provision liboqs for every reachable target
         # Build static liboqs.a for host + every cross target where it
         # is feasible. The resulting binaries static-link OQS so they

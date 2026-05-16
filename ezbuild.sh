@@ -508,6 +508,22 @@ detect_argon2() {
             return 0
         fi
     fi
+    # BUSYBOX cross builds: also check the vendor sysroot we stage to.
+    # Without this the function would happily report true based on the
+    # host argon2.h alone, but resolve_argon2_sysroot_paths would then
+    # return empty paths and the build aborts with
+    #   "libargon2 headers found but library missing".
+    if [[ "${BUSYBOX:-0}" -eq 1 && -n "${TARGET_ARCH:-}" ]]; then
+        local _vendor="${PWD}/vendor/busybox-${TARGET_ARCH}"
+        if [[ -f "${_vendor}/include/argon2.h" \
+              && ( -f "${_vendor}/lib/libargon2.a" || -f "${_vendor}/lib/libargon2.so" ) ]]; then
+            return 0
+        fi
+        # Cross build but no vendor argon2 staged: refuse to claim true
+        # based on host paths — the host .a won't link against the
+        # cross compiler.
+        return 1
+    fi
     if [[ -f /usr/include/argon2.h ]] || [[ -f /usr/local/include/argon2.h ]]; then
         return 0
     fi
@@ -622,6 +638,19 @@ resolve_argon2_sysroot_paths() {
             lib="${OPENWRT_USR}/lib/libargon2.so"
         else
             lib="$(ls -1 "${OPENWRT_USR}/lib/libargon2.so."* 2>/dev/null | head -n 1 || true)"
+        fi
+    elif [[ "${BUSYBOX:-0}" -eq 1 && -n "${TARGET_ARCH:-}" ]]; then
+        # BUSYBOX cross builds stage libargon2 under
+        # ${PWD}/vendor/busybox-<arch>/ via build-libargon2-target.sh.
+        # Same shape as the OQS sibling fix earlier in this file.
+        local _vendor="${PWD}/vendor/busybox-${TARGET_ARCH}"
+        if [[ -f "${_vendor}/include/argon2.h" ]]; then
+            inc="${_vendor}/include"
+            if [[ -f "${_vendor}/lib/libargon2.a" ]]; then
+                lib="${_vendor}/lib/libargon2.a"
+            elif [[ -f "${_vendor}/lib/libargon2.so" ]]; then
+                lib="${_vendor}/lib/libargon2.so"
+            fi
         fi
     fi
     echo "${inc}|${lib}"

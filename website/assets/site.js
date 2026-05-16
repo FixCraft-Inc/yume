@@ -24,28 +24,29 @@ const assetMap = {
   "yumed-linux-amd64": { bin: "yumed-amd64-linux", group: "linux", component: "daemon" },
   "yume-linux-amd64-static": { bin: "yume-amd64-linux-static", group: "linux", component: "client" },
   "yumed-linux-amd64-static": { bin: "yumed-amd64-linux-static", group: "linux", component: "daemon" },
+  "yume-gui-linux-amd64": { bin: "yume-gui-amd64-linux", group: "linux", component: "gui" },
   "yume-linux-armv7": { bin: "yume-armv7-linux", group: "linux", component: "client" },
   "yumed-linux-armv7": { bin: "yumed-armv7-linux", group: "linux", component: "daemon" },
   "yume-linux-armv8": { bin: "yume-armv8-linux", group: "linux", component: "client" },
   "yumed-linux-armv8": { bin: "yumed-armv8-linux", group: "linux", component: "daemon" },
   "yume-openwrt-mips": { bin: "yume-mips-openwrt", group: "embedded", component: "client" },
   "yumed-openwrt-mips": { bin: "yumed-mips-openwrt", group: "embedded", component: "daemon" },
-  "yume-busybox-amd64": { bin: "yume-x86-busybox", group: "embedded", component: "client" },
-  "yumed-busybox-amd64": { bin: "yumed-x86-busybox", group: "embedded", component: "daemon" },
+  // BusyBox/embedded builds only ship as truly-static binaries (verified
+  // by the release workflow's static-link assertion). The dynamic
+  // "busybox" variants were dropped because they're misleading — a
+  // glibc-dynamic binary can't run on a real busybox/musl target.
   "yume-busybox-amd64-static": { bin: "yume-x86-busybox-static", group: "embedded", component: "client" },
   "yumed-busybox-amd64-static": { bin: "yumed-x86-busybox-static", group: "embedded", component: "daemon" },
-  "yume-busybox-armv7": { bin: "yume-armv7-busybox", group: "embedded", component: "client" },
-  "yumed-busybox-armv7": { bin: "yumed-armv7-busybox", group: "embedded", component: "daemon" },
   "yume-busybox-armv7-static": { bin: "yume-armv7-busybox-static", group: "embedded", component: "client" },
   "yumed-busybox-armv7-static": { bin: "yumed-armv7-busybox-static", group: "embedded", component: "daemon" },
-  "yume-busybox-armv8": { bin: "yume-armv8-busybox", group: "embedded", component: "client" },
-  "yumed-busybox-armv8": { bin: "yumed-armv8-busybox", group: "embedded", component: "daemon" },
   "yume-busybox-armv8-static": { bin: "yume-armv8-busybox-static", group: "embedded", component: "client" },
   "yumed-busybox-armv8-static": { bin: "yumed-armv8-busybox-static", group: "embedded", component: "daemon" },
   "yume-macos-arm64": { bin: "yume-armv8-mac", group: "macos", component: "client" },
   "yumed-macos-arm64": { bin: "yumed-armv8-mac", group: "macos", component: "daemon" },
+  "yume-gui-macos-arm64": { bin: "yume-gui-armv8-mac", group: "macos", component: "gui" },
   "yume-windows-amd64": { bin: "yume-amd64-windows.tar.xz", group: "windows", component: "client" },
-  "yumed-windows-amd64": { bin: "yumed-amd64-windows.tar.xz", group: "windows", component: "daemon" }
+  "yumed-windows-amd64": { bin: "yumed-amd64-windows.tar.xz", group: "windows", component: "daemon" },
+  "yume-gui-windows-amd64": { bin: "yume-gui-amd64-windows.exe", group: "windows", component: "gui" }
 };
 
 Object.values(assetMap).forEach((entry) => {

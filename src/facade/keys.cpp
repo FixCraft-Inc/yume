@@ -325,6 +325,9 @@ void apply_meta_to_entry(nlohmann::json const& meta_root,
     if (auto a = it->find("alias"); a != it->end() && a->is_string()) {
         e.alias = a->get<std::string>();
     }
+    if (auto p = it->find("federation_peer_id"); p != it->end() && p->is_string()) {
+        e.federation_peer_id = p->get<std::string>();
+    }
     auto p_it = it->find("permissions");
     if (p_it == it->end() || !p_it->is_object()) return;
     auto const& p = *p_it;
@@ -344,6 +347,9 @@ void apply_meta_to_entry(nlohmann::json const& meta_root,
 
 void entry_meta_to_json(AuthorizedKeyEntry const& e, nlohmann::json& dst) {
     dst["alias"] = e.alias;
+    if (!e.federation_peer_id.empty()) {
+        dst["federation_peer_id"] = e.federation_peer_id;
+    }
     nlohmann::json perms = nlohmann::json::object();
     auto put = [&](const char* k, std::optional<bool> const& v) {
         if (v.has_value()) perms[k] = *v;

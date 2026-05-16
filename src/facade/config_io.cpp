@@ -341,12 +341,23 @@ std::optional<server::ServerConfig> load_server(
     read_opt(j, "anonym_sub_cert", s.anonym_sub_cert);
     read_opt(j, "server_name", s.server_name);
     read_opt(j, "server_id", s.server_id);
+    read_opt(j, "outbound_proxy", s.outbound_proxy_url);
     read_opt(j, "relay_enable", s.relay_enable);
     read_opt(j, "directory_enable", s.directory_enable);
     read_opt(j, "ipc_enable", s.ipc_enable);
     read_opt(j, "ipc_path", s.ipc_path);
     read_opt(j, "federation_enable", s.federation_enable);
-    read_opt(j, "federation_peers", s.federation_peers);
+    if (auto it = j.find("federation_peers"); it != j.end() && it->is_array()) {
+        for (const auto& peer : *it) {
+            if (peer.is_string()) {
+                s.federation_peers.push_back(peer.get<std::string>());
+            } else if (peer.is_object()) {
+                s.federation_peers.push_back(peer.dump());
+            }
+        }
+    }
+    read_opt(j, "federation_auth_key", s.federation_auth_key);
+    read_opt(j, "federation_anonym_ca", s.federation_anonym_ca);
     read_opt(j, "operator_keys", s.operator_keys);
     read_opt(j, "operator_keys_meta", s.operator_keys_meta);
     read_opt(j, "boring", s.boring);
@@ -363,6 +374,8 @@ std::optional<server::ServerConfig> load_server(
     resolve_config_path(s.anonym_sub_key, base);
     resolve_config_path(s.anonym_sub_cert, base);
     resolve_config_path(s.ipc_path, base);
+    resolve_config_path(s.federation_auth_key, base);
+    resolve_config_path(s.federation_anonym_ca, base);
     return s;
 }
 
@@ -406,12 +419,15 @@ bool save_server(server::ServerConfig const& s,
         {"anonym_sub_cert", s.anonym_sub_cert},
         {"server_name", s.server_name},
         {"server_id", s.server_id},
+        {"outbound_proxy", s.outbound_proxy_url},
         {"relay_enable", s.relay_enable},
         {"directory_enable", s.directory_enable},
         {"ipc_enable", s.ipc_enable},
         {"ipc_path", s.ipc_path},
         {"federation_enable", s.federation_enable},
         {"federation_peers", s.federation_peers},
+        {"federation_auth_key", s.federation_auth_key},
+        {"federation_anonym_ca", s.federation_anonym_ca},
         {"operator_keys", s.operator_keys},
         {"operator_keys_meta", s.operator_keys_meta},
         {"boring", s.boring},
@@ -449,6 +465,17 @@ ValidationReport validate(server::ServerConfig const& s) {
     }
     if (s.threads < 0) {
         r.errors.emplace_back("threads: must be >= 0 (0 = auto)");
+    }
+    if (s.federation_enable) {
+        if (s.federation_auth_key.empty()) {
+            r.errors.emplace_back("federation_auth_key: required when federation_enable=true");
+        }
+        if (s.federation_anonym_ca.empty()) {
+            r.errors.emplace_back("federation_anonym_ca: required when federation_enable=true");
+        }
+        if (s.federation_peers.empty()) {
+            r.errors.emplace_back("federation_peers: at least one peer is required when federation_enable=true");
+        }
     }
     return r;
 }

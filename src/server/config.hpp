@@ -60,12 +60,15 @@ struct ServerConfig {
     std::string auth_keys_meta;
     std::string server_name;
     std::string server_id;
+    std::string outbound_proxy_url;
     bool relay_enable{true};
     bool directory_enable{true};
     bool ipc_enable{true};
     std::string ipc_path;
     bool federation_enable{false};
     std::vector<std::string> federation_peers;
+    std::string federation_auth_key;
+    std::string federation_anonym_ca;
     std::string operator_keys;
     std::string operator_keys_meta;
     bool boring{false};

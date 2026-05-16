@@ -110,6 +110,17 @@ nlohmann::json LocalRuntime::handle_request(const nlohmann::json& request) {
             {"enabled", manager_->config_snapshot().federation_enable},
             {"peers", manager_->config_snapshot().federation_peers},
         };
+        result["peer_status"] = nlohmann::json::array();
+        for (const auto& peer : manager_->federation_statuses()) {
+            result["peer_status"].push_back({
+                {"id", peer.id},
+                {"state", peer.state},
+                {"ready", peer.ready},
+                {"last_error", peer.last_error},
+                {"last_handshake_ts", peer.last_handshake_ts},
+                {"channels_active", peer.channels_active},
+            });
+        }
         return {{"ok", true}, {"result", result}};
     }
     if (op == "runtime.stop") {

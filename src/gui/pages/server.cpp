@@ -346,6 +346,8 @@ private:
             ui::section_label("Identity & resolver");
             text_input("Server display name", cfg_.server_name);
             text_input("DNS resolver IP", cfg_.dns_server, "1.1.1.1");
+            text_input("Outbound SOCKS5 proxy", cfg_.outbound_proxy_url,
+                       "socks5://127.0.0.1:9050");
             int_input("Worker threads (0 = auto)", cfg_.threads);
 
             ImGui::Dummy(ImVec2(0, 8 * sc));
@@ -359,6 +361,32 @@ private:
                 ImGui::TableNextColumn();
                 ui::checkbox("Anonym proof", &cfg_.anonym);
                 ImGui::EndTable();
+            }
+            ui::checkbox("Federation", &cfg_.federation_enable);
+
+            if (cfg_.federation_enable) {
+                ImGui::Dummy(ImVec2(0, 6 * sc));
+                ui::section_label("Federation");
+                file_picker("Federation AUTH key",
+                            "Pick federation Ed25519 private key",
+                            cfg_.federation_auth_key,
+                            "(required)", nullptr);
+                file_picker("Federation peer CA",
+                            "Pick federation peer CA",
+                            cfg_.federation_anonym_ca,
+                            "(required)", nullptr);
+                std::string peer_json = cfg_.federation_peers.empty()
+                    ? std::string{}
+                    : cfg_.federation_peers.front();
+                text_input("Federation peer JSON", peer_json,
+                           "{\"id\":\"peer-b\",\"url\":\"yume://host:443\",\"tls_pin\":\"...\"}");
+                if (peer_json.empty()) {
+                    cfg_.federation_peers.clear();
+                } else if (cfg_.federation_peers.empty()) {
+                    cfg_.federation_peers.push_back(peer_json);
+                } else {
+                    cfg_.federation_peers.front() = peer_json;
+                }
             }
 
             if (cfg_.anonym) {

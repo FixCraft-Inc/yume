@@ -22,6 +22,7 @@ struct EndpointInfo {
     std::string client_variant{"unknown"};
     std::string client_version;
     std::string server_id;
+    std::string server_name;
     RelayMode relay_mode{RelayMode::untrusted};
     bool allow_inbound_admin{false};
     bool allow_chat{true};
@@ -32,6 +33,9 @@ struct EndpointInfo {
     std::string auth_pubkey_b64;
     std::vector<std::string> controller_ids;
     std::vector<std::string> controlled_target_ids;
+    bool remote{false};
+    std::string federation_peer_id;
+    std::string remote_endpoint_id;
 };
 
 struct PresenceAnnouncement {

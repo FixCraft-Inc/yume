@@ -937,14 +937,18 @@ void RelayRuntime::on_inbound_open(uint8_t stream_id, const nlohmann::json& json
     }
     const auto peer_it = directory_by_id_.find(from_id);
     if (peer_it == directory_by_id_.end()) {
-        tunnel_->send_open_ack(stream_id, false, "unknown peer");
-        return;
+        if (it->second.invite.from_auth_pubkey_b64.empty()) {
+            tunnel_->send_open_ack(stream_id, false, "unknown peer");
+            return;
+        }
     }
     ChannelState channel;
     channel.channel_id = channel_id;
     channel.channel_kind = kind;
     channel.peer_id = from_id;
-    channel.peer_name = peer_it->second.display_name;
+    channel.peer_name = peer_it == directory_by_id_.end()
+        ? (it->second.invite.from_display_name.empty() ? from_id : it->second.invite.from_display_name)
+        : peer_it->second.display_name;
     channel.stream_id = stream_id;
     auto keys = derive_channel_keys(false,
                                     it->second.ephemeral_key.get(),

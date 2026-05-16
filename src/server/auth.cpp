@@ -44,7 +44,8 @@ bool AuthKeyPolicy::empty() const {
            !allow_outbound_admin.has_value() &&
            !allow_chat.has_value() &&
            !allow_file.has_value() &&
-           !allow_bytes.has_value();
+           !allow_bytes.has_value() &&
+           federation_peer_id.empty();
 }
 
 std::vector<crypto::Bytes> load_authorized_keys(const std::string& path) {
@@ -111,6 +112,9 @@ AuthKeyPolicyMap load_auth_policies(const std::string& meta_path) {
         policy.allow_chat = read_policy_bool(it.value(), "allow_chat");
         policy.allow_file = read_policy_bool(it.value(), "allow_file");
         policy.allow_bytes = read_policy_bool(it.value(), "allow_bytes");
+        if (it.value().contains("federation_peer_id") && it.value()["federation_peer_id"].is_string()) {
+            policy.federation_peer_id = it.value()["federation_peer_id"].get<std::string>();
+        }
         if (!policy.empty()) {
             policies[it.key()] = std::move(policy);
         }
@@ -193,6 +197,9 @@ std::string summarize_auth_policy(const AuthKeyPolicy& policy) {
     append("allow_chat", policy.allow_chat);
     append("allow_file", policy.allow_file);
     append("allow_bytes", policy.allow_bytes);
+    if (!policy.federation_peer_id.empty()) {
+        parts.emplace_back("federation_peer_id=" + policy.federation_peer_id);
+    }
 
     std::ostringstream out;
     for (std::size_t i = 0; i < parts.size(); ++i) {

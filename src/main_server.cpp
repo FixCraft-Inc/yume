@@ -49,6 +49,7 @@
 #include "core/inner_crypto.hpp"
 #include "core/runtime_policy.hpp"
 #include "core/version.hpp"
+#include "client/outbound_proxy.hpp"
 #include "server/manager.hpp"
 #include "server/auth.hpp"
 #include "server/local_runtime.hpp"
@@ -69,8 +70,8 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --obfs --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --peer --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
-  local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --keys-add --keys-gen"
+  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
+  local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --federation-auth-key --federation-anonym-ca --keys-add --keys-gen"
   case "$prev" in
     --completion)
       COMPREPLY=( $(compgen -W "bash" -- "$cur") )
@@ -117,6 +118,7 @@ void print_help() {
         << "  --reverse-port-max <p>   Reverse listen maximum (default "
         << yume::policy::kReversePortMaxDefault << ")\n"
         << "  --dns-server <ip>        Direct DNS resolver for outbound opens\n"
+        << "  --proxy <socks5://...>   Route server outbound TCP through SOCKS5\n"
         << "  --obfs                   Enable obfuscation\n"
         << "  --allow-local-ip         Allow private/loopback destinations\n"
         << "  --control-full           Allow full server-side network control\n"
@@ -158,6 +160,8 @@ void print_help() {
         << "  --directory-disable      Disable endpoint directory\n"
         << "  --operator-keys <path>   Operator key metadata\n"
         << "  --federation-enable      Enable static federation mode\n"
+        << "  --federation-auth-key <path> Ed25519 key used for peer AUTH\n"
+        << "  --federation-anonym-ca <path> CA used to verify peer servers\n"
         << "  --peer <json>            Add a federation peer\n"
         << "  --attach-local           Attach to a local yumed\n\n"
         << "Key Management:\n"
@@ -167,7 +171,7 @@ void print_help() {
         << "  --keys-alias <id> <a>    Set alias\n"
         << "  --keys-gen <prefix>      Generate Ed25519 keypair (<prefix>.key/.pub)\n"
         << "  --keys-gen-add           Append generated public key to auth_keys\n"
-        << "  auth_keys_meta supports permissions.{allow_local_ip,control_full,allow_exec,allow_chat,allow_file,allow_bytes,allow_inbound_admin,allow_outbound_admin}\n"
+        << "  auth_keys_meta supports federation_peer_id and permissions.{allow_local_ip,control_full,allow_exec,allow_chat,allow_file,allow_bytes,allow_inbound_admin,allow_outbound_admin}\n"
         << "  --ui                     Interactive server manager\n\n"
         << "Other:\n"
         << "  completion bash\n"
@@ -312,7 +316,27 @@ int run_local_server_attach(const std::string& socket_path, bool non_interactive
                 yume::util::log_warn(error.empty() ? resp.value("error", "federation failed") : error);
                 error.clear();
             } else {
-                std::cout << resp["result"].dump(2) << std::endl;
+                const auto& result = resp["result"];
+                if (!result.value("enabled", false)) {
+                    std::cout << "federation disabled\n";
+                    continue;
+                }
+                if (!result.contains("peer_status") || result["peer_status"].empty()) {
+                    std::cout << "federation enabled, no peer status\n";
+                    continue;
+                }
+                for (const auto& peer : result["peer_status"]) {
+                    std::cout << peer.value("id", "")
+                              << " state=" << peer.value("state", "")
+                              << " ready=" << (peer.value("ready", false) ? "yes" : "no")
+                              << " channels=" << peer.value("channels_active", 0)
+                              << " last_handshake=" << peer.value("last_handshake_ts", 0LL);
+                    const std::string last_error = peer.value("last_error", "");
+                    if (!last_error.empty()) {
+                        std::cout << " error=" << last_error;
+                    }
+                    std::cout << std::endl;
+                }
             }
             continue;
         }
@@ -612,7 +636,8 @@ nlohmann::json post_json_https_via_curl(const std::string& host,
                                         const std::string& port,
                                         const std::string& target,
                                         const nlohmann::json& payload,
-                                        const std::string& token) {
+                                        const std::string& token,
+                                        const std::string& outbound_proxy_url) {
     if (!command_exists("curl")) {
         throw std::runtime_error("curl is required for anonym HTTPS transport on this build");
     }
@@ -645,6 +670,14 @@ nlohmann::json post_json_https_via_curl(const std::string& host,
 
     std::string cmd = "curl --silent --show-error --fail --connect-timeout 10 --max-time 30 "
                       "--header " + shell_quote("Content-Type: application/json") + " ";
+    if (!outbound_proxy_url.empty()) {
+        std::string curl_proxy = outbound_proxy_url;
+        constexpr std::string_view socks5 = "socks5://";
+        if (curl_proxy.rfind(socks5, 0) == 0) {
+            curl_proxy = "socks5h://" + curl_proxy.substr(socks5.size());
+        }
+        cmd += "--proxy " + shell_quote(curl_proxy) + " ";
+    }
     if (!token.empty()) {
         cmd += "--header " + shell_quote("X-FC-VERITY-TOKEN: " + token) + " ";
     }
@@ -686,9 +719,10 @@ nlohmann::json post_json_https(const std::string& host,
                                const std::string& port,
                                const std::string& target,
                                const nlohmann::json& payload,
-                               const std::string& token) {
+                               const std::string& token,
+                               const std::string& outbound_proxy_url) {
     if (use_curl_for_anonym_https()) {
-        return post_json_https_via_curl(host, port, target, payload, token);
+        return post_json_https_via_curl(host, port, target, payload, token, outbound_proxy_url);
     }
 
     boost::asio::io_context io;
@@ -700,11 +734,28 @@ nlohmann::json post_json_https(const std::string& host,
     ctx.set_verify_mode(boost::asio::ssl::verify_peer);
     ctx.set_default_verify_paths();
 
-    boost::asio::ip::tcp::resolver resolver(io);
-    auto endpoints = resolver.resolve(host, port);
     boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, ctx);
     SSL_set_tlsext_host_name(stream.native_handle(), host.c_str());
-    boost::asio::connect(stream.next_layer(), endpoints);
+    if (!outbound_proxy_url.empty()) {
+        yume::client::outbound_proxy::Config proxy_cfg;
+        std::string parse_error;
+        if (!yume::client::outbound_proxy::parse_proxy_url(outbound_proxy_url, proxy_cfg, &parse_error)) {
+            throw std::runtime_error("outbound proxy: " + parse_error);
+        }
+        auto dial = yume::client::outbound_proxy::socks5_dial(stream.next_layer(),
+                                                              io,
+                                                              proxy_cfg,
+                                                              host,
+                                                              std::stoi(port),
+                                                              std::chrono::milliseconds(15000));
+        if (!dial.ok) {
+            throw std::runtime_error(dial.error.empty() ? "outbound proxy failed" : "outbound proxy: " + dial.error);
+        }
+    } else {
+        boost::asio::ip::tcp::resolver resolver(io);
+        auto endpoints = resolver.resolve(host, port);
+        boost::asio::connect(stream.next_layer(), endpoints);
+    }
     stream.handshake(boost::asio::ssl::stream_base::client);
 
     std::string body = payload.dump();
@@ -1028,7 +1079,8 @@ AnonymProof fetch_anonym_proof(const std::string& hash,
                                const std::string& sub_cert_path,
                                const std::string& pq_public_path,
                                const std::string& pq_sign_key_path,
-                               bool enable_local_sign) {
+                               bool enable_local_sign,
+                               const std::string& outbound_proxy_url) {
     AnonymProof proof;
     proof.hash = hash;
     proof.ts = std::to_string(static_cast<long long>(std::time(nullptr)));
@@ -1048,7 +1100,7 @@ AnonymProof fetch_anonym_proof(const std::string& hash,
 
     if (allow_remote && !api_url.empty()) {
         ApiEndpoint ep = parse_api_url(api_url);
-        auto resp = post_json_https(ep.host, ep.port, ep.target, req, token);
+        auto resp = post_json_https(ep.host, ep.port, ep.target, req, token, outbound_proxy_url);
         proof.sig = resp.value("sig", "");
         if (proof.sig.empty()) {
             std::string err = resp.value("error", "unknown");
@@ -1179,6 +1231,8 @@ int main(int argc, char** argv) {
             cfg.reverse_port_max = std::stoi(argv[++i]);
         } else if (arg == "--dns-server" && i + 1 < argc) {
             cfg.dns_server = argv[++i];
+        } else if (arg == "--proxy" && i + 1 < argc) {
+            cfg.outbound_proxy_url = argv[++i];
         } else if ((arg == "--cert" || arg == "--tls_cert") && i + 1 < argc) {
             cfg.tls_cert = resolve_cli_path(argv[++i]);
         } else if ((arg == "--key" || arg == "--tls_key") && i + 1 < argc) {
@@ -1306,6 +1360,10 @@ int main(int argc, char** argv) {
             cfg.operator_keys = resolve_cli_path(argv[++i]);
         } else if (arg == "--federation-enable") {
             cfg.federation_enable = true;
+        } else if (arg == "--federation-auth-key" && i + 1 < argc) {
+            cfg.federation_auth_key = resolve_cli_path(argv[++i]);
+        } else if (arg == "--federation-anonym-ca" && i + 1 < argc) {
+            cfg.federation_anonym_ca = resolve_cli_path(argv[++i]);
         } else if (arg == "--peer" && i + 1 < argc) {
             cfg.federation_peers.push_back(argv[++i]);
         } else if (arg == "--attach-local") {
@@ -1541,6 +1599,9 @@ int main(int argc, char** argv) {
             if (json.contains("server_id") && cfg.server_id.empty()) {
                 cfg.server_id = json["server_id"].get<std::string>();
             }
+            if (json.contains("outbound_proxy") && cfg.outbound_proxy_url.empty()) {
+                cfg.outbound_proxy_url = json["outbound_proxy"].get<std::string>();
+            }
             if (json.contains("relay_enable") && !relay_enable_override) {
                 cfg.relay_enable = json["relay_enable"].get<bool>();
             }
@@ -1560,6 +1621,12 @@ int main(int argc, char** argv) {
                 for (const auto& peer : json["federation_peers"]) {
                     cfg.federation_peers.push_back(peer.dump());
                 }
+            }
+            if (json.contains("federation_auth_key") && cfg.federation_auth_key.empty()) {
+                cfg.federation_auth_key = resolve_cfg_path(json["federation_auth_key"].get<std::string>());
+            }
+            if (json.contains("federation_anonym_ca") && cfg.federation_anonym_ca.empty()) {
+                cfg.federation_anonym_ca = resolve_cfg_path(json["federation_anonym_ca"].get<std::string>());
             }
             if (json.contains("operator_keys") && cfg.operator_keys.empty()) {
                 cfg.operator_keys = resolve_cfg_path(json["operator_keys"].get<std::string>());
@@ -1607,6 +1674,12 @@ int main(int argc, char** argv) {
     }
     if (!cfg.operator_keys_meta.empty()) {
         cfg.operator_keys_meta = resolve_cfg_path(cfg.operator_keys_meta);
+    }
+    if (!cfg.federation_auth_key.empty()) {
+        cfg.federation_auth_key = resolve_cfg_path(cfg.federation_auth_key);
+    }
+    if (!cfg.federation_anonym_ca.empty()) {
+        cfg.federation_anonym_ca = resolve_cfg_path(cfg.federation_anonym_ca);
     }
     if (cfg.dns_server.empty()) {
         const char* dns_env = std::getenv("YUME_DNS_SERVER");
@@ -1682,6 +1755,11 @@ int main(int argc, char** argv) {
             "no key will inherit these permissions until you create the meta file and grant per-key access "
             "(see docs/PERMISSIONS.md)");
     }
+    if (cfg.federation_enable &&
+        (cfg.federation_auth_key.empty() || cfg.federation_anonym_ca.empty() || cfg.federation_peers.empty())) {
+        yume::util::log_error("federation requires --federation-auth-key, --federation-anonym-ca, and at least one --peer");
+        return 1;
+    }
 
     auto require_readable = [&](const char* label, const std::string& path) {
         if (path.empty()) {
@@ -1727,6 +1805,12 @@ int main(int argc, char** argv) {
             return 1;
         }
         if (!require_readable("anonym_sub_cert", cfg.anonym_sub_cert)) {
+            return 1;
+        }
+        if (!require_readable("federation_auth_key", cfg.federation_auth_key)) {
+            return 1;
+        }
+        if (!require_readable("federation_anonym_ca", cfg.federation_anonym_ca)) {
             return 1;
         }
     }
@@ -1811,6 +1895,11 @@ int main(int argc, char** argv) {
             std::string anonym_ca_cert = prompt("anonym_ca_cert", cfg.anonym_ca_cert);
             std::string anonym_sub_key = prompt("anonym_sub_key", cfg.anonym_sub_key);
             std::string anonym_sub_cert = prompt("anonym_sub_cert", cfg.anonym_sub_cert);
+            std::string outbound_proxy = prompt("outbound_proxy", cfg.outbound_proxy_url);
+            std::string federation_enable = prompt("federation_enable (true/false)", cfg.federation_enable ? "true" : "false");
+            std::string federation_auth_key = prompt("federation_auth_key", cfg.federation_auth_key);
+            std::string federation_anonym_ca = prompt("federation_anonym_ca", cfg.federation_anonym_ca);
+            std::string federation_peer = prompt("federation_peer_json", cfg.federation_peers.empty() ? "" : cfg.federation_peers.front());
 
             json["listen_port"] = std::stoi(listen);
             json["reverse_port_min"] = std::stoi(reverse_min);
@@ -1843,6 +1932,11 @@ int main(int argc, char** argv) {
             if (!anonym_ca_cert.empty()) json["anonym_ca_cert"] = anonym_ca_cert;
             if (!anonym_sub_key.empty()) json["anonym_sub_key"] = anonym_sub_key;
             if (!anonym_sub_cert.empty()) json["anonym_sub_cert"] = anonym_sub_cert;
+            if (!outbound_proxy.empty()) json["outbound_proxy"] = outbound_proxy;
+            json["federation_enable"] = (federation_enable == "true");
+            if (!federation_auth_key.empty()) json["federation_auth_key"] = federation_auth_key;
+            if (!federation_anonym_ca.empty()) json["federation_anonym_ca"] = federation_anonym_ca;
+            if (!federation_peer.empty()) json["federation_peers"] = nlohmann::json::array({nlohmann::json::parse(federation_peer)});
 
             ensure_dir(std::filesystem::path(out_path).parent_path().string());
             std::ofstream out(out_path);
@@ -2288,7 +2382,8 @@ int main(int argc, char** argv) {
             auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_certfp, cfg.anonym_proof_mode, cfg.anonym_api,
                                             cfg.anonym_token, cfg.anonym_ca_key,
                                             cfg.anonym_sub_key, cfg.anonym_sub_cert,
-                                            pq_public_path, pq_sign_key, anonym_local_sign);
+                                            pq_public_path, pq_sign_key, anonym_local_sign,
+                                            cfg.outbound_proxy_url);
             cfg.anonym_sig = proof.sig;
             cfg.anonym_ts = proof.ts;
             cfg.anonym_nonce = proof.nonce;
@@ -2326,6 +2421,7 @@ int main(int argc, char** argv) {
         if (!pq_public_path.empty() && cfg.pq_pub_b64.empty()) {
             std::string pq_pub_b64;
             if (load_pq_public_b64(pq_public_path, &pq_pub_b64)) {
+                cfg.pq_pub_b64 = pq_pub_b64;
                 std::string pq_sign_key;
                 if (!cfg.anonym_sub_key.empty() && !cfg.anonym_sub_cert.empty()) {
                     pq_sign_key = cfg.anonym_sub_key;
@@ -2348,8 +2444,6 @@ int main(int argc, char** argv) {
                 } else if (!sign_pq_pub_with_key(pq_pub_b64, cfg.anonym_certfp, pq_sign_key,
                                                  &cfg.pq_sig, &cfg.pq_alg)) {
                     yume::util::log_warn("PQ OTA disabled: pq public key signing failed");
-                } else {
-                    cfg.pq_pub_b64 = pq_pub_b64;
                 }
             } else {
                 yume::util::log_warn("PQ public key not readable; OTA PQ disabled");
@@ -2431,7 +2525,8 @@ int main(int argc, char** argv) {
                     auto proof = fetch_anonym_proof(cfg.anonym_hash, cfg.anonym_certfp, cfg.anonym_proof_mode, cfg.anonym_api,
                                                     cfg.anonym_token, cfg.anonym_ca_key,
                                                     cfg.anonym_sub_key, cfg.anonym_sub_cert,
-                                                    pq_public_path, pq_sign_key, anonym_local_sign);
+                                                    pq_public_path, pq_sign_key, anonym_local_sign,
+                                                    cfg.outbound_proxy_url);
                     cfg.anonym_ts = proof.ts;
                     manager.update_anonym_proof(proof.hash, proof.sig, proof.ts, proof.nonce,
                                                 proof.certfp, proof.proof_policy, proof.proof_sources,

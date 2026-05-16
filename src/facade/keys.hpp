@@ -50,6 +50,7 @@ struct AuthorizedKeyEntry {
     std::string alias;
     std::string algorithm;      // typically "ed25519"
     std::string pem;            // full PEM block (PUBLIC KEY)
+    std::string federation_peer_id;
 
     // permission overrides; nullopt means "inherit server default"
     std::optional<bool> allow_exec;

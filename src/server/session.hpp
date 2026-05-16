@@ -44,6 +44,19 @@ public:
     void force_close_reverse_port(int port);
     std::string endpoint_id() const { return client_id_; }
     std::string endpoint_name() const { return client_display_name_; }
+    const std::string& federation_peer_id() const { return federation_peer_id_; }
+    bool is_federation_authenticated() const { return authenticated_ && !federation_peer_id_.empty(); }
+    void send_control_json_to_client(const nlohmann::json& json);
+    bool attach_federated_stream(uint8_t stream_id,
+                                 control::ChannelKind channel_kind,
+                                 const std::string& channel_id,
+                                 const std::string& left_endpoint_id,
+                                 const std::string& right_endpoint_id,
+                                 std::function<void(const crypto::Bytes&)> on_data,
+                                 std::function<void(const std::string&)> on_close);
+    void complete_federated_open(uint8_t stream_id, bool ok, const std::string& message);
+    void send_federated_data(uint8_t stream_id, const crypto::Bytes& payload);
+    void send_federated_close(uint8_t stream_id, const std::string& reason);
 
 private:
     void on_handshake(const boost::system::error_code& ec);
@@ -226,6 +239,16 @@ private:
     std::mutex streams_mutex_;
     std::unordered_map<uint8_t, ControlLink> control_outbound_;
     std::unordered_map<uint8_t, ControlLink> control_inbound_;
+    struct FederatedStream {
+        control::ChannelKind channel_kind{control::ChannelKind::chat};
+        std::string channel_id;
+        std::string left_endpoint_id;
+        std::string right_endpoint_id;
+        std::function<void(const crypto::Bytes&)> on_data;
+        std::function<void(const std::string&)> on_close;
+        bool pending{true};
+    };
+    std::unordered_map<uint8_t, FederatedStream> federated_streams_;
     std::weak_ptr<Session> control_target_;
     std::string control_target_id_;
     bool is_controller_{false};
@@ -234,7 +257,9 @@ private:
     std::string client_id_;
     std::string client_display_name_;
     std::string auth_fingerprint_;
+    std::string federation_peer_id_;
     std::string client_auth_pubkey_b64_;
+    std::deque<std::int64_t> federation_directory_hits_;
     bool session_allow_exec_policy_{false};
     bool session_allow_local_ip_{false};
     bool session_control_full_{false};

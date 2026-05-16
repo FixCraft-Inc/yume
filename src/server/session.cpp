@@ -1618,6 +1618,7 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         session_allow_chat_policy_ = auth_policy.allow_chat.value_or(true);
         session_allow_file_policy_ = auth_policy.allow_file.value_or(true);
         session_allow_bytes_policy_ = auth_policy.allow_bytes.value_or(true);
+        federation_peer_id_ = auth_policy.federation_peer_id;
         if (!auth_policy.empty()) {
             util::log_info("session " + std::to_string(session_id_) + ": auth policy " +
                            summarize_auth_policy(auth_policy));
@@ -1837,6 +1838,13 @@ void Session::handle_open(const protocol::Frame& frame) {
             }
             if (target_id.empty() || channel_id.empty() || from_id.empty()) {
                 send_open_reply(frame.header.stream_id, false, "invalid relay open");
+                return;
+            }
+            std::string federated_error;
+            if (manager_ && manager_->open_federated_channel(shared_from_this(), frame.header.stream_id, json, &federated_error)) {
+                if (!federated_error.empty()) {
+                    send_open_reply(frame.header.stream_id, false, federated_error);
+                }
                 return;
             }
             std::shared_ptr<Session> target;
@@ -2780,6 +2788,60 @@ void Session::handle_control(const protocol::Frame& frame) {
         return;
     }
 
+    if (cmd == "federation.hello") {
+        nlohmann::json resp;
+        resp["cmd"] = cmd;
+        if (!is_federation_authenticated()) {
+            resp["ok"] = false;
+            resp["error"] = "federation auth required";
+            send_json(resp);
+            return;
+        }
+        resp["ok"] = true;
+        resp["peer_id"] = federation_peer_id_;
+        resp["your_peer_id"] = federation_peer_id_;
+        resp["server_id"] = manager_ ? manager_->server_id() : cfg_.server_id;
+        resp["server_name"] = manager_ ? manager_->server_name() : cfg_.server_name;
+        send_json(resp);
+        return;
+    }
+
+    if (cmd == "federation.directory") {
+        nlohmann::json resp;
+        resp["cmd"] = cmd;
+        if (json.contains("request_id")) {
+            resp["request_id"] = json["request_id"];
+        }
+        if (!is_federation_authenticated()) {
+            resp["ok"] = false;
+            resp["error"] = "federation auth required";
+            send_json(resp);
+            return;
+        }
+        const std::int64_t now = epoch_now_ms();
+        while (!federation_directory_hits_.empty() && now - federation_directory_hits_.front() > 1000) {
+            federation_directory_hits_.pop_front();
+        }
+        if (federation_directory_hits_.size() >= 10) {
+            resp["ok"] = false;
+            resp["error"] = "federation.directory throttled";
+            send_json(resp);
+            return;
+        }
+        federation_directory_hits_.push_back(now);
+        resp["ok"] = true;
+        resp["server_id"] = manager_ ? manager_->server_id() : cfg_.server_id;
+        resp["server_name"] = manager_ ? manager_->server_name() : cfg_.server_name;
+        resp["endpoints"] = nlohmann::json::array();
+        if (manager_) {
+            for (const auto& endpoint : manager_->list_local_endpoints()) {
+                resp["endpoints"].push_back(control::endpoint_to_json(endpoint, true));
+            }
+        }
+        send_json(resp);
+        return;
+    }
+
     if (cmd == "directory.lookup") {
         nlohmann::json resp;
         resp["cmd"] = cmd;
@@ -2806,14 +2868,21 @@ void Session::handle_control(const protocol::Frame& frame) {
         invite.from_auth_pubkey_b64 = client_auth_pubkey_b64_;
         invite.created_ms = epoch_now_ms();
         std::string error;
-        if (!manager_ || !manager_->route_invite(shared_from_this(), invite, &error)) {
+        std::shared_ptr<Session> target;
+        bool federated = false;
+        if (!manager_ || !manager_->route_invite(shared_from_this(), invite, &error, &target, &federated)) {
             resp["ok"] = false;
             resp["error"] = error.empty() ? "invite routing failed" : error;
             send_json(resp);
             return;
         }
-        control::EndpointInfo target_info;
-        auto target = manager_->find_endpoint_session(invite.to_endpoint_id, &target_info);
+        if (federated) {
+            resp["ok"] = true;
+            resp["queued"] = true;
+            resp["federated"] = true;
+            send_json(resp);
+            return;
+        }
         if (!target) {
             resp["ok"] = false;
             resp["error"] = "target unavailable";
@@ -2824,6 +2893,37 @@ void Session::handle_control(const protocol::Frame& frame) {
         notify["cmd"] = "invite.request";
         std::string out = notify.dump();
         target->send_control_frame(protocol::CONTROL, 0, crypto::Bytes(out.begin(), out.end()));
+        resp["ok"] = true;
+        resp["queued"] = true;
+        send_json(resp);
+        return;
+    }
+
+    if (cmd == "federation.invite.request") {
+        nlohmann::json resp;
+        resp["cmd"] = cmd;
+        if (!is_federation_authenticated()) {
+            resp["ok"] = false;
+            resp["error"] = "federation auth required";
+            send_json(resp);
+            return;
+        }
+        control::PendingInvite invite = control::invite_from_json(json);
+        const std::string raw_target_id = json.value("raw_to_id", "");
+        std::shared_ptr<Session> target;
+        std::string error;
+        if (!manager_ || !manager_->route_federated_invite(shared_from_this(), invite, raw_target_id, &error, &target)) {
+            resp["ok"] = false;
+            resp["error"] = error.empty() ? "invite routing failed" : error;
+            send_json(resp);
+            return;
+        }
+        if (target) {
+            nlohmann::json notify = control::invite_to_json(invite, false);
+            notify["cmd"] = "invite.request";
+            std::string out = notify.dump();
+            target->send_control_frame(protocol::CONTROL, 0, crypto::Bytes(out.begin(), out.end()));
+        }
         resp["ok"] = true;
         resp["queued"] = true;
         send_json(resp);
@@ -2846,7 +2946,7 @@ void Session::handle_control(const protocol::Frame& frame) {
         }
         if (initiator) {
             nlohmann::json notify = control::invite_to_json(resolved_invite, true);
-            notify["cmd"] = "invite.reply";
+            notify["cmd"] = initiator->is_federation_authenticated() ? "federation.invite.reply" : "invite.reply";
             std::string out = notify.dump();
             initiator->send_control_frame(protocol::CONTROL, 0, crypto::Bytes(out.begin(), out.end()));
         }
@@ -3197,6 +3297,96 @@ void Session::send_control_close(uint8_t stream_id, const std::string& reason) {
     send_control_frame(protocol::CLOSE, stream_id, payload);
 }
 
+void Session::send_control_json_to_client(const nlohmann::json& json) {
+    const std::string out = json.dump();
+    send_control_frame(protocol::CONTROL, 0, crypto::Bytes(out.begin(), out.end()));
+}
+
+bool Session::attach_federated_stream(uint8_t stream_id,
+                                      control::ChannelKind channel_kind,
+                                      const std::string& channel_id,
+                                      const std::string& left_endpoint_id,
+                                      const std::string& right_endpoint_id,
+                                      std::function<void(const crypto::Bytes&)> on_data,
+                                      std::function<void(const std::string&)> on_close) {
+    if (stream_id == 0) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(control_mutex_);
+    if (federated_streams_.find(stream_id) != federated_streams_.end()) {
+        return false;
+    }
+    FederatedStream stream;
+    stream.channel_kind = channel_kind;
+    stream.channel_id = channel_id;
+    stream.left_endpoint_id = left_endpoint_id;
+    stream.right_endpoint_id = right_endpoint_id;
+    stream.on_data = std::move(on_data);
+    stream.on_close = std::move(on_close);
+    federated_streams_[stream_id] = std::move(stream);
+    return true;
+}
+
+void Session::complete_federated_open(uint8_t stream_id, bool ok, const std::string& message) {
+    std::string channel_id;
+    control::ChannelKind channel_kind{control::ChannelKind::chat};
+    std::string left_endpoint_id;
+    std::string right_endpoint_id;
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        auto it = federated_streams_.find(stream_id);
+        if (it == federated_streams_.end()) {
+            return;
+        }
+        channel_id = it->second.channel_id;
+        channel_kind = it->second.channel_kind;
+        left_endpoint_id = it->second.left_endpoint_id;
+        right_endpoint_id = it->second.right_endpoint_id;
+        if (ok) {
+            it->second.pending = false;
+        } else {
+            federated_streams_.erase(it);
+        }
+    }
+    if (ok && manager_ && !channel_id.empty()) {
+        control::ActiveRelayChannel channel;
+        channel.channel_id = channel_id;
+        channel.channel_kind = channel_kind;
+        channel.left_endpoint_id = left_endpoint_id;
+        channel.right_endpoint_id = right_endpoint_id;
+        channel.left_stream_id = stream_id;
+        channel.right_stream_id = 0;
+        channel.pending = false;
+        channel.federated = true;
+        channel.route_hops = 1;
+        manager_->register_active_channel(channel);
+    }
+    if (!ok && manager_ && !channel_id.empty()) {
+        manager_->unregister_active_channel(channel_id);
+    }
+    send_open_reply(stream_id, ok, message);
+}
+
+void Session::send_federated_data(uint8_t stream_id, const crypto::Bytes& payload) {
+    send_control_frame(protocol::DATA, stream_id, payload);
+}
+
+void Session::send_federated_close(uint8_t stream_id, const std::string& reason) {
+    std::string channel_id;
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        auto it = federated_streams_.find(stream_id);
+        if (it != federated_streams_.end()) {
+            channel_id = it->second.channel_id;
+            federated_streams_.erase(it);
+        }
+    }
+    if (manager_ && !channel_id.empty()) {
+        manager_->unregister_active_channel(channel_id);
+    }
+    send_control_close(stream_id, reason);
+}
+
 void Session::handle_data(const protocol::Frame& frame) {
     crypto::Bytes payload = frame.payload;
     if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
@@ -3207,6 +3397,18 @@ void Session::handle_data(const protocol::Frame& frame) {
             return;
         }
     }
+    std::function<void(const crypto::Bytes&)> federated_data;
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        auto it = federated_streams_.find(frame.header.stream_id);
+        if (it != federated_streams_.end()) {
+            federated_data = it->second.on_data;
+        }
+    }
+    if (federated_data) {
+        federated_data(payload);
+        return;
+    }
     auto it_udp = udp_streams_.find(frame.header.stream_id);
     if (it_udp != udp_streams_.end()) {
         enqueue_udp_write(frame.header.stream_id, payload);
@@ -3216,6 +3418,24 @@ void Session::handle_data(const protocol::Frame& frame) {
 }
 
 void Session::handle_close(uint8_t stream_id, const std::string& reason) {
+    std::function<void(const std::string&)> federated_close;
+    std::string federated_channel_id;
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        auto it = federated_streams_.find(stream_id);
+        if (it != federated_streams_.end()) {
+            federated_close = it->second.on_close;
+            federated_channel_id = it->second.channel_id;
+            federated_streams_.erase(it);
+        }
+    }
+    if (federated_close) {
+        if (manager_ && !federated_channel_id.empty()) {
+            manager_->unregister_active_channel(federated_channel_id);
+        }
+        federated_close(reason);
+        return;
+    }
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
 

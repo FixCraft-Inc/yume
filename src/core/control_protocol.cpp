@@ -107,6 +107,9 @@ nlohmann::json endpoint_to_json(const EndpointInfo& endpoint, bool include_auth_
     json["client_variant"] = normalize_client_variant(endpoint.client_variant);
     json["client_version"] = endpoint.client_version;
     json["server_id"] = endpoint.server_id;
+    if (!endpoint.server_name.empty()) {
+        json["server_name"] = endpoint.server_name;
+    }
     json["relay_mode"] = to_string(endpoint.relay_mode);
     json["allow_inbound_admin"] = endpoint.allow_inbound_admin;
     json["allow_outbound_admin"] = endpoint.allow_outbound_admin;
@@ -116,6 +119,11 @@ nlohmann::json endpoint_to_json(const EndpointInfo& endpoint, bool include_auth_
     json["online"] = endpoint.online;
     json["controller_ids"] = endpoint.controller_ids;
     json["controlled_target_ids"] = endpoint.controlled_target_ids;
+    if (endpoint.remote) {
+        json["remote"] = true;
+        json["federation_peer_id"] = endpoint.federation_peer_id;
+        json["remote_endpoint_id"] = endpoint.remote_endpoint_id;
+    }
     if (include_auth_pubkey && !endpoint.auth_pubkey_b64.empty()) {
         json["auth_pubkey_b64"] = endpoint.auth_pubkey_b64;
     }
@@ -132,6 +140,7 @@ EndpointInfo endpoint_from_json(const nlohmann::json& json) {
     endpoint.client_variant = normalize_client_variant(json.value("client_variant", "unknown"));
     endpoint.client_version = json.value("client_version", "");
     endpoint.server_id = json.value("server_id", "");
+    endpoint.server_name = json.value("server_name", "");
     endpoint.relay_mode = relay_mode_from_string(json.value("relay_mode", "untrusted"));
     endpoint.allow_inbound_admin = json.value("allow_inbound_admin", false);
     endpoint.allow_outbound_admin = json.value("allow_outbound_admin", false);
@@ -140,6 +149,9 @@ EndpointInfo endpoint_from_json(const nlohmann::json& json) {
     endpoint.allow_bytes = json.value("allow_bytes", true);
     endpoint.online = json.value("online", true);
     endpoint.auth_pubkey_b64 = json.value("auth_pubkey_b64", "");
+    endpoint.remote = json.value("remote", false);
+    endpoint.federation_peer_id = json.value("federation_peer_id", "");
+    endpoint.remote_endpoint_id = json.value("remote_endpoint_id", "");
     if (json.contains("controller_ids") && json["controller_ids"].is_array()) {
         endpoint.controller_ids = json["controller_ids"].get<std::vector<std::string>>();
     }

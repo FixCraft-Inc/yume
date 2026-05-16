@@ -356,13 +356,16 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     # server implementation. The executable below contains only main().
     add_library(yume_server STATIC
         server/local_runtime.cpp
+        server/federation_link.cpp
+        server/federation_manager.cpp
         server/manager.cpp
         server/auth.cpp
         server/session.cpp
         server/runtime_controller.cpp
+        client/outbound_proxy.cpp
     )
     target_include_directories(yume_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(yume_server PUBLIC yume_core)
+    target_link_libraries(yume_server PUBLIC yume_core yume_transport_core)
     yume_apply_perf_opts(yume_server)
     if(WIN32)
         target_link_libraries(yume_server PUBLIC ws2_32 mswsock)

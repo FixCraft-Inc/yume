@@ -21,9 +21,12 @@
 #include "core/identity.hpp"
 #include "core/obfs.hpp"
 #include "server/config.hpp"
+#include "server/federation_types.hpp"
 
 namespace yume::server {
 
+class FederationManager;
+class FederationLink;
 class Session;
 
 struct ControlledClientInfo {
@@ -45,6 +48,7 @@ struct EndpointRegistrationResult {
 class Manager {
 public:
     Manager(boost::asio::io_context& io, const ServerConfig& cfg);
+    ~Manager();
 
     void start();
     void stop();
@@ -79,13 +83,28 @@ public:
                                    control::ClientLifecycleEvent event,
                                    control::ClientLifecycleEvent* stored_event = nullptr);
     void unregister_endpoint(Session* session);
+    std::vector<control::EndpointInfo> list_local_endpoints() const;
     std::vector<control::EndpointInfo> list_endpoints() const;
     std::vector<control::EndpointRuntimeStatus> list_endpoint_statuses() const;
     std::vector<control::ClientLifecycleEvent> list_recent_lifecycle_events(std::size_t limit = 200) const;
     std::shared_ptr<Session> find_endpoint_session(const std::string& query, control::EndpointInfo* info);
-    bool route_invite(const std::shared_ptr<Session>& from_session, const control::PendingInvite& invite, std::string* error);
+    bool route_invite(const std::shared_ptr<Session>& from_session,
+                      const control::PendingInvite& invite,
+                      std::string* error,
+                      std::shared_ptr<Session>* local_target_session = nullptr,
+                      bool* federated = nullptr);
+    bool route_federated_invite(const std::shared_ptr<Session>& from_session,
+                                const control::PendingInvite& invite,
+                                const std::string& raw_target_id,
+                                std::string* error,
+                                std::shared_ptr<Session>* local_target_session = nullptr);
     bool respond_invite(const std::shared_ptr<Session>& from_session, const control::PendingInvite& response,
                         std::shared_ptr<Session>* initiator_session, control::PendingInvite* invite_out, std::string* error);
+    bool respond_federated_invite(const std::string& peer_id,
+                                  const control::PendingInvite& response,
+                                  std::shared_ptr<Session>* initiator_session,
+                                  control::PendingInvite* invite_out,
+                                  std::string* error);
     bool can_open_channel(const std::string& channel_id,
                           const std::string& from_id,
                           const std::string& to_id,
@@ -93,13 +112,20 @@ public:
                           std::shared_ptr<Session>* target_session,
                           control::PendingInvite* invite_out,
                           std::string* error);
+    bool open_federated_channel(const std::shared_ptr<Session>& origin,
+                                std::uint8_t origin_stream_id,
+                                const nlohmann::json& open_json,
+                                std::string* error);
     void register_active_channel(const control::ActiveRelayChannel& channel);
     void unregister_active_channel(const std::string& channel_id);
     std::vector<control::ActiveRelayChannel> list_active_channels() const;
+    std::vector<FederationPeerStatus> federation_statuses() const;
     bool disconnect_endpoint(const std::string& query, std::string* error);
     void add_admin_relationship(const std::string& controller_id, const std::string& target_id);
     void remove_admin_relationship(const std::string& controller_id, const std::string& target_id);
     const ServerConfig& config_snapshot() const;
+    const std::string& server_id() const { return server_id_; }
+    const std::string& server_name() const { return server_name_; }
 
 private:
     static constexpr std::size_t kMaxLifecycleEvents = 512;
@@ -134,6 +160,10 @@ private:
         control::PendingInvite invite;
         std::weak_ptr<Session> from_session;
         std::weak_ptr<Session> to_session;
+        bool outbound_federated{false};
+        bool inbound_federated{false};
+        std::string federation_peer_id;
+        std::string federation_remote_id;
     };
     mutable std::mutex endpoint_mutex_;
     std::unordered_map<std::string, EndpointEntry> endpoints_;
@@ -144,6 +174,7 @@ private:
     std::deque<control::ClientLifecycleEvent> lifecycle_events_;
     std::string server_id_;
     std::string server_name_;
+    std::unique_ptr<FederationManager> federation_;
 };
 
 }  // namespace yume::server

@@ -7,6 +7,7 @@
 #include "server/manager.hpp"
 
 #include <algorithm>
+#include "server/federation_manager.hpp"
 #include "server/auth.hpp"
 #include "server/session.hpp"
 #include "util.hpp"
@@ -28,6 +29,8 @@ Manager::Manager(boost::asio::io_context& io, const ServerConfig& cfg)
     cfg_.server_name = server_name_;
 }
 
+Manager::~Manager() = default;
+
 void Manager::start() {
     if (cfg_.auth_keys.empty()) {
         throw std::runtime_error("auth_keys must be set");
@@ -42,6 +45,14 @@ void Manager::start() {
     if (authorized_keys_->empty()) {
         util::log_warn("authorized_keys is empty");
     }
+    if (cfg_.federation_enable) {
+        if (cfg_.federation_auth_key.empty() || cfg_.federation_anonym_ca.empty() || cfg_.federation_peers.empty()) {
+            util::log_warn("federation disabled: federation_auth_key, federation_anonym_ca, and peers are required");
+            cfg_.federation_enable = false;
+        } else {
+            federation_ = std::make_unique<FederationManager>(io_, cfg_, this);
+        }
+    }
 
     boost::asio::ip::tcp::endpoint ep(boost::asio::ip::tcp::v4(), cfg_.listen_port);
     acceptor_.open(ep.protocol());
@@ -55,9 +66,15 @@ void Manager::start() {
         std::cerr << "\033[1;33myumed listening on port " << cfg_.listen_port << "\033[0m\n";
     }
     do_accept();
+    if (federation_) {
+        federation_->start();
+    }
 }
 
 void Manager::stop() {
+    if (federation_) {
+        federation_->stop();
+    }
     boost::system::error_code ec;
     acceptor_.close(ec);
 
@@ -255,6 +272,7 @@ EndpointRegistrationResult Manager::register_endpoint(const std::shared_ptr<Sess
     result.endpoint.client_variant = announce.client_variant;
     result.endpoint.client_version = announce.client_version;
     result.endpoint.server_id = server_id_;
+    result.endpoint.server_name = server_name_;
     result.endpoint.relay_mode = announce.relay_mode;
     result.endpoint.allow_chat = announce.allow_chat;
     result.endpoint.allow_file = announce.allow_file;
@@ -403,6 +421,18 @@ void Manager::unregister_endpoint(Session* session) {
 }
 
 std::vector<control::EndpointInfo> Manager::list_endpoints() const {
+    auto out = list_local_endpoints();
+    if (federation_) {
+        auto remote = federation_->remote_endpoints();
+        out.insert(out.end(), remote.begin(), remote.end());
+    }
+    std::sort(out.begin(), out.end(), [](const control::EndpointInfo& a, const control::EndpointInfo& b) {
+        return a.display_name < b.display_name;
+    });
+    return out;
+}
+
+std::vector<control::EndpointInfo> Manager::list_local_endpoints() const {
     std::vector<control::EndpointInfo> out;
     std::lock_guard<std::mutex> lock(endpoint_mutex_);
     out.reserve(endpoints_.size());
@@ -479,21 +509,89 @@ std::shared_ptr<Session> Manager::find_endpoint_session(const std::string& query
 
 bool Manager::route_invite(const std::shared_ptr<Session>& from_session,
                            const control::PendingInvite& invite,
-                           std::string* error) {
+                           std::string* error,
+                           std::shared_ptr<Session>* local_target_session,
+                           bool* federated) {
+    if (local_target_session) {
+        local_target_session->reset();
+    }
+    if (federated) {
+        *federated = false;
+    }
     control::EndpointInfo target_info;
     auto target = find_endpoint_session(invite.to_endpoint_id, &target_info);
+    if (target) {
+        std::lock_guard<std::mutex> lock(endpoint_mutex_);
+        InviteEntry entry;
+        entry.invite = invite;
+        entry.from_session = from_session;
+        entry.to_session = target;
+        invites_[invite.invite_id] = std::move(entry);
+        if (local_target_session) {
+            *local_target_session = target;
+        }
+        return true;
+    }
+
+    if (federation_) {
+        std::string peer_id;
+        std::string remote_id;
+        if (federation_->resolve_remote_endpoint(invite.to_endpoint_id, &peer_id, &remote_id, nullptr)) {
+            {
+                std::lock_guard<std::mutex> lock(endpoint_mutex_);
+                InviteEntry entry;
+                entry.invite = invite;
+                entry.from_session = from_session;
+                entry.outbound_federated = true;
+                entry.federation_peer_id = peer_id;
+                entry.federation_remote_id = remote_id;
+                invites_[invite.invite_id] = std::move(entry);
+            }
+            if (!federation_->send_invite_request(invite, peer_id, remote_id, error)) {
+                std::lock_guard<std::mutex> lock(endpoint_mutex_);
+                invites_.erase(invite.invite_id);
+                return false;
+            }
+            if (federated) {
+                *federated = true;
+            }
+            return true;
+        }
+    }
+    if (error) {
+        *error = "target not found";
+    }
+    return false;
+}
+
+bool Manager::route_federated_invite(const std::shared_ptr<Session>& from_session,
+                                     const control::PendingInvite& invite,
+                                     const std::string& raw_target_id,
+                                     std::string* error,
+                                     std::shared_ptr<Session>* local_target_session) {
+    if (local_target_session) {
+        local_target_session->reset();
+    }
+    control::EndpointInfo target_info;
+    auto target = find_endpoint_session(raw_target_id.empty() ? invite.to_endpoint_id : raw_target_id, &target_info);
     if (!target) {
         if (error) {
             *error = "target not found";
         }
         return false;
     }
+    const std::string peer_id = from_session ? from_session->federation_peer_id() : std::string{};
     std::lock_guard<std::mutex> lock(endpoint_mutex_);
     InviteEntry entry;
     entry.invite = invite;
     entry.from_session = from_session;
     entry.to_session = target;
+    entry.inbound_federated = true;
+    entry.federation_peer_id = peer_id;
     invites_[invite.invite_id] = std::move(entry);
+    if (local_target_session) {
+        *local_target_session = target;
+    }
     return true;
 }
 
@@ -514,6 +612,49 @@ bool Manager::respond_invite(const std::shared_ptr<Session>& from_session,
         it->second.invite.to_endpoint_id != response.to_endpoint_id) {
         if (error) {
             *error = "invite responder mismatch";
+        }
+        return false;
+    }
+    it->second.invite.accepted = response.accepted;
+    it->second.invite.response_reason = response.response_reason;
+    it->second.invite.response_ephemeral_pubkey_b64 = response.response_ephemeral_pubkey_b64;
+    it->second.invite.response_ephemeral_signature_b64 = response.response_ephemeral_signature_b64;
+    auto initiator = it->second.from_session.lock();
+    if (!initiator) {
+        if (error) {
+            *error = "invite initiator unavailable";
+        }
+        invites_.erase(it);
+        return false;
+    }
+    if (initiator_session) {
+        *initiator_session = initiator;
+    }
+    if (invite_out) {
+        *invite_out = it->second.invite;
+    }
+    if (!it->second.invite.accepted) {
+        invites_.erase(it);
+    }
+    return true;
+}
+
+bool Manager::respond_federated_invite(const std::string& peer_id,
+                                       const control::PendingInvite& response,
+                                       std::shared_ptr<Session>* initiator_session,
+                                       control::PendingInvite* invite_out,
+                                       std::string* error) {
+    std::lock_guard<std::mutex> lock(endpoint_mutex_);
+    auto it = invites_.find(response.invite_id);
+    if (it == invites_.end()) {
+        if (error) {
+            *error = "invite not found";
+        }
+        return false;
+    }
+    if (!it->second.outbound_federated || it->second.federation_peer_id != peer_id) {
+        if (error) {
+            *error = "invite federation peer mismatch";
         }
         return false;
     }
@@ -586,6 +727,70 @@ bool Manager::can_open_channel(const std::string& channel_id,
     return true;
 }
 
+bool Manager::open_federated_channel(const std::shared_ptr<Session>& origin,
+                                     std::uint8_t origin_stream_id,
+                                     const nlohmann::json& open_json,
+                                     std::string* error) {
+    if (!federation_ || !origin) {
+        return false;
+    }
+    const std::string target_id = open_json.value("target_id", "");
+    const std::string from_id = open_json.value("from_id", origin->endpoint_id());
+    const std::string channel_id = open_json.value("channel_id", "");
+    const auto channel_kind = control::channel_kind_from_string(open_json.value("channel_kind", "chat"));
+    std::string peer_id;
+    std::string remote_id;
+    if (!federation_->resolve_remote_endpoint(target_id, &peer_id, &remote_id, nullptr)) {
+        return false;
+    }
+    control::PendingInvite invite;
+    {
+        std::lock_guard<std::mutex> lock(endpoint_mutex_);
+        auto it = invites_.find(channel_id);
+        if (it == invites_.end()) {
+            if (error) {
+                *error = "invite not found";
+            }
+            return true;
+        }
+        invite = it->second.invite;
+        if (!it->second.outbound_federated || it->second.federation_peer_id != peer_id) {
+            if (error) {
+                *error = "invite federation peer mismatch";
+            }
+            return true;
+        }
+        if (!invite.accepted) {
+            if (error) {
+                *error = "invite not accepted";
+            }
+            return true;
+        }
+        if (invite.from_endpoint_id != from_id || invite.to_endpoint_id != target_id || invite.channel_kind != channel_kind) {
+            if (error) {
+                *error = "invite/channel mismatch";
+            }
+            return true;
+        }
+    }
+    control::ActiveRelayChannel channel;
+    channel.channel_id = invite.invite_id;
+    channel.channel_kind = invite.channel_kind;
+    channel.left_endpoint_id = invite.from_endpoint_id;
+    channel.right_endpoint_id = invite.to_endpoint_id;
+    channel.left_stream_id = origin_stream_id;
+    channel.right_stream_id = 0;
+    channel.pending = true;
+    channel.federated = true;
+    channel.route_hops = 1;
+    register_active_channel(channel);
+    if (!federation_->open_channel(origin, origin_stream_id, invite, open_json, error)) {
+        unregister_active_channel(invite.invite_id);
+        return true;
+    }
+    return true;
+}
+
 void Manager::register_active_channel(const control::ActiveRelayChannel& channel) {
     std::lock_guard<std::mutex> lock(endpoint_mutex_);
     active_channels_[channel.channel_id] = channel;
@@ -605,6 +810,13 @@ std::vector<control::ActiveRelayChannel> Manager::list_active_channels() const {
         out.push_back(entry.second);
     }
     return out;
+}
+
+std::vector<FederationPeerStatus> Manager::federation_statuses() const {
+    if (!federation_) {
+        return {};
+    }
+    return federation_->statuses();
 }
 
 bool Manager::disconnect_endpoint(const std::string& query, std::string* error) {

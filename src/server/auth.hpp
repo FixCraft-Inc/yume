@@ -21,6 +21,7 @@ struct AuthKeyPolicy {
     std::optional<bool> allow_chat;
     std::optional<bool> allow_file;
     std::optional<bool> allow_bytes;
+    std::string federation_peer_id;
 
     bool empty() const;
 };

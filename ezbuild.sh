@@ -1609,13 +1609,20 @@ EOF
                 fi
             fi
         fi
-        # If static libs are missing in the SDK, fall back to dynamic.
-        # OpenWRT SDKs often lack full static deps; force dynamic by default.
-        if [[ " ${CMAKE_ARGS[*]} " == *"-DYUME_STATIC=ON"* ]]; then
-            warn "OpenWRT build: forcing YUME_STATIC=OFF to avoid static link of shared libs."
-            CMAKE_ARGS=("${CMAKE_ARGS[@]/-DYUME_STATIC=ON/-DYUME_STATIC=OFF}")
+        # OpenWRT SDKs often lack full static deps; force dynamic.
+        # This override is OpenWRT-specific — BUSYBOX targets stage their
+        # own per-arch static prefix (vendor/busybox-<arch>) and fullau
+        # explicitly verifies libz.a/liblzma.a/libssl.a/etc. are present
+        # before requesting -DYUME_STATIC=ON. Clobbering that here would
+        # produce dynamic-PIE binaries packaged as `*-busybox-static`,
+        # which the release workflow's static-link assertion rejects.
+        if [[ $OPENWRT -eq 1 ]]; then
+            if [[ " ${CMAKE_ARGS[*]} " == *"-DYUME_STATIC=ON"* ]]; then
+                warn "OpenWRT build: forcing YUME_STATIC=OFF to avoid static link of shared libs."
+                CMAKE_ARGS=("${CMAKE_ARGS[@]/-DYUME_STATIC=ON/-DYUME_STATIC=OFF}")
+            fi
+            CMAKE_ARGS+=("-DYUME_STATIC=OFF")
         fi
-        CMAKE_ARGS+=("-DYUME_STATIC=OFF")
         CMAKE_ARGS+=("-DBASEFWX_NATIVE_OPT=OFF")
         info "Using toolchain: ${YUME_TOOLCHAIN_FILE}"
         CMAKE_ARGS+=("-DCMAKE_TOOLCHAIN_FILE=${YUME_TOOLCHAIN_FILE}")

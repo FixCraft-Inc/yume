@@ -169,12 +169,29 @@ mkdir -p "${LIBOQS_BUILD_DIR}"
 src_dir="${LIBOQS_BUILD_DIR}/src"
 build_dir="${LIBOQS_BUILD_DIR}/build"
 
-if [[ ! -d "${src_dir}/CMakeLists.txt" && ! -f "${src_dir}/CMakeLists.txt" ]]; then
-    echo "Fetching liboqs ${LIBOQS_VERSION} source..."
+if [[ ! -f "${src_dir}/CMakeLists.txt" ]]; then
+    # Cache the source tarball outside the per-target build dir so all
+    # cross targets reuse a single download. Without this, the workflow
+    # re-fetches the same tarball 4-5 times and a single transient
+    # GitHub 5xx/rate-limit kills the entire matrix (we saw exit 8 from
+    # wget on the armv8 leg even though armv7 had just succeeded).
+    cache_dir="${LIBOQS_SRC_CACHE_DIR:-${TMPDIR:-/tmp}/liboqs-src-cache}"
+    mkdir -p "${cache_dir}"
+    tarball="${cache_dir}/liboqs-${LIBOQS_VERSION}.tar.gz"
+    if [[ ! -s "${tarball}" ]]; then
+        echo "Fetching liboqs ${LIBOQS_VERSION} source..."
+        # --tries / --waitretry / --retry-connrefused make wget survive
+        # transient errors; drop -q so HTTP failure reasons are visible
+        # in the workflow log.
+        wget --tries=5 --waitretry=10 --retry-connrefused \
+            "https://github.com/open-quantum-safe/liboqs/archive/refs/tags/${LIBOQS_VERSION}.tar.gz" \
+            -O "${tarball}.part"
+        mv -f "${tarball}.part" "${tarball}"
+    else
+        echo "Reusing cached liboqs ${LIBOQS_VERSION} tarball at ${tarball}"
+    fi
     rm -rf "${src_dir}"
     mkdir -p "${src_dir}"
-    tarball="${LIBOQS_BUILD_DIR}/liboqs.tar.gz"
-    wget -q "https://github.com/open-quantum-safe/liboqs/archive/refs/tags/${LIBOQS_VERSION}.tar.gz" -O "${tarball}"
     tar -xzf "${tarball}" --strip-components=1 -C "${src_dir}"
 fi
 

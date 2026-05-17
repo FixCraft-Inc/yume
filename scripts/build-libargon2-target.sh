@@ -109,11 +109,23 @@ mkdir -p "${LIBARGON2_BUILD_DIR}"
 src_dir="${LIBARGON2_BUILD_DIR}/src"
 
 if [[ ! -f "${src_dir}/Makefile" ]]; then
-    echo "Fetching libargon2 ${LIBARGON2_VERSION} source..."
+    # Cache the source tarball outside the per-target build dir so all
+    # cross targets reuse a single download (see build-liboqs-target.sh
+    # for the same pattern + rationale).
+    cache_dir="${LIBARGON2_SRC_CACHE_DIR:-${TMPDIR:-/tmp}/libargon2-src-cache}"
+    mkdir -p "${cache_dir}"
+    tarball="${cache_dir}/libargon2-${LIBARGON2_VERSION}.tar.gz"
+    if [[ ! -s "${tarball}" ]]; then
+        echo "Fetching libargon2 ${LIBARGON2_VERSION} source..."
+        wget --tries=5 --waitretry=10 --retry-connrefused \
+            "https://github.com/P-H-C/phc-winner-argon2/archive/refs/tags/${LIBARGON2_VERSION}.tar.gz" \
+            -O "${tarball}.part"
+        mv -f "${tarball}.part" "${tarball}"
+    else
+        echo "Reusing cached libargon2 ${LIBARGON2_VERSION} tarball at ${tarball}"
+    fi
     rm -rf "${src_dir}"
     mkdir -p "${src_dir}"
-    tarball="${LIBARGON2_BUILD_DIR}/libargon2.tar.gz"
-    wget -q "https://github.com/P-H-C/phc-winner-argon2/archive/refs/tags/${LIBARGON2_VERSION}.tar.gz" -O "${tarball}"
     tar -xzf "${tarball}" --strip-components=1 -C "${src_dir}"
 fi
 

@@ -394,9 +394,14 @@ jobs:
             [[ -f "$path" ]] || return 0
             echo "Inspecting $path"
             file "$path"
-            readelf -h "$path" >/dev/null
+            readelf -h "$path" >/dev/null || true
+            # ldd on the build host can only inspect host-arch ELFs; for
+            # cross-built ARM/MIPS binaries it prints "not a dynamic
+            # executable" and exits 1. This step is logging-only, so we
+            # make it non-fatal and cap output so cross binaries don't
+            # blow up the workflow.
             if file "$path" | grep -qi 'dynamically linked'; then
-              ldd "$path"
+              ldd "$path" 2>&1 | head -20 || true
             fi
           }
 

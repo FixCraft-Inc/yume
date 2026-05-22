@@ -361,6 +361,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/manager.cpp
         server/auth.cpp
         server/session.cpp
+        server/session_control.cpp
         server/runtime_controller.cpp
         client/outbound_proxy.cpp
     )

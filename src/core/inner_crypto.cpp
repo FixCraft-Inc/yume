@@ -756,13 +756,18 @@ std::optional<DerivedKey> server_derive_key(const Config& cfg,
     (void)kdf_params;
     throw std::runtime_error("inner crypto not available: BaseFWX disabled");
 #else
-    Bytes priv = load_pq_private_key(cfg.pq_private_key, cfg.allow_embedded_master);
-    Bytes shared = basefwx::pq::KemDecrypt(priv, pq_ciphertext);
     // priv (PQ private key) and shared (KEM secret) are both key
     // material and must be wiped before this function returns
-    // (crypto-conventions Rule 2). SecretGuard covers all return paths.
+    // (crypto-conventions Rule 2). SecretGuard is constructed BEFORE
+    // KemDecrypt so a throw between priv being bound and shared being
+    // bound still wipes priv on unwind. The previous ordering left a
+    // brief window where KemDecrypt could throw (malformed PQ
+    // ciphertext, liboqs allocation failure) and leak the embedded
+    // master PQ private key into freed heap pages.
     basefwx::crypto::SecretGuard secrets;
+    Bytes priv = load_pq_private_key(cfg.pq_private_key, cfg.allow_embedded_master);
     secrets.Add(priv);
+    Bytes shared = basefwx::pq::KemDecrypt(priv, pq_ciphertext);
     secrets.Add(shared);
     if (!heavy) {
         DerivedKey out;

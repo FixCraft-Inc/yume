@@ -467,6 +467,12 @@ DerivedKey derive_key_heavy(const Bytes& shared,
     };
 
     std::string password(reinterpret_cast<const char*>(shared.data()), shared.size());
+    // password is a std::string copy of the KEM shared secret — it
+    // holds key material and must be wiped before this function returns
+    // (crypto-conventions Rule 2). SecretGuard handles every return
+    // path, including the three exception-rethrow paths below.
+    basefwx::crypto::SecretGuard pwd_guard;
+    pwd_guard.Add(password);
     KdfParams params = kdf_params;
     if (params.name.empty()) {
         params = select_argon2_params();
@@ -554,8 +560,39 @@ Bytes build_aad(std::uint8_t frame_type, std::uint8_t stream_id) {
 }
 }  // namespace
 
+// Safe-by-default Argon2 caps. The server-side guard at
+// session.cpp::on_read_payload calls argon2_params_exceed_limits with
+// the value returned here — and prior to 1.0.x this function returned
+// {0,0,0} when no env var was set, which the guard interpreted as
+// "no cap". That made the daemon vulnerable to a remote pre-auth
+// resource-exhaustion: a hostile client could request
+// argon2_memory = UINT32_MAX KiB and the server would attempt to
+// allocate it before the AUTH frame had succeeded.
+//
+// The defaults below are deliberately generous (2× the existing HEAVY
+// mode constants in basefwx::constants — kHeavyArgon2TimeCost=6,
+// kHeavyArgon2MemoryCost=1<<18 KiB, kHeavyArgon2Parallelism=4) so any
+// legitimate client request, including the heaviest documented mode,
+// passes the guard untouched. They only block obvious abuse.
+//
+// Operators who genuinely need to allow heavier params can raise the
+// caps via env vars; setting an env var to a value LARGER than the
+// default wins. Setting an env var to 0 keeps the field at the
+// default — there's no way to disable the cap entirely from the env,
+// which is the safe direction.
+inline constexpr std::uint32_t kDefaultArgon2TimeMax        = 12;
+inline constexpr std::uint32_t kDefaultArgon2MemoryMaxKib   = 1u << 19;   // 512 MiB
+inline constexpr std::uint32_t kDefaultArgon2ParallelismMax = 8;
+
 Argon2Limits argon2_env_limits() {
     Argon2Limits limits;
+    limits.time_max        = kDefaultArgon2TimeMax;
+    limits.memory_max      = kDefaultArgon2MemoryMaxKib;
+    limits.parallelism_max = kDefaultArgon2ParallelismMax;
+    // Env vars RAISE (or override) the defaults — read_env_u32_optional
+    // only writes the field when the env is present and parseable as a
+    // non-zero u32. Operators who want heavier allowances set the env
+    // explicitly; the safe-by-default cap is always in place otherwise.
     (void)read_env_u32_optional("YUME_ARGON2_TIME_MAX", &limits.time_max);
     (void)read_env_u32_optional("YUME_ARGON2_MEM_MAX", &limits.memory_max);
     (void)read_env_u32_optional("YUME_ARGON2_PAR_MAX", &limits.parallelism_max);
@@ -712,6 +749,12 @@ std::optional<DerivedKey> server_derive_key(const Config& cfg,
 #else
     Bytes priv = load_pq_private_key(cfg.pq_private_key, cfg.allow_embedded_master);
     Bytes shared = basefwx::pq::KemDecrypt(priv, pq_ciphertext);
+    // priv (PQ private key) and shared (KEM secret) are both key
+    // material and must be wiped before this function returns
+    // (crypto-conventions Rule 2). SecretGuard covers all return paths.
+    basefwx::crypto::SecretGuard secrets;
+    secrets.Add(priv);
+    secrets.Add(shared);
     if (!heavy) {
         DerivedKey out;
         out.kdf = "hkdf";

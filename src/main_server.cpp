@@ -70,7 +70,7 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
+  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
   local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --federation-auth-key --federation-anonym-ca --keys-add --keys-gen"
   case "$prev" in
     --completion)
@@ -171,6 +171,10 @@ void print_help() {
         << "  --cluster-bootstrap      Mark this node as a cluster entry point;\n"
         << "                             federation enabled but no outbound --peer required\n"
         << "                             (other servers will dial in via --cluster-join)\n"
+        << "  --public-node            Hardening preset for an internet-facing yumed.\n"
+        << "                             Rejects --allow-exec / --allow-local-ip /\n"
+        << "                             --control-full / --no-inner; requires --auth-keys;\n"
+        << "                             logs what is and is not yet enforced.\n"
         << "  --attach-local           Attach to a local yumed\n\n"
         << "Key Management:\n"
         << "  --keys-list              List authorized keys\n"
@@ -1489,6 +1493,8 @@ int main(int argc, char** argv) {
         } else if (arg == "--cluster-bootstrap") {
             cfg.federation_enable = true;
             cfg.cluster_bootstrap = true;
+        } else if (arg == "--public-node") {
+            cfg.public_node = true;
         } else if (arg == "--attach-local") {
             attach_local = true;
         } else if (arg == "--root") {
@@ -1886,6 +1892,48 @@ int main(int argc, char** argv) {
     if (cfg.federation_enable && !cfg.cluster_bootstrap && cfg.federation_peers.empty()) {
         yume::util::log_error("federation requires at least one --peer or --cluster-join; pass --cluster-bootstrap if this node is a cluster entry point");
         return 1;
+    }
+
+    if (cfg.public_node) {
+        // --public-node: hardening preset for an internet-facing yumed.
+        // Refuses flags that expose dangerous capabilities and requires
+        // explicit auth setup. The existing silent-downgrade warnings
+        // for --allow-local-ip / --control-full become hard errors here
+        // so operators can't accidentally ship a "public" node that
+        // also tries to bridge to LAN or expose full address control.
+        std::vector<std::string> violations;
+        if (cfg.allow_exec) {
+            violations.emplace_back("--allow-exec is forbidden by --public-node (server-side exec on a public node is a remote-shell hole)");
+        }
+        if (cfg.allow_local_ip) {
+            violations.emplace_back("--allow-local-ip is forbidden by --public-node (LAN bridging from a public endpoint exposes the host's private network)");
+        }
+        if (cfg.control_full) {
+            violations.emplace_back("--control-full is forbidden by --public-node (unrestricted address bridging from a public endpoint is a relay hole)");
+        }
+        if (!cfg.inner_crypto) {
+            violations.emplace_back("--no-inner is forbidden by --public-node (inner crypto is the only post-handshake confidentiality; a public node MUST require it)");
+        }
+        if (cfg.auth_keys.empty()) {
+            violations.emplace_back("--public-node requires --auth-keys to be set (otherwise the daemon accepts no clients, or worse, accepts everyone if you later loosen this)");
+        }
+        if (!violations.empty()) {
+            yume::util::log_error("--public-node violations:");
+            for (const auto& v : violations) {
+                yume::util::log_error("  - " + v);
+            }
+            return 1;
+        }
+        yume::util::log_info("--public-node active; the following protections are enforced at startup:");
+        yume::util::log_info("  - dangerous capability flags (--allow-exec / --allow-local-ip / --control-full) are rejected");
+        yume::util::log_info("  - inner crypto required (no plaintext transport)");
+        yume::util::log_info("  - --auth-keys required (no anonymous-relay accidents)");
+        yume::util::log_info("  - Argon2 caps locked to safe defaults (env vars can only RAISE, never lower)");
+        yume::util::log_info("KNOWN NOT-YET-ENFORCED by --public-node (release-audit follow-ups):");
+        yume::util::log_info("  - private-IP bind refusal (needs --listen <addr:port> support)");
+        yume::util::log_info("  - TLS handshake deadline");
+        yume::util::log_info("  - accept-side rate-limit / max-concurrent-session cap");
+        yume::util::log_info("  - facade data dir 0700 enforcement (currently default umask)");
     }
 
     auto require_readable = [&](const char* label, const std::string& path) {

@@ -71,6 +71,13 @@ struct ServerConfig {
     // it but has no outgoing dial-out list of its own. Relaxes the
     // "federation requires at least one --peer" startup check.
     bool cluster_bootstrap{false};
+    // True when the operator passed --public-node: hardening preset for
+    // a yumed instance reachable from the open internet. Turns the
+    // existing build-feature-silent-downgrade warnings into hard
+    // startup errors, requires --auth-keys, and rejects flags that
+    // would expose dangerous capabilities (--allow-exec, --allow-local-ip,
+    // --control-full, --no-inner).
+    bool public_node{false};
     std::vector<std::string> federation_peers;
     std::string federation_auth_key;
     std::string federation_anonym_ca;

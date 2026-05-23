@@ -70,7 +70,7 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
+  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
   local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --federation-auth-key --federation-anonym-ca --keys-add --keys-gen"
   case "$prev" in
     --completion)
@@ -162,7 +162,15 @@ void print_help() {
         << "  --federation-enable      Enable static federation mode\n"
         << "  --federation-auth-key <path> Ed25519 key used for peer AUTH\n"
         << "  --federation-anonym-ca <path> CA used to verify peer servers\n"
-        << "  --peer <json>            Add a federation peer\n"
+        << "  --peer <json>            Add a federation peer (raw JSON form)\n"
+        << "  --cluster-join <spec>    Join cluster via short form; implies --federation-enable.\n"
+        << "                             spec: [id@]host[:port][?pin=<sha256>]\n"
+        << "                             e.g. alice@alice.example.com:443\n"
+        << "                                  alice.example.com (id+port defaulted)\n"
+        << "                             repeat for multiple peers\n"
+        << "  --cluster-bootstrap      Mark this node as a cluster entry point;\n"
+        << "                             federation enabled but no outbound --peer required\n"
+        << "                             (other servers will dial in via --cluster-join)\n"
         << "  --attach-local           Attach to a local yumed\n\n"
         << "Key Management:\n"
         << "  --keys-list              List authorized keys\n"
@@ -1002,6 +1010,109 @@ bool parse_env_bool(const char* name, bool fallback) {
     return fallback;
 }
 
+// Translates the --cluster-join short form into the JSON peer entry
+// the existing FederationManager::parse_peer consumer expects.
+//
+// Accepted shapes:
+//   alice                          → {"id":"alice","url":"yume://alice:443"}
+//   alice:8443                     → {"id":"alice","url":"yume://alice:8443"}
+//   alice@alice.example.com        → {"id":"alice","url":"yume://alice.example.com:443"}
+//   alice@alice.example.com:8443   → {"id":"alice","url":"yume://alice.example.com:8443"}
+//   alice@alice.example.com:8443?pin=sha256:abc
+//                                   → ...,"tls_pin":"sha256:abc"
+//
+// IPv6 hosts must be bracketed: alice@[2001:db8::1]:443
+//
+// Throws std::runtime_error on invalid input; the caller is the CLI
+// flag handler which will log and exit non-zero.
+std::string expand_cluster_join_spec(const std::string& spec) {
+    if (spec.empty()) {
+        throw std::runtime_error("--cluster-join argument is empty");
+    }
+    std::string body = spec;
+    std::string pin;
+    auto qpos = body.find('?');
+    if (qpos != std::string::npos) {
+        std::string query = body.substr(qpos + 1);
+        body.resize(qpos);
+        // Only `pin=` is recognised today. Quietly ignore unknown
+        // keys so future query parameters don't break old binaries.
+        std::size_t cursor = 0;
+        while (cursor < query.size()) {
+            auto amp = query.find('&', cursor);
+            std::string pair = query.substr(cursor, amp == std::string::npos ? std::string::npos : amp - cursor);
+            cursor = amp == std::string::npos ? query.size() : amp + 1;
+            auto eq = pair.find('=');
+            if (eq == std::string::npos) continue;
+            std::string key = pair.substr(0, eq);
+            std::string val = pair.substr(eq + 1);
+            if (key == "pin") {
+                pin = std::move(val);
+            }
+        }
+    }
+    std::string id;
+    std::string hostport = body;
+    auto at = body.find('@');
+    if (at != std::string::npos) {
+        id = body.substr(0, at);
+        hostport = body.substr(at + 1);
+    }
+    // Detect bracketed IPv6 and split on the FIRST colon after the
+    // closing bracket. For non-bracketed forms, the rightmost colon
+    // separates host and port (so plain `alice` or `alice:443` work).
+    std::string host;
+    int port = 443;
+    if (!hostport.empty() && hostport.front() == '[') {
+        auto close = hostport.find(']');
+        if (close == std::string::npos) {
+            throw std::runtime_error("--cluster-join: unmatched '[' in " + spec);
+        }
+        host = hostport.substr(1, close - 1);
+        if (close + 1 < hostport.size()) {
+            if (hostport[close + 1] != ':') {
+                throw std::runtime_error("--cluster-join: expected ':port' after ']' in " + spec);
+            }
+            try {
+                port = std::stoi(hostport.substr(close + 2));
+            } catch (const std::exception&) {
+                throw std::runtime_error("--cluster-join: invalid port in " + spec);
+            }
+        }
+    } else {
+        auto colon = hostport.rfind(':');
+        if (colon == std::string::npos) {
+            host = hostport;
+        } else {
+            host = hostport.substr(0, colon);
+            try {
+                port = std::stoi(hostport.substr(colon + 1));
+            } catch (const std::exception&) {
+                throw std::runtime_error("--cluster-join: invalid port in " + spec);
+            }
+        }
+    }
+    if (host.empty()) {
+        throw std::runtime_error("--cluster-join: empty host in " + spec);
+    }
+    if (port <= 0 || port > 65535) {
+        throw std::runtime_error("--cluster-join: port out of range in " + spec);
+    }
+    if (id.empty()) {
+        id = host;
+    }
+    nlohmann::json peer;
+    peer["id"] = id;
+    peer["url"] = std::string("yume://") + (host.find(':') != std::string::npos
+                                                ? "[" + host + "]"
+                                                : host) +
+                  ":" + std::to_string(port);
+    if (!pin.empty()) {
+        peer["tls_pin"] = pin;
+    }
+    return peer.dump();
+}
+
 bool anonym_local_sign_default() {
     return true;
 }
@@ -1366,6 +1477,18 @@ int main(int argc, char** argv) {
             cfg.federation_anonym_ca = resolve_cli_path(argv[++i]);
         } else if (arg == "--peer" && i + 1 < argc) {
             cfg.federation_peers.push_back(argv[++i]);
+        } else if (arg == "--cluster-join" && i + 1 < argc) {
+            const std::string spec = argv[++i];
+            try {
+                cfg.federation_peers.push_back(expand_cluster_join_spec(spec));
+            } catch (const std::exception& ex) {
+                yume::util::log_error(ex.what());
+                return 1;
+            }
+            cfg.federation_enable = true;
+        } else if (arg == "--cluster-bootstrap") {
+            cfg.federation_enable = true;
+            cfg.cluster_bootstrap = true;
         } else if (arg == "--attach-local") {
             attach_local = true;
         } else if (arg == "--root") {
@@ -1756,8 +1879,12 @@ int main(int argc, char** argv) {
             "(see docs/PERMISSIONS.md)");
     }
     if (cfg.federation_enable &&
-        (cfg.federation_auth_key.empty() || cfg.federation_anonym_ca.empty() || cfg.federation_peers.empty())) {
-        yume::util::log_error("federation requires --federation-auth-key, --federation-anonym-ca, and at least one --peer");
+        (cfg.federation_auth_key.empty() || cfg.federation_anonym_ca.empty())) {
+        yume::util::log_error("federation requires --federation-auth-key and --federation-anonym-ca");
+        return 1;
+    }
+    if (cfg.federation_enable && !cfg.cluster_bootstrap && cfg.federation_peers.empty()) {
+        yume::util::log_error("federation requires at least one --peer or --cluster-join; pass --cluster-bootstrap if this node is a cluster entry point");
         return 1;
     }
 

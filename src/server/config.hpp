@@ -66,6 +66,11 @@ struct ServerConfig {
     bool ipc_enable{true};
     std::string ipc_path;
     bool federation_enable{false};
+    // True when the operator passed --cluster-bootstrap: the daemon is
+    // an entry point into a federated cluster, expects peers to dial
+    // it but has no outgoing dial-out list of its own. Relaxes the
+    // "federation requires at least one --peer" startup check.
+    bool cluster_bootstrap{false};
     std::vector<std::string> federation_peers;
     std::string federation_auth_key;
     std::string federation_anonym_ca;

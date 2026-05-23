@@ -78,6 +78,12 @@ struct ServerConfig {
     // would expose dangerous capabilities (--allow-exec, --allow-local-ip,
     // --control-full, --no-inner).
     bool public_node{false};
+    // --hide-in-the-crowd <profile>. Name of a yume::http_profile::ServerProfile
+    // — controls the Server: header, 404 body shape, and supplementary
+    // headers (X-Powered-By for express, CF-Ray for cloudflare, etc).
+    // Empty string means "use the default", which is "yumed" unless
+    // --public-node also set, in which case startup overrides to "nginx".
+    std::string http_profile;
     std::vector<std::string> federation_peers;
     std::string federation_auth_key;
     std::string federation_anonym_ca;

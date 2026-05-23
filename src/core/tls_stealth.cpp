@@ -6,6 +6,8 @@
 
 #include "core/tls_stealth.hpp"
 
+#include "core/http_profile.hpp"
+
 #include <boost/asio/read.hpp>
 #include <boost/asio/write.hpp>
 #include <boost/asio/connect.hpp>
@@ -165,7 +167,11 @@ std::vector<uint8_t> build_http2_request_headers(const VerificationEndpoint& end
     hpack_encode_indexed_field(block, 7);   // :scheme: https
     hpack_encode_literal_indexed_name(block, 4, endpoint.path);       // :path
     hpack_encode_literal_indexed_name(block, 1, endpoint.authority);  // :authority
-    hpack_encode_literal_indexed_name(block, 58, "yume-tls-verify/1.0");
+    // UA: pulled from yume::http_profile::active_client_ua() so that
+    // --hide-in-the-crowd <chrome|firefox|…> on the client CLI is
+    // reflected in stealth-probe traffic too. Defaults to the
+    // historical "yume-tls-verify/1.0" if no profile was set.
+    hpack_encode_literal_indexed_name(block, 58, yume::http_profile::active_client_ua());
     hpack_encode_literal_indexed_name(block, 19, "application/json");
     return block;
 }
@@ -215,7 +221,7 @@ std::string fetch_http11_json(Stream& stream, const VerificationEndpoint& endpoi
     const std::string request =
         "GET " + endpoint.path + " HTTP/1.1\r\n"
         "Host: " + endpoint.authority + "\r\n"
-        "User-Agent: yume-tls-verify/1.0\r\n"
+        "User-Agent: " + yume::http_profile::active_client_ua() + "\r\n"
         "Accept: application/json\r\n"
         "Connection: close\r\n\r\n";
     boost::asio::write(stream, boost::asio::buffer(request));

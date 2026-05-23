@@ -37,7 +37,12 @@ void configure_alpn(boost::asio::ssl::context& ctx, bool is_server, bool allow_h
 
 void apply_jitter(int max_jitter_ms);
 
-void send_dummy_http_response(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream);
+// Sends a profile-driven 404 response and returns. `profile_name`
+// is a yume::http_profile::ServerProfile key (e.g. "nginx", "apache",
+// "yumed"). Empty string or unknown name falls back to "yumed" so a
+// typo can't take down a connection.
+void send_dummy_http_response(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+                              const std::string& profile_name = "yumed");
 
 template <typename SyncStream>
 std::size_t write_obfs(SyncStream& stream, const uint8_t* data, std::size_t len, const ObfsConfig& cfg) {

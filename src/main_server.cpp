@@ -45,6 +45,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/crypto.hpp"
+#include "core/http_profile.hpp"
 #include "core/identity.hpp"
 #include "core/inner_crypto.hpp"
 #include "core/runtime_policy.hpp"
@@ -70,7 +71,7 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
+  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
   local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --federation-auth-key --federation-anonym-ca --keys-add --keys-gen"
   case "$prev" in
     --completion)
@@ -175,6 +176,13 @@ void print_help() {
         << "                             Rejects --allow-exec / --allow-local-ip /\n"
         << "                             --control-full / --no-inner; requires --auth-keys;\n"
         << "                             logs what is and is not yet enforced.\n"
+        << "                             Also implicitly sets --hide-in-the-crowd nginx\n"
+        << "                             when no profile is otherwise selected.\n"
+        << "  --hide-in-the-crowd <p>  HTTP-layer disguise profile for the disguise\n"
+        << "                             responses this daemon emits when probed.\n"
+        << "                             Values: nginx, nginx-stable, apache, caddy,\n"
+        << "                             cloudflare, express, gunicorn, none, yumed\n"
+        << "                             (default: yumed; nginx under --public-node).\n"
         << "  --attach-local           Attach to a local yumed\n\n"
         << "Key Management:\n"
         << "  --keys-list              List authorized keys\n"
@@ -1495,6 +1503,8 @@ int main(int argc, char** argv) {
             cfg.cluster_bootstrap = true;
         } else if (arg == "--public-node") {
             cfg.public_node = true;
+        } else if (arg == "--hide-in-the-crowd" && i + 1 < argc) {
+            cfg.http_profile = argv[++i];
         } else if (arg == "--attach-local") {
             attach_local = true;
         } else if (arg == "--root") {
@@ -1894,6 +1904,19 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    if (!cfg.http_profile.empty()) {
+        if (!yume::http_profile::server(cfg.http_profile).has_value()) {
+            std::string supported;
+            for (const auto& n : yume::http_profile::server_names()) {
+                if (!supported.empty()) supported += ", ";
+                supported += n;
+            }
+            yume::util::log_error("--hide-in-the-crowd: unknown server profile '" + cfg.http_profile +
+                                  "'. Supported: " + supported);
+            return 1;
+        }
+    }
+
     if (cfg.public_node) {
         // --public-node: hardening preset for an internet-facing yumed.
         // Refuses flags that expose dangerous capabilities and requires
@@ -1901,6 +1924,10 @@ int main(int argc, char** argv) {
         // for --allow-local-ip / --control-full become hard errors here
         // so operators can't accidentally ship a "public" node that
         // also tries to bridge to LAN or expose full address control.
+        if (cfg.http_profile.empty()) {
+            cfg.http_profile = "nginx";
+            yume::util::log_info("--public-node: defaulting --hide-in-the-crowd to 'nginx' (pass --hide-in-the-crowd <profile> to override)");
+        }
         std::vector<std::string> violations;
         if (cfg.allow_exec) {
             violations.emplace_back("--allow-exec is forbidden by --public-node (server-side exec on a public node is a remote-shell hole)");

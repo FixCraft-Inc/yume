@@ -6,6 +6,8 @@
 
 #include "core/obfs.hpp"
 
+#include "core/http_profile.hpp"
+
 #include <openssl/ssl.h>
 
 #include <chrono>
@@ -87,13 +89,18 @@ void apply_jitter(int max_jitter_ms) {
     std::this_thread::sleep_for(std::chrono::milliseconds(dist(rng)));
 }
 
-void send_dummy_http_response(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream) {
-    static const char kResp[] =
-        "HTTP/1.1 404 Not Found\r\n"
-        "Server: yumed\r\n"
-        "Content-Length: 0\r\n"
-        "Connection: close\r\n\r\n";
-    boost::asio::write(stream, boost::asio::buffer(kResp, sizeof(kResp) - 1));
+void send_dummy_http_response(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+                              const std::string& profile_name) {
+    // Resolve the profile; fall back to yumed if unknown so a typo
+    // doesn't take down a connection. yumed is the historical default
+    // and preserves pre-1.0 byte-for-byte behavior unless an operator
+    // passed --hide-in-the-crowd.
+    auto profile = yume::http_profile::server(profile_name.empty() ? "yumed" : profile_name);
+    if (!profile.has_value()) {
+        profile = yume::http_profile::server("yumed");
+    }
+    const std::string resp = yume::http_profile::render_404(*profile, /*connection_close=*/true);
+    boost::asio::write(stream, boost::asio::buffer(resp));
 }
 
 }  // namespace yume::obfs

@@ -29,6 +29,7 @@
 #include <string>
 #include <string_view>
 
+#include "core/http_profile.hpp"
 #include "core/inner_crypto.hpp"
 #include "core/obfs_h2.hpp"
 #include "core/obfs_signal.hpp"
@@ -910,8 +911,27 @@ void Session::send_real_http_response(const std::string& path) {
 
     std::string hidden = build_hidden_blob();
     if (!hidden.empty()) {
+        // Hidden blob stays in the body (zero-width <span> + HTML
+        // comment) — both are picked up by clients that parse the
+        // body. The previous X-Yume-Blob response header was dropped
+        // in 1.0: it had no in-tree consumers and the "Yume" substring
+        // was a passive fingerprint for any layer-7 inspector reading
+        // headers.
         body += "<span style=\"display:none\" aria-hidden=\"true\">" + hidden + "</span>";
         body += "<!--" + hidden + "-->";
+    }
+
+    // Disguise headers come from yume::http_profile. The default
+    // profile (empty config => "yumed") preserves pre-1.0 behavior;
+    // operators who pass --hide-in-the-crowd <profile> get the
+    // selected disguise. --public-node forces "nginx" if no profile
+    // is set explicitly.
+    auto profile = yume::http_profile::server(
+        cfg_.http_profile.empty() ? "yumed" : cfg_.http_profile);
+    if (!profile.has_value()) {
+        // Validation runs at startup, so reaching here means an
+        // operator hot-edited the config; fall back to yumed.
+        profile = yume::http_profile::server("yumed");
     }
 
     std::string headers;
@@ -919,12 +939,14 @@ void Session::send_real_http_response(const std::string& path) {
     if (path != "/") {
         headers += "Location: /\r\n";
     }
-    headers += "Server: nginx\r\n";
+    if (!profile->server_header.empty()) {
+        headers += "Server: " + profile->server_header + "\r\n";
+    }
+    if (!profile->extra_headers.empty()) {
+        headers += profile->extra_headers;
+    }
     headers += "Content-Type: text/html; charset=utf-8\r\n";
     headers += "Cache-Control: no-store\r\n";
-    if (!hidden.empty()) {
-        headers += "X-Yume-Blob: " + hidden + "\r\n";
-    }
     headers += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     headers += "Connection: close\r\n\r\n";
 

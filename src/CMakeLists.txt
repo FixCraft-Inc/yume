@@ -199,6 +199,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_library(yume_core
         core/control_protocol.cpp
         core/crypto.cpp
+        core/http_profile.cpp
         core/identity.cpp
         core/inner_crypto.cpp
         core/local_runtime.cpp

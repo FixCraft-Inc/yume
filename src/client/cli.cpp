@@ -67,6 +67,7 @@
 #include "client/socks.hpp"
 #include "client/tunnel.hpp"
 #include "core/crypto.hpp"
+#include "core/http_profile.hpp"
 #include "core/identity.hpp"
 #include "core/inner_crypto.hpp"
 #include "core/obfs.hpp"
@@ -1141,6 +1142,12 @@ struct ParsedArgs {
     bool tls_stealth{true};
     bool tls_stealth_override{false};
     std::string tls_stealth_profile{"chrome"};
+    // --hide-in-the-crowd <client-profile>. Empty = derive from
+    // tls_stealth_profile so the HTTP-layer UA stays consistent with
+    // the TLS-layer JA3. See yume::http_profile::client_names() for
+    // the supported set (chrome, firefox, safari, edge, curl, wget,
+    // yume).
+    std::string http_profile;
     bool tls_stealth_rotate{false};
     std::uint32_t tls_stealth_rotation_interval{100};
     bool tls_fingerprint_log{false};
@@ -1307,6 +1314,12 @@ ParsedArgs parse_args(int argc, char** argv) {
                 return args;
             }
             args.server = server;
+        } else if (arg == "--hide-in-the-crowd") {
+            const char* value = take_value("--hide-in-the-crowd");
+            if (!value) {
+                return args;
+            }
+            args.http_profile = value;
         } else if (arg == "--cluster") {
             // Friendly short form: --cluster host[:port] or --cluster [ipv6]:port
             // Sets args.server and args.port together, so a config-file
@@ -2026,7 +2039,7 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --server --cluster --port --auth -i --socks --threads --obfs --no-obfs --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
+  local opts="--help -h --version --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --threads --obfs --no-obfs --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
   local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path --relay-key-file"
   case "$prev" in
     --completion)
@@ -2073,6 +2086,12 @@ void print_help() {
         << "                             host:port\n"
         << "                             [ipv6]:port\n"
         << "                           Sets --server + --port together.\n"
+        << "  --hide-in-the-crowd <p>  HTTP-layer disguise profile. Sets the\n"
+        << "                             User-Agent emitted in stealth probes.\n"
+        << "                             Values: chrome, firefox, safari, edge,\n"
+        << "                             curl, wget, yume.\n"
+        << "                             When omitted, derived from --profile so the\n"
+        << "                             HTTP UA stays consistent with the TLS JA3.\n"
         << "  --config <path>          Config file\n"
         << "  -i, --auth <path>        Identity key\n\n"
         << "Modes:\n"
@@ -3233,6 +3252,43 @@ int Cli::run(int argc, char** argv) {
     }
     if (args.timing) {
         util::set_timing_enabled(true);
+    }
+
+    // Resolve the effective client HTTP profile, then install it.
+    // Order of preference:
+    //   1. --hide-in-the-crowd <name> (explicit; must be a registered
+    //      client profile)
+    //   2. --profile <chrome|firefox|safari> (existing flag for the
+    //      TLS-layer JA3; we mirror it at the HTTP-layer UA when no
+    //      explicit --hide-in-the-crowd was given, so the two stay
+    //      consistent)
+    //   3. default ("yume", current pre-1.0 behavior)
+    {
+        std::string ua_profile;
+        if (!args.http_profile.empty()) {
+            auto p = yume::http_profile::client(args.http_profile);
+            if (!p.has_value()) {
+                std::string supported;
+                for (const auto& n : yume::http_profile::client_names()) {
+                    if (!supported.empty()) supported += ", ";
+                    supported += n;
+                }
+                util::log_error("--hide-in-the-crowd: unknown client profile '" + args.http_profile +
+                                "'. Supported: " + supported);
+                return 1;
+            }
+            ua_profile = p->name;
+            yume::http_profile::set_active_client_ua(p->user_agent);
+        } else if (!args.tls_stealth_profile.empty()) {
+            auto p = yume::http_profile::client(args.tls_stealth_profile);
+            if (p.has_value()) {
+                ua_profile = p->name;
+                yume::http_profile::set_active_client_ua(p->user_agent);
+            }
+        }
+        if (!ua_profile.empty() && args.timing) {
+            util::log_info("hide-in-the-crowd: active client profile = " + ua_profile);
+        }
     }
     if (args.completion) {
         if (args.completion_shell == "bash") {

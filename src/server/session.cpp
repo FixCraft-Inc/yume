@@ -68,12 +68,6 @@ int64_t steady_now_ms() {
         .count();
 }
 
-int64_t epoch_now_ms() {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-               std::chrono::system_clock::now().time_since_epoch())
-        .count();
-}
-
 bool is_private_ipv4(const boost::asio::ip::address_v4& addr) {
     const auto bytes = addr.to_bytes();
     const uint8_t a = bytes[0];
@@ -605,6 +599,12 @@ private:
     std::array<uint8_t, 1500> response_{};
 };
 
+}
+
+std::int64_t epoch_now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
 }
 
 Session::Session(boost::asio::ip::tcp::socket socket,

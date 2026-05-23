@@ -37,12 +37,6 @@ namespace {
 constexpr std::chrono::milliseconds kConnectTimeout{15000};
 constexpr std::size_t kMaxFederationRead = 64U * 1024U;
 
-std::int64_t epoch_now_ms() {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-               std::chrono::system_clock::now().time_since_epoch())
-        .count();
-}
-
 std::string hex_encode(const unsigned char* data, std::size_t len) {
     static const char* kHex = "0123456789abcdef";
     std::string out;

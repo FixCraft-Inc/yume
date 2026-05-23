@@ -28,6 +28,11 @@ namespace yume::server {
 
 class Manager;
 
+// Wall-clock helper defined in session.cpp. Exposed here because
+// session_control.cpp (split out in f6db161) also calls it; the
+// anonymous-namespace version it used to share a TU with is gone.
+std::int64_t epoch_now_ms();
+
 class Session : public std::enable_shared_from_this<Session> {
 public:
     Session(boost::asio::ip::tcp::socket socket,

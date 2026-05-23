@@ -1232,6 +1232,10 @@ bool parse_u32_strict(std::string_view text, std::uint32_t& out) {
     return true;
 }
 
+// Forward decl; defined below near the end of the anonymous namespace
+// to keep the parse_args body compact.
+bool parse_cluster_spec(const std::string& spec, std::string* host, int* port, std::string* err);
+
 ParsedArgs parse_args(int argc, char** argv) {
     ParsedArgs args;
     int i = 1;
@@ -1303,6 +1307,23 @@ ParsedArgs parse_args(int argc, char** argv) {
                 return args;
             }
             args.server = server;
+        } else if (arg == "--cluster") {
+            // Friendly short form: --cluster host[:port] or --cluster [ipv6]:port
+            // Sets args.server and args.port together, so a config-file
+            // server entry doesn't get partially overridden.
+            const char* spec = take_value("--cluster");
+            if (!spec) {
+                return args;
+            }
+            std::string host;
+            int port = 443;
+            std::string err;
+            if (!parse_cluster_spec(spec, &host, &port, &err)) {
+                args.parse_error = err;
+                return args;
+            }
+            args.server = host;
+            args.port = port;
         } else if (arg == "--port") {
             if (!parse_int_value("--port", args.port)) {
                 return args;
@@ -2005,7 +2026,7 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --server --port --auth -i --socks --threads --obfs --no-obfs --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
+  local opts="--help -h --version --config --server --cluster --port --auth -i --socks --threads --obfs --no-obfs --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
   local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path --relay-key-file"
   case "$prev" in
     --completion)
@@ -2047,6 +2068,11 @@ void print_help() {
         << "  yume --version\n\n"
         << "Connection:\n"
         << "  --server <host>          Server address\n"
+        << "  --cluster <spec>         Cluster entry-point short form:\n"
+        << "                             host                    (port 443)\n"
+        << "                             host:port\n"
+        << "                             [ipv6]:port\n"
+        << "                           Sets --server + --port together.\n"
         << "  --config <path>          Config file\n"
         << "  -i, --auth <path>        Identity key\n\n"
         << "Modes:\n"
@@ -3127,6 +3153,69 @@ private:
     std::vector<std::thread> workers_;
     bool joined_{false};
 };
+
+// Translates --cluster <spec> into a (host, port) pair. Mirrors the
+// server-side expand_cluster_join_spec parser but is simpler — the
+// client doesn't need a peer-id or a TLS pin (those live in the
+// server's federation config). Accepted shapes:
+//
+//   alice.example.com           host=alice.example.com, port=443
+//   alice.example.com:8443      host=alice.example.com, port=8443
+//   [2001:db8::1]:443           host=2001:db8::1,      port=443
+//
+// Returns true on success; on failure, sets *err and returns false.
+bool parse_cluster_spec(const std::string& spec, std::string* host, int* port, std::string* err) {
+    if (spec.empty()) {
+        if (err) *err = "--cluster argument is empty";
+        return false;
+    }
+    std::string h;
+    int p = 443;
+    if (spec.front() == '[') {
+        auto close = spec.find(']');
+        if (close == std::string::npos) {
+            if (err) *err = "--cluster: unmatched '[' in " + spec;
+            return false;
+        }
+        h = spec.substr(1, close - 1);
+        if (close + 1 < spec.size()) {
+            if (spec[close + 1] != ':') {
+                if (err) *err = "--cluster: expected ':port' after ']' in " + spec;
+                return false;
+            }
+            try {
+                p = std::stoi(spec.substr(close + 2));
+            } catch (const std::exception&) {
+                if (err) *err = "--cluster: invalid port in " + spec;
+                return false;
+            }
+        }
+    } else {
+        auto colon = spec.rfind(':');
+        if (colon == std::string::npos) {
+            h = spec;
+        } else {
+            h = spec.substr(0, colon);
+            try {
+                p = std::stoi(spec.substr(colon + 1));
+            } catch (const std::exception&) {
+                if (err) *err = "--cluster: invalid port in " + spec;
+                return false;
+            }
+        }
+    }
+    if (h.empty()) {
+        if (err) *err = "--cluster: empty host in " + spec;
+        return false;
+    }
+    if (p <= 0 || p > 65535) {
+        if (err) *err = "--cluster: port out of range in " + spec;
+        return false;
+    }
+    *host = std::move(h);
+    *port = p;
+    return true;
+}
 
 }  // namespace
 

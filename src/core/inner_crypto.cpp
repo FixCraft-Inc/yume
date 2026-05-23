@@ -688,20 +688,15 @@ bool validate_pq_keypair(const std::string& private_path,
             return false;
         }
         Bytes pub = basefwx::pq::DecodeKeyBytes(read_file(public_path));
-        Bytes priv = basefwx::pq::DecodeKeyBytes(read_file(private_path));
-        // SecretGuard stores raw Bytes* pointers; its destructor must
-        // not outlive the buffers it tracks (use-after-free into the
-        // freed vector storage corrupts the heap). Declare a guard
-        // immediately after each secret-bearing local so the guard
-        // is destroyed BEFORE the local — and a throw between bindings
-        // still wipes everything bound so far.
-        basefwx::crypto::SecretGuard priv_guard;
-        priv_guard.Add(priv);
+        // priv and shared2 are key material — SecureBytes wraps each
+        // so wipe-on-destruction is automatic, in correct order, with
+        // no SecretGuard raw-pointer lifetime trap.
+        basefwx::crypto::SecureBytes priv{
+            basefwx::pq::DecodeKeyBytes(read_file(private_path))};
         auto kem = basefwx::pq::KemEncrypt(pub);
-        Bytes shared2 = basefwx::pq::KemDecrypt(priv, kem.ciphertext);
-        basefwx::crypto::SecretGuard shared_guard;
-        shared_guard.Add(shared2);
-        if (shared2 != kem.shared) {
+        basefwx::crypto::SecureBytes shared2{
+            basefwx::pq::KemDecrypt(priv.bytes(), kem.ciphertext)};
+        if (shared2.bytes() != kem.shared) {
             if (err) *err = "pq keypair mismatch";
             return false;
         }
@@ -763,30 +758,23 @@ std::optional<DerivedKey> server_derive_key(const Config& cfg,
     (void)kdf_params;
     throw std::runtime_error("inner crypto not available: BaseFWX disabled");
 #else
-    // priv (PQ private key) and shared (KEM secret) are both key
-    // material and must be wiped before this function returns
-    // (crypto-conventions Rule 2). SecretGuard stores raw Bytes*
-    // pointers, so the guard must not outlive the buffer it tracks —
-    // a guard declared BEFORE its locals would be destroyed AFTER
-    // them and SecureClear into freed vector storage, corrupting the
-    // heap. Declare a guard immediately after each binding so the
-    // guard is destroyed first AND a throw between bindings still
-    // wipes everything bound so far.
-    Bytes priv = load_pq_private_key(cfg.pq_private_key, cfg.allow_embedded_master);
-    basefwx::crypto::SecretGuard priv_guard;
-    priv_guard.Add(priv);
-    Bytes shared = basefwx::pq::KemDecrypt(priv, pq_ciphertext);
-    basefwx::crypto::SecretGuard shared_guard;
-    shared_guard.Add(shared);
+    // priv (PQ private key) and shared (KEM secret) are key material;
+    // SecureBytes wraps each so the destructor wipes them on scope
+    // exit, in reverse construction order, with the wrap holding the
+    // bytes (no SecretGuard raw-pointer lifetime trap).
+    basefwx::crypto::SecureBytes priv{
+        load_pq_private_key(cfg.pq_private_key, cfg.allow_embedded_master)};
+    basefwx::crypto::SecureBytes shared{
+        basefwx::pq::KemDecrypt(priv.bytes(), pq_ciphertext)};
     if (!heavy) {
         DerivedKey out;
         out.kdf = "hkdf";
-        out.key = derive_key(shared);
+        out.key = derive_key(shared.bytes());
         return out;
     }
     KdfParams params = kdf_params.value_or(KdfParams{});
     bool allow_fallback = params.name.empty();
-    return derive_key_heavy(shared, salt, params, allow_fallback);
+    return derive_key_heavy(shared.bytes(), salt, params, allow_fallback);
 #endif
 }
 

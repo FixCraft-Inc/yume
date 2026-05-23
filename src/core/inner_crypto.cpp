@@ -151,6 +151,7 @@ Bytes load_pq_private_key(const std::string& path, bool allow_embedded_master) {
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         cache.path = cache_key;
+        basefwx::crypto::SecureClear(cache.bytes);
         cache.bytes = loaded;
         cache.valid = true;
     }
@@ -330,6 +331,10 @@ std::uint32_t argon2_parallelism() {
     if (read_env_u32_optional("YUME_ARGON2_PAR", &env_val)) {
         return env_val;
     }
+    // YUME heavy handshakes carry the selected Argon2 lane count in the
+    // auth payload. This host-tuned fallback is only for locally selected
+    // transport params, including the speculative heavy key in dual-mode
+    // light sessions; it is not a portable file-format default.
     const double cap = resource_cap_ratio();
     auto count = std::thread::hardware_concurrency();
     if (count == 0) {
@@ -457,7 +462,7 @@ DerivedKey derive_key_heavy(const Bytes& shared,
         if (lowered.find("insufficient memory") != std::string::npos) {
             return true;
         }
-        if (lowered.find("allocation") != std::string::npos) {
+        if (lowered.find("memory allocation") != std::string::npos) {
             return true;
         }
         if (lowered.find("memory cost is too large") != std::string::npos) {
@@ -589,18 +594,19 @@ Argon2Limits argon2_env_limits() {
     limits.time_max        = kDefaultArgon2TimeMax;
     limits.memory_max      = kDefaultArgon2MemoryMaxKib;
     limits.parallelism_max = kDefaultArgon2ParallelismMax;
-    // Env vars RAISE (or override) the defaults — read_env_u32_optional
-    // only writes the field when the env is present and parseable as a
-    // non-zero u32. Operators who want heavier allowances set the env
-    // explicitly; the safe-by-default cap is always in place otherwise.
-    (void)read_env_u32_optional("YUME_ARGON2_TIME_MAX", &limits.time_max);
-    (void)read_env_u32_optional("YUME_ARGON2_MEM_MAX", &limits.memory_max);
-    (void)read_env_u32_optional("YUME_ARGON2_PAR_MAX", &limits.parallelism_max);
+    // Env vars can only raise the defaults. A too-small value is ignored
+    // so operators cannot accidentally lock out legitimate default-heavy
+    // clients by setting, for example, YUME_ARGON2_MEM_MAX=1024.
+    auto raise_from_env = [](const char* name, std::uint32_t& cap) {
+        std::uint32_t parsed = 0;
+        if (read_env_u32_optional(name, &parsed)) {
+            cap = std::max(cap, parsed);
+        }
+    };
+    raise_from_env("YUME_ARGON2_TIME_MAX", limits.time_max);
+    raise_from_env("YUME_ARGON2_MEM_MAX", limits.memory_max);
+    raise_from_env("YUME_ARGON2_PAR_MAX", limits.parallelism_max);
     return limits;
-}
-
-bool has_argon2_limits(const Argon2Limits& limits) {
-    return limits.time_max > 0 || limits.memory_max > 0 || limits.parallelism_max > 0;
 }
 
 bool argon2_params_exceed_limits(const KdfParams& params,
@@ -683,8 +689,11 @@ bool validate_pq_keypair(const std::string& private_path,
         }
         Bytes pub = basefwx::pq::DecodeKeyBytes(read_file(public_path));
         Bytes priv = basefwx::pq::DecodeKeyBytes(read_file(private_path));
+        basefwx::crypto::SecretGuard secrets;
+        secrets.Add(priv);
         auto kem = basefwx::pq::KemEncrypt(pub);
         Bytes shared2 = basefwx::pq::KemDecrypt(priv, kem.ciphertext);
+        secrets.Add(shared2);
         if (shared2 != kem.shared) {
             if (err) *err = "pq keypair mismatch";
             return false;

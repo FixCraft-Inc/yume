@@ -1076,22 +1076,20 @@ void Session::send_auth_challenge() {
     challenge_ = crypto::random_bytes(32);
     if (cfg_.inner_crypto) {
         inner::Argon2Limits limits = inner::argon2_env_limits();
-        if (inner::has_argon2_limits(limits)) {
-            nlohmann::json meta{
-                {"challenge_meta", 1}
-            };
-            if (limits.time_max > 0) {
-                meta["argon2_time_max"] = limits.time_max;
-            }
-            if (limits.memory_max > 0) {
-                meta["argon2_mem_max"] = limits.memory_max;
-            }
-            if (limits.parallelism_max > 0) {
-                meta["argon2_par_max"] = limits.parallelism_max;
-            }
-            std::string meta_text = meta.dump();
-            challenge_.insert(challenge_.end(), meta_text.begin(), meta_text.end());
+        nlohmann::json meta{
+            {"challenge_meta", 1}
+        };
+        if (limits.time_max > 0) {
+            meta["argon2_time_max"] = limits.time_max;
         }
+        if (limits.memory_max > 0) {
+            meta["argon2_mem_max"] = limits.memory_max;
+        }
+        if (limits.parallelism_max > 0) {
+            meta["argon2_par_max"] = limits.parallelism_max;
+        }
+        std::string meta_text = meta.dump();
+        challenge_.insert(challenge_.end(), meta_text.begin(), meta_text.end());
     }
     protocol::Frame frame{{static_cast<uint32_t>(challenge_.size()), protocol::AUTH, 0, 0}, challenge_};
     auto self = shared_from_this();

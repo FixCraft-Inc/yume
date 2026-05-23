@@ -67,7 +67,6 @@ bool pq_supported();
 bool argon2_supported();
 bool pbkdf2_supported();
 Argon2Limits argon2_env_limits();
-bool has_argon2_limits(const Argon2Limits& limits);
 bool argon2_params_exceed_limits(const KdfParams& params,
                                  const Argon2Limits& limits,
                                  std::string* reason);

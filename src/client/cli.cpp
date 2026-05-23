@@ -4114,7 +4114,11 @@ int Cli::run(int argc, char** argv) {
             util::log_info("AUTH challenge received");
             inner::Argon2Limits server_argon2_limits =
                 parse_auth_challenge_argon2_limits(auth_challenge);
-            if (inner::has_argon2_limits(server_argon2_limits)) {
+            const bool server_advertised_argon2_limits =
+                server_argon2_limits.time_max > 0 ||
+                server_argon2_limits.memory_max > 0 ||
+                server_argon2_limits.parallelism_max > 0;
+            if (server_advertised_argon2_limits) {
                 util::log_info("server Argon2 caps: " + describe_argon2_limits(server_argon2_limits));
             }
 

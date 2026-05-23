@@ -17,6 +17,13 @@ DEV_services
 .idea/
 *.swp
 
+# AI tools — per-machine state, not for the repo
+.claude/
+.codex/
+.aider*
+.cursor/
+.copilot/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -971,11 +971,11 @@ void Session::send_real_http_response(const std::string& path) {
     if (path != "/") {
         headers += "Location: /\r\n";
     }
-    if (!profile->server_header.empty()) {
-        headers += "Server: " + profile->server_header + "\r\n";
+    if (!profile->server_header_value.empty()) {
+        headers += "Server: " + profile->server_header_value + "\r\n";
     }
-    if (!profile->extra_headers.empty()) {
-        headers += profile->extra_headers;
+    if (!profile->extra_response_headers.empty()) {
+        headers += profile->extra_response_headers;
     }
     headers += "Content-Type: text/html; charset=utf-8\r\n";
     headers += "Cache-Control: no-store\r\n";

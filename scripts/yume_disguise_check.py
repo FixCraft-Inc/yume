@@ -89,14 +89,20 @@ SERVER_PROFILES = {
     },
     "express": {
         "server_re":      None,   # express doesn't set Server
-        "body_must":      ["Cannot GET"],
-        "extra_headers":  ["x-powered-by: express"],
-        "body_min":       1,
-        "body_max":       60,
+        "body_must":      ["Cannot GET", "<!DOCTYPE html>", "<title>Error</title>"],
+        "extra_headers":  [
+            "x-powered-by: express",
+            "content-security-policy: default-src 'none'",
+            "x-content-type-options: nosniff",
+        ],
+        "body_min":       100,
+        "body_max":       200,
     },
     "gunicorn": {
-        "server_re":      r"gunicorn/[\d.]+$",
-        "body_must":      ["Not Found"],
+        # Recent gunicorn (21.x+) omits the version by default; some
+        # deployments configure it back on. Accept either.
+        "server_re":      r"gunicorn(/[\d.]+)?$",
+        "body_must":      ["Not Found", "<!doctype html>"],
         "extra_headers":  [],
         "body_min":       150,
         "body_max":       300,

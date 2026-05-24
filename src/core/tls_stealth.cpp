@@ -480,11 +480,48 @@ void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profi
 }
 
 void StealthContext::configure_cipher_suites(const std::vector<uint16_t>& suites) {
-    std::string cipher_string = cipher_list_to_openssl_string(suites);
     SSL_CTX* ctx = ssl_context_.native_handle();
-    std::string tls13_ciphers = "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256";
-    SSL_CTX_set_ciphersuites(ctx, tls13_ciphers.c_str());
-    SSL_CTX_set_cipher_list(ctx, cipher_string.c_str());
+    // Split the profile's cipher list into TLS 1.3 vs TLS 1.2 IDs.
+    // OpenSSL takes them through two separate APIs and preserves
+    // each's emit order, which is what we need for per-profile JA3
+    // divergence. TLS 1.3 suites are 0x1301-0x1305; everything else
+    // is TLS 1.2 or lower.
+    std::vector<std::uint16_t> tls13_ids;
+    std::vector<std::uint16_t> tls12_ids;
+    for (std::uint16_t s : suites) {
+        if (s >= 0x1301 && s <= 0x1305) tls13_ids.push_back(s);
+        else                            tls12_ids.push_back(s);
+    }
+
+    auto tls13_name = [](std::uint16_t id) -> const char* {
+        switch (id) {
+            case 0x1301: return "TLS_AES_128_GCM_SHA256";
+            case 0x1302: return "TLS_AES_256_GCM_SHA384";
+            case 0x1303: return "TLS_CHACHA20_POLY1305_SHA256";
+            case 0x1304: return "TLS_AES_128_CCM_SHA256";
+            case 0x1305: return "TLS_AES_128_CCM_8_SHA256";
+            default:     return nullptr;
+        }
+    };
+    std::string tls13_str;
+    for (std::uint16_t id : tls13_ids) {
+        const char* n = tls13_name(id);
+        if (!n) continue;
+        if (!tls13_str.empty()) tls13_str += ":";
+        tls13_str += n;
+    }
+    if (tls13_str.empty()) {
+        // Fallback to the historical default if the profile didn't list
+        // any TLS 1.3 suites (e.g. an outdated profile entry).
+        tls13_str = "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256";
+    }
+    SSL_CTX_set_ciphersuites(ctx, tls13_str.c_str());
+
+    std::string tls12_str = cipher_list_to_openssl_string(tls12_ids);
+    if (tls12_str.empty()) {
+        tls12_str = cipher_list_to_openssl_string(suites);  // legacy fallback
+    }
+    SSL_CTX_set_cipher_list(ctx, tls12_str.c_str());
 }
 
 void StealthContext::configure_supported_groups(const std::vector<uint16_t>& groups) {
@@ -494,12 +531,52 @@ void StealthContext::configure_supported_groups(const std::vector<uint16_t>& gro
 }
 
 void StealthContext::configure_signature_algorithms(const std::vector<uint16_t>& algorithms) {
-    (void)algorithms;
+    // Map IANA TLS SignatureScheme values to OpenSSL sigalg string
+    // tokens. The string passed to SSL_CTX_set1_sigalgs_list is a
+    // colon-separated list of names from RFC 8446 §4.2.3 / OpenSSL's
+    // X509 namespace; the emit order in the ClientHello matches the
+    // string order, which is exactly what we need for per-profile
+    // sigalg differentiation in JA4 (and helps cluster the right
+    // browser even where JA3 doesn't cover sigalgs).
     SSL_CTX* ctx = ssl_context_.native_handle();
-    const char* sigalgs = "ECDSA+SHA256:ECDSA+SHA384:ECDSA+SHA512:"
-                          "RSA-PSS+SHA256:RSA-PSS+SHA384:RSA-PSS+SHA512:"
-                          "RSA+SHA256:RSA+SHA384:RSA+SHA512";
-    SSL_CTX_set1_sigalgs_list(ctx, sigalgs);
+    if (algorithms.empty()) {
+        SSL_CTX_set1_sigalgs_list(ctx,
+            "ECDSA+SHA256:ECDSA+SHA384:ECDSA+SHA512:"
+            "RSA-PSS+SHA256:RSA-PSS+SHA384:RSA-PSS+SHA512:"
+            "RSA+SHA256:RSA+SHA384:RSA+SHA512");
+        return;
+    }
+    std::string list;
+    auto add = [&](const char* tok) {
+        if (!list.empty()) list += ":";
+        list += tok;
+    };
+    for (std::uint16_t a : algorithms) {
+        switch (a) {
+            case 0x0403: add("ECDSA+SHA256"); break;
+            case 0x0503: add("ECDSA+SHA384"); break;
+            case 0x0603: add("ECDSA+SHA512"); break;
+            case 0x0804: add("rsa_pss_rsae_sha256"); break;
+            case 0x0805: add("rsa_pss_rsae_sha384"); break;
+            case 0x0806: add("rsa_pss_rsae_sha512"); break;
+            case 0x0809: add("rsa_pss_pss_sha256"); break;
+            case 0x080a: add("rsa_pss_pss_sha384"); break;
+            case 0x080b: add("rsa_pss_pss_sha512"); break;
+            case 0x0401: add("RSA+SHA256"); break;
+            case 0x0501: add("RSA+SHA384"); break;
+            case 0x0601: add("RSA+SHA512"); break;
+            case 0x0807: add("ed25519"); break;
+            case 0x0808: add("ed448"); break;
+            default: break;  // ignore unknown IDs
+        }
+    }
+    if (list.empty()) {
+        // Fall back rather than emit a sigalgs ext we don't want.
+        SSL_CTX_set1_sigalgs_list(ctx,
+            "ECDSA+SHA256:RSA-PSS+SHA256:RSA+SHA256");
+    } else {
+        SSL_CTX_set1_sigalgs_list(ctx, list.c_str());
+    }
 }
 
 void StealthContext::configure_alpn(const std::vector<std::string>& protocols) {

@@ -352,24 +352,60 @@ crypto::Bytes encode_data_frames(const std::uint8_t* data, std::size_t len,
     if (max_payload == 0 || max_payload > 16384) max_payload = 16384;
     if (max_payload < 64) max_payload = 64;
 
+    // Cap the effective length at the caller's flow-control budget.
+    // RFC 7540 §6.9.1: only DATA frame payload counts against the
+    // window. Headers, padding length bytes, and pad bytes are NOT
+    // payload, but the spec is explicit that the entire DATA frame
+    // length (including padding + length byte) DOES count. We
+    // conservatively enforce on the payload size we're about to
+    // emit; the padding budget is then trimmed to stay inside the
+    // window.
+    std::size_t effective_len = len;
+    if (params.send_window < effective_len) {
+        effective_len = params.send_window;
+    }
+
     std::size_t pos = 0;
-    while (pos < len) {
-        std::size_t chunk = std::min<std::size_t>(len - pos,
+    while (pos < effective_len) {
+        std::size_t chunk = std::min<std::size_t>(effective_len - pos,
             static_cast<std::size_t>(max_payload) - 1);
-        std::uint32_t pad = sample_padding(params.padding_mean,
-            std::min(params.padding_max, max_payload - static_cast<std::uint32_t>(chunk) - 1));
-        std::uint32_t frame_len = static_cast<std::uint32_t>(chunk) + pad + 1;
-        append_frame_header(out, frame_len, kFrameData, kFlagPadded, 1);
-        out.push_back(static_cast<std::uint8_t>(pad));
-        out.insert(out.end(), data + pos, data + pos + chunk);
-        if (pad > 0) {
-            std::vector<std::uint8_t> padding_bytes(pad, 0);
-            RAND_bytes(padding_bytes.data(), static_cast<int>(padding_bytes.size()));
-            out.insert(out.end(), padding_bytes.begin(), padding_bytes.end());
+        // Budget for this DATA frame's total length (including the
+        // 1-byte pad-length and the pad bytes themselves). Window
+        // is whatever the caller said minus what we've already
+        // emitted.
+        std::uint32_t emitted = static_cast<std::uint32_t>(pos);
+        std::uint32_t window_remaining = params.send_window > emitted
+            ? params.send_window - emitted
+            : 0u;
+        std::uint32_t this_frame_cap = std::min(max_payload, window_remaining);
+        if (this_frame_cap <= static_cast<std::uint32_t>(chunk) + 1) {
+            // No room for padding; skip pad entirely.
+            std::uint32_t pad = 0;
+            std::uint32_t frame_len = static_cast<std::uint32_t>(chunk) + pad + 1;
+            append_frame_header(out, frame_len, kFrameData, kFlagPadded, 1);
+            out.push_back(static_cast<std::uint8_t>(pad));
+            out.insert(out.end(), data + pos, data + pos + chunk);
+        } else {
+            std::uint32_t pad = sample_padding(params.padding_mean,
+                std::min(params.padding_max,
+                         this_frame_cap - static_cast<std::uint32_t>(chunk) - 1));
+            std::uint32_t frame_len = static_cast<std::uint32_t>(chunk) + pad + 1;
+            append_frame_header(out, frame_len, kFrameData, kFlagPadded, 1);
+            out.push_back(static_cast<std::uint8_t>(pad));
+            out.insert(out.end(), data + pos, data + pos + chunk);
+            if (pad > 0) {
+                std::vector<std::uint8_t> padding_bytes(pad, 0);
+                RAND_bytes(padding_bytes.data(), static_cast<int>(padding_bytes.size()));
+                out.insert(out.end(), padding_bytes.begin(), padding_bytes.end());
+            }
         }
         pos += chunk;
     }
 
+    // Emit an empty DATA frame for a zero-length body only when there
+    // was actually no input AND we have budget for the frame at all
+    // (an empty DATA frame is 9 header bytes of cleartext, no payload
+    // — payload size 0 doesn't draw from the flow-control window).
     if (len == 0) {
         append_frame_header(out, 0, kFrameData, 0, 1);
     }
@@ -481,7 +517,27 @@ bool H2InboundDecoder::parse_one_frame(std::size_t* consumed) {
                         case 0x1: peer_header_table_size_      = val; break;
                         case 0x2: /* SETTINGS_ENABLE_PUSH; ignored, we never push */ break;
                         case 0x3: peer_max_concurrent_streams_ = val; break;
-                        case 0x4: peer_initial_window_size_    = val; break;
+                        case 0x4: {
+                            // RFC 7540 §6.5.2: SETTINGS_INITIAL_WINDOW_SIZE
+                            // is bounded by 2^31-1; values above are a
+                            // FLOW_CONTROL_ERROR. We clamp and continue
+                            // so a malformed peer doesn't kill the
+                            // connection. §6.9.2 then requires
+                            // delta-applying (new - old) to every
+                            // per-stream window we're tracking; this is
+                            // the sign-tricky bit (delta can be negative
+                            // and windows can go transiently negative).
+                            std::uint32_t clamped = val;
+                            if (clamped > 0x7FFFFFFFu) clamped = 0x7FFFFFFFu;
+                            const std::int64_t delta =
+                                static_cast<std::int64_t>(clamped) -
+                                static_cast<std::int64_t>(peer_initial_window_size_);
+                            peer_initial_window_size_ = clamped;
+                            if (delta != 0) {
+                                apply_initial_window_delta(delta);
+                            }
+                            break;
+                        }
                         case 0x5: {
                             // RFC 7540 §6.5.2: MAX_FRAME_SIZE must be
                             // in [16384, 16777215]. Out-of-range is a
@@ -504,6 +560,46 @@ bool H2InboundDecoder::parse_one_frame(std::size_t* consumed) {
             break;
         }
         case kFrameWindowUpdate: {
+            if (length != 4) {
+                error_ = "WINDOW_UPDATE with bad length";
+                break;
+            }
+            // The 31-bit increment lives in the low bits of the
+            // payload; the high bit is reserved (R) and MUST be
+            // ignored. Increment of 0 is a PROTOCOL_ERROR per
+            // RFC 7540 §6.9 (stream_id==0 → connection error,
+            // otherwise stream error). We treat both as a soft
+            // signal — surface as error_, the caller decides.
+            const std::uint32_t increment = read_be31(payload);
+            if (increment == 0) {
+                error_ = "WINDOW_UPDATE with zero increment";
+                break;
+            }
+            // Clamp window growth at 2^31-1; §6.9.1 says a window
+            // that would exceed that is a FLOW_CONTROL_ERROR. The
+            // peer can't legitimately want us to send MORE than
+            // 2GiB at once, and a misbehaved peer shouldn't be
+            // able to push our int64_t past INT_MAX.
+            constexpr std::int64_t kMaxWindow = 0x7FFFFFFFLL;
+            if (stream_id == 0) {
+                conn_send_window_ += increment;
+                if (conn_send_window_ > kMaxWindow) {
+                    conn_send_window_ = kMaxWindow;
+                }
+            } else {
+                // Lazy-init per-stream window to the current peer
+                // INITIAL_WINDOW_SIZE if we haven't seen the stream.
+                auto it = stream_send_windows_.find(stream_id);
+                if (it == stream_send_windows_.end()) {
+                    it = stream_send_windows_.emplace(
+                        stream_id,
+                        static_cast<std::int64_t>(peer_initial_window_size_)).first;
+                }
+                it->second += increment;
+                if (it->second > kMaxWindow) {
+                    it->second = kMaxWindow;
+                }
+            }
             break;
         }
         case kFramePing: {
@@ -633,6 +729,39 @@ void H2InboundDecoder::drain_inbound_buffer(std::vector<std::uint8_t>* out) {
     if (!out || inbound_buf_.empty()) return;
     out->insert(out->end(), inbound_buf_.begin(), inbound_buf_.end());
     inbound_buf_.clear();
+}
+
+std::int64_t H2InboundDecoder::stream_send_window(std::uint32_t stream_id) const {
+    auto it = stream_send_windows_.find(stream_id);
+    if (it != stream_send_windows_.end()) {
+        return it->second;
+    }
+    // Unseen stream: peer has not had a chance to send a
+    // WINDOW_UPDATE for it yet, so the window is whatever
+    // SETTINGS_INITIAL_WINDOW_SIZE currently says.
+    return static_cast<std::int64_t>(peer_initial_window_size_);
+}
+
+void H2InboundDecoder::on_local_data_sent(std::uint32_t stream_id, std::uint32_t bytes) {
+    if (bytes == 0) return;
+    const std::int64_t delta = static_cast<std::int64_t>(bytes);
+    conn_send_window_ -= delta;
+    auto it = stream_send_windows_.find(stream_id);
+    if (it == stream_send_windows_.end()) {
+        it = stream_send_windows_.emplace(
+            stream_id,
+            static_cast<std::int64_t>(peer_initial_window_size_)).first;
+    }
+    it->second -= delta;
+}
+
+void H2InboundDecoder::apply_initial_window_delta(std::int64_t delta) {
+    // RFC 7540 §6.9.2: deltas from SETTINGS_INITIAL_WINDOW_SIZE
+    // apply to every stream we've seen. Streams we haven't seen
+    // pick up the new value lazily via stream_send_window().
+    for (auto& [_, w] : stream_send_windows_) {
+        w += delta;
+    }
 }
 
 }  // namespace yume::obfs

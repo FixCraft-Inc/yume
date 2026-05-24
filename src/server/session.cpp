@@ -1143,8 +1143,33 @@ void Session::serve_fake_h2_real_index() {
     if (carrier_decoder_ && carrier_decoder_->peer_settings_seen()) {
         params.max_data_payload = carrier_decoder_->peer_max_frame_size();
     }
+    // Honour the peer's flow-control budget: the lesser of the conn-
+    // level and per-stream send window the peer has granted us. If a
+    // peer advertised a small INITIAL_WINDOW_SIZE we'd otherwise
+    // emit DATA exceeding it, which a fully-conformant H2 middlebox
+    // flags as a flow-control protocol error. Clamp to non-negative
+    // — a negative window means "wait for WINDOW_UPDATE", which we
+    // can't here because we close right after, so we just don't send
+    // any DATA past the budget (the response gets truncated, the
+    // browser sees the headers and the truncated body which is
+    // still less suspicious than an over-window emit).
+    if (carrier_decoder_) {
+        const std::int64_t conn   = carrier_decoder_->conn_send_window();
+        const std::int64_t stream = carrier_decoder_->stream_send_window(1);
+        const std::int64_t budget = std::max<std::int64_t>(0, std::min(conn, stream));
+        if (budget < static_cast<std::int64_t>(0xFFFFFFFFu)) {
+            params.send_window = static_cast<std::uint32_t>(budget);
+        }
+    }
     crypto::Bytes data_frames = obfs::encode_data_frames(
         reinterpret_cast<const uint8_t*>(body.data()), body.size(), params);
+    if (carrier_decoder_) {
+        // Account for what we just emitted so any subsequent emit on
+        // this decoder (none today, but kept for hygiene) sees the
+        // updated windows.
+        const std::size_t emitted = std::min<std::size_t>(body.size(), params.send_window);
+        carrier_decoder_->on_local_data_sent(1, static_cast<std::uint32_t>(emitted));
+    }
     std::vector<uint8_t> combined;
     combined.reserve(hello.size() + data_frames.size());
     combined.insert(combined.end(), hello.begin(), hello.end());

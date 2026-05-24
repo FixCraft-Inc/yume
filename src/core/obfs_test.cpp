@@ -179,6 +179,155 @@ void test_decoder_defaults_match_rfc_7540() {
     assert(decoder.peer_header_table_size() == 4096);
     assert(decoder.peer_initial_window_size() == 65535);
     assert(decoder.peer_max_frame_size() == 16384);
+    // §6.9 defaults: conn-level send window starts at 65535;
+    // unseen stream windows fall back to peer_initial_window_size().
+    assert(decoder.conn_send_window() == 65535);
+    assert(decoder.stream_send_window(1) == 65535);
+}
+
+// Build a frame on the wire: [length:24][type:8][flags:8][stream_id:32].
+void push_frame(std::vector<std::uint8_t>& out,
+                std::uint32_t length, std::uint8_t type, std::uint8_t flags,
+                std::uint32_t stream_id) {
+    out.push_back(static_cast<std::uint8_t>((length >> 16) & 0xFF));
+    out.push_back(static_cast<std::uint8_t>((length >> 8) & 0xFF));
+    out.push_back(static_cast<std::uint8_t>(length & 0xFF));
+    out.push_back(type);
+    out.push_back(flags);
+    out.push_back(static_cast<std::uint8_t>((stream_id >> 24) & 0x7F));
+    out.push_back(static_cast<std::uint8_t>((stream_id >> 16) & 0xFF));
+    out.push_back(static_cast<std::uint8_t>((stream_id >> 8) & 0xFF));
+    out.push_back(static_cast<std::uint8_t>(stream_id & 0xFF));
+}
+
+void push_be32(std::vector<std::uint8_t>& out, std::uint32_t v) {
+    out.push_back(static_cast<std::uint8_t>((v >> 24) & 0xFF));
+    out.push_back(static_cast<std::uint8_t>((v >> 16) & 0xFF));
+    out.push_back(static_cast<std::uint8_t>((v >> 8) & 0xFF));
+    out.push_back(static_cast<std::uint8_t>(v & 0xFF));
+}
+
+void test_decoder_tracks_window_update() {
+    // Preface + WINDOW_UPDATE on stream 0 (+1000) and on stream 1
+    // (+2000). conn_send_window goes 65535 → 66535; stream(1) goes
+    // 65535 → 67535. Unseen stream still returns the default.
+    std::vector<std::uint8_t> input;
+    const char kPref[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    input.insert(input.end(), kPref, kPref + 24);
+    push_frame(input, 4, 0x08, 0, 0);
+    push_be32(input, 1000);
+    push_frame(input, 4, 0x08, 0, 1);
+    push_be32(input, 2000);
+
+    yume::obfs::H2InboundDecoder decoder(true);
+    decoder.feed(input.data(), input.size());
+    assert(!decoder.failed());
+    assert(decoder.conn_send_window() == 65535 + 1000);
+    assert(decoder.stream_send_window(1) == 65535 + 2000);
+    assert(decoder.stream_send_window(99) == 65535);  // never touched
+}
+
+void test_decoder_rejects_zero_window_update() {
+    // RFC 7540 §6.9: WINDOW_UPDATE with 0 increment is a protocol
+    // error (PROTOCOL_ERROR / FLOW_CONTROL_ERROR depending on
+    // stream_id). We surface as error_ — connection is broken.
+    std::vector<std::uint8_t> input;
+    const char kPref[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    input.insert(input.end(), kPref, kPref + 24);
+    push_frame(input, 4, 0x08, 0, 0);
+    push_be32(input, 0);
+
+    yume::obfs::H2InboundDecoder decoder(true);
+    decoder.feed(input.data(), input.size());
+    assert(decoder.failed());
+}
+
+void test_decoder_rejects_bad_window_update_length() {
+    // WINDOW_UPDATE payload must be exactly 4 bytes (RFC 7540 §6.9).
+    std::vector<std::uint8_t> input;
+    const char kPref[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    input.insert(input.end(), kPref, kPref + 24);
+    push_frame(input, 6, 0x08, 0, 0);
+    push_be32(input, 1000);
+    input.push_back(0); input.push_back(0);
+
+    yume::obfs::H2InboundDecoder decoder(true);
+    decoder.feed(input.data(), input.size());
+    assert(decoder.failed());
+}
+
+void test_decoder_clamps_window_overflow() {
+    // RFC 7540 §6.9.1: a WINDOW_UPDATE that would push the window
+    // past 2^31-1 is a FLOW_CONTROL_ERROR. We clamp instead of
+    // erroring (consistent with how we handle other peer-malformation),
+    // so the window saturates at 2^31-1.
+    std::vector<std::uint8_t> input;
+    const char kPref[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    input.insert(input.end(), kPref, kPref + 24);
+    push_frame(input, 4, 0x08, 0, 0);
+    push_be32(input, 0x7FFFFFFFu);
+
+    yume::obfs::H2InboundDecoder decoder(true);
+    decoder.feed(input.data(), input.size());
+    assert(!decoder.failed());
+    assert(decoder.conn_send_window() == 0x7FFFFFFFLL);
+}
+
+void test_decoder_initial_window_size_delta_applies() {
+    // RFC 7540 §6.9.2: a SETTINGS_INITIAL_WINDOW_SIZE change delta-
+    // applies to every per-stream window already in flight. Verify:
+    //   1. WINDOW_UPDATE on stream 1 takes it to 65535+1000.
+    //   2. SETTINGS lowering INITIAL_WINDOW_SIZE to 8192 makes
+    //      delta = 8192 - 65535 = -57343, so stream 1 ends at
+    //      (65535+1000) + (-57343) = 9192.
+    //   3. Conn-level window is independent and untouched (it's
+    //      controlled only by WINDOW_UPDATE on stream 0).
+    //   4. Unseen stream returns the new lower default.
+    std::vector<std::uint8_t> input;
+    const char kPref[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    input.insert(input.end(), kPref, kPref + 24);
+    push_frame(input, 4, 0x08, 0, 1);
+    push_be32(input, 1000);
+    push_frame(input, 6, 0x04, 0, 0);
+    input.push_back(0x00); input.push_back(0x04);
+    push_be32(input, 8192);
+
+    yume::obfs::H2InboundDecoder decoder(true);
+    decoder.feed(input.data(), input.size());
+    assert(!decoder.failed());
+    assert(decoder.peer_initial_window_size() == 8192);
+    assert(decoder.conn_send_window() == 65535);
+    assert(decoder.stream_send_window(1) == 65535 + 1000 - (65535 - 8192));
+    assert(decoder.stream_send_window(99) == 8192);
+}
+
+void test_on_local_data_sent_debits_both_windows() {
+    yume::obfs::H2InboundDecoder decoder(true);
+    decoder.on_local_data_sent(1, 1024);
+    assert(decoder.conn_send_window() == 65535 - 1024);
+    assert(decoder.stream_send_window(1) == 65535 - 1024);
+    decoder.on_local_data_sent(1, 0);  // no-op
+    assert(decoder.conn_send_window() == 65535 - 1024);
+}
+
+void test_encoder_respects_send_window() {
+    // Body bigger than the budget should be truncated; budget = 100
+    // means we emit at most 100 payload bytes total across all DATA
+    // frames in the returned buffer.
+    std::vector<std::uint8_t> payload(2000, 0xAB);
+    yume::obfs::H2EncodeParams params;
+    params.padding_mean = 0;
+    params.padding_max = 0;
+    params.max_data_payload = 1024;
+    params.send_window = 100;
+
+    auto framed = yume::obfs::encode_data_frames(payload.data(), payload.size(), params);
+
+    yume::obfs::H2InboundDecoder decoder(true);
+    decoder.mark_carrier_active();
+    decoder.feed(framed.data(), framed.size());
+    assert(!decoder.failed());
+    assert(decoder.decoded_available() == 100);
 }
 
 }  // namespace
@@ -192,6 +341,13 @@ int main() {
     test_decoder_parses_peer_settings();
     test_decoder_clamps_oversize_max_frame_size();
     test_decoder_defaults_match_rfc_7540();
-    std::puts("obfs_test: all 8 cases passed");
+    test_decoder_tracks_window_update();
+    test_decoder_rejects_zero_window_update();
+    test_decoder_rejects_bad_window_update_length();
+    test_decoder_clamps_window_overflow();
+    test_decoder_initial_window_size_delta_applies();
+    test_on_local_data_sent_debits_both_windows();
+    test_encoder_respects_send_window();
+    std::puts("obfs_test: all 15 cases passed");
     return 0;
 }

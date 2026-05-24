@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "core/crypto.hpp"
@@ -20,6 +21,14 @@ struct H2EncodeParams {
     std::uint32_t padding_mean{24};
     std::uint32_t padding_max{200};
     std::uint32_t max_data_payload{16384};
+    // Per-call flow-control budget (the lesser of the conn-level and
+    // per-stream send window the peer has granted us; RFC 7540 §6.9).
+    // encode_data_frames will never emit more than `send_window`
+    // payload bytes across all DATA frames in the returned buffer; if
+    // the input is larger, the tail is dropped. Default (UINT32_MAX)
+    // means "no flow-control limit" — appropriate when the caller has
+    // not opted into window tracking.
+    std::uint32_t send_window{0xFFFFFFFFu};
 };
 
 crypto::Bytes encode_client_handshake(std::string_view sni,
@@ -81,6 +90,21 @@ public:
     std::uint32_t peer_max_header_list_size() const { return peer_max_header_list_size_; }
     bool          peer_settings_seen() const       { return peer_settings_seen_; }
 
+    // Send-side flow control (RFC 7540 §6.9). These track the credit
+    // the peer has granted US to send DATA: WINDOW_UPDATE adds,
+    // outgoing DATA debits, SETTINGS_INITIAL_WINDOW_SIZE deltas apply
+    // to every per-stream window we know about (§6.9.2).
+    //
+    // Stored as int64_t because windows can validly go transiently
+    // negative after a SETTINGS shrink. on_local_data_sent should not
+    // be called while a window is <= 0 — the caller is responsible
+    // for stalling. Initial values per spec: 65535 conn-level, and
+    // peer_initial_window_size() per-stream at first-touch (lazy
+    // init).
+    std::int64_t conn_send_window() const { return conn_send_window_; }
+    std::int64_t stream_send_window(std::uint32_t stream_id) const;
+    void on_local_data_sent(std::uint32_t stream_id, std::uint32_t bytes);
+
 private:
     void process_inbound();
     bool parse_one_frame(std::size_t* consumed);
@@ -107,6 +131,24 @@ private:
     std::uint32_t peer_max_frame_size_{16384};
     std::uint32_t peer_max_header_list_size_{0xFFFFFFFFu};
     bool peer_settings_seen_{false};
+
+    // Flow-control credit the peer has granted us. conn_send_window_
+    // is the connection-level credit (init 65535 per RFC). The map
+    // is per-stream credit, lazily populated on first touch — entries
+    // are added when a WINDOW_UPDATE arrives for an unseen stream or
+    // when on_local_data_sent is called for one. The
+    // peer_initial_window_size_ delta-apply in handle_settings_value
+    // walks every map entry, never the (unbounded) full stream-id
+    // space.
+    std::int64_t conn_send_window_{65535};
+    mutable std::unordered_map<std::uint32_t, std::int64_t> stream_send_windows_;
+    // Helper invoked from the SETTINGS handler when
+    // peer_initial_window_size_ changes. Applies the (new - old)
+    // delta to every stream window currently in the map per
+    // §6.9.2. Out-of-range results are not an error — they're
+    // documented spec behaviour and resolved by a future
+    // WINDOW_UPDATE.
+    void apply_initial_window_delta(std::int64_t delta);
 };
 
 }  // namespace yume::obfs

@@ -372,20 +372,33 @@ std::string calculate_akamai_hash(const JA3Components& components) {
 std::vector<BrowserFingerprint> get_known_browser_fingerprints() {
     std::vector<BrowserFingerprint> fingerprints;
     
-    // Chrome 135 (Latest as of Feb 2026)
+    // Chrome 131 (captured from a real Chrome 131 ClientHello 2026-05).
+    // Real Chrome additionally prefixes a GREASE value (RFC 8701); we
+    // can't add GREASE through stock OpenSSL so we drop it here. The
+    // remaining 16 ciphers are byte-identical to the captured shape
+    // and differ from Safari's list in both content and order, which
+    // is what we need for per-profile JA3 divergence.
     {
         BrowserFingerprint fp;
         fp.profile = BrowserProfile::CHROME_135;
-        fp.name = "Chrome 135";
+        fp.name = "Chrome 131";
         fp.tls_version = 0x0303;  // TLS 1.2 in ClientHello, upgrades to 1.3
         fp.cipher_suites = {
             0x1301,  // TLS_AES_128_GCM_SHA256
             0x1302,  // TLS_AES_256_GCM_SHA384
             0x1303,  // TLS_CHACHA20_POLY1305_SHA256
-            0xc02c,  // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
             0xc02b,  // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-            0xc030,  // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
             0xc02f,  // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+            0xc02c,  // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+            0xc030,  // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+            0xcca9,  // TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+            0xcca8,  // TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+            0xc013,  // TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
+            0xc014,  // TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA
+            0x009c,  // TLS_RSA_WITH_AES_128_GCM_SHA256
+            0x009d,  // TLS_RSA_WITH_AES_256_GCM_SHA384
+            0x002f,  // TLS_RSA_WITH_AES_128_CBC_SHA
+            0x0035,  // TLS_RSA_WITH_AES_256_CBC_SHA
         };
         fp.extensions = {
             0,      // server_name
@@ -519,16 +532,36 @@ std::vector<BrowserFingerprint> get_known_browser_fingerprints() {
     {
         BrowserFingerprint fp;
         fp.profile = BrowserProfile::SAFARI_17;
-        fp.name = "Safari 17";
+        fp.name = "Safari 18";
         fp.tls_version = 0x0303;
+        // Safari 18 cipher list captured from real Safari on macOS 15
+        // (2026-05). Note: starts with 0x1302 (AES_256) not 0x1301
+        // (AES_128) — Safari prefers stronger TLS 1.3 cipher first.
+        // Includes the full CBC-SHA384 lineup that Chrome dropped,
+        // which is the primary structural divergence we need for
+        // distinct JA3 hashes.
         fp.cipher_suites = {
-            0x1301,  // TLS_AES_128_GCM_SHA256
             0x1302,  // TLS_AES_256_GCM_SHA384
             0x1303,  // TLS_CHACHA20_POLY1305_SHA256
+            0x1301,  // TLS_AES_128_GCM_SHA256
             0xc02c,  // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
             0xc02b,  // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+            0xcca9,  // TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+            0xcca8,  // TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
             0xc030,  // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
             0xc02f,  // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+            0xc024,  // TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384
+            0xc028,  // TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384
+            0xc00a,  // TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA
+            0xc014,  // TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA
+            0xc023,  // TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256
+            0xc027,  // TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256
+            0xc009,  // TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA
+            0xc013,  // TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
+            0x009d,  // TLS_RSA_WITH_AES_256_GCM_SHA384
+            0x009c,  // TLS_RSA_WITH_AES_128_GCM_SHA256
+            0x0035,  // TLS_RSA_WITH_AES_256_CBC_SHA
+            0x002f,  // TLS_RSA_WITH_AES_128_CBC_SHA
         };
         fp.extensions = {
             0,      // server_name

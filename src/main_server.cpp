@@ -2549,11 +2549,20 @@ int main(int argc, char** argv) {
     // observed JA3 stops matching any known browser cluster the daemon
     // logs loudly so operators see it on the next restart.
     {
+        // Baselines captured 2026-05 on the build-host build
+        // (OpenSSL 3.5, Debian 13). Each is the MD5 of the
+        // standard JA3 string produced by compute_self_fingerprint
+        // for that profile against the current registry data. A
+        // future OpenSSL upgrade or profile-data edit that changes
+        // these will fire a "DRIFT" warning at every startup, which
+        // is exactly what we want — silent drift away from a known
+        // browser cluster is the failure mode the self-check exists
+        // to catch.
         struct Baseline { yume::tls_fingerprint::BrowserProfile profile; const char* name; const char* expected_ja3; };
         constexpr Baseline kBaselines[] = {
-            {yume::tls_fingerprint::BrowserProfile::CHROME_135,  "chrome",  ""},
-            {yume::tls_fingerprint::BrowserProfile::FIREFOX_126, "firefox", ""},
-            {yume::tls_fingerprint::BrowserProfile::SAFARI_17,   "safari",  ""},
+            {yume::tls_fingerprint::BrowserProfile::CHROME_135,  "chrome",  "51dc1deffb716cb50b5b0e5449c4e28f"},
+            {yume::tls_fingerprint::BrowserProfile::FIREFOX_126, "firefox", "b2f1f8aa44e9d9510358e21055e2a3c2"},
+            {yume::tls_fingerprint::BrowserProfile::SAFARI_17,   "safari",  "96244ebd33ea0991b081300f27a9a6b3"},
         };
         for (const auto& b : kBaselines) {
             auto self = yume::tls_stealth::compute_self_fingerprint(b.profile);

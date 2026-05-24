@@ -203,6 +203,71 @@ def stop_proc(proc: subprocess.Popen) -> None:
         proc.wait(timeout=2)
 
 
+def have_tcpdump_capability() -> tuple[bool, str]:
+    """Returns (ok, reason). tcpdump on loopback needs CAP_NET_RAW or
+    root. We don't try sudo here because that prompts; instead the
+    --dpi mode tells the user up-front what's needed."""
+    if os.geteuid() == 0:
+        return True, "running as root"
+    # Check if tcpdump has the cap_net_raw capability set.
+    tcpdump = shutil.which("tcpdump")
+    if tcpdump is None:
+        return False, "tcpdump not on PATH"
+    getcap = shutil.which("getcap") or "/sbin/getcap"
+    if not Path(getcap).exists():
+        return False, "getcap not available; install libcap2-bin to enable cap detection"
+    r = subprocess.run([getcap, tcpdump], capture_output=True, text=True)
+    if "cap_net_raw" in (r.stdout or ""):
+        return True, "tcpdump has cap_net_raw"
+    return False, "need root or `setcap cap_net_raw,cap_net_admin+eip $(which tcpdump)`"
+
+
+def capture_and_classify(port: int, path: str, profile_label: str, pcap_dir: Path) -> Optional[str]:
+    """Captures the probe traffic on loopback and runs ndpiReader.
+    Returns the top-protocol label (e.g. "TLS") or None on error."""
+    pcap = pcap_dir / f"{profile_label}.pcap"
+    # tcpdump on loopback, filtering to our port for a clean single-flow
+    # capture. -U flushes per packet so the capture is ready right after
+    # we stop tcpdump.
+    proc = subprocess.Popen(
+        ["tcpdump", "-i", "lo", "-U", "-s", "0", "-w", str(pcap), f"port {port}"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    time.sleep(0.3)  # give tcpdump time to attach
+    try:
+        subprocess.run(
+            ["curl", "-sk", "--http1.1", "-o", "/dev/null",
+             f"https://127.0.0.1:{port}{path}"],
+            capture_output=True, timeout=5,
+        )
+    finally:
+        proc.terminate()
+        try: proc.wait(timeout=2)
+        except subprocess.TimeoutExpired: proc.kill()
+
+    if not pcap.exists() or pcap.stat().st_size == 0:
+        return None
+    r = subprocess.run(
+        ["ndpiReader", "-i", str(pcap), "-q"],
+        capture_output=True, text=True, timeout=10,
+    )
+    # ndpiReader "-q" prints a one-line-per-flow summary. We want the
+    # protocol field — typically the third whitespace-separated token
+    # after stripping the leading flow index. Parse the most-frequent
+    # protocol label.
+    proto_counts: dict[str, int] = {}
+    for line in (r.stdout or "").splitlines():
+        # Lines look like:
+        #   1     TCP 127.0.0.1:nnnnn <-> 127.0.0.1:19443  [proto: 91/TLS][...]
+        m = re.search(r"\[proto:\s*\d+(?:\.\d+)?/([^\]]+)\]", line)
+        if m:
+            label = m.group(1).strip()
+            proto_counts[label] = proto_counts.get(label, 0) + 1
+    if not proto_counts:
+        return "Unknown"
+    return max(proto_counts.items(), key=lambda kv: kv[1])[0]
+
+
 def curl_probe(port: int, path: str = "/notfound") -> tuple[bool, str, str]:
     """Returns (ok, headers, body). Tolerates non-zero curl exits when
     the response itself parses — yumed closes the TCP socket without
@@ -249,16 +314,22 @@ def header_present(headers: str, name_with_colon: str) -> bool:
     return False
 
 
-def check_server_profile(name: str, yumed: Path, workdir: Path, ks: dict, port: int) -> ProbeResult:
+def check_server_profile(name: str, yumed: Path, workdir: Path, ks: dict, port: int,
+                         dpi: bool = False) -> ProbeResult:
     spec = SERVER_PROFILES[name]
     proc = start_yumed(yumed, workdir, ks, name, port)
     time.sleep(1.5)
     try:
         ok, headers, body = curl_probe(port)
+        dpi_label = None
+        if dpi:
+            dpi_label = capture_and_classify(port, "/notfound", name, workdir)
     finally:
         stop_proc(proc)
 
     res = ProbeResult(profile=name, ok=False, raw_headers=headers)
+    if dpi:
+        res.dpi_label = dpi_label
     if not ok:
         res.failures.append("no usable HTTP response (yumed log: " + str(workdir / f'yumed-{name}.log') + ")")
         return res
@@ -329,7 +400,20 @@ def main() -> int:
     ap.add_argument("--no-client", action="store_true", help="skip client-profile checks")
     ap.add_argument("--port", type=int, default=19443, help="local port yumed listens on")
     ap.add_argument("--json", action="store_true", help="emit results as JSON")
+    ap.add_argument("--dpi", action="store_true",
+                    help="capture loopback traffic per profile and run "
+                         "ndpiReader; needs tcpdump capability "
+                         "(root or `setcap cap_net_raw,cap_net_admin+eip $(which tcpdump)`).")
     args = ap.parse_args()
+
+    if args.dpi:
+        ok, reason = have_tcpdump_capability()
+        if not ok:
+            print(f"--dpi requires tcpdump capability: {reason}", file=sys.stderr)
+            return 2
+        if shutil.which("ndpiReader") is None:
+            print("--dpi requires ndpiReader (apt install libndpi-bin)", file=sys.stderr)
+            return 2
 
     if shutil.which("curl") is None:
         return print("curl is required") or 1
@@ -346,7 +430,7 @@ def main() -> int:
         if name not in SERVER_PROFILES:
             print(f"unknown profile: {name}", file=sys.stderr)
             return 2
-        server_results.append(check_server_profile(name, yumed, workdir, ks, args.port))
+        server_results.append(check_server_profile(name, yumed, workdir, ks, args.port, dpi=args.dpi))
 
     client_results = {} if args.no_client else check_client_profiles(yume)
 
@@ -364,11 +448,13 @@ def main() -> int:
         }, indent=2))
     else:
         print("\nServer profile fidelity:")
-        print(f"  {'profile':<14} {'ok':<4} {'server':<32} {'body':<5}  failures")
+        dpi_hdr = "  dpi   " if args.dpi else ""
+        print(f"  {'profile':<14} {'ok':<4} {'server':<32} {'body':<5}{dpi_hdr}  failures")
         for r in server_results:
             ok_mark = "✓" if r.ok else "✗"
             server_short = (r.server or "(none)")[:32]
-            print(f"  {r.profile:<14} {ok_mark:<4} {server_short:<32} {r.body_len if r.body_len is not None else '-':<5}  "
+            dpi_col = f"  {(r.dpi_label or '-'):<6}" if args.dpi else ""
+            print(f"  {r.profile:<14} {ok_mark:<4} {server_short:<32} {r.body_len if r.body_len is not None else '-':<5}{dpi_col}  "
                   + ("clean" if r.ok else "; ".join(r.failures)))
 
         if client_results:

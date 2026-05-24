@@ -88,10 +88,16 @@ A browser that hits the same hostname and port with `GET / HTTP/1.1` is served t
 
 **Partial defense (depends on the depth of the attack):**
 
-- **Stateful HTTP/2 middleboxes** that fully track stream and HPACK dynamic-table state. SETTINGS frame ACKs and proper PING handling are emitted; SETTINGS values that change frame-emission behavior (`SETTINGS_MAX_FRAME_SIZE`, `SETTINGS_INITIAL_WINDOW_SIZE`) are now honored on the write path. The HPACK encoder is still intentionally stateless — it never adds to the dynamic table — so a fully-conformant H2 parser that asserts dynamic-table consistency will eventually flag the stream. Rewriting the codec as a complete H2 implementation is on the post-1.x roadmap; in practice most middleboxes don't go that deep.
-- **ML traffic classifiers** trained on joint inter-arrival × packet-size distributions over the full session. Mitigations active by default: per-frame size padding to a configurable multiple (`--obfs-pad-multiple <bytes>`, default 32) and randomized send-side jitter (`--obfs-jitter-ms <ms>`, default 0 — opt-in because it costs latency). Neither closes the gap against arbitrarily sensitive classifiers; they raise the training cost.
-- **Active probers** that send arbitrary HTTP/1.1 requests to the server: served a profile-driven 404 by `--hide-in-the-crowd <profile>` (see [Layer 3](#layer-3-http-layer-server-disguise---hide-in-the-crowd)) whose header order, charset, body shape, and profile-specific extras (`Alt-Svc` for Caddy, `CF-RAY` + `alt-svc` for Cloudflare, `Content-Security-Policy` + `nosniff` + `X-Powered-By` for Express, etc.) match the real-server bytes captured from upstream source. With `--upstream <url>`, yumed proxies probe requests to a real upstream so probes get bit-identical real-CDN responses (closes the gap entirely, at the cost of a per-probe outbound).
+- **Stateful HTTP/2 middleboxes** that fully track stream and HPACK dynamic-table state. SETTINGS frame ACKs and proper PING handling are emitted, but `SETTINGS_MAX_FRAME_SIZE` / `SETTINGS_INITIAL_WINDOW_SIZE` updates from the peer are not honored on the write path, and the HPACK encoder is stateless — it never adds to the dynamic table. A fully-conformant H2 parser that asserts dynamic-table consistency or polices peer-advertised limits will eventually flag the stream. Rewriting the codec as a complete H2 implementation is on the post-1.x roadmap; in practice most middleboxes don't go that deep.
+- **ML traffic classifiers** trained on joint inter-arrival × packet-size distributions over the full session. Mitigations are opt-in (both knobs default to 0 because they need a matching-version peer / cost latency):
+    - `--obfs-pad-multiple <N>` (0..256) — rounds every outbound frame payload up to a multiple of N bytes via trailing pad + a 1-byte length (`kFlagPadded`). Both ends must run a yume that knows `kFlagPadded`; enable it on both sides or leave it off.
+    - `--obfs-jitter-ms <ms>` — defers each batched TLS write by a uniform random 0..ms delay. Strand-serialised, so the cadence offset propagates and the inter-arrival ML feature stops being constant. Adds latency.
+    - `YUME_AUTH_JITTER_MS=<ms>` env — server-side jitter on the single AUTH challenge frame, separate from `--obfs-jitter-ms`. Cheap because it only fires once per session.
+    
+    None of these close the gap against arbitrarily sensitive classifiers; they raise the training cost.
+- **Active probers** that send arbitrary HTTP/1.1 requests to the server: served a profile-driven 404 by `--hide-in-the-crowd <profile>` (see [Layer 3](#layer-3-http-layer-server-disguise---hide-in-the-crowd)) whose header order, charset, body shape, and profile-specific extras (`Alt-Svc` for Caddy, `CF-RAY` + `alt-svc` for Cloudflare, `Content-Security-Policy` + `nosniff` + `X-Powered-By` for Express, etc.) match the real-server bytes captured from upstream source. For byte-identical replay of a real captured response, use `--upstream-response <file>` (single capture, replayed verbatim every probe) or `--upstream-response-dir <dir>` + optional `--upstream-response-ttl <s>` (loads every `*.http` / `*.response` in the directory and rotates one per probe; TTL reloads the directory periodically so operators can refresh captures without restarting). Rotation defeats the "probe twice, get byte-identical Date / ETag / body" tell that single-capture replay leaves behind.
 - **TLS-fingerprint regressions** if OpenSSL is upgraded to a version whose default extension order drifts from the compiled-in browser profiles. Mitigated: yumed runs a startup JA3 self-check that hashes its own ClientHello via the configured profile and compares to a pinned per-profile baseline. Drift is logged loudly with the observed vs expected JA3.
+- **Real-browser GREASE values** (RFC 8701) in the ClientHello cipher suites / supported_groups / extensions / ALPN lists. Chrome and Firefox emit GREASE; stock OpenSSL doesn't, so the compiled-in browser profiles omit them. A JA3 classifier that expects GREASE in the canonical Chrome / Firefox cluster will see the difference (yume's JA3 falls in a "stock-OpenSSL-clean" sub-cluster rather than the GREASE-rotated canonical browser cluster). Closing this needs either a BoringSSL-bindings build or a pre-handshake hook that injects GREASE extensions into the OpenSSL-generated ClientHello; both are on the post-1.x roadmap.
 
 ## Quick recipes
 
@@ -117,6 +123,31 @@ yumed --listen 443 --cert … --key … --auth-keys … \
 
 ```bash
 yume --server … --auth … --socks 1080 --tls-stealth-rotate --tls-stealth-rotation-interval 50
+```
+
+**Per-frame padding + send-side jitter.** Defeats ML classifiers that fingerprint by inter-arrival × packet-size joints. Enable on BOTH ends — `--obfs-pad-multiple` flips on `kFlagPadded` and an old peer can't parse the stream:
+
+```bash
+# server
+yumed --listen 443 --cert … --key … --auth-keys … \
+      --obfs --obfs-pad-multiple 32 --obfs-jitter-ms 25
+
+# client
+yume --server … --auth … --socks 1080 \
+     --obfs --obfs-pad-multiple 32 --obfs-jitter-ms 25
+```
+
+**Rotating real-server replay for probes.** Capture N real upstream responses once and let yumed rotate one per probe; refresh the cache every 30 min without restarting:
+
+```bash
+# Capture once (one-time setup)
+for i in 1 2 3 4; do
+  curl -i "https://real-cdn.example.com/notfound-$i" > ./captures/$i.http
+done
+
+# Server
+yumed --listen 443 --cert … --key … --auth-keys … \
+      --upstream-response-dir ./captures --upstream-response-ttl 1800
 ```
 
 **Disable obfs entirely.** Fastest, but recognisable as a YUME server to anything that probes:

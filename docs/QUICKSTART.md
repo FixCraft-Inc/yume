@@ -48,6 +48,44 @@ sudo ./build/bin/yumed \
 
 Port 443 normally requires root or `cap_net_bind_service` on Linux. Cloudflare HTTP-mode proxies terminate TLS and will break the tunnel; use TCP passthrough if a proxy sits in front of `yumed`.
 
+### Public-facing daemon
+
+For a `yumed` reachable from the open internet, add `--public-node` to bundle the hardening preset (rejects `--allow-exec`, `--allow-local-ip`, `--control-full`, `--no-inner`; requires `--auth-keys`; defaults the HTTP disguise to `nginx`):
+
+```bash
+sudo ./build/bin/yumed \
+  --listen 443 \
+  --cert certs/server.crt --key certs/server.key \
+  --auth-keys /etc/yume/authorized_keys \
+  --public-node                       # hardening bundle
+  --hide-in-the-crowd nginx           # implicit under --public-node
+```
+
+A probe (`curl https://your-host/`) gets a real-looking nginx 404 — header order, charset, body all match upstream nginx's defaults captured from source. See [STEALTH.md § Layer 3](STEALTH.md#layer-3-http-layer-server-disguise---hide-in-the-crowd) for the full profile list.
+
+### Federation cluster
+
+Multiple `yumed` instances can join one cluster. Bootstrap node:
+
+```bash
+sudo yumed --listen 443 --cluster-bootstrap \
+  --federation-auth-key /etc/yume/fed.key \
+  --federation-anonym-ca /etc/yume/fed-ca.pem \
+  --auth-keys /etc/yume/authorized_keys --public-node
+```
+
+Joining node (dials out to the bootstrap):
+
+```bash
+sudo yumed --listen 443 \
+  --cluster-join alice@bootstrap.example.com:443 \
+  --federation-auth-key /etc/yume/fed.key \
+  --federation-anonym-ca /etc/yume/fed-ca.pem \
+  --auth-keys /etc/yume/authorized_keys --public-node
+```
+
+ASCII view of the cluster from any node: `yume-net-map`.
+
 ## Connect a client
 
 SOCKS mode:

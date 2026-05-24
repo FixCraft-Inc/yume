@@ -1,6 +1,8 @@
-# YUME
+# YUME — 夢
 
-Yume Universal Multiprotocol Engine. An open-source post-quantum stealth transport.
+**yume** *(Japanese: 夢)*: a dream.
+
+Yume Universal Multiprotocol Engine. An open-source post-quantum stealth transport. The name is a single character — 夢 — and we use it the way Japanese uses it: a dream of a network you can trust, where the wire shape can't tell yume from any other HTTPS site, and where neither the client nor the server is forced to advertise itself.
 
 YUME tunnels TCP and UDP through TLS 1.3 sessions that look like ordinary Chrome HTTPS to a DPI box, with hybrid ML-KEM-768 + AES-GCM inner crypto, an optional Argon2id heavy KDF, and 1–4 Hz live key hopping. Both the client (`yume`) and the daemon (`yumed`) are GPL-v3 and build from this tree. They run on x86, ARMv7/8, MIPS OpenWRT, BusyBox, macOS, and Windows; the minimal build runs on routers with as little as 128 MiB of RAM.
 
@@ -48,6 +50,17 @@ sudo ./build/bin/yumed \
     --auth-keys /etc/yume/authorized_keys
 ```
 
+Public-facing server, hardened defaults bundle:
+
+```bash
+sudo ./build/bin/yumed \
+    --listen 443 \
+    --cert certs/server.crt --key certs/server.key \
+    --auth-keys /etc/yume/authorized_keys \
+    --public-node                      # rejects dangerous flags, locks Argon2 floors
+    --hide-in-the-crowd nginx          # implicit when --public-node is set
+```
+
 Client:
 
 ```bash
@@ -55,6 +68,12 @@ Client:
     --server fixcraft.net \
     --auth ~/.yume/id_ed25519 \
     --socks 1080
+```
+
+Cluster entry-point short form (translates to `--server` + `--port`):
+
+```bash
+./build/bin/yume --cluster fixcraft.net:443 --auth ~/.yume/id_ed25519 --socks 1080
 ```
 
 For a privileged port 443 on Linux, run `yumed` with `sudo` or grant `cap_net_bind_service`. Cloudflare HTTP-mode proxies will terminate TLS and break YUME. Use Spectrum or another TCP passthrough if you front the daemon with Cloudflare.
@@ -155,11 +174,12 @@ Specific hostnames will land here once the fleet is up.
 
 ## Stealth and obfuscation
 
-YUME stacks three independent layers of byte-shape camouflage:
+YUME stacks four independent layers of byte-shape camouflage:
 
-1. **TLS 1.3 with browser fingerprint.** `--profile chrome|firefox|safari` configures cipher suites, supported groups, signature algorithms, and ALPN to match Chrome 135 / Firefox 126 / Safari 17. The handshake is a real TLS 1.3 handshake (OpenSSL emits the ClientHello against the configured profile), so JA3/JA4 fall in the browser cluster. Source: [src/core/tls_stealth.cpp](src/core/tls_stealth.cpp), [src/core/tls_fingerprint.cpp](src/core/tls_fingerprint.cpp).
+1. **TLS 1.3 with browser fingerprint.** `--profile chrome|firefox|safari` configures cipher suites, supported groups, signature algorithms, and ALPN to match Chrome 131 / Firefox 133 / Safari 18. The handshake is a real TLS 1.3 handshake (OpenSSL emits the ClientHello against the configured profile), so JA3/JA4 fall in the browser cluster. Source: [src/core/tls_stealth.cpp](src/core/tls_stealth.cpp), [src/core/tls_fingerprint.cpp](src/core/tls_fingerprint.cpp).
 2. **HTTP/2 carrier handshake (`--obfs`, default on).** After the TLS handshake the client emits a real HTTP/2 connection preface (`PRI * HTTP/2.0…`), Chrome-shaped SETTINGS, a WINDOW_UPDATE, and a HEADERS frame for `POST /<token>/<nonce>` with realistic Chrome request headers. The server validates the token (HMAC-SHA256 over `(SNI || hour || "yume-obfs-v2")` keyed by `--obfs-secret`), replies with canned SETTINGS / SETTINGS-ACK / HEADERS `:status=200`, and the YUME tunnel resumes underneath. To a stateless DPI box the first ~150 cleartext bytes of every connection look exactly like a Chrome → CDN gRPC-web request. The codec lives in [src/core/obfs_h2.cpp](src/core/obfs_h2.cpp); the token derivation in [src/core/obfs_signal.cpp](src/core/obfs_signal.cpp). Disable with `--no-obfs`. Per-frame DATA wrapping with PADDED frames and PING keepalive is implemented in the codec and is on the post-1.0 roadmap to enable by default.
-3. **Real HTML facade (`--real --real-index <html>`).** A browser that hits the same port with `GET / HTTP/1.1` is served the configured HTML page (or a Wikipedia redirect by default). YUME clients and browsers cohabit on port 443.
+3. **HTTP-layer server disguise (`--hide-in-the-crowd <profile>`).** Before 1.0 a non-YUME probe (curl / scanner) saw TLS handshake + immediate TCP close — one of the strongest DPI fingerprints. With this flag yumed instead serves a profile-driven 404 whose header order, charset, and body shape match a real install of the chosen software, captured from upstream source: `nginx`, `nginx-stable`, `apache`, `caddy` (with `Alt-Svc: h3=":443"`), `cloudflare` (with `CF-RAY` + `alt-svc`), `express` (with `X-Powered-By` + `Content-Security-Policy` + `X-Content-Type-Options`), `gunicorn`, `none` (no Server header), and `yumed` (legacy). Same flag on the client picks the User-Agent (`chrome`, `firefox`, `safari`, `edge`, `curl`, `wget`, `yume`); when unspecified, the UA is derived from `--profile` so the JA3 and the UA stay consistent. Codec: [src/core/http_profile.cpp](src/core/http_profile.cpp); fidelity check: [scripts/yume_disguise_check.py](scripts/yume_disguise_check.py).
+4. **Real HTML facade (`--real --real-index <html>`).** A browser that hits the same port with `GET / HTTP/1.1` is served the configured HTML page (or a Wikipedia redirect by default). YUME clients and browsers cohabit on port 443.
 
 Limits: this defends against stateless DPI, classifier-based ISP filters, and active probes that complete TLS and inspect the first kilobyte. It does not defend against fully-stateful HTTP/2 middleboxes that track stream and HPACK state, or against ML traffic classifiers trained on joint inter-arrival × size distributions.
 
@@ -293,6 +313,55 @@ Numbers below are from a live run reported in [docs/PERFORMANCE.md](docs/PERFORM
 | Client upload retained vs direct      | 92 %         | 92 %         |
 
 The throughput loss on long routes is dominated by the relay path's own capacity, not by YUME's CPU or framing. With hopping disabled, YUME's steady-state overhead is below the noise floor of the measurement.
+
+## Cluster federation
+
+Multiple `yumed` instances can join a single federated cluster so any client can reach any peer's clients through any entry point. Each peer keeps its own auth keys and config; the federation link is a mutual TLS 1.3 server-to-server connection with per-peer permissions.
+
+Bootstrap node (cluster entry point, accepts incoming peer dials):
+
+```bash
+sudo yumed --listen 443 \
+    --cluster-bootstrap \
+    --federation-auth-key /etc/yume/fed.key \
+    --federation-anonym-ca /etc/yume/fed-ca.pem \
+    --auth-keys /etc/yume/authorized_keys \
+    --public-node
+```
+
+Joining node (dials out to the bootstrap; implies `--federation-enable`):
+
+```bash
+sudo yumed --listen 443 \
+    --cluster-join alice@bootstrap.example.com:443 \
+    --cluster-join bob@second.example.com \
+    --federation-auth-key /etc/yume/fed.key \
+    --federation-anonym-ca /etc/yume/fed-ca.pem \
+    --auth-keys /etc/yume/authorized_keys \
+    --public-node
+```
+
+The short-form spec is `[id@]host[:port][?pin=<sha256>]` — bracket IPv6 as `[2001:db8::1]:443`. The raw `--peer '<json>'` form still works for power users; `--cluster-join` is just a friendlier wrapper that emits the same JSON internally.
+
+ASCII cluster map from any node:
+
+```text
+$ yume-net-map
+                ┌──────────────┐
+                │* alice       │
+                │local:443     │
+                │5 endpoints   │
+                └──────┬───────┘
+                       │
+        ┌──────────────┼──────────────┐
+┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+│  bob         │ │  carol       │ │  dave        │
+│bob:443       │ │carol:443     │ │dave:443      │
+│3 ch ready    │ │2 ch ready    │ │0 ch error    │
+└──────────────┘ └──────────────┘ └──────────────┘
+```
+
+`yume-net-map --ascii` falls back to `+--+` `|` chars for terminals without box-drawing support; `yume-net-map --json` emits the topology as JSON for downstream tooling.
 
 ## Modes
 

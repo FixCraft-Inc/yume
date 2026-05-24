@@ -687,7 +687,16 @@ void Session::on_handshake(const boost::system::error_code& ec) {
     boost::system::error_code nodelay_ec;
     stream_.lowest_layer().set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
 
-    if (cfg_.real_http || cfg_.obfuscation) {
+    // Preface inspection lets us serve an HTTP disguise (real cover
+    // page with --real, or profile-driven 404 otherwise) instead of
+    // closing on non-yume probes. Activated by --real, --obfs, or
+    // --hide-in-the-crowd / --public-node (which sets http_profile).
+    // Cost: ~200 ms preface_timer wait on the first byte from
+    // legitimate yume clients, which they already eat under --real
+    // and --obfs. Without any of these, fall through to the fast
+    // AUTH-challenge path (preserves pre-1.0 latency for operators
+    // who haven't opted in to stealth).
+    if (cfg_.real_http || cfg_.obfuscation || !cfg_.http_profile.empty()) {
         start_preface_read();
         return;
     }
@@ -762,14 +771,18 @@ void Session::on_preface_read(const boost::system::error_code& ec, std::size_t b
                    (static_cast<uint32_t>(preface_accum_[3]));
     uint8_t type = preface_accum_[4];
     bool header_ok = len <= kMaxFrameSize && type >= kMinFrameType && type <= kMaxFrameType;
-    if (!header_ok && cfg_.real_http) {
-        send_real_http_response("/");
-        return;
-    }
-    if (preface_accum_.size() > header_buf_.size()) {
+    if (!header_ok) {
+        // Non-yume preface. With --real, serve the disguise root page
+        // so probers see a styled redirect (the cover site). Otherwise
+        // serve a profile-matching 404 — anything is less of a DPI
+        // signal than a TLS-handshake-then-immediate-close (which the
+        // pre-1.0 close path used to leak).
         preface_probe_active_ = false;
-        util::log_warn("session " + std::to_string(session_id_) + ": unexpected preface data");
-        close_with_reason("unexpected preface data");
+        if (cfg_.real_http) {
+            send_real_http_response("/");
+        } else {
+            send_disguise_404("/");
+        }
         return;
     }
 
@@ -836,14 +849,16 @@ bool Session::handle_http_preface(const std::string& preface) {
                                                                      }
                                                                  }
 
-                                                                 if (!self->cfg_.real_http) {
-                                                                     self->close_with_reason("ignored post-TLS HTTP probe");
-                                                                     return;
+                                                                 std::string path = target;
+                                                                 if (self->cfg_.real_http) {
+                                                                     self->send_real_http_response(path);
+                                                                 } else {
+                                                                     // Pre-1.0 this path closed immediately, which is a
+                                                                     // strong DPI signal. Serve a profile-driven 404 so
+                                                                     // the probe sees what looks like a real web server
+                                                                     // with nothing at that path.
+                                                                     self->send_disguise_404(path);
                                                                  }
-
-                                                                 std::string path = "/";
-                                                                 path = target;
-                                                                 self->send_real_http_response(path);
                                                              }));
     return true;
 }
@@ -896,6 +911,23 @@ std::string Session::build_hidden_blob() {
 #else
     return "";
 #endif
+}
+
+void Session::send_disguise_404(const std::string& path) {
+    (void)path;  // not echoed back; logged only as the connection close reason
+    auto profile = yume::http_profile::server(
+        cfg_.http_profile.empty() ? "yumed" : cfg_.http_profile);
+    if (!profile.has_value()) {
+        profile = yume::http_profile::server("yumed");
+    }
+    auto resp = std::make_shared<std::string>(
+        yume::http_profile::render_404(*profile, /*connection_close=*/true));
+    auto self = shared_from_this();
+    boost::asio::async_write(stream_, boost::asio::buffer(*resp),
+                             boost::asio::bind_executor(strand_,
+                                                        [self, resp](const boost::system::error_code&, std::size_t) {
+                                                            self->close_with_reason("served disguise 404");
+                                                        }));
 }
 
 void Session::send_real_http_response(const std::string& path) {

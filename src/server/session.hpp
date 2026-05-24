@@ -70,6 +70,13 @@ private:
     void on_preface_timeout(const boost::system::error_code& ec);
     bool handle_http_preface(const std::string& preface);
     void send_real_http_response(const std::string& path);
+    // Profile-driven 404 served on any non-yume probe (HTTP or otherwise)
+    // so a passive DPI inspector sees TLS handshake + valid 404, never
+    // the TLS-handshake-followed-by-immediate-close fingerprint that the
+    // pre-1.0 close-on-probe path used to leak. Profile comes from
+    // cfg_.http_profile (defaults to "yumed" for back-compat, overridden
+    // by --hide-in-the-crowd <name> or --public-node which forces nginx).
+    void send_disguise_404(const std::string& path);
     std::string load_real_index();
     std::string build_hidden_blob();
     void send_auth_challenge();

@@ -32,8 +32,12 @@ std::vector<uint8_t> encode_frame(FrameType type,
         if (!payload.empty()) {
             std::copy(payload.begin(), payload.end(), padded.begin());
         }
-        // zero-fill is already done by resize().
-        padded.back() = static_cast<uint8_t>(n_zero);
+        // zero-fill is already done by resize(); place the length byte at
+        // the tail. Indexing instead of back() keeps gcc's
+        // -Wstringop-overflow happy — it can't otherwise prove padded
+        // is non-empty here, even though pad_total >= m >= 1 by
+        // construction.
+        padded[pad_total - 1] = static_cast<uint8_t>(n_zero);
         eff_payload = &padded;
         flags = static_cast<uint16_t>(flags | kFlagPadded);
     }

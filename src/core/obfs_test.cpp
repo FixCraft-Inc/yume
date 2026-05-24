@@ -310,6 +310,93 @@ void test_on_local_data_sent_debits_both_windows() {
     assert(decoder.conn_send_window() == 65535 - 1024);
 }
 
+void test_hpack_encoder_emits_incremental_indexing_opcode() {
+    // Real Chrome uses 0x40-prefix opcodes ("literal with incremental
+    // indexing"). The pre-stateful encoder used 0x00. Verify the new
+    // encoder emits the right pattern: opcode high nibble bits 0100xx.
+    std::vector<std::uint8_t> out;
+    yume::obfs::HpackEncoder enc;
+    enc.emit_literal_with_indexing(out, /*name_index=*/1,
+        std::string_view(), std::string_view("example.com"));
+    assert(!out.empty());
+    // First byte: 01 in high two bits + name_index=1 in low 6 bits.
+    assert((out[0] & 0xC0) == 0x40);
+    assert((out[0] & 0x3F) == 1);
+}
+
+void test_hpack_encoder_evicts_on_table_shrink() {
+    // Default max is 4096. Fill the table to ~80 entries (each ~50
+    // bytes: short name + short value + 32 overhead), then shrink
+    // max to 200 and verify eviction occurred and the size accounting
+    // is correct.
+    yume::obfs::HpackEncoder enc;
+    std::vector<std::uint8_t> sink;
+    for (int i = 0; i < 80; ++i) {
+        std::string val = "v" + std::to_string(i);
+        enc.emit_literal_with_indexing(sink, /*name_index=*/0,
+            std::string_view("x-test-header"), std::string_view(val));
+    }
+    assert(enc.dyn_table_entry_count() > 0);
+    const auto initial_count = enc.dyn_table_entry_count();
+    enc.set_peer_max_table_size(200);
+    assert(enc.dyn_table_size_bytes() <= 200);
+    assert(enc.dyn_table_entry_count() < initial_count);
+}
+
+void test_hpack_encoder_size_update_opcode() {
+    // After a max-size change, emit_size_update_if_needed must emit
+    // the 001x xxxx opcode at the start of the next HEADERS block.
+    yume::obfs::HpackEncoder enc;
+    enc.set_peer_max_table_size(256);
+    std::vector<std::uint8_t> out;
+    enc.emit_size_update_if_needed(out);
+    assert(!out.empty());
+    // First byte: 001 in top 3 bits + (256 doesn't fit in 5-bit
+    // prefix), so prefix saturates and bytes follow as varint.
+    assert((out[0] & 0xE0) == 0x20);
+    // Second call is a no-op (we already signaled).
+    out.clear();
+    enc.emit_size_update_if_needed(out);
+    assert(out.empty());
+    assert(enc.signaled_max_table_size() == 256);
+}
+
+void test_hpack_encoder_drops_oversize_entry() {
+    // §4.4: entry larger than max table size MUST NOT be added.
+    yume::obfs::HpackEncoder enc;
+    enc.set_peer_max_table_size(64);
+    std::vector<std::uint8_t> sink;
+    std::string huge_value(200, 'A');
+    enc.emit_literal_with_indexing(sink, /*name_index=*/0,
+        std::string_view("name"), std::string_view(huge_value));
+    // Output still includes the literal header (the peer's decoder
+    // sees the value either way), but the dynamic table stays empty
+    // because the entry was too big to fit.
+    assert(enc.dyn_table_entry_count() == 0);
+    assert(enc.dyn_table_size_bytes() == 0);
+}
+
+void test_handshake_round_trip_with_stateful_encoder() {
+    // The carrier handshake now uses HpackEncoder. Verify the decoder
+    // can still extract the :authority and :path — it must, because
+    // the decoder already handled the 0x40-prefix opcode (the literal
+    // values are still emitted identically; only the opcode byte
+    // changes).
+    const std::string sni = "stateful.example";
+    yume::crypto::Bytes signal = yume::obfs::derive_signal_key("");
+    std::int64_t hour = static_cast<std::int64_t>(std::time(nullptr)) / 3600;
+    std::string token = yume::obfs::derive_path_token(signal, sni, hour);
+    std::string path = yume::obfs::build_path(token, yume::obfs::random_nonce_hex());
+    auto bytes = yume::obfs::encode_client_handshake(sni, path, "Mozilla/5.0 Chrome/131.0");
+
+    yume::obfs::H2InboundDecoder decoder(true);
+    decoder.feed(bytes.data(), bytes.size());
+    assert(!decoder.failed());
+    assert(decoder.headers_seen());
+    assert(decoder.extracted_authority() == sni);
+    assert(decoder.extracted_path() == path);
+}
+
 void test_encoder_respects_send_window() {
     // Body bigger than the budget should be truncated; budget = 100
     // means we emit at most 100 payload bytes total across all DATA
@@ -348,6 +435,11 @@ int main() {
     test_decoder_initial_window_size_delta_applies();
     test_on_local_data_sent_debits_both_windows();
     test_encoder_respects_send_window();
-    std::puts("obfs_test: all 15 cases passed");
+    test_hpack_encoder_emits_incremental_indexing_opcode();
+    test_hpack_encoder_evicts_on_table_shrink();
+    test_hpack_encoder_size_update_opcode();
+    test_hpack_encoder_drops_oversize_entry();
+    test_handshake_round_trip_with_stateful_encoder();
+    std::puts("obfs_test: all 20 cases passed");
     return 0;
 }

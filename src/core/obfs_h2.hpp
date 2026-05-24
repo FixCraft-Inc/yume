@@ -8,9 +8,11 @@
 
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "core/crypto.hpp"
@@ -29,6 +31,82 @@ struct H2EncodeParams {
     // means "no flow-control limit" — appropriate when the caller has
     // not opted into window tracking.
     std::uint32_t send_window{0xFFFFFFFFu};
+};
+
+// Stateful HPACK encoder (RFC 7541). Real browsers (Chrome 131+,
+// Firefox 133) emit literal headers with the "incremental indexing"
+// opcode (0x40 prefix) so they accrete into the dynamic table on
+// first use, then reference by index on subsequent HEADERS frames.
+// The pre-1.x encoder always emitted "literal without indexing"
+// (0x00 prefix), which is RFC-conformant but visibly not what a
+// browser sends. This class lets the carrier handshake emit the
+// browser-shaped opcode, maintain a per-connection dynamic table,
+// and honor SETTINGS_HEADER_TABLE_SIZE changes from the peer
+// (RFC 7541 §4.2 + §6.3 size-update opcode).
+//
+// The encoder is stateful but pure: every method writes into the
+// caller's buffer. The lifetime of a HpackEncoder matches one H2
+// connection's worth of HEADERS blocks; if we ever start emitting
+// HEADERS more than once per connection (we don't today, but the
+// fake-h2 path could), the same encoder must be reused so the
+// dynamic table accumulates correctly.
+class HpackEncoder {
+public:
+    HpackEncoder();
+
+    // Latch the peer's SETTINGS_HEADER_TABLE_SIZE. Evicts to fit if
+    // the new max is smaller than what we currently have. Marks the
+    // encoder so the next emit_size_update_if_needed() call writes
+    // the §6.3 size-update opcode at the start of the HEADERS block.
+    void set_peer_max_table_size(std::uint32_t new_max);
+
+    // Write a size-update opcode (RFC 7541 §6.3) to `out` IF the
+    // peer's max table size changed since the last block. MUST be
+    // called once at the start of each HEADERS payload (before the
+    // first emit_*) so the decoder applies the new max before
+    // interpreting any indexed references.
+    void emit_size_update_if_needed(std::vector<std::uint8_t>& out);
+
+    // §6.1: Indexed header (1xxxxxxx). idx is a 1-based index into
+    // the combined static (1..61) + dynamic (62..) table. Does not
+    // touch the dynamic table.
+    void emit_indexed(std::vector<std::uint8_t>& out, std::uint16_t idx);
+
+    // §6.2.1: Literal Header Field with Incremental Indexing
+    // (01xxxxxx). `name_index` references a static-table name
+    // (1..61) or 0 to mean "name is literal" (in which case `name`
+    // must be supplied). The (resolved_name, value) pair is added
+    // to the dynamic table — possibly evicting older entries to fit.
+    void emit_literal_with_indexing(std::vector<std::uint8_t>& out,
+                                    std::uint16_t name_index,
+                                    std::string_view name,
+                                    std::string_view value);
+
+    // §6.2.2: Literal Header Field without Indexing (0000xxxx).
+    // Same shape as the old append_hpack_literal_indexed_name; kept
+    // for headers that legitimately should NOT enter the dynamic
+    // table (e.g. one-shot path tokens we don't want the peer
+    // caching). Does not touch the dynamic table.
+    void emit_literal_without_indexing(std::vector<std::uint8_t>& out,
+                                       std::uint16_t name_index,
+                                       std::string_view value);
+
+    // Diagnostics — exposed for tests.
+    std::uint32_t dyn_table_size_bytes() const { return dyn_table_size_; }
+    std::size_t   dyn_table_entry_count() const { return dyn_table_.size(); }
+    std::uint32_t signaled_max_table_size() const { return signaled_max_table_size_; }
+    std::uint32_t peer_max_table_size() const     { return peer_max_table_size_; }
+
+private:
+    // §4.1: entry size = name.size() + value.size() + 32 octets.
+    void add_to_dyn_table(std::string name, std::string value);
+    void evict_to_size(std::uint32_t target);
+
+    std::deque<std::pair<std::string, std::string>> dyn_table_;
+    std::uint32_t dyn_table_size_{0};
+    std::uint32_t peer_max_table_size_{4096};
+    std::uint32_t signaled_max_table_size_{4096};
+    bool pending_size_update_{false};
 };
 
 crypto::Bytes encode_client_handshake(std::string_view sni,

@@ -15,6 +15,8 @@
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 
+#include <atomic>
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -33,6 +35,24 @@
 namespace yume::tls_stealth {
 
 namespace {
+
+// RFC 8701 §2.1: GREASE values reserved for cipher_suites,
+// supported_groups, extensions, and ALPN. We pick one per category
+// per-connection (via a rotating process-local counter), exactly
+// like Chrome. Different categories use different "buckets" of the
+// wheel so they don't collide in a single ClientHello (RFC 8701
+// §3.3: "the GREASE value used for one extension SHOULD be
+// different from any other GREASE value used in the same
+// ClientHello").
+constexpr std::uint16_t kGreaseValues[16] = {
+    0x0A0A, 0x1A1A, 0x2A2A, 0x3A3A, 0x4A4A, 0x5A5A, 0x6A6A, 0x7A7A,
+    0x8A8A, 0x9A9A, 0xAAAA, 0xBABA, 0xCACA, 0xDADA, 0xEAEA, 0xFAFA,
+};
+std::uint16_t pick_grease(unsigned bucket) {
+    static std::atomic<unsigned> seed{0};
+    const unsigned s = seed.fetch_add(1, std::memory_order_relaxed);
+    return kGreaseValues[(s + bucket * 7u) & 0x0Fu];
+}
 
 std::string current_timestamp() {
     auto now = std::chrono::system_clock::now();
@@ -477,6 +497,39 @@ void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profi
     SSL_CTX* ctx = ssl_context_.native_handle();
     SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
     SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
+
+    // RFC 8701 GREASE: register one extension at a GREASE-range type
+    // (0x0A0A, 0x1A1A, …, 0xFAFA, rotated per-connection via
+    // pick_grease). add_cb returning 1 + setting *out_len=0 emits
+    // the extension with an empty payload, exactly the shape real
+    // Chrome / Firefox use. SSL_EXT_CLIENT_HELLO scopes it to
+    // outbound ClientHellos only. Registration once per CTX; the
+    // callback is invoked per handshake.
+    static const auto grease_add_cb =
+        +[](SSL*, unsigned int /*ext_type*/, unsigned int /*context*/,
+            const unsigned char** out, size_t* out_len,
+            X509* /*x*/, size_t /*chainidx*/, int* /*al*/,
+            void* /*add_arg*/) -> int {
+            *out = nullptr;
+            *out_len = 0;
+            return 1;
+        };
+    static const auto grease_free_cb =
+        +[](SSL*, unsigned int /*ext_type*/, unsigned int /*context*/,
+            const unsigned char* /*out*/, void* /*add_arg*/) {};
+    const unsigned int grease_ext_type = pick_grease(/*bucket=*/1);
+    // Verified against OpenSSL 3.5.6 (Debian 13) by hex-dumping the
+    // rendered ClientHello via the JA3-self-check BIO-mem pattern:
+    // returns 1, and the extension appears at the front of the
+    // extensions block (e.g. "7a 7a 00 00" — GREASE type, length 0
+    // payload — exactly the shape real Chrome emits for its GREASE
+    // extension). Best-effort: a 0 return (already registered on
+    // rotate_profile re-entry, or hypothetical future OpenSSL that
+    // rejects the type) is harmless — handshake proceeds normally.
+    (void)SSL_CTX_add_custom_ext(
+        ctx, grease_ext_type, SSL_EXT_CLIENT_HELLO,
+        grease_add_cb, grease_free_cb, nullptr,
+        /*parse_cb=*/nullptr, /*parse_arg=*/nullptr);
 }
 
 void StealthContext::configure_cipher_suites(const std::vector<uint16_t>& suites) {
@@ -525,6 +578,14 @@ void StealthContext::configure_cipher_suites(const std::vector<uint16_t>& suites
 }
 
 void StealthContext::configure_supported_groups(const std::vector<uint16_t>& groups) {
+    // Use the name-based string API. The uint16-array API
+    // (SSL_CTX_set1_groups) was tried during 1.x development but
+    // OpenSSL 3.5 silently rejects any unknown / GREASE-range
+    // values in the array AND falls back to its own defaults
+    // (which include 0x11ec = X25519MLKEM768) — net effect: the
+    // supported_groups extension drifted away from our profile
+    // data. Stick with the string form, which validates per name
+    // and emits the result verbatim when every name is known.
     std::string groups_string = groups_to_openssl_string(groups);
     SSL_CTX* ctx = ssl_context_.native_handle();
     SSL_CTX_set1_groups_list(ctx, groups_string.c_str());

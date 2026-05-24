@@ -67,6 +67,20 @@ public:
     std::string error() const { return error_; }
     bool failed() const { return !error_.empty(); }
 
+    // Peer-advertised HTTP/2 SETTINGS values (RFC 7540 §6.5.2).
+    // Updated from incoming SETTINGS frames; default to the protocol
+    // defaults until a peer SETTINGS arrives. Callers thread
+    // peer_max_frame_size() into H2EncodeParams::max_data_payload so
+    // outbound DATA frames stay inside the peer's advertised limit —
+    // a peer that lowered MAX_FRAME_SIZE and saw an oversize DATA
+    // would correctly flag a protocol violation.
+    std::uint32_t peer_header_table_size() const   { return peer_header_table_size_; }
+    std::uint32_t peer_max_concurrent_streams() const { return peer_max_concurrent_streams_; }
+    std::uint32_t peer_initial_window_size() const { return peer_initial_window_size_; }
+    std::uint32_t peer_max_frame_size() const      { return peer_max_frame_size_; }
+    std::uint32_t peer_max_header_list_size() const { return peer_max_header_list_size_; }
+    bool          peer_settings_seen() const       { return peer_settings_seen_; }
+
 private:
     void process_inbound();
     bool parse_one_frame(std::size_t* consumed);
@@ -84,6 +98,15 @@ private:
     std::string extracted_path_;
     std::string extracted_authority_;
     std::string error_;
+
+    // Peer SETTINGS, initialised to RFC 7540 §6.5.2 defaults. Updated
+    // when a non-ACK SETTINGS frame arrives via parse_one_frame.
+    std::uint32_t peer_header_table_size_{4096};
+    std::uint32_t peer_max_concurrent_streams_{0xFFFFFFFFu};
+    std::uint32_t peer_initial_window_size_{65535};
+    std::uint32_t peer_max_frame_size_{16384};
+    std::uint32_t peer_max_header_list_size_{0xFFFFFFFFu};
+    bool peer_settings_seen_{false};
 };
 
 }  // namespace yume::obfs

@@ -1135,6 +1135,14 @@ void Session::serve_fake_h2_real_index() {
     obfs::H2EncodeParams params;
     params.padding_mean = 0;
     params.padding_max = 0;
+    // Honour the peer's SETTINGS_MAX_FRAME_SIZE so a stateful H2
+    // middlebox doesn't see a DATA frame oversize relative to what
+    // the client advertised. Fall back to the protocol default
+    // (16384) when no peer SETTINGS were seen (e.g. when we never
+    // got into the carrier decoder for this connection).
+    if (carrier_decoder_ && carrier_decoder_->peer_settings_seen()) {
+        params.max_data_payload = carrier_decoder_->peer_max_frame_size();
+    }
     crypto::Bytes data_frames = obfs::encode_data_frames(
         reinterpret_cast<const uint8_t*>(body.data()), body.size(), params);
     std::vector<uint8_t> combined;

@@ -110,6 +110,77 @@ void test_decoder_handles_streamed_input() {
     assert(decoder.extracted_path() == path);
 }
 
+void test_decoder_parses_peer_settings() {
+    // Construct a minimal preface + SETTINGS frame that advertises
+    //   HEADER_TABLE_SIZE      = 65536
+    //   ENABLE_PUSH            = 0       (ignored by us)
+    //   MAX_CONCURRENT_STREAMS = 200
+    //   INITIAL_WINDOW_SIZE    = 1048576
+    //   MAX_FRAME_SIZE         = 16777215  (clamped to peer max)
+    //   MAX_HEADER_LIST_SIZE   = 32768
+    std::vector<std::uint8_t> input;
+    const char kPref[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    input.insert(input.end(), kPref, kPref + 24);
+    // Frame header: length=36, type=4 (SETTINGS), flags=0, stream=0
+    input.push_back(0x00); input.push_back(0x00); input.push_back(0x24);
+    input.push_back(0x04);
+    input.push_back(0x00);
+    input.push_back(0x00); input.push_back(0x00); input.push_back(0x00); input.push_back(0x00);
+    auto add = [&](std::uint16_t id, std::uint32_t val) {
+        input.push_back(static_cast<std::uint8_t>(id >> 8));
+        input.push_back(static_cast<std::uint8_t>(id & 0xff));
+        input.push_back(static_cast<std::uint8_t>((val >> 24) & 0xff));
+        input.push_back(static_cast<std::uint8_t>((val >> 16) & 0xff));
+        input.push_back(static_cast<std::uint8_t>((val >> 8)  & 0xff));
+        input.push_back(static_cast<std::uint8_t>( val        & 0xff));
+    };
+    add(0x1, 65536);
+    add(0x2, 0);
+    add(0x3, 200);
+    add(0x4, 1048576);
+    add(0x5, 16777215);
+    add(0x6, 32768);
+
+    yume::obfs::H2InboundDecoder decoder(true);
+    decoder.feed(input.data(), input.size());
+    assert(!decoder.failed());
+    assert(decoder.peer_settings_seen());
+    assert(decoder.peer_header_table_size() == 65536);
+    assert(decoder.peer_max_concurrent_streams() == 200);
+    assert(decoder.peer_initial_window_size() == 1048576);
+    assert(decoder.peer_max_frame_size() == 16777215);
+    assert(decoder.peer_max_header_list_size() == 32768);
+}
+
+void test_decoder_clamps_oversize_max_frame_size() {
+    // Peer advertises MAX_FRAME_SIZE > 16777215, which is illegal
+    // per RFC 7540 §6.5.2. Verify we clamp rather than fault.
+    std::vector<std::uint8_t> input;
+    const char kPref[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    input.insert(input.end(), kPref, kPref + 24);
+    input.push_back(0x00); input.push_back(0x00); input.push_back(0x06);
+    input.push_back(0x04);
+    input.push_back(0x00);
+    input.push_back(0x00); input.push_back(0x00); input.push_back(0x00); input.push_back(0x00);
+    input.push_back(0x00); input.push_back(0x05);
+    input.push_back(0xFF); input.push_back(0xFF); input.push_back(0xFF); input.push_back(0xFF);
+
+    yume::obfs::H2InboundDecoder decoder(true);
+    decoder.feed(input.data(), input.size());
+    assert(!decoder.failed());
+    assert(decoder.peer_settings_seen());
+    assert(decoder.peer_max_frame_size() == 16777215u);
+}
+
+void test_decoder_defaults_match_rfc_7540() {
+    // Fresh decoder, no SETTINGS seen: getters return §6.5.2 defaults.
+    yume::obfs::H2InboundDecoder decoder(true);
+    assert(!decoder.peer_settings_seen());
+    assert(decoder.peer_header_table_size() == 4096);
+    assert(decoder.peer_initial_window_size() == 65535);
+    assert(decoder.peer_max_frame_size() == 16384);
+}
+
 }  // namespace
 
 int main() {
@@ -118,6 +189,9 @@ int main() {
     test_data_round_trip_with_padding();
     test_decoder_rejects_garbage_preface();
     test_decoder_handles_streamed_input();
-    std::puts("obfs_test: all 5 cases passed");
+    test_decoder_parses_peer_settings();
+    test_decoder_clamps_oversize_max_frame_size();
+    test_decoder_defaults_match_rfc_7540();
+    std::puts("obfs_test: all 8 cases passed");
     return 0;
 }

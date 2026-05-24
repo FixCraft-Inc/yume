@@ -456,6 +456,49 @@ bool H2InboundDecoder::parse_one_frame(std::size_t* consumed) {
     switch (type) {
         case kFrameSettings: {
             if (!(flags & kFlagAck)) {
+                // Parse the SETTINGS payload (6 bytes per setting:
+                // 2-byte id + 4-byte value, RFC 7540 §6.5.1) and
+                // update our peer-state defaults. SETTINGS frames
+                // with a payload length that isn't a multiple of 6
+                // are a connection error per RFC 7540; we treat
+                // them as a soft signal — log and drop, the ACK
+                // still goes out so the peer doesn't hang.
+                if (length % 6 != 0) {
+                    error_ = "SETTINGS payload not a multiple of 6";
+                    break;
+                }
+                for (std::size_t off = 0; off + 6 <= length; off += 6) {
+                    const std::uint16_t id =
+                        (static_cast<std::uint16_t>(payload[off]) << 8) |
+                         static_cast<std::uint16_t>(payload[off + 1]);
+                    const std::uint32_t val =
+                        (static_cast<std::uint32_t>(payload[off + 2]) << 24) |
+                        (static_cast<std::uint32_t>(payload[off + 3]) << 16) |
+                        (static_cast<std::uint32_t>(payload[off + 4]) << 8) |
+                         static_cast<std::uint32_t>(payload[off + 5]);
+                    // Identifier values from RFC 7540 §6.5.2.
+                    switch (id) {
+                        case 0x1: peer_header_table_size_      = val; break;
+                        case 0x2: /* SETTINGS_ENABLE_PUSH; ignored, we never push */ break;
+                        case 0x3: peer_max_concurrent_streams_ = val; break;
+                        case 0x4: peer_initial_window_size_    = val; break;
+                        case 0x5: {
+                            // RFC 7540 §6.5.2: MAX_FRAME_SIZE must be
+                            // in [16384, 16777215]. Out-of-range is a
+                            // connection error; clamp and continue.
+                            std::uint32_t clamped = val;
+                            if (clamped < 16384u)    clamped = 16384u;
+                            if (clamped > 16777215u) clamped = 16777215u;
+                            peer_max_frame_size_ = clamped;
+                            break;
+                        }
+                        case 0x6: peer_max_header_list_size_   = val; break;
+                        // Unknown SETTINGS identifiers must be
+                        // ignored per RFC 7540 §6.5.2; no action.
+                        default: break;
+                    }
+                }
+                peer_settings_seen_ = true;
                 enqueue_reply(encode_settings_ack());
             }
             break;

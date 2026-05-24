@@ -12,8 +12,13 @@
 #include "server/session.hpp"
 #include "util.hpp"
 
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <random>
+#include <sstream>
 #include <stdexcept>
+#include <vector>
 
 namespace yume::server {
 
@@ -65,6 +70,19 @@ void Manager::start() {
     } else {
         std::cerr << "\033[1;33myumed listening on port " << cfg_.listen_port << "\033[0m\n";
     }
+    if (!cfg_.upstream_response_dir.empty()) {
+        const std::size_t loaded = reload_upstream_responses();
+        util::log_info("--upstream-response-dir " + cfg_.upstream_response_dir +
+                       ": loaded " + std::to_string(loaded) +
+                       " capture(s) for per-probe rotation");
+        if (cfg_.upstream_response_ttl_s > 0) {
+            upstream_reload_timer_ = std::make_unique<boost::asio::steady_timer>(io_);
+            schedule_upstream_reload();
+            util::log_info("--upstream-response-ttl " + std::to_string(cfg_.upstream_response_ttl_s) +
+                           "s: directory will reload on every tick (drop new captures in without restarting)");
+        }
+    }
+
     do_accept();
     if (federation_) {
         federation_->start();
@@ -74,6 +92,11 @@ void Manager::start() {
 void Manager::stop() {
     if (federation_) {
         federation_->stop();
+    }
+    if (upstream_reload_timer_) {
+        boost::system::error_code tec;
+        upstream_reload_timer_->cancel(tec);
+        upstream_reload_stopped_ = true;
     }
     boost::system::error_code ec;
     acceptor_.close(ec);
@@ -94,6 +117,99 @@ void Manager::stop() {
     for (const auto& session : sessions) {
         session->notify_server_shutdown("server closed, kicked");
     }
+}
+
+std::size_t Manager::reload_upstream_responses() {
+    if (cfg_.upstream_response_dir.empty()) {
+        return 0;
+    }
+    namespace fs = std::filesystem;
+    std::vector<std::string> loaded;
+    std::error_code ec;
+    if (!fs::is_directory(cfg_.upstream_response_dir, ec)) {
+        util::log_warn("--upstream-response-dir: " + cfg_.upstream_response_dir +
+                       " is not a directory");
+        return 0;
+    }
+    // Stable order across reloads so deterministic captures (e.g.
+    // numbered files) don't get reshuffled into a different mix that
+    // confuses operators reading logs side-by-side with the dir
+    // contents.
+    std::vector<fs::path> files;
+    for (const auto& entry : fs::directory_iterator(cfg_.upstream_response_dir, ec)) {
+        if (!entry.is_regular_file()) continue;
+        const auto ext = entry.path().extension().string();
+        if (ext == ".http" || ext == ".response") {
+            files.push_back(entry.path());
+        }
+    }
+    std::sort(files.begin(), files.end());
+    for (const auto& path : files) {
+        std::ifstream in(path, std::ios::binary);
+        if (!in) {
+            util::log_warn("--upstream-response-dir: cannot open " + path.string());
+            continue;
+        }
+        std::stringstream ss; ss << in.rdbuf();
+        std::string raw = ss.str();
+        std::string normalized;
+        normalized.reserve(raw.size() + raw.size() / 16);
+        for (std::size_t i = 0; i < raw.size(); ++i) {
+            char c = raw[i];
+            if (c == '\n' && (i == 0 || raw[i - 1] != '\r')) {
+                normalized += '\r';
+            }
+            normalized += c;
+        }
+        if (normalized.rfind("HTTP/1.", 0) != 0) {
+            util::log_warn("--upstream-response-dir: " + path.string() +
+                           " does not start with 'HTTP/1.' (skipped)");
+            continue;
+        }
+        loaded.push_back(std::move(normalized));
+    }
+    const std::size_t count = loaded.size();
+    auto snapshot = std::make_shared<const std::vector<std::string>>(std::move(loaded));
+    {
+        std::lock_guard<std::mutex> lock(upstream_cache_mu_);
+        upstream_cache_ = std::move(snapshot);
+    }
+    return count;
+}
+
+namespace {
+std::size_t pick_index(std::size_t bound) {
+    if (bound <= 1) return 0;
+    thread_local std::mt19937 rng{std::random_device{}()};
+    std::uniform_int_distribution<std::size_t> dist(0, bound - 1);
+    return dist(rng);
+}
+}  // namespace
+
+std::string Manager::upstream_response_pick() const {
+    std::shared_ptr<const std::vector<std::string>> snap;
+    {
+        std::lock_guard<std::mutex> lock(upstream_cache_mu_);
+        snap = upstream_cache_;
+    }
+    if (!snap || snap->empty()) {
+        return {};
+    }
+    return (*snap)[pick_index(snap->size())];
+}
+
+void Manager::schedule_upstream_reload() {
+    if (!upstream_reload_timer_ || upstream_reload_stopped_) {
+        return;
+    }
+    upstream_reload_timer_->expires_after(std::chrono::seconds(cfg_.upstream_response_ttl_s));
+    upstream_reload_timer_->async_wait([this](const boost::system::error_code& ec) {
+        if (ec || upstream_reload_stopped_) return;
+        const std::size_t n = reload_upstream_responses();
+        util::log_info("--upstream-response-dir: reloaded " + std::to_string(n) +
+                       " capture(s) from " + cfg_.upstream_response_dir);
+        schedule_upstream_reload();
+    });
 }
 
 void Manager::register_session(const std::shared_ptr<Session>& session) {

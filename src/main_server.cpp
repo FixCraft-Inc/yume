@@ -74,7 +74,7 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --upstream-response --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
+  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --upstream-response --upstream-response-dir --upstream-response-ttl --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
   local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --federation-auth-key --federation-anonym-ca --keys-add --keys-gen"
   case "$prev" in
     --completion)
@@ -200,6 +200,18 @@ void print_help() {
         << "                             `curl -i https://real-site/notfound > resp.http`\n"
         << "                             once and point this flag at it. Wins over\n"
         << "                             --hide-in-the-crowd when both are set.\n"
+        << "  --upstream-response-dir <d>\n"
+        << "                           Like --upstream-response but loads every\n"
+        << "                             *.http / *.response in the directory and\n"
+        << "                             picks one at random per probe. Defeats\n"
+        << "                             'probe twice, get identical bytes' replay\n"
+        << "                             checks. Wins over --upstream-response when\n"
+        << "                             both are set.\n"
+        << "  --upstream-response-ttl <s>\n"
+        << "                           When used with --upstream-response-dir, reloads\n"
+        << "                             the directory every <s> seconds so operators\n"
+        << "                             can drop new captures in without restarting.\n"
+        << "                             0 = load once at startup (default).\n"
         << "  --attach-local           Attach to a local yumed\n\n"
         << "Key Management:\n"
         << "  --keys-list              List authorized keys\n"
@@ -1533,6 +1545,12 @@ int main(int argc, char** argv) {
             cfg.http_profile = argv[++i];
         } else if (arg == "--upstream-response" && i + 1 < argc) {
             cfg.upstream_response_file = resolve_cli_path(argv[++i]);
+        } else if (arg == "--upstream-response-dir" && i + 1 < argc) {
+            cfg.upstream_response_dir = resolve_cli_path(argv[++i]);
+        } else if (arg == "--upstream-response-ttl" && i + 1 < argc) {
+            int parsed = std::atoi(argv[++i]);
+            if (parsed < 0) parsed = 0;
+            cfg.upstream_response_ttl_s = static_cast<std::uint32_t>(parsed);
         } else if (arg == "--attach-local") {
             attach_local = true;
         } else if (arg == "--root") {
@@ -1729,6 +1747,14 @@ int main(int argc, char** argv) {
                 int v = json["obfs_jitter_ms"].get<int>();
                 if (v < 0) v = 0;
                 cfg.obfs_jitter_ms = static_cast<std::uint32_t>(v);
+            }
+            if (json.contains("upstream_response_dir") && cfg.upstream_response_dir.empty()) {
+                cfg.upstream_response_dir = resolve_cfg_path(json["upstream_response_dir"].get<std::string>());
+            }
+            if (json.contains("upstream_response_ttl") && cfg.upstream_response_ttl_s == 0) {
+                int v = json["upstream_response_ttl"].get<int>();
+                if (v < 0) v = 0;
+                cfg.upstream_response_ttl_s = static_cast<std::uint32_t>(v);
             }
             if (json.contains("boring")) {
                 cfg.boring = json["boring"].get<bool>();
@@ -1987,6 +2013,20 @@ int main(int argc, char** argv) {
                              std::to_string(cfg.upstream_response_bytes.size()) +
                              " bytes from " + cfg.upstream_response_file +
                              " (replayed verbatim to non-yume probes)");
+    }
+
+    if (!cfg.upstream_response_dir.empty()) {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        if (!fs::is_directory(cfg.upstream_response_dir, ec)) {
+            yume::util::log_error("--upstream-response-dir: " + cfg.upstream_response_dir +
+                                  " is not a directory");
+            return 1;
+        }
+        if (!cfg.upstream_response_file.empty()) {
+            yume::util::log_warn("--upstream-response-dir overrides --upstream-response " +
+                                 cfg.upstream_response_file + " (single-file capture will be ignored)");
+        }
     }
 
     if (cfg.obfs_pad_multiple > 0) {

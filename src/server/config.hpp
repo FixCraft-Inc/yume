@@ -96,6 +96,19 @@ struct ServerConfig {
     // breaking HTTP wire format. Empty = use synthetic profile.
     std::string upstream_response_file;
     std::string upstream_response_bytes;
+    // --upstream-response-dir <dir>. Sibling of --upstream-response that
+    // loads every *.http / *.response file in the directory and rotates
+    // per-probe. Defeats the "replay yumed twice, get the same Date /
+    // ETag / body" tell from --upstream-response. Files are normalised
+    // (lone \n → \r\n) the same way --upstream-response handles them.
+    // If both --upstream-response and --upstream-response-dir are set,
+    // the directory wins and the single file is ignored.
+    std::string upstream_response_dir;
+    // --upstream-response-ttl <s>. When > 0 alongside
+    // --upstream-response-dir, Manager reloads the directory every TTL
+    // seconds so operators can drop in new captures without restarting
+    // yumed. 0 = load once at startup.
+    std::uint32_t upstream_response_ttl_s{0};
     // --obfs-pad-multiple <N>. When > 0, every outbound frame's payload
     // is padded with trailing zeros + a 1-byte length to round its
     // on-wire size up to a multiple of N. Defeats classifiers that

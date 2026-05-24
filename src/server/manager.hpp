@@ -127,11 +127,25 @@ public:
     const std::string& server_id() const { return server_id_; }
     const std::string& server_name() const { return server_name_; }
 
+    // Returns one of the loaded upstream-response captures (chosen
+    // uniformly), or an empty string if no directory is configured /
+    // the directory is empty. Thread-safe — Session calls this from
+    // its strand on every probe. The internal cache is reloaded on
+    // the --upstream-response-ttl interval; sessions never see a
+    // half-loaded cache because we swap a shared_ptr atomically.
+    std::string upstream_response_pick() const;
+
+    // Synchronous load of the configured --upstream-response-dir into
+    // the cache. Returns the number of files successfully loaded.
+    // Called once at startup and (if TTL > 0) by the periodic timer.
+    std::size_t reload_upstream_responses();
+
 private:
     static constexpr std::size_t kMaxLifecycleEvents = 512;
 
     void do_accept();
     void append_lifecycle_event_locked(const control::ClientLifecycleEvent& event);
+    void schedule_upstream_reload();
 
     boost::asio::io_context& io_;
     ServerConfig cfg_;
@@ -175,6 +189,16 @@ private:
     std::string server_id_;
     std::string server_name_;
     std::unique_ptr<FederationManager> federation_;
+
+    // Per-probe upstream-response rotation. cache_ is swapped under the
+    // mutex; readers (Session::send_disguise_404) atomically load a
+    // shared_ptr snapshot and pick from it lock-free. timer_ fires on
+    // the io_context and reloads the directory every
+    // cfg_.upstream_response_ttl_s seconds.
+    mutable std::mutex upstream_cache_mu_;
+    std::shared_ptr<const std::vector<std::string>> upstream_cache_;
+    std::unique_ptr<boost::asio::steady_timer> upstream_reload_timer_;
+    bool upstream_reload_stopped_{false};
 };
 
 }  // namespace yume::server

@@ -698,7 +698,8 @@ void Session::on_handshake(const boost::system::error_code& ec) {
     // AUTH-challenge path (preserves pre-1.0 latency for operators
     // who haven't opted in to stealth).
     if (cfg_.real_http || cfg_.obfuscation || !cfg_.http_profile.empty()
-        || !cfg_.upstream_response_bytes.empty()) {
+        || !cfg_.upstream_response_bytes.empty()
+        || !cfg_.upstream_response_dir.empty()) {
         start_preface_read();
         return;
     }
@@ -917,14 +918,22 @@ std::string Session::build_hidden_blob() {
 
 void Session::send_disguise_404(const std::string& path) {
     (void)path;  // not echoed back; logged only as the connection close reason
-    // --upstream-response wins: if the operator loaded a pre-captured
-    // real upstream response, replay those bytes verbatim. That's
-    // byte-identical to what a real nginx / apache / etc would emit
-    // for the captured request, which defeats any DPI that compares
-    // probe responses to known-good captures.
+    // Resolution order, strongest disguise first:
+    //   1. --upstream-response-dir <dir> (rotation): pick one of N
+    //      pre-captured replies. Defeats "probe twice, both replies
+    //      identical" inspection.
+    //   2. --upstream-response <file>: single byte-identical replay.
+    //   3. profile-driven synthetic 404 (--hide-in-the-crowd / yumed).
     std::shared_ptr<std::string> resp;
     std::string reason;
-    if (!cfg_.upstream_response_bytes.empty()) {
+    std::string rotated;
+    if (manager_) {
+        rotated = manager_->upstream_response_pick();
+    }
+    if (!rotated.empty()) {
+        resp = std::make_shared<std::string>(std::move(rotated));
+        reason = "served upstream-response replay (rotated)";
+    } else if (!cfg_.upstream_response_bytes.empty()) {
         resp = std::make_shared<std::string>(cfg_.upstream_response_bytes);
         reason = "served upstream-response replay";
     } else {

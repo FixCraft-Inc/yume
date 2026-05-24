@@ -1161,12 +1161,39 @@ void Session::send_auth_challenge() {
     }
     protocol::Frame frame{{static_cast<uint32_t>(challenge_.size()), protocol::AUTH, 0, 0}, challenge_};
     auto self = shared_from_this();
-    async_write_frame(frame, [self](const boost::system::error_code& ec, std::size_t) {
-        if (ec) {
-            self->close_with_reason("AUTH challenge write failed: " + ec.message());
-            return;
-        }
-        self->read_header();
+    auto do_write = [self, frame]() {
+        self->async_write_frame(frame, [self](const boost::system::error_code& ec, std::size_t) {
+            if (ec) {
+                self->close_with_reason("AUTH challenge write failed: " + ec.message());
+                return;
+            }
+            self->read_header();
+        });
+    };
+
+    // Optional opt-in send-side jitter on the AUTH challenge. Read the
+    // env once per call (cheap; getenv is fast and there's exactly one
+    // AUTH per session). YUME_AUTH_JITTER_MS=N adds a uniform random
+    // 0..N ms delay before writing AUTH, which breaks the
+    // "server always emits AUTH at exactly T ms after TLS finish"
+    // ML signature without costing latency for operators who don't
+    // care. Default 0 = no delay.
+    int jitter_max = 0;
+    if (const char* raw = std::getenv("YUME_AUTH_JITTER_MS")) {
+        try { jitter_max = std::max(0, std::stoi(raw)); }
+        catch (const std::exception&) { jitter_max = 0; }
+    }
+    if (jitter_max == 0) {
+        do_write();
+        return;
+    }
+    thread_local std::mt19937 rng{std::random_device{}()};
+    std::uniform_int_distribution<int> dist(0, jitter_max);
+    int delay_ms = dist(rng);
+    auto timer = std::make_shared<boost::asio::steady_timer>(strand_);
+    timer->expires_after(std::chrono::milliseconds(delay_ms));
+    timer->async_wait([timer, do_write](const boost::system::error_code& ec) {
+        if (!ec) do_write();
     });
 }
 

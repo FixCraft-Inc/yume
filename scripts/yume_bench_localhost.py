@@ -541,44 +541,64 @@ def run_one_config(cfg: Config, ctx: dict, iters: int) -> dict:
         }
 
 
+_USE_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+if _USE_COLOR:
+    _BOLD = "\033[1m"; _DIM = "\033[2m"; _RED = "\033[1;31m"; _GREEN = "\033[1;32m"
+    _YELLOW = "\033[1;33m"; _CYAN = "\033[1;36m"; _MAGENTA = "\033[1;35m"; _RESET = "\033[0m"
+else:
+    _BOLD = _DIM = _RED = _GREEN = _YELLOW = _CYAN = _MAGENTA = _RESET = ""
+
+
+def _delta_color(delta_ms: float) -> str:
+    # green < 0.1 ms overhead, yellow < 1 ms, red ≥ 1 ms.
+    if delta_ms < 0.1:
+        return _GREEN
+    if delta_ms < 1.0:
+        return _YELLOW
+    return _RED
+
+
 def render_summary(results: list[dict]) -> str:
-    """Pretty-print a summary table to stderr."""
+    """Pretty-print a summary table."""
     base_noise = next((r for r in results if r.get("base_noise") and r["ok"]), None)
     base_median = base_noise["stats_ms"]["median_ms"] if base_noise else None
 
     lines = []
     lines.append("")
-    lines.append("YUME localhost bench — round-trip latency (smaller is better)")
-    lines.append("=" * 80)
+    lines.append(f"{_BOLD}⚡ YUME localhost bench{_RESET}  "
+                 f"{_DIM}— round-trip latency, smaller is better{_RESET}")
+    lines.append(f"{_DIM}" + "═" * 80 + _RESET)
     lines.append(
-        f"{'config':<22} {'iters':>6} {'med ms':>8} {'p95':>7} {'p99':>7} "
-        f"{'stdev':>7} {'Δ med vs base':>15}"
+        f"  {_DIM}{'config':<22} {'iters':>6} {'med ms':>8} {'p95':>7} {'p99':>7} "
+        f"{'stdev':>7} {'Δ med vs base':>15}{_RESET}"
     )
-    lines.append("-" * 80)
+    lines.append(f"  {_DIM}" + "─" * 78 + _RESET)
     for r in results:
         if not r["ok"]:
-            lines.append(f"{r['name']:<22} FAILED — {r.get('error', '?')[:50]}")
+            lines.append(f"  {_BOLD}{r['name']:<22}{_RESET} {_RED}❌ FAILED{_RESET} "
+                         f"— {_RED}{r.get('error', '?')[:50]}{_RESET}")
             continue
         s = r["stats_ms"]
         if base_median is not None and not r["base_noise"]:
             delta = s["median_ms"] - base_median
-            delta_str = f"+{delta:>5.2f} ms"
+            delta_str = f"{_delta_color(delta)}+{delta:>5.2f} ms{_RESET}"
         elif r["base_noise"]:
-            delta_str = "(base)"
+            delta_str = f"{_DIM}(base){_RESET}"
         else:
-            delta_str = "—"
+            delta_str = f"{_DIM}—{_RESET}"
+        med_color = _CYAN if s["median_ms"] < 2 else (_YELLOW if s["median_ms"] < 10 else _RED)
         lines.append(
-            f"{r['name']:<22} "
+            f"  {_BOLD}{r['name']:<22}{_RESET} "
             f"{r['iters']:>6} "
-            f"{s['median_ms']:>8.3f} "
+            f"{med_color}{s['median_ms']:>8.3f}{_RESET} "
             f"{s['p95_ms']:>7.3f} "
             f"{s['p99_ms']:>7.3f} "
-            f"{s['stdev_ms']:>7.3f} "
+            f"{_DIM}{s['stdev_ms']:>7.3f}{_RESET} "
             f"{delta_str:>15}"
         )
-    lines.append("=" * 80)
-    lines.append("Δ med vs base = added latency contributed by the yume stack.")
-    lines.append("Stdev ~ 1ms or less is normal for loopback; higher = noisy host.")
+    lines.append(f"{_DIM}" + "═" * 80 + _RESET)
+    lines.append(f"{_DIM}Δ med vs base = added latency contributed by the yume stack.{_RESET}")
+    lines.append(f"{_DIM}Stdev ~ 1ms or less is normal for loopback; higher = noisy host.{_RESET}")
     return "\n".join(lines)
 
 

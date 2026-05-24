@@ -49,6 +49,38 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+# --- pretty output ----------------------------------------------------------
+# Degrade gracefully when not a TTY or when NO_COLOR is set. Matches the
+# basefwx plugin-smoke.sh convention so the visual style is consistent
+# with the other helpers in the tree.
+
+_USE_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+
+if _USE_COLOR:
+    BOLD    = "\033[1m"
+    DIM     = "\033[2m"
+    RED     = "\033[1;31m"
+    GREEN   = "\033[1;32m"
+    YELLOW  = "\033[1;33m"
+    BLUE    = "\033[1;34m"
+    MAGENTA = "\033[1;35m"
+    CYAN    = "\033[1;36m"
+    RESET   = "\033[0m"
+else:
+    BOLD = DIM = RED = GREEN = YELLOW = BLUE = MAGENTA = CYAN = RESET = ""
+
+# Emojis double as PASS/FAIL markers. They render in any terminal that
+# can show a checkmark; the trailing colored letter keeps the signal
+# even on glyph-stripped terminals.
+ICON_PASS = "✅"
+ICON_FAIL = "❌"
+ICON_WARN = "⚠️ "
+ICON_SHIELD = "🛡️ "
+ICON_SEARCH = "🔍"
+ICON_GLOBE  = "🌐"
+ICON_BOX    = "📦"
+ICON_INFO   = "ℹ️ "
+
 # --- expectations -----------------------------------------------------------
 
 SERVER_PROFILES = {
@@ -447,28 +479,61 @@ def main() -> int:
             "client": {name: {"ok": ok, "note": note} for name, (ok, note) in client_results.items()},
         }, indent=2))
     else:
-        print("\nServer profile fidelity:")
-        dpi_hdr = "  dpi   " if args.dpi else ""
-        print(f"  {'profile':<14} {'ok':<4} {'server':<32} {'body':<5}{dpi_hdr}  failures")
+        # Banner
+        title = f"{ICON_SHIELD} {BOLD}yume disguise check{RESET}"
+        sub   = f"{DIM}— validates --hide-in-the-crowd profile fidelity{RESET}"
+        print(f"\n{title}\n{sub}\n")
+
+        print(f"{BOLD}{ICON_BOX} Server profile fidelity{RESET}")
+        dpi_hdr = f"  {CYAN}dpi{RESET}   " if args.dpi else ""
+        header = (f"  {DIM}{'profile':<14} {'status':<8} "
+                  f"{'server':<32} {'body':>5}{dpi_hdr}  details{RESET}")
+        print(header)
+        sep = f"  {DIM}" + "─" * (60 + (8 if args.dpi else 0)) + RESET
+        print(sep)
         for r in server_results:
-            ok_mark = "✓" if r.ok else "✗"
+            if r.ok:
+                status = f"{GREEN}{ICON_PASS} ok  {RESET}"
+                server_color = GREEN
+                details = f"{DIM}clean{RESET}"
+            else:
+                status = f"{RED}{ICON_FAIL} fail{RESET}"
+                server_color = RED
+                details = f"{RED}" + "; ".join(r.failures) + RESET
             server_short = (r.server or "(none)")[:32]
-            dpi_col = f"  {(r.dpi_label or '-'):<6}" if args.dpi else ""
-            print(f"  {r.profile:<14} {ok_mark:<4} {server_short:<32} {r.body_len if r.body_len is not None else '-':<5}{dpi_col}  "
-                  + ("clean" if r.ok else "; ".join(r.failures)))
+            body_disp = str(r.body_len) if r.body_len is not None else "-"
+            dpi_col = ""
+            if args.dpi:
+                lbl = r.dpi_label or "-"
+                lbl_color = GREEN if lbl in ("TLS", "TLS.HTTPS", "HTTP") else (YELLOW if lbl == "Unknown" else CYAN)
+                dpi_col = f"  {lbl_color}{lbl:<6}{RESET}"
+            print(f"  {BOLD}{r.profile:<14}{RESET} {status} "
+                  f"{server_color}{server_short:<32}{RESET} {body_disp:>5}{dpi_col}  {details}")
 
         if client_results:
-            print("\nClient profile wiring:")
+            print(f"\n{BOLD}{ICON_GLOBE} Client profile wiring{RESET}")
             for name, (ok, note) in client_results.items():
-                print(f"  {name:<10} {'✓' if ok else '✗'}  {note}")
+                if ok:
+                    print(f"  {BOLD}{name:<10}{RESET} {GREEN}{ICON_PASS} ok{RESET}  {DIM}{note}{RESET}")
+                else:
+                    print(f"  {BOLD}{name:<10}{RESET} {RED}{ICON_FAIL} fail{RESET}  {RED}{note}{RESET}")
 
     server_pass = all(r.ok for r in server_results)
     client_pass = all(ok for ok, _ in client_results.values()) if client_results else True
-    print(f"\nResult: {len(server_results)} server profile(s), "
-          f"{sum(1 for r in server_results if r.ok)} pass / {sum(1 for r in server_results if not r.ok)} fail; "
-          f"{len(client_results)} client profile(s), "
-          f"{sum(1 for ok,_ in client_results.values() if ok)} pass.")
-    print(f"workdir: {workdir}")
+    n_pass = sum(1 for r in server_results if r.ok)
+    n_fail = len(server_results) - n_pass
+    n_cpass = sum(1 for ok, _ in client_results.values() if ok)
+
+    print()
+    if server_pass and client_pass:
+        verdict = f"{GREEN}{ICON_PASS} all profiles pass{RESET}"
+    else:
+        verdict = f"{RED}{ICON_FAIL} {n_fail} server profile(s) failed{RESET}"
+    summary = (f"{BOLD}Result:{RESET} {verdict}  "
+               f"{DIM}({n_pass}/{len(server_results)} server, "
+               f"{n_cpass}/{len(client_results) if client_results else 0} client){RESET}")
+    print(summary)
+    print(f"{DIM}{ICON_INFO} workdir: {workdir}{RESET}")
     return 0 if (server_pass and client_pass) else 1
 
 

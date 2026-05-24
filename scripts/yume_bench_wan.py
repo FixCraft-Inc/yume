@@ -920,6 +920,104 @@ def _fmt_mbps(d: dict[str, Any] | None) -> str:
     return f"{d['median_ms']:.1f} Mbps (p95 {d['p95_ms']:.1f})"
 
 
+# ---------------------------------------------------------------------
+# Pretty terminal rendering (basefwx scripts/plugin-smoke.sh style:
+# ANSI colors + glyph prefixes, degrade cleanly when not a TTY)
+# ---------------------------------------------------------------------
+
+_USE_COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+if _USE_COLOR:
+    _BOLD    = "\033[1m"
+    _DIM     = "\033[2m"
+    _RED     = "\033[1;31m"
+    _GREEN   = "\033[1;32m"
+    _YELLOW  = "\033[1;33m"
+    _BLUE    = "\033[1;34m"
+    _MAGENTA = "\033[1;35m"
+    _CYAN    = "\033[1;36m"
+    _RESET   = "\033[0m"
+else:
+    _BOLD = _DIM = _RED = _GREEN = _YELLOW = _BLUE = _MAGENTA = _CYAN = _RESET = ""
+
+
+def render_terminal(profile: dict[str, Any], rtt: dict[str, float] | None,
+                    arms: list[dict[str, Any]]) -> str:
+    """Colorful terminal-friendly report. Markdown is for files; this
+    is for humans staring at a terminal."""
+    L = []
+    L.append("")
+    L.append(f"{_BOLD}⚡ yume virtual-WAN bench{_RESET}")
+    L.append(f"{_DIM}— TLS handshake, throughput, and DPI verdict per arm{_RESET}")
+    L.append("")
+
+    L.append(f"{_BOLD}🌐 WAN profile:{_RESET}  {_CYAN}{profile['label']}{_RESET}")
+    L.append(f"  {_DIM}latency:{_RESET}   {profile['latency_ms']} ms ± {profile['jitter_ms']} ms")
+    L.append(f"  {_DIM}loss:{_RESET}      {profile['loss_pct']}% per-direction")
+    L.append(f"  {_DIM}bandwidth:{_RESET} {profile['bandwidth_mbit']} Mbps")
+    L.append("")
+
+    if rtt:
+        loss = rtt.get("loss_pct", 0)
+        loss_color = _GREEN if loss < 2 else (_YELLOW if loss < 10 else _RED)
+        L.append(f"{_BOLD}📡 Measured ICMP RTT{_RESET}  "
+                 f"{_DIM}(client → server, {loss_color}{loss:.1f}%{_DIM} loss){_RESET}")
+        L.append(f"  min {_CYAN}{rtt['min_ms']:.1f}{_RESET} ms  "
+                 f"avg {_CYAN}{rtt['avg_ms']:.1f}{_RESET} ms  "
+                 f"max {_CYAN}{rtt['max_ms']:.1f}{_RESET} ms  "
+                 f"mdev {_DIM}{rtt['mdev_ms']:.1f}{_RESET} ms")
+        L.append("")
+
+    L.append(f"{_BOLD}📦 Per-arm results{_RESET}")
+    L.append(f"  {_DIM}{'arm':<10} {'TLS handshake':<26} {'total':<14} "
+             f"{'throughput':<14} {'DPI':<14} {'flows':>5}{_RESET}")
+    L.append(f"  {_DIM}" + "─" * 86 + _RESET)
+    for arm in arms:
+        if arm is None:
+            continue
+        agg = arm["aggregate"]
+        dpi = arm.get("dpi") or {}
+        name = arm["arm"]
+        name_color = _MAGENTA if name == "yume" else _BLUE
+        handshake = _fmt_ms(agg.get("tls_handshake_ms"))
+        if name == "yume" and "tunnel_handshake_s" in arm:
+            handshake = (f"{arm['tunnel_handshake_s'] * 1000:.0f} ms tunnel + {handshake}")
+        total = _fmt_ms(agg.get("total_time_ms") or agg.get("page_load_ms"))
+        tput = _fmt_mbps(agg.get("throughput_mbps"))
+        dpi_top = dpi.get("top_protocol", "—")
+        dpi_color = _GREEN if dpi_top in ("TLS", "TLS.HTTPS", "HTTP") else (
+                    _YELLOW if dpi_top in ("Unknown", "—") else _CYAN)
+        dpi_n = str(dpi.get("match_count", "—"))
+        L.append(f"  {name_color}{name:<10}{_RESET} {handshake:<26} {total:<14} "
+                 f"{tput:<14} {dpi_color}{dpi_top:<14}{_RESET} {dpi_n:>5}")
+    L.append("")
+
+    has_dpi = any(arm and arm.get("dpi") for arm in arms)
+    if has_dpi:
+        L.append(f"{_BOLD}🔍 DPI verdicts (raw){_RESET}")
+        for arm in arms:
+            if arm is None:
+                continue
+            dpi = arm.get("dpi")
+            name = arm["arm"]
+            name_color = _MAGENTA if name == "yume" else _BLUE
+            if dpi is None:
+                L.append(f"  {name_color}{name}{_RESET}  {_DIM}ndpiReader not installed; skipped{_RESET}")
+                continue
+            if "error" in dpi:
+                L.append(f"  {name_color}{name}{_RESET}  {_RED}error: {dpi['error']}{_RESET}")
+                continue
+            top = dpi["top_protocol"]
+            top_color = _GREEN if top in ("TLS", "TLS.HTTPS", "HTTP") else _YELLOW
+            L.append(f"  {name_color}{name}{_RESET}  top {top_color}{top}{_RESET}  "
+                     f"{_DIM}({dpi['match_count']} flows){_RESET}")
+            for proto, n in sorted(dpi.get("protocols", {}).items(),
+                                   key=lambda kv: (-kv[1], kv[0])):
+                L.append(f"    {_DIM}- {proto}: {n}{_RESET}")
+        L.append("")
+
+    return "\n".join(L)
+
+
 def render_markdown(profile: dict[str, Any], rtt: dict[str, float] | None,
                     arms: list[dict[str, Any]]) -> str:
     out = []
@@ -1296,7 +1394,14 @@ def main() -> int:
         args.report.write_text(md)
         print(f"[bench] markdown report written to {args.report}", file=sys.stderr)
     else:
-        print(md)
+        # Default to the pretty terminal renderer when stdout is a TTY;
+        # fall back to markdown when piped or when NO_COLOR is set so
+        # downstream consumers (paste-into-issue, CI logs) get a clean
+        # markdown stream.
+        if sys.stdout.isatty() and not os.environ.get("NO_COLOR"):
+            print(render_terminal(profile, rtt, arms))
+        else:
+            print(md)
 
     if args.json:
         args.json.write_text(json.dumps(report, indent=2, default=str))

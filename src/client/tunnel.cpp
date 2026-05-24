@@ -7,7 +7,9 @@
 #include "client/tunnel.hpp"
 
 #include <array>
+#include <chrono>
 #include <cstdio>
+#include <random>
 #include <thread>
 
 #include "client/forward.hpp"
@@ -43,10 +45,31 @@ Tunnel::Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream)
                             completion(!ec, bytes, ec ? ec.message() : std::string{});
                         }
                     });
-                boost::asio::async_write(
-                    self->stream_,
-                    boost::asio::buffer(*write_data),
-                    std::move(write_handler));
+                auto fire = [self, write_data, write_handler = std::move(write_handler)]() mutable {
+                    boost::asio::async_write(
+                        self->stream_,
+                        boost::asio::buffer(*write_data),
+                        std::move(write_handler));
+                };
+                // Per-batch send-side jitter. The strand serialises
+                // dispatches, so a delay on batch N delays the write
+                // strand's next batch by the same amount — breaks the
+                // tight inter-arrival ML signature without losing
+                // payload ordering. 0 = bypass entirely.
+                const std::uint32_t jitter_max =
+                    self->obfs_jitter_ms_max_.load(std::memory_order_relaxed);
+                if (jitter_max == 0) {
+                    fire();
+                    return;
+                }
+                thread_local std::mt19937 jitter_rng{std::random_device{}()};
+                std::uniform_int_distribution<std::uint32_t> dist(0, jitter_max);
+                const auto delay = std::chrono::milliseconds(dist(jitter_rng));
+                auto timer = std::make_shared<boost::asio::steady_timer>(self->strand_);
+                timer->expires_after(delay);
+                timer->async_wait([timer, fire = std::move(fire)](const boost::system::error_code& ec) mutable {
+                    if (!ec) fire();
+                });
             });
     });
     core_.set_close_transport_handler([this](const std::string& reason) {
@@ -80,6 +103,11 @@ void Tunnel::set_inner_key(const Bytes& key) {
 
 void Tunnel::set_hop(bool enabled, std::uint32_t interval_ms, std::int64_t offset_ms) {
     core_.set_hop(enabled, interval_ms, offset_ms);
+}
+
+void Tunnel::set_obfs_shape(std::uint16_t pad_multiple, std::uint32_t jitter_ms_max) {
+    core_.set_obfs_shape(pad_multiple, jitter_ms_max);
+    obfs_jitter_ms_max_.store(jitter_ms_max, std::memory_order_relaxed);
 }
 
 void Tunnel::set_server_in_charge(bool enabled) {

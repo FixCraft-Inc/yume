@@ -86,6 +86,51 @@ void test_inner_crypto_round_trip() {
 #endif
 }
 
+void test_padded_frame_round_trip() {
+    using namespace yume::protocol;
+    // Pick a payload whose size is *not* a multiple of any test M.
+    const std::vector<uint8_t> payload{0xDE, 0xAD, 0xBE, 0xEF, 0x42};
+
+    for (uint16_t m : {uint16_t{1}, uint16_t{16}, uint16_t{32}, uint16_t{64}, uint16_t{256}}) {
+        auto wire = encode_frame(DATA, /*stream_id=*/7, /*flags=*/0, payload, m);
+        // Header carries kFlagPadded; on-wire payload length is a multiple of m.
+        const uint32_t wire_len =
+            (uint32_t(wire[0]) << 24) | (uint32_t(wire[1]) << 16) |
+            (uint32_t(wire[2]) << 8)  |  uint32_t(wire[3]);
+        const uint16_t flags = uint16_t(wire[6] << 8) | uint16_t(wire[7]);
+        assert((flags & kFlagPadded) != 0);
+        if (m > 1) {
+            assert(wire_len % m == 0);
+        }
+        // Decode strips the padding transparently and clears the flag.
+        const auto frame = decode_frame(wire);
+        assert((frame.header.flags & kFlagPadded) == 0);
+        assert(frame.payload == payload);
+    }
+
+    // pad_multiple = 0 keeps the legacy byte-for-byte encoding.
+    auto legacy = encode_frame(DATA, 7, 0, payload, 0);
+    const uint16_t legacy_flags = uint16_t(legacy[6] << 8) | uint16_t(legacy[7]);
+    assert((legacy_flags & kFlagPadded) == 0);
+    assert(legacy.size() == 8 + payload.size());
+    const auto legacy_frame = decode_frame(legacy);
+    assert(legacy_frame.payload == payload);
+}
+
+void test_padded_frame_rejects_bad_length() {
+    using namespace yume::protocol;
+    // Hand-craft a frame with kFlagPadded set but a length byte that
+    // claims to consume more than the payload itself. decode_frame must
+    // throw rather than producing a Frame with a negative-size payload.
+    std::vector<uint8_t> wire;
+    const uint8_t payload_size = 4;
+    wire = {0, 0, 0, payload_size, uint8_t(DATA), 0, uint8_t(kFlagPadded >> 8), uint8_t(kFlagPadded & 0xFF),
+            0, 0, 0, 99};  // length byte 99 > payload_size - 1
+    bool threw = false;
+    try { (void)decode_frame(wire); } catch (const std::runtime_error&) { threw = true; }
+    assert(threw);
+}
+
 void test_shutdown_closes_registered_streams() {
     Recorder recorder;
     yume::client::TransportCore core(recorder.writer(), recorder.closer());
@@ -112,6 +157,8 @@ void test_shutdown_closes_registered_streams() {
 int main() {
     test_open_round_trip();
     test_inner_crypto_round_trip();
+    test_padded_frame_round_trip();
+    test_padded_frame_rejects_bad_length();
     test_shutdown_closes_registered_streams();
     return 0;
 }

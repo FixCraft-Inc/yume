@@ -96,6 +96,20 @@ struct ServerConfig {
     // breaking HTTP wire format. Empty = use synthetic profile.
     std::string upstream_response_file;
     std::string upstream_response_bytes;
+    // --obfs-pad-multiple <N>. When > 0, every outbound frame's payload
+    // is padded with trailing zeros + a 1-byte length to round its
+    // on-wire size up to a multiple of N. Defeats classifiers that
+    // train on per-packet payload-size histograms. 0 = off. Receivers
+    // always strip padding transparently — but both ends must run a
+    // version that knows about kFlagPadded, so enabling this on a new
+    // sender talking to a pre-padding peer is a hard break. Clamped to
+    // [0, 256] (256 is the largest N a single length byte can carry).
+    std::uint16_t obfs_pad_multiple{0};
+    // --obfs-jitter-ms <ms>. When > 0, each batched frame write is
+    // deferred by a uniform random delay in [0, ms]. Breaks the
+    // "constant ping/keepalive cadence" ML feature at the cost of
+    // added send latency. 0 = no jitter.
+    std::uint32_t obfs_jitter_ms{0};
     std::vector<std::string> federation_peers;
     std::string federation_auth_key;
     std::string federation_anonym_ca;

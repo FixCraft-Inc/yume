@@ -22,6 +22,14 @@ struct ClientConfig {
     int io_threads{0};
     bool obfuscation{true};
     std::string obfs_secret;
+    // --obfs-pad-multiple <N>. Round every outbound frame payload up to
+    // a multiple of N bytes via trailing pad bytes + 1-byte length. 0 =
+    // off. Clamped to [0, 256]. The peer must understand kFlagPadded
+    // (same yume version), so this is opt-in.
+    std::uint16_t obfs_pad_multiple{0};
+    // --obfs-jitter-ms <ms>. Defer each batched TLS write by a uniform
+    // random delay in [0, ms]. 0 = no delay.
+    std::uint32_t obfs_jitter_ms{0};
     bool inner_crypto{true};
     bool inner_heavy{true};
     bool inner_hop{true};

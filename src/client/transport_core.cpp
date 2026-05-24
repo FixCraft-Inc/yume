@@ -129,6 +129,22 @@ void TransportCore::set_server_in_charge(bool enabled) {
     server_in_charge_ = enabled;
 }
 
+void TransportCore::set_obfs_shape(std::uint16_t pad_multiple, std::uint32_t jitter_ms_max) {
+    std::lock_guard<std::mutex> lock(state_mu_);
+    obfs_pad_multiple_ = pad_multiple > 256 ? std::uint16_t{256} : pad_multiple;
+    obfs_jitter_ms_max_ = jitter_ms_max;
+}
+
+std::uint16_t TransportCore::obfs_pad_multiple() const {
+    std::lock_guard<std::mutex> lock(state_mu_);
+    return obfs_pad_multiple_;
+}
+
+std::uint32_t TransportCore::obfs_jitter_ms_max() const {
+    std::lock_guard<std::mutex> lock(state_mu_);
+    return obfs_jitter_ms_max_;
+}
+
 void TransportCore::set_allow_exec(bool enabled) {
     std::lock_guard<std::mutex> lock(state_mu_);
     allow_exec_ = enabled;
@@ -427,7 +443,7 @@ void TransportCore::feed_tls_bytes(const uint8_t* data, std::size_t size) {
     while (true) {
         protocol::Frame frame{};
         bool have_frame = false;
-        bool frame_too_large = false;
+        const char* fatal_reason = nullptr;
         {
             std::lock_guard<std::mutex> lock(state_mu_);
             if (stopped_) {
@@ -439,7 +455,7 @@ void TransportCore::feed_tls_bytes(const uint8_t* data, std::size_t size) {
             const auto header = parse_header(incoming_bytes_.data());
             if (header.len > kMaxFramePayloadBytes) {
                 incoming_bytes_.clear();
-                frame_too_large = true;
+                fatal_reason = "frame too large";
             } else {
                 const std::size_t frame_bytes = 8U + static_cast<std::size_t>(header.len);
                 if (incoming_bytes_.size() < frame_bytes) {
@@ -448,12 +464,18 @@ void TransportCore::feed_tls_bytes(const uint8_t* data, std::size_t size) {
                 frame.header = header;
                 frame.payload.assign(incoming_bytes_.begin() + 8, incoming_bytes_.begin() + frame_bytes);
                 incoming_bytes_.erase(incoming_bytes_.begin(), incoming_bytes_.begin() + frame_bytes);
-                have_frame = true;
+                if ((frame.header.flags & protocol::kFlagPadded) != 0 &&
+                    !protocol::strip_padding(frame)) {
+                    incoming_bytes_.clear();
+                    fatal_reason = "malformed padded frame: pad length exceeds payload";
+                } else {
+                    have_frame = true;
+                }
             }
         }
 
-        if (frame_too_large) {
-            request_transport_close("frame too large");
+        if (fatal_reason) {
+            request_transport_close(fatal_reason);
             return;
         }
 
@@ -496,11 +518,17 @@ std::shared_ptr<TransportCore::Bytes> TransportCore::encode_outgoing_frame(const
     if ((frame.header.flags & protocol::kFlagInnerEncrypted) != 0) {
         payload = encrypt_inner_payload(frame.header.type, frame.header.stream_id, payload);
     }
+    std::uint16_t pad_multiple = 0;
+    {
+        std::lock_guard<std::mutex> lock(state_mu_);
+        pad_multiple = obfs_pad_multiple_;
+    }
     return std::make_shared<Bytes>(protocol::encode_frame(
         static_cast<protocol::FrameType>(frame.header.type),
         frame.header.stream_id,
         frame.header.flags,
-        payload));
+        payload,
+        pad_multiple));
 }
 
 void TransportCore::dispatch_next_write() {

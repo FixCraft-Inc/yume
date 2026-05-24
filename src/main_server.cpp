@@ -74,7 +74,7 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --upstream-response --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
+  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --upstream-response --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
   local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --federation-auth-key --federation-anonym-ca --keys-add --keys-gen"
   case "$prev" in
     --completion)
@@ -124,6 +124,15 @@ void print_help() {
         << "  --dns-server <ip>        Direct DNS resolver for outbound opens\n"
         << "  --proxy <socks5://...>   Route server outbound TCP through SOCKS5\n"
         << "  --obfs                   Enable obfuscation\n"
+        << "  --obfs-pad-multiple <N>  Pad every outbound frame payload to a\n"
+        << "                             multiple of N bytes (0-256, default 0).\n"
+        << "                             Defeats per-packet size classifiers.\n"
+        << "                             Requires the same yume version on the\n"
+        << "                             client (kFlagPadded support).\n"
+        << "  --obfs-jitter-ms <ms>    Defer each batched write by a uniform\n"
+        << "                             random 0..ms delay (default 0). Breaks\n"
+        << "                             the inter-arrival ML signature at the\n"
+        << "                             cost of added latency.\n"
         << "  --allow-local-ip         Allow private/loopback destinations\n"
         << "  --control-full           Allow full server-side network control\n"
         << "  --root                   Keep root privileges after bind/listen\n"
@@ -1378,6 +1387,15 @@ int main(int argc, char** argv) {
             cfg.obfuscation = false;
         } else if (arg == "--obfs-secret" && i + 1 < argc) {
             cfg.obfs_secret = argv[++i];
+        } else if (arg == "--obfs-pad-multiple" && i + 1 < argc) {
+            int parsed = std::atoi(argv[++i]);
+            if (parsed < 0) parsed = 0;
+            if (parsed > 256) parsed = 256;
+            cfg.obfs_pad_multiple = static_cast<std::uint16_t>(parsed);
+        } else if (arg == "--obfs-jitter-ms" && i + 1 < argc) {
+            int parsed = std::atoi(argv[++i]);
+            if (parsed < 0) parsed = 0;
+            cfg.obfs_jitter_ms = static_cast<std::uint32_t>(parsed);
         } else if (arg == "--inner") {
             yume::util::log_warn("--inner is deprecated; use --inner-heavy or --inner-light");
             cfg.inner_crypto = true;
@@ -1701,6 +1719,17 @@ int main(int argc, char** argv) {
                     cfg.obfs_secret = json["obfs_secret"].get<std::string>();
                 }
             }
+            if (json.contains("obfs_pad_multiple") && cfg.obfs_pad_multiple == 0) {
+                int v = json["obfs_pad_multiple"].get<int>();
+                if (v < 0) v = 0;
+                if (v > 256) v = 256;
+                cfg.obfs_pad_multiple = static_cast<std::uint16_t>(v);
+            }
+            if (json.contains("obfs_jitter_ms") && cfg.obfs_jitter_ms == 0) {
+                int v = json["obfs_jitter_ms"].get<int>();
+                if (v < 0) v = 0;
+                cfg.obfs_jitter_ms = static_cast<std::uint32_t>(v);
+            }
             if (json.contains("boring")) {
                 cfg.boring = json["boring"].get<bool>();
             }
@@ -1958,6 +1987,19 @@ int main(int argc, char** argv) {
                              std::to_string(cfg.upstream_response_bytes.size()) +
                              " bytes from " + cfg.upstream_response_file +
                              " (replayed verbatim to non-yume probes)");
+    }
+
+    if (cfg.obfs_pad_multiple > 0) {
+        yume::util::log_info("--obfs-pad-multiple " + std::to_string(cfg.obfs_pad_multiple) +
+                             ": every outbound frame payload is padded to a multiple of this size. " +
+                             "Connecting clients MUST run a yume build that knows kFlagPadded (>= 1.0 post-padding); " +
+                             "older clients will fail to parse the stream.");
+    }
+    if (cfg.obfs_jitter_ms > 0) {
+        yume::util::log_info("--obfs-jitter-ms " + std::to_string(cfg.obfs_jitter_ms) +
+                             ": each batched write is deferred by 0.." +
+                             std::to_string(cfg.obfs_jitter_ms) +
+                             " ms. Adds latency, breaks the constant-cadence ML signature.");
     }
 
     if (cfg.public_node) {

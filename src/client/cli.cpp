@@ -1111,6 +1111,10 @@ struct ParsedArgs {
     bool obfuscation_override{false};
     std::string obfs_secret;
     bool obfs_secret_override{false};
+    std::uint16_t obfs_pad_multiple{0};
+    bool obfs_pad_multiple_override{false};
+    std::uint32_t obfs_jitter_ms{0};
+    bool obfs_jitter_ms_override{false};
     int lport{0};
     std::string rhost;
     int rport{0};
@@ -1367,6 +1371,23 @@ ParsedArgs parse_args(int argc, char** argv) {
             if (!v) return args;
             args.obfs_secret = v;
             args.obfs_secret_override = true;
+        } else if (arg == "--obfs-pad-multiple") {
+            int parsed = 0;
+            if (!parse_int_value("--obfs-pad-multiple", parsed)) {
+                return args;
+            }
+            if (parsed < 0) parsed = 0;
+            if (parsed > 256) parsed = 256;
+            args.obfs_pad_multiple = static_cast<std::uint16_t>(parsed);
+            args.obfs_pad_multiple_override = true;
+        } else if (arg == "--obfs-jitter-ms") {
+            int parsed = 0;
+            if (!parse_int_value("--obfs-jitter-ms", parsed)) {
+                return args;
+            }
+            if (parsed < 0) parsed = 0;
+            args.obfs_jitter_ms = static_cast<std::uint32_t>(parsed);
+            args.obfs_jitter_ms_override = true;
         } else if (arg == "--lport") {
             if (!parse_int_value("--lport", args.lport)) {
                 return args;
@@ -2039,7 +2060,7 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --threads --obfs --no-obfs --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
+  local opts="--help -h --version --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --threads --obfs --no-obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
   local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path --relay-key-file"
   case "$prev" in
     --completion)
@@ -2149,6 +2170,15 @@ void print_help() {
         << "  --hop / --no-hop         Inner key hopping on/off\n"
         << "  --hop-interval <ms>      Hop interval\n"
         << "  --obfs / --no-obfs       HTTPS masking tunnel preface on/off\n"
+        << "  --obfs-pad-multiple <N>  Pad every outbound frame payload to a\n"
+        << "                             multiple of N bytes (0-256, default 0).\n"
+        << "                             Defeats per-packet size classifiers.\n"
+        << "                             Requires the same yume version on the\n"
+        << "                             server (kFlagPadded support).\n"
+        << "  --obfs-jitter-ms <ms>    Defer each batched write by a uniform\n"
+        << "                             random 0..ms delay (default 0). Breaks\n"
+        << "                             the inter-arrival ML signature at the\n"
+        << "                             cost of added latency.\n"
         << "  --pq-pub <path>          PQ public key\n"
         << "  --use-embedded-master    Allow embedded BaseFWX master fallback\n"
         << "  --no-embedded-master     Disable embedded BaseFWX master fallback\n"
@@ -3406,6 +3436,17 @@ int Cli::run(int argc, char** argv) {
             if (json.contains("obfs_secret") && !args.obfs_secret_override) {
                 cfg.obfs_secret = json["obfs_secret"].get<std::string>();
             }
+            if (json.contains("obfs_pad_multiple") && !args.obfs_pad_multiple_override) {
+                int v = json["obfs_pad_multiple"].get<int>();
+                if (v < 0) v = 0;
+                if (v > 256) v = 256;
+                cfg.obfs_pad_multiple = static_cast<std::uint16_t>(v);
+            }
+            if (json.contains("obfs_jitter_ms") && !args.obfs_jitter_ms_override) {
+                int v = json["obfs_jitter_ms"].get<int>();
+                if (v < 0) v = 0;
+                cfg.obfs_jitter_ms = static_cast<std::uint32_t>(v);
+            }
             if (json.contains("inner_crypto") && !args.inner_crypto_override) {
                 cfg.inner_crypto = json["inner_crypto"].get<bool>();
             }
@@ -3527,6 +3568,12 @@ int Cli::run(int argc, char** argv) {
     }
     if (args.obfs_secret_override) {
         cfg.obfs_secret = args.obfs_secret;
+    }
+    if (args.obfs_pad_multiple_override) {
+        cfg.obfs_pad_multiple = args.obfs_pad_multiple;
+    }
+    if (args.obfs_jitter_ms_override) {
+        cfg.obfs_jitter_ms = args.obfs_jitter_ms;
     }
     if (args.inner_crypto_override) {
         cfg.inner_crypto = args.inner_crypto;
@@ -3795,6 +3842,8 @@ int Cli::run(int argc, char** argv) {
         if (cfg.socks_port > 0) json["socks_port"] = cfg.socks_port;
         if (cfg.io_threads != 0) json["threads"] = cfg.io_threads;
         json["obfuscation"] = cfg.obfuscation;
+        if (cfg.obfs_pad_multiple > 0) json["obfs_pad_multiple"] = cfg.obfs_pad_multiple;
+        if (cfg.obfs_jitter_ms > 0) json["obfs_jitter_ms"] = cfg.obfs_jitter_ms;
         json["inner_crypto"] = cfg.inner_crypto;
         json["inner_heavy"] = cfg.inner_heavy;
         json["inner_hop"] = cfg.inner_hop;
@@ -5224,6 +5273,7 @@ int Cli::run(int argc, char** argv) {
                 tunnel->set_inner_key(*inner_key);
             }
             tunnel->set_hop(hop_enabled, hop_interval_ms, hop_offset_ms);
+            tunnel->set_obfs_shape(cfg.obfs_pad_multiple, cfg.obfs_jitter_ms);
             tunnel->set_server_in_charge(cfg.server_in_charge);
             tunnel->set_allow_exec(cfg.allow_exec);
             std::string close_reason;

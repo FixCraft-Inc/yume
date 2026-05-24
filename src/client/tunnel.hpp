@@ -36,6 +36,11 @@ public:
     void start();
     void set_inner_key(const Bytes& key);
     void set_hop(bool enabled, std::uint32_t interval_ms, std::int64_t offset_ms);
+    // Send-side obfs shape. `pad_multiple` is forwarded to TransportCore
+    // for per-frame padding; `jitter_ms_max` is consumed here in the
+    // tunnel's write_handler to defer the actual TLS write by a uniform
+    // random delay [0, jitter_ms_max]. Both default to 0 (off).
+    void set_obfs_shape(std::uint16_t pad_multiple, std::uint32_t jitter_ms_max);
     void set_server_in_charge(bool enabled);
     void set_allow_exec(bool enabled);
     void set_reverse_handler(ReverseOpenHandler handler);
@@ -91,6 +96,7 @@ private:
     std::mutex close_handler_mu_;
     std::atomic<std::uint64_t> bytes_in_{0};
     std::atomic<std::uint64_t> bytes_out_{0};
+    std::atomic<std::uint32_t> obfs_jitter_ms_max_{0};
     bool closed_{false};
 };
 

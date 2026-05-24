@@ -50,6 +50,16 @@ public:
 
     void set_inner_key(const Bytes& key);
     void set_hop(bool enabled, std::uint32_t interval_ms, std::int64_t offset_ms);
+    // Send-side traffic-shape obfuscation. `pad_multiple` (clamped to
+    // [0, 256]) rounds every outbound frame payload up to that multiple
+    // via trailing pad bytes + a length byte (kFlagPadded). 0 = off.
+    // `jitter_ms_max` is wired by the writer (Tunnel) — TransportCore
+    // only stores it for inspection. Wire compatibility: the peer must
+    // know about kFlagPadded too, so enabling padding against an old
+    // server is a hard break.
+    void set_obfs_shape(std::uint16_t pad_multiple, std::uint32_t jitter_ms_max);
+    std::uint16_t obfs_pad_multiple() const;
+    std::uint32_t obfs_jitter_ms_max() const;
     void set_server_in_charge(bool enabled);
     void set_allow_exec(bool enabled);
     void set_reverse_handler(ReverseOpenHandler handler);
@@ -131,6 +141,8 @@ private:
     std::int64_t hop_offset_ms_{0};
     bool server_in_charge_{false};
     bool allow_exec_{false};
+    std::uint16_t obfs_pad_multiple_{0};
+    std::uint32_t obfs_jitter_ms_max_{0};
     std::chrono::steady_clock::time_point last_pong_{};
     Bytes incoming_bytes_;
 };

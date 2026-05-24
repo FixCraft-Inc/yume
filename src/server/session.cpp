@@ -667,7 +667,8 @@ void Session::notify_server_shutdown(const std::string& reason) {
                 protocol::CONTROL,
                 0,
                 flags,
-                payload));
+                payload,
+                self->cfg_.obfs_pad_multiple));
             self->queue_encoded_write_on_strand(data);
         }
         self->close_with_reason(reason);
@@ -1296,6 +1297,12 @@ void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
 
     payload_buf_.assign(len, 0);
     if (len == 0) {
+        if ((current_header_.flags & protocol::kFlagPadded) != 0) {
+            // kFlagPadded with zero payload is malformed: a padded frame
+            // always carries at least the 1-byte length, so len >= 1.
+            close_with_reason("malformed padded frame: zero-length payload");
+            return;
+        }
         protocol::Frame frame{current_header_, {}};
         handle_frame(frame);
         return;
@@ -1328,6 +1335,10 @@ void Session::on_read_payload(const boost::system::error_code& ec, std::size_t) 
     }
 
     protocol::Frame frame{current_header_, payload_buf_};
+    if ((frame.header.flags & protocol::kFlagPadded) != 0 && !protocol::strip_padding(frame)) {
+        close_with_reason("malformed padded frame: pad length exceeds payload");
+        return;
+    }
     handle_frame(frame);
 }
 
@@ -3214,7 +3225,8 @@ void Session::async_write_frame(const protocol::Frame& frame,
         static_cast<protocol::FrameType>(frame.header.type),
         frame.header.stream_id,
         frame.header.flags,
-        frame.payload));
+        frame.payload,
+        cfg_.obfs_pad_multiple));
 
     boost::asio::post(strand_, [self = shared_from_this(), data, handler = std::move(handler)]() mutable {
         self->queue_encoded_write_on_strand(data, std::move(handler));
@@ -3227,7 +3239,8 @@ void Session::queue_frame_on_strand(const protocol::Frame& frame,
         static_cast<protocol::FrameType>(frame.header.type),
         frame.header.stream_id,
         frame.header.flags,
-        frame.payload));
+        frame.payload,
+        cfg_.obfs_pad_multiple));
     queue_encoded_write_on_strand(std::move(data), std::move(handler));
 }
 
@@ -3350,47 +3363,70 @@ void Session::do_write() {
     }
 
     auto self = shared_from_this();
-    boost::asio::async_write(stream_, boost::asio::buffer(*batch_data),
-                             boost::asio::bind_executor(strand_,
-                                                        [self, batch_data, batch_count](const boost::system::error_code& ec,
-                                                               std::size_t bytes) {
-                                                            std::vector<PendingWrite> completed;
-                                                            completed.reserve(batch_count);
-                                                            std::size_t popped = 0;
-                                                            while (popped < batch_count && !self->write_queue_.empty()) {
-                                                                completed.push_back(std::move(self->write_queue_.front()));
-                                                                self->write_queue_.pop_front();
-                                                                ++popped;
-                                                            }
-                                                            if (self->write_queue_depth_ >= popped) {
-                                                                self->write_queue_depth_ -= static_cast<uint32_t>(popped);
-                                                            } else {
-                                                                self->write_queue_depth_ = 0;
-                                                            }
-                                                            if (!ec) {
-                                                                self->maybe_resume_inbound_reads_on_strand();
-                                                            }
-                                                            for (auto& item : completed) {
-                                                                if (item.handler) {
-                                                                    const std::size_t item_bytes = (!ec && item.data) ? item.data->size() : bytes;
-                                                                    item.handler(ec, item_bytes);
-                                                                }
-                                                            }
-                                                            if (ec) {
-                                                                if (self->close_state_ != CloseState::Open && is_expected_close_ec(ec)) {
-                                                                    self->shutdown_transport();
-                                                                    return;
-                                                                }
-                                                                std::string error_msg = "frame write failed: " + describe_error_code(ec);
-                                                                if (ec.category().name() == std::string("ssl") ||
-                                                                    ec == boost::asio::ssl::error::stream_truncated) {
-                                                                    error_msg = "SSL/TLS write error: " + error_msg + " [client must reconnect]";
-                                                                }
-                                                                self->close_with_reason(error_msg);
-                                                                return;
-                                                            }
-                                                            self->do_write();
-                                                        }));
+    auto on_complete = [self, batch_data, batch_count](const boost::system::error_code& ec,
+                                                       std::size_t bytes) {
+        std::vector<PendingWrite> completed;
+        completed.reserve(batch_count);
+        std::size_t popped = 0;
+        while (popped < batch_count && !self->write_queue_.empty()) {
+            completed.push_back(std::move(self->write_queue_.front()));
+            self->write_queue_.pop_front();
+            ++popped;
+        }
+        if (self->write_queue_depth_ >= popped) {
+            self->write_queue_depth_ -= static_cast<uint32_t>(popped);
+        } else {
+            self->write_queue_depth_ = 0;
+        }
+        if (!ec) {
+            self->maybe_resume_inbound_reads_on_strand();
+        }
+        for (auto& item : completed) {
+            if (item.handler) {
+                const std::size_t item_bytes = (!ec && item.data) ? item.data->size() : bytes;
+                item.handler(ec, item_bytes);
+            }
+        }
+        if (ec) {
+            if (self->close_state_ != CloseState::Open && is_expected_close_ec(ec)) {
+                self->shutdown_transport();
+                return;
+            }
+            std::string error_msg = "frame write failed: " + describe_error_code(ec);
+            if (ec.category().name() == std::string("ssl") ||
+                ec == boost::asio::ssl::error::stream_truncated) {
+                error_msg = "SSL/TLS write error: " + error_msg + " [client must reconnect]";
+            }
+            self->close_with_reason(error_msg);
+            return;
+        }
+        self->do_write();
+    };
+
+    auto fire_write = [self, batch_data, on_complete = std::move(on_complete)]() mutable {
+        boost::asio::async_write(self->stream_, boost::asio::buffer(*batch_data),
+                                 boost::asio::bind_executor(self->strand_, std::move(on_complete)));
+    };
+
+    // Per-batch send-side jitter. Defers the actual async_write by a
+    // uniform random 0..obfs_jitter_ms delay. Because do_write() is
+    // strand-serialised and the next do_write() only fires from
+    // on_complete, the delay propagates: each batch is offset
+    // independently. This is what defeats the "every keepalive arrives
+    // T ms after the last" ML feature. Opt-in via --obfs-jitter-ms; 0 =
+    // no delay, no timer overhead.
+    if (cfg_.obfs_jitter_ms == 0) {
+        fire_write();
+        return;
+    }
+    thread_local std::mt19937 jitter_rng{std::random_device{}()};
+    std::uniform_int_distribution<std::uint32_t> dist(0, cfg_.obfs_jitter_ms);
+    const auto delay_ms = std::chrono::milliseconds(dist(jitter_rng));
+    auto timer = std::make_shared<boost::asio::steady_timer>(strand_);
+    timer->expires_after(delay_ms);
+    timer->async_wait([timer, fire_write = std::move(fire_write)](const boost::system::error_code& ec) mutable {
+        if (!ec) fire_write();
+    });
 }
 
 void Session::touch_activity() {

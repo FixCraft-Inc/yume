@@ -68,6 +68,22 @@ boost::asio::ssl::context generate_stealth_tls_config(
     tls_fingerprint::BrowserProfile profile,
     bool verbose = false);
 
+// Generates a ClientHello using the stealth context for `profile` via
+// an in-memory BIO pair (no network I/O) and parses the resulting
+// bytes through tls_fingerprint::parse_client_hello. Returns the
+// computed JA3 hash and the raw component vector, or std::nullopt on
+// any OpenSSL / parse error.
+//
+// Use at daemon startup to verify the JA3 the local OpenSSL build
+// will actually emit matches the expected per-profile baseline —
+// catches silent drift when OpenSSL is upgraded between builds.
+struct SelfFingerprint {
+    std::string ja3_hash;
+    tls_fingerprint::FingerprintData fingerprint;
+};
+std::optional<SelfFingerprint> compute_self_fingerprint(
+    tls_fingerprint::BrowserProfile profile);
+
 struct StealthConnectionResult {
     bool success{false};
     std::string error_message;

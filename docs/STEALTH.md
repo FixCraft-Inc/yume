@@ -86,12 +86,12 @@ A browser that hits the same hostname and port with `GET / HTTP/1.1` is served t
 - Active probes that complete TLS and inspect the application layer for non-HTTP traffic
 - ISP-level "OpenVPN/WireGuard signature" filters that block known VPN protocols
 
-**Does not defend against:**
+**Partial defense (depends on the depth of the attack):**
 
-- Stateful HTTP/2 middleboxes that fully track stream and HPACK dynamic-table state. The HPACK encoder is intentionally stateless and SETTINGS changes from the peer are ignored, so a fully-conformant H2 parser will desync within seconds.
-- ML traffic classifiers trained on joint inter-arrival × packet-size distributions over the full session.
-- Active probers that send arbitrary HTTP/2 requests to the server: any path that doesn't match the structural / token check gets the `--real` HTML page back, distinguishable from a real CDN by content (the page is configured by you, not generated dynamically).
-- TLS-fingerprint regressions if OpenSSL is upgraded to a version whose default extension order drifts from the compiled-in browser profiles.
+- **Stateful HTTP/2 middleboxes** that fully track stream and HPACK dynamic-table state. SETTINGS frame ACKs and proper PING handling are emitted; SETTINGS values that change frame-emission behavior (`SETTINGS_MAX_FRAME_SIZE`, `SETTINGS_INITIAL_WINDOW_SIZE`) are now honored on the write path. The HPACK encoder is still intentionally stateless — it never adds to the dynamic table — so a fully-conformant H2 parser that asserts dynamic-table consistency will eventually flag the stream. Rewriting the codec as a complete H2 implementation is on the post-1.x roadmap; in practice most middleboxes don't go that deep.
+- **ML traffic classifiers** trained on joint inter-arrival × packet-size distributions over the full session. Mitigations active by default: per-frame size padding to a configurable multiple (`--obfs-pad-multiple <bytes>`, default 32) and randomized send-side jitter (`--obfs-jitter-ms <ms>`, default 0 — opt-in because it costs latency). Neither closes the gap against arbitrarily sensitive classifiers; they raise the training cost.
+- **Active probers** that send arbitrary HTTP/1.1 requests to the server: served a profile-driven 404 by `--hide-in-the-crowd <profile>` (see [Layer 3](#layer-3-http-layer-server-disguise---hide-in-the-crowd)) whose header order, charset, body shape, and profile-specific extras (`Alt-Svc` for Caddy, `CF-RAY` + `alt-svc` for Cloudflare, `Content-Security-Policy` + `nosniff` + `X-Powered-By` for Express, etc.) match the real-server bytes captured from upstream source. With `--upstream <url>`, yumed proxies probe requests to a real upstream so probes get bit-identical real-CDN responses (closes the gap entirely, at the cost of a per-probe outbound).
+- **TLS-fingerprint regressions** if OpenSSL is upgraded to a version whose default extension order drifts from the compiled-in browser profiles. Mitigated: yumed runs a startup JA3 self-check that hashes its own ClientHello via the configured profile and compares to a pinned per-profile baseline. Drift is logged loudly with the observed vs expected JA3.
 
 ## Quick recipes
 

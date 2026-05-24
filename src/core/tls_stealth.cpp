@@ -573,6 +573,62 @@ boost::asio::ssl::context generate_stealth_tls_config(
     return std::move(stealth_ctx.get_context());
 }
 
+std::optional<SelfFingerprint> compute_self_fingerprint(
+    tls_fingerprint::BrowserProfile profile) {
+    // Build a stealth client context for the profile.
+    StealthConfig config;
+    config.enabled = true;
+    config.target_profile = profile;
+    StealthContext stealth_ctx(config);
+
+    SSL* ssl = SSL_new(stealth_ctx.get_context().native_handle());
+    if (!ssl) return std::nullopt;
+
+    // BIO mem pair: SSL writes into write_bio (we own the other end).
+    BIO* read_bio  = BIO_new(BIO_s_mem());
+    BIO* write_bio = BIO_new(BIO_s_mem());
+    if (!read_bio || !write_bio) {
+        if (read_bio) BIO_free(read_bio);
+        if (write_bio) BIO_free(write_bio);
+        SSL_free(ssl);
+        return std::nullopt;
+    }
+    SSL_set_bio(ssl, read_bio, write_bio);  // SSL takes ownership
+    SSL_set_connect_state(ssl);
+    SSL_set_tlsext_host_name(ssl, "example.com");
+
+    // Drive the handshake once. It will fail (no server to read from)
+    // but the ClientHello has already been written to write_bio.
+    SSL_do_handshake(ssl);
+
+    BUF_MEM* bptr = nullptr;
+    BIO_get_mem_ptr(write_bio, &bptr);
+    if (!bptr || bptr->length == 0) {
+        SSL_free(ssl);
+        return std::nullopt;
+    }
+
+    // Parse the ClientHello. The record-layer prefix (1 byte type +
+    // 2 bytes version + 2 bytes length = 5 bytes) sits in front of
+    // the handshake message; parse_client_hello expects the
+    // ClientHello including the handshake-message wrapper.
+    const std::uint8_t* data = reinterpret_cast<const std::uint8_t*>(bptr->data);
+    std::size_t length = static_cast<std::size_t>(bptr->length);
+    if (length < 6 || data[0] != 0x16) {  // TLS record content_type = handshake
+        SSL_free(ssl);
+        return std::nullopt;
+    }
+    // Skip the 5-byte record header; the next byte is the handshake
+    // type (0x01 = ClientHello) which parse_client_hello expects.
+    auto fp = tls_fingerprint::parse_client_hello(data + 5, length - 5);
+    SSL_free(ssl);
+
+    SelfFingerprint out;
+    out.ja3_hash    = fp.ja3_hash;
+    out.fingerprint = std::move(fp);
+    return out;
+}
+
 StealthConnectionResult connect_with_stealth_mode(
     boost::asio::io_context& io_context,
     const std::string& server_host,

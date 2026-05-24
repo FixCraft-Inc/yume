@@ -49,6 +49,8 @@
 #include "core/identity.hpp"
 #include "core/inner_crypto.hpp"
 #include "core/runtime_policy.hpp"
+#include "core/tls_fingerprint.hpp"
+#include "core/tls_stealth.hpp"
 #include "core/version.hpp"
 #include "client/outbound_proxy.hpp"
 #include "server/manager.hpp"
@@ -2540,6 +2542,39 @@ int main(int argc, char** argv) {
     yume::util::log_info("effective inner mode: " + effective_inner_mode +
                          "; hopping: " + hop_state +
                          "; required: " + (cfg.inner_required ? "yes" : "no"));
+
+    // TLS JA3 self-check: generate our own ClientHello via in-memory
+    // BIO, compute JA3, compare against the per-profile baseline. Catches
+    // silent drift when OpenSSL is upgraded between builds — if the
+    // observed JA3 stops matching any known browser cluster the daemon
+    // logs loudly so operators see it on the next restart.
+    {
+        struct Baseline { yume::tls_fingerprint::BrowserProfile profile; const char* name; const char* expected_ja3; };
+        constexpr Baseline kBaselines[] = {
+            {yume::tls_fingerprint::BrowserProfile::CHROME_135,  "chrome",  ""},
+            {yume::tls_fingerprint::BrowserProfile::FIREFOX_126, "firefox", ""},
+            {yume::tls_fingerprint::BrowserProfile::SAFARI_17,   "safari",  ""},
+        };
+        for (const auto& b : kBaselines) {
+            auto self = yume::tls_stealth::compute_self_fingerprint(b.profile);
+            if (!self.has_value()) {
+                yume::util::log_warn(std::string("ja3 self-check ") + b.name + ": could not generate ClientHello");
+                continue;
+            }
+            const std::string& got = self->ja3_hash;
+            if (*b.expected_ja3 == '\0') {
+                yume::util::log_info(std::string("ja3 self-check ") + b.name + ": " + got +
+                                     " (no pinned baseline — record this hash if it should be pinned)");
+            } else if (got == b.expected_ja3) {
+                yume::util::log_info(std::string("ja3 self-check ") + b.name + ": " + got + " (matches baseline)");
+            } else {
+                yume::util::log_warn(std::string("ja3 self-check ") + b.name +
+                                     ": DRIFT — observed " + got +
+                                     " vs pinned " + b.expected_ja3 +
+                                     ". OpenSSL extension order may have changed; verify the JA3 still falls in the browser cluster before publishing.");
+            }
+        }
+    }
 
     if (cfg.real_http) {
         if (cfg.real_secret.empty()) {

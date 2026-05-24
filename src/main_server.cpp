@@ -7,6 +7,7 @@
 #include <iostream>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <algorithm>
 #include <utility>
 #include <ctime>
@@ -73,7 +74,7 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
+  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --upstream-response --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
   local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --federation-auth-key --federation-anonym-ca --keys-add --keys-gen"
   case "$prev" in
     --completion)
@@ -185,6 +186,11 @@ void print_help() {
         << "                             Values: nginx, nginx-stable, apache, caddy,\n"
         << "                             cloudflare, express, gunicorn, none, yumed\n"
         << "                             (default: yumed; nginx under --public-node).\n"
+        << "  --upstream-response <p>  Replay a pre-captured real HTTP/1.x response\n"
+        << "                             byte-identically when probed. Capture with\n"
+        << "                             `curl -i https://real-site/notfound > resp.http`\n"
+        << "                             once and point this flag at it. Wins over\n"
+        << "                             --hide-in-the-crowd when both are set.\n"
         << "  --attach-local           Attach to a local yumed\n\n"
         << "Key Management:\n"
         << "  --keys-list              List authorized keys\n"
@@ -1507,6 +1513,8 @@ int main(int argc, char** argv) {
             cfg.public_node = true;
         } else if (arg == "--hide-in-the-crowd" && i + 1 < argc) {
             cfg.http_profile = argv[++i];
+        } else if (arg == "--upstream-response" && i + 1 < argc) {
+            cfg.upstream_response_file = resolve_cli_path(argv[++i]);
         } else if (arg == "--attach-local") {
             attach_local = true;
         } else if (arg == "--root") {
@@ -1917,6 +1925,39 @@ int main(int argc, char** argv) {
                                   "'. Supported: " + supported);
             return 1;
         }
+    }
+
+    if (!cfg.upstream_response_file.empty()) {
+        // Load the captured response once at startup. Normalise lone
+        // \n into \r\n so operators who captured with `curl -i` (which
+        // strips the on-wire \r) still produce valid HTTP wire bytes
+        // when we replay. Already-\r\n stays unchanged.
+        std::ifstream in(cfg.upstream_response_file, std::ios::binary);
+        if (!in) {
+            yume::util::log_error("--upstream-response: cannot open " + cfg.upstream_response_file);
+            return 1;
+        }
+        std::stringstream ss; ss << in.rdbuf();
+        std::string raw = ss.str();
+        std::string normalized;
+        normalized.reserve(raw.size() + raw.size() / 16);
+        for (std::size_t i = 0; i < raw.size(); ++i) {
+            char c = raw[i];
+            if (c == '\n' && (i == 0 || raw[i - 1] != '\r')) {
+                normalized += '\r';
+            }
+            normalized += c;
+        }
+        if (normalized.rfind("HTTP/1.", 0) != 0) {
+            yume::util::log_error("--upstream-response: " + cfg.upstream_response_file +
+                                  " does not start with 'HTTP/1.' — expected a captured HTTP/1.x response");
+            return 1;
+        }
+        cfg.upstream_response_bytes = std::move(normalized);
+        yume::util::log_info("--upstream-response: loaded " +
+                             std::to_string(cfg.upstream_response_bytes.size()) +
+                             " bytes from " + cfg.upstream_response_file +
+                             " (replayed verbatim to non-yume probes)");
     }
 
     if (cfg.public_node) {

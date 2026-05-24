@@ -84,6 +84,18 @@ struct ServerConfig {
     // Empty string means "use the default", which is "yumed" unless
     // --public-node also set, in which case startup overrides to "nginx".
     std::string http_profile;
+    // --upstream-response <path>. Path to a pre-captured real HTTP/1.1
+    // response (operator captures it once via tcpdump or curl -i
+    // against a real nginx/apache/etc and points this flag at the
+    // file). When set, Session::send_disguise_404 emits those bytes
+    // verbatim instead of the synthetic profile-driven 404 — probes
+    // see a byte-identical-to-the-real-upstream response, defeating
+    // any DPI inspector that compares body bytes against a known
+    // capture. Loaded at startup; line endings are normalised so
+    // operators can capture with curl -i (which prints \n) without
+    // breaking HTTP wire format. Empty = use synthetic profile.
+    std::string upstream_response_file;
+    std::string upstream_response_bytes;
     std::vector<std::string> federation_peers;
     std::string federation_auth_key;
     std::string federation_anonym_ca;

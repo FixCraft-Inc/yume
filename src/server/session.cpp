@@ -696,7 +696,8 @@ void Session::on_handshake(const boost::system::error_code& ec) {
     // and --obfs. Without any of these, fall through to the fast
     // AUTH-challenge path (preserves pre-1.0 latency for operators
     // who haven't opted in to stealth).
-    if (cfg_.real_http || cfg_.obfuscation || !cfg_.http_profile.empty()) {
+    if (cfg_.real_http || cfg_.obfuscation || !cfg_.http_profile.empty()
+        || !cfg_.upstream_response_bytes.empty()) {
         start_preface_read();
         return;
     }
@@ -915,18 +916,31 @@ std::string Session::build_hidden_blob() {
 
 void Session::send_disguise_404(const std::string& path) {
     (void)path;  // not echoed back; logged only as the connection close reason
-    auto profile = yume::http_profile::server(
-        cfg_.http_profile.empty() ? "yumed" : cfg_.http_profile);
-    if (!profile.has_value()) {
-        profile = yume::http_profile::server("yumed");
+    // --upstream-response wins: if the operator loaded a pre-captured
+    // real upstream response, replay those bytes verbatim. That's
+    // byte-identical to what a real nginx / apache / etc would emit
+    // for the captured request, which defeats any DPI that compares
+    // probe responses to known-good captures.
+    std::shared_ptr<std::string> resp;
+    std::string reason;
+    if (!cfg_.upstream_response_bytes.empty()) {
+        resp = std::make_shared<std::string>(cfg_.upstream_response_bytes);
+        reason = "served upstream-response replay";
+    } else {
+        auto profile = yume::http_profile::server(
+            cfg_.http_profile.empty() ? "yumed" : cfg_.http_profile);
+        if (!profile.has_value()) {
+            profile = yume::http_profile::server("yumed");
+        }
+        resp = std::make_shared<std::string>(
+            yume::http_profile::render_404(*profile, /*connection_close=*/true));
+        reason = "served disguise 404";
     }
-    auto resp = std::make_shared<std::string>(
-        yume::http_profile::render_404(*profile, /*connection_close=*/true));
     auto self = shared_from_this();
     boost::asio::async_write(stream_, boost::asio::buffer(*resp),
                              boost::asio::bind_executor(strand_,
-                                                        [self, resp](const boost::system::error_code&, std::size_t) {
-                                                            self->close_with_reason("served disguise 404");
+                                                        [self, resp, reason](const boost::system::error_code&, std::size_t) {
+                                                            self->close_with_reason(reason);
                                                         }));
 }
 

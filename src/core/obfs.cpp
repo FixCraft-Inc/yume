@@ -10,10 +10,6 @@
 
 #include <openssl/ssl.h>
 
-#include <chrono>
-#include <random>
-#include <thread>
-
 namespace yume::obfs {
 
 namespace {
@@ -78,15 +74,6 @@ void configure_alpn(boost::asio::ssl::context& ctx, bool is_server, bool allow_h
     } else {
         SSL_CTX_set_alpn_protos(native, protos, protos_len);
     }
-}
-
-void apply_jitter(int max_jitter_ms) {
-    if (max_jitter_ms <= 0) {
-        return;
-    }
-    thread_local std::mt19937 rng{std::random_device{}()};
-    std::uniform_int_distribution<int> dist(0, max_jitter_ms);
-    std::this_thread::sleep_for(std::chrono::milliseconds(dist(rng)));
 }
 
 void send_dummy_http_response(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,

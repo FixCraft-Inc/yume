@@ -5959,6 +5959,27 @@ int Cli::run(int argc, char** argv) {
                 auto socks = std::make_shared<SocksServer>(io, cfg.socks_port, tunnel, cfg.allow_udp);
                 socks->start();
                 util::log_info("SOCKS5 listening on 127.0.0.1:" + std::to_string(cfg.socks_port));
+                // One-time leak warning: SOCKS5 only covers what the
+                // browser/app actually routes through it. WebRTC, QUIC
+                // over UDP, DNS-over-HTTPS, and OS-level traffic all
+                // bypass it unless the operator explicitly closes
+                // those vectors. The runbook lists each + the exact
+                // flag/config to fix it. Logged once at start so
+                // first-time operators don't get blindsided by a
+                // browserleaks.com result that shows their real IP.
+                util::log_warn(
+                    "SOCKS5-mode leak notice: WebRTC / QUIC / system DNS "
+                    "BYPASS this proxy by design. A 'what's my IP' page that uses "
+                    "WebRTC (whoer.net, browserleaks.com) will show your real IP "
+                    "even though HTTP traffic is tunneled. To close: see "
+                    "docs/LEAK_TIGHT.md (browser flags + an iptables route-tight "
+                    "option), or use the Android client which runs at the VPN TUN "
+                    "layer and covers everything.");
+                if (!cfg.allow_udp) {
+                    util::log_info(
+                        "  (UDP ASSOCIATE is off; pass --udp to allow apps that "
+                        "negotiate UDP through SOCKS5 — note: most browsers don't.)");
+                }
                 io_threads.wait();
                 if (stop_requested.load()) {
                     announce_stopping();

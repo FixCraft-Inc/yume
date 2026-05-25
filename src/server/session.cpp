@@ -313,9 +313,32 @@ bool env_value_enabled(const char* raw) {
 }
 
 bool server_resolve_any_family_enabled() {
-    return env_value_enabled(std::getenv("YUME_RESOLVE_ANY")) ||
-           env_value_enabled(std::getenv("YUME_RESOLVE_IPV6")) ||
-           env_value_enabled(std::getenv("YUME_RESOLVE_FAMILY"));
+    // Default to resolving BOTH A and AAAA records. Pre-fix, this
+    // returned false (IPv4-only) and any destination with only AAAA
+    // — increasingly common for CDN-hosted services — failed with
+    // "DNS response contained no A records", which the SOCKS client
+    // surfaces to the browser as REP=0x04 host unreachable.
+    //
+    // The connect path uses prefer_ipv4_endpoints to sort v4 first,
+    // so v4-reachable destinations behave exactly as today; v6 is
+    // only attempted when v4 isn't available. Servers without IPv6
+    // egress that hit a v6-only destination will see a "network
+    // unreachable" connect failure instead of a "no A records"
+    // resolve failure — same outcome to the client, more honest
+    // error class.
+    //
+    // Opt-out for operators who explicitly want IPv4-only resolution:
+    //   YUME_RESOLVE_FAMILY=ipv4   (also accepts: =v4, =4)
+    const char* family = std::getenv("YUME_RESOLVE_FAMILY");
+    if (family != nullptr) {
+        std::string value(family);
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (value == "ipv4" || value == "v4" || value == "4") {
+            return false;
+        }
+    }
+    return true;
 }
 
 constexpr int64_t kDirectDnsTimeoutMs = 1500;

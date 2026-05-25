@@ -16,8 +16,11 @@ namespace yume::client {
 namespace {
 constexpr uint8_t kVersion5 = 0x05;
 constexpr uint8_t kMethodNoAuth = 0x00;
-constexpr uint8_t kReplySuccess = 0x00;
-constexpr uint8_t kReplyGeneralFailure = 0x01;
+constexpr uint8_t kReplySuccess         = 0x00;
+constexpr uint8_t kReplyGeneralFailure  = 0x01;
+constexpr uint8_t kReplyNetworkUnreach  = 0x03;
+constexpr uint8_t kReplyHostUnreach     = 0x04;
+constexpr uint8_t kReplyConnRefused     = 0x05;
 constexpr uint8_t kReplyCommandNotSupported = 0x07;
 constexpr uint8_t kReplyAddrNotSupported = 0x08;
 constexpr uint8_t kCmdConnect = 0x01;
@@ -54,6 +57,25 @@ std::vector<uint8_t> make_reply(uint8_t reply_code, const boost::asio::ip::udp::
 
 std::string udp_assoc_key(const std::string& host, int port) {
     return host + "|" + std::to_string(port);
+}
+
+// Map a free-text server-side OPEN failure reason to the best-fitting
+// RFC 1928 §6 REP code. The server doesn't currently emit a structured
+// error class, so we substring-match on the canonical phrases. Falling
+// back to general-failure (0x01) is always safe; the more specific
+// codes just let well-behaved clients (browsers, curl) report a more
+// useful error to the user instead of "SOCKS5 general failure".
+uint8_t reason_to_rep(const std::string& reason) {
+    auto contains = [&](const char* needle) { return reason.find(needle) != std::string::npos; };
+    if (contains("blocked"))                              return 0x02;  // not allowed by ruleset
+    if (contains("resolve failed") || contains("resolve timeout") ||
+        contains("DNS"))                                  return 0x04;  // host unreachable (DNS class)
+    if (contains("network unreachable"))                  return 0x03;
+    if (contains("Connection refused") ||
+        contains("connection refused"))                   return 0x05;
+    if (contains("connect timeout") || contains("Host unreachable") ||
+        contains("host unreachable"))                     return 0x04;
+    return 0x01;  // general failure
 }
 }  // namespace
 
@@ -217,8 +239,18 @@ void SocksSession::on_read_request_address(uint8_t atyp, const boost::system::er
         std::copy_n(addr_buf_.begin(), 4, bytes.begin());
         target_host_ = boost::asio::ip::address_v4(bytes).to_string();
     } else if (atyp == kAtypV6) {
-        send_reply(kReplyAddrNotSupported, [self = shared_from_this()]() { self->close(); });
-        return;
+        // Pre-fix this branch refused IPv6 with kReplyAddrNotSupported,
+        // which broke any site whose Happy-Eyeballs AAAA was tried
+        // first by the client (Chromium, curl, ...). The client would
+        // then either fall back to IPv4 (slow) or fail outright; some
+        // clients fall back to a direct connection on SOCKS failure,
+        // which is an IP leak. The tunnel takes host as a string, so
+        // we can forward the IPv6 literal verbatim — the server-side
+        // resolver / connect path already handles v6 endpoints when
+        // YUME_RESOLVE_FAMILY=any (see session.cpp).
+        boost::asio::ip::address_v6::bytes_type bytes{};
+        std::copy_n(addr_buf_.begin(), 16, bytes.begin());
+        target_host_ = boost::asio::ip::address_v6(bytes).to_string();
     } else if (atyp == kAtypDomain) {
         target_host_.assign(addr_buf_.begin(), addr_buf_.end());
     }
@@ -271,6 +303,17 @@ void SocksSession::start_tunnel() {
         [self = shared_from_this()](const Tunnel::Bytes& data) { self->deliver_from_tunnel(data); },
         [self = shared_from_this()](const std::string&) { self->close_from_tunnel(); });
 
+    // RFC 1928 §6: REP must be sent AFTER the upstream connection
+    // either succeeds or fails — with the right code in either case.
+    // Pre-fix this sent REP=succeeded the moment open_stream was
+    // *initiated*, then closed the SOCKS socket if the server-side
+    // connect later failed. From the browser's POV that looked like
+    // a connection that succeeded and then died mid-request — which
+    // some browsers respond to by retrying directly (an IP leak),
+    // others by spinning until timeout (the "websites won't load
+    // properly" symptom). Now we wait for the open_stream callback
+    // and reply with the right REP code (or a specific failure code
+    // mapped from the server's reason string via reason_to_rep).
     tunnel_->open_stream(stream_id_, target_host_, target_port_,
                          [self = shared_from_this()](bool ok, const std::string& reason) {
                              const int64_t elapsed = self->opened_started_ms_ > 0
@@ -285,13 +328,17 @@ void SocksSession::start_tunnel() {
                                                   std::to_string(self->target_port_) +
                                                   (reason.empty() ? std::string{} : " reason=" + reason));
                              if (!ok) {
-                                 util::log_warn("SOCKS open failed: " + reason);
-                                 self->close();
+                                 const uint8_t rep = reason_to_rep(reason);
+                                 util::log_warn("SOCKS open failed (REP=0x" +
+                                                std::to_string(rep) + "): " + reason);
+                                 self->send_reply(rep,
+                                     [self]() { self->close(); });
                                  return;
                              }
                              self->open_confirmed_ = true;
+                             self->send_reply(kReplySuccess,
+                                 [self]() { self->start_client_read(); });
                          });
-    send_reply(kReplySuccess, [self = shared_from_this()]() { self->start_client_read(); });
 }
 
 void SocksSession::start_udp_associate() {
@@ -379,8 +426,14 @@ void SocksSession::on_udp_read(const boost::system::error_code& ec, std::size_t 
         host.assign(reinterpret_cast<const char*>(buf + idx), len);
         idx += len;
     } else if (atyp == kAtypV6) {
-        start_udp_read();
-        return;
+        if (bytes < idx + 16 + 2) {
+            start_udp_read();
+            return;
+        }
+        boost::asio::ip::address_v6::bytes_type addr_bytes{};
+        std::copy_n(buf + idx, 16, addr_bytes.begin());
+        host = boost::asio::ip::address_v6(addr_bytes).to_string();
+        idx += 16;
     } else {
         start_udp_read();
         return;

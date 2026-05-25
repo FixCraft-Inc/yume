@@ -2263,11 +2263,10 @@ int main(int argc, char** argv) {
         yume::util::log_info("  - inner crypto required (no plaintext transport)");
         yume::util::log_info("  - --auth-keys required (no anonymous-relay accidents)");
         yume::util::log_info("  - Argon2 caps locked to safe defaults (env vars can only RAISE, never lower)");
-        yume::util::log_info("KNOWN NOT-YET-ENFORCED by --public-node (release-audit follow-ups):");
-        yume::util::log_info("  - private-IP bind refusal (needs --listen <addr:port> support)");
-        yume::util::log_info("  - TLS handshake deadline");
-        yume::util::log_info("  - accept-side rate-limit / max-concurrent-session cap");
-        yume::util::log_info("  - facade data dir 0700 enforcement (currently default umask)");
+        yume::util::log_info("  - private-IP bind refusal (--listen explicit-addr in RFC 1918 / loopback / link-local / ULA → startup error)");
+        yume::util::log_info("  - TLS handshake deadline (--tls-handshake-timeout-ms; default 10s, slow-loris guard)");
+        yume::util::log_info("  - accept-side rate-limit + max-concurrent-session cap (--accept-rate-limit 100/s, --max-sessions 4096)");
+        yume::util::log_info("  - process umask locked to 0077 (secret files + IPC socket land at 0600/0700)");
     }
 
     auto require_readable = [&](const char* label, const std::string& path) {

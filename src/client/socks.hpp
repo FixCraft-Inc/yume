@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -14,6 +15,8 @@
 #include "client/tunnel.hpp"
 
 namespace yume::client {
+
+class TunnelPool;
 
 class SocksSession : public std::enable_shared_from_this<SocksSession> {
 public:
@@ -98,16 +101,34 @@ private:
 
 class SocksServer {
 public:
+    // Single-tunnel constructor — every accepted SOCKS session binds
+    // to the same tunnel. Kept for compatibility with embedders that
+    // don't (yet) use the multi-tunnel path.
     SocksServer(boost::asio::io_context& io, int port, std::shared_ptr<Tunnel> tunnel, bool allow_udp);
+
+    // Pool-based constructor — each accepted SOCKS session picks a
+    // tunnel from the pool at accept time and is bound to it for the
+    // session's lifetime. This lifts the single-TLS-connection
+    // throughput cap that a multiplexed tunnel hits at high
+    // concurrency.
+    SocksServer(boost::asio::io_context& io,
+                int port,
+                std::shared_ptr<TunnelPool> pool,
+                bool allow_udp);
 
     void start();
     int port() const;
 
 private:
     void do_accept();
+    std::shared_ptr<Tunnel> pick_tunnel_for_new_session();
 
     boost::asio::ip::tcp::acceptor acceptor_;
+    // Single-tunnel path: tunnel_ is set, pool_ is null.
+    // Pool path: pool_ is set, tunnel_ is null and the picker is
+    // consulted on every accept.
     std::shared_ptr<Tunnel> tunnel_;
+    std::shared_ptr<TunnelPool> pool_;
     bool allow_udp_{false};
 };
 

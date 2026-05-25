@@ -412,6 +412,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/relay_runtime.cpp
         client/runtime_controller.cpp
         client/tunnel.cpp
+        client/tunnel_pool.cpp
         client/socks.cpp
         client/forward.cpp
         client/outbound_proxy.cpp

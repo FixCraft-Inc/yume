@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <limits>
 
+#include "client/tunnel_pool.hpp"
 #include "util.hpp"
 
 namespace yume::client {
@@ -706,6 +707,20 @@ SocksServer::SocksServer(boost::asio::io_context& io, int port, std::shared_ptr<
     acceptor_.listen();
 }
 
+SocksServer::SocksServer(boost::asio::io_context& io,
+                         int port,
+                         std::shared_ptr<TunnelPool> pool,
+                         bool allow_udp)
+    : acceptor_(io)
+    , pool_(std::move(pool))
+    , allow_udp_(allow_udp) {
+    boost::asio::ip::tcp::endpoint ep(boost::asio::ip::tcp::v4(), port);
+    acceptor_.open(ep.protocol());
+    acceptor_.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true));
+    acceptor_.bind(ep);
+    acceptor_.listen();
+}
+
 void SocksServer::start() {
     do_accept();
 }
@@ -719,11 +734,23 @@ int SocksServer::port() const {
     return static_cast<int>(ep.port());
 }
 
+std::shared_ptr<Tunnel> SocksServer::pick_tunnel_for_new_session() {
+    if (pool_) {
+        return pool_->pick_for_session();
+    }
+    return tunnel_;
+}
+
 void SocksServer::do_accept() {
     acceptor_.async_accept([this](const boost::system::error_code& ec, boost::asio::ip::tcp::socket socket) {
         if (!ec) {
-            auto session = std::make_shared<SocksSession>(std::move(socket), tunnel_, allow_udp_);
-            session->start();
+            auto picked = pick_tunnel_for_new_session();
+            if (!picked) {
+                util::log_warn("SOCKS accept: no live tunnel available; dropping client");
+            } else {
+                auto session = std::make_shared<SocksSession>(std::move(socket), std::move(picked), allow_udp_);
+                session->start();
+            }
         } else {
             util::log_warn(std::string("SOCKS accept failed: ") + ec.message());
         }

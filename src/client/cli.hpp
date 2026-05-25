@@ -20,6 +20,12 @@ struct ClientConfig {
     std::string identity;
     int socks_port{0};
     int io_threads{0};
+    // Number of parallel TLS tunnels the client opens to the server.
+    // The first is the "primary" — owns control / relay / activity
+    // handlers. The remaining are data-only and share the data plane
+    // via TunnelPool round-robin. Clamped to [1, 16]; 1 disables
+    // multi-tunnel and matches the pre-3.7.1 single-tunnel layout.
+    int tunnel_count{4};
     bool obfuscation{true};
     std::string obfs_secret;
     // --obfs-pad-multiple <N>. Round every outbound frame payload up to

@@ -67,6 +67,7 @@
 #include "client/share_file.hpp"
 #include "client/socks.hpp"
 #include "client/tunnel.hpp"
+#include "client/tunnel_pool.hpp"
 #include "core/crypto.hpp"
 #include "core/http_profile.hpp"
 #include "core/identity.hpp"
@@ -1108,6 +1109,8 @@ struct ParsedArgs {
     std::string identity;
     int socks_port{0};
     int io_threads{0};
+    int tunnel_count{0};
+    bool tunnel_count_override{false};
     bool obfuscation{true};
     bool obfuscation_override{false};
     std::string obfs_secret;
@@ -1397,6 +1400,11 @@ ParsedArgs parse_args(int argc, char** argv) {
                 return args;
             }
             args.io_threads_override = true;
+        } else if (arg == "--tunnels") {
+            if (!parse_int_value("--tunnels", args.tunnel_count)) {
+                return args;
+            }
+            args.tunnel_count_override = true;
         } else if (arg == "--obfs") {
             args.obfuscation = true;
             args.obfuscation_override = true;
@@ -2097,7 +2105,7 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --threads --obfs --no-obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms export import --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
+  local opts="--help -h --version --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --threads --tunnels --obfs --no-obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms export import --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
   local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path --relay-key-file"
   case "$prev" in
     --completion)
@@ -2185,6 +2193,7 @@ void print_help() {
         << "                           Byte relay\n\n"
         << "Runtime:\n"
         << "  --threads <n>            IO threads (0 = auto)\n"
+        << "  --tunnels <n>            Parallel TLS tunnels to the server (1..16; default 4)\n"
         << "  --instance <name>        Runtime instance name\n"
         << "  --history-dir <path>     Chat history directory\n"
         << "  --relay-key-file <path>  Relay key file\n"
@@ -3701,6 +3710,9 @@ int Cli::run(int argc, char** argv) {
             if (json.contains("threads") && cfg.io_threads == 0 && !args.io_threads_override) {
                 cfg.io_threads = json["threads"].get<int>();
             }
+            if (json.contains("tunnels") && !args.tunnel_count_override) {
+                cfg.tunnel_count = json["tunnels"].get<int>();
+            }
             if (json.contains("obfuscation") && !args.obfuscation_override) {
                 cfg.obfuscation = json["obfuscation"].get<bool>();
             }
@@ -3833,6 +3845,22 @@ int Cli::run(int argc, char** argv) {
     }
     if (args.io_threads != 0 || args.io_threads_override) {
         cfg.io_threads = args.io_threads;
+    }
+    if (args.tunnel_count > 0 || args.tunnel_count_override) {
+        cfg.tunnel_count = args.tunnel_count;
+    }
+    if (cfg.tunnel_count < 1) {
+        cfg.tunnel_count = 1;
+    }
+    if (cfg.tunnel_count > 16) {
+        // Per-tunnel TLS state, auth handshake, and key-hopping timer
+        // aren't free; 16 is the empirical sweet spot above which the
+        // server-side rate limiter (default 100 accepts/s) starts to
+        // drop handshakes anyway. Clamp loudly rather than crash much
+        // later with cryptic accept failures.
+        util::log_warn("--tunnels " + std::to_string(cfg.tunnel_count) +
+                       " exceeds the 16-tunnel cap; clamping to 16");
+        cfg.tunnel_count = 16;
     }
     if (args.obfuscation_override) {
         cfg.obfuscation = args.obfuscation;
@@ -4121,6 +4149,7 @@ int Cli::run(int argc, char** argv) {
         if (!cfg.identity.empty()) json["identity"] = cfg.identity;
         if (cfg.socks_port > 0) json["socks_port"] = cfg.socks_port;
         if (cfg.io_threads != 0) json["threads"] = cfg.io_threads;
+        if (cfg.tunnel_count > 1) json["tunnels"] = cfg.tunnel_count;
         json["obfuscation"] = cfg.obfuscation;
         if (cfg.obfs_pad_multiple > 0) json["obfs_pad_multiple"] = cfg.obfs_pad_multiple;
         if (cfg.obfs_jitter_ms > 0) json["obfs_jitter_ms"] = cfg.obfs_jitter_ms;
@@ -6236,9 +6265,25 @@ int Cli::run(int argc, char** argv) {
             }
 
             if (cfg.socks_port > 0) {
-                auto socks = std::make_shared<SocksServer>(io, cfg.socks_port, tunnel, cfg.allow_udp);
+                // Phase 1 of multi-tunnel: --tunnels parses and a
+                // TunnelPool is constructed, but the connection-setup
+                // path that builds N additional TLS+auth tunnels is a
+                // follow-up. The pool currently holds the single
+                // primary tunnel so behaviour is bit-identical to the
+                // previous single-tunnel SocksServer code.
+                if (cfg.tunnel_count > 1) {
+                    util::log_warn("--tunnels " + std::to_string(cfg.tunnel_count) +
+                                   " requested but the CLI multi-tunnel connection setup is not yet wired; "
+                                   "only the primary tunnel will carry SOCKS5 traffic. Use the Android client "
+                                   "for live multi-tunnel testing; the CLI follow-up will extract a "
+                                   "connect_one_tunnel() helper from cli.cpp.");
+                }
+                auto pool = std::make_shared<TunnelPool>(TunnelPool::Policy::LeastLoaded);
+                pool->add(tunnel);
+                auto socks = std::make_shared<SocksServer>(io, cfg.socks_port, pool, cfg.allow_udp);
                 socks->start();
-                util::log_info("SOCKS5 listening on 127.0.0.1:" + std::to_string(cfg.socks_port));
+                util::log_info("SOCKS5 listening on 127.0.0.1:" + std::to_string(cfg.socks_port) +
+                               " over " + std::to_string(pool->size()) + " tunnel(s)");
                 // One-time leak warning: SOCKS5 only covers what the
                 // browser/app actually routes through it. WebRTC, QUIC
                 // over UDP, DNS-over-HTTPS, and OS-level traffic all

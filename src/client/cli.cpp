@@ -2251,15 +2251,17 @@ void print_help() {
         << "Share files (server backup / device migration):\n"
         << "  export <file>            Encrypt the current config + auth key\n"
         << "                             + CA cert + PQ pubkey into a\n"
-        << "                             password-protected .yume-share file.\n"
-        << "                             Prompts for a password (8+ chars,\n"
-        << "                             twice for confirmation). The file is\n"
-        << "                             written 0600.\n"
-        << "  import <file>            Decrypt a .yume-share file and write the\n"
-        << "                             extracted keys + a ready-to-use\n"
-        << "                             config.json to ~/.yume/imported/\n"
-        << "                             <server-host>/. Prints the exact\n"
-        << "                             `yume --config <path>` to use them.\n\n"
+        << "                             password-protected .yss file (\"yume\n"
+        << "                             secure store\"; old .yume-share is\n"
+        << "                             still accepted on import). Prompts\n"
+        << "                             for a password (8+ chars, twice for\n"
+        << "                             confirmation). File written 0600.\n"
+        << "  import <file>            Decrypt a .yss / .yume-share file and\n"
+        << "                             write the extracted keys + a ready-\n"
+        << "                             to-use config.json to ~/.yume/\n"
+        << "                             imported/<server-host>/. Prints the\n"
+        << "                             exact `yume --config <path>` to use\n"
+        << "                             them.\n\n"
         << "Other:\n"
         << "  completion bash\n"
         << "  -h, --help               Show help\n"
@@ -3466,7 +3468,7 @@ int run_import_share(const std::string& in_path, bool password_stdin) {
                                     std::istreambuf_iterator<char>());
     yume::share::ShareFileHeader hdr{};
     if (!yume::share::peek_share_header(blob, &hdr)) {
-        util::log_error("import: " + in_path + " is not a yume-share file (bad magic / unsupported version)");
+        util::log_error("import: " + in_path + " is not a yume-share / .yss file (bad magic or unsupported version)");
         return 1;
     }
     util::log_info("import: detected yume-share format v" + std::to_string(hdr.version) +

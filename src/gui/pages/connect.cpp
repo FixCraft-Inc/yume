@@ -320,7 +320,9 @@ private:
         ImGui::EndDisabled();
 
         // Export / Import — backup the current profile to a password-
-        // encrypted .yume-share file and restore it on another device.
+        // encrypted .yss ("yume secure store") file and restore it on
+        // another device. Old .yume-share files still open on import
+        // — we match by the on-wire magic, not the file extension.
         ImGui::SameLine(0.0f, 10 * sc);
         ImGui::BeginDisabled(cfg_.server.empty() || cfg_.identity.empty());
         if (ui::quiet_button("Export…", ImVec2(96 * sc, 40 * sc))) {
@@ -404,7 +406,7 @@ private:
         const float sc = ui::scale();
         if (!ImGui::BeginPopupModal("##share_export", nullptr,
                                     ImGuiWindowFlags_AlwaysAutoResize)) return;
-        ImGui::TextUnformatted("Export this profile to a .yume-share file");
+        ImGui::TextUnformatted("Export this profile to a .yss file");
         ImGui::Dummy(ImVec2(0, 4 * sc));
         ImGui::TextWrapped(
             "Encrypts the server connection info, your auth private key, "
@@ -433,9 +435,9 @@ private:
                                ImVec2(280 * sc, 38 * sc))) {
             std::string err;
             auto dest = platform::save_file_dialog(
-                "Save yume share file",
-                cfg_.server.empty() ? std::string("yume-backup.yume-share")
-                                    : (cfg_.server + ".yume-share"),
+                "Save yume secure store (.yss)",
+                cfg_.server.empty() ? std::string("yume-backup.yss")
+                                    : (cfg_.server + ".yss"),
                 &err);
             if (!dest) {
                 export_status_ = err.empty() ? std::string("cancelled") : err;
@@ -469,11 +471,11 @@ private:
         const float sc = ui::scale();
         if (!ImGui::BeginPopupModal("##share_import", nullptr,
                                     ImGuiWindowFlags_AlwaysAutoResize)) return;
-        ImGui::TextUnformatted("Import a .yume-share file");
+        ImGui::TextUnformatted("Import a .yss / .yume-share file");
         ImGui::Dummy(ImVec2(0, 4 * sc));
         if (import_path_.empty()) {
-            ImGui::TextWrapped("Pick a .yume-share file someone shared with you (or that you "
-                               "exported on another device).");
+            ImGui::TextWrapped("Pick a .yss (or older .yume-share) file someone shared with "
+                               "you, or that you exported on another device.");
             ImGui::Dummy(ImVec2(0, 6 * sc));
             if (ui::primary_button("Choose file…", ImVec2(180 * sc, 38 * sc))) {
                 std::string err;

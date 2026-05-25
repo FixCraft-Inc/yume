@@ -155,4 +155,87 @@ std::optional<std::filesystem::path> open_file_dialog(std::string const& title,
 #endif
 }
 
+std::optional<std::filesystem::path> save_file_dialog(std::string const& title,
+                                                       std::string const& default_name,
+                                                       std::string* err) {
+#if defined(_WIN32)
+    std::wstring wtitle;
+    if (!title.empty()) {
+        int n = MultiByteToWideChar(CP_UTF8, 0, title.c_str(),
+                                    static_cast<int>(title.size()),
+                                    nullptr, 0);
+        if (n > 0) {
+            wtitle.resize(static_cast<std::size_t>(n));
+            MultiByteToWideChar(CP_UTF8, 0, title.c_str(),
+                                static_cast<int>(title.size()),
+                                wtitle.data(), n);
+        }
+    }
+    wchar_t buf[MAX_PATH]{};
+    if (!default_name.empty()) {
+        int n = MultiByteToWideChar(CP_UTF8, 0, default_name.c_str(),
+                                    static_cast<int>(default_name.size()),
+                                    buf, MAX_PATH - 1);
+        if (n < 0) n = 0;
+    }
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize  = sizeof(ofn);
+    ofn.hwndOwner    = GetForegroundWindow();
+    ofn.lpstrFile    = buf;
+    ofn.nMaxFile     = MAX_PATH;
+    ofn.lpstrFilter  = L"Yume share file\0*.yume-share\0All files\0*.*\0";
+    ofn.lpstrTitle   = wtitle.empty() ? nullptr : wtitle.c_str();
+    ofn.Flags        = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
+                        OFN_OVERWRITEPROMPT | OFN_EXPLORER;
+    ofn.lpstrDefExt  = L"yume-share";
+    if (!GetSaveFileNameW(&ofn)) {
+        DWORD ext = CommDlgExtendedError();
+        if (err && ext != 0) {
+            char msg[64];
+            std::snprintf(msg, sizeof(msg), "save picker error 0x%lx",
+                          static_cast<unsigned long>(ext));
+            *err = msg;
+        }
+        return std::nullopt;
+    }
+    int len = WideCharToMultiByte(CP_UTF8, 0, buf, -1,
+                                  nullptr, 0, nullptr, nullptr);
+    std::string utf8;
+    if (len > 1) {
+        utf8.resize(static_cast<std::size_t>(len - 1));
+        WideCharToMultiByte(CP_UTF8, 0, buf, -1,
+                            utf8.data(), len, nullptr, nullptr);
+    }
+    return std::filesystem::path(utf8);
+#else
+    const std::string filename_arg = default_name.empty() ? std::string{} : default_name;
+    if (auto zenity = path_lookup("zenity")) {
+        std::string cmd = shell_quote(zenity->string()) +
+            " --file-selection --save --confirm-overwrite --title=" + shell_quote(title);
+        if (!filename_arg.empty()) cmd += " --filename=" + shell_quote(filename_arg);
+        auto picked = run_picker(cmd, err);
+        if (picked) return std::filesystem::path(*picked);
+        return std::nullopt;
+    }
+    if (auto kdialog = path_lookup("kdialog")) {
+        std::string cmd = shell_quote(kdialog->string()) + " --getsavefilename " +
+            (filename_arg.empty() ? std::string(".") : shell_quote(filename_arg)) +
+            " --title " + shell_quote(title);
+        auto picked = run_picker(cmd, err);
+        if (picked) return std::filesystem::path(*picked);
+        return std::nullopt;
+    }
+    if (auto yad = path_lookup("yad")) {
+        std::string cmd = shell_quote(yad->string()) +
+            " --file-selection --save --confirm-overwrite --title=" + shell_quote(title);
+        if (!filename_arg.empty()) cmd += " --filename=" + shell_quote(filename_arg);
+        auto picked = run_picker(cmd, err);
+        if (picked) return std::filesystem::path(*picked);
+        return std::nullopt;
+    }
+    if (err) *err = "install zenity, kdialog, or yad to use the save-as picker";
+    return std::nullopt;
+#endif
+}
+
 }  // namespace yume::gui::platform

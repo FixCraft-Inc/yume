@@ -13,11 +13,20 @@
 
 #include <imgui.h>
 
+#include "client/share_file.hpp"
 #include "facade/client_session.hpp"
 #include "facade/config_io.hpp"
 #include "facade/profiles.hpp"
 #include "facade/secure_materials.hpp"
+#include "platform/file_dialog.hpp"
 #include "ui/design.hpp"
+
+#include <filesystem>
+#include <fstream>
+
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 namespace yume::gui {
 
@@ -310,6 +319,29 @@ private:
         }
         ImGui::EndDisabled();
 
+        // Export / Import — backup the current profile to a password-
+        // encrypted .yume-share file and restore it on another device.
+        ImGui::SameLine(0.0f, 10 * sc);
+        ImGui::BeginDisabled(cfg_.server.empty() || cfg_.identity.empty());
+        if (ui::quiet_button("Export…", ImVec2(96 * sc, 40 * sc))) {
+            export_pwd_[0] = 0;
+            export_pwd2_[0] = 0;
+            export_status_.clear();
+            ImGui::OpenPopup("##share_export");
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine(0.0f, 6 * sc);
+        if (ui::quiet_button("Import…", ImVec2(96 * sc, 40 * sc))) {
+            import_pwd_[0] = 0;
+            import_path_.clear();
+            import_status_.clear();
+            import_summary_ = std::nullopt;
+            ImGui::OpenPopup("##share_import");
+        }
+
+        render_export_modal(ctx);
+        render_import_modal(ctx);
+
         if (!active_id_.empty()) {
             ImGui::SameLine(0.0f, 6 * sc);
             if (ui::quiet_button("Save", ImVec2(96 * sc, 40 * sc))) {
@@ -367,6 +399,218 @@ private:
         active_id_ = facade::profiles::active_id();
     }
 
+    void render_export_modal(AppContext& ctx) {
+        (void)ctx;
+        const float sc = ui::scale();
+        if (!ImGui::BeginPopupModal("##share_export", nullptr,
+                                    ImGuiWindowFlags_AlwaysAutoResize)) return;
+        ImGui::TextUnformatted("Export this profile to a .yume-share file");
+        ImGui::Dummy(ImVec2(0, 4 * sc));
+        ImGui::TextWrapped(
+            "Encrypts the server connection info, your auth private key, "
+            "the anonym CA cert, PQ public key, and the obfs secret into "
+            "one password-protected file. Anyone with the file AND the "
+            "password becomes you on this server — pick a strong password.");
+        ImGui::Dummy(ImVec2(0, 6 * sc));
+        ui::field_label("Password (8+ chars)");
+        ImGui::SetNextItemWidth(320 * sc);
+        ImGui::InputText("##share_pwd1", export_pwd_, sizeof(export_pwd_),
+                         ImGuiInputTextFlags_Password);
+        ui::field_label("Confirm");
+        ImGui::SetNextItemWidth(320 * sc);
+        ImGui::InputText("##share_pwd2", export_pwd2_, sizeof(export_pwd2_),
+                         ImGuiInputTextFlags_Password);
+        if (!export_status_.empty()) {
+            ImGui::Dummy(ImVec2(0, 4 * sc));
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f), "%s",
+                               export_status_.c_str());
+        }
+        ImGui::Dummy(ImVec2(0, 6 * sc));
+        bool can = std::strlen(export_pwd_) >= 8 &&
+                   std::strcmp(export_pwd_, export_pwd2_) == 0;
+        ImGui::BeginDisabled(!can);
+        if (ui::primary_button("Choose destination & export",
+                               ImVec2(280 * sc, 38 * sc))) {
+            std::string err;
+            auto dest = platform::save_file_dialog(
+                "Save yume share file",
+                cfg_.server.empty() ? std::string("yume-backup.yume-share")
+                                    : (cfg_.server + ".yume-share"),
+                &err);
+            if (!dest) {
+                export_status_ = err.empty() ? std::string("cancelled") : err;
+            } else {
+                std::string werr;
+                if (do_export(dest->string(), export_pwd_, &werr)) {
+                    last_message_ = "Exported to " + dest->string();
+                    last_error_ = false;
+                    // Wipe password buffers so a screenshot of the next
+                    // popup doesn't expose them.
+                    std::memset(export_pwd_, 0, sizeof(export_pwd_));
+                    std::memset(export_pwd2_, 0, sizeof(export_pwd2_));
+                    ImGui::CloseCurrentPopup();
+                } else {
+                    export_status_ = werr;
+                }
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine(0.0f, 8 * sc);
+        if (ui::secondary_button("Cancel", ImVec2(100 * sc, 38 * sc))) {
+            std::memset(export_pwd_, 0, sizeof(export_pwd_));
+            std::memset(export_pwd2_, 0, sizeof(export_pwd2_));
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    void render_import_modal(AppContext& ctx) {
+        (void)ctx;
+        const float sc = ui::scale();
+        if (!ImGui::BeginPopupModal("##share_import", nullptr,
+                                    ImGuiWindowFlags_AlwaysAutoResize)) return;
+        ImGui::TextUnformatted("Import a .yume-share file");
+        ImGui::Dummy(ImVec2(0, 4 * sc));
+        if (import_path_.empty()) {
+            ImGui::TextWrapped("Pick a .yume-share file someone shared with you (or that you "
+                               "exported on another device).");
+            ImGui::Dummy(ImVec2(0, 6 * sc));
+            if (ui::primary_button("Choose file…", ImVec2(180 * sc, 38 * sc))) {
+                std::string err;
+                auto src = platform::open_file_dialog("Open yume share file", &err);
+                if (src) {
+                    import_path_ = src->string();
+                    import_status_.clear();
+                    import_summary_ = std::nullopt;
+                } else {
+                    import_status_ = err.empty() ? std::string("cancelled") : err;
+                }
+            }
+        } else {
+            ImGui::Text("File: %s", import_path_.c_str());
+            ImGui::Dummy(ImVec2(0, 6 * sc));
+            ui::field_label("Password");
+            ImGui::SetNextItemWidth(320 * sc);
+            ImGui::InputText("##share_import_pwd", import_pwd_, sizeof(import_pwd_),
+                             ImGuiInputTextFlags_Password);
+            ImGui::Dummy(ImVec2(0, 4 * sc));
+            ImGui::BeginDisabled(import_pwd_[0] == 0);
+            if (ui::primary_button("Decrypt & preview",
+                                   ImVec2(200 * sc, 38 * sc))) {
+                std::string err;
+                if (do_decrypt_preview(&err)) {
+                    import_status_.clear();
+                } else {
+                    import_status_ = err;
+                }
+            }
+            ImGui::EndDisabled();
+            if (import_summary_) {
+                const auto& b = *import_summary_;
+                ImGui::Dummy(ImVec2(0, 6 * sc));
+                ImGui::TextUnformatted("─── Bundle contents ───");
+                if (!b.label.empty())  ImGui::Text("Label:       %s", b.label.c_str());
+                ImGui::Text("Server:      %s:%d", b.server_host.c_str(), b.server_port);
+                ImGui::Text("Auth key:    %s", b.auth_private_key_pem.empty() ? "(none)" : "PRESENT");
+                ImGui::Text("Anonym CA:   %s", b.anonym_ca_cert_pem.empty() ? "(none)" : "PRESENT");
+                ImGui::Text("PQ pubkey:   %s", b.pq_public_key_pem.empty() ? "(none)" : "PRESENT");
+                ImGui::Text("Obfs secret: %s", b.obfs_secret.empty() ? "(none)" : "PRESENT");
+                ImGui::Text("Inner:       %s; hop=%s",
+                    b.inner_crypto ? (b.inner_heavy ? "heavy" : "light") : "off",
+                    b.inner_hop ? "on" : "off");
+                ImGui::Dummy(ImVec2(0, 6 * sc));
+                if (ui::primary_button("Apply: write to ~/.yume/imported/",
+                                       ImVec2(300 * sc, 38 * sc))) {
+                    std::string err;
+                    if (do_apply_preview(&err)) {
+                        std::memset(import_pwd_, 0, sizeof(import_pwd_));
+                        ImGui::CloseCurrentPopup();
+                    } else {
+                        import_status_ = err;
+                    }
+                }
+            }
+        }
+        if (!import_status_.empty()) {
+            ImGui::Dummy(ImVec2(0, 4 * sc));
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.6f, 1.0f), "%s",
+                               import_status_.c_str());
+        }
+        ImGui::Dummy(ImVec2(0, 6 * sc));
+        if (ui::secondary_button("Close", ImVec2(100 * sc, 38 * sc))) {
+            std::memset(import_pwd_, 0, sizeof(import_pwd_));
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    bool do_export(const std::string& dest, const std::string& password, std::string* err) {
+        yume::share::BackupInputs in;
+        in.label = cfg_.server + (cfg_.port > 0 ? ":" + std::to_string(cfg_.port) : std::string());
+        in.created_by = std::string("yume-gui");
+        in.server_host = cfg_.server;
+        in.server_port = cfg_.port > 0 ? cfg_.port : 443;
+        in.identity_path = cfg_.identity;
+        in.anonym_ca_cert_path = cfg_.anonym_ca_cert;
+        in.pq_public_key_path = cfg_.pq_public_key;
+        in.obfuscation = cfg_.obfuscation;
+        in.obfs_secret = cfg_.obfs_secret;
+        in.obfs_pad_multiple = cfg_.obfs_pad_multiple;
+        in.obfs_jitter_ms = cfg_.obfs_jitter_ms;
+        in.tls_pin_sha256 = cfg_.tls_pin_sha256;
+        in.tls_stealth_profile = cfg_.tls_stealth_profile;
+        in.anonym_pubkey = cfg_.anonym_pubkey;
+        in.inner_crypto = cfg_.inner_crypto;
+        in.inner_heavy = cfg_.inner_heavy;
+        in.inner_hop = cfg_.inner_hop;
+        in.hop_interval_ms = cfg_.hop_interval_ms;
+        in.allow_udp = cfg_.allow_udp;
+        in.allow_local_ip = cfg_.allow_local_ip;
+
+        yume::share::ShareBundle bundle;
+        if (!yume::share::build_backup_bundle(in, &bundle, err)) return false;
+        auto bytes = yume::share::encode_share(bundle, password, err);
+        if (bytes.empty()) return false;
+
+#ifndef _WIN32
+        const mode_t prior = ::umask(0077);
+#endif
+        std::ofstream f(dest, std::ios::binary | std::ios::trunc);
+#ifndef _WIN32
+        ::umask(prior);
+#endif
+        if (!f) { if (err) *err = "cannot write " + dest; return false; }
+        f.write(reinterpret_cast<const char*>(bytes.data()),
+                static_cast<std::streamsize>(bytes.size()));
+        if (!f) { if (err) *err = "write failed: " + dest; return false; }
+        f.close();
+#ifndef _WIN32
+        (void)::chmod(dest.c_str(), 0600);
+#endif
+        return true;
+    }
+
+    bool do_decrypt_preview(std::string* err) {
+        std::ifstream f(import_path_, std::ios::binary);
+        if (!f) { if (err) *err = "cannot open " + import_path_; return false; }
+        std::vector<std::uint8_t> blob((std::istreambuf_iterator<char>(f)),
+                                        std::istreambuf_iterator<char>());
+        auto bundle_opt = yume::share::decode_share(blob, import_pwd_, err);
+        if (!bundle_opt) return false;
+        import_summary_ = std::move(*bundle_opt);
+        return true;
+    }
+
+    bool do_apply_preview(std::string* err) {
+        if (!import_summary_) { if (err) *err = "no bundle decrypted yet"; return false; }
+        yume::share::ApplyResult applied;
+        if (!yume::share::apply_imported_bundle(*import_summary_, &applied, err)) return false;
+        last_message_ = "Imported to " + applied.target_dir +
+                        " — connect with: yume --config " + applied.config_path;
+        last_error_ = false;
+        return true;
+    }
+
     client::ClientConfig cfg_{};
     std::vector<facade::profiles::ProfileSummary> profiles_;
     std::string active_id_;
@@ -375,6 +619,15 @@ private:
     bool advanced_open_{false};
     std::string last_message_;
     bool last_error_{false};
+
+    // Share-file dialog state
+    char export_pwd_[160]{};
+    char export_pwd2_[160]{};
+    std::string export_status_;
+    char import_pwd_[160]{};
+    std::string import_path_;
+    std::string import_status_;
+    std::optional<yume::share::ShareBundle> import_summary_;
 };
 
 }  // namespace

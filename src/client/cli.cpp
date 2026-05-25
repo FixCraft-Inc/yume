@@ -3317,17 +3317,6 @@ bool parse_cluster_spec(const std::string& spec, std::string* host, int* port, s
 
 // ─── share-file (yume export / yume import) ────────────────────────────────
 
-std::string read_text_file_to_string(const std::string& path, std::string* error) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) {
-        if (error) *error = "cannot open " + path;
-        return {};
-    }
-    std::stringstream ss;
-    ss << f.rdbuf();
-    return ss.str();
-}
-
 bool write_with_owner_only_mode(const std::string& path,
                                 const std::vector<std::uint8_t>& data,
                                 std::string* error) {
@@ -3355,22 +3344,6 @@ bool write_with_owner_only_mode(const std::string& path,
     (void)::chmod(path.c_str(), 0600);
 #endif
     return true;
-}
-
-std::string iso8601_now_utc() {
-    using namespace std::chrono;
-    auto now = system_clock::now();
-    auto secs = duration_cast<seconds>(now.time_since_epoch()).count();
-    std::time_t t = static_cast<std::time_t>(secs);
-    std::tm tm{};
-#ifdef _WIN32
-    gmtime_s(&tm, &t);
-#else
-    gmtime_r(&t, &tm);
-#endif
-    char buf[32]{};
-    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
-    return std::string(buf);
 }
 
 bool prompt_share_password(const std::string& purpose,
@@ -3434,59 +3407,41 @@ int run_export_share(const std::string& out_path,
         return 1;
     }
 
-    yume::share::ShareBundle bundle;
-    bundle.type = yume::share::BundleType::Backup;
-    bundle.created_at_iso8601 = iso8601_now_utc();
-    bundle.created_by = std::string("yume ") + yume::kVersion;
-    bundle.label = cfg.server + (cfg.port > 0 ? ":" + std::to_string(cfg.port) : std::string());
-    bundle.server_host = cfg.server;
-    bundle.server_port = cfg.port > 0 ? cfg.port : 443;
+    yume::share::BackupInputs in;
+    in.label = cfg.server + (cfg.port > 0 ? ":" + std::to_string(cfg.port) : std::string());
+    in.created_by = std::string("yume ") + yume::kVersion;
+    in.server_host = cfg.server;
+    in.server_port = cfg.port > 0 ? cfg.port : 443;
+    in.identity_path = cfg.identity;
+    in.anonym_ca_cert_path = cfg.anonym_ca_cert;
+    in.pq_public_key_path = cfg.pq_public_key;
+    in.obfuscation = cfg.obfuscation;
+    in.obfs_secret = cfg.obfs_secret;
+    in.obfs_pad_multiple = cfg.obfs_pad_multiple;
+    in.obfs_jitter_ms = cfg.obfs_jitter_ms;
+    in.tls_pin_sha256 = cfg.tls_pin_sha256;
+    in.tls_stealth_profile = cfg.tls_stealth_profile;
+    in.anonym_pubkey = cfg.anonym_pubkey;
+    in.inner_crypto = cfg.inner_crypto;
+    in.inner_heavy = cfg.inner_heavy;
+    in.inner_hop = cfg.inner_hop;
+    in.hop_interval_ms = cfg.hop_interval_ms;
+    in.allow_udp = cfg.allow_udp;
+    in.allow_local_ip = cfg.allow_local_ip;
 
+    yume::share::ShareBundle bundle;
     std::string err;
-    bundle.auth_private_key_pem = read_text_file_to_string(cfg.identity, &err);
-    if (bundle.auth_private_key_pem.empty()) {
-        util::log_error("export: " + (err.empty() ? std::string("cannot read auth key " + cfg.identity) : err));
+    if (!yume::share::build_backup_bundle(in, &bundle, &err)) {
+        util::log_error("export: " + err);
         return 1;
     }
-
-    if (!cfg.anonym_ca_cert.empty()) {
-        std::string ca = read_text_file_to_string(cfg.anonym_ca_cert, &err);
-        if (!ca.empty()) {
-            bundle.anonym_ca_cert_pem = std::move(ca);
-        } else {
-            util::log_warn("export: skipping anonym CA cert (" + err + ")");
-        }
-    }
-    if (!cfg.pq_public_key.empty()) {
-        std::string pq = read_text_file_to_string(cfg.pq_public_key, &err);
-        if (!pq.empty()) {
-            bundle.pq_public_key_pem = std::move(pq);
-        } else {
-            util::log_warn("export: skipping PQ public key (" + err + ")");
-        }
-    }
-    bundle.obfuscation = cfg.obfuscation;
-    bundle.obfs_secret = cfg.obfs_secret;
-    bundle.obfs_pad_multiple = cfg.obfs_pad_multiple;
-    bundle.obfs_jitter_ms = cfg.obfs_jitter_ms;
-    bundle.tls_pin_sha256 = cfg.tls_pin_sha256;
-    bundle.tls_stealth_profile = cfg.tls_stealth_profile;
-    bundle.anonym_pubkey = cfg.anonym_pubkey;
-    bundle.inner_crypto = cfg.inner_crypto;
-    bundle.inner_heavy = cfg.inner_heavy;
-    bundle.inner_hop = cfg.inner_hop;
-    bundle.hop_interval_ms = cfg.hop_interval_ms;
-    bundle.allow_udp = cfg.allow_udp;
-    bundle.allow_local_ip = cfg.allow_local_ip;
 
     std::string password;
     if (!prompt_share_password("export", password_stdin, &password, &err)) {
         util::log_error("export: " + err);
         return 1;
     }
-
     auto bytes = yume::share::encode_share(bundle, password, &err);
-    // Zero the password buffer after use to keep it out of swap.
     std::fill(password.begin(), password.end(), '\0');
     if (bytes.empty()) {
         util::log_error("export: " + err);
@@ -3564,79 +3519,14 @@ int run_import_share(const std::string& in_path, bool password_stdin) {
         }
     }
 
-    namespace fs = std::filesystem;
-    fs::path home;
-    if (const char* h = std::getenv("HOME")) home = h;
-    if (home.empty()) {
-        util::log_error("import: HOME not set, can't pick a destination");
+    yume::share::ApplyResult applied;
+    if (!yume::share::apply_imported_bundle(bundle, &applied, &err)) {
+        util::log_error("import: " + err);
         return 1;
     }
-    fs::path target_dir = home / ".yume" / "imported" / bundle.server_host;
-#ifndef _WIN32
-    mode_t prior = ::umask(0077);
-#endif
-    std::error_code ec;
-    fs::create_directories(target_dir, ec);
-#ifndef _WIN32
-    ::umask(prior);
-    (void)::chmod(target_dir.c_str(), 0700);
-#endif
-    if (ec) {
-        util::log_error("import: cannot create " + target_dir.string() + ": " + ec.message());
-        return 1;
-    }
-
-    auto write_pem = [&](const std::string& name, const std::string& contents) -> std::string {
-        if (contents.empty()) return {};
-        fs::path p = target_dir / name;
-        std::vector<std::uint8_t> bytes(contents.begin(), contents.end());
-        std::string werr;
-        if (!write_with_owner_only_mode(p.string(), bytes, &werr)) {
-            util::log_warn("import: " + werr);
-            return {};
-        }
-        return p.string();
-    };
-
-    const std::string identity_path = write_pem("identity.key", bundle.auth_private_key_pem);
-    const std::string anonym_ca_path = write_pem("anonym_ca.pem", bundle.anonym_ca_cert_pem);
-    const std::string pq_pub_path = write_pem("pq_public.key", bundle.pq_public_key_pem);
-
-    nlohmann::json cfg_json = nlohmann::json::object();
-    cfg_json["server"] = bundle.server_host;
-    cfg_json["port"] = bundle.server_port;
-    if (!identity_path.empty())  cfg_json["identity"] = identity_path;
-    if (!anonym_ca_path.empty()) cfg_json["anonym_ca_cert"] = anonym_ca_path;
-    if (!pq_pub_path.empty())    cfg_json["pq_public_key"] = pq_pub_path;
-    cfg_json["obfuscation"] = bundle.obfuscation;
-    if (!bundle.obfs_secret.empty())    cfg_json["obfs_secret"] = bundle.obfs_secret;
-    if (bundle.obfs_pad_multiple > 0)   cfg_json["obfs_pad_multiple"] = bundle.obfs_pad_multiple;
-    if (bundle.obfs_jitter_ms > 0)      cfg_json["obfs_jitter_ms"] = bundle.obfs_jitter_ms;
-    if (!bundle.tls_pin_sha256.empty()) cfg_json["tls_pin"] = bundle.tls_pin_sha256;
-    if (!bundle.tls_stealth_profile.empty()) cfg_json["tls_stealth_profile"] = bundle.tls_stealth_profile;
-    if (!bundle.anonym_pubkey.empty())  cfg_json["anonym_pubkey"] = bundle.anonym_pubkey;
-    cfg_json["inner_crypto"] = bundle.inner_crypto;
-    cfg_json["inner_heavy"] = bundle.inner_heavy;
-    cfg_json["inner_hop"] = bundle.inner_hop;
-    cfg_json["hop_interval_ms"] = bundle.hop_interval_ms;
-    cfg_json["udp"] = bundle.allow_udp;
-    cfg_json["allow_local_ip"] = bundle.allow_local_ip;
-
-    fs::path config_path = target_dir / "config.json";
-    std::ofstream cfg_out(config_path);
-    if (!cfg_out) {
-        util::log_error("import: cannot write " + config_path.string());
-        return 1;
-    }
-    cfg_out << cfg_json.dump(2) << "\n";
-    cfg_out.close();
-#ifndef _WIN32
-    ::chmod(config_path.c_str(), 0600);
-#endif
-
     util::log_info("Import complete.");
-    util::log_info("  Wrote: " + target_dir.string() + "/ (mode 0700)");
-    util::log_info("  Connect with: yume --config " + config_path.string());
+    util::log_info("  Wrote: " + applied.target_dir + "/ (mode 0700)");
+    util::log_info("  Connect with: yume --config " + applied.config_path);
     return 0;
 }
 

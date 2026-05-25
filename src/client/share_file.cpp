@@ -10,8 +10,18 @@
 #include <nlohmann/json.hpp>
 
 #include <array>
+#include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <stdexcept>
+
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 namespace yume::share {
 
@@ -179,6 +189,202 @@ bool peek_share_header(const std::vector<std::uint8_t>& blob, ShareFileHeader* o
     out->version = blob[kMagicLen];
     if (out->version != kFormatVersion) return false;
     out->type = static_cast<BundleType>(blob[kMagicLen + 1]);
+    return true;
+}
+
+namespace {
+std::string slurp_text_file(const std::string& path, std::string* error) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) {
+        if (error) *error = "cannot open " + path;
+        return {};
+    }
+    std::stringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+bool write_file_owner_only(const std::string& path,
+                           const std::vector<std::uint8_t>& data,
+                           std::string* error) {
+#ifndef _WIN32
+    const mode_t prior = ::umask(0077);
+#endif
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+#ifndef _WIN32
+    ::umask(prior);
+#endif
+    if (!f) {
+        if (error) *error = "cannot write " + path;
+        return false;
+    }
+    if (!data.empty()) {
+        f.write(reinterpret_cast<const char*>(data.data()),
+                static_cast<std::streamsize>(data.size()));
+    }
+    if (!f) {
+        if (error) *error = "write failed: " + path;
+        return false;
+    }
+    f.close();
+#ifndef _WIN32
+    (void)::chmod(path.c_str(), 0600);
+#endif
+    return true;
+}
+}  // namespace
+
+bool build_backup_bundle(const BackupInputs& in, ShareBundle* out, std::string* error) {
+    if (!out) {
+        if (error) *error = "build_backup_bundle: out is null";
+        return false;
+    }
+    if (in.server_host.empty() || in.server_port < 1 || in.server_port > 65535) {
+        if (error) *error = "server endpoint missing or invalid";
+        return false;
+    }
+    if (in.identity_path.empty()) {
+        if (error) *error = "auth identity path is required for a backup";
+        return false;
+    }
+    std::string err;
+    out->type = BundleType::Backup;
+    {
+        using namespace std::chrono;
+        auto now = system_clock::now();
+        std::time_t t = system_clock::to_time_t(now);
+        std::tm tm{};
+#ifdef _WIN32
+        gmtime_s(&tm, &t);
+#else
+        gmtime_r(&t, &tm);
+#endif
+        char buf[32]{};
+        std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
+        out->created_at_iso8601 = buf;
+    }
+    out->created_by = in.created_by;
+    out->label      = in.label;
+    out->server_host = in.server_host;
+    out->server_port = in.server_port;
+
+    out->auth_private_key_pem = slurp_text_file(in.identity_path, &err);
+    if (out->auth_private_key_pem.empty()) {
+        if (error) *error = "auth identity: " + err;
+        return false;
+    }
+    if (!in.anonym_ca_cert_path.empty()) {
+        std::string ca = slurp_text_file(in.anonym_ca_cert_path, &err);
+        if (!ca.empty()) out->anonym_ca_cert_pem = std::move(ca);
+        // missing CA is non-fatal — the caller may not have configured one
+    }
+    if (!in.pq_public_key_path.empty()) {
+        std::string pq = slurp_text_file(in.pq_public_key_path, &err);
+        if (!pq.empty()) out->pq_public_key_pem = std::move(pq);
+    }
+
+    out->obfuscation         = in.obfuscation;
+    out->obfs_secret         = in.obfs_secret;
+    out->obfs_pad_multiple   = in.obfs_pad_multiple;
+    out->obfs_jitter_ms      = in.obfs_jitter_ms;
+    out->tls_pin_sha256      = in.tls_pin_sha256;
+    out->tls_stealth_profile = in.tls_stealth_profile;
+    out->anonym_pubkey       = in.anonym_pubkey;
+    out->inner_crypto        = in.inner_crypto;
+    out->inner_heavy         = in.inner_heavy;
+    out->inner_hop           = in.inner_hop;
+    out->hop_interval_ms     = in.hop_interval_ms;
+    out->allow_udp           = in.allow_udp;
+    out->allow_local_ip      = in.allow_local_ip;
+    return true;
+}
+
+bool apply_imported_bundle(const ShareBundle& bundle,
+                           ApplyResult* out,
+                           std::string* error) {
+    if (!out) {
+        if (error) *error = "apply_imported_bundle: out is null";
+        return false;
+    }
+    namespace fs = std::filesystem;
+    fs::path home;
+    if (const char* h = std::getenv("HOME")) home = h;
+    if (home.empty()) {
+        if (error) *error = "HOME not set";
+        return false;
+    }
+    fs::path target = home / ".yume" / "imported" / bundle.server_host;
+#ifndef _WIN32
+    const mode_t prior = ::umask(0077);
+#endif
+    std::error_code ec;
+    fs::create_directories(target, ec);
+#ifndef _WIN32
+    ::umask(prior);
+    (void)::chmod(target.c_str(), 0700);
+#endif
+    if (ec) {
+        if (error) *error = "create_directories(" + target.string() + "): " + ec.message();
+        return false;
+    }
+    out->target_dir = target.string();
+
+    auto write_pem = [&](const std::string& name, const std::string& pem,
+                         std::string* dst_path) -> bool {
+        if (pem.empty()) return true;
+        const auto p = (target / name).string();
+        std::vector<std::uint8_t> bytes(pem.begin(), pem.end());
+        std::string werr;
+        if (!write_file_owner_only(p, bytes, &werr)) {
+            if (error) *error = werr;
+            return false;
+        }
+        *dst_path = p;
+        return true;
+    };
+    if (!write_pem("identity.key", bundle.auth_private_key_pem, &out->identity_path)) return false;
+    if (!write_pem("anonym_ca.pem", bundle.anonym_ca_cert_pem, &out->anonym_ca_path)) return false;
+    if (!write_pem("pq_public.key", bundle.pq_public_key_pem, &out->pq_public_path)) return false;
+
+    nlohmann::json cfg = nlohmann::json::object();
+    cfg["server"] = bundle.server_host;
+    cfg["port"]   = bundle.server_port;
+    if (!out->identity_path.empty())   cfg["identity"] = out->identity_path;
+    if (!out->anonym_ca_path.empty())  cfg["anonym_ca_cert"] = out->anonym_ca_path;
+    if (!out->pq_public_path.empty())  cfg["pq_public_key"] = out->pq_public_path;
+    cfg["obfuscation"] = bundle.obfuscation;
+    if (!bundle.obfs_secret.empty())    cfg["obfs_secret"] = bundle.obfs_secret;
+    if (bundle.obfs_pad_multiple > 0)   cfg["obfs_pad_multiple"] = bundle.obfs_pad_multiple;
+    if (bundle.obfs_jitter_ms > 0)      cfg["obfs_jitter_ms"] = bundle.obfs_jitter_ms;
+    if (!bundle.tls_pin_sha256.empty()) cfg["tls_pin"] = bundle.tls_pin_sha256;
+    if (!bundle.tls_stealth_profile.empty()) cfg["tls_stealth_profile"] = bundle.tls_stealth_profile;
+    if (!bundle.anonym_pubkey.empty())  cfg["anonym_pubkey"] = bundle.anonym_pubkey;
+    cfg["inner_crypto"]    = bundle.inner_crypto;
+    cfg["inner_heavy"]     = bundle.inner_heavy;
+    cfg["inner_hop"]       = bundle.inner_hop;
+    cfg["hop_interval_ms"] = bundle.hop_interval_ms;
+    cfg["udp"]             = bundle.allow_udp;
+    cfg["allow_local_ip"]  = bundle.allow_local_ip;
+
+    const auto cfg_path = (target / "config.json").string();
+    {
+#ifndef _WIN32
+        const mode_t p2 = ::umask(0077);
+#endif
+        std::ofstream f(cfg_path);
+#ifndef _WIN32
+        ::umask(p2);
+#endif
+        if (!f) {
+            if (error) *error = "cannot write " + cfg_path;
+            return false;
+        }
+        f << cfg.dump(2) << "\n";
+#ifndef _WIN32
+        ::chmod(cfg_path.c_str(), 0600);
+#endif
+    }
+    out->config_path = cfg_path;
     return true;
 }
 

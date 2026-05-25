@@ -99,4 +99,66 @@ struct ShareFileHeader {
 bool peek_share_header(const std::vector<std::uint8_t>& blob,
                        ShareFileHeader* out);
 
+// ─── orchestration helpers (no UI, sync; shared by CLI + GUI) ──────────────
+
+// Inputs to build_backup_bundle: client-side config fields that map
+// directly into the bundle, plus paths to the key/cert files that
+// must be slurped at export time. Pass empty strings for any path
+// that doesn't apply. Caller fills this from ClientConfig (CLI) or
+// from the GUI's working state.
+struct BackupInputs {
+    // Display label + provenance (optional but nice in the summary)
+    std::string label;
+    std::string created_by;       // e.g. "yume 1.0 (linux-x86_64)"
+    // Server endpoint (required)
+    std::string server_host;
+    int         server_port{443};
+    // Paths to PEM files to slurp into the bundle. identity_path is
+    // required (backup needs a private key); the other two are optional.
+    std::string identity_path;
+    std::string anonym_ca_cert_path;
+    std::string pq_public_key_path;
+    // Inline values (already strings, no file read needed)
+    std::string obfs_secret;
+    std::string tls_pin_sha256;
+    std::string tls_stealth_profile;
+    std::string anonym_pubkey;
+    // Stealth + client-behavior flags
+    bool          obfuscation{true};
+    std::uint16_t obfs_pad_multiple{0};
+    std::uint32_t obfs_jitter_ms{0};
+    bool          inner_crypto{true};
+    bool          inner_heavy{true};
+    bool          inner_hop{true};
+    std::uint32_t hop_interval_ms{500};
+    bool          allow_udp{false};
+    bool          allow_local_ip{false};
+};
+
+// Build a ShareBundle from the inputs above by reading the referenced
+// PEM files into memory and copying scalar fields. Returns false if a
+// required file (identity_path) is missing or unreadable. On success
+// `*out` is the bundle ready to pass to encode_share.
+bool build_backup_bundle(const BackupInputs& in, ShareBundle* out, std::string* error);
+
+// Outputs from apply_imported_bundle.
+struct ApplyResult {
+    std::string target_dir;      // e.g. ~/.yume/imported/<host>
+    std::string config_path;     // <target_dir>/config.json
+    std::string identity_path;   // <target_dir>/identity.key (if any)
+    std::string anonym_ca_path;  // <target_dir>/anonym_ca.pem (if any)
+    std::string pq_public_path;  // <target_dir>/pq_public.key (if any)
+};
+
+// Write extracted bundle contents to a directory under the user's
+// home (~/.yume/imported/<server-host>/). Creates the directory at
+// mode 0700 and writes each file at 0600. Always writes a
+// config.json that points at the just-written files so the operator
+// can `yume --config <config_path>` directly. Returns false on I/O
+// errors; partial writes are not rolled back (the directory may
+// contain a subset of files).
+bool apply_imported_bundle(const ShareBundle& bundle,
+                           ApplyResult* out,
+                           std::string* error);
+
 }  // namespace yume::share

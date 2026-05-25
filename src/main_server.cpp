@@ -74,7 +74,7 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --upstream-response --upstream-response-dir --upstream-response-ttl --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
+  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms --tls-handshake-timeout-ms --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --upstream-response --upstream-response-dir --upstream-response-ttl --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
   local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --federation-auth-key --federation-anonym-ca --keys-add --keys-gen"
   case "$prev" in
     --completion)
@@ -133,6 +133,12 @@ void print_help() {
         << "                             random 0..ms delay (default 0). Breaks\n"
         << "                             the inter-arrival ML signature at the\n"
         << "                             cost of added latency.\n"
+        << "  --tls-handshake-timeout-ms <ms>\n"
+        << "                           Close the socket if the TLS handshake\n"
+        << "                             doesn't complete in this many ms.\n"
+        << "                             Slow-loris guard. 0 = no deadline\n"
+        << "                             (legacy). --public-node defaults to\n"
+        << "                             10000 when unset.\n"
         << "  --allow-local-ip         Allow private/loopback destinations\n"
         << "  --control-full           Allow full server-side network control\n"
         << "  --root                   Keep root privileges after bind/listen\n"
@@ -1349,6 +1355,9 @@ int main(int argc, char** argv) {
     bool anonym_proof_mode_override = false;
     bool pq_auto_generate_override = false;
     bool allow_embedded_master_override = false;
+    // Track whether operator explicitly set the new hardening knobs so
+    // the --public-node defaults don't overwrite them.
+    bool tls_handshake_timeout_override = false;
     bool relay_enable_override = false;
     bool directory_enable_override = false;
     bool attach_local = false;
@@ -1408,6 +1417,11 @@ int main(int argc, char** argv) {
             int parsed = std::atoi(argv[++i]);
             if (parsed < 0) parsed = 0;
             cfg.obfs_jitter_ms = static_cast<std::uint32_t>(parsed);
+        } else if (arg == "--tls-handshake-timeout-ms" && i + 1 < argc) {
+            int parsed = std::atoi(argv[++i]);
+            if (parsed < 0) parsed = 0;
+            cfg.tls_handshake_timeout_ms = static_cast<std::uint32_t>(parsed);
+            tls_handshake_timeout_override = true;
         } else if (arg == "--inner") {
             yume::util::log_warn("--inner is deprecated; use --inner-heavy or --inner-light");
             cfg.inner_crypto = true;
@@ -1748,6 +1762,11 @@ int main(int argc, char** argv) {
                 if (v < 0) v = 0;
                 cfg.obfs_jitter_ms = static_cast<std::uint32_t>(v);
             }
+            if (json.contains("tls_handshake_timeout_ms") && !tls_handshake_timeout_override) {
+                int v = json["tls_handshake_timeout_ms"].get<int>();
+                if (v < 0) v = 0;
+                cfg.tls_handshake_timeout_ms = static_cast<std::uint32_t>(v);
+            }
             if (json.contains("upstream_response_dir") && cfg.upstream_response_dir.empty()) {
                 cfg.upstream_response_dir = resolve_cfg_path(json["upstream_response_dir"].get<std::string>());
             }
@@ -2052,6 +2071,13 @@ int main(int argc, char** argv) {
         if (cfg.http_profile.empty()) {
             cfg.http_profile = "nginx";
             yume::util::log_info("--public-node: defaulting --hide-in-the-crowd to 'nginx' (pass --hide-in-the-crowd <profile> to override)");
+        }
+        // --public-node hardening defaults. Each respects an explicit
+        // operator override (CLI flag or JSON config); only fills in
+        // the safe-by-default value when the operator left it at 0.
+        if (!tls_handshake_timeout_override && cfg.tls_handshake_timeout_ms == 0) {
+            cfg.tls_handshake_timeout_ms = 10000;
+            yume::util::log_info("--public-node: defaulting --tls-handshake-timeout-ms to 10000 (pass --tls-handshake-timeout-ms 0 to disable)");
         }
         std::vector<std::string> violations;
         if (cfg.allow_exec) {

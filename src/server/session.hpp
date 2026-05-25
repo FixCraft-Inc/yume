@@ -163,6 +163,12 @@ private:
     std::unique_ptr<obfs::H2InboundDecoder> carrier_decoder_;
     std::array<uint8_t, 4096> carrier_scratch_{};
     boost::asio::steady_timer preface_timer_;
+    // Per-connection TLS handshake deadline (RFC 7540 has none; this
+    // is yume's slow-loris guard). Armed in start() when
+    // cfg_.tls_handshake_timeout_ms > 0, cancelled in on_handshake on
+    // success or failure. Closing on expiry pulls the rug from the
+    // pending async_handshake which then reports operation_aborted.
+    boost::asio::steady_timer tls_handshake_timer_;
     protocol::FrameHeader current_header_{};
     std::vector<uint8_t> payload_buf_;
     crypto::Bytes challenge_;

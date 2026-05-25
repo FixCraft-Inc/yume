@@ -621,6 +621,7 @@ Session::Session(boost::asio::ip::tcp::socket socket,
     , manager_(manager)
     , strand_(stream_.get_executor())
     , preface_timer_(stream_.get_executor())
+    , tls_handshake_timer_(stream_.get_executor())
     , idle_timer_(stream_.get_executor()) {
     last_activity_ms_.store(steady_now_ms(), std::memory_order_relaxed);
     session_allow_exec_policy_ = false;
@@ -634,6 +635,25 @@ void Session::start() {
     auto self = shared_from_this();
     boost::system::error_code keep_ec;
     stream_.lowest_layer().set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
+
+    // Arm the TLS-handshake deadline before kicking off async_handshake.
+    // If the timer fires before on_handshake completes, we close the
+    // lowest-layer socket — the pending async_handshake then reports
+    // operation_aborted and on_handshake closes the session normally.
+    if (cfg_.tls_handshake_timeout_ms > 0) {
+        tls_handshake_timer_.expires_after(
+            std::chrono::milliseconds(cfg_.tls_handshake_timeout_ms));
+        tls_handshake_timer_.async_wait(boost::asio::bind_executor(strand_,
+            [self](const boost::system::error_code& ec) {
+                if (ec) return;  // cancelled by on_handshake
+                boost::system::error_code close_ec;
+                self->stream_.lowest_layer().close(close_ec);
+                if (self->close_state_ == CloseState::Open) {
+                    self->close_with_reason("TLS handshake deadline exceeded");
+                }
+            }));
+    }
+
     stream_.async_handshake(boost::asio::ssl::stream_base::server,
                             boost::asio::bind_executor(strand_,
                                                        [self](const boost::system::error_code& ec) {
@@ -676,6 +696,12 @@ void Session::notify_server_shutdown(const std::string& reason) {
 }
 
 void Session::on_handshake(const boost::system::error_code& ec) {
+    // Deadline served its purpose; cancel regardless of handshake
+    // outcome so it doesn't try to close an already-handled stream.
+    {
+        boost::system::error_code cancel_ec;
+        tls_handshake_timer_.cancel(cancel_ec);
+    }
     if (ec) {
         close_with_reason("TLS handshake failed: " + ec.message());
         return;

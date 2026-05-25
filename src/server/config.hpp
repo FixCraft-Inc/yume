@@ -123,6 +123,14 @@ struct ServerConfig {
     // "constant ping/keepalive cadence" ML feature at the cost of
     // added send latency. 0 = no jitter.
     std::uint32_t obfs_jitter_ms{0};
+    // --tls-handshake-timeout-ms <ms>. Per-connection cap on the TLS
+    // handshake. A peer that opens TCP and starts TLS but never sends
+    // ClientHello (slow-loris style) holds a session slot until the
+    // OS keepalive eventually fires; this deadline closes the socket
+    // sooner. 0 = no deadline (legacy behaviour). --public-node sets
+    // this to 10000 (10 s) when the operator hasn't overridden;
+    // generous enough that any legitimate client finishes in time.
+    std::uint32_t tls_handshake_timeout_ms{0};
     std::vector<std::string> federation_peers;
     std::string federation_auth_key;
     std::string federation_anonym_ca;

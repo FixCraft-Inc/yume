@@ -33,8 +33,10 @@
 #include <io.h>
 #elif defined(__APPLE__)
 #include <mach-o/dyld.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #else
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 #include <openssl/sha.h>
@@ -2079,6 +2081,22 @@ int main(int argc, char** argv) {
             cfg.tls_handshake_timeout_ms = 10000;
             yume::util::log_info("--public-node: defaulting --tls-handshake-timeout-ms to 10000 (pass --tls-handshake-timeout-ms 0 to disable)");
         }
+#ifndef _WIN32
+        // Lock the process umask to 0077 BEFORE anything writes a
+        // file or creates a directory. Subsequent secret-key writes
+        // (PQ keypair under ./.secrets), IPC socket creates, config
+        // dirs etc all inherit owner-only mode so other local users
+        // can't read them. Set unconditionally under --public-node;
+        // no override knob — operators who want world-readable
+        // secret files on a public-facing host should reconsider.
+        const mode_t prior = umask(0077);
+        yume::util::log_info(
+            std::string("--public-node: process umask set to 0077 (was 0") +
+            std::to_string(prior >> 6 & 7) +
+            std::to_string(prior >> 3 & 7) +
+            std::to_string(prior & 7) +
+            "); subsequent secret files and IPC socket will be 0600/0700");
+#endif
         std::vector<std::string> violations;
         if (cfg.allow_exec) {
             violations.emplace_back("--allow-exec is forbidden by --public-node (server-side exec on a public node is a remote-shell hole)");

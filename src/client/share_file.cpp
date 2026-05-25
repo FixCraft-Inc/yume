@@ -395,7 +395,7 @@ std::optional<ShareBundle> decode_share(const std::vector<std::uint8_t>& blob,
                                         std::string* error) {
     ShareFileHeader hdr{};
     if (!peek_share_header(blob, &hdr)) {
-        if (error) *error = "not a yume-share file (bad magic or unsupported version)";
+        if (error) *error = "not a .yss file (bad magic or unsupported version)";
         return std::nullopt;
     }
     if (password.empty()) {

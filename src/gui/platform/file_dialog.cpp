@@ -183,7 +183,7 @@ std::optional<std::filesystem::path> save_file_dialog(std::string const& title,
     ofn.hwndOwner    = GetForegroundWindow();
     ofn.lpstrFile    = buf;
     ofn.nMaxFile     = MAX_PATH;
-    ofn.lpstrFilter  = L"Yume secure store\0*.yss;*.yume-share\0All files\0*.*\0";
+    ofn.lpstrFilter  = L"Yume secure store\0*.yss\0All files\0*.*\0";
     ofn.lpstrTitle   = wtitle.empty() ? nullptr : wtitle.c_str();
     ofn.Flags        = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
                         OFN_OVERWRITEPROMPT | OFN_EXPLORER;

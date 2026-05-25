@@ -13,9 +13,12 @@
 
 namespace yume::share {
 
-// On-wire structure of a .yume-share file:
+// On-wire structure of a .yss ("yume secure store") file:
 //
-//   [ 8 bytes ] "YUMESHRE"                 — magic
+//   [ 8 bytes ] "YUMESHRE"                 — magic (stable file
+//                                             signature; the name is
+//                                             historical, the bytes
+//                                             never change)
 //   [ 1 byte  ] version       (currently 1) — wire format revision
 //   [ 1 byte  ] bundle type   (0 = backup)  — semantics of the inner JSON
 //   [ 2 bytes ] reserved      (=0)          — for future flags
@@ -25,7 +28,7 @@ namespace yume::share {
 //                                              of BaseFWX)
 //
 // The 12-byte header is the only unencrypted material; anyone who can
-// open the file learns it's a yume-share blob and nothing else. The
+// open the file learns it's a .yss blob and nothing else. The
 // FwxAES blob carries its own salt + nonce + auth tag, so wrong-
 // password attempts fail at the GCM tag check.
 constexpr std::uint8_t kFormatVersion = 1;
@@ -90,7 +93,7 @@ std::optional<ShareBundle> decode_share(const std::vector<std::uint8_t>& blob,
                                         std::string* error);
 
 // Inspect the unencrypted header WITHOUT decrypting. Useful for
-// "this file is a yume-share v1 backup; enter the password" UX
+// "this file is a .yss v1 backup; enter the password" UX
 // before prompting. Returns false if magic / version don't validate.
 struct ShareFileHeader {
     std::uint8_t version{0};

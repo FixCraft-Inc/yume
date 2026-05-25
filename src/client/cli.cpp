@@ -2252,16 +2252,14 @@ void print_help() {
         << "  export <file>            Encrypt the current config + auth key\n"
         << "                             + CA cert + PQ pubkey into a\n"
         << "                             password-protected .yss file (\"yume\n"
-        << "                             secure store\"; old .yume-share is\n"
-        << "                             still accepted on import). Prompts\n"
-        << "                             for a password (8+ chars, twice for\n"
+        << "                             secure store\"). Prompts for a\n"
+        << "                             password (8+ chars, twice for\n"
         << "                             confirmation). File written 0600.\n"
-        << "  import <file>            Decrypt a .yss / .yume-share file and\n"
-        << "                             write the extracted keys + a ready-\n"
-        << "                             to-use config.json to ~/.yume/\n"
-        << "                             imported/<server-host>/. Prints the\n"
-        << "                             exact `yume --config <path>` to use\n"
-        << "                             them.\n\n"
+        << "  import <file>            Decrypt a .yss file and write the\n"
+        << "                             extracted keys + a ready-to-use\n"
+        << "                             config.json to ~/.yume/imported/\n"
+        << "                             <server-host>/. Prints the exact\n"
+        << "                             `yume --config <path>` to use them.\n\n"
         << "Other:\n"
         << "  completion bash\n"
         << "  -h, --help               Show help\n"
@@ -3468,10 +3466,10 @@ int run_import_share(const std::string& in_path, bool password_stdin) {
                                     std::istreambuf_iterator<char>());
     yume::share::ShareFileHeader hdr{};
     if (!yume::share::peek_share_header(blob, &hdr)) {
-        util::log_error("import: " + in_path + " is not a yume-share / .yss file (bad magic or unsupported version)");
+        util::log_error("import: " + in_path + " is not a .yss file (bad magic or unsupported version)");
         return 1;
     }
-    util::log_info("import: detected yume-share format v" + std::to_string(hdr.version) +
+    util::log_info("import: detected .yss format v" + std::to_string(hdr.version) +
                    " (type=" + (hdr.type == yume::share::BundleType::Backup ? "backup" : "?") + ").");
 
     std::string err;

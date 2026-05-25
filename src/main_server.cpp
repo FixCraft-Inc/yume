@@ -76,7 +76,7 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms --tls-handshake-timeout-ms --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --upstream-response --upstream-response-dir --upstream-response-ttl --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
+  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms --tls-handshake-timeout-ms --max-sessions --accept-rate-limit --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --upstream-response --upstream-response-dir --upstream-response-ttl --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
   local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --federation-auth-key --federation-anonym-ca --keys-add --keys-gen"
   case "$prev" in
     --completion)
@@ -141,6 +141,15 @@ void print_help() {
         << "                             Slow-loris guard. 0 = no deadline\n"
         << "                             (legacy). --public-node defaults to\n"
         << "                             10000 when unset.\n"
+        << "  --max-sessions <N>       Hard cap on simultaneously-tracked\n"
+        << "                             sessions. New accepts past the cap are\n"
+        << "                             closed immediately (looks like a busy\n"
+        << "                             nginx). 0 = unlimited. --public-node\n"
+        << "                             defaults to 4096 when unset.\n"
+        << "  --accept-rate-limit <N>  Cap on accepts per second over a 1 s\n"
+        << "                             rolling window. Refused accepts close\n"
+        << "                             immediately. 0 = unlimited.\n"
+        << "                             --public-node defaults to 100 when unset.\n"
         << "  --allow-local-ip         Allow private/loopback destinations\n"
         << "  --control-full           Allow full server-side network control\n"
         << "  --root                   Keep root privileges after bind/listen\n"
@@ -1360,6 +1369,8 @@ int main(int argc, char** argv) {
     // Track whether operator explicitly set the new hardening knobs so
     // the --public-node defaults don't overwrite them.
     bool tls_handshake_timeout_override = false;
+    bool max_sessions_override = false;
+    bool accept_rate_limit_override = false;
     bool relay_enable_override = false;
     bool directory_enable_override = false;
     bool attach_local = false;
@@ -1424,6 +1435,16 @@ int main(int argc, char** argv) {
             if (parsed < 0) parsed = 0;
             cfg.tls_handshake_timeout_ms = static_cast<std::uint32_t>(parsed);
             tls_handshake_timeout_override = true;
+        } else if (arg == "--max-sessions" && i + 1 < argc) {
+            int parsed = std::atoi(argv[++i]);
+            if (parsed < 0) parsed = 0;
+            cfg.max_sessions = static_cast<std::uint32_t>(parsed);
+            max_sessions_override = true;
+        } else if (arg == "--accept-rate-limit" && i + 1 < argc) {
+            int parsed = std::atoi(argv[++i]);
+            if (parsed < 0) parsed = 0;
+            cfg.accept_rate_limit = static_cast<std::uint32_t>(parsed);
+            accept_rate_limit_override = true;
         } else if (arg == "--inner") {
             yume::util::log_warn("--inner is deprecated; use --inner-heavy or --inner-light");
             cfg.inner_crypto = true;
@@ -1769,6 +1790,16 @@ int main(int argc, char** argv) {
                 if (v < 0) v = 0;
                 cfg.tls_handshake_timeout_ms = static_cast<std::uint32_t>(v);
             }
+            if (json.contains("max_sessions") && !max_sessions_override) {
+                int v = json["max_sessions"].get<int>();
+                if (v < 0) v = 0;
+                cfg.max_sessions = static_cast<std::uint32_t>(v);
+            }
+            if (json.contains("accept_rate_limit") && !accept_rate_limit_override) {
+                int v = json["accept_rate_limit"].get<int>();
+                if (v < 0) v = 0;
+                cfg.accept_rate_limit = static_cast<std::uint32_t>(v);
+            }
             if (json.contains("upstream_response_dir") && cfg.upstream_response_dir.empty()) {
                 cfg.upstream_response_dir = resolve_cfg_path(json["upstream_response_dir"].get<std::string>());
             }
@@ -2080,6 +2111,14 @@ int main(int argc, char** argv) {
         if (!tls_handshake_timeout_override && cfg.tls_handshake_timeout_ms == 0) {
             cfg.tls_handshake_timeout_ms = 10000;
             yume::util::log_info("--public-node: defaulting --tls-handshake-timeout-ms to 10000 (pass --tls-handshake-timeout-ms 0 to disable)");
+        }
+        if (!max_sessions_override && cfg.max_sessions == 0) {
+            cfg.max_sessions = 4096;
+            yume::util::log_info("--public-node: defaulting --max-sessions to 4096 (pass --max-sessions <N> to override; 0 = unlimited)");
+        }
+        if (!accept_rate_limit_override && cfg.accept_rate_limit == 0) {
+            cfg.accept_rate_limit = 100;
+            yume::util::log_info("--public-node: defaulting --accept-rate-limit to 100/s (pass --accept-rate-limit <N> to override; 0 = unlimited)");
         }
 #ifndef _WIN32
         // Lock the process umask to 0077 BEFORE anything writes a

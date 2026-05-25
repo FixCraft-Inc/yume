@@ -199,6 +199,26 @@ private:
     std::shared_ptr<const std::vector<std::string>> upstream_cache_;
     std::unique_ptr<boost::asio::steady_timer> upstream_reload_timer_;
     bool upstream_reload_stopped_{false};
+
+    // --accept-rate-limit token bucket. Single-threaded by do_accept
+    // (which always runs on io_'s default executor) so no lock needed.
+    // accept_window_start_ is the steady_clock millisecond timestamp
+    // when the current 1000 ms window opened; accept_window_count_ is
+    // the number of accepts admitted in that window. When the window
+    // expires we roll forward by adding 1000 ms (not snapping to now)
+    // so a burst doesn't get punished by an idle gap right after.
+    std::chrono::steady_clock::time_point accept_window_start_{};
+    std::uint32_t accept_window_count_{0};
+    // Counters surfaced via the next start-up banner / future status
+    // RPC: how many accepts we've refused for each reason since
+    // start(). Lock-free because do_accept is single-reader.
+    std::uint64_t accept_refused_cap_{0};
+    std::uint64_t accept_refused_rate_{0};
+    // Returns true if the new accept may proceed; false if it must
+    // be refused (caller closes the socket). Pure function of
+    // (current time, cfg_, live_sessions_.size(), bucket state) —
+    // safe to call in the accept handler with no extra locks.
+    bool admit_accept();
 };
 
 }  // namespace yume::server

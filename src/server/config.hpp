@@ -131,6 +131,21 @@ struct ServerConfig {
     // this to 10000 (10 s) when the operator hasn't overridden;
     // generous enough that any legitimate client finishes in time.
     std::uint32_t tls_handshake_timeout_ms{0};
+    // --max-sessions <N>. Hard cap on simultaneously-tracked sessions
+    // (entries in Manager::live_sessions_). 0 = unlimited (legacy).
+    // When the cap is reached, new accepts are immediately closed —
+    // the TCP connection sees a successful accept then a fast RST/FIN,
+    // which is what an over-capacity nginx looks like, so this stays
+    // disguise-consistent. --public-node defaults to 4096 (generous
+    // for typical operator use; raise via --max-sessions <N>).
+    std::uint32_t max_sessions{0};
+    // --accept-rate-limit <conns-per-sec>. Token bucket on the accept
+    // loop: at most this many new connections per second over a 1s
+    // sliding window. 0 = unlimited (legacy). --public-node defaults
+    // to 100 (legitimate clients reconnect once on disconnect, not
+    // hundreds per second; pure scanner / DoS traffic does). Refused
+    // connections are closed immediately on accept.
+    std::uint32_t accept_rate_limit{0};
     std::vector<std::string> federation_peers;
     std::string federation_auth_key;
     std::string federation_anonym_ca;

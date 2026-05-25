@@ -994,21 +994,81 @@ void Manager::append_lifecycle_event_locked(const control::ClientLifecycleEvent&
     }
 }
 
+bool Manager::admit_accept() {
+    // Hard session cap first — cheap to check, and it's the absolute
+    // ceiling regardless of any rate concerns.
+    if (cfg_.max_sessions > 0) {
+        std::size_t live = 0;
+        {
+            std::lock_guard<std::mutex> lock(sessions_mutex_);
+            live = live_sessions_.size();
+        }
+        if (live >= cfg_.max_sessions) {
+            ++accept_refused_cap_;
+            // Throttle the warn line to once per 64 refusals so a
+            // sustained DoS doesn't fill the log faster than it
+            // exhausts memory.
+            if ((accept_refused_cap_ & 0x3F) == 1) {
+                util::log_warn("accept refused: max_sessions cap " +
+                              std::to_string(cfg_.max_sessions) +
+                              " reached (live=" + std::to_string(live) +
+                              ", refused-total=" + std::to_string(accept_refused_cap_) + ")");
+            }
+            return false;
+        }
+    }
+
+    // Token bucket over a 1 s rolling window.
+    if (cfg_.accept_rate_limit > 0) {
+        const auto now = std::chrono::steady_clock::now();
+        if (accept_window_start_.time_since_epoch().count() == 0 ||
+            now - accept_window_start_ >= std::chrono::seconds(1)) {
+            // Window expired — open a fresh one. Snap to now instead
+            // of rolling forward by 1 s steps to keep the math simple;
+            // worst-case effect of snapping is one extra refused
+            // connection per window vs strict sliding semantics.
+            accept_window_start_ = now;
+            accept_window_count_ = 0;
+        }
+        if (accept_window_count_ >= cfg_.accept_rate_limit) {
+            ++accept_refused_rate_;
+            if ((accept_refused_rate_ & 0x3F) == 1) {
+                util::log_warn("accept refused: rate-limit " +
+                              std::to_string(cfg_.accept_rate_limit) +
+                              "/s exceeded (refused-total=" +
+                              std::to_string(accept_refused_rate_) + ")");
+            }
+            return false;
+        }
+        ++accept_window_count_;
+    }
+    return true;
+}
+
 void Manager::do_accept() {
     if (!acceptor_.is_open()) {
         return;
     }
     acceptor_.async_accept([this](boost::system::error_code ec, boost::asio::ip::tcp::socket socket) {
         if (!ec) {
-            uint64_t session_id = next_session_id_.fetch_add(1);
-            ServerConfig cfg_copy;
-            {
-                std::lock_guard<std::mutex> lock(cfg_mutex_);
-                cfg_copy = cfg_;
+            if (!admit_accept()) {
+                // Close on the spot. Reading nothing then closing
+                // mirrors what a load-balancer would do under
+                // backpressure — the disguise stays consistent
+                // since a real busy nginx also accepts then closes.
+                boost::system::error_code close_ec;
+                socket.close(close_ec);
+            } else {
+                uint64_t session_id = next_session_id_.fetch_add(1);
+                ServerConfig cfg_copy;
+                {
+                    std::lock_guard<std::mutex> lock(cfg_mutex_);
+                    cfg_copy = cfg_;
+                }
+                auto session = std::make_shared<Session>(std::move(socket), ssl_ctx_, cfg_copy, authorized_keys_, session_id, this);
+                register_session(session);
+                session->start();
             }
-            auto session = std::make_shared<Session>(std::move(socket), ssl_ctx_, cfg_copy, authorized_keys_, session_id, this);
-            register_session(session);
-            session->start();
         } else if (ec != boost::asio::error::operation_aborted && acceptor_.is_open()) {
             util::log_warn(std::string("accept failed: ") + ec.message());
         }

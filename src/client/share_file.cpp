@@ -149,10 +149,11 @@ std::vector<std::uint8_t> encode_share(const ShareBundle& bundle,
         if (error) *error = "bundle missing valid server endpoint";
         return {};
     }
-    if (bundle.type == BundleType::Backup && bundle.auth_private_key_pem.empty()) {
-        if (error) *error = "backup bundle requires an auth private key";
-        return {};
-    }
+    // We don't require an auth key here — both full backups (with
+    // private key) and info-only bundles (server connection + CA +
+    // obfs secret, no key) are valid. The downstream importer
+    // surfaces "no auth key in this bundle, you'll need to add one"
+    // in its summary UI; the operator decides what's acceptable.
 
     std::string serialised;
     try {
@@ -243,10 +244,9 @@ bool build_backup_bundle(const BackupInputs& in, ShareBundle* out, std::string* 
         if (error) *error = "server endpoint missing or invalid";
         return false;
     }
-    if (in.identity_path.empty()) {
-        if (error) *error = "auth identity path is required for a backup";
-        return false;
-    }
+    // identity_path may be empty for an info-only bundle (Android's
+    // current export mode). build_backup_bundle just won't populate
+    // auth_private_key_pem in that case.
     std::string err;
     out->type = BundleType::Backup;
     {
@@ -268,10 +268,12 @@ bool build_backup_bundle(const BackupInputs& in, ShareBundle* out, std::string* 
     out->server_host = in.server_host;
     out->server_port = in.server_port;
 
-    out->auth_private_key_pem = slurp_text_file(in.identity_path, &err);
-    if (out->auth_private_key_pem.empty()) {
-        if (error) *error = "auth identity: " + err;
-        return false;
+    if (!in.identity_path.empty()) {
+        out->auth_private_key_pem = slurp_text_file(in.identity_path, &err);
+        if (out->auth_private_key_pem.empty()) {
+            if (error) *error = "auth identity: " + err;
+            return false;
+        }
     }
     if (!in.anonym_ca_cert_path.empty()) {
         std::string ca = slurp_text_file(in.anonym_ca_cert_path, &err);

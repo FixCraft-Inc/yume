@@ -415,6 +415,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/socks.cpp
         client/forward.cpp
         client/outbound_proxy.cpp
+        client/share_file.cpp
         client/cli.cpp
     )
     target_include_directories(yume_client_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

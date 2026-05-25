@@ -64,6 +64,7 @@
 #include "client/outbound_proxy.hpp"
 #include "client/relay_secret.hpp"
 #include "client/relay_runtime.hpp"
+#include "client/share_file.hpp"
 #include "client/socks.hpp"
 #include "client/tunnel.hpp"
 #include "core/crypto.hpp"
@@ -1162,6 +1163,22 @@ struct ParsedArgs {
     bool version{false};
     bool accept_monitoring{false};
     bool save_server{false};
+    // Share-file subcommands: "yume export <file>" backs up the
+    // currently-loaded ClientConfig + auth/CA/PQ key files into a
+    // password-encrypted bundle (FwxAES, same crypto as the rest of
+    // BaseFWX). "yume import <file>" decrypts the bundle and writes
+    // the contents into an isolated directory under the user's home
+    // so the operator can review before pointing yume at the new
+    // config. Only one of the two may be set per invocation; setting
+    // either short-circuits the normal connect path.
+    bool share_export{false};
+    bool share_import{false};
+    std::string share_path;
+    // --password-stdin: read the share-file password from the FIRST
+    // line of stdin instead of opening a hidden-input prompt. Useful
+    // for scripting, CI, and the GUI/Android wrappers (which gather
+    // the password via a dialog and then re-invoke the CLI).
+    bool share_password_stdin{false};
     bool require_anonym{false};
     bool boring{false};
     bool boring_override{false};
@@ -1294,6 +1311,26 @@ ParsedArgs parse_args(int argc, char** argv) {
             }
             args.completion = true;
             args.completion_shell = shell;
+        } else if (arg == "export") {
+            // "yume export <file>" — short-circuits normal startup.
+            // Reads the config that would otherwise be loaded by the
+            // normal flow (so --config / --server / --auth etc on the
+            // same line still take effect), encrypts to <file>.
+            const char* file = take_value("export");
+            if (!file) return args;
+            args.share_export = true;
+            args.share_path = file;
+        } else if (arg == "import") {
+            // "yume import <file>" — decrypts the bundle, writes the
+            // extracted keys + a config snippet to ~/.yume/imported/
+            // <server-host>/ and prints the path. Operator inspects
+            // and then runs "yume --config <path>".
+            const char* file = take_value("import");
+            if (!file) return args;
+            args.share_import = true;
+            args.share_path = file;
+        } else if (arg == "--password-stdin") {
+            args.share_password_stdin = true;
         } else if (arg == "--completion") {
             const char* shell = take_value("--completion");
             if (!shell) {
@@ -2060,7 +2097,7 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --threads --obfs --no-obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
+  local opts="--help -h --version --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --threads --obfs --no-obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms export import --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
   local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path --relay-key-file"
   case "$prev" in
     --completion)
@@ -2211,6 +2248,18 @@ void print_help() {
         << "  help, status, directory, invites, chat, send, send-file, send-bytes,\n"
         << "  accept, reject, history, history-delete, admin attach, admin status,\n"
         << "  admin sessions, admin stop, whoami, quit\n\n"
+        << "Share files (server backup / device migration):\n"
+        << "  export <file>            Encrypt the current config + auth key\n"
+        << "                             + CA cert + PQ pubkey into a\n"
+        << "                             password-protected .yume-share file.\n"
+        << "                             Prompts for a password (8+ chars,\n"
+        << "                             twice for confirmation). The file is\n"
+        << "                             written 0600.\n"
+        << "  import <file>            Decrypt a .yume-share file and write the\n"
+        << "                             extracted keys + a ready-to-use\n"
+        << "                             config.json to ~/.yume/imported/\n"
+        << "                             <server-host>/. Prints the exact\n"
+        << "                             `yume --config <path>` to use them.\n\n"
         << "Other:\n"
         << "  completion bash\n"
         << "  -h, --help               Show help\n"
@@ -3266,6 +3315,331 @@ bool parse_cluster_spec(const std::string& spec, std::string* host, int* port, s
     return true;
 }
 
+// ─── share-file (yume export / yume import) ────────────────────────────────
+
+std::string read_text_file_to_string(const std::string& path, std::string* error) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) {
+        if (error) *error = "cannot open " + path;
+        return {};
+    }
+    std::stringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+bool write_with_owner_only_mode(const std::string& path,
+                                const std::vector<std::uint8_t>& data,
+                                std::string* error) {
+    // Write owner-only (0600 on POSIX). On Windows the umask call is
+    // a no-op; the file inherits the default ACL.
+#ifndef _WIN32
+    mode_t prior = ::umask(0077);
+#endif
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+#ifndef _WIN32
+    ::umask(prior);
+#endif
+    if (!f) {
+        if (error) *error = "cannot write " + path;
+        return false;
+    }
+    f.write(reinterpret_cast<const char*>(data.data()),
+            static_cast<std::streamsize>(data.size()));
+    if (!f) {
+        if (error) *error = "write to " + path + " failed";
+        return false;
+    }
+#ifndef _WIN32
+    // Tighten existing-file modes too (umask only affects creates).
+    (void)::chmod(path.c_str(), 0600);
+#endif
+    return true;
+}
+
+std::string iso8601_now_utc() {
+    using namespace std::chrono;
+    auto now = system_clock::now();
+    auto secs = duration_cast<seconds>(now.time_since_epoch()).count();
+    std::time_t t = static_cast<std::time_t>(secs);
+    std::tm tm{};
+#ifdef _WIN32
+    gmtime_s(&tm, &t);
+#else
+    gmtime_r(&t, &tm);
+#endif
+    char buf[32]{};
+    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return std::string(buf);
+}
+
+bool prompt_share_password(const std::string& purpose,
+                           bool from_stdin,
+                           std::string* out,
+                           std::string* error) {
+    // "purpose" is one of "export" (set new) or "import" (enter existing).
+    // For export with TTY we confirm with a second prompt — typos in a
+    // new password mean a file you can never decrypt. For
+    // --password-stdin we trust the caller (usually a GUI / CI script
+    // that already confirmed) and read a single line.
+    if (from_stdin) {
+        std::string line;
+        if (!std::getline(std::cin, line)) {
+            if (error) *error = "could not read password from stdin";
+            return false;
+        }
+        // Trim trailing CR (Windows line endings) but preserve other
+        // whitespace — passwords sometimes contain trailing spaces and
+        // the caller is responsible for sending exactly what they want.
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) {
+            if (error) *error = "password must not be empty";
+            return false;
+        }
+        if (purpose == "export" && line.size() < 8) {
+            if (error) *error = "password must be at least 8 characters";
+            return false;
+        }
+        *out = std::move(line);
+        return true;
+    }
+
+    if (purpose == "export") {
+        std::string first, second;
+        if (!prompt_hidden_input("Set a password to protect the export: ", &first, error)) {
+            return false;
+        }
+        if (first.size() < 8) {
+            if (error) *error = "password must be at least 8 characters";
+            return false;
+        }
+        if (!prompt_hidden_input("Confirm the password: ", &second, error)) {
+            return false;
+        }
+        if (first != second) {
+            if (error) *error = "passwords don't match";
+            return false;
+        }
+        *out = std::move(first);
+        return true;
+    }
+    return prompt_hidden_input("Password for the share file: ", out, error);
+}
+
+int run_export_share(const std::string& out_path,
+                     const ClientConfig& cfg,
+                     bool password_stdin) {
+    if (cfg.server.empty() || cfg.identity.empty()) {
+        util::log_error("export: nothing to export — load a config first (--config <path>) or pass --server + --auth.");
+        return 1;
+    }
+
+    yume::share::ShareBundle bundle;
+    bundle.type = yume::share::BundleType::Backup;
+    bundle.created_at_iso8601 = iso8601_now_utc();
+    bundle.created_by = std::string("yume ") + yume::kVersion;
+    bundle.label = cfg.server + (cfg.port > 0 ? ":" + std::to_string(cfg.port) : std::string());
+    bundle.server_host = cfg.server;
+    bundle.server_port = cfg.port > 0 ? cfg.port : 443;
+
+    std::string err;
+    bundle.auth_private_key_pem = read_text_file_to_string(cfg.identity, &err);
+    if (bundle.auth_private_key_pem.empty()) {
+        util::log_error("export: " + (err.empty() ? std::string("cannot read auth key " + cfg.identity) : err));
+        return 1;
+    }
+
+    if (!cfg.anonym_ca_cert.empty()) {
+        std::string ca = read_text_file_to_string(cfg.anonym_ca_cert, &err);
+        if (!ca.empty()) {
+            bundle.anonym_ca_cert_pem = std::move(ca);
+        } else {
+            util::log_warn("export: skipping anonym CA cert (" + err + ")");
+        }
+    }
+    if (!cfg.pq_public_key.empty()) {
+        std::string pq = read_text_file_to_string(cfg.pq_public_key, &err);
+        if (!pq.empty()) {
+            bundle.pq_public_key_pem = std::move(pq);
+        } else {
+            util::log_warn("export: skipping PQ public key (" + err + ")");
+        }
+    }
+    bundle.obfuscation = cfg.obfuscation;
+    bundle.obfs_secret = cfg.obfs_secret;
+    bundle.obfs_pad_multiple = cfg.obfs_pad_multiple;
+    bundle.obfs_jitter_ms = cfg.obfs_jitter_ms;
+    bundle.tls_pin_sha256 = cfg.tls_pin_sha256;
+    bundle.tls_stealth_profile = cfg.tls_stealth_profile;
+    bundle.anonym_pubkey = cfg.anonym_pubkey;
+    bundle.inner_crypto = cfg.inner_crypto;
+    bundle.inner_heavy = cfg.inner_heavy;
+    bundle.inner_hop = cfg.inner_hop;
+    bundle.hop_interval_ms = cfg.hop_interval_ms;
+    bundle.allow_udp = cfg.allow_udp;
+    bundle.allow_local_ip = cfg.allow_local_ip;
+
+    std::string password;
+    if (!prompt_share_password("export", password_stdin, &password, &err)) {
+        util::log_error("export: " + err);
+        return 1;
+    }
+
+    auto bytes = yume::share::encode_share(bundle, password, &err);
+    // Zero the password buffer after use to keep it out of swap.
+    std::fill(password.begin(), password.end(), '\0');
+    if (bytes.empty()) {
+        util::log_error("export: " + err);
+        return 1;
+    }
+    if (!write_with_owner_only_mode(out_path, bytes, &err)) {
+        util::log_error("export: " + err);
+        return 1;
+    }
+    util::log_info("Exported " + std::to_string(bytes.size()) + "-byte share file to " + out_path +
+                   " (owner-readable only). Keep the password safe — it's the only way to decrypt.");
+    return 0;
+}
+
+int run_import_share(const std::string& in_path, bool password_stdin) {
+    std::ifstream in(in_path, std::ios::binary);
+    if (!in) {
+        util::log_error("import: cannot open " + in_path);
+        return 1;
+    }
+    std::vector<std::uint8_t> blob((std::istreambuf_iterator<char>(in)),
+                                    std::istreambuf_iterator<char>());
+    yume::share::ShareFileHeader hdr{};
+    if (!yume::share::peek_share_header(blob, &hdr)) {
+        util::log_error("import: " + in_path + " is not a yume-share file (bad magic / unsupported version)");
+        return 1;
+    }
+    util::log_info("import: detected yume-share format v" + std::to_string(hdr.version) +
+                   " (type=" + (hdr.type == yume::share::BundleType::Backup ? "backup" : "?") + ").");
+
+    std::string err;
+    std::string password;
+    if (!prompt_share_password("import", password_stdin, &password, &err)) {
+        util::log_error("import: " + err);
+        return 1;
+    }
+    auto bundle_opt = yume::share::decode_share(blob, password, &err);
+    std::fill(password.begin(), password.end(), '\0');
+    if (!bundle_opt) {
+        util::log_error("import: " + err);
+        return 1;
+    }
+    const auto& bundle = *bundle_opt;
+
+    std::cout << "\n────────── share-file summary ──────────\n";
+    if (!bundle.label.empty())           std::cout << "Label:        " << bundle.label << "\n";
+    std::cout                             << "Server:       " << bundle.server_host << ":" << bundle.server_port << "\n";
+    if (!bundle.created_at_iso8601.empty()) std::cout << "Created at:   " << bundle.created_at_iso8601 << "\n";
+    if (!bundle.created_by.empty())      std::cout << "Created by:   " << bundle.created_by << "\n";
+    std::cout                             << "Auth key:     " << (bundle.auth_private_key_pem.empty() ? "(none)" : "PRESENT") << "\n";
+    std::cout                             << "Anonym CA:    " << (bundle.anonym_ca_cert_pem.empty() ? "(none)" : "PRESENT") << "\n";
+    std::cout                             << "PQ pubkey:    " << (bundle.pq_public_key_pem.empty() ? "(none)" : "PRESENT") << "\n";
+    std::cout                             << "Obfs secret:  " << (bundle.obfs_secret.empty() ? "(none)" : "PRESENT") << "\n";
+    std::cout                             << "Inner crypto: " << (bundle.inner_crypto ? (bundle.inner_heavy ? "heavy" : "light") : "off")
+                                          << "; hop=" << (bundle.inner_hop ? "on" : "off") << "\n";
+    std::cout << "─────────────────────────────────────────\n\n";
+
+    // Confirmation: TTY operators get a y/N prompt. Non-TTY callers
+    // (the GUI / Android wrappers, CI scripts) declare consent by
+    // passing --password-stdin — at that point the wrapper has
+    // already shown the bundle summary in its own UI and the user
+    // clicked "Import".
+    if (!password_stdin) {
+        if (!is_tty_stdin()) {
+            util::log_error("import: confirmation requires a TTY; pass --password-stdin to skip the prompt");
+            return 1;
+        }
+        std::cout << "Write extracted files to ~/.yume/imported/" << bundle.server_host
+                  << "/ and a ready-to-use config.json there? [y/N]: " << std::flush;
+        std::string answer;
+        std::getline(std::cin, answer);
+        if (answer.empty() || (answer[0] != 'y' && answer[0] != 'Y')) {
+            util::log_info("import: cancelled, nothing was written.");
+            return 0;
+        }
+    }
+
+    namespace fs = std::filesystem;
+    fs::path home;
+    if (const char* h = std::getenv("HOME")) home = h;
+    if (home.empty()) {
+        util::log_error("import: HOME not set, can't pick a destination");
+        return 1;
+    }
+    fs::path target_dir = home / ".yume" / "imported" / bundle.server_host;
+#ifndef _WIN32
+    mode_t prior = ::umask(0077);
+#endif
+    std::error_code ec;
+    fs::create_directories(target_dir, ec);
+#ifndef _WIN32
+    ::umask(prior);
+    (void)::chmod(target_dir.c_str(), 0700);
+#endif
+    if (ec) {
+        util::log_error("import: cannot create " + target_dir.string() + ": " + ec.message());
+        return 1;
+    }
+
+    auto write_pem = [&](const std::string& name, const std::string& contents) -> std::string {
+        if (contents.empty()) return {};
+        fs::path p = target_dir / name;
+        std::vector<std::uint8_t> bytes(contents.begin(), contents.end());
+        std::string werr;
+        if (!write_with_owner_only_mode(p.string(), bytes, &werr)) {
+            util::log_warn("import: " + werr);
+            return {};
+        }
+        return p.string();
+    };
+
+    const std::string identity_path = write_pem("identity.key", bundle.auth_private_key_pem);
+    const std::string anonym_ca_path = write_pem("anonym_ca.pem", bundle.anonym_ca_cert_pem);
+    const std::string pq_pub_path = write_pem("pq_public.key", bundle.pq_public_key_pem);
+
+    nlohmann::json cfg_json = nlohmann::json::object();
+    cfg_json["server"] = bundle.server_host;
+    cfg_json["port"] = bundle.server_port;
+    if (!identity_path.empty())  cfg_json["identity"] = identity_path;
+    if (!anonym_ca_path.empty()) cfg_json["anonym_ca_cert"] = anonym_ca_path;
+    if (!pq_pub_path.empty())    cfg_json["pq_public_key"] = pq_pub_path;
+    cfg_json["obfuscation"] = bundle.obfuscation;
+    if (!bundle.obfs_secret.empty())    cfg_json["obfs_secret"] = bundle.obfs_secret;
+    if (bundle.obfs_pad_multiple > 0)   cfg_json["obfs_pad_multiple"] = bundle.obfs_pad_multiple;
+    if (bundle.obfs_jitter_ms > 0)      cfg_json["obfs_jitter_ms"] = bundle.obfs_jitter_ms;
+    if (!bundle.tls_pin_sha256.empty()) cfg_json["tls_pin"] = bundle.tls_pin_sha256;
+    if (!bundle.tls_stealth_profile.empty()) cfg_json["tls_stealth_profile"] = bundle.tls_stealth_profile;
+    if (!bundle.anonym_pubkey.empty())  cfg_json["anonym_pubkey"] = bundle.anonym_pubkey;
+    cfg_json["inner_crypto"] = bundle.inner_crypto;
+    cfg_json["inner_heavy"] = bundle.inner_heavy;
+    cfg_json["inner_hop"] = bundle.inner_hop;
+    cfg_json["hop_interval_ms"] = bundle.hop_interval_ms;
+    cfg_json["udp"] = bundle.allow_udp;
+    cfg_json["allow_local_ip"] = bundle.allow_local_ip;
+
+    fs::path config_path = target_dir / "config.json";
+    std::ofstream cfg_out(config_path);
+    if (!cfg_out) {
+        util::log_error("import: cannot write " + config_path.string());
+        return 1;
+    }
+    cfg_out << cfg_json.dump(2) << "\n";
+    cfg_out.close();
+#ifndef _WIN32
+    ::chmod(config_path.c_str(), 0600);
+#endif
+
+    util::log_info("Import complete.");
+    util::log_info("  Wrote: " + target_dir.string() + "/ (mode 0700)");
+    util::log_info("  Connect with: yume --config " + config_path.string());
+    return 0;
+}
+
 }  // namespace
 
 void Cli::set_runtime_ready_callback(RuntimeReadyCallback cb) {
@@ -3327,6 +3701,13 @@ int Cli::run(int argc, char** argv) {
         }
         util::log_error("unsupported completion shell: " + args.completion_shell);
         return 1;
+    }
+    // Import is config-less — reads only the share-file. Dispatch as
+    // early as possible so we don't load any irrelevant default config
+    // first (which could prompt the user, attempt local-runtime
+    // attach, etc).
+    if (args.share_import) {
+        return run_import_share(args.share_path, args.share_password_stdin);
     }
     if (args.proxycmd) {
         int socks_port = args.socks_port > 0 ? args.socks_port : 1080;
@@ -3782,7 +4163,8 @@ int Cli::run(int argc, char** argv) {
         !args.file_target.empty() ||
         !args.bytes_target.empty() ||
         !args.admin_target.empty() ||
-        args.attach_local;
+        args.attach_local ||
+        args.share_export;  // export is a one-shot, not a connection
     if (!has_active_mode) {
         util::log_error("no mode selected (use --socks, -L, -R, --run, --directory, --chat, --send-file, --send-bytes, --admin-attach, --control, or --attach-local)");
         return 1;
@@ -3827,6 +4209,14 @@ int Cli::run(int argc, char** argv) {
         cfg.inner_crypto = false;
     }
 #endif
+
+    // Export uses the fully-loaded ClientConfig — runs after JSON +
+    // CLI overrides have been merged, but before the local-runtime
+    // attach check so an in-flight `yume` daemon doesn't get in the
+    // way of a backup.
+    if (args.share_export) {
+        return run_export_share(args.share_path, cfg, args.share_password_stdin);
+    }
 
     if (args.save_server && !cfg.server.empty()) {
         nlohmann::json json;

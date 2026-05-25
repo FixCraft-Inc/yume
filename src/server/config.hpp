@@ -10,6 +10,14 @@ namespace yume::server {
 
 struct ServerConfig {
     int listen_port{443};
+    // --listen now accepts either "<port>" (legacy: bind 0.0.0.0:<port>)
+    // or "<addr>:<port>" (bind specifically to <addr>). When the addr
+    // form is used, listen_address holds the parsed address string;
+    // empty means "bind any" (the legacy default). Under --public-node,
+    // a listen_address that resolves to a private or loopback range is
+    // a hard startup error — that's the "private-IP bind refusal" item
+    // the banner had been logging.
+    std::string listen_address;
     std::string tls_cert;
     std::string tls_key;
     std::string auth_keys;

@@ -114,7 +114,12 @@ void print_help() {
         << "  yumed --version\n\n"
         << "Core:\n"
         << "  --config <path>          Config file\n"
-        << "  --listen <port>          Override listen_port\n"
+        << "  --listen <port>          Override listen_port (binds 0.0.0.0:<port>)\n"
+        << "  --listen <addr>:<port>   Bind specifically to <addr>:<port>\n"
+        << "                             (use [::1]:443 / [::]:443 for IPv6).\n"
+        << "                             Under --public-node, addresses in\n"
+        << "                             RFC 1918 / loopback / link-local /\n"
+        << "                             CGNAT / IPv6 ULA are refused at startup.\n"
         << "  --cert <path>            TLS certificate\n"
         << "  --key <path>             TLS private key\n"
         << "  --auth-keys <path>       Override auth_keys\n"
@@ -1398,7 +1403,44 @@ int main(int argc, char** argv) {
             config_path = argv[++i];
             config_specified = true;
         } else if (arg == "--listen" && i + 1 < argc) {
-            cfg.listen_port = std::stoi(argv[++i]);
+            // Two forms:
+            //   --listen 443           → bind 0.0.0.0:443 (legacy)
+            //   --listen 1.2.3.4:443   → bind specifically to that IP
+            //   --listen [::1]:443     → IPv6 with bracket syntax
+            //   --listen [::]:443      → IPv6 any
+            std::string raw = argv[++i];
+            std::string addr_part;
+            std::string port_part;
+            if (!raw.empty() && raw.front() == '[') {
+                // [addr]:port form
+                auto rbr = raw.find(']');
+                if (rbr == std::string::npos || rbr + 2 > raw.size() || raw[rbr + 1] != ':') {
+                    yume::util::log_error("--listen: bracket form must be [addr]:port");
+                    return 1;
+                }
+                addr_part = raw.substr(1, rbr - 1);
+                port_part = raw.substr(rbr + 2);
+            } else {
+                auto colon = raw.rfind(':');
+                if (colon == std::string::npos) {
+                    // Port-only legacy form
+                    port_part = raw;
+                } else {
+                    addr_part = raw.substr(0, colon);
+                    port_part = raw.substr(colon + 1);
+                }
+            }
+            try {
+                cfg.listen_port = std::stoi(port_part);
+            } catch (const std::exception&) {
+                yume::util::log_error("--listen: cannot parse port '" + port_part + "'");
+                return 1;
+            }
+            if (cfg.listen_port < 1 || cfg.listen_port > 65535) {
+                yume::util::log_error("--listen: port out of range 1..65535: " + port_part);
+                return 1;
+            }
+            cfg.listen_address = addr_part;
         } else if (arg == "--reverse-port-min" && i + 1 < argc) {
             cfg.reverse_port_min = std::stoi(argv[++i]);
         } else if (arg == "--reverse-port-max" && i + 1 < argc) {
@@ -2119,6 +2161,63 @@ int main(int argc, char** argv) {
         if (!accept_rate_limit_override && cfg.accept_rate_limit == 0) {
             cfg.accept_rate_limit = 100;
             yume::util::log_info("--public-node: defaulting --accept-rate-limit to 100/s (pass --accept-rate-limit <N> to override; 0 = unlimited)");
+        }
+        // Refuse to bind to a private / loopback / link-local address
+        // when the operator declared this is an internet-facing node.
+        // Empty listen_address = "bind any" (0.0.0.0) which is the
+        // operator's clear intent to be internet-facing, so it's
+        // allowed. Only explicit addr binds are checked.
+        if (!cfg.listen_address.empty()) {
+            boost::system::error_code addr_ec;
+            auto addr = boost::asio::ip::make_address(cfg.listen_address, addr_ec);
+            if (addr_ec) {
+                yume::util::log_error("--public-node: --listen address '" +
+                                      cfg.listen_address + "' does not parse: " +
+                                      addr_ec.message());
+                return 1;
+            }
+            bool refuse = false;
+            std::string reason;
+            if (addr.is_loopback()) {
+                refuse = true; reason = "loopback (127.0.0.0/8 or ::1)";
+            } else if (addr.is_unspecified()) {
+                // 0.0.0.0 / :: are the explicit "any" forms — allowed,
+                // operator just wrote them out longhand.
+            } else if (addr.is_v4()) {
+                const auto v4 = addr.to_v4();
+                const auto bytes = v4.to_bytes();
+                const uint32_t ip = (uint32_t(bytes[0]) << 24) | (uint32_t(bytes[1]) << 16) |
+                                    (uint32_t(bytes[2]) << 8)  |  uint32_t(bytes[3]);
+                // RFC 1918 ranges + link-local (169.254/16) + CGNAT
+                // (100.64/10). Public CGNAT addresses can legitimately
+                // back internet-facing services in some ISP setups,
+                // but the typical case is a misconfigured edge router;
+                // err on the side of refusing.
+                if ((ip & 0xFF000000u) == 0x0A000000u)  { refuse = true; reason = "RFC 1918 (10.0.0.0/8)"; }
+                if ((ip & 0xFFF00000u) == 0xAC100000u)  { refuse = true; reason = "RFC 1918 (172.16.0.0/12)"; }
+                if ((ip & 0xFFFF0000u) == 0xC0A80000u)  { refuse = true; reason = "RFC 1918 (192.168.0.0/16)"; }
+                if ((ip & 0xFFFF0000u) == 0xA9FE0000u)  { refuse = true; reason = "link-local (169.254.0.0/16)"; }
+                if ((ip & 0xFFC00000u) == 0x64400000u)  { refuse = true; reason = "CGNAT (100.64.0.0/10)"; }
+            } else if (addr.is_v6()) {
+                const auto v6 = addr.to_v6();
+                if (v6.is_link_local()) {
+                    refuse = true; reason = "IPv6 link-local (fe80::/10)";
+                }
+                // ULA fc00::/7 — bytes[0] in {0xFC, 0xFD}.
+                const auto bytes = v6.to_bytes();
+                if ((bytes[0] & 0xFE) == 0xFC) {
+                    refuse = true; reason = "IPv6 ULA (fc00::/7)";
+                }
+            }
+            if (refuse) {
+                yume::util::log_error("--public-node: refusing to bind --listen " +
+                                      cfg.listen_address + " (" + reason +
+                                      "). A public node must not bind to a private/loopback range. "
+                                      "Either drop --public-node, or set --listen to a public address (or just the port).");
+                return 1;
+            }
+            yume::util::log_info("--public-node: --listen " + cfg.listen_address +
+                                 " passes private-range check");
         }
 #ifndef _WIN32
         // Lock the process umask to 0077 BEFORE anything writes a

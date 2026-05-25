@@ -59,16 +59,35 @@ void Manager::start() {
         }
     }
 
-    boost::asio::ip::tcp::endpoint ep(boost::asio::ip::tcp::v4(), cfg_.listen_port);
+    // Pick the bind endpoint. Empty listen_address means legacy:
+    // bind any (0.0.0.0). A non-empty listen_address parses as an
+    // IPv4 or IPv6 literal; cfg validation (in main_server.cpp's
+    // --public-node block) rejected private ranges already.
+    boost::asio::ip::tcp::endpoint ep;
+    if (cfg_.listen_address.empty()) {
+        ep = boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(), cfg_.listen_port);
+    } else {
+        boost::system::error_code addr_ec;
+        auto addr = boost::asio::ip::make_address(cfg_.listen_address, addr_ec);
+        if (addr_ec) {
+            throw std::runtime_error("invalid listen address '" + cfg_.listen_address +
+                                     "': " + addr_ec.message());
+        }
+        ep = boost::asio::ip::tcp::endpoint(addr,
+                                            static_cast<unsigned short>(cfg_.listen_port));
+    }
     acceptor_.open(ep.protocol());
     acceptor_.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true));
     acceptor_.bind(ep);
     acceptor_.listen();
 
+    const std::string bind_desc = cfg_.listen_address.empty()
+        ? std::string("port ") + std::to_string(cfg_.listen_port)
+        : cfg_.listen_address + ":" + std::to_string(cfg_.listen_port);
     if (util::is_logging_enabled()) {
-        util::log_info("yumed listening on port " + std::to_string(cfg_.listen_port));
+        util::log_info("yumed listening on " + bind_desc);
     } else {
-        std::cerr << "\033[1;33myumed listening on port " << cfg_.listen_port << "\033[0m\n";
+        std::cerr << "\033[1;33myumed listening on " << bind_desc << "\033[0m\n";
     }
     if (!cfg_.upstream_response_dir.empty()) {
         const std::size_t loaded = reload_upstream_responses();

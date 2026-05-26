@@ -864,6 +864,26 @@ void Session::on_preface_timeout(const boost::system::error_code& ec) {
         preface_probe_active_ = false;
         boost::system::error_code cancel_ec;
         stream_.lowest_layer().cancel(cancel_ec);
+        // When ANY stealth mode is enabled, we must NEVER send the
+        // AUTH challenge to a connection that hasn't proven it's a
+        // Yume client by sending a recognised preface. Browsers
+        // routinely hold idle pooled TLS connections open for tens of
+        // seconds without sending a request — the previous behaviour
+        // dropped the AUTH challenge (containing the very obvious
+        // `{"challenge_meta":1,"argon2_mem_max":...}` JSON) into
+        // those idle sockets, making the server trivially
+        // fingerprintable to anyone who opened the IP in a browser.
+        // The fix: in stealth modes, idle-with-no-preface ==
+        // "probably not a yume client" → close silently. A real
+        // yume client either sends the h2 carrier handshake (obfs
+        // on) or the raw AUTH header (no obfs, no stealth), both
+        // arrive well under the 200 ms preface timer.
+        if (cfg_.real_http || cfg_.obfuscation || !cfg_.http_profile.empty()
+            || !cfg_.upstream_response_bytes.empty()
+            || !cfg_.upstream_response_dir.empty()) {
+            close_with_reason("preface timeout (stealth mode): no recognised preface received");
+            return;
+        }
         send_auth_challenge();
     }
 }

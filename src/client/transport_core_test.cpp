@@ -5,6 +5,7 @@
  */
 
 #include "client/transport_core.hpp"
+#include "core/packet_bulk.hpp"
 
 #include <cassert>
 #include <string>
@@ -131,6 +132,43 @@ void test_padded_frame_rejects_bad_length() {
     assert(threw);
 }
 
+void test_packet_bulk_round_trip() {
+    using namespace yume::protocol::packet_bulk;
+    Batch batch;
+    batch.sequence = 42;
+    batch.flags = 3;
+    batch.packets = {
+        Bytes{0x45, 0x00, 0x00, 0x14},
+        Bytes{0x60, 0x00, 0x00, 0x00, 0x00},
+    };
+
+    const auto encoded = encode_batch(batch);
+    assert(encoded.size() == encoded_size(batch));
+    assert(can_append_packet(0, 0, batch.packets.front().size()));
+
+    std::string error;
+    const auto decoded = decode_batch(encoded, &error);
+    assert(decoded.has_value());
+    assert(error.empty());
+    assert(decoded->sequence == batch.sequence);
+    assert(decoded->flags == batch.flags);
+    assert(decoded->packets == batch.packets);
+}
+
+void test_packet_bulk_rejects_malformed_payload() {
+    using namespace yume::protocol::packet_bulk;
+    Batch batch;
+    batch.sequence = 1;
+    batch.packets = {Bytes{0x45, 0x00, 0x00, 0x14}};
+    auto encoded = encode_batch(batch);
+    encoded.pop_back();
+
+    std::string error;
+    const auto decoded = decode_batch(encoded, &error);
+    assert(!decoded.has_value());
+    assert(!error.empty());
+}
+
 void test_shutdown_closes_registered_streams() {
     Recorder recorder;
     yume::client::TransportCore core(recorder.writer(), recorder.closer());
@@ -159,6 +197,8 @@ int main() {
     test_inner_crypto_round_trip();
     test_padded_frame_round_trip();
     test_padded_frame_rejects_bad_length();
+    test_packet_bulk_round_trip();
+    test_packet_bulk_rejects_malformed_payload();
     test_shutdown_closes_registered_streams();
     return 0;
 }

@@ -203,6 +203,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         core/identity.cpp
         core/inner_crypto.cpp
         core/local_runtime.cpp
+        core/packet_bulk.cpp
         core/protocol.cpp
         core/obfs.cpp
         core/obfs_h2.cpp
@@ -325,6 +326,7 @@ endif()
 add_library(yume_transport_core
     client/transport_core.cpp
     core/inner_crypto.cpp
+    core/packet_bulk.cpp
     core/protocol.cpp
 )
 

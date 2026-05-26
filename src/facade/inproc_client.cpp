@@ -15,6 +15,7 @@
 
 #include "client/relay_runtime.hpp"
 #include "client/tunnel.hpp"
+#include "facade/log_sink.hpp"
 
 namespace yume::facade {
 
@@ -32,6 +33,21 @@ void push_arg(std::vector<std::string>& args, std::string flag, std::string valu
 void push_flag(std::vector<std::string>& args, bool on, char const* on_flag, char const* off_flag) {
     if (on && on_flag)  args.push_back(on_flag);
     if (!on && off_flag) args.push_back(off_flag);
+}
+
+std::string latest_startup_error(std::chrono::system_clock::time_point since) {
+    auto logs = LogSink::instance().snapshot(32);
+    for (auto it = logs.rbegin(); it != logs.rend(); ++it) {
+        if (it->ts < since) {
+            continue;
+        }
+        if (it->level == LogLevel::Error ||
+            it->level == LogLevel::Critical ||
+            it->level == LogLevel::Warn) {
+            return it->message;
+        }
+    }
+    return {};
 }
 
 // Translate a fully-populated ClientConfig back into a synthetic argv
@@ -179,6 +195,7 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
 
     impl_->cli_thread = std::thread([this, cfg = std::move(cfg)]() mutable {
         client::Cli cli;
+        (void)LogSink::instance();
         // Suppress the colour-coded banner Cli prints after auth — the
         // same details are surfaced in the GUI's status panes, and we
         // don't want them duplicated into stdout/stderr of whatever
@@ -214,10 +231,14 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
         {
             std::lock_guard<std::mutex> lock(impl_->ready_mtx);
             if (!impl_->ready) {
-                char buf[64];
-                std::snprintf(buf, sizeof(buf),
-                              "Cli::run exited rc=%d before tunnel was ready", rc);
-                impl_->ready_error = buf;
+                std::string detail = latest_startup_error(impl_->started);
+                if (detail.empty()) {
+                    char buf[64];
+                    std::snprintf(buf, sizeof(buf),
+                                  "Cli::run exited rc=%d before tunnel was ready", rc);
+                    detail = buf;
+                }
+                impl_->ready_error = std::move(detail);
                 impl_->ready       = true;  // unblock start()'s wait
             }
         }

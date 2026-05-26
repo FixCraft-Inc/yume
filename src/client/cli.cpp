@@ -135,6 +135,21 @@ struct FatalError : public std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
+bool looks_like_endpoint_down(std::string message) {
+    std::transform(message.begin(), message.end(), message.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return message.find("server offline") != std::string::npos ||
+           message.find("could not reach endpoint") != std::string::npos ||
+           message.find("connect timeout") != std::string::npos ||
+           message.find("connection refused") != std::string::npos ||
+           message.find("network is unreachable") != std::string::npos ||
+           message.find("host is unreachable") != std::string::npos ||
+           message.find("no route to host") != std::string::npos ||
+           message.find("dns resolution failed") != std::string::npos ||
+           message.find("proxy timed out") != std::string::npos;
+}
+
 constexpr std::chrono::milliseconds kConnectTimeout{10000};
 constexpr std::chrono::milliseconds kHandshakeTimeout{12000};
 constexpr std::chrono::milliseconds kAuthChallengeTimeout{6000};
@@ -6366,6 +6381,11 @@ int Cli::run(int argc, char** argv) {
             {
                 std::lock_guard<std::mutex> lock(runtime_mu);
                 relay_ptr = active_relay_runtime.lock();
+            }
+            if ((args.non_interactive || !relay_ptr) && looks_like_endpoint_down(ex.what())) {
+                util::log_error("endpoint appears down (" + cfg.server + ":" +
+                                std::to_string(cfg.port) + "): " + ex.what());
+                return 1;
             }
             if (relay_ptr) {
                 std::string lifecycle_error;

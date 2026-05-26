@@ -88,7 +88,11 @@
 namespace yume::client {
 
 namespace {
-constexpr std::uint64_t kHopDecryptWindow = 24;
+// Must match the server's kHopDecryptWindow (server/session.cpp). 120
+// hops at 500 ms intervals = ±60 s tolerance for queued-frame staleness.
+// See server/session.cpp comment for the full motivation (was 24, raised
+// after Android-upload-congestion-triggered session drops).
+constexpr std::uint64_t kHopDecryptWindow = 120;
 
 #if !defined(_WIN32)
 std::mutex g_terminal_mode_mutex;

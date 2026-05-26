@@ -53,7 +53,19 @@ constexpr uint8_t kMinFrameType = protocol::AUTH;
 constexpr uint8_t kMaxFrameType = protocol::SOPEN;
 constexpr int64_t kIdleTimeoutMs = 90 * 1000;
 constexpr int64_t kIdleCheckIntervalMs = 30 * 1000;
-constexpr std::uint64_t kHopDecryptWindow = 24;
+// Decrypt-time hop-key tolerance. With hop_interval_ms=500 (default),
+// 120 hops = ±60 s of clock-drift / queue-delay tolerance. The previous
+// 24-hop (±12 s) window wasn't wide enough when an Android client's
+// outbound TLS pipe backed up under congested upload (~10 Mbps wifi
+// uplink saturated by a speedtest): DATA frames could sit queued for
+// 12+ seconds, putting their hop_id just outside the server's window
+// when they finally arrived. The server then failed AES-GCM tag
+// verification and forcibly closed the session ("DATA decrypt failed"
+// → session reset → user-visible speedtest error). 60 s covers the
+// worst-case backlog we've observed in real Android traces. Cost is
+// bounded: most decrypts hit the first key (current hop), so the
+// worst case (240 candidates) only triggers on already-stale frames.
+constexpr std::uint64_t kHopDecryptWindow = 120;
 constexpr int64_t kResolverTimeoutMs = 8000;
 constexpr int64_t kConnectTimeoutMs = 15000;
 constexpr int64_t kReverseAcceptTimeoutMs = 30000;

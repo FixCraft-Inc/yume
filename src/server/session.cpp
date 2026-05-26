@@ -1036,15 +1036,19 @@ void Session::send_disguise_404(const std::string& path) {
 }
 
 void Session::send_real_http_response(const std::string& path) {
-    std::string body;
-    std::string status_line = "HTTP/1.1 200 OK\r\n";
+    // Non-`/` paths get an nginx-style 404 via the same disguise
+    // pipeline that --hide-in-the-crowd uses without --real. The
+    // previous behaviour (302 Location: / on every unknown path)
+    // was a soft fingerprint: a real nginx returns 404 for
+    // /random-path, not "Redirecting to /". The 302-everywhere
+    // pattern is recognisable to any prober that GETs more than
+    // one URL on the same TLS connection.
     if (path != "/") {
-        status_line = "HTTP/1.1 302 Found\r\n";
-        body = "<!doctype html><html><head><meta charset=\"utf-8\"><title>Redirect</title></head>"
-               "<body>Redirecting to /</body></html>";
-    } else {
-        body = load_real_index();
+        send_disguise_404(path);
+        return;
     }
+    std::string body = load_real_index();
+    std::string status_line = "HTTP/1.1 200 OK\r\n";
 
     std::string hidden = build_hidden_blob();
     if (!hidden.empty()) {
@@ -1073,9 +1077,6 @@ void Session::send_real_http_response(const std::string& path) {
 
     std::string headers;
     headers += status_line;
-    if (path != "/") {
-        headers += "Location: /\r\n";
-    }
     if (!profile->server_header_value.empty()) {
         headers += "Server: " + profile->server_header_value + "\r\n";
     }

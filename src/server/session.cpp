@@ -756,10 +756,10 @@ void Session::notify_server_shutdown(const std::string& reason) {
 void Session::on_handshake(const boost::system::error_code& ec) {
     // Deadline served its purpose; cancel regardless of handshake
     // outcome so it doesn't try to close an already-handled stream.
-    {
-        boost::system::error_code cancel_ec;
-        tls_handshake_timer_.cancel(cancel_ec);
-    }
+    // No-arg cancel(): the error_code overload of basic_waitable_timer::cancel
+    // was removed in Boost.Asio 1.87 (vcpkg arm64-osx). The no-arg form works on
+    // every Boost version and does not throw for an ordinary timer cancellation.
+    tls_handshake_timer_.cancel();
     if (ec) {
         close_with_reason("TLS handshake failed: " + ec.message());
         return;

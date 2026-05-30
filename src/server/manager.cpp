@@ -197,8 +197,11 @@ void Manager::stop() {
         federation_->stop();
     }
     if (upstream_reload_timer_) {
-        boost::system::error_code tec;
-        upstream_reload_timer_->cancel(tec);
+        // No-arg cancel(): the error_code overload of basic_waitable_timer::cancel
+        // was removed in Boost.Asio 1.87 (the vcpkg arm64-osx build pulls it).
+        // The no-arg form is valid on every Boost version and does not throw for
+        // an ordinary timer cancellation.
+        upstream_reload_timer_->cancel();
         upstream_reload_stopped_ = true;
     }
     boost::system::error_code ec;

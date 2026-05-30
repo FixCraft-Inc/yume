@@ -6,6 +6,11 @@
 
 #include "platform/file_dialog.hpp"
 
+// On Apple targets the native AppKit pickers live in file_dialog_macos.mm,
+// which CMake compiles instead of this file. The guard keeps this translation
+// unit empty there as belt-and-suspenders against a double-add.
+#if !defined(__APPLE__)
+
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -239,3 +244,5 @@ std::optional<std::filesystem::path> save_file_dialog(std::string const& title,
 }
 
 }  // namespace yume::gui::platform
+
+#endif  // !__APPLE__

@@ -17,9 +17,12 @@
 #include <unordered_map>
 #include <vector>
 
-#if defined(__linux__) || defined(__APPLE__)
+#if defined(__linux__)
 #  include <limits.h>
 #  include <unistd.h>
+#elif defined(__APPLE__)
+#  include <cstdint>
+#  include <mach-o/dyld.h>
 #endif
 
 namespace yume::gui::geo {
@@ -74,19 +77,38 @@ std::vector<std::filesystem::path> candidate_dirs() {
     if (!g_asset_dir.empty()) dirs.push_back(g_asset_dir);
 
 #if defined(__linux__) || defined(__APPLE__)
-    char buf[4096];
+    std::filesystem::path exe_dir;
 #  if defined(__linux__)
+    char buf[4096];
     ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
     if (n > 0) {
         buf[n] = 0;
-        std::filesystem::path exe = buf;
-        auto exe_dir = exe.parent_path();
-        // Layout when running from build tree.
-        dirs.push_back(exe_dir / ".." / ".." / "src" / "gui" / "assets" / "geoip");
-        // Installed layouts (CMake bindir = .../bin, datadir = .../share).
-        dirs.push_back(exe_dir / ".." / "share" / "yume-gui" / "geoip");
+        exe_dir = std::filesystem::path(buf).parent_path();
+    }
+#  elif defined(__APPLE__)
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    if (size > 0) {
+        std::string out(size, '\0');
+        if (_NSGetExecutablePath(out.data(), &size) == 0) {
+            out.resize(std::strlen(out.c_str()));
+            std::error_code ec;
+            std::filesystem::path resolved = std::filesystem::canonical(out, ec);
+            exe_dir = (ec ? std::filesystem::path(out) : resolved).parent_path();
+        }
     }
 #  endif
+    if (!exe_dir.empty()) {
+        // Build-tree layout (binary under build/.../src/gui or build/bin).
+        dirs.push_back(exe_dir / ".." / ".." / "src" / "gui" / "assets" / "geoip");
+        // Installed layout (bindir = .../bin, datadir = .../share).
+        dirs.push_back(exe_dir / ".." / "share" / "yume-gui" / "geoip");
+        // macOS .app bundle: Yume.app/Contents/MacOS/yume-gui ->
+        // Yume.app/Contents/Resources/geoip.
+        dirs.push_back(exe_dir / ".." / "Resources" / "geoip");
+        // Portable: geoip sitting next to the executable.
+        dirs.push_back(exe_dir / "geoip");
+    }
 #endif
     dirs.push_back("/usr/share/yume-gui/geoip");
     dirs.push_back("/usr/local/share/yume-gui/geoip");

@@ -9,6 +9,15 @@
 include(FetchContent)
 find_package(OpenGL REQUIRED)
 
+# Objective-C++ is needed on macOS for the AppKit-backed platform pieces
+# (native file pickers in platform/file_dialog_macos.mm, and a future
+# NSStatusItem tray). clang — both native and via osxcross — supports it; we
+# only enable it on Apple so non-Apple toolchains aren't asked for an ObjC++
+# compiler they may not have.
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
+
 # Freetype is wanted on every platform - it produces dramatically
 # better text rasterization than ImGui's built-in stb_truetype, and
 # it provides synthetic bold/oblique for our embedded Jost font (we
@@ -212,6 +221,13 @@ set(YUME_GUI_SOURCES
     geo/country_lookup.cpp
     "${YUME_FONT_JOST_OUTPUT}"
 )
+# file_dialog.cpp guards itself out on Apple; the native AppKit pickers come
+# from the Objective-C++ .mm instead. (Both can sit in the list safely — the
+# .cpp is empty on Apple, the .mm is empty everywhere else by virtue of not
+# being added.)
+if(APPLE)
+    list(APPEND YUME_GUI_SOURCES platform/file_dialog_macos.mm)
+endif()
 # tray.cpp is always compiled — internally it gates the libayatana-
 # appindicator code path on YUME_GUI_TRAY=1 and falls back to a stub when
 # the dev pkg isn't present, so the Tray class is always available to

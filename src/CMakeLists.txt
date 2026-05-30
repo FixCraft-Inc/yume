@@ -196,6 +196,18 @@ if(YUME_STATIC AND YUME_USE_SPDLOG AND NOT YUME_SPDLOG_TARGET STREQUAL "spdlog::
 endif()
 
 if(NOT YUME_TRANSPORT_CORE_ONLY)
+    # Per-OS platform abstraction (src/platform/). Exactly one executable_*.cpp
+    # is compiled per target; the rest are platform-specific and would not even
+    # parse elsewhere. Add new os-split helpers (paths, daemonization, …) the
+    # same way so the rest of the tree stays #ifdef-free.
+    if(WIN32)
+        set(YUME_PLATFORM_SOURCES platform/executable_windows.cpp)
+    elseif(APPLE)
+        set(YUME_PLATFORM_SOURCES platform/executable_macos.cpp)
+    else()
+        set(YUME_PLATFORM_SOURCES platform/executable_linux.cpp)
+    endif()
+
     add_library(yume_core
         core/control_protocol.cpp
         core/crypto.cpp
@@ -212,6 +224,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         core/tls_stealth.cpp
         core/tls_metrics.cpp
         util.cpp
+        ${YUME_PLATFORM_SOURCES}
     )
 
     target_include_directories(yume_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

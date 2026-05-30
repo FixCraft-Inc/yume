@@ -31,6 +31,7 @@
 
 #include "client/local_runtime.hpp"
 #include "core/identity.hpp"
+#include "platform/platform.hpp"
 
 namespace yume::client {
 
@@ -52,17 +53,15 @@ bool path_is_executable(std::filesystem::path const& path) {
 }
 
 std::filesystem::path sibling_executable(char const* name) {
-#if defined(_WIN32)
-    (void)name;
-    return {};
-#else
-    char buf[4096];
-    ssize_t len = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-    if (len <= 0) return {};
-    buf[len] = '\0';
-    std::filesystem::path p(buf);
-    return p.parent_path() / name;
-#endif
+    // Locate a binary that ships next to us (e.g. `yume` finding `yumed`).
+    // platform::executable_dir() resolves the running image per-OS — including
+    // macOS, where the old /proc/self/exe path did not exist and this returned
+    // nothing.
+    std::filesystem::path dir = yume::platform::executable_dir();
+    if (dir.empty()) {
+        return {};
+    }
+    return dir / name;
 }
 
 std::filesystem::path path_lookup(char const* name) {

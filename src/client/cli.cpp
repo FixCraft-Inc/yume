@@ -40,9 +40,8 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <conio.h>
-#elif defined(__APPLE__)
-#include <mach-o/dyld.h>
 #endif
+#include "platform/platform.hpp"
 #include <unordered_map>
 #include <limits>
 #include <chrono>
@@ -600,39 +599,8 @@ protocol::Frame read_frame_with_timeout(boost::asio::ssl::stream<boost::asio::ip
 }
 
 std::string get_self_path(const char* argv0) {
-#if defined(_WIN32)
-    char buf[MAX_PATH];
-    DWORD len = GetModuleFileNameA(nullptr, buf, MAX_PATH);
-    if (len > 0 && len < MAX_PATH) {
-        return std::string(buf, len);
-    }
-#elif defined(__APPLE__)
-    uint32_t size = 0;
-    _NSGetExecutablePath(nullptr, &size);
-    if (size > 0) {
-        std::string out(size, '\0');
-        if (_NSGetExecutablePath(out.data(), &size) == 0) {
-            auto end = out.find('\0');
-            if (end != std::string::npos) {
-                out.resize(end);
-            }
-            std::error_code ec;
-            return std::filesystem::absolute(out, ec).string();
-        }
-    }
-#else
-    char buf[4096];
-    ssize_t len = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-    if (len > 0) {
-        buf[len] = '\0';
-        return std::string(buf);
-    }
-#endif
-    if (argv0 && *argv0) {
-        std::error_code ec;
-        return std::filesystem::absolute(argv0, ec).string();
-    }
-    return {};
+    // Per-OS resolution lives in src/platform/executable_*.cpp.
+    return yume::platform::executable_path(argv0);
 }
 
 std::string get_system_hostname() {

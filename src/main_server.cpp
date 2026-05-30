@@ -32,13 +32,13 @@
 #include <windows.h>
 #include <io.h>
 #elif defined(__APPLE__)
-#include <mach-o/dyld.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #else
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
+#include "platform/platform.hpp"
 #include <openssl/sha.h>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -611,37 +611,8 @@ std::string sha256_hex(const std::string& data) {
 }
 
 std::string get_self_path(const char* argv0) {
-#if defined(_WIN32)
-    char buf[MAX_PATH];
-    DWORD len = GetModuleFileNameA(nullptr, buf, MAX_PATH);
-    if (len > 0 && len < MAX_PATH) {
-        return std::string(buf, len);
-    }
-#elif defined(__APPLE__)
-    uint32_t size = 0;
-    _NSGetExecutablePath(nullptr, &size);
-    if (size > 0) {
-        std::string out(size, '\0');
-        if (_NSGetExecutablePath(out.data(), &size) == 0) {
-            auto end = out.find('\0');
-            if (end != std::string::npos) {
-                out.resize(end);
-            }
-            std::error_code ec;
-            return std::filesystem::absolute(out, ec).string();
-        }
-    }
-#else
-    std::error_code ec;
-    auto p = std::filesystem::read_symlink("/proc/self/exe", ec);
-    if (!ec) {
-        return p.string();
-    }
-#endif
-    if (argv0 && argv0[0] != '\0') {
-        return std::filesystem::absolute(argv0).string();
-    }
-    return {};
+    // Per-OS resolution lives in src/platform/executable_*.cpp.
+    return yume::platform::executable_path(argv0);
 }
 
 bool parse_env_bool_local(const char* name, bool fallback) {

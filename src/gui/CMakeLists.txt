@@ -9,14 +9,16 @@
 include(FetchContent)
 find_package(OpenGL REQUIRED)
 
-# Objective-C++ is needed on macOS for the AppKit-backed platform pieces
-# (native file pickers in platform/file_dialog_macos.mm, and a future
-# NSStatusItem tray). clang — both native and via osxcross — supports it; we
-# only enable it on Apple so non-Apple toolchains aren't asked for an ObjC++
-# compiler they may not have.
-if(APPLE)
-    enable_language(OBJCXX)
-endif()
+# NOTE on macOS Objective-C++: we deliberately do NOT enable_language(OBJCXX).
+# Enabling it as a separate language made CMake add a stray `-isystem
+# /usr/include` to OBJCXX compiles (it strips that host dir for CXX as an
+# implicit dir, but not for the separately-detected OBJCXX language). Under an
+# osxcross cross-build that host /usr/include then won libc++'s
+# `#include_next <string.h>` and broke compilation with glibc errors. Instead
+# the lone .mm is compiled through the CXX toolchain with `-x objective-c++`
+# (see the file_dialog_macos.mm source-file properties below), which reuses the
+# clean CXX include set. clang — native or osxcross — compiles Objective-C++
+# fine this way.
 
 # Freetype is wanted on every platform - it produces dramatically
 # better text rasterization than ImGui's built-in stb_truetype, and
@@ -231,6 +233,13 @@ set(YUME_GUI_SOURCES
 # being added.)
 if(APPLE)
     list(APPEND YUME_GUI_SOURCES platform/file_dialog_macos.mm)
+    # Compile the .mm through the CXX toolchain (clean include set) as
+    # Objective-C++, rather than as a separate OBJCXX language — see the note
+    # near find_package(OpenGL). -x objective-c++ tells clang to treat the .mm
+    # as ObjC++; -ObjC++ runtime + AppKit framework come from the link step.
+    set_source_files_properties(platform/file_dialog_macos.mm PROPERTIES
+        LANGUAGE CXX
+        COMPILE_OPTIONS "-x;objective-c++")
 endif()
 # tray.cpp is always compiled — internally it gates the libayatana-
 # appindicator code path on YUME_GUI_TRAY=1 and falls back to a stub when

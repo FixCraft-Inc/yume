@@ -306,8 +306,12 @@ YUME_LOCK_ROOT="$(init_lock_root)"
 trap cleanup_temp_assets EXIT
 
 env_truthy() {
-    local value="${1:-}"
-    case "${value,,}" in
+    # Lowercase via tr, not ${x,,}: the latter is a bash-4 expansion and macOS
+    # still ships bash 3.2 as /bin/bash, where it is a syntax error. tr keeps
+    # this runnable under the stock Mac shell.
+    local value
+    value="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+    case "${value}" in
         1|true|yes|on) return 0 ;;
         *) return 1 ;;
     esac
@@ -796,7 +800,7 @@ build_liboqs_openwrt() {
         -DOQS_USE_OPENSSL=OFF \
         -DBUILD_SHARED_LIBS=OFF \
         -DBUILD_TESTING=OFF
-    cmake --build "${workdir}/build" -j"$(nproc 2>/dev/null || echo 4)"
+    cmake --build "${workdir}/build" -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
     if need_cmd sudo; then
         sudo cmake --install "${workdir}/build"
     else
@@ -831,7 +835,7 @@ build_liboqs_host() {
         -DOQS_USE_OPENSSL=OFF \
         -DBUILD_SHARED_LIBS=OFF \
         -DBUILD_TESTING=OFF
-    cmake --build "${workdir}/build" -j"$(nproc 2>/dev/null || echo 4)"
+    cmake --build "${workdir}/build" -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
     cmake --install "${workdir}/build"
     return 0
 }

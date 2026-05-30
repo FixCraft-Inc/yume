@@ -2074,10 +2074,16 @@ copy_build_outputs() {
   mkdir -p "${outdir}"
   cp -f "${yume_src}" "${outdir}/yume${exe_suffix}"
   cp -f "${yumed_src}" "${outdir}/yumed${exe_suffix}"
-  # Optional GUI binary — present only when this target was built with --gui.
-  local gui_src="build/bin/yume-gui${exe_suffix}"
-  if [[ -f "${gui_src}" ]]; then
-    cp -f "${gui_src}" "${outdir}/yume-gui${exe_suffix}"
+  # Optional GUI output, present only when this target was built with --gui:
+  #  - macOS produces an app bundle (a directory): build/bin/Yume.app
+  #  - Linux produces a bare binary:               build/bin/yume-gui
+  local gui_app
+  for gui_app in build/bin/*.app; do
+    [[ -d "${gui_app}" ]] && cp -R "${gui_app}" "${outdir}/"
+  done
+  local gui_bin="build/bin/yume-gui${exe_suffix}"
+  if [[ -f "${gui_bin}" ]]; then
+    cp -f "${gui_bin}" "${outdir}/yume-gui${exe_suffix}"
   fi
 }
 
@@ -2660,10 +2666,10 @@ EOF
     macos_cmake_args="${macos_cmake_args} -DCMAKE_TOOLCHAIN_FILE=${toolchain_file}"
   fi
 
-  # GUI only on the dynamic variant (a static .app would have to bundle the
-  # frameworks differently; the dynamic build links them from the SDK).
-  local gui_arg=""
-  [[ "${variant}" != "static" ]] && gui_arg="${EZBUILD_GUI_ARG}"
+  # GUI on BOTH macOS variants: on macOS "static" only means static third-party
+  # libs (glfw/freetype/openssl/boost) — the Cocoa/IOKit/OpenGL frameworks and
+  # libc++ are always dynamic on Mach-O — so a static .app is valid and useful.
+  local gui_arg="${EZBUILD_GUI_ARG}"
   PATH="${shim_bin}:${bin_dir}:${PATH}" \
     MACOSX_DEPLOYMENT_TARGET="${MACOS_DEPLOYMENT_TARGET}" \
     YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=1 YUME_SKIP_DEPS=1 YUME_MACOS_VENDOR_ARCH="${arch}" YUME_CMAKE_ARGS="${macos_cmake_args}" \

@@ -318,6 +318,33 @@ endif()
 if(APPLE)
     target_link_libraries(yume-gui PRIVATE
         "-framework Cocoa" "-framework IOKit" "-framework CoreVideo")
+
+    # Ship as a proper Yume.app bundle (Contents/MacOS/Yume + a CMake-generated
+    # Info.plist + Resources/). This works for BOTH a native macOS build and an
+    # osxcross cross-build — CMake only lays out the directory tree and writes
+    # the plist; no macOS-only tooling is required (code-signing, which would
+    # need a Mac, is intentionally not done here).
+    set_target_properties(yume-gui PROPERTIES
+        MACOSX_BUNDLE TRUE
+        OUTPUT_NAME "Yume"
+        MACOSX_BUNDLE_BUNDLE_NAME "Yume"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.fixcraft.yume.gui"
+        MACOSX_BUNDLE_BUNDLE_VERSION "1.0"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
+        MACOSX_BUNDLE_COPYRIGHT "Copyright (C) FixCraft Inc.")
+
+    # Bake the country-by-IP DB into Contents/Resources/geoip so the lookup
+    # resolves it via the ../Resources/geoip candidate added in
+    # geo/country_lookup.cpp. Files with MACOSX_PACKAGE_LOCATION are copied
+    # into the bundle, not compiled.
+    file(GLOB YUME_GUI_GEOIP_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/geoip/*.db"
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/geoip/*.tsv")
+    if(YUME_GUI_GEOIP_FILES)
+        set_source_files_properties(${YUME_GUI_GEOIP_FILES} PROPERTIES
+            MACOSX_PACKAGE_LOCATION "Resources/geoip")
+        target_sources(yume-gui PRIVATE ${YUME_GUI_GEOIP_FILES})
+    endif()
 endif()
 
 yume_apply_perf_opts(yume-gui)
@@ -328,10 +355,13 @@ if(YUME_GUI_PORTABLE)
         # CMAKE_MSVC_RUNTIME_LIBRARY apply per-target.
         set_property(TARGET yume-gui PROPERTY
             MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE)
         # Static libgcc/libstdc++ so the binary doesn't drag a runtime
         # symlink with it. On MinGW this also avoids libstdc++-6.dll /
-        # libgcc_s_seh-1.dll alongside the .exe.
+        # libgcc_s_seh-1.dll alongside the .exe. Skipped on Apple: macOS clang
+        # uses libc++ (always system-provided) and rejects -static-libstdc++,
+        # so a "static" macOS build means static third-party libs + the system
+        # libc++/frameworks — which is the most static a Mach-O app can be.
         target_link_options(yume-gui PRIVATE
             -static-libgcc -static-libstdc++)
         if(WIN32)
@@ -342,7 +372,9 @@ if(YUME_GUI_PORTABLE)
     endif()
 endif()
 
-install(TARGETS yume-gui RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+install(TARGETS yume-gui
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    BUNDLE DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
 # Country-by-IP DB. Installed next to the desktop entry so the lookup
 # code can find it via the prefix-relative candidate paths it walks at

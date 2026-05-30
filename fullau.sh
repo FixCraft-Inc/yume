@@ -165,7 +165,7 @@ init_tmp_root() {
 
 show_fullau_usage() {
   cat <<'EOF'
-Usage: ./fullau.sh [--help] [--target NAME[,NAME...]] [--targets LIST]
+Usage: ./fullau.sh [--help] [--gui] [--target NAME[,NAME...]] [--targets LIST]
 
 Targets:
   all
@@ -177,10 +177,19 @@ Targets:
   windows, windows-x86_64
   macos, macos-x86_64, macos-arm64
 
+Options:
+  --gui   Also build the desktop GUI (yume-gui) for the three desktop
+          targets — linux-x86_64, windows-x86_64, macos-x86_64/arm64.
+          Ignored for non-desktop targets (openwrt/busybox/arm*). Pulls
+          glfw3 + freetype via vcpkg for the Windows/macOS cross builds;
+          the Linux build links the host's system X11/GLFW/Freetype.
+          Equivalent to YUME_FULLAU_GUI=1.
+
 Notes:
   - Multiple targets can be passed as a comma-separated list.
   - The same target selection can also be set via YUME_TARGETS.
   - With no arguments, all supported targets are considered.
+  - To build ONLY the desktop GUIs: ./fullau.sh --gui --targets linux,windows,macos
 EOF
 }
 
@@ -213,6 +222,11 @@ parse_fullau_args() {
       -h|--help)
         show_fullau_usage
         exit 0
+        ;;
+      --gui)
+        YUME_FULLAU_GUI=1
+        export YUME_FULLAU_GUI
+        shift
         ;;
       -t|--target|--targets)
         if [[ $# -lt 2 ]]; then
@@ -257,6 +271,17 @@ parse_fullau_args() {
 }
 
 parse_fullau_args "$@"
+
+# Desktop-GUI build toggle (opt-in). When off (the default), every GUI hook
+# below is a no-op, so CLI-only cross-builds are byte-for-byte unchanged.
+# Inline truthy test — is_truthy() is defined further down the file.
+case "${YUME_FULLAU_GUI:-0}" in
+  1|true|yes|on|TRUE|YES|ON|True|Yes|On) FULLAU_BUILD_GUI=1 ;;
+  *) FULLAU_BUILD_GUI=0 ;;
+esac
+EZBUILD_GUI_ARG=""
+[[ "${FULLAU_BUILD_GUI}" -eq 1 ]] && EZBUILD_GUI_ARG="--gui"
+export FULLAU_BUILD_GUI EZBUILD_GUI_ARG
 
 REAL_HOME="$(resolve_real_home)"
 REAL_UID="$(resolve_real_uid)"
@@ -1991,7 +2016,13 @@ build_host_linux_target() {
   if [[ -f "${zstd_lib}" ]]; then
     extra_args="${extra_args} -DZSTD_LIBRARY=${zstd_lib} -DZSTD_INCLUDE_DIR=/usr/include"
   fi
-  YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0 YUME_OQS_STATIC=1 YUME_CMAKE_ARGS="${extra_args}" ./ezbuild.sh
+  # GUI only on the dynamic variant: a static Linux GUI would have to static-
+  # link X11 / fontconfig / freetype, which is impractical. The dynamic build
+  # links the host's system GUI libs (ezbuild's Linux dep install pulls the
+  # X11/GLFW/Freetype -dev packages when --gui is passed).
+  local gui_arg=""
+  [[ "${variant}" != "static" ]] && gui_arg="${EZBUILD_GUI_ARG}"
+  YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0 YUME_OQS_STATIC=1 YUME_CMAKE_ARGS="${extra_args}" ./ezbuild.sh ${gui_arg}
   copy_build_outputs "${outdir}" "" || return 1
   strip "${outdir}/yume" "${outdir}/yumed"
   if [[ "${variant}" == "static" ]]; then
@@ -2043,6 +2074,11 @@ copy_build_outputs() {
   mkdir -p "${outdir}"
   cp -f "${yume_src}" "${outdir}/yume${exe_suffix}"
   cp -f "${yumed_src}" "${outdir}/yumed${exe_suffix}"
+  # Optional GUI binary — present only when this target was built with --gui.
+  local gui_src="build/bin/yume-gui${exe_suffix}"
+  if [[ -f "${gui_src}" ]]; then
+    cp -f "${gui_src}" "${outdir}/yume-gui${exe_suffix}"
+  fi
 }
 
 resolve_windows_mingw_compilers() {
@@ -2255,6 +2291,12 @@ EOF
     if [[ " ${windows_vcpkg_packages} " != *" boost-asio "* ]]; then
       windows_vcpkg_packages="${windows_vcpkg_packages} boost-asio"
     fi
+    # GUI deps: GLFW + Freetype from vcpkg (mingw-static triplet). The GUI's
+    # Win32 bits (Shell_NotifyIcon tray, GetOpenFileName dialogs, dwmapi) are
+    # in-tree and link against the system import libs added in gui/CMakeLists.
+    if [[ "${FULLAU_BUILD_GUI}" -eq 1 && " ${windows_vcpkg_packages} " != *" glfw3 "* ]]; then
+      windows_vcpkg_packages="${windows_vcpkg_packages} glfw3 freetype"
+    fi
 
     CC="${tool_cc}" CXX="${tool_cxx}" PATH="${shim_bin}:${PATH}" VCPKG_POWERSHELL_PATH="${powershell_stub}" \
       "${vcpkg_bin}" install "${vcpkg_triplet_args[@]}" ${windows_vcpkg_packages}
@@ -2325,7 +2367,7 @@ EOF
 
   PATH="${shim_bin}:${PATH}" VCPKG_POWERSHELL_PATH="${powershell_stub}" \
     YUME_WINDOWS_CROSS=1 YUME_MACOS_CROSS=0 YUME_SKIP_DEPS=1 YUME_CMAKE_ARGS="${windows_cmake_args}" \
-    ./ezbuild.sh
+    ./ezbuild.sh ${EZBUILD_GUI_ARG}
 
   if [[ ! -f build/bin/yume.exe || ! -f build/bin/yumed.exe ]]; then
     echo "Windows build outputs missing in build/bin" >&2
@@ -2334,6 +2376,10 @@ EOF
   mkdir -p "${outdir}"
   cp -f build/bin/yume.exe "${outdir}/yume.exe"
   cp -f build/bin/yumed.exe "${outdir}/yumed.exe"
+  # Optional GUI binary (present only with --gui).
+  if [[ -f build/bin/yume-gui.exe ]]; then
+    cp -f build/bin/yume-gui.exe "${outdir}/yume-gui.exe"
+  fi
   if [[ "${triplet}" == *"dynamic"* ]]; then
     cp -f "${dep_prefix}/bin/"*.dll "${outdir}/" 2>/dev/null || true
     if [[ "${use_vcpkg}" -eq 1 ]]; then
@@ -2489,6 +2535,8 @@ set(CMAKE_SYSTEM_NAME Darwin)
 set(CMAKE_SYSTEM_PROCESSOR ${arch})
 set(CMAKE_C_COMPILER ${cc})
 set(CMAKE_CXX_COMPILER ${cxx})
+set(CMAKE_OBJC_COMPILER ${cc})
+set(CMAKE_OBJCXX_COMPILER ${cxx})
 set(CMAKE_OSX_SYSROOT ${sdk})
 set(CMAKE_OSX_ARCHITECTURES ${arch})
 EOF
@@ -2562,6 +2610,12 @@ EOF
     if [[ " ${macos_vcpkg_packages} " != *" boost-asio "* ]]; then
       macos_vcpkg_packages="${macos_vcpkg_packages} boost-asio"
     fi
+    # GUI deps: GLFW + Freetype from vcpkg. Cocoa/IOKit/OpenGL frameworks come
+    # from the osxcross SDK; the AppKit pickers (file_dialog_macos.mm) compile
+    # via CMAKE_OBJCXX_COMPILER set in the toolchain above.
+    if [[ "${FULLAU_BUILD_GUI}" -eq 1 && " ${macos_vcpkg_packages} " != *" glfw3 "* ]]; then
+      macos_vcpkg_packages="${macos_vcpkg_packages} glfw3 freetype"
+    fi
 
     PATH="${shim_bin}:${bin_dir}:${PATH}" \
       MACOSX_DEPLOYMENT_TARGET="${MACOS_DEPLOYMENT_TARGET}" \
@@ -2606,10 +2660,14 @@ EOF
     macos_cmake_args="${macos_cmake_args} -DCMAKE_TOOLCHAIN_FILE=${toolchain_file}"
   fi
 
+  # GUI only on the dynamic variant (a static .app would have to bundle the
+  # frameworks differently; the dynamic build links them from the SDK).
+  local gui_arg=""
+  [[ "${variant}" != "static" ]] && gui_arg="${EZBUILD_GUI_ARG}"
   PATH="${shim_bin}:${bin_dir}:${PATH}" \
     MACOSX_DEPLOYMENT_TARGET="${MACOS_DEPLOYMENT_TARGET}" \
     YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=1 YUME_SKIP_DEPS=1 YUME_MACOS_VENDOR_ARCH="${arch}" YUME_CMAKE_ARGS="${macos_cmake_args}" \
-    ./ezbuild.sh
+    ./ezbuild.sh ${gui_arg}
 
   copy_build_outputs "${outdir}" "" || return 1
 }

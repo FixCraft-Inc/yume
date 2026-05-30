@@ -41,8 +41,8 @@ Constraints:
       apt install libndpi-bin
     If missing, DPI is skipped with a warning rather than failing.
   - Yume binaries must exist at build/bin/yume{,d}. The harness does
-    not build them; see [local-only development file removed] re heavy builds (run them on
-    build-host, not the laptop).
+    not build them; build them on a dedicated build machine rather
+    than a low-RAM laptop.
 """
 
 from __future__ import annotations

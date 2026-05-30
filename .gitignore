@@ -58,6 +58,9 @@ config/*.private.json
 basefwx/
 
 # Local notes for AI agents — kept out of git deliberately.
+# [local-only development file removed] documents personal infra (build-host details, home paths), so it
+# stays local-only rather than in this public repo.
+[local-only development file removed]
 [local-only development file removed]
 
 # Python

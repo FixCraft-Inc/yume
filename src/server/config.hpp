@@ -154,6 +154,11 @@ struct ServerConfig {
     // hundreds per second; pure scanner / DoS traffic does). Refused
     // connections are closed immediately on accept.
     std::uint32_t accept_rate_limit{0};
+    // --egress-mbps <N>. Optional weighted fair egress shaper across
+    // authenticated client keys. 0 = disabled. When enabled, one active
+    // key can use the full cap; N equal-priority active keys converge to
+    // 1/N of the cap. auth_keys_meta priority values act as weights.
+    std::uint32_t egress_mbps{0};
     std::vector<std::string> federation_peers;
     std::string federation_auth_key;
     std::string federation_anonym_ca;

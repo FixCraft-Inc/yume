@@ -66,6 +66,8 @@ std::optional<DerivedKey> server_derive_key(const Config& cfg,
 bool pq_supported();
 bool argon2_supported();
 bool pbkdf2_supported();
+std::string pq_backend_version();
+std::string argon2_backend_version();
 Argon2Limits argon2_env_limits();
 bool argon2_params_exceed_limits(const KdfParams& params,
                                  const Argon2Limits& limits,

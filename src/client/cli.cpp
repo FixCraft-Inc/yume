@@ -53,6 +53,7 @@
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
+#include <openssl/crypto.h>
 #include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
@@ -93,6 +94,7 @@ namespace {
 // See server/session.cpp comment for the full motivation (was 24, raised
 // after Android-upload-congestion-triggered session drops).
 constexpr std::uint64_t kHopDecryptWindow = 120;
+constexpr int kSocketBufferBytes = 2 * 1024 * 1024;
 
 #if !defined(_WIN32)
 std::mutex g_terminal_mode_mutex;
@@ -1183,6 +1185,7 @@ struct ParsedArgs {
     std::string tls_fingerprint_test_endpoint{"tls.peet.ws"};
     bool help{false};
     bool version{false};
+    bool credits{false};
     bool accept_monitoring{false};
     bool save_server{false};
     // Share-file subcommands: "yume export <file>" backs up the
@@ -1371,6 +1374,8 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.help = true;
         } else if (arg == "--version") {
             args.version = true;
+        } else if (arg == "--credits") {
+            args.credits = true;
         } else if (arg == "--server") {
             const char* server = take_value("--server");
             if (!server) {
@@ -2124,7 +2129,7 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --threads --tunnels --obfs --no-obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms export import --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
+  local opts="--help -h --version --credits --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --threads --tunnels --obfs --no-obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms export import --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
   local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path --relay-key-file"
   case "$prev" in
     --completion)
@@ -2153,7 +2158,30 @@ complete -F _yume_complete yume
 }
 
 void print_version() {
-    std::cout << "yume " << yume::kVersion << " (using BaseFWX " << yume::kBasefwxVersion << ")\n";
+    std::cout
+        << "yume " << yume::kVersion << "\n"
+        << "BaseFWX: " << yume::kBasefwxVersion << "\n"
+        << "OpenSSL: " << OpenSSL_version(OPENSSL_VERSION) << "\n"
+        << "PQ/ML-KEM: " << inner::pq_backend_version() << "\n"
+        << "Argon2id: " << inner::argon2_backend_version() << "\n"
+        << "PBKDF2/HKDF fallback: " << (inner::pbkdf2_supported() ? "available" : "unavailable") << "\n";
+}
+
+void print_credits() {
+    std::cout
+        << "YUME credits\n"
+        << "Author: F1xGOD - founder, lead developer, and designer of Yume and BaseFWX.\n"
+        << "Engineering partners:\n"
+        << "  Claude (Anthropic) - Yume/BaseFWX engineering partner.\n"
+        << "  ChatGPT / Codex - implementation and debugging support.\n"
+        << "Core open-source components:\n"
+        << "  BaseFWX - GPL-3.0\n"
+        << "  liboqs (Open Quantum Safe) - MIT\n"
+        << "  OpenSSL - Apache-2.0\n"
+        << "  Boost.Asio - Boost Software License 1.0\n"
+        << "  nlohmann/json - MIT\n"
+        << "  spdlog - MIT\n"
+        << "  zstd - BSD-3-Clause\n";
 }
 
 void print_help() {
@@ -2163,7 +2191,8 @@ void print_help() {
         << "  yume --server <host> -i <id_ed25519> [mode] [options]\n"
         << "  yume completion bash\n"
         << "  yume --help\n"
-        << "  yume --version\n\n"
+        << "  yume --version\n"
+        << "  yume --credits\n\n"
         << "Connection:\n"
         << "  --server <host>          Server address\n"
         << "  --cluster <spec>         Cluster entry-point short form:\n"
@@ -2291,7 +2320,8 @@ void print_help() {
         << "Other:\n"
         << "  completion bash\n"
         << "  -h, --help               Show help\n"
-        << "  --version                Show version\n";
+        << "  --version                Show version and compiled crypto capabilities\n"
+        << "  --credits                Show credits and bundled component acknowledgements\n";
 }
 
 bool parse_ssh_forward(const std::string& spec, int& lport, std::string& host, int& rport) {
@@ -3639,6 +3669,10 @@ int Cli::run(int argc, char** argv) {
         print_version();
         return 0;
     }
+    if (args.credits) {
+        print_credits();
+        return 0;
+    }
     std::string cli_cwd;
     {
         std::error_code ec;
@@ -4490,6 +4524,10 @@ int Cli::run(int argc, char** argv) {
             if (keep_ec) {
                 util::log_warn(std::string("keepalive set failed: ") + keep_ec.message());
             }
+            boost::system::error_code recvbuf_ec;
+            stream.next_layer().set_option(boost::asio::socket_base::receive_buffer_size(kSocketBufferBytes), recvbuf_ec);
+            boost::system::error_code sendbuf_ec;
+            stream.next_layer().set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
             boost::system::error_code nodelay_ec;
             stream.next_layer().set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
             SSL_set_tlsext_host_name(stream.native_handle(), cfg.server.c_str());
@@ -5662,10 +5700,227 @@ int Cli::run(int argc, char** argv) {
                 }
                 return protection;
             }();
+            auto tunnel_pool = std::make_shared<TunnelPool>(TunnelPool::Policy::LeastLoaded);
+            tunnel_pool->add(tunnel);
+            std::vector<std::shared_ptr<Tunnel>> secondary_tunnels;
+            auto connect_additional_tunnel = [&](int index) -> std::shared_ptr<Tunnel> {
+                boost::asio::ssl::stream<boost::asio::ip::tcp::socket> extra_stream(io, *ctx);
+                if (via_proxy) {
+                    auto dr = outbound_proxy::socks5_dial(
+                        extra_stream.next_layer(), io, proxy_cfg,
+                        cfg.server, cfg.port, kConnectTimeout);
+                    if (dr.timed_out) {
+                        throw std::runtime_error("proxy timed out");
+                    }
+                    if (!dr.ok) {
+                        throw std::runtime_error(dr.error.empty() ? "outbound proxy failed"
+                                                                  : "outbound proxy: " + dr.error);
+                    }
+                } else {
+                    boost::asio::ip::tcp::resolver resolver(io);
+                    auto endpoints = resolver.resolve(boost::asio::ip::tcp::v4(), cfg.server, std::to_string(cfg.port));
+                    auto cr = connect_with_timeout(extra_stream.next_layer(), endpoints, io, kConnectTimeout);
+                    if (cr.timed_out) {
+                        throw std::runtime_error("connect timeout");
+                    }
+                    if (cr.ec) {
+                        throw boost::system::system_error(cr.ec);
+                    }
+                }
+
+                boost::system::error_code keep_ec;
+                extra_stream.next_layer().set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
+                boost::system::error_code recvbuf_ec;
+                extra_stream.next_layer().set_option(boost::asio::socket_base::receive_buffer_size(kSocketBufferBytes), recvbuf_ec);
+                boost::system::error_code sendbuf_ec;
+                extra_stream.next_layer().set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
+                boost::system::error_code nodelay_ec;
+                extra_stream.next_layer().set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
+                SSL_set_tlsext_host_name(extra_stream.native_handle(), cfg.server.c_str());
+                SSL_set1_host(extra_stream.native_handle(), cfg.server.c_str());
+
+                auto hr = handshake_with_timeout(extra_stream, io, kHandshakeTimeout);
+                if (hr.timed_out) {
+                    throw std::runtime_error("TLS handshake timeout");
+                }
+                if (hr.ec) {
+                    throw std::runtime_error("TLS handshake failed: " + hr.ec.message());
+                }
+                if (!cfg.tls_pin_sha256.empty()) {
+                    std::string fp = get_peer_cert_fingerprint(nullptr, extra_stream.native_handle());
+                    if (fp.empty() || fp != cfg.tls_pin_sha256) {
+                        throw std::runtime_error("TLS pin mismatch");
+                    }
+                }
+
+                std::vector<uint8_t> prefetched_tls_bytes;
+                if (cfg.obfuscation) {
+                    perform_h2_carrier_handshake(extra_stream, io, cfg.server, cfg.port,
+                                                 cfg.obfs_secret, &prefetched_tls_bytes);
+                }
+
+                protocol::Frame extra_auth_challenge = read_auth_challenge(
+                    extra_stream,
+                    io,
+                    cfg.server,
+                    cfg.port,
+                    &prefetched_tls_bytes);
+                inner::Argon2Limits extra_argon2_limits =
+                    parse_auth_challenge_argon2_limits(extra_auth_challenge);
+
+                std::optional<crypto::Bytes> extra_pq_ciphertext;
+                std::optional<crypto::Bytes> extra_pq_salt;
+                std::optional<crypto::Bytes> extra_inner_key;
+                std::optional<std::string> extra_inner_mode;
+                std::optional<bool> extra_inner_hop;
+                std::optional<inner::KdfParams> extra_inner_kdf;
+                if (cfg.inner_crypto) {
+                    inner::Config extra_inner_cfg;
+                    extra_inner_cfg.enabled = true;
+                    extra_inner_cfg.pq_public_key = cfg.pq_public_key;
+                    extra_inner_cfg.allow_embedded_master = cfg.allow_embedded_master;
+                    extra_inner_cfg.argon2_limits = extra_argon2_limits;
+                    auto hs = inner::client_prepare(extra_inner_cfg, cfg.inner_heavy);
+                    if (!hs.enabled || hs.key.empty()) {
+                        throw std::runtime_error("inner crypto init failed");
+                    }
+                    extra_pq_ciphertext = hs.pq_ciphertext;
+                    extra_pq_salt = hs.salt;
+                    extra_inner_key = hs.key;
+                    extra_inner_mode = cfg.inner_heavy ? std::optional<std::string>("heavy")
+                                                       : std::optional<std::string>("light");
+                    extra_inner_hop = cfg.inner_hop;
+                    if (!hs.kdf.empty()) {
+                        inner::KdfParams params;
+                        params.name = hs.kdf;
+                        params.argon2_time = hs.argon2_time;
+                        params.argon2_memory = hs.argon2_memory;
+                        params.argon2_parallelism = hs.argon2_parallelism;
+                        params.pbkdf2_iters = hs.pbkdf2_iters;
+                        extra_inner_kdf = params;
+                    }
+                }
+
+                send_auth_response(extra_stream,
+                                   cfg.identity,
+                                   extra_auth_challenge,
+                                   extra_pq_ciphertext,
+                                   extra_pq_salt,
+                                   extra_inner_mode,
+                                   extra_inner_hop,
+                                   extra_inner_kdf);
+
+                auto extra_server_info_timeout = kServerInfoTimeout;
+                if (extra_pq_ciphertext.has_value() && cfg.inner_crypto) {
+                    extra_server_info_timeout = cfg.inner_heavy ? kServerInfoTimeoutInnerHeavy
+                                                                : kServerInfoTimeoutInner;
+                }
+                protocol::Frame extra_info = read_frame_with_timeout(
+                    extra_stream,
+                    io,
+                    extra_server_info_timeout,
+                    "server info",
+                    cfg.server,
+                    cfg.port,
+                    true);
+                if (extra_info.header.type != protocol::ANON) {
+                    throw std::runtime_error("unexpected server info response");
+                }
+                auto extra_json = nlohmann::json::parse(
+                    std::string(extra_info.payload.begin(), extra_info.payload.end()));
+                const std::string extra_version = extra_json.value("version", "");
+                const std::string extra_error = extra_json.value("error", "");
+                const std::string extra_mode = extra_json.value("mode", "normal");
+                if (!extra_error.empty()) {
+                    throw std::runtime_error(extra_error);
+                }
+                if (extra_version != yume::kVersion) {
+                    throw std::runtime_error("server version mismatch");
+                }
+                if (cfg.require_anonym && extra_mode != "anonym") {
+                    throw std::runtime_error("server is not in anonym mode");
+                }
+                const bool extra_have_inner_caps = extra_json.contains("inner_supported") ||
+                                                   extra_json.contains("inner_required") ||
+                                                   extra_json.contains("inner_dual") ||
+                                                   extra_json.contains("inner_mode");
+                if (extra_have_inner_caps) {
+                    const bool extra_server_inner_supported = extra_json.value("inner_supported", false);
+                    const bool extra_server_inner_required = extra_json.value("inner_required", false);
+                    if (extra_inner_key.has_value() && !extra_server_inner_supported) {
+                        throw std::runtime_error("server does not support inner crypto");
+                    }
+                    if (!extra_inner_key.has_value() && extra_server_inner_required) {
+                        throw std::runtime_error("server requires inner crypto");
+                    }
+                }
+                const bool extra_server_hop_enabled = extra_json.value("hop_enabled", false);
+                std::uint32_t extra_hop_interval_ms =
+                    static_cast<std::uint32_t>(extra_json.value("hop_interval_ms", 0));
+                if (extra_hop_interval_ms == 0) {
+                    extra_hop_interval_ms = cfg.hop_interval_ms;
+                }
+                if (extra_hop_interval_ms > 0) {
+                    extra_hop_interval_ms = std::clamp<std::uint32_t>(extra_hop_interval_ms, 250, 1000);
+                }
+                std::int64_t extra_hop_offset_ms = 0;
+                const std::int64_t extra_server_time_ms = extra_json.value("server_time_ms", 0LL);
+                if (extra_server_time_ms > 0) {
+                    extra_hop_offset_ms = extra_server_time_ms - util::now_ms();
+                }
+                const bool extra_hop_enabled =
+                    extra_inner_key.has_value() &&
+                    cfg.inner_hop &&
+                    extra_server_hop_enabled &&
+                    extra_hop_interval_ms > 0;
+
+                auto extra_tunnel = std::make_shared<Tunnel>(std::move(extra_stream));
+                if (extra_inner_key.has_value()) {
+                    extra_tunnel->set_inner_key(*extra_inner_key);
+                }
+                extra_tunnel->set_hop(extra_hop_enabled, extra_hop_interval_ms, extra_hop_offset_ms);
+                extra_tunnel->set_obfs_shape(cfg.obfs_pad_multiple, cfg.obfs_jitter_ms);
+                extra_tunnel->set_close_handler([index](const std::string& reason) {
+                    util::log_warn("SOCKS secondary tunnel " + std::to_string(index) +
+                                   " closed: " + reason);
+                });
+                return extra_tunnel;
+            };
+            const bool cli_socks_pool_mode =
+                cfg.socks_port > 0 &&
+                args.run_cmd.empty() &&
+                args.exec_cmd.empty() &&
+                args.lport <= 0 &&
+                args.rhost.empty() &&
+                args.rport <= 0 &&
+                !use_reverse &&
+                !args.directory_mode &&
+                args.chat_target.empty() &&
+                args.file_target.empty() &&
+                args.bytes_target.empty() &&
+                args.admin_target.empty() &&
+                !args.control_mode;
+            if (cli_socks_pool_mode && cfg.tunnel_count > 1) {
+                for (int i = 2; i <= cfg.tunnel_count; ++i) {
+                    try {
+                        util::log_info("opening SOCKS secondary tunnel " +
+                                       std::to_string(i) + "/" +
+                                       std::to_string(cfg.tunnel_count));
+                        auto extra = connect_additional_tunnel(i);
+                        tunnel_pool->add(extra);
+                        secondary_tunnels.push_back(extra);
+                    } catch (const std::exception& ex) {
+                        util::log_warn("SOCKS secondary tunnel " +
+                                       std::to_string(i) + "/" +
+                                       std::to_string(cfg.tunnel_count) +
+                                       " failed: " + ex.what());
+                    }
+                }
+            }
             auto disconnect_once = std::make_shared<std::atomic<bool>>(false);
             auto request_disconnect = [disconnect_once,
                                        relay_runtime,
-                                       tunnel,
+                                       tunnel_pool,
                                        &stop_requested,
                                        &announce_stopping](const std::string& reason,
                                                            const std::string& lifecycle_message,
@@ -5679,7 +5934,7 @@ int Cli::run(int argc, char** argv) {
                 announce_stopping();
                 std::string lifecycle_error;
                 relay_runtime->notify_disconnecting(lifecycle_message, &lifecycle_error);
-                tunnel->stop(reason);
+                tunnel_pool->stop_all(reason);
             };
             relay_runtime->set_stop_callback([request_disconnect]() {
                 std::thread([request_disconnect]() {
@@ -5712,6 +5967,9 @@ int Cli::run(int argc, char** argv) {
                 request_disconnect(reason, "im disconnecting", true);
             });
             tunnel->start();
+            for (auto& secondary : secondary_tunnels) {
+                secondary->start();
+            }
             IoThreadGroup io_threads(io, start_io_threads(io, cfg.io_threads));
             if (!relay_runtime->announce_presence(&relay_error)) {
                 util::log_warn("relay presence unavailable: " + relay_error);
@@ -6284,25 +6542,10 @@ int Cli::run(int argc, char** argv) {
             }
 
             if (cfg.socks_port > 0) {
-                // Phase 1 of multi-tunnel: --tunnels parses and a
-                // TunnelPool is constructed, but the connection-setup
-                // path that builds N additional TLS+auth tunnels is a
-                // follow-up. The pool currently holds the single
-                // primary tunnel so behaviour is bit-identical to the
-                // previous single-tunnel SocksServer code.
-                if (cfg.tunnel_count > 1) {
-                    util::log_warn("--tunnels " + std::to_string(cfg.tunnel_count) +
-                                   " requested but the CLI multi-tunnel connection setup is not yet wired; "
-                                   "only the primary tunnel will carry SOCKS5 traffic. Use the Android client "
-                                   "for live multi-tunnel testing; the CLI follow-up will extract a "
-                                   "connect_one_tunnel() helper from cli.cpp.");
-                }
-                auto pool = std::make_shared<TunnelPool>(TunnelPool::Policy::LeastLoaded);
-                pool->add(tunnel);
-                auto socks = std::make_shared<SocksServer>(io, cfg.socks_port, pool, cfg.allow_udp);
+                auto socks = std::make_shared<SocksServer>(io, cfg.socks_port, tunnel_pool, cfg.allow_udp);
                 socks->start();
                 util::log_info("SOCKS5 listening on 127.0.0.1:" + std::to_string(cfg.socks_port) +
-                               " over " + std::to_string(pool->size()) + " tunnel(s)");
+                               " over " + std::to_string(tunnel_pool->size()) + " tunnel(s)");
                 // One-time leak warning: SOCKS5 only covers what the
                 // browser/app actually routes through it. WebRTC, QUIC
                 // over UDP, DNS-over-HTTPS, and OS-level traffic all

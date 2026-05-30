@@ -28,12 +28,16 @@ private:
     void start_tunnel();
     void start_client_read();
     void on_client_read(const boost::system::error_code& ec, std::size_t bytes);
+    void send_client_fin();
 
     void deliver_from_tunnel(const Tunnel::Bytes& data);
     void close_from_tunnel();
+    void remote_fin_from_tunnel(const std::string& reason);
 
     void enqueue_write(std::shared_ptr<std::vector<uint8_t>> data);
     void do_write();
+    void request_socket_send_shutdown();
+    void maybe_finish_cleanly();
 
     void close();
 
@@ -41,7 +45,7 @@ private:
     std::shared_ptr<Tunnel> tunnel_;
     boost::asio::strand<boost::asio::any_io_executor> strand_;
 
-    std::array<uint8_t, 4096> read_buf_{};
+    std::array<uint8_t, 65536> read_buf_{};
     std::deque<std::shared_ptr<std::vector<uint8_t>>> write_queue_;
     bool write_in_flight_{false};
 
@@ -49,6 +53,10 @@ private:
     int target_port_{0};
     uint8_t stream_id_{0};
     bool open_confirmed_{false};
+    bool closed_{false};
+    bool local_fin_sent_{false};
+    bool remote_fin_received_{false};
+    bool socket_send_shutdown_done_{false};
 };
 
 class LocalForwardSession : public std::enable_shared_from_this<LocalForwardSession> {
@@ -72,8 +80,8 @@ private:
     boost::asio::ip::tcp::resolver resolver_;
     boost::asio::strand<boost::asio::any_io_executor> strand_;
 
-    std::array<uint8_t, 4096> client_buf_{};
-    std::array<uint8_t, 4096> remote_buf_{};
+    std::array<uint8_t, 65536> client_buf_{};
+    std::array<uint8_t, 65536> remote_buf_{};
 
     std::string target_host_;
     int target_port_{0};
@@ -102,7 +110,7 @@ private:
     boost::asio::ip::tcp::socket local_;
     boost::asio::ip::tcp::resolver resolver_;
     boost::asio::strand<boost::asio::any_io_executor> strand_;
-    std::array<uint8_t, 4096> read_buf_{};
+    std::array<uint8_t, 65536> read_buf_{};
 
     std::string target_host_;
     int target_port_{0};

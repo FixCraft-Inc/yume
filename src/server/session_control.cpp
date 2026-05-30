@@ -756,6 +756,11 @@ void Session::send_control_close(uint8_t stream_id, const std::string& reason) {
     send_control_frame(protocol::CLOSE, stream_id, payload);
 }
 
+void Session::send_control_fin(uint8_t stream_id, const std::string& reason) {
+    crypto::Bytes payload(reason.begin(), reason.end());
+    send_control_frame(protocol::CLOSE, stream_id, payload, protocol::kFlagStreamFin);
+}
+
 void Session::send_control_json_to_client(const nlohmann::json& json) {
     const std::string out = json.dump();
     send_control_frame(protocol::CONTROL, 0, crypto::Bytes(out.begin(), out.end()));

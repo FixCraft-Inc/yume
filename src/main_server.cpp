@@ -40,6 +40,7 @@
 #include <unistd.h>
 #endif
 #include <openssl/sha.h>
+#include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/x509.h>
 #include <boost/asio.hpp>
@@ -76,7 +77,7 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms --tls-handshake-timeout-ms --max-sessions --accept-rate-limit --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --upstream-response --upstream-response-dir --upstream-response-ttl --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
+  local opts="--help -h --version --credits --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms --tls-handshake-timeout-ms --max-sessions --accept-rate-limit --egress-mbps --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --upstream-response --upstream-response-dir --upstream-response-ttl --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
   local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --federation-auth-key --federation-anonym-ca --keys-add --keys-gen"
   case "$prev" in
     --completion)
@@ -101,7 +102,30 @@ complete -F _yumed_complete yumed
 }
 
 void print_version() {
-    std::cout << "yumed " << yume::kVersion << " (using BaseFWX " << yume::kBasefwxVersion << ")\n";
+    std::cout
+        << "yumed " << yume::kVersion << "\n"
+        << "BaseFWX: " << yume::kBasefwxVersion << "\n"
+        << "OpenSSL: " << OpenSSL_version(OPENSSL_VERSION) << "\n"
+        << "PQ/ML-KEM: " << yume::inner::pq_backend_version() << "\n"
+        << "Argon2id: " << yume::inner::argon2_backend_version() << "\n"
+        << "PBKDF2/HKDF fallback: " << (yume::inner::pbkdf2_supported() ? "available" : "unavailable") << "\n";
+}
+
+void print_credits() {
+    std::cout
+        << "YUME credits\n"
+        << "Author: F1xGOD - founder, lead developer, and designer of Yume and BaseFWX.\n"
+        << "Engineering partners:\n"
+        << "  Claude (Anthropic) - Yume/BaseFWX engineering partner.\n"
+        << "  ChatGPT / Codex - implementation and debugging support.\n"
+        << "Core open-source components:\n"
+        << "  BaseFWX - GPL-3.0\n"
+        << "  liboqs (Open Quantum Safe) - MIT\n"
+        << "  OpenSSL - Apache-2.0\n"
+        << "  Boost.Asio - Boost Software License 1.0\n"
+        << "  nlohmann/json - MIT\n"
+        << "  spdlog - MIT\n"
+        << "  zstd - BSD-3-Clause\n";
 }
 
 void print_help() {
@@ -111,7 +135,8 @@ void print_help() {
         << "  yumed [--config <path>] [options]\n"
         << "  yumed completion bash\n"
         << "  yumed --help\n"
-        << "  yumed --version\n\n"
+        << "  yumed --version\n"
+        << "  yumed --credits\n\n"
         << "Core:\n"
         << "  --config <path>          Config file\n"
         << "  --listen <port>          Override listen_port (binds 0.0.0.0:<port>)\n"
@@ -155,6 +180,11 @@ void print_help() {
         << "                             rolling window. Refused accepts close\n"
         << "                             immediately. 0 = unlimited.\n"
         << "                             --public-node defaults to 100 when unset.\n"
+        << "  --egress-mbps <N>        Weighted fair egress cap across auth keys.\n"
+        << "                             0 = disabled. One active key can use the\n"
+        << "                             full cap; equal active keys split it.\n"
+        << "                             auth_keys_meta priority 1..100 controls\n"
+        << "                             weighted shares (default 50).\n"
         << "  --allow-local-ip         Allow private/loopback destinations\n"
         << "  --control-full           Allow full server-side network control\n"
         << "  --root                   Keep root privileges after bind/listen\n"
@@ -242,12 +272,13 @@ void print_help() {
         << "  --keys-alias <id> <a>    Set alias\n"
         << "  --keys-gen <prefix>      Generate Ed25519 keypair (<prefix>.key/.pub)\n"
         << "  --keys-gen-add           Append generated public key to auth_keys\n"
-        << "  auth_keys_meta supports federation_peer_id and permissions.{allow_local_ip,control_full,allow_exec,allow_chat,allow_file,allow_bytes,allow_inbound_admin,allow_outbound_admin}\n"
+        << "  auth_keys_meta supports federation_peer_id, priority, and permissions.{allow_local_ip,control_full,allow_exec,allow_chat,allow_file,allow_bytes,allow_inbound_admin,allow_outbound_admin}\n"
         << "  --ui                     Interactive server manager\n\n"
         << "Other:\n"
         << "  completion bash\n"
         << "  -h, --help               Show help\n"
-        << "  --version                Show version\n";
+        << "  --version                Show version and compiled crypto capabilities\n"
+        << "  --credits                Show credits and bundled component acknowledgements\n";
 }
 
 std::string trim_copy(std::string s) {
@@ -1376,6 +1407,7 @@ int main(int argc, char** argv) {
     bool tls_handshake_timeout_override = false;
     bool max_sessions_override = false;
     bool accept_rate_limit_override = false;
+    bool egress_mbps_override = false;
     bool relay_enable_override = false;
     bool directory_enable_override = false;
     bool attach_local = false;
@@ -1397,6 +1429,10 @@ int main(int argc, char** argv) {
         }
         if (arg == "--version") {
             print_version();
+            return 0;
+        }
+        if (arg == "--credits") {
+            print_credits();
             return 0;
         }
         if (arg == "--config" && i + 1 < argc) {
@@ -1487,6 +1523,11 @@ int main(int argc, char** argv) {
             if (parsed < 0) parsed = 0;
             cfg.accept_rate_limit = static_cast<std::uint32_t>(parsed);
             accept_rate_limit_override = true;
+        } else if (arg == "--egress-mbps" && i + 1 < argc) {
+            int parsed = std::atoi(argv[++i]);
+            if (parsed < 0) parsed = 0;
+            cfg.egress_mbps = static_cast<std::uint32_t>(parsed);
+            egress_mbps_override = true;
         } else if (arg == "--inner") {
             yume::util::log_warn("--inner is deprecated; use --inner-heavy or --inner-light");
             cfg.inner_crypto = true;
@@ -1841,6 +1882,11 @@ int main(int argc, char** argv) {
                 int v = json["accept_rate_limit"].get<int>();
                 if (v < 0) v = 0;
                 cfg.accept_rate_limit = static_cast<std::uint32_t>(v);
+            }
+            if (json.contains("egress_mbps") && !egress_mbps_override) {
+                int v = json["egress_mbps"].get<int>();
+                if (v < 0) v = 0;
+                cfg.egress_mbps = static_cast<std::uint32_t>(v);
             }
             if (json.contains("upstream_response_dir") && cfg.upstream_response_dir.empty()) {
                 cfg.upstream_response_dir = resolve_cfg_path(json["upstream_response_dir"].get<std::string>());

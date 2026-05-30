@@ -69,11 +69,15 @@ constexpr std::uint64_t kHopDecryptWindow = 120;
 constexpr int64_t kResolverTimeoutMs = 8000;
 constexpr int64_t kConnectTimeoutMs = 15000;
 constexpr int64_t kReverseAcceptTimeoutMs = 30000;
-constexpr uint32_t kMaxWriteQueueSize = 256;
-constexpr uint32_t kWriteQueueHighWatermark = 16;
-constexpr uint32_t kWriteQueueLowWatermark = 4;
-constexpr uint32_t kMaxWriteBatchFrames = 16;
-constexpr std::size_t kMaxWriteBatchBytes = 64 * 1024;
+constexpr uint32_t kMaxWriteQueueSize = 512;
+constexpr uint32_t kWriteQueueHighWatermark = 64;
+constexpr uint32_t kWriteQueueLowWatermark = 16;
+constexpr uint32_t kMaxWriteBatchFrames = 64;
+constexpr std::size_t kMaxWriteBatchBytes = 1024 * 1024;
+constexpr int kSocketBufferBytes = 2 * 1024 * 1024;
+constexpr std::uint32_t kDefaultBandwidthPriority = 50;
+constexpr std::uint32_t kMinBandwidthPriority = 1;
+constexpr std::uint32_t kMaxBandwidthPriority = 100;
 
 int64_t steady_now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -299,6 +303,7 @@ bool is_expected_close_reason(const std::string& reason) {
            reason == "peer closed the TLS session" ||
            starts_with(reason, "client disconnected before AUTH") ||
            reason == "served HTTP disguise response" ||
+           reason == "server closed" ||
            reason == "server closed, kicked" ||
            reason == "session closed";
 }
@@ -670,6 +675,10 @@ void Session::start() {
     auto self = shared_from_this();
     boost::system::error_code keep_ec;
     stream_.lowest_layer().set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
+    boost::system::error_code recvbuf_ec;
+    stream_.lowest_layer().set_option(boost::asio::socket_base::receive_buffer_size(kSocketBufferBytes), recvbuf_ec);
+    boost::system::error_code sendbuf_ec;
+    stream_.lowest_layer().set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
 
     // Arm the TLS-handshake deadline before kicking off async_handshake.
     // If the timer fires before on_handshake completes, we close the
@@ -725,6 +734,20 @@ void Session::notify_server_shutdown(const std::string& reason) {
                 payload,
                 self->cfg_.obfs_pad_multiple));
             self->queue_encoded_write_on_strand(data);
+
+            crypto::Bytes close_payload(reason.begin(), reason.end());
+            uint16_t close_flags = 0;
+            if (self->inner_key_.has_value()) {
+                close_payload = self->encrypt_inner_payload(protocol::CLOSE, 0, close_payload);
+                close_flags |= protocol::kFlagInnerEncrypted;
+            }
+            auto close_frame = std::make_shared<std::vector<uint8_t>>(protocol::encode_frame(
+                protocol::CLOSE,
+                0,
+                close_flags,
+                close_payload,
+                self->cfg_.obfs_pad_multiple));
+            self->queue_encoded_write_on_strand(close_frame);
         }
         self->close_with_reason(reason);
     });
@@ -1613,7 +1636,21 @@ void Session::handle_frame(const protocol::Frame& frame) {
             break;
         case protocol::CLOSE:
             if (!handle_control_close(frame)) {
-                handle_close(frame.header.stream_id, "client closed");
+                bool ok = true;
+                std::string reason = decode_close_reason(frame, &ok);
+                if (!ok) {
+                    close_with_reason("CLOSE decrypt failed for stream " +
+                                      std::to_string(frame.header.stream_id));
+                    return;
+                }
+                if (reason.empty()) {
+                    reason = "client closed";
+                }
+                if ((frame.header.flags & protocol::kFlagStreamFin) != 0) {
+                    handle_stream_fin(frame.header.stream_id, reason);
+                } else {
+                    handle_close(frame.header.stream_id, reason);
+                }
             }
             break;
         default:
@@ -1811,6 +1848,10 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                 return false;
             }
         }
+        bandwidth_fair_key_ = fingerprint;
+        bandwidth_priority_ = std::clamp(auth_policy.priority.value_or(kDefaultBandwidthPriority),
+                                         kMinBandwidthPriority,
+                                         kMaxBandwidthPriority);
         const bool key_exec = auth_policy.allow_exec.value_or(false);
         const bool key_local_ip = auth_policy.allow_local_ip.value_or(false);
         const bool key_control_full = auth_policy.control_full.value_or(false);
@@ -2534,6 +2575,10 @@ void Session::handle_open(const protocol::Frame& frame) {
                                                                   }
                                                                   boost::system::error_code nodelay_ec;
                                                                   remote->socket.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
+                                                                  boost::system::error_code remote_recvbuf_ec;
+                                                                  remote->socket.set_option(boost::asio::socket_base::receive_buffer_size(kSocketBufferBytes), remote_recvbuf_ec);
+                                                                  boost::system::error_code remote_sendbuf_ec;
+                                                                  remote->socket.set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), remote_sendbuf_ec);
                                                                   remote->connected = true;
                                                                   self->send_open_reply(stream_id, true, "");
                                                                   util::log_timing("server.open",
@@ -2955,6 +3000,43 @@ void Session::handle_data(const protocol::Frame& frame) {
     enqueue_remote_write(frame.header.stream_id, payload);
 }
 
+std::string Session::decode_close_reason(const protocol::Frame& frame, bool* ok) {
+    if (ok) {
+        *ok = true;
+    }
+    crypto::Bytes payload = frame.payload;
+    if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
+        if (!decrypt_inner_payload(protocol::CLOSE, frame.header.stream_id, frame.payload, &payload)) {
+            if (ok) {
+                *ok = false;
+            }
+            return {};
+        }
+    }
+    return std::string(payload.begin(), payload.end());
+}
+
+void Session::handle_stream_fin(uint8_t stream_id, const std::string& reason) {
+    std::shared_ptr<RemoteStream> remote;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        auto it = streams_.find(stream_id);
+        if (it == streams_.end()) {
+            return;
+        }
+        remote = it->second;
+        if (remote->client_fin_received) {
+            return;
+        }
+        remote->client_fin_received = true;
+        remote->write_shutdown_pending = true;
+    }
+    util::log_info("session " + std::to_string(session_id_) + ": stream " +
+                   std::to_string(stream_id) + " client FIN: " + reason);
+    shutdown_remote_send_if_ready(stream_id);
+    finish_remote_stream_if_done(stream_id);
+}
+
 void Session::handle_close(uint8_t stream_id, const std::string& reason) {
     std::function<void(const std::string&)> federated_close;
     std::string federated_channel_id;
@@ -3117,8 +3199,27 @@ void Session::on_remote_read(uint8_t stream_id, const boost::system::error_code&
     }
 
     if (ec) {
-        handle_close(stream_id, "remote closed");
-        send_control_close(stream_id, "");
+        if (ec == boost::asio::error::eof) {
+            bool send_fin = false;
+            {
+                std::lock_guard<std::mutex> lock(streams_mutex_);
+                auto it = streams_.find(stream_id);
+                if (it == streams_.end()) {
+                    return;
+                }
+                if (!it->second->remote_fin_sent) {
+                    it->second->remote_fin_sent = true;
+                    send_fin = true;
+                }
+            }
+            if (send_fin) {
+                send_control_fin(stream_id, "remote closed");
+            }
+            finish_remote_stream_if_done(stream_id);
+            return;
+        }
+        handle_close(stream_id, "remote read failed: " + ec.message());
+        send_control_close(stream_id, "remote read failed");
         return;
     }
     remote->downstream_bytes += static_cast<std::uint64_t>(bytes);
@@ -3245,6 +3346,13 @@ void Session::enqueue_udp_write(uint8_t stream_id, const crypto::Bytes& data) {
     }
 }
 
+std::chrono::milliseconds Session::reserve_egress_delay(std::size_t bytes) const {
+    if (!authenticated_ || !manager_ || bandwidth_fair_key_.empty() || bytes == 0) {
+        return std::chrono::milliseconds(0);
+    }
+    return manager_->reserve_egress_write(bandwidth_fair_key_, bandwidth_priority_, bytes);
+}
+
 void Session::do_udp_write(uint8_t stream_id) {
     std::shared_ptr<UdpStream> udp;
     crypto::Bytes data_to_write;
@@ -3265,18 +3373,30 @@ void Session::do_udp_write(uint8_t stream_id) {
     }
     auto buffer = std::make_shared<crypto::Bytes>(std::move(data_to_write));
     auto self = shared_from_this();
-    udp->socket.async_send(
-        boost::asio::buffer(*buffer),
-        boost::asio::bind_executor(
-            strand_,
-            [self, buffer, stream_id](const boost::system::error_code& ec, std::size_t) {
-                if (ec) {
-                    self->handle_close(stream_id, "udp send failed");
-                    self->send_control_close(stream_id, "");
-                    return;
-                }
-                self->do_udp_write(stream_id);
-            }));
+    auto fire_write = [self, udp, buffer, stream_id]() {
+        udp->socket.async_send(
+            boost::asio::buffer(*buffer),
+            boost::asio::bind_executor(
+                self->strand_,
+                [self, buffer, stream_id](const boost::system::error_code& ec, std::size_t) {
+                    if (ec) {
+                        self->handle_close(stream_id, "udp send failed");
+                        self->send_control_close(stream_id, "");
+                        return;
+                    }
+                    self->do_udp_write(stream_id);
+                }));
+    };
+    const auto delay_ms = reserve_egress_delay(buffer->size());
+    if (delay_ms.count() <= 0) {
+        fire_write();
+        return;
+    }
+    auto timer = std::make_shared<boost::asio::steady_timer>(strand_);
+    timer->expires_after(delay_ms);
+    timer->async_wait([timer, fire_write = std::move(fire_write)](const boost::system::error_code& ec) mutable {
+        if (!ec) fire_write();
+    });
 }
 
 void Session::enqueue_remote_write(uint8_t stream_id, const std::vector<uint8_t>& data) {
@@ -3322,25 +3442,100 @@ void Session::do_remote_write(uint8_t stream_id) {
         }
         if (remote->write_queue.empty()) {
             remote->write_in_flight = false;
+            if (remote->write_shutdown_pending && !remote->write_shutdown_sent && remote->connected) {
+                // Do the half-shutdown outside the mutex.
+            } else {
+                return;
+            }
+        }
+        if (remote->write_queue.empty() && remote->write_shutdown_pending &&
+            !remote->write_shutdown_sent && remote->connected) {
+            // Nothing left to write from the client side; send FIN to the upstream TCP peer.
+            remote->write_in_flight = false;
+            remote->write_shutdown_sent = true;
+            data_to_write.clear();
+        } else if (remote->write_queue.empty()) {
             return;
         }
-        remote->write_in_flight = true;
-        data_to_write = std::move(remote->write_queue.front());
-        remote->write_queue.pop_front();
+        if (!remote->write_queue.empty()) {
+            remote->write_in_flight = true;
+            data_to_write = std::move(remote->write_queue.front());
+            remote->write_queue.pop_front();
+        }
+    }
+
+    if (data_to_write.empty()) {
+        boost::system::error_code ec;
+        remote->socket.shutdown(boost::asio::ip::tcp::socket::shutdown_send, ec);
+        finish_remote_stream_if_done(stream_id);
+        return;
     }
 
     auto buffer = std::make_shared<std::vector<uint8_t>>(std::move(data_to_write));
     auto self = shared_from_this();
-    boost::asio::async_write(remote->socket, boost::asio::buffer(*buffer),
-                             boost::asio::bind_executor(strand_,
-                                                        [self, buffer, stream_id](const boost::system::error_code& ec, std::size_t) {
-                                                            if (ec) {
-                                                                self->handle_close(stream_id, "remote write failed");
-                                                                self->send_control_close(stream_id, "");
-                                                                return;
-                                                            }
-                                                            self->do_remote_write(stream_id);
-                                                        }));
+    auto fire_write = [self, remote, buffer, stream_id]() {
+        boost::asio::async_write(remote->socket, boost::asio::buffer(*buffer),
+                                 boost::asio::bind_executor(self->strand_,
+                                                            [self, buffer, stream_id](const boost::system::error_code& ec, std::size_t) {
+                                                                if (ec) {
+                                                                    self->handle_close(stream_id, "remote write failed");
+                                                                    self->send_control_close(stream_id, "");
+                                                                    return;
+                                                                }
+                                                                self->do_remote_write(stream_id);
+                                                            }));
+    };
+    const auto delay_ms = reserve_egress_delay(buffer->size());
+    if (delay_ms.count() <= 0) {
+        fire_write();
+        return;
+    }
+    auto timer = std::make_shared<boost::asio::steady_timer>(strand_);
+    timer->expires_after(delay_ms);
+    timer->async_wait([timer, fire_write = std::move(fire_write)](const boost::system::error_code& ec) mutable {
+        if (!ec) fire_write();
+    });
+}
+
+void Session::shutdown_remote_send_if_ready(uint8_t stream_id) {
+    std::shared_ptr<RemoteStream> remote;
+    bool shutdown_now = false;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        auto it = streams_.find(stream_id);
+        if (it == streams_.end()) {
+            return;
+        }
+        remote = it->second;
+        if (remote->write_shutdown_pending && !remote->write_shutdown_sent &&
+            !remote->write_in_flight && remote->write_queue.empty() && remote->connected) {
+            remote->write_shutdown_sent = true;
+            shutdown_now = true;
+        }
+    }
+    if (!shutdown_now) {
+        return;
+    }
+    boost::system::error_code ec;
+    remote->socket.shutdown(boost::asio::ip::tcp::socket::shutdown_send, ec);
+    finish_remote_stream_if_done(stream_id);
+}
+
+void Session::finish_remote_stream_if_done(uint8_t stream_id) {
+    bool done = false;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        auto it = streams_.find(stream_id);
+        if (it == streams_.end()) {
+            return;
+        }
+        const auto& remote = it->second;
+        done = remote->client_fin_received && remote->remote_fin_sent &&
+               remote->write_queue.empty() && !remote->write_in_flight;
+    }
+    if (done) {
+        handle_close(stream_id, "tcp half-close complete");
+    }
 }
 
 void Session::async_write_frame(const protocol::Frame& frame,
@@ -3539,13 +3734,16 @@ void Session::do_write() {
     // independently. This is what defeats the "every keepalive arrives
     // T ms after the last" ML feature. Opt-in via --obfs-jitter-ms; 0 =
     // no delay, no timer overhead.
-    if (cfg_.obfs_jitter_ms == 0) {
+    std::chrono::milliseconds delay_ms = reserve_egress_delay(batch_data ? batch_data->size() : 0);
+    if (cfg_.obfs_jitter_ms > 0) {
+        thread_local std::mt19937 jitter_rng{std::random_device{}()};
+        std::uniform_int_distribution<std::uint32_t> dist(0, cfg_.obfs_jitter_ms);
+        delay_ms += std::chrono::milliseconds(dist(jitter_rng));
+    }
+    if (delay_ms.count() <= 0) {
         fire_write();
         return;
     }
-    thread_local std::mt19937 jitter_rng{std::random_device{}()};
-    std::uniform_int_distribution<std::uint32_t> dist(0, cfg_.obfs_jitter_ms);
-    const auto delay_ms = std::chrono::milliseconds(dist(jitter_rng));
     auto timer = std::make_shared<boost::asio::steady_timer>(strand_);
     timer->expires_after(delay_ms);
     timer->async_wait([timer, fire_write = std::move(fire_write)](const boost::system::error_code& ec) mutable {

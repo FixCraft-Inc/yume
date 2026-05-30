@@ -20,20 +20,30 @@ std::shared_ptr<Tunnel> TunnelPool::pick_for_session() {
     if (entries_.empty()) {
         return nullptr;
     }
+    std::vector<Entry*> live_entries;
+    live_entries.reserve(entries_.size());
+    for (auto& entry : entries_) {
+        if (entry->tunnel && entry->tunnel->is_alive()) {
+            live_entries.push_back(entry.get());
+        }
+    }
+    if (live_entries.empty()) {
+        return nullptr;
+    }
     Entry* chosen = nullptr;
     if (policy_ == Policy::RoundRobin) {
-        const std::size_t idx = round_robin_cursor_.fetch_add(1) % entries_.size();
-        chosen = entries_[idx].get();
+        const std::size_t idx = round_robin_cursor_.fetch_add(1) % live_entries.size();
+        chosen = live_entries[idx];
     } else {
         // Least-loaded: linear scan over a small pool (N <= 16) is
         // fine; the alternative (heap / sorted index) would add
         // complexity that buys nothing at this size.
         std::size_t best_load = std::numeric_limits<std::size_t>::max();
-        for (auto& entry : entries_) {
+        for (auto* entry : live_entries) {
             const std::size_t load = entry->active_sessions.load();
             if (load < best_load) {
                 best_load = load;
-                chosen = entry.get();
+                chosen = entry;
             }
         }
     }

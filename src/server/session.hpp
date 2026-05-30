@@ -95,6 +95,8 @@ private:
     void handle_open(const protocol::Frame& frame);
     void handle_data(const protocol::Frame& frame);
     void handle_close(uint8_t stream_id, const std::string& reason);
+    void handle_stream_fin(uint8_t stream_id, const std::string& reason);
+    std::string decode_close_reason(const protocol::Frame& frame, bool* ok);
     void handle_exec(const protocol::Frame& frame);
     void handle_rlisten(const protocol::Frame& frame);
     void handle_control(const protocol::Frame& frame);
@@ -105,6 +107,7 @@ private:
     bool handle_control_exec(const protocol::Frame& frame);
     void send_control_frame(protocol::FrameType type, uint8_t stream_id, const crypto::Bytes& payload, uint16_t extra_flags = 0);
     void send_control_close(uint8_t stream_id, const std::string& reason);
+    void send_control_fin(uint8_t stream_id, const std::string& reason);
     uint8_t reserve_stream_id();
     bool decrypt_inner_payload(uint8_t frame_type,
                                uint8_t stream_id,
@@ -120,6 +123,8 @@ private:
     void on_remote_read(uint8_t stream_id, const boost::system::error_code& ec, std::size_t bytes);
     void enqueue_remote_write(uint8_t stream_id, const std::vector<uint8_t>& data);
     void do_remote_write(uint8_t stream_id);
+    void shutdown_remote_send_if_ready(uint8_t stream_id);
+    void finish_remote_stream_if_done(uint8_t stream_id);
     void start_udp_read(uint8_t stream_id);
     void on_udp_read(uint8_t stream_id, const boost::system::error_code& ec, std::size_t bytes);
     void enqueue_udp_write(uint8_t stream_id, const crypto::Bytes& data);
@@ -133,6 +138,7 @@ private:
         std::shared_ptr<std::vector<uint8_t>> data,
         std::function<void(const boost::system::error_code&, std::size_t)> handler = {});
     void do_write();
+    std::chrono::milliseconds reserve_egress_delay(std::size_t bytes) const;
     bool should_pause_inbound_reads_on_strand() const;
     void maybe_resume_inbound_reads_on_strand();
 
@@ -205,6 +211,10 @@ private:
         bool write_in_flight{false};
         bool read_in_flight{false};
         bool read_paused{false};
+        bool client_fin_received{false};
+        bool remote_fin_sent{false};
+        bool write_shutdown_pending{false};
+        bool write_shutdown_sent{false};
 
         explicit RemoteStream(boost::asio::any_io_executor exec)
             : socket(exec)
@@ -275,6 +285,8 @@ private:
     std::string client_id_;
     std::string client_display_name_;
     std::string auth_fingerprint_;
+    std::string bandwidth_fair_key_;
+    std::uint32_t bandwidth_priority_{50};
     std::string federation_peer_id_;
     std::string client_auth_pubkey_b64_;
     std::deque<std::int64_t> federation_directory_hits_;

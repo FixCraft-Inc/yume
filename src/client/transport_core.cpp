@@ -14,10 +14,14 @@
 namespace yume::client {
 
 namespace {
-constexpr std::uint64_t kHopDecryptWindow = 24;
+// Must match the server's tolerance. Under Android/desktop upload
+// congestion, encrypted DATA frames can sit behind large batched writes
+// long enough to cross many hop ticks; accept the bounded adjacent-hop
+// window instead of tearing down the whole transport on a stale frame.
+constexpr std::uint64_t kHopDecryptWindow = 120;
 constexpr std::size_t kMaxFramePayloadBytes = 16U * 1024U * 1024U;
-constexpr std::size_t kMaxWriteBatchFrames = 16;
-constexpr std::size_t kMaxWriteBatchBytes = 64U * 1024U;
+constexpr std::size_t kMaxWriteBatchFrames = 64;
+constexpr std::size_t kMaxWriteBatchBytes = 1024U * 1024U;
 
 std::string payload_to_string(const std::vector<uint8_t>& payload) {
     return std::string(payload.begin(), payload.end());
@@ -204,12 +208,15 @@ uint8_t TransportCore::reserve_stream_id() {
     return 0;
 }
 
-void TransportCore::register_stream(uint8_t stream_id, DataHandler on_data, CloseHandler on_close) {
+void TransportCore::register_stream(uint8_t stream_id,
+                                    DataHandler on_data,
+                                    CloseHandler on_close,
+                                    HalfCloseHandler on_half_close) {
     std::lock_guard<std::mutex> lock(state_mu_);
     if (stopped_) {
         return;
     }
-    streams_[stream_id] = StreamCallbacks{std::move(on_data), std::move(on_close)};
+    streams_[stream_id] = StreamCallbacks{std::move(on_data), std::move(on_close), std::move(on_half_close)};
 }
 
 void TransportCore::unregister_stream(uint8_t stream_id) {
@@ -362,6 +369,22 @@ void TransportCore::send_data(uint8_t stream_id, const Bytes& data) {
 void TransportCore::send_close(uint8_t stream_id, const std::string& reason) {
     Bytes payload(reason.begin(), reason.end());
     uint16_t flags = 0;
+    {
+        std::lock_guard<std::mutex> lock(state_mu_);
+        if (stopped_) {
+            return;
+        }
+        if (inner_key_.has_value()) {
+            flags |= protocol::kFlagInnerEncrypted;
+        }
+    }
+    protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::CLOSE, stream_id, flags}, payload};
+    queue_frame(frame);
+}
+
+void TransportCore::send_stream_fin(uint8_t stream_id, const std::string& reason) {
+    Bytes payload(reason.begin(), reason.end());
+    uint16_t flags = protocol::kFlagStreamFin;
     {
         std::lock_guard<std::mutex> lock(state_mu_);
         if (stopped_) {
@@ -826,17 +849,33 @@ void TransportCore::handle_frame(const protocol::Frame& frame) {
         }
         case protocol::CLOSE: {
             CloseHandler on_close;
+            HalfCloseHandler on_half_close;
             const std::string reason = payload_to_string(payload);
+            const bool is_fin = (frame.header.flags & protocol::kFlagStreamFin) != 0;
+            if (stream_id == 0 && !is_fin) {
+                request_transport_close(reason.empty() ? "server closed" : reason);
+                break;
+            }
             {
                 std::lock_guard<std::mutex> lock(state_mu_);
                 auto it = streams_.find(stream_id);
                 if (it != streams_.end()) {
-                    on_close = std::move(it->second.on_close);
-                    streams_.erase(it);
+                    if (is_fin && it->second.on_half_close) {
+                        on_half_close = it->second.on_half_close;
+                    } else {
+                        on_close = std::move(it->second.on_close);
+                        streams_.erase(it);
+                    }
                 }
-                pending_open_.erase(stream_id);
-                pending_rlisten_.erase(stream_id);
-                reserved_streams_.erase(stream_id);
+                if (!is_fin || !on_half_close) {
+                    pending_open_.erase(stream_id);
+                    pending_rlisten_.erase(stream_id);
+                    reserved_streams_.erase(stream_id);
+                }
+            }
+            if (on_half_close) {
+                on_half_close(reason);
+                break;
             }
             if (on_close) {
                 on_close(reason);

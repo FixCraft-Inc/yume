@@ -26,6 +26,7 @@ public:
     using OpenHandler = std::function<void(bool, const std::string&)>;
     using DataHandler = std::function<void(const Bytes&)>;
     using CloseHandler = std::function<void(const std::string&)>;
+    using HalfCloseHandler = std::function<void(const std::string&)>;
     using ReverseOpenHandler = std::function<void(uint8_t listen_id, uint8_t stream_id)>;
     using ControlHandler = std::function<void(const nlohmann::json&)>;
     using InboundOpenHandler = std::function<void(uint8_t stream_id, const nlohmann::json&)>;
@@ -70,7 +71,10 @@ public:
     void set_exec_handler(ExecHandler handler);
 
     uint8_t reserve_stream_id();
-    void register_stream(uint8_t stream_id, DataHandler on_data, CloseHandler on_close);
+    void register_stream(uint8_t stream_id,
+                         DataHandler on_data,
+                         CloseHandler on_close,
+                         HalfCloseHandler on_half_close = {});
     void unregister_stream(uint8_t stream_id);
     void release_reserved_stream(uint8_t stream_id);
 
@@ -88,6 +92,7 @@ public:
                                int max_port = 0);
     void send_data(uint8_t stream_id, const Bytes& data);
     void send_close(uint8_t stream_id, const std::string& reason);
+    void send_stream_fin(uint8_t stream_id, const std::string& reason);
     void send_open_ack(uint8_t stream_id, bool ok, const std::string& reason);
     void send_exec(uint8_t stream_id, const std::string& command);
     void send_control_json(const nlohmann::json& json);
@@ -104,6 +109,7 @@ private:
     struct StreamCallbacks {
         DataHandler on_data;
         CloseHandler on_close;
+        HalfCloseHandler on_half_close;
     };
 
     bool has_stream_id_locked(uint8_t stream_id) const;

@@ -360,6 +360,7 @@ std::optional<server::ServerConfig> load_server(
     read_opt(j, "federation_anonym_ca", s.federation_anonym_ca);
     read_opt(j, "operator_keys", s.operator_keys);
     read_opt(j, "operator_keys_meta", s.operator_keys_meta);
+    read_opt(j, "egress_mbps", s.egress_mbps);
     read_opt(j, "boring", s.boring);
 
     auto const base = path.parent_path();
@@ -430,6 +431,7 @@ bool save_server(server::ServerConfig const& s,
         {"federation_anonym_ca", s.federation_anonym_ca},
         {"operator_keys", s.operator_keys},
         {"operator_keys_meta", s.operator_keys_meta},
+        {"egress_mbps", s.egress_mbps},
         {"boring", s.boring},
     };
 

@@ -12,6 +12,7 @@
 #include <mutex>
 #include <fstream>
 #include <ctime>
+#include <algorithm>
 #include <sstream>
 #include <stdexcept>
 
@@ -34,6 +35,34 @@ std::optional<bool> read_policy_bool(const nlohmann::json& entry, const char* ke
     return std::nullopt;
 }
 
+std::optional<std::uint32_t> read_policy_uint(const nlohmann::json& entry,
+                                              const char* key,
+                                              std::uint32_t min_value,
+                                              std::uint32_t max_value) {
+    const auto read_value = [&](const nlohmann::json& value) -> std::optional<std::uint32_t> {
+        if (!value.is_number_unsigned() && !value.is_number_integer()) {
+            return std::nullopt;
+        }
+        const auto parsed = value.get<std::int64_t>();
+        if (parsed <= 0) {
+            return min_value;
+        }
+        const auto clamped = std::clamp(static_cast<std::uint32_t>(parsed), min_value, max_value);
+        return clamped;
+    };
+
+    if (entry.contains("permissions") && entry["permissions"].is_object()) {
+        const auto& permissions = entry["permissions"];
+        if (permissions.contains(key)) {
+            return read_value(permissions[key]);
+        }
+    }
+    if (entry.contains(key)) {
+        return read_value(entry[key]);
+    }
+    return std::nullopt;
+}
+
 }  // namespace
 
 bool AuthKeyPolicy::empty() const {
@@ -45,6 +74,7 @@ bool AuthKeyPolicy::empty() const {
            !allow_chat.has_value() &&
            !allow_file.has_value() &&
            !allow_bytes.has_value() &&
+           !priority.has_value() &&
            federation_peer_id.empty();
 }
 
@@ -112,6 +142,7 @@ AuthKeyPolicyMap load_auth_policies(const std::string& meta_path) {
         policy.allow_chat = read_policy_bool(it.value(), "allow_chat");
         policy.allow_file = read_policy_bool(it.value(), "allow_file");
         policy.allow_bytes = read_policy_bool(it.value(), "allow_bytes");
+        policy.priority = read_policy_uint(it.value(), "priority", 1, 100);
         if (it.value().contains("federation_peer_id") && it.value()["federation_peer_id"].is_string()) {
             policy.federation_peer_id = it.value()["federation_peer_id"].get<std::string>();
         }
@@ -197,6 +228,9 @@ std::string summarize_auth_policy(const AuthKeyPolicy& policy) {
     append("allow_chat", policy.allow_chat);
     append("allow_file", policy.allow_file);
     append("allow_bytes", policy.allow_bytes);
+    if (policy.priority.has_value()) {
+        parts.emplace_back("priority=" + std::to_string(*policy.priority));
+    }
     if (!policy.federation_peer_id.empty()) {
         parts.emplace_back("federation_peer_id=" + policy.federation_peer_id);
     }

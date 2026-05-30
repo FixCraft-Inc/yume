@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -21,6 +22,7 @@ struct AuthKeyPolicy {
     std::optional<bool> allow_chat;
     std::optional<bool> allow_file;
     std::optional<bool> allow_bytes;
+    std::optional<std::uint32_t> priority;
     std::string federation_peer_id;
 
     bool empty() const;

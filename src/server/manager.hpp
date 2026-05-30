@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -126,6 +127,10 @@ public:
     const ServerConfig& config_snapshot() const;
     const std::string& server_id() const { return server_id_; }
     const std::string& server_name() const { return server_name_; }
+    bool egress_fairness_enabled() const;
+    std::chrono::milliseconds reserve_egress_write(const std::string& client_key,
+                                                   std::uint32_t priority,
+                                                   std::size_t bytes);
 
     // Returns one of the loaded upstream-response captures (chosen
     // uniformly), or an empty string if no directory is configured /
@@ -142,6 +147,8 @@ public:
 
 private:
     static constexpr std::size_t kMaxLifecycleEvents = 512;
+
+    class WeightedEgressLimiter;
 
     void do_accept();
     void append_lifecycle_event_locked(const control::ClientLifecycleEvent& event);
@@ -189,6 +196,7 @@ private:
     std::string server_id_;
     std::string server_name_;
     std::unique_ptr<FederationManager> federation_;
+    std::unique_ptr<WeightedEgressLimiter> egress_limiter_;
 
     // Per-probe upstream-response rotation. cache_ is swapped under the
     // mutex; readers (Session::send_disguise_404) atomically load a

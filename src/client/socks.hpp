@@ -20,7 +20,10 @@ class TunnelPool;
 
 class SocksSession : public std::enable_shared_from_this<SocksSession> {
 public:
-    SocksSession(boost::asio::ip::tcp::socket socket, std::shared_ptr<Tunnel> tunnel, bool allow_udp);
+    SocksSession(boost::asio::ip::tcp::socket socket,
+                 std::shared_ptr<Tunnel> tunnel,
+                 bool allow_udp,
+                 std::shared_ptr<TunnelPool> pool = nullptr);
 
     void start();
 
@@ -45,17 +48,24 @@ private:
 
     void start_client_read();
     void on_client_read(const boost::system::error_code& ec, std::size_t bytes);
+    void send_client_fin();
 
     void deliver_from_tunnel(const Tunnel::Bytes& data);
     void close_from_tunnel();
+    void remote_fin_from_tunnel(const std::string& reason);
 
     void enqueue_write(std::shared_ptr<std::vector<uint8_t>> data, std::function<void()> on_done = {});
     void do_write();
+    void request_socket_send_shutdown();
+    void maybe_finish_cleanly();
+    void release_pool_session();
+    void log_summary_once();
 
     void close();
 
     boost::asio::ip::tcp::socket socket_;
     std::shared_ptr<Tunnel> tunnel_;
+    std::shared_ptr<TunnelPool> pool_;
     boost::asio::strand<boost::asio::any_io_executor> strand_;
     bool allow_udp_{false};
     bool udp_active_{false};
@@ -70,7 +80,7 @@ private:
     std::vector<uint8_t> addr_buf_;
     std::array<uint8_t, 2> port_buf_{};
 
-    std::array<uint8_t, 32768> read_buf_{};
+    std::array<uint8_t, 65536> read_buf_{};
 
     std::deque<std::pair<std::shared_ptr<std::vector<uint8_t>>, std::function<void()>>> write_queue_;
     bool write_in_flight_{false};
@@ -87,6 +97,12 @@ private:
     std::uint64_t upload_bytes_{0};
     std::uint64_t download_bytes_{0};
     bool close_summary_logged_{false};
+    bool pool_session_released_{false};
+    bool closed_{false};
+    bool local_fin_sent_{false};
+    bool remote_fin_received_{false};
+    bool socket_send_shutdown_pending_{false};
+    bool socket_send_shutdown_done_{false};
 
     struct UdpAssoc {
         std::string host;

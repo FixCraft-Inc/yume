@@ -22,6 +22,82 @@
 
 namespace yume::server {
 
+class Manager::WeightedEgressLimiter {
+public:
+    explicit WeightedEgressLimiter(std::uint32_t cap_mbps)
+        : bytes_per_second_(std::max<double>(1.0, static_cast<double>(cap_mbps) * 1'000'000.0 / 8.0)) {}
+
+    std::chrono::milliseconds reserve(const std::string& key, std::uint32_t priority, std::size_t bytes) {
+        if (key.empty() || bytes == 0 || bytes_per_second_ <= 0.0) {
+            return std::chrono::milliseconds(0);
+        }
+
+        const std::uint32_t weight = std::clamp<std::uint32_t>(priority == 0 ? 50 : priority, 1, 100);
+        const auto now = std::chrono::steady_clock::now();
+        std::lock_guard<std::mutex> lock(mutex_);
+        prune_inactive_locked(now);
+
+        auto& current = clients_[key];
+        current.weight = weight;
+
+        std::uint64_t active_weight = 0;
+        bool current_counted = false;
+        for (const auto& [client_key, state] : clients_) {
+            if (state.next_available > now) {
+                active_weight += state.weight;
+                if (client_key == key) {
+                    current_counted = true;
+                }
+            }
+        }
+        if (!current_counted) {
+            active_weight += weight;
+        }
+        if (active_weight == 0) {
+            active_weight = weight;
+        }
+
+        const double share = static_cast<double>(weight) / static_cast<double>(active_weight);
+        const double fair_rate = std::max(1.0, bytes_per_second_ * share);
+        const auto start = current.next_available > now ? current.next_available : now;
+        const std::chrono::duration<double> service_seconds(static_cast<double>(bytes) / fair_rate);
+        auto service_duration = std::chrono::duration_cast<std::chrono::steady_clock::duration>(service_seconds);
+        if (service_duration.count() <= 0) {
+            service_duration = std::chrono::milliseconds(1);
+        }
+        current.next_available = start + service_duration;
+
+        if (start <= now) {
+            return std::chrono::milliseconds(0);
+        }
+        return std::chrono::duration_cast<std::chrono::milliseconds>(start - now);
+    }
+
+private:
+    struct ClientState {
+        std::uint32_t weight{50};
+        std::chrono::steady_clock::time_point next_available{};
+    };
+
+    void prune_inactive_locked(std::chrono::steady_clock::time_point now) {
+        if (clients_.size() <= 4096) {
+            return;
+        }
+        const auto cutoff = now - std::chrono::minutes(5);
+        for (auto it = clients_.begin(); it != clients_.end();) {
+            if (it->second.next_available < cutoff) {
+                it = clients_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    double bytes_per_second_{0.0};
+    std::mutex mutex_;
+    std::unordered_map<std::string, ClientState> clients_;
+};
+
 Manager::Manager(boost::asio::io_context& io, const ServerConfig& cfg)
     : io_(io)
     , cfg_(cfg)
@@ -32,6 +108,9 @@ Manager::Manager(boost::asio::io_context& io, const ServerConfig& cfg)
     , server_name_(cfg.server_name.empty() ? std::string("yumed") : cfg.server_name) {
     cfg_.server_id = server_id_;
     cfg_.server_name = server_name_;
+    if (cfg_.egress_mbps > 0) {
+        egress_limiter_ = std::make_unique<WeightedEgressLimiter>(cfg_.egress_mbps);
+    }
 }
 
 Manager::~Manager() = default;
@@ -101,6 +180,11 @@ void Manager::start() {
                            "s: directory will reload on every tick (drop new captures in without restarting)");
         }
     }
+    if (egress_limiter_) {
+        util::log_info("weighted egress fairness enabled: cap=" +
+                       std::to_string(cfg_.egress_mbps) +
+                       " Mbps, grouped by auth key, priority weight range=1..100 (default 50)");
+    }
 
     do_accept();
     if (federation_) {
@@ -134,7 +218,7 @@ void Manager::stop() {
         }
     }
     for (const auto& session : sessions) {
-        session->notify_server_shutdown("server closed, kicked");
+        session->notify_server_shutdown("server closed");
     }
 }
 
@@ -215,6 +299,19 @@ std::string Manager::upstream_response_pick() const {
         return {};
     }
     return (*snap)[pick_index(snap->size())];
+}
+
+bool Manager::egress_fairness_enabled() const {
+    return static_cast<bool>(egress_limiter_);
+}
+
+std::chrono::milliseconds Manager::reserve_egress_write(const std::string& client_key,
+                                                        std::uint32_t priority,
+                                                        std::size_t bytes) {
+    if (!egress_limiter_) {
+        return std::chrono::milliseconds(0);
+    }
+    return egress_limiter_->reserve(client_key, priority, bytes);
 }
 
 void Manager::schedule_upstream_reload() {

@@ -44,6 +44,17 @@
 namespace yume::client {
 
 namespace {
+constexpr int kSocketBufferBytes = 2 * 1024 * 1024;
+
+void tune_tcp_socket(boost::asio::ip::tcp::socket& socket) {
+    boost::system::error_code ec;
+    socket.set_option(boost::asio::ip::tcp::no_delay(true), ec);
+    boost::system::error_code recvbuf_ec;
+    socket.set_option(boost::asio::socket_base::receive_buffer_size(kSocketBufferBytes), recvbuf_ec);
+    boost::system::error_code sendbuf_ec;
+    socket.set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
+}
+
 std::string pid_path_for_port(const char* proto, int port) {
     std::filesystem::path base;
     try {
@@ -270,7 +281,9 @@ ForwardSession::ForwardSession(boost::asio::ip::tcp::socket socket,
     , tunnel_(std::move(tunnel))
     , strand_(socket_.get_executor())
     , target_host_(std::move(target_host))
-    , target_port_(target_port) {}
+    , target_port_(target_port) {
+    tune_tcp_socket(socket_);
+}
 
 void ForwardSession::start() {
     start_tunnel();
@@ -287,7 +300,8 @@ void ForwardSession::start_tunnel() {
     tunnel_->register_stream(
         stream_id_,
         [self = shared_from_this()](const Tunnel::Bytes& data) { self->deliver_from_tunnel(data); },
-        [self = shared_from_this()](const std::string&) { self->close_from_tunnel(); });
+        [self = shared_from_this()](const std::string&) { self->close_from_tunnel(); },
+        [self = shared_from_this()](const std::string& reason) { self->remote_fin_from_tunnel(reason); });
 
     tunnel_->open_stream(stream_id_, target_host_, target_port_,
                          [self = shared_from_this()](bool ok, const std::string& reason) {
@@ -312,6 +326,10 @@ void ForwardSession::start_client_read() {
 
 void ForwardSession::on_client_read(const boost::system::error_code& ec, std::size_t bytes) {
     if (ec) {
+        if (ec == boost::asio::error::eof) {
+            send_client_fin();
+            return;
+        }
         close();
         return;
     }
@@ -321,9 +339,23 @@ void ForwardSession::on_client_read(const boost::system::error_code& ec, std::si
     start_client_read();
 }
 
+void ForwardSession::send_client_fin() {
+    if (closed_ || local_fin_sent_) {
+        return;
+    }
+    local_fin_sent_ = true;
+    if (stream_id_ != 0) {
+        tunnel_->send_stream_fin(stream_id_, "client upload finished");
+    }
+    maybe_finish_cleanly();
+}
+
 void ForwardSession::deliver_from_tunnel(const Tunnel::Bytes& data) {
     auto self = shared_from_this();
     boost::asio::post(strand_, [self, data]() {
+        if (self->closed_) {
+            return;
+        }
         auto buf = std::make_shared<std::vector<uint8_t>>(data.begin(), data.end());
         self->enqueue_write(buf);
     });
@@ -332,6 +364,18 @@ void ForwardSession::deliver_from_tunnel(const Tunnel::Bytes& data) {
 void ForwardSession::close_from_tunnel() {
     auto self = shared_from_this();
     boost::asio::post(strand_, [self]() { self->close(); });
+}
+
+void ForwardSession::remote_fin_from_tunnel(const std::string&) {
+    auto self = shared_from_this();
+    boost::asio::post(strand_, [self]() {
+        if (self->closed_ || self->remote_fin_received_) {
+            return;
+        }
+        self->remote_fin_received_ = true;
+        self->request_socket_send_shutdown();
+        self->maybe_finish_cleanly();
+    });
 }
 
 void ForwardSession::enqueue_write(std::shared_ptr<std::vector<uint8_t>> data) {
@@ -346,6 +390,8 @@ void ForwardSession::enqueue_write(std::shared_ptr<std::vector<uint8_t>> data) {
 void ForwardSession::do_write() {
     if (write_queue_.empty()) {
         write_in_flight_ = false;
+        request_socket_send_shutdown();
+        maybe_finish_cleanly();
         return;
     }
     write_in_flight_ = true;
@@ -365,7 +411,38 @@ void ForwardSession::do_write() {
                                                         }));
 }
 
+void ForwardSession::request_socket_send_shutdown() {
+    if (!remote_fin_received_ || socket_send_shutdown_done_) {
+        return;
+    }
+    if (write_in_flight_ || !write_queue_.empty()) {
+        return;
+    }
+    boost::system::error_code ec;
+    socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_send, ec);
+    socket_send_shutdown_done_ = true;
+}
+
+void ForwardSession::maybe_finish_cleanly() {
+    if (closed_ || !local_fin_sent_ || !remote_fin_received_ ||
+        write_in_flight_ || !write_queue_.empty()) {
+        return;
+    }
+    closed_ = true;
+    if (stream_id_ != 0) {
+        tunnel_->unregister_stream(stream_id_);
+        stream_id_ = 0;
+    }
+    boost::system::error_code ec;
+    socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
+    socket_.close(ec);
+}
+
 void ForwardSession::close() {
+    if (closed_) {
+        return;
+    }
+    closed_ = true;
     if (stream_id_ != 0) {
         tunnel_->send_close(stream_id_, "client closed");
         tunnel_->unregister_stream(stream_id_);
@@ -602,7 +679,9 @@ LocalForwardSession::LocalForwardSession(boost::asio::ip::tcp::socket socket,
     , resolver_(socket_.get_executor())
     , strand_(socket_.get_executor())
     , target_host_(std::move(target_host))
-    , target_port_(target_port) {}
+    , target_port_(target_port) {
+    tune_tcp_socket(socket_);
+}
 
 void LocalForwardSession::start() {
     start_connect();
@@ -628,6 +707,7 @@ void LocalForwardSession::start_connect() {
                                                                                                                          self->close();
                                                                                                                          return;
                                                                                                                      }
+                                                                                                                     tune_tcp_socket(self->remote_);
                                                                                                                      self->start_client_read();
                                                                                                                      self->start_remote_read();
                                                                                                                  }));
@@ -734,6 +814,7 @@ void ReverseForwardSession::start_connect() {
                                                                                                                          self->close();
                                                                                                                          return;
                                                                                                                      }
+                                                                                                                     tune_tcp_socket(self->local_);
                                                                                                                      self->open_confirmed_ = true;
                                                                                                                      self->tunnel_->send_open_ack(self->stream_id_, true, "");
                                                                                                                      self->start_local_read();

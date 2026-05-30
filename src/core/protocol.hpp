@@ -10,6 +10,11 @@ namespace yume::protocol {
 enum FrameType : uint8_t { AUTH = 1, OPEN, DATA, CLOSE, EXEC, ANON, RLISTEN, ROPEN, PING, PONG, CONTROL, SOPEN };
 
 inline constexpr uint16_t kFlagOpenOk = 0x0001;
+// CLOSE with this flag is a TCP half-close/FIN for the stream's send side.
+// A plain CLOSE remains a full stream abort/teardown. This keeps HTTP uploads,
+// CONNECT tunnels, and browser page-load completion from being truncated when
+// one TCP direction finishes before the other.
+inline constexpr uint16_t kFlagStreamFin = 0x0002;
 // Trailing-padding flag (HTTP/2 DATA-style). When set, the payload's last
 // byte is N, the count of pad bytes preceding it. The on-wire payload size
 // is therefore actual_payload + N + 1. Senders only set this when an

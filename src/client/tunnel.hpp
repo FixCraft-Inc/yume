@@ -25,6 +25,7 @@ public:
     using OpenHandler = std::function<void(bool, const std::string&)>;
     using DataHandler = std::function<void(const Bytes&)>;
     using CloseHandler = std::function<void(const std::string&)>;
+    using HalfCloseHandler = std::function<void(const std::string&)>;
     using TunnelCloseHandler = std::function<void(const std::string&)>;
     using ReverseOpenHandler = std::function<void(uint8_t listen_id, uint8_t stream_id)>;
     using ControlHandler = std::function<void(const nlohmann::json&)>;
@@ -51,7 +52,10 @@ public:
     boost::asio::any_io_executor get_executor();
 
     uint8_t reserve_stream_id();
-    void register_stream(uint8_t stream_id, DataHandler on_data, CloseHandler on_close);
+    void register_stream(uint8_t stream_id,
+                         DataHandler on_data,
+                         CloseHandler on_close,
+                         HalfCloseHandler on_half_close = {});
     void unregister_stream(uint8_t stream_id);
 
     void open_stream(uint8_t stream_id,
@@ -69,9 +73,11 @@ public:
     void stop(const std::string& reason = "client stopping");
     void send_data(uint8_t stream_id, const Bytes& data);
     void send_close(uint8_t stream_id, const std::string& reason);
+    void send_stream_fin(uint8_t stream_id, const std::string& reason);
     void send_open_ack(uint8_t stream_id, bool ok, const std::string& reason);
     void send_exec(uint8_t stream_id, const std::string& command);
     void send_control_json(const nlohmann::json& json);
+    bool is_alive() const noexcept { return !closed_.load(std::memory_order_relaxed); }
 
     // Cumulative wire-level byte counters since this tunnel was opened.
     // bytes_received() counts TLS reads from the server; bytes_sent()
@@ -97,7 +103,7 @@ private:
     std::atomic<std::uint64_t> bytes_in_{0};
     std::atomic<std::uint64_t> bytes_out_{0};
     std::atomic<std::uint32_t> obfs_jitter_ms_max_{0};
-    bool closed_{false};
+    std::atomic<bool> closed_{false};
 };
 
 }  // namespace yume::client

@@ -40,6 +40,9 @@
 #if defined(BASEFWX_HAS_OQS) && BASEFWX_HAS_OQS
 #include <oqs/oqs.h>
 #endif
+#if defined(BASEFWX_HAS_ARGON2) && BASEFWX_HAS_ARGON2
+#include <argon2.h>
+#endif
 #endif
 
 namespace yume::inner {
@@ -796,6 +799,38 @@ bool argon2_supported() {
 
 bool pbkdf2_supported() {
     return true;
+}
+
+std::string pq_backend_version() {
+#if YUME_USE_BASEFWX && defined(BASEFWX_HAS_OQS) && BASEFWX_HAS_OQS
+    std::string out = "available (";
+#if defined(OQS_VERSION_TEXT)
+    out += "liboqs ";
+    out += OQS_VERSION_TEXT;
+#else
+    out += "liboqs";
+#endif
+    out += ", ";
+    out.append(basefwx::constants::kMasterPqAlg.data(), basefwx::constants::kMasterPqAlg.size());
+    out += ")";
+    return out;
+#else
+    return "unavailable";
+#endif
+}
+
+std::string argon2_backend_version() {
+#if YUME_USE_BASEFWX && defined(BASEFWX_HAS_ARGON2) && BASEFWX_HAS_ARGON2
+    std::string out = "available (libargon2";
+#if defined(ARGON2_VERSION_NUMBER)
+    out += ", Argon2 v=";
+    out += std::to_string(ARGON2_VERSION_NUMBER);
+#endif
+    out += ")";
+    return out;
+#else
+    return "unavailable";
+#endif
 }
 
 std::uint64_t hop_id_from_time_ms(std::int64_t now_ms, std::uint32_t interval_ms, std::int64_t offset_ms) {

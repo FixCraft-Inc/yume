@@ -17,15 +17,23 @@
 
 namespace yume::client {
 
+namespace {
+constexpr int kSocketBufferBytes = 2 * 1024 * 1024;
+}
+
 Tunnel::Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream)
     : stream_(std::move(stream))
     , strand_(stream_.get_executor()) {
+    boost::system::error_code recvbuf_ec;
+    stream_.lowest_layer().set_option(boost::asio::socket_base::receive_buffer_size(kSocketBufferBytes), recvbuf_ec);
+    boost::system::error_code sendbuf_ec;
+    stream_.lowest_layer().set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
     core_.set_write_handler([this](std::shared_ptr<Bytes> data, TransportCore::WriteCompletion completion) {
         auto self = shared_from_this();
         boost::asio::post(
             strand_,
             [self, data = std::move(data), completion = std::move(completion)]() mutable {
-                if (self->closed_) {
+                if (self->closed_.load(std::memory_order_relaxed)) {
                     if (completion) {
                         completion(false, 0, "transport closed");
                     }
@@ -147,8 +155,11 @@ uint8_t Tunnel::reserve_stream_id() {
     return core_.reserve_stream_id();
 }
 
-void Tunnel::register_stream(uint8_t stream_id, DataHandler on_data, CloseHandler on_close) {
-    core_.register_stream(stream_id, std::move(on_data), std::move(on_close));
+void Tunnel::register_stream(uint8_t stream_id,
+                             DataHandler on_data,
+                             CloseHandler on_close,
+                             HalfCloseHandler on_half_close) {
+    core_.register_stream(stream_id, std::move(on_data), std::move(on_close), std::move(on_half_close));
 }
 
 void Tunnel::unregister_stream(uint8_t stream_id) {
@@ -191,6 +202,10 @@ void Tunnel::send_close(uint8_t stream_id, const std::string& reason) {
     core_.send_close(stream_id, reason);
 }
 
+void Tunnel::send_stream_fin(uint8_t stream_id, const std::string& reason) {
+    core_.send_stream_fin(stream_id, reason);
+}
+
 void Tunnel::send_open_ack(uint8_t stream_id, bool ok, const std::string& reason) {
     core_.send_open_ack(stream_id, ok, reason);
 }
@@ -223,7 +238,7 @@ void Tunnel::on_read_tls(const boost::system::error_code& ec, std::size_t bytes)
         bytes_in_.fetch_add(bytes, std::memory_order_relaxed);
         core_.feed_tls_bytes(read_buf_.data(), bytes);
     }
-    if (!closed_) {
+    if (!closed_.load(std::memory_order_relaxed)) {
         read_tls();
     }
 }
@@ -267,10 +282,9 @@ void Tunnel::start_exec(uint8_t stream_id, std::string command) {
 }
 
 void Tunnel::close_all(const std::string& reason) {
-    if (closed_) {
+    if (closed_.exchange(true, std::memory_order_relaxed)) {
         return;
     }
-    closed_ = true;
 
     auto close_callbacks = core_.shutdown();
     TunnelCloseHandler close_handler;
@@ -299,7 +313,7 @@ void Tunnel::schedule_keepalive() {
     keepalive_timer_.async_wait(boost::asio::bind_executor(
         strand_,
         [self](const boost::system::error_code& ec) {
-            if (ec || self->closed_) {
+            if (ec || self->closed_.load(std::memory_order_relaxed)) {
                 return;
             }
             std::string close_reason;

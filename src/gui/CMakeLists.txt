@@ -31,8 +31,12 @@ find_package(Freetype QUIET)
 # Fontconfig is Linux/X11-only — Windows and macOS don't ship it. We
 # use it on Linux to find URW Gothic / Inter / etc. so the GUI uses
 # the user's preferred system font with its original sizes instead of
-# the bundled Jost fallback.
-if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
+# the bundled Jost fallback. macOS (incl. the osxcross cross-build) and
+# Windows fall back to the bundled Jost font. NOTE: APPLE must be excluded
+# explicitly — otherwise a Darwin cross-build run on a Linux host lets
+# pkg-config pick up the HOST's fontconfig.pc and then fails compiling
+# <fontconfig/fontconfig.h>, which isn't in the macOS SDK.
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows" AND NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
         pkg_check_modules(FONTCONFIG QUIET fontconfig)

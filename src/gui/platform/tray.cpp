@@ -50,6 +50,13 @@
 #include <nanosvg.h>
 #include <nanosvgrast.h>
 
+// STB_IMAGE_WRITE_STATIC gives this TU its own file-local copy of the
+// stb_image_write symbols. basefwx (libbasefwxcpp.a, imagecipher.cpp) bundles
+// the same single-header library, and Apple's ld64 rejects the duplicate
+// stbi_write_* / stbi_zlib_compress definitions (GNU ld tolerated it by not
+// pulling the conflicting archive member). Static linkage avoids the clash on
+// every platform; tray.cpp is the only TU that calls these (stbi_write_png).
+#define STB_IMAGE_WRITE_STATIC
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb/stb_image_write.h"
 

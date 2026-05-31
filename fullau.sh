@@ -2602,6 +2602,18 @@ build_macos_cross_target() {
   fi
   fi
 
+  # Static and dynamic variants must NOT share a vcpkg triplet. vcpkg keys its
+  # install tree by triplet NAME, so if both used "arm64-osx" the first
+  # (dynamic) install gets reused by the static build — producing a .app that
+  # links @rpath/libssl.3.dylib at the BUILD machine's vcpkg path and crashes
+  # on any other Mac ("Library not loaded"). Give the static variant its own
+  # triplet (arm64-osx-static) → its own installed/ prefix with static .a libs.
+  # base_triplet still names the stock upstream triplet file for include().
+  local base_triplet="${triplet}"
+  if [[ "${variant}" == "static" ]]; then
+    triplet="${triplet}-static"
+  fi
+
   vendor_prefix="$(vendor_cross_dir "macos-${arch}" || true)"
   if [[ -n "${vcpkg_root}" && -x "${vcpkg_root}/vcpkg" && -f "${vcpkg_root}/scripts/buildsystems/vcpkg.cmake" ]]; then
     use_vcpkg=1

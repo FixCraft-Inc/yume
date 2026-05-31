@@ -87,3 +87,6 @@ vendor/
 
 # Cloudflare Wrangler dev cache
 .wrangler/
+
+# Build output artifacts (binaries, .app, .dmg) — never commit
+bins/

@@ -2575,6 +2575,31 @@ build_macos_cross_target() {
   fi
   if [[ -n "${bin_dir}" && -n "${tool_prefix}" ]]; then
     mkdir -p "${shim_bin}"
+    # ar wrapper: osxcross ships cctools 'ar', which cannot read @response-files.
+    # Ninja archives a target with many objects via 'ar qc lib.a @objs.rsp'
+    # (liboqs has hundreds), so the STATIC build died with
+    #   ar: @CMakeFiles/oqs.rsp: No such file or directory
+    # This wrapper expands any @file argument in place, then execs the real
+    # cctools ar — keeping the correct Darwin archive format (safer than
+    # substituting llvm-ar, which writes GNU-format archives). CMAKE_AR points
+    # here. Only the real_ar= line is fullau-expanded; the body is literal.
+    {
+      echo '#!/usr/bin/env bash'
+      echo 'set -e'
+      echo "real_ar=\"${bin_dir}/${tool_prefix}-ar\""
+      cat <<'YUME_AR_WRAP_EOF'
+args=()
+for a in "$@"; do
+  if [ "${a#@}" != "$a" ]; then
+    while IFS= read -r line; do args+=( $line ); done < "${a#@}"
+  else
+    args+=("$a")
+  fi
+done
+exec "$real_ar" "${args[@]}"
+YUME_AR_WRAP_EOF
+    } > "${shim_bin}/yume-ar-wrapper"
+    chmod +x "${shim_bin}/yume-ar-wrapper"
     if [[ -x "${bin_dir}/${tool_prefix}-install_name_tool" ]]; then
       ln -sf "${bin_dir}/${tool_prefix}-install_name_tool" "${shim_bin}/install_name_tool"
     fi
@@ -2679,7 +2704,7 @@ EOF
     cat >> "${toolchain_file}" <<EOF
 set(CMAKE_INSTALL_NAME_TOOL ${install_name_tool_path})
 set(CMAKE_RANLIB ${bin_dir}/${tool_prefix}-ranlib)
-set(CMAKE_AR ${bin_dir}/${tool_prefix}-ar)
+set(CMAKE_AR ${shim_bin}/yume-ar-wrapper)
 set(CMAKE_LIPO ${bin_dir}/${tool_prefix}-lipo)
 set(CMAKE_STRIP ${bin_dir}/${tool_prefix}-strip)
 EOF

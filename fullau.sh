@@ -2658,6 +2658,17 @@ set(CMAKE_OBJC_COMPILER ${cc})
 set(CMAKE_OBJCXX_COMPILER ${cxx})
 set(CMAKE_OSX_SYSROOT ${sdk})
 set(CMAKE_OSX_ARCHITECTURES ${arch})
+# osxcross ships cctools 'ar', which does NOT understand the '@response-file'
+# syntax that GNU/LLVM ar use. With Ninja, a target with many object files
+# (liboqs has hundreds) is archived via 'ar qc lib.a @objs.rsp', and cctools ar
+# treats the literal "@objs.rsp" as a missing member → "No such file or
+# directory" and the STATIC build fails. (The dynamic build is unaffected: it
+# archives via the linker, which does support @file.) Force object lists onto
+# the command line instead — Linux ARG_MAX (~2 MB) easily holds them.
+set(CMAKE_C_USE_RESPONSE_FILE_FOR_OBJECTS OFF)
+set(CMAKE_CXX_USE_RESPONSE_FILE_FOR_OBJECTS OFF)
+set(CMAKE_OBJC_USE_RESPONSE_FILE_FOR_OBJECTS OFF)
+set(CMAKE_OBJCXX_USE_RESPONSE_FILE_FOR_OBJECTS OFF)
 EOF
   if [[ -n "${ld_path}" ]]; then
     cat >> "${toolchain_file}" <<EOF

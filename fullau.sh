@@ -184,12 +184,11 @@ Options:
           glfw3 + freetype via vcpkg for the Windows/macOS cross builds;
           the Linux build links the host's system X11/GLFW/Freetype.
           Equivalent to YUME_FULLAU_GUI=1.
-
-Notes:
-  - Multiple targets can be passed as a comma-separated list.
-  - The same target selection can also be set via YUME_TARGETS.
-  - With no arguments, all supported targets are considered.
-  - To build ONLY the desktop GUIs: ./fullau.sh --gui --targets linux,windows,macos
+          macOS GUI targets emit Yume.app; DMG creation:
+          - On macOS: hdiutil creates visual drag-drop installer (.dmg)
+          - On Linux: genisoimage creates functional .dmg (no visual UI)
+          - For visual installer on Linux, build on macOS or use a Mac
+            buildhost. Disable DMG entirely with YUME_FULLAU_DMG=0
 EOF
 }
 
@@ -737,7 +736,9 @@ variant_cmake_args() {
 }
 
 is_truthy() {
-  case "${1,,}" in
+  local value
+  value="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  case "${value}" in
     1|true|yes|on) return 0 ;;
     *) return 1 ;;
   esac
@@ -2038,16 +2039,13 @@ build_host_native_target() {
   local exe_suffix="$3"
   local variant_args
   variant_args="$(variant_cmake_args "${variant}")"
-  YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0 YUME_CMAKE_ARGS="${variant_args}" ./ezbuild.sh
-  local yume_src="build/bin/yume${exe_suffix}"
-  local yumed_src="build/bin/yumed${exe_suffix}"
-  if [[ ! -f "${yume_src}" || ! -f "${yumed_src}" ]]; then
-    echo "Host build outputs missing: ${yume_src} ${yumed_src}" >&2
-    return 1
+  YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=0 YUME_CMAKE_ARGS="${variant_args}" ./ezbuild.sh ${EZBUILD_GUI_ARG}
+  copy_build_outputs "${outdir}" "${exe_suffix}" || return 1
+  if [[ "${HOST_OS}" == "Darwin" && "${FULLAU_BUILD_GUI}" -eq 1 ]]; then
+    local macos_app
+    macos_app="$(require_macos_gui_bundle "${outdir}")" || return 1
+    maybe_package_macos_dmg "${outdir}" "${macos_app}" || return 1
   fi
-  mkdir -p "${outdir}"
-  cp -f "${yume_src}" "${outdir}/yume${exe_suffix}"
-  cp -f "${yumed_src}" "${outdir}/yumed${exe_suffix}"
   if command -v strip >/dev/null 2>&1; then
     strip "${outdir}/yume${exe_suffix}" "${outdir}/yumed${exe_suffix}" >/dev/null 2>&1 || true
   fi
@@ -2074,17 +2072,119 @@ copy_build_outputs() {
   mkdir -p "${outdir}"
   cp -f "${yume_src}" "${outdir}/yume${exe_suffix}"
   cp -f "${yumed_src}" "${outdir}/yumed${exe_suffix}"
+  chmod +x "${outdir}/yume${exe_suffix}" "${outdir}/yumed${exe_suffix}" 2>/dev/null || true
   # Optional GUI output, present only when this target was built with --gui:
   #  - macOS produces an app bundle (a directory): build/bin/Yume.app
   #  - Linux produces a bare binary:               build/bin/yume-gui
   local gui_app
   for gui_app in build/bin/*.app; do
-    [[ -d "${gui_app}" ]] && cp -R "${gui_app}" "${outdir}/"
+    if [[ -d "${gui_app}" ]]; then
+      local app_name
+      app_name="$(basename "${gui_app}")"
+      rm -rf "${outdir}/${app_name}"
+      cp -R "${gui_app}" "${outdir}/"
+      ensure_macos_app_bundle "${outdir}/${app_name}" || return 1
+    fi
   done
   local gui_bin="build/bin/yume-gui${exe_suffix}"
   if [[ -f "${gui_bin}" ]]; then
     cp -f "${gui_bin}" "${outdir}/yume-gui${exe_suffix}"
+    chmod +x "${outdir}/yume-gui${exe_suffix}" 2>/dev/null || true
   fi
+}
+
+ensure_macos_app_bundle() {
+  local app="$1"
+  local app_exe="${app}/Contents/MacOS/Yume"
+  if [[ ! -d "${app}" ]]; then
+    echo "macOS app bundle missing: ${app}" >&2
+    return 1
+  fi
+  if [[ ! -f "${app_exe}" ]]; then
+    app_exe="$(find "${app}/Contents/MacOS" -maxdepth 1 -type f 2>/dev/null | head -n 1 || true)"
+  fi
+  if [[ -z "${app_exe}" || ! -f "${app_exe}" ]]; then
+    echo "macOS app bundle has no executable under ${app}/Contents/MacOS" >&2
+    return 1
+  fi
+  chmod +x "${app_exe}" 2>/dev/null || true
+  if [[ ! -x "${app_exe}" ]]; then
+    echo "macOS app executable is not runnable: ${app_exe}" >&2
+    return 1
+  fi
+}
+
+require_macos_gui_bundle() {
+  local outdir="$1"
+  local app
+  app="$(find "${outdir}" -maxdepth 1 -type d -name "*.app" | sort | head -n 1 || true)"
+  if [[ -z "${app}" ]]; then
+    echo "--gui requested for macOS, but no .app bundle was copied into ${outdir}" >&2
+    return 1
+  fi
+  ensure_macos_app_bundle "${app}" || return 1
+  printf '%s\n' "${app}"
+}
+
+ensure_genisoimage_linux() {
+  if command -v genisoimage >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! command -v apt-get >/dev/null 2>&1; then
+    return 1
+  fi
+  apt_install genisoimage
+  return $?
+}
+
+maybe_package_macos_dmg() {
+  local outdir="$1"
+  local app="$2"
+  local dmg="${outdir}/Yume.dmg"
+  local stage="${YUME_TMP_ROOT}/dmg-$(basename "${outdir}")"
+
+  if ! is_truthy "${YUME_FULLAU_DMG:-1}"; then
+    return 0
+  fi
+  if [[ ! -d "${app}" ]]; then
+    return 0
+  fi
+
+  rm -f "${dmg}"
+
+  # Method 1: hdiutil (native on macOS, creates visual drag-drop installer)
+  if command -v hdiutil >/dev/null 2>&1; then
+    rm -rf "${stage}"
+    mkdir -p "${stage}"
+    cp -R "${app}" "${stage}/"
+    ln -s /Applications "${stage}/Applications" 2>/dev/null || true
+    if hdiutil create -volname "Yume" -srcfolder "${stage}" -ov -format UDZO "${dmg}"; then
+      echo "macOS DMG packaged at ${dmg} (via hdiutil, visual installer)"
+      return 0
+    fi
+  fi
+
+  # Method 2: genisoimage (on Linux, creates functional but non-visual DMG)
+  # Note: create-dmg npm package doesn't work on Linux (requires macOS/appdmg)
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    if ensure_genisoimage_linux; then
+      if genisoimage -V "Yume" -no-pad -r -apple -o "${dmg}" "${app}" 2>/dev/null; then
+        echo "macOS DMG packaged at ${dmg} (via genisoimage, functional ISO-based)"
+        echo "  Note: This is a functional DMG but lacks visual drag-drop installer UI."
+        echo "  For a visual installer with drag-drop UI, build on macOS or use osxcross+hdiutil."
+        return 0
+      fi
+    fi
+    # genisoimage failed; leave .app instead
+    echo "Warning: genisoimage not available. Leaving macOS app bundle at ${app}"
+    echo "  On Linux, to create a DMG: sudo apt install genisoimage"
+    echo "  For visual drag-drop installer: build this target on macOS (requires hdiutil)."
+    return 0
+  fi
+
+  # If all else fails, leave the .app
+  echo "Warning: Could not create DMG. Leaving macOS app bundle at ${app}"
+  return 0
 }
 
 resolve_windows_mingw_compilers() {
@@ -2676,6 +2776,11 @@ EOF
     ./ezbuild.sh ${gui_arg}
 
   copy_build_outputs "${outdir}" "" || return 1
+  if [[ "${FULLAU_BUILD_GUI}" -eq 1 ]]; then
+    local macos_app
+    macos_app="$(require_macos_gui_bundle "${outdir}")" || return 1
+    maybe_package_macos_dmg "${outdir}" "${macos_app}" || return 1
+  fi
 }
 
 macos_triplet_arch() {

@@ -103,7 +103,7 @@ std::vector<std::filesystem::path> candidate_dirs() {
         dirs.push_back(exe_dir / ".." / ".." / "src" / "gui" / "assets" / "geoip");
         // Installed layout (bindir = .../bin, datadir = .../share).
         dirs.push_back(exe_dir / ".." / "share" / "yume-gui" / "geoip");
-        // macOS .app bundle: Yume.app/Contents/MacOS/yume-gui ->
+        // macOS .app bundle: Yume.app/Contents/MacOS/Yume ->
         // Yume.app/Contents/Resources/geoip.
         dirs.push_back(exe_dir / ".." / "Resources" / "geoip");
         // Portable: geoip sitting next to the executable.

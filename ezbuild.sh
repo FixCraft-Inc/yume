@@ -1202,7 +1202,9 @@ build_project() {
     step "Compiling..."
     cmake --build "${build_dir}" -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu || echo 4)"
     ok "Build complete."
-    if [[ -x "${build_dir}/bin/yume-gui" ]]; then
+    if [[ -x "${build_dir}/bin/Yume.app/Contents/MacOS/Yume" ]]; then
+        info "Yume.app built at ${build_dir}/bin/Yume.app"
+    elif [[ -x "${build_dir}/bin/yume-gui" ]]; then
         info "yume-gui built at ${build_dir}/bin/yume-gui"
     fi
 }

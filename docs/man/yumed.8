@@ -73,6 +73,23 @@ Maximum port for reverse forwards.
 .BI "--dns-server " ip
 Resolver for outbound opens.
 .TP
+.BI "--packet-egress " tun
+Enable packet-native egress over an operator-prepared Linux TUN/NAT
+interface. Disabled by default.
+.TP
+.BI "--packet-tun-name " ifname
+TUN device to attach for packet-native mode. Default:
+.BR yume-pkt0 .
+.TP
+.BI "--packet-cidr " cidr
+IPv4 pool assigned to packet-native clients. Default:
+.BR 10.89.0.0/24 .
+The .1 address is reserved for the TUN side.
+.TP
+.BI "--packet-mtu " n
+Packet-native MTU. Default:
+.BR 1420 .
+.TP
 .B --obfs
 Enable HTTP/2 carrier obfuscation.
 .TP

@@ -375,6 +375,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/federation_link.cpp
         server/federation_manager.cpp
         server/manager.cpp
+        server/packet_tun_egress.cpp
         server/auth.cpp
         server/session.cpp
         server/session_control.cpp
@@ -494,6 +495,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     endif()
 endif()
 
+if(BUILD_TESTING)
 enable_testing()
 
 add_executable(yume_transport_core_test
@@ -506,10 +508,17 @@ yume_apply_perf_opts(yume_transport_core_test)
 
 add_test(NAME yume_transport_core_test COMMAND yume_transport_core_test)
 
+add_executable(yume_packet_bulk_test core/packet_bulk_test.cpp)
+target_link_libraries(yume_packet_bulk_test PRIVATE yume_transport_core)
+yume_link_atomic_if_needed(yume_packet_bulk_test PRIVATE)
+yume_apply_perf_opts(yume_packet_bulk_test)
+add_test(NAME yume_packet_bulk_test COMMAND yume_packet_bulk_test)
+
 if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_executable(yume_obfs_test core/obfs_test.cpp)
     target_link_libraries(yume_obfs_test PRIVATE yume_core)
     yume_link_atomic_if_needed(yume_obfs_test PRIVATE)
     yume_apply_perf_opts(yume_obfs_test)
     add_test(NAME yume_obfs_test COMMAND yume_obfs_test)
+endif()
 endif()

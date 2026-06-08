@@ -94,6 +94,10 @@ private:
     bool handle_auth(const protocol::Frame& frame);
     void handle_open(const protocol::Frame& frame);
     void handle_data(const protocol::Frame& frame);
+    bool handle_packet_open(uint8_t stream_id);
+    bool handle_packet_data(uint8_t stream_id, const crypto::Bytes& payload);
+    void queue_packet_downstream(crypto::Bytes packet);
+    void flush_packet_downstream();
     void handle_close(uint8_t stream_id, const std::string& reason);
     void handle_stream_fin(uint8_t stream_id, const std::string& reason);
     std::string decode_close_reason(const protocol::Frame& frame, bool* ok);
@@ -245,8 +249,27 @@ private:
             , resolver(exec) {}
     };
 
+    struct PacketStream {
+        uint8_t stream_id{0};
+        std::uint32_t client_ipv4_be{0};
+        std::string client_ipv4;
+        std::uint32_t mtu{0};
+        std::vector<std::string> dns_servers;
+        std::deque<crypto::Bytes> downstream_packets;
+        std::size_t downstream_encoded_bytes{0};
+        std::uint64_t downstream_sequence{0};
+        std::uint64_t upstream_batches{0};
+        std::uint64_t upstream_packets{0};
+        std::uint64_t downstream_batches{0};
+        std::uint64_t downstream_packet_count{0};
+        int64_t open_started_ms{0};
+        bool close_summary_logged{false};
+        std::unique_ptr<boost::asio::steady_timer> flush_timer;
+    };
+
     std::unordered_map<uint8_t, std::shared_ptr<RemoteStream>> streams_;
     std::unordered_map<uint8_t, std::shared_ptr<UdpStream>> udp_streams_;
+    std::optional<PacketStream> packet_stream_;
     std::unordered_map<uint8_t, std::shared_ptr<boost::asio::ip::tcp::acceptor>> reverse_listeners_;
     std::unordered_map<uint8_t, int> reverse_listener_ports_;
     std::unordered_map<int, uint8_t> reverse_port_streams_;

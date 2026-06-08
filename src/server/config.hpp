@@ -159,6 +159,10 @@ struct ServerConfig {
     // key can use the full cap; N equal-priority active keys converge to
     // 1/N of the cap. auth_keys_meta priority values act as weights.
     std::uint32_t egress_mbps{0};
+    std::string packet_egress;
+    std::string packet_tun_name{"yume-pkt0"};
+    std::string packet_cidr{"10.89.0.0/24"};
+    std::uint32_t packet_mtu{1420};
     std::vector<std::string> federation_peers;
     std::string federation_auth_key;
     std::string federation_anonym_ca;

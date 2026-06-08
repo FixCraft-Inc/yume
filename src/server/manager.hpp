@@ -23,11 +23,13 @@
 #include "core/obfs.hpp"
 #include "server/config.hpp"
 #include "server/federation_types.hpp"
+#include "server/packet_tun_egress.hpp"
 
 namespace yume::server {
 
 class FederationManager;
 class FederationLink;
+class PacketTunEgress;
 class Session;
 
 struct ControlledClientInfo {
@@ -131,6 +133,12 @@ public:
     std::chrono::milliseconds reserve_egress_write(const std::string& client_key,
                                                    std::uint32_t priority,
                                                    std::size_t bytes);
+    bool packet_egress_active() const;
+    std::optional<PacketTunAssignment> register_packet_client(
+        Session* session,
+        std::function<void(crypto::Bytes)> handler);
+    void unregister_packet_client(Session* session, std::uint32_t ipv4_be);
+    void write_packet_to_egress(std::uint32_t client_ipv4_be, crypto::Bytes packet);
 
     // Returns one of the loaded upstream-response captures (chosen
     // uniformly), or an empty string if no directory is configured /
@@ -197,6 +205,7 @@ private:
     std::string server_name_;
     std::unique_ptr<FederationManager> federation_;
     std::unique_ptr<WeightedEgressLimiter> egress_limiter_;
+    std::unique_ptr<PacketTunEgress> packet_egress_;
 
     // Per-probe upstream-response rotation. cache_ is swapped under the
     // mutex; readers (Session::send_disguise_404) atomically load a

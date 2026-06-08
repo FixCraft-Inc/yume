@@ -9,6 +9,7 @@
 #include <algorithm>
 #include "server/federation_manager.hpp"
 #include "server/auth.hpp"
+#include "server/packet_tun_egress.hpp"
 #include "server/session.hpp"
 #include "util.hpp"
 
@@ -111,6 +112,9 @@ Manager::Manager(boost::asio::io_context& io, const ServerConfig& cfg)
     if (cfg_.egress_mbps > 0) {
         egress_limiter_ = std::make_unique<WeightedEgressLimiter>(cfg_.egress_mbps);
     }
+    if (!cfg_.packet_egress.empty() && cfg_.packet_egress != "off" && cfg_.packet_egress != "none") {
+        packet_egress_ = std::make_unique<PacketTunEgress>(io_, cfg_);
+    }
 }
 
 Manager::~Manager() = default;
@@ -185,6 +189,9 @@ void Manager::start() {
                        std::to_string(cfg_.egress_mbps) +
                        " Mbps, grouped by auth key, priority weight range=1..100 (default 50)");
     }
+    if (packet_egress_) {
+        packet_egress_->start();
+    }
 
     do_accept();
     if (federation_) {
@@ -195,6 +202,9 @@ void Manager::start() {
 void Manager::stop() {
     if (federation_) {
         federation_->stop();
+    }
+    if (packet_egress_) {
+        packet_egress_->stop();
     }
     if (upstream_reload_timer_) {
         // No-arg cancel(): the error_code overload of basic_waitable_timer::cancel
@@ -315,6 +325,31 @@ std::chrono::milliseconds Manager::reserve_egress_write(const std::string& clien
         return std::chrono::milliseconds(0);
     }
     return egress_limiter_->reserve(client_key, priority, bytes);
+}
+
+bool Manager::packet_egress_active() const {
+    return packet_egress_ && packet_egress_->active();
+}
+
+std::optional<PacketTunAssignment> Manager::register_packet_client(
+    Session* session,
+    std::function<void(crypto::Bytes)> handler) {
+    if (!packet_egress_) {
+        return std::nullopt;
+    }
+    return packet_egress_->register_client(session, std::move(handler));
+}
+
+void Manager::unregister_packet_client(Session* session, std::uint32_t ipv4_be) {
+    if (packet_egress_) {
+        packet_egress_->unregister_client(session, ipv4_be);
+    }
+}
+
+void Manager::write_packet_to_egress(std::uint32_t client_ipv4_be, crypto::Bytes packet) {
+    if (packet_egress_) {
+        packet_egress_->write_packet(client_ipv4_be, std::move(packet));
+    }
 }
 
 void Manager::schedule_upstream_reload() {

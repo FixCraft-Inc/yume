@@ -361,6 +361,10 @@ std::optional<server::ServerConfig> load_server(
     read_opt(j, "operator_keys", s.operator_keys);
     read_opt(j, "operator_keys_meta", s.operator_keys_meta);
     read_opt(j, "egress_mbps", s.egress_mbps);
+    read_opt(j, "packet_egress", s.packet_egress);
+    read_opt(j, "packet_tun_name", s.packet_tun_name);
+    read_opt(j, "packet_cidr", s.packet_cidr);
+    read_opt(j, "packet_mtu", s.packet_mtu);
     read_opt(j, "boring", s.boring);
 
     auto const base = path.parent_path();
@@ -432,6 +436,10 @@ bool save_server(server::ServerConfig const& s,
         {"operator_keys", s.operator_keys},
         {"operator_keys_meta", s.operator_keys_meta},
         {"egress_mbps", s.egress_mbps},
+        {"packet_egress", s.packet_egress},
+        {"packet_tun_name", s.packet_tun_name},
+        {"packet_cidr", s.packet_cidr},
+        {"packet_mtu", s.packet_mtu},
         {"boring", s.boring},
     };
 
@@ -467,6 +475,17 @@ ValidationReport validate(server::ServerConfig const& s) {
     }
     if (s.threads < 0) {
         r.errors.emplace_back("threads: must be >= 0 (0 = auto)");
+    }
+    if (!s.packet_egress.empty() && s.packet_egress != "off" && s.packet_egress != "none" && s.packet_egress != "tun") {
+        r.errors.emplace_back("packet_egress: expected tun, off, none, or empty");
+    }
+    if (!s.packet_egress.empty() && s.packet_egress != "off" && s.packet_egress != "none") {
+        if (s.packet_tun_name.empty()) {
+            r.errors.emplace_back("packet_tun_name: must not be empty when packet egress is enabled");
+        }
+        if (s.packet_mtu < 576 || s.packet_mtu > 65535) {
+            r.errors.emplace_back("packet_mtu: must be 576..65535");
+        }
     }
     if (s.federation_enable) {
         if (s.federation_auth_key.empty()) {

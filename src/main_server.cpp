@@ -77,7 +77,7 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --credits --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms --tls-handshake-timeout-ms --max-sessions --accept-rate-limit --egress-mbps --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --upstream-response --upstream-response-dir --upstream-response-ttl --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
+  local opts="--help -h --version --credits --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms --tls-handshake-timeout-ms --max-sessions --accept-rate-limit --egress-mbps --packet-egress --packet-tun-name --packet-cidr --packet-mtu --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --upstream-response --upstream-response-dir --upstream-response-ttl --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
   local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --federation-auth-key --federation-anonym-ca --keys-add --keys-gen"
   case "$prev" in
     --completion)
@@ -185,6 +185,12 @@ void print_help() {
         << "                             full cap; equal active keys split it.\n"
         << "                             auth_keys_meta priority 1..100 controls\n"
         << "                             weighted shares (default 50).\n"
+        << "  --packet-egress tun      Enable packet_bulk_v1 over an operator-\n"
+        << "                             prepared Linux TUN/NAT interface.\n"
+        << "  --packet-tun-name <if>   TUN device to attach (default yume-pkt0).\n"
+        << "  --packet-cidr <cidr>     Client IPv4 pool (default 10.89.0.0/24).\n"
+        << "                             The .1 address is reserved for the TUN side.\n"
+        << "  --packet-mtu <N>         Packet-native MTU (default 1420).\n"
         << "  --allow-local-ip         Allow private/loopback destinations\n"
         << "  --control-full           Allow full server-side network control\n"
         << "  --root                   Keep root privileges after bind/listen\n"
@@ -1379,6 +1385,10 @@ int main(int argc, char** argv) {
     bool max_sessions_override = false;
     bool accept_rate_limit_override = false;
     bool egress_mbps_override = false;
+    bool packet_egress_override = false;
+    bool packet_tun_name_override = false;
+    bool packet_cidr_override = false;
+    bool packet_mtu_override = false;
     bool relay_enable_override = false;
     bool directory_enable_override = false;
     bool attach_local = false;
@@ -1499,6 +1509,20 @@ int main(int argc, char** argv) {
             if (parsed < 0) parsed = 0;
             cfg.egress_mbps = static_cast<std::uint32_t>(parsed);
             egress_mbps_override = true;
+        } else if (arg == "--packet-egress" && i + 1 < argc) {
+            cfg.packet_egress = argv[++i];
+            packet_egress_override = true;
+        } else if (arg == "--packet-tun-name" && i + 1 < argc) {
+            cfg.packet_tun_name = argv[++i];
+            packet_tun_name_override = true;
+        } else if (arg == "--packet-cidr" && i + 1 < argc) {
+            cfg.packet_cidr = argv[++i];
+            packet_cidr_override = true;
+        } else if (arg == "--packet-mtu" && i + 1 < argc) {
+            int parsed = std::atoi(argv[++i]);
+            if (parsed < 0) parsed = 0;
+            cfg.packet_mtu = static_cast<std::uint32_t>(parsed);
+            packet_mtu_override = true;
         } else if (arg == "--inner") {
             yume::util::log_warn("--inner is deprecated; use --inner-heavy or --inner-light");
             cfg.inner_crypto = true;
@@ -1859,6 +1883,20 @@ int main(int argc, char** argv) {
                 if (v < 0) v = 0;
                 cfg.egress_mbps = static_cast<std::uint32_t>(v);
             }
+            if (json.contains("packet_egress") && !packet_egress_override) {
+                cfg.packet_egress = json["packet_egress"].get<std::string>();
+            }
+            if (json.contains("packet_tun_name") && !packet_tun_name_override) {
+                cfg.packet_tun_name = json["packet_tun_name"].get<std::string>();
+            }
+            if (json.contains("packet_cidr") && !packet_cidr_override) {
+                cfg.packet_cidr = json["packet_cidr"].get<std::string>();
+            }
+            if (json.contains("packet_mtu") && !packet_mtu_override) {
+                int v = json["packet_mtu"].get<int>();
+                if (v < 0) v = 0;
+                cfg.packet_mtu = static_cast<std::uint32_t>(v);
+            }
             if (json.contains("upstream_response_dir") && cfg.upstream_response_dir.empty()) {
                 cfg.upstream_response_dir = resolve_cfg_path(json["upstream_response_dir"].get<std::string>());
             }
@@ -2091,6 +2129,24 @@ int main(int argc, char** argv) {
                                   "'. Supported: " + supported);
             return 1;
         }
+    }
+    if (!cfg.packet_egress.empty() && cfg.packet_egress != "off" && cfg.packet_egress != "none") {
+        if (cfg.packet_egress != "tun") {
+            yume::util::log_error("--packet-egress supports only 'tun' in v1");
+            return 1;
+        }
+        if (cfg.packet_tun_name.empty()) {
+            yume::util::log_error("--packet-tun-name must not be empty");
+            return 1;
+        }
+        if (cfg.packet_mtu < 576 || cfg.packet_mtu > 65535) {
+            yume::util::log_error("--packet-mtu must be in range 576..65535");
+            return 1;
+        }
+        yume::util::log_info("packet-native egress requested: tun=" + cfg.packet_tun_name +
+                             " cidr=" + cfg.packet_cidr +
+                             " mtu=" + std::to_string(cfg.packet_mtu) +
+                             ". The TUN address/NAT must be prepared by the operator before startup.");
     }
 
     if (!cfg.upstream_response_file.empty()) {

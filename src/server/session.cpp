@@ -33,6 +33,7 @@
 #include "core/inner_crypto.hpp"
 #include "core/obfs_h2.hpp"
 #include "core/obfs_signal.hpp"
+#include "core/packet_bulk.hpp"
 #include "core/protocol.hpp"
 #include "core/runtime_policy.hpp"
 #include "core/version.hpp"
@@ -506,6 +507,43 @@ bool parse_dns_a_response(const uint8_t* data,
             *error = "DNS response contained no A records";
         }
         return false;
+    }
+    return true;
+}
+
+std::uint32_t read_ipv4_be(const std::vector<uint8_t>& packet, std::size_t offset) {
+    return (static_cast<std::uint32_t>(packet[offset]) << 24) |
+           (static_cast<std::uint32_t>(packet[offset + 1]) << 16) |
+           (static_cast<std::uint32_t>(packet[offset + 2]) << 8) |
+           static_cast<std::uint32_t>(packet[offset + 3]);
+}
+
+bool validate_client_ipv4_packet(const std::vector<uint8_t>& packet,
+                                 std::uint32_t expected_source_be,
+                                 std::string* reason) {
+    auto fail = [&](const std::string& message) {
+        if (reason) {
+            *reason = message;
+        }
+        return false;
+    };
+    if (packet.size() < 20) {
+        return fail("short IPv4 packet");
+    }
+    const auto version = static_cast<std::uint8_t>(packet[0] >> 4);
+    if (version != 4) {
+        return fail(version == 6 ? "IPv6 packet not supported in packet_bulk_v1" : "not an IPv4 packet");
+    }
+    const std::size_t ihl = static_cast<std::size_t>(packet[0] & 0x0f) * 4;
+    if (ihl < 20 || ihl > packet.size()) {
+        return fail("invalid IPv4 header length");
+    }
+    const std::size_t total_len = read_u16(packet.data(), 2);
+    if (total_len != packet.size() || total_len < ihl) {
+        return fail("invalid IPv4 total length");
+    }
+    if (read_ipv4_be(packet, 12) != expected_source_be) {
+        return fail("packet source IPv4 does not match assigned tunnel address");
     }
     return true;
 }
@@ -1577,6 +1615,9 @@ void Session::handle_frame(const protocol::Frame& frame) {
         anon["cap_pq"] = inner::pq_supported();
         anon["cap_argon2"] = inner::argon2_supported();
         anon["cap_pbkdf2"] = inner::pbkdf2_supported();
+        if (manager_ && manager_->packet_egress_active()) {
+            anon["capabilities"] = nlohmann::json::array({std::string(protocol::packet_bulk::kCapability)});
+        }
         std::string payload_str = anon.dump();
         crypto::Bytes payload(payload_str.begin(), payload_str.end());
         protocol::Frame anon_frame{{static_cast<uint32_t>(payload.size()), protocol::ANON, 0, 0}, payload};
@@ -2072,7 +2113,8 @@ void Session::handle_open(const protocol::Frame& frame) {
         return;
     }
     if (streams_.find(frame.header.stream_id) != streams_.end() ||
-        udp_streams_.find(frame.header.stream_id) != udp_streams_.end()) {
+        udp_streams_.find(frame.header.stream_id) != udp_streams_.end() ||
+        (packet_stream_.has_value() && packet_stream_->stream_id == frame.header.stream_id)) {
         send_open_reply(frame.header.stream_id, false, "stream already exists");
         return;
     }
@@ -2194,6 +2236,13 @@ void Session::handle_open(const protocol::Frame& frame) {
         proto = json.value("proto", "");
     } catch (const std::exception&) {
         send_open_reply(frame.header.stream_id, false, "invalid OPEN payload");
+        return;
+    }
+
+    if (proto == std::string(protocol::packet_bulk::kOpenProto)) {
+        if (!handle_packet_open(frame.header.stream_id)) {
+            return;
+        }
         return;
     }
 
@@ -2970,6 +3019,164 @@ void Session::send_federated_close(uint8_t stream_id, const std::string& reason)
     send_control_close(stream_id, reason);
 }
 
+bool Session::handle_packet_open(uint8_t stream_id) {
+    if (!manager_ || !manager_->packet_egress_active()) {
+        send_open_reply(stream_id, false, "packet egress unavailable");
+        return false;
+    }
+    if (packet_stream_.has_value()) {
+        send_open_reply(stream_id, false, "packet stream already open");
+        return false;
+    }
+
+    auto weak = weak_from_this();
+    auto assignment = manager_->register_packet_client(
+        this,
+        [weak](crypto::Bytes packet) mutable {
+            if (auto self = weak.lock()) {
+                boost::asio::post(self->strand_, [self, packet = std::move(packet)]() mutable {
+                    self->queue_packet_downstream(std::move(packet));
+                });
+            }
+        });
+    if (!assignment.has_value()) {
+        send_open_reply(stream_id, false, "packet client address unavailable");
+        return false;
+    }
+
+    PacketStream packet;
+    packet.stream_id = stream_id;
+    packet.client_ipv4_be = assignment->ipv4_be;
+    packet.client_ipv4 = assignment->ipv4;
+    packet.mtu = assignment->mtu;
+    packet.dns_servers = assignment->dns_servers;
+    packet.downstream_encoded_bytes = protocol::packet_bulk::kHeaderBytes;
+    packet.open_started_ms = util::now_ms();
+    packet.flush_timer = std::make_unique<boost::asio::steady_timer>(stream_.get_executor());
+    packet_stream_ = std::move(packet);
+
+    nlohmann::json ack{
+        {"proto", std::string(protocol::packet_bulk::kOpenProto)},
+        {"capability", std::string(protocol::packet_bulk::kCapability)},
+        {"ipv4", assignment->ipv4},
+        {"mtu", assignment->mtu},
+        {"dns", assignment->dns_servers},
+    };
+    send_open_reply(stream_id, true, ack.dump());
+    util::log_info("session " + std::to_string(session_id_) +
+                   ": packet-bulk stream " + std::to_string(stream_id) +
+                   " assigned " + assignment->ipv4 +
+                   " mtu=" + std::to_string(assignment->mtu));
+    return true;
+}
+
+bool Session::handle_packet_data(uint8_t stream_id, const crypto::Bytes& payload) {
+    if (!packet_stream_.has_value() || packet_stream_->stream_id != stream_id) {
+        return false;
+    }
+    std::string error;
+    auto batch = protocol::packet_bulk::decode_batch(payload, &error);
+    if (!batch.has_value()) {
+        util::log_warn("session " + std::to_string(session_id_) +
+                       ": dropped malformed packet-bulk DATA on stream " +
+                       std::to_string(stream_id) + ": " + error);
+        return true;
+    }
+    packet_stream_->upstream_batches += 1;
+    for (auto& packet : batch->packets) {
+        std::string reason;
+        if (!validate_client_ipv4_packet(packet, packet_stream_->client_ipv4_be, &reason)) {
+            util::log_warn("session " + std::to_string(session_id_) +
+                           ": dropped packet-bulk packet on stream " +
+                           std::to_string(stream_id) + ": " + reason);
+            continue;
+        }
+        packet_stream_->upstream_packets += 1;
+        if (manager_) {
+            manager_->write_packet_to_egress(packet_stream_->client_ipv4_be, std::move(packet));
+        }
+    }
+    return true;
+}
+
+void Session::queue_packet_downstream(crypto::Bytes packet) {
+    if (!packet_stream_.has_value() || close_state_ != CloseState::Open) {
+        return;
+    }
+    auto& stream = *packet_stream_;
+    if (!protocol::packet_bulk::can_append_packet(stream.downstream_encoded_bytes,
+                                                  stream.downstream_packets.size(),
+                                                  packet.size())) {
+        flush_packet_downstream();
+    }
+    if (!protocol::packet_bulk::can_append_packet(stream.downstream_encoded_bytes,
+                                                  stream.downstream_packets.size(),
+                                                  packet.size())) {
+        return;
+    }
+    const std::size_t base = stream.downstream_packets.empty()
+        ? protocol::packet_bulk::kHeaderBytes
+        : stream.downstream_encoded_bytes;
+    stream.downstream_encoded_bytes = base + protocol::packet_bulk::kPacketLengthBytes + packet.size();
+    stream.downstream_packets.push_back(std::move(packet));
+    stream.downstream_packet_count += 1;
+    if (stream.downstream_packets.size() >= protocol::packet_bulk::kMaxPacketsPerBatch ||
+        stream.downstream_encoded_bytes >= protocol::packet_bulk::kDefaultMaxBatchBytes) {
+        flush_packet_downstream();
+        return;
+    }
+    auto* timer = stream.flush_timer.get();
+    if (!timer) {
+        return;
+    }
+    timer->expires_after(std::chrono::microseconds(protocol::packet_bulk::kDefaultFlushDelayMicros));
+    auto self = shared_from_this();
+    timer->async_wait(boost::asio::bind_executor(
+        strand_,
+        [self](const boost::system::error_code& ec) {
+            if (!ec) {
+                self->flush_packet_downstream();
+            }
+        }));
+}
+
+void Session::flush_packet_downstream() {
+    if (!packet_stream_.has_value() || packet_stream_->downstream_packets.empty()) {
+        return;
+    }
+    auto& stream = *packet_stream_;
+    if (stream.flush_timer) {
+        boost::system::error_code ec;
+        stream.flush_timer->cancel(ec);
+    }
+    std::vector<crypto::Bytes> packets;
+    packets.reserve(stream.downstream_packets.size());
+    while (!stream.downstream_packets.empty()) {
+        packets.push_back(std::move(stream.downstream_packets.front()));
+        stream.downstream_packets.pop_front();
+    }
+    stream.downstream_encoded_bytes = protocol::packet_bulk::kHeaderBytes;
+    protocol::packet_bulk::Batch batch;
+    batch.sequence = stream.downstream_sequence++;
+    batch.packets = std::move(packets);
+    crypto::Bytes payload;
+    try {
+        payload = protocol::packet_bulk::encode_batch(batch);
+    } catch (const std::exception& ex) {
+        util::log_warn("session " + std::to_string(session_id_) +
+                       ": failed to encode downstream packet batch: " + ex.what());
+        return;
+    }
+    std::uint16_t flags = 0;
+    if (inner_key_.has_value()) {
+        payload = encrypt_inner_payload(protocol::DATA, stream.stream_id, payload);
+        flags |= protocol::kFlagInnerEncrypted;
+    }
+    stream.downstream_batches += 1;
+    protocol::Frame frame{{static_cast<std::uint32_t>(payload.size()), protocol::DATA, stream.stream_id, flags}, payload};
+    queue_frame_on_strand(frame);
+}
+
 void Session::handle_data(const protocol::Frame& frame) {
     crypto::Bytes payload = frame.payload;
     if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
@@ -2990,6 +3197,9 @@ void Session::handle_data(const protocol::Frame& frame) {
     }
     if (federated_data) {
         federated_data(payload);
+        return;
+    }
+    if (handle_packet_data(frame.header.stream_id, payload)) {
         return;
     }
     auto it_udp = udp_streams_.find(frame.header.stream_id);
@@ -3054,6 +3264,34 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
             manager_->unregister_active_channel(federated_channel_id);
         }
         federated_close(reason);
+        return;
+    }
+    if (packet_stream_.has_value() && packet_stream_->stream_id == stream_id) {
+        flush_packet_downstream();
+        auto& packet = *packet_stream_;
+        if (!packet.close_summary_logged) {
+            packet.close_summary_logged = true;
+            const int64_t elapsed = packet.open_started_ms > 0 ? (util::now_ms() - packet.open_started_ms) : 0;
+            util::log_timing("server.stream",
+                             "summary",
+                             "session=" + std::to_string(session_id_) +
+                                 " stream=" + std::to_string(stream_id) +
+                                 " proto=packet-bulk-v1 ms=" + std::to_string(elapsed) +
+                                 " client_ipv4=" + packet.client_ipv4 +
+                                 " upstream_batches=" + std::to_string(packet.upstream_batches) +
+                                 " upstream_packets=" + std::to_string(packet.upstream_packets) +
+                                 " downstream_batches=" + std::to_string(packet.downstream_batches) +
+                                 " downstream_packets=" + std::to_string(packet.downstream_packet_count) +
+                                 " reason=" + reason);
+        }
+        if (packet.flush_timer) {
+            boost::system::error_code ec;
+            packet.flush_timer->cancel(ec);
+        }
+        if (manager_) {
+            manager_->unregister_packet_client(this, packet.client_ipv4_be);
+        }
+        packet_stream_.reset();
         return;
     }
     {
@@ -3827,6 +4065,9 @@ void Session::begin_close() {
     preface_timer_.cancel();
     if (manager_) {
         manager_->unregister_session(this);
+        if (packet_stream_.has_value()) {
+            manager_->unregister_packet_client(this, packet_stream_->client_ipv4_be);
+        }
         for (const auto& entry : reverse_listener_ports_) {
             manager_->unregister_reverse_listener(entry.second, this);
         }
@@ -3835,6 +4076,12 @@ void Session::begin_close() {
     }
     reverse_listener_ports_.clear();
     reverse_port_streams_.clear();
+    if (packet_stream_.has_value()) {
+        if (packet_stream_->flush_timer) {
+            packet_stream_->flush_timer->cancel(ec);
+        }
+        packet_stream_.reset();
+    }
 
     std::vector<std::pair<std::shared_ptr<Session>, uint8_t>> control_peers;
     {

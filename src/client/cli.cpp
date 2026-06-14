@@ -2377,7 +2377,20 @@ int resolve_io_threads(int requested) {
         return requested;
     }
     unsigned int hw = std::thread::hardware_concurrency();
-    return hw > 0 ? static_cast<int>(hw) : 1;
+    int auto_threads = hw > 0 ? static_cast<int>(hw) : 1;
+    // Cap the auto default. Each relay stream is serialised on a single
+    // asio strand, so extra io threads cannot speed one stream up -- they
+    // only bounce its handlers across cores (futex wakeups + cache-line
+    // migration), which measurably *slows* single/few-stream throughput
+    // (benchmarked ~3.5x loss at 32 threads vs the cap on a single stream).
+    // Few concurrent streams is the dominant client workload; a handful of
+    // threads still spreads many parallel streams across cores, and high-
+    // concurrency operators can opt into more with --threads N.
+    constexpr int kAutoThreadCap = 4;
+    if (auto_threads > kAutoThreadCap) {
+        auto_threads = kAutoThreadCap;
+    }
+    return auto_threads;
 }
 
 bool parse_env_bool(const char* name, bool fallback) {

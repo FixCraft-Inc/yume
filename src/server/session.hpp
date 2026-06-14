@@ -23,6 +23,7 @@
 #include "core/obfs_h2.hpp"
 #include "core/protocol.hpp"
 #include "server/config.hpp"
+#include "util.hpp"
 
 namespace yume::server {
 
@@ -200,7 +201,7 @@ private:
     struct RemoteStream {
         boost::asio::ip::tcp::socket socket;
         boost::asio::ip::tcp::resolver resolver;
-        std::array<uint8_t, 65536> read_buf{};
+        std::vector<uint8_t> read_buf;
         std::deque<std::vector<uint8_t>> write_queue;
         std::string host;
         int port{0};
@@ -223,7 +224,9 @@ private:
 
         explicit RemoteStream(boost::asio::any_io_executor exec)
             : socket(exec)
-            , resolver(exec) {}
+            , resolver(exec) {
+            read_buf.resize(util::relay_read_buf_size());
+        }
     };
 
     struct UdpStream {

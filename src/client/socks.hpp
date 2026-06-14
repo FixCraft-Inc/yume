@@ -80,7 +80,7 @@ private:
     std::vector<uint8_t> addr_buf_;
     std::array<uint8_t, 2> port_buf_{};
 
-    std::array<uint8_t, 65536> read_buf_{};
+    std::vector<uint8_t> read_buf_;
 
     std::deque<std::pair<std::shared_ptr<std::vector<uint8_t>>, std::function<void()>>> write_queue_;
     bool write_in_flight_{false};

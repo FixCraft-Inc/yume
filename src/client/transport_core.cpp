@@ -555,9 +555,15 @@ void TransportCore::queue_frame(protocol::Frame frame, WriteCompletion handler) 
 }
 
 std::shared_ptr<TransportCore::Bytes> TransportCore::encode_outgoing_frame(const protocol::Frame& frame) {
-    Bytes payload = frame.payload;
+    // Avoid copying the payload on the no-inner path: encode_frame and
+    // encrypt_inner_payload both take const&, so the source frame's payload
+    // can be passed through directly. Only the inner-encrypted path needs a
+    // separate buffer to hold the AEAD output.
+    const Bytes* eff_payload = &frame.payload;
+    Bytes encrypted;
     if ((frame.header.flags & protocol::kFlagInnerEncrypted) != 0) {
-        payload = encrypt_inner_payload(frame.header.type, frame.header.stream_id, payload);
+        encrypted = encrypt_inner_payload(frame.header.type, frame.header.stream_id, frame.payload);
+        eff_payload = &encrypted;
     }
     std::uint16_t pad_multiple = 0;
     {
@@ -568,7 +574,7 @@ std::shared_ptr<TransportCore::Bytes> TransportCore::encode_outgoing_frame(const
         static_cast<protocol::FrameType>(frame.header.type),
         frame.header.stream_id,
         frame.header.flags,
-        payload,
+        *eff_payload,
         pad_multiple));
 }
 

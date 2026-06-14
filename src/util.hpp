@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <functional>
 #include <string>
 
@@ -32,6 +33,9 @@ void clear_status_line();
 bool drop_privileges(std::string* error = nullptr, std::string* summary = nullptr);
 std::string random_hex(size_t bytes);
 int64_t now_ms();
+// Per-stream relay read-buffer size in bytes (see definition). Tunable via
+// YUME_RELAY_READ_BUF (KiB); default 64 KiB.
+std::size_t relay_read_buf_size();
 std::string base64_decode(const std::string& input);
 std::string base64_encode(const std::string& input);
 

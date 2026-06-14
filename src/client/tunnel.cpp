@@ -24,6 +24,7 @@ constexpr int kSocketBufferBytes = 2 * 1024 * 1024;
 Tunnel::Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream)
     : stream_(std::move(stream))
     , strand_(stream_.get_executor()) {
+    read_buf_.resize(util::relay_read_buf_size());
     boost::system::error_code recvbuf_ec;
     stream_.lowest_layer().set_option(boost::asio::socket_base::receive_buffer_size(kSocketBufferBytes), recvbuf_ec);
     boost::system::error_code sendbuf_ec;

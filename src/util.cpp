@@ -594,6 +594,32 @@ int64_t now_ms() {
         .count();
 }
 
+std::size_t relay_read_buf_size() {
+    // Size (in bytes) of the per-stream relay read buffers that set the
+    // outgoing DATA frame size: the client SOCKS read, the client TLS read,
+    // and the server upstream-socket read. Larger buffers coalesce more
+    // bytes per read into fewer, larger frames, which cuts the per-frame
+    // cost that dominates the real relay path (syscalls, TLS records,
+    // strand posts, the server's 2-read-per-frame inbound parse). Tunable
+    // via YUME_RELAY_READ_BUF (in KiB) so the sweet spot can be swept
+    // without a rebuild; default 64 KiB preserves historical behaviour.
+    // Read once and cached.
+    static const std::size_t cached = [] {
+        std::size_t kib = 64;
+        if (const char* raw = std::getenv("YUME_RELAY_READ_BUF")) {
+            try {
+                const long v = std::stol(raw);
+                if (v >= 4 && v <= 16384) {
+                    kib = static_cast<std::size_t>(v);
+                }
+            } catch (...) {
+            }
+        }
+        return kib * 1024u;
+    }();
+    return cached;
+}
+
 std::string base64_decode(const std::string& input) {
     if (input.empty()) {
         return {};

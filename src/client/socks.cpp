@@ -97,6 +97,7 @@ SocksSession::SocksSession(boost::asio::ip::tcp::socket socket,
     , strand_(socket_.get_executor())
     , allow_udp_(allow_udp)
     , udp_socket_(socket_.get_executor()) {
+    read_buf_.resize(util::relay_read_buf_size());
     boost::system::error_code ec;
     socket_.set_option(boost::asio::ip::tcp::no_delay(true), ec);
     boost::system::error_code recvbuf_ec;

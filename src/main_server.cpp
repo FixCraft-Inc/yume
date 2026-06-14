@@ -571,6 +571,93 @@ bool generate_ed25519_keypair(const std::string& priv_path, const std::string& p
                                  std::filesystem::perm_options::replace, ec);
     return ok;
 }
+
+std::string auth_keys_write_hint(const std::string& path) {
+#if defined(_WIN32)
+    (void)path;
+    return "";
+#else
+    if (path.rfind("/etc/", 0) == 0 && geteuid() != 0) {
+        return " (permission denied? run yumed --ui with sudo, or set --auth-keys to a writable file)";
+    }
+    return "";
+#endif
+}
+
+bool append_authorized_public_key(const yume::server::ServerConfig& cfg,
+                                  const std::string& public_key_path,
+                                  const std::string& alias,
+                                  std::string* out_fingerprint = nullptr) {
+    if (cfg.auth_keys.empty()) {
+        yume::util::log_error("auth_keys must be set before adding a key");
+        return false;
+    }
+    auto auth_dir = std::filesystem::path(cfg.auth_keys).parent_path();
+    if (!auth_dir.empty() && !ensure_dir(auth_dir.string())) {
+        yume::util::log_error("failed to create auth_keys directory: " + auth_dir.string() +
+                              auth_keys_write_hint(cfg.auth_keys));
+        return false;
+    }
+
+    BIO* inbio = BIO_new_file(public_key_path.c_str(), "r");
+    if (!inbio) {
+        yume::util::log_error("failed to open public key: " + public_key_path);
+        return false;
+    }
+    yume::crypto::EVP_PKEY_ptr key{PEM_read_bio_PUBKEY(inbio, nullptr, nullptr, nullptr), EVP_PKEY_free};
+    BIO_free(inbio);
+    if (!key) {
+        yume::util::log_error("failed to parse public key: " + public_key_path);
+        return false;
+    }
+
+    const std::string fp = yume::server::fingerprint_pubkey(key.get());
+    if (out_fingerprint) {
+        *out_fingerprint = fp;
+    }
+
+    bool already_authorized = false;
+    BIO* existing = BIO_new_file(cfg.auth_keys.c_str(), "r");
+    if (existing) {
+        while (true) {
+            yume::crypto::EVP_PKEY_ptr existing_key{
+                PEM_read_bio_PUBKEY(existing, nullptr, nullptr, nullptr), EVP_PKEY_free};
+            if (!existing_key) {
+                break;
+            }
+            if (yume::server::fingerprint_pubkey(existing_key.get()) == fp) {
+                already_authorized = true;
+                break;
+            }
+        }
+        BIO_free(existing);
+    }
+
+    if (!already_authorized) {
+        BIO* outbio = BIO_new_file(cfg.auth_keys.c_str(), "a");
+        if (!outbio) {
+            yume::util::log_error("failed to open auth_keys for append: " + cfg.auth_keys +
+                                  auth_keys_write_hint(cfg.auth_keys));
+            return false;
+        }
+        const bool wrote = PEM_write_bio_PUBKEY(outbio, key.get()) == 1;
+        BIO_free(outbio);
+        if (!wrote) {
+            yume::util::log_error("failed to write public key to auth_keys: " + cfg.auth_keys);
+            return false;
+        }
+    }
+
+    yume::server::update_auth_meta(cfg.auth_keys_meta, fp, alias);
+    std::cout << (already_authorized ? "Already authorized: " : "Authorized: ")
+              << fp << "\n";
+    if (!alias.empty()) {
+        std::cout << "Alias: " << alias << "\n";
+    }
+    std::cout << "auth_keys: " << cfg.auth_keys << "\n";
+    return true;
+}
+
 std::string read_file_bytes(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
@@ -2452,7 +2539,7 @@ int main(int argc, char** argv) {
     };
 
     const bool key_management_only =
-        keys_list || !keys_add.empty() || !keys_remove.empty()
+        ui_mode || keys_list || !keys_add.empty() || !keys_remove.empty()
         || !keys_alias.empty() || !keys_gen.empty();
 
     if (!key_management_only) {
@@ -2496,28 +2583,56 @@ int main(int argc, char** argv) {
 
     if (ui_mode) {
         std::cout << "\n\033[1;36mYUME Server Manager\033[0m\n";
-        std::cout << "1) Generate keypair\n";
+        if (cfg.auth_keys.empty()) {
+            cfg.auth_keys = "/etc/yume/authorized_keys";
+        }
+        if (cfg.auth_keys_meta.empty() && !cfg.auth_keys.empty()) {
+            cfg.auth_keys_meta = cfg.auth_keys + ".json";
+        }
+        std::cout << "auth_keys: " << cfg.auth_keys << auth_keys_write_hint(cfg.auth_keys) << "\n";
+        std::cout << "1) Generate keypair and authorize it\n";
         std::cout << "2) Add public key to auth_keys\n";
         std::cout << "3) Remove key (fingerprint or alias)\n";
         std::cout << "4) Set alias\n";
         std::cout << "5) List keys\n";
         std::cout << "6) Edit config\n";
+        std::cout << "7) Generate keypair only\n";
         std::cout << "0) Exit\n";
         std::cout << "Select: ";
         std::string choice;
         std::getline(std::cin, choice);
         if (choice == "1") {
-            std::cout << "Prefix (path without extension): ";
+            std::cout << "Prefix (path without extension) [./yume-client]: ";
             std::getline(std::cin, keys_gen);
+            if (keys_gen.empty()) {
+                keys_gen = "./yume-client";
+            }
+            std::cout << "Alias (optional): ";
+            std::getline(std::cin, keys_alias_value);
+            keys_gen_add = true;
         } else if (choice == "2") {
             std::cout << "Public key path: ";
             std::getline(std::cin, keys_add);
+            if (keys_add.empty()) {
+                yume::util::log_error("public key path is required");
+                return 1;
+            }
+            std::cout << "Alias (optional): ";
+            std::getline(std::cin, keys_alias_value);
         } else if (choice == "3") {
             std::cout << "Fingerprint or alias: ";
             std::getline(std::cin, keys_remove);
+            if (keys_remove.empty()) {
+                yume::util::log_error("fingerprint or alias is required");
+                return 1;
+            }
         } else if (choice == "4") {
             std::cout << "Fingerprint or alias: ";
             std::getline(std::cin, keys_alias);
+            if (keys_alias.empty()) {
+                yume::util::log_error("fingerprint or alias is required");
+                return 1;
+            }
             std::cout << "New alias: ";
             std::getline(std::cin, keys_alias_value);
         } else if (choice == "5") {
@@ -2626,6 +2741,12 @@ int main(int argc, char** argv) {
             out << json.dump(2);
             std::cout << "Saved config: " << out_path << "\n";
             return 0;
+        } else if (choice == "7") {
+            std::cout << "Prefix (path without extension) [./yume-client]: ";
+            std::getline(std::cin, keys_gen);
+            if (keys_gen.empty()) {
+                keys_gen = "./yume-client";
+            }
         } else {
             return 0;
         }
@@ -2840,33 +2961,7 @@ int main(int argc, char** argv) {
         }
 
         if (!keys_add.empty()) {
-            auto auth_dir = std::filesystem::path(cfg.auth_keys).parent_path();
-            if (!auth_dir.empty()) {
-                ensure_dir(auth_dir.string());
-            }
-            BIO* inbio = BIO_new_file(keys_add.c_str(), "r");
-            if (!inbio) {
-                yume::util::log_error("failed to open key: " + keys_add);
-                return 1;
-            }
-            EVP_PKEY* key = PEM_read_bio_PUBKEY(inbio, nullptr, nullptr, nullptr);
-            BIO_free(inbio);
-            if (!key) {
-                yume::util::log_error("failed to parse key: " + keys_add);
-                return 1;
-            }
-            BIO* outbio = BIO_new_file(cfg.auth_keys.c_str(), "a");
-            if (!outbio) {
-                EVP_PKEY_free(key);
-                yume::util::log_error("failed to open auth_keys for append");
-                return 1;
-            }
-            PEM_write_bio_PUBKEY(outbio, key);
-            BIO_free(outbio);
-            std::string fp = yume::server::fingerprint_pubkey(key);
-            yume::server::update_auth_meta(cfg.auth_keys_meta, fp, keys_alias_value);
-            EVP_PKEY_free(key);
-            return 0;
+            return append_authorized_public_key(cfg, keys_add, keys_alias_value) ? 0 : 1;
         }
 
         if (!keys_gen.empty()) {
@@ -2882,38 +2977,12 @@ int main(int argc, char** argv) {
                 return 1;
             }
             std::cout << "Generated: " << priv_path << " and " << pub_path << "\n";
+            std::cout << "Client auth key: " << priv_path << "\n";
             if (keys_gen_add) {
-                if (cfg.auth_keys.empty()) {
-                    yume::util::log_error("auth_keys must be set to add generated key");
+                if (!append_authorized_public_key(cfg, pub_path, keys_alias_value)) {
                     return 1;
                 }
-                auto auth_dir = std::filesystem::path(cfg.auth_keys).parent_path();
-                if (!auth_dir.empty()) {
-                    ensure_dir(auth_dir.string());
-                }
-                keys_add = pub_path;
-                BIO* inbio = BIO_new_file(keys_add.c_str(), "r");
-                if (!inbio) {
-                    yume::util::log_error("failed to open key: " + keys_add);
-                    return 1;
-                }
-                EVP_PKEY* key = PEM_read_bio_PUBKEY(inbio, nullptr, nullptr, nullptr);
-                BIO_free(inbio);
-                if (!key) {
-                    yume::util::log_error("failed to parse key: " + keys_add);
-                    return 1;
-                }
-                BIO* outbio = BIO_new_file(cfg.auth_keys.c_str(), "a");
-                if (!outbio) {
-                    EVP_PKEY_free(key);
-                    yume::util::log_error("failed to open auth_keys for append");
-                    return 1;
-                }
-                PEM_write_bio_PUBKEY(outbio, key);
-                BIO_free(outbio);
-                std::string fp = yume::server::fingerprint_pubkey(key);
-                yume::server::update_auth_meta(cfg.auth_keys_meta, fp, keys_alias_value);
-                EVP_PKEY_free(key);
+                std::cout << "Use this client flag: --auth " << priv_path << "\n";
             }
             return 0;
         }

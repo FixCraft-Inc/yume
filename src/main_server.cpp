@@ -16,6 +16,7 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <cerrno>
 #include <mutex>
 #include <cctype>
 #include <cstdlib>
@@ -1192,6 +1193,86 @@ bool parse_env_bool(const char* name, bool fallback) {
     }
     return fallback;
 }
+
+#if !defined(_WIN32)
+bool parse_unsigned_env(const char* name, unsigned long* out) {
+    if (!out) {
+        return false;
+    }
+    const char* raw = std::getenv(name);
+    if (!raw || !*raw) {
+        return false;
+    }
+    char* end = nullptr;
+    errno = 0;
+    unsigned long value = std::strtoul(raw, &end, 10);
+    if (errno != 0 || !end || *end != '\0') {
+        return false;
+    }
+    *out = value;
+    return true;
+}
+
+bool sudo_drop_target(uid_t* uid, gid_t* gid) {
+    unsigned long raw_uid = 0;
+    unsigned long raw_gid = 0;
+    if (!parse_unsigned_env("SUDO_UID", &raw_uid) ||
+        !parse_unsigned_env("SUDO_GID", &raw_gid) ||
+        raw_uid == 0) {
+        return false;
+    }
+    if (uid) {
+        *uid = static_cast<uid_t>(raw_uid);
+    }
+    if (gid) {
+        *gid = static_cast<gid_t>(raw_gid);
+    }
+    return true;
+}
+
+void repair_drop_target_file(const std::filesystem::path& path,
+                             uid_t uid,
+                             gid_t gid,
+                             mode_t mode,
+                             const char* label) {
+    if (path.empty()) {
+        return;
+    }
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+        return;
+    }
+    if (::chown(path.c_str(), uid, gid) != 0) {
+        yume::util::log_warn(std::string("failed to chown ") + label + " for privilege drop: " +
+                             path.string() + " (" + std::strerror(errno) + ")");
+    }
+    if (::chmod(path.c_str(), mode) != 0) {
+        yume::util::log_warn(std::string("failed to chmod ") + label + " for privilege drop: " +
+                             path.string() + " (" + std::strerror(errno) + ")");
+    }
+}
+
+void repair_pq_key_ownership_for_drop(const yume::server::ServerConfig& cfg, bool keep_root) {
+    if (keep_root || cfg.pq_private_key.empty() || ::geteuid() != 0) {
+        return;
+    }
+
+    uid_t uid = 0;
+    gid_t gid = 0;
+    if (!sudo_drop_target(&uid, &gid)) {
+        return;
+    }
+
+    std::filesystem::path priv_path(cfg.pq_private_key);
+    std::filesystem::path pub_path(derive_pq_public_path(cfg.pq_private_key));
+    std::filesystem::path key_dir = priv_path.parent_path();
+    if (!key_dir.empty()) {
+        repair_drop_target_file(key_dir, uid, gid, 0700, "PQ key directory");
+    }
+    repair_drop_target_file(priv_path, uid, gid, 0600, "PQ private key");
+    repair_drop_target_file(pub_path, uid, gid, 0644, "PQ public key");
+}
+#endif
 
 // Translates the --cluster-join short form into the JSON peer entry
 // the existing FederationManager::parse_peer consumer expects.
@@ -3386,6 +3467,10 @@ int main(int argc, char** argv) {
             io.stop();
         }).detach();
     });
+
+#if !defined(_WIN32)
+    repair_pq_key_ownership_for_drop(cfg, keep_root);
+#endif
 
     try {
         std::string ipc_error;

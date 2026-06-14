@@ -2996,31 +2996,56 @@ int main(int argc, char** argv) {
 
             if (!keys_alias.empty()) {
                 std::string target = keys_alias;
+                bool matched = false;
                 for (auto it = meta.begin(); it != meta.end(); ++it) {
                     if (it.value().value("alias", "") == keys_alias) {
                         target = it.key();
+                        matched = true;
                         break;
                     }
                 }
+                if (!matched) {
+                    for (auto* key : keys) {
+                        std::string fp = yume::server::fingerprint_pubkey(key);
+                        if (fp == keys_alias) {
+                            matched = true;
+                            break;
+                        }
+                    }
+                }
+                if (!matched) {
+                    for (auto* key : keys) EVP_PKEY_free(key);
+                    yume::util::log_error("no authorized key matches fingerprint or alias: " + keys_alias);
+                    return 1;
+                }
                 yume::server::update_auth_meta(cfg.auth_keys_meta, target, keys_alias_value);
+                std::cout << "Updated alias for " << target << ": " << keys_alias_value << "\n";
                 for (auto* key : keys) EVP_PKEY_free(key);
                 return 0;
             }
 
             std::vector<EVP_PKEY*> remaining;
+            std::size_t removed = 0;
             for (auto* key : keys) {
                 std::string fp = yume::server::fingerprint_pubkey(key);
                 if (fp == keys_remove || meta.value(fp, nlohmann::json::object()).value("alias", "") == keys_remove) {
                     EVP_PKEY_free(key);
                     meta.erase(fp);
+                    ++removed;
                     continue;
                 }
                 remaining.push_back(key);
             }
+            if (removed == 0) {
+                for (auto* key : remaining) EVP_PKEY_free(key);
+                yume::util::log_error("no authorized key matches fingerprint or alias: " + keys_remove);
+                return 1;
+            }
             BIO* outbio = BIO_new_file(cfg.auth_keys.c_str(), "w");
             if (!outbio) {
                 for (auto* key : remaining) EVP_PKEY_free(key);
-                yume::util::log_error("failed to rewrite auth_keys");
+                yume::util::log_error("failed to rewrite auth_keys: " + cfg.auth_keys +
+                                      auth_keys_write_hint(cfg.auth_keys));
                 return 1;
             }
             for (auto* key : remaining) {
@@ -3030,6 +3055,8 @@ int main(int argc, char** argv) {
             BIO_free(outbio);
             std::ofstream meta_out(cfg.auth_keys_meta);
             meta_out << meta.dump(2);
+            std::cout << "Removed " << removed << " authorized key"
+                      << (removed == 1 ? "" : "s") << " from " << cfg.auth_keys << "\n";
             return 0;
         }
     }

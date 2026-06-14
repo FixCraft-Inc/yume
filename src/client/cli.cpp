@@ -1134,6 +1134,7 @@ struct ParsedArgs {
     int port{0};
     std::string identity;
     int socks_port{0};
+    bool socks_port_override{false};
     int io_threads{0};
     int tunnel_count{0};
     bool tunnel_count_override{false};
@@ -1429,6 +1430,7 @@ ParsedArgs parse_args(int argc, char** argv) {
             if (!parse_int_value("--socks", args.socks_port)) {
                 return args;
             }
+            args.socks_port_override = true;
         } else if (arg == "--bench") {
             args.bench = true;
             args.non_interactive = true;
@@ -4112,7 +4114,7 @@ int Cli::run(int argc, char** argv) {
             if (json.contains("identity") && cfg.identity.empty()) {
                 cfg.identity = resolve_cfg_path(json["identity"].get<std::string>());
             }
-            if (json.contains("socks_port") && cfg.socks_port == 0) {
+            if (json.contains("socks_port") && !args.socks_port_override && cfg.socks_port == 0) {
                 cfg.socks_port = json["socks_port"].get<int>();
             }
             if (json.contains("threads") && cfg.io_threads == 0 && !args.io_threads_override) {
@@ -4251,7 +4253,7 @@ int Cli::run(int argc, char** argv) {
     if (!args.identity.empty()) {
         cfg.identity = resolve_cli_path(args.identity);
     }
-    if (args.socks_port > 0) {
+    if (args.socks_port_override) {
         cfg.socks_port = args.socks_port;
     }
     if (args.io_threads != 0 || args.io_threads_override) {
@@ -4425,6 +4427,13 @@ int Cli::run(int argc, char** argv) {
         }
         if (args.bench_chunk_kib > 1024) {
             args.bench_chunk_kib = 1024;
+        }
+        if (!args.socks_port_override) {
+            cfg.socks_port = 0;
+        }
+        if (!args.server_in_charge_override) {
+            cfg.server_in_charge = false;
+            cfg.server_in_charge_port = 0;
         }
     }
     if (cfg.hop_interval_ms > 0) {

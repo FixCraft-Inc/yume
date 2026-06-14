@@ -34,6 +34,11 @@ must connect to a loopback echo target. The tool creates a temporary
 `authorized_keys.json` and grants `allow_local_ip` only to the generated test
 key.
 
+Inner-crypto configs let the temporary `yumed` generate a throwaway PQ keypair
+and pass the generated public key to the temporary client. The harness also
+passes `--accept-monitoring`, because this is an explicit local benchmark
+rather than an anonym-mode trust test.
+
 Heavy mode is still bounded by default: `YUME_ARGON2_MEM` and server caps are
 set to 32768 KiB with parallelism 2 for the child processes. Use
 `--argon-mem-kib` and `--argon-parallelism` when intentionally profiling

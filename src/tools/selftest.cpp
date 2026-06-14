@@ -813,17 +813,22 @@ public:
         , socks_port_(socks_port) {}
 
     void start() {
+        const bool needs_pq_file =
+            !has_flag(cfg_.client_flags, "--no-inner") &&
+            !has_flag(cfg_.client_flags, "--use-embedded-master");
         std::vector<std::string> server_argv{
             args_.yumed.string(),
             "--listen", "127.0.0.1:" + std::to_string(yumed_port_),
             "--cert", ks_.cert.string(),
             "--key", ks_.key.string(),
             "--auth-keys", ks_.authorized_keys.string(),
-            "--pq-auto-generate",
             "--allow-local-ip",
             "--threads", "2",
             "--boring",
         };
+        if (needs_pq_file) {
+            server_argv.push_back("--pq-auto-generate");
+        }
         server_argv.insert(server_argv.end(), cfg_.server_flags.begin(), cfg_.server_flags.end());
         server_ = std::make_unique<ChildProcess>(
             server_argv,
@@ -834,8 +839,7 @@ public:
         if (!wait_for_port(yumed_port_, std::chrono::seconds(12))) {
             throw std::runtime_error("yumed did not listen; see " + server_->log_path().string());
         }
-        const bool needs_pq = !has_flag(cfg_.client_flags, "--no-inner");
-        if (needs_pq && !wait_for_path(ks_.pq_public, std::chrono::seconds(12))) {
+        if (needs_pq_file && !wait_for_path(ks_.pq_public, std::chrono::seconds(12))) {
             throw std::runtime_error("server did not generate pq_public.key; see " + server_->log_path().string());
         }
 
@@ -848,10 +852,11 @@ public:
             "--allow-local-ip",
             "--tunnels", std::to_string(args_.tunnels),
             "--non-interactive",
+            "--accept-monitoring",
             "--boring",
             "--tls-ca", ks_.cert.string(),
         };
-        if (needs_pq) {
+        if (needs_pq_file) {
             client_argv.push_back("--pq-pub");
             client_argv.push_back(ks_.pq_public.string());
         }
@@ -1044,6 +1049,8 @@ int main(int argc, char** argv) {
         }
         require_executable(args.yume, "yume");
         require_executable(args.yumed, "yumed");
+        args.yume = fs::canonical(args.yume);
+        args.yumed = fs::canonical(args.yumed);
         if (::access("openssl", X_OK) != 0 && find_on_path("openssl").empty()) {
             throw std::runtime_error("openssl is required on PATH for temporary TLS/key material");
         }

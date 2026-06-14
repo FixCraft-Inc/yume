@@ -7,7 +7,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(GNUInstallDirs)
-include(CTest)
 
 if(POLICY CMP0167)
     cmake_policy(SET CMP0167 NEW)
@@ -31,6 +30,11 @@ option(YUME_FAST_MATH "Enable fast-math (unsafe for crypto)" OFF)
 option(YUME_TRANSPORT_CORE_ONLY "Build only the shared transport core target" OFF)
 option(YUME_DEB_SHLIBDEPS "Use dpkg-shlibdeps when building Debian packages" ON)
 option(YUME_BUILD_SELFTEST "Build optional localhost benchmark self-test tool for desktop developers" OFF)
+option(YUME_BUILD_TESTING "Build optional YUME unit test executables" OFF)
+option(YUME_BUILD_TOOLS "Build optional helper tools such as yume-net-map" OFF)
+
+set(BUILD_TESTING ${YUME_BUILD_TESTING} CACHE BOOL "Build YUME unit tests" FORCE)
+include(CTest)
 
 if(YUME_BUILD_SELFTEST AND NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING

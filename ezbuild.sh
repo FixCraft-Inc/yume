@@ -19,6 +19,9 @@ TARGET_ARCH=""
 CLEAN_ONLY=0
 BUILD_DEB=0
 BUILD_GUI=0
+BUILD_TESTS=0
+BUILD_TOOLS=0
+BUILD_SELFTEST=0
 PORTABLE=0
 SKIP_PULL=0
 OPENWRT=0
@@ -101,6 +104,9 @@ Options:
   --minimal               Build a minimal/static YUME
   --gui                   Also build the optional yume-gui desktop app
                           (installs libgl/libglfw/appindicator dev pkgs)
+  --tests                 Build unit-test executables
+  --tools                 Build helper tools such as yume-net-map
+  --selftest              Build desktop benchmark/self-test tools
   --portable, --static    Produce single self-contained binaries (no
                           MinGW/vcpkg DLLs alongside). For the cross
                           route this pins WINDOWS_TRIPLET to
@@ -1264,6 +1270,18 @@ main() {
                 BUILD_GUI=1
                 shift
                 ;;
+            --tests|--with-tests)
+                BUILD_TESTS=1
+                shift
+                ;;
+            --tools|--with-tools)
+                BUILD_TOOLS=1
+                shift
+                ;;
+            --selftest|--with-selftest)
+                BUILD_SELFTEST=1
+                shift
+                ;;
             --portable|--static)
                 # Produce one self-contained executable: no MinGW
                 # runtime DLLs, no vcpkg .dlls alongside. Implies
@@ -1347,6 +1365,21 @@ main() {
             info "GUI build enabled (-DYUME_BUILD_GUI=ON)."
             CMAKE_ARGS+=( -DYUME_BUILD_GUI=ON )
         fi
+    fi
+
+    if [[ $BUILD_TESTS -eq 1 ]]; then
+        info "Unit-test executables enabled (-DYUME_BUILD_TESTING=ON)."
+        CMAKE_ARGS+=( -DYUME_BUILD_TESTING=ON )
+    fi
+
+    if [[ $BUILD_TOOLS -eq 1 ]]; then
+        info "Helper tools enabled (-DYUME_BUILD_TOOLS=ON)."
+        CMAKE_ARGS+=( -DYUME_BUILD_TOOLS=ON )
+    fi
+
+    if [[ $BUILD_SELFTEST -eq 1 ]]; then
+        info "Self-test benchmark tools enabled (-DYUME_BUILD_SELFTEST=ON)."
+        CMAKE_ARGS+=( -DYUME_BUILD_SELFTEST=ON )
     fi
 
     if [[ $PORTABLE -eq 1 ]]; then

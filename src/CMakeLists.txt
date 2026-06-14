@@ -458,18 +458,19 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         target_link_options(yume PRIVATE -static)
     endif()
 
-    # yume-net-map: read-only ASCII visualization of the local yumed's
-    # federation topology. Links the server lib for LocalRuntime::request
-    # but is a separate binary so it can be dropped on a server without
-    # adding the full yumed CLI surface, and so it cannot accidentally
-    # mutate runtime state.
-    add_executable(yume-net-map
-        tools/net_map.cpp
-    )
-    target_link_libraries(yume-net-map PRIVATE yume_server)
-    yume_apply_perf_opts(yume-net-map)
-    if(YUME_STATIC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-        target_link_options(yume-net-map PRIVATE -static)
+    set(_yume_install_targets yume yumed)
+
+    if(YUME_BUILD_TOOLS)
+        # Read-only ASCII visualization of the local yumed federation topology.
+        add_executable(yume-net-map
+            tools/net_map.cpp
+        )
+        target_link_libraries(yume-net-map PRIVATE yume_server)
+        yume_apply_perf_opts(yume-net-map)
+        if(YUME_STATIC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+            target_link_options(yume-net-map PRIVATE -static)
+        endif()
+        list(APPEND _yume_install_targets yume-net-map)
     endif()
     if(WIN32)
         target_link_libraries(yume PRIVATE ws2_32 mswsock)
@@ -512,7 +513,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         endif()
     endif()
 
-    install(TARGETS yume yumed yume-net-map
+    install(TARGETS ${_yume_install_targets}
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
     )
 
@@ -527,8 +528,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     endif()
 endif()
 
-if(BUILD_TESTING)
-enable_testing()
+if(YUME_BUILD_TESTING)
 
 add_executable(yume_transport_core_test
     client/transport_core_test.cpp

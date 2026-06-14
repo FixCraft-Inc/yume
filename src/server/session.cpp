@@ -90,6 +90,18 @@ int64_t steady_now_ms() {
         .count();
 }
 
+bool auth_debug_enabled() {
+    const char* value = std::getenv("YUME_AUTH_DEBUG");
+    if (!value || !*value) {
+        return false;
+    }
+    std::string text(value);
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return text == "1" || text == "true" || text == "yes" || text == "on";
+}
+
 bool is_private_ipv4(const boost::asio::ip::address_v4& addr) {
     const auto bytes = addr.to_bytes();
     const uint8_t a = bytes[0];
@@ -1927,6 +1939,15 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         EVP_PKEY_free(pubkey);
 
         if (!sig_ok || !auth_ok) {
+            if (!cfg_.anonym || auth_debug_enabled()) {
+                const std::size_t loaded_keys = authorized_keys_ ? authorized_keys_->size() : 0;
+                util::log_warn("session " + std::to_string(session_id_) +
+                               ": auth rejected fingerprint=" + (fingerprint.empty() ? std::string("<unknown>") : fingerprint) +
+                               " signature=" + (sig_ok ? "ok" : "bad") +
+                               " authorized=" + (auth_ok ? "yes" : "no") +
+                               " loaded_keys=" + std::to_string(loaded_keys) +
+                               " auth_keys=" + (cfg_.auth_keys.empty() ? std::string("<unset>") : cfg_.auth_keys));
+            }
             if (!sig_ok) {
                 auth_error_ = "access denied: bad signature";
             } else {

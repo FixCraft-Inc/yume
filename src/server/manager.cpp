@@ -162,6 +162,9 @@ void Manager::start() {
 
     if (authorized_keys_->empty()) {
         util::log_warn("authorized_keys is empty");
+    } else {
+        util::log_info("loaded " + std::to_string(authorized_keys_->size()) +
+                       " authorized key(s) from " + cfg_.auth_keys);
     }
     if (cfg_.federation_enable) {
         if (cfg_.federation_auth_key.empty() || cfg_.federation_anonym_ca.empty() || cfg_.federation_peers.empty()) {

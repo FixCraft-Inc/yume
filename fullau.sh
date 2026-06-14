@@ -227,6 +227,15 @@ parse_fullau_args() {
         export YUME_FULLAU_GUI
         shift
         ;;
+      --portable-gui)
+        # Portable GUI: build the desktop GUI AND, for macOS, produce a fully
+        # self-contained .app (Release, static third-party deps, every non-system
+        # dylib bundled+rewritten into Contents/Frameworks, then validated).
+        YUME_FULLAU_GUI=1
+        YUME_FULLAU_PORTABLE_GUI=1
+        export YUME_FULLAU_GUI YUME_FULLAU_PORTABLE_GUI
+        shift
+        ;;
       -t|--target|--targets)
         if [[ $# -lt 2 ]]; then
           echo "Missing value for $1" >&2
@@ -2112,6 +2121,228 @@ ensure_macos_app_bundle() {
     echo "macOS app executable is not runnable: ${app_exe}" >&2
     return 1
   fi
+
+  # For portable GUI builds, finalize and validate the app bundle
+  if [[ "${YUME_FULLAU_PORTABLE_GUI:-0}" -eq 1 ]]; then
+    echo "[fullau] Finalizing portable macOS app bundle..."
+    finalize_macos_app_portable "${app}" || return 1
+    echo "[fullau] Validating portable macOS app bundle..."
+    validate_macos_app_portable "${app}" || return 1
+  fi
+}
+
+finalize_macos_app_portable() {
+  # Bundle all non-system dylibs into Contents/Frameworks and rewrite load commands.
+  local app="$1"
+  local app_exe="${app}/Contents/MacOS/Yume"
+  local frameworks_dir="${app}/Contents/Frameworks"
+  local otool_bin=""
+  local install_name_tool_bin=""
+  local processed_libs=()
+  local queue=("${app_exe}")
+  local idx=0
+  local max_iterations=50
+
+  # Find otool and install_name_tool (prefer osxcross versions if available)
+  if [[ -n "${OSXCROSS_BIN_PREFIX:-}" ]]; then
+    otool_bin="$(ls "${OSXCROSS_BIN_PREFIX}"/*-otool 2>/dev/null | head -n 1 || true)"
+    install_name_tool_bin="$(ls "${OSXCROSS_BIN_PREFIX}"/*-install_name_tool 2>/dev/null | head -n 1 || true)"
+  fi
+  if [[ -z "${otool_bin}" ]]; then
+    otool_bin="$(command -v llvm-otool || command -v otool || true)"
+  fi
+  if [[ -z "${install_name_tool_bin}" ]]; then
+    install_name_tool_bin="$(command -v install_name_tool || true)"
+  fi
+
+  if [[ -z "${otool_bin}" || -z "${install_name_tool_bin}" ]]; then
+    echo "  WARNING: otool or install_name_tool not found; skipping dylib bundling" >&2
+    return 0
+  fi
+
+  mkdir -p "${frameworks_dir}"
+
+  # Breadth-first scan of all dylib dependencies
+  while [[ ${#queue[@]} -gt 0 && ${idx} -lt ${max_iterations} ]]; do
+    ((idx++))
+    local binary="${queue[0]}"
+    queue=("${queue[@]:1}")
+
+    if ! [[ -f "${binary}" ]]; then
+      continue
+    fi
+
+    # Get all dependencies for this binary/dylib
+    local deps
+    deps=$("${otool_bin}" -L "${binary}" 2>/dev/null | grep -E "^\s+/" | awk '{print $1}' || true)
+
+    while IFS= read -r dep; do
+      [[ -z "${dep}" ]] && continue
+
+      # Ignore system frameworks and libraries
+      if [[ "${dep}" =~ ^/usr/lib/|^/System/Library/|^/Library/|\.framework ]]; then
+        continue
+      fi
+
+      # Ignore @-paths
+      if [[ "${dep}" =~ ^@ ]]; then
+        continue
+      fi
+
+      # Skip if already processed
+      local is_processed=0
+      for proc_lib in "${processed_libs[@]}"; do
+        if [[ "${proc_lib}" == "${dep}" ]]; then
+          is_processed=1
+          break
+        fi
+      done
+      if [[ ${is_processed} -eq 1 ]]; then
+        continue
+      fi
+
+      processed_libs+=("${dep}")
+
+      # Copy dylib to Frameworks
+      local libname
+      libname="$(basename "${dep}")"
+      local dest_lib="${frameworks_dir}/${libname}"
+
+      if [[ ! -f "${dest_lib}" ]]; then
+        echo "    Bundling: ${libname}"
+        cp "${dep}" "${dest_lib}" 2>/dev/null || true
+
+        # Rewrite the dylib's own ID to @rpath/libname
+        "${install_name_tool_bin}" -id "@rpath/${libname}" "${dest_lib}" 2>/dev/null || true
+
+        # Add to queue for recursive dependency scanning
+        queue+=("${dest_lib}")
+      fi
+    done <<< "${deps}"
+  done
+
+  # Now rewrite all load commands in the executable
+  echo "    Rewriting load commands in executable..."
+
+  # First pass: collect all dependencies in Frameworks
+  local frameworks_libs=()
+  if [[ -d "${frameworks_dir}" ]]; then
+    while IFS= read -r -d '' lib; do
+      frameworks_libs+=("$lib")
+    done < <(find "${frameworks_dir}" -maxdepth 1 -name "*.dylib" -print0 2>/dev/null)
+  fi
+
+  for flib in "${frameworks_libs[@]}"; do
+    [[ ! -f "${flib}" ]] && continue
+    local libname
+    libname="$(basename "${flib}")"
+
+    # Rewrite reference in main executable
+    "${install_name_tool_bin}" -change "/opt/homebrew/opt"*"/${libname}" "@executable_path/../Frameworks/${libname}" "${app_exe}" 2>/dev/null || true
+    "${install_name_tool_bin}" -change "/usr/local/opt"*"/${libname}" "@executable_path/../Frameworks/${libname}" "${app_exe}" 2>/dev/null || true
+    "${install_name_tool_bin}" -change "${dep}" "@executable_path/../Frameworks/${libname}" "${app_exe}" 2>/dev/null || true
+
+    # Find and rewrite references in all bundled dylibs
+    for bundled_dylib in "${frameworks_libs[@]}"; do
+      [[ ! -f "${bundled_dylib}" ]] && continue
+      "${install_name_tool_bin}" -change "/opt/homebrew/opt"*"/${libname}" "@loader_path/${libname}" "${bundled_dylib}" 2>/dev/null || true
+      "${install_name_tool_bin}" -change "/usr/local/opt"*"/${libname}" "@loader_path/${libname}" "${bundled_dylib}" 2>/dev/null || true
+    done
+  done
+
+  echo "    Portable app finalization complete"
+  return 0
+}
+
+validate_macos_app_portable() {
+  # Validate that the app has no references to external paths
+  local app="$1"
+  local app_exe="${app}/Contents/MacOS/Yume"
+  local frameworks_dir="${app}/Contents/Frameworks"
+  local otool_bin=""
+  local failed=0
+
+  # Find otool
+  if [[ -n "${OSXCROSS_BIN_PREFIX:-}" ]]; then
+    otool_bin="$(ls "${OSXCROSS_BIN_PREFIX}"/*-otool 2>/dev/null | head -n 1 || true)"
+  fi
+  if [[ -z "${otool_bin}" ]]; then
+    otool_bin="$(command -v llvm-otool || command -v otool || true)"
+  fi
+
+  if [[ -z "${otool_bin}" ]]; then
+    echo "  WARNING: otool not found; skipping portable app validation" >&2
+    return 0
+  fi
+
+  # Check executable
+  echo "    Validating executable..."
+  local exe_deps
+  exe_deps=$("${otool_bin}" -L "${app_exe}" 2>/dev/null || true)
+
+  if echo "${exe_deps}" | grep -q "/opt/homebrew"; then
+    echo "    FAIL: executable references /opt/homebrew" >&2
+    echo "${exe_deps}" | grep "/opt/homebrew" >&2
+    failed=1
+  fi
+  if echo "${exe_deps}" | grep -q "/usr/local/opt"; then
+    echo "    FAIL: executable references /usr/local/opt" >&2
+    echo "${exe_deps}" | grep "/usr/local/opt" >&2
+    failed=1
+  fi
+  if echo "${exe_deps}" | grep -q "vcpkg/installed"; then
+    echo "    FAIL: executable references vcpkg/installed" >&2
+    echo "${exe_deps}" | grep "vcpkg/installed" >&2
+    failed=1
+  fi
+  if echo "${exe_deps}" | grep -q "/debug/"; then
+    echo "    FAIL: executable references /debug/ paths" >&2
+    echo "${exe_deps}" | grep "/debug/" >&2
+    failed=1
+  fi
+  if echo "${exe_deps}" | grep -qi "libfreetyped"; then
+    echo "    FAIL: executable references debug freetype (libfreetyped)" >&2
+    failed=1
+  fi
+  if echo "${exe_deps}" | grep -E "@rpath.*liboqs\.(dylib|0\.15\.0\.dylib)"; then
+    echo "    WARNING: executable still has @rpath reference to liboqs dylib (should be static)" >&2
+  fi
+  if echo "${exe_deps}" | grep -E "@rpath.*libz\.1\.3\.1\.dylib"; then
+    echo "    WARNING: executable has @rpath reference to libz.1.3.1 (Homebrew zlib?)" >&2
+  fi
+
+  # Check bundled dylibs
+  if [[ -d "${frameworks_dir}" ]]; then
+    echo "    Validating bundled dylibs..."
+    while IFS= read -r -d '' dylib; do
+      [[ ! -f "${dylib}" ]] && continue
+      local libname
+      libname="$(basename "${dylib}")"
+      local dylib_deps
+      dylib_deps=$("${otool_bin}" -L "${dylib}" 2>/dev/null || true)
+
+      if echo "${dylib_deps}" | grep -q "/opt/homebrew"; then
+        echo "    FAIL: ${libname} references /opt/homebrew" >&2
+        failed=1
+      fi
+      if echo "${dylib_deps}" | grep -q "vcpkg/installed"; then
+        echo "    FAIL: ${libname} references vcpkg/installed" >&2
+        failed=1
+      fi
+      if echo "${dylib_deps}" | grep -q "/debug/"; then
+        echo "    FAIL: ${libname} references /debug/ paths" >&2
+        failed=1
+      fi
+    done < <(find "${frameworks_dir}" -maxdepth 1 -name "*.dylib" -print0 2>/dev/null)
+  fi
+
+  if [[ ${failed} -eq 1 ]]; then
+    echo "  Portable app validation FAILED" >&2
+    return 1
+  fi
+
+  echo "    Portable app validation passed"
+  return 0
 }
 
 require_macos_gui_bundle() {
@@ -2504,6 +2735,17 @@ build_macos_cross_target() {
   if [[ "${variant}" == "dynamic" ]]; then
     lib_linkage="dynamic"
   fi
+
+  # For portable GUI on macOS: use DYNAMIC linking (which works),
+  # but finalize_macos_app_portable() will bundle all dylibs into Contents/Frameworks.
+  # This avoids the osxcross liboqs static build issue while still producing
+  # a self-contained, portable app.
+  if [[ "${YUME_FULLAU_PORTABLE_GUI:-0}" -eq 1 && "${FULLAU_BUILD_GUI}" -eq 1 ]]; then
+    echo "[fullau] Portable GUI enabled: using dynamic linking + bundled frameworks"
+    variant="dynamic"
+    lib_linkage="dynamic"
+  fi
+
   local vcpkg_root="${VCPKG_ROOT:-}"
   local toolchain_file="${YUME_TMP_ROOT}/osxcross-toolchain.cmake"
   local toolchain_info=""
@@ -2641,12 +2883,24 @@ YUME_AR_WRAP_EOF
   fi
 
   vendor_prefix="$(vendor_cross_dir "macos-${arch}" || true)"
-  if [[ -n "${vcpkg_root}" && -x "${vcpkg_root}/vcpkg" && -f "${vcpkg_root}/scripts/buildsystems/vcpkg.cmake" ]]; then
+
+  # For portable GUI, prefer vendor prefix (prebuilt dylibs) over vcpkg (which may have build issues)
+  local prefer_vendor=0
+  if [[ "${YUME_FULLAU_PORTABLE_GUI:-0}" -eq 1 && "${FULLAU_BUILD_GUI}" -eq 1 ]]; then
+    prefer_vendor=1
+  fi
+
+  if [[ ${prefer_vendor} -eq 1 && "${vendor_prefix}" && -d "${vendor_prefix}" ]]; then
+    # Use vendor prefix for portable GUI (convert to absolute path for CMake)
+    dep_prefix="$(cd "${vendor_prefix}" && pwd)"
+    use_vcpkg=0
+    echo "Using vendored macOS dependency prefix for portable GUI: ${dep_prefix}"
+  elif [[ -n "${vcpkg_root}" && -x "${vcpkg_root}/vcpkg" && -f "${vcpkg_root}/scripts/buildsystems/vcpkg.cmake" ]]; then
     use_vcpkg=1
     patch_vcpkg_boost_ports "${vcpkg_root}"
     dep_prefix="${vcpkg_root}/installed/${triplet}"
   elif vendor_has_cross_prefix "${vendor_prefix}"; then
-    dep_prefix="${vendor_prefix}"
+    dep_prefix="$(cd "${vendor_prefix}" && pwd)"
     echo "Using vendored macOS dependency prefix: ${dep_prefix}"
   else
     echo "Skipping macos cross build; set VCPKG_ROOT or stage vendor/macos-${arch}." >&2
@@ -2797,6 +3051,7 @@ EOF
 
   local variant_args
   variant_args="$(variant_cmake_args "${variant}")"
+
   local extra_oqs_args=""
   if [[ -n "${oqs_lib}" && -d "${oqs_include}" ]]; then
     extra_oqs_args="-DOQS_INCLUDE_DIR=${oqs_include} -DOQS_LIBRARY=${oqs_lib}"
@@ -2808,21 +3063,50 @@ EOF
     zstd_args="-DZSTD_LIBRARY=${dep_prefix}/lib/libzstd.dylib -DZSTD_INCLUDE_DIR=${dep_prefix}/include -DZSTD_DIR=${dep_prefix}/share/zstd"
   fi
 
-  local macos_cmake_args="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF -DOPENSSL_ROOT_DIR=${dep_prefix} -DCMAKE_PREFIX_PATH=${dep_prefix} -DBoost_DIR=${dep_prefix}/share/boost ${zstd_args} ${extra_oqs_args} -DCMAKE_SYSTEM_NAME=Darwin -DCMAKE_OSX_DEPLOYMENT_TARGET=${MACOS_DEPLOYMENT_TARGET}"
+  local macos_cmake_args="${variant_args} -DBASEFWX_USE_VENDOR_DEPS=OFF -DBASEFWX_NATIVE_OPT=OFF -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF -DBUILD_SHARED_LIBS=ON -DOPENSSL_ROOT_DIR=${dep_prefix} -DCMAKE_PREFIX_PATH=${dep_prefix} -DBoost_DIR=${dep_prefix}/share/boost ${zstd_args} ${extra_oqs_args} -DCMAKE_SYSTEM_NAME=Darwin -DCMAKE_OSX_DEPLOYMENT_TARGET=${MACOS_DEPLOYMENT_TARGET}"
+
+  # For portable GUI, ensure Release build type
+  if [[ "${YUME_FULLAU_PORTABLE_GUI:-0}" -eq 1 && "${FULLAU_BUILD_GUI}" -eq 1 ]]; then
+    macos_cmake_args="${macos_cmake_args} -DCMAKE_BUILD_TYPE=Release"
+  fi
+
   if [[ "${use_vcpkg}" -eq 1 ]]; then
     macos_cmake_args="${macos_cmake_args} -DCMAKE_TOOLCHAIN_FILE=${vcpkg_root}/scripts/buildsystems/vcpkg.cmake -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${toolchain_file} -DVCPKG_TARGET_TRIPLET=${triplet} -DVCPKG_OVERLAY_TRIPLETS=${overlay_triplets_dir}"
   else
+    # When using vendor prefix directly, tell CMake where to find packages and libraries
     macos_cmake_args="${macos_cmake_args} -DCMAKE_TOOLCHAIN_FILE=${toolchain_file}"
+    macos_cmake_args="${macos_cmake_args} -DCMAKE_PREFIX_PATH=${dep_prefix}"
+    macos_cmake_args="${macos_cmake_args} -DCMAKE_INCLUDE_PATH=${dep_prefix}/include"
+    macos_cmake_args="${macos_cmake_args} -DCMAKE_LIBRARY_PATH=${dep_prefix}/lib"
+    macos_cmake_args="${macos_cmake_args} -DOPENSSL_ROOT_DIR=${dep_prefix}"
+    # For dynamic linking with vendor dylibs - explicitly set library paths for packages
+    macos_cmake_args="${macos_cmake_args} -DARGON2_LIBRARY=${dep_prefix}/lib/libargon2.dylib"
+    macos_cmake_args="${macos_cmake_args} -DARGON2_INCLUDE_DIR=${dep_prefix}/include"
+    macos_cmake_args="${macos_cmake_args} -DZSTD_LIBRARY=${dep_prefix}/lib/libzstd.dylib"
+    macos_cmake_args="${macos_cmake_args} -DZSTD_INCLUDE_DIR=${dep_prefix}/include"
+    # Use cache init file to force native code generation (osxcross defaults to LLVM bitcode)
+    # Use absolute path since ezbuild.sh changes directories
+    macos_cmake_args="${macos_cmake_args} -C /home/user/yume/osxcross-native-init.cmake"
+    # Skip tests when building portable GUI (bitcode prevents test linking with native code)
+    if [[ "${YUME_FULLAU_PORTABLE_GUI:-0}" -eq 1 ]]; then
+      macos_cmake_args="${macos_cmake_args} -DBUILD_TESTING=OFF -DYUME_BUILD_TESTING=OFF"
+    fi
   fi
 
   # GUI on BOTH macOS variants: on macOS "static" only means static third-party
   # libs (glfw/freetype/openssl/boost) — the Cocoa/IOKit/OpenGL frameworks and
   # libc++ are always dynamic on Mach-O — so a static .app is valid and useful.
   local gui_arg="${EZBUILD_GUI_ARG}"
+  # For portable GUI builds, disable osxcross LTO/bitcode at wrapper level
+  if [[ "${YUME_FULLAU_PORTABLE_GUI:-0}" -eq 1 ]]; then
+    export OSXCROSS_NO_LTO=1
+  fi
   PATH="${shim_bin}:${bin_dir}:${PATH}" \
     MACOSX_DEPLOYMENT_TARGET="${MACOS_DEPLOYMENT_TARGET}" \
+    OSXCROSS_BIN_PREFIX="${bin_dir}" \
     YUME_WINDOWS_CROSS=0 YUME_MACOS_CROSS=1 YUME_SKIP_DEPS=1 YUME_MACOS_VENDOR_ARCH="${arch}" YUME_CMAKE_ARGS="${macos_cmake_args}" \
     ./ezbuild.sh ${gui_arg}
+
 
   copy_build_outputs "${outdir}" "" || return 1
   if [[ "${FULLAU_BUILD_GUI}" -eq 1 ]]; then

@@ -71,6 +71,37 @@ must connect to a loopback echo target. The tool creates a temporary
 `authorized_keys.json` and grants `allow_local_ip` only to the generated test
 key.
 
+## Real Endpoint Benchmark
+
+`yume --bench` measures an authenticated YUME stream against a real `yumed`
+endpoint without Chromium, curl, SOCKS apps, or an external echo server.
+
+Use portable binaries for real endpoints. `YUME_NATIVE_OPT` is off by default;
+only turn it on for same-machine experiments. A binary configured with
+`-DYUME_NATIVE_OPT=ON` can crash with `Illegal instruction` when copied to a
+different x86_64 CPU that lacks the builder's AVX/BMI/AES-class features.
+
+Enable the virtual benchmark endpoint on the server:
+
+```bash
+yumed --bench --config config/yumed.json
+```
+
+Run from the client:
+
+```bash
+yume --config config/yume.json --bench
+yume --config config/yume.json --bench --bench-mib 1024
+yume --config config/yume.json --bench --bench-mib 1024 --bench-chunk-kib 256
+```
+
+The server rejects benchmark streams unless `--bench` or
+`"benchmark_enable": true` is set. The benchmark uses the current TLS profile,
+obfs carrier, inner crypto, and hopping settings, then opens two synthetic
+streams: one upload sink and one download source. It does not include browser,
+local SOCKS client, remote website, CDN, or provider routing behavior beyond
+the path between `yume` and `yumed`.
+
 Inner-crypto configs let the temporary `yumed` generate a throwaway PQ keypair
 and pass the generated public key to the temporary client. The harness also
 passes `--accept-monitoring`, because this is an explicit local benchmark

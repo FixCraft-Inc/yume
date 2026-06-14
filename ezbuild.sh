@@ -1801,6 +1801,10 @@ EOF
         fi
     elif [[ "${YUME_MACOS_CROSS:-0}" == "1" ]]; then
         CMAKE_ARGS+=("-DYUME_FORCE_CROSS=ON")
+        # Disable LTO and native optimization for macOS cross-compilation to prevent LLVM bitcode
+        CMAKE_ARGS+=("-DBASEFWX_NATIVE_OPT=OFF" "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF" "-DBUILD_SHARED_LIBS=ON")
+        # Disable tests for macOS cross builds (linking issues with bitcode objects)
+        CMAKE_ARGS+=("-DBUILD_TESTING=OFF" "-DYUME_BUILD_TESTING=OFF")
         local macos_vendor_prefix=""
         macos_vendor_prefix="$(macos_vendor_dir || true)"
         if [[ -n "${macos_vendor_prefix}" ]]; then

@@ -740,7 +740,12 @@ bool Session::handle_control_exec(const protocol::Frame& frame) {
     return true;
 }
 
-void Session::send_control_frame(protocol::FrameType type, uint8_t stream_id, const crypto::Bytes& payload, uint16_t extra_flags) {
+void Session::send_control_frame(
+    protocol::FrameType type,
+    uint8_t stream_id,
+    const crypto::Bytes& payload,
+    uint16_t extra_flags,
+    std::function<void(const boost::system::error_code&, std::size_t)> handler) {
     crypto::Bytes out = payload;
     uint16_t flags = extra_flags;
     if (inner_key_.has_value()) {
@@ -748,7 +753,7 @@ void Session::send_control_frame(protocol::FrameType type, uint8_t stream_id, co
         flags |= protocol::kFlagInnerEncrypted;
     }
     protocol::Frame frame{{static_cast<uint32_t>(out.size()), type, stream_id, flags}, out};
-    async_write_frame(frame);
+    async_write_frame(frame, std::move(handler));
 }
 
 void Session::send_control_close(uint8_t stream_id, const std::string& reason) {

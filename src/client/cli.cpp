@@ -49,6 +49,7 @@
 #include <vector>
 #include <atomic>
 #include <mutex>
+#include <condition_variable>
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
@@ -1189,6 +1190,9 @@ struct ParsedArgs {
     std::string tls_fingerprint_test_endpoint{"tls.peet.ws"};
     bool self_dpi{false};
     bool self_dpi_override{false};
+    bool bench{false};
+    int bench_mib{256};
+    int bench_chunk_kib{64};
     bool help{false};
     bool version{false};
     bool credits{false};
@@ -1425,6 +1429,21 @@ ParsedArgs parse_args(int argc, char** argv) {
             if (!parse_int_value("--socks", args.socks_port)) {
                 return args;
             }
+        } else if (arg == "--bench") {
+            args.bench = true;
+            args.non_interactive = true;
+        } else if (arg == "--bench-mib") {
+            if (!parse_int_value("--bench-mib", args.bench_mib)) {
+                return args;
+            }
+            args.bench = true;
+            args.non_interactive = true;
+        } else if (arg == "--bench-chunk-kib") {
+            if (!parse_int_value("--bench-chunk-kib", args.bench_chunk_kib)) {
+                return args;
+            }
+            args.bench = true;
+            args.non_interactive = true;
         } else if (arg == "--threads") {
             if (!parse_int_value("--threads", args.io_threads)) {
                 return args;
@@ -2141,7 +2160,7 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --credits --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --threads --tunnels --obfs --no-obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms export import --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --self-dpi --no-self-dpi --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
+  local opts="--help -h --version --credits --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --bench --bench-mib --bench-chunk-kib --threads --tunnels --obfs --no-obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms export import --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --self-dpi --no-self-dpi --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
   local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path --relay-key-file"
   case "$prev" in
     --completion)
@@ -2222,6 +2241,10 @@ void print_help() {
         << "  -i, --auth <path>        Identity key\n\n"
         << "Modes:\n"
         << "  --socks <port>           Start a SOCKS5 proxy\n"
+        << "  --bench                  Run authenticated endpoint up/down benchmark\n"
+        << "                             against yumed --bench, then exit.\n"
+        << "  --bench-mib <N>          Benchmark payload per direction (default 256).\n"
+        << "  --bench-chunk-kib <N>    DATA chunk size (default 64, max 1024).\n"
         << "  -L [bind:]lport:host:port\n"
         << "                           Local forward\n"
         << "  -R [bind:]rport:host:port\n"
@@ -3616,6 +3639,310 @@ int run_import_share(const std::string& in_path, bool password_stdin) {
     return 0;
 }
 
+constexpr const char kBenchSinkProto[] = "bench-sink-v1";
+constexpr const char kBenchSourceProto[] = "bench-source-v1";
+constexpr const char kBenchHost[] = "yume-bench.invalid";
+constexpr std::uint64_t kBenchWindowBytes = 8ULL * 1024ULL * 1024ULL;
+
+struct EndpointBenchResult {
+    bool ok{false};
+    std::string error;
+    std::uint64_t bytes{0};
+    double seconds{0.0};
+    std::uint64_t server_bytes{0};
+    double server_seconds{0.0};
+};
+
+double mib_per_second(std::uint64_t bytes, double seconds) {
+    if (seconds <= 0.0) {
+        return 0.0;
+    }
+    return (static_cast<double>(bytes) / (1024.0 * 1024.0)) / seconds;
+}
+
+std::string format_mib(std::uint64_t bytes) {
+    std::ostringstream out;
+    out.setf(std::ios::fixed);
+    out << std::setprecision(1)
+        << (static_cast<double>(bytes) / (1024.0 * 1024.0));
+    return out.str();
+}
+
+EndpointBenchResult run_endpoint_upload_bench(const std::shared_ptr<Tunnel>& tunnel,
+                                              std::uint64_t total_bytes,
+                                              std::size_t chunk_size) {
+    EndpointBenchResult result;
+    const uint8_t stream_id = tunnel->reserve_stream_id();
+    if (stream_id == 0) {
+        result.error = "no stream id available";
+        return result;
+    }
+
+    std::mutex mu;
+    std::condition_variable cv;
+    bool open_done = false;
+    bool open_ok = false;
+    bool closed = false;
+    bool write_failed = false;
+    std::string error;
+    std::string close_reason;
+    std::vector<std::uint8_t> summary_bytes;
+    std::uint64_t queued_bytes = 0;
+    std::uint64_t in_flight_bytes = 0;
+
+    tunnel->register_stream(
+        stream_id,
+        [&](const Tunnel::Bytes& data) {
+            std::lock_guard<std::mutex> lock(mu);
+            summary_bytes.insert(summary_bytes.end(), data.begin(), data.end());
+        },
+        [&](const std::string& reason) {
+            std::lock_guard<std::mutex> lock(mu);
+            close_reason = reason;
+            closed = true;
+            cv.notify_all();
+        });
+
+    nlohmann::json open{
+        {"proto", kBenchSinkProto},
+        {"host", kBenchHost},
+        {"port", 1},
+        {"bytes", total_bytes},
+    };
+    tunnel->open_relay_stream(stream_id, open, [&](bool ok, const std::string& reason) {
+        std::lock_guard<std::mutex> lock(mu);
+        open_done = true;
+        open_ok = ok;
+        error = reason;
+        cv.notify_all();
+    });
+
+    {
+        std::unique_lock<std::mutex> lock(mu);
+        if (!cv.wait_for(lock, std::chrono::seconds(30), [&] { return open_done || closed; })) {
+            result.error = "benchmark upload OPEN timed out";
+            tunnel->unregister_stream(stream_id);
+            return result;
+        }
+        if (!open_ok) {
+            result.error = error.empty() ? "benchmark upload OPEN failed" : error;
+            tunnel->unregister_stream(stream_id);
+            return result;
+        }
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    while (true) {
+        std::size_t n = 0;
+        std::uint64_t offset = 0;
+        {
+            std::unique_lock<std::mutex> lock(mu);
+            cv.wait(lock, [&] {
+                return write_failed || closed || queued_bytes >= total_bytes ||
+                       in_flight_bytes + chunk_size <= kBenchWindowBytes;
+            });
+            if (write_failed || closed || queued_bytes >= total_bytes) {
+                break;
+            }
+            const std::uint64_t remaining = total_bytes - queued_bytes;
+            n = static_cast<std::size_t>(std::min<std::uint64_t>(remaining, chunk_size));
+            offset = queued_bytes;
+            queued_bytes += n;
+            in_flight_bytes += n;
+        }
+
+        Tunnel::Bytes payload(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            payload[i] = static_cast<std::uint8_t>((offset + i) & 0xffu);
+        }
+        tunnel->send_data(stream_id, std::move(payload), [&, n](bool ok, std::size_t, const std::string& reason) {
+            std::lock_guard<std::mutex> lock(mu);
+            if (in_flight_bytes >= n) {
+                in_flight_bytes -= n;
+            } else {
+                in_flight_bytes = 0;
+            }
+            if (!ok) {
+                write_failed = true;
+                error = reason.empty() ? "benchmark upload write failed" : reason;
+            }
+            cv.notify_all();
+        });
+    }
+
+    {
+        std::unique_lock<std::mutex> lock(mu);
+        cv.wait(lock, [&] { return write_failed || in_flight_bytes == 0; });
+        if (write_failed) {
+            result.error = error;
+            tunnel->unregister_stream(stream_id);
+            return result;
+        }
+        if (closed && queued_bytes < total_bytes) {
+            result.error = close_reason.empty() ? "benchmark upload closed early" : close_reason;
+            tunnel->unregister_stream(stream_id);
+            return result;
+        }
+    }
+
+    tunnel->send_close(stream_id, "benchmark upload complete");
+    {
+        std::unique_lock<std::mutex> lock(mu);
+        cv.wait(lock, [&] { return closed; });
+    }
+    const auto end = std::chrono::steady_clock::now();
+
+    result.ok = true;
+    result.bytes = queued_bytes;
+    result.seconds = std::chrono::duration<double>(end - start).count();
+    if (!summary_bytes.empty()) {
+        try {
+            auto summary = nlohmann::json::parse(std::string(summary_bytes.begin(), summary_bytes.end()));
+            result.server_bytes = summary.value("bytes", static_cast<std::uint64_t>(0));
+            const auto server_ms = summary.value("server_ms", 0LL);
+            if (server_ms > 0) {
+                result.server_seconds = static_cast<double>(server_ms) / 1000.0;
+            }
+        } catch (...) {
+        }
+    }
+    if (!close_reason.empty() && close_reason.find("failed") != std::string::npos) {
+        result.ok = false;
+        result.error = close_reason;
+    }
+    if (result.server_bytes > 0 && result.server_bytes != total_bytes) {
+        result.ok = false;
+        result.error = "benchmark upload byte mismatch: server got " +
+                       std::to_string(result.server_bytes) +
+                       ", expected " + std::to_string(total_bytes);
+    }
+    return result;
+}
+
+EndpointBenchResult run_endpoint_download_bench(const std::shared_ptr<Tunnel>& tunnel,
+                                                std::uint64_t total_bytes) {
+    EndpointBenchResult result;
+    const uint8_t stream_id = tunnel->reserve_stream_id();
+    if (stream_id == 0) {
+        result.error = "no stream id available";
+        return result;
+    }
+
+    std::mutex mu;
+    std::condition_variable cv;
+    bool open_done = false;
+    bool open_ok = false;
+    bool closed = false;
+    std::string error;
+    std::string close_reason;
+    std::uint64_t received = 0;
+
+    tunnel->register_stream(
+        stream_id,
+        [&](const Tunnel::Bytes& data) {
+            std::lock_guard<std::mutex> lock(mu);
+            received += static_cast<std::uint64_t>(data.size());
+            cv.notify_all();
+        },
+        [&](const std::string& reason) {
+            std::lock_guard<std::mutex> lock(mu);
+            close_reason = reason;
+            closed = true;
+            cv.notify_all();
+        });
+
+    nlohmann::json open{
+        {"proto", kBenchSourceProto},
+        {"host", kBenchHost},
+        {"port", 1},
+        {"bytes", total_bytes},
+    };
+    tunnel->open_relay_stream(stream_id, open, [&](bool ok, const std::string& reason) {
+        std::lock_guard<std::mutex> lock(mu);
+        open_done = true;
+        open_ok = ok;
+        error = reason;
+        cv.notify_all();
+    });
+
+    {
+        std::unique_lock<std::mutex> lock(mu);
+        if (!cv.wait_for(lock, std::chrono::seconds(30), [&] { return open_done || closed; })) {
+            result.error = "benchmark download OPEN timed out";
+            tunnel->unregister_stream(stream_id);
+            return result;
+        }
+        if (!open_ok) {
+            result.error = error.empty() ? "benchmark download OPEN failed" : error;
+            tunnel->unregister_stream(stream_id);
+            return result;
+        }
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    {
+        std::unique_lock<std::mutex> lock(mu);
+        cv.wait(lock, [&] { return closed; });
+    }
+    const auto end = std::chrono::steady_clock::now();
+
+    result.ok = true;
+    result.bytes = received;
+    result.seconds = std::chrono::duration<double>(end - start).count();
+    if (received != total_bytes) {
+        result.ok = false;
+        result.error = "benchmark download byte mismatch: got " + std::to_string(received) +
+                       ", expected " + std::to_string(total_bytes);
+    }
+    if (!close_reason.empty() && close_reason.find("failed") != std::string::npos) {
+        result.ok = false;
+        result.error = close_reason;
+    }
+    return result;
+}
+
+int run_endpoint_benchmark(const std::shared_ptr<Tunnel>& tunnel,
+                           const ClientConfig& cfg,
+                           const ParsedArgs& args) {
+    const std::uint64_t total_bytes =
+        static_cast<std::uint64_t>(args.bench_mib) * 1024ULL * 1024ULL;
+    const std::size_t chunk_size =
+        static_cast<std::size_t>(args.bench_chunk_kib) * 1024U;
+
+    std::cout << "\nYUME endpoint benchmark\n"
+              << "server: " << cfg.server << ":" << cfg.port << "\n"
+              << "payload: " << args.bench_mib << " MiB per direction"
+              << ", chunk: " << args.bench_chunk_kib << " KiB\n"
+              << "path: authenticated YUME stream over current TLS/obfs/inner settings\n\n";
+
+    auto up = run_endpoint_upload_bench(tunnel, total_bytes, chunk_size);
+    if (!up.ok) {
+        util::log_error("bench upload failed: " + up.error);
+        return 1;
+    }
+    std::cout << "UP:   " << std::fixed << std::setprecision(1)
+              << mib_per_second(up.bytes, up.seconds) << " MiB/s"
+              << "  (" << format_mib(up.bytes) << " MiB in "
+              << std::setprecision(3) << up.seconds << " s";
+    if (up.server_bytes > 0 && up.server_seconds > 0.0) {
+        std::cout << ", server " << std::setprecision(1)
+                  << mib_per_second(up.server_bytes, up.server_seconds)
+                  << " MiB/s";
+    }
+    std::cout << ")\n";
+
+    auto down = run_endpoint_download_bench(tunnel, total_bytes);
+    if (!down.ok) {
+        util::log_error("bench download failed: " + down.error);
+        return 1;
+    }
+    std::cout << "DOWN: " << std::fixed << std::setprecision(1)
+              << mib_per_second(down.bytes, down.seconds) << " MiB/s"
+              << "  (" << format_mib(down.bytes) << " MiB in "
+              << std::setprecision(3) << down.seconds << " s)\n";
+    return 0;
+}
+
 }  // namespace
 
 void Cli::set_runtime_ready_callback(RuntimeReadyCallback cb) {
@@ -4086,6 +4413,20 @@ int Cli::run(int argc, char** argv) {
     if (!cfg.inner_crypto) {
         cfg.inner_hop = false;
     }
+    if (args.bench) {
+        if (args.bench_mib <= 0) {
+            args.bench_mib = 256;
+        }
+        if (args.bench_mib > 16384) {
+            args.bench_mib = 16384;
+        }
+        if (args.bench_chunk_kib <= 0) {
+            args.bench_chunk_kib = 64;
+        }
+        if (args.bench_chunk_kib > 1024) {
+            args.bench_chunk_kib = 1024;
+        }
+    }
     if (cfg.hop_interval_ms > 0) {
         if (cfg.hop_interval_ms < 250) {
             cfg.hop_interval_ms = 250;
@@ -4156,7 +4497,25 @@ int Cli::run(int argc, char** argv) {
     if ((args.control_mode || args.list_controlled) && args.server.empty()) {
         cfg.server = "127.0.0.1";
     }
+    if (args.bench &&
+        ((!args.run_cmd.empty()) ||
+         (args.lport > 0) ||
+         (cfg.socks_port > 0) ||
+         use_reverse ||
+         args.control_mode ||
+         args.list_controlled ||
+         args.directory_mode ||
+         !args.chat_target.empty() ||
+         !args.file_target.empty() ||
+         !args.bytes_target.empty() ||
+         !args.admin_target.empty() ||
+         args.attach_local ||
+         args.share_export)) {
+        util::log_error("--bench is a one-shot mode; do not combine it with SOCKS, forwards, relay, or control modes");
+        return 1;
+    }
     const bool has_active_mode =
+        args.bench ||
         (!args.run_cmd.empty()) ||
         (args.lport > 0) ||
         (cfg.socks_port > 0) ||
@@ -4171,7 +4530,7 @@ int Cli::run(int argc, char** argv) {
         args.attach_local ||
         args.share_export;  // export is a one-shot, not a connection
     if (!has_active_mode) {
-        util::log_error("no mode selected (use --socks, -L, -R, --run, --directory, --chat, --send-file, --send-bytes, --admin-attach, --control, or --attach-local)");
+        util::log_error("no mode selected (use --bench, --socks, -L, -R, --run, --directory, --chat, --send-file, --send-bytes, --admin-attach, --control, or --attach-local)");
         return 1;
     }
 
@@ -5373,7 +5732,7 @@ int Cli::run(int argc, char** argv) {
                     print_red("SERVER IS NOT IN ANONYM MODE");
                     return 1;
                 }
-                if (!args.accept_monitoring) {
+                if (!args.accept_monitoring && !args.bench) {
                     print_red("CRITICAL WARNING");
                     print_red("This server operator can observe your traffic metadata.");
                     print_red("Type \"I understand the privacy risk\" to continue.");
@@ -6012,6 +6371,13 @@ int Cli::run(int argc, char** argv) {
                 secondary->start();
             }
             IoThreadGroup io_threads(io, start_io_threads(io, cfg.io_threads));
+            if (args.bench) {
+                const int bench_code = run_endpoint_benchmark(tunnel, cfg, args);
+                tunnel_pool->stop_all("benchmark complete");
+                io.stop();
+                io_threads.wait();
+                return bench_code;
+            }
             if (!relay_runtime->announce_presence(&relay_error)) {
                 util::log_warn("relay presence unavailable: " + relay_error);
             } else {

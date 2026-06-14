@@ -350,11 +350,18 @@ void TransportCore::send_data(uint8_t stream_id, const Bytes& data) {
 }
 
 void TransportCore::send_data(uint8_t stream_id, Bytes&& data) {
+    send_data(stream_id, std::move(data), {});
+}
+
+void TransportCore::send_data(uint8_t stream_id, Bytes&& data, WriteCompletion handler) {
     uint16_t flags = 0;
     ActivityHandler activity_handler;
     {
         std::lock_guard<std::mutex> lock(state_mu_);
         if (stopped_) {
+            if (handler) {
+                handler(false, 0, "transport stopped");
+            }
             return;
         }
         if (inner_key_.has_value()) {
@@ -365,7 +372,7 @@ void TransportCore::send_data(uint8_t stream_id, Bytes&& data) {
         }
     }
     protocol::Frame frame{{static_cast<uint32_t>(data.size()), protocol::DATA, stream_id, flags}, std::move(data)};
-    queue_frame(std::move(frame));
+    queue_frame(std::move(frame), std::move(handler));
     if (activity_handler) {
         activity_handler();
     }

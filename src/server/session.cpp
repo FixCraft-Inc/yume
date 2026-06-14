@@ -76,6 +76,10 @@ constexpr uint32_t kWriteQueueLowWatermark = 16;
 constexpr uint32_t kMaxWriteBatchFrames = 64;
 constexpr std::size_t kMaxWriteBatchBytes = 1024 * 1024;
 constexpr int kSocketBufferBytes = 2 * 1024 * 1024;
+constexpr const char kBenchSinkProto[] = "bench-sink-v1";
+constexpr const char kBenchSourceProto[] = "bench-source-v1";
+constexpr std::uint64_t kBenchMaxBytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
+constexpr std::uint32_t kBenchSourceWindowFrames = 64;
 constexpr std::uint32_t kDefaultBandwidthPriority = 50;
 constexpr std::uint32_t kMinBandwidthPriority = 1;
 constexpr std::uint32_t kMaxBandwidthPriority = 100;
@@ -2169,6 +2173,7 @@ void Session::handle_open(const protocol::Frame& frame) {
     }
     if (streams_.find(frame.header.stream_id) != streams_.end() ||
         udp_streams_.find(frame.header.stream_id) != udp_streams_.end() ||
+        bench_streams_.find(frame.header.stream_id) != bench_streams_.end() ||
         (packet_stream_.has_value() && packet_stream_->stream_id == frame.header.stream_id)) {
         send_open_reply(frame.header.stream_id, false, "stream already exists");
         return;
@@ -2190,14 +2195,15 @@ void Session::handle_open(const protocol::Frame& frame) {
     std::string host;
     int port = 0;
     std::string proto;
+    nlohmann::json open_json;
 
     try {
-        auto json = nlohmann::json::parse(payload_str);
-        if (json.contains("target_id") && json.contains("channel_kind") && json.contains("channel_id")) {
-            const std::string target_id = json.value("target_id", "");
-            const std::string from_id = json.value("from_id", client_id_);
-            const std::string channel_id = json.value("channel_id", "");
-            const auto channel_kind = control::channel_kind_from_string(json.value("channel_kind", "chat"));
+        open_json = nlohmann::json::parse(payload_str);
+        if (open_json.contains("target_id") && open_json.contains("channel_kind") && open_json.contains("channel_id")) {
+            const std::string target_id = open_json.value("target_id", "");
+            const std::string from_id = open_json.value("from_id", client_id_);
+            const std::string channel_id = open_json.value("channel_id", "");
+            const auto channel_kind = control::channel_kind_from_string(open_json.value("channel_kind", "chat"));
             if (!cfg_.relay_enable) {
                 send_open_reply(frame.header.stream_id, false, "relay disabled");
                 return;
@@ -2207,7 +2213,7 @@ void Session::handle_open(const protocol::Frame& frame) {
                 return;
             }
             std::string federated_error;
-            if (manager_ && manager_->open_federated_channel(shared_from_this(), frame.header.stream_id, json, &federated_error)) {
+            if (manager_ && manager_->open_federated_channel(shared_from_this(), frame.header.stream_id, open_json, &federated_error)) {
                 if (!federated_error.empty()) {
                     send_open_reply(frame.header.stream_id, false, federated_error);
                 }
@@ -2286,9 +2292,9 @@ void Session::handle_open(const protocol::Frame& frame) {
             target->send_control_frame(protocol::SOPEN, target_stream, payload);
             return;
         }
-        host = json.value("host", "");
-        port = json.value("port", 0);
-        proto = json.value("proto", "");
+        host = open_json.value("host", "");
+        port = open_json.value("port", 0);
+        proto = open_json.value("proto", "");
     } catch (const std::exception&) {
         send_open_reply(frame.header.stream_id, false, "invalid OPEN payload");
         return;
@@ -2298,6 +2304,11 @@ void Session::handle_open(const protocol::Frame& frame) {
         if (!handle_packet_open(frame.header.stream_id)) {
             return;
         }
+        return;
+    }
+
+    if (proto == kBenchSinkProto || proto == kBenchSourceProto) {
+        handle_bench_open(frame.header.stream_id, proto, open_json);
         return;
     }
 
@@ -3312,6 +3323,173 @@ void Session::flush_packet_downstream() {
     queue_frame_on_strand(frame);
 }
 
+bool Session::handle_bench_open(uint8_t stream_id, const std::string& proto, const nlohmann::json& json) {
+    if (!cfg_.benchmark_enable) {
+        send_open_reply(stream_id, false, "benchmark disabled on server");
+        return true;
+    }
+
+    std::uint64_t requested = 0;
+    try {
+        requested = json.value("bytes", static_cast<std::uint64_t>(0));
+    } catch (...) {
+        requested = 0;
+    }
+    if (requested == 0 || requested > kBenchMaxBytes) {
+        send_open_reply(stream_id, false, "invalid benchmark byte count");
+        return true;
+    }
+
+    BenchStream bench;
+    bench.mode = (proto == kBenchSourceProto) ? BenchStream::Mode::Source : BenchStream::Mode::Sink;
+    bench.requested_bytes = requested;
+    bench.open_started_ms = util::now_ms();
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        bench_streams_[stream_id] = bench;
+    }
+
+    send_open_reply(stream_id, true, "");
+    util::log_info("session " + std::to_string(session_id_) +
+                   ": benchmark stream " + std::to_string(stream_id) +
+                   " proto=" + proto +
+                   " bytes=" + std::to_string(requested));
+    if (bench.mode == BenchStream::Mode::Source) {
+        pump_bench_source(stream_id);
+    }
+    return true;
+}
+
+bool Session::handle_bench_data(uint8_t stream_id, const crypto::Bytes& payload) {
+    std::lock_guard<std::mutex> lock(streams_mutex_);
+    auto it = bench_streams_.find(stream_id);
+    if (it == bench_streams_.end()) {
+        return false;
+    }
+    if (it->second.mode == BenchStream::Mode::Sink) {
+        it->second.upstream_bytes += static_cast<std::uint64_t>(payload.size());
+    }
+    return true;
+}
+
+bool Session::handle_bench_close(uint8_t stream_id, const std::string& reason) {
+    BenchStream bench;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        auto it = bench_streams_.find(stream_id);
+        if (it == bench_streams_.end()) {
+            return false;
+        }
+        bench = it->second;
+        bench_streams_.erase(it);
+    }
+
+    const int64_t elapsed_ms = bench.open_started_ms > 0 ? (util::now_ms() - bench.open_started_ms) : 0;
+    if (bench.mode == BenchStream::Mode::Sink) {
+        nlohmann::json summary{
+            {"mode", "up"},
+            {"bytes", bench.upstream_bytes},
+            {"requested_bytes", bench.requested_bytes},
+            {"server_ms", elapsed_ms},
+        };
+        const std::string out = summary.dump();
+        send_control_frame(protocol::DATA, stream_id, crypto::Bytes(out.begin(), out.end()));
+    }
+    send_control_close(stream_id, reason.empty() ? "benchmark complete" : reason);
+    util::log_timing("server.stream",
+                     "summary",
+                     "session=" + std::to_string(session_id_) +
+                         " stream=" + std::to_string(stream_id) +
+                         " proto=bench " +
+                         "mode=" + std::string(bench.mode == BenchStream::Mode::Sink ? "sink" : "source") +
+                         " ms=" + std::to_string(elapsed_ms) +
+                         " upstream=" + std::to_string(bench.upstream_bytes) +
+                         " downstream=" + std::to_string(bench.downstream_bytes) +
+                         " requested=" + std::to_string(bench.requested_bytes));
+    return true;
+}
+
+void Session::pump_bench_source(uint8_t stream_id) {
+    for (;;) {
+        std::uint64_t offset = 0;
+        std::size_t chunk_size = 0;
+        {
+            std::lock_guard<std::mutex> lock(streams_mutex_);
+            auto it = bench_streams_.find(stream_id);
+            if (it == bench_streams_.end() ||
+                it->second.mode != BenchStream::Mode::Source ||
+                it->second.close_sent) {
+                return;
+            }
+            auto& bench = it->second;
+            if (bench.downstream_bytes >= bench.requested_bytes ||
+                bench.in_flight_frames >= kBenchSourceWindowFrames ||
+                write_queue_depth_ >= kWriteQueueHighWatermark) {
+                break;
+            }
+            const std::uint64_t remaining = bench.requested_bytes - bench.downstream_bytes;
+            chunk_size = static_cast<std::size_t>(
+                std::min<std::uint64_t>(remaining, util::relay_read_buf_size()));
+            offset = bench.downstream_bytes;
+            bench.downstream_bytes += static_cast<std::uint64_t>(chunk_size);
+            bench.in_flight_frames += 1;
+        }
+
+        crypto::Bytes payload(chunk_size);
+        for (std::size_t i = 0; i < chunk_size; ++i) {
+            payload[i] = static_cast<std::uint8_t>((offset + i) & 0xffu);
+        }
+        auto self = shared_from_this();
+        send_control_frame(
+            protocol::DATA,
+            stream_id,
+            payload,
+            0,
+            [self, stream_id](const boost::system::error_code& ec, std::size_t) {
+                bool should_continue = false;
+                {
+                    std::lock_guard<std::mutex> lock(self->streams_mutex_);
+                    auto it = self->bench_streams_.find(stream_id);
+                    if (it == self->bench_streams_.end()) {
+                        return;
+                    }
+                    if (it->second.in_flight_frames > 0) {
+                        it->second.in_flight_frames -= 1;
+                    }
+                    should_continue = !ec;
+                }
+                if (!should_continue) {
+                    self->handle_bench_close(stream_id, "benchmark write failed");
+                    return;
+                }
+                self->maybe_finish_bench_source(stream_id);
+                self->pump_bench_source(stream_id);
+            });
+    }
+    maybe_finish_bench_source(stream_id);
+}
+
+void Session::maybe_finish_bench_source(uint8_t stream_id) {
+    bool done = false;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        auto it = bench_streams_.find(stream_id);
+        if (it == bench_streams_.end() ||
+            it->second.mode != BenchStream::Mode::Source ||
+            it->second.close_sent) {
+            return;
+        }
+        auto& bench = it->second;
+        done = bench.downstream_bytes >= bench.requested_bytes && bench.in_flight_frames == 0;
+        if (done) {
+            bench.close_sent = true;
+        }
+    }
+    if (done) {
+        handle_bench_close(stream_id, "benchmark complete");
+    }
+}
+
 void Session::handle_data(const protocol::Frame& frame) {
     crypto::Bytes payload = frame.payload;
     if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
@@ -3335,6 +3513,9 @@ void Session::handle_data(const protocol::Frame& frame) {
         return;
     }
     if (handle_packet_data(frame.header.stream_id, payload)) {
+        return;
+    }
+    if (handle_bench_data(frame.header.stream_id, payload)) {
         return;
     }
     auto it_udp = udp_streams_.find(frame.header.stream_id);
@@ -3362,6 +3543,9 @@ std::string Session::decode_close_reason(const protocol::Frame& frame, bool* ok)
 }
 
 void Session::handle_stream_fin(uint8_t stream_id, const std::string& reason) {
+    if (handle_bench_close(stream_id, reason)) {
+        return;
+    }
     std::shared_ptr<RemoteStream> remote;
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
@@ -3427,6 +3611,9 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
             manager_->unregister_packet_client(this, packet.client_ipv4_be);
         }
         packet_stream_.reset();
+        return;
+    }
+    if (handle_bench_close(stream_id, reason)) {
         return;
     }
     {

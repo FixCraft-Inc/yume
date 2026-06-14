@@ -78,7 +78,7 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --credits --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms --tls-handshake-timeout-ms --max-sessions --accept-rate-limit --egress-mbps --robots-deny --filter-list --filter-geolite --filter-memory-mib --client-filter-mode --egress-filter-mode --packet-egress --packet-tun-name --packet-cidr --packet-mtu --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --upstream-response --upstream-response-dir --upstream-response-ttl --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
+  local opts="--help -h --version --credits --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms --tls-handshake-timeout-ms --max-sessions --accept-rate-limit --egress-mbps --robots-deny --filter-list --filter-geolite --filter-memory-mib --client-filter-mode --egress-filter-mode --packet-egress --packet-tun-name --packet-cidr --packet-mtu --bench --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --upstream-response --upstream-response-dir --upstream-response-ttl --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
   local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --filter-geolite --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --federation-auth-key --federation-anonym-ca --keys-add --keys-gen"
   case "$prev" in
     --completion)
@@ -199,6 +199,8 @@ void print_help() {
         << "  --packet-cidr <cidr>     Client IPv4 pool (default 10.89.0.0/24).\n"
         << "                             The .1 address is reserved for the TUN side.\n"
         << "  --packet-mtu <N>         Packet-native MTU (default 1420).\n"
+        << "  --bench                 Enable authenticated built-in up/down\n"
+        << "                             benchmark streams for yume --bench.\n"
         << "  --allow-local-ip         Allow private/loopback destinations\n"
         << "  --control-full           Allow full server-side network control\n"
         << "  --root                   Keep root privileges after bind/listen\n"
@@ -1566,6 +1568,8 @@ int main(int argc, char** argv) {
             if (parsed < 0) parsed = 0;
             cfg.packet_mtu = static_cast<std::uint32_t>(parsed);
             packet_mtu_override = true;
+        } else if (arg == "--bench") {
+            cfg.benchmark_enable = true;
         } else if (arg == "--inner") {
             yume::util::log_warn("--inner is deprecated; use --inner-heavy or --inner-light");
             cfg.inner_crypto = true;
@@ -1966,6 +1970,9 @@ int main(int argc, char** argv) {
                 int v = json["packet_mtu"].get<int>();
                 if (v < 0) v = 0;
                 cfg.packet_mtu = static_cast<std::uint32_t>(v);
+            }
+            if (json.contains("benchmark_enable") && !cfg.benchmark_enable) {
+                cfg.benchmark_enable = json["benchmark_enable"].get<bool>();
             }
             if (json.contains("upstream_response_dir") && cfg.upstream_response_dir.empty()) {
                 cfg.upstream_response_dir = resolve_cfg_path(json["upstream_response_dir"].get<std::string>());
@@ -3010,6 +3017,9 @@ int main(int argc, char** argv) {
     yume::util::log_info("effective inner mode: " + effective_inner_mode +
                          "; hopping: " + hop_state +
                          "; required: " + (cfg.inner_required ? "yes" : "no"));
+    if (cfg.benchmark_enable) {
+        yume::util::log_info("authenticated benchmark endpoint enabled for yume --bench");
+    }
 
     // TLS JA3 self-check: generate our own ClientHello via in-memory
     // BIO, compute JA3, compare against the per-profile baseline. Catches

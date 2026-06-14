@@ -100,6 +100,11 @@ private:
     bool handle_packet_data(uint8_t stream_id, const crypto::Bytes& payload);
     void queue_packet_downstream(crypto::Bytes packet);
     void flush_packet_downstream();
+    bool handle_bench_open(uint8_t stream_id, const std::string& proto, const nlohmann::json& json);
+    bool handle_bench_data(uint8_t stream_id, const crypto::Bytes& payload);
+    bool handle_bench_close(uint8_t stream_id, const std::string& reason);
+    void pump_bench_source(uint8_t stream_id);
+    void maybe_finish_bench_source(uint8_t stream_id);
     void handle_close(uint8_t stream_id, const std::string& reason);
     void handle_stream_fin(uint8_t stream_id, const std::string& reason);
     std::string decode_close_reason(const protocol::Frame& frame, bool* ok);
@@ -111,7 +116,11 @@ private:
     bool handle_control_data(const protocol::Frame& frame);
     bool handle_control_close(const protocol::Frame& frame);
     bool handle_control_exec(const protocol::Frame& frame);
-    void send_control_frame(protocol::FrameType type, uint8_t stream_id, const crypto::Bytes& payload, uint16_t extra_flags = 0);
+    void send_control_frame(protocol::FrameType type,
+                            uint8_t stream_id,
+                            const crypto::Bytes& payload,
+                            uint16_t extra_flags = 0,
+                            std::function<void(const boost::system::error_code&, std::size_t)> handler = {});
     void send_control_close(uint8_t stream_id, const std::string& reason);
     void send_control_fin(uint8_t stream_id, const std::string& reason);
     uint8_t reserve_stream_id();
@@ -274,6 +283,20 @@ private:
     std::unordered_map<uint8_t, std::shared_ptr<RemoteStream>> streams_;
     std::unordered_map<uint8_t, std::shared_ptr<UdpStream>> udp_streams_;
     std::optional<PacketStream> packet_stream_;
+    struct BenchStream {
+        enum class Mode {
+            Sink,
+            Source,
+        };
+        Mode mode{Mode::Sink};
+        std::uint64_t requested_bytes{0};
+        std::uint64_t upstream_bytes{0};
+        std::uint64_t downstream_bytes{0};
+        std::uint32_t in_flight_frames{0};
+        int64_t open_started_ms{0};
+        bool close_sent{false};
+    };
+    std::unordered_map<uint8_t, BenchStream> bench_streams_;
     std::unordered_map<uint8_t, std::shared_ptr<boost::asio::ip::tcp::acceptor>> reverse_listeners_;
     std::unordered_map<uint8_t, int> reverse_listener_ports_;
     std::unordered_map<int, uint8_t> reverse_port_streams_;

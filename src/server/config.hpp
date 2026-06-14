@@ -169,6 +169,7 @@ struct ServerConfig {
     std::string packet_tun_name{"yume-pkt0"};
     std::string packet_cidr{"10.89.0.0/24"};
     std::uint32_t packet_mtu{1420};
+    bool benchmark_enable{false};
     std::vector<std::string> federation_peers;
     std::string federation_auth_key;
     std::string federation_anonym_ca;

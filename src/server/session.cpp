@@ -1531,7 +1531,11 @@ void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
     current_header_.flags = static_cast<uint16_t>(header_buf_[6] << 8) |
                             static_cast<uint16_t>(header_buf_[7]);
 
-    payload_buf_.assign(len, 0);
+    // resize, not assign(len, 0): the async_read below fully overwrites
+    // [0, len), so zero-filling every frame is pure memset waste. In steady
+    // state (constant frame size) resize is a no-op and keeps capacity;
+    // only a grow touches the new tail, which the read then overwrites.
+    payload_buf_.resize(len);
     if (len == 0) {
         if ((current_header_.flags & protocol::kFlagPadded) != 0) {
             // kFlagPadded with zero payload is malformed: a padded frame

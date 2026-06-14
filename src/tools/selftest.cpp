@@ -75,6 +75,9 @@ struct Args {
     int argon_mem_kib{32768};
     int argon_parallelism{2};
     int tunnels{1};
+    int client_threads{0};   // 0 = don't pass --threads (client default = hw concurrency)
+    int server_threads{2};   // matches historical selftest default
+    bool one_way{false};     // measure one-way upload (sink+ack) instead of echo round-trip
     bool list_configs{false};
     bool keep_workdir{false};
     bool json_stdout{false};
@@ -212,6 +215,9 @@ void print_help() {
         << "  --argon-mem-kib <N>       Heavy KDF memory cap/env for this run (default 32768)\n"
         << "  --argon-parallelism <N>   Heavy KDF parallelism cap/env (default 2)\n"
         << "  --tunnels <N>             Client TLS tunnel count (default 1)\n"
+        << "  --client-threads <N>      Client io threads (0=auto/hw concurrency)\n"
+        << "  --server-threads <N>      Server io threads (default 2)\n"
+        << "  --one-way                 Measure one-way upload (sink+ack), not echo\n"
         << "  --json <path>             Write JSON result file\n"
         << "  --json-stdout             Print JSON to stdout after the table\n"
         << "  --keep-workdir            Keep temp logs and generated keys\n"
@@ -285,6 +291,12 @@ Args parse_args(int argc, char** argv) {
             args.argon_parallelism = std::max(1, std::stoi(require_value(i, arg)));
         } else if (arg == "--tunnels") {
             args.tunnels = std::max(1, std::stoi(require_value(i, arg)));
+        } else if (arg == "--client-threads") {
+            args.client_threads = std::max(0, std::stoi(require_value(i, arg)));
+        } else if (arg == "--server-threads") {
+            args.server_threads = std::max(1, std::stoi(require_value(i, arg)));
+        } else if (arg == "--one-way") {
+            args.one_way = true;
         } else if (arg == "--json") {
             args.json_path = require_value(i, arg);
         } else if (arg == "--json-stdout") {
@@ -532,6 +544,13 @@ public:
     EchoServer() = default;
     ~EchoServer() { stop(); }
 
+    // When sink mode is on, the server drains all bytes and, on the client's
+    // half-close (EOF), replies with an 8-byte big-endian count of the bytes
+    // it received. This turns the harness into a one-way upload throughput
+    // test (no echo return), with a tiny end-to-end ack so the sender can
+    // time when the far end has actually drained everything.
+    void set_sink(bool sink) { sink_ = sink; }
+
     int start() {
         listener_.reset(::socket(AF_INET, SOCK_STREAM, 0));
         if (!listener_) throw std::runtime_error("echo socket failed");
@@ -580,16 +599,37 @@ private:
             if (ready <= 0) continue;
             int client = ::accept(fd, nullptr, nullptr);
             if (client < 0) continue;
-            std::thread(&EchoServer::echo_client, client).detach();
+            std::thread(&EchoServer::handle_client, client, sink_.load()).detach();
         }
     }
 
-    static void echo_client(int fd) {
+    static void handle_client(int fd, bool sink) {
         FileDescriptor client(fd);
         std::vector<char> buf(64 * 1024);
+        std::uint64_t received = 0;
         while (true) {
             const ssize_t n = ::recv(client.get(), buf.data(), buf.size(), 0);
-            if (n <= 0) return;
+            if (n < 0) return;
+            if (n == 0) {
+                // Peer half-closed. In sink mode, ack the drained count.
+                if (sink) {
+                    unsigned char ack[8];
+                    for (int i = 0; i < 8; ++i) {
+                        ack[i] = static_cast<unsigned char>((received >> (56 - 8 * i)) & 0xFF);
+                    }
+                    std::size_t sent = 0;
+                    while (sent < sizeof(ack)) {
+                        const ssize_t w = ::send(client.get(), ack + sent, sizeof(ack) - sent, 0);
+                        if (w <= 0) break;
+                        sent += static_cast<std::size_t>(w);
+                    }
+                }
+                return;
+            }
+            received += static_cast<std::uint64_t>(n);
+            if (sink) {
+                continue;  // drain only
+            }
             std::size_t sent = 0;
             while (sent < static_cast<std::size_t>(n)) {
                 const ssize_t w = ::send(client.get(), buf.data() + sent, static_cast<std::size_t>(n) - sent, 0);
@@ -601,6 +641,7 @@ private:
 
     FileDescriptor listener_;
     std::atomic<bool> running_{false};
+    std::atomic<bool> sink_{false};
     std::thread accept_thread_;
     int port_{0};
 };
@@ -734,6 +775,38 @@ LatencyMeasurement measure_latency(int connect_port, int echo_port, int iters, b
         out.push_back(std::chrono::duration<double, std::milli>(end - start).count());
     }
     measurement.stats = compute_stats(std::move(out));
+    return measurement;
+}
+
+BulkMeasurement measure_bulk_one_way(int connect_port, int echo_port, int mib, bool via_socks) {
+    FileDescriptor fd = via_socks ? socks5_connect(connect_port, echo_port) : tcp_connect(echo_port);
+    const std::size_t total = static_cast<std::size_t>(mib) * 1024u * 1024u;
+    const auto payload = random_payload(64 * 1024);
+
+    const auto start = Clock::now();
+    std::size_t sent = 0;
+    while (sent < total) {
+        const std::size_t chunk = std::min<std::size_t>(payload.size(), total - sent);
+        send_all(fd.get(), payload.data(), chunk);
+        sent += chunk;
+    }
+    const auto send_done = Clock::now();
+    // Half-close the upload direction so the far-end sink sees EOF and acks.
+    ::shutdown(fd.get(), SHUT_WR);
+    unsigned char ack[8]{};
+    recv_exact(fd.get(), ack, sizeof(ack));
+    const auto end = Clock::now();
+    std::uint64_t drained = 0;
+    for (int i = 0; i < 8; ++i) drained = (drained << 8) | ack[i];
+    if (drained != total) {
+        throw std::runtime_error("one-way sink drained " + std::to_string(drained) +
+                                 " != " + std::to_string(total));
+    }
+    BulkMeasurement measurement;
+    measurement.total_s = elapsed_s(start, end);
+    measurement.send_s = elapsed_s(start, send_done);
+    measurement.mib_s = (static_cast<double>(total) / (1024.0 * 1024.0)) /
+                        std::max(measurement.total_s, 0.000001);
     return measurement;
 }
 
@@ -880,7 +953,7 @@ public:
             "--key", ks_.key.string(),
             "--auth-keys", ks_.authorized_keys.string(),
             "--allow-local-ip",
-            "--threads", "2",
+            "--threads", std::to_string(args_.server_threads),
             "--boring",
         };
         if (needs_pq_file) {
@@ -920,6 +993,10 @@ public:
             "--boring",
             "--tls-ca", ks_.cert.string(),
         };
+        if (args_.client_threads > 0) {
+            client_argv.push_back("--threads");
+            client_argv.push_back(std::to_string(args_.client_threads));
+        }
         if (needs_pq_file) {
             client_argv.push_back("--pq-pub");
             client_argv.push_back(ks_.pq_public.string());
@@ -966,11 +1043,15 @@ Result run_config(const Args& args,
     const auto start = Clock::now();
     try {
         if (cfg.base_direct) {
-            LatencyMeasurement latency = measure_latency(0, echo_port, args.latency_iters, false);
-            result.latency_ms = latency.stats;
-            result.breakdown.connect_ms = latency.connect_ms;
-            result.breakdown.warmup_ms = latency.warmup_ms;
-            BulkMeasurement bulk = measure_bulk(0, echo_port, args.bulk_mib, false);
+            if (!args.one_way) {
+                LatencyMeasurement latency = measure_latency(0, echo_port, args.latency_iters, false);
+                result.latency_ms = latency.stats;
+                result.breakdown.connect_ms = latency.connect_ms;
+                result.breakdown.warmup_ms = latency.warmup_ms;
+            }
+            BulkMeasurement bulk = args.one_way
+                ? measure_bulk_one_way(0, echo_port, args.bulk_mib, false)
+                : measure_bulk(0, echo_port, args.bulk_mib, false);
             result.throughput_mib_s = bulk.mib_s;
             result.breakdown.bulk_total_s = bulk.total_s;
             result.breakdown.bulk_send_s = bulk.send_s;
@@ -979,11 +1060,15 @@ Result run_config(const Args& args,
             const int socks_port = pick_free_port();
             YumeStack stack(args, ks, cfg, workdir, yumed_port, socks_port);
             stack.start(result.breakdown);
-            LatencyMeasurement latency = measure_latency(socks_port, echo_port, args.latency_iters, true);
-            result.latency_ms = latency.stats;
-            result.breakdown.connect_ms = latency.connect_ms;
-            result.breakdown.warmup_ms = latency.warmup_ms;
-            BulkMeasurement bulk = measure_bulk(socks_port, echo_port, args.bulk_mib, true);
+            if (!args.one_way) {
+                LatencyMeasurement latency = measure_latency(socks_port, echo_port, args.latency_iters, true);
+                result.latency_ms = latency.stats;
+                result.breakdown.connect_ms = latency.connect_ms;
+                result.breakdown.warmup_ms = latency.warmup_ms;
+            }
+            BulkMeasurement bulk = args.one_way
+                ? measure_bulk_one_way(socks_port, echo_port, args.bulk_mib, true)
+                : measure_bulk(socks_port, echo_port, args.bulk_mib, true);
             result.throughput_mib_s = bulk.mib_s;
             result.breakdown.bulk_total_s = bulk.total_s;
             result.breakdown.bulk_send_s = bulk.send_s;
@@ -1183,6 +1268,7 @@ int main(int argc, char** argv) {
 
         TempDir tmp(args.keep_workdir);
         EchoServer echo;
+        echo.set_sink(args.one_way);
         const int echo_port = echo.start();
         Keyset ks = generate_keyset(args, tmp.path());
         const auto configs = select_configs(args);

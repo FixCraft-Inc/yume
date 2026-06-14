@@ -9,10 +9,15 @@ Build it explicitly:
 
 ```bash
 cmake -B build-selftest \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DYUME_BUILD_SELFTEST=ON \
   -DYUME_FEATURE_LAN_BRIDGE=ON
-cmake --build build-selftest --target yume-selftest yume yumed
+cmake --build build-selftest --target yume-selftest yume-basefwx-bench yume yumed
 ```
+
+`YUME_BUILD_SELFTEST=ON` defaults an otherwise unset single-config CMake build
+to `RelWithDebInfo`. Benchmark numbers from an empty `CMAKE_BUILD_TYPE` are not
+meaningful because the transport/proxy path is then built without optimization.
 
 Run a quick local benchmark:
 
@@ -29,6 +34,38 @@ build-selftest/bin/yume-selftest --json selftest.json
 build-selftest/bin/yume-selftest --keep-workdir
 ```
 
+Useful isolation configs:
+
+```bash
+build-selftest/bin/yume-selftest \
+  --configs base-direct,no-inner-raw,no-inner-obfs,light-no-hop,light-hop-2hz \
+  --latency-iters 40 --bulk-mib 8
+```
+
+Interpret the comparisons this way:
+
+- `base-direct`: kernel/host TCP echo floor. Very small `--bulk-mib` values can
+  under-report this baseline because setup noise dominates the transfer.
+- `no-inner-raw`: SOCKS + YUME framing over TLS without the H2 disguise.
+- `no-inner-obfs`: adds the browser-shaped H2 carrier handshake and obfs TLS
+  profile path; compare to `no-inner-raw` to estimate stealth-path cost.
+- `light-no-hop` and `light-hop-2hz`: compare these to estimate live hopping
+  cost after inner crypto is enabled.
+- `heavy-hop-2hz` and `heavy-no-hop`: include the heavy KDF setup path, still
+  bounded by the local Argon2 caps below.
+
+The self-test prints a second phase-breakdown table:
+
+- `srv ms`: time until temporary `yumed` accepts TCP.
+- `pq ms`: extra wait for the generated PQ public key when inner crypto is used.
+- `cli ms`: time until temporary `yume` starts the local SOCKS listener.
+- `conn ms`: direct TCP connect or TCP+SOCKS connect to the echo target.
+- `warm ms`: first echo round trip before sampled latency begins.
+- `bulk s`: total bulk echo transfer time.
+- `send s` and `send%`: how long the benchmark writer was blocked sending.
+  `send%` near 100 means the upstream write path is backpressured for most of
+  the transfer; a much lower value points at the return/read path instead.
+
 The routed benchmark requires `YUME_FEATURE_LAN_BRIDGE=ON` because the server
 must connect to a loopback echo target. The tool creates a temporary
 `authorized_keys.json` and grants `allow_local_ip` only to the generated test
@@ -43,3 +80,43 @@ Heavy mode is still bounded by default: `YUME_ARGON2_MEM` and server caps are
 set to 32768 KiB with parallelism 2 for the child processes. Use
 `--argon-mem-kib` and `--argon-parallelism` when intentionally profiling
 larger KDF settings on a suitable machine.
+
+## Inner Crypto Microbench
+
+`yume-basefwx-bench` measures the same YUME `inner_crypto` API used by the
+transport, but without TLS, H2 obfs, SOCKS, loopback routing, or child process
+startup:
+
+```bash
+build-selftest/bin/yume-basefwx-bench
+build-selftest/bin/yume-basefwx-bench --bytes-mib 256 --light-iters 100 --no-heavy
+build-selftest/bin/yume-basefwx-bench --heavy-iters 5 --argon-mem-kib 65536
+```
+
+Use it with `yume-selftest` to localize bottlenecks:
+
+- If `inner-aead-encrypt`/`inner-aead-decrypt` are far faster than
+  `yume-selftest` throughput, steady-state payload crypto is not the main cap.
+- If `pq-client-heavy` or `pq-server-heavy` are large but the payload rows are
+  fast, the slowdown is handshake/KDF setup rather than transfer speed.
+- If `no-inner-raw` is already slow compared with BaseFWX AEAD, inspect SOCKS,
+  stream framing, TLS writes, and process scheduling.
+- If `no-inner-obfs` is much slower than `no-inner-raw`, inspect the H2 carrier,
+  padding, flush behavior, and stealth shaping.
+
+Current desktop interpretation:
+
+- BaseFWX AEAD in the same process should be several GiB/s on a normal desktop
+  CPU. If `yume-selftest` is hundreds of MiB/s while `yume-basefwx-bench` is
+  multiple GiB/s, inspect the proxy/carrier path first.
+- Heavy Argon2 is visible in `cli ms` because the client prepares inner crypto
+  before the SOCKS listener becomes ready. It should not materially change
+  steady-state throughput after the tunnel is authenticated.
+- Low `send%` during bulk means the benchmark writer is not waiting on local
+  `send()` for most of the transfer. The limiter is then downstream receive,
+  carrier parsing, proxy forwarding, or scheduling rather than the local upload
+  syscall path.
+- The desktop `--obfs` path performs an H2-shaped carrier handshake, then
+  carries normal YUME frames over the established TLS session. Treat
+  `no-inner-raw` vs `no-inner-obfs` as a whole-carrier/profile comparison, not
+  as per-payload HTTP/2 DATA frame cost.

@@ -102,6 +102,7 @@ std::vector<TransportCore::CloseHandler> TransportCore::shutdown() {
         pending_rlisten_.clear();
         reserved_streams_.clear();
         incoming_bytes_.clear();
+        incoming_offset_ = 0;
     }
     {
         std::lock_guard<std::mutex> write_lock(write_mu_);
@@ -345,6 +346,10 @@ void TransportCore::request_remote_listen(uint8_t listen_id,
 
 void TransportCore::send_data(uint8_t stream_id, const Bytes& data) {
     Bytes payload = data;
+    send_data(stream_id, std::move(payload));
+}
+
+void TransportCore::send_data(uint8_t stream_id, Bytes&& data) {
     uint16_t flags = 0;
     ActivityHandler activity_handler;
     {
@@ -359,8 +364,8 @@ void TransportCore::send_data(uint8_t stream_id, const Bytes& data) {
             activity_handler = activity_handler_;
         }
     }
-    protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::DATA, stream_id, flags}, payload};
-    queue_frame(frame);
+    protocol::Frame frame{{static_cast<uint32_t>(data.size()), protocol::DATA, stream_id, flags}, std::move(data)};
+    queue_frame(std::move(frame));
     if (activity_handler) {
         activity_handler();
     }
@@ -472,24 +477,37 @@ void TransportCore::feed_tls_bytes(const uint8_t* data, std::size_t size) {
             if (stopped_) {
                 return;
             }
-            if (incoming_bytes_.size() < 8) {
+            const std::size_t available = incoming_bytes_.size() - incoming_offset_;
+            if (available < 8) {
                 return;
             }
-            const auto header = parse_header(incoming_bytes_.data());
+            const auto* frame_start = incoming_bytes_.data() + incoming_offset_;
+            const auto header = parse_header(frame_start);
             if (header.len > kMaxFramePayloadBytes) {
                 incoming_bytes_.clear();
+                incoming_offset_ = 0;
                 fatal_reason = "frame too large";
             } else {
                 const std::size_t frame_bytes = 8U + static_cast<std::size_t>(header.len);
-                if (incoming_bytes_.size() < frame_bytes) {
+                if (available < frame_bytes) {
                     return;
                 }
                 frame.header = header;
-                frame.payload.assign(incoming_bytes_.begin() + 8, incoming_bytes_.begin() + frame_bytes);
-                incoming_bytes_.erase(incoming_bytes_.begin(), incoming_bytes_.begin() + frame_bytes);
+                frame.payload.assign(frame_start + 8, frame_start + frame_bytes);
+                incoming_offset_ += frame_bytes;
+                if (incoming_offset_ == incoming_bytes_.size()) {
+                    incoming_bytes_.clear();
+                    incoming_offset_ = 0;
+                } else if (incoming_offset_ >= 1024 * 1024 ||
+                           incoming_offset_ * 2 >= incoming_bytes_.size()) {
+                    incoming_bytes_.erase(incoming_bytes_.begin(),
+                                          incoming_bytes_.begin() + static_cast<std::ptrdiff_t>(incoming_offset_));
+                    incoming_offset_ = 0;
+                }
                 if ((frame.header.flags & protocol::kFlagPadded) != 0 &&
                     !protocol::strip_padding(frame)) {
                     incoming_bytes_.clear();
+                    incoming_offset_ = 0;
                     fatal_reason = "malformed padded frame: pad length exceeds payload";
                 } else {
                     have_frame = true;
@@ -512,7 +530,7 @@ void TransportCore::feed_tls_bytes(const uint8_t* data, std::size_t size) {
     }
 }
 
-void TransportCore::queue_frame(const protocol::Frame& frame, WriteCompletion handler) {
+void TransportCore::queue_frame(protocol::Frame frame, WriteCompletion handler) {
     bool dispatch = false;
     {
         std::lock_guard<std::mutex> state_lock(state_mu_);
@@ -525,7 +543,7 @@ void TransportCore::queue_frame(const protocol::Frame& frame, WriteCompletion ha
     }
     {
         std::lock_guard<std::mutex> write_lock(write_mu_);
-        write_queue_.push_back({frame, std::move(handler)});
+        write_queue_.push_back({std::move(frame), std::move(handler)});
         if (!write_in_flight_) {
             write_in_flight_ = true;
             dispatch = true;
@@ -661,7 +679,8 @@ void TransportCore::dispatch_next_write() {
 
 void TransportCore::handle_frame(const protocol::Frame& frame) {
     const uint8_t stream_id = frame.header.stream_id;
-    Bytes payload = frame.payload;
+    Bytes decrypted_payload;
+    const Bytes* payload = &frame.payload;
     bool inner_encrypted = false;
     {
         std::lock_guard<std::mutex> lock(state_mu_);
@@ -669,12 +688,11 @@ void TransportCore::handle_frame(const protocol::Frame& frame) {
                           ((frame.header.flags & protocol::kFlagInnerEncrypted) != 0);
     }
     if (inner_encrypted) {
-        Bytes decrypted;
-        if (!decrypt_inner_payload(frame.header.type, stream_id, frame.payload, &decrypted)) {
+        if (!decrypt_inner_payload(frame.header.type, stream_id, frame.payload, &decrypted_payload)) {
             request_transport_close("decrypt failed");
             return;
         }
-        payload = std::move(decrypted);
+        payload = &decrypted_payload;
     }
 
     switch (frame.header.type) {
@@ -706,9 +724,9 @@ void TransportCore::handle_frame(const protocol::Frame& frame) {
                     if (activity_handler) {
                         activity_handler();
                     }
-                    handler(true, is_remote_listen ? payload_to_string(payload) : std::string{});
+                    handler(true, is_remote_listen ? payload_to_string(*payload) : std::string{});
                 } else {
-                    handler(false, payload_to_string(payload));
+                    handler(false, payload_to_string(*payload));
                 }
             }
             break;
@@ -721,7 +739,7 @@ void TransportCore::handle_frame(const protocol::Frame& frame) {
             }
             if (reverse_handler) {
                 try {
-                    auto json = nlohmann::json::parse(payload_to_string(payload));
+                    auto json = nlohmann::json::parse(payload_to_string(*payload));
                     const auto listen_id = static_cast<uint8_t>(json.value("listen_id", 0));
                     if (listen_id != 0) {
                         reverse_handler(listen_id, stream_id);
@@ -742,7 +760,7 @@ void TransportCore::handle_frame(const protocol::Frame& frame) {
                 server_in_charge = server_in_charge_;
             }
             try {
-                auto json = nlohmann::json::parse(payload_to_string(payload));
+                auto json = nlohmann::json::parse(payload_to_string(*payload));
                 if (json.contains("channel_kind")) {
                     if (inbound_open_handler) {
                         inbound_open_handler(stream_id, json);
@@ -790,7 +808,7 @@ void TransportCore::handle_frame(const protocol::Frame& frame) {
             }
             if (control_handler) {
                 try {
-                    auto json = nlohmann::json::parse(payload_to_string(payload));
+                    auto json = nlohmann::json::parse(payload_to_string(*payload));
                     control_handler(json);
                 } catch (...) {
                 }
@@ -806,7 +824,7 @@ void TransportCore::handle_frame(const protocol::Frame& frame) {
                 if (it != streams_.end()) {
                     on_data = it->second.on_data;
                 }
-                if (!payload.empty()) {
+                if (!payload->empty()) {
                     activity_handler = activity_handler_;
                 }
             }
@@ -814,7 +832,7 @@ void TransportCore::handle_frame(const protocol::Frame& frame) {
                 if (activity_handler) {
                     activity_handler();
                 }
-                on_data(payload);
+                on_data(*payload);
             }
             break;
         }
@@ -844,13 +862,13 @@ void TransportCore::handle_frame(const protocol::Frame& frame) {
                 send_close(stream_id, "exec stream id in use");
                 break;
             }
-            exec_handler(stream_id, payload_to_string(payload));
+            exec_handler(stream_id, payload_to_string(*payload));
             break;
         }
         case protocol::CLOSE: {
             CloseHandler on_close;
             HalfCloseHandler on_half_close;
-            const std::string reason = payload_to_string(payload);
+            const std::string reason = payload_to_string(*payload);
             const bool is_fin = (frame.header.flags & protocol::kFlagStreamFin) != 0;
             if (stream_id == 0 && !is_fin) {
                 request_transport_close(reason.empty() ? "server closed" : reason);

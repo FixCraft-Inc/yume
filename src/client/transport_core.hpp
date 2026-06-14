@@ -91,6 +91,7 @@ public:
                                int min_port = 0,
                                int max_port = 0);
     void send_data(uint8_t stream_id, const Bytes& data);
+    void send_data(uint8_t stream_id, Bytes&& data);
     void send_close(uint8_t stream_id, const std::string& reason);
     void send_stream_fin(uint8_t stream_id, const std::string& reason);
     void send_open_ack(uint8_t stream_id, bool ok, const std::string& reason);
@@ -113,7 +114,7 @@ private:
     };
 
     bool has_stream_id_locked(uint8_t stream_id) const;
-    void queue_frame(const protocol::Frame& frame, WriteCompletion handler = {});
+    void queue_frame(protocol::Frame frame, WriteCompletion handler = {});
     void dispatch_next_write();
     std::shared_ptr<Bytes> encode_outgoing_frame(const protocol::Frame& frame);
     void handle_frame(const protocol::Frame& frame);
@@ -151,6 +152,7 @@ private:
     std::uint32_t obfs_jitter_ms_max_{0};
     std::chrono::steady_clock::time_point last_pong_{};
     Bytes incoming_bytes_;
+    std::size_t incoming_offset_{0};
 };
 
 }  // namespace yume::client

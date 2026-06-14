@@ -495,8 +495,20 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         )
         target_link_libraries(yume-selftest PRIVATE OpenSSL::Crypto Threads::Threads)
         yume_apply_perf_opts(yume-selftest)
+        add_executable(yume-basefwx-bench
+            tools/basefwx_bench.cpp
+        )
+        target_link_libraries(yume-basefwx-bench PRIVATE yume_core)
+        yume_apply_perf_opts(yume-basefwx-bench)
+        add_executable(yume-relay-bench
+            tools/relay_bench.cpp
+        )
+        target_link_libraries(yume-relay-bench PRIVATE yume_transport_core OpenSSL::SSL OpenSSL::Crypto)
+        yume_apply_perf_opts(yume-relay-bench)
         if(YUME_STATIC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
             target_link_options(yume-selftest PRIVATE -static)
+            target_link_options(yume-basefwx-bench PRIVATE -static)
+            target_link_options(yume-relay-bench PRIVATE -static)
         endif()
     endif()
 

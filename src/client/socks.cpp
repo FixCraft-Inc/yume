@@ -622,7 +622,7 @@ void SocksSession::on_client_read(const boost::system::error_code& ec, std::size
                              " ms=" + std::to_string(open_to_first) +
                              " bytes=" + std::to_string(bytes));
     }
-    tunnel_->send_data(stream_id_, payload);
+    tunnel_->send_data(stream_id_, std::move(payload));
     start_client_read();
 }
 
@@ -639,11 +639,12 @@ void SocksSession::send_client_fin() {
 
 void SocksSession::deliver_from_tunnel(const Tunnel::Bytes& data) {
     auto self = shared_from_this();
-    boost::asio::post(strand_, [self, data]() {
+    auto buf = std::make_shared<std::vector<uint8_t>>(data.begin(), data.end());
+    boost::asio::post(strand_, [self, buf = std::move(buf)]() mutable {
         if (self->closed_) {
             return;
         }
-        self->download_bytes_ += static_cast<std::uint64_t>(data.size());
+        self->download_bytes_ += static_cast<std::uint64_t>(buf->size());
         if (self->first_download_ms_ == 0) {
             self->first_download_ms_ = util::now_ms();
             const int64_t open_to_first = self->opened_started_ms_ > 0
@@ -653,10 +654,12 @@ void SocksSession::deliver_from_tunnel(const Tunnel::Bytes& data) {
                              "first_download",
                              "stream=" + std::to_string(self->stream_id_) +
                                  " ms=" + std::to_string(open_to_first) +
-                                 " bytes=" + std::to_string(data.size()));
+                                 " bytes=" + std::to_string(buf->size()));
         }
-        auto buf = std::make_shared<std::vector<uint8_t>>(data.begin(), data.end());
-        self->enqueue_write(buf);
+        self->write_queue_.emplace_back(std::move(buf), std::function<void()>{});
+        if (!self->write_in_flight_) {
+            self->do_write();
+        }
     });
 }
 

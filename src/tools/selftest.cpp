@@ -50,6 +50,14 @@ namespace {
 using Clock = std::chrono::steady_clock;
 namespace fs = std::filesystem;
 
+double elapsed_ms(Clock::time_point start, Clock::time_point end) {
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+double elapsed_s(Clock::time_point start, Clock::time_point end) {
+    return std::chrono::duration<double>(end - start).count();
+}
+
 struct Config {
     std::string name;
     std::string description;
@@ -83,6 +91,16 @@ struct Stats {
     double mean{0.0};
 };
 
+struct Breakdown {
+    double server_listen_ms{0.0};
+    double pq_ready_ms{0.0};
+    double client_socks_ms{0.0};
+    double connect_ms{0.0};
+    double warmup_ms{0.0};
+    double bulk_total_s{0.0};
+    double bulk_send_s{0.0};
+};
+
 struct Result {
     Config config;
     bool ok{false};
@@ -90,6 +108,19 @@ struct Result {
     Stats latency_ms;
     double throughput_mib_s{0.0};
     double wall_s{0.0};
+    Breakdown breakdown;
+};
+
+struct LatencyMeasurement {
+    Stats stats;
+    double connect_ms{0.0};
+    double warmup_ms{0.0};
+};
+
+struct BulkMeasurement {
+    double mib_s{0.0};
+    double total_s{0.0};
+    double send_s{0.0};
 };
 
 const std::vector<Config>& builtin_configs() {
@@ -102,11 +133,25 @@ const std::vector<Config>& builtin_configs() {
             {},
         },
         {
+            "no-inner-raw",
+            "YUME SOCKS over plain TLS carrier, no inner crypto or H2 disguise.",
+            false,
+            {"--no-obfs", "--no-inner"},
+            {"--no-obfs", "--no-inner"},
+        },
+        {
             "no-inner-obfs",
             "YUME SOCKS over TLS/H2 carrier, no inner crypto.",
             false,
             {"--obfs", "--no-inner"},
             {"--obfs", "--no-inner"},
+        },
+        {
+            "light-no-hop",
+            "Inner light crypto with hopping disabled.",
+            false,
+            {"--obfs", "--inner-light", "--inner-required", "--no-hop"},
+            {"--obfs", "--inner-light", "--no-hop"},
         },
         {
             "light-hop-2hz",
@@ -433,7 +478,7 @@ bool wait_for_path(const fs::path& path, std::chrono::seconds timeout) {
     while (Clock::now() < deadline) {
         std::error_code ec;
         if (fs::exists(path, ec) && fs::file_size(path, ec) > 0) return true;
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     return false;
 }
@@ -451,7 +496,7 @@ bool wait_for_port(int port, std::chrono::seconds timeout) {
                 return true;
             }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     return false;
 }
@@ -665,12 +710,18 @@ Stats compute_stats(std::vector<double> samples) {
     return stats;
 }
 
-std::vector<double> measure_latency(int connect_port, int echo_port, int iters, bool via_socks) {
+LatencyMeasurement measure_latency(int connect_port, int echo_port, int iters, bool via_socks) {
+    LatencyMeasurement measurement;
+    const auto connect_start = Clock::now();
     FileDescriptor fd = via_socks ? socks5_connect(connect_port, echo_port) : tcp_connect(echo_port);
+    measurement.connect_ms = elapsed_ms(connect_start, Clock::now());
     auto payload = random_payload(64);
     std::vector<unsigned char> reply(payload.size());
+    const auto warmup_start = Clock::now();
     send_all(fd.get(), payload.data(), payload.size());
     recv_exact(fd.get(), reply.data(), reply.size());
+    measurement.warmup_ms = elapsed_ms(warmup_start, Clock::now());
+    if (reply != payload) throw std::runtime_error("latency warmup payload mismatch");
 
     std::vector<double> out;
     out.reserve(static_cast<std::size_t>(iters));
@@ -682,10 +733,11 @@ std::vector<double> measure_latency(int connect_port, int echo_port, int iters, 
         if (reply != payload) throw std::runtime_error("latency payload mismatch");
         out.push_back(std::chrono::duration<double, std::milli>(end - start).count());
     }
-    return out;
+    measurement.stats = compute_stats(std::move(out));
+    return measurement;
 }
 
-double measure_bulk_mib_s(int connect_port, int echo_port, int mib, bool via_socks) {
+BulkMeasurement measure_bulk(int connect_port, int echo_port, int mib, bool via_socks) {
     FileDescriptor fd = via_socks ? socks5_connect(connect_port, echo_port) : tcp_connect(echo_port);
     const std::size_t total = static_cast<std::size_t>(mib) * 1024u * 1024u;
     const auto payload = random_payload(64 * 1024);
@@ -711,13 +763,18 @@ double measure_bulk_mib_s(int connect_port, int echo_port, int mib, bool via_soc
         send_all(fd.get(), payload.data(), chunk);
         sent += chunk;
     }
+    const auto send_done = Clock::now();
     reader.join();
     const auto end = Clock::now();
     if (reader_failed.load() || received.load() != total) {
         throw std::runtime_error("bulk echo did not complete");
     }
-    const double seconds = std::chrono::duration<double>(end - start).count();
-    return (static_cast<double>(total) / (1024.0 * 1024.0)) / std::max(seconds, 0.000001);
+    BulkMeasurement measurement;
+    measurement.total_s = elapsed_s(start, end);
+    measurement.send_s = elapsed_s(start, send_done);
+    measurement.mib_s = (static_cast<double>(total) / (1024.0 * 1024.0)) /
+                        std::max(measurement.total_s, 0.000001);
+    return measurement;
 }
 
 void write_text(const fs::path& path, const std::string& text) {
@@ -812,7 +869,7 @@ public:
         , yumed_port_(yumed_port)
         , socks_port_(socks_port) {}
 
-    void start() {
+    void start(Breakdown& breakdown) {
         const bool needs_pq_file =
             !has_flag(cfg_.client_flags, "--no-inner") &&
             !has_flag(cfg_.client_flags, "--use-embedded-master");
@@ -835,12 +892,19 @@ public:
             workdir_,
             workdir_ / (cfg_.name + "-yumed.log"),
             run_env(args_, workdir_, true));
+        const auto server_start = Clock::now();
         server_->start();
         if (!wait_for_port(yumed_port_, std::chrono::seconds(12))) {
+            breakdown.server_listen_ms = elapsed_ms(server_start, Clock::now());
             throw std::runtime_error("yumed did not listen; see " + server_->log_path().string());
         }
+        breakdown.server_listen_ms = elapsed_ms(server_start, Clock::now());
         if (needs_pq_file && !wait_for_path(ks_.pq_public, std::chrono::seconds(12))) {
+            breakdown.pq_ready_ms = elapsed_ms(server_start, Clock::now()) - breakdown.server_listen_ms;
             throw std::runtime_error("server did not generate pq_public.key; see " + server_->log_path().string());
+        }
+        if (needs_pq_file) {
+            breakdown.pq_ready_ms = elapsed_ms(server_start, Clock::now()) - breakdown.server_listen_ms;
         }
 
         std::vector<std::string> client_argv{
@@ -866,10 +930,13 @@ public:
             workdir_,
             workdir_ / (cfg_.name + "-yume.log"),
             run_env(args_, workdir_, false));
+        const auto client_start = Clock::now();
         client_->start();
         if (!wait_for_port(socks_port_, std::chrono::seconds(20))) {
+            breakdown.client_socks_ms = elapsed_ms(client_start, Clock::now());
             throw std::runtime_error("yume did not start SOCKS; see " + client_->log_path().string());
         }
+        breakdown.client_socks_ms = elapsed_ms(client_start, Clock::now());
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
 
@@ -899,15 +966,27 @@ Result run_config(const Args& args,
     const auto start = Clock::now();
     try {
         if (cfg.base_direct) {
-            result.latency_ms = compute_stats(measure_latency(0, echo_port, args.latency_iters, false));
-            result.throughput_mib_s = measure_bulk_mib_s(0, echo_port, args.bulk_mib, false);
+            LatencyMeasurement latency = measure_latency(0, echo_port, args.latency_iters, false);
+            result.latency_ms = latency.stats;
+            result.breakdown.connect_ms = latency.connect_ms;
+            result.breakdown.warmup_ms = latency.warmup_ms;
+            BulkMeasurement bulk = measure_bulk(0, echo_port, args.bulk_mib, false);
+            result.throughput_mib_s = bulk.mib_s;
+            result.breakdown.bulk_total_s = bulk.total_s;
+            result.breakdown.bulk_send_s = bulk.send_s;
         } else {
             const int yumed_port = pick_free_port();
             const int socks_port = pick_free_port();
             YumeStack stack(args, ks, cfg, workdir, yumed_port, socks_port);
-            stack.start();
-            result.latency_ms = compute_stats(measure_latency(socks_port, echo_port, args.latency_iters, true));
-            result.throughput_mib_s = measure_bulk_mib_s(socks_port, echo_port, args.bulk_mib, true);
+            stack.start(result.breakdown);
+            LatencyMeasurement latency = measure_latency(socks_port, echo_port, args.latency_iters, true);
+            result.latency_ms = latency.stats;
+            result.breakdown.connect_ms = latency.connect_ms;
+            result.breakdown.warmup_ms = latency.warmup_ms;
+            BulkMeasurement bulk = measure_bulk(socks_port, echo_port, args.bulk_mib, true);
+            result.throughput_mib_s = bulk.mib_s;
+            result.breakdown.bulk_total_s = bulk.total_s;
+            result.breakdown.bulk_send_s = bulk.send_s;
             stack.stop();
         }
         result.ok = true;
@@ -978,6 +1057,44 @@ void render_table(const std::vector<Result>& results) {
     }
     std::cerr << "--------------------------------------------------------------------------------\n";
     std::cerr << "lat delta = added median RTT over direct loopback. thr pct = MiB/s vs direct.\n";
+    std::cerr << "\nSelf-test phase breakdown\n";
+    std::cerr << "------------------------------------------------------------------------------------------------\n";
+    std::cerr << std::left << std::setw(18) << "config"
+              << std::right << std::setw(10) << "srv ms"
+              << std::setw(10) << "pq ms"
+              << std::setw(10) << "cli ms"
+              << std::setw(10) << "conn ms"
+              << std::setw(10) << "warm ms"
+              << std::setw(10) << "bulk s"
+              << std::setw(10) << "send s"
+              << std::setw(9) << "send%"
+              << "\n";
+    std::cerr << "------------------------------------------------------------------------------------------------\n";
+    for (const auto& r : results) {
+        std::cerr << std::left << std::setw(18) << r.config.name << std::right;
+        if (!r.ok) {
+            std::cerr << "  skipped\n";
+            continue;
+        }
+        const double send_pct = r.breakdown.bulk_total_s > 0.0
+            ? (r.breakdown.bulk_send_s / r.breakdown.bulk_total_s) * 100.0
+            : 0.0;
+        std::cerr << std::fixed << std::setprecision(1)
+                  << std::setw(10) << r.breakdown.server_listen_ms
+                  << std::setw(10) << r.breakdown.pq_ready_ms
+                  << std::setw(10) << r.breakdown.client_socks_ms
+                  << std::setw(10) << r.breakdown.connect_ms
+                  << std::setw(10) << r.breakdown.warmup_ms
+                  << std::setprecision(3)
+                  << std::setw(10) << r.breakdown.bulk_total_s
+                  << std::setw(10) << r.breakdown.bulk_send_s
+                  << std::setprecision(0)
+                  << std::setw(8) << send_pct << "%"
+                  << "\n";
+    }
+    std::cerr << "------------------------------------------------------------------------------------------------\n";
+    std::cerr << "srv/pq/cli are startup waits. conn is TCP+SOCKS connect. warm is first echo.\n";
+    std::cerr << "send% near 100 means writes are backpressured for most of the bulk transfer.\n";
 }
 
 std::string json_escape(const std::string& value) {
@@ -1004,7 +1121,7 @@ std::string json_escape(const std::string& value) {
 std::string render_json(const Args& args, const std::vector<Result>& results, const fs::path& workdir) {
     std::ostringstream out;
     out << "{\n";
-    out << "  \"schema_version\": 1,\n";
+    out << "  \"schema_version\": 2,\n";
     out << "  \"workdir\": \"" << json_escape(workdir.string()) << "\",\n";
     out << "  \"latency_iters\": " << args.latency_iters << ",\n";
     out << "  \"bulk_mib\": " << args.bulk_mib << ",\n";
@@ -1028,6 +1145,15 @@ std::string render_json(const Args& args, const std::vector<Result>& results, co
         out << "        \"mean\": " << r.latency_ms.mean << "\n";
         out << "      },\n";
         out << "      \"throughput_mib_s\": " << r.throughput_mib_s << ",\n";
+        out << "      \"breakdown\": {\n";
+        out << "        \"server_listen_ms\": " << r.breakdown.server_listen_ms << ",\n";
+        out << "        \"pq_ready_ms\": " << r.breakdown.pq_ready_ms << ",\n";
+        out << "        \"client_socks_ms\": " << r.breakdown.client_socks_ms << ",\n";
+        out << "        \"connect_ms\": " << r.breakdown.connect_ms << ",\n";
+        out << "        \"warmup_ms\": " << r.breakdown.warmup_ms << ",\n";
+        out << "        \"bulk_total_s\": " << r.breakdown.bulk_total_s << ",\n";
+        out << "        \"bulk_send_s\": " << r.breakdown.bulk_send_s << "\n";
+        out << "      },\n";
         out << "      \"wall_s\": " << r.wall_s << "\n";
         out << "    }" << (i + 1 == results.size() ? "\n" : ",\n");
     }

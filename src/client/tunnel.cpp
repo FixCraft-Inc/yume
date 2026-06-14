@@ -198,6 +198,10 @@ void Tunnel::send_data(uint8_t stream_id, const Bytes& data) {
     core_.send_data(stream_id, data);
 }
 
+void Tunnel::send_data(uint8_t stream_id, Bytes&& data) {
+    core_.send_data(stream_id, std::move(data));
+}
+
 void Tunnel::send_close(uint8_t stream_id, const std::string& reason) {
     core_.send_close(stream_id, reason);
 }

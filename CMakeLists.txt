@@ -32,6 +32,15 @@ option(YUME_TRANSPORT_CORE_ONLY "Build only the shared transport core target" OF
 option(YUME_DEB_SHLIBDEPS "Use dpkg-shlibdeps when building Debian packages" ON)
 option(YUME_BUILD_SELFTEST "Build optional localhost benchmark self-test tool for desktop developers" OFF)
 
+if(YUME_BUILD_SELFTEST AND NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING
+        "Build type for optimized self-test benchmark builds" FORCE)
+    message(STATUS "YUME_BUILD_SELFTEST=ON: defaulting CMAKE_BUILD_TYPE to RelWithDebInfo for meaningful benchmark results")
+endif()
+if(YUME_BUILD_SELFTEST AND NOT CMAKE_CONFIGURATION_TYPES AND CMAKE_BUILD_TYPE MATCHES "^[Dd]ebug$")
+    message(WARNING "YUME_BUILD_SELFTEST=ON with CMAKE_BUILD_TYPE=Debug will produce misleading throughput numbers")
+endif()
+
 # Dangerous-feature build gates. Each gate must be explicitly turned ON at
 # configure time to compile the feature. The runtime CLI flag and the per-key
 # meta entry are the second and third locks. Stock builds ship with all three

@@ -59,6 +59,7 @@
 #include "client/outbound_proxy.hpp"
 #include "server/manager.hpp"
 #include "server/auth.hpp"
+#include "server/ip_filter.hpp"
 #include "server/local_runtime.hpp"
 #include "util.hpp"
 
@@ -77,8 +78,8 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --credits --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms --tls-handshake-timeout-ms --max-sessions --accept-rate-limit --egress-mbps --packet-egress --packet-tun-name --packet-cidr --packet-mtu --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --upstream-response --upstream-response-dir --upstream-response-ttl --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
-  local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --federation-auth-key --federation-anonym-ca --keys-add --keys-gen"
+  local opts="--help -h --version --credits --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms --tls-handshake-timeout-ms --max-sessions --accept-rate-limit --egress-mbps --robots-deny --filter-list --filter-geolite --filter-memory-mib --client-filter-mode --egress-filter-mode --packet-egress --packet-tun-name --packet-cidr --packet-mtu --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --upstream-response --upstream-response-dir --upstream-response-ttl --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
+  local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --filter-geolite --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --federation-auth-key --federation-anonym-ca --keys-add --keys-gen"
   case "$prev" in
     --completion)
       COMPREPLY=( $(compgen -W "bash" -- "$cur") )
@@ -185,6 +186,13 @@ void print_help() {
         << "                             full cap; equal active keys split it.\n"
         << "                             auth_keys_meta priority 1..100 controls\n"
         << "                             weighted shares (default 50).\n"
+        << "  --filter-list <spec>     Load an IP/country filter list. spec is\n"
+        << "                             <client|egress|both>:<allow|deny>:<path>\n"
+        << "                             where path is JSON, vpn_db.bin, or .tar.xz.\n"
+        << "  --filter-geolite <path>  Country DB archive or compact DB path.\n"
+        << "  --filter-memory-mib <N>  Approximate in-memory filter cap (0 = unlimited).\n"
+        << "  --client-filter-mode <m> Client source mode: blacklist or whitelist.\n"
+        << "  --egress-filter-mode <m> Egress destination mode: blacklist or whitelist.\n"
         << "  --packet-egress tun      Enable packet_bulk_v1 over an operator-\n"
         << "                             prepared Linux TUN/NAT interface.\n"
         << "  --packet-tun-name <if>   TUN device to attach (default yume-pkt0).\n"
@@ -211,6 +219,8 @@ void print_help() {
         << "  --no-embedded-master     Disable embedded BaseFWX master fallback\n\n"
         << "HTTP / Anonym:\n"
         << "  --real                   Serve real HTTP for non-client requests\n"
+        << "  --robots-deny            Serve /robots.txt with Disallow: / through\n"
+        << "                             the HTTP facade for normal probes.\n"
         << "  --real-index <path>      HTML file for /\n"
         << "  --real-secret <str>      Hidden metadata secret\n"
         << "  --real-secret-file <path> Load or create secret file\n"
@@ -662,6 +672,19 @@ std::string shell_quote(const std::string& input) {
     }
     out.push_back('\'');
     return out;
+}
+
+std::string resolve_filter_list_spec_path(const std::string& spec,
+                                          const std::string& base_dir,
+                                          const std::string& exe_dir) {
+    const auto first = spec.find(':');
+    const auto second = first == std::string::npos ? std::string::npos : spec.find(':', first + 1);
+    if (first == std::string::npos || second == std::string::npos || second + 1 >= spec.size()) {
+        return spec;
+    }
+    const std::string prefix = spec.substr(0, second + 1);
+    const std::string path = yume::util::resolve_path(spec.substr(second + 1), base_dir, exe_dir);
+    return prefix + path;
 }
 
 bool command_exists(const std::string& command) {
@@ -1385,6 +1408,10 @@ int main(int argc, char** argv) {
     bool max_sessions_override = false;
     bool accept_rate_limit_override = false;
     bool egress_mbps_override = false;
+    bool client_filter_mode_override = false;
+    bool egress_filter_mode_override = false;
+    bool filter_geolite_override = false;
+    bool filter_memory_mib_override = false;
     bool packet_egress_override = false;
     bool packet_tun_name_override = false;
     bool packet_cidr_override = false;
@@ -1509,6 +1536,22 @@ int main(int argc, char** argv) {
             if (parsed < 0) parsed = 0;
             cfg.egress_mbps = static_cast<std::uint32_t>(parsed);
             egress_mbps_override = true;
+        } else if (arg == "--filter-list" && i + 1 < argc) {
+            cfg.filter_lists.push_back(resolve_filter_list_spec_path(argv[++i], cli_cwd, ""));
+        } else if (arg == "--filter-geolite" && i + 1 < argc) {
+            cfg.filter_geolite = resolve_cli_path(argv[++i]);
+            filter_geolite_override = true;
+        } else if (arg == "--filter-memory-mib" && i + 1 < argc) {
+            int parsed = std::atoi(argv[++i]);
+            if (parsed < 0) parsed = 0;
+            cfg.filter_memory_mib = static_cast<std::uint32_t>(parsed);
+            filter_memory_mib_override = true;
+        } else if (arg == "--client-filter-mode" && i + 1 < argc) {
+            cfg.client_filter_mode = argv[++i];
+            client_filter_mode_override = true;
+        } else if (arg == "--egress-filter-mode" && i + 1 < argc) {
+            cfg.egress_filter_mode = argv[++i];
+            egress_filter_mode_override = true;
         } else if (arg == "--packet-egress" && i + 1 < argc) {
             cfg.packet_egress = argv[++i];
             packet_egress_override = true;
@@ -1590,6 +1633,8 @@ int main(int argc, char** argv) {
             cfg.control_full = true;
         } else if (arg == "--real") {
             cfg.real_http = true;
+        } else if (arg == "--robots-deny") {
+            cfg.robots_deny = true;
         } else if (arg == "--real-index" && i + 1 < argc) {
             cfg.real_index_path = resolve_cli_path(argv[++i]);
         } else if (arg == "--real-secret" && i + 1 < argc) {
@@ -1883,6 +1928,31 @@ int main(int argc, char** argv) {
                 if (v < 0) v = 0;
                 cfg.egress_mbps = static_cast<std::uint32_t>(v);
             }
+            if (json.contains("robots_deny") && !cfg.robots_deny) {
+                cfg.robots_deny = json["robots_deny"].get<bool>();
+            }
+            if (json.contains("client_filter_mode") && !client_filter_mode_override) {
+                cfg.client_filter_mode = json["client_filter_mode"].get<std::string>();
+            }
+            if (json.contains("egress_filter_mode") && !egress_filter_mode_override) {
+                cfg.egress_filter_mode = json["egress_filter_mode"].get<std::string>();
+            }
+            if (json.contains("filter_memory_mib") && !filter_memory_mib_override) {
+                int v = json["filter_memory_mib"].get<int>();
+                if (v < 0) v = 0;
+                cfg.filter_memory_mib = static_cast<std::uint32_t>(v);
+            }
+            if (json.contains("filter_geolite") && !filter_geolite_override) {
+                cfg.filter_geolite = resolve_cfg_path(json["filter_geolite"].get<std::string>());
+            }
+            if (json.contains("filter_lists") && json["filter_lists"].is_array()) {
+                for (const auto& item : json["filter_lists"]) {
+                    if (item.is_string()) {
+                        cfg.filter_lists.push_back(
+                            resolve_filter_list_spec_path(item.get<std::string>(), config_dir, exe_dir));
+                    }
+                }
+            }
             if (json.contains("packet_egress") && !packet_egress_override) {
                 cfg.packet_egress = json["packet_egress"].get<std::string>();
             }
@@ -2034,6 +2104,12 @@ int main(int argc, char** argv) {
     if (!cfg.federation_anonym_ca.empty()) {
         cfg.federation_anonym_ca = resolve_cfg_path(cfg.federation_anonym_ca);
     }
+    if (!cfg.filter_geolite.empty()) {
+        cfg.filter_geolite = resolve_cfg_path(cfg.filter_geolite);
+    }
+    for (auto& spec : cfg.filter_lists) {
+        spec = resolve_filter_list_spec_path(spec, config_dir, exe_dir);
+    }
     if (cfg.dns_server.empty()) {
         const char* dns_env = std::getenv("YUME_DNS_SERVER");
         if (dns_env && *dns_env) {
@@ -2127,6 +2203,21 @@ int main(int argc, char** argv) {
             }
             yume::util::log_error("--hide-in-the-crowd: unknown server profile '" + cfg.http_profile +
                                   "'. Supported: " + supported);
+            return 1;
+        }
+    }
+    if (!yume::server::IpFilter::parse_mode(cfg.client_filter_mode).has_value()) {
+        yume::util::log_error("--client-filter-mode must be blacklist or whitelist");
+        return 1;
+    }
+    if (!yume::server::IpFilter::parse_mode(cfg.egress_filter_mode).has_value()) {
+        yume::util::log_error("--egress-filter-mode must be blacklist or whitelist");
+        return 1;
+    }
+    for (const auto& spec : cfg.filter_lists) {
+        std::string parse_error;
+        if (!yume::server::IpFilter::parse_list_spec(spec, &parse_error).has_value()) {
+            yume::util::log_error("--filter-list " + spec + ": " + parse_error);
             return 1;
         }
     }

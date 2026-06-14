@@ -79,6 +79,12 @@ uint8_t reason_to_rep(const std::string& reason) {
         contains("host unreachable"))                     return 0x04;
     return 0x01;  // general failure
 }
+
+bool noisy_open_failure(const std::string& reason) {
+    return reason.find("resolve failed") != std::string::npos ||
+           reason.find("resolve timeout") != std::string::npos ||
+           reason.find("connect timeout") != std::string::npos;
+}
 }  // namespace
 
 SocksSession::SocksSession(boost::asio::ip::tcp::socket socket,
@@ -340,8 +346,13 @@ void SocksSession::start_tunnel() {
                                                   (reason.empty() ? std::string{} : " reason=" + reason));
                              if (!ok) {
                                  const uint8_t rep = reason_to_rep(reason);
-                                 util::log_warn("SOCKS open failed (REP=0x" +
-                                                std::to_string(rep) + "): " + reason);
+                                 const std::string message = "SOCKS open failed (REP=0x" +
+                                     std::to_string(rep) + "): " + reason;
+                                 if (noisy_open_failure(reason)) {
+                                     util::log_info_rate_limited("socks-open-noisy-failure", message, 30000);
+                                 } else {
+                                     util::log_warn(message);
+                                 }
                                  self->send_reply(rep,
                                      [self]() { self->close(); });
                                  return;

@@ -73,6 +73,48 @@ Maximum port for reverse forwards.
 .BI "--dns-server " ip
 Resolver for outbound opens.
 .TP
+.B --robots-deny
+Serve
+.B /robots.txt
+as
+.B Disallow: /
+through the existing HTTP facade. Disabled by default.
+.TP
+.BI "--filter-list " spec
+Load a source or egress filter list. The form is
+.BI client|egress|both:allow|deny:path
+where
+.I path
+is JSON,
+.B vpn_db.bin ,
+or a
+.B .tar.xz
+archive containing one of those files.
+.TP
+.BI "--filter-geolite " path
+Country lookup archive, GeoLite2-Country
+.B .mmdb ,
+or compact YUME
+.B geoip_country_ipv4.db .
+Archives are extracted at startup; hot-path lookup is in-memory.
+.TP
+.BI "--filter-memory-mib " n
+Approximate memory cap for loaded filter data. Use
+.B 0
+for unlimited.
+.TP
+.BI "--client-filter-mode " mode
+Client source filter mode:
+.B blacklist
+or
+.BR whitelist .
+.TP
+.BI "--egress-filter-mode " mode
+Destination filter mode:
+.B blacklist
+or
+.BR whitelist .
+.TP
 .BI "--packet-egress " tun
 Enable packet-native egress over an operator-prepared Linux TUN/NAT
 interface. Disabled by default.
@@ -159,7 +201,6 @@ Disable the embedded BaseFWX master fallback.
 .TP
 .B --real
 Serve real HTTP for non-YUME requests on the same port.
-.TP
 .BI "--real-index " path
 HTML file served for
 .BR / .
@@ -292,6 +333,14 @@ sudo yumed --listen 443 --cert server.crt --key server.key \
     --real --real-index /var/www/yume/index.html
 .fi
 .TP
+Block VPN-provider egress destinations using an operator-supplied archive:
+.nf
+sudo yumed --listen 443 --cert server.crt --key server.key \
+    --auth-keys authorized_keys \
+    --filter-list egress:deny:/etc/yume/vpn_db.tar.xz \
+    --filter-geolite /etc/yume/GeoLiteCountry.tar.xz
+.fi
+.TP
 Generate and add a client key:
 .nf
 yumed --auth-keys /etc/yume/authorized_keys --keys-gen /tmp/alice --keys-gen-add
@@ -303,6 +352,10 @@ Authorized client public keys.
 .TP
 .I /etc/yume/auth_keys.meta
 Per-key permissions and metadata.
+.TP
+.I /etc/yume/vpn_db.tar.xz
+Optional private VPN-provider blocklist archive. This file is
+operator-supplied and should not be committed to the YUME source tree.
 .TP
 .I /etc/yume/
 Common system configuration directory.

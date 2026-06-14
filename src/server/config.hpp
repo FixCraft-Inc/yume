@@ -39,6 +39,7 @@ struct ServerConfig {
     bool allow_local_ip{false};
     bool control_full{false};
     bool real_http{false};
+    bool robots_deny{false};
     std::string real_index_path;
     std::string real_secret;
     std::string real_secret_file;
@@ -159,6 +160,11 @@ struct ServerConfig {
     // key can use the full cap; N equal-priority active keys converge to
     // 1/N of the cap. auth_keys_meta priority values act as weights.
     std::uint32_t egress_mbps{0};
+    std::string client_filter_mode{"blacklist"};
+    std::string egress_filter_mode{"blacklist"};
+    std::vector<std::string> filter_lists;
+    std::string filter_geolite;
+    std::uint32_t filter_memory_mib{64};
     std::string packet_egress;
     std::string packet_tun_name{"yume-pkt0"};
     std::string packet_cidr{"10.89.0.0/24"};

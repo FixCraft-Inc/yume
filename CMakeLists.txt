@@ -30,6 +30,7 @@ option(YUME_LTO "Enable link-time optimization for yume builds" ON)
 option(YUME_FAST_MATH "Enable fast-math (unsafe for crypto)" OFF)
 option(YUME_TRANSPORT_CORE_ONLY "Build only the shared transport core target" OFF)
 option(YUME_DEB_SHLIBDEPS "Use dpkg-shlibdeps when building Debian packages" ON)
+option(YUME_BUILD_SELFTEST "Build optional localhost benchmark self-test tool for desktop developers" OFF)
 
 # Dangerous-feature build gates. Each gate must be explicitly turned ON at
 # configure time to compile the feature. The runtime CLI flag and the per-key

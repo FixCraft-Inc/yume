@@ -1,0 +1,55 @@
+# Filtering, Robots, And Self-DPI
+
+## Stealth Boundary
+
+`--robots-deny`, IP filtering, and self-DPI do not change the TLS profile,
+ALPN, HTTP/2 carrier preface, obfs token, or YUME frame format. Robots is a
+normal HTTP-facade response for `GET`/`HEAD /robots.txt`; packet and stream
+traffic still rides inside the existing encrypted YUME `DATA` frames.
+
+## Server Filters
+
+Two independent planes are available:
+
+- `client`: source IPs are checked immediately after accept and refused before
+  the TLS handshake.
+- `egress`: resolved TCP/UDP destinations and packet-native IPv4 destinations
+  are checked before the server connects or writes packets to the TUN.
+
+Use:
+
+```bash
+yumed --filter-list egress:deny:/etc/yume/vpn_db.tar.xz \
+      --filter-list egress:allow:/etc/yume/allow.json \
+      --filter-geolite /etc/yume/GeoLiteCountry.tar.xz
+```
+
+JSON lists use:
+
+```json
+{ "ips": ["1.2.3.4", "1.2.3.0/24"], "countries": ["US"] }
+```
+
+Most-specific match wins. If two rules have the same specificity, deny wins.
+This lets exact allow rules override broad country or VPN-provider denies
+while keeping ambiguous equal matches fail-closed.
+
+Archives are extracted once at startup into a private temp directory, validated
+for path traversal, loaded into memory, then removed on shutdown. No archive
+extraction or disk parsing is done in the hot path.
+
+`vpn_db.tar.xz` is private/operator-supplied and remains untracked.
+`GeoLiteCountry.tar.xz` may contain a compact `geoip_country_ipv4.db` or a
+GeoLite2-Country `.mmdb`; both are loaded into memory without a runtime
+MaxMind library dependency. Committing a copy requires a deliberate license
+review and `.gitignore` exception.
+
+## Client Self-DPI
+
+Desktop: `--self-dpi` enables warning-only checks of local carrier metadata.
+Android: Diagnostics -> Self-DPI warnings.
+
+Self-DPI v1 inspects local configuration and runtime metadata only: TLS
+profile, HTTPS masking, port, padding/jitter, packet-native batch settings,
+and raw versus smoothed throughput. It does not inspect application payloads
+and does not auto-tune the connection.

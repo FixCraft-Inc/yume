@@ -17,6 +17,8 @@ void init_logging();
 void log_info(const std::string& msg);
 void log_warn(const std::string& msg);
 void log_error(const std::string& msg);
+void log_info_rate_limited(const std::string& key, const std::string& msg, int64_t interval_ms);
+void log_warn_rate_limited(const std::string& key, const std::string& msg, int64_t interval_ms);
 void set_logging_enabled(bool enabled);
 bool is_logging_enabled();
 void set_timing_enabled(bool enabled);

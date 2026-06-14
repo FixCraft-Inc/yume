@@ -213,6 +213,42 @@ std::string format_verified_sources(const std::vector<std::string>& sources) {
     return "PASS [" + joined + "]";
 }
 
+void emit_self_dpi_report(const ClientConfig& cfg,
+                          tls_fingerprint::BrowserProfile active_profile,
+                          const tls_fingerprint::FingerprintData& fingerprint,
+                          bool h2_carrier_active,
+                          std::chrono::milliseconds tls_ms) {
+    if (!cfg.self_dpi) {
+        return;
+    }
+    const std::string profile_name = tls_fingerprint::browser_profile_name(active_profile);
+    util::log_info(
+        std::string("self-DPI carrier metadata: tls_stealth=") +
+        std::string(cfg.tls_stealth_enabled ? "on" : "off") +
+        " profile=" + profile_name +
+        " carrier=" + std::string(h2_carrier_active ? "http2" : "raw-auth") +
+        " port=" + std::to_string(cfg.port) +
+        " tls_ms=" + std::to_string(tls_ms.count()) +
+        " pad_multiple=" + std::to_string(cfg.obfs_pad_multiple) +
+        " jitter_ms=" + std::to_string(cfg.obfs_jitter_ms));
+
+    if (!cfg.tls_stealth_enabled) {
+        util::log_warn("self-DPI: TLS stealth is disabled; carrier TLS will not resemble a browser profile.");
+    }
+    if (!h2_carrier_active) {
+        util::log_warn("self-DPI: HTTPS masking is disabled; the AUTH exchange is visible immediately after TLS.");
+    }
+    if (cfg.port != 443) {
+        util::log_warn("self-DPI: non-443 server port weakens browser/CDN cover traffic assumptions.");
+    }
+    if (cfg.tls_stealth_enabled && !fingerprint.matches_known_browser) {
+        util::log_warn("self-DPI: selected TLS profile did not resolve to a known browser fingerprint locally.");
+    }
+    if (cfg.obfs_pad_multiple == 0 && cfg.obfs_jitter_ms == 0) {
+        util::log_info("self-DPI: frame padding and jitter are off; fastest path, weaker size/timing cover.");
+    }
+}
+
 struct IoOpResult {
     boost::system::error_code ec;
     bool timed_out{false};
@@ -1151,6 +1187,8 @@ struct ParsedArgs {
     std::string tls_fingerprint_log_path{"./logs/fingerprints"};
     bool tls_fingerprint_verify{false};
     std::string tls_fingerprint_test_endpoint{"tls.peet.ws"};
+    bool self_dpi{false};
+    bool self_dpi_override{false};
     bool help{false};
     bool version{false};
     bool credits{false};
@@ -1759,6 +1797,12 @@ ParsedArgs parse_args(int argc, char** argv) {
                 return args;
             }
             args.tls_fingerprint_test_endpoint = value;
+        } else if (arg == "--self-dpi") {
+            args.self_dpi = true;
+            args.self_dpi_override = true;
+        } else if (arg == "--no-self-dpi") {
+            args.self_dpi = false;
+            args.self_dpi_override = true;
         } else if (arg == "--accept-monitoring") {
             args.accept_monitoring = true;
         } else if (arg == "--save-server") {
@@ -2097,7 +2141,7 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --credits --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --threads --tunnels --obfs --no-obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms export import --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
+  local opts="--help -h --version --credits --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --threads --tunnels --obfs --no-obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms export import --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --self-dpi --no-self-dpi --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
   local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path --relay-key-file"
   case "$prev" in
     --completion)
@@ -2268,7 +2312,10 @@ void print_help() {
         << "                           Fingerprint log path\n"
         << "  --tls-fingerprint-verify Verify fingerprints against a test endpoint\n"
         << "  --tls-fingerprint-test-endpoint <host>\n"
-        << "                           Test endpoint host\n\n"
+        << "                           Test endpoint host\n"
+        << "  --self-dpi               Warn when local carrier metadata stops\n"
+        << "                             matching the selected disguise profile\n"
+        << "  --no-self-dpi            Disable self-DPI warnings\n\n"
         << "Console:\n"
         << "  help, status, directory, invites, chat, send, send-file, send-bytes,\n"
         << "  accept, reject, history, history-delete, admin attach, admin status,\n"
@@ -3847,6 +3894,9 @@ int Cli::run(int argc, char** argv) {
             if (json.contains("auto_attach_local")) {
                 cfg.auto_attach_local = json["auto_attach_local"].get<bool>();
             }
+            if (json.contains("self_dpi") && !args.self_dpi_override) {
+                cfg.self_dpi = json["self_dpi"].get<bool>();
+            }
         } catch (const std::exception& ex) {
             util::log_warn(std::string("config load failed: ") + ex.what());
         }
@@ -4008,6 +4058,9 @@ int Cli::run(int argc, char** argv) {
     }
     if (!args.tls_fingerprint_test_endpoint.empty()) {
         cfg.tls_fingerprint_test_endpoint = args.tls_fingerprint_test_endpoint;
+    }
+    if (args.self_dpi_override) {
+        cfg.self_dpi = args.self_dpi;
     }
 #if defined(_WIN32) || defined(__APPLE__)
     if (cfg.tls_ca_cert.empty() && !cfg.anonym_ca_cert.empty()) {
@@ -4204,6 +4257,7 @@ int Cli::run(int argc, char** argv) {
         if (!cfg.history_dir.empty()) json["history_dir"] = cfg.history_dir;
         if (!cfg.relay_key_file.empty()) json["relay_key_file"] = cfg.relay_key_file;
         json["auto_attach_local"] = cfg.auto_attach_local;
+        json["self_dpi"] = cfg.self_dpi;
         std::ofstream out(args.config_path);
         if (out) {
             out << json.dump(2);
@@ -4625,6 +4679,12 @@ int Cli::run(int argc, char** argv) {
                                      " prefetched=" + std::to_string(prefetched_tls_bytes.size()));
                 util::log_info("HTTPS h2 carrier handshake established");
             }
+            emit_self_dpi_report(
+                cfg,
+                active_tls_profile,
+                fingerprint_for_metrics,
+                cfg.obfuscation,
+                handshake_duration);
             util::log_info("waiting for AUTH challenge");
             auto auth_challenge_start = std::chrono::steady_clock::now();
             protocol::Frame auth_challenge = read_auth_challenge(

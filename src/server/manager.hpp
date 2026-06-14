@@ -23,6 +23,7 @@
 #include "core/obfs.hpp"
 #include "server/config.hpp"
 #include "server/federation_types.hpp"
+#include "server/ip_filter.hpp"
 #include "server/packet_tun_egress.hpp"
 
 namespace yume::server {
@@ -139,6 +140,7 @@ public:
         std::function<void(crypto::Bytes)> handler);
     void unregister_packet_client(Session* session, std::uint32_t ipv4_be);
     void write_packet_to_egress(std::uint32_t client_ipv4_be, crypto::Bytes packet);
+    bool egress_allowed(const boost::asio::ip::address& address, std::string* reason = nullptr) const;
 
     // Returns one of the loaded upstream-response captures (chosen
     // uniformly), or an empty string if no directory is configured /
@@ -206,6 +208,7 @@ private:
     std::unique_ptr<FederationManager> federation_;
     std::unique_ptr<WeightedEgressLimiter> egress_limiter_;
     std::unique_ptr<PacketTunEgress> packet_egress_;
+    std::unique_ptr<IpFilter> ip_filter_;
 
     // Per-probe upstream-response rotation. cache_ is swapped under the
     // mutex; readers (Session::send_disguise_404) atomically load a
@@ -231,6 +234,7 @@ private:
     // start(). Lock-free because do_accept is single-reader.
     std::uint64_t accept_refused_cap_{0};
     std::uint64_t accept_refused_rate_{0};
+    std::uint64_t accept_refused_filter_{0};
     // Returns true if the new accept may proceed; false if it must
     // be refused (caller closes the socket). Pure function of
     // (current time, cfg_, live_sessions_.size(), bucket state) —

@@ -70,6 +70,7 @@ private:
     void on_preface_timeout(const boost::system::error_code& ec);
     bool handle_http_preface(const std::string& preface);
     void send_real_http_response(const std::string& path);
+    void send_robots_txt_response(bool head_only = false);
     // Profile-driven 404 served on any non-yume probe (HTTP or otherwise)
     // so a passive DPI inspector sees TLS handshake + valid 404, never
     // the TLS-handshake-followed-by-immediate-close fingerprint that the

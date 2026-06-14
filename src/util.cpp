@@ -18,6 +18,7 @@
 #include <mutex>
 #include <iostream>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 #if defined(_WIN32)
@@ -50,6 +51,8 @@ std::size_t g_status_lines = 0;
 bool g_status_enabled = true;
 bool g_status_active = false;
 bool g_status_supported = true;
+std::mutex g_rate_log_mutex;
+std::unordered_map<std::string, int64_t> g_rate_log_last_ms;
 
 bool is_tty_stdout() {
 #if defined(_WIN32)
@@ -305,6 +308,18 @@ void signal_dispatch(int signum) {
         g_signal_handler(signum);
     }
 }
+
+bool should_log_rate_limited(const std::string& key, int64_t interval_ms) {
+    const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    std::lock_guard<std::mutex> lock(g_rate_log_mutex);
+    auto it = g_rate_log_last_ms.find(key);
+    if (it != g_rate_log_last_ms.end() && interval_ms > 0 && now - it->second < interval_ms) {
+        return false;
+    }
+    g_rate_log_last_ms[key] = now;
+    return true;
+}
 }  // namespace
 
 nlohmann::json read_json_config(const std::string& path) {
@@ -409,6 +424,18 @@ void log_error(const std::string& msg) {
     print_colored_log("ERROR", "1;31", msg);
 #endif
     render_status_line_locked();
+}
+
+void log_info_rate_limited(const std::string& key, const std::string& msg, int64_t interval_ms) {
+    if (should_log_rate_limited("info:" + key, interval_ms)) {
+        log_info(msg);
+    }
+}
+
+void log_warn_rate_limited(const std::string& key, const std::string& msg, int64_t interval_ms) {
+    if (should_log_rate_limited("warn:" + key, interval_ms)) {
+        log_warn(msg);
+    }
 }
 
 void set_logging_enabled(bool enabled) {

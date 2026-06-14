@@ -9,6 +9,7 @@
 #include <algorithm>
 #include "server/federation_manager.hpp"
 #include "server/auth.hpp"
+#include "server/ip_filter.hpp"
 #include "server/packet_tun_egress.hpp"
 #include "server/session.hpp"
 #include "util.hpp"
@@ -112,6 +113,35 @@ Manager::Manager(boost::asio::io_context& io, const ServerConfig& cfg)
     if (cfg_.egress_mbps > 0) {
         egress_limiter_ = std::make_unique<WeightedEgressLimiter>(cfg_.egress_mbps);
     }
+    if (!cfg_.filter_lists.empty() ||
+        !cfg_.filter_geolite.empty() ||
+        cfg_.client_filter_mode != "blacklist" ||
+        cfg_.egress_filter_mode != "blacklist") {
+        auto client_mode = IpFilter::parse_mode(cfg_.client_filter_mode);
+        auto egress_mode = IpFilter::parse_mode(cfg_.egress_filter_mode);
+        if (!client_mode.has_value()) {
+            throw std::runtime_error("invalid client filter mode: " + cfg_.client_filter_mode);
+        }
+        if (!egress_mode.has_value()) {
+            throw std::runtime_error("invalid egress filter mode: " + cfg_.egress_filter_mode);
+        }
+        std::vector<FilterListSpec> specs;
+        specs.reserve(cfg_.filter_lists.size());
+        for (const auto& raw : cfg_.filter_lists) {
+            std::string parse_error;
+            auto spec = IpFilter::parse_list_spec(raw, &parse_error);
+            if (!spec.has_value()) {
+                throw std::runtime_error("--filter-list " + raw + ": " + parse_error);
+            }
+            specs.push_back(std::move(*spec));
+        }
+        ip_filter_ = std::make_unique<IpFilter>();
+        ip_filter_->configure(*client_mode, *egress_mode);
+        std::string load_error;
+        if (!ip_filter_->load(specs, cfg_.filter_geolite, cfg_.filter_memory_mib, &load_error)) {
+            throw std::runtime_error("filter load failed: " + load_error);
+        }
+    }
     if (!cfg_.packet_egress.empty() && cfg_.packet_egress != "off" && cfg_.packet_egress != "none") {
         packet_egress_ = std::make_unique<PacketTunEgress>(io_, cfg_);
     }
@@ -188,6 +218,9 @@ void Manager::start() {
         util::log_info("weighted egress fairness enabled: cap=" +
                        std::to_string(cfg_.egress_mbps) +
                        " Mbps, grouped by auth key, priority weight range=1..100 (default 50)");
+    }
+    if (ip_filter_ && ip_filter_->active()) {
+        util::log_info("IP filtering active: " + ip_filter_->summary());
     }
     if (packet_egress_) {
         packet_egress_->start();
@@ -350,6 +383,17 @@ void Manager::write_packet_to_egress(std::uint32_t client_ipv4_be, crypto::Bytes
     if (packet_egress_) {
         packet_egress_->write_packet(client_ipv4_be, std::move(packet));
     }
+}
+
+bool Manager::egress_allowed(const boost::asio::ip::address& address, std::string* reason) const {
+    if (!ip_filter_) {
+        return true;
+    }
+    const auto decision = ip_filter_->check_egress(address);
+    if (!decision.allowed && reason) {
+        *reason = decision.source.empty() ? "egress filter" : decision.source;
+    }
+    return decision.allowed;
 }
 
 void Manager::schedule_upstream_reload() {
@@ -1205,6 +1249,26 @@ void Manager::do_accept() {
     }
     acceptor_.async_accept([this](boost::system::error_code ec, boost::asio::ip::tcp::socket socket) {
         if (!ec) {
+            if (ip_filter_) {
+                boost::system::error_code ep_ec;
+                auto remote = socket.remote_endpoint(ep_ec);
+                if (!ep_ec) {
+                    const auto decision = ip_filter_->check_client(remote.address());
+                    if (!decision.allowed) {
+                        ++accept_refused_filter_;
+                        if ((accept_refused_filter_ & 0x3F) == 1) {
+                            util::log_info("accept refused by client IP filter (refused-total=" +
+                                           std::to_string(accept_refused_filter_) + ")");
+                        }
+                        boost::system::error_code close_ec;
+                        socket.close(close_ec);
+                        if (acceptor_.is_open()) {
+                            do_accept();
+                        }
+                        return;
+                    }
+                }
+            }
             if (!admit_accept()) {
                 // Close on the spot. Reading nothing then closing
                 // mirrors what a load-balancer would do under

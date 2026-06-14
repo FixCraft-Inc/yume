@@ -68,6 +68,17 @@ void resolve_config_path(std::string& value, std::filesystem::path const& base) 
     value = p.lexically_normal().string();
 }
 
+void resolve_filter_spec_path(std::string& value, std::filesystem::path const& base) {
+    const auto first = value.find(':');
+    const auto second = first == std::string::npos ? std::string::npos : value.find(':', first + 1);
+    if (first == std::string::npos || second == std::string::npos || second + 1 >= value.size()) {
+        return;
+    }
+    std::string list_path = value.substr(second + 1);
+    resolve_config_path(list_path, base);
+    value = value.substr(0, second + 1) + list_path;
+}
+
 }  // namespace
 
 std::filesystem::path default_data_dir() {
@@ -181,6 +192,7 @@ std::optional<client::ClientConfig> load_client(
     read_opt(j, "tls_fingerprint_log_path", c.tls_fingerprint_log_path);
     read_opt(j, "tls_fingerprint_verify", c.tls_fingerprint_verify);
     read_opt(j, "tls_fingerprint_test_endpoint", c.tls_fingerprint_test_endpoint);
+    read_opt(j, "self_dpi", c.self_dpi);
     read_opt(j, "outbound_proxy", c.outbound_proxy_url);
 
     auto const base = path.parent_path();
@@ -246,6 +258,7 @@ bool save_client(client::ClientConfig const& c,
         {"tls_fingerprint_log_path", c.tls_fingerprint_log_path},
         {"tls_fingerprint_verify", c.tls_fingerprint_verify},
         {"tls_fingerprint_test_endpoint", c.tls_fingerprint_test_endpoint},
+        {"self_dpi", c.self_dpi},
         {"outbound_proxy", c.outbound_proxy_url},
     };
 
@@ -328,6 +341,7 @@ std::optional<server::ServerConfig> load_server(
     read_opt(j, "allow_local_ip", s.allow_local_ip);
     read_opt(j, "control_full", s.control_full);
     read_opt(j, "real_http", s.real_http);
+    read_opt(j, "robots_deny", s.robots_deny);
     read_opt(j, "real_index_path", s.real_index_path);
     read_opt(j, "real_secret", s.real_secret);
     read_opt(j, "real_secret_file", s.real_secret_file);
@@ -361,6 +375,17 @@ std::optional<server::ServerConfig> load_server(
     read_opt(j, "operator_keys", s.operator_keys);
     read_opt(j, "operator_keys_meta", s.operator_keys_meta);
     read_opt(j, "egress_mbps", s.egress_mbps);
+    read_opt(j, "client_filter_mode", s.client_filter_mode);
+    read_opt(j, "egress_filter_mode", s.egress_filter_mode);
+    read_opt(j, "filter_geolite", s.filter_geolite);
+    read_opt(j, "filter_memory_mib", s.filter_memory_mib);
+    if (auto it = j.find("filter_lists"); it != j.end() && it->is_array()) {
+        for (const auto& item : *it) {
+            if (item.is_string()) {
+                s.filter_lists.push_back(item.get<std::string>());
+            }
+        }
+    }
     read_opt(j, "packet_egress", s.packet_egress);
     read_opt(j, "packet_tun_name", s.packet_tun_name);
     read_opt(j, "packet_cidr", s.packet_cidr);
@@ -381,6 +406,12 @@ std::optional<server::ServerConfig> load_server(
     resolve_config_path(s.ipc_path, base);
     resolve_config_path(s.federation_auth_key, base);
     resolve_config_path(s.federation_anonym_ca, base);
+    resolve_config_path(s.operator_keys, base);
+    resolve_config_path(s.operator_keys_meta, base);
+    resolve_config_path(s.filter_geolite, base);
+    for (auto& spec : s.filter_lists) {
+        resolve_filter_spec_path(spec, base);
+    }
     return s;
 }
 
@@ -412,6 +443,7 @@ bool save_server(server::ServerConfig const& s,
         {"allow_local_ip", s.allow_local_ip},
         {"control_full", s.control_full},
         {"real_http", s.real_http},
+        {"robots_deny", s.robots_deny},
         {"real_index_path", s.real_index_path},
         {"real_secret_file", s.real_secret_file},
         {"anonym", s.anonym},
@@ -436,6 +468,11 @@ bool save_server(server::ServerConfig const& s,
         {"operator_keys", s.operator_keys},
         {"operator_keys_meta", s.operator_keys_meta},
         {"egress_mbps", s.egress_mbps},
+        {"client_filter_mode", s.client_filter_mode},
+        {"egress_filter_mode", s.egress_filter_mode},
+        {"filter_lists", s.filter_lists},
+        {"filter_geolite", s.filter_geolite},
+        {"filter_memory_mib", s.filter_memory_mib},
         {"packet_egress", s.packet_egress},
         {"packet_tun_name", s.packet_tun_name},
         {"packet_cidr", s.packet_cidr},
@@ -475,6 +512,24 @@ ValidationReport validate(server::ServerConfig const& s) {
     }
     if (s.threads < 0) {
         r.errors.emplace_back("threads: must be >= 0 (0 = auto)");
+    }
+    auto valid_filter_mode = [](const std::string& value) {
+        return value == "blacklist" || value == "denylist" ||
+               value == "whitelist" || value == "allowlist";
+    };
+    if (!valid_filter_mode(s.client_filter_mode)) {
+        r.errors.emplace_back("client_filter_mode: expected blacklist or whitelist");
+    }
+    if (!valid_filter_mode(s.egress_filter_mode)) {
+        r.errors.emplace_back("egress_filter_mode: expected blacklist or whitelist");
+    }
+    for (const auto& spec : s.filter_lists) {
+        const auto first = spec.find(':');
+        const auto second = first == std::string::npos ? std::string::npos : spec.find(':', first + 1);
+        if (first == std::string::npos || second == std::string::npos || second + 1 >= spec.size()) {
+            r.errors.emplace_back("filter_lists: expected <client|egress|both>:<allow|deny>:<path>");
+            break;
+        }
     }
     if (!s.packet_egress.empty() && s.packet_egress != "off" && s.packet_egress != "none" && s.packet_egress != "tun") {
         r.errors.emplace_back("packet_egress: expected tun, off, none, or empty");

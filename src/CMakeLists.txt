@@ -374,6 +374,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/local_runtime.cpp
         server/federation_link.cpp
         server/federation_manager.cpp
+        server/ip_filter.cpp
         server/manager.cpp
         server/packet_tun_egress.cpp
         server/auth.cpp
@@ -480,6 +481,25 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         )
     endif()
 
+    if(YUME_BUILD_SELFTEST)
+        if(WIN32)
+            message(FATAL_ERROR "YUME_BUILD_SELFTEST currently supports POSIX desktop hosts only")
+        endif()
+        if(NOT YUME_FEATURE_LAN_BRIDGE)
+            message(WARNING
+                "yume-selftest can be built, but routed loopback benchmarks require "
+                "-DYUME_FEATURE_LAN_BRIDGE=ON in the yume/yumed binaries under test")
+        endif()
+        add_executable(yume-selftest
+            tools/selftest.cpp
+        )
+        target_link_libraries(yume-selftest PRIVATE OpenSSL::Crypto Threads::Threads)
+        yume_apply_perf_opts(yume-selftest)
+        if(YUME_STATIC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+            target_link_options(yume-selftest PRIVATE -static)
+        endif()
+    endif()
+
     install(TARGETS yume yumed yume-net-map
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
     )
@@ -513,6 +533,12 @@ target_link_libraries(yume_packet_bulk_test PRIVATE yume_transport_core)
 yume_link_atomic_if_needed(yume_packet_bulk_test PRIVATE)
 yume_apply_perf_opts(yume_packet_bulk_test)
 add_test(NAME yume_packet_bulk_test COMMAND yume_packet_bulk_test)
+
+add_executable(yume_ip_filter_test server/ip_filter_test.cpp server/ip_filter.cpp)
+target_link_libraries(yume_ip_filter_test PRIVATE yume_core)
+yume_link_atomic_if_needed(yume_ip_filter_test PRIVATE)
+yume_apply_perf_opts(yume_ip_filter_test)
+add_test(NAME yume_ip_filter_test COMMAND yume_ip_filter_test)
 
 if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_executable(yume_obfs_test core/obfs_test.cpp)

@@ -81,6 +81,7 @@ struct ClientConfig {
     std::string tls_fingerprint_log_path{"./logs/fingerprints"};
     bool tls_fingerprint_verify{false};
     std::string tls_fingerprint_test_endpoint{"tls.peet.ws"};
+    bool self_dpi{false};
 
     // Outbound proxy used to reach the Yume server. When set, the client
     // doesn't do a direct DNS+TCP connect to `server:port` — it connects

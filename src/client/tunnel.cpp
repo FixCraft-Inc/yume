@@ -293,7 +293,11 @@ void Tunnel::close_all(const std::string& reason) {
         close_handler = close_handler_;
     }
 
-    util::log_warn("tunnel closed: " + reason);
+    if (reason == "interrupt" || reason == "server closed" || reason == "server shutdown") {
+        util::log_info("tunnel closed: " + reason);
+    } else {
+        util::log_warn("tunnel closed: " + reason);
+    }
     keepalive_timer_.cancel();
     if (close_handler) {
         close_handler(reason);

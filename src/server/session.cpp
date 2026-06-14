@@ -145,6 +145,15 @@ bool is_allowed_address(const boost::asio::ip::address& addr, bool allow_local_i
     return allow_local_ip;
 }
 
+bool egress_filter_allows(Manager* manager,
+                          const boost::asio::ip::address& address,
+                          std::string* reason) {
+    if (!manager) {
+        return true;
+    }
+    return manager->egress_allowed(address, reason);
+}
+
 bool is_blocked_host_literal(const std::string& host, bool allow_local_ip, bool control_full) {
     if (control_full) {
         return false;
@@ -819,7 +828,7 @@ void Session::on_handshake(const boost::system::error_code& ec) {
     // and --obfs. Without any of these, fall through to the fast
     // AUTH-challenge path (preserves pre-1.0 latency for operators
     // who haven't opted in to stealth).
-    if (cfg_.real_http || cfg_.obfuscation || !cfg_.http_profile.empty()
+    if (cfg_.real_http || cfg_.robots_deny || cfg_.obfuscation || !cfg_.http_profile.empty()
         || !cfg_.upstream_response_bytes.empty()
         || !cfg_.upstream_response_dir.empty()) {
         start_preface_read();
@@ -939,7 +948,7 @@ void Session::on_preface_timeout(const boost::system::error_code& ec) {
         // yume client either sends the h2 carrier handshake (obfs
         // on) or the raw AUTH header (no obfs, no stealth), both
         // arrive well under the 200 ms preface timer.
-        if (cfg_.real_http || cfg_.obfuscation || !cfg_.http_profile.empty()
+        if (cfg_.real_http || cfg_.robots_deny || cfg_.obfuscation || !cfg_.http_profile.empty()
             || !cfg_.upstream_response_bytes.empty()
             || !cfg_.upstream_response_dir.empty()) {
             close_with_reason("preface timeout (stealth mode): no recognised preface received");
@@ -983,10 +992,12 @@ bool Session::handle_http_preface(const std::string& preface) {
                                                                  if (pos != std::string::npos) {
                                                                      line = request->substr(0, pos);
                                                                  }
+                                                                 std::string method;
                                                                  std::string target = "/";
                                                                  if (!line.empty()) {
                                                                      auto p1 = line.find(' ');
                                                                      if (p1 != std::string::npos) {
+                                                                         method = line.substr(0, p1);
                                                                          auto p2 = line.find(' ', p1 + 1);
                                                                          if (p2 != std::string::npos && p2 > p1 + 1) {
                                                                              target = line.substr(p1 + 1, p2 - p1 - 1);
@@ -995,6 +1006,12 @@ bool Session::handle_http_preface(const std::string& preface) {
                                                                  }
 
                                                                  std::string path = target;
+                                                                 if (self->cfg_.robots_deny &&
+                                                                     path == "/robots.txt" &&
+                                                                     (method == "GET" || method == "HEAD")) {
+                                                                     self->send_robots_txt_response(method == "HEAD");
+                                                                     return;
+                                                                 }
                                                                  if (self->cfg_.real_http) {
                                                                      self->send_real_http_response(path);
                                                                  } else {
@@ -1097,6 +1114,10 @@ void Session::send_disguise_404(const std::string& path) {
 }
 
 void Session::send_real_http_response(const std::string& path) {
+    if (cfg_.robots_deny && path == "/robots.txt") {
+        send_robots_txt_response(false);
+        return;
+    }
     // Non-`/` paths get an nginx-style 404 via the same disguise
     // pipeline that --hide-in-the-crowd uses without --real. The
     // previous behaviour (302 Location: / on every unknown path)
@@ -1155,6 +1176,36 @@ void Session::send_real_http_response(const std::string& path) {
                              boost::asio::bind_executor(strand_,
                                                         [self, resp](const boost::system::error_code&, std::size_t) {
                                                             self->close_with_reason("served HTTP disguise response");
+                                                        }));
+}
+
+void Session::send_robots_txt_response(bool head_only) {
+    const std::string body = "User-agent: *\nDisallow: /\n";
+    auto profile = yume::http_profile::server(
+        cfg_.http_profile.empty() ? "yumed" : cfg_.http_profile);
+    if (!profile.has_value()) {
+        profile = yume::http_profile::server("yumed");
+    }
+
+    std::string headers;
+    headers += "HTTP/1.1 200 OK\r\n";
+    if (profile.has_value() && !profile->server_header_value.empty()) {
+        headers += "Server: " + profile->server_header_value + "\r\n";
+    }
+    if (profile.has_value() && !profile->extra_response_headers.empty()) {
+        headers += profile->extra_response_headers;
+    }
+    headers += "Content-Type: text/plain; charset=utf-8\r\n";
+    headers += "Cache-Control: no-store\r\n";
+    headers += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+    headers += "Connection: close\r\n\r\n";
+
+    auto resp = std::make_shared<std::string>(head_only ? headers : headers + body);
+    auto self = shared_from_this();
+    boost::asio::async_write(stream_, boost::asio::buffer(*resp),
+                             boost::asio::bind_executor(strand_,
+                                                        [self, resp](const boost::system::error_code&, std::size_t) {
+                                                            self->close_with_reason("served robots.txt");
                                                         }));
 }
 
@@ -2336,6 +2387,8 @@ void Session::handle_open(const protocol::Frame& frame) {
 
             std::vector<boost::asio::ip::udp::endpoint> allowed;
             bool blocked_active_server = false;
+            bool blocked_egress_filter = false;
+            std::string egress_filter_reason;
             for (const auto& entry : results) {
                 if (is_active_server_endpoint(entry.endpoint(), self->cfg_, self_local_addr)) {
                     blocked_active_server = true;
@@ -2344,6 +2397,14 @@ void Session::handle_open(const protocol::Frame& frame) {
                 if (is_allowed_address(entry.endpoint().address(),
                                        self->session_allow_local_ip_,
                                        self->session_control_full_)) {
+                    std::string reason;
+                    if (!egress_filter_allows(self->manager_, entry.endpoint().address(), &reason)) {
+                        blocked_egress_filter = true;
+                        if (egress_filter_reason.empty()) {
+                            egress_filter_reason = std::move(reason);
+                        }
+                        continue;
+                    }
                     allowed.push_back(entry.endpoint());
                 }
             }
@@ -2353,7 +2414,17 @@ void Session::handle_open(const protocol::Frame& frame) {
                                      false,
                                      blocked_active_server
                                          ? "blocked destination: active server endpoint"
-                                         : "blocked destination");
+                                         : (blocked_egress_filter
+                                             ? "blocked destination: egress filter"
+                                             : "blocked destination"));
+                if (blocked_egress_filter) {
+                    util::log_info_rate_limited(
+                        "server-open-egress-filter",
+                        "egress filter blocked UDP OPEN target " + udp->host + ":" +
+                            std::to_string(udp->port) +
+                            (egress_filter_reason.empty() ? "" : " (" + egress_filter_reason + ")"),
+                        30000);
+                }
                 std::lock_guard<std::mutex> lock(self->streams_mutex_);
                 self->udp_streams_.erase(stream_id);
                 return;
@@ -2426,6 +2497,8 @@ void Session::handle_open(const protocol::Frame& frame) {
 
                     std::vector<boost::asio::ip::udp::endpoint> allowed;
                     bool blocked_active_server = false;
+                    bool blocked_egress_filter = false;
+                    std::string egress_filter_reason;
                     for (const auto& address : addresses) {
                         boost::asio::ip::udp::endpoint endpoint(address, static_cast<unsigned short>(port));
                         if (is_active_server_endpoint(endpoint, self->cfg_, self_local_addr)) {
@@ -2435,6 +2508,14 @@ void Session::handle_open(const protocol::Frame& frame) {
                         if (is_allowed_address(endpoint.address(),
                                                self->session_allow_local_ip_,
                                                self->session_control_full_)) {
+                            std::string reason;
+                            if (!egress_filter_allows(self->manager_, endpoint.address(), &reason)) {
+                                blocked_egress_filter = true;
+                                if (egress_filter_reason.empty()) {
+                                    egress_filter_reason = std::move(reason);
+                                }
+                                continue;
+                            }
                             allowed.push_back(endpoint);
                         }
                     }
@@ -2444,7 +2525,17 @@ void Session::handle_open(const protocol::Frame& frame) {
                                              false,
                                              blocked_active_server
                                                  ? "blocked destination: active server endpoint"
-                                                 : "blocked destination");
+                                                 : (blocked_egress_filter
+                                                     ? "blocked destination: egress filter"
+                                                     : "blocked destination"));
+                        if (blocked_egress_filter) {
+                            util::log_info_rate_limited(
+                                "server-open-egress-filter",
+                                "egress filter blocked UDP OPEN target " + udp->host + ":" +
+                                    std::to_string(udp->port) +
+                                    (egress_filter_reason.empty() ? "" : " (" + egress_filter_reason + ")"),
+                                30000);
+                        }
                         std::lock_guard<std::mutex> lock(self->streams_mutex_);
                         self->udp_streams_.erase(stream_id);
                         return;
@@ -2553,6 +2644,8 @@ void Session::handle_open(const protocol::Frame& frame) {
 
         std::vector<boost::asio::ip::tcp::endpoint> allowed;
         bool blocked_active_server = false;
+        bool blocked_egress_filter = false;
+        std::string egress_filter_reason;
         for (const auto& endpoint : resolved) {
             if (is_active_server_endpoint(endpoint, self->cfg_, self_local_addr)) {
                 blocked_active_server = true;
@@ -2561,6 +2654,14 @@ void Session::handle_open(const protocol::Frame& frame) {
             if (is_allowed_address(endpoint.address(),
                                    self->session_allow_local_ip_,
                                    self->session_control_full_)) {
+                std::string reason;
+                if (!egress_filter_allows(self->manager_, endpoint.address(), &reason)) {
+                    blocked_egress_filter = true;
+                    if (egress_filter_reason.empty()) {
+                        egress_filter_reason = std::move(reason);
+                    }
+                    continue;
+                }
                 allowed.push_back(endpoint);
             }
         }
@@ -2570,7 +2671,17 @@ void Session::handle_open(const protocol::Frame& frame) {
                                   false,
                                   blocked_active_server
                                       ? "blocked destination: active server endpoint"
-                                      : "blocked destination");
+                                      : (blocked_egress_filter
+                                          ? "blocked destination: egress filter"
+                                          : "blocked destination"));
+            if (blocked_egress_filter) {
+                util::log_info_rate_limited(
+                    "server-open-egress-filter",
+                    "egress filter blocked TCP OPEN target " + remote->host + ":" +
+                        std::to_string(remote->port) +
+                        (egress_filter_reason.empty() ? "" : " (" + egress_filter_reason + ")"),
+                    30000);
+            }
             std::lock_guard<std::mutex> lock(self->streams_mutex_);
             self->streams_.erase(stream_id);
             return;
@@ -3090,6 +3201,26 @@ bool Session::handle_packet_data(uint8_t stream_id, const crypto::Bytes& payload
                            ": dropped packet-bulk packet on stream " +
                            std::to_string(stream_id) + ": " + reason);
             continue;
+        }
+        if (manager_) {
+            const std::uint32_t dst_be = read_ipv4_be(packet, 16);
+            boost::asio::ip::address_v4::bytes_type dst_bytes{{
+                static_cast<unsigned char>((dst_be >> 24) & 0xffu),
+                static_cast<unsigned char>((dst_be >> 16) & 0xffu),
+                static_cast<unsigned char>((dst_be >> 8) & 0xffu),
+                static_cast<unsigned char>(dst_be & 0xffu),
+            }};
+            const boost::asio::ip::address dst = boost::asio::ip::address_v4(dst_bytes);
+            std::string filter_reason;
+            if (!manager_->egress_allowed(dst, &filter_reason)) {
+                util::log_info_rate_limited(
+                    "packet-egress-filter",
+                    "egress filter dropped packet-native IPv4 packet to " +
+                        dst.to_string() +
+                        (filter_reason.empty() ? "" : " (" + filter_reason + ")"),
+                    30000);
+                continue;
+            }
         }
         packet_stream_->upstream_packets += 1;
         if (manager_) {

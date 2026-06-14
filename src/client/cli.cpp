@@ -1193,7 +1193,7 @@ struct ParsedArgs {
     bool self_dpi_override{false};
     bool bench{false};
     int bench_mib{256};
-    int bench_chunk_kib{64};
+    int bench_chunk_kib{1024};
     std::string bench_direction{"both"};
     bool help{false};
     bool version{false};
@@ -2263,7 +2263,7 @@ void print_help() {
         << "  --bench                  Run authenticated endpoint up/down benchmark\n"
         << "                             against yumed --bench, then exit.\n"
         << "  --bench-mib <N>          Benchmark payload per direction (default 256).\n"
-        << "  --bench-chunk-kib <N>    DATA chunk size (default 64, max 1024).\n"
+        << "  --bench-chunk-kib <N>    DATA chunk size (default 1024, max 1024).\n"
         << "  --bench-direction <D>    both, up, or down (default both).\n"
         << "  -L [bind:]lport:host:port\n"
         << "                           Local forward\n"

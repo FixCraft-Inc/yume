@@ -5309,8 +5309,6 @@ int Cli::run(int argc, char** argv) {
             if (server_version.empty() || server_version == "UNKNOWN") {
                 throw FatalError("this endpoint is not a yume server (no version info); please check the origin and try again");
             }
-            util::log_info("authenticated to server");
-
             auto sanitize_msg = [&](const std::string& msg) {
                 if (!cfg.boring) {
                     return msg;
@@ -5450,7 +5448,11 @@ int Cli::run(int argc, char** argv) {
                 }
             };
             bool allow_pq_bootstrap = server_error.empty() ||
-                                      server_error.find("requires inner") != std::string::npos;
+                                      server_error.find("requires inner") != std::string::npos ||
+                                      server_error.find("pq key") != std::string::npos ||
+                                      (cfg.inner_crypto &&
+                                       !pq_pub_b64.empty() &&
+                                       server_error.find("invalid key") != std::string::npos);
             maybe_auto_trust_pq(allow_pq_bootstrap);
 
             if (!server_error.empty()) {
@@ -5467,6 +5469,7 @@ int Cli::run(int argc, char** argv) {
                 }
                 return 1;
             }
+            util::log_info("authenticated to server");
             if (server_version != yume::kVersion) {
                 print_red("server is version " + server_version + ", you are " + std::string(yume::kVersion) +
                           ", please install a matching version to connect to this server");

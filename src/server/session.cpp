@@ -102,6 +102,21 @@ bool auth_debug_enabled() {
     return text == "1" || text == "true" || text == "yes" || text == "on";
 }
 
+bool looks_like_inner_auth_exception(const std::string& message) {
+    std::string lower(message);
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return lower.find("pq") != std::string::npos ||
+           lower.find("ml-kem") != std::string::npos ||
+           lower.find("kem") != std::string::npos ||
+           lower.find("oqs") != std::string::npos ||
+           lower.find("decapsulation") != std::string::npos ||
+           lower.find("inner crypto") != std::string::npos ||
+           lower.find("argon2") != std::string::npos ||
+           lower.find("kdf") != std::string::npos;
+}
+
 bool is_private_ipv4(const boost::asio::ip::address_v4& addr) {
     const auto bytes = addr.to_bytes();
     const uint8_t a = bytes[0];
@@ -2164,8 +2179,20 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             update_auth_meta(cfg_.auth_keys_meta, fingerprint);
         }
         return true;
-    } catch (const std::exception&) {
-        auth_error_ = "access denied: invalid key";
+    } catch (const std::exception& ex) {
+        const std::string detail = ex.what();
+        const bool post_key_auth = !auth_fingerprint_.empty();
+        if (!cfg_.anonym || auth_debug_enabled()) {
+            util::log_warn("session " + std::to_string(session_id_) +
+                           ": auth exception fingerprint=" +
+                           (auth_fingerprint_.empty() ? std::string("<unknown>") : auth_fingerprint_) +
+                           " detail=" + detail);
+        }
+        if (post_key_auth && looks_like_inner_auth_exception(detail)) {
+            auth_error_ = "access denied: pq key derivation failed";
+        } else {
+            auth_error_ = "access denied: invalid key";
+        }
         return false;
     }
 }

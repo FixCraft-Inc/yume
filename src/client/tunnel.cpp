@@ -318,6 +318,12 @@ void Tunnel::close_all(const std::string& reason) {
     }
 
     boost::system::error_code ec;
+    if (reason == "interrupt") {
+        stream_.lowest_layer().cancel(ec);
+        stream_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
+        stream_.lowest_layer().close(ec);
+        return;
+    }
     stream_.shutdown(ec);
     stream_.lowest_layer().close(ec);
 }

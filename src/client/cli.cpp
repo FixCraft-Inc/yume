@@ -1194,6 +1194,7 @@ struct ParsedArgs {
     bool bench{false};
     int bench_mib{256};
     int bench_chunk_kib{64};
+    std::string bench_direction{"both"};
     bool help{false};
     bool version{false};
     bool credits{false};
@@ -1442,6 +1443,22 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.non_interactive = true;
         } else if (arg == "--bench-chunk-kib") {
             if (!parse_int_value("--bench-chunk-kib", args.bench_chunk_kib)) {
+                return args;
+            }
+            args.bench = true;
+            args.non_interactive = true;
+        } else if (arg == "--bench-direction") {
+            const char* direction = take_value("--bench-direction");
+            if (!direction) {
+                return args;
+            }
+            args.bench_direction = direction;
+            std::transform(args.bench_direction.begin(), args.bench_direction.end(), args.bench_direction.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (args.bench_direction != "both" &&
+                args.bench_direction != "up" &&
+                args.bench_direction != "down") {
+                args.parse_error = "--bench-direction must be one of: both, up, down";
                 return args;
             }
             args.bench = true;
@@ -2162,7 +2179,7 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --credits --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --bench --bench-mib --bench-chunk-kib --threads --tunnels --obfs --no-obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms export import --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --self-dpi --no-self-dpi --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
+  local opts="--help -h --version --credits --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --bench --bench-mib --bench-chunk-kib --bench-direction --threads --tunnels --obfs --no-obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms export import --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --self-dpi --no-self-dpi --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
   local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path --relay-key-file"
   case "$prev" in
     --completion)
@@ -2247,6 +2264,7 @@ void print_help() {
         << "                             against yumed --bench, then exit.\n"
         << "  --bench-mib <N>          Benchmark payload per direction (default 256).\n"
         << "  --bench-chunk-kib <N>    DATA chunk size (default 64, max 1024).\n"
+        << "  --bench-direction <D>    both, up, or down (default both).\n"
         << "  -L [bind:]lport:host:port\n"
         << "                           Local forward\n"
         << "  -R [bind:]rport:host:port\n"
@@ -4021,33 +4039,37 @@ int run_endpoint_benchmark(const std::shared_ptr<Tunnel>& tunnel,
               << ", chunk: " << args.bench_chunk_kib << " KiB\n"
               << "path: authenticated YUME stream over current TLS/obfs/inner settings\n\n";
 
-    std::cout << "UP:   running upload...\n" << std::flush;
-    auto up = run_endpoint_upload_bench(tunnel, total_bytes, chunk_size);
-    if (!up.ok) {
-        util::log_error("bench upload failed: " + up.error);
-        return 1;
+    if (args.bench_direction == "both" || args.bench_direction == "up") {
+        std::cout << "UP:   running upload...\n" << std::flush;
+        auto up = run_endpoint_upload_bench(tunnel, total_bytes, chunk_size);
+        if (!up.ok) {
+            util::log_error("bench upload failed: " + up.error);
+            return 1;
+        }
+        std::cout << "UP:   " << std::fixed << std::setprecision(1)
+                  << mib_per_second(up.bytes, up.seconds) << " MiB/s"
+                  << "  (" << format_mib(up.bytes) << " MiB in "
+                  << std::setprecision(3) << up.seconds << " s";
+        if (up.server_bytes > 0 && up.server_seconds > 0.0) {
+            std::cout << ", server " << std::setprecision(1)
+                      << mib_per_second(up.server_bytes, up.server_seconds)
+                      << " MiB/s";
+        }
+        std::cout << ")\n";
     }
-    std::cout << "UP:   " << std::fixed << std::setprecision(1)
-              << mib_per_second(up.bytes, up.seconds) << " MiB/s"
-              << "  (" << format_mib(up.bytes) << " MiB in "
-              << std::setprecision(3) << up.seconds << " s";
-    if (up.server_bytes > 0 && up.server_seconds > 0.0) {
-        std::cout << ", server " << std::setprecision(1)
-                  << mib_per_second(up.server_bytes, up.server_seconds)
-                  << " MiB/s";
-    }
-    std::cout << ")\n";
 
-    std::cout << "DOWN: running download...\n" << std::flush;
-    auto down = run_endpoint_download_bench(tunnel, total_bytes);
-    if (!down.ok) {
-        util::log_error("bench download failed: " + down.error);
-        return 1;
+    if (args.bench_direction == "both" || args.bench_direction == "down") {
+        std::cout << "DOWN: running download...\n" << std::flush;
+        auto down = run_endpoint_download_bench(tunnel, total_bytes);
+        if (!down.ok) {
+            util::log_error("bench download failed: " + down.error);
+            return 1;
+        }
+        std::cout << "DOWN: " << std::fixed << std::setprecision(1)
+                  << mib_per_second(down.bytes, down.seconds) << " MiB/s"
+                  << "  (" << format_mib(down.bytes) << " MiB in "
+                  << std::setprecision(3) << down.seconds << " s)\n";
     }
-    std::cout << "DOWN: " << std::fixed << std::setprecision(1)
-              << mib_per_second(down.bytes, down.seconds) << " MiB/s"
-              << "  (" << format_mib(down.bytes) << " MiB in "
-              << std::setprecision(3) << down.seconds << " s)\n";
     return 0;
 }
 
@@ -4855,6 +4877,10 @@ int Cli::run(int argc, char** argv) {
             ::close(STDIN_FILENO);
         }
 #endif
+        if (args.bench) {
+            std::cerr << "[INFO] Benchmark interrupted. Exiting immediately." << std::endl;
+            std::_Exit(130);
+        }
         if (already_requested) {
             std::cerr << "[WARN] Force stop requested. Exiting immediately." << std::endl;
             std::_Exit(1);

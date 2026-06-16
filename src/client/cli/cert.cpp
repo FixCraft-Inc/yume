@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  *
  * CLI certificate / OpenSSL helpers, extracted verbatim from
- * client/cli.cpp. No behavior change.
+ * client/cli/entry.cpp. No behavior change.
  */
 
 #include "client/cli/cert.hpp"

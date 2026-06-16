@@ -39,7 +39,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
-#include "server/srv_help.hpp"
+#include "server/cli/help.hpp"
 #include <boost/asio.hpp>
 #include <nlohmann/json.hpp>
 
@@ -49,16 +49,16 @@
 #include "core/tls_fingerprint.hpp"
 #include "core/tls_stealth.hpp"
 #include "core/version.hpp"
-#include "server/manager.hpp"
-#include "server/auth.hpp"
-#include "server/ip_filter.hpp"
-#include "server/server_anonym_cli.hpp"
-#include "server/server_cluster_cli.hpp"
-#include "server/server_key_cli.hpp"
-#include "server/local_runtime.hpp"
-#include "server/server_local_cli.hpp"
-#include "server/server_misc_cli.hpp"
-#include "server/server_runtime_prep.hpp"
+#include "server/runtime/manager.hpp"
+#include "server/auth/auth.hpp"
+#include "server/filter/ip_filter.hpp"
+#include "server/cli/anonym.hpp"
+#include "server/cli/cluster.hpp"
+#include "server/cli/key.hpp"
+#include "server/runtime/local_runtime.hpp"
+#include "server/cli/local.hpp"
+#include "server/cli/misc.hpp"
+#include "server/cli/runtime_prep.hpp"
 #include "util.hpp"
 
 namespace {

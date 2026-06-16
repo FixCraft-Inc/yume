@@ -90,7 +90,7 @@ NETNS_CLIENT = "yume-bench-cli"
 VETH_SERVER = "vyumebsrv"
 VETH_CLIENT = "vyumebcli"
 # Use 11.0.0.0/24 (DoD-assigned but unrouted in practice). yumed's
-# is_private_ipv4 (src/server/session.cpp:71) classifies the RFC 1918
+# is_private_ipv4 (src/server/session/net.cpp:61) classifies the RFC 1918
 # private blocks, RFC 6598 CGNAT, RFC 5737 test-nets, and IETF reserved
 # 192.0/24 / 198.18-19/15 / 198.51/16 / 203.0/24 all as "private" — and
 # the SOCKS open path rejects with "blocked destination" unless

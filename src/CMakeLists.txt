@@ -337,7 +337,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
 endif()
 
 add_library(yume_transport_core
-    client/transport_core.cpp
+    client/transport/core.cpp
     core/inner_crypto.cpp
     core/packet_bulk.cpp
     core/protocol.cpp
@@ -371,25 +371,25 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     # library (consumed by yume-gui) can link a single source-of-truth
     # server implementation. The executable below contains only main().
     add_library(yume_server STATIC
-        server/local_runtime.cpp
-        server/federation_link.cpp
-        server/federation_manager.cpp
-        server/ip_filter.cpp
-        server/ip_filter_mmdb.cpp
-        server/manager.cpp
-        server/manager_relay.cpp
-        server/packet_tun_egress.cpp
-        server/auth.cpp
-        server/session.cpp
-        server/session_control.cpp
-        server/session_net.cpp
-        server/session_carrier.cpp
-        server/session_streams.cpp
-        server/session_ext.cpp
-        server/session_open.cpp
-        server/session_auth.cpp
-        server/runtime_controller.cpp
-        client/outbound_proxy.cpp
+        server/runtime/local_runtime.cpp
+        server/federation/link.cpp
+        server/federation/manager.cpp
+        server/filter/ip_filter.cpp
+        server/filter/ip_filter_mmdb.cpp
+        server/runtime/manager.cpp
+        server/runtime/manager_relay.cpp
+        server/packet/tun_egress.cpp
+        server/auth/auth.cpp
+        server/session/session.cpp
+        server/session/control.cpp
+        server/session/net.cpp
+        server/session/carrier.cpp
+        server/session/streams.cpp
+        server/session/ext.cpp
+        server/session/open.cpp
+        server/session/auth.cpp
+        server/runtime/controller.cpp
+        client/proxy/outbound_proxy.cpp
     )
     target_include_directories(yume_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(yume_server PUBLIC yume_core yume_transport_core)
@@ -406,13 +406,13 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
 
     add_executable(yumed
         main_server.cpp
-        server/server_anonym_cli.cpp
-        server/server_cluster_cli.cpp
-        server/server_key_cli.cpp
-        server/server_local_cli.cpp
-        server/server_misc_cli.cpp
-        server/server_runtime_prep.cpp
-        server/srv_help.cpp
+        server/cli/anonym.cpp
+        server/cli/cluster.cpp
+        server/cli/key.cpp
+        server/cli/local.cpp
+        server/cli/misc.cpp
+        server/cli/runtime_prep.cpp
+        server/cli/help.cpp
     )
     target_link_libraries(yumed PRIVATE yume_server)
     yume_apply_perf_opts(yumed)
@@ -432,24 +432,22 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     # ------------------------------------------------------------------
     # Client library
     # ------------------------------------------------------------------
-    # Mirror of yume_server: every client primitive except the CLI/REPL
-    # entrypoint (cli.cpp) lives here so the facade can construct a
-    # client session without duplicating the transport stack. cli.cpp
-    # stays inside the `yume` executable because it contains argv
-    # parsing and the interactive REPL — neither relevant to the GUI.
+    # Mirror of yume_server: every client primitive except main() lives
+    # here so the facade can construct a client session without
+    # duplicating the transport stack.
     add_library(yume_client_lib STATIC
-        client/history.cpp
-        client/local_runtime.cpp
-        client/relay_secret.cpp
-        client/relay_runtime.cpp
-        client/runtime_controller.cpp
-        client/tunnel.cpp
-        client/tunnel_pool.cpp
-        client/socks.cpp
-        client/forward.cpp
-        client/outbound_proxy.cpp
-        client/share_file.cpp
-        client/cli.cpp
+        client/relay/history.cpp
+        client/runtime/local_runtime.cpp
+        client/relay/secret.cpp
+        client/relay/runtime.cpp
+        client/runtime/controller.cpp
+        client/transport/tunnel.cpp
+        client/transport/tunnel_pool.cpp
+        client/proxy/socks.cpp
+        client/proxy/forward.cpp
+        client/proxy/outbound_proxy.cpp
+        client/transfer/share_file.cpp
+        client/cli/entry.cpp
         client/cli/anonym_proof.cpp
         client/cli/attach.cpp
         client/cli/args.cpp
@@ -466,8 +464,8 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/cli/platform.cpp
         client/cli/pq_bootstrap.cpp
         client/cli/proxy.cpp
-        client/cli/relay.cpp
-        client/cli/runtime.cpp
+        client/cli/relay_secret.cpp
+        client/cli/io_runtime.cpp
         client/cli/server_info.cpp
         client/cli/secondary_tunnel.cpp
         client/cli/share.cpp
@@ -568,7 +566,7 @@ endif()
 if(YUME_BUILD_TESTING)
 
 add_executable(yume_transport_core_test
-    client/transport_core_test.cpp
+    client/transport/core_test.cpp
 )
 
 target_link_libraries(yume_transport_core_test PRIVATE yume_transport_core)
@@ -583,7 +581,7 @@ yume_link_atomic_if_needed(yume_packet_bulk_test PRIVATE)
 yume_apply_perf_opts(yume_packet_bulk_test)
 add_test(NAME yume_packet_bulk_test COMMAND yume_packet_bulk_test)
 
-add_executable(yume_ip_filter_test server/ip_filter_test.cpp server/ip_filter.cpp server/ip_filter_mmdb.cpp)
+add_executable(yume_ip_filter_test server/filter/ip_filter_test.cpp server/filter/ip_filter.cpp server/filter/ip_filter_mmdb.cpp)
 target_link_libraries(yume_ip_filter_test PRIVATE yume_core)
 yume_link_atomic_if_needed(yume_ip_filter_test PRIVATE)
 yume_apply_perf_opts(yume_ip_filter_test)

@@ -457,7 +457,7 @@ sudo ./build/bin/yumed \
 
 - GPL-v3, both client and daemon fully buildable from this tree
 - BaseFWX is pinned by commit (see `.basefwx-ref`); release CI fails if mandatory crypto support is missing
-- Authorized keys verified with constant-time `EVP_DigestVerify` ([src/server/auth.cpp:78–99](src/server/auth.cpp#L78-L99))
+- Authorized keys verified with OpenSSL `EVP_DigestVerify` ([src/core/crypto.cpp:78](src/core/crypto.cpp#L78))
 - Inner-frame AEAD verified before plaintext is delivered (OpenSSL `EVP_DecryptFinal_ex`)
 - Master PQ keypair off by default; explicit `--use-embedded-master` required and warned about at startup on both ends
 - Server-side exec / LAN bridging / unrestricted bridging are off at compile time by default ([CMakeLists.txt](CMakeLists.txt) `YUME_FEATURE_EXEC` / `_LAN_BRIDGE` / `_FULL_CONTROL`); enabling them requires opting in at build, runtime flag, AND per-key meta (see [docs/PERMISSIONS.md](docs/PERMISSIONS.md))

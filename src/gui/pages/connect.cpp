@@ -13,7 +13,7 @@
 
 #include <imgui.h>
 
-#include "client/share_file.hpp"
+#include "client/transfer/share_file.hpp"
 #include "facade/client_session.hpp"
 #include "facade/config_io.hpp"
 #include "facade/profiles.hpp"

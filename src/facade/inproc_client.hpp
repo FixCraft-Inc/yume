@@ -25,7 +25,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "client/cli.hpp"
+#include "client/cli/entry.hpp"
 
 namespace yume::client {
 class Tunnel;

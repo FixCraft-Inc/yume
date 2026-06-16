@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  *
  * CLI help / version / credits / bash-completion output, extracted
- * verbatim from client/cli.cpp. No behavior change.
+ * verbatim from client/cli/entry.cpp. No behavior change.
  */
 
 #include "client/cli/help.hpp"

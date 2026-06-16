@@ -5,7 +5,7 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU General Public License v3.0.
  *
- * CLI certificate / OpenSSL helpers, extracted from client/cli.cpp.
+ * CLI certificate / OpenSSL helpers, extracted from client/cli/entry.cpp.
  * No behavior change.
  */
 

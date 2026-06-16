@@ -11,8 +11,8 @@
 #include <string>
 #include <vector>
 
-#include "client/cli.hpp"
-#include "server/config.hpp"
+#include "client/cli/entry.hpp"
+#include "server/config/config.hpp"
 
 namespace yume::facade::config_io {
 

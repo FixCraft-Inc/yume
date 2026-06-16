@@ -14,7 +14,7 @@
 #include "facade/keys.hpp"
 #include "facade/log_sink.hpp"
 #include "facade/traffic_meter.hpp"
-#include "server/runtime_controller.hpp"
+#include "server/runtime/controller.hpp"
 
 namespace yume::facade {
 

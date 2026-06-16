@@ -14,10 +14,10 @@
 #include <nlohmann/json.hpp>
 
 #include "client/cli/input.hpp"
-#include "client/cli/relay.hpp"
-#include "client/cli/runtime.hpp"
-#include "client/relay_runtime.hpp"
-#include "client/tunnel.hpp"
+#include "client/cli/relay_secret.hpp"
+#include "client/cli/io_runtime.hpp"
+#include "client/relay/runtime.hpp"
+#include "client/transport/tunnel.hpp"
 #include "core/control_protocol.hpp"
 #include "util.hpp"
 

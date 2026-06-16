@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "client/cli.hpp"
+#include "client/cli/entry.hpp"
 
 int main(int argc, char** argv) {
     yume::client::Cli cli;

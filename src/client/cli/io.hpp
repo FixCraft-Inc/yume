@@ -6,7 +6,7 @@
  * Licensed under the GNU General Public License v3.0.
  *
  * CLI low-level async-I/O-with-timeout helpers and wire-inspection
- * diagnostics, extracted verbatim from client/cli.cpp. Several of these
+ * diagnostics, extracted verbatim from client/cli/entry.cpp. Several of these
  * are function templates or small inline helpers, so the cluster is
  * header-resident. Included by CLI connection/auth code.
  */

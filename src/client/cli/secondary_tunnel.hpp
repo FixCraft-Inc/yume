@@ -11,8 +11,8 @@
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 
-#include "client/cli.hpp"
-#include "client/outbound_proxy.hpp"
+#include "client/cli/entry.hpp"
+#include "client/proxy/outbound_proxy.hpp"
 
 namespace yume::client {
 

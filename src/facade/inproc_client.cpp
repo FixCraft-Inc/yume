@@ -13,8 +13,8 @@
 
 #include <boost/asio/post.hpp>
 
-#include "client/relay_runtime.hpp"
-#include "client/tunnel.hpp"
+#include "client/relay/runtime.hpp"
+#include "client/transport/tunnel.hpp"
 #include "facade/log_sink.hpp"
 
 namespace yume::facade {

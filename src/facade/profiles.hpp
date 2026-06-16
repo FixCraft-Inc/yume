@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-#include "client/cli.hpp"
+#include "client/cli/entry.hpp"
 
 namespace yume::facade::profiles {
 

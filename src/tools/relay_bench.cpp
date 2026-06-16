@@ -26,7 +26,7 @@
  * socket/strand/kernel cost.
  */
 
-#include "client/transport_core.hpp"
+#include "client/transport/core.hpp"
 #include "core/inner_crypto.hpp"
 #include "core/protocol.hpp"
 

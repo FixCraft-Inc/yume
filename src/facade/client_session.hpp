@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-#include "client/cli.hpp"
+#include "client/cli/entry.hpp"
 #include "facade/status.hpp"
 
 namespace yume::facade {

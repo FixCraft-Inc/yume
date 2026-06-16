@@ -19,9 +19,9 @@
 #include <sys/stat.h>
 #endif
 
-#include "client/cli.hpp"
+#include "client/cli/entry.hpp"
 #include "client/cli/input.hpp"
-#include "client/share_file.hpp"
+#include "client/transfer/share_file.hpp"
 #include "core/version.hpp"
 #include "util.hpp"
 

@@ -20,8 +20,8 @@
 
 #include <nlohmann/json.hpp>
 
-#include "client/cli.hpp"
-#include "client/tunnel.hpp"
+#include "client/cli/entry.hpp"
+#include "client/transport/tunnel.hpp"
 #include "util.hpp"
 
 namespace yume::client {

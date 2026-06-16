@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "facade/status.hpp"
-#include "server/config.hpp"
+#include "server/config/config.hpp"
 
 namespace yume::facade {
 

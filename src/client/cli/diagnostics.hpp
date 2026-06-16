@@ -11,7 +11,7 @@
 #include <string_view>
 #include <vector>
 
-#include "client/cli.hpp"
+#include "client/cli/entry.hpp"
 #include "core/tls_fingerprint.hpp"
 
 namespace yume::client {

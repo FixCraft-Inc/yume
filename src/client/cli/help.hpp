@@ -6,7 +6,7 @@
  * Licensed under the GNU General Public License v3.0.
  *
  * CLI help/usage text and version/credits output, extracted from
- * client/cli.cpp to keep that entrypoint file from carrying ~200 lines
+ * client/cli/entry.cpp to keep that entrypoint file from carrying ~200 lines
  * of static text. No behavior change.
  */
 

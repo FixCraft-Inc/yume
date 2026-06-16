@@ -14,11 +14,11 @@
 
 #include <nlohmann/json.hpp>
 
-#include "client/cli.hpp"
+#include "client/cli/entry.hpp"
 #include "client/cli/args.hpp"
 #include "client/cli/input.hpp"
-#include "client/cli/relay.hpp"
-#include "client/local_runtime.hpp"
+#include "client/cli/relay_secret.hpp"
+#include "client/runtime/local_runtime.hpp"
 #include "core/identity.hpp"
 #include "util.hpp"
 

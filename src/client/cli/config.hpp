@@ -8,7 +8,7 @@
 
 #include <string>
 
-#include "client/cli.hpp"
+#include "client/cli/entry.hpp"
 #include "client/cli/args.hpp"
 
 namespace yume::client {

@@ -19,7 +19,7 @@
 #include "client/cli/cert.hpp"
 #include "client/cli/io.hpp"
 #include "client/cli/server_info.hpp"
-#include "client/tunnel.hpp"
+#include "client/transport/tunnel.hpp"
 #include "core/inner_crypto.hpp"
 #include "core/protocol.hpp"
 #include "core/version.hpp"

@@ -9,7 +9,7 @@
 // can't accidentally mutate runtime state — it only reads.
 
 #include "core/local_runtime.hpp"
-#include "server/local_runtime.hpp"
+#include "server/runtime/local_runtime.hpp"
 #include "util.hpp"
 
 #include <nlohmann/json.hpp>

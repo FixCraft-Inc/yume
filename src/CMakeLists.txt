@@ -404,6 +404,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
 
     add_executable(yumed
         main_server.cpp
+        server/srv_help.cpp
     )
     target_link_libraries(yumed PRIVATE yume_server)
     yume_apply_perf_opts(yumed)

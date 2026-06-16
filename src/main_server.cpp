@@ -40,13 +40,9 @@
 #include <unistd.h>
 #endif
 #include "server/srv_help.hpp"
-#include <openssl/crypto.h>
-#include <openssl/evp.h>
 #include <boost/asio.hpp>
-#include <openssl/pem.h>
 #include <nlohmann/json.hpp>
 
-#include "core/crypto.hpp"
 #include "core/http_profile.hpp"
 #include "core/inner_crypto.hpp"
 #include "core/runtime_policy.hpp"
@@ -68,14 +64,10 @@ namespace {
 constexpr const char kDefaultSecretPath[] = "./.secrets/html_secret";
 
 using yume::server_cli::anonym_local_sign_default;
-using yume::server_cli::append_authorized_public_key;
-using yume::server_cli::auth_keys_write_hint;
 using yume::server_cli::derive_pq_public_path;
-using yume::server_cli::ensure_dir;
 using yume::server_cli::expand_cluster_join_spec;
 using yume::server_cli::fetch_anonym_proof;
 using yume::server_cli::file_readable;
-using yume::server_cli::generate_ed25519_keypair;
 using yume::server_cli::cert_fingerprint_sha256;
 using yume::server_cli::get_self_path;
 using yume::server_cli::load_pq_public_b64;
@@ -83,6 +75,9 @@ using yume::server_cli::load_or_create_secret;
 using yume::server_cli::parse_proof_ts;
 using yume::server_cli::read_file_bytes;
 using yume::server_cli::resolve_filter_list_spec_path;
+using yume::server_cli::run_server_key_command;
+using yume::server_cli::run_server_manager_ui;
+using yume::server_cli::ServerKeyCommand;
 using yume::server_cli::sha256_hex;
 using yume::server_cli::sign_pq_pub_with_key;
 
@@ -201,14 +196,7 @@ int main(int argc, char** argv) {
     };
     std::string config_path = "config/yumed.json";
     bool config_specified = false;
-    std::string keys_add;
-    std::string keys_remove;
-    std::string keys_alias;
-    std::string keys_alias_value;
-    bool keys_list = false;
-    std::string keys_gen;
-    bool keys_gen_add = false;
-    bool ui_mode = false;
+    ServerKeyCommand key_command;
     bool inner_heavy_override = false;
     bool inner_heavy_value = true;
     bool inner_crypto_override = false;
@@ -537,20 +525,20 @@ int main(int argc, char** argv) {
         } else if (arg == "--root") {
             keep_root = true;
         } else if (arg == "--keys-add" && i + 1 < argc) {
-            keys_add = argv[++i];
+            key_command.add = argv[++i];
         } else if (arg == "--keys-remove" && i + 1 < argc) {
-            keys_remove = argv[++i];
+            key_command.remove = argv[++i];
         } else if (arg == "--keys-alias" && i + 2 < argc) {
-            keys_alias = argv[++i];
-            keys_alias_value = argv[++i];
+            key_command.alias = argv[++i];
+            key_command.alias_value = argv[++i];
         } else if (arg == "--keys-list") {
-            keys_list = true;
+            key_command.list = true;
         } else if (arg == "--keys-gen" && i + 1 < argc) {
-            keys_gen = argv[++i];
+            key_command.generate_prefix = argv[++i];
         } else if (arg == "--keys-gen-add") {
-            keys_gen_add = true;
+            key_command.generate_and_add = true;
         } else if (arg == "--ui") {
-            ui_mode = true;
+            key_command.ui = true;
         } else if (arg == "--boring") {
             cfg.boring = true;
         } else if (arg == "--timing") {
@@ -1268,9 +1256,7 @@ int main(int argc, char** argv) {
         return true;
     };
 
-    const bool key_management_only =
-        ui_mode || keys_list || !keys_add.empty() || !keys_remove.empty()
-        || !keys_alias.empty() || !keys_gen.empty();
+    const bool key_management_only = key_command.ui || key_command.has_action();
 
     if (!key_management_only) {
         if (!require_readable("tls_cert", cfg.tls_cert)) {
@@ -1311,178 +1297,14 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (ui_mode) {
-        std::cout << "\n\033[1;36mYUME Server Manager\033[0m\n";
-        if (cfg.auth_keys.empty()) {
-            cfg.auth_keys = "/etc/yume/authorized_keys";
-        }
-        if (cfg.auth_keys_meta.empty() && !cfg.auth_keys.empty()) {
-            cfg.auth_keys_meta = cfg.auth_keys + ".json";
-        }
-        std::cout << "auth_keys: " << cfg.auth_keys << auth_keys_write_hint(cfg.auth_keys) << "\n";
-        std::cout << "1) Generate keypair and authorize it\n";
-        std::cout << "2) Add public key to auth_keys\n";
-        std::cout << "3) Remove key (fingerprint or alias)\n";
-        std::cout << "4) Set alias\n";
-        std::cout << "5) List keys\n";
-        std::cout << "6) Edit config\n";
-        std::cout << "7) Generate keypair only\n";
-        std::cout << "0) Exit\n";
-        std::cout << "Select: ";
-        std::string choice;
-        std::getline(std::cin, choice);
-        if (choice == "1") {
-            std::cout << "Prefix (path without extension) [./yume-client]: ";
-            std::getline(std::cin, keys_gen);
-            if (keys_gen.empty()) {
-                keys_gen = "./yume-client";
-            }
-            std::cout << "Alias (optional): ";
-            std::getline(std::cin, keys_alias_value);
-            keys_gen_add = true;
-        } else if (choice == "2") {
-            std::cout << "Public key path: ";
-            std::getline(std::cin, keys_add);
-            if (keys_add.empty()) {
-                yume::util::log_error("public key path is required");
-                return 1;
-            }
-            std::cout << "Alias (optional): ";
-            std::getline(std::cin, keys_alias_value);
-        } else if (choice == "3") {
-            std::cout << "Fingerprint or alias: ";
-            std::getline(std::cin, keys_remove);
-            if (keys_remove.empty()) {
-                yume::util::log_error("fingerprint or alias is required");
-                return 1;
-            }
-        } else if (choice == "4") {
-            std::cout << "Fingerprint or alias: ";
-            std::getline(std::cin, keys_alias);
-            if (keys_alias.empty()) {
-                yume::util::log_error("fingerprint or alias is required");
-                return 1;
-            }
-            std::cout << "New alias: ";
-            std::getline(std::cin, keys_alias_value);
-        } else if (choice == "5") {
-            keys_list = true;
-        } else if (choice == "6") {
-            std::string out_path = "config/yumed.json";
-            std::cout << "Config path [config/yumed.json]: ";
-            std::string input_path;
-            std::getline(std::cin, input_path);
-            if (!input_path.empty()) {
-                out_path = input_path;
-            }
-            nlohmann::json json;
-            std::ifstream in(out_path);
-            if (in) {
-                try { in >> json; } catch (...) { json = nlohmann::json::object(); }
-            } else {
-                json = nlohmann::json::object();
-            }
-            auto prompt = [&](const std::string& key, const std::string& current) {
-                std::cout << key << " [" << current << "]: ";
-                std::string v;
-                std::getline(std::cin, v);
-                return v.empty() ? current : v;
-            };
-            std::string listen = prompt("listen_port", std::to_string(cfg.listen_port));
-            std::string reverse_min = prompt("reverse_port_min", std::to_string(cfg.reverse_port_min));
-            std::string reverse_max = prompt("reverse_port_max", std::to_string(cfg.reverse_port_max));
-            std::string cert = prompt("tls_cert", cfg.tls_cert);
-            std::string key = prompt("tls_key", cfg.tls_key);
-            std::string auth = prompt("auth_keys", cfg.auth_keys);
-            std::string threads = prompt("threads", std::to_string(cfg.threads));
-            std::string obfs = prompt("obfuscation (true/false)", cfg.obfuscation ? "true" : "false");
-            std::string inner = prompt("inner_crypto (true/false)", cfg.inner_crypto ? "true" : "false");
-            std::string inner_heavy = prompt("inner_heavy (true/false)", cfg.inner_heavy ? "true" : "false");
-            std::string inner_dual = prompt("inner_dual (true/false)", cfg.inner_dual ? "true" : "false");
-            std::string inner_required = prompt("inner_required (true/false)", cfg.inner_required ? "true" : "false");
-            std::string inner_hop = prompt("inner_hop (true/false)", cfg.inner_hop ? "true" : "false");
-            std::string hop_interval = prompt("hop_interval_ms", std::to_string(cfg.hop_interval_ms));
-            std::string pq = prompt("pq_private_key", cfg.pq_private_key);
-            std::string pq_auto_generate = prompt("pq_auto_generate (true/false)", cfg.pq_auto_generate ? "true" : "false");
-            std::string use_embedded_master = prompt("use_embedded_master (true/false)", cfg.allow_embedded_master ? "true" : "false");
-            std::string allow_exec = prompt("allow_exec (true/false)", cfg.allow_exec ? "true" : "false");
-            std::string allow_local_ip = prompt("allow_local_ip (true/false)", cfg.allow_local_ip ? "true" : "false");
-            std::string control_full = prompt("control_full (true/false)", cfg.control_full ? "true" : "false");
-            std::string real_http = prompt("real_http (true/false)", cfg.real_http ? "true" : "false");
-            std::string real_index = prompt("real_index_path", cfg.real_index_path);
-            std::string real_secret_file = prompt("real_secret_file", cfg.real_secret_file);
-            std::string anonym = prompt("anonym (true/false)", cfg.anonym ? "true" : "false");
-            std::string anonym_proof_mode = prompt("anonym_proof_mode", cfg.anonym_proof_mode);
-            std::string anonym_api = prompt("anonym_api", cfg.anonym_api);
-            std::string anonym_token = prompt("anonym_token", cfg.anonym_token);
-            std::string anonym_ca_key = prompt("anonym_ca_key", cfg.anonym_ca_key);
-            std::string anonym_ca_cert = prompt("anonym_ca_cert", cfg.anonym_ca_cert);
-            std::string anonym_sub_key = prompt("anonym_sub_key", cfg.anonym_sub_key);
-            std::string anonym_sub_cert = prompt("anonym_sub_cert", cfg.anonym_sub_cert);
-            std::string outbound_proxy = prompt("outbound_proxy", cfg.outbound_proxy_url);
-            std::string federation_enable = prompt("federation_enable (true/false)", cfg.federation_enable ? "true" : "false");
-            std::string federation_auth_key = prompt("federation_auth_key", cfg.federation_auth_key);
-            std::string federation_anonym_ca = prompt("federation_anonym_ca", cfg.federation_anonym_ca);
-            std::string federation_peer = prompt("federation_peer_json", cfg.federation_peers.empty() ? "" : cfg.federation_peers.front());
-
-            json["listen_port"] = std::stoi(listen);
-            json["reverse_port_min"] = std::stoi(reverse_min);
-            json["reverse_port_max"] = std::stoi(reverse_max);
-            json["tls_cert"] = cert;
-            json["tls_key"] = key;
-            json["auth_keys"] = auth;
-            json["threads"] = std::stoi(threads);
-            json["obfuscation"] = (obfs == "true");
-            json["inner_crypto"] = (inner == "true");
-            json["inner_heavy"] = (inner_heavy == "true");
-            json["inner_dual"] = (inner_dual == "true");
-            json["inner_required"] = (inner_required == "true");
-            json["inner_hop"] = (inner_hop == "true");
-            json["hop_interval_ms"] = std::stoi(hop_interval);
-            if (!pq.empty()) json["pq_private_key"] = pq;
-            json["pq_auto_generate"] = (pq_auto_generate == "true");
-            json["use_embedded_master"] = (use_embedded_master == "true");
-            json["allow_exec"] = (allow_exec == "true");
-            json["allow_local_ip"] = (allow_local_ip == "true");
-            json["control_full"] = (control_full == "true");
-            json["real_http"] = (real_http == "true");
-            if (!real_index.empty()) json["real_index_path"] = real_index;
-            if (!real_secret_file.empty()) json["real_secret_file"] = real_secret_file;
-            json["anonym"] = (anonym == "true");
-            json["anonym_proof_mode"] = yume::policy::normalize_anonym_proof_mode(anonym_proof_mode);
-            if (!anonym_api.empty()) json["anonym_api"] = anonym_api;
-            if (!anonym_token.empty()) json["anonym_token"] = anonym_token;
-            if (!anonym_ca_key.empty()) json["anonym_ca_key"] = anonym_ca_key;
-            if (!anonym_ca_cert.empty()) json["anonym_ca_cert"] = anonym_ca_cert;
-            if (!anonym_sub_key.empty()) json["anonym_sub_key"] = anonym_sub_key;
-            if (!anonym_sub_cert.empty()) json["anonym_sub_cert"] = anonym_sub_cert;
-            if (!outbound_proxy.empty()) json["outbound_proxy"] = outbound_proxy;
-            json["federation_enable"] = (federation_enable == "true");
-            if (!federation_auth_key.empty()) json["federation_auth_key"] = federation_auth_key;
-            if (!federation_anonym_ca.empty()) json["federation_anonym_ca"] = federation_anonym_ca;
-            if (!federation_peer.empty()) json["federation_peers"] = nlohmann::json::array({nlohmann::json::parse(federation_peer)});
-
-            ensure_dir(std::filesystem::path(out_path).parent_path().string());
-            std::ofstream out(out_path);
-            if (!out) {
-                yume::util::log_error("failed to write config: " + out_path);
-                return 1;
-            }
-            out << json.dump(2);
-            std::cout << "Saved config: " << out_path << "\n";
-            return 0;
-        } else if (choice == "7") {
-            std::cout << "Prefix (path without extension) [./yume-client]: ";
-            std::getline(std::cin, keys_gen);
-            if (keys_gen.empty()) {
-                keys_gen = "./yume-client";
-            }
-        } else {
-            return 0;
+    if (key_command.ui) {
+        auto result = run_server_manager_ui(cfg, key_command);
+        if (result.handled) {
+            return result.exit_code;
         }
     }
 
-    if (!(keys_list || !keys_add.empty() || !keys_remove.empty() || !keys_alias.empty() || !keys_gen.empty())) {
+    if (!key_command.has_action()) {
         if (cfg.anonym && (cfg.anonym_sub_key.empty() || cfg.anonym_sub_cert.empty())) {
             std::error_code ec;
             std::filesystem::path runtime_dir = std::filesystem::current_path(ec);
@@ -1621,173 +1443,10 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (keys_list || !keys_add.empty() || !keys_remove.empty() || !keys_alias.empty() || !keys_gen.empty()) {
-        if (cfg.auth_keys.empty()) {
-            std::string default_auth = "/etc/yume/authorized_keys";
-            if (ui_mode) {
-                std::cout << "auth_keys path [/etc/yume/authorized_keys]: ";
-                std::string input;
-                std::getline(std::cin, input);
-                if (!input.empty()) {
-                    default_auth = input;
-                }
-            }
-            cfg.auth_keys = default_auth;
-        }
-        if (cfg.auth_keys_meta.empty() && !cfg.auth_keys.empty()) {
-            cfg.auth_keys_meta = cfg.auth_keys + ".json";
-        }
-        std::vector<EVP_PKEY*> keys;
-        BIO* bio = BIO_new_file(cfg.auth_keys.c_str(), "r");
-        if (bio) {
-            while (true) {
-                EVP_PKEY* key = PEM_read_bio_PUBKEY(bio, nullptr, nullptr, nullptr);
-                if (!key) {
-                    break;
-                }
-                keys.push_back(key);
-            }
-            BIO_free(bio);
-        }
-
-        if (keys_list) {
-            if (!file_readable(cfg.auth_keys)) {
-                std::cout << "No auth_keys found at: " << cfg.auth_keys << "\n";
-                std::cout << "Use option 2 to add a public key first.\n";
-                for (auto* key : keys) EVP_PKEY_free(key);
-                return 0;
-            }
-            nlohmann::json meta = nlohmann::json::object();
-            yume::server::AuthKeyPolicyMap policies;
-            std::ifstream in(cfg.auth_keys_meta);
-            if (in) {
-                try { in >> meta; } catch (...) { meta = nlohmann::json::object(); }
-            }
-            try {
-                policies = yume::server::load_auth_policies(cfg.auth_keys_meta);
-            } catch (const std::exception& ex) {
-                yume::util::log_error(std::string("failed to parse auth_keys_meta: ") + ex.what());
-                for (auto* free_key : keys) EVP_PKEY_free(free_key);
-                return 1;
-            }
-            for (auto* key : keys) {
-                std::string fp = yume::server::fingerprint_pubkey(key);
-                auto entry = meta.value(fp, nlohmann::json::object());
-                std::string alias = entry.value("alias", "");
-                long long last_seen = entry.value("last_seen", 0LL);
-                yume::server::AuthKeyPolicy policy;
-                auto it = policies.find(fp);
-                if (it != policies.end()) {
-                    policy = it->second;
-                }
-                std::cout << fp;
-                if (!alias.empty()) std::cout << "  alias=" << alias;
-                if (last_seen > 0) std::cout << "  last_seen=" << last_seen;
-                if (!policy.empty()) std::cout << "  policy=" << yume::server::summarize_auth_policy(policy);
-                std::cout << "\n";
-            }
-            for (auto* key : keys) EVP_PKEY_free(key);
-            return 0;
-        }
-
-        if (!keys_add.empty()) {
-            return append_authorized_public_key(cfg, keys_add, keys_alias_value) ? 0 : 1;
-        }
-
-        if (!keys_gen.empty()) {
-            std::filesystem::path base = std::filesystem::absolute(keys_gen);
-            std::string priv_path = base.string() + ".key";
-            std::string pub_path = base.string() + ".pub";
-            auto key_dir = base.parent_path();
-            if (!key_dir.empty()) {
-                ensure_dir(key_dir.string());
-            }
-            if (!generate_ed25519_keypair(priv_path, pub_path)) {
-                yume::util::log_error("failed to generate keypair");
-                return 1;
-            }
-            std::cout << "Generated: " << priv_path << " and " << pub_path << "\n";
-            std::cout << "Client auth key: " << priv_path << "\n";
-            if (keys_gen_add) {
-                if (!append_authorized_public_key(cfg, pub_path, keys_alias_value)) {
-                    return 1;
-                }
-                std::cout << "Use this client flag: --auth " << priv_path << "\n";
-            }
-            return 0;
-        }
-
-        if (!keys_remove.empty() || !keys_alias.empty()) {
-            nlohmann::json meta = nlohmann::json::object();
-            std::ifstream in(cfg.auth_keys_meta);
-            if (in) {
-                try { in >> meta; } catch (...) { meta = nlohmann::json::object(); }
-            }
-
-            if (!keys_alias.empty()) {
-                std::string target = keys_alias;
-                bool matched = false;
-                for (auto it = meta.begin(); it != meta.end(); ++it) {
-                    if (it.value().value("alias", "") == keys_alias) {
-                        target = it.key();
-                        matched = true;
-                        break;
-                    }
-                }
-                if (!matched) {
-                    for (auto* key : keys) {
-                        std::string fp = yume::server::fingerprint_pubkey(key);
-                        if (fp == keys_alias) {
-                            matched = true;
-                            break;
-                        }
-                    }
-                }
-                if (!matched) {
-                    for (auto* key : keys) EVP_PKEY_free(key);
-                    yume::util::log_error("no authorized key matches fingerprint or alias: " + keys_alias);
-                    return 1;
-                }
-                yume::server::update_auth_meta(cfg.auth_keys_meta, target, keys_alias_value);
-                std::cout << "Updated alias for " << target << ": " << keys_alias_value << "\n";
-                for (auto* key : keys) EVP_PKEY_free(key);
-                return 0;
-            }
-
-            std::vector<EVP_PKEY*> remaining;
-            std::size_t removed = 0;
-            for (auto* key : keys) {
-                std::string fp = yume::server::fingerprint_pubkey(key);
-                if (fp == keys_remove || meta.value(fp, nlohmann::json::object()).value("alias", "") == keys_remove) {
-                    EVP_PKEY_free(key);
-                    meta.erase(fp);
-                    ++removed;
-                    continue;
-                }
-                remaining.push_back(key);
-            }
-            if (removed == 0) {
-                for (auto* key : remaining) EVP_PKEY_free(key);
-                yume::util::log_error("no authorized key matches fingerprint or alias: " + keys_remove);
-                return 1;
-            }
-            BIO* outbio = BIO_new_file(cfg.auth_keys.c_str(), "w");
-            if (!outbio) {
-                for (auto* key : remaining) EVP_PKEY_free(key);
-                yume::util::log_error("failed to rewrite auth_keys: " + cfg.auth_keys +
-                                      auth_keys_write_hint(cfg.auth_keys));
-                return 1;
-            }
-            for (auto* key : remaining) {
-                PEM_write_bio_PUBKEY(outbio, key);
-                EVP_PKEY_free(key);
-            }
-            BIO_free(outbio);
-            std::ofstream meta_out(cfg.auth_keys_meta);
-            meta_out << meta.dump(2);
-            std::cout << "Removed " << removed << " authorized key"
-                      << (removed == 1 ? "" : "s") << " from " << cfg.auth_keys << "\n";
-            return 0;
+    if (key_command.has_action()) {
+        auto result = run_server_key_command(cfg, key_command);
+        if (result.handled) {
+            return result.exit_code;
         }
     }
 

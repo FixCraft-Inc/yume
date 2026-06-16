@@ -6,6 +6,7 @@
 
 #include "client/cli/config.hpp"
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 
@@ -361,6 +362,62 @@ void apply_cli_config_overrides(const ParsedArgs& args,
     }
     if (args.self_dpi_override) {
         cfg->self_dpi = args.self_dpi;
+    }
+}
+
+void normalize_client_config_after_overrides(ParsedArgs* args, ClientConfig* cfg) {
+    if (!args || !cfg) {
+        return;
+    }
+#if defined(_WIN32) || defined(__APPLE__)
+    if (cfg->tls_ca_cert.empty() && !cfg->anonym_ca_cert.empty()) {
+        cfg->tls_ca_cert = cfg->anonym_ca_cert;
+    }
+#endif
+    if (cfg->inner_hop && !cfg->inner_crypto) {
+        cfg->inner_crypto = true;
+    }
+    if (!cfg->inner_crypto) {
+        cfg->inner_hop = false;
+    }
+    if (args->bench) {
+        if (args->bench_mib <= 0) {
+            args->bench_mib = 256;
+        }
+        if (args->bench_mib > 16384) {
+            args->bench_mib = 16384;
+        }
+        if (args->bench_chunk_kib <= 0) {
+            args->bench_chunk_kib = 64;
+        }
+        if (args->bench_chunk_kib > 1024) {
+            args->bench_chunk_kib = 1024;
+        }
+        if (!args->socks_port_override) {
+            cfg->socks_port = 0;
+        }
+        if (!args->server_in_charge_override) {
+            cfg->server_in_charge = false;
+            cfg->server_in_charge_port = 0;
+        }
+    }
+    if (cfg->hop_interval_ms > 0) {
+        if (cfg->hop_interval_ms < 250) {
+            cfg->hop_interval_ms = 250;
+        } else if (cfg->hop_interval_ms > 1000) {
+            cfg->hop_interval_ms = 1000;
+        }
+    }
+    if (cfg->history_dir.empty()) {
+        const char* xdg = std::getenv("XDG_CONFIG_HOME");
+        const char* home = std::getenv("HOME");
+        std::filesystem::path base = (xdg && *xdg)
+            ? std::filesystem::path(xdg)
+            : ((home && *home) ? std::filesystem::path(home) : std::filesystem::path("."));
+        cfg->history_dir = ((home && *home) ? (base / ".yume" / "history") : (base / "history")).string();
+    }
+    if (cfg->relay_mode != "trusted") {
+        cfg->relay_mode = "untrusted";
     }
 }
 

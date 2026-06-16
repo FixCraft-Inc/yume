@@ -20,6 +20,7 @@ void load_client_config_file(const ParsedArgs& args,
 void apply_cli_config_overrides(const ParsedArgs& args,
                                 const std::string& cli_cwd,
                                 ClientConfig* cfg);
+void normalize_client_config_after_overrides(ParsedArgs* args, ClientConfig* cfg);
 void save_client_config_file(const ParsedArgs& args, const ClientConfig& cfg);
 
 }  // namespace yume::client

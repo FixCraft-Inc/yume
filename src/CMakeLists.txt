@@ -463,7 +463,9 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/cli_proxy.cpp
         client/cli_relay.cpp
         client/cli_runtime.cpp
+        client/cli_server_info.cpp
         client/cli_share.cpp
+        client/cli_status.cpp
     )
     target_include_directories(yume_client_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(yume_client_lib PUBLIC yume_core yume_transport_core)

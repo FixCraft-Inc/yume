@@ -19,15 +19,15 @@
 #include "client/cli_proxy.hpp"
 #include "client/cli_relay.hpp"
 #include "client/cli_runtime.hpp"
+#include "client/cli_server_info.hpp"
 #include "client/cli_share.hpp"
+#include "client/cli_status.hpp"
 
 #include <algorithm>
-#include <iomanip>
 #include <iostream>
 #include <functional>
 #include <memory>
 #include <optional>
-#include <sstream>
 #include <stdexcept>
 #include <cctype>
 #include <utility>
@@ -1416,59 +1416,40 @@ int Cli::run(int argc, char** argv) {
             std::string pq_sig;
             std::string pq_alg;
             try {
-                std::string payload(anon_frame.payload.begin(), anon_frame.payload.end());
-                auto json = nlohmann::json::parse(payload);
-                server_version = json.value("version", "UNKNOWN");
-                server_error = json.value("error", "");
-                mode = json.value("mode", "normal");
-                hash = json.value("hash", "");
-                sig = json.value("sig", "");
-                ts = json.value("ts", "");
-                nonce = json.value("nonce", "");
-                certfp = json.value("certfp", "");
-                ca_sig = json.value("ca_sig", "");
-                ca_alg = json.value("ca_alg", "");
-                sub_sig = json.value("sub_sig", "");
-                sub_alg = json.value("sub_alg", "");
-                sub_cert_b64 = json.value("sub_cert", "");
-                if (json.contains("proof_sources") && json["proof_sources"].is_array()) {
-                    for (const auto& entry : json["proof_sources"]) {
-                        if (entry.is_string()) {
-                            announced_proof_sources.push_back(normalize_proof_source(entry.get<std::string>()));
-                        }
-                    }
-                }
-                pq_pub_b64 = json.value("pq_pub", "");
-                pq_sig = json.value("pq_sig", "");
-                pq_alg = json.value("pq_alg", "");
-                have_inner_caps = json.contains("inner_supported") || json.contains("inner_required") ||
-                                  json.contains("inner_dual") || json.contains("inner_mode");
-                server_inner_supported = json.value("inner_supported", false);
-                server_inner_required = json.value("inner_required", false);
-                server_inner_dual = json.value("inner_dual", false);
-                server_inner_active = json.value("inner_active", false);
-                server_inner_mode = json.value("inner_mode", "");
-                server_cap_pq = json.value("cap_pq", false);
-                server_cap_argon2 = json.value("cap_argon2", false);
-                server_cap_pbkdf2 = json.value("cap_pbkdf2", false);
-                server_hop_enabled = json.value("hop_enabled", false);
-                server_hop_interval_ms = static_cast<std::uint32_t>(json.value("hop_interval_ms", 0));
-                server_time_ms = json.value("server_time_ms", 0LL);
+                ServerInfoPayload server_info = parse_server_info_payload(anon_frame);
+                server_version = std::move(server_info.version);
+                server_error = std::move(server_info.error);
+                mode = std::move(server_info.mode);
+                hash = std::move(server_info.hash);
+                sig = std::move(server_info.sig);
+                ts = std::move(server_info.ts);
+                nonce = std::move(server_info.nonce);
+                certfp = std::move(server_info.certfp);
+                ca_sig = std::move(server_info.ca_sig);
+                ca_alg = std::move(server_info.ca_alg);
+                sub_sig = std::move(server_info.sub_sig);
+                sub_alg = std::move(server_info.sub_alg);
+                sub_cert_b64 = std::move(server_info.sub_cert_b64);
+                pq_pub_b64 = std::move(server_info.pq_pub_b64);
+                pq_sig = std::move(server_info.pq_sig);
+                pq_alg = std::move(server_info.pq_alg);
+                announced_proof_sources = std::move(server_info.announced_proof_sources);
+                have_inner_caps = server_info.have_inner_caps;
+                server_inner_supported = server_info.server_inner_supported;
+                server_inner_required = server_info.server_inner_required;
+                server_inner_dual = server_info.server_inner_dual;
+                server_inner_active = server_info.server_inner_active;
+                server_inner_mode = std::move(server_info.server_inner_mode);
+                server_cap_pq = server_info.server_cap_pq;
+                server_cap_argon2 = server_info.server_cap_argon2;
+                server_cap_pbkdf2 = server_info.server_cap_pbkdf2;
+                server_hop_enabled = server_info.server_hop_enabled;
+                server_hop_interval_ms = server_info.server_hop_interval_ms;
+                server_time_ms = server_info.server_time_ms;
             } catch (const nlohmann::json::parse_error&) {
                 throw FatalError("this endpoint is not a yume server (invalid server response); please check the origin and try again");
             } catch (const std::exception& ex) {
                 throw FatalError("this endpoint is not a yume server (" + std::string(ex.what()) + "); please check the origin and try again");
-            }
-            if (announced_proof_sources.empty()) {
-                if (!sig.empty()) {
-                    add_verified_source(&announced_proof_sources, yume::policy::kAnonymProofSourceFixcraft);
-                }
-                if (!ca_sig.empty()) {
-                    add_verified_source(&announced_proof_sources, yume::policy::kAnonymProofSourceCa);
-                }
-                if (!sub_sig.empty() || !sub_cert_b64.empty()) {
-                    add_verified_source(&announced_proof_sources, yume::policy::kAnonymProofSourceSubCa);
-                }
             }
             if (server_version.empty() || server_version == "UNKNOWN") {
                 throw FatalError("this endpoint is not a yume server (no version info); please check the origin and try again");
@@ -1954,87 +1935,23 @@ int Cli::run(int argc, char** argv) {
                 print_red("inner crypto was requested but could not be established; refusing downgraded session");
                 return 1;
             }
-            auto build_hop_status_line = [hop_enabled, hop_interval_ms, hop_offset_ms]() {
-                auto color_wrap = [](const std::string& text, const char* code) {
-                    return std::string("\033[") + code + "m" + text + "\033[0m";
-                };
-                std::string hop_state = hop_enabled ? "ON" : "OFF";
-                std::string hop_line = color_wrap(hop_state, hop_enabled ? "1;32" : "1;31");
-                std::ostringstream hop_freq_stream;
-                hop_freq_stream.setf(std::ios::fixed);
-                hop_freq_stream << std::setprecision(2)
-                                << (hop_enabled && hop_interval_ms > 0
-                                        ? (1000.0 / static_cast<double>(hop_interval_ms))
-                                        : 0.0);
-                std::string hop_freq = color_wrap(hop_freq_stream.str() + "Hz", "1;33");
-                std::int64_t adjusted = util::now_ms() + hop_offset_ms;
-                if (adjusted < 0) {
-                    adjusted = 0;
-                }
-                std::int64_t last_change = (hop_enabled && hop_interval_ms > 0)
-                                               ? (adjusted % static_cast<std::int64_t>(hop_interval_ms))
-                                               : 0;
-                std::string hop_last = color_wrap(std::to_string(last_change) + "ms", "1;34");
-                return color_wrap("Hopping", "1;36") + ": " + hop_line + " - " + hop_freq + " | " + hop_last;
-            };
-
             if (have_anon && !summary_once) {
-                auto color_wrap = [&](const std::string& text, const char* code) {
-                    return std::string("\033[") + code + "m" + text + "\033[0m";
-                };
-                auto to_upper = [](std::string v) {
-                    for (char& c : v) {
-                        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-                    }
-                    return v;
-                };
-                std::string protection_line = "TLS";
-                if (inner_key.has_value()) {
-                    std::vector<std::string> protections;
-                    protections.push_back("PQ");
-                    std::string kdf_name;
-                    if (inner_kdf.has_value()) {
-                        kdf_name = inner_kdf->name;
-                    }
-                    if (kdf_name.empty()) {
-                        kdf_name = cfg.inner_heavy ? "argon2" : "hkdf";
-                    }
-                    protections.push_back(to_upper(kdf_name));
-                    protection_line.clear();
-                    for (size_t i = 0; i < protections.size(); ++i) {
-                        if (i) protection_line += "/";
-                        protection_line += protections[i];
-                    }
+                ConnectionStatusSummary summary;
+                summary.server = cfg.server;
+                summary.version = server_version;
+                if (inner_kdf.has_value()) {
+                    summary.inner_kdf_name = inner_kdf->name;
                 }
-                std::string inner_state = (inner_key.has_value() || server_inner_active) ? "ON" : "OFF";
-                std::string inner_line = color_wrap(inner_state, (inner_state == "ON") ? "1;32" : "1;31");
-                if (inner_key.has_value()) {
-                    inner_line += color_wrap(cfg.inner_heavy ? " (heavy)" : " (light)", "1;35");
-                    if (have_inner_caps && server_inner_dual) {
-                        inner_line += color_wrap(", dual", "1;35");
-                    }
-                }
-                std::string server_display = color_wrap(cfg.server, "1;33");
-                std::string version_value = color_wrap(server_version.empty() ? "UNKNOWN" : server_version, "1;35");
-                std::string connection_value = color_wrap("🔒 TLS", "1;32");
-                std::string protection_value = color_wrap(protection_line, "1;35");
-                std::string obfs_value = cfg.obfuscation
-                    ? color_wrap("ON", "1;32") + color_wrap(" (HTTPS mask)", "1;35")
-                    : color_wrap("OFF", "1;31");
-                std::string verity_state = format_verified_sources(verified_proof_sources);
-                std::string verity_line = color_wrap(verity_state, verity_ok ? "1;32" : "1;31");
-                std::string header =
-                    color_wrap("Connected to", "1;36") + " " + server_display + ":\n" +
-                    color_wrap("VERSION", "1;36") + ": " + version_value + "\n" +
-                    color_wrap("Connection", "1;36") + ": " + connection_value + "\n" +
-                    color_wrap("Protection", "1;36") + ": " + protection_value + "\n" +
-                    color_wrap("Obfuscation", "1;36") + ": " + obfs_value + "\n" +
-                    color_wrap("Inner", "1;36") + ": " + inner_line + "\n";
-                std::string footer = color_wrap("Verity", "1;36") + ": " + verity_line + "\n";
-                const std::string border = color_wrap("------------------------------------------", "1;34");
-                status_block_builder = [header, footer, border, build_hop_status_line]() {
-                    return border + "\n" + header + build_hop_status_line() + "\n" + footer + border + "\n";
-                };
+                summary.verified_proof_sources = verified_proof_sources;
+                summary.hop = {hop_enabled, hop_interval_ms, hop_offset_ms};
+                summary.obfuscation_enabled = cfg.obfuscation;
+                summary.inner_established = inner_key.has_value();
+                summary.inner_heavy = cfg.inner_heavy;
+                summary.have_inner_caps = have_inner_caps;
+                summary.server_inner_dual = server_inner_dual;
+                summary.server_inner_active = server_inner_active;
+                summary.verity_ok = verity_ok;
+                status_block_builder = make_connection_status_block(std::move(summary));
                 if (!live_status_enabled) {
                     // When embedded via facade::InProcClient the GUI
                     // sets silent_ to suppress this banner — the same
@@ -2042,17 +1959,7 @@ int Cli::run(int argc, char** argv) {
                     // status panes via the runtime_ready callback +
                     // status() polling.
                     if (!silent_) {
-                        std::cout
-                            << border << "\n"
-                            << color_wrap("Connected to", "1;36") << " " << server_display << ":\n"
-                            << color_wrap("VERSION", "1;36") << ": " << version_value << "\n"
-                            << color_wrap("Connection", "1;36") << ": " << connection_value << "\n"
-                            << color_wrap("Protection", "1;36") << ": " << protection_value << "\n"
-                            << color_wrap("Obfuscation", "1;36") << ": " << obfs_value << "\n"
-                            << color_wrap("Inner", "1;36") << ": " << inner_line << "\n"
-                            << build_hop_status_line() << "\n"
-                            << color_wrap("Verity", "1;36") << ": " << verity_line << "\n"
-                            << border << "\n";
+                        std::cout << status_block_builder();
                     }
                     if (hop_enabled) {
                         util::log_info("live hop updates are disabled; use --live-status (or YUME_LIVE_STATUS=1) to update periodically");
@@ -2402,37 +2309,25 @@ int Cli::run(int argc, char** argv) {
                 if (extra_info.header.type != protocol::ANON) {
                     throw std::runtime_error("unexpected server info response");
                 }
-                auto extra_json = nlohmann::json::parse(
-                    std::string(extra_info.payload.begin(), extra_info.payload.end()));
-                const std::string extra_version = extra_json.value("version", "");
-                const std::string extra_error = extra_json.value("error", "");
-                const std::string extra_mode = extra_json.value("mode", "normal");
-                if (!extra_error.empty()) {
-                    throw std::runtime_error(extra_error);
+                ServerInfoPayload extra_server_info = parse_server_info_payload(extra_info);
+                if (!extra_server_info.error.empty()) {
+                    throw std::runtime_error(extra_server_info.error);
                 }
-                if (extra_version != yume::kVersion) {
+                if (extra_server_info.version != yume::kVersion) {
                     throw std::runtime_error("server version mismatch");
                 }
-                if (cfg.require_anonym && extra_mode != "anonym") {
+                if (cfg.require_anonym && extra_server_info.mode != "anonym") {
                     throw std::runtime_error("server is not in anonym mode");
                 }
-                const bool extra_have_inner_caps = extra_json.contains("inner_supported") ||
-                                                   extra_json.contains("inner_required") ||
-                                                   extra_json.contains("inner_dual") ||
-                                                   extra_json.contains("inner_mode");
-                if (extra_have_inner_caps) {
-                    const bool extra_server_inner_supported = extra_json.value("inner_supported", false);
-                    const bool extra_server_inner_required = extra_json.value("inner_required", false);
-                    if (extra_inner_key.has_value() && !extra_server_inner_supported) {
+                if (extra_server_info.have_inner_caps) {
+                    if (extra_inner_key.has_value() && !extra_server_info.server_inner_supported) {
                         throw std::runtime_error("server does not support inner crypto");
                     }
-                    if (!extra_inner_key.has_value() && extra_server_inner_required) {
+                    if (!extra_inner_key.has_value() && extra_server_info.server_inner_required) {
                         throw std::runtime_error("server requires inner crypto");
                     }
                 }
-                const bool extra_server_hop_enabled = extra_json.value("hop_enabled", false);
-                std::uint32_t extra_hop_interval_ms =
-                    static_cast<std::uint32_t>(extra_json.value("hop_interval_ms", 0));
+                std::uint32_t extra_hop_interval_ms = extra_server_info.server_hop_interval_ms;
                 if (extra_hop_interval_ms == 0) {
                     extra_hop_interval_ms = cfg.hop_interval_ms;
                 }
@@ -2440,14 +2335,13 @@ int Cli::run(int argc, char** argv) {
                     extra_hop_interval_ms = std::clamp<std::uint32_t>(extra_hop_interval_ms, 250, 1000);
                 }
                 std::int64_t extra_hop_offset_ms = 0;
-                const std::int64_t extra_server_time_ms = extra_json.value("server_time_ms", 0LL);
-                if (extra_server_time_ms > 0) {
-                    extra_hop_offset_ms = extra_server_time_ms - util::now_ms();
+                if (extra_server_info.server_time_ms > 0) {
+                    extra_hop_offset_ms = extra_server_info.server_time_ms - util::now_ms();
                 }
                 const bool extra_hop_enabled =
                     extra_inner_key.has_value() &&
                     cfg.inner_hop &&
-                    extra_server_hop_enabled &&
+                    extra_server_info.server_hop_enabled &&
                     extra_hop_interval_ms > 0;
 
                 auto extra_tunnel = std::make_shared<Tunnel>(std::move(extra_stream));

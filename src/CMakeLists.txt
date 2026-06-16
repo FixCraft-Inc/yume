@@ -375,6 +375,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/federation_link.cpp
         server/federation_manager.cpp
         server/ip_filter.cpp
+        server/ip_filter_mmdb.cpp
         server/manager.cpp
         server/manager_relay.cpp
         server/packet_tun_egress.cpp
@@ -556,7 +557,7 @@ yume_link_atomic_if_needed(yume_packet_bulk_test PRIVATE)
 yume_apply_perf_opts(yume_packet_bulk_test)
 add_test(NAME yume_packet_bulk_test COMMAND yume_packet_bulk_test)
 
-add_executable(yume_ip_filter_test server/ip_filter_test.cpp server/ip_filter.cpp)
+add_executable(yume_ip_filter_test server/ip_filter_test.cpp server/ip_filter.cpp server/ip_filter_mmdb.cpp)
 target_link_libraries(yume_ip_filter_test PRIVATE yume_core)
 yume_link_atomic_if_needed(yume_ip_filter_test PRIVATE)
 yume_apply_perf_opts(yume_ip_filter_test)

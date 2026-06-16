@@ -376,6 +376,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/federation_manager.cpp
         server/ip_filter.cpp
         server/manager.cpp
+        server/manager_relay.cpp
         server/packet_tun_egress.cpp
         server/auth.cpp
         server/session.cpp

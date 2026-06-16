@@ -7,8 +7,8 @@
  *
  * CLI low-level async-I/O-with-timeout helpers and wire-inspection
  * diagnostics, extracted verbatim from client/cli.cpp. Several of these
- * are function templates, so the cluster is header-resident. Included
- * only by cli.cpp. No behavior change.
+ * are function templates or small inline helpers, so the cluster is
+ * header-resident. Included by CLI connection/auth code.
  */
 
 #include <array>
@@ -102,10 +102,10 @@ IoOpResult read_exact_with_timeout_prefetched(AsyncStream& stream,
     return tail;
 }
 
-IoOpResult connect_with_timeout(boost::asio::ip::tcp::socket& sock,
-                                const boost::asio::ip::tcp::resolver::results_type& endpoints,
-                                boost::asio::io_context& io,
-                                std::chrono::milliseconds timeout) {
+inline IoOpResult connect_with_timeout(boost::asio::ip::tcp::socket& sock,
+                                       const boost::asio::ip::tcp::resolver::results_type& endpoints,
+                                       boost::asio::io_context& io,
+                                       std::chrono::milliseconds timeout) {
     IoOpResult res{};
     bool done = false;
 
@@ -132,9 +132,9 @@ IoOpResult connect_with_timeout(boost::asio::ip::tcp::socket& sock,
     return res;
 }
 
-IoOpResult handshake_with_timeout(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
-                                  boost::asio::io_context& io,
-                                  std::chrono::milliseconds timeout) {
+inline IoOpResult handshake_with_timeout(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+                                         boost::asio::io_context& io,
+                                         std::chrono::milliseconds timeout) {
     IoOpResult res{};
     bool done = false;
 
@@ -228,7 +228,7 @@ IoOpResult read_until_with_timeout(AsyncStream& stream,
     return res;
 }
 
-std::string hex_preview(const uint8_t* data, std::size_t len, std::size_t max = 16) {
+inline std::string hex_preview(const uint8_t* data, std::size_t len, std::size_t max = 16) {
     std::ostringstream oss;
     oss << std::hex << std::setfill('0');
     std::size_t n = std::min(len, max);
@@ -244,7 +244,7 @@ std::string hex_preview(const uint8_t* data, std::size_t len, std::size_t max = 
     return oss.str();
 }
 
-std::string ascii_preview(const uint8_t* data, std::size_t len, std::size_t max = 64) {
+inline std::string ascii_preview(const uint8_t* data, std::size_t len, std::size_t max = 64) {
     std::string out;
     std::size_t n = std::min(len, max);
     out.reserve(n);
@@ -262,7 +262,7 @@ std::string ascii_preview(const uint8_t* data, std::size_t len, std::size_t max 
     return out;
 }
 
-std::string classify_plaintext_prefix(const uint8_t* data, std::size_t len) {
+inline std::string classify_plaintext_prefix(const uint8_t* data, std::size_t len) {
     if (!data || len == 0) {
         return {};
     }
@@ -285,7 +285,7 @@ std::string classify_plaintext_prefix(const uint8_t* data, std::size_t len) {
     return {};
 }
 
-std::string classify_http2_frame_prefix(const uint8_t* data, std::size_t len) {
+inline std::string classify_http2_frame_prefix(const uint8_t* data, std::size_t len) {
     // Recognize a short HTTP/2 SETTINGS frame prefix.
     if (!data || len < 8) {
         return {};
@@ -299,9 +299,9 @@ std::string classify_http2_frame_prefix(const uint8_t* data, std::size_t len) {
     return {};
 }
 
-std::string endpoint_hint_tls(bool tls_handshake_succeeded,
-                              const uint8_t* prefix,
-                              std::size_t prefix_len) {
+inline std::string endpoint_hint_tls(bool tls_handshake_succeeded,
+                                     const uint8_t* prefix,
+                                     std::size_t prefix_len) {
     std::string plain = classify_plaintext_prefix(prefix, prefix_len);
     if (!plain.empty()) {
         if (tls_handshake_succeeded) {
@@ -320,7 +320,7 @@ std::string endpoint_hint_tls(bool tls_handshake_succeeded,
     return "unknown";
 }
 
-bool looks_like_yume_header(const std::array<uint8_t, 8>& header) {
+inline bool looks_like_yume_header(const std::array<uint8_t, 8>& header) {
     uint32_t len = (static_cast<uint32_t>(header[0]) << 24) |
                    (static_cast<uint32_t>(header[1]) << 16) |
                    (static_cast<uint32_t>(header[2]) << 8) |
@@ -335,14 +335,14 @@ bool looks_like_yume_header(const std::array<uint8_t, 8>& header) {
     return true;
 }
 
-protocol::Frame read_frame_with_timeout(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
-                                       boost::asio::io_context& io,
-                                       std::chrono::milliseconds timeout,
-                                       const char* what,
-                                       const std::string& host,
-                                       int port,
-                                       bool tls_handshake_succeeded,
-                                       std::vector<uint8_t>* prefetched = nullptr) {
+inline protocol::Frame read_frame_with_timeout(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+                                              boost::asio::io_context& io,
+                                              std::chrono::milliseconds timeout,
+                                              const char* what,
+                                              const std::string& host,
+                                              int port,
+                                              bool tls_handshake_succeeded,
+                                              std::vector<uint8_t>* prefetched = nullptr) {
     std::array<uint8_t, 8> header_buf{};
     auto cancel = [&]() {
         boost::system::error_code ignored;

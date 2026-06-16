@@ -58,6 +58,7 @@
 #include "server/local_runtime.hpp"
 #include "server/server_local_cli.hpp"
 #include "server/server_misc_cli.hpp"
+#include "server/server_runtime_prep.hpp"
 #include "util.hpp"
 
 namespace {
@@ -73,6 +74,7 @@ using yume::server_cli::get_self_path;
 using yume::server_cli::load_pq_public_b64;
 using yume::server_cli::load_or_create_secret;
 using yume::server_cli::parse_proof_ts;
+using yume::server_cli::prepare_server_runtime_files;
 using yume::server_cli::read_file_bytes;
 using yume::server_cli::resolve_filter_list_spec_path;
 using yume::server_cli::run_server_key_command;
@@ -1304,143 +1306,8 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!key_command.has_action()) {
-        if (cfg.anonym && (cfg.anonym_sub_key.empty() || cfg.anonym_sub_cert.empty())) {
-            std::error_code ec;
-            std::filesystem::path runtime_dir = std::filesystem::current_path(ec);
-            std::filesystem::path exe_path_dir;
-            std::string self_path = get_self_path(argv[0]);
-            if (!self_path.empty()) {
-                exe_path_dir = std::filesystem::path(self_path).parent_path();
-            }
-            auto try_set = [&](std::string& out, const std::filesystem::path& base, const char* name) {
-                if (!out.empty() || base.empty()) {
-                    return;
-                }
-                std::filesystem::path cand = base / name;
-                if (file_readable(cand.string())) {
-                    out = cand.string();
-                }
-            };
-            try_set(cfg.anonym_sub_key, runtime_dir, "anonym_sub.key");
-            try_set(cfg.anonym_sub_cert, runtime_dir, "anonym_sub.pem");
-            try_set(cfg.anonym_sub_key, exe_path_dir, "anonym_sub.key");
-            try_set(cfg.anonym_sub_cert, exe_path_dir, "anonym_sub.pem");
-            if (!cfg.anonym_sub_key.empty() && !cfg.anonym_sub_cert.empty()) {
-                yume::util::log_info("using anonym sub key/cert from runtime directory");
-            }
-        }
-        if (cfg.inner_crypto && cfg.pq_private_key.empty()) {
-            std::error_code ec;
-            std::filesystem::path runtime_dir = std::filesystem::current_path(ec);
-            std::filesystem::path exe_path_dir;
-            std::string self_path = get_self_path(argv[0]);
-            if (!self_path.empty()) {
-                exe_path_dir = std::filesystem::path(self_path).parent_path();
-            }
-            auto try_set = [&](std::string& out, const std::filesystem::path& base, const char* name) {
-                if (!out.empty() || base.empty()) {
-                    return;
-                }
-                std::filesystem::path cand = base / name;
-                if (file_readable(cand.string())) {
-                    out = cand.string();
-                }
-            };
-            try_set(cfg.pq_private_key, runtime_dir, "pq_private.key");
-            try_set(cfg.pq_private_key, exe_path_dir, "pq_private.key");
-            std::filesystem::path secret_dir = runtime_dir / ".secrets";
-            try_set(cfg.pq_private_key, secret_dir, "pq_private.key");
-            if (!cfg.pq_private_key.empty()) {
-                yume::util::log_info("using discovered pq_private_key: " + cfg.pq_private_key);
-            } else if (cfg.pq_auto_generate) {
-                std::filesystem::path priv_path = secret_dir / "pq_private.key";
-                std::filesystem::path pub_path = secret_dir / "pq_public.key";
-                std::string err;
-                if (yume::inner::generate_pq_keypair(priv_path.string(), pub_path.string(), &err)) {
-                    cfg.pq_private_key = priv_path.string();
-                    yume::util::log_info("generated PQ keypair at ./.secrets (copy pq_public.key to clients)");
-                } else {
-                    yume::util::log_error("PQ keypair generation failed: " + err);
-                    return 1;
-                }
-            }
-        }
-        const bool validate_pq_on_start =
-            parse_env_bool("YUME_VALIDATE_PQ_ON_START", cfg.pq_auto_generate);
-        if (cfg.inner_crypto && !cfg.pq_private_key.empty() && validate_pq_on_start) {
-            std::string pq_public_path = derive_pq_public_path(cfg.pq_private_key);
-            if (file_readable(cfg.pq_private_key) && file_readable(pq_public_path)) {
-                std::string err;
-                if (!yume::inner::validate_pq_keypair(cfg.pq_private_key, pq_public_path, &err)) {
-                    if (!cfg.pq_auto_generate) {
-                        yume::util::log_error("PQ keypair mismatch: " + err +
-                                              " (run with --pq-auto-generate to regenerate)");
-                        return 1;
-                    }
-                    yume::util::log_warn("PQ keypair mismatch; regenerating: " + err);
-                    if (!yume::inner::generate_pq_keypair(cfg.pq_private_key, pq_public_path, &err)) {
-                        yume::util::log_error("PQ keypair regeneration failed: " + err);
-                        return 1;
-                    }
-                    yume::util::log_info("regenerated PQ keypair at " + pq_public_path);
-                }
-            }
-        }
-        if (cfg.tls_cert.empty() || cfg.tls_key.empty()) {
-            yume::util::log_error("tls_cert and tls_key must be set in config");
-            return 1;
-        }
-        if (cfg.auth_keys.empty()) {
-            yume::util::log_error("auth_keys must be set in config");
-            return 1;
-        }
-        if (!file_readable(cfg.tls_cert)) {
-            yume::util::log_error("tls_cert not found: " + cfg.tls_cert);
-            return 1;
-        }
-        if (!file_readable(cfg.tls_key)) {
-            yume::util::log_error("tls_key not found: " + cfg.tls_key);
-            return 1;
-        }
-        if (!file_readable(cfg.auth_keys)) {
-            yume::util::log_error("auth_keys not found: " + cfg.auth_keys);
-            return 1;
-        }
-        if (cfg.inner_crypto && cfg.pq_private_key.empty() && !cfg.allow_embedded_master) {
-            yume::util::log_error(
-                "inner_crypto enabled but pq_private_key is not set "
-                "(set --pq-key, provide pq_private.key, enable --pq-auto-generate, or use --use-embedded-master)");
-            return 1;
-        }
-        if (cfg.inner_crypto && !cfg.pq_private_key.empty() && !file_readable(cfg.pq_private_key)) {
-            yume::util::log_error("pq_private_key not found: " + cfg.pq_private_key);
-            return 1;
-        }
-        if (cfg.anonym && !cfg.anonym_ca_key.empty() && !file_readable(cfg.anonym_ca_key)) {
-            yume::util::log_error("anonym_ca_key not found: " + cfg.anonym_ca_key);
-            return 1;
-        }
-        if (cfg.anonym && !cfg.anonym_ca_cert.empty() && !file_readable(cfg.anonym_ca_cert)) {
-            yume::util::log_error("anonym_ca_cert not found: " + cfg.anonym_ca_cert);
-            return 1;
-        }
-        if (cfg.anonym && !cfg.anonym_sub_key.empty() && !file_readable(cfg.anonym_sub_key)) {
-            yume::util::log_error("anonym_sub_key not found: " + cfg.anonym_sub_key);
-            return 1;
-        }
-        if (cfg.anonym && !cfg.anonym_sub_cert.empty() && !file_readable(cfg.anonym_sub_cert)) {
-            yume::util::log_error("anonym_sub_cert not found: " + cfg.anonym_sub_cert);
-            return 1;
-        }
-        if (cfg.real_http && !cfg.real_index_path.empty() && !file_readable(cfg.real_index_path)) {
-            yume::util::log_error("real_index_path not found: " + cfg.real_index_path);
-            return 1;
-        }
-
-        if (cfg.auth_keys_meta.empty() && !cfg.auth_keys.empty()) {
-            cfg.auth_keys_meta = cfg.auth_keys + ".json";
-        }
+    if (prepare_server_runtime_files(cfg, argv[0], key_command.has_action()) != 0) {
+        return 1;
     }
 
     if (key_command.has_action()) {

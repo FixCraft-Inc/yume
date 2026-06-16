@@ -39,7 +39,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
-#include "platform/platform.hpp"
 #include "server/srv_help.hpp"
 #include <openssl/sha.h>
 #include <openssl/crypto.h>
@@ -65,6 +64,7 @@
 #include "server/server_key_cli.hpp"
 #include "server/local_runtime.hpp"
 #include "server/server_local_cli.hpp"
+#include "server/server_misc_cli.hpp"
 #include "util.hpp"
 
 namespace {
@@ -82,70 +82,14 @@ using yume::server_cli::ensure_dir;
 using yume::server_cli::expand_cluster_join_spec;
 using yume::server_cli::file_readable;
 using yume::server_cli::generate_ed25519_keypair;
+using yume::server_cli::cert_fingerprint_sha256;
+using yume::server_cli::get_self_path;
 using yume::server_cli::load_or_create_secret;
+using yume::server_cli::read_file_bytes;
+using yume::server_cli::resolve_filter_list_spec_path;
+using yume::server_cli::sha256_hex;
 
 
-std::string read_file_bytes(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) {
-        throw std::runtime_error("failed to open file: " + path);
-    }
-    std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    return data;
-}
-
-std::string cert_fingerprint_sha256(const std::string& cert_path) {
-    std::ifstream in(cert_path, std::ios::binary);
-    if (!in) {
-        throw std::runtime_error("failed to open cert: " + cert_path);
-    }
-    std::string pem((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    BIO* bio = BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()));
-    if (!bio) {
-        throw std::runtime_error("failed to read cert bio");
-    }
-    X509* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
-    BIO_free(bio);
-    if (!cert) {
-        throw std::runtime_error("failed to parse cert");
-    }
-    unsigned char* der = nullptr;
-    int len = i2d_X509(cert, &der);
-    X509_free(cert);
-    if (len <= 0 || !der) {
-        if (der) OPENSSL_free(der);
-        throw std::runtime_error("failed to encode cert");
-    }
-    unsigned char hash[SHA256_DIGEST_LENGTH] = {0};
-    SHA256(der, static_cast<size_t>(len), hash);
-    OPENSSL_free(der);
-    static const char* kHex = "0123456789abcdef";
-    std::string out;
-    out.reserve(SHA256_DIGEST_LENGTH * 2);
-    for (size_t i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
-        out.push_back(kHex[(hash[i] >> 4) & 0xF]);
-        out.push_back(kHex[hash[i] & 0xF]);
-    }
-    return out;
-}
-
-std::string sha256_hex(const std::string& data) {
-    unsigned char hash[SHA256_DIGEST_LENGTH] = {0};
-    SHA256(reinterpret_cast<const unsigned char*>(data.data()), data.size(), hash);
-    static const char* kHex = "0123456789abcdef";
-    std::string out;
-    out.reserve(SHA256_DIGEST_LENGTH * 2);
-    for (size_t i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
-        out.push_back(kHex[(hash[i] >> 4) & 0xF]);
-        out.push_back(kHex[hash[i] & 0xF]);
-    }
-    return out;
-}
-
-std::string get_self_path(const char* argv0) {
-    // Per-OS resolution lives in src/platform/executable_*.cpp.
-    return yume::platform::executable_path(argv0);
-}
 
 bool parse_env_bool_local(const char* name, bool fallback) {
     const char* raw = std::getenv(name);
@@ -190,18 +134,6 @@ std::string shell_quote(const std::string& input) {
     return out;
 }
 
-std::string resolve_filter_list_spec_path(const std::string& spec,
-                                          const std::string& base_dir,
-                                          const std::string& exe_dir) {
-    const auto first = spec.find(':');
-    const auto second = first == std::string::npos ? std::string::npos : spec.find(':', first + 1);
-    if (first == std::string::npos || second == std::string::npos || second + 1 >= spec.size()) {
-        return spec;
-    }
-    const std::string prefix = spec.substr(0, second + 1);
-    const std::string path = yume::util::resolve_path(spec.substr(second + 1), base_dir, exe_dir);
-    return prefix + path;
-}
 
 bool command_exists(const std::string& command) {
     if (command.empty()) {

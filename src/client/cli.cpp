@@ -324,34 +324,7 @@ int Cli::run(int argc, char** argv) {
         return 1;
     }
 
-    if (cfg.inner_crypto && cfg.pq_public_key.empty()) {
-        std::error_code ec;
-        std::filesystem::path runtime_dir = std::filesystem::current_path(ec);
-        std::filesystem::path exe_path_dir;
-        std::filesystem::path user_cfg_dir;
-        std::string self_path = get_self_path(argv[0]);
-        if (!self_path.empty()) {
-            exe_path_dir = std::filesystem::path(self_path).parent_path();
-        }
-        if (const char* home = std::getenv("HOME"); home && *home) {
-            user_cfg_dir = std::filesystem::path(home) / ".yume";
-        }
-        auto try_set = [&](const std::filesystem::path& base) {
-            if (!cfg.pq_public_key.empty() || base.empty()) {
-                return;
-            }
-            std::filesystem::path cand = base / "pq_public.key";
-            if (file_exists(cand.string())) {
-                cfg.pq_public_key = cand.string();
-            }
-        };
-        try_set(user_cfg_dir);
-        try_set(runtime_dir);
-        try_set(exe_path_dir);
-        if (!cfg.pq_public_key.empty()) {
-            util::log_info("using discovered pq_public_key: " + cfg.pq_public_key);
-        }
-    }
+    discover_default_pq_public_key(argv[0], &cfg);
 
     if (cfg.port != 443) {
         util::log_warn("using non-443 server port; HTTPS disguise is weaker");

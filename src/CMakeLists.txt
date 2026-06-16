@@ -458,6 +458,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/cli/capabilities.cpp
         client/cli/help.cpp
         client/cli/cert.cpp
+        client/cli/console.cpp
         client/cli/config.cpp
         client/cli/diagnostics.cpp
         client/cli/files.cpp
@@ -468,6 +469,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/cli/relay.cpp
         client/cli/runtime.cpp
         client/cli/server_info.cpp
+        client/cli/secondary_tunnel.cpp
         client/cli/share.cpp
         client/cli/status.cpp
     )

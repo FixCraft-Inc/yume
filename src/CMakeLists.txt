@@ -462,6 +462,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/cli/files.cpp
         client/cli/input.cpp
         client/cli/platform.cpp
+        client/cli/pq_bootstrap.cpp
         client/cli/proxy.cpp
         client/cli/relay.cpp
         client/cli/runtime.cpp

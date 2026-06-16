@@ -382,6 +382,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/session_control.cpp
         server/session_net.cpp
         server/session_carrier.cpp
+        server/session_streams.cpp
         server/runtime_controller.cpp
         client/outbound_proxy.cpp
     )

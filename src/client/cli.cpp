@@ -5,6 +5,7 @@
  */
 
 #include "client/cli.hpp"
+#include "client/cli/anonym_proof.hpp"
 #include "client/cli/args.hpp"
 #include "client/cli/auth.hpp"
 #include "client/cli/attach.hpp"
@@ -35,7 +36,6 @@
 #include <filesystem>
 #include <fstream>
 #include <chrono>
-#include <ctime>
 #include <cstdlib>
 #include <thread>
 #if !defined(_WIN32)
@@ -59,9 +59,7 @@
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
-#include <openssl/pem.h>
 #include <openssl/ssl.h>
-#include <openssl/x509.h>
 
 #include "client/forward.hpp"
 #include "client/local_runtime.hpp"
@@ -97,13 +95,7 @@ namespace {
 constexpr std::uint64_t kHopDecryptWindow = 120;
 constexpr int kSocketBufferBytes = 2 * 1024 * 1024;
 
-
-constexpr const char kAnonMsgPrefix[] = "YUME-ANON-V1:";
 constexpr const char kPqMsgPrefix[] = "YUME-PQ-V1:";
-constexpr const char kFixcraftAnonymPubPem[] =
-    "-----BEGIN PUBLIC KEY-----\n"
-    "MCowBQYDK2VwAyEAtupzLhANnB0VxP51vB/7yYwR+/3/jv4Str9MGLGA+is=\n"
-    "-----END PUBLIC KEY-----\n";
 constexpr const char kDefaultAnonymCaCertPath[] = "";
 
 }  // namespace
@@ -1649,196 +1641,40 @@ int Cli::run(int argc, char** argv) {
             hop_enabled = capability.hop_enabled;
 
             if (mode == "anonym") {
-                const bool fixcraft_present =
-                    std::find(announced_proof_sources.begin(), announced_proof_sources.end(),
-                              std::string(yume::policy::kAnonymProofSourceFixcraft)) != announced_proof_sources.end() ||
-                    !sig.empty();
-                const bool ca_present =
-                    std::find(announced_proof_sources.begin(), announced_proof_sources.end(),
-                              std::string(yume::policy::kAnonymProofSourceCa)) != announced_proof_sources.end() ||
-                    !ca_sig.empty();
-                const bool sub_present =
-                    std::find(announced_proof_sources.begin(), announced_proof_sources.end(),
-                              std::string(yume::policy::kAnonymProofSourceSubCa)) != announced_proof_sources.end() ||
-                    !sub_sig.empty() || !sub_cert_b64.empty();
+                AnonymProofInput proof_input;
+                proof_input.announced_proof_sources = announced_proof_sources;
+                proof_input.hash = hash;
+                proof_input.sig = sig;
+                proof_input.ts = ts;
+                proof_input.nonce = nonce;
+                proof_input.certfp = certfp;
+                proof_input.ca_sig = ca_sig;
+                proof_input.sub_sig = sub_sig;
+                proof_input.sub_cert_b64 = sub_cert_b64;
+                proof_input.anonym_pubkey = cfg.anonym_pubkey;
+                proof_input.anonym_ca_cert = cfg.anonym_ca_cert;
+                proof_input.peer_cert_fingerprint = get_peer_cert_fingerprint(nullptr, stream.native_handle());
+                proof_input.initial_sub_ok = sub_ok;
+                proof_input.initial_ca_ok = ca_ok;
 
-                if (hash.empty() || ts.empty() || nonce.empty()) {
-                    print_red("CRITICAL ERROR");
-                    print_red("ANONYM PROOF IS INCOMPLETE");
+                AnonymProofResult proof = verify_anonym_proof(proof_input);
+                if (!proof.error_lines.empty()) {
+                    for (const auto& line : proof.error_lines) {
+                        print_red(line);
+                    }
                     return 1;
                 }
-                if (certfp.empty()) {
-                    print_red("CRITICAL ERROR");
-                    print_red("ANONYM PROOF MISSING CERTIFICATE FINGERPRINT");
-                    return 1;
+                fixcraft_ok = proof.fixcraft_ok;
+                sub_ok = proof.sub_ok;
+                ca_ok = proof.ca_ok;
+                if (proof.sub_pub) {
+                    sub_pub = std::move(proof.sub_pub);
                 }
-                long long ts_val = 0;
-                try {
-                    ts_val = std::stoll(ts);
-                } catch (...) {
-                    print_red("CRITICAL ERROR");
-                    print_red("INVALID TIMESTAMP IN ANONYM PROOF");
-                    return 1;
+                if (proof.ca_pub) {
+                    ca_pub = std::move(proof.ca_pub);
                 }
-                const long long now = static_cast<long long>(std::time(nullptr));
-                if (std::llabs(now - ts_val) > yume::policy::kAnonymProofWindowSeconds) {
-                    print_red("CRITICAL ERROR");
-                    print_red("ANONYM PROOF EXPIRED OR NOT YET VALID");
-                    return 1;
-                }
-                const std::string peer_fp = get_peer_cert_fingerprint(nullptr, stream.native_handle());
-                if (!peer_fp.empty() && certfp != peer_fp) {
-                    print_red("CRITICAL ERROR");
-                    print_red("ANONYM CERTIFICATE FINGERPRINT MISMATCH");
-                    return 1;
-                }
-
-                std::string message = std::string(kAnonMsgPrefix) + hash + ":" + ts + ":" + nonce + ":" + certfp;
-                crypto::Bytes msg_bytes(message.begin(), message.end());
-
-                if (fixcraft_present) {
-                    if (sig.empty()) {
-                        print_red("CRITICAL ERROR");
-                        print_red("FIXCRAFT SIGNATURE MISSING");
-                        return 1;
-                    }
-                    crypto::EVP_PKEY_ptr pubkey{nullptr, EVP_PKEY_free};
-                    if (!cfg.anonym_pubkey.empty()) {
-                        auto kp = crypto::load_keypair("", cfg.anonym_pubkey);
-                        pubkey.reset(kp.public_key.release());
-                    } else {
-                        BIO* bio = BIO_new_mem_buf(kFixcraftAnonymPubPem, -1);
-                        if (!bio) {
-                            print_red("CRITICAL ERROR");
-                            print_red("FAILED TO LOAD EMBEDDED ANONYM PUBLIC KEY");
-                            return 1;
-                        }
-                        EVP_PKEY* key = PEM_read_bio_PUBKEY(bio, nullptr, nullptr, nullptr);
-                        BIO_free(bio);
-                        if (!key) {
-                            print_red("CRITICAL ERROR");
-                            print_red("FAILED TO LOAD EMBEDDED ANONYM PUBLIC KEY");
-                            return 1;
-                        }
-                        pubkey.reset(key);
-                    }
-                    std::string sig_raw = util::base64_decode(sig);
-                    if (sig_raw.empty()) {
-                        print_red("CRITICAL ERROR");
-                        print_red("INVALID SIGNATURE FORMAT FROM SERVER");
-                        return 1;
-                    }
-                    crypto::Bytes sig_bytes(sig_raw.begin(), sig_raw.end());
-                    if (!crypto::verify_key(pubkey.get(), msg_bytes, sig_bytes)) {
-                        print_red("CRITICAL ERROR");
-                        print_red("server anonym proof signature verification failed; treat this server as untrusted and report it");
-                        return 1;
-                    }
-                    fixcraft_ok = true;
-                    add_verified_source(&verified_proof_sources, yume::policy::kAnonymProofSourceFixcraft);
-                }
-
-                if (sub_present) {
-                    if (cfg.anonym_ca_cert.empty()) {
-                        print_red("CRITICAL ERROR");
-                        print_red("ANONYM SUB CERT PROVIDED BUT NO --anonym-ca-cert SET");
-                        return 1;
-                    }
-                    if (sub_cert_b64.empty()) {
-                        print_red("CRITICAL ERROR");
-                        print_red("ANONYM SUB CERT MISSING");
-                        return 1;
-                    }
-                    if (sub_sig.empty()) {
-                        print_red("CRITICAL ERROR");
-                        print_red("ANONYM SUB SIGNATURE MISSING");
-                        return 1;
-                    }
-                    std::string sub_pem = util::base64_decode(sub_cert_b64);
-                    auto sub_cert = load_cert_from_pem(sub_pem);
-                    if (!sub_cert) {
-                        print_red("CRITICAL ERROR");
-                        print_red("FAILED TO PARSE ANONYM SUB CERT");
-                        return 1;
-                    }
-                    auto ca_cert = load_cert_from_file(cfg.anonym_ca_cert);
-                    if (!ca_cert) {
-                        print_red("CRITICAL ERROR");
-                        print_red("FAILED TO LOAD ANONYM CA CERT");
-                        return 1;
-                    }
-                    if (!is_cert_time_valid(sub_cert.get())) {
-                        print_red("CRITICAL ERROR");
-                        print_red("ANONYM SUB CERT IS EXPIRED OR NOT YET VALID");
-                        return 1;
-                    }
-                    if (!verify_cert_signed_by_ca(sub_cert.get(), ca_cert.get())) {
-                        print_red("CRITICAL ERROR");
-                        print_red("ANONYM SUB CERT IS NOT SIGNED BY THE TRUSTED CA");
-                        return 1;
-                    }
-                    crypto::EVP_PKEY_ptr sub_key{X509_get_pubkey(sub_cert.get()), EVP_PKEY_free};
-                    if (!sub_key) {
-                        print_red("CRITICAL ERROR");
-                        print_red("FAILED TO LOAD SUB CERT PUBLIC KEY");
-                        return 1;
-                    }
-                    std::string sub_sig_raw = util::base64_decode(sub_sig);
-                    if (sub_sig_raw.empty()) {
-                        print_red("CRITICAL ERROR");
-                        print_red("INVALID ANONYM SUB SIGNATURE FORMAT");
-                        return 1;
-                    }
-                    crypto::Bytes sub_sig_bytes(sub_sig_raw.begin(), sub_sig_raw.end());
-                    if (!crypto::verify_key(sub_key.get(), msg_bytes, sub_sig_bytes)) {
-                        print_red("CRITICAL ERROR");
-                        print_red("ANONYM SUB SIGNATURE INVALID");
-                        return 1;
-                    }
-                    sub_pub = std::move(sub_key);
-                    sub_ok = true;
-                    add_verified_source(&verified_proof_sources, yume::policy::kAnonymProofSourceSubCa);
-                }
-
-                if (ca_present) {
-                    if (ca_sig.empty()) {
-                        print_red("CRITICAL ERROR");
-                        print_red("ANONYM CA SIGNATURE MISSING");
-                        return 1;
-                    }
-                    if (cfg.anonym_ca_cert.empty()) {
-                        util::log_warn("anonym CA signature provided but no --anonym-ca-cert set; skipping CA verification");
-                    } else {
-                        auto ca_key = load_pubkey_from_cert(cfg.anonym_ca_cert);
-                        if (!ca_key) {
-                            print_red("CRITICAL ERROR");
-                            print_red("FAILED TO LOAD ANONYM CA CERT");
-                            return 1;
-                        }
-                        std::string ca_sig_raw = util::base64_decode(ca_sig);
-                        if (ca_sig_raw.empty()) {
-                            print_red("CRITICAL ERROR");
-                            print_red("INVALID ANONYM CA SIGNATURE FORMAT");
-                            return 1;
-                        }
-                        crypto::Bytes ca_sig_bytes(ca_sig_raw.begin(), ca_sig_raw.end());
-                        if (!crypto::verify_key(ca_key.get(), msg_bytes, ca_sig_bytes)) {
-                            print_red("CRITICAL ERROR");
-                            print_red("ANONYM CA SIGNATURE INVALID");
-                            return 1;
-                        }
-                        ca_pub = std::move(ca_key);
-                        ca_ok = true;
-                        add_verified_source(&verified_proof_sources, yume::policy::kAnonymProofSourceCa);
-                    }
-                }
-
+                verified_proof_sources = std::move(proof.verified_proof_sources);
                 verity_ok = fixcraft_ok || ca_ok || sub_ok;
-                if (!verity_ok) {
-                    print_red("CRITICAL ERROR");
-                    print_red("NO TRUSTED ANONYM PROOF SOURCE COULD BE VERIFIED");
-                    return 1;
-                }
                 if (!verified_once) {
                     print_green("Verified");
                     verified_once = true;

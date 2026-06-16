@@ -406,6 +406,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
 
     add_executable(yumed
         main_server.cpp
+        server/server_local_cli.cpp
         server/srv_help.cpp
     )
     target_link_libraries(yumed PRIVATE yume_server)
@@ -444,11 +445,16 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/outbound_proxy.cpp
         client/share_file.cpp
         client/cli.cpp
+        client/cli_attach.cpp
+        client/cli_args.cpp
         client/cli_bench.cpp
         client/cli_help.cpp
         client/cli_cert.cpp
+        client/cli_input.cpp
         client/cli_platform.cpp
         client/cli_proxy.cpp
+        client/cli_relay.cpp
+        client/cli_share.cpp
     )
     target_include_directories(yume_client_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(yume_client_lib PUBLIC yume_core yume_transport_core)

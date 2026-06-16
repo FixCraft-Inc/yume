@@ -444,6 +444,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/outbound_proxy.cpp
         client/share_file.cpp
         client/cli.cpp
+        client/cli_bench.cpp
         client/cli_help.cpp
         client/cli_cert.cpp
     )

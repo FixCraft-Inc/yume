@@ -61,6 +61,7 @@
 #include "server/manager.hpp"
 #include "server/auth.hpp"
 #include "server/ip_filter.hpp"
+#include "server/server_cluster_cli.hpp"
 #include "server/server_key_cli.hpp"
 #include "server/local_runtime.hpp"
 #include "server/server_local_cli.hpp"
@@ -78,6 +79,7 @@ constexpr const char kDefaultSecretPath[] = "./.secrets/html_secret";
 using yume::server_cli::append_authorized_public_key;
 using yume::server_cli::auth_keys_write_hint;
 using yume::server_cli::ensure_dir;
+using yume::server_cli::expand_cluster_join_spec;
 using yume::server_cli::file_readable;
 using yume::server_cli::generate_ed25519_keypair;
 using yume::server_cli::load_or_create_secret;
@@ -698,108 +700,6 @@ void repair_pq_key_ownership_for_drop(const yume::server::ServerConfig& cfg, boo
 }
 #endif
 
-// Translates the --cluster-join short form into the JSON peer entry
-// the existing FederationManager::parse_peer consumer expects.
-//
-// Accepted shapes:
-//   alice                          → {"id":"alice","url":"yume://alice:443"}
-//   alice:8443                     → {"id":"alice","url":"yume://alice:8443"}
-//   alice@alice.example.com        → {"id":"alice","url":"yume://alice.example.com:443"}
-//   alice@alice.example.com:8443   → {"id":"alice","url":"yume://alice.example.com:8443"}
-//   alice@alice.example.com:8443?pin=sha256:abc
-//                                   → ...,"tls_pin":"sha256:abc"
-//
-// IPv6 hosts must be bracketed: alice@[2001:db8::1]:443
-//
-// Throws std::runtime_error on invalid input; the caller is the CLI
-// flag handler which will log and exit non-zero.
-std::string expand_cluster_join_spec(const std::string& spec) {
-    if (spec.empty()) {
-        throw std::runtime_error("--cluster-join argument is empty");
-    }
-    std::string body = spec;
-    std::string pin;
-    auto qpos = body.find('?');
-    if (qpos != std::string::npos) {
-        std::string query = body.substr(qpos + 1);
-        body.resize(qpos);
-        // Only `pin=` is recognised today. Quietly ignore unknown
-        // keys so future query parameters don't break old binaries.
-        std::size_t cursor = 0;
-        while (cursor < query.size()) {
-            auto amp = query.find('&', cursor);
-            std::string pair = query.substr(cursor, amp == std::string::npos ? std::string::npos : amp - cursor);
-            cursor = amp == std::string::npos ? query.size() : amp + 1;
-            auto eq = pair.find('=');
-            if (eq == std::string::npos) continue;
-            std::string key = pair.substr(0, eq);
-            std::string val = pair.substr(eq + 1);
-            if (key == "pin") {
-                pin = std::move(val);
-            }
-        }
-    }
-    std::string id;
-    std::string hostport = body;
-    auto at = body.find('@');
-    if (at != std::string::npos) {
-        id = body.substr(0, at);
-        hostport = body.substr(at + 1);
-    }
-    // Detect bracketed IPv6 and split on the FIRST colon after the
-    // closing bracket. For non-bracketed forms, the rightmost colon
-    // separates host and port (so plain `alice` or `alice:443` work).
-    std::string host;
-    int port = 443;
-    if (!hostport.empty() && hostport.front() == '[') {
-        auto close = hostport.find(']');
-        if (close == std::string::npos) {
-            throw std::runtime_error("--cluster-join: unmatched '[' in " + spec);
-        }
-        host = hostport.substr(1, close - 1);
-        if (close + 1 < hostport.size()) {
-            if (hostport[close + 1] != ':') {
-                throw std::runtime_error("--cluster-join: expected ':port' after ']' in " + spec);
-            }
-            try {
-                port = std::stoi(hostport.substr(close + 2));
-            } catch (const std::exception&) {
-                throw std::runtime_error("--cluster-join: invalid port in " + spec);
-            }
-        }
-    } else {
-        auto colon = hostport.rfind(':');
-        if (colon == std::string::npos) {
-            host = hostport;
-        } else {
-            host = hostport.substr(0, colon);
-            try {
-                port = std::stoi(hostport.substr(colon + 1));
-            } catch (const std::exception&) {
-                throw std::runtime_error("--cluster-join: invalid port in " + spec);
-            }
-        }
-    }
-    if (host.empty()) {
-        throw std::runtime_error("--cluster-join: empty host in " + spec);
-    }
-    if (port <= 0 || port > 65535) {
-        throw std::runtime_error("--cluster-join: port out of range in " + spec);
-    }
-    if (id.empty()) {
-        id = host;
-    }
-    nlohmann::json peer;
-    peer["id"] = id;
-    peer["url"] = std::string("yume://") + (host.find(':') != std::string::npos
-                                                ? "[" + host + "]"
-                                                : host) +
-                  ":" + std::to_string(port);
-    if (!pin.empty()) {
-        peer["tls_pin"] = pin;
-    }
-    return peer.dump();
-}
 
 bool anonym_local_sign_default() {
     return true;

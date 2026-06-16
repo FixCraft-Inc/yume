@@ -406,6 +406,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
 
     add_executable(yumed
         main_server.cpp
+        server/server_cluster_cli.cpp
         server/server_key_cli.cpp
         server/server_local_cli.cpp
         server/srv_help.cpp

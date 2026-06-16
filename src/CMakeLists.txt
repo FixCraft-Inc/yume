@@ -443,6 +443,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/share_file.cpp
         client/cli.cpp
         client/cli_help.cpp
+        client/cli_cert.cpp
     )
     target_include_directories(yume_client_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(yume_client_lib PUBLIC yume_core yume_transport_core)

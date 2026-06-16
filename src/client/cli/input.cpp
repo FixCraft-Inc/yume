@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "client/cli_input.hpp"
+#include "client/cli/input.hpp"
 
 #include <algorithm>
 #include <cctype>

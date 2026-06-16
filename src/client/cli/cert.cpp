@@ -7,7 +7,7 @@
  * client/cli.cpp. No behavior change.
  */
 
-#include "client/cli_cert.hpp"
+#include "client/cli/cert.hpp"
 
 #include <filesystem>
 #include <iostream>

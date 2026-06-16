@@ -450,23 +450,23 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/outbound_proxy.cpp
         client/share_file.cpp
         client/cli.cpp
-        client/cli_attach.cpp
-        client/cli_args.cpp
-        client/cli_auth.cpp
-        client/cli_bench.cpp
-        client/cli_capabilities.cpp
-        client/cli_help.cpp
-        client/cli_cert.cpp
-        client/cli_diagnostics.cpp
-        client/cli_files.cpp
-        client/cli_input.cpp
-        client/cli_platform.cpp
-        client/cli_proxy.cpp
-        client/cli_relay.cpp
-        client/cli_runtime.cpp
-        client/cli_server_info.cpp
-        client/cli_share.cpp
-        client/cli_status.cpp
+        client/cli/attach.cpp
+        client/cli/args.cpp
+        client/cli/auth.cpp
+        client/cli/bench.cpp
+        client/cli/capabilities.cpp
+        client/cli/help.cpp
+        client/cli/cert.cpp
+        client/cli/diagnostics.cpp
+        client/cli/files.cpp
+        client/cli/input.cpp
+        client/cli/platform.cpp
+        client/cli/proxy.cpp
+        client/cli/relay.cpp
+        client/cli/runtime.cpp
+        client/cli/server_info.cpp
+        client/cli/share.cpp
+        client/cli/status.cpp
     )
     target_include_directories(yume_client_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(yume_client_lib PUBLIC yume_core yume_transport_core)

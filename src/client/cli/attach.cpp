@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "client/cli_attach.hpp"
+#include "client/cli/attach.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -15,9 +15,9 @@
 #include <nlohmann/json.hpp>
 
 #include "client/cli.hpp"
-#include "client/cli_args.hpp"
-#include "client/cli_input.hpp"
-#include "client/cli_relay.hpp"
+#include "client/cli/args.hpp"
+#include "client/cli/input.hpp"
+#include "client/cli/relay.hpp"
 #include "client/local_runtime.hpp"
 #include "core/identity.hpp"
 #include "util.hpp"

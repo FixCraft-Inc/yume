@@ -4,14 +4,14 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "client/cli_status.hpp"
+#include "client/cli/status.hpp"
 
 #include <cctype>
 #include <iomanip>
 #include <sstream>
 #include <utility>
 
-#include "client/cli_diagnostics.hpp"
+#include "client/cli/diagnostics.hpp"
 #include "util.hpp"
 
 namespace yume::client {

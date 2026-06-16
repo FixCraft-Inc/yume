@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "client/cli_args.hpp"
+#include "client/cli/args.hpp"
 
 #include <algorithm>
 #include <charconv>

@@ -4,13 +4,13 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "client/cli_server_info.hpp"
+#include "client/cli/server_info.hpp"
 
 #include <string>
 
 #include <nlohmann/json.hpp>
 
-#include "client/cli_diagnostics.hpp"
+#include "client/cli/diagnostics.hpp"
 #include "core/runtime_policy.hpp"
 
 namespace yume::client {

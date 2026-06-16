@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "client/cli_files.hpp"
+#include "client/cli/files.hpp"
 
 #include <exception>
 #include <filesystem>

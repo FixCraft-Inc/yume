@@ -7,7 +7,7 @@
  * verbatim from client/cli.cpp. No behavior change.
  */
 
-#include "client/cli_help.hpp"
+#include "client/cli/help.hpp"
 
 #include <iostream>
 #include <string>

@@ -4,15 +4,15 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "client/cli_relay.hpp"
+#include "client/cli/relay.hpp"
 
 #include <cstdlib>
 #include <string>
 #include <utility>
 
 #include "client/cli.hpp"
-#include "client/cli_cert.hpp"
-#include "client/cli_input.hpp"
+#include "client/cli/cert.hpp"
+#include "client/cli/input.hpp"
 #include "client/relay_secret.hpp"
 #include "util.hpp"
 

@@ -9,6 +9,7 @@
 #include "client/cli_auth.hpp"
 #include "client/cli_attach.hpp"
 #include "client/cli_bench.hpp"
+#include "client/cli_capabilities.hpp"
 #include "client/cli_help.hpp"
 #include "client/cli_cert.hpp"
 #include "client/cli_diagnostics.hpp"
@@ -1615,76 +1616,37 @@ int Cli::run(int argc, char** argv) {
                 return 1;
             }
             util::log_info("authenticated to server");
-            if (server_version != yume::kVersion) {
-                print_red("server is version " + server_version + ", you are " + std::string(yume::kVersion) +
-                          ", please install a matching version to connect to this server");
+            ServerCapabilityInput capability_input;
+            capability_input.server_version = server_version;
+            capability_input.server_inner_mode = server_inner_mode;
+            if (inner_kdf.has_value()) {
+                capability_input.inner_kdf_name = inner_kdf->name;
+            }
+            capability_input.inner_crypto_requested = cfg.inner_crypto;
+            capability_input.inner_disabled_for_session = inner_disabled_for_session;
+            capability_input.inner_heavy = cfg.inner_heavy;
+            capability_input.inner_hop = cfg.inner_hop;
+            capability_input.inner_key_established = inner_key.has_value();
+            capability_input.have_inner_caps = have_inner_caps;
+            capability_input.server_inner_supported = server_inner_supported;
+            capability_input.server_inner_required = server_inner_required;
+            capability_input.server_inner_dual = server_inner_dual;
+            capability_input.server_cap_pq = server_cap_pq;
+            capability_input.server_cap_argon2 = server_cap_argon2;
+            capability_input.server_cap_pbkdf2 = server_cap_pbkdf2;
+            capability_input.server_hop_enabled = server_hop_enabled;
+            capability_input.client_hop_interval_ms = cfg.hop_interval_ms;
+            capability_input.server_hop_interval_ms = server_hop_interval_ms;
+            capability_input.server_time_ms = server_time_ms;
+
+            ServerCapabilityResult capability = evaluate_server_capabilities(capability_input);
+            if (!capability.error.empty()) {
+                print_red(capability.error);
                 return 1;
             }
-            bool want_inner = cfg.inner_crypto && !inner_disabled_for_session;
-            if (have_inner_caps) {
-                if (want_inner) {
-                    if (!server_inner_supported) {
-                        print_red("server does not support inner crypto");
-                        return 1;
-                    }
-                    if (!server_inner_dual && !server_inner_mode.empty() && server_inner_mode != "off") {
-                        if (cfg.inner_heavy && server_inner_mode == "light") {
-                            print_red("server does not support inner-heavy");
-                            return 1;
-                        }
-                        if (!cfg.inner_heavy && server_inner_mode == "heavy") {
-                            print_red("server does not support inner-light");
-                            return 1;
-                        }
-                    }
-                } else if (server_inner_required) {
-                    print_red("server does not support connecting without inner!");
-                    return 1;
-                }
-            }
-            if (want_inner && have_inner_caps && !server_cap_pq) {
-                print_red("server does not support PQ");
-                return 1;
-            }
-            if (want_inner && inner_kdf.has_value() && !inner_kdf->name.empty()) {
-                if (inner_kdf->name == "argon2" && !server_cap_argon2) {
-                    print_red("server does not support argon2");
-                    return 1;
-                }
-                if (inner_kdf->name == "pbkdf2" && !server_cap_pbkdf2) {
-                    print_red("server does not support pbkdf2");
-                    return 1;
-                }
-            }
-            if (want_inner) {
-                if (server_hop_enabled && !cfg.inner_hop) {
-                    print_red("server requires hopping");
-                    return 1;
-                }
-                if (!server_hop_enabled && cfg.inner_hop) {
-                    print_red("server does not support hopping");
-                    return 1;
-                }
-            }
-            hop_interval_ms = cfg.hop_interval_ms;
-            if (server_hop_interval_ms > 0) {
-                hop_interval_ms = server_hop_interval_ms;
-            }
-            if (hop_interval_ms > 0) {
-                if (hop_interval_ms < 250) {
-                    hop_interval_ms = 250;
-                } else if (hop_interval_ms > 1000) {
-                    hop_interval_ms = 1000;
-                }
-            }
-            hop_offset_ms = 0;
-            if (server_time_ms > 0) {
-                hop_offset_ms = server_time_ms - util::now_ms();
-            }
-            hop_enabled = (want_inner && cfg.inner_hop && server_hop_enabled && inner_key.has_value());
-            if (hop_interval_ms == 0) {
-                hop_enabled = false;
-            }
+            hop_interval_ms = capability.hop_interval_ms;
+            hop_offset_ms = capability.hop_offset_ms;
+            hop_enabled = capability.hop_enabled;
 
             if (mode == "anonym") {
                 const bool fixcraft_present =

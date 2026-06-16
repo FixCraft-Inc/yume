@@ -454,6 +454,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/cli_args.cpp
         client/cli_auth.cpp
         client/cli_bench.cpp
+        client/cli_capabilities.cpp
         client/cli_help.cpp
         client/cli_cert.cpp
         client/cli_diagnostics.cpp

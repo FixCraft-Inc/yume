@@ -164,7 +164,17 @@ contains a `debian/` scaffold for that workflow:
 - `debian/changelog`: Debian package changelog.
 - `debian/copyright`: machine-readable license and `Files-Excluded`.
 - `debian/watch`: upstream release scanner.
-- `debian/tests/*`: basic autopkgtest smoke test.
+- `debian/tests/*`: autopkgtest smoke and `libyume-dev` ABI consumer tests.
+
+Run the lightweight source-package check before a full package build:
+
+```bash
+scripts/check_debian_source.sh
+```
+
+It creates and validates the upstream orig tarball, checks for accidentally
+included local/private artifacts, runs `dpkg-source -b`, and removes the
+generated source-package files when it exits.
 
 Build the Debian-style binary package locally:
 

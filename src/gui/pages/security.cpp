@@ -12,10 +12,10 @@
 
 #include <imgui.h>
 
-#include "facade/client_session.hpp"
-#include "facade/config_io.hpp"
-#include "facade/log_sink.hpp"
-#include "facade/secure_materials.hpp"
+#include "facade/session/client_session.hpp"
+#include "facade/config/config_io.hpp"
+#include "facade/logging/log_sink.hpp"
+#include "facade/security/secure_materials.hpp"
 #include "platform/file_dialog.hpp"
 #include "ui/design.hpp"
 
@@ -183,12 +183,7 @@ private:
     }
 
     static void log_event(facade::LogLevel level, std::string message) {
-        facade::LogEntry e;
-        e.ts = std::chrono::system_clock::now();
-        e.level = level;
-        e.component = "gui.security";
-        e.message = std::move(message);
-        facade::LogSink::instance().push(std::move(e));
+        facade::LogSink::instance().push(level, "gui.security", std::move(message));
     }
 
     void choose_file(sm::MaterialType type) {

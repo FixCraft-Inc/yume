@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "facade/secure_materials.hpp"
+#include "facade/security/secure_materials.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -24,7 +24,7 @@
 #include <openssl/sha.h>
 #include <openssl/x509.h>
 
-#include "facade/config_io.hpp"
+#include "facade/config/config_io.hpp"
 
 namespace yume::facade::secure_materials {
 

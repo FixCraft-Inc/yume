@@ -78,7 +78,7 @@ public:
     Status status() const;
 
     // Mirror of LocalRuntime::Server::request() so existing call sites
-    // in facade/client_session.cpp don't need to change shape. We post
+    // in facade/session/client_session.cpp don't need to change shape. We post
     // the request onto the tunnel's executor (the same thread Cli's
     // io_context drives) so that RelayRuntime sees the call from its
     // own thread and avoids the locking surface a cross-thread call

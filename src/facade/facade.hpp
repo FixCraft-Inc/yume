@@ -8,10 +8,10 @@
 
 #pragma once
 
-#include "facade/client_session.hpp"
-#include "facade/config_io.hpp"
-#include "facade/keys.hpp"
-#include "facade/log_sink.hpp"
-#include "facade/server_session.hpp"
-#include "facade/status.hpp"
-#include "facade/traffic_meter.hpp"
+#include "facade/session/client_session.hpp"
+#include "facade/config/config_io.hpp"
+#include "facade/keys/keys.hpp"
+#include "facade/logging/log_sink.hpp"
+#include "facade/session/server_session.hpp"
+#include "facade/model/status.hpp"
+#include "facade/metrics/traffic_meter.hpp"

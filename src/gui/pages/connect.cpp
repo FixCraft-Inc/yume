@@ -14,10 +14,10 @@
 #include <imgui.h>
 
 #include "client/transfer/share_file.hpp"
-#include "facade/client_session.hpp"
-#include "facade/config_io.hpp"
-#include "facade/profiles.hpp"
-#include "facade/secure_materials.hpp"
+#include "facade/session/client_session.hpp"
+#include "facade/config/config_io.hpp"
+#include "facade/config/profiles.hpp"
+#include "facade/security/secure_materials.hpp"
 #include "platform/file_dialog.hpp"
 #include "ui/design.hpp"
 

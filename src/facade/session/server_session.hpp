@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-#include "facade/status.hpp"
+#include "facade/model/status.hpp"
 #include "server/config/config.hpp"
 
 namespace yume::facade {

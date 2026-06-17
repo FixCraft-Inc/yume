@@ -14,9 +14,9 @@
 
 #include <imgui.h>
 
-#include "facade/client_session.hpp"
-#include "facade/server_session.hpp"
-#include "facade/traffic_meter.hpp"
+#include "facade/session/client_session.hpp"
+#include "facade/session/server_session.hpp"
+#include "facade/metrics/traffic_meter.hpp"
 #include "ui/design.hpp"
 
 namespace yume::gui {

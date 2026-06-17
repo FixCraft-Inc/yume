@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "facade/traffic_meter.hpp"
+#include "facade/metrics/traffic_meter.hpp"
 
 namespace yume::facade {
 

@@ -11,8 +11,8 @@
 
 #include <imgui.h>
 
-#include "facade/config_io.hpp"
-#include "facade/keys.hpp"
+#include "facade/config/config_io.hpp"
+#include "facade/keys/keys.hpp"
 #include "ui/design.hpp"
 
 namespace yume::gui {

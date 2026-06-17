@@ -11,7 +11,7 @@
 
 #include <imgui.h>
 
-#include "facade/client_session.hpp"
+#include "facade/session/client_session.hpp"
 #include "ui/design.hpp"
 
 namespace yume::gui {

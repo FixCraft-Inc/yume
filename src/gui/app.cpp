@@ -19,11 +19,11 @@
 #include <implot.h>
 
 #include "core/version.hpp"
-#include "facade/client_session.hpp"
-#include "facade/config_io.hpp"
-#include "facade/log_sink.hpp"
-#include "facade/server_session.hpp"
-#include "facade/status.hpp"
+#include "facade/session/client_session.hpp"
+#include "facade/config/config_io.hpp"
+#include "facade/logging/log_sink.hpp"
+#include "facade/session/server_session.hpp"
+#include "facade/model/status.hpp"
 #include "geo/country_lookup.hpp"
 #include "theme/theme.hpp"
 #include "ui/design.hpp"
@@ -249,12 +249,10 @@ void App::load_configs() {
             client_cfg = *c;
         } else {
             // Non-fatal: surface via log sink so user sees it on the Logs page.
-            facade::LogEntry e;
-            e.ts = std::chrono::system_clock::now();
-            e.level = facade::LogLevel::Warn;
-            e.component = "gui.app";
-            e.message = "client config load failed: " + err;
-            facade::LogSink::instance().push(std::move(e));
+            facade::LogSink::instance().push(
+                facade::LogLevel::Warn,
+                "gui.app",
+                "client config load failed: " + err);
         }
     }
     client_ = std::make_unique<facade::ClientSession>(client_cfg);
@@ -268,12 +266,10 @@ void App::load_configs() {
         if (auto s = load_server(server_path, &err)) {
             server_cfg = *s;
         } else {
-            facade::LogEntry e;
-            e.ts = std::chrono::system_clock::now();
-            e.level = facade::LogLevel::Warn;
-            e.component = "gui.app";
-            e.message = "server config load failed: " + err;
-            facade::LogSink::instance().push(std::move(e));
+            facade::LogSink::instance().push(
+                facade::LogLevel::Warn,
+                "gui.app",
+                "server config load failed: " + err);
         }
     }
     server_ = std::make_unique<facade::ServerSession>(server_cfg);

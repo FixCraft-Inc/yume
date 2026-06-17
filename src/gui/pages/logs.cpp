@@ -11,7 +11,7 @@
 
 #include <imgui.h>
 
-#include "facade/log_sink.hpp"
+#include "facade/logging/log_sink.hpp"
 #include "theme/theme.hpp"
 #include "ui/design.hpp"
 

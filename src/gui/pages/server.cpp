@@ -29,10 +29,10 @@
 
 #include <imgui.h>
 
-#include "facade/config_io.hpp"
-#include "facade/keys.hpp"
-#include "facade/log_sink.hpp"
-#include "facade/server_session.hpp"
+#include "facade/config/config_io.hpp"
+#include "facade/keys/keys.hpp"
+#include "facade/logging/log_sink.hpp"
+#include "facade/session/server_session.hpp"
 #include "platform/file_dialog.hpp"
 #include "ui/design.hpp"
 
@@ -137,12 +137,7 @@ std::filesystem::path resolved_auth_meta(server::ServerConfig const& cfg) {
 }
 
 void push_log(facade::LogLevel level, std::string msg) {
-    facade::LogEntry e;
-    e.ts = std::chrono::system_clock::now();
-    e.level = level;
-    e.component = "gui.server";
-    e.message = std::move(msg);
-    facade::LogSink::instance().push(std::move(e));
+    facade::LogSink::instance().push(level, "gui.server", std::move(msg));
 }
 
 class ServerPage : public Page {

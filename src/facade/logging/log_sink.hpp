@@ -8,9 +8,10 @@
 
 #include <functional>
 #include <mutex>
+#include <string>
 #include <vector>
 
-#include "facade/status.hpp"
+#include "facade/model/status.hpp"
 
 namespace yume::facade {
 
@@ -43,6 +44,7 @@ public:
 
     // Directly push an entry (used by adapters that aren't using spdlog).
     void push(LogEntry entry);
+    void push(LogLevel level, std::string component, std::string message);
 
 private:
     LogSink();

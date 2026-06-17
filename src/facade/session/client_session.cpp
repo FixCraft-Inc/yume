@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "facade/client_session.hpp"
+#include "facade/session/client_session.hpp"
 
 #include <atomic>
 #include <filesystem>
@@ -14,11 +14,11 @@
 
 #include <nlohmann/json.hpp>
 
-#include "facade/config_io.hpp"
-#include "facade/inproc_client.hpp"
-#include "facade/log_sink.hpp"
-#include "facade/secure_materials.hpp"
-#include "facade/traffic_meter.hpp"
+#include "facade/config/config_io.hpp"
+#include "facade/session/inproc_client.hpp"
+#include "facade/logging/log_sink.hpp"
+#include "facade/security/secure_materials.hpp"
+#include "facade/metrics/traffic_meter.hpp"
 
 namespace yume::facade {
 
@@ -158,17 +158,13 @@ ClientSession::ClientSession(client::ClientConfig cfg)
     impl_->status.server_endpoint = endpoint_for(impl_->cfg);
     impl_->runtime.set_log_callback([](std::string const& line) {
         std::string clean = strip_ansi(line);
-        LogEntry entry;
-        entry.ts = std::chrono::system_clock::now();
-        entry.level = LogLevel::Info;
+        LogLevel level = LogLevel::Info;
         if (clean.find("[ERROR]") != std::string::npos || clean.find("error") != std::string::npos) {
-            entry.level = LogLevel::Error;
+            level = LogLevel::Error;
         } else if (clean.find("[WARN]") != std::string::npos || clean.find("warn") != std::string::npos) {
-            entry.level = LogLevel::Warn;
+            level = LogLevel::Warn;
         }
-        entry.component = "client.runtime";
-        entry.message = std::move(clean);
-        LogSink::instance().push(std::move(entry));
+        LogSink::instance().push(level, "client.runtime", std::move(clean));
     });
 }
 
@@ -216,12 +212,7 @@ bool ClientSession::start(std::string* err) {
                 fsnap = impl_->status;
                 fcb = impl_->status_callback();
             }
-            LogEntry e;
-            e.ts = std::chrono::system_clock::now();
-            e.level = LogLevel::Error;
-            e.component = "facade.client";
-            e.message = msg;
-            LogSink::instance().push(std::move(e));
+            LogSink::instance().push(LogLevel::Error, "facade.client", msg);
             if (fcb) fcb(fsnap);
         };
 
@@ -267,12 +258,7 @@ bool ClientSession::start(std::string* err) {
             ok_snap = impl_->status;
             ok_cb = impl_->status_callback();
         }
-        LogEntry entry;
-        entry.ts = std::chrono::system_clock::now();
-        entry.level = LogLevel::Info;
-        entry.component = "facade.client";
-        entry.message = "client runtime started";
-        LogSink::instance().push(std::move(entry));
+        LogSink::instance().push(LogLevel::Info, "facade.client", "client runtime started");
         if (ok_cb) ok_cb(ok_snap);
 
         // Spin up the stats-poll thread now that IPC is up. It loops

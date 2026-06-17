@@ -4,16 +4,16 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "facade/server_session.hpp"
+#include "facade/session/server_session.hpp"
 
 #include <atomic>
 #include <mutex>
 #include <thread>
 #include <utility>
 
-#include "facade/keys.hpp"
-#include "facade/log_sink.hpp"
-#include "facade/traffic_meter.hpp"
+#include "facade/keys/keys.hpp"
+#include "facade/logging/log_sink.hpp"
+#include "facade/metrics/traffic_meter.hpp"
 #include "server/runtime/controller.hpp"
 
 namespace yume::facade {
@@ -60,12 +60,7 @@ ServerStatus to_facade_status(server::RuntimeController::Status const& runtime,
 }
 
 void push_server_log(LogLevel level, std::string message) {
-    LogEntry entry;
-    entry.ts = std::chrono::system_clock::now();
-    entry.level = level;
-    entry.component = "facade.server";
-    entry.message = std::move(message);
-    LogSink::instance().push(std::move(entry));
+    LogSink::instance().push(level, "facade.server", std::move(message));
 }
 
 }  // namespace

@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "facade/profiles.hpp"
+#include "facade/config/profiles.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -16,7 +16,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "facade/config_io.hpp"
+#include "facade/config/config_io.hpp"
 
 namespace yume::facade::profiles {
 

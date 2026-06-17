@@ -8,7 +8,7 @@
 
 #include <imgui.h>
 
-#include "facade/config_io.hpp"
+#include "facade/config/config_io.hpp"
 #include "theme/theme.hpp"
 #include "ui/design.hpp"
 

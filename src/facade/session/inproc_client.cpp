@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "facade/inproc_client.hpp"
+#include "facade/session/inproc_client.hpp"
 
 #include <cstdio>
 #include <future>
@@ -15,7 +15,7 @@
 
 #include "client/relay/runtime.hpp"
 #include "client/transport/tunnel.hpp"
-#include "facade/log_sink.hpp"
+#include "facade/logging/log_sink.hpp"
 
 namespace yume::facade {
 

@@ -4,9 +4,11 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "facade/log_sink.hpp"
+#include "facade/logging/log_sink.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <utility>
 
 #if YUME_FACADE_HAVE_SPDLOG
 #include <spdlog/sinks/base_sink.h>
@@ -153,6 +155,15 @@ void LogSink::push(LogEntry entry) {
             }
         }
     }
+}
+
+void LogSink::push(LogLevel level, std::string component, std::string message) {
+    LogEntry entry;
+    entry.ts = std::chrono::system_clock::now();
+    entry.level = level;
+    entry.component = std::move(component);
+    entry.message = std::move(message);
+    push(std::move(entry));
 }
 
 std::vector<LogEntry> LogSink::snapshot(std::size_t max) const {

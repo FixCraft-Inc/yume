@@ -7,15 +7,17 @@
 # ------------------------------------------------------------------------
 
 add_library(yume_facade STATIC
-    log_sink.cpp
-    config_io.cpp
-    secure_materials.cpp
-    profiles.cpp
-    keys.cpp
-    traffic_meter.cpp
-    inproc_client.cpp
-    client_session.cpp
-    server_session.cpp
+    logging/log_sink.cpp
+    config/config_io.cpp
+    config/client_config_io.cpp
+    config/server_config_io.cpp
+    security/secure_materials.cpp
+    config/profiles.cpp
+    keys/keys.cpp
+    metrics/traffic_meter.cpp
+    session/inproc_client.cpp
+    session/client_session.cpp
+    session/server_session.cpp
 )
 
 target_include_directories(yume_facade PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)

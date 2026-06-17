@@ -1,3 +1,5 @@
 usr/bin/yume-gui
 usr/share/applications/yume-gui.desktop
+usr/share/icons/hicolor/512x512/apps/yume-gui.png
 usr/share/man/man1/yume-gui.1
+usr/share/yume-gui/geoip/*

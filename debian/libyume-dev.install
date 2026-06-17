@@ -1,0 +1,4 @@
+usr/include/yume/*.h
+usr/lib/*/libyume.so
+usr/lib/*/cmake/yume/*
+usr/lib/*/pkgconfig/yume.pc

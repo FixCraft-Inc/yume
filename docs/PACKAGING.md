@@ -4,19 +4,20 @@ This page covers local installs, man pages, and Debian package builds.
 
 ## Package Split
 
-The Debian source packaging currently produces two YUME binary packages:
+The Debian source packaging currently produces four YUME binary packages:
 
+- `libyume1`: the stable C ABI runtime library.
+- `libyume-dev`: the public C header, CMake config, and pkg-config file.
 - `yume`: the CLI client and `yumed` server daemon.
 - `yume-gui`: the optional desktop GUI, built unless
   `DEB_BUILD_PROFILES=nogui` is set.
 
 BaseFWX is packaged separately as `basefwx`, `libbasefwx3`, and
 `libbasefwx-dev`; YUME links to that packaged library for Debian builds.
-YUME's own `yume_core`, `yume_client_lib`, `yume_server`, and
-`yume_facade` targets are still internal static libraries. Do not create
-an empty `libyume` package from them. A real `libyume0`/`libyume-dev` split
-should land only after YUME exports a stable shared-library ABI and installs
-public headers/CMake metadata for external consumers.
+`libyume` is intentionally a narrow C ABI for build/version/feature/backend
+information. YUME's `yume_core`, `yume_client_lib`, `yume_server`, and
+`yume_facade` targets remain internal static libraries so CLI/GUI/session
+refactors do not accidentally become ABI breaks.
 
 ## Install From A Build Tree
 
@@ -36,6 +37,8 @@ Installed files:
 - `yume(1)` goes to `share/man/man1`.
 - `yumed(8)` goes to `share/man/man8`.
 - `yume-gui(1)` goes to `share/man/man1` when the GUI is built.
+- `libyume.so.1`, `include/yume/yume.h`, CMake config, and pkg-config
+  metadata are installed when `YUME_BUILD_SHARED_ABI=ON`.
 - Markdown docs go to `share/doc/yume`.
 
 Use a different prefix with:
@@ -91,7 +94,8 @@ toolchain, disable it:
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
-  -DYUME_DEB_SHLIBDEPS=OFF
+  -DYUME_DEB_SHLIBDEPS=OFF \
+  -DYUME_BUILD_SHARED_ABI=ON
 cmake --build build -j"$(nproc)"
 (cd build && cpack -G DEB)
 ```
@@ -183,6 +187,7 @@ The Debian package builds with:
 -DYUME_USE_BASEFWX=ON
 -DYUME_USE_SYSTEM_BASEFWX=ON
 -DYUME_USE_BUNDLED_NLOHMANN=OFF
+-DYUME_BUILD_SHARED_ABI=ON
 ```
 
 That means YUME must build against a separately packaged BaseFWX development
@@ -192,15 +197,17 @@ library. The intended package chain is:
 basefwx          optional command-line frontend
 libbasefwx3      runtime shared library
 libbasefwx-dev   headers, CMake config, pkg-config metadata
+libyume1         stable C ABI runtime library
+libyume-dev      yume.h, CMake config, pkg-config metadata
 yume             client/server binaries linked to libbasefwx3
 yume-gui         optional desktop frontend, omitted by DEB_BUILD_PROFILES=nogui
 ```
 
-YUME does not yet emit a `libyume` runtime package because there is no
-exported YUME shared-library ABI. The GUI links the internal facade target
-inside its own binary today. When that ABI is deliberately introduced, add
-the shared CMake target first, install public headers and package metadata,
-then add `libyume0` and `libyume-dev` Debian packages.
+The source-build default leaves `YUME_BUILD_SHARED_ABI=OFF` so a plain CMake
+build still produces only `yume` and `yumed`. Debian turns it on because
+library packages are part of the distribution contract. The current C ABI is
+small on purpose; expand it with opaque handles only after a client/server
+facade contract is deliberately designed.
 
 For local testing, build BaseFWX first:
 

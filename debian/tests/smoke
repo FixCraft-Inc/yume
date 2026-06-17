@@ -9,3 +9,10 @@ yumed --version
 
 man -w yume >/dev/null
 man -w yumed >/dev/null
+
+multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
+test -r /usr/include/yume/yume.h
+test -e "/usr/lib/${multiarch}/libyume.so"
+test -e "/usr/lib/${multiarch}/libyume.so.1"
+test -d "/usr/lib/${multiarch}/cmake/yume"
+pkg-config --exists yume

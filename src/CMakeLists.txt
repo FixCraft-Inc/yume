@@ -333,7 +333,76 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         endif()
     endif()
 
+    if(YUME_BUILD_SHARED_ABI)
+        set_target_properties(yume_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    endif()
+
     yume_apply_perf_opts(yume_core)
+
+    if(YUME_BUILD_SHARED_ABI)
+        include(CMakePackageConfigHelpers)
+
+        add_library(yume_abi SHARED
+            abi/yume_c.cpp
+        )
+        set_target_properties(yume_abi PROPERTIES
+            OUTPUT_NAME yume
+            EXPORT_NAME yume
+            VERSION "${YUME_PACKAGE_VERSION}"
+            SOVERSION 1
+            CXX_VISIBILITY_PRESET hidden
+            VISIBILITY_INLINES_HIDDEN ON
+            POSITION_INDEPENDENT_CODE ON
+            PUBLIC_HEADER "${CMAKE_SOURCE_DIR}/include/yume/yume.h"
+        )
+        target_compile_definitions(yume_abi PRIVATE YUME_ABI_BUILD=1)
+        target_include_directories(yume_abi
+            PUBLIC
+                $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+                $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}
+        )
+        target_link_libraries(yume_abi PRIVATE yume_core)
+
+        install(TARGETS yume_abi
+            EXPORT yumeTargets
+            RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+            LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+            ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+            PUBLIC_HEADER DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/yume"
+        )
+        install(EXPORT yumeTargets
+            FILE yumeTargets.cmake
+            NAMESPACE yume::
+            DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/yume"
+        )
+
+        configure_package_config_file(
+            "${CMAKE_SOURCE_DIR}/cmake/yumeConfig.cmake.in"
+            "${CMAKE_BINARY_DIR}/yumeConfig.cmake"
+            INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/yume"
+        )
+        write_basic_package_version_file(
+            "${CMAKE_BINARY_DIR}/yumeConfigVersion.cmake"
+            VERSION "${YUME_PACKAGE_VERSION}"
+            COMPATIBILITY SameMajorVersion
+        )
+        install(FILES
+            "${CMAKE_BINARY_DIR}/yumeConfig.cmake"
+            "${CMAKE_BINARY_DIR}/yumeConfigVersion.cmake"
+            DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/yume"
+        )
+
+        configure_file(
+            "${CMAKE_SOURCE_DIR}/cmake/yume.pc.in"
+            "${CMAKE_BINARY_DIR}/yume.pc"
+            @ONLY
+        )
+        install(FILES "${CMAKE_BINARY_DIR}/yume.pc"
+            DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig"
+        )
+    endif()
 endif()
 
 add_library(yume_transport_core
@@ -598,5 +667,11 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     yume_link_atomic_if_needed(yume_obfs_test PRIVATE)
     yume_apply_perf_opts(yume_obfs_test)
     add_test(NAME yume_obfs_test COMMAND yume_obfs_test)
+endif()
+
+if(YUME_BUILD_SHARED_ABI AND TARGET yume_abi)
+    add_executable(yume_abi_test abi/yume_c_test.cpp)
+    target_link_libraries(yume_abi_test PRIVATE yume_abi)
+    add_test(NAME yume_abi_test COMMAND yume_abi_test)
 endif()
 endif()

@@ -1,0 +1,9 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+libdir=@CMAKE_INSTALL_FULL_LIBDIR@
+includedir=@CMAKE_INSTALL_FULL_INCLUDEDIR@
+
+Name: yume
+Description: YUME stable C ABI
+Version: @YUME_PACKAGE_VERSION@
+Libs: -L${libdir} -lyume
+Cflags: -I${includedir}

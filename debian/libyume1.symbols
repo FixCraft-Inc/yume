@@ -1,0 +1,9 @@
+libyume.so.1 libyume1 #MINVER#
+* Build-Depends-Package: libyume-dev
+ yume_abi_version@Base 1.0-1
+ yume_argon2_backend@Base 1.0-1
+ yume_basefwx_version@Base 1.0-1
+ yume_feature_flags@Base 1.0-1
+ yume_get_build_info@Base 1.0-1
+ yume_pq_backend@Base 1.0-1
+ yume_version@Base 1.0-1

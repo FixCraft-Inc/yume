@@ -1,0 +1,12 @@
+{
+    global:
+        yume_abi_version;
+        yume_version;
+        yume_feature_flags;
+        yume_basefwx_version;
+        yume_pq_backend;
+        yume_argon2_backend;
+        yume_get_build_info;
+    local:
+        *;
+};

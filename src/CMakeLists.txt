@@ -364,6 +364,15 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
                 ${CMAKE_CURRENT_SOURCE_DIR}
         )
         target_link_libraries(yume_abi PRIVATE yume_core)
+        if(UNIX AND NOT APPLE)
+            set(_yume_abi_version_script "${CMAKE_CURRENT_SOURCE_DIR}/abi/yume.map")
+            target_link_options(yume_abi PRIVATE
+                "LINKER:--version-script=${_yume_abi_version_script}"
+            )
+            set_property(TARGET yume_abi APPEND PROPERTY
+                LINK_DEPENDS "${_yume_abi_version_script}"
+            )
+        endif()
 
         install(TARGETS yume_abi
             EXPORT yumeTargets

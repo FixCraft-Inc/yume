@@ -442,6 +442,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/runtime/local_runtime.cpp
         client/relay/secret.cpp
         client/relay/runtime.cpp
+        client/relay/runtime_control.cpp
         client/runtime/controller.cpp
         client/transport/tunnel.cpp
         client/transport/tunnel_pool.cpp

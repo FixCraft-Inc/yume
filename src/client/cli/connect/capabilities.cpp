@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "client/cli/capabilities.hpp"
+#include "client/cli/connect/capabilities.hpp"
 
 #include "core/version.hpp"
 #include "util.hpp"

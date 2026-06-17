@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "client/cli/anonym_proof.hpp"
+#include "client/cli/display/anonym_proof.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -15,8 +15,8 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
-#include "client/cli/cert.hpp"
-#include "client/cli/diagnostics.hpp"
+#include "client/cli/connect/cert.hpp"
+#include "client/cli/connect/diagnostics.hpp"
 #include "core/protocol/runtime_policy.hpp"
 #include "util.hpp"
 

@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "client/cli/console.hpp"
+#include "client/cli/commands/console.hpp"
 
 #include <cstdint>
 #include <iostream>
@@ -13,9 +13,9 @@
 
 #include <nlohmann/json.hpp>
 
-#include "client/cli/input.hpp"
-#include "client/cli/relay_secret.hpp"
-#include "client/cli/io_runtime.hpp"
+#include "client/cli/config/input.hpp"
+#include "client/cli/commands/relay_secret.hpp"
+#include "client/cli/commands/io_runtime.hpp"
 #include "client/relay/runtime.hpp"
 #include "client/transport/tunnel.hpp"
 #include "core/protocol/control_protocol.hpp"

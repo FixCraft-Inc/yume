@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "client/cli/share.hpp"
+#include "client/cli/commands/share.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -20,7 +20,7 @@
 #endif
 
 #include "client/cli/entry.hpp"
-#include "client/cli/input.hpp"
+#include "client/cli/config/input.hpp"
 #include "client/transfer/share_file.hpp"
 #include "core/version.hpp"
 #include "util.hpp"

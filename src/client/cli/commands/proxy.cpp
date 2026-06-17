@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "client/cli/proxy.hpp"
+#include "client/cli/commands/proxy.hpp"
 
 #include <array>
 #include <cstdint>

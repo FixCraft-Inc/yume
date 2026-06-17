@@ -449,28 +449,28 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/proxy/outbound_proxy.cpp
         client/transfer/share_file.cpp
         client/cli/entry.cpp
-        client/cli/anonym_proof.cpp
-        client/cli/attach.cpp
-        client/cli/args.cpp
-        client/cli/auth.cpp
-        client/cli/bench.cpp
-        client/cli/capabilities.cpp
-        client/cli/help.cpp
-        client/cli/cert.cpp
-        client/cli/console.cpp
-        client/cli/config.cpp
-        client/cli/diagnostics.cpp
-        client/cli/files.cpp
-        client/cli/input.cpp
-        client/cli/platform.cpp
-        client/cli/pq_bootstrap.cpp
-        client/cli/proxy.cpp
-        client/cli/relay_secret.cpp
-        client/cli/io_runtime.cpp
-        client/cli/server_info.cpp
-        client/cli/secondary_tunnel.cpp
-        client/cli/share.cpp
-        client/cli/status.cpp
+        client/cli/display/anonym_proof.cpp
+        client/cli/commands/attach.cpp
+        client/cli/config/args.cpp
+        client/cli/connect/auth.cpp
+        client/cli/commands/bench.cpp
+        client/cli/connect/capabilities.cpp
+        client/cli/display/help.cpp
+        client/cli/connect/cert.cpp
+        client/cli/commands/console.cpp
+        client/cli/config/config.cpp
+        client/cli/connect/diagnostics.cpp
+        client/cli/config/files.cpp
+        client/cli/config/input.cpp
+        client/cli/config/platform.cpp
+        client/cli/connect/pq_bootstrap.cpp
+        client/cli/commands/proxy.cpp
+        client/cli/commands/relay_secret.cpp
+        client/cli/commands/io_runtime.cpp
+        client/cli/connect/server_info.cpp
+        client/cli/connect/secondary_tunnel.cpp
+        client/cli/commands/share.cpp
+        client/cli/display/status.cpp
     )
     target_include_directories(yume_client_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(yume_client_lib PUBLIC yume_core yume_transport_core)

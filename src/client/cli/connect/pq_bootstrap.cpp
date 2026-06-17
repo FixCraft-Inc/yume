@@ -4,14 +4,14 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "client/cli/pq_bootstrap.hpp"
+#include "client/cli/connect/pq_bootstrap.hpp"
 
 #include <cstdlib>
 #include <filesystem>
 #include <string>
 
-#include "client/cli/cert.hpp"
-#include "client/cli/files.hpp"
+#include "client/cli/connect/cert.hpp"
+#include "client/cli/config/files.hpp"
 #include "util.hpp"
 
 namespace yume::client {

@@ -7,7 +7,7 @@
  * client/cli/entry.cpp. No behavior change.
  */
 
-#include "client/cli/cert.hpp"
+#include "client/cli/connect/cert.hpp"
 
 #include <filesystem>
 #include <iostream>

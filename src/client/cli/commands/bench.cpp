@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "client/cli/bench.hpp"
+#include "client/cli/commands/bench.hpp"
 
 #include <atomic>
 #include <chrono>

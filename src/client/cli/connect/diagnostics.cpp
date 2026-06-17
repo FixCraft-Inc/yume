@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "client/cli/diagnostics.hpp"
+#include "client/cli/connect/diagnostics.hpp"
 
 #include <algorithm>
 #include <cctype>

@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "client/cli/config.hpp"
+#include "client/cli/config/config.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -12,8 +12,8 @@
 
 #include <nlohmann/json.hpp>
 
-#include "client/cli/cert.hpp"
-#include "client/cli/platform.hpp"
+#include "client/cli/connect/cert.hpp"
+#include "client/cli/config/platform.hpp"
 #include "util.hpp"
 
 namespace yume::client {

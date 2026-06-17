@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "client/cli/auth.hpp"
+#include "client/cli/connect/auth.hpp"
 
 #include <array>
 #include <cstring>
@@ -15,7 +15,7 @@
 #include <openssl/pem.h>
 #include <nlohmann/json.hpp>
 
-#include "client/cli/io.hpp"
+#include "client/cli/connect/io.hpp"
 #include "core/stealth/obfs.hpp"
 #include "core/stealth/obfs_h2.hpp"
 #include "core/stealth/obfs_signal.hpp"

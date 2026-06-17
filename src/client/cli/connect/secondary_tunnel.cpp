@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "client/cli/secondary_tunnel.hpp"
+#include "client/cli/connect/secondary_tunnel.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -15,10 +15,10 @@
 
 #include <openssl/ssl.h>
 
-#include "client/cli/auth.hpp"
-#include "client/cli/cert.hpp"
-#include "client/cli/io.hpp"
-#include "client/cli/server_info.hpp"
+#include "client/cli/connect/auth.hpp"
+#include "client/cli/connect/cert.hpp"
+#include "client/cli/connect/io.hpp"
+#include "client/cli/connect/server_info.hpp"
 #include "client/transport/tunnel.hpp"
 #include "core/security/inner_crypto.hpp"
 #include "core/protocol/protocol.hpp"

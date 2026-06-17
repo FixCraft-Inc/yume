@@ -368,14 +368,20 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         install(TARGETS yume_abi
             EXPORT yumeTargets
             RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+                COMPONENT libyume_runtime
             LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+                COMPONENT libyume_runtime
+                NAMELINK_COMPONENT libyume_development
             ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+                COMPONENT libyume_development
             PUBLIC_HEADER DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/yume"
+                COMPONENT libyume_development
         )
         install(EXPORT yumeTargets
             FILE yumeTargets.cmake
             NAMESPACE yume::
             DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/yume"
+            COMPONENT libyume_development
         )
 
         configure_package_config_file(
@@ -392,6 +398,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             "${CMAKE_BINARY_DIR}/yumeConfig.cmake"
             "${CMAKE_BINARY_DIR}/yumeConfigVersion.cmake"
             DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/yume"
+            COMPONENT libyume_development
         )
 
         configure_file(
@@ -401,6 +408,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         )
         install(FILES "${CMAKE_BINARY_DIR}/yume.pc"
             DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig"
+            COMPONENT libyume_development
         )
     endif()
 endif()
@@ -624,6 +632,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
 
     install(TARGETS ${_yume_install_targets}
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+        COMPONENT yume_cli
     )
 
     # ------------------------------------------------------------------

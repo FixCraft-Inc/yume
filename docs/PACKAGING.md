@@ -85,8 +85,10 @@ man yumed
 The CPack `.deb` is a single upstream convenience package. It includes the
 binaries, man pages, and installed Markdown docs. That means users do not
 need to install the man pages separately when they install `yume_*.deb`.
-Use the `debian/` packaging when you need separate CLI/server and GUI
-packages.
+When `YUME_BUILD_SHARED_ABI=ON`, CPack switches to component packages for
+DEB/TGZ output and uses the same coarse split as the Debian source package:
+`libyume1`, `libyume-dev`, `yume`, and, when enabled, `yume-gui`.
+Use the `debian/` packaging for archive-style source package review.
 
 For a native dynamic Debian build, CPack uses `dpkg-shlibdeps` by default
 to infer shared-library dependencies. If you are building a static or
@@ -209,6 +211,17 @@ build still produces only `yume` and `yumed`. Debian turns it on because
 library packages are part of the distribution contract. The current C ABI is
 small on purpose; expand it with opaque handles only after a client/server
 facade contract is deliberately designed.
+
+CPack follows the same rule: no ABI option means one convenience package;
+ABI enabled means component packages. This keeps quick source builds simple
+while making SDK/package builds explicit.
+
+Local CPack dependency scanning uses `dpkg-shlibdeps`. It can only infer
+Debian package dependencies for libraries that were themselves installed from
+Debian packages. If ML-KEM/liboqs is staged manually under `/usr/local`, the
+generated local `.deb` assumes the target machine has that same library path
+available. For archive-style packages, build through `debian/` against a
+packaged `liboqs-dev` instead.
 
 For local testing, build BaseFWX first:
 

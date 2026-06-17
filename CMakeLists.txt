@@ -235,10 +235,12 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         docs/release/CHANGELOG.md
         docs/release/RELEASE-NOTES-1.0.md
         DESTINATION "${YUME_DOC_INSTALL_DIR}"
+        COMPONENT yume_cli
     )
 
     install(DIRECTORY config/
         DESTINATION "${YUME_DOC_INSTALL_DIR}/examples"
+        COMPONENT yume_cli
         FILES_MATCHING PATTERN "*.json"
     )
 
@@ -246,24 +248,29 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         install(FILES debian/copyright
             DESTINATION "${YUME_DOC_INSTALL_DIR}"
             RENAME copyright
+            COMPONENT yume_cli
         )
     endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/debian/changelog")
         install(FILES debian/changelog
             DESTINATION "${YUME_DOC_INSTALL_DIR}"
             RENAME changelog.Debian
+            COMPONENT yume_cli
         )
     endif()
 
     install(FILES docs/man/yume.1
         DESTINATION "${CMAKE_INSTALL_MANDIR}/man1"
+        COMPONENT yume_cli
     )
     install(FILES docs/man/yumed.8
         DESTINATION "${CMAKE_INSTALL_MANDIR}/man8"
+        COMPONENT yume_cli
     )
     if(YUME_BUILD_GUI)
         install(FILES docs/man/yume-gui.1
             DESTINATION "${CMAKE_INSTALL_MANDIR}/man1"
+            COMPONENT yume_gui
         )
     endif()
 
@@ -275,6 +282,23 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Post-quantum stealth transport client and server")
     set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
     set(CPACK_PACKAGE_INSTALL_DIRECTORY "yume")
+    set(CPACK_COMPONENT_YUME_CLI_DISPLAY_NAME "YUME CLI and server")
+    set(CPACK_COMPONENT_YUME_CLI_DESCRIPTION "YUME command-line client, yumed server daemon, man pages, and documentation.")
+    set(CPACK_COMPONENT_YUME_GUI_DISPLAY_NAME "YUME desktop GUI")
+    set(CPACK_COMPONENT_YUME_GUI_DESCRIPTION "Optional desktop GUI for YUME.")
+    set(CPACK_COMPONENT_LIBYUME_RUNTIME_DISPLAY_NAME "libyume runtime")
+    set(CPACK_COMPONENT_LIBYUME_RUNTIME_DESCRIPTION "Runtime shared library for the stable YUME C ABI.")
+    set(CPACK_COMPONENT_LIBYUME_DEVELOPMENT_DISPLAY_NAME "libyume development files")
+    set(CPACK_COMPONENT_LIBYUME_DEVELOPMENT_DESCRIPTION "Header, CMake config, and pkg-config metadata for libyume.")
+    set(CPACK_COMPONENT_LIBYUME_DEVELOPMENT_DEPENDS libyume_runtime)
+    set(CPACK_COMPONENTS_ALL yume_cli)
+    if(YUME_BUILD_SHARED_ABI)
+        list(APPEND CPACK_COMPONENTS_ALL libyume_runtime libyume_development)
+    endif()
+    if(YUME_BUILD_GUI)
+        list(APPEND CPACK_COMPONENTS_ALL yume_gui)
+        set(CPACK_COMPONENT_YUME_GUI_DEPENDS yume_cli)
+    endif()
     if(UNIX AND NOT APPLE)
         set(CPACK_GENERATOR "TGZ;DEB")
         set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
@@ -282,6 +306,23 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
         set(CPACK_DEBIAN_PACKAGE_MAINTAINER "FixCraft")
         set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ${YUME_DEB_SHLIBDEPS})
+        if(YUME_BUILD_SHARED_ABI)
+            set(CPACK_DEB_COMPONENT_INSTALL ON)
+            set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+            set(CPACK_COMPONENTS_GROUPING IGNORE)
+            set(CPACK_DEBIAN_YUME_CLI_PACKAGE_NAME "yume")
+            set(CPACK_DEBIAN_YUME_CLI_PACKAGE_SECTION "net")
+            set(CPACK_DEBIAN_LIBYUME_RUNTIME_PACKAGE_NAME "libyume1")
+            set(CPACK_DEBIAN_LIBYUME_RUNTIME_PACKAGE_SECTION "libs")
+            set(CPACK_DEBIAN_LIBYUME_DEVELOPMENT_PACKAGE_NAME "libyume-dev")
+            set(CPACK_DEBIAN_LIBYUME_DEVELOPMENT_PACKAGE_SECTION "libdevel")
+            set(CPACK_DEBIAN_LIBYUME_DEVELOPMENT_PACKAGE_DEPENDS "libyume1 (= ${YUME_PACKAGE_VERSION})")
+            if(YUME_BUILD_GUI)
+                set(CPACK_DEBIAN_YUME_GUI_PACKAGE_NAME "yume-gui")
+                set(CPACK_DEBIAN_YUME_GUI_PACKAGE_SECTION "net")
+                set(CPACK_DEBIAN_YUME_GUI_PACKAGE_DEPENDS "yume (= ${YUME_PACKAGE_VERSION})")
+            endif()
+        endif()
         set(CPACK_DEBIAN_PACKAGE_DESCRIPTION
 "YUME is a TLS 1.3 stealth transport with optional HTTP/2 masking,
 BaseFWX-backed inner crypto, live key hopping, SOCKS, forwarding,

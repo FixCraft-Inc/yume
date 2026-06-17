@@ -9,6 +9,16 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <iostream>
+#include <utility>
+
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
+
+#include "client/cli/config/input.hpp"
+#include "client/transport/tunnel.hpp"
+#include "util.hpp"
 
 namespace yume::client {
 
@@ -114,6 +124,102 @@ void IoThreadGroup::stop_and_wait() {
     }
     io_.stop();
     wait();
+}
+
+RuntimeStopController::RuntimeStopController(bool immediate_benchmark_exit)
+    : immediate_benchmark_exit_(immediate_benchmark_exit) {}
+
+RuntimeStopController::~RuntimeStopController() {
+    util::install_signal_handlers({});
+}
+
+void RuntimeStopController::install_signal_handler() {
+    util::install_signal_handlers([this](int) {
+        request_stop_from_signal();
+    });
+}
+
+void RuntimeStopController::announce_stopping() {
+    if (stop_announced_.exchange(true)) {
+        return;
+    }
+    util::clear_status_line();
+    std::cerr << "[INFO] Stopping..." << std::endl;
+}
+
+bool RuntimeStopController::stop_requested() const {
+    return stop_requested_.load();
+}
+
+std::atomic<bool>& RuntimeStopController::stop_flag() {
+    return stop_requested_;
+}
+
+void RuntimeStopController::set_active(boost::asio::io_context* io,
+                                       const std::shared_ptr<Tunnel>& tunnel,
+                                       const std::shared_ptr<RelayRuntime>& relay,
+                                       std::function<void(const std::string&)> disconnect) {
+    std::lock_guard<std::mutex> lock(runtime_mu_);
+    active_io_ = io;
+    active_tunnel_ = tunnel;
+    active_relay_runtime_ = relay;
+    active_disconnect_ = std::move(disconnect);
+}
+
+void RuntimeStopController::clear_active() {
+    std::lock_guard<std::mutex> lock(runtime_mu_);
+    active_io_ = nullptr;
+    active_tunnel_.reset();
+    active_relay_runtime_.reset();
+    active_disconnect_ = {};
+}
+
+std::shared_ptr<RelayRuntime> RuntimeStopController::active_relay_runtime() {
+    std::lock_guard<std::mutex> lock(runtime_mu_);
+    return active_relay_runtime_.lock();
+}
+
+void RuntimeStopController::request_stop_from_signal() {
+    const bool already_requested = force_stop_requested_.exchange(true);
+    stop_requested_.store(true);
+    announce_stopping();
+
+    boost::asio::io_context* io = nullptr;
+    std::shared_ptr<Tunnel> tunnel;
+    std::function<void(const std::string&)> disconnect;
+    {
+        std::lock_guard<std::mutex> lock(runtime_mu_);
+        io = active_io_;
+        tunnel = active_tunnel_.lock();
+        disconnect = active_disconnect_;
+    }
+
+    if (disconnect) {
+        disconnect("interrupt");
+    } else {
+        if (tunnel) {
+            tunnel->stop("interrupt");
+        }
+        if (io) {
+            io->stop();
+        }
+    }
+
+#if !defined(_WIN32)
+    restore_tracked_terminal_mode();
+    if (!stdin_closed_for_stop_.exchange(true)) {
+        ::close(STDIN_FILENO);
+    }
+#endif
+
+    if (immediate_benchmark_exit_) {
+        std::cerr << "[INFO] Benchmark interrupted. Exiting immediately." << std::endl;
+        std::_Exit(130);
+    }
+    if (already_requested) {
+        std::cerr << "[WARN] Force stop requested. Exiting immediately." << std::endl;
+        std::_Exit(1);
+    }
 }
 
 }  // namespace yume::client

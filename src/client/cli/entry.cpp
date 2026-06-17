@@ -33,6 +33,7 @@
 #include <optional>
 #include <stdexcept>
 #include <cctype>
+#include <cstdint>
 #include <utility>
 #include <filesystem>
 #include <chrono>
@@ -53,8 +54,6 @@
 #include <windows.h>
 #endif
 #include <vector>
-#include <atomic>
-#include <mutex>
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
@@ -374,84 +373,8 @@ int Cli::run(int argc, char** argv) {
             util::log_info(drop_summary);
         }
     }
-    std::atomic<bool> stop_requested{false};
-    std::atomic<bool> stop_announced{false};
-    std::atomic<bool> force_stop_requested{false};
-#if !defined(_WIN32)
-    std::atomic<bool> stdin_closed_for_stop{false};
-#endif
-    std::mutex runtime_mu;
-    boost::asio::io_context* active_io = nullptr;
-    std::weak_ptr<Tunnel> active_tunnel;
-    std::weak_ptr<RelayRuntime> active_relay_runtime;
-    std::function<void(const std::string&)> active_disconnect;
-    auto announce_stopping = [&]() {
-        if (stop_announced.exchange(true)) {
-            return;
-        }
-        util::clear_status_line();
-        std::cerr << "[INFO] Stopping..." << std::endl;
-    };
-    auto set_active_runtime = [&](boost::asio::io_context* io_ptr,
-                                  const std::shared_ptr<Tunnel>& tunnel_ptr,
-                                  const std::shared_ptr<RelayRuntime>& relay_ptr = nullptr,
-                                  std::function<void(const std::string&)> disconnect_fn = {}) {
-        std::lock_guard<std::mutex> lock(runtime_mu);
-        active_io = io_ptr;
-        active_tunnel = tunnel_ptr;
-        active_relay_runtime = relay_ptr;
-        active_disconnect = std::move(disconnect_fn);
-    };
-    auto clear_active_runtime = [&]() {
-        std::lock_guard<std::mutex> lock(runtime_mu);
-        active_io = nullptr;
-        active_tunnel.reset();
-        active_relay_runtime.reset();
-        active_disconnect = {};
-    };
-    util::install_signal_handlers([&](int) {
-        const bool already_requested = force_stop_requested.exchange(true);
-        stop_requested.store(true);
-        announce_stopping();
-        boost::asio::io_context* io_ptr = nullptr;
-        std::shared_ptr<Tunnel> tunnel_ptr;
-        std::function<void(const std::string&)> disconnect_fn;
-        {
-            std::lock_guard<std::mutex> lock(runtime_mu);
-            io_ptr = active_io;
-            tunnel_ptr = active_tunnel.lock();
-            disconnect_fn = active_disconnect;
-        }
-        if (disconnect_fn) {
-            disconnect_fn("interrupt");
-        } else {
-            if (tunnel_ptr) {
-                tunnel_ptr->stop("interrupt");
-            }
-            if (io_ptr) {
-                io_ptr->stop();
-            }
-        }
-#if !defined(_WIN32)
-        restore_tracked_terminal_mode();
-        if (!stdin_closed_for_stop.exchange(true)) {
-            ::close(STDIN_FILENO);
-        }
-#endif
-        if (args.bench) {
-            std::cerr << "[INFO] Benchmark interrupted. Exiting immediately." << std::endl;
-            std::_Exit(130);
-        }
-        if (already_requested) {
-            std::cerr << "[WARN] Force stop requested. Exiting immediately." << std::endl;
-            std::_Exit(1);
-        }
-    });
-    struct SignalHandlerResetGuard {
-        ~SignalHandlerResetGuard() {
-            util::install_signal_handlers({});
-        }
-    } signal_handler_reset_guard;
+    RuntimeStopController stop_controller(args.bench);
+    stop_controller.install_signal_handler();
     int attempt = 0;
     bool pq_warned = false;
     bool pq_reconnect_used = false;
@@ -459,15 +382,15 @@ int Cli::run(int argc, char** argv) {
     bool tls_fingerprint_verification_attempted = false;
     std::optional<tls_fingerprint::FingerprintData> verified_tls_fingerprint;
     for (;;) {
-        if (stop_requested.load()) {
-            announce_stopping();
+        if (stop_controller.stop_requested()) {
+            stop_controller.announce_stopping();
             return 130;
         }
         bool summary_once = false;
         std::function<std::string()> status_block_builder;
         try {
             boost::asio::io_context io(resolve_io_threads(cfg.io_threads));
-            set_active_runtime(&io, nullptr);
+            stop_controller.set_active(&io, nullptr);
             struct ActiveRuntimeGuard {
                 std::function<void()> cleanup;
                 ~ActiveRuntimeGuard() {
@@ -475,7 +398,7 @@ int Cli::run(int argc, char** argv) {
                         cleanup();
                     }
                 }
-            } active_runtime_guard{clear_active_runtime};
+            } active_runtime_guard{[&stop_controller]() { stop_controller.clear_active(); }};
             
             std::unique_ptr<boost::asio::ssl::context> owned_ctx;
             boost::asio::ssl::context* ctx = nullptr;
@@ -1251,13 +1174,15 @@ int Cli::run(int argc, char** argv) {
             connected_options.inner_kdf = inner_kdf;
             connected_options.inner_key = inner_key;
             connected_options.status_block_builder = status_block_builder;
-            connected_options.announce_stopping = announce_stopping;
+            connected_options.announce_stopping = [&stop_controller]() {
+                stop_controller.announce_stopping();
+            };
             connected_options.set_active_runtime =
-                [&set_active_runtime](boost::asio::io_context* io_ptr,
-                                      const std::shared_ptr<Tunnel>& tunnel_ptr,
-                                      const std::shared_ptr<RelayRuntime>& relay_ptr,
-                                      std::function<void(const std::string&)> disconnect_fn) {
-                    set_active_runtime(io_ptr, tunnel_ptr, relay_ptr, std::move(disconnect_fn));
+                [&stop_controller](boost::asio::io_context* io_ptr,
+                                   const std::shared_ptr<Tunnel>& tunnel_ptr,
+                                   const std::shared_ptr<RelayRuntime>& relay_ptr,
+                                   std::function<void(const std::string&)> disconnect_fn) {
+                    stop_controller.set_active(io_ptr, tunnel_ptr, relay_ptr, std::move(disconnect_fn));
                 };
             connected_options.take_runtime_ready_callback = [this]() {
                 return std::exchange(runtime_ready_callback_, {});
@@ -1269,24 +1194,20 @@ int Cli::run(int argc, char** argv) {
                 std::move(stream),
                 proxy_cfg,
                 std::move(connected_options),
-                stop_requested);
+                stop_controller.stop_flag());
         } catch (const FatalError& ex) {
-            if (stop_requested.load()) {
-                announce_stopping();
+            if (stop_controller.stop_requested()) {
+                stop_controller.announce_stopping();
                 return 130;
             }
             util::log_error(ex.what());
             return 1;
         } catch (const std::exception& ex) {
-            if (stop_requested.load()) {
-                announce_stopping();
+            if (stop_controller.stop_requested()) {
+                stop_controller.announce_stopping();
                 return 130;
             }
-            std::shared_ptr<RelayRuntime> relay_ptr;
-            {
-                std::lock_guard<std::mutex> lock(runtime_mu);
-                relay_ptr = active_relay_runtime.lock();
-            }
+            std::shared_ptr<RelayRuntime> relay_ptr = stop_controller.active_relay_runtime();
             if ((args.non_interactive || !relay_ptr) && looks_like_endpoint_down(ex.what())) {
                 util::log_error("endpoint appears down (" + cfg.server + ":" +
                                 std::to_string(cfg.port) + "): " + ex.what());
@@ -1301,8 +1222,8 @@ int Cli::run(int argc, char** argv) {
             util::log_warn(std::string("connection failed: ") + ex.what());
             util::log_warn("retrying in " + std::to_string(backoff) + "s");
             for (int i = 0; i < backoff * 10; ++i) {
-                if (stop_requested.load()) {
-                    announce_stopping();
+                if (stop_controller.stop_requested()) {
+                    stop_controller.announce_stopping();
                     return 130;
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));

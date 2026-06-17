@@ -223,6 +223,8 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         docs/PERMISSIONS.md
         docs/QUICKSTART.md
         docs/STEALTH.md
+        docs/release/CHANGELOG.md
+        docs/release/RELEASE-NOTES-1.0.md
         DESTINATION "${YUME_DOC_INSTALL_DIR}"
     )
 

@@ -2,6 +2,22 @@
 
 This page covers local installs, man pages, and Debian package builds.
 
+## Package Split
+
+The Debian source packaging currently produces two YUME binary packages:
+
+- `yume`: the CLI client and `yumed` server daemon.
+- `yume-gui`: the optional desktop GUI, built unless
+  `DEB_BUILD_PROFILES=nogui` is set.
+
+BaseFWX is packaged separately as `basefwx`, `libbasefwx3`, and
+`libbasefwx-dev`; YUME links to that packaged library for Debian builds.
+YUME's own `yume_core`, `yume_client_lib`, `yume_server`, and
+`yume_facade` targets are still internal static libraries. Do not create
+an empty `libyume` package from them. A real `libyume0`/`libyume-dev` split
+should land only after YUME exports a stable shared-library ABI and installs
+public headers/CMake metadata for external consumers.
+
 ## Install From A Build Tree
 
 ```bash
@@ -15,8 +31,11 @@ Installed files:
 
 - `yume` and `yumed` go to the configured binary directory, usually
   `/usr/local/bin`.
+- `yume-gui` goes to the configured binary directory when
+  `YUME_BUILD_GUI=ON`.
 - `yume(1)` goes to `share/man/man1`.
 - `yumed(8)` goes to `share/man/man8`.
+- `yume-gui(1)` goes to `share/man/man1` when the GUI is built.
 - Markdown docs go to `share/doc/yume`.
 
 Use a different prefix with:
@@ -59,9 +78,11 @@ man yume
 man yumed
 ```
 
-The `.deb` includes the binaries, man pages, and installed Markdown docs.
-That means users do not need to install the man pages separately when they
-install `yume_*.deb`.
+The CPack `.deb` is a single upstream convenience package. It includes the
+binaries, man pages, and installed Markdown docs. That means users do not
+need to install the man pages separately when they install `yume_*.deb`.
+Use the `debian/` packaging when you need separate CLI/server and GUI
+packages.
 
 For a native dynamic Debian build, CPack uses `dpkg-shlibdeps` by default
 to infer shared-library dependencies. If you are building a static or
@@ -172,7 +193,14 @@ basefwx          optional command-line frontend
 libbasefwx3      runtime shared library
 libbasefwx-dev   headers, CMake config, pkg-config metadata
 yume             client/server binaries linked to libbasefwx3
+yume-gui         optional desktop frontend, omitted by DEB_BUILD_PROFILES=nogui
 ```
+
+YUME does not yet emit a `libyume` runtime package because there is no
+exported YUME shared-library ABI. The GUI links the internal facade target
+inside its own binary today. When that ABI is deliberately introduced, add
+the shared CMake target first, install public headers and package metadata,
+then add `libyume0` and `libyume-dev` Debian packages.
 
 For local testing, build BaseFWX first:
 

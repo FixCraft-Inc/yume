@@ -532,6 +532,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         endif()
         add_executable(yume-selftest
             tools/selftest.cpp
+            tools/selftest/runtime.cpp
         )
         target_link_libraries(yume-selftest PRIVATE OpenSSL::Crypto Threads::Threads)
         yume_apply_perf_opts(yume-selftest)

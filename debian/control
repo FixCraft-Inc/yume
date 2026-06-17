@@ -46,6 +46,7 @@ Description: stealth transport client and server
 
 Package: yume-gui
 Architecture: any
+Build-Profiles: <!nogui>
 Depends:
  ${shlibs:Depends},
  ${misc:Depends},

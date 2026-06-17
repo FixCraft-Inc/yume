@@ -1,0 +1,188 @@
+/*
+ * YUME - Yume Universal Multiprotocol Engine
+ * Copyright (C) 2026  FixCraft Inc.
+ * Licensed under the GNU General Public License v3.0.
+ */
+
+#pragma once
+
+#include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <sys/types.h>
+#include <thread>
+#include <utility>
+#include <vector>
+
+namespace yume::tools::selftest {
+
+using Clock = std::chrono::steady_clock;
+
+double elapsed_ms(Clock::time_point start, Clock::time_point end);
+double elapsed_s(Clock::time_point start, Clock::time_point end);
+
+struct Config {
+    std::string name;
+    std::string description;
+    bool base_direct{false};
+    std::vector<std::string> server_flags;
+    std::vector<std::string> client_flags;
+};
+
+struct Args {
+    std::filesystem::path yume;
+    std::filesystem::path yumed;
+    std::vector<std::string> configs;
+    int latency_iters{120};
+    int bulk_mib{32};
+    int argon_mem_kib{32768};
+    int argon_parallelism{2};
+    int tunnels{1};
+    int client_threads{0};
+    int server_threads{2};
+    bool one_way{false};
+    bool list_configs{false};
+    bool keep_workdir{false};
+    bool json_stdout{false};
+    std::filesystem::path json_path;
+};
+
+struct Stats {
+    std::size_t n{0};
+    double min{0.0};
+    double median{0.0};
+    double p95{0.0};
+    double p99{0.0};
+    double max{0.0};
+    double mean{0.0};
+};
+
+struct Breakdown {
+    double server_listen_ms{0.0};
+    double pq_ready_ms{0.0};
+    double client_socks_ms{0.0};
+    double connect_ms{0.0};
+    double warmup_ms{0.0};
+    double bulk_total_s{0.0};
+    double bulk_send_s{0.0};
+};
+
+struct Result {
+    Config config;
+    bool ok{false};
+    std::string error;
+    Stats latency_ms;
+    double throughput_mib_s{0.0};
+    double wall_s{0.0};
+    Breakdown breakdown;
+};
+
+struct LatencyMeasurement {
+    Stats stats;
+    double connect_ms{0.0};
+    double warmup_ms{0.0};
+};
+
+struct BulkMeasurement {
+    double mib_s{0.0};
+    double total_s{0.0};
+    double send_s{0.0};
+};
+
+class TempDir {
+public:
+    explicit TempDir(bool keep);
+    ~TempDir();
+    const std::filesystem::path& path() const;
+    void keep();
+
+private:
+    std::filesystem::path path_;
+    bool keep_{false};
+};
+
+class FileDescriptor {
+public:
+    FileDescriptor() = default;
+    explicit FileDescriptor(int fd);
+    ~FileDescriptor();
+    FileDescriptor(const FileDescriptor&) = delete;
+    FileDescriptor& operator=(const FileDescriptor&) = delete;
+    FileDescriptor(FileDescriptor&& other) noexcept;
+    FileDescriptor& operator=(FileDescriptor&& other) noexcept;
+
+    int get() const;
+    int release();
+    void reset(int fd = -1);
+    explicit operator bool() const;
+
+private:
+    int fd_{-1};
+};
+
+class ChildProcess {
+public:
+    ChildProcess() = default;
+    ChildProcess(std::vector<std::string> argv,
+                 std::filesystem::path cwd,
+                 std::filesystem::path log_path,
+                 std::vector<std::pair<std::string, std::string>> env = {});
+    ~ChildProcess();
+
+    void start();
+    int wait();
+    void terminate();
+    const std::filesystem::path& log_path() const;
+
+private:
+    std::vector<std::string> argv_;
+    std::filesystem::path cwd_;
+    std::filesystem::path log_path_;
+    std::vector<std::pair<std::string, std::string>> env_;
+    pid_t pid_{-1};
+};
+
+class EchoServer {
+public:
+    EchoServer() = default;
+    ~EchoServer();
+
+    void set_sink(bool sink);
+    int start();
+    void stop();
+
+private:
+    void accept_loop();
+    static void handle_client(int fd, bool sink);
+
+    FileDescriptor listener_;
+    std::atomic<bool> running_{false};
+    std::atomic<bool> sink_{false};
+    std::thread accept_thread_;
+    int port_{0};
+};
+
+std::filesystem::path find_on_path(const std::string& name);
+std::filesystem::path self_path(const char* argv0);
+bool is_executable(const std::filesystem::path& path);
+void require_executable(const std::filesystem::path& path, const char* label);
+int run_checked(std::vector<std::string> argv,
+                const std::filesystem::path& cwd,
+                const std::filesystem::path& log_path);
+std::vector<std::uint8_t> read_file(const std::filesystem::path& path);
+std::string sha256_hex(const std::vector<std::uint8_t>& bytes);
+bool wait_for_path(const std::filesystem::path& path, std::chrono::seconds timeout);
+bool wait_for_port(int port, std::chrono::seconds timeout);
+bool has_flag(const std::vector<std::string>& flags, std::string_view flag);
+int pick_free_port();
+LatencyMeasurement measure_latency(int connect_port, int echo_port, int iters, bool via_socks);
+BulkMeasurement measure_bulk_one_way(int connect_port, int echo_port, int mib, bool via_socks);
+BulkMeasurement measure_bulk(int connect_port, int echo_port, int mib, bool via_socks);
+void write_text(const std::filesystem::path& path, const std::string& text);
+
+}  // namespace yume::tools::selftest

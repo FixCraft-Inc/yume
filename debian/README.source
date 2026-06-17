@@ -28,3 +28,10 @@ runtime. Do not build Debian packages against the bundled basefwx/ tree or
 against vendor/; both are excluded from the Debian source tarball.
 dpkg-shlibdeps should then produce the runtime dependency on libbasefwx3
 from the linked yume binaries.
+
+This source package currently emits yume and yume-gui binary packages. The
+nogui build profile omits yume-gui. Do not add an empty libyume package:
+YUME's own libraries are internal static CMake targets today, and the GUI
+links its facade directly into the executable. Add libyume0/libyume-dev only
+after an exported shared-library ABI, public headers, and CMake/pkg-config
+metadata exist.

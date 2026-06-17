@@ -412,6 +412,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/cli/local.cpp
         server/cli/misc.cpp
         server/cli/runtime_prep.cpp
+        server/cli/startup_checks.cpp
         server/cli/help.cpp
     )
     target_link_libraries(yumed PRIVATE yume_server)

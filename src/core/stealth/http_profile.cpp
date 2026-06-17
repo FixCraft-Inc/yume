@@ -1,4 +1,4 @@
-#include "core/http_profile.hpp"
+#include "core/stealth/http_profile.hpp"
 
 #include <algorithm>
 #include <array>

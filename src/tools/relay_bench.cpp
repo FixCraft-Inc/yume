@@ -27,8 +27,8 @@
  */
 
 #include "client/transport/core.hpp"
-#include "core/inner_crypto.hpp"
-#include "core/protocol.hpp"
+#include "core/security/inner_crypto.hpp"
+#include "core/protocol/protocol.hpp"
 
 #include <algorithm>
 #include <chrono>

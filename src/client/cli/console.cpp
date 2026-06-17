@@ -18,7 +18,7 @@
 #include "client/cli/io_runtime.hpp"
 #include "client/relay/runtime.hpp"
 #include "client/transport/tunnel.hpp"
-#include "core/control_protocol.hpp"
+#include "core/protocol/control_protocol.hpp"
 #include "util.hpp"
 
 namespace yume::client {

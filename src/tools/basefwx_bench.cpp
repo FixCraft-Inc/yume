@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "core/inner_crypto.hpp"
+#include "core/security/inner_crypto.hpp"
 
 #include <algorithm>
 #include <atomic>

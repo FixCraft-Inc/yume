@@ -17,10 +17,10 @@
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 
-#include "core/control_protocol.hpp"
-#include "core/crypto.hpp"
-#include "core/identity.hpp"
-#include "core/obfs.hpp"
+#include "core/protocol/control_protocol.hpp"
+#include "core/security/crypto.hpp"
+#include "core/security/identity.hpp"
+#include "core/stealth/obfs.hpp"
 #include "server/config/config.hpp"
 #include "server/federation/types.hpp"
 #include "server/filter/ip_filter.hpp"

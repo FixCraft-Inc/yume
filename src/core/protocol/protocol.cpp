@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "core/protocol.hpp"
+#include "core/protocol/protocol.hpp"
 
 #include <algorithm>
 #include <stdexcept>

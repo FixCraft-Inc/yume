@@ -27,8 +27,8 @@
 #include <openssl/ssl.h>
 
 #include "client/proxy/outbound_proxy.hpp"
-#include "core/crypto.hpp"
-#include "core/runtime_policy.hpp"
+#include "core/security/crypto.hpp"
+#include "core/protocol/runtime_policy.hpp"
 #include "server/cli/misc.hpp"
 #include "util.hpp"
 

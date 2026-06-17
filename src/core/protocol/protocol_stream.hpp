@@ -4,7 +4,7 @@
 
 #include <boost/asio.hpp>
 
-#include "core/protocol.hpp"
+#include "core/protocol/protocol.hpp"
 
 namespace yume::protocol {
 

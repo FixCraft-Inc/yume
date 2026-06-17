@@ -9,7 +9,7 @@
 
 #include <openssl/evp.h>
 
-#include "core/crypto.hpp"
+#include "core/security/crypto.hpp"
 
 namespace yume::server {
 

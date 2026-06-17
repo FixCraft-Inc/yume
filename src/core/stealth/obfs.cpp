@@ -4,9 +4,9 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "core/obfs.hpp"
+#include "core/stealth/obfs.hpp"
 
-#include "core/http_profile.hpp"
+#include "core/stealth/http_profile.hpp"
 
 #include <openssl/ssl.h>
 

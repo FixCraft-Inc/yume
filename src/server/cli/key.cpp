@@ -21,8 +21,8 @@
 #include <openssl/pem.h>
 #include <nlohmann/json.hpp>
 
-#include "core/crypto.hpp"
-#include "core/runtime_policy.hpp"
+#include "core/security/crypto.hpp"
+#include "core/protocol/runtime_policy.hpp"
 #include "server/auth/auth.hpp"
 #include "server/runtime/manager.hpp"
 #include "util.hpp"

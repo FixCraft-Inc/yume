@@ -5,9 +5,9 @@
  * It can be used to test and verify browser profile emulation.
  */
 
-#include "core/tls_fingerprint.hpp"
-#include "core/tls_stealth.hpp"
-#include "core/tls_metrics.hpp"
+#include "core/stealth/tls_fingerprint.hpp"
+#include "core/stealth/tls_stealth.hpp"
+#include "core/stealth/tls_metrics.hpp"
 
 #include <iostream>
 #include <iomanip>

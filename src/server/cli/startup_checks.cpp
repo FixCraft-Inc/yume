@@ -6,10 +6,10 @@
 
 #include "server/cli/startup_checks.hpp"
 
-#include "core/http_profile.hpp"
-#include "core/runtime_policy.hpp"
-#include "core/tls_fingerprint.hpp"
-#include "core/tls_stealth.hpp"
+#include "core/stealth/http_profile.hpp"
+#include "core/protocol/runtime_policy.hpp"
+#include "core/stealth/tls_fingerprint.hpp"
+#include "core/stealth/tls_stealth.hpp"
 #include "server/cli/key.hpp"
 #include "server/config/config.hpp"
 #include "server/filter/ip_filter.hpp"

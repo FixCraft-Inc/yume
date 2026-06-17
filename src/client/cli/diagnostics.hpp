@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "client/cli/entry.hpp"
-#include "core/tls_fingerprint.hpp"
+#include "core/stealth/tls_fingerprint.hpp"
 
 namespace yume::client {
 

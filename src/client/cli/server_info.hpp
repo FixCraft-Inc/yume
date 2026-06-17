@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-#include "core/protocol.hpp"
+#include "core/protocol/protocol.hpp"
 
 namespace yume::client {
 

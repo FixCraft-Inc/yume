@@ -30,7 +30,7 @@
 #endif
 
 #include "client/runtime/local_runtime.hpp"
-#include "core/identity.hpp"
+#include "core/security/identity.hpp"
 #include "platform/platform.hpp"
 
 namespace yume::client {

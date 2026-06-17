@@ -37,7 +37,7 @@
 #include <boost/asio/deadline_timer.hpp>
 #include <boost/date_time/posix_time/posix_time_duration.hpp>
 
-#include "core/protocol.hpp"
+#include "core/protocol/protocol.hpp"
 #include "server/config/config.hpp"
 #include "util.hpp"
 

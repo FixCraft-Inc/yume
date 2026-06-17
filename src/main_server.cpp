@@ -40,7 +40,7 @@
 #include <boost/asio.hpp>
 #include <nlohmann/json.hpp>
 
-#include "core/runtime_policy.hpp"
+#include "core/protocol/runtime_policy.hpp"
 #include "server/runtime/manager.hpp"
 #include "server/cli/anonym.hpp"
 #include "server/cli/cluster.hpp"

@@ -8,7 +8,7 @@
 // without pulling in the rest of the yumed CLI surface, and so it
 // can't accidentally mutate runtime state — it only reads.
 
-#include "core/local_runtime.hpp"
+#include "core/runtime/local_runtime.hpp"
 #include "server/runtime/local_runtime.hpp"
 #include "util.hpp"
 

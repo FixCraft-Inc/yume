@@ -23,9 +23,9 @@
 #include <openssl/ssl.h>
 
 #include "client/proxy/outbound_proxy.hpp"
-#include "core/crypto.hpp"
-#include "core/inner_crypto.hpp"
-#include "core/protocol_stream.hpp"
+#include "core/security/crypto.hpp"
+#include "core/security/inner_crypto.hpp"
+#include "core/protocol/protocol_stream.hpp"
 #include "server/federation/manager.hpp"
 #include "server/session/session.hpp"
 #include "util.hpp"

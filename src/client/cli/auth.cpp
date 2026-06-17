@@ -16,10 +16,10 @@
 #include <nlohmann/json.hpp>
 
 #include "client/cli/io.hpp"
-#include "core/obfs.hpp"
-#include "core/obfs_h2.hpp"
-#include "core/obfs_signal.hpp"
-#include "core/protocol_stream.hpp"
+#include "core/stealth/obfs.hpp"
+#include "core/stealth/obfs_h2.hpp"
+#include "core/stealth/obfs_signal.hpp"
+#include "core/protocol/protocol_stream.hpp"
 
 namespace yume::client {
 namespace {

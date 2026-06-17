@@ -9,7 +9,7 @@
 #include <algorithm>
 #include <cctype>
 
-#include "core/runtime_policy.hpp"
+#include "core/protocol/runtime_policy.hpp"
 #include "util.hpp"
 
 namespace yume::client {

@@ -14,7 +14,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "core/protocol.hpp"
+#include "core/protocol/protocol.hpp"
 
 namespace yume::client {
 

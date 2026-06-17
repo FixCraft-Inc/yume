@@ -18,10 +18,10 @@
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 
-#include "core/control_protocol.hpp"
-#include "core/crypto.hpp"
-#include "core/obfs_h2.hpp"
-#include "core/protocol.hpp"
+#include "core/protocol/control_protocol.hpp"
+#include "core/security/crypto.hpp"
+#include "core/stealth/obfs_h2.hpp"
+#include "core/protocol/protocol.hpp"
 #include "server/config/config.hpp"
 #include "util.hpp"
 

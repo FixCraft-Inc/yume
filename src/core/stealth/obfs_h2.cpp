@@ -11,7 +11,7 @@
  * stream state will desync within seconds; that's by design.
  */
 
-#include "core/obfs_h2.hpp"
+#include "core/stealth/obfs_h2.hpp"
 
 #include <openssl/rand.h>
 

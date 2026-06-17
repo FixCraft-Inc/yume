@@ -8,7 +8,7 @@
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 
-#include "core/identity.hpp"
+#include "core/security/identity.hpp"
 #include "util.hpp"
 
 namespace yume::client {

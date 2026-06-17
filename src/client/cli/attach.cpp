@@ -19,7 +19,7 @@
 #include "client/cli/input.hpp"
 #include "client/cli/relay_secret.hpp"
 #include "client/runtime/local_runtime.hpp"
-#include "core/identity.hpp"
+#include "core/security/identity.hpp"
 #include "util.hpp"
 
 namespace yume::client {

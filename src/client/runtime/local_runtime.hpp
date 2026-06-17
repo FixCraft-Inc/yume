@@ -4,7 +4,7 @@
 #include <string>
 
 #include "client/relay/runtime.hpp"
-#include "core/local_runtime.hpp"
+#include "core/runtime/local_runtime.hpp"
 
 namespace yume::client {
 

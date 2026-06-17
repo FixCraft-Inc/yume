@@ -14,7 +14,7 @@
 #include <nlohmann/json.hpp>
 
 #include "client/transport/core.hpp"
-#include "core/control_protocol.hpp"
+#include "core/protocol/control_protocol.hpp"
 #include "server/config/config.hpp"
 #include "server/federation/types.hpp"
 

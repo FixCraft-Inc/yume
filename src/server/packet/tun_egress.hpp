@@ -15,7 +15,7 @@
 
 #include <boost/asio.hpp>
 
-#include "core/crypto.hpp"
+#include "core/security/crypto.hpp"
 #include "server/config/config.hpp"
 
 namespace yume::server {

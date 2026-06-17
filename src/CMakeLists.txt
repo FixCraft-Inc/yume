@@ -209,20 +209,20 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     endif()
 
     add_library(yume_core
-        core/control_protocol.cpp
-        core/crypto.cpp
-        core/http_profile.cpp
-        core/identity.cpp
-        core/inner_crypto.cpp
-        core/local_runtime.cpp
-        core/packet_bulk.cpp
-        core/protocol.cpp
-        core/obfs.cpp
-        core/obfs_h2.cpp
-        core/obfs_signal.cpp
-        core/tls_fingerprint.cpp
-        core/tls_stealth.cpp
-        core/tls_metrics.cpp
+        core/protocol/control_protocol.cpp
+        core/security/crypto.cpp
+        core/stealth/http_profile.cpp
+        core/security/identity.cpp
+        core/security/inner_crypto.cpp
+        core/runtime/local_runtime.cpp
+        core/protocol/packet_bulk.cpp
+        core/protocol/protocol.cpp
+        core/stealth/obfs.cpp
+        core/stealth/obfs_h2.cpp
+        core/stealth/obfs_signal.cpp
+        core/stealth/tls_fingerprint.cpp
+        core/stealth/tls_stealth.cpp
+        core/stealth/tls_metrics.cpp
         util.cpp
         ${YUME_PLATFORM_SOURCES}
     )
@@ -338,9 +338,9 @@ endif()
 
 add_library(yume_transport_core
     client/transport/core.cpp
-    core/inner_crypto.cpp
-    core/packet_bulk.cpp
-    core/protocol.cpp
+    core/security/inner_crypto.cpp
+    core/protocol/packet_bulk.cpp
+    core/protocol/protocol.cpp
 )
 
 target_include_directories(yume_transport_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -576,7 +576,7 @@ yume_apply_perf_opts(yume_transport_core_test)
 
 add_test(NAME yume_transport_core_test COMMAND yume_transport_core_test)
 
-add_executable(yume_packet_bulk_test core/packet_bulk_test.cpp)
+add_executable(yume_packet_bulk_test core/protocol/packet_bulk_test.cpp)
 target_link_libraries(yume_packet_bulk_test PRIVATE yume_transport_core)
 yume_link_atomic_if_needed(yume_packet_bulk_test PRIVATE)
 yume_apply_perf_opts(yume_packet_bulk_test)
@@ -589,7 +589,7 @@ yume_apply_perf_opts(yume_ip_filter_test)
 add_test(NAME yume_ip_filter_test COMMAND yume_ip_filter_test)
 
 if(NOT YUME_TRANSPORT_CORE_ONLY)
-    add_executable(yume_obfs_test core/obfs_test.cpp)
+    add_executable(yume_obfs_test core/stealth/obfs_test.cpp)
     target_link_libraries(yume_obfs_test PRIVATE yume_core)
     yume_link_atomic_if_needed(yume_obfs_test PRIVATE)
     yume_apply_perf_opts(yume_obfs_test)

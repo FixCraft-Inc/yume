@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/tls_fingerprint.hpp"
-#include "core/tls_stealth.hpp"
+#include "core/stealth/tls_fingerprint.hpp"
+#include "core/stealth/tls_stealth.hpp"
 
 #include <chrono>
 #include <map>

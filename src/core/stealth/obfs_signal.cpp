@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "core/obfs_signal.hpp"
+#include "core/stealth/obfs_signal.hpp"
 
 #include <openssl/crypto.h>
 

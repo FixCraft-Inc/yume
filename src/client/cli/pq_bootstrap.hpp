@@ -8,7 +8,7 @@
 
 #include <string>
 
-#include "core/crypto.hpp"
+#include "core/security/crypto.hpp"
 
 namespace yume::client {
 

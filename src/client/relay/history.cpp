@@ -4,7 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "core/crypto.hpp"
+#include "core/security/crypto.hpp"
 #include "util.hpp"
 
 namespace yume::client {

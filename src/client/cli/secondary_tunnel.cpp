@@ -20,8 +20,8 @@
 #include "client/cli/io.hpp"
 #include "client/cli/server_info.hpp"
 #include "client/transport/tunnel.hpp"
-#include "core/inner_crypto.hpp"
-#include "core/protocol.hpp"
+#include "core/security/inner_crypto.hpp"
+#include "core/protocol/protocol.hpp"
 #include "core/version.hpp"
 #include "util.hpp"
 

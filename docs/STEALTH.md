@@ -6,7 +6,7 @@ YUME stacks four independent layers of byte-shape camouflage on top of TLS 1.3. 
 
 The TLS handshake is real, not forged. OpenSSL emits a genuine ClientHello, but its cipher suites, supported groups, signature algorithms, and ALPN list are configured to match a specific browser profile. JA3 / JA4 hashes fall in the browser cluster, and a passive TLS-fingerprint observer sees the same handshake shape they'd see from the configured browser.
 
-Source: [src/core/tls_stealth.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/tls_stealth.cpp), [src/core/tls_fingerprint.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/tls_fingerprint.cpp).
+Source: [src/core/stealth/tls_stealth.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/stealth/tls_stealth.cpp), [src/core/stealth/tls_fingerprint.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/stealth/tls_fingerprint.cpp).
 
 | Profile flag | Mimics |
 | --- | --- |
@@ -23,7 +23,7 @@ After TLS handshake, the client emits the bytes a real Chrome would: an HTTP/2 c
 
 To a stateless DPI box, the first ~150 cleartext bytes of every YUME connection look exactly like a Chrome → CDN gRPC-web request.
 
-Source: [src/core/obfs_h2.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/obfs_h2.cpp), [src/core/obfs_signal.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/obfs_signal.cpp).
+Source: [src/core/stealth/obfs_h2.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/stealth/obfs_h2.cpp), [src/core/stealth/obfs_signal.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/stealth/obfs_signal.cpp).
 
 | Flag | Effect |
 | --- | --- |
@@ -57,7 +57,7 @@ Server profiles:
 
 Client profiles select the User-Agent in stealth probes (and any other HTTP-layer code the client runs): `chrome`, `firefox`, `safari`, `edge`, `curl`, `wget`, `yume`. When unset, the UA is derived from `--profile` so the JA3 and the UA stay consistent.
 
-Source: [src/core/http_profile.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/http_profile.cpp). Automated fidelity test (verifies header order, charset, body length, profile-specific extras): [scripts/yume_disguise_check.py](https://github.com/FixCraft-Inc/yume/blob/main/scripts/yume_disguise_check.py).
+Source: [src/core/stealth/http_profile.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/stealth/http_profile.cpp). Automated fidelity test (verifies header order, charset, body length, profile-specific extras): [scripts/yume_disguise_check.py](https://github.com/FixCraft-Inc/yume/blob/main/scripts/yume_disguise_check.py).
 
 | Flag | Effect |
 | --- | --- |

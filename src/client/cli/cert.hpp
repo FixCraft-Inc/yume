@@ -17,7 +17,7 @@
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 
-#include "core/crypto.hpp"
+#include "core/security/crypto.hpp"
 
 namespace yume::client {
 

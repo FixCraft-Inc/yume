@@ -31,7 +31,7 @@
 #include <openssl/x509.h>
 #include <nlohmann/json.hpp>
 
-#include "core/inner_crypto.hpp"
+#include "core/security/inner_crypto.hpp"
 #include "server/auth/auth.hpp"
 
 namespace yume::facade::keys {

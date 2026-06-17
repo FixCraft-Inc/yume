@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "core/crypto.hpp"
+#include "core/security/crypto.hpp"
 
 #include <openssl/err.h>
 #include <openssl/hmac.h>

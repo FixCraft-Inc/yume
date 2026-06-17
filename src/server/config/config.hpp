@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "core/runtime_policy.hpp"
+#include "core/protocol/runtime_policy.hpp"
 
 namespace yume::server {
 

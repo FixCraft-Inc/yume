@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-#include "core/crypto.hpp"
+#include "core/security/crypto.hpp"
 
 namespace yume::obfs {
 

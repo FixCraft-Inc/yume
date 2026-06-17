@@ -1,4 +1,4 @@
-#include "core/control_protocol.hpp"
+#include "core/protocol/control_protocol.hpp"
 
 #include <algorithm>
 #include <stdexcept>

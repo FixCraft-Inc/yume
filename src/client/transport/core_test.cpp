@@ -5,7 +5,7 @@
  */
 
 #include "client/transport/core.hpp"
-#include "core/packet_bulk.hpp"
+#include "core/protocol/packet_bulk.hpp"
 
 #include <cassert>
 #include <string>

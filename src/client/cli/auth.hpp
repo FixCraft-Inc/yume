@@ -15,9 +15,9 @@
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 
-#include "core/crypto.hpp"
-#include "core/inner_crypto.hpp"
-#include "core/protocol.hpp"
+#include "core/security/crypto.hpp"
+#include "core/security/inner_crypto.hpp"
+#include "core/protocol/protocol.hpp"
 
 namespace yume::client {
 

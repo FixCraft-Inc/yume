@@ -4,7 +4,7 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "core/packet_bulk.hpp"
+#include "core/protocol/packet_bulk.hpp"
 
 #include <limits>
 #include <stdexcept>

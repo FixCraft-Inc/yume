@@ -18,8 +18,8 @@
 #include "client/relay/history.hpp"
 #include "client/relay/secret.hpp"
 #include "client/transport/tunnel.hpp"
-#include "core/control_protocol.hpp"
-#include "core/crypto.hpp"
+#include "core/protocol/control_protocol.hpp"
+#include "core/security/crypto.hpp"
 
 namespace yume::client {
 

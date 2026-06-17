@@ -48,11 +48,11 @@
 #include <string>
 #include <string_view>
 
-#include "core/inner_crypto.hpp"
-#include "core/obfs_h2.hpp"
-#include "core/obfs_signal.hpp"
-#include "core/protocol.hpp"
-#include "core/runtime_policy.hpp"
+#include "core/security/inner_crypto.hpp"
+#include "core/stealth/obfs_h2.hpp"
+#include "core/stealth/obfs_signal.hpp"
+#include "core/protocol/protocol.hpp"
+#include "core/protocol/runtime_policy.hpp"
 #include "core/version.hpp"
 #include "server/auth/auth.hpp"
 #include "util.hpp"

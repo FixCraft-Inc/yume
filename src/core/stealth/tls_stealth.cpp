@@ -4,9 +4,9 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
-#include "core/tls_stealth.hpp"
+#include "core/stealth/tls_stealth.hpp"
 
-#include "core/http_profile.hpp"
+#include "core/stealth/http_profile.hpp"
 
 #include <boost/asio/read.hpp>
 #include <boost/asio/write.hpp>

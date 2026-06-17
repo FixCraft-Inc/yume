@@ -22,7 +22,7 @@
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 
-#include "core/protocol.hpp"
+#include "core/protocol/protocol.hpp"
 
 namespace yume::client {
 

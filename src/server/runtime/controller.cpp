@@ -12,7 +12,7 @@
 
 #include <boost/asio.hpp>
 
-#include "core/identity.hpp"
+#include "core/security/identity.hpp"
 #include "server/runtime/local_runtime.hpp"
 #include "server/runtime/manager.hpp"
 

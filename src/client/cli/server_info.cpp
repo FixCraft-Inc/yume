@@ -11,7 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include "client/cli/diagnostics.hpp"
-#include "core/runtime_policy.hpp"
+#include "core/protocol/runtime_policy.hpp"
 
 namespace yume::client {
 

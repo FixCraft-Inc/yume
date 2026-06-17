@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/tls_fingerprint.hpp"
+#include "core/stealth/tls_fingerprint.hpp"
 
 #include <boost/asio/ssl.hpp>
 #include <boost/asio/ip/tcp.hpp>

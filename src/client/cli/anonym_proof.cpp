@@ -17,7 +17,7 @@
 
 #include "client/cli/cert.hpp"
 #include "client/cli/diagnostics.hpp"
-#include "core/runtime_policy.hpp"
+#include "core/protocol/runtime_policy.hpp"
 #include "util.hpp"
 
 namespace yume::client {

@@ -15,7 +15,7 @@
 #include <openssl/crypto.h>
 #include <openssl/opensslv.h>
 
-#include "core/inner_crypto.hpp"
+#include "core/security/inner_crypto.hpp"
 #include "core/version.hpp"
 
 namespace yume::client {

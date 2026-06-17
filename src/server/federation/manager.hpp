@@ -9,7 +9,7 @@
 #include <boost/asio.hpp>
 #include <nlohmann/json.hpp>
 
-#include "core/control_protocol.hpp"
+#include "core/protocol/control_protocol.hpp"
 #include "server/config/config.hpp"
 #include "server/federation/types.hpp"
 

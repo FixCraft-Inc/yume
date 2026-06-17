@@ -15,8 +15,8 @@
 #include <openssl/crypto.h>
 #include <openssl/opensslv.h>
 
-#include "core/inner_crypto.hpp"
-#include "core/runtime_policy.hpp"
+#include "core/security/inner_crypto.hpp"
+#include "core/protocol/runtime_policy.hpp"
 #include "core/version.hpp"
 
 void print_bash_completion() {

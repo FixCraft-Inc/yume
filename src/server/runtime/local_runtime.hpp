@@ -3,7 +3,7 @@
 #include <functional>
 #include <string>
 
-#include "core/local_runtime.hpp"
+#include "core/runtime/local_runtime.hpp"
 
 namespace yume::server {
 

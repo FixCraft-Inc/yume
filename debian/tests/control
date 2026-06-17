@@ -1,3 +1,7 @@
 Tests: smoke
 Depends: @, man-db, pkgconf, dpkg-dev
 Restrictions: superficial
+
+Tests: libyume-dev
+Depends: @, binutils, cmake, gcc, pkgconf, dpkg-dev
+Restrictions: superficial

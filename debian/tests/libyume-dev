@@ -1,0 +1,72 @@
+#!/bin/sh
+set -eu
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+cat >"$tmp/check.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+#include <yume/yume.h>
+
+int main(void) {
+    yume_build_info info;
+    int rc = yume_get_build_info(&info, sizeof(info));
+    if (rc != YUME_STATUS_OK) {
+        return 1;
+    }
+    if (yume_abi_version() != YUME_ABI_VERSION || info.abi_version != YUME_ABI_VERSION) {
+        return 2;
+    }
+    if (info.struct_size != sizeof(info)) {
+        return 3;
+    }
+    if (!info.yume_version || !info.basefwx_version || !info.pq_backend || !info.argon2_backend) {
+        return 4;
+    }
+    if ((info.feature_flags & YUME_FEATURE_PBKDF2_HKDF) == 0) {
+        return 5;
+    }
+    printf("yume abi %u, yume %s, basefwx %s\n",
+           info.abi_version,
+           info.yume_version,
+           info.basefwx_version);
+    return 0;
+}
+EOF
+
+cc $(pkg-config --cflags yume) "$tmp/check.c" $(pkg-config --libs yume) -o "$tmp/check-pkg-config"
+"$tmp/check-pkg-config"
+
+mkdir "$tmp/cmake"
+cat >"$tmp/cmake/CMakeLists.txt" <<'EOF'
+cmake_minimum_required(VERSION 3.20)
+project(yume_abi_consumer C)
+find_package(yume CONFIG REQUIRED)
+add_executable(check-cmake ../check.c)
+target_link_libraries(check-cmake PRIVATE yume::yume)
+EOF
+
+cmake -S "$tmp/cmake" -B "$tmp/cmake-build" -DCMAKE_BUILD_TYPE=Release
+cmake --build "$tmp/cmake-build"
+"$tmp/cmake-build/check-cmake"
+
+multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
+lib="/usr/lib/${multiarch}/libyume.so.1"
+if [ ! -e "$lib" ]; then
+    lib="/usr/lib/libyume.so.1"
+fi
+test -e "$lib"
+
+cat >"$tmp/expected-symbols" <<'EOF'
+yume_abi_version
+yume_argon2_backend
+yume_basefwx_version
+yume_feature_flags
+yume_get_build_info
+yume_pq_backend
+yume_version
+EOF
+
+nm -D --defined-only "$lib" | awk '{print $3}' | sort >"$tmp/actual-symbols"
+diff -u "$tmp/expected-symbols" "$tmp/actual-symbols"

@@ -224,6 +224,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
 
     install(FILES
         README.md
+        docs/ABI.md
         docs/EXPLAINED.md
         docs/OPERATIONS.md
         docs/PACKAGING.md

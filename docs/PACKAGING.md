@@ -17,7 +17,8 @@ BaseFWX is packaged separately as `basefwx`, `libbasefwx3`, and
 `libyume` is intentionally a narrow C ABI for build/version/feature/backend
 information. YUME's `yume_core`, `yume_client_lib`, `yume_server`, and
 `yume_facade` targets remain internal static libraries so CLI/GUI/session
-refactors do not accidentally become ABI breaks.
+refactors do not accidentally become ABI breaks. See `docs/ABI.md` for the
+compatibility rules.
 
 ## Install From A Build Tree
 

@@ -7,7 +7,7 @@ Files-Excluded:
  build-*
  vendor
  third_party
- yume-vendor-prebuilt.tar.xz
+ third_party/prebuilt/yume-vendor-prebuilt.tar.xz
  crashed.log
  example.log
  scripts/__pycache__

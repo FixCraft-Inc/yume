@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+YUME_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR=""
 BIN_DYNAMIC=""
 BIN_STATIC=""
@@ -21,9 +22,9 @@ TOOLCHAIN_STRIP=""
 TOOLCHAIN_ROOT=""
 OQS_SRC="${OQS_SRC:-${HOME}/liboqs}"
 ARGON2_SRC="${ARGON2_SRC:-${HOME}/argon2}"
-VENDOR_BUILDER="./scripts/build_vendor_libs.sh"
-VENDOR_ARCHIVE="./yume-vendor-prebuilt.tar.xz"
-VENDOR_DIR="./vendor"
+VENDOR_BUILDER="${YUME_REPO_ROOT}/scripts/build_vendor_libs.sh"
+VENDOR_ARCHIVE="${YUME_REPO_ROOT}/third_party/prebuilt/yume-vendor-prebuilt.tar.xz"
+VENDOR_DIR="${YUME_REPO_ROOT}/vendor"
 export YUME_VENDOR_ONLY=1
 OPENWRT_SDK_TEMP=0
 OPENWRT_SDK_TEMP_DIR=""
@@ -354,7 +355,7 @@ APT_UPDATED_FLAG="${APT_UPDATED_FLAG:-${YUME_CACHE_ROOT}/apt-updated}"
 OQS_BUILD_MIPS="${OQS_BUILD_MIPS:-${YUME_TMP_ROOT}/liboqs-mips-build}"
 OQS_BUILD_HOST="${OQS_BUILD_HOST:-${YUME_TMP_ROOT}/liboqs-host-build}"
 
-BASEFWX_REF_FILE="${BASEFWX_REF_FILE:-${PWD}/.basefwx-ref}"
+BASEFWX_REF_FILE="${BASEFWX_REF_FILE:-${YUME_REPO_ROOT}/config/refs/basefwx.ref}"
 if [[ -z "${YUME_BASEFWX_REF:-}" && -f "${BASEFWX_REF_FILE}" ]]; then
   YUME_BASEFWX_REF="$(tr -d '[:space:]' < "${BASEFWX_REF_FILE}")"
 fi
@@ -3086,7 +3087,7 @@ EOF
     macos_cmake_args="${macos_cmake_args} -DZSTD_INCLUDE_DIR=${dep_prefix}/include"
     # Use cache init file to force native code generation (osxcross defaults to LLVM bitcode)
     # Use absolute path since ezbuild.sh changes directories
-    macos_cmake_args="${macos_cmake_args} -C /home/user/yume/osxcross-native-init.cmake"
+    macos_cmake_args="${macos_cmake_args} -C ${YUME_REPO_ROOT}/cmake/osxcross-native-init.cmake"
     # Skip tests when building portable GUI (bitcode prevents test linking with native code)
     if [[ "${YUME_FULLAU_PORTABLE_GUI:-0}" -eq 1 ]]; then
       macos_cmake_args="${macos_cmake_args} -DBUILD_TESTING=OFF -DYUME_BUILD_TESTING=OFF"

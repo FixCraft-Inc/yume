@@ -19,7 +19,7 @@ Future 1.x releases keep on-the-wire compatibility with 1.0.
 | **Outer transport** | Real TLS 1.3 (OpenSSL 3.5) with browser-cluster JA3/JA4 fingerprints. Chrome 135 by default, Firefox 126 and Safari 17 selectable; rotation supported. |
 | **Carrier camouflage** | HTTP/2 obfs handshake (`PRI * HTTP/2.0`, Chrome-shaped SETTINGS, HEADERS), hourly-rotating HMAC path token, optional `--obfs-secret` peer-pinning. |
 | **Decoy site** | `--real` mode serves a real HTML page (or Wikipedia redirect by default) to non-YUME visitors of the same port. YUME and a website coexist on `:443`. |
-| **Inner crypto** | BaseFWX 3.6.4 — hybrid **ML-KEM-768 + AES-256-GCM** with **HKDF-SHA256**, hardened Argon2id / PBKDF2 password KDF (see [BaseFWX 3.6.4 release notes](basefwx/RELEASE-NOTES-3.6.4.md)). |
+| **Inner crypto** | BaseFWX 3.6.4 — hybrid **ML-KEM-768 + AES-256-GCM** with **HKDF-SHA256**, hardened Argon2id / PBKDF2 password KDF (see [BaseFWX 3.6.4 release notes](../../basefwx/RELEASE-NOTES-3.6.4.md)). |
 | **Live key hopping** | 1–4 Hz over-the-air key rotation. Each window encrypts with a fresh `HKDF(master, hop_index)` derivative; a captured window decrypts only that window. |
 | **Authentication** | Ed25519 client keys. `yumed --auth-keys` is the server's authorised-key file (SSH-style). |
 | **Routing modes** | SOCKS5 (`--socks`), local TCP/UDP forward, `--run <cmd>`, Android VPN capture (separate APK), and server-side `--reverse-port-min/--reverse-port-max` reverse tunneling. |
@@ -130,7 +130,7 @@ of why password-only mode is already PQ-resistant (AES-256 under
 Grover is 128-bit equivalent; hardened KDF makes brute force
 expensive) — lives in
 [`basefwx/SECURITY.md`](basefwx/SECURITY.md) and
-[`basefwx/RELEASE-NOTES-3.6.4.md`](basefwx/RELEASE-NOTES-3.6.4.md).
+[`../../basefwx/RELEASE-NOTES-3.6.4.md`](../../basefwx/RELEASE-NOTES-3.6.4.md).
 
 ### Live key hopping
 
@@ -227,7 +227,7 @@ performance work. After normalising for the BaseFWX 3.6.4 KDF
 hardening, the overall test suite is **−55 % to −60 % faster** than
 3.6.3 across C++, Java, and Python; KDF-heavy paths are −60 % to
 −80 % faster. Full numbers and methodology:
-[`basefwx/RELEASE-NOTES-3.6.4.md`](basefwx/RELEASE-NOTES-3.6.4.md).
+[`../../basefwx/RELEASE-NOTES-3.6.4.md`](../../basefwx/RELEASE-NOTES-3.6.4.md).
 
 ---
 

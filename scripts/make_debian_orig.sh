@@ -39,8 +39,7 @@ find . -mindepth 1 \
   -o \( -name '*.pyc' \
         -o -name '.DS_Store' \
         -o -name 'crashed.log' \
-        -o -name 'example.log' \
-        -o -name 'yume-vendor-prebuilt.tar.xz' \) -prune \
+        -o -name 'example.log' \ \) -prune \
   -o -print0 \
   | LC_ALL=C sort -z \
   | tar --null --no-recursion --files-from - \

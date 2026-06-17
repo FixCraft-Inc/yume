@@ -3,7 +3,7 @@ set -euo pipefail
 
 BASE_BRANCH="${1:-main}"
 DEV_BRANCH="${2:-DEV}"
-ALLOWLIST_FILE="${ALLOWLIST_FILE:-.branch-parity-allowlist}"
+ALLOWLIST_FILE="${ALLOWLIST_FILE:-config/refs/branch-parity-allowlist}"
 
 resolve_ref() {
   local ref="$1"

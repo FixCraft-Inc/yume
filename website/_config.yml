@@ -22,4 +22,4 @@ exclude:
   - README.md
   - crashed.log
   - example.log
-  - yume-vendor-prebuilt.tar.xz
+  - third_party/prebuilt/yume-vendor-prebuilt.tar.xz

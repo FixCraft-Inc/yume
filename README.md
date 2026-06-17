@@ -456,7 +456,7 @@ sudo ./build/bin/yumed \
 ## Security posture
 
 - GPL-v3, both client and daemon fully buildable from this tree
-- BaseFWX is pinned by commit (see `.basefwx-ref`); release CI fails if mandatory crypto support is missing
+- BaseFWX is pinned by commit (see `config/refs/basefwx.ref`); release CI fails if mandatory crypto support is missing
 - Authorized keys verified with OpenSSL `EVP_DigestVerify` ([src/core/security/crypto.cpp:78](src/core/security/crypto.cpp#L78))
 - Inner-frame AEAD verified before plaintext is delivered (OpenSSL `EVP_DecryptFinal_ex`)
 - Master PQ keypair off by default; explicit `--use-embedded-master` required and warned about at startup on both ends

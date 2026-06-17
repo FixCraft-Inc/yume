@@ -32,7 +32,7 @@ Compare: <https://github.com/FixCraft-Inc/yume/commits/v1.0> (initial release)
   - Browser-cluster JA3 / JA4 fingerprint via genuine OpenSSL 3.5 `ClientHello` shaping. `--profile chrome` (Chrome 135) is the default; `--profile firefox` (Firefox 126) and `--profile safari` (Safari 17) are selectable, plus per-N-connection rotation via `--tls-stealth-rotate` / `--tls-stealth-rotation-interval`.
   - HTTP/2 carrier handshake (`--obfs`) with Chrome-shaped `SETTINGS`, `WINDOW_UPDATE`, and a `HEADERS` frame opening a `POST` to `/<token>/<nonce>`. The token is `HMAC-SHA256(K, sni || hour_epoch || "yume-obfs-v2")` truncated to 16 bytes hex with optional peer-pinning via `--obfs-secret`; the server accepts ±1 hour of clock skew.
   - Real HTML facade (`--real`) so a browser hitting the same `:443` with `GET / HTTP/1.1` is served a real HTML page (or a Wikipedia redirect by default). YUME and a normal website coexist on a single port.
-- **Hybrid post-quantum inner crypto** via BaseFWX 3.6.4 (separate library, pinned via `.basefwx-ref`):
+- **Hybrid post-quantum inner crypto** via BaseFWX 3.6.4 (separate library, pinned via `config/refs/basefwx.ref`):
   - **ML-KEM-768** (NIST FIPS 203 / Kyber-768) hybrid wrap for session keys when a master public key is configured.
   - **AES-256-GCM** AEAD with a 12-byte nonce and 16-byte tag.
   - Hardened **Argon2id** (default `4 / 2¹⁶`) or **PBKDF2-HMAC-SHA256** (default 600 000 iters) for password-based key derivation.
@@ -56,7 +56,7 @@ Compare: <https://github.com/FixCraft-Inc/yume/commits/v1.0> (initial release)
   - Static-link assertion on every `*-static` artifact (`file` must not say "dynamically linked"; `readelf -d` must show no `NEEDED` entries).
   - `--version` self-test on every published binary (native amd64 directly, ARM via `qemu-aarch64-static`/`qemu-arm-static`, MIPS via `qemu-mips-static`, PE via wine if available else PE32 header check, tar.xz CLI bundles extracted and tested).
   - GPG-signed `*.sig` per artifact plus aggregate `SHA256SUMS.txt`, `MD5SUMS.txt`, `release-manifest.json`.
-- Project documentation: `README.md`, `docs/QUICKSTART.md`, `docs/STEALTH.md`, `docs/EXPLAINED.md` (protocol internals + routing diagrams for federation, Tor egress, Tor-over-YUME, YUME-Tor-YUME, Android), `docs/PERFORMANCE.md`, `docs/OPERATIONS.md`, `docs/PACKAGING.md`, `docs/PERMISSIONS.md`, `RELEASE-NOTES-1.0.md`, and the project website at <https://yume.fixcraft.jp>.
+- Project documentation: `README.md`, `docs/QUICKSTART.md`, `docs/STEALTH.md`, `docs/EXPLAINED.md` (protocol internals + routing diagrams for federation, Tor egress, Tor-over-YUME, YUME-Tor-YUME, Android), `docs/PERFORMANCE.md`, `docs/OPERATIONS.md`, `docs/PACKAGING.md`, `docs/PERMISSIONS.md`, `docs/release/RELEASE-NOTES-1.0.md`, and the project website at <https://yume.fixcraft.jp>.
 
 ### Changed
 - Wire format, authentication key file format, anonym CA / sub-key file format, and the `yume-obfs-v2` HTTP/2 token format are declared **stable** as of 1.0. Subsequent 1.x releases will keep on-the-wire compatibility.
@@ -73,6 +73,6 @@ Compare: <https://github.com/FixCraft-Inc/yume/commits/v1.0> (initial release)
 - **OpenWRT MIPS** is intentionally **not** built in CI because cross-builds against the OpenWRT SDK are slow and brittle on hosted runners; maintainers attach the MIPS artifacts manually when a release is cut. The static BusyBox builds cover most embedded use.
 - **Intel macOS** is not built in 1.0. The `build-macos` workflow is matrix-ized so an Intel entry is a one-line uncomment in `.github/workflows/release.yml`. Rosetta 2 covers Intel Macs running the arm64 binary.
 - **Windows GUI cross-build is best-effort** in 1.0: marked `continue-on-error: true` because the GUI-specific vcpkg packages (Freetype, GLFW3) on a fresh runner can take significantly longer than the CLI path and may time out. If the cross-build fails the CLI tarball still ships and the GUI lands in a follow-up.
-- **Performance**: steady-state CPU overhead is <1 % typical and <5 % always on the SOCKS path; full methodology and per-link numbers in `docs/PERFORMANCE.md`. The inner-crypto hot path benefits from BaseFWX 3.6.4's perf work (overall test suite −55 % to −60 % faster at constant security strength vs 3.6.3; see `basefwx/RELEASE-NOTES-3.6.4.md`).
+- **Performance**: steady-state CPU overhead is <1 % typical and <5 % always on the SOCKS path; full methodology and per-link numbers in `docs/PERFORMANCE.md`. The inner-crypto hot path benefits from BaseFWX 3.6.4's perf work (overall test suite −55 % to −60 % faster at constant security strength vs 3.6.3; see `../../basefwx/RELEASE-NOTES-3.6.4.md`).
 - **Compatibility policy for the 1.x line**: authorised-key files (`--auth-keys`), anonym CA / sub-key files, and the `yume-obfs-v2` token format carry forward unchanged. The BaseFWX inner format is byte-compatible across the 3.6.x line per BaseFWX's own compatibility policy.
 - **License**: GPL-3.0-only across all yume binaries, source, and bundled BaseFWX inner crypto. See `LICENCE`.

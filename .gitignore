@@ -81,6 +81,7 @@ vendor/
 *.changes
 *.dsc
 *.tar.xz
+!third_party/prebuilt/yume-vendor-prebuilt.tar.xz
 *.tar.gz
 *.tar.zst
 *-dbgsym_*

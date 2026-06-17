@@ -17,10 +17,10 @@ def require(condition: bool, message: str) -> None:
 
 
 def read_ref() -> str:
-    ref_file = ROOT / ".basefwx-ref"
-    require(ref_file.is_file(), "Missing .basefwx-ref")
+    ref_file = ROOT / "config/refs/basefwx.ref"
+    require(ref_file.is_file(), "Missing config/refs/basefwx.ref")
     ref = ref_file.read_text(encoding="utf-8").strip()
-    require(ref, ".basefwx-ref is empty")
+    require(ref, "config/refs/basefwx.ref is empty")
     return ref
 
 

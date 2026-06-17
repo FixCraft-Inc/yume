@@ -25,7 +25,7 @@ The manifest records file size, OS, architecture, component, linkage, hashes, an
 
 ## BaseFWX pinning
 
-YUME depends on BaseFWX for post-quantum and AEAD primitives. The release and CI workflows read `.basefwx-ref`, fetch that exact ref, and fail preflight if it is not reachable. Keep this file pinned to a commit or immutable release ref for production releases.
+YUME depends on BaseFWX for post-quantum and AEAD primitives. The release and CI workflows read `config/refs/basefwx.ref`, fetch that exact ref, and fail preflight if it is not reachable. Keep this file pinned to a commit or immutable release ref for production releases.
 
 ## Service deployment
 

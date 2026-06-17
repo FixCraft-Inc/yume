@@ -1,6 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: yume
-Source: https://github.com/F1xGOD/yume
+Source: https://github.com/FixCraft-Inc/yume
 Files-Excluded:
  basefwx
  basefwx/*

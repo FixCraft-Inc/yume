@@ -23,9 +23,9 @@ Build-Depends:
  libayatana-appindicator3-dev <!nogui>
 Standards-Version: 4.7.4.1
 Rules-Requires-Root: no
-Homepage: https://github.com/F1xGOD/yume
-Vcs-Browser: https://github.com/F1xGOD/yume
-Vcs-Git: https://github.com/F1xGOD/yume.git
+Homepage: https://github.com/FixCraft-Inc/yume
+Vcs-Browser: https://github.com/FixCraft-Inc/yume
+Vcs-Git: https://github.com/FixCraft-Inc/yume.git
 
 Package: libyume1
 Section: libs

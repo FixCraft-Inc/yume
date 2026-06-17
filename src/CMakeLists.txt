@@ -691,5 +691,13 @@ if(YUME_BUILD_SHARED_ABI AND TARGET yume_abi)
     add_executable(yume_abi_test abi/yume_c_test.cpp)
     target_link_libraries(yume_abi_test PRIVATE yume_abi)
     add_test(NAME yume_abi_test COMMAND yume_abi_test)
+    if(UNIX AND NOT APPLE AND CMAKE_NM)
+        add_test(NAME yume_abi_exports
+            COMMAND "${CMAKE_COMMAND}"
+                "-DYUME_ABI_LIBRARY=$<TARGET_FILE:yume_abi>"
+                "-DYUME_NM=${CMAKE_NM}"
+                -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_abi_exports.cmake"
+        )
+    endif()
 endif()
 endif()

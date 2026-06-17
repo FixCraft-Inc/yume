@@ -38,12 +38,12 @@
 #endif
 #include "server/cli/help.hpp"
 #include <boost/asio.hpp>
-#include <nlohmann/json.hpp>
 
 #include "core/protocol/runtime_policy.hpp"
 #include "server/runtime/manager.hpp"
 #include "server/cli/anonym.hpp"
 #include "server/cli/cluster.hpp"
+#include "server/cli/config_load.hpp"
 #include "server/cli/key.hpp"
 #include "server/runtime/local_runtime.hpp"
 #include "server/cli/local.hpp"
@@ -61,6 +61,7 @@ using yume::server_cli::expand_cluster_join_spec;
 using yume::server_cli::fetch_anonym_proof;
 using yume::server_cli::cert_fingerprint_sha256;
 using yume::server_cli::get_self_path;
+using yume::server_cli::load_server_config_file_and_resolve_paths;
 using yume::server_cli::load_pq_public_b64;
 using yume::server_cli::parse_proof_ts;
 using yume::server_cli::prepare_server_runtime_files;
@@ -68,6 +69,8 @@ using yume::server_cli::read_file_bytes;
 using yume::server_cli::resolve_filter_list_spec_path;
 using yume::server_cli::run_server_key_command;
 using yume::server_cli::run_server_manager_ui;
+using yume::server_cli::ServerConfigLoadContext;
+using yume::server_cli::ServerConfigOverrides;
 using yume::server_cli::ServerKeyCommand;
 using yume::server_cli::sha256_hex;
 using yume::server_cli::sign_pq_pub_with_key;
@@ -541,380 +544,45 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
-    std::string exe_dir;
+    ServerConfigLoadContext config_context;
+    config_context.config_path = config_path;
+    config_context.config_specified = config_specified;
     {
         std::string self_path = get_self_path(argv[0]);
         if (!self_path.empty()) {
-            exe_dir = std::filesystem::path(self_path).parent_path().string();
+            config_context.exe_dir = std::filesystem::path(self_path).parent_path().string();
         }
     }
-    config_path = yume::util::expand_user(config_path);
-    if (!config_specified && !exe_dir.empty()) {
-        std::filesystem::path cfg_path(config_path);
-        if (!std::filesystem::exists(cfg_path)) {
-            std::filesystem::path cand = std::filesystem::path(exe_dir) / cfg_path;
-            if (std::filesystem::exists(cand)) {
-                config_path = cand.string();
-            }
-        }
-    }
-    std::string config_dir;
-    if (config_specified || std::filesystem::exists(config_path)) {
-        std::error_code ec;
-        auto cfg_abs = std::filesystem::absolute(config_path, ec);
-        if (!ec) {
-            config_dir = cfg_abs.parent_path().string();
-        } else {
-            config_dir = std::filesystem::path(config_path).parent_path().string();
-        }
-    }
-    auto resolve_cfg_path = [&](const std::string& value) {
-        return yume::util::resolve_path(value, config_dir, exe_dir);
-    };
 
-    if (config_specified || std::filesystem::exists(config_path)) {
-        try {
-            auto json = yume::util::read_json_config(config_path);
-            if (json.contains("listen_port")) {
-                if (cfg.listen_port == 443) {
-                    cfg.listen_port = json["listen_port"].get<int>();
-                }
-            }
-            if (json.contains("reverse_port_min")) {
-                if (cfg.reverse_port_min == yume::policy::kReversePortMinDefault) {
-                    cfg.reverse_port_min = json["reverse_port_min"].get<int>();
-                }
-            }
-            if (json.contains("reverse_port_max")) {
-                if (cfg.reverse_port_max == yume::policy::kReversePortMaxDefault) {
-                    cfg.reverse_port_max = json["reverse_port_max"].get<int>();
-                }
-            }
-            if (json.contains("dns_server")) {
-                if (cfg.dns_server.empty()) {
-                    cfg.dns_server = json["dns_server"].get<std::string>();
-                }
-            }
-            if (json.contains("tls_cert")) {
-                if (cfg.tls_cert.empty()) {
-                    cfg.tls_cert = resolve_cfg_path(json["tls_cert"].get<std::string>());
-                }
-            }
-            if (json.contains("tls_key")) {
-                if (cfg.tls_key.empty()) {
-                    cfg.tls_key = resolve_cfg_path(json["tls_key"].get<std::string>());
-                }
-            }
-            if (json.contains("auth_keys")) {
-                if (cfg.auth_keys.empty()) {
-                    cfg.auth_keys = resolve_cfg_path(json["auth_keys"].get<std::string>());
-                }
-            }
-            if (json.contains("threads")) {
-                if (cfg.threads == 0) {
-                    cfg.threads = json["threads"].get<int>();
-                }
-            }
-            if (json.contains("obfuscation")) {
-                if (!cfg.obfuscation) {
-                    cfg.obfuscation = json["obfuscation"].get<bool>();
-                }
-            }
-            if (json.contains("inner_crypto")) {
-                if (!inner_crypto_override) {
-                    cfg.inner_crypto = json["inner_crypto"].get<bool>();
-                }
-            }
-            if (json.contains("inner_dual")) {
-                if (!inner_dual_override) {
-                    cfg.inner_dual = json["inner_dual"].get<bool>();
-                }
-            }
-            if (json.contains("inner_required")) {
-                if (!inner_required_override) {
-                    cfg.inner_required = json["inner_required"].get<bool>();
-                }
-            }
-            if (json.contains("inner_hop")) {
-                if (!inner_hop_override) {
-                    cfg.inner_hop = json["inner_hop"].get<bool>();
-                }
-            }
-            if (json.contains("hop_interval_ms")) {
-                if (!hop_interval_override) {
-                    cfg.hop_interval_ms = static_cast<std::uint32_t>(json["hop_interval_ms"].get<int>());
-                }
-            }
-            if (json.contains("inner_heavy")) {
-                cfg.inner_heavy = json["inner_heavy"].get<bool>();
-            }
-            if (json.contains("pq_private_key")) {
-                if (cfg.pq_private_key.empty()) {
-                    cfg.pq_private_key = resolve_cfg_path(json["pq_private_key"].get<std::string>());
-                }
-            }
-            if (json.contains("pq_auto_generate")) {
-                if (!pq_auto_generate_override) {
-                    cfg.pq_auto_generate = json["pq_auto_generate"].get<bool>();
-                }
-            }
-            if (json.contains("use_embedded_master")) {
-                if (!allow_embedded_master_override) {
-                    cfg.allow_embedded_master = json["use_embedded_master"].get<bool>();
-                }
-            }
-            if (json.contains("allow_exec")) {
-                if (!cfg.allow_exec) {
-                    cfg.allow_exec = json["allow_exec"].get<bool>();
-                }
-            }
-            if (json.contains("allow_local_ip")) {
-                cfg.allow_local_ip = json["allow_local_ip"].get<bool>();
-            }
-            if (json.contains("control_full")) {
-                cfg.control_full = json["control_full"].get<bool>();
-            }
-            if (json.contains("real_http")) {
-                if (!cfg.real_http) {
-                    cfg.real_http = json["real_http"].get<bool>();
-                }
-            }
-            if (json.contains("real_index_path")) {
-                if (cfg.real_index_path.empty()) {
-                    cfg.real_index_path = resolve_cfg_path(json["real_index_path"].get<std::string>());
-                }
-            }
-            if (json.contains("real_secret")) {
-                if (cfg.real_secret.empty()) {
-                    cfg.real_secret = json["real_secret"].get<std::string>();
-                }
-            }
-            if (json.contains("real_secret_file")) {
-                if (cfg.real_secret_file.empty()) {
-                    cfg.real_secret_file = resolve_cfg_path(json["real_secret_file"].get<std::string>());
-                }
-            }
-            if (json.contains("obfs_secret")) {
-                if (cfg.obfs_secret.empty()) {
-                    cfg.obfs_secret = json["obfs_secret"].get<std::string>();
-                }
-            }
-            if (json.contains("obfs_pad_multiple") && cfg.obfs_pad_multiple == 0) {
-                int v = json["obfs_pad_multiple"].get<int>();
-                if (v < 0) v = 0;
-                if (v > 256) v = 256;
-                cfg.obfs_pad_multiple = static_cast<std::uint16_t>(v);
-            }
-            if (json.contains("obfs_jitter_ms") && cfg.obfs_jitter_ms == 0) {
-                int v = json["obfs_jitter_ms"].get<int>();
-                if (v < 0) v = 0;
-                cfg.obfs_jitter_ms = static_cast<std::uint32_t>(v);
-            }
-            if (json.contains("tls_handshake_timeout_ms") && !tls_handshake_timeout_override) {
-                int v = json["tls_handshake_timeout_ms"].get<int>();
-                if (v < 0) v = 0;
-                cfg.tls_handshake_timeout_ms = static_cast<std::uint32_t>(v);
-            }
-            if (json.contains("max_sessions") && !max_sessions_override) {
-                int v = json["max_sessions"].get<int>();
-                if (v < 0) v = 0;
-                cfg.max_sessions = static_cast<std::uint32_t>(v);
-            }
-            if (json.contains("accept_rate_limit") && !accept_rate_limit_override) {
-                int v = json["accept_rate_limit"].get<int>();
-                if (v < 0) v = 0;
-                cfg.accept_rate_limit = static_cast<std::uint32_t>(v);
-            }
-            if (json.contains("egress_mbps") && !egress_mbps_override) {
-                int v = json["egress_mbps"].get<int>();
-                if (v < 0) v = 0;
-                cfg.egress_mbps = static_cast<std::uint32_t>(v);
-            }
-            if (json.contains("robots_deny") && !cfg.robots_deny) {
-                cfg.robots_deny = json["robots_deny"].get<bool>();
-            }
-            if (json.contains("client_filter_mode") && !client_filter_mode_override) {
-                cfg.client_filter_mode = json["client_filter_mode"].get<std::string>();
-            }
-            if (json.contains("egress_filter_mode") && !egress_filter_mode_override) {
-                cfg.egress_filter_mode = json["egress_filter_mode"].get<std::string>();
-            }
-            if (json.contains("filter_memory_mib") && !filter_memory_mib_override) {
-                int v = json["filter_memory_mib"].get<int>();
-                if (v < 0) v = 0;
-                cfg.filter_memory_mib = static_cast<std::uint32_t>(v);
-            }
-            if (json.contains("filter_geolite") && !filter_geolite_override) {
-                cfg.filter_geolite = resolve_cfg_path(json["filter_geolite"].get<std::string>());
-            }
-            if (json.contains("filter_lists") && json["filter_lists"].is_array()) {
-                for (const auto& item : json["filter_lists"]) {
-                    if (item.is_string()) {
-                        cfg.filter_lists.push_back(
-                            resolve_filter_list_spec_path(item.get<std::string>(), config_dir, exe_dir));
-                    }
-                }
-            }
-            if (json.contains("packet_egress") && !packet_egress_override) {
-                cfg.packet_egress = json["packet_egress"].get<std::string>();
-            }
-            if (json.contains("packet_tun_name") && !packet_tun_name_override) {
-                cfg.packet_tun_name = json["packet_tun_name"].get<std::string>();
-            }
-            if (json.contains("packet_cidr") && !packet_cidr_override) {
-                cfg.packet_cidr = json["packet_cidr"].get<std::string>();
-            }
-            if (json.contains("packet_mtu") && !packet_mtu_override) {
-                int v = json["packet_mtu"].get<int>();
-                if (v < 0) v = 0;
-                cfg.packet_mtu = static_cast<std::uint32_t>(v);
-            }
-            if (json.contains("benchmark_enable") && !cfg.benchmark_enable) {
-                cfg.benchmark_enable = json["benchmark_enable"].get<bool>();
-            }
-            if (json.contains("upstream_response_dir") && cfg.upstream_response_dir.empty()) {
-                cfg.upstream_response_dir = resolve_cfg_path(json["upstream_response_dir"].get<std::string>());
-            }
-            if (json.contains("upstream_response_ttl") && cfg.upstream_response_ttl_s == 0) {
-                int v = json["upstream_response_ttl"].get<int>();
-                if (v < 0) v = 0;
-                cfg.upstream_response_ttl_s = static_cast<std::uint32_t>(v);
-            }
-            if (json.contains("boring")) {
-                cfg.boring = json["boring"].get<bool>();
-            }
-            if (json.contains("anonym")) {
-                if (!anonym_override) {
-                    cfg.anonym = json["anonym"].get<bool>();
-                }
-            }
-            if (json.contains("anonym_proof_mode") && !anonym_proof_mode_override) {
-                cfg.anonym_proof_mode = json["anonym_proof_mode"].get<std::string>();
-            }
-            if (json.contains("anonym_api")) {
-                if (cfg.anonym_api.empty()) {
-                    cfg.anonym_api = json["anonym_api"].get<std::string>();
-                }
-            }
-            if (json.contains("anonym_token")) {
-                if (cfg.anonym_token.empty()) {
-                    cfg.anonym_token = json["anonym_token"].get<std::string>();
-                }
-            }
-            if (json.contains("anonym_ca_key")) {
-                if (cfg.anonym_ca_key.empty()) {
-                    cfg.anonym_ca_key = resolve_cfg_path(json["anonym_ca_key"].get<std::string>());
-                }
-            }
-            if (json.contains("anonym_ca_cert")) {
-                if (cfg.anonym_ca_cert.empty()) {
-                    cfg.anonym_ca_cert = resolve_cfg_path(json["anonym_ca_cert"].get<std::string>());
-                }
-            }
-            if (json.contains("anonym_sub_key")) {
-                if (cfg.anonym_sub_key.empty()) {
-                    cfg.anonym_sub_key = resolve_cfg_path(json["anonym_sub_key"].get<std::string>());
-                }
-            }
-            if (json.contains("anonym_sub_cert")) {
-                if (cfg.anonym_sub_cert.empty()) {
-                    cfg.anonym_sub_cert = resolve_cfg_path(json["anonym_sub_cert"].get<std::string>());
-                }
-            }
-            if (json.contains("server_name") && cfg.server_name.empty()) {
-                cfg.server_name = json["server_name"].get<std::string>();
-            }
-            if (json.contains("server_id") && cfg.server_id.empty()) {
-                cfg.server_id = json["server_id"].get<std::string>();
-            }
-            if (json.contains("outbound_proxy") && cfg.outbound_proxy_url.empty()) {
-                cfg.outbound_proxy_url = json["outbound_proxy"].get<std::string>();
-            }
-            if (json.contains("relay_enable") && !relay_enable_override) {
-                cfg.relay_enable = json["relay_enable"].get<bool>();
-            }
-            if (json.contains("directory_enable") && !directory_enable_override) {
-                cfg.directory_enable = json["directory_enable"].get<bool>();
-            }
-            if (json.contains("ipc_enable")) {
-                cfg.ipc_enable = json["ipc_enable"].get<bool>();
-            }
-            if (json.contains("ipc_path") && cfg.ipc_path.empty()) {
-                cfg.ipc_path = resolve_cfg_path(json["ipc_path"].get<std::string>());
-            }
-            if (json.contains("federation_enable") && !cfg.federation_enable) {
-                cfg.federation_enable = json["federation_enable"].get<bool>();
-            }
-            if (json.contains("federation_peers") && cfg.federation_peers.empty()) {
-                for (const auto& peer : json["federation_peers"]) {
-                    cfg.federation_peers.push_back(peer.dump());
-                }
-            }
-            if (json.contains("federation_auth_key") && cfg.federation_auth_key.empty()) {
-                cfg.federation_auth_key = resolve_cfg_path(json["federation_auth_key"].get<std::string>());
-            }
-            if (json.contains("federation_anonym_ca") && cfg.federation_anonym_ca.empty()) {
-                cfg.federation_anonym_ca = resolve_cfg_path(json["federation_anonym_ca"].get<std::string>());
-            }
-            if (json.contains("operator_keys") && cfg.operator_keys.empty()) {
-                cfg.operator_keys = resolve_cfg_path(json["operator_keys"].get<std::string>());
-            }
-            if (json.contains("operator_keys_meta") && cfg.operator_keys_meta.empty()) {
-                cfg.operator_keys_meta = resolve_cfg_path(json["operator_keys_meta"].get<std::string>());
-            }
-        } catch (const std::exception& ex) {
-            yume::util::log_error(std::string("config load failed: ") + ex.what());
-            return 1;
-        }
+    ServerConfigOverrides config_overrides;
+    config_overrides.inner_crypto = inner_crypto_override;
+    config_overrides.inner_dual = inner_dual_override;
+    config_overrides.inner_required = inner_required_override;
+    config_overrides.inner_hop = inner_hop_override;
+    config_overrides.hop_interval = hop_interval_override;
+    config_overrides.anonym = anonym_override;
+    config_overrides.anonym_proof_mode = anonym_proof_mode_override;
+    config_overrides.pq_auto_generate = pq_auto_generate_override;
+    config_overrides.allow_embedded_master = allow_embedded_master_override;
+    config_overrides.tls_handshake_timeout = tls_handshake_timeout_override;
+    config_overrides.max_sessions = max_sessions_override;
+    config_overrides.accept_rate_limit = accept_rate_limit_override;
+    config_overrides.egress_mbps = egress_mbps_override;
+    config_overrides.client_filter_mode = client_filter_mode_override;
+    config_overrides.egress_filter_mode = egress_filter_mode_override;
+    config_overrides.filter_geolite = filter_geolite_override;
+    config_overrides.filter_memory_mib = filter_memory_mib_override;
+    config_overrides.packet_egress = packet_egress_override;
+    config_overrides.packet_tun_name = packet_tun_name_override;
+    config_overrides.packet_cidr = packet_cidr_override;
+    config_overrides.packet_mtu = packet_mtu_override;
+    config_overrides.relay_enable = relay_enable_override;
+    config_overrides.directory_enable = directory_enable_override;
+
+    if (!load_server_config_file_and_resolve_paths(cfg, config_context, config_overrides)) {
+        return 1;
     }
-    if (!cfg.tls_cert.empty()) {
-        cfg.tls_cert = resolve_cfg_path(cfg.tls_cert);
-    }
-    if (!cfg.tls_key.empty()) {
-        cfg.tls_key = resolve_cfg_path(cfg.tls_key);
-    }
-    if (!cfg.auth_keys.empty()) {
-        cfg.auth_keys = resolve_cfg_path(cfg.auth_keys);
-    }
-    if (!cfg.pq_private_key.empty()) {
-        cfg.pq_private_key = resolve_cfg_path(cfg.pq_private_key);
-    }
-    if (!cfg.real_index_path.empty()) {
-        cfg.real_index_path = resolve_cfg_path(cfg.real_index_path);
-    }
-    if (!cfg.real_secret_file.empty()) {
-        cfg.real_secret_file = resolve_cfg_path(cfg.real_secret_file);
-    }
-    if (!cfg.anonym_ca_key.empty()) {
-        cfg.anonym_ca_key = resolve_cfg_path(cfg.anonym_ca_key);
-    }
-    if (!cfg.anonym_ca_cert.empty()) {
-        cfg.anonym_ca_cert = resolve_cfg_path(cfg.anonym_ca_cert);
-    }
-    if (!cfg.anonym_sub_key.empty()) {
-        cfg.anonym_sub_key = resolve_cfg_path(cfg.anonym_sub_key);
-    }
-    if (!cfg.anonym_sub_cert.empty()) {
-        cfg.anonym_sub_cert = resolve_cfg_path(cfg.anonym_sub_cert);
-    }
-    if (!cfg.operator_keys.empty()) {
-        cfg.operator_keys = resolve_cfg_path(cfg.operator_keys);
-    }
-    if (!cfg.operator_keys_meta.empty()) {
-        cfg.operator_keys_meta = resolve_cfg_path(cfg.operator_keys_meta);
-    }
-    if (!cfg.federation_auth_key.empty()) {
-        cfg.federation_auth_key = resolve_cfg_path(cfg.federation_auth_key);
-    }
-    if (!cfg.federation_anonym_ca.empty()) {
-        cfg.federation_anonym_ca = resolve_cfg_path(cfg.federation_anonym_ca);
-    }
-    if (!cfg.filter_geolite.empty()) {
-        cfg.filter_geolite = resolve_cfg_path(cfg.filter_geolite);
-    }
-    for (auto& spec : cfg.filter_lists) {
-        spec = resolve_filter_list_spec_path(spec, config_dir, exe_dir);
-    }
+    config_path = config_context.config_path;
     if (cfg.dns_server.empty()) {
         const char* dns_env = std::getenv("YUME_DNS_SERVER");
         if (dns_env && *dns_env) {

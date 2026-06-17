@@ -408,6 +408,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         main_server.cpp
         server/cli/anonym.cpp
         server/cli/cluster.cpp
+        server/cli/config_load.cpp
         server/cli/key.cpp
         server/cli/local.cpp
         server/cli/misc.cpp

@@ -3,13 +3,23 @@ Upstream-Name: yume
 Source: https://github.com/F1xGOD/yume
 Files-Excluded:
  basefwx
+ basefwx/*
  build
- build-*
+ build/*
+ build-*/*
+ .claude
+ .codex
+ .wrangler
+ [local-only development file removed]
+ [local-only development file removed]
+ DEV_services
  vendor
- third_party
- third_party/prebuilt/yume-vendor-prebuilt.tar.xz
- crashed.log
- example.log
+ vendor/*
+ third_party/*
+ *.log
+ *.trace
+ *.out
+ *.tar.xz
  scripts/__pycache__
  *.pyc
 
@@ -20,6 +30,76 @@ License: GPL-3
 Files: debian/*
 Copyright: 2026 FixCraft Inc.
 License: GPL-3
+
+Files: src/gui/third_party/nanosvg/*
+Copyright:
+ 2013-2014 Mikko Mononen <memon@inside.org>
+ 2002-2004 Maxim Shemanarev
+License: Zlib
+ This software is provided 'as-is', without any express or implied warranty.
+ In no event will the authors be held liable for any damages arising from the
+ use of this software.
+ .
+ Permission is granted to anyone to use this software for any purpose,
+ including commercial applications, and to alter it and redistribute it freely,
+ subject to the following restrictions:
+ .
+ 1. The origin of this software must not be misrepresented; you must not claim
+    that you wrote the original software. If you use this software in a
+    product, an acknowledgment in the product documentation would be
+    appreciated but is not required.
+ 2. Altered source versions must be plainly marked as such, and must not be
+    misrepresented as being the original software.
+ 3. This notice may not be removed or altered from any source distribution.
+
+Files: src/gui/third_party/stb/stb_image_write.h
+Copyright: 2010-2015 Sean Barrett
+License: public-domain
+ This file states that stb_image_write is public domain. It is provided with
+ no warranty implied and used at your own risk.
+
+Files:
+ src/gui/assets/fonts/Jost-Regular.ttf
+ src/gui/assets/fonts/LICENSE-Jost.txt
+Copyright: 2020 The Jost Project Authors
+License: OFL-1.1
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of the Font Software, to use, study, copy, merge, embed, modify, redistribute,
+ and sell modified and unmodified copies of the Font Software, subject to the
+ following conditions:
+ .
+ 1. Neither the Font Software nor any of its individual components, in Original
+    or Modified Versions, may be sold by itself.
+ .
+ 2. Original or Modified Versions of the Font Software may be bundled,
+    redistributed and/or sold with any software, provided that each copy
+    contains the above copyright notice and this license. These can be included
+    either as stand-alone text files, human-readable headers or in the
+    appropriate machine-readable metadata fields within text or binary files as
+    long as those fields can be easily viewed by the user.
+ .
+ 4. The name(s) of the Copyright Holder(s) or the Author(s) of the Font
+    Software shall not be used to promote, endorse or advertise any Modified
+    Version, except to acknowledge the contribution(s) of the Copyright
+    Holder(s) and the Author(s) or with their explicit written permission.
+ .
+ 5. The Font Software, modified or unmodified, in part or in whole, must be
+    distributed entirely under this license, and must not be distributed under
+    any other license. The requirement for fonts to remain under this license
+    does not apply to any document created using the Font Software.
+ .
+ TERMINATION: This license becomes null and void if any of the above
+ conditions are not met.
+ .
+ DISCLAIMER: The Font Software is provided "as is", without warranty of any
+ kind, express or implied, including but not limited to any warranties of
+ merchantability, fitness for a particular purpose and noninfringement of
+ copyright, patent, trademark, or other right. In no event shall the Copyright
+ Holder be liable for any claim, damages or other liability, including any
+ general, special, indirect, incidental, or consequential damages, whether in an
+ action of contract, tort or otherwise, arising from, out of the use or
+ inability to use the Font Software or from other dealings in the Font
+ Software.
 
 License: GPL-3
  This package is free software; you can redistribute it and/or modify it

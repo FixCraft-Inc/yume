@@ -6,7 +6,7 @@ for portable upstream builds:
 
 * basefwx/
 * vendor/
-* third_party/
+* top-level third_party/
 
 These are excluded from the Debian source package through Files-Excluded in
 debian/copyright. Debian builds must not download dependencies during package

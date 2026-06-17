@@ -27,19 +27,26 @@ cd "${repo_root}"
 find . -mindepth 1 \
   \( -path './.git' \
      -o -path './.claude' \
+     -o -path './.codex' \
+     -o -path './.wrangler' \
      -o -path './basefwx' \
      -o -path './build' \
      -o -path './build-*' \
      -o -path './debian' \
+     -o -path './DEV_services' \
      -o -path './obj-*' \
      -o -path './third_party' \
      -o -path './vendor' \
      -o -path './website/.jekyll-cache' \
      -o -path './scripts/__pycache__' \) -prune \
   -o \( -name '*.pyc' \
+        -o -name '*.log' \
+        -o -name '*.trace' \
+        -o -name '*.out' \
+        -o -name '*.tar.xz' \
         -o -name '.DS_Store' \
-        -o -name 'crashed.log' \
-        -o -name 'example.log' \ \) -prune \
+        -o -name '[local-only development file removed]' \
+        -o -name '[local-only development file removed]' \) -prune \
   -o -print0 \
   | LC_ALL=C sort -z \
   | tar --null --no-recursion --files-from - \

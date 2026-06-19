@@ -641,6 +641,23 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    if (key_command.ui) {
+        auto result = run_server_manager_ui(cfg, key_command);
+        if (result.handled) {
+            return result.exit_code;
+        }
+    }
+    if (key_command.has_action()) {
+        auto result = run_server_key_command(cfg, key_command);
+        if (result.handled) {
+            return result.exit_code;
+        }
+    }
+
+    if (prepare_server_runtime_files(cfg, argv[0], false) != 0) {
+        return 1;
+    }
+
     std::atomic<long long> anonym_last_ts{0};
     const char* anonym_local_sign_env = std::getenv("YUME_ANONYM_LOCAL_SIGN");
     const bool anonym_local_sign =

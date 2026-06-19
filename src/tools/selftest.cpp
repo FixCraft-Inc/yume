@@ -573,6 +573,7 @@ std::string render_json(const Args& args, const std::vector<Result>& results, co
 }  // namespace
 
 int main(int argc, char** argv) {
+    std::unique_ptr<TempDir> tmp;
     try {
         Args args = parse_args(argc, argv);
         if (args.list_configs) {
@@ -589,25 +590,25 @@ int main(int argc, char** argv) {
             throw std::runtime_error("openssl is required on PATH for temporary TLS/key material");
         }
 
-        TempDir tmp(args.keep_workdir);
+        tmp = std::make_unique<TempDir>(args.keep_workdir);
         EchoServer echo;
         echo.set_sink(args.one_way);
         const int echo_port = echo.start();
-        Keyset ks = generate_keyset(args, tmp.path());
+        Keyset ks = generate_keyset(args, tmp->path());
         const auto configs = select_configs(args);
 
         std::vector<Result> results;
         results.reserve(configs.size());
         for (const auto& cfg : configs) {
             std::cerr << "[selftest] " << cfg.name << ": " << cfg.description << "\n";
-            Result result = run_config(args, ks, cfg, tmp.path(), echo_port);
-            if (!result.ok) tmp.keep();
+            Result result = run_config(args, ks, cfg, tmp->path(), echo_port);
+            if (!result.ok) tmp->keep();
             results.push_back(std::move(result));
         }
         echo.stop();
 
         render_table(results);
-        const std::string json = render_json(args, results, tmp.path());
+        const std::string json = render_json(args, results, tmp->path());
         if (!args.json_path.empty()) {
             write_text(args.json_path, json);
             std::cerr << "[selftest] wrote JSON " << args.json_path << "\n";
@@ -618,12 +619,16 @@ int main(int argc, char** argv) {
 
         const bool all_ok = std::all_of(results.begin(), results.end(), [](const Result& r) { return r.ok; });
         if (!all_ok) {
-            tmp.keep();
-            std::cerr << "[selftest] logs kept in " << tmp.path() << "\n";
+            tmp->keep();
+            std::cerr << "[selftest] logs kept in " << tmp->path() << "\n";
         }
         return all_ok ? 0 : 1;
     } catch (const std::exception& ex) {
         std::cerr << "yume-selftest: " << ex.what() << "\n";
+        if (tmp) {
+            tmp->keep();
+            std::cerr << "[selftest] logs kept in " << tmp->path() << "\n";
+        }
         return 2;
     }
 }

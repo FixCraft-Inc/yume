@@ -589,22 +589,6 @@ void TransportCore::dispatch_next_write() {
     std::vector<PendingWrite> batch;
     WriteHandler writer;
     {
-        std::lock_guard<std::mutex> write_lock(write_mu_);
-        if (write_queue_.empty()) {
-            write_in_flight_ = false;
-            return;
-        }
-        std::size_t total_bytes = 0;
-        for (auto it = write_queue_.begin();
-             it != write_queue_.end() &&
-             batch.size() < kMaxWriteBatchFrames &&
-             total_bytes < kMaxWriteBatchBytes;
-             ++it) {
-            batch.push_back(*it);
-            total_bytes += it->frame.payload.size() + 8;
-        }
-    }
-    {
         std::lock_guard<std::mutex> state_lock(state_mu_);
         if (stopped_) {
             return;
@@ -614,6 +598,22 @@ void TransportCore::dispatch_next_write() {
     if (!writer) {
         request_transport_close("transport writer unavailable");
         return;
+    }
+
+    {
+        std::lock_guard<std::mutex> write_lock(write_mu_);
+        if (write_queue_.empty()) {
+            write_in_flight_ = false;
+            return;
+        }
+        std::size_t total_bytes = 0;
+        while (!write_queue_.empty() &&
+               batch.size() < kMaxWriteBatchFrames &&
+               total_bytes < kMaxWriteBatchBytes) {
+            total_bytes += write_queue_.front().frame.payload.size() + 8;
+            batch.push_back(std::move(write_queue_.front()));
+            write_queue_.pop_front();
+        }
     }
 
     std::shared_ptr<Bytes> encoded;
@@ -655,23 +655,15 @@ void TransportCore::dispatch_next_write() {
                         std::size_t bytes,
                         const std::string& error) mutable {
         bool dispatch = false;
-        bool queue_empty = true;
+        const bool stopped = is_stopped();
         {
             std::lock_guard<std::mutex> write_lock(write_mu_);
-            std::size_t popped = 0;
-            while (popped < batch.size() && !write_queue_.empty()) {
-                write_queue_.pop_front();
-                ++popped;
+            if (!ok || stopped || write_queue_.empty()) {
+                write_in_flight_ = false;
+            } else {
+                write_in_flight_ = true;
+                dispatch = true;
             }
-            queue_empty = write_queue_.empty();
-            write_in_flight_ = !queue_empty;
-        }
-        const bool stopped = is_stopped();
-        if (queue_empty || !ok || stopped) {
-            std::lock_guard<std::mutex> write_lock(write_mu_);
-            write_in_flight_ = false;
-        } else {
-            dispatch = true;
         }
         for (std::size_t i = 0; i < batch.size(); ++i) {
             auto& item = batch[i];

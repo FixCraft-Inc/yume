@@ -239,6 +239,12 @@ ParsedArgs parse_args(int argc, char** argv) {
             }
             args.bench = true;
             args.non_interactive = true;
+        } else if (arg == "--bench-streams") {
+            if (!parse_int_value("--bench-streams", args.bench_streams)) {
+                return args;
+            }
+            args.bench = true;
+            args.non_interactive = true;
         } else if (arg == "--bench-direction") {
             const char* direction = take_value("--bench-direction");
             if (!direction) {

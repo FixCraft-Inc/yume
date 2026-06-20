@@ -60,6 +60,30 @@ namespace yume::server {
 
 using namespace detail;
 
+namespace {
+
+int frame_write_priority(uint8_t frame_type, std::size_t payload_size) {
+    switch (frame_type) {
+        case protocol::PING:
+        case protocol::PONG:
+        case protocol::CONTROL:
+            return 0;
+        case protocol::OPEN:
+        case protocol::CLOSE:
+        case protocol::RLISTEN:
+        case protocol::ROPEN:
+        case protocol::SOPEN:
+        case protocol::EXEC:
+            return 1;
+        case protocol::DATA:
+            return payload_size <= 4096 ? 2 : 3;
+        default:
+            return 4;
+    }
+}
+
+}  // namespace
+
 void Session::start_remote_read(uint8_t stream_id) {
     std::shared_ptr<RemoteStream> remote;
     {
@@ -453,8 +477,13 @@ void Session::async_write_frame(const protocol::Frame& frame,
         frame.payload,
         cfg_.obfs_pad_multiple));
 
-    boost::asio::post(strand_, [self = shared_from_this(), data, handler = std::move(handler)]() mutable {
-        self->queue_encoded_write_on_strand(data, std::move(handler));
+    boost::asio::post(strand_, [self = shared_from_this(),
+                                data,
+                                frame_type = frame.header.type,
+                                stream_id = frame.header.stream_id,
+                                payload_size = frame.payload.size(),
+                                handler = std::move(handler)]() mutable {
+        self->queue_encoded_write_on_strand(data, frame_type, stream_id, payload_size, std::move(handler));
     });
 }
 
@@ -466,11 +495,18 @@ void Session::queue_frame_on_strand(const protocol::Frame& frame,
         frame.header.flags,
         frame.payload,
         cfg_.obfs_pad_multiple));
-    queue_encoded_write_on_strand(std::move(data), std::move(handler));
+    queue_encoded_write_on_strand(std::move(data),
+                                  frame.header.type,
+                                  frame.header.stream_id,
+                                  frame.payload.size(),
+                                  std::move(handler));
 }
 
 void Session::queue_encoded_write_on_strand(
     std::shared_ptr<std::vector<uint8_t>> data,
+    uint8_t frame_type,
+    uint8_t stream_id,
+    std::size_t payload_size,
     std::function<void(const boost::system::error_code&, std::size_t)> handler) {
     if (close_state_ != CloseState::Open) {
         if (handler) {
@@ -490,7 +526,7 @@ void Session::queue_encoded_write_on_strand(
         return;
     }
 
-    write_queue_.push_back({std::move(data), std::move(handler)});
+    write_queue_.push_back({std::move(data), frame_type, stream_id, payload_size, std::move(handler)});
     write_queue_depth_++;
     if (!write_in_flight_) {
         do_write();
@@ -548,6 +584,56 @@ void Session::maybe_resume_inbound_reads_on_strand() {
     }
 }
 
+std::deque<Session::PendingWrite>::iterator Session::select_next_write_on_strand(
+    std::size_t current_batch_bytes,
+    const std::unordered_set<uint8_t>& batch_streams) {
+    auto select = [&](bool allow_already_selected_stream) {
+        auto best = write_queue_.end();
+        int best_priority = 999;
+        std::size_t best_size = 0;
+        std::size_t best_index = 0;
+        std::size_t index = 0;
+        for (auto it = write_queue_.begin(); it != write_queue_.end(); ++it, ++index) {
+            const std::size_t estimated_size = it->data ? it->data->size() : it->payload_size + 8U;
+            if (current_batch_bytes > 0 && current_batch_bytes + estimated_size > kMaxWriteBatchBytes) {
+                continue;
+            }
+            if (!allow_already_selected_stream && batch_streams.count(it->stream_id) != 0) {
+                continue;
+            }
+
+            bool blocked_by_same_stream = false;
+            for (auto prior = write_queue_.begin(); prior != it; ++prior) {
+                if (prior->stream_id == it->stream_id) {
+                    blocked_by_same_stream = true;
+                    break;
+                }
+            }
+            if (blocked_by_same_stream) {
+                continue;
+            }
+
+            const int priority = frame_write_priority(it->frame_type, it->payload_size);
+            if (best == write_queue_.end() ||
+                priority < best_priority ||
+                (priority == best_priority && estimated_size < best_size) ||
+                (priority == best_priority && estimated_size == best_size && index < best_index)) {
+                best = it;
+                best_priority = priority;
+                best_size = estimated_size;
+                best_index = index;
+            }
+        }
+        return best;
+    };
+
+    auto it = select(false);
+    if (it == write_queue_.end()) {
+        it = select(true);
+    }
+    return it;
+}
+
 void Session::do_write() {
     if (write_queue_.empty()) {
         write_in_flight_ = false;
@@ -558,14 +644,19 @@ void Session::do_write() {
     }
     write_in_flight_ = true;
 
+    std::vector<PendingWrite> batch;
     std::size_t batch_count = 0;
     std::size_t total_bytes = 0;
-    for (auto it = write_queue_.begin();
-         it != write_queue_.end() &&
-         batch_count < kMaxWriteBatchFrames &&
-         total_bytes < kMaxWriteBatchBytes;
-         ++it) {
+    std::unordered_set<uint8_t> batch_streams;
+    while (!write_queue_.empty() && batch_count < kMaxWriteBatchFrames) {
+        auto it = select_next_write_on_strand(total_bytes, batch_streams);
+        if (it == write_queue_.end()) {
+            break;
+        }
         total_bytes += it->data ? it->data->size() : 0;
+        batch_streams.insert(it->stream_id);
+        batch.push_back(std::move(*it));
+        write_queue_.erase(it);
         ++batch_count;
     }
     if (batch_count == 0) {
@@ -575,38 +666,32 @@ void Session::do_write() {
 
     std::shared_ptr<std::vector<uint8_t>> batch_data;
     if (batch_count == 1) {
-        batch_data = write_queue_.front().data;
+        batch_data = batch.front().data;
     } else {
         batch_data = std::make_shared<std::vector<uint8_t>>();
         batch_data->reserve(total_bytes);
-        std::size_t copied = 0;
-        for (auto it = write_queue_.begin(); it != write_queue_.end() && copied < batch_count; ++it, ++copied) {
-            if (it->data && !it->data->empty()) {
-                batch_data->insert(batch_data->end(), it->data->begin(), it->data->end());
+        for (const auto& item : batch) {
+            if (item.data && !item.data->empty()) {
+                batch_data->insert(batch_data->end(), item.data->begin(), item.data->end());
             }
         }
     }
 
     auto self = shared_from_this();
-    auto on_complete = [self, batch_data, batch_count](const boost::system::error_code& ec,
-                                                       std::size_t bytes) {
-        std::vector<PendingWrite> completed;
-        completed.reserve(batch_count);
-        std::size_t popped = 0;
-        while (popped < batch_count && !self->write_queue_.empty()) {
-            completed.push_back(std::move(self->write_queue_.front()));
-            self->write_queue_.pop_front();
-            ++popped;
-        }
-        if (self->write_queue_depth_ >= popped) {
-            self->write_queue_depth_ -= static_cast<uint32_t>(popped);
+    auto on_complete = [self,
+                        batch_data,
+                        batch = std::move(batch),
+                        batch_count](const boost::system::error_code& ec,
+                                     std::size_t bytes) mutable {
+        if (self->write_queue_depth_ >= batch_count) {
+            self->write_queue_depth_ -= static_cast<uint32_t>(batch_count);
         } else {
             self->write_queue_depth_ = 0;
         }
         if (!ec) {
             self->maybe_resume_inbound_reads_on_strand();
         }
-        for (auto& item : completed) {
+        for (auto& item : batch) {
             if (item.handler) {
                 const std::size_t item_bytes = (!ec && item.data) ? item.data->size() : bytes;
                 item.handler(ec, item_bytes);

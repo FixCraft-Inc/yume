@@ -65,6 +65,8 @@ public:
     void send_federated_close(uint8_t stream_id, const std::string& reason);
 
 private:
+    struct PendingWrite;
+
     void on_handshake(const boost::system::error_code& ec);
     void start_preface_read();
     void on_preface_read(const boost::system::error_code& ec, std::size_t bytes);
@@ -152,7 +154,13 @@ private:
                                std::function<void(const boost::system::error_code&, std::size_t)> handler = {});
     void queue_encoded_write_on_strand(
         std::shared_ptr<std::vector<uint8_t>> data,
+        uint8_t frame_type,
+        uint8_t stream_id,
+        std::size_t payload_size,
         std::function<void(const boost::system::error_code&, std::size_t)> handler = {});
+    std::deque<PendingWrite>::iterator select_next_write_on_strand(
+        std::size_t current_batch_bytes,
+        const std::unordered_set<uint8_t>& batch_streams);
     void do_write();
     std::chrono::milliseconds reserve_egress_delay(std::size_t bytes) const;
     bool should_pause_inbound_reads_on_strand() const;
@@ -368,6 +376,9 @@ private:
 
     struct PendingWrite {
         std::shared_ptr<std::vector<uint8_t>> data;
+        uint8_t frame_type{0};
+        uint8_t stream_id{0};
+        std::size_t payload_size{0};
         std::function<void(const boost::system::error_code&, std::size_t)> handler;
     };
 

@@ -23,6 +23,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <system_error>
+#include <utility>
 
 #if defined(_WIN32)
 #error "yume-selftest currently supports POSIX desktop hosts only"
@@ -144,6 +145,39 @@ void recv_exact(int fd, void* data, std::size_t len) {
             throw std::runtime_error("recv failed");
         }
         got += static_cast<std::size_t>(n);
+    }
+}
+
+FileDescriptor tcp_connect(int port);
+FileDescriptor socks5_connect(int socks_port, int target_port);
+
+std::vector<std::size_t> split_total_bytes(std::size_t total, int streams) {
+    const int n = std::max(1, streams);
+    std::vector<std::size_t> out(static_cast<std::size_t>(n), total / static_cast<std::size_t>(n));
+    std::size_t remaining = total % static_cast<std::size_t>(n);
+    for (auto& item : out) {
+        if (remaining == 0) {
+            break;
+        }
+        ++item;
+        --remaining;
+    }
+    return out;
+}
+
+std::vector<FileDescriptor> open_bulk_connections(int connect_port, int echo_port, bool via_socks, int streams) {
+    std::vector<FileDescriptor> fds;
+    fds.reserve(static_cast<std::size_t>(std::max(1, streams)));
+    for (int i = 0; i < std::max(1, streams); ++i) {
+        fds.push_back(via_socks ? socks5_connect(connect_port, echo_port) : tcp_connect(echo_port));
+    }
+    return fds;
+}
+
+void store_first_exception(std::exception_ptr ex, std::mutex& mu, std::exception_ptr& first) {
+    std::lock_guard<std::mutex> lock(mu);
+    if (!first) {
+        first = std::move(ex);
     }
 }
 
@@ -621,7 +655,82 @@ LatencyMeasurement measure_latency(int connect_port, int echo_port, int iters, b
     return measurement;
 }
 
-BulkMeasurement measure_bulk_one_way(int connect_port, int echo_port, int mib, bool via_socks) {
+BulkMeasurement measure_bulk_one_way(int connect_port, int echo_port, int mib, bool via_socks, int streams) {
+    if (streams > 1) {
+        const std::size_t total = static_cast<std::size_t>(mib) * 1024u * 1024u;
+        auto targets = split_total_bytes(total, streams);
+        auto fds = open_bulk_connections(connect_port, echo_port, via_socks, streams);
+        const auto payload = random_payload(64 * 1024);
+        std::atomic<bool> start_flag{false};
+        std::vector<double> send_seconds(fds.size(), 0.0);
+        std::vector<double> stream_mib_s(fds.size(), 0.0);
+        std::mutex exception_mu;
+        std::exception_ptr first_exception;
+        const auto start = Clock::now();
+        std::vector<std::thread> workers;
+        workers.reserve(fds.size());
+        for (std::size_t i = 0; i < fds.size(); ++i) {
+            workers.emplace_back([fd = std::move(fds[i]),
+                                  target = targets[i],
+                                  i,
+                                  &payload,
+                                  &start_flag,
+                                  start,
+                                  &send_seconds,
+                                  &stream_mib_s,
+                                  &exception_mu,
+                                  &first_exception]() mutable {
+                try {
+                    while (!start_flag.load(std::memory_order_acquire)) {
+                        std::this_thread::yield();
+                    }
+                    std::size_t sent = 0;
+                    while (sent < target) {
+                        const std::size_t chunk = std::min<std::size_t>(payload.size(), target - sent);
+                        send_all(fd.get(), payload.data(), chunk);
+                        sent += chunk;
+                    }
+                    const auto send_done = Clock::now();
+                    ::shutdown(fd.get(), SHUT_WR);
+                    unsigned char ack[8]{};
+                    recv_exact(fd.get(), ack, sizeof(ack));
+                    const auto end = Clock::now();
+                    std::uint64_t drained = 0;
+                    for (int j = 0; j < 8; ++j) {
+                        drained = (drained << 8) | ack[j];
+                    }
+                    if (drained != target) {
+                        throw std::runtime_error("one-way stream drained " + std::to_string(drained) +
+                                                 " != " + std::to_string(target));
+                    }
+                    send_seconds[i] = elapsed_s(start, send_done);
+                    const double seconds = std::max(elapsed_s(start, end), 0.000001);
+                    stream_mib_s[i] = (static_cast<double>(target) / (1024.0 * 1024.0)) / seconds;
+                } catch (...) {
+                    store_first_exception(std::current_exception(), exception_mu, first_exception);
+                }
+            });
+        }
+        start_flag.store(true, std::memory_order_release);
+        for (auto& worker : workers) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
+        if (first_exception) {
+            std::rethrow_exception(first_exception);
+        }
+        const auto end = Clock::now();
+        BulkMeasurement measurement;
+        measurement.streams = static_cast<int>(fds.size());
+        measurement.total_s = elapsed_s(start, end);
+        measurement.send_s = send_seconds.empty() ? 0.0 : *std::max_element(send_seconds.begin(), send_seconds.end());
+        measurement.mib_s = (static_cast<double>(total) / (1024.0 * 1024.0)) /
+                            std::max(measurement.total_s, 0.000001);
+        measurement.per_stream_mib_s = compute_stats(std::move(stream_mib_s));
+        return measurement;
+    }
+
     FileDescriptor fd = via_socks ? socks5_connect(connect_port, echo_port) : tcp_connect(echo_port);
     const std::size_t total = static_cast<std::size_t>(mib) * 1024u * 1024u;
     const auto payload = random_payload(64 * 1024);
@@ -651,10 +760,94 @@ BulkMeasurement measure_bulk_one_way(int connect_port, int echo_port, int mib, b
     measurement.send_s = elapsed_s(start, send_done);
     measurement.mib_s = (static_cast<double>(total) / (1024.0 * 1024.0)) /
                         std::max(measurement.total_s, 0.000001);
+    measurement.streams = 1;
+    measurement.per_stream_mib_s = compute_stats({measurement.mib_s});
     return measurement;
 }
 
-BulkMeasurement measure_bulk(int connect_port, int echo_port, int mib, bool via_socks) {
+BulkMeasurement measure_bulk(int connect_port, int echo_port, int mib, bool via_socks, int streams) {
+    if (streams > 1) {
+        const std::size_t total = static_cast<std::size_t>(mib) * 1024u * 1024u;
+        auto targets = split_total_bytes(total, streams);
+        auto fds = open_bulk_connections(connect_port, echo_port, via_socks, streams);
+        const auto payload = random_payload(64 * 1024);
+        std::atomic<bool> start_flag{false};
+        std::vector<double> send_seconds(fds.size(), 0.0);
+        std::vector<double> stream_mib_s(fds.size(), 0.0);
+        std::mutex exception_mu;
+        std::exception_ptr first_exception;
+        const auto start = Clock::now();
+        std::vector<std::thread> workers;
+        workers.reserve(fds.size());
+        for (std::size_t i = 0; i < fds.size(); ++i) {
+            workers.emplace_back([fd = std::move(fds[i]),
+                                  target = targets[i],
+                                  i,
+                                  &payload,
+                                  &start_flag,
+                                  start,
+                                  &send_seconds,
+                                  &stream_mib_s,
+                                  &exception_mu,
+                                  &first_exception]() mutable {
+                try {
+                    while (!start_flag.load(std::memory_order_acquire)) {
+                        std::this_thread::yield();
+                    }
+                    std::atomic<std::size_t> received{0};
+                    std::atomic<bool> reader_failed{false};
+                    std::thread reader([&] {
+                        std::vector<unsigned char> buf(64 * 1024);
+                        while (received.load() < target) {
+                            const std::size_t want = std::min<std::size_t>(buf.size(), target - received.load());
+                            const ssize_t n = ::recv(fd.get(), buf.data(), want, 0);
+                            if (n <= 0) {
+                                reader_failed.store(true);
+                                return;
+                            }
+                            received.fetch_add(static_cast<std::size_t>(n));
+                        }
+                    });
+                    std::size_t sent = 0;
+                    while (sent < target) {
+                        const std::size_t chunk = std::min<std::size_t>(payload.size(), target - sent);
+                        send_all(fd.get(), payload.data(), chunk);
+                        sent += chunk;
+                    }
+                    const auto send_done = Clock::now();
+                    reader.join();
+                    const auto end = Clock::now();
+                    if (reader_failed.load() || received.load() != target) {
+                        throw std::runtime_error("bulk echo stream did not complete");
+                    }
+                    send_seconds[i] = elapsed_s(start, send_done);
+                    const double seconds = std::max(elapsed_s(start, end), 0.000001);
+                    stream_mib_s[i] = (static_cast<double>(target) / (1024.0 * 1024.0)) / seconds;
+                } catch (...) {
+                    store_first_exception(std::current_exception(), exception_mu, first_exception);
+                }
+            });
+        }
+        start_flag.store(true, std::memory_order_release);
+        for (auto& worker : workers) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
+        if (first_exception) {
+            std::rethrow_exception(first_exception);
+        }
+        const auto end = Clock::now();
+        BulkMeasurement measurement;
+        measurement.streams = static_cast<int>(fds.size());
+        measurement.total_s = elapsed_s(start, end);
+        measurement.send_s = send_seconds.empty() ? 0.0 : *std::max_element(send_seconds.begin(), send_seconds.end());
+        measurement.mib_s = (static_cast<double>(total) / (1024.0 * 1024.0)) /
+                            std::max(measurement.total_s, 0.000001);
+        measurement.per_stream_mib_s = compute_stats(std::move(stream_mib_s));
+        return measurement;
+    }
+
     FileDescriptor fd = via_socks ? socks5_connect(connect_port, echo_port) : tcp_connect(echo_port);
     const std::size_t total = static_cast<std::size_t>(mib) * 1024u * 1024u;
     const auto payload = random_payload(64 * 1024);
@@ -691,6 +884,8 @@ BulkMeasurement measure_bulk(int connect_port, int echo_port, int mib, bool via_
     measurement.send_s = elapsed_s(start, send_done);
     measurement.mib_s = (static_cast<double>(total) / (1024.0 * 1024.0)) /
                         std::max(measurement.total_s, 0.000001);
+    measurement.streams = 1;
+    measurement.per_stream_mib_s = compute_stats({measurement.mib_s});
     return measurement;
 }
 

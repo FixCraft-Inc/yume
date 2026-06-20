@@ -24,6 +24,26 @@ constexpr std::size_t kMaxFramePayloadBytes = 16U * 1024U * 1024U;
 constexpr std::size_t kMaxWriteBatchFrames = 64;
 constexpr std::size_t kMaxWriteBatchBytes = 1024U * 1024U;
 
+int frame_write_priority(const protocol::Frame& frame) {
+    switch (frame.header.type) {
+        case protocol::PING:
+        case protocol::PONG:
+        case protocol::CONTROL:
+            return 0;
+        case protocol::OPEN:
+        case protocol::CLOSE:
+        case protocol::RLISTEN:
+        case protocol::ROPEN:
+        case protocol::SOPEN:
+        case protocol::EXEC:
+            return 1;
+        case protocol::DATA:
+            return frame.payload.size() <= 4096 ? 2 : 3;
+        default:
+            return 4;
+    }
+}
+
 std::string payload_to_string(const std::vector<uint8_t>& payload) {
     return std::string(payload.begin(), payload.end());
 }
@@ -41,6 +61,57 @@ protocol::FrameHeader parse_header(const uint8_t* bytes) {
     return header;
 }
 }  // namespace
+
+std::deque<TransportCore::PendingWrite>::iterator TransportCore::select_next_write_locked(
+    std::size_t current_batch_bytes,
+    const std::unordered_set<uint8_t>& batch_streams) {
+    auto select = [&](bool allow_already_selected_stream) {
+        auto best = write_queue_.end();
+        int best_priority = 999;
+        std::size_t best_size = 0;
+        std::size_t best_index = 0;
+        std::size_t index = 0;
+        for (auto it = write_queue_.begin(); it != write_queue_.end(); ++it, ++index) {
+            const auto& frame = it->frame;
+            const std::size_t estimated_size = frame.payload.size() + 8U;
+            if (current_batch_bytes > 0 && current_batch_bytes + estimated_size > kMaxWriteBatchBytes) {
+                continue;
+            }
+            if (!allow_already_selected_stream && batch_streams.count(frame.header.stream_id) != 0) {
+                continue;
+            }
+
+            bool blocked_by_same_stream = false;
+            for (auto prior = write_queue_.begin(); prior != it; ++prior) {
+                if (prior->frame.header.stream_id == frame.header.stream_id) {
+                    blocked_by_same_stream = true;
+                    break;
+                }
+            }
+            if (blocked_by_same_stream) {
+                continue;
+            }
+
+            const int priority = frame_write_priority(frame);
+            if (best == write_queue_.end() ||
+                priority < best_priority ||
+                (priority == best_priority && estimated_size < best_size) ||
+                (priority == best_priority && estimated_size == best_size && index < best_index)) {
+                best = it;
+                best_priority = priority;
+                best_size = estimated_size;
+                best_index = index;
+            }
+        }
+        return best;
+    };
+
+    auto it = select(false);
+    if (it == write_queue_.end()) {
+        it = select(true);
+    }
+    return it;
+}
 
 TransportCore::TransportCore(WriteHandler write_handler,
                              std::function<void(const std::string&)> close_transport_handler)
@@ -619,12 +690,17 @@ void TransportCore::dispatch_next_write() {
             return;
         }
         std::size_t total_bytes = 0;
-        while (!write_queue_.empty() &&
-               batch.size() < kMaxWriteBatchFrames &&
-               total_bytes < kMaxWriteBatchBytes) {
-            total_bytes += write_queue_.front().frame.payload.size() + 8;
-            batch.push_back(std::move(write_queue_.front()));
-            write_queue_.pop_front();
+        std::unordered_set<uint8_t> batch_streams;
+        while (!write_queue_.empty() && batch.size() < kMaxWriteBatchFrames) {
+            auto it = select_next_write_locked(total_bytes, batch_streams);
+            if (it == write_queue_.end()) {
+                break;
+            }
+            const auto stream_id = it->frame.header.stream_id;
+            total_bytes += it->frame.payload.size() + 8U;
+            batch_streams.insert(stream_id);
+            batch.push_back(std::move(*it));
+            write_queue_.erase(it);
         }
     }
 

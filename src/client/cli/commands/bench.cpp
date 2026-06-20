@@ -6,12 +6,14 @@
 
 #include "client/cli/commands/bench.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <thread>
@@ -44,6 +46,18 @@ struct EndpointBenchResult {
     std::uint64_t server_bytes{0};
     double server_seconds{0.0};
 };
+
+std::vector<std::uint64_t> split_total_bytes(std::uint64_t total, int streams) {
+    const auto count = static_cast<std::size_t>(std::max(1, streams));
+    std::vector<std::uint64_t> out(count, total / count);
+    std::uint64_t remaining = total % count;
+    for (auto& item : out) {
+        if (remaining == 0) break;
+        ++item;
+        --remaining;
+    }
+    return out;
+}
 
 double mib_per_second(std::uint64_t bytes, double seconds) {
     if (seconds <= 0.0) {
@@ -127,7 +141,9 @@ private:
 
 EndpointBenchResult run_endpoint_upload_bench(const std::shared_ptr<Tunnel>& tunnel,
                                               std::uint64_t total_bytes,
-                                              std::size_t chunk_size) {
+                                              std::size_t chunk_size,
+                                              const char* progress_label = "UP",
+                                              std::atomic<std::uint64_t>* aggregate_progress = nullptr) {
     EndpointBenchResult result;
     const uint8_t stream_id = tunnel->reserve_stream_id();
     if (stream_id == 0) {
@@ -191,7 +207,10 @@ EndpointBenchResult run_endpoint_upload_bench(const std::shared_ptr<Tunnel>& tun
     }
 
     const auto start = std::chrono::steady_clock::now();
-    BenchProgressTicker progress("UP", total_bytes, progress_bytes);
+    std::unique_ptr<BenchProgressTicker> progress;
+    if (progress_label && *progress_label) {
+        progress = std::make_unique<BenchProgressTicker>(progress_label, total_bytes, progress_bytes);
+    }
     while (true) {
         std::size_t n = 0;
         std::uint64_t offset = 0;
@@ -233,6 +252,9 @@ EndpointBenchResult run_endpoint_upload_bench(const std::shared_ptr<Tunnel>& tun
             } else {
                 completed_bytes += n;
                 progress_bytes.store(completed_bytes, std::memory_order_relaxed);
+                if (aggregate_progress) {
+                    aggregate_progress->fetch_add(n, std::memory_order_relaxed);
+                }
             }
             cv.notify_all();
         });
@@ -268,7 +290,9 @@ EndpointBenchResult run_endpoint_upload_bench(const std::shared_ptr<Tunnel>& tun
         }
     }
     const auto end = std::chrono::steady_clock::now();
-    progress.stop();
+    if (progress) {
+        progress->stop();
+    }
 
     result.ok = true;
     result.bytes = queued_bytes;
@@ -298,7 +322,9 @@ EndpointBenchResult run_endpoint_upload_bench(const std::shared_ptr<Tunnel>& tun
 }
 
 EndpointBenchResult run_endpoint_download_bench(const std::shared_ptr<Tunnel>& tunnel,
-                                                std::uint64_t total_bytes) {
+                                                std::uint64_t total_bytes,
+                                                const char* progress_label = "DOWN",
+                                                std::atomic<std::uint64_t>* aggregate_progress = nullptr) {
     EndpointBenchResult result;
     const uint8_t stream_id = tunnel->reserve_stream_id();
     if (stream_id == 0) {
@@ -322,6 +348,9 @@ EndpointBenchResult run_endpoint_download_bench(const std::shared_ptr<Tunnel>& t
             std::lock_guard<std::mutex> lock(mu);
             received += static_cast<std::uint64_t>(data.size());
             progress_bytes.store(received, std::memory_order_relaxed);
+            if (aggregate_progress) {
+                aggregate_progress->fetch_add(static_cast<std::uint64_t>(data.size()), std::memory_order_relaxed);
+            }
             cv.notify_all();
         },
         [&](const std::string& reason) {
@@ -360,7 +389,10 @@ EndpointBenchResult run_endpoint_download_bench(const std::shared_ptr<Tunnel>& t
     }
 
     const auto start = std::chrono::steady_clock::now();
-    BenchProgressTicker progress("DOWN", total_bytes, progress_bytes);
+    std::unique_ptr<BenchProgressTicker> progress;
+    if (progress_label && *progress_label) {
+        progress = std::make_unique<BenchProgressTicker>(progress_label, total_bytes, progress_bytes);
+    }
     {
         std::unique_lock<std::mutex> lock(mu);
         std::uint64_t last_received = received;
@@ -377,7 +409,9 @@ EndpointBenchResult run_endpoint_download_bench(const std::shared_ptr<Tunnel>& t
         }
     }
     const auto end = std::chrono::steady_clock::now();
-    progress.stop();
+    if (progress) {
+        progress->stop();
+    }
 
     result.ok = true;
     result.bytes = received;
@@ -394,6 +428,87 @@ EndpointBenchResult run_endpoint_download_bench(const std::shared_ptr<Tunnel>& t
     return result;
 }
 
+EndpointBenchResult run_endpoint_upload_bench_many(const std::shared_ptr<Tunnel>& tunnel,
+                                                   std::uint64_t total_bytes,
+                                                   std::size_t chunk_size,
+                                                   int streams) {
+    if (streams <= 1) {
+        return run_endpoint_upload_bench(tunnel, total_bytes, chunk_size);
+    }
+
+    auto parts = split_total_bytes(total_bytes, streams);
+    std::atomic<std::uint64_t> aggregate_progress{0};
+    BenchProgressTicker progress("UP", total_bytes, aggregate_progress);
+    std::vector<EndpointBenchResult> results(parts.size());
+    std::vector<std::thread> workers;
+    workers.reserve(parts.size());
+    const auto start = std::chrono::steady_clock::now();
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        workers.emplace_back([&, i] {
+            results[i] = run_endpoint_upload_bench(tunnel, parts[i], chunk_size, "", &aggregate_progress);
+        });
+    }
+    for (auto& worker : workers) {
+        if (worker.joinable()) worker.join();
+    }
+    const auto end = std::chrono::steady_clock::now();
+    progress.stop();
+
+    EndpointBenchResult aggregate;
+    aggregate.ok = true;
+    aggregate.seconds = std::chrono::duration<double>(end - start).count();
+    for (const auto& result : results) {
+        if (!result.ok) {
+            aggregate.ok = false;
+            aggregate.error = result.error.empty() ? "benchmark upload stream failed" : result.error;
+            return aggregate;
+        }
+        aggregate.bytes += result.bytes;
+        aggregate.server_bytes += result.server_bytes;
+        aggregate.server_seconds = std::max(aggregate.server_seconds, result.server_seconds);
+    }
+    return aggregate;
+}
+
+EndpointBenchResult run_endpoint_download_bench_many(const std::shared_ptr<Tunnel>& tunnel,
+                                                     std::uint64_t total_bytes,
+                                                     int streams) {
+    if (streams <= 1) {
+        return run_endpoint_download_bench(tunnel, total_bytes);
+    }
+
+    auto parts = split_total_bytes(total_bytes, streams);
+    std::atomic<std::uint64_t> aggregate_progress{0};
+    BenchProgressTicker progress("DOWN", total_bytes, aggregate_progress);
+    std::vector<EndpointBenchResult> results(parts.size());
+    std::vector<std::thread> workers;
+    workers.reserve(parts.size());
+    const auto start = std::chrono::steady_clock::now();
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        workers.emplace_back([&, i] {
+            results[i] = run_endpoint_download_bench(tunnel, parts[i], "", &aggregate_progress);
+        });
+    }
+    for (auto& worker : workers) {
+        if (worker.joinable()) worker.join();
+    }
+    const auto end = std::chrono::steady_clock::now();
+    progress.stop();
+
+    EndpointBenchResult aggregate;
+    aggregate.ok = true;
+    aggregate.seconds = std::chrono::duration<double>(end - start).count();
+    for (const auto& result : results) {
+        if (!result.ok) {
+            aggregate.ok = false;
+            aggregate.error = result.error.empty() ? "benchmark download stream failed" : result.error;
+            return aggregate;
+        }
+        aggregate.bytes += result.bytes;
+    }
+    return aggregate;
+}
+
 }  // namespace
 
 int run_endpoint_benchmark(const std::shared_ptr<Tunnel>& tunnel,
@@ -407,12 +522,13 @@ int run_endpoint_benchmark(const std::shared_ptr<Tunnel>& tunnel,
     std::cout << "\nYUME endpoint benchmark\n"
               << "server: " << cfg.server << ":" << cfg.port << "\n"
               << "payload: " << options.bench_mib << " MiB per direction"
-              << ", chunk: " << options.bench_chunk_kib << " KiB\n"
+              << ", chunk: " << options.bench_chunk_kib << " KiB"
+              << ", streams: " << options.bench_streams << "\n"
               << "path: authenticated YUME stream over current TLS/obfs/inner settings\n\n";
 
     if (options.bench_direction == "both" || options.bench_direction == "up") {
         std::cout << "UP:   running upload...\n" << std::flush;
-        auto up = run_endpoint_upload_bench(tunnel, total_bytes, chunk_size);
+        auto up = run_endpoint_upload_bench_many(tunnel, total_bytes, chunk_size, options.bench_streams);
         if (!up.ok) {
             util::log_error("bench upload failed: " + up.error);
             return 1;
@@ -431,7 +547,7 @@ int run_endpoint_benchmark(const std::shared_ptr<Tunnel>& tunnel,
 
     if (options.bench_direction == "both" || options.bench_direction == "down") {
         std::cout << "DOWN: running download...\n" << std::flush;
-        auto down = run_endpoint_download_bench(tunnel, total_bytes);
+        auto down = run_endpoint_download_bench_many(tunnel, total_bytes, options.bench_streams);
         if (!down.ok) {
             util::log_error("bench download failed: " + down.error);
             return 1;

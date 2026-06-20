@@ -142,7 +142,7 @@ void Session::notify_server_shutdown(const std::string& reason) {
                 flags,
                 payload,
                 self->cfg_.obfs_pad_multiple));
-            self->queue_encoded_write_on_strand(data);
+            self->queue_encoded_write_on_strand(data, protocol::CONTROL, 0, payload.size());
 
             crypto::Bytes close_payload(reason.begin(), reason.end());
             uint16_t close_flags = 0;
@@ -156,7 +156,7 @@ void Session::notify_server_shutdown(const std::string& reason) {
                 close_flags,
                 close_payload,
                 self->cfg_.obfs_pad_multiple));
-            self->queue_encoded_write_on_strand(close_frame);
+            self->queue_encoded_write_on_strand(close_frame, protocol::CLOSE, 0, close_payload.size());
         }
         self->close_with_reason(reason);
     });

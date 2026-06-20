@@ -395,6 +395,12 @@ void normalize_client_config_after_overrides(ParsedArgs* args, ClientConfig* cfg
         if (args->bench_chunk_kib > 1024) {
             args->bench_chunk_kib = 1024;
         }
+        if (args->bench_streams <= 0) {
+            args->bench_streams = 1;
+        }
+        if (args->bench_streams > 240) {
+            args->bench_streams = 240;
+        }
         if (!args->socks_port_override) {
             cfg->socks_port = 0;
         }

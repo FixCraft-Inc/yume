@@ -47,6 +47,7 @@ struct Args {
     int server_threads{2};
     int cooldown_ms{500};
     int repeats{1};
+    int streams{1};
     bool one_way{false};
     bool list_configs{false};
     bool keep_workdir{false};
@@ -74,6 +75,7 @@ struct Breakdown {
     double warmup_ms{0.0};
     double bulk_total_s{0.0};
     double bulk_send_s{0.0};
+    int bulk_streams{1};
 };
 
 struct Result {
@@ -99,6 +101,8 @@ struct BulkMeasurement {
     double mib_s{0.0};
     double total_s{0.0};
     double send_s{0.0};
+    int streams{1};
+    Stats per_stream_mib_s;
 };
 
 class TempDir {
@@ -188,8 +192,8 @@ bool wait_for_port(int port, std::chrono::seconds timeout);
 bool has_flag(const std::vector<std::string>& flags, std::string_view flag);
 int pick_free_port();
 LatencyMeasurement measure_latency(int connect_port, int echo_port, int iters, bool via_socks);
-BulkMeasurement measure_bulk_one_way(int connect_port, int echo_port, int mib, bool via_socks);
-BulkMeasurement measure_bulk(int connect_port, int echo_port, int mib, bool via_socks);
+BulkMeasurement measure_bulk_one_way(int connect_port, int echo_port, int mib, bool via_socks, int streams = 1);
+BulkMeasurement measure_bulk(int connect_port, int echo_port, int mib, bool via_socks, int streams = 1);
 void write_text(const std::filesystem::path& path, const std::string& text);
 
 }  // namespace yume::tools::selftest

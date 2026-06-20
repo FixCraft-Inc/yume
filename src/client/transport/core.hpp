@@ -117,6 +117,8 @@ private:
     bool has_stream_id_locked(uint8_t stream_id) const;
     void queue_frame(protocol::Frame frame, WriteCompletion handler = {});
     void dispatch_next_write();
+    std::deque<PendingWrite>::iterator select_next_write_locked(std::size_t current_batch_bytes,
+                                                                const std::unordered_set<uint8_t>& batch_streams);
     std::shared_ptr<Bytes> encode_outgoing_frame(const protocol::Frame& frame);
     void handle_frame(const protocol::Frame& frame);
     Bytes encrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const Bytes& input);

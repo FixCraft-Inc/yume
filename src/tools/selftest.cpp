@@ -118,6 +118,7 @@ void print_help() {
         << "  --argon-mem-kib <N>       Heavy KDF memory cap/env for this run (default 32768)\n"
         << "  --argon-parallelism <N>   Heavy KDF parallelism cap/env (default 2)\n"
         << "  --tunnels <N>             Client TLS tunnel count (default 1)\n"
+        << "  --streams <N>             Concurrent bulk streams per config (default 1)\n"
         << "  --client-threads <N>      Client io threads (0=auto/hw concurrency)\n"
         << "  --server-threads <N>      Server io threads (default 2)\n"
         << "  --cooldown-ms <N>         Pause between configs for fairer sweeps (default 500)\n"
@@ -168,6 +169,8 @@ Args parse_args(int argc, char** argv) {
             args.argon_parallelism = std::max(1, std::stoi(require_value(i, arg)));
         } else if (arg == "--tunnels") {
             args.tunnels = std::max(1, std::stoi(require_value(i, arg)));
+        } else if (arg == "--streams") {
+            args.streams = std::max(1, std::stoi(require_value(i, arg)));
         } else if (arg == "--client-threads") {
             args.client_threads = std::max(0, std::stoi(require_value(i, arg)));
         } else if (arg == "--server-threads") {
@@ -387,11 +390,12 @@ Result run_config(const Args& args,
                 result.breakdown.warmup_ms = latency.warmup_ms;
             }
             BulkMeasurement bulk = args.one_way
-                ? measure_bulk_one_way(0, echo_port, args.bulk_mib, false)
-                : measure_bulk(0, echo_port, args.bulk_mib, false);
+                ? measure_bulk_one_way(0, echo_port, args.bulk_mib, false, args.streams)
+                : measure_bulk(0, echo_port, args.bulk_mib, false, args.streams);
             result.throughput_mib_s = bulk.mib_s;
             result.breakdown.bulk_total_s = bulk.total_s;
             result.breakdown.bulk_send_s = bulk.send_s;
+            result.breakdown.bulk_streams = bulk.streams;
         } else {
             const int yumed_port = pick_free_port();
             const int socks_port = pick_free_port();
@@ -404,11 +408,12 @@ Result run_config(const Args& args,
                 result.breakdown.warmup_ms = latency.warmup_ms;
             }
             BulkMeasurement bulk = args.one_way
-                ? measure_bulk_one_way(socks_port, echo_port, args.bulk_mib, true)
-                : measure_bulk(socks_port, echo_port, args.bulk_mib, true);
+                ? measure_bulk_one_way(socks_port, echo_port, args.bulk_mib, true, args.streams)
+                : measure_bulk(socks_port, echo_port, args.bulk_mib, true, args.streams);
             result.throughput_mib_s = bulk.mib_s;
             result.breakdown.bulk_total_s = bulk.total_s;
             result.breakdown.bulk_send_s = bulk.send_s;
+            result.breakdown.bulk_streams = bulk.streams;
             stack.stop();
         }
         result.ok = true;
@@ -553,6 +558,7 @@ void render_table(const std::vector<Result>& results) {
               << std::setw(10) << "cli ms"
               << std::setw(10) << "conn ms"
               << std::setw(10) << "warm ms"
+              << std::setw(8) << "streams"
               << std::setw(10) << "bulk s"
               << std::setw(10) << "send s"
               << std::setw(9) << "send%"
@@ -573,6 +579,7 @@ void render_table(const std::vector<Result>& results) {
                   << std::setw(10) << r.breakdown.client_socks_ms
                   << std::setw(10) << r.breakdown.connect_ms
                   << std::setw(10) << r.breakdown.warmup_ms
+                  << std::setw(8) << r.breakdown.bulk_streams
                   << std::setprecision(3)
                   << std::setw(10) << r.breakdown.bulk_total_s
                   << std::setw(10) << r.breakdown.bulk_send_s
@@ -639,10 +646,11 @@ std::string json_escape(const std::string& value) {
 std::string render_json(const Args& args, const std::vector<Result>& results, const fs::path& workdir) {
     std::ostringstream out;
     out << "{\n";
-    out << "  \"schema_version\": 3,\n";
+    out << "  \"schema_version\": 4,\n";
     out << "  \"workdir\": \"" << json_escape(workdir.string()) << "\",\n";
     out << "  \"latency_iters\": " << args.latency_iters << ",\n";
     out << "  \"bulk_mib\": " << args.bulk_mib << ",\n";
+    out << "  \"streams\": " << args.streams << ",\n";
     out << "  \"argon_mem_kib\": " << args.argon_mem_kib << ",\n";
     out << "  \"argon_parallelism\": " << args.argon_parallelism << ",\n";
     out << "  \"cooldown_ms\": " << args.cooldown_ms << ",\n";
@@ -687,6 +695,7 @@ std::string render_json(const Args& args, const std::vector<Result>& results, co
         out << "        \"client_socks_ms\": " << r.breakdown.client_socks_ms << ",\n";
         out << "        \"connect_ms\": " << r.breakdown.connect_ms << ",\n";
         out << "        \"warmup_ms\": " << r.breakdown.warmup_ms << ",\n";
+        out << "        \"bulk_streams\": " << r.breakdown.bulk_streams << ",\n";
         out << "        \"bulk_total_s\": " << r.breakdown.bulk_total_s << ",\n";
         out << "        \"bulk_send_s\": " << r.breakdown.bulk_send_s << "\n";
         out << "      },\n";

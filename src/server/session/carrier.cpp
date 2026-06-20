@@ -436,7 +436,8 @@ void Session::start_h2_carrier_probe() {
     auto replies = carrier_decoder_->take_outbound_replies();
     if (!replies.empty()) {
         auto data = std::make_shared<std::vector<uint8_t>>(std::move(replies));
-        queue_encoded_write_on_strand(std::move(data));
+        const auto payload_size = data->size();
+        queue_encoded_write_on_strand(std::move(data), protocol::CONTROL, 0, payload_size);
     }
     auto self = shared_from_this();
     stream_.async_read_some(
@@ -465,7 +466,8 @@ void Session::on_h2_probe_read(const boost::system::error_code& ec, std::size_t 
     auto replies = carrier_decoder_->take_outbound_replies();
     if (!replies.empty()) {
         auto data = std::make_shared<std::vector<uint8_t>>(std::move(replies));
-        queue_encoded_write_on_strand(std::move(data));
+        const auto payload_size = data->size();
+        queue_encoded_write_on_strand(std::move(data), protocol::CONTROL, 0, payload_size);
     }
 
     if (carrier_decoder_->headers_seen()) {
@@ -535,7 +537,8 @@ void Session::on_h2_probe_read(const boost::system::error_code& ec, std::size_t 
 void Session::send_h2_server_handshake_then_continue() {
     crypto::Bytes hello = obfs::encode_server_handshake();
     auto data = std::make_shared<std::vector<uint8_t>>(hello.begin(), hello.end());
-    queue_encoded_write_on_strand(std::move(data));
+    const auto payload_size = data->size();
+    queue_encoded_write_on_strand(std::move(data), protocol::CONTROL, 0, payload_size);
     util::log_info("session " + std::to_string(session_id_) + ": h2 carrier handshake established");
     send_auth_challenge();
 }

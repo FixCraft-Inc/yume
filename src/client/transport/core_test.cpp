@@ -16,14 +16,18 @@ namespace {
 
 struct Recorder {
     std::vector<std::vector<uint8_t>> writes;
+    std::vector<yume::client::TransportCore::WriteCompletion> completions;
     std::string close_reason;
+    bool complete_immediately{true};
 
     yume::client::TransportCore::WriteHandler writer() {
         return [this](std::shared_ptr<std::vector<uint8_t>> data,
                       yume::client::TransportCore::WriteCompletion completion) {
             writes.push_back(*data);
-            if (completion) {
+            if (completion && complete_immediately) {
                 completion(true, data->size(), {});
+            } else if (completion) {
+                completions.push_back(std::move(completion));
             }
         };
     }
@@ -34,6 +38,26 @@ struct Recorder {
         };
     }
 };
+
+std::vector<yume::protocol::Frame> decode_all_frames(const std::vector<uint8_t>& wire) {
+    std::vector<yume::protocol::Frame> out;
+    std::size_t offset = 0;
+    while (offset < wire.size()) {
+        assert(wire.size() - offset >= 8);
+        const uint32_t len =
+            (uint32_t(wire[offset]) << 24) |
+            (uint32_t(wire[offset + 1]) << 16) |
+            (uint32_t(wire[offset + 2]) << 8) |
+            uint32_t(wire[offset + 3]);
+        const std::size_t frame_size = 8U + static_cast<std::size_t>(len);
+        assert(offset + frame_size <= wire.size());
+        std::vector<uint8_t> one(wire.begin() + static_cast<std::ptrdiff_t>(offset),
+                                 wire.begin() + static_cast<std::ptrdiff_t>(offset + frame_size));
+        out.push_back(yume::protocol::decode_frame(one));
+        offset += frame_size;
+    }
+    return out;
+}
 
 void test_open_round_trip() {
     Recorder recorder;
@@ -190,6 +214,44 @@ void test_shutdown_closes_registered_streams() {
     assert(close_reason == "test shutdown");
 }
 
+void test_write_scheduler_prioritizes_control_without_reordering_stream() {
+    Recorder recorder;
+    recorder.complete_immediately = false;
+    yume::client::TransportCore core(recorder.writer(), recorder.closer());
+    core.start();
+
+    core.send_data(1, std::vector<uint8_t>(64 * 1024, 0x11));
+    assert(recorder.writes.size() == 1);
+    assert(recorder.completions.size() == 1);
+
+    core.send_data(5, std::vector<uint8_t>{0x22});
+    core.send_close(5, "done");
+    core.send_control_json({{"cmd", "scheduler.test"}});
+    core.send_data(6, std::vector<uint8_t>(64 * 1024, 0x33));
+    assert(recorder.writes.size() == 1);
+
+    auto completion = std::move(recorder.completions.front());
+    recorder.completions.clear();
+    completion(true, recorder.writes.front().size(), {});
+
+    assert(recorder.writes.size() == 2);
+    const auto frames = decode_all_frames(recorder.writes.back());
+    assert(frames.size() >= 4);
+    assert(frames[0].header.type == yume::protocol::CONTROL);
+
+    std::size_t data5_index = frames.size();
+    std::size_t close5_index = frames.size();
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+        if (frames[i].header.stream_id == 5 && frames[i].header.type == yume::protocol::DATA) {
+            data5_index = i;
+        }
+        if (frames[i].header.stream_id == 5 && frames[i].header.type == yume::protocol::CLOSE) {
+            close5_index = i;
+        }
+    }
+    assert(data5_index < close5_index);
+}
+
 }  // namespace
 
 int main() {
@@ -200,5 +262,6 @@ int main() {
     test_packet_bulk_round_trip();
     test_packet_bulk_rejects_malformed_payload();
     test_shutdown_closes_registered_streams();
+    test_write_scheduler_prioritizes_control_without_reordering_stream();
     return 0;
 }

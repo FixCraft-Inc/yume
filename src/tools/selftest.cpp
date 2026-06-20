@@ -68,14 +68,14 @@ const std::vector<Config>& builtin_configs() {
         },
         {
             "heavy-hop-2hz",
-            "Inner heavy KDF with live hopping every 500 ms.",
+            "All protections: HTTPS/H2 disguise, inner heavy KDF, live hopping every 500 ms.",
             false,
             {"--obfs", "--inner-heavy", "--inner-required", "--hop", "--hop-interval", "500"},
             {"--obfs", "--inner-heavy", "--hop", "--hop-interval", "500"},
         },
         {
             "heavy-no-hop",
-            "Inner heavy KDF with hopping disabled.",
+            "HTTPS/H2 disguise and inner heavy KDF with hopping disabled.",
             false,
             {"--obfs", "--inner-heavy", "--inner-required", "--no-hop"},
             {"--obfs", "--inner-heavy", "--no-hop"},
@@ -112,7 +112,7 @@ void print_help() {
         << "Options:\n"
         << "  --yume <path>             yume binary (default: sibling ./yume)\n"
         << "  --yumed <path>            yumed binary (default: sibling ./yumed)\n"
-        << "  --configs <a,b>           Config subset; use --list-configs\n"
+        << "  --configs <a,b|all>       Config subset; use --list-configs\n"
         << "  --latency-iters <N>       Echo round trips per config (default 120)\n"
         << "  --bulk-mib <N>            Bulk echo size per config (default 32)\n"
         << "  --argon-mem-kib <N>       Heavy KDF memory cap/env for this run (default 32768)\n"
@@ -120,6 +120,7 @@ void print_help() {
         << "  --tunnels <N>             Client TLS tunnel count (default 1)\n"
         << "  --client-threads <N>      Client io threads (0=auto/hw concurrency)\n"
         << "  --server-threads <N>      Server io threads (default 2)\n"
+        << "  --cooldown-ms <N>         Pause between configs for fairer sweeps (default 500)\n"
         << "  --one-way                 Measure one-way upload (sink+ack), not echo\n"
         << "  --json <path>             Write JSON result file\n"
         << "  --json-stdout             Print JSON to stdout after the table\n"
@@ -127,6 +128,8 @@ void print_help() {
         << "  --list-configs            Print config names and exit\n"
         << "  -h, --help                Show this help\n\n"
         << "Notes:\n"
+        << "  Default/no --configs runs every built-in config, including heavy-hop-2hz.\n"
+        << "  Config aliases: all expands to the full suite; all-on selects heavy-hop-2hz.\n"
         << "  Routed loopback benchmarks require yumed built with\n"
         << "  -DYUME_FEATURE_LAN_BRIDGE=ON. The tool grants allow_local_ip only\n"
         << "  to its temporary auth key through authorized_keys.json.\n";
@@ -168,6 +171,8 @@ Args parse_args(int argc, char** argv) {
             args.client_threads = std::max(0, std::stoi(require_value(i, arg)));
         } else if (arg == "--server-threads") {
             args.server_threads = std::max(1, std::stoi(require_value(i, arg)));
+        } else if (arg == "--cooldown-ms") {
+            args.cooldown_ms = std::max(0, std::stoi(require_value(i, arg)));
         } else if (arg == "--one-way") {
             args.one_way = true;
         } else if (arg == "--json") {
@@ -415,12 +420,25 @@ Result run_config(const Args& args,
 std::vector<Config> select_configs(const Args& args) {
     if (args.configs.empty()) return builtin_configs();
     std::vector<Config> selected;
+    auto append_once = [&](const Config& cfg) {
+        const auto exists = std::any_of(selected.begin(), selected.end(), [&](const Config& existing) {
+            return existing.name == cfg.name;
+        });
+        if (!exists) selected.push_back(cfg);
+    };
     for (const auto& name : args.configs) {
+        if (name == "all" || name == "*") {
+            for (const auto& cfg : builtin_configs()) append_once(cfg);
+            continue;
+        }
+        const std::string resolved = (name == "all-on" || name == "heavy-obfs-2hz" || name == "heavy-obfs-hop-2hz")
+            ? "heavy-hop-2hz"
+            : name;
         auto it = std::find_if(builtin_configs().begin(), builtin_configs().end(), [&](const Config& cfg) {
-            return cfg.name == name;
+            return cfg.name == resolved;
         });
         if (it == builtin_configs().end()) throw std::runtime_error("unknown config: " + name);
-        selected.push_back(*it);
+        append_once(*it);
     }
     return selected;
 }
@@ -535,6 +553,7 @@ std::string render_json(const Args& args, const std::vector<Result>& results, co
     out << "  \"bulk_mib\": " << args.bulk_mib << ",\n";
     out << "  \"argon_mem_kib\": " << args.argon_mem_kib << ",\n";
     out << "  \"argon_parallelism\": " << args.argon_parallelism << ",\n";
+    out << "  \"cooldown_ms\": " << args.cooldown_ms << ",\n";
     out << "  \"results\": [\n";
     for (std::size_t i = 0; i < results.size(); ++i) {
         const auto& r = results[i];
@@ -599,7 +618,12 @@ int main(int argc, char** argv) {
 
         std::vector<Result> results;
         results.reserve(configs.size());
-        for (const auto& cfg : configs) {
+        for (std::size_t i = 0; i < configs.size(); ++i) {
+            const auto& cfg = configs[i];
+            if (i > 0 && args.cooldown_ms > 0) {
+                std::cerr << "[selftest] cooldown " << args.cooldown_ms << " ms before " << cfg.name << "\n";
+                std::this_thread::sleep_for(std::chrono::milliseconds(args.cooldown_ms));
+            }
             std::cerr << "[selftest] " << cfg.name << ": " << cfg.description << "\n";
             Result result = run_config(args, ks, cfg, tmp->path(), echo_port);
             if (!result.ok) tmp->keep();

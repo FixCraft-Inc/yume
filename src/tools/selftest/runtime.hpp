@@ -45,6 +45,7 @@ struct Args {
     int tunnels{1};
     int client_threads{0};
     int server_threads{2};
+    int cooldown_ms{500};
     bool one_way{false};
     bool list_configs{false};
     bool keep_workdir{false};

@@ -115,6 +115,15 @@ void Session::send_auth_challenge() {
     });
 }
 
+void Session::clear_hop_key_cache() {
+    std::fill(encrypt_hop_key_.begin(), encrypt_hop_key_.end(), 0);
+    std::fill(decrypt_hop_key_.begin(), decrypt_hop_key_.end(), 0);
+    encrypt_hop_key_.clear();
+    decrypt_hop_key_.clear();
+    encrypt_hop_id_.reset();
+    decrypt_hop_id_.reset();
+}
+
 bool Session::decrypt_inner_payload(uint8_t frame_type,
                                     uint8_t stream_id,
                                     const crypto::Bytes& input,
@@ -133,6 +142,18 @@ bool Session::decrypt_inner_payload(uint8_t frame_type,
                 return true;
             }
             std::uint64_t hop_id = current_hop_id();
+            auto in_window = [hop_id](std::uint64_t id) {
+                return id <= hop_id
+                    ? (hop_id - id) <= kHopDecryptWindow
+                    : (id - hop_id) <= kHopDecryptWindow;
+            };
+            if (decrypt_hop_id_.has_value() && !decrypt_hop_key_.empty() && in_window(*decrypt_hop_id_)) {
+                try {
+                    *output = inner::decrypt_payload(decrypt_hop_key_, frame_type, stream_id, input);
+                    return true;
+                } catch (...) {
+                }
+            }
             std::uint64_t candidates[1 + (kHopDecryptWindow * 2)];
             std::size_t candidate_count = 0;
             candidates[candidate_count++] = hop_id;
@@ -144,9 +165,14 @@ bool Session::decrypt_inner_payload(uint8_t frame_type,
             }
             for (std::size_t i = 0; i < candidate_count; ++i) {
                 std::uint64_t id = candidates[i];
+                if (decrypt_hop_id_.has_value() && *decrypt_hop_id_ == id) {
+                    continue;
+                }
                 crypto::Bytes hop_key = inner::derive_hop_key(key, id);
                 try {
                     *output = inner::decrypt_payload(hop_key, frame_type, stream_id, input);
+                    decrypt_hop_id_ = id;
+                    decrypt_hop_key_ = hop_key;
                     return true;
                 } catch (...) {
                 }
@@ -163,6 +189,7 @@ bool Session::decrypt_inner_payload(uint8_t frame_type,
     if (!inner_key_alt_.has_value()) {
         return false;
     }
+    clear_hop_key_cache();
     if (try_decrypt(*inner_key_alt_)) {
         inner_key_ = inner_key_alt_;
         inner_key_alt_.reset();
@@ -189,7 +216,15 @@ crypto::Bytes Session::encrypt_inner_payload(uint8_t frame_type,
         return inner::encrypt_payload(*inner_key_, frame_type, stream_id, input);
     }
     std::uint64_t hop_id = current_hop_id();
-    crypto::Bytes hop_key = inner::derive_hop_key(*inner_key_, hop_id);
+    crypto::Bytes hop_key;
+    if (encrypt_hop_id_.has_value() && *encrypt_hop_id_ == hop_id && !encrypt_hop_key_.empty()) {
+        hop_key = encrypt_hop_key_;
+    }
+    if (hop_key.empty()) {
+        hop_key = inner::derive_hop_key(*inner_key_, hop_id);
+        encrypt_hop_id_ = hop_id;
+        encrypt_hop_key_ = hop_key;
+    }
     return inner::encrypt_payload(hop_key, frame_type, stream_id, input);
 }
 
@@ -499,6 +534,7 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         hop_enabled_ = (cfg_.inner_hop && client_hop && inner_key_.has_value());
         hop_interval_ms_ = cfg_.hop_interval_ms;
         hop_offset_ms_ = 0;
+        clear_hop_key_cache();
 
         if (!cfg_.anonym) {
             update_auth_meta(cfg_.auth_keys_meta, fingerprint);

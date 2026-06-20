@@ -6,6 +6,7 @@
 
 #include "client/transport/core.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <thread>
 
@@ -117,9 +118,19 @@ bool TransportCore::is_stopped() const {
     return stopped_;
 }
 
+void TransportCore::clear_hop_key_cache_locked() {
+    std::fill(encrypt_hop_key_.begin(), encrypt_hop_key_.end(), 0);
+    std::fill(decrypt_hop_key_.begin(), decrypt_hop_key_.end(), 0);
+    encrypt_hop_key_.clear();
+    decrypt_hop_key_.clear();
+    encrypt_hop_id_.reset();
+    decrypt_hop_id_.reset();
+}
+
 void TransportCore::set_inner_key(const Bytes& key) {
     std::lock_guard<std::mutex> lock(state_mu_);
     inner_key_ = key;
+    clear_hop_key_cache_locked();
 }
 
 void TransportCore::set_hop(bool enabled, std::uint32_t interval_ms, std::int64_t offset_ms) {
@@ -127,6 +138,7 @@ void TransportCore::set_hop(bool enabled, std::uint32_t interval_ms, std::int64_
     hop_enabled_ = enabled;
     hop_interval_ms_ = interval_ms;
     hop_offset_ms_ = offset_ms;
+    clear_hop_key_cache_locked();
 }
 
 void TransportCore::set_server_in_charge(bool enabled) {
@@ -946,7 +958,19 @@ TransportCore::Bytes TransportCore::encrypt_inner_payload(uint8_t frame_type,
             .count(),
         hop_interval_ms,
         hop_offset_ms);
-    Bytes hop_key = inner::derive_hop_key(*inner_key, hop_id);
+    Bytes hop_key;
+    {
+        std::lock_guard<std::mutex> lock(state_mu_);
+        if (encrypt_hop_id_.has_value() && *encrypt_hop_id_ == hop_id && !encrypt_hop_key_.empty()) {
+            hop_key = encrypt_hop_key_;
+        }
+    }
+    if (hop_key.empty()) {
+        hop_key = inner::derive_hop_key(*inner_key, hop_id);
+        std::lock_guard<std::mutex> lock(state_mu_);
+        encrypt_hop_id_ = hop_id;
+        encrypt_hop_key_ = hop_key;
+    }
     return inner::encrypt_payload(hop_key, frame_type, stream_id, input);
 }
 
@@ -961,12 +985,16 @@ bool TransportCore::decrypt_inner_payload(uint8_t frame_type,
     bool hop_enabled = false;
     std::uint32_t hop_interval_ms = 0;
     std::int64_t hop_offset_ms = 0;
+    std::optional<std::uint64_t> cached_hop_id;
+    Bytes cached_hop_key;
     {
         std::lock_guard<std::mutex> lock(state_mu_);
         inner_key = inner_key_;
         hop_enabled = hop_enabled_;
         hop_interval_ms = hop_interval_ms_;
         hop_offset_ms = hop_offset_ms_;
+        cached_hop_id = decrypt_hop_id_;
+        cached_hop_key = decrypt_hop_key_;
     }
     if (!inner_key.has_value()) {
         *output = input;
@@ -983,6 +1011,23 @@ bool TransportCore::decrypt_inner_payload(uint8_t frame_type,
                 .count(),
             hop_interval_ms,
             hop_offset_ms);
+        auto remember_success = [&](std::uint64_t id, const Bytes& key) {
+            std::lock_guard<std::mutex> lock(state_mu_);
+            decrypt_hop_id_ = id;
+            decrypt_hop_key_ = key;
+        };
+        auto in_window = [hop_id](std::uint64_t id) {
+            return id <= hop_id
+                ? (hop_id - id) <= kHopDecryptWindow
+                : (id - hop_id) <= kHopDecryptWindow;
+        };
+        if (cached_hop_id.has_value() && !cached_hop_key.empty() && in_window(*cached_hop_id)) {
+            try {
+                *output = inner::decrypt_payload(cached_hop_key, frame_type, stream_id, input);
+                return true;
+            } catch (...) {
+            }
+        }
         std::uint64_t candidates[1 + (kHopDecryptWindow * 2)];
         std::size_t candidate_count = 0;
         candidates[candidate_count++] = hop_id;
@@ -993,9 +1038,14 @@ bool TransportCore::decrypt_inner_payload(uint8_t frame_type,
             candidates[candidate_count++] = hop_id + delta;
         }
         for (std::size_t i = 0; i < candidate_count; ++i) {
-            Bytes hop_key = inner::derive_hop_key(*inner_key, candidates[i]);
+            const std::uint64_t candidate = candidates[i];
+            if (cached_hop_id.has_value() && *cached_hop_id == candidate) {
+                continue;
+            }
+            Bytes hop_key = inner::derive_hop_key(*inner_key, candidate);
             try {
                 *output = inner::decrypt_payload(hop_key, frame_type, stream_id, input);
+                remember_success(candidate, hop_key);
                 return true;
             } catch (...) {
             }

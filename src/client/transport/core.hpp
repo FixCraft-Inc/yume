@@ -123,6 +123,7 @@ private:
     bool decrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const Bytes& input, Bytes* output);
     std::uint64_t current_hop_id() const;
     void request_transport_close(const std::string& reason);
+    void clear_hop_key_cache_locked();
 
     mutable std::mutex state_mu_;
     std::mutex write_mu_;
@@ -147,6 +148,10 @@ private:
     bool hop_enabled_{false};
     std::uint32_t hop_interval_ms_{0};
     std::int64_t hop_offset_ms_{0};
+    std::optional<std::uint64_t> encrypt_hop_id_;
+    Bytes encrypt_hop_key_;
+    std::optional<std::uint64_t> decrypt_hop_id_;
+    Bytes decrypt_hop_key_;
     bool server_in_charge_{false};
     bool allow_exec_{false};
     std::uint16_t obfs_pad_multiple_{0};

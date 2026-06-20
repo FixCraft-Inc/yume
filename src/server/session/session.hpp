@@ -132,6 +132,7 @@ private:
                                         uint8_t stream_id,
                                         const crypto::Bytes& input);
     std::uint64_t current_hop_id() const;
+    void clear_hop_key_cache();
 
     void send_open_reply(uint8_t stream_id, bool ok, const std::string& message);
     void start_remote_read(uint8_t stream_id);
@@ -204,6 +205,10 @@ private:
     bool hop_enabled_{false};
     std::uint32_t hop_interval_ms_{0};
     std::int64_t hop_offset_ms_{0};
+    std::optional<std::uint64_t> encrypt_hop_id_;
+    crypto::Bytes encrypt_hop_key_;
+    std::optional<std::uint64_t> decrypt_hop_id_;
+    crypto::Bytes decrypt_hop_key_;
     boost::asio::steady_timer idle_timer_;
     std::atomic<int64_t> last_activity_ms_{0};
 

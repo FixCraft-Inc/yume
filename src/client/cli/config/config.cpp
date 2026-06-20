@@ -133,6 +133,9 @@ void load_client_config_file(const ParsedArgs& args,
         if (json.contains("tls_ca_cert") && cfg->tls_ca_cert.empty()) {
             cfg->tls_ca_cert = resolve_cfg_path(json["tls_ca_cert"].get<std::string>());
         }
+        if (json.contains("tls_server_name") && cfg->tls_server_name.empty()) {
+            cfg->tls_server_name = json["tls_server_name"].get<std::string>();
+        }
         if (json.contains("tls_pin") && cfg->tls_pin_sha256.empty()) {
             cfg->tls_pin_sha256 = json["tls_pin"].get<std::string>();
         }
@@ -271,6 +274,9 @@ void apply_cli_config_overrides(const ParsedArgs& args,
     }
     if (!args.tls_ca_cert.empty()) {
         cfg->tls_ca_cert = resolve_cli_path(args.tls_ca_cert);
+    }
+    if (!args.tls_server_name.empty()) {
+        cfg->tls_server_name = args.tls_server_name;
     }
     if (!args.tls_pin_sha256.empty()) {
         cfg->tls_pin_sha256 = args.tls_pin_sha256;
@@ -498,6 +504,7 @@ void save_client_config_file(const ParsedArgs& args, const ClientConfig& cfg) {
     json["use_embedded_master"] = cfg.allow_embedded_master;
     if (!cfg.anonym_ca_cert.empty()) json["anonym_ca_cert"] = cfg.anonym_ca_cert;
     if (!cfg.tls_ca_cert.empty()) json["tls_ca_cert"] = cfg.tls_ca_cert;
+    if (!cfg.tls_server_name.empty()) json["tls_server_name"] = cfg.tls_server_name;
     if (!cfg.tls_pin_sha256.empty()) json["tls_pin"] = cfg.tls_pin_sha256;
     json["require_anonym"] = cfg.require_anonym;
     json["boring"] = cfg.boring;

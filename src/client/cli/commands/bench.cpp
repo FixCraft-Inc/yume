@@ -66,6 +66,19 @@ double mib_per_second(std::uint64_t bytes, double seconds) {
     return (static_cast<double>(bytes) / (1024.0 * 1024.0)) / seconds;
 }
 
+double mbit_per_second(std::uint64_t bytes, double seconds) {
+    return mib_per_second(bytes, seconds) * 8.388608;
+}
+
+std::string format_rate(std::uint64_t bytes, double seconds) {
+    std::ostringstream out;
+    out.setf(std::ios::fixed);
+    out << std::setprecision(1)
+        << mib_per_second(bytes, seconds) << " MiB/s / "
+        << mbit_per_second(bytes, seconds) << " Mbit/s";
+    return out.str();
+}
+
 std::string format_mib(std::uint64_t bytes) {
     std::ostringstream out;
     out.setf(std::ios::fixed);
@@ -123,7 +136,7 @@ private:
             std::cout << label_ << ":   "
                       << format_mib(bytes) << "/" << format_mib(total_bytes_)
                       << " MiB (" << std::fixed << std::setprecision(1) << pct
-                      << "%, " << mib_per_second(bytes, elapsed) << " MiB/s)\n"
+                      << "%, " << format_rate(bytes, elapsed) << ")\n"
                       << std::flush;
             lock.lock();
         }
@@ -520,7 +533,12 @@ int run_endpoint_benchmark(const std::shared_ptr<Tunnel>& tunnel,
         static_cast<std::size_t>(options.bench_chunk_kib) * 1024U;
 
     std::cout << "\nYUME endpoint benchmark\n"
-              << "server: " << cfg.server << ":" << cfg.port << "\n"
+              << "server: " << cfg.server << ":" << cfg.port;
+    const std::string& tls_name = effective_tls_server_name(cfg);
+    if (tls_name != cfg.server) {
+        std::cout << " (tls-name: " << tls_name << ")";
+    }
+    std::cout << "\n"
               << "payload: " << options.bench_mib << " MiB per direction"
               << ", chunk: " << options.bench_chunk_kib << " KiB"
               << ", streams: " << options.bench_streams << "\n"
@@ -533,14 +551,11 @@ int run_endpoint_benchmark(const std::shared_ptr<Tunnel>& tunnel,
             util::log_error("bench upload failed: " + up.error);
             return 1;
         }
-        std::cout << "UP:   " << std::fixed << std::setprecision(1)
-                  << mib_per_second(up.bytes, up.seconds) << " MiB/s"
+        std::cout << "UP:   " << format_rate(up.bytes, up.seconds)
                   << "  (" << format_mib(up.bytes) << " MiB in "
-                  << std::setprecision(3) << up.seconds << " s";
+                  << std::fixed << std::setprecision(3) << up.seconds << " s";
         if (up.server_bytes > 0 && up.server_seconds > 0.0) {
-            std::cout << ", server " << std::setprecision(1)
-                      << mib_per_second(up.server_bytes, up.server_seconds)
-                      << " MiB/s";
+            std::cout << ", server " << format_rate(up.server_bytes, up.server_seconds);
         }
         std::cout << ")\n";
     }
@@ -552,10 +567,9 @@ int run_endpoint_benchmark(const std::shared_ptr<Tunnel>& tunnel,
             util::log_error("bench download failed: " + down.error);
             return 1;
         }
-        std::cout << "DOWN: " << std::fixed << std::setprecision(1)
-                  << mib_per_second(down.bytes, down.seconds) << " MiB/s"
+        std::cout << "DOWN: " << format_rate(down.bytes, down.seconds)
                   << "  (" << format_mib(down.bytes) << " MiB in "
-                  << std::setprecision(3) << down.seconds << " s)\n";
+                  << std::fixed << std::setprecision(3) << down.seconds << " s)\n";
     }
     return 0;
 }

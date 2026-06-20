@@ -54,6 +54,7 @@ struct ClientConfig {
     std::string auth_key_material_id;
     std::string tls_ca_cert;
     std::string tls_ca_material_id;
+    std::string tls_server_name;
     std::string tls_pin_sha256;
     bool require_anonym{false};
     bool boring{false};
@@ -92,6 +93,10 @@ struct ClientConfig {
     // direct. Format: "socks5://[user[:pass]@]host:port".
     std::string outbound_proxy_url;
 };
+
+inline const std::string& effective_tls_server_name(const ClientConfig& cfg) noexcept {
+    return cfg.tls_server_name.empty() ? cfg.server : cfg.tls_server_name;
+}
 
 class Cli {
 public:

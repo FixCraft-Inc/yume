@@ -458,6 +458,7 @@ int Cli::run(int argc, char** argv) {
                 }
             }
             const bool via_proxy = proxy_cfg.type == outbound_proxy::Type::Socks5;
+            const std::string& tls_name = effective_tls_server_name(cfg);
 
             boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, *ctx);
 
@@ -549,8 +550,8 @@ int Cli::run(int argc, char** argv) {
             stream.next_layer().set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
             boost::system::error_code nodelay_ec;
             stream.next_layer().set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
-            SSL_set_tlsext_host_name(stream.native_handle(), cfg.server.c_str());
-            SSL_set1_host(stream.native_handle(), cfg.server.c_str());
+            SSL_set_tlsext_host_name(stream.native_handle(), tls_name.c_str());
+            SSL_set1_host(stream.native_handle(), tls_name.c_str());
             
             auto handshake_start = std::chrono::steady_clock::now();
             boost::system::error_code hs_ec;
@@ -565,14 +566,15 @@ int Cli::run(int argc, char** argv) {
             auto handshake_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
                 handshake_end - handshake_start);
             util::log_timing("client.connect",
-                             "tls",
-                             "ms=" + std::to_string(handshake_duration.count()) +
-                                 " host=" + cfg.server +
-                                 " port=" + std::to_string(cfg.port));
+                                 "tls",
+                                 "ms=" + std::to_string(handshake_duration.count()) +
+                                     " host=" + cfg.server +
+                                     (tls_name == cfg.server ? "" : " tls_name=" + tls_name) +
+                                     " port=" + std::to_string(cfg.port));
             
             if (hs_ec) {
                 long vr = SSL_get_verify_result(stream.native_handle());
-                std::string detail = describe_verify_result(vr, cfg.server);
+                std::string detail = describe_verify_result(vr, tls_name);
                 std::string ssl_detail = describe_openssl_error();
                 std::string msg = "TLS handshake failed: " + hs_ec.message();
                 if (!detail.empty()) {
@@ -666,7 +668,7 @@ int Cli::run(int argc, char** argv) {
             if (cfg.obfuscation) {
                 util::log_info("starting HTTPS h2 carrier handshake");
                 auto h2_start = std::chrono::steady_clock::now();
-                perform_h2_carrier_handshake(stream, io, cfg.server, cfg.port,
+                perform_h2_carrier_handshake(stream, io, tls_name, cfg.port,
                                              cfg.obfs_secret, &prefetched_tls_bytes);
                 auto h2_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - h2_start).count();
@@ -687,7 +689,7 @@ int Cli::run(int argc, char** argv) {
             protocol::Frame auth_challenge = read_auth_challenge(
                 stream,
                 io,
-                cfg.server,
+                tls_name,
                 cfg.port,
                 &prefetched_tls_bytes);
             auto auth_challenge_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1118,6 +1120,9 @@ int Cli::run(int argc, char** argv) {
             if (have_anon && !summary_once) {
                 ConnectionStatusSummary summary;
                 summary.server = cfg.server;
+                if (tls_name != cfg.server) {
+                    summary.server += " (tls: " + tls_name + ")";
+                }
                 summary.version = server_version;
                 if (inner_kdf.has_value()) {
                     summary.inner_kdf_name = inner_kdf->name;

@@ -61,6 +61,7 @@ std::optional<client::ClientConfig> load_client(
     read_opt(j, "tls_ca_material_id", c.tls_ca_material_id);
     read_opt(j, "auth_key_material_id", c.auth_key_material_id);
     read_opt(j, "tls_ca_cert", c.tls_ca_cert);
+    read_opt(j, "tls_server_name", c.tls_server_name);
     read_opt(j, "tls_pin_sha256", c.tls_pin_sha256);
     read_opt(j, "require_anonym", c.require_anonym);
     read_opt(j, "boring", c.boring);
@@ -127,6 +128,7 @@ bool save_client(client::ClientConfig const& c,
         {"tls_ca_material_id", c.tls_ca_material_id},
         {"auth_key_material_id", c.auth_key_material_id},
         {"tls_ca_cert", c.tls_ca_cert},
+        {"tls_server_name", c.tls_server_name},
         {"tls_pin_sha256", c.tls_pin_sha256},
         {"require_anonym", c.require_anonym},
         {"boring", c.boring},

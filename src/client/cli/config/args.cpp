@@ -579,6 +579,12 @@ ParsedArgs parse_args(int argc, char** argv) {
                 return args;
             }
             args.tls_ca_cert = value;
+        } else if (arg == "--tls-name" || arg == "--tls-server-name") {
+            const char* value = take_value(arg);
+            if (!value) {
+                return args;
+            }
+            args.tls_server_name = value;
         } else if (arg == "--tls-pin") {
             const char* value = take_value("--tls-pin");
             if (!value) {

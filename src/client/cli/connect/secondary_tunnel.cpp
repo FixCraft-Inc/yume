@@ -38,6 +38,7 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
                                                  const outbound_proxy::Config& proxy_cfg,
                                                  int index) {
     boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, ctx);
+    const std::string& tls_name = effective_tls_server_name(cfg);
     if (proxy_cfg.type == outbound_proxy::Type::Socks5) {
         auto dr = outbound_proxy::socks5_dial(
             stream.next_layer(), io, proxy_cfg,
@@ -69,8 +70,8 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
     stream.next_layer().set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
     boost::system::error_code nodelay_ec;
     stream.next_layer().set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
-    SSL_set_tlsext_host_name(stream.native_handle(), cfg.server.c_str());
-    SSL_set1_host(stream.native_handle(), cfg.server.c_str());
+    SSL_set_tlsext_host_name(stream.native_handle(), tls_name.c_str());
+    SSL_set1_host(stream.native_handle(), tls_name.c_str());
 
     auto hr = handshake_with_timeout(stream, io, kHandshakeTimeout);
     if (hr.timed_out) {
@@ -88,14 +89,14 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
 
     std::vector<uint8_t> prefetched_tls_bytes;
     if (cfg.obfuscation) {
-        perform_h2_carrier_handshake(stream, io, cfg.server, cfg.port,
+        perform_h2_carrier_handshake(stream, io, tls_name, cfg.port,
                                      cfg.obfs_secret, &prefetched_tls_bytes);
     }
 
     protocol::Frame auth_challenge = read_auth_challenge(
         stream,
         io,
-        cfg.server,
+        tls_name,
         cfg.port,
         &prefetched_tls_bytes);
     inner::Argon2Limits argon2_limits =

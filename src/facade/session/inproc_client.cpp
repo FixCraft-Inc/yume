@@ -96,6 +96,7 @@ std::vector<std::string> build_argv(client::ClientConfig const& cfg) {
 
     push_arg(a, "--anonym-ca-cert", cfg.anonym_ca_cert);
     push_arg(a, "--tls-ca", cfg.tls_ca_cert);
+    push_arg(a, "--tls-name", cfg.tls_server_name);
     push_arg(a, "--tls-pin", cfg.tls_pin_sha256);
     if (cfg.require_anonym) a.push_back("--require-anonym");
 

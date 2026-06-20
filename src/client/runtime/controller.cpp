@@ -156,6 +156,7 @@ std::vector<std::string> build_args(std::filesystem::path const& exe,
     args.emplace_back(cfg.allow_embedded_master ? "--use-embedded-master" : "--no-embedded-master");
     add_arg(args, "--anonym-ca-cert", cfg.anonym_ca_cert);
     add_arg(args, "--tls-ca", cfg.tls_ca_cert);
+    add_arg(args, "--tls-name", cfg.tls_server_name);
     add_arg(args, "--tls-pin", cfg.tls_pin_sha256);
     add_arg(args, "--proxy", cfg.outbound_proxy_url);
     if (cfg.require_anonym) args.emplace_back("--require-anonym");

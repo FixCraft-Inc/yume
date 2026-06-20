@@ -340,12 +340,15 @@ void Session::on_read_payload(const boost::system::error_code& ec, std::size_t) 
         return;
     }
 
-    protocol::Frame frame{current_header_, payload_buf_};
+    protocol::Frame frame{current_header_, {}};
+    frame.payload.swap(payload_buf_);
     if ((frame.header.flags & protocol::kFlagPadded) != 0 && !protocol::strip_padding(frame)) {
+        payload_buf_.swap(frame.payload);
         close_with_reason("malformed padded frame: pad length exceeds payload");
         return;
     }
     handle_frame(frame);
+    payload_buf_.swap(frame.payload);
 }
 
 void Session::handle_frame(const protocol::Frame& frame) {
@@ -533,14 +536,16 @@ void Session::handle_frame(const protocol::Frame& frame) {
 // file gets bigger.
 
 void Session::handle_data(const protocol::Frame& frame) {
-    crypto::Bytes payload = frame.payload;
+    crypto::Bytes decrypted_payload;
+    const crypto::Bytes* payload = &frame.payload;
     if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
-        if (!decrypt_inner_payload(frame.header.type, frame.header.stream_id, frame.payload, &payload)) {
+        if (!decrypt_inner_payload(frame.header.type, frame.header.stream_id, frame.payload, &decrypted_payload)) {
             util::log_warn("session " + std::to_string(session_id_) + ": DATA decrypt failed for stream " +
                            std::to_string(frame.header.stream_id));
             close_with_reason("DATA decrypt failed for stream " + std::to_string(frame.header.stream_id));
             return;
         }
+        payload = &decrypted_payload;
     }
     std::function<void(const crypto::Bytes&)> federated_data;
     {
@@ -551,21 +556,21 @@ void Session::handle_data(const protocol::Frame& frame) {
         }
     }
     if (federated_data) {
-        federated_data(payload);
+        federated_data(*payload);
         return;
     }
-    if (handle_packet_data(frame.header.stream_id, payload)) {
+    if (handle_packet_data(frame.header.stream_id, *payload)) {
         return;
     }
-    if (handle_bench_data(frame.header.stream_id, payload)) {
+    if (handle_bench_data(frame.header.stream_id, *payload)) {
         return;
     }
     auto it_udp = udp_streams_.find(frame.header.stream_id);
     if (it_udp != udp_streams_.end()) {
-        enqueue_udp_write(frame.header.stream_id, payload);
+        enqueue_udp_write(frame.header.stream_id, *payload);
         return;
     }
-    enqueue_remote_write(frame.header.stream_id, payload);
+    enqueue_remote_write(frame.header.stream_id, *payload);
 }
 
 std::string Session::decode_close_reason(const protocol::Frame& frame, bool* ok) {

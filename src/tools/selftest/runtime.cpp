@@ -215,6 +215,13 @@ std::vector<unsigned char> random_payload(std::size_t len) {
     return out;
 }
 
+void set_reuseaddr(int fd) {
+    int yes = 1;
+    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+}
+
+}  // namespace
+
 Stats compute_stats(std::vector<double> samples) {
     Stats stats;
     stats.n = samples.size();
@@ -243,13 +250,6 @@ Stats compute_stats(std::vector<double> samples) {
     stats.mean = sum / static_cast<double>(samples.size());
     return stats;
 }
-
-void set_reuseaddr(int fd) {
-    int yes = 1;
-    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-}
-
-}  // namespace
 
 ChildProcess::ChildProcess(std::vector<std::string> argv,
                            fs::path cwd,

@@ -46,6 +46,7 @@ struct Args {
     int client_threads{0};
     int server_threads{2};
     int cooldown_ms{500};
+    int repeats{1};
     bool one_way{false};
     bool list_configs{false};
     bool keep_workdir{false};
@@ -63,6 +64,8 @@ struct Stats {
     double mean{0.0};
 };
 
+Stats compute_stats(std::vector<double> samples);
+
 struct Breakdown {
     double server_listen_ms{0.0};
     double pq_ready_ms{0.0};
@@ -79,6 +82,9 @@ struct Result {
     std::string error;
     Stats latency_ms;
     double throughput_mib_s{0.0};
+    Stats throughput_trial_stats;
+    std::vector<double> throughput_trials_mib_s;
+    int repeat_count{1};
     double wall_s{0.0};
     Breakdown breakdown;
 };

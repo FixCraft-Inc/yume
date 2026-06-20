@@ -121,6 +121,7 @@ void print_help() {
         << "  --client-threads <N>      Client io threads (0=auto/hw concurrency)\n"
         << "  --server-threads <N>      Server io threads (default 2)\n"
         << "  --cooldown-ms <N>         Pause between configs for fairer sweeps (default 500)\n"
+        << "  --repeat <N>              Run each config N times; report median-throughput trial\n"
         << "  --one-way                 Measure one-way upload (sink+ack), not echo\n"
         << "  --json <path>             Write JSON result file\n"
         << "  --json-stdout             Print JSON to stdout after the table\n"
@@ -173,6 +174,8 @@ Args parse_args(int argc, char** argv) {
             args.server_threads = std::max(1, std::stoi(require_value(i, arg)));
         } else if (arg == "--cooldown-ms") {
             args.cooldown_ms = std::max(0, std::stoi(require_value(i, arg)));
+        } else if (arg == "--repeat" || arg == "--repeats") {
+            args.repeats = std::max(1, std::stoi(require_value(i, arg)));
         } else if (arg == "--one-way") {
             args.one_way = true;
         } else if (arg == "--json") {
@@ -417,6 +420,61 @@ Result run_config(const Args& args,
     return result;
 }
 
+Result run_config_repeated(const Args& args,
+                           const Keyset& ks,
+                           const Config& cfg,
+                           const fs::path& workdir,
+                           int echo_port) {
+    std::cerr << "[selftest] " << cfg.name << ": " << cfg.description << "\n";
+    if (args.repeats <= 1) {
+        return run_config(args, ks, cfg, workdir, echo_port);
+    }
+
+    std::vector<Result> trials;
+    trials.reserve(static_cast<std::size_t>(args.repeats));
+    for (int trial = 0; trial < args.repeats; ++trial) {
+        if (trial > 0 && args.cooldown_ms > 0) {
+            std::cerr << "[selftest] cooldown " << args.cooldown_ms
+                      << " ms before " << cfg.name << " trial "
+                      << (trial + 1) << "/" << args.repeats << "\n";
+            std::this_thread::sleep_for(std::chrono::milliseconds(args.cooldown_ms));
+        }
+        std::cerr << "[selftest] " << cfg.name << " trial "
+                  << (trial + 1) << "/" << args.repeats << "\n";
+        Result result = run_config(args, ks, cfg, workdir, echo_port);
+        result.repeat_count = trial + 1;
+        if (!result.ok) {
+            return result;
+        }
+        trials.push_back(std::move(result));
+    }
+
+    std::vector<double> throughput_trials;
+    throughput_trials.reserve(trials.size());
+    for (const auto& trial : trials) {
+        throughput_trials.push_back(trial.throughput_mib_s);
+    }
+    const Stats throughput_stats = compute_stats(throughput_trials);
+
+    std::size_t closest = 0;
+    auto distance_to_median = [&](std::size_t i) {
+        const double value = trials[i].throughput_mib_s;
+        return value > throughput_stats.median ? value - throughput_stats.median : throughput_stats.median - value;
+    };
+    for (std::size_t i = 1; i < trials.size(); ++i) {
+        if (distance_to_median(i) < distance_to_median(closest)) {
+            closest = i;
+        }
+    }
+
+    Result summary = trials[closest];
+    summary.repeat_count = args.repeats;
+    summary.throughput_mib_s = throughput_stats.median;
+    summary.throughput_trials_mib_s = std::move(throughput_trials);
+    summary.throughput_trial_stats = throughput_stats;
+    return summary;
+}
+
 std::vector<Config> select_configs(const Args& args) {
     if (args.configs.empty()) return builtin_configs();
     std::vector<Config> selected;
@@ -479,7 +537,11 @@ void render_table(const std::vector<Result>& results) {
                   << std::setw(12) << delta
                   << std::setprecision(1)
                   << std::setw(11) << thr_pct << "%"
-                  << "  ok\n";
+                  << "  ok";
+        if (r.repeat_count > 1) {
+            std::cerr << " median/" << r.repeat_count;
+        }
+        std::cerr << "\n";
     }
     std::cerr << "--------------------------------------------------------------------------------\n";
     std::cerr << "lat delta = added median RTT over direct loopback. thr pct = MiB/s vs direct.\n";
@@ -521,6 +583,36 @@ void render_table(const std::vector<Result>& results) {
     std::cerr << "------------------------------------------------------------------------------------------------\n";
     std::cerr << "srv/pq/cli are startup waits. conn is TCP+SOCKS connect. warm is first echo.\n";
     std::cerr << "send% near 100 means writes are backpressured for most of the bulk transfer.\n";
+
+    const bool has_repeats = std::any_of(results.begin(), results.end(), [](const Result& r) {
+        return r.ok && r.repeat_count > 1;
+    });
+    if (!has_repeats) return;
+
+    std::cerr << "\nRepeat throughput summary\n";
+    std::cerr << "--------------------------------------------------------------------------------\n";
+    std::cerr << std::left << std::setw(18) << "config"
+              << std::right << std::setw(8) << "runs"
+              << std::setw(12) << "min"
+              << std::setw(12) << "median"
+              << std::setw(12) << "mean"
+              << std::setw(12) << "max"
+              << std::setw(12) << "reported"
+              << "\n";
+    std::cerr << "--------------------------------------------------------------------------------\n";
+    for (const auto& r : results) {
+        if (!r.ok || r.repeat_count <= 1) continue;
+        std::cerr << std::left << std::setw(18) << r.config.name << std::right
+                  << std::setw(8) << r.repeat_count
+                  << std::fixed << std::setprecision(1)
+                  << std::setw(12) << r.throughput_trial_stats.min
+                  << std::setw(12) << r.throughput_trial_stats.median
+                  << std::setw(12) << r.throughput_trial_stats.mean
+                  << std::setw(12) << r.throughput_trial_stats.max
+                  << std::setw(12) << r.throughput_mib_s
+                  << "\n";
+    }
+    std::cerr << "--------------------------------------------------------------------------------\n";
 }
 
 std::string json_escape(const std::string& value) {
@@ -547,13 +639,14 @@ std::string json_escape(const std::string& value) {
 std::string render_json(const Args& args, const std::vector<Result>& results, const fs::path& workdir) {
     std::ostringstream out;
     out << "{\n";
-    out << "  \"schema_version\": 2,\n";
+    out << "  \"schema_version\": 3,\n";
     out << "  \"workdir\": \"" << json_escape(workdir.string()) << "\",\n";
     out << "  \"latency_iters\": " << args.latency_iters << ",\n";
     out << "  \"bulk_mib\": " << args.bulk_mib << ",\n";
     out << "  \"argon_mem_kib\": " << args.argon_mem_kib << ",\n";
     out << "  \"argon_parallelism\": " << args.argon_parallelism << ",\n";
     out << "  \"cooldown_ms\": " << args.cooldown_ms << ",\n";
+    out << "  \"repeat\": " << args.repeats << ",\n";
     out << "  \"results\": [\n";
     for (std::size_t i = 0; i < results.size(); ++i) {
         const auto& r = results[i];
@@ -572,6 +665,22 @@ std::string render_json(const Args& args, const std::vector<Result>& results, co
         out << "        \"mean\": " << r.latency_ms.mean << "\n";
         out << "      },\n";
         out << "      \"throughput_mib_s\": " << r.throughput_mib_s << ",\n";
+        out << "      \"repeat_count\": " << r.repeat_count << ",\n";
+        out << "      \"throughput_trial_stats\": {\n";
+        out << "        \"n\": " << r.throughput_trial_stats.n << ",\n";
+        out << "        \"median\": " << r.throughput_trial_stats.median << ",\n";
+        out << "        \"p95\": " << r.throughput_trial_stats.p95 << ",\n";
+        out << "        \"p99\": " << r.throughput_trial_stats.p99 << ",\n";
+        out << "        \"min\": " << r.throughput_trial_stats.min << ",\n";
+        out << "        \"max\": " << r.throughput_trial_stats.max << ",\n";
+        out << "        \"mean\": " << r.throughput_trial_stats.mean << "\n";
+        out << "      },\n";
+        out << "      \"throughput_trials_mib_s\": [";
+        for (std::size_t j = 0; j < r.throughput_trials_mib_s.size(); ++j) {
+            if (j > 0) out << ", ";
+            out << r.throughput_trials_mib_s[j];
+        }
+        out << "],\n";
         out << "      \"breakdown\": {\n";
         out << "        \"server_listen_ms\": " << r.breakdown.server_listen_ms << ",\n";
         out << "        \"pq_ready_ms\": " << r.breakdown.pq_ready_ms << ",\n";
@@ -624,8 +733,7 @@ int main(int argc, char** argv) {
                 std::cerr << "[selftest] cooldown " << args.cooldown_ms << " ms before " << cfg.name << "\n";
                 std::this_thread::sleep_for(std::chrono::milliseconds(args.cooldown_ms));
             }
-            std::cerr << "[selftest] " << cfg.name << ": " << cfg.description << "\n";
-            Result result = run_config(args, ks, cfg, tmp->path(), echo_port);
+            Result result = run_config_repeated(args, ks, cfg, tmp->path(), echo_port);
             if (!result.ok) tmp->keep();
             results.push_back(std::move(result));
         }

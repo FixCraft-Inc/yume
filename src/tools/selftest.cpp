@@ -80,21 +80,39 @@ std::string ansi_wrap(const Args& args, std::string_view code, std::string value
     return "\033[" + std::string(code) + "m" + value + "\033[0m";
 }
 
-std::string grade_color_code(std::string_view grade) {
-    if (grade.rfind("SSS+", 0) == 0) return "96;1";
-    if (grade.rfind("SSS", 0) == 0) return "94;1";
-    if (grade.rfind("SS", 0) == 0) return "34;1";
-    if (grade.rfind("S", 0) == 0) return "32;1";
-    if (grade.rfind("AAA", 0) == 0) return "92;1";
-    if (grade.rfind("A", 0) == 0) return "33;1";
-    if (grade.rfind("B", 0) == 0) return "38;5;214;1";
-    if (grade.rfind("C", 0) == 0) return "38;5;208;1";
-    if (grade.rfind("D", 0) == 0) return "38;5;202;1";
-    return "31;1";
+std::string grade_color_code(std::string_view grade, long long score) {
+    if (score > 0 && score < 2500) return "30;47;1";      // critical: black on white
+    if (grade == "F-") return "38;5;52;1";                 // darkest red
+    if (grade == "F") return "38;5;88;1";
+    if (grade == "F+") return "38;5;124;1";
+    if (grade == "D-") return "38;5;160;1";                // red
+    if (grade == "D") return "38;5;196;1";
+    if (grade == "D+") return "38;5;202;1";                // dark orange
+    if (grade == "C-") return "38;5;208;1";
+    if (grade == "C") return "38;5;214;1";                 // orange
+    if (grade == "C+") return "38;5;220;1";
+    if (grade == "B-") return "38;5;136;1";                // dark yellow
+    if (grade == "B") return "38;5;178;1";
+    if (grade == "B+") return "38;5;226;1";                // light yellow
+    if (grade == "A-") return "38;5;190;1";
+    if (grade == "A") return "38;5;154;1";                 // light green
+    if (grade == "A+") return "38;5;118;1";
+    if (grade == "AAA-") return "38;5;82;1";
+    if (grade == "AAA") return "38;5;34;1";                // green
+    if (grade == "AAA+") return "38;5;28;1";               // dark green
+    if (grade == "S-") return "38;5;24;1";
+    if (grade == "S") return "38;5;25;1";                  // dark blue
+    if (grade == "S+") return "38;5;26;1";
+    if (grade == "SS-") return "38;5;27;1";
+    if (grade == "SS") return "38;5;33;1";
+    if (grade == "SS+") return "38;5;39;1";
+    if (grade == "SSS-") return "38;5;45;1";
+    if (grade == "SSS") return "38;5;51;1";
+    return "96;1";                                         // SSS+ light blue
 }
 
-std::string color_grade(const Args& args, std::string grade) {
-    return ansi_wrap(args, grade_color_code(grade), std::move(grade));
+std::string color_grade(const Args& args, std::string grade, long long score) {
+    return ansi_wrap(args, grade_color_code(grade, score), std::move(grade));
 }
 
 void render_progress_bar(double completed, int total, std::string_view label) {
@@ -1345,7 +1363,7 @@ void render_score(const Args& args,
     if (global_score.available) {
         const std::string grade = score_grade(global_score.total);
         std::cerr << "GLOBAL  " << format_integer(global_score.total)
-                  << "  " << color_grade(args, grade);
+                  << "  " << color_grade(args, grade, global_score.total);
         if (args.dev_style) {
             std::cerr << "  model yume-global-v4";
         }
@@ -1360,7 +1378,7 @@ void render_score(const Args& args,
     if (league_score.available) {
         const std::string grade = score_grade(league_score.total);
         std::cerr << "LEAGUE  " << format_integer(league_score.total)
-                  << "  " << color_grade(args, grade);
+                  << "  " << color_grade(args, grade, league_score.total);
         if (args.dev_style) {
             std::cerr << "  model yume-desktop-v4";
         }

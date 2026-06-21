@@ -623,6 +623,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         add_library(yume_selftest_lib STATIC
             tools/selftest.cpp
             tools/selftest/runtime.cpp
+            tools/selftest/render.cpp
         )
         target_include_directories(yume_selftest_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
         target_link_libraries(yume_selftest_lib PUBLIC yume_core OpenSSL::Crypto Threads::Threads)

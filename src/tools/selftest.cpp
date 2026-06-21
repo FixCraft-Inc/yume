@@ -1004,6 +1004,9 @@ int main(int argc, char** argv) {
             throw std::runtime_error("openssl is required on PATH for temporary TLS/key material");
         }
 
+        const auto configs = select_configs(args);
+        apply_full_benchmark_defaults(args, configs.size());
+
         tmp = std::make_unique<TempDir>(args.keep_workdir);
         EchoServer echo;
         echo.set_sink(false);
@@ -1015,8 +1018,6 @@ int main(int argc, char** argv) {
             sink_port = sink.start();
         }
         Keyset ks = generate_keyset(args, tmp->path());
-        const auto configs = select_configs(args);
-        apply_full_benchmark_defaults(args, configs.size());
         const int progress_total = std::max(1, static_cast<int>(configs.size()) * std::max(1, args.repeats));
         int progress_completed = 0;
 

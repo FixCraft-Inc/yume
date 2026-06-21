@@ -663,6 +663,10 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.live_status = true;
         } else if (arg == "--timing") {
             args.timing = true;
+        } else {
+            args.parse_error = (arg.rfind("-", 0) == 0 ? "unknown option: " : "unknown argument: ") +
+                               arg + " (try --help)";
+            return args;
         }
     }
     return args;

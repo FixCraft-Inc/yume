@@ -84,6 +84,17 @@ constexpr int kSocketBufferBytes = 2 * 1024 * 1024;
 
 constexpr const char kDefaultAnonymCaCertPath[] = "";
 
+std::string join_items(const std::vector<std::string>& items) {
+    std::string out;
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        if (i > 0) {
+            out += (i + 1 == items.size()) ? " and " : ", ";
+        }
+        out += items[i];
+    }
+    return out;
+}
+
 }  // namespace
 
 void Cli::set_runtime_ready_callback(RuntimeReadyCallback cb) {
@@ -255,21 +266,6 @@ int Cli::run(int argc, char** argv) {
         !cfg.non_interactive &&
         (args.live_status || parse_env_bool("YUME_LIVE_STATUS", false));
     util::set_status_enabled(live_status_enabled);
-    if (!require_file("identity", cfg.identity)) {
-        return 1;
-    }
-    if (!require_file("tls_ca_cert", cfg.tls_ca_cert)) {
-        return 1;
-    }
-    if (!require_file("anonym_ca_cert", cfg.anonym_ca_cert)) {
-        return 1;
-    }
-    if (!require_file("anonym_pubkey", cfg.anonym_pubkey)) {
-        return 1;
-    }
-    if (!require_file("pq_public_key", cfg.pq_public_key)) {
-        return 1;
-    }
     if ((args.control_mode || args.list_controlled) && args.server.empty()) {
         cfg.server = "127.0.0.1";
     }
@@ -310,7 +306,41 @@ int Cli::run(int argc, char** argv) {
         return 1;
     }
 
+    if (args.bench) {
+        std::vector<std::string> missing;
+        if (cfg.server.empty()) {
+            missing.emplace_back("--server <host>");
+        }
+        if (cfg.identity.empty() || !file_exists(cfg.identity)) {
+            missing.emplace_back("--auth <identity-key>");
+        }
+        if (!missing.empty()) {
+            const std::string flag = args.bench_full ? "--fullbench" : "--bench";
+            util::log_error(flag + " needs " + join_items(missing) +
+                            ". The server must also be running yumed with --bench enabled.");
+            return 1;
+        }
+    }
     discover_default_pq_public_key(argv[0], &cfg);
+    if (args.bench && cfg.inner_crypto && !cfg.pq_public_key.empty() && !file_exists(cfg.pq_public_key)) {
+        util::log_warn("configured pq_public_key is missing; benchmark will try signed PQ auto-bootstrap");
+        cfg.pq_public_key.clear();
+    }
+    if (!require_file("identity", cfg.identity)) {
+        return 1;
+    }
+    if (!require_file("tls_ca_cert", cfg.tls_ca_cert)) {
+        return 1;
+    }
+    if (!require_file("anonym_ca_cert", cfg.anonym_ca_cert)) {
+        return 1;
+    }
+    if (!require_file("anonym_pubkey", cfg.anonym_pubkey)) {
+        return 1;
+    }
+    if (!args.bench && !require_file("pq_public_key", cfg.pq_public_key)) {
+        return 1;
+    }
 
     if (cfg.port != 443) {
         util::log_warn("using non-443 server port; HTTPS disguise is weaker");

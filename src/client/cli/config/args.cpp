@@ -267,7 +267,12 @@ ParsedArgs parse_args(int argc, char** argv) {
         } else if (arg == "--one-way" ||
                    arg == "--json-stdout" ||
                    arg == "--keep-workdir" ||
-                   arg == "--list-configs") {
+                   arg == "--list-configs" ||
+                   arg == "--dev" ||
+                   arg == "--color" ||
+                   arg == "--colour" ||
+                   arg == "--no-color" ||
+                   arg == "--no-colour") {
             args.local_benchmark_args.push_back(arg);
         } else if (arg == "--bench-mib") {
             if (!parse_int_value("--bench-mib", args.bench_mib)) {

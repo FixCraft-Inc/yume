@@ -44,13 +44,21 @@ namespace {
 using namespace yume::tools::selftest;
 namespace fs = std::filesystem;
 
-bool progress_inline_enabled() {
+bool stderr_is_tty() {
 #if !defined(_WIN32)
     static const bool enabled = ::isatty(STDERR_FILENO) == 1;
 #else
     static const bool enabled = true;
 #endif
     return enabled;
+}
+
+bool progress_inline_enabled() {
+    return stderr_is_tty();
+}
+
+bool color_enabled(const Args& args) {
+    return args.color && stderr_is_tty() && std::getenv("NO_COLOR") == nullptr;
 }
 
 bool& progress_line_active() {
@@ -65,19 +73,49 @@ void finish_progress_line() {
     }
 }
 
-void render_progress_bar(int completed, int total, std::string_view label) {
+std::string ansi_wrap(const Args& args, std::string_view code, std::string value) {
+    if (!color_enabled(args)) {
+        return value;
+    }
+    return "\033[" + std::string(code) + "m" + value + "\033[0m";
+}
+
+std::string grade_color_code(std::string_view grade) {
+    if (grade.rfind("SSS+", 0) == 0) return "96;1";
+    if (grade.rfind("SSS", 0) == 0) return "94;1";
+    if (grade.rfind("SS", 0) == 0) return "34;1";
+    if (grade.rfind("S", 0) == 0) return "32;1";
+    if (grade.rfind("AAA", 0) == 0) return "92;1";
+    if (grade.rfind("A", 0) == 0) return "33;1";
+    if (grade.rfind("B", 0) == 0) return "38;5;214;1";
+    if (grade.rfind("C", 0) == 0) return "38;5;208;1";
+    if (grade.rfind("D", 0) == 0) return "38;5;202;1";
+    return "31;1";
+}
+
+std::string color_grade(const Args& args, std::string grade) {
+    return ansi_wrap(args, grade_color_code(grade), std::move(grade));
+}
+
+void render_progress_bar(double completed, int total, std::string_view label) {
     total = std::max(1, total);
-    completed = std::clamp(completed, 0, total);
+    completed = std::clamp(completed, 0.0, static_cast<double>(total));
     constexpr int kWidth = 28;
-    const int filled = static_cast<int>((static_cast<long long>(completed) * kWidth) / total);
-    const int percent = static_cast<int>((static_cast<long long>(completed) * 100) / total);
+    const int filled = static_cast<int>((completed * kWidth) / static_cast<double>(total));
+    const int percent = static_cast<int>((completed * 100.0) / static_cast<double>(total));
     std::ostringstream line;
     line << "[bench] progress [";
     for (int i = 0; i < kWidth; ++i) {
         line << (i < filled ? '#' : '.');
     }
-    line << "] " << std::setw(3) << percent << "% "
-         << completed << "/" << total << " " << label;
+    line << "] " << std::setw(3) << std::clamp(percent, 0, 100) << "% ";
+    const double rounded = std::round(completed);
+    if (std::abs(completed - rounded) < 0.05) {
+        line << static_cast<int>(rounded);
+    } else {
+        line << std::fixed << std::setprecision(1) << completed;
+    }
+    line << "/" << total << " " << label;
 
     if (progress_inline_enabled()) {
         std::cerr << "\r" << line.str() << "        " << std::flush;
@@ -90,11 +128,15 @@ void render_progress_bar(int completed, int total, std::string_view label) {
     }
 
     static int last_bucket = -1;
-    const int bucket = percent / 10;
+    const int bucket = std::clamp(percent, 0, 100) / 10;
     if (completed >= total || (percent > 0 && bucket != last_bucket)) {
         std::cerr << line.str() << "\n";
         last_bucket = bucket;
     }
+}
+
+void render_progress_bar(int completed, int total, std::string_view label) {
+    render_progress_bar(static_cast<double>(completed), total, label);
 }
 
 
@@ -201,15 +243,19 @@ void print_help() {
         << "  --one-way                 Measure one-way upload (sink+ack), not echo\n"
         << "  --json <path>             Write JSON result file\n"
         << "  --json-stdout             Print JSON to stdout after the table\n"
+        << "  --dev                     Show component tables, timings, and row details\n"
+        << "  --no-color                Disable ANSI colors in terminal output\n"
         << "  --keep-workdir            Keep temp logs and generated keys\n"
         << "  --list-configs            Print config names and exit\n"
         << "  -h, --help                Show this help\n\n"
         << "Notes:\n"
         << "  Default/no --configs runs every built-in config, including heavy-hop-2hz.\n"
         << "  Config aliases: all expands to the full suite; all-on selects heavy-hop-2hz.\n"
-        << "  Quick mode prints raw tables only. Full mode prints GLOBAL and LEAGUE\n"
-        << "  scores. GLOBAL uses rows shared with Android; LEAGUE compares desktop\n"
-        << "  YUME transport behavior against desktop baselines.\n"
+        << "  Quick mode is an unscored smoke test. Full mode prints GLOBAL and\n"
+        << "  LEAGUE scores. GLOBAL uses rows shared with Android; LEAGUE compares\n"
+        << "  desktop YUME transport behavior against desktop baselines.\n"
+        << "  Add --dev when you want raw rows, phase timings, component points,\n"
+        << "  and other audit/debug details.\n"
         << "  Routed loopback benchmarks require yumed built with\n"
         << "  -DYUME_FEATURE_LAN_BRIDGE=ON. The tool grants allow_local_ip only\n"
         << "  to its temporary auth key through authorized_keys.json.\n";
@@ -287,6 +333,12 @@ Args parse_args(int argc, char** argv) {
             args.json_path = require_value(i, arg);
         } else if (arg == "--json-stdout") {
             args.json_stdout = true;
+        } else if (arg == "--dev") {
+            args.dev_style = true;
+        } else if (arg == "--no-color" || arg == "--no-colour") {
+            args.color = false;
+        } else if (arg == "--color" || arg == "--colour") {
+            args.color = true;
         } else if (arg == "--keep-workdir") {
             args.keep_workdir = true;
         } else if (arg == "--list-configs") {
@@ -1134,7 +1186,6 @@ HotPathRow run_sustained_mix(long target_ms,
             next_progress = now + std::chrono::milliseconds(500);
         }
     } while (now < deadline);
-    progress(1.0);
     const double seconds = elapsed_s(started, Clock::now());
     return throughput_row("sustained-mix",
                           bytes,
@@ -1179,9 +1230,11 @@ std::vector<HotPathRow> run_hot_paths(const Args& args,
     if (sustained_ms > 0) {
         step("sustained-mix", [&] {
             return run_sustained_mix(sustained_ms, [&](double fraction) {
-                const int base = progress_completed;
-                const int span = std::max(1, progress_total);
-                const int pseudo = std::clamp(base + static_cast<int>(std::round(fraction)), 0, span);
+                const double base = static_cast<double>(progress_completed);
+                const double pseudo = std::clamp(
+                    base + std::clamp(fraction, 0.0, 0.999),
+                    0.0,
+                    static_cast<double>(std::max(1, progress_total)));
                 render_progress_bar(pseudo, progress_total, "hotpath sustained-mix");
             });
         });
@@ -1280,19 +1333,23 @@ void render_score(const Args& args,
                   const BenchmarkScore& global_score,
                   const BenchmarkScore& league_score) {
     if (!args.full_benchmark) {
-        std::cerr << "\nScore not computed in quick mode. Use --fullbench for the long local benchmark score.\n";
+        std::cerr << "\nQuick benchmark complete. Use --fullbench for scored GLOBAL and LEAGUE results.\n";
         return;
     }
     if (!global_score.available && !league_score.available) {
         std::cerr << "\nYUME benchmark score: not computed.\n";
         return;
     }
-    std::cerr << "\nYUME benchmark result\n";
+    std::cerr << "\nYUME benchmark\n";
     std::cerr << "--------------------------------------------------------------------------------\n";
     if (global_score.available) {
+        const std::string grade = score_grade(global_score.total);
         std::cerr << "GLOBAL  " << format_integer(global_score.total)
-                  << "  grade " << score_grade(global_score.total)
-                  << "  model yume-global-v4\n";
+                  << "  " << color_grade(args, grade);
+        if (args.dev_style) {
+            std::cerr << "  model yume-global-v4";
+        }
+        std::cerr << "\n";
     } else {
         std::cerr << "GLOBAL  not computed";
         if (!global_score.unavailable_reason.empty()) {
@@ -1301,9 +1358,13 @@ void render_score(const Args& args,
         std::cerr << "\n";
     }
     if (league_score.available) {
+        const std::string grade = score_grade(league_score.total);
         std::cerr << "LEAGUE  " << format_integer(league_score.total)
-                  << "  grade " << score_grade(league_score.total)
-                  << "  model yume-desktop-v4\n";
+                  << "  " << color_grade(args, grade);
+        if (args.dev_style) {
+            std::cerr << "  model yume-desktop-v4";
+        }
+        std::cerr << "\n";
     } else {
         std::cerr << "LEAGUE  not computed";
         if (!league_score.unavailable_reason.empty()) {
@@ -1317,9 +1378,15 @@ void render_score(const Args& args,
               << "  streams=" << args.streams
               << "  repeats=" << args.repeats
               << "  tunnels=" << args.tunnels << "\n";
-    std::cerr << "GLOBAL compares common hot paths across Android and desktop.\n";
-    std::cerr << "LEAGUE compares desktop YUME transport behavior against desktop baselines.\n";
+    std::cerr << "GLOBAL: shared Android/desktop hot paths.\n";
+    std::cerr << "LEAGUE: desktop YUME transport profile.\n";
+    if (!args.dev_style) {
+        std::cerr << "Run again with --dev for component tables and phase timings.\n";
+    }
     std::cerr << "--------------------------------------------------------------------------------\n";
+    if (!args.dev_style) {
+        return;
+    }
     auto render_components = [](std::string_view title, const BenchmarkScore& score) {
         if (!score.available) {
             return;
@@ -1722,8 +1789,10 @@ int run_cli(int argc, char** argv) {
         if (args.full_benchmark) {
             render_score(args, global_score, league_score);
         }
-        render_hot_path_table(hot_paths);
-        render_table(results);
+        if (args.dev_style) {
+            render_hot_path_table(hot_paths);
+            render_table(results);
+        }
         if (!args.full_benchmark) {
             render_score(args, global_score, league_score);
         }

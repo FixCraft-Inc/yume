@@ -51,6 +51,8 @@ struct Args {
     int target_duration_sec{60};
     bool one_way{false};
     bool full_benchmark{false};
+    bool dev_style{false};
+    bool color{true};
     bool list_configs{false};
     bool keep_workdir{false};
     bool json_stdout{false};

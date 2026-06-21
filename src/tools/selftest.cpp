@@ -83,7 +83,7 @@ const std::vector<Config>& builtin_configs() {
         },
         {
             "heavy-hop-2hz",
-            "All protections: HTTPS/H2 disguise, inner heavy KDF, live hopping every 500 ms.",
+            "HTTPS/H2 disguise, heavy inner KDF, live hopping every 500 ms.",
             false,
             {"--obfs", "--inner-heavy", "--inner-required", "--hop", "--hop-interval", "500"},
             {"--obfs", "--inner-heavy", "--hop", "--hop-interval", "500"},
@@ -608,6 +608,7 @@ struct ScoreComponent {
 struct BenchmarkScore {
     bool available{false};
     long long total{0};
+    std::string unavailable_reason;
     std::vector<ScoreComponent> components;
 };
 
@@ -620,18 +621,46 @@ const Result* find_result(const std::vector<Result>& results, std::string_view n
 
 constexpr double kBenchmarkReferenceScore = 10000000.0;
 
+double score_scale(double ratio) {
+    if (ratio <= 0.0) {
+        return 0.0;
+    }
+    if (ratio <= 1.0) {
+        return std::pow(ratio, 0.70);
+    }
+    return 1.0 + std::log1p(ratio - 1.0) * 0.22;
+}
+
 double scaled_metric_points(double value, double reference, double reference_points) {
     if (value <= 0.0 || reference <= 0.0 || reference_points <= 0.0) {
         return 0.0;
     }
-    return std::pow(value / reference, 0.55) * reference_points;
+    return score_scale(value / reference) * reference_points;
 }
 
 double scaled_latency_points(double median_ms, double reference_ms, double reference_points) {
     if (median_ms <= 0.0 || reference_ms <= 0.0 || reference_points <= 0.0) {
         return 0.0;
     }
-    return std::pow(reference_ms / median_ms, 0.45) * reference_points;
+    return score_scale(reference_ms / median_ms) * reference_points;
+}
+
+std::string format_integer(long long value) {
+    const bool negative = value < 0;
+    std::string digits = std::to_string(negative ? -value : value);
+    std::string out;
+    out.reserve(digits.size() + digits.size() / 3 + 1);
+    if (negative) {
+        out.push_back('-');
+    }
+    const std::size_t first_group = digits.size() % 3;
+    for (std::size_t i = 0; i < digits.size(); ++i) {
+        if (i > 0 && (i - first_group) % 3 == 0) {
+            out.push_back(',');
+        }
+        out.push_back(digits[i]);
+    }
+    return out;
 }
 
 BenchmarkScore compute_score(const Args& args, const std::vector<Result>& results) {
@@ -640,9 +669,13 @@ BenchmarkScore compute_score(const Args& args, const std::vector<Result>& result
         return score;
     }
 
+    std::vector<std::string> missing_required;
     auto add_throughput = [&](std::string_view name, double reference, double weight) {
         const Result* result = find_result(results, name);
-        if (!result) return;
+        if (!result) {
+            missing_required.push_back(std::string(name));
+            return;
+        }
         score.components.push_back({
             std::string(name),
             result->throughput_mib_s,
@@ -652,24 +685,30 @@ BenchmarkScore compute_score(const Args& args, const std::vector<Result>& result
         });
     };
 
-    add_throughput("base-direct", 8000.0, 900000.0);
-    add_throughput("no-inner-raw", 1600.0, 1100000.0);
-    add_throughput("no-inner-obfs", 1400.0, 1400000.0);
-    add_throughput("light-no-hop", 1200.0, 1500000.0);
-    add_throughput("light-hop-2hz", 1000.0, 1800000.0);
-    add_throughput("heavy-no-hop", 950.0, 1400000.0);
-    add_throughput("heavy-hop-2hz", 900.0, 1900000.0);
+    add_throughput("base-direct", 12000.0, 600000.0);
+    add_throughput("no-inner-raw", 1600.0, 1000000.0);
+    add_throughput("no-inner-obfs", 1500.0, 1300000.0);
+    add_throughput("light-no-hop", 1350.0, 1400000.0);
+    add_throughput("light-hop-2hz", 1250.0, 1800000.0);
+    add_throughput("heavy-no-hop", 1150.0, 1400000.0);
+    add_throughput("heavy-hop-2hz", 1100.0, 1900000.0);
 
     const Result* latency_anchor = find_result(results, "heavy-hop-2hz");
-    if (!latency_anchor) latency_anchor = find_result(results, "light-hop-2hz");
     if (latency_anchor && latency_anchor->latency_ms.median > 0.0) {
         score.components.push_back({
             "latency-anchor",
             latency_anchor->latency_ms.median,
             "ms",
-            scaled_latency_points(latency_anchor->latency_ms.median, 0.20, 1000000.0),
-            1000000.0,
+            scaled_latency_points(latency_anchor->latency_ms.median, 0.05, 600000.0),
+            600000.0,
         });
+    } else {
+        missing_required.push_back("latency-anchor");
+    }
+
+    if (!missing_required.empty()) {
+        score.unavailable_reason = "partial benchmark; run --full without --configs for an overall score";
+        return score;
     }
 
     double earned = 0.0;
@@ -689,32 +728,32 @@ BenchmarkScore compute_score(const Args& args, const std::vector<Result>& result
 }
 
 std::string score_grade(long long score) {
-    if (score >= 20000000) return "SSS+";
-    if (score >= 17000000) return "SSS";
-    if (score >= 14000000) return "SSS-";
-    if (score >= 12000000) return "SS+";
-    if (score >= 10000000) return "SS";
-    if (score >= 8500000) return "SS-";
-    if (score >= 7250000) return "S+";
-    if (score >= 6250000) return "S";
-    if (score >= 5250000) return "S-";
-    if (score >= 4500000) return "AAA+";
-    if (score >= 3800000) return "AAA";
-    if (score >= 3200000) return "AAA-";
-    if (score >= 2700000) return "A+";
-    if (score >= 2200000) return "A";
-    if (score >= 1800000) return "A-";
-    if (score >= 1400000) return "B+";
-    if (score >= 1000000) return "B";
-    if (score >= 750000) return "B-";
-    if (score >= 550000) return "C+";
-    if (score >= 375000) return "C";
-    if (score >= 250000) return "C-";
-    if (score >= 160000) return "D+";
-    if (score >= 100000) return "D";
-    if (score >= 50000) return "D-";
-    if (score >= 25000) return "F+";
-    if (score >= 10000) return "F";
+    if (score >= 60000000) return "SSS+";
+    if (score >= 40000000) return "SSS";
+    if (score >= 28000000) return "SSS-";
+    if (score >= 20000000) return "SS+";
+    if (score >= 15000000) return "SS";
+    if (score >= 11000000) return "SS-";
+    if (score >= 9000000) return "S+";
+    if (score >= 7000000) return "S";
+    if (score >= 5200000) return "S-";
+    if (score >= 3800000) return "AAA+";
+    if (score >= 2800000) return "AAA";
+    if (score >= 2000000) return "AAA-";
+    if (score >= 1500000) return "A+";
+    if (score >= 1100000) return "A";
+    if (score >= 800000) return "A-";
+    if (score >= 580000) return "B+";
+    if (score >= 420000) return "B";
+    if (score >= 300000) return "B-";
+    if (score >= 210000) return "C+";
+    if (score >= 150000) return "C";
+    if (score >= 100000) return "C-";
+    if (score >= 65000) return "D+";
+    if (score >= 40000) return "D";
+    if (score >= 25000) return "D-";
+    if (score >= 12000) return "F+";
+    if (score >= 6000) return "F";
     return "F-";
 }
 
@@ -724,12 +763,16 @@ void render_score(const Args& args, const BenchmarkScore& score) {
         return;
     }
     if (!score.available) {
-        std::cerr << "\nOverall score: unavailable; no successful scored benchmark rows.\n";
+        std::cerr << "\nYUME benchmark score: not computed";
+        if (!score.unavailable_reason.empty()) {
+            std::cerr << " (" << score.unavailable_reason << ")";
+        }
+        std::cerr << ".\n";
         return;
     }
     std::cerr << "\nYUME benchmark score\n";
     std::cerr << "--------------------------------------------------------------------------------\n";
-    std::cerr << "overall: " << score.total
+    std::cerr << "score: " << format_integer(score.total)
               << "  grade " << score_grade(score.total) << "\n";
     std::cerr << "mode: full"
               << "  target=" << args.target_duration_sec << "s"
@@ -737,8 +780,8 @@ void render_score(const Args& args, const BenchmarkScore& score) {
               << "  streams=" << args.streams
               << "  repeats=" << args.repeats
               << "  tunnels=" << args.tunnels << "\n";
-    std::cerr << "10,000,000 is the reference-class baseline, not a maximum.\n";
-    std::cerr << "Raw MiB/s and ms rows are the exact measurements.\n";
+    std::cerr << "reference score: 10,000,000; faster systems can score higher.\n";
+    std::cerr << "Use the raw MiB/s and latency rows for exact measurements.\n";
     std::cerr << "--------------------------------------------------------------------------------\n";
     std::cerr << std::left << std::setw(20) << "component"
               << std::right << std::setw(14) << "raw"
@@ -901,12 +944,13 @@ std::string render_json(const Args& args,
                         const BenchmarkScore& score) {
     std::ostringstream out;
     out << "{\n";
-    out << "  \"schema_version\": 6,\n";
+    out << "  \"schema_version\": 7,\n";
     out << "  \"benchmark_mode\": \"" << (args.full_benchmark ? "full" : "quick") << "\",\n";
     out << "  \"workdir\": \"" << json_escape(workdir.string()) << "\",\n";
     out << "  \"score\": ";
     if (score.available) {
         out << "{\n";
+        out << "    \"model\": \"yume-bench-v2\",\n";
         out << "    \"total\": " << score.total << ",\n";
         out << "    \"reference\": 10000000,\n";
         out << "    \"grade\": \"" << score_grade(score.total) << "\",\n";
@@ -924,6 +968,12 @@ std::string render_json(const Args& args,
         out << "  },\n";
     } else {
         out << "null,\n";
+    }
+    out << "  \"score_unavailable_reason\": ";
+    if (score.available || score.unavailable_reason.empty()) {
+        out << "null,\n";
+    } else {
+        out << "\"" << json_escape(score.unavailable_reason) << "\",\n";
     }
     out << "  \"latency_iters\": " << args.latency_iters << ",\n";
     out << "  \"bulk_mib\": " << args.bulk_mib << ",\n";

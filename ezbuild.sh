@@ -22,6 +22,7 @@ BUILD_GUI=0
 BUILD_TESTS=0
 BUILD_TOOLS=0
 BUILD_SELFTEST=0
+SELFTEST_ONLY=0
 PORTABLE=0
 SKIP_PULL=0
 OPENWRT=0
@@ -106,7 +107,11 @@ Options:
                           (installs libgl/libglfw/appindicator dev pkgs)
   --tests                 Build unit-test executables
   --tools                 Build helper tools such as yume-net-map
-  --selftest              Build desktop benchmark/self-test tools
+  --selftest, --include-selftest
+                          Build desktop benchmark/self-test tools
+                          alongside yume and yumed
+  --selftest-only         Build only yume, yumed, and desktop self-test
+                          benchmark tools; skips GUI/tests/helper tools
   --portable, --static    Produce single self-contained binaries (no
                           MinGW/vcpkg DLLs alongside). For the cross
                           route this pins WINDOWS_TRIPLET to
@@ -1206,7 +1211,15 @@ build_project() {
     step "Configuring build..."
     cmake -B "${build_dir}" "${CMAKE_ARGS[@]}"
     step "Compiling..."
-    cmake --build "${build_dir}" -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu || echo 4)"
+    local jobs
+    jobs="$(nproc 2>/dev/null || sysctl -n hw.ncpu || echo 4)"
+    if [[ ${SELFTEST_ONLY:-0} -eq 1 ]]; then
+        cmake --build "${build_dir}" \
+            --target yume yumed yume-selftest yume-basefwx-bench yume-relay-bench \
+            -j"${jobs}"
+    else
+        cmake --build "${build_dir}" -j"${jobs}"
+    fi
     ok "Build complete."
     if [[ -x "${build_dir}/bin/Yume.app/Contents/MacOS/Yume" ]]; then
         info "Yume.app built at ${build_dir}/bin/Yume.app"
@@ -1278,8 +1291,13 @@ main() {
                 BUILD_TOOLS=1
                 shift
                 ;;
-            --selftest|--with-selftest)
+            --selftest|--with-selftest|--include-selftest)
                 BUILD_SELFTEST=1
+                shift
+                ;;
+            --selftest-only|--only-selftest)
+                BUILD_SELFTEST=1
+                SELFTEST_ONLY=1
                 shift
                 ;;
             --portable|--static)
@@ -1346,6 +1364,13 @@ main() {
 
     maybe_sync_repo
 
+    if [[ $BUILD_SELFTEST -eq 1 ]]; then
+        if [[ "${WINDOWS_CROSS}" == "1" || $OPENWRT -eq 1 || $BUSYBOX -eq 1 ]]; then
+            error "Self-test builds are native desktop-only; do not combine --selftest/--selftest-only with Windows cross, OpenWRT, or BusyBox modes."
+            exit 1
+        fi
+    fi
+
     if [[ $MINIMAL -eq 1 ]]; then
         warn "Minimal mode: enabling static build and BaseFWX."
         CMAKE_ARGS+=(
@@ -1355,6 +1380,15 @@ main() {
             -DYUME_USE_SPDLOG=OFF
             -DCMAKE_BUILD_TYPE=Release
         )
+    fi
+
+    if [[ $SELFTEST_ONLY -eq 1 ]]; then
+        if [[ $BUILD_GUI -eq 1 || $BUILD_TESTS -eq 1 || $BUILD_TOOLS -eq 1 ]]; then
+            warn "--selftest-only ignores --gui, --tests, and --tools; only self-test target set will be built."
+        fi
+        BUILD_GUI=0
+        BUILD_TESTS=0
+        BUILD_TOOLS=0
     fi
 
     if [[ $BUILD_GUI -eq 1 ]]; then
@@ -1379,7 +1413,8 @@ main() {
 
     if [[ $BUILD_SELFTEST -eq 1 ]]; then
         info "Self-test benchmark tools enabled (-DYUME_BUILD_SELFTEST=ON)."
-        CMAKE_ARGS+=( -DYUME_BUILD_SELFTEST=ON )
+        info "Self-test builds enable LAN bridge compile support for routed loopback benchmarks."
+        CMAKE_ARGS+=( -DYUME_BUILD_SELFTEST=ON -DYUME_FEATURE_LAN_BRIDGE=ON )
     fi
 
     if [[ $PORTABLE -eq 1 ]]; then
@@ -1977,6 +2012,10 @@ EOF
     local build_dir="${YUME_BUILD_DIR:-build}"
     echo -e "${COLOR_GREEN}Run:${COLOR_RESET} ./${build_dir}/bin/yumed${exe_suffix} --config config/yumed.json"
     echo -e "${COLOR_GREEN}Then:${COLOR_RESET} ./${build_dir}/bin/yume${exe_suffix} --config config/yume.json --socks 1080"
+    if [[ $BUILD_SELFTEST -eq 1 ]]; then
+        echo -e "${COLOR_GREEN}Self-test:${COLOR_RESET} ./${build_dir}/bin/yume-selftest --quick"
+        echo -e "${COLOR_GREEN}Bench:${COLOR_RESET} ./${build_dir}/bin/yume-selftest --full"
+    fi
 }
 
 main "$@"

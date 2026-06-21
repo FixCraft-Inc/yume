@@ -637,6 +637,11 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             target_link_options(yume-basefwx-bench PRIVATE -static)
             target_link_options(yume-relay-bench PRIVATE -static)
         endif()
+        list(APPEND _yume_install_targets
+            yume-selftest
+            yume-basefwx-bench
+            yume-relay-bench
+        )
     endif()
 
     install(TARGETS ${_yume_install_targets}

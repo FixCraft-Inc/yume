@@ -44,6 +44,19 @@ namespace {
 using namespace yume::tools::selftest;
 namespace fs = std::filesystem;
 
+constexpr std::string_view kBenchLogPrefix = "[bench]";
+constexpr std::string_view kGlobalScoreModel = "yume-global-v1";
+constexpr std::string_view kDesktopScoreModel = "yume-desktop-v1";
+constexpr std::string_view kEngineScoreModel = "yume-engine-v1";
+constexpr std::string_view kTransportScoreModel = "yume-transport-v1";
+constexpr std::string_view kChecksumField = "checksum";
+constexpr std::string_view kHkdfInfoPrefix = "yume-hop-v1:";
+constexpr int kJsonSchemaVersion = 1;
+
+std::string checksum_detail(int value) {
+    return std::string(kChecksumField) + "=" + std::to_string(value & 0xff);
+}
+
 bool stderr_is_tty() {
 #if !defined(_WIN32)
     static const bool enabled = ::isatty(STDERR_FILENO) == 1;
@@ -122,7 +135,7 @@ void render_progress_bar(double completed, int total, std::string_view label) {
     const int filled = static_cast<int>((completed * kWidth) / static_cast<double>(total));
     const int percent = static_cast<int>((completed * 100.0) / static_cast<double>(total));
     std::ostringstream line;
-    line << "[bench] progress [";
+    line << kBenchLogPrefix << " progress [";
     for (int i = 0; i < kWidth; ++i) {
         line << (i < filled ? '#' : '.');
     }
@@ -247,8 +260,8 @@ void print_help() {
         << "  --quick                   Alias for --benchmark quick\n"
         << "  --full                    Alias for --benchmark full\n"
         << "  --duration-sec <N>        Full-mode target duration hint (30..600,\n"
-        << "                            default 60; scales payload size)\n"
-        << "  --latency-iters <N>       Echo round trips per config (default 120)\n"
+        << "                            default 180; scales payload size)\n"
+        << "  --latency-iters <N>       Echo round trips per config (default 120; full uses 360)\n"
         << "  --bulk-mib <N>            Bulk echo size per config (default 32)\n"
         << "  --argon-mem-kib <N>       Heavy KDF memory cap/env for this run (default 32768)\n"
         << "  --argon-parallelism <N>   Heavy KDF parallelism cap/env (default 2)\n"
@@ -270,8 +283,8 @@ void print_help() {
         << "  Default/no --configs runs every built-in config, including heavy-hop-2hz.\n"
         << "  Config aliases: all expands to the full suite; all-on selects heavy-hop-2hz.\n"
         << "  Quick mode is an unscored smoke test. Full mode prints GLOBAL and\n"
-        << "  LEAGUE scores. GLOBAL uses rows shared with Android; LEAGUE compares\n"
-        << "  desktop YUME transport behavior against desktop baselines.\n"
+        << "  LEAGUE scores. GLOBAL uses rows shared with Android; LEAGUE combines\n"
+        << "  desktop engine and YUME transport behavior against desktop baselines.\n"
         << "  Add --dev when you want raw rows, phase timings, component points,\n"
         << "  and other audit/debug details.\n"
         << "  Routed loopback benchmarks require yumed built with\n"
@@ -603,7 +616,7 @@ Result run_config_repeated(const Args& args,
                            int& progress_completed,
                            int progress_total) {
     if (!progress_inline_enabled()) {
-        std::cerr << "[bench] " << cfg.name << ": " << cfg.description << "\n";
+        std::cerr << kBenchLogPrefix << " " << cfg.name << ": " << cfg.description << "\n";
     }
     if (args.repeats <= 1) {
         render_progress_bar(progress_completed, progress_total, cfg.name);
@@ -618,14 +631,14 @@ Result run_config_repeated(const Args& args,
     for (int trial = 0; trial < args.repeats; ++trial) {
         if (trial > 0 && args.cooldown_ms > 0) {
             if (!progress_inline_enabled()) {
-                std::cerr << "[bench] cooldown " << args.cooldown_ms
+                std::cerr << kBenchLogPrefix << " cooldown " << args.cooldown_ms
                           << " ms before " << cfg.name << " trial "
                           << (trial + 1) << "/" << args.repeats << "\n";
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(args.cooldown_ms));
         }
         if (!progress_inline_enabled()) {
-            std::cerr << "[bench] " << cfg.name << " trial "
+            std::cerr << kBenchLogPrefix << " " << cfg.name << " trial "
                       << (trial + 1) << "/" << args.repeats << "\n";
         }
         const std::string progress_label = cfg.name + " trial " +
@@ -698,7 +711,7 @@ void apply_full_benchmark_defaults(Args& args, std::size_t config_count) {
         return;
     }
     if (!args.target_duration_override) {
-        args.target_duration_sec = 60;
+        args.target_duration_sec = 180;
     }
     if (!args.repeat_count_override) {
         args.repeats = 3;
@@ -719,7 +732,7 @@ void apply_full_benchmark_defaults(Args& args, std::size_t config_count) {
         args.one_way = true;
     }
     if (!args.latency_iters_override) {
-        args.latency_iters = 240;
+        args.latency_iters = 360;
     }
     if (!args.bulk_mib_override) {
         const int divisor = std::max(1, static_cast<int>(config_count) * args.repeats);
@@ -773,7 +786,7 @@ double score_scale(double ratio) {
     if (ratio <= 1.0) {
         return std::pow(ratio, 0.95);
     }
-    return std::pow(ratio, 0.68);
+    return std::pow(ratio, 1.15);
 }
 
 double scaled_metric_points(double value, double reference, double reference_points) {
@@ -814,9 +827,8 @@ std::string format_integer(long long value) {
     if (negative) {
         out.push_back('-');
     }
-    const std::size_t first_group = digits.size() % 3;
     for (std::size_t i = 0; i < digits.size(); ++i) {
-        if (i > 0 && (i - first_group) % 3 == 0) {
+        if (i > 0 && (digits.size() - i) % 3 == 0) {
             out.push_back(',');
         }
         out.push_back(digits[i]);
@@ -846,13 +858,13 @@ BenchmarkScore compute_score(const Args& args, const std::vector<Result>& result
         });
     };
 
-    add_throughput("base-direct", 100000.0, 600000.0);
-    add_throughput("no-inner-raw", 12000.0, 1000000.0);
-    add_throughput("no-inner-obfs", 11000.0, 1300000.0);
-    add_throughput("light-no-hop", 10000.0, 1400000.0);
-    add_throughput("light-hop-2hz", 9500.0, 1800000.0);
-    add_throughput("heavy-no-hop", 9000.0, 1400000.0);
-    add_throughput("heavy-hop-2hz", 8500.0, 1900000.0);
+    add_throughput("base-direct", 25000.0, 300000.0);
+    add_throughput("no-inner-raw", 1600.0, 900000.0);
+    add_throughput("no-inner-obfs", 1450.0, 1200000.0);
+    add_throughput("light-no-hop", 1300.0, 1400000.0);
+    add_throughput("light-hop-2hz", 1150.0, 1900000.0);
+    add_throughput("heavy-no-hop", 1050.0, 1500000.0);
+    add_throughput("heavy-hop-2hz", 950.0, 2000000.0);
 
     const Result* latency_anchor = find_result(results, "heavy-hop-2hz");
     if (latency_anchor && latency_anchor->latency_ms.median > 0.0) {
@@ -860,8 +872,8 @@ BenchmarkScore compute_score(const Args& args, const std::vector<Result>& result
             "latency-anchor",
             latency_anchor->latency_ms.median,
             "ms",
-            scaled_latency_points(latency_anchor->latency_ms.median, 0.025, 600000.0),
-            600000.0,
+            scaled_latency_points(latency_anchor->latency_ms.median, 0.08, 800000.0),
+            800000.0,
         });
     } else {
         missing_required.push_back("latency-anchor");
@@ -886,6 +898,16 @@ std::vector<std::uint8_t> patterned_bytes(std::size_t size, int seed = 17) {
 
 int iterations_for(std::uint64_t total_bytes, std::size_t chunk_bytes) {
     return static_cast<int>(std::max<std::uint64_t>(1, total_bytes / std::max<std::size_t>(1, chunk_bytes)));
+}
+
+std::vector<std::uint64_t> split_work(std::uint64_t total, int workers) {
+    const int count = std::max(1, workers);
+    std::vector<std::uint64_t> out(static_cast<std::size_t>(count), total / static_cast<std::uint64_t>(count));
+    std::uint64_t remaining = total % static_cast<std::uint64_t>(count);
+    for (int i = 0; remaining > 0; ++i, --remaining) {
+        out[static_cast<std::size_t>(i % count)] += 1;
+    }
+    return out;
 }
 
 HotPathRow throughput_row(std::string name,
@@ -923,17 +945,12 @@ HotPathRow run_copy_floor(std::uint64_t total_bytes) {
     return throughput_row("copy-floor",
                           static_cast<std::uint64_t>(iterations) * src.size(),
                           seconds,
-                          "64 KiB vector copy, guard=" + std::to_string(guard & 0xff));
+                          "64 KiB vector copy, " + checksum_detail(guard));
 }
 
 HotPathRow run_stream_copy(std::uint64_t total_bytes, int streams) {
     const int stream_count = std::max(1, streams);
-    std::vector<std::uint64_t> per_stream(static_cast<std::size_t>(stream_count),
-                                          total_bytes / static_cast<std::uint64_t>(stream_count));
-    std::uint64_t remaining = total_bytes % static_cast<std::uint64_t>(stream_count);
-    for (int i = 0; remaining > 0; ++i, --remaining) {
-        per_stream[static_cast<std::size_t>(i % stream_count)] += 1;
-    }
+    const auto per_stream = split_work(total_bytes, stream_count);
 
     const auto src = patterned_bytes(32 * kKiB);
     std::atomic<bool> start_flag{false};
@@ -983,11 +1000,59 @@ HotPathRow run_stream_copy(std::uint64_t total_bytes, int streams) {
            << " median=" << stats.median
            << " p95=" << stats.p95
            << " max=" << stats.max
-           << " instability=" << instability << "% guard=" << guard;
+           << " instability=" << instability << "% " << checksum_detail(guard);
     return throughput_row(stream_count == 1 ? "stream-copy-1" : "stream-copy-many",
                           total_bytes,
                           seconds,
                           detail.str());
+}
+
+HotPathRow run_memory_bandwidth(std::uint64_t total_bytes, int thread_count, std::size_t chunk_bytes) {
+    const int workers = std::clamp(thread_count, 1, 256);
+    const std::size_t chunk = std::clamp<std::size_t>(chunk_bytes, 256 * kKiB, 32 * kMiB);
+    const auto per_worker = split_work(total_bytes, workers);
+
+    std::atomic<bool> start_flag{false};
+    std::vector<std::uint64_t> copied_by_worker(static_cast<std::size_t>(workers), 0);
+    std::vector<int> guards(static_cast<std::size_t>(workers), 0);
+    std::vector<std::thread> threads;
+    threads.reserve(static_cast<std::size_t>(workers));
+
+    for (int worker = 0; worker < workers; ++worker) {
+        threads.emplace_back([&, worker] {
+            auto src = patterned_bytes(chunk, 41 + worker);
+            std::vector<std::uint8_t> dst(src.size());
+            while (!start_flag.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            const auto target = per_worker[static_cast<std::size_t>(worker)];
+            std::uint64_t copied = 0;
+            int guard = 0;
+            while (copied < target) {
+                const auto n = static_cast<std::size_t>(std::min<std::uint64_t>(src.size(), target - copied));
+                std::copy_n(src.begin(), static_cast<std::ptrdiff_t>(n), dst.begin());
+                guard ^= dst[(copied / std::max<std::size_t>(1, n)) & (dst.size() - 1)];
+                copied += n;
+            }
+            copied_by_worker[static_cast<std::size_t>(worker)] = copied;
+            guards[static_cast<std::size_t>(worker)] = guard;
+        });
+    }
+
+    const auto started = Clock::now();
+    start_flag.store(true, std::memory_order_release);
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    const double seconds = elapsed_s(started, Clock::now());
+    const auto copied = std::accumulate(copied_by_worker.begin(), copied_by_worker.end(), std::uint64_t{0});
+    const int guard = std::accumulate(guards.begin(), guards.end(), 0, [](int a, int b) { return a ^ b; }) & 0xff;
+    return throughput_row("memory-bandwidth",
+                          copied,
+                          seconds,
+                          "parallel memory copy, threads=" + std::to_string(workers) +
+                              ", chunk_kib=" + std::to_string(chunk / kKiB) +
+                              ", " + checksum_detail(guard));
 }
 
 yume::protocol::packet_bulk::Batch packet_batch() {
@@ -1003,101 +1068,233 @@ yume::protocol::packet_bulk::Batch packet_batch() {
     return batch;
 }
 
-HotPathRow run_aead_encrypt(std::uint64_t total_bytes) {
-    const auto key = patterned_bytes(32, 3);
-    const std::vector<std::uint8_t> aad{
-        'y', 'u', 'm', 'e', '-', 'd', 'e', 's', 'k', 't', 'o', 'p', '-', 'b', 'e', 'n', 'c', 'h'};
-    const auto plaintext = patterned_bytes(64 * kKiB);
-    const int iterations = iterations_for(total_bytes, plaintext.size());
-    int guard = 0;
+HotPathRow run_aead_encrypt(std::uint64_t total_bytes, int thread_count) {
+    const int workers = std::clamp(thread_count, 1, 256);
+    const auto per_worker = split_work(total_bytes, workers);
+    std::atomic<bool> start_flag{false};
+    std::vector<std::uint64_t> bytes_by_worker(static_cast<std::size_t>(workers), 0);
+    std::vector<int> guards(static_cast<std::size_t>(workers), 0);
+    std::vector<std::thread> threads;
+    threads.reserve(static_cast<std::size_t>(workers));
+
+    for (int worker = 0; worker < workers; ++worker) {
+        threads.emplace_back([&, worker] {
+            const auto key = patterned_bytes(32, 3 + worker);
+            const std::vector<std::uint8_t> aad{
+                'y', 'u', 'm', 'e', '-', 'd', 'e', 's', 'k', 't', 'o', 'p', '-', 'b', 'e', 'n', 'c', 'h'};
+            const auto plaintext = patterned_bytes(64 * kKiB, 21 + worker);
+            const int iterations = iterations_for(per_worker[static_cast<std::size_t>(worker)], plaintext.size());
+            int guard = 0;
+            while (!start_flag.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            for (int i = 0; i < iterations; ++i) {
+                auto encrypted = basefwx::crypto::AeadEncrypt(key, plaintext, aad);
+                guard ^= encrypted.back();
+            }
+            bytes_by_worker[static_cast<std::size_t>(worker)] =
+                static_cast<std::uint64_t>(iterations) * plaintext.size();
+            guards[static_cast<std::size_t>(worker)] = guard;
+        });
+    }
     const auto start = Clock::now();
-    for (int i = 0; i < iterations; ++i) {
-        auto encrypted = basefwx::crypto::AeadEncrypt(key, plaintext, aad);
-        guard ^= encrypted.back();
+    start_flag.store(true, std::memory_order_release);
+    for (auto& thread : threads) {
+        thread.join();
     }
     const double seconds = elapsed_s(start, Clock::now());
+    const auto bytes = std::accumulate(bytes_by_worker.begin(), bytes_by_worker.end(), std::uint64_t{0});
+    const int guard = std::accumulate(guards.begin(), guards.end(), 0, [](int a, int b) { return a ^ b; });
     return throughput_row("aes-gcm-encrypt",
-                          static_cast<std::uint64_t>(iterations) * plaintext.size(),
+                          bytes,
                           seconds,
-                          "BaseFWX AES-GCM, 64 KiB chunks, guard=" + std::to_string(guard & 0xff));
+                          "BaseFWX AES-GCM, 64 KiB chunks, threads=" + std::to_string(workers) +
+                              ", " + checksum_detail(guard));
 }
 
-HotPathRow run_aead_decrypt(std::uint64_t total_bytes) {
-    const auto key = patterned_bytes(32, 3);
-    const std::vector<std::uint8_t> aad{
-        'y', 'u', 'm', 'e', '-', 'd', 'e', 's', 'k', 't', 'o', 'p', '-', 'b', 'e', 'n', 'c', 'h'};
-    const auto plaintext = patterned_bytes(64 * kKiB);
-    const auto encrypted = basefwx::crypto::AeadEncrypt(key, plaintext, aad);
-    const int iterations = iterations_for(total_bytes, plaintext.size());
-    int guard = 0;
+HotPathRow run_aead_decrypt(std::uint64_t total_bytes, int thread_count) {
+    const int workers = std::clamp(thread_count, 1, 256);
+    const auto per_worker = split_work(total_bytes, workers);
+    std::atomic<bool> start_flag{false};
+    std::vector<std::uint64_t> bytes_by_worker(static_cast<std::size_t>(workers), 0);
+    std::vector<int> guards(static_cast<std::size_t>(workers), 0);
+    std::vector<std::thread> threads;
+    threads.reserve(static_cast<std::size_t>(workers));
+
+    for (int worker = 0; worker < workers; ++worker) {
+        threads.emplace_back([&, worker] {
+            const auto key = patterned_bytes(32, 3 + worker);
+            const std::vector<std::uint8_t> aad{
+                'y', 'u', 'm', 'e', '-', 'd', 'e', 's', 'k', 't', 'o', 'p', '-', 'b', 'e', 'n', 'c', 'h'};
+            const auto plaintext = patterned_bytes(64 * kKiB, 21 + worker);
+            const auto encrypted = basefwx::crypto::AeadEncrypt(key, plaintext, aad);
+            const int iterations = iterations_for(per_worker[static_cast<std::size_t>(worker)], plaintext.size());
+            int guard = 0;
+            while (!start_flag.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            for (int i = 0; i < iterations; ++i) {
+                auto decrypted = basefwx::crypto::AeadDecrypt(key, encrypted, aad);
+                guard ^= decrypted[static_cast<std::size_t>(i) & (decrypted.size() - 1)];
+            }
+            bytes_by_worker[static_cast<std::size_t>(worker)] =
+                static_cast<std::uint64_t>(iterations) * plaintext.size();
+            guards[static_cast<std::size_t>(worker)] = guard;
+        });
+    }
     const auto start = Clock::now();
-    for (int i = 0; i < iterations; ++i) {
-        auto decrypted = basefwx::crypto::AeadDecrypt(key, encrypted, aad);
-        guard ^= decrypted[static_cast<std::size_t>(i) & (decrypted.size() - 1)];
+    start_flag.store(true, std::memory_order_release);
+    for (auto& thread : threads) {
+        thread.join();
     }
     const double seconds = elapsed_s(start, Clock::now());
+    const auto bytes = std::accumulate(bytes_by_worker.begin(), bytes_by_worker.end(), std::uint64_t{0});
+    const int guard = std::accumulate(guards.begin(), guards.end(), 0, [](int a, int b) { return a ^ b; });
     return throughput_row("aes-gcm-decrypt",
-                          static_cast<std::uint64_t>(iterations) * plaintext.size(),
+                          bytes,
                           seconds,
-                          "BaseFWX AES-GCM, 64 KiB chunks, guard=" + std::to_string(guard & 0xff));
+                          "BaseFWX AES-GCM, 64 KiB chunks, threads=" + std::to_string(workers) +
+                              ", " + checksum_detail(guard));
 }
 
-HotPathRow run_packet_bulk_encode(std::uint64_t total_bytes) {
-    auto batch = packet_batch();
-    const auto encoded_size = yume::protocol::packet_bulk::encoded_size(batch);
-    const int iterations = iterations_for(total_bytes, encoded_size);
-    int guard = 0;
+HotPathRow run_packet_bulk_encode(std::uint64_t total_bytes, int thread_count) {
+    const int workers = std::clamp(thread_count, 1, 256);
+    const auto per_worker = split_work(total_bytes, workers);
+    std::atomic<bool> start_flag{false};
+    std::vector<std::uint64_t> bytes_by_worker(static_cast<std::size_t>(workers), 0);
+    std::vector<int> guards(static_cast<std::size_t>(workers), 0);
+    std::vector<std::thread> threads;
+    threads.reserve(static_cast<std::size_t>(workers));
+
+    for (int worker = 0; worker < workers; ++worker) {
+        threads.emplace_back([&, worker] {
+            auto batch = packet_batch();
+            const auto encoded_size = yume::protocol::packet_bulk::encoded_size(batch);
+            const int iterations = iterations_for(per_worker[static_cast<std::size_t>(worker)], encoded_size);
+            int guard = 0;
+            while (!start_flag.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            for (int i = 0; i < iterations; ++i) {
+                batch.sequence = (static_cast<std::uint64_t>(worker) << 48) | static_cast<std::uint64_t>(i);
+                auto encoded = yume::protocol::packet_bulk::encode_batch(batch);
+                guard ^= encoded.back();
+            }
+            bytes_by_worker[static_cast<std::size_t>(worker)] =
+                static_cast<std::uint64_t>(iterations) * encoded_size;
+            guards[static_cast<std::size_t>(worker)] = guard;
+        });
+    }
     const auto start = Clock::now();
-    for (int i = 0; i < iterations; ++i) {
-        batch.sequence = static_cast<std::uint64_t>(i);
-        auto encoded = yume::protocol::packet_bulk::encode_batch(batch);
-        guard ^= encoded.back();
+    start_flag.store(true, std::memory_order_release);
+    for (auto& thread : threads) {
+        thread.join();
     }
     const double seconds = elapsed_s(start, Clock::now());
+    const auto bytes = std::accumulate(bytes_by_worker.begin(), bytes_by_worker.end(), std::uint64_t{0});
+    const int guard = std::accumulate(guards.begin(), guards.end(), 0, [](int a, int b) { return a ^ b; });
     return throughput_row("packet-bulk-encode",
-                          static_cast<std::uint64_t>(iterations) * encoded_size,
+                          bytes,
                           seconds,
-                          "64 packets/batch, guard=" + std::to_string(guard & 0xff));
+                          "64 packets/batch, threads=" + std::to_string(workers) +
+                              ", " + checksum_detail(guard));
 }
 
-HotPathRow run_packet_bulk_decode(std::uint64_t total_bytes) {
-    const auto batch = packet_batch();
-    const auto encoded = yume::protocol::packet_bulk::encode_batch(batch);
-    const int iterations = iterations_for(total_bytes, encoded.size());
-    int guard = 0;
+HotPathRow run_packet_bulk_decode(std::uint64_t total_bytes, int thread_count) {
+    const int workers = std::clamp(thread_count, 1, 256);
+    const auto per_worker = split_work(total_bytes, workers);
+    std::atomic<bool> start_flag{false};
+    std::vector<std::uint64_t> bytes_by_worker(static_cast<std::size_t>(workers), 0);
+    std::vector<int> guards(static_cast<std::size_t>(workers), 0);
+    std::vector<std::string> errors(static_cast<std::size_t>(workers));
+    std::vector<std::thread> threads;
+    threads.reserve(static_cast<std::size_t>(workers));
+
+    for (int worker = 0; worker < workers; ++worker) {
+        threads.emplace_back([&, worker] {
+            const auto batch = packet_batch();
+            const auto encoded = yume::protocol::packet_bulk::encode_batch(batch);
+            const int iterations = iterations_for(per_worker[static_cast<std::size_t>(worker)], encoded.size());
+            int guard = 0;
+            while (!start_flag.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            for (int i = 0; i < iterations; ++i) {
+                auto decoded = yume::protocol::packet_bulk::decode_batch(encoded);
+                if (!decoded.has_value()) {
+                    errors[static_cast<std::size_t>(worker)] = "packet bulk decode failed";
+                    return;
+                }
+                guard ^= decoded->packets.back().back();
+            }
+            bytes_by_worker[static_cast<std::size_t>(worker)] =
+                static_cast<std::uint64_t>(iterations) * encoded.size();
+            guards[static_cast<std::size_t>(worker)] = guard;
+        });
+    }
     const auto start = Clock::now();
-    for (int i = 0; i < iterations; ++i) {
-        auto decoded = yume::protocol::packet_bulk::decode_batch(encoded);
-        if (!decoded.has_value()) {
-            throw std::runtime_error("packet bulk decode failed");
+    start_flag.store(true, std::memory_order_release);
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    for (const auto& error : errors) {
+        if (!error.empty()) {
+            throw std::runtime_error(error);
         }
-        guard ^= decoded->packets.back().back();
     }
     const double seconds = elapsed_s(start, Clock::now());
+    const auto bytes = std::accumulate(bytes_by_worker.begin(), bytes_by_worker.end(), std::uint64_t{0});
+    const int guard = std::accumulate(guards.begin(), guards.end(), 0, [](int a, int b) { return a ^ b; });
     return throughput_row("packet-bulk-decode",
-                          static_cast<std::uint64_t>(iterations) * encoded.size(),
+                          bytes,
                           seconds,
-                          "64 packets/batch, guard=" + std::to_string(guard & 0xff));
+                          "64 packets/batch, threads=" + std::to_string(workers) +
+                              ", " + checksum_detail(guard));
 }
 
-HotPathRow run_hop_hkdf(int ops) {
-    const auto key = patterned_bytes(32, 9);
-    const int count = std::max(1, ops);
-    int guard = 0;
+HotPathRow run_hop_hkdf(int ops, int thread_count) {
+    const int workers = std::clamp(thread_count, 1, 256);
+    const auto per_worker = split_work(static_cast<std::uint64_t>(std::max(1, ops)), workers);
+    std::atomic<bool> start_flag{false};
+    std::vector<std::uint64_t> ops_by_worker(static_cast<std::size_t>(workers), 0);
+    std::vector<int> guards(static_cast<std::size_t>(workers), 0);
+    std::vector<std::thread> threads;
+    threads.reserve(static_cast<std::size_t>(workers));
+
+    for (int worker = 0; worker < workers; ++worker) {
+        threads.emplace_back([&, worker] {
+            const auto key = patterned_bytes(32, 9 + worker);
+            const auto count = per_worker[static_cast<std::size_t>(worker)];
+            int guard = 0;
+            while (!start_flag.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            for (std::uint64_t i = 0; i < count; ++i) {
+                const std::string info = std::string(kHkdfInfoPrefix) + std::to_string(worker) + ":" +
+                                         std::to_string(i);
+                auto derived = basefwx::crypto::HkdfSha256(key, info, 32);
+                guard ^= derived.front();
+            }
+            ops_by_worker[static_cast<std::size_t>(worker)] = count;
+            guards[static_cast<std::size_t>(worker)] = guard;
+        });
+    }
     const auto start = Clock::now();
-    for (int i = 0; i < count; ++i) {
-        const std::string info = "yume-hop-v1:" + std::to_string(i);
-        auto derived = basefwx::crypto::HkdfSha256(key, info, 32);
-        guard ^= derived.front();
+    start_flag.store(true, std::memory_order_release);
+    for (auto& thread : threads) {
+        thread.join();
     }
     const double seconds = elapsed_s(start, Clock::now());
+    const auto count = std::accumulate(ops_by_worker.begin(), ops_by_worker.end(), std::uint64_t{0});
+    const int guard = std::accumulate(guards.begin(), guards.end(), 0, [](int a, int b) { return a ^ b; });
     const double ops_s = static_cast<double>(count) / std::max(seconds, 0.000001);
     std::ostringstream metric;
     metric << std::fixed << std::setprecision(1) << ops_s << " ops/s";
     return {
         "hop-hkdf",
         metric.str(),
-        std::to_string(count) + " derived hop keys, guard=" + std::to_string(guard & 0xff),
+        std::to_string(count) + " derived hop keys, threads=" + std::to_string(workers) +
+            ", " + checksum_detail(guard),
         true,
         ops_s,
         "ops/s",
@@ -1162,7 +1359,7 @@ HotPathRow run_disk_write(const fs::path& workdir, std::uint64_t total_bytes) {
     return throughput_row("disk-write",
                           static_cast<std::uint64_t>(iterations) * chunk.size(),
                           seconds,
-                          "cache file write, 64 KiB chunks, fsync, guard=" + std::to_string(guard & 0xff));
+                          "cache file write, 64 KiB chunks, fsync, " + checksum_detail(guard));
 }
 
 HotPathRow run_sustained_mix(long target_ms,
@@ -1257,7 +1454,7 @@ HotPathRow run_sustained_mix(long target_ms,
                           seconds,
                           std::to_string(target_ms) + "ms mixed AES-GCM + packet bulk + HKDF, rounds=" +
                               std::to_string(rounds) + ", threads=" + std::to_string(workers) +
-                              ", guard=" + std::to_string(guard & 0xff));
+                              ", " + checksum_detail(guard));
 }
 
 std::vector<HotPathRow> run_hot_paths(const Args& args,
@@ -1265,15 +1462,16 @@ std::vector<HotPathRow> run_hot_paths(const Args& args,
                                       int& progress_completed,
                                       int progress_total) {
     const bool full = args.full_benchmark;
-    const std::uint64_t copy_bytes = static_cast<std::uint64_t>(full ? 512 : 64) * kMiB;
-    const std::uint64_t stream_single_bytes = static_cast<std::uint64_t>(full ? 256 : 32) * kMiB;
-    const std::uint64_t stream_many_bytes = static_cast<std::uint64_t>(full ? 1024 : 256) * kMiB;
-    const std::uint64_t crypto_bytes = static_cast<std::uint64_t>(full ? 512 : 32) * kMiB;
-    const std::uint64_t packet_bytes = static_cast<std::uint64_t>(full ? 512 : 32) * kMiB;
-    const int hkdf_ops = full ? 100000 : 5000;
-    const std::uint64_t disk_bytes = full ? static_cast<std::uint64_t>(256) * kMiB : 0;
-    const long sustained_ms = full ? 30000L : 0L;
-    const int sustained_threads = full
+    const std::uint64_t copy_bytes = static_cast<std::uint64_t>(full ? 1024 : 64) * kMiB;
+    const std::uint64_t stream_single_bytes = static_cast<std::uint64_t>(full ? 512 : 32) * kMiB;
+    const std::uint64_t stream_many_bytes = static_cast<std::uint64_t>(full ? 2048 : 256) * kMiB;
+    const std::uint64_t memory_bytes = static_cast<std::uint64_t>(full ? 4096 : 64) * kMiB;
+    const std::uint64_t crypto_bytes = static_cast<std::uint64_t>(full ? 1024 : 32) * kMiB;
+    const std::uint64_t packet_bytes = static_cast<std::uint64_t>(full ? 1024 : 32) * kMiB;
+    const int hkdf_ops = full ? 250000 : 5000;
+    const std::uint64_t disk_bytes = full ? static_cast<std::uint64_t>(1024) * kMiB : 0;
+    const long sustained_ms = full ? std::max<long>(60000L, static_cast<long>(args.target_duration_sec) * 500L) : 0L;
+    const int hot_threads = full
         ? std::clamp(static_cast<int>(std::thread::hardware_concurrency()), 1, 256)
         : 1;
 
@@ -1288,17 +1486,20 @@ std::vector<HotPathRow> run_hot_paths(const Args& args,
     step("copy-floor", [&] { return run_copy_floor(copy_bytes); });
     step("stream-copy-1", [&] { return run_stream_copy(stream_single_bytes, 1); });
     step("stream-copy-many", [&] { return run_stream_copy(stream_many_bytes, 64); });
-    step("aes-gcm-encrypt", [&] { return run_aead_encrypt(crypto_bytes); });
-    step("aes-gcm-decrypt", [&] { return run_aead_decrypt(crypto_bytes); });
-    step("packet-bulk-encode", [&] { return run_packet_bulk_encode(packet_bytes); });
-    step("packet-bulk-decode", [&] { return run_packet_bulk_decode(packet_bytes); });
-    step("hop-hkdf", [&] { return run_hop_hkdf(hkdf_ops); });
+    step("memory-bandwidth", [&] {
+        return run_memory_bandwidth(memory_bytes, hot_threads, full ? 32 * kMiB : 1 * kMiB);
+    });
+    step("aes-gcm-encrypt", [&] { return run_aead_encrypt(crypto_bytes, hot_threads); });
+    step("aes-gcm-decrypt", [&] { return run_aead_decrypt(crypto_bytes, hot_threads); });
+    step("packet-bulk-encode", [&] { return run_packet_bulk_encode(packet_bytes, hot_threads); });
+    step("packet-bulk-decode", [&] { return run_packet_bulk_decode(packet_bytes, hot_threads); });
+    step("hop-hkdf", [&] { return run_hop_hkdf(hkdf_ops, hot_threads); });
     if (disk_bytes > 0) {
         step("disk-write", [&] { return run_disk_write(workdir, disk_bytes); });
     }
     if (sustained_ms > 0) {
         step("sustained-mix", [&] {
-            return run_sustained_mix(sustained_ms, sustained_threads, [&](double fraction) {
+            return run_sustained_mix(sustained_ms, hot_threads, [&](double fraction) {
                 const double base = static_cast<double>(progress_completed);
                 const double pseudo = std::clamp(
                     base + std::clamp(fraction, 0.0, 0.999),
@@ -1335,15 +1536,16 @@ BenchmarkScore compute_hot_path_score(const Args& args,
         {"copy-floor", 250000.0, 100000.0},
         {"stream-copy-1", 80000.0, 150000.0},
         {"stream-copy-many", 120000.0, 150000.0},
+        {"memory-bandwidth", 180000.0, 600000.0},
         {"aes-gcm-encrypt", 6000.0, 1300000.0},
         {"aes-gcm-decrypt", 6000.0, 1300000.0},
         {"packet-bulk-encode", 12000.0, 1100000.0},
         {"packet-bulk-decode", 12000.0, 1100000.0},
         {"hop-hkdf", 2500000.0, 800000.0},
         {"disk-write", 3500.0, 100000.0},
-        {"sustained-mix", 12000.0, 3900000.0},
+        {"sustained-mix", 14000.0, 4300000.0},
     };
-    constexpr double kGlobalReferenceMultiplier = 2.0;
+    constexpr double kGlobalReferenceMultiplier = 6.0;
 
     std::vector<std::string> missing;
     for (const auto& ref : refs) {
@@ -1398,33 +1600,53 @@ BenchmarkScore compute_desktop_league_score(const Args& args,
     return score;
 }
 
-std::string score_grade(long long score) {
-    if (score >= 120000000) return "SSS+";
-    if (score >= 80000000) return "SSS";
-    if (score >= 55000000) return "SSS-";
-    if (score >= 38000000) return "SS+";
-    if (score >= 26000000) return "SS";
-    if (score >= 18000000) return "SS-";
-    if (score >= 12000000) return "S+";
-    if (score >= 8000000) return "S";
-    if (score >= 5500000) return "S-";
-    if (score >= 3800000) return "AAA+";
-    if (score >= 3000000) return "AAA";
-    if (score >= 2350000) return "AAA-";
-    if (score >= 2000000) return "A+";
-    if (score >= 1750000) return "A";
-    if (score >= 1500000) return "A-";
-    if (score >= 1200000) return "B+";
-    if (score >= 900000) return "B";
-    if (score >= 650000) return "B-";
-    if (score >= 460000) return "C+";
-    if (score >= 300000) return "C";
-    if (score >= 190000) return "C-";
-    if (score >= 140000) return "D+";
-    if (score >= 85000) return "D";
-    if (score >= 50000) return "D-";
-    if (score >= 25000) return "F+";
-    if (score >= 10000) return "F";
+enum class ScoreTrack {
+    Global,
+    DesktopLeague,
+};
+
+struct GradeCutoff {
+    long long global;
+    long long league;
+    std::string_view grade;
+};
+
+constexpr GradeCutoff kGradeCutoffs[] = {
+    {50000000, 25000000, "SSS+"},
+    {35000000, 18000000, "SSS"},
+    {24000000, 12000000, "SSS-"},
+    {17000000, 8500000, "SS+"},
+    {12000000, 6000000, "SS"},
+    {8500000, 4200000, "SS-"},
+    {6000000, 3000000, "S+"},
+    {4200000, 2200000, "S"},
+    {3000000, 1600000, "S-"},
+    {2100000, 1150000, "AAA+"},
+    {1500000, 850000, "AAA"},
+    {1050000, 620000, "AAA-"},
+    {750000, 450000, "A+"},
+    {520000, 320000, "A"},
+    {360000, 230000, "A-"},
+    {250000, 165000, "B+"},
+    {175000, 115000, "B"},
+    {120000, 80000, "B-"},
+    {80000, 55000, "C+"},
+    {50000, 36000, "C"},
+    {32000, 23000, "C-"},
+    {20000, 15000, "D+"},
+    {12000, 9000, "D"},
+    {7000, 5000, "D-"},
+    {3500, 2500, "F+"},
+    {1500, 1000, "F"},
+};
+
+std::string score_grade(long long score, ScoreTrack track) {
+    for (const auto& cutoff : kGradeCutoffs) {
+        const long long threshold = track == ScoreTrack::DesktopLeague ? cutoff.league : cutoff.global;
+        if (score >= threshold) {
+            return std::string(cutoff.grade);
+        }
+    }
     return "F-";
 }
 
@@ -1442,11 +1664,11 @@ void render_score(const Args& args,
     std::cerr << "\nYUME benchmark\n";
     std::cerr << "--------------------------------------------------------------------------------\n";
     if (global_score.available) {
-        const std::string grade = score_grade(global_score.total);
+        const std::string grade = score_grade(global_score.total, ScoreTrack::Global);
         std::cerr << "GLOBAL  " << format_integer(global_score.total)
                   << "  " << color_grade(args, grade, global_score.total);
         if (args.dev_style) {
-            std::cerr << "  model yume-global-v5";
+            std::cerr << "  model " << kGlobalScoreModel;
         }
         std::cerr << "\n";
     } else {
@@ -1457,11 +1679,11 @@ void render_score(const Args& args,
         std::cerr << "\n";
     }
     if (league_score.available) {
-        const std::string grade = score_grade(league_score.total);
+        const std::string grade = score_grade(league_score.total, ScoreTrack::DesktopLeague);
         std::cerr << "LEAGUE  " << format_integer(league_score.total)
                   << "  " << color_grade(args, grade, league_score.total);
         if (args.dev_style) {
-            std::cerr << "  model yume-desktop-v5";
+            std::cerr << "  model " << kDesktopScoreModel;
         }
         std::cerr << "\n";
     } else {
@@ -1681,6 +1903,7 @@ std::string json_escape(const std::string& value) {
 void append_score_json(std::ostringstream& out,
                        const BenchmarkScore& score,
                        std::string_view model,
+                       ScoreTrack track,
                        std::string_view indent) {
     if (!score.available) {
         out << "null";
@@ -1689,7 +1912,7 @@ void append_score_json(std::ostringstream& out,
     out << "{\n";
     out << indent << "  \"model\": \"" << model << "\",\n";
     out << indent << "  \"total\": " << score.total << ",\n";
-    out << indent << "  \"grade\": \"" << score_grade(score.total) << "\",\n";
+    out << indent << "  \"grade\": \"" << score_grade(score.total, track) << "\",\n";
     out << indent << "  \"components\": [\n";
     for (std::size_t i = 0; i < score.components.size(); ++i) {
         const auto& c = score.components[i];
@@ -1714,23 +1937,23 @@ std::string render_json(const Args& args,
                         const BenchmarkScore& transport_score) {
     std::ostringstream out;
     out << "{\n";
-    out << "  \"schema_version\": 9,\n";
+    out << "  \"schema_version\": " << kJsonSchemaVersion << ",\n";
     out << "  \"benchmark_mode\": \"" << (args.full_benchmark ? "full" : "quick") << "\",\n";
     out << "  \"workdir\": \"" << json_escape(workdir.string()) << "\",\n";
     out << "  \"global_score\": ";
-    append_score_json(out, global_score, "yume-global-v5", "  ");
+    append_score_json(out, global_score, kGlobalScoreModel, ScoreTrack::Global, "  ");
     out << ",\n";
     out << "  \"league_score\": ";
-    append_score_json(out, league_score, "yume-desktop-v5", "  ");
+    append_score_json(out, league_score, kDesktopScoreModel, ScoreTrack::DesktopLeague, "  ");
     out << ",\n";
     out << "  \"score\": ";
-    append_score_json(out, global_score, "yume-global-v5", "  ");
+    append_score_json(out, global_score, kGlobalScoreModel, ScoreTrack::Global, "  ");
     out << ",\n";
     out << "  \"engine_league_score\": ";
-    append_score_json(out, engine_league_score, "yume-engine-v5", "  ");
+    append_score_json(out, engine_league_score, kEngineScoreModel, ScoreTrack::DesktopLeague, "  ");
     out << ",\n";
     out << "  \"transport_score\": ";
-    append_score_json(out, transport_score, "yume-transport-v5", "  ");
+    append_score_json(out, transport_score, kTransportScoreModel, ScoreTrack::DesktopLeague, "  ");
     out << ",\n";
     out << "  \"global_score_unavailable_reason\": ";
     if (global_score.available || global_score.unavailable_reason.empty()) {
@@ -1854,7 +2077,7 @@ int run_cli(int argc, char** argv) {
             sink_port = sink.start();
         }
         Keyset ks = generate_keyset(args, tmp->path());
-        const int hot_path_steps = args.full_benchmark ? 10 : 8;
+        const int hot_path_steps = args.full_benchmark ? 11 : 9;
         const int progress_total = std::max(
             1,
             static_cast<int>(configs.size()) * std::max(1, args.repeats) + hot_path_steps);
@@ -1866,7 +2089,7 @@ int run_cli(int argc, char** argv) {
             const auto& cfg = configs[i];
             if (i > 0 && args.cooldown_ms > 0) {
                 if (!progress_inline_enabled()) {
-                    std::cerr << "[bench] cooldown " << args.cooldown_ms << " ms before " << cfg.name << "\n";
+                    std::cerr << kBenchLogPrefix << " cooldown " << args.cooldown_ms << " ms before " << cfg.name << "\n";
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(args.cooldown_ms));
             }
@@ -1919,7 +2142,7 @@ int run_cli(int argc, char** argv) {
             transport_score);
         if (!args.json_path.empty()) {
             write_text(args.json_path, json);
-            std::cerr << "[bench] wrote JSON " << args.json_path << "\n";
+            std::cerr << kBenchLogPrefix << " wrote JSON " << args.json_path << "\n";
         }
         if (args.json_stdout) {
             std::cout << json;
@@ -1928,7 +2151,7 @@ int run_cli(int argc, char** argv) {
         const bool all_ok = std::all_of(results.begin(), results.end(), [](const Result& r) { return r.ok; });
         if (!all_ok) {
             tmp->keep();
-            std::cerr << "[bench] logs kept in " << tmp->path() << "\n";
+            std::cerr << kBenchLogPrefix << " logs kept in " << tmp->path() << "\n";
         }
         return all_ok ? 0 : 1;
     } catch (const std::exception& ex) {
@@ -1940,7 +2163,7 @@ int run_cli(int argc, char** argv) {
         std::cerr << prefix << ": " << ex.what() << "\n";
         if (tmp) {
             tmp->keep();
-            std::cerr << "[bench] logs kept in " << tmp->path() << "\n";
+            std::cerr << kBenchLogPrefix << " logs kept in " << tmp->path() << "\n";
         }
         return 2;
     }

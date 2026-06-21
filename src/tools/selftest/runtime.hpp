@@ -63,6 +63,8 @@ struct Args {
     bool cooldown_ms_override{false};
     bool repeat_count_override{false};
     bool stream_count_override{false};
+    bool argon_mem_override{false};
+    bool argon_parallelism_override{false};
     bool one_way_override{false};
     bool target_duration_override{false};
     std::filesystem::path json_path;

@@ -215,6 +215,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         core/security/identity.cpp
         core/security/inner_crypto.cpp
         core/runtime/local_runtime.cpp
+        core/runtime/system_profile.cpp
         core/protocol/packet_bulk.cpp
         core/protocol/protocol.cpp
         core/stealth/obfs.cpp

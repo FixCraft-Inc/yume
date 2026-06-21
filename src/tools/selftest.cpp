@@ -7,6 +7,7 @@
 #include "tools/selftest/runner.hpp"
 
 #include "core/protocol/packet_bulk.hpp"
+#include "core/runtime/system_profile.hpp"
 #include "selftest/runtime.hpp"
 
 #include <basefwx/crypto.hpp>
@@ -51,10 +52,19 @@ constexpr std::string_view kEngineScoreModel = "yume-engine-v1";
 constexpr std::string_view kTransportScoreModel = "yume-transport-v1";
 constexpr std::string_view kChecksumField = "checksum";
 constexpr std::string_view kHkdfInfoPrefix = "yume-hop-v1:";
+constexpr std::string_view kBenchmarkAad = "yume-desktop-selftest";
+constexpr std::string_view kSustainedHkdfInfoPrefix = "yume-sustain:";
 constexpr int kJsonSchemaVersion = 1;
+constexpr double kBenchmarkReferenceScore = 10000000.0;
+constexpr int kKiB = 1024;
+constexpr int kMiB = 1024 * kKiB;
 
 std::string checksum_detail(int value) {
     return std::string(kChecksumField) + "=" + std::to_string(value & 0xff);
+}
+
+std::vector<std::uint8_t> ascii_bytes(std::string_view value) {
+    return {value.begin(), value.end()};
 }
 
 bool stderr_is_tty() {
@@ -159,10 +169,20 @@ void render_progress_bar(double completed, int total, std::string_view label) {
     }
 
     static int last_bucket = -1;
+    static int last_percent = -1;
+    static int last_total = -1;
+    if (last_total != total || completed <= 0.0) {
+        last_bucket = -1;
+        last_percent = -1;
+        last_total = total;
+    }
     const int bucket = std::clamp(percent, 0, 100) / 10;
-    if (completed >= total || (percent > 0 && bucket != last_bucket)) {
+    const bool final_line = completed >= total;
+    const bool should_print = final_line ? last_percent < 100 : (percent > 0 && bucket != last_bucket);
+    if (should_print) {
         std::cerr << line.str() << "\n";
         last_bucket = bucket;
+        last_percent = std::clamp(percent, 0, 100);
     }
 }
 
@@ -263,8 +283,10 @@ void print_help() {
         << "                            default 180; scales payload size)\n"
         << "  --latency-iters <N>       Echo round trips per config (default 120; full uses 360)\n"
         << "  --bulk-mib <N>            Bulk echo size per config (default 32)\n"
-        << "  --argon-mem-kib <N>       Heavy KDF memory cap/env for this run (default 32768)\n"
-        << "  --argon-parallelism <N>   Heavy KDF parallelism cap/env (default 2)\n"
+        << "  --argon-mem-kib <N>       Heavy KDF memory cap/env; full mode auto-sizes\n"
+        << "                            when this is omitted (quick default 32768)\n"
+        << "  --argon-parallelism <N>   Heavy KDF parallelism; full mode auto-sizes\n"
+        << "                            when this is omitted (quick default 2)\n"
         << "  --tunnels <N>             Client TLS tunnel count (default 1)\n"
         << "  --streams <N>             Concurrent bulk streams per config (default 1)\n"
         << "  --client-threads <N>      Client io threads (0=auto/hw concurrency)\n"
@@ -338,8 +360,10 @@ Args parse_args(int argc, char** argv) {
             args.bulk_mib_override = true;
         } else if (arg == "--argon-mem-kib") {
             args.argon_mem_kib = std::max(1024, std::stoi(require_value(i, arg)));
+            args.argon_mem_override = true;
         } else if (arg == "--argon-parallelism") {
             args.argon_parallelism = std::max(1, std::stoi(require_value(i, arg)));
+            args.argon_parallelism_override = true;
         } else if (arg == "--tunnels") {
             args.tunnels = std::max(1, std::stoi(require_value(i, arg)));
             args.tunnel_count_override = true;
@@ -706,10 +730,80 @@ std::vector<Config> select_configs(const Args& args) {
     return selected;
 }
 
+struct BenchmarkSizing {
+    int hot_threads{1};
+    std::uint64_t copy_bytes{64ull * kMiB};
+    std::uint64_t stream_single_bytes{32ull * kMiB};
+    std::uint64_t stream_many_bytes{256ull * kMiB};
+    std::uint64_t memory_bytes{64ull * kMiB};
+    std::size_t memory_chunk_bytes{1ull * kMiB};
+    std::uint64_t crypto_bytes{32ull * kMiB};
+    std::uint64_t packet_bytes{32ull * kMiB};
+    int hkdf_ops{5000};
+    std::uint64_t disk_bytes{0};
+    long sustained_ms{0};
+};
+
+std::uint64_t mib_to_bytes(std::uint64_t mib) {
+    return mib * static_cast<std::uint64_t>(kMiB);
+}
+
+std::uint64_t bytes_to_mib(std::uint64_t bytes) {
+    return bytes / static_cast<std::uint64_t>(kMiB);
+}
+
+std::uint64_t profile_available_mib(const yume::runtime::SystemProfile& profile) {
+    if (profile.available_memory_mib > 0) {
+        return profile.available_memory_mib;
+    }
+    if (profile.total_memory_mib > 0) {
+        return profile.total_memory_mib / 2;
+    }
+    return 4096;
+}
+
+BenchmarkSizing compute_benchmark_sizing(const Args& args, const yume::runtime::SystemProfile& profile) {
+    BenchmarkSizing sizing;
+    if (!args.full_benchmark) {
+        return sizing;
+    }
+
+    sizing.hot_threads = std::clamp(static_cast<int>(profile.logical_cpus), 1, 256);
+    const std::uint64_t available_mib = profile_available_mib(profile);
+    const std::uint64_t target_working_set_mib = std::clamp<std::uint64_t>(
+        available_mib / 4,
+        512,
+        16384);
+    const std::uint64_t per_thread_chunk_mib = std::clamp<std::uint64_t>(
+        target_working_set_mib / static_cast<std::uint64_t>(std::max(1, sizing.hot_threads * 2)),
+        2,
+        256);
+    const std::uint64_t parallel_payload_mib = std::clamp<std::uint64_t>(
+        static_cast<std::uint64_t>(sizing.hot_threads) * 256,
+        1024,
+        16384);
+
+    sizing.copy_bytes = mib_to_bytes(std::clamp<std::uint64_t>(available_mib / 32, 1024, 4096));
+    sizing.stream_single_bytes = mib_to_bytes(std::clamp<std::uint64_t>(available_mib / 64, 512, 2048));
+    sizing.stream_many_bytes = mib_to_bytes(std::clamp<std::uint64_t>(available_mib / 16, 2048, 8192));
+    sizing.memory_bytes = mib_to_bytes(std::clamp<std::uint64_t>(target_working_set_mib * 2, 2048, 32768));
+    sizing.memory_chunk_bytes = static_cast<std::size_t>(mib_to_bytes(per_thread_chunk_mib));
+    sizing.crypto_bytes = mib_to_bytes(parallel_payload_mib);
+    sizing.packet_bytes = mib_to_bytes(parallel_payload_mib);
+    sizing.hkdf_ops = std::clamp(sizing.hot_threads * 25000, 250000, 2000000);
+    sizing.disk_bytes = mib_to_bytes(std::clamp<std::uint64_t>(available_mib / 64, 1024, 4096));
+    sizing.sustained_ms = std::clamp<long>(
+        std::max<long>(90000L, static_cast<long>(args.target_duration_sec) * 700L),
+        90000L,
+        300000L);
+    return sizing;
+}
+
 void apply_full_benchmark_defaults(Args& args, std::size_t config_count) {
     if (!args.full_benchmark) {
         return;
     }
+    const auto profile = yume::runtime::detect_system_profile();
     if (!args.target_duration_override) {
         args.target_duration_sec = 180;
     }
@@ -723,7 +817,7 @@ void apply_full_benchmark_defaults(Args& args, std::size_t config_count) {
         args.tunnels = 4;
     }
     if (!args.server_threads_override) {
-        args.server_threads = 4;
+        args.server_threads = std::clamp(static_cast<int>(profile.logical_cpus / 4), 4, 16);
     }
     if (!args.cooldown_ms_override) {
         args.cooldown_ms = 1000;
@@ -733,6 +827,16 @@ void apply_full_benchmark_defaults(Args& args, std::size_t config_count) {
     }
     if (!args.latency_iters_override) {
         args.latency_iters = 360;
+    }
+    if (!args.argon_mem_override) {
+        const std::uint64_t adaptive_mib = std::clamp<std::uint64_t>(
+            profile_available_mib(profile) / 256,
+            32,
+            256);
+        args.argon_mem_kib = static_cast<int>(adaptive_mib * 1024);
+    }
+    if (!args.argon_parallelism_override) {
+        args.argon_parallelism = std::clamp(static_cast<int>(profile.logical_cpus / 4), 2, 8);
     }
     if (!args.bulk_mib_override) {
         const int divisor = std::max(1, static_cast<int>(config_count) * args.repeats);
@@ -774,10 +878,6 @@ const Result* find_result(const std::vector<Result>& results, std::string_view n
     });
     return it == results.end() ? nullptr : &*it;
 }
-
-constexpr double kBenchmarkReferenceScore = 10000000.0;
-constexpr int kKiB = 1024;
-constexpr int kMiB = 1024 * kKiB;
 
 double score_scale(double ratio) {
     if (ratio <= 0.0) {
@@ -1080,8 +1180,7 @@ HotPathRow run_aead_encrypt(std::uint64_t total_bytes, int thread_count) {
     for (int worker = 0; worker < workers; ++worker) {
         threads.emplace_back([&, worker] {
             const auto key = patterned_bytes(32, 3 + worker);
-            const std::vector<std::uint8_t> aad{
-                'y', 'u', 'm', 'e', '-', 'd', 'e', 's', 'k', 't', 'o', 'p', '-', 'b', 'e', 'n', 'c', 'h'};
+            const auto aad = ascii_bytes(kBenchmarkAad);
             const auto plaintext = patterned_bytes(64 * kKiB, 21 + worker);
             const int iterations = iterations_for(per_worker[static_cast<std::size_t>(worker)], plaintext.size());
             int guard = 0;
@@ -1124,8 +1223,7 @@ HotPathRow run_aead_decrypt(std::uint64_t total_bytes, int thread_count) {
     for (int worker = 0; worker < workers; ++worker) {
         threads.emplace_back([&, worker] {
             const auto key = patterned_bytes(32, 3 + worker);
-            const std::vector<std::uint8_t> aad{
-                'y', 'u', 'm', 'e', '-', 'd', 'e', 's', 'k', 't', 'o', 'p', '-', 'b', 'e', 'n', 'c', 'h'};
+            const auto aad = ascii_bytes(kBenchmarkAad);
             const auto plaintext = patterned_bytes(64 * kKiB, 21 + worker);
             const auto encrypted = basefwx::crypto::AeadEncrypt(key, plaintext, aad);
             const int iterations = iterations_for(per_worker[static_cast<std::size_t>(worker)], plaintext.size());
@@ -1385,8 +1483,7 @@ HotPathRow run_sustained_mix(long target_ms,
         threads.emplace_back([&, worker] {
             try {
                 const auto key = patterned_bytes(32, 11 + worker);
-                const std::vector<std::uint8_t> aad{
-                    'y', 'u', 'm', 'e', '-', 'd', 'e', 's', 'k', 't', 'o', 'p', '-', 'b', 'e', 'n', 'c', 'h'};
+                const auto aad = ascii_bytes(kBenchmarkAad);
                 const auto plaintext = patterned_bytes(64 * kKiB, 31 + worker);
                 auto batch = packet_batch();
                 const auto encoded_packet_bytes = yume::protocol::packet_bulk::encoded_size(batch);
@@ -1400,7 +1497,8 @@ HotPathRow run_sustained_mix(long target_ms,
                     batch.sequence = (static_cast<std::uint64_t>(worker) << 48) | local.rounds;
                     auto encoded = yume::protocol::packet_bulk::encode_batch(batch);
                     auto decoded = yume::protocol::packet_bulk::decode_batch(encoded);
-                    const std::string info = "yume-sustain:" + std::to_string(worker) + ":" +
+                    const std::string info = std::string(kSustainedHkdfInfoPrefix) +
+                                             std::to_string(worker) + ":" +
                                              std::to_string(local.rounds);
                     auto derived = basefwx::crypto::HkdfSha256(key, info, 32);
                     if (!decoded.has_value()) {
@@ -1461,19 +1559,7 @@ std::vector<HotPathRow> run_hot_paths(const Args& args,
                                       const fs::path& workdir,
                                       int& progress_completed,
                                       int progress_total) {
-    const bool full = args.full_benchmark;
-    const std::uint64_t copy_bytes = static_cast<std::uint64_t>(full ? 1024 : 64) * kMiB;
-    const std::uint64_t stream_single_bytes = static_cast<std::uint64_t>(full ? 512 : 32) * kMiB;
-    const std::uint64_t stream_many_bytes = static_cast<std::uint64_t>(full ? 2048 : 256) * kMiB;
-    const std::uint64_t memory_bytes = static_cast<std::uint64_t>(full ? 4096 : 64) * kMiB;
-    const std::uint64_t crypto_bytes = static_cast<std::uint64_t>(full ? 1024 : 32) * kMiB;
-    const std::uint64_t packet_bytes = static_cast<std::uint64_t>(full ? 1024 : 32) * kMiB;
-    const int hkdf_ops = full ? 250000 : 5000;
-    const std::uint64_t disk_bytes = full ? static_cast<std::uint64_t>(1024) * kMiB : 0;
-    const long sustained_ms = full ? std::max<long>(60000L, static_cast<long>(args.target_duration_sec) * 500L) : 0L;
-    const int hot_threads = full
-        ? std::clamp(static_cast<int>(std::thread::hardware_concurrency()), 1, 256)
-        : 1;
+    const BenchmarkSizing sizing = compute_benchmark_sizing(args, yume::runtime::detect_system_profile());
 
     std::vector<HotPathRow> rows;
     auto step = [&](std::string_view name, auto&& fn) {
@@ -1483,23 +1569,23 @@ std::vector<HotPathRow> run_hot_paths(const Args& args,
         render_progress_bar(progress_completed, progress_total, std::string("hotpath ") + std::string(name));
     };
 
-    step("copy-floor", [&] { return run_copy_floor(copy_bytes); });
-    step("stream-copy-1", [&] { return run_stream_copy(stream_single_bytes, 1); });
-    step("stream-copy-many", [&] { return run_stream_copy(stream_many_bytes, 64); });
+    step("copy-floor", [&] { return run_copy_floor(sizing.copy_bytes); });
+    step("stream-copy-1", [&] { return run_stream_copy(sizing.stream_single_bytes, 1); });
+    step("stream-copy-many", [&] { return run_stream_copy(sizing.stream_many_bytes, 64); });
     step("memory-bandwidth", [&] {
-        return run_memory_bandwidth(memory_bytes, hot_threads, full ? 32 * kMiB : 1 * kMiB);
+        return run_memory_bandwidth(sizing.memory_bytes, sizing.hot_threads, sizing.memory_chunk_bytes);
     });
-    step("aes-gcm-encrypt", [&] { return run_aead_encrypt(crypto_bytes, hot_threads); });
-    step("aes-gcm-decrypt", [&] { return run_aead_decrypt(crypto_bytes, hot_threads); });
-    step("packet-bulk-encode", [&] { return run_packet_bulk_encode(packet_bytes, hot_threads); });
-    step("packet-bulk-decode", [&] { return run_packet_bulk_decode(packet_bytes, hot_threads); });
-    step("hop-hkdf", [&] { return run_hop_hkdf(hkdf_ops, hot_threads); });
-    if (disk_bytes > 0) {
-        step("disk-write", [&] { return run_disk_write(workdir, disk_bytes); });
+    step("aes-gcm-encrypt", [&] { return run_aead_encrypt(sizing.crypto_bytes, sizing.hot_threads); });
+    step("aes-gcm-decrypt", [&] { return run_aead_decrypt(sizing.crypto_bytes, sizing.hot_threads); });
+    step("packet-bulk-encode", [&] { return run_packet_bulk_encode(sizing.packet_bytes, sizing.hot_threads); });
+    step("packet-bulk-decode", [&] { return run_packet_bulk_decode(sizing.packet_bytes, sizing.hot_threads); });
+    step("hop-hkdf", [&] { return run_hop_hkdf(sizing.hkdf_ops, sizing.hot_threads); });
+    if (sizing.disk_bytes > 0) {
+        step("disk-write", [&] { return run_disk_write(workdir, sizing.disk_bytes); });
     }
-    if (sustained_ms > 0) {
+    if (sizing.sustained_ms > 0) {
         step("sustained-mix", [&] {
-            return run_sustained_mix(sustained_ms, hot_threads, [&](double fraction) {
+            return run_sustained_mix(sizing.sustained_ms, sizing.hot_threads, [&](double fraction) {
                 const double base = static_cast<double>(progress_completed);
                 const double pseudo = std::clamp(
                     base + std::clamp(fraction, 0.0, 0.999),
@@ -1699,6 +1785,19 @@ void render_score(const Args& args,
               << "  streams=" << args.streams
               << "  repeats=" << args.repeats
               << "  tunnels=" << args.tunnels << "\n";
+    if (args.dev_style) {
+        const auto profile = yume::runtime::detect_system_profile();
+        const auto sizing = compute_benchmark_sizing(args, profile);
+        std::cerr << "host: cpus=" << profile.logical_cpus
+                  << "  mem=" << profile.total_memory_mib << "MiB"
+                  << "  available=" << profile_available_mib(profile) << "MiB\n";
+        std::cerr << "workload: threads=" << sizing.hot_threads
+                  << "  memory=" << bytes_to_mib(sizing.memory_bytes) << "MiB"
+                  << "  crypto=" << bytes_to_mib(sizing.crypto_bytes) << "MiB"
+                  << "  packet=" << bytes_to_mib(sizing.packet_bytes) << "MiB"
+                  << "  disk=" << bytes_to_mib(sizing.disk_bytes) << "MiB"
+                  << "  sustained=" << (sizing.sustained_ms / 1000) << "s\n";
+    }
     std::cerr << "GLOBAL: shared Android/desktop hot paths.\n";
     std::cerr << "LEAGUE: desktop overall, 50% engine and 50% YUME transport.\n";
     if (!args.dev_style) {
@@ -1927,6 +2026,31 @@ void append_score_json(std::ostringstream& out,
     out << indent << "}";
 }
 
+void append_system_profile_json(std::ostringstream& out, const yume::runtime::SystemProfile& profile) {
+    out << "{"
+        << "\"logical_cpus\": " << profile.logical_cpus << ", "
+        << "\"total_memory_mib\": " << profile.total_memory_mib << ", "
+        << "\"available_memory_mib\": " << profile.available_memory_mib << ", "
+        << "\"usable_memory_mib\": " << profile_available_mib(profile)
+        << "}";
+}
+
+void append_benchmark_sizing_json(std::ostringstream& out, const BenchmarkSizing& sizing) {
+    out << "{"
+        << "\"hot_threads\": " << sizing.hot_threads << ", "
+        << "\"copy_bytes\": " << sizing.copy_bytes << ", "
+        << "\"stream_single_bytes\": " << sizing.stream_single_bytes << ", "
+        << "\"stream_many_bytes\": " << sizing.stream_many_bytes << ", "
+        << "\"memory_bytes\": " << sizing.memory_bytes << ", "
+        << "\"memory_chunk_bytes\": " << sizing.memory_chunk_bytes << ", "
+        << "\"crypto_bytes\": " << sizing.crypto_bytes << ", "
+        << "\"packet_bytes\": " << sizing.packet_bytes << ", "
+        << "\"hkdf_ops\": " << sizing.hkdf_ops << ", "
+        << "\"disk_bytes\": " << sizing.disk_bytes << ", "
+        << "\"sustained_ms\": " << sizing.sustained_ms
+        << "}";
+}
+
 std::string render_json(const Args& args,
                         const std::vector<Result>& results,
                         const std::vector<HotPathRow>& hot_paths,
@@ -1936,10 +2060,18 @@ std::string render_json(const Args& args,
                         const BenchmarkScore& engine_league_score,
                         const BenchmarkScore& transport_score) {
     std::ostringstream out;
+    const auto profile = yume::runtime::detect_system_profile();
+    const auto sizing = compute_benchmark_sizing(args, profile);
     out << "{\n";
     out << "  \"schema_version\": " << kJsonSchemaVersion << ",\n";
     out << "  \"benchmark_mode\": \"" << (args.full_benchmark ? "full" : "quick") << "\",\n";
     out << "  \"workdir\": \"" << json_escape(workdir.string()) << "\",\n";
+    out << "  \"system_profile\": ";
+    append_system_profile_json(out, profile);
+    out << ",\n";
+    out << "  \"benchmark_sizing\": ";
+    append_benchmark_sizing_json(out, sizing);
+    out << ",\n";
     out << "  \"global_score\": ";
     append_score_json(out, global_score, kGlobalScoreModel, ScoreTrack::Global, "  ");
     out << ",\n";

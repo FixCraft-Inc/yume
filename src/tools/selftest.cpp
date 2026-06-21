@@ -424,7 +424,8 @@ Result run_config(const Args& args,
                   const Keyset& ks,
                   const Config& cfg,
                   const fs::path& workdir,
-                  int echo_port) {
+                  int echo_port,
+                  int sink_port) {
     Result result;
     result.config = cfg;
     const auto start = Clock::now();
@@ -435,7 +436,7 @@ Result run_config(const Args& args,
             result.breakdown.connect_ms = latency.connect_ms;
             result.breakdown.warmup_ms = latency.warmup_ms;
             BulkMeasurement bulk = args.one_way
-                ? measure_bulk_one_way(0, echo_port, args.bulk_mib, false, args.streams)
+                ? measure_bulk_one_way(0, sink_port, args.bulk_mib, false, args.streams)
                 : measure_bulk(0, echo_port, args.bulk_mib, false, args.streams);
             result.throughput_mib_s = bulk.mib_s;
             result.breakdown.bulk_total_s = bulk.total_s;
@@ -451,7 +452,7 @@ Result run_config(const Args& args,
             result.breakdown.connect_ms = latency.connect_ms;
             result.breakdown.warmup_ms = latency.warmup_ms;
             BulkMeasurement bulk = args.one_way
-                ? measure_bulk_one_way(socks_port, echo_port, args.bulk_mib, true, args.streams)
+                ? measure_bulk_one_way(socks_port, sink_port, args.bulk_mib, true, args.streams)
                 : measure_bulk(socks_port, echo_port, args.bulk_mib, true, args.streams);
             result.throughput_mib_s = bulk.mib_s;
             result.breakdown.bulk_total_s = bulk.total_s;
@@ -473,12 +474,13 @@ Result run_config_repeated(const Args& args,
                            const Config& cfg,
                            const fs::path& workdir,
                            int echo_port,
+                           int sink_port,
                            int& progress_completed,
                            int progress_total) {
     std::cerr << "[selftest] " << cfg.name << ": " << cfg.description << "\n";
     if (args.repeats <= 1) {
         render_progress_bar(progress_completed, progress_total, cfg.name);
-        Result result = run_config(args, ks, cfg, workdir, echo_port);
+        Result result = run_config(args, ks, cfg, workdir, echo_port, sink_port);
         ++progress_completed;
         render_progress_bar(progress_completed, progress_total, cfg.name);
         return result;
@@ -498,7 +500,7 @@ Result run_config_repeated(const Args& args,
         const std::string progress_label = cfg.name + " trial " +
             std::to_string(trial + 1) + "/" + std::to_string(args.repeats);
         render_progress_bar(progress_completed, progress_total, progress_label);
-        Result result = run_config(args, ks, cfg, workdir, echo_port);
+        Result result = run_config(args, ks, cfg, workdir, echo_port, sink_port);
         ++progress_completed;
         render_progress_bar(progress_completed, progress_total, progress_label);
         result.repeat_count = trial + 1;
@@ -1004,8 +1006,14 @@ int main(int argc, char** argv) {
 
         tmp = std::make_unique<TempDir>(args.keep_workdir);
         EchoServer echo;
-        echo.set_sink(args.one_way);
+        echo.set_sink(false);
         const int echo_port = echo.start();
+        EchoServer sink;
+        int sink_port = echo_port;
+        if (args.one_way) {
+            sink.set_sink(true);
+            sink_port = sink.start();
+        }
         Keyset ks = generate_keyset(args, tmp->path());
         const auto configs = select_configs(args);
         apply_full_benchmark_defaults(args, configs.size());
@@ -1026,11 +1034,13 @@ int main(int argc, char** argv) {
                 cfg,
                 tmp->path(),
                 echo_port,
+                sink_port,
                 progress_completed,
                 progress_total);
             if (!result.ok) tmp->keep();
             results.push_back(std::move(result));
         }
+        sink.stop();
         echo.stop();
 
         render_table(results);

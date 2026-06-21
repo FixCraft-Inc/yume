@@ -29,6 +29,20 @@ namespace {
 using namespace yume::tools::selftest;
 namespace fs = std::filesystem;
 
+void render_progress_bar(int completed, int total, std::string_view label) {
+    total = std::max(1, total);
+    completed = std::clamp(completed, 0, total);
+    constexpr int kWidth = 28;
+    const int filled = static_cast<int>((static_cast<long long>(completed) * kWidth) / total);
+    const int percent = static_cast<int>((static_cast<long long>(completed) * 100) / total);
+    std::cerr << "[selftest] progress [";
+    for (int i = 0; i < kWidth; ++i) {
+        std::cerr << (i < filled ? '#' : '.');
+    }
+    std::cerr << "] " << std::setw(3) << percent << "% "
+              << completed << "/" << total << " " << label << "\n";
+}
+
 
 const std::vector<Config>& builtin_configs() {
     static const std::vector<Config> configs{
@@ -458,10 +472,16 @@ Result run_config_repeated(const Args& args,
                            const Keyset& ks,
                            const Config& cfg,
                            const fs::path& workdir,
-                           int echo_port) {
+                           int echo_port,
+                           int& progress_completed,
+                           int progress_total) {
     std::cerr << "[selftest] " << cfg.name << ": " << cfg.description << "\n";
     if (args.repeats <= 1) {
-        return run_config(args, ks, cfg, workdir, echo_port);
+        render_progress_bar(progress_completed, progress_total, cfg.name);
+        Result result = run_config(args, ks, cfg, workdir, echo_port);
+        ++progress_completed;
+        render_progress_bar(progress_completed, progress_total, cfg.name);
+        return result;
     }
 
     std::vector<Result> trials;
@@ -475,7 +495,12 @@ Result run_config_repeated(const Args& args,
         }
         std::cerr << "[selftest] " << cfg.name << " trial "
                   << (trial + 1) << "/" << args.repeats << "\n";
+        const std::string progress_label = cfg.name + " trial " +
+            std::to_string(trial + 1) + "/" + std::to_string(args.repeats);
+        render_progress_bar(progress_completed, progress_total, progress_label);
         Result result = run_config(args, ks, cfg, workdir, echo_port);
+        ++progress_completed;
+        render_progress_bar(progress_completed, progress_total, progress_label);
         result.repeat_count = trial + 1;
         if (!result.ok) {
             return result;
@@ -575,12 +600,12 @@ struct ScoreComponent {
     double raw{0.0};
     std::string unit;
     double points{0.0};
-    double max_points{0.0};
+    double reference_points{0.0};
 };
 
 struct BenchmarkScore {
     bool available{false};
-    int total{0};
+    long long total{0};
     std::vector<ScoreComponent> components;
 };
 
@@ -591,20 +616,20 @@ const Result* find_result(const std::vector<Result>& results, std::string_view n
     return it == results.end() ? nullptr : &*it;
 }
 
-double scaled_metric_points(double value, double reference, double max_points) {
-    if (value <= 0.0 || reference <= 0.0 || max_points <= 0.0) {
+constexpr double kBenchmarkReferenceScore = 10000000.0;
+
+double scaled_metric_points(double value, double reference, double reference_points) {
+    if (value <= 0.0 || reference <= 0.0 || reference_points <= 0.0) {
         return 0.0;
     }
-    const double normalized = std::clamp(std::pow(value / reference, 0.55), 0.0, 1.35) / 1.35;
-    return normalized * max_points;
+    return std::pow(value / reference, 0.55) * reference_points;
 }
 
-double scaled_latency_points(double median_ms, double reference_ms, double max_points) {
-    if (median_ms <= 0.0 || reference_ms <= 0.0 || max_points <= 0.0) {
+double scaled_latency_points(double median_ms, double reference_ms, double reference_points) {
+    if (median_ms <= 0.0 || reference_ms <= 0.0 || reference_points <= 0.0) {
         return 0.0;
     }
-    const double normalized = std::clamp(std::pow(reference_ms / median_ms, 0.45), 0.0, 1.35) / 1.35;
-    return normalized * max_points;
+    return std::pow(reference_ms / median_ms, 0.45) * reference_points;
 }
 
 BenchmarkScore compute_score(const Args& args, const std::vector<Result>& results) {
@@ -649,22 +674,46 @@ BenchmarkScore compute_score(const Args& args, const std::vector<Result>& result
     double possible = 0.0;
     for (const auto& component : score.components) {
         earned += component.points;
-        possible += component.max_points;
+        possible += component.reference_points;
     }
     if (possible <= 0.0) {
         return score;
     }
     score.available = true;
-    score.total = static_cast<int>(std::llround(std::clamp(earned / possible, 0.0, 1.0) * 10000000.0));
+    score.total = std::max<long long>(
+        0,
+        static_cast<long long>(std::llround((earned / possible) * kBenchmarkReferenceScore)));
     return score;
 }
 
-std::string score_grade(int score) {
-    if (score >= 8500000) return "S";
-    if (score >= 7000000) return "A";
-    if (score >= 5500000) return "B";
-    if (score >= 4000000) return "C";
-    return "D";
+std::string score_grade(long long score) {
+    if (score >= 20000000) return "SSS+";
+    if (score >= 17000000) return "SSS";
+    if (score >= 14000000) return "SSS-";
+    if (score >= 12000000) return "SS+";
+    if (score >= 10000000) return "SS";
+    if (score >= 8500000) return "SS-";
+    if (score >= 7250000) return "S+";
+    if (score >= 6250000) return "S";
+    if (score >= 5250000) return "S-";
+    if (score >= 4500000) return "AAA+";
+    if (score >= 3800000) return "AAA";
+    if (score >= 3200000) return "AAA-";
+    if (score >= 2700000) return "A+";
+    if (score >= 2200000) return "A";
+    if (score >= 1800000) return "A-";
+    if (score >= 1400000) return "B+";
+    if (score >= 1000000) return "B";
+    if (score >= 750000) return "B-";
+    if (score >= 550000) return "C+";
+    if (score >= 375000) return "C";
+    if (score >= 250000) return "C-";
+    if (score >= 160000) return "D+";
+    if (score >= 100000) return "D";
+    if (score >= 50000) return "D-";
+    if (score >= 25000) return "F+";
+    if (score >= 10000) return "F";
+    return "F-";
 }
 
 void render_score(const Args& args, const BenchmarkScore& score) {
@@ -678,7 +727,7 @@ void render_score(const Args& args, const BenchmarkScore& score) {
     }
     std::cerr << "\nYUME benchmark score\n";
     std::cerr << "--------------------------------------------------------------------------------\n";
-    std::cerr << "overall: " << score.total << " / 10000000"
+    std::cerr << "overall: " << score.total
               << "  grade " << score_grade(score.total) << "\n";
     std::cerr << "mode: full"
               << "  target=" << args.target_duration_sec << "s"
@@ -686,7 +735,8 @@ void render_score(const Args& args, const BenchmarkScore& score) {
               << "  streams=" << args.streams
               << "  repeats=" << args.repeats
               << "  tunnels=" << args.tunnels << "\n";
-    std::cerr << "The score is normalized for comparison; raw MiB/s and ms rows are the exact measurements.\n";
+    std::cerr << "10,000,000 is the reference-class baseline, not a maximum.\n";
+    std::cerr << "Raw MiB/s and ms rows are the exact measurements.\n";
     std::cerr << "--------------------------------------------------------------------------------\n";
     std::cerr << std::left << std::setw(20) << "component"
               << std::right << std::setw(14) << "raw"
@@ -849,14 +899,14 @@ std::string render_json(const Args& args,
                         const BenchmarkScore& score) {
     std::ostringstream out;
     out << "{\n";
-    out << "  \"schema_version\": 5,\n";
+    out << "  \"schema_version\": 6,\n";
     out << "  \"benchmark_mode\": \"" << (args.full_benchmark ? "full" : "quick") << "\",\n";
     out << "  \"workdir\": \"" << json_escape(workdir.string()) << "\",\n";
     out << "  \"score\": ";
     if (score.available) {
         out << "{\n";
         out << "    \"total\": " << score.total << ",\n";
-        out << "    \"max\": 10000000,\n";
+        out << "    \"reference\": 10000000,\n";
         out << "    \"grade\": \"" << score_grade(score.total) << "\",\n";
         out << "    \"components\": [\n";
         for (std::size_t i = 0; i < score.components.size(); ++i) {
@@ -865,7 +915,7 @@ std::string render_json(const Args& args,
                 << "\"raw\": " << c.raw << ", "
                 << "\"unit\": \"" << json_escape(c.unit) << "\", "
                 << "\"points\": " << c.points << ", "
-                << "\"max_points\": " << c.max_points << "}"
+                << "\"reference_points\": " << c.reference_points << "}"
                 << (i + 1 == score.components.size() ? "\n" : ",\n");
         }
         out << "    ]\n";
@@ -959,6 +1009,8 @@ int main(int argc, char** argv) {
         Keyset ks = generate_keyset(args, tmp->path());
         const auto configs = select_configs(args);
         apply_full_benchmark_defaults(args, configs.size());
+        const int progress_total = std::max(1, static_cast<int>(configs.size()) * std::max(1, args.repeats));
+        int progress_completed = 0;
 
         std::vector<Result> results;
         results.reserve(configs.size());
@@ -968,7 +1020,14 @@ int main(int argc, char** argv) {
                 std::cerr << "[selftest] cooldown " << args.cooldown_ms << " ms before " << cfg.name << "\n";
                 std::this_thread::sleep_for(std::chrono::milliseconds(args.cooldown_ms));
             }
-            Result result = run_config_repeated(args, ks, cfg, tmp->path(), echo_port);
+            Result result = run_config_repeated(
+                args,
+                ks,
+                cfg,
+                tmp->path(),
+                echo_port,
+                progress_completed,
+                progress_total);
             if (!result.ok) tmp->keep();
             results.push_back(std::move(result));
         }

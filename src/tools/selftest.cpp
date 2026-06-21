@@ -4,6 +4,8 @@
  * Licensed under the GNU General Public License v3.0.
  */
 
+#include "tools/selftest/runner.hpp"
+
 #include "selftest/runtime.hpp"
 
 #include <algorithm>
@@ -23,11 +25,35 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 
 namespace {
 
 using namespace yume::tools::selftest;
 namespace fs = std::filesystem;
+
+bool progress_inline_enabled() {
+#if !defined(_WIN32)
+    static const bool enabled = ::isatty(STDERR_FILENO) == 1;
+#else
+    static const bool enabled = true;
+#endif
+    return enabled;
+}
+
+bool& progress_line_active() {
+    static bool active = false;
+    return active;
+}
+
+void finish_progress_line() {
+    if (progress_inline_enabled() && progress_line_active()) {
+        std::cerr << "\n";
+        progress_line_active() = false;
+    }
+}
 
 void render_progress_bar(int completed, int total, std::string_view label) {
     total = std::max(1, total);
@@ -35,12 +61,30 @@ void render_progress_bar(int completed, int total, std::string_view label) {
     constexpr int kWidth = 28;
     const int filled = static_cast<int>((static_cast<long long>(completed) * kWidth) / total);
     const int percent = static_cast<int>((static_cast<long long>(completed) * 100) / total);
-    std::cerr << "[selftest] progress [";
+    std::ostringstream line;
+    line << "[bench] progress [";
     for (int i = 0; i < kWidth; ++i) {
-        std::cerr << (i < filled ? '#' : '.');
+        line << (i < filled ? '#' : '.');
     }
-    std::cerr << "] " << std::setw(3) << percent << "% "
-              << completed << "/" << total << " " << label << "\n";
+    line << "] " << std::setw(3) << percent << "% "
+         << completed << "/" << total << " " << label;
+
+    if (progress_inline_enabled()) {
+        std::cerr << "\r" << line.str() << "        " << std::flush;
+        progress_line_active() = true;
+        if (completed >= total) {
+            std::cerr << "\n";
+            progress_line_active() = false;
+        }
+        return;
+    }
+
+    static int last_bucket = -1;
+    const int bucket = percent / 10;
+    if (completed >= total || (percent > 0 && bucket != last_bucket)) {
+        std::cerr << line.str() << "\n";
+        last_bucket = bucket;
+    }
 }
 
 
@@ -477,7 +521,8 @@ Result run_config_repeated(const Args& args,
                            int sink_port,
                            int& progress_completed,
                            int progress_total) {
-    std::cerr << "[selftest] " << cfg.name << ": " << cfg.description << "\n";
+    finish_progress_line();
+    std::cerr << "[bench] " << cfg.name << ": " << cfg.description << "\n";
     if (args.repeats <= 1) {
         render_progress_bar(progress_completed, progress_total, cfg.name);
         Result result = run_config(args, ks, cfg, workdir, echo_port, sink_port);
@@ -490,12 +535,14 @@ Result run_config_repeated(const Args& args,
     trials.reserve(static_cast<std::size_t>(args.repeats));
     for (int trial = 0; trial < args.repeats; ++trial) {
         if (trial > 0 && args.cooldown_ms > 0) {
-            std::cerr << "[selftest] cooldown " << args.cooldown_ms
+            finish_progress_line();
+            std::cerr << "[bench] cooldown " << args.cooldown_ms
                       << " ms before " << cfg.name << " trial "
                       << (trial + 1) << "/" << args.repeats << "\n";
             std::this_thread::sleep_for(std::chrono::milliseconds(args.cooldown_ms));
         }
-        std::cerr << "[selftest] " << cfg.name << " trial "
+        finish_progress_line();
+        std::cerr << "[bench] " << cfg.name << " trial "
                   << (trial + 1) << "/" << args.repeats << "\n";
         const std::string progress_label = cfg.name + " trial " +
             std::to_string(trial + 1) + "/" + std::to_string(args.repeats);
@@ -626,9 +673,9 @@ double score_scale(double ratio) {
         return 0.0;
     }
     if (ratio <= 1.0) {
-        return std::pow(ratio, 0.70);
+        return std::pow(ratio, 0.95);
     }
-    return 1.0 + std::log1p(ratio - 1.0) * 0.22;
+    return 1.0 + std::log1p(ratio - 1.0) * 0.12;
 }
 
 double scaled_metric_points(double value, double reference, double reference_points) {
@@ -685,13 +732,13 @@ BenchmarkScore compute_score(const Args& args, const std::vector<Result>& result
         });
     };
 
-    add_throughput("base-direct", 12000.0, 600000.0);
-    add_throughput("no-inner-raw", 1600.0, 1000000.0);
-    add_throughput("no-inner-obfs", 1500.0, 1300000.0);
-    add_throughput("light-no-hop", 1350.0, 1400000.0);
-    add_throughput("light-hop-2hz", 1250.0, 1800000.0);
-    add_throughput("heavy-no-hop", 1150.0, 1400000.0);
-    add_throughput("heavy-hop-2hz", 1100.0, 1900000.0);
+    add_throughput("base-direct", 100000.0, 600000.0);
+    add_throughput("no-inner-raw", 12000.0, 1000000.0);
+    add_throughput("no-inner-obfs", 11000.0, 1300000.0);
+    add_throughput("light-no-hop", 10000.0, 1400000.0);
+    add_throughput("light-hop-2hz", 9500.0, 1800000.0);
+    add_throughput("heavy-no-hop", 9000.0, 1400000.0);
+    add_throughput("heavy-hop-2hz", 8500.0, 1900000.0);
 
     const Result* latency_anchor = find_result(results, "heavy-hop-2hz");
     if (latency_anchor && latency_anchor->latency_ms.median > 0.0) {
@@ -699,7 +746,7 @@ BenchmarkScore compute_score(const Args& args, const std::vector<Result>& result
             "latency-anchor",
             latency_anchor->latency_ms.median,
             "ms",
-            scaled_latency_points(latency_anchor->latency_ms.median, 0.05, 600000.0),
+            scaled_latency_points(latency_anchor->latency_ms.median, 0.025, 600000.0),
             600000.0,
         });
     } else {
@@ -728,38 +775,38 @@ BenchmarkScore compute_score(const Args& args, const std::vector<Result>& result
 }
 
 std::string score_grade(long long score) {
-    if (score >= 60000000) return "SSS+";
-    if (score >= 40000000) return "SSS";
-    if (score >= 28000000) return "SSS-";
-    if (score >= 20000000) return "SS+";
-    if (score >= 15000000) return "SS";
-    if (score >= 11000000) return "SS-";
-    if (score >= 9000000) return "S+";
-    if (score >= 7000000) return "S";
-    if (score >= 5200000) return "S-";
+    if (score >= 120000000) return "SSS+";
+    if (score >= 80000000) return "SSS";
+    if (score >= 55000000) return "SSS-";
+    if (score >= 38000000) return "SS+";
+    if (score >= 26000000) return "SS";
+    if (score >= 18000000) return "SS-";
+    if (score >= 12000000) return "S+";
+    if (score >= 8000000) return "S";
+    if (score >= 5500000) return "S-";
     if (score >= 3800000) return "AAA+";
-    if (score >= 2800000) return "AAA";
-    if (score >= 2000000) return "AAA-";
-    if (score >= 1500000) return "A+";
-    if (score >= 1100000) return "A";
-    if (score >= 800000) return "A-";
-    if (score >= 580000) return "B+";
-    if (score >= 420000) return "B";
-    if (score >= 300000) return "B-";
-    if (score >= 210000) return "C+";
-    if (score >= 150000) return "C";
-    if (score >= 100000) return "C-";
-    if (score >= 65000) return "D+";
-    if (score >= 40000) return "D";
-    if (score >= 25000) return "D-";
-    if (score >= 12000) return "F+";
-    if (score >= 6000) return "F";
+    if (score >= 3000000) return "AAA";
+    if (score >= 2350000) return "AAA-";
+    if (score >= 2000000) return "A+";
+    if (score >= 1750000) return "A";
+    if (score >= 1500000) return "A-";
+    if (score >= 1200000) return "B+";
+    if (score >= 900000) return "B";
+    if (score >= 650000) return "B-";
+    if (score >= 460000) return "C+";
+    if (score >= 300000) return "C";
+    if (score >= 190000) return "C-";
+    if (score >= 140000) return "D+";
+    if (score >= 85000) return "D";
+    if (score >= 50000) return "D-";
+    if (score >= 25000) return "F+";
+    if (score >= 10000) return "F";
     return "F-";
 }
 
 void render_score(const Args& args, const BenchmarkScore& score) {
     if (!args.full_benchmark) {
-        std::cerr << "\nOverall score: not computed in quick mode. Use --full for the long benchmark score.\n";
+        std::cerr << "\nScore not computed in quick mode. Use --fullbench for the long local benchmark score.\n";
         return;
     }
     if (!score.available) {
@@ -770,17 +817,17 @@ void render_score(const Args& args, const BenchmarkScore& score) {
         std::cerr << ".\n";
         return;
     }
-    std::cerr << "\nYUME benchmark score\n";
+    std::cerr << "\nYUME benchmark result\n";
     std::cerr << "--------------------------------------------------------------------------------\n";
-    std::cerr << "score: " << format_integer(score.total)
-              << "  grade " << score_grade(score.total) << "\n";
+    std::cerr << "TOTAL   " << format_integer(score.total)
+              << "  grade " << score_grade(score.total)
+              << "  model yume-bench-v3\n";
     std::cerr << "mode: full"
               << "  target=" << args.target_duration_sec << "s"
               << "  bulk=" << args.bulk_mib << "MiB"
               << "  streams=" << args.streams
               << "  repeats=" << args.repeats
               << "  tunnels=" << args.tunnels << "\n";
-    std::cerr << "reference score: 10,000,000; faster systems can score higher.\n";
     std::cerr << "Use the raw MiB/s and latency rows for exact measurements.\n";
     std::cerr << "--------------------------------------------------------------------------------\n";
     std::cerr << std::left << std::setw(20) << "component"
@@ -808,7 +855,7 @@ void render_table(const std::vector<Result>& results) {
     const double base_lat = base == results.end() ? 0.0 : base->latency_ms.median;
     const double base_thr = base == results.end() ? 0.0 : base->throughput_mib_s;
 
-    std::cerr << "\nYUME localhost self-test\n";
+    std::cerr << "\nYUME local benchmark details\n";
     std::cerr << "--------------------------------------------------------------------------------\n";
     std::cerr << std::left << std::setw(18) << "config"
               << std::right << std::setw(10) << "med ms"
@@ -845,7 +892,7 @@ void render_table(const std::vector<Result>& results) {
     }
     std::cerr << "--------------------------------------------------------------------------------\n";
     std::cerr << "lat delta = added median RTT over direct loopback. thr pct = MiB/s vs direct.\n";
-    std::cerr << "\nSelf-test phase breakdown\n";
+    std::cerr << "\nPhase breakdown\n";
     std::cerr << "------------------------------------------------------------------------------------------------\n";
     std::cerr << std::left << std::setw(18) << "config"
               << std::right << std::setw(10) << "srv ms"
@@ -950,7 +997,7 @@ std::string render_json(const Args& args,
     out << "  \"score\": ";
     if (score.available) {
         out << "{\n";
-        out << "    \"model\": \"yume-bench-v2\",\n";
+        out << "    \"model\": \"yume-bench-v3\",\n";
         out << "    \"total\": " << score.total << ",\n";
         out << "    \"reference\": 10000000,\n";
         out << "    \"grade\": \"" << score_grade(score.total) << "\",\n";
@@ -1036,7 +1083,9 @@ std::string render_json(const Args& args,
 
 }  // namespace
 
-int main(int argc, char** argv) {
+namespace yume::tools::selftest {
+
+int run_cli(int argc, char** argv) {
     std::unique_ptr<TempDir> tmp;
     try {
         Args args = parse_args(argc, argv);
@@ -1076,7 +1125,8 @@ int main(int argc, char** argv) {
         for (std::size_t i = 0; i < configs.size(); ++i) {
             const auto& cfg = configs[i];
             if (i > 0 && args.cooldown_ms > 0) {
-                std::cerr << "[selftest] cooldown " << args.cooldown_ms << " ms before " << cfg.name << "\n";
+                finish_progress_line();
+                std::cerr << "[bench] cooldown " << args.cooldown_ms << " ms before " << cfg.name << "\n";
                 std::this_thread::sleep_for(std::chrono::milliseconds(args.cooldown_ms));
             }
             Result result = run_config_repeated(
@@ -1094,13 +1144,19 @@ int main(int argc, char** argv) {
         sink.stop();
         echo.stop();
 
-        render_table(results);
+        finish_progress_line();
         const BenchmarkScore score = compute_score(args, results);
-        render_score(args, score);
+        if (args.full_benchmark) {
+            render_score(args, score);
+        }
+        render_table(results);
+        if (!args.full_benchmark) {
+            render_score(args, score);
+        }
         const std::string json = render_json(args, results, tmp->path(), score);
         if (!args.json_path.empty()) {
             write_text(args.json_path, json);
-            std::cerr << "[selftest] wrote JSON " << args.json_path << "\n";
+            std::cerr << "[bench] wrote JSON " << args.json_path << "\n";
         }
         if (args.json_stdout) {
             std::cout << json;
@@ -1109,15 +1165,22 @@ int main(int argc, char** argv) {
         const bool all_ok = std::all_of(results.begin(), results.end(), [](const Result& r) { return r.ok; });
         if (!all_ok) {
             tmp->keep();
-            std::cerr << "[selftest] logs kept in " << tmp->path() << "\n";
+            std::cerr << "[bench] logs kept in " << tmp->path() << "\n";
         }
         return all_ok ? 0 : 1;
     } catch (const std::exception& ex) {
-        std::cerr << "yume-selftest: " << ex.what() << "\n";
+        finish_progress_line();
+        const std::string exe_name = (argc > 0 && argv && argv[0])
+            ? fs::path(argv[0]).filename().string()
+            : std::string{};
+        const char* prefix = exe_name == "yume-selftest" ? "yume-selftest" : "yume benchmark";
+        std::cerr << prefix << ": " << ex.what() << "\n";
         if (tmp) {
             tmp->keep();
-            std::cerr << "[selftest] logs kept in " << tmp->path() << "\n";
+            std::cerr << "[bench] logs kept in " << tmp->path() << "\n";
         }
         return 2;
     }
 }
+
+}  // namespace yume::tools::selftest

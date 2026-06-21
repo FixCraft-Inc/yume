@@ -73,8 +73,8 @@ key.
 
 ## Client Shortcut
 
-When `yume-selftest` is built next to `yume`, the client exposes the same local
-benchmark without requiring any config:
+When `yume` is built with `YUME_BUILD_SELFTEST=ON`, the client exposes the same
+local benchmark without requiring any config:
 
 ```bash
 yume --quickbench
@@ -82,8 +82,9 @@ yume --fullbench
 yume --fullbench --duration-sec 120
 ```
 
-`--fullbench` is local and scored. It does not contact a server, read the
-normal client config, or require `--auth`.
+`--fullbench` is local and scored. It runs inside the `yume` process, starts
+temporary local `yume`/`yumed` children for routed configs, and does not contact
+a remote server, read the normal client config, or require `--auth`.
 
 ## Real Endpoint Benchmark
 

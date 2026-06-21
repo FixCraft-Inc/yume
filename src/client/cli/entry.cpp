@@ -32,7 +32,6 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
-#include <cerrno>
 #include <cctype>
 #include <cstdint>
 #include <utility>
@@ -41,7 +40,6 @@
 #include <cstdlib>
 #include <thread>
 #if !defined(_WIN32)
-#include <sys/wait.h>
 #include <unistd.h>
 #endif
 #if defined(_WIN32)
@@ -77,6 +75,9 @@
 #include "core/stealth/tls_stealth.hpp"
 #include "core/stealth/tls_metrics.hpp"
 #include "util.hpp"
+#if defined(YUME_HAS_SELFTEST) && YUME_HAS_SELFTEST
+#include "tools/selftest/runner.hpp"
+#endif
 #include <nlohmann/json.hpp>
 
 namespace yume::client {
@@ -98,66 +99,25 @@ std::string join_items(const std::vector<std::string>& items) {
 }
 
 int run_local_benchmark(const char* argv0, const ParsedArgs& args) {
-#if defined(_WIN32)
-    (void)argv0;
-    (void)args;
-    util::log_error("--fullbench local benchmark is currently available on POSIX desktop builds only");
-    return 1;
-#else
-    std::filesystem::path tool;
-    const std::string self_path = get_self_path(argv0);
-    if (!self_path.empty()) {
-        tool = std::filesystem::path(self_path).parent_path() / "yume-selftest";
-    } else if (argv0 && *argv0) {
-        std::error_code ec;
-        tool = std::filesystem::absolute(argv0, ec).parent_path() / "yume-selftest";
-    }
-    if (tool.empty() || !file_exists(tool.string())) {
-        util::log_error("--fullbench is a local device benchmark, but yume-selftest is not built next to yume. "
-                        "Rebuild with ./ezbuild.sh --selftest or CMake -DYUME_BUILD_SELFTEST=ON.");
-        return 1;
-    }
-
-    std::vector<std::string> child_args;
-    child_args.push_back(tool.string());
-    child_args.push_back(args.local_benchmark_full ? "--full" : "--quick");
-    child_args.insert(child_args.end(), args.local_benchmark_args.begin(), args.local_benchmark_args.end());
-
-    util::log_info(std::string("starting local ") +
-                   (args.local_benchmark_full ? "full benchmark" : "quick benchmark") +
-                   " via " + tool.string());
+#if defined(YUME_HAS_SELFTEST) && YUME_HAS_SELFTEST
+    std::vector<std::string> local_args;
+    local_args.emplace_back((argv0 && *argv0) ? argv0 : "yume");
+    local_args.emplace_back(args.local_benchmark_full ? "--full" : "--quick");
+    local_args.insert(local_args.end(), args.local_benchmark_args.begin(), args.local_benchmark_args.end());
 
     std::vector<char*> raw;
-    raw.reserve(child_args.size() + 1);
-    for (auto& item : child_args) {
+    raw.reserve(local_args.size() + 1);
+    for (auto& item : local_args) {
         raw.push_back(item.data());
     }
     raw.push_back(nullptr);
 
-    const pid_t child = ::fork();
-    if (child < 0) {
-        util::log_error("failed to start yume-selftest");
-        return 1;
-    }
-    if (child == 0) {
-        ::execv(raw[0], raw.data());
-        _exit(127);
-    }
-
-    int status = 0;
-    while (::waitpid(child, &status, 0) < 0) {
-        if (errno == EINTR) {
-            continue;
-        }
-        util::log_error("failed while waiting for yume-selftest");
-        return 1;
-    }
-    if (WIFEXITED(status)) {
-        return WEXITSTATUS(status);
-    }
-    if (WIFSIGNALED(status)) {
-        return 128 + WTERMSIG(status);
-    }
+    return yume::tools::selftest::run_cli(static_cast<int>(local_args.size()), raw.data());
+#else
+    (void)argv0;
+    (void)args;
+    util::log_error("--fullbench is a local device benchmark, but this yume binary was built without it. "
+                    "Rebuild with ./ezbuild.sh --selftest or CMake -DYUME_BUILD_SELFTEST=ON.");
     return 1;
 #endif
 }

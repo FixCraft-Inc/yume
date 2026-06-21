@@ -616,11 +616,20 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
                 "yume-selftest can be built, but routed loopback benchmarks require "
                 "-DYUME_FEATURE_LAN_BRIDGE=ON in the yume/yumed binaries under test")
         endif()
-        add_executable(yume-selftest
+        add_library(yume_selftest_lib STATIC
             tools/selftest.cpp
             tools/selftest/runtime.cpp
         )
-        target_link_libraries(yume-selftest PRIVATE OpenSSL::Crypto Threads::Threads)
+        target_include_directories(yume_selftest_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+        target_link_libraries(yume_selftest_lib PUBLIC OpenSSL::Crypto Threads::Threads)
+        yume_apply_perf_opts(yume_selftest_lib)
+        target_compile_definitions(yume_client_lib PRIVATE YUME_HAS_SELFTEST=1)
+        target_link_libraries(yume PRIVATE yume_selftest_lib)
+
+        add_executable(yume-selftest
+            tools/selftest_main.cpp
+        )
+        target_link_libraries(yume-selftest PRIVATE yume_selftest_lib)
         yume_apply_perf_opts(yume-selftest)
         add_executable(yume-basefwx-bench
             tools/basefwx_bench.cpp

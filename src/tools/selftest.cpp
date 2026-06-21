@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <iomanip>
@@ -113,6 +114,12 @@ void print_help() {
         << "  --yume <path>             yume binary (default: sibling ./yume)\n"
         << "  --yumed <path>            yumed binary (default: sibling ./yumed)\n"
         << "  --configs <a,b|all>       Config subset; use --list-configs\n"
+        << "  --benchmark <quick|full>  quick keeps smoke-test defaults; full runs a\n"
+        << "                            longer score-producing device benchmark\n"
+        << "  --quick                   Alias for --benchmark quick\n"
+        << "  --full                    Alias for --benchmark full\n"
+        << "  --duration-sec <N>        Full-mode target duration hint (30..600,\n"
+        << "                            default 60; scales payload size)\n"
         << "  --latency-iters <N>       Echo round trips per config (default 120)\n"
         << "  --bulk-mib <N>            Bulk echo size per config (default 32)\n"
         << "  --argon-mem-kib <N>       Heavy KDF memory cap/env for this run (default 32768)\n"
@@ -132,6 +139,8 @@ void print_help() {
         << "Notes:\n"
         << "  Default/no --configs runs every built-in config, including heavy-hop-2hz.\n"
         << "  Config aliases: all expands to the full suite; all-on selects heavy-hop-2hz.\n"
+        << "  Quick mode prints raw tables only. Full mode also prints a normalized\n"
+        << "  YUME score from 0..10,000,000 for easy device-to-device comparison.\n"
         << "  Routed loopback benchmarks require yumed built with\n"
         << "  -DYUME_FEATURE_LAN_BRIDGE=ON. The tool grants allow_local_ip only\n"
         << "  to its temporary auth key through authorized_keys.json.\n";
@@ -159,28 +168,52 @@ Args parse_args(int argc, char** argv) {
             args.yumed = require_value(i, arg);
         } else if (arg == "--configs") {
             args.configs = split_csv(require_value(i, arg));
+        } else if (arg == "--benchmark") {
+            const std::string mode = require_value(i, arg);
+            if (mode == "full" || mode == "long") {
+                args.full_benchmark = true;
+            } else if (mode == "quick" || mode == "smoke") {
+                args.full_benchmark = false;
+            } else {
+                throw std::runtime_error("--benchmark must be quick or full");
+            }
+        } else if (arg == "--full" || arg == "--long") {
+            args.full_benchmark = true;
+        } else if (arg == "--quick") {
+            args.full_benchmark = false;
+        } else if (arg == "--duration-sec") {
+            args.target_duration_sec = std::clamp(std::stoi(require_value(i, arg)), 30, 600);
+            args.target_duration_override = true;
         } else if (arg == "--latency-iters") {
             args.latency_iters = std::max(1, std::stoi(require_value(i, arg)));
+            args.latency_iters_override = true;
         } else if (arg == "--bulk-mib") {
             args.bulk_mib = std::max(1, std::stoi(require_value(i, arg)));
+            args.bulk_mib_override = true;
         } else if (arg == "--argon-mem-kib") {
             args.argon_mem_kib = std::max(1024, std::stoi(require_value(i, arg)));
         } else if (arg == "--argon-parallelism") {
             args.argon_parallelism = std::max(1, std::stoi(require_value(i, arg)));
         } else if (arg == "--tunnels") {
             args.tunnels = std::max(1, std::stoi(require_value(i, arg)));
+            args.tunnel_count_override = true;
         } else if (arg == "--streams") {
             args.streams = std::max(1, std::stoi(require_value(i, arg)));
+            args.stream_count_override = true;
         } else if (arg == "--client-threads") {
             args.client_threads = std::max(0, std::stoi(require_value(i, arg)));
         } else if (arg == "--server-threads") {
             args.server_threads = std::max(1, std::stoi(require_value(i, arg)));
+            args.server_threads_override = true;
         } else if (arg == "--cooldown-ms") {
             args.cooldown_ms = std::max(0, std::stoi(require_value(i, arg)));
+            args.cooldown_ms_override = true;
         } else if (arg == "--repeat" || arg == "--repeats") {
             args.repeats = std::max(1, std::stoi(require_value(i, arg)));
+            args.repeat_count_override = true;
         } else if (arg == "--one-way") {
             args.one_way = true;
+            args.one_way_override = true;
         } else if (arg == "--json") {
             args.json_path = require_value(i, arg);
         } else if (arg == "--json-stdout") {
@@ -383,12 +416,10 @@ Result run_config(const Args& args,
     const auto start = Clock::now();
     try {
         if (cfg.base_direct) {
-            if (!args.one_way) {
-                LatencyMeasurement latency = measure_latency(0, echo_port, args.latency_iters, false);
-                result.latency_ms = latency.stats;
-                result.breakdown.connect_ms = latency.connect_ms;
-                result.breakdown.warmup_ms = latency.warmup_ms;
-            }
+            LatencyMeasurement latency = measure_latency(0, echo_port, args.latency_iters, false);
+            result.latency_ms = latency.stats;
+            result.breakdown.connect_ms = latency.connect_ms;
+            result.breakdown.warmup_ms = latency.warmup_ms;
             BulkMeasurement bulk = args.one_way
                 ? measure_bulk_one_way(0, echo_port, args.bulk_mib, false, args.streams)
                 : measure_bulk(0, echo_port, args.bulk_mib, false, args.streams);
@@ -401,12 +432,10 @@ Result run_config(const Args& args,
             const int socks_port = pick_free_port();
             YumeStack stack(args, ks, cfg, workdir, yumed_port, socks_port);
             stack.start(result.breakdown);
-            if (!args.one_way) {
-                LatencyMeasurement latency = measure_latency(socks_port, echo_port, args.latency_iters, true);
-                result.latency_ms = latency.stats;
-                result.breakdown.connect_ms = latency.connect_ms;
-                result.breakdown.warmup_ms = latency.warmup_ms;
-            }
+            LatencyMeasurement latency = measure_latency(socks_port, echo_port, args.latency_iters, true);
+            result.latency_ms = latency.stats;
+            result.breakdown.connect_ms = latency.connect_ms;
+            result.breakdown.warmup_ms = latency.warmup_ms;
             BulkMeasurement bulk = args.one_way
                 ? measure_bulk_one_way(socks_port, echo_port, args.bulk_mib, true, args.streams)
                 : measure_bulk(socks_port, echo_port, args.bulk_mib, true, args.streams);
@@ -504,6 +533,177 @@ std::vector<Config> select_configs(const Args& args) {
         append_once(*it);
     }
     return selected;
+}
+
+void apply_full_benchmark_defaults(Args& args, std::size_t config_count) {
+    if (!args.full_benchmark) {
+        return;
+    }
+    if (!args.target_duration_override) {
+        args.target_duration_sec = 60;
+    }
+    if (!args.repeat_count_override) {
+        args.repeats = 3;
+    }
+    if (!args.stream_count_override) {
+        args.streams = 64;
+    }
+    if (!args.tunnel_count_override) {
+        args.tunnels = 4;
+    }
+    if (!args.server_threads_override) {
+        args.server_threads = 4;
+    }
+    if (!args.cooldown_ms_override) {
+        args.cooldown_ms = 1000;
+    }
+    if (!args.one_way_override) {
+        args.one_way = true;
+    }
+    if (!args.latency_iters_override) {
+        args.latency_iters = 240;
+    }
+    if (!args.bulk_mib_override) {
+        const int divisor = std::max(1, static_cast<int>(config_count) * args.repeats);
+        const int mib = (args.target_duration_sec * 1024) / divisor;
+        args.bulk_mib = std::clamp(mib, 512, 8192);
+    }
+}
+
+struct ScoreComponent {
+    std::string name;
+    double raw{0.0};
+    std::string unit;
+    double points{0.0};
+    double max_points{0.0};
+};
+
+struct BenchmarkScore {
+    bool available{false};
+    int total{0};
+    std::vector<ScoreComponent> components;
+};
+
+const Result* find_result(const std::vector<Result>& results, std::string_view name) {
+    auto it = std::find_if(results.begin(), results.end(), [&](const Result& r) {
+        return r.ok && r.config.name == name;
+    });
+    return it == results.end() ? nullptr : &*it;
+}
+
+double scaled_metric_points(double value, double reference, double max_points) {
+    if (value <= 0.0 || reference <= 0.0 || max_points <= 0.0) {
+        return 0.0;
+    }
+    const double normalized = std::clamp(std::pow(value / reference, 0.55), 0.0, 1.35) / 1.35;
+    return normalized * max_points;
+}
+
+double scaled_latency_points(double median_ms, double reference_ms, double max_points) {
+    if (median_ms <= 0.0 || reference_ms <= 0.0 || max_points <= 0.0) {
+        return 0.0;
+    }
+    const double normalized = std::clamp(std::pow(reference_ms / median_ms, 0.45), 0.0, 1.35) / 1.35;
+    return normalized * max_points;
+}
+
+BenchmarkScore compute_score(const Args& args, const std::vector<Result>& results) {
+    BenchmarkScore score;
+    if (!args.full_benchmark) {
+        return score;
+    }
+
+    auto add_throughput = [&](std::string_view name, double reference, double weight) {
+        const Result* result = find_result(results, name);
+        if (!result) return;
+        score.components.push_back({
+            std::string(name),
+            result->throughput_mib_s,
+            "MiB/s",
+            scaled_metric_points(result->throughput_mib_s, reference, weight),
+            weight,
+        });
+    };
+
+    add_throughput("base-direct", 8000.0, 900000.0);
+    add_throughput("no-inner-raw", 1600.0, 1100000.0);
+    add_throughput("no-inner-obfs", 1400.0, 1400000.0);
+    add_throughput("light-no-hop", 1200.0, 1500000.0);
+    add_throughput("light-hop-2hz", 1000.0, 1800000.0);
+    add_throughput("heavy-no-hop", 950.0, 1400000.0);
+    add_throughput("heavy-hop-2hz", 900.0, 1900000.0);
+
+    const Result* latency_anchor = find_result(results, "heavy-hop-2hz");
+    if (!latency_anchor) latency_anchor = find_result(results, "light-hop-2hz");
+    if (latency_anchor && latency_anchor->latency_ms.median > 0.0) {
+        score.components.push_back({
+            "latency-anchor",
+            latency_anchor->latency_ms.median,
+            "ms",
+            scaled_latency_points(latency_anchor->latency_ms.median, 0.20, 1000000.0),
+            1000000.0,
+        });
+    }
+
+    double earned = 0.0;
+    double possible = 0.0;
+    for (const auto& component : score.components) {
+        earned += component.points;
+        possible += component.max_points;
+    }
+    if (possible <= 0.0) {
+        return score;
+    }
+    score.available = true;
+    score.total = static_cast<int>(std::llround(std::clamp(earned / possible, 0.0, 1.0) * 10000000.0));
+    return score;
+}
+
+std::string score_grade(int score) {
+    if (score >= 8500000) return "S";
+    if (score >= 7000000) return "A";
+    if (score >= 5500000) return "B";
+    if (score >= 4000000) return "C";
+    return "D";
+}
+
+void render_score(const Args& args, const BenchmarkScore& score) {
+    if (!args.full_benchmark) {
+        std::cerr << "\nOverall score: not computed in quick mode. Use --full for the long benchmark score.\n";
+        return;
+    }
+    if (!score.available) {
+        std::cerr << "\nOverall score: unavailable; no successful scored benchmark rows.\n";
+        return;
+    }
+    std::cerr << "\nYUME benchmark score\n";
+    std::cerr << "--------------------------------------------------------------------------------\n";
+    std::cerr << "overall: " << score.total << " / 10000000"
+              << "  grade " << score_grade(score.total) << "\n";
+    std::cerr << "mode: full"
+              << "  target=" << args.target_duration_sec << "s"
+              << "  bulk=" << args.bulk_mib << "MiB"
+              << "  streams=" << args.streams
+              << "  repeats=" << args.repeats
+              << "  tunnels=" << args.tunnels << "\n";
+    std::cerr << "The score is normalized for comparison; raw MiB/s and ms rows are the exact measurements.\n";
+    std::cerr << "--------------------------------------------------------------------------------\n";
+    std::cerr << std::left << std::setw(20) << "component"
+              << std::right << std::setw(14) << "raw"
+              << std::setw(10) << "unit"
+              << std::setw(12) << "points"
+              << "\n";
+    std::cerr << "--------------------------------------------------------------------------------\n";
+    for (const auto& component : score.components) {
+        std::cerr << std::left << std::setw(20) << component.name
+                  << std::right << std::fixed << std::setprecision(component.unit == "ms" ? 3 : 1)
+                  << std::setw(14) << component.raw
+                  << std::setw(10) << component.unit
+                  << std::setprecision(0)
+                  << std::setw(12) << component.points
+                  << "\n";
+    }
+    std::cerr << "--------------------------------------------------------------------------------\n";
 }
 
 void render_table(const std::vector<Result>& results) {
@@ -643,11 +843,36 @@ std::string json_escape(const std::string& value) {
     return out.str();
 }
 
-std::string render_json(const Args& args, const std::vector<Result>& results, const fs::path& workdir) {
+std::string render_json(const Args& args,
+                        const std::vector<Result>& results,
+                        const fs::path& workdir,
+                        const BenchmarkScore& score) {
     std::ostringstream out;
     out << "{\n";
-    out << "  \"schema_version\": 4,\n";
+    out << "  \"schema_version\": 5,\n";
+    out << "  \"benchmark_mode\": \"" << (args.full_benchmark ? "full" : "quick") << "\",\n";
     out << "  \"workdir\": \"" << json_escape(workdir.string()) << "\",\n";
+    out << "  \"score\": ";
+    if (score.available) {
+        out << "{\n";
+        out << "    \"total\": " << score.total << ",\n";
+        out << "    \"max\": 10000000,\n";
+        out << "    \"grade\": \"" << score_grade(score.total) << "\",\n";
+        out << "    \"components\": [\n";
+        for (std::size_t i = 0; i < score.components.size(); ++i) {
+            const auto& c = score.components[i];
+            out << "      {\"name\": \"" << json_escape(c.name) << "\", "
+                << "\"raw\": " << c.raw << ", "
+                << "\"unit\": \"" << json_escape(c.unit) << "\", "
+                << "\"points\": " << c.points << ", "
+                << "\"max_points\": " << c.max_points << "}"
+                << (i + 1 == score.components.size() ? "\n" : ",\n");
+        }
+        out << "    ]\n";
+        out << "  },\n";
+    } else {
+        out << "null,\n";
+    }
     out << "  \"latency_iters\": " << args.latency_iters << ",\n";
     out << "  \"bulk_mib\": " << args.bulk_mib << ",\n";
     out << "  \"streams\": " << args.streams << ",\n";
@@ -733,6 +958,7 @@ int main(int argc, char** argv) {
         const int echo_port = echo.start();
         Keyset ks = generate_keyset(args, tmp->path());
         const auto configs = select_configs(args);
+        apply_full_benchmark_defaults(args, configs.size());
 
         std::vector<Result> results;
         results.reserve(configs.size());
@@ -749,7 +975,9 @@ int main(int argc, char** argv) {
         echo.stop();
 
         render_table(results);
-        const std::string json = render_json(args, results, tmp->path());
+        const BenchmarkScore score = compute_score(args, results);
+        render_score(args, score);
+        const std::string json = render_json(args, results, tmp->path(), score);
         if (!args.json_path.empty()) {
             write_text(args.json_path, json);
             std::cerr << "[selftest] wrote JSON " << args.json_path << "\n";

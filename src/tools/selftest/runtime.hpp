@@ -48,10 +48,21 @@ struct Args {
     int cooldown_ms{500};
     int repeats{1};
     int streams{1};
+    int target_duration_sec{60};
     bool one_way{false};
+    bool full_benchmark{false};
     bool list_configs{false};
     bool keep_workdir{false};
     bool json_stdout{false};
+    bool latency_iters_override{false};
+    bool bulk_mib_override{false};
+    bool tunnel_count_override{false};
+    bool server_threads_override{false};
+    bool cooldown_ms_override{false};
+    bool repeat_count_override{false};
+    bool stream_count_override{false};
+    bool one_way_override{false};
+    bool target_duration_override{false};
     std::filesystem::path json_path;
 };
 

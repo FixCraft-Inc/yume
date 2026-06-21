@@ -71,12 +71,27 @@ must connect to a loopback echo target. The tool creates a temporary
 `authorized_keys.json` and grants `allow_local_ip` only to the generated test
 key.
 
+## Client Shortcut
+
+When `yume-selftest` is built next to `yume`, the client exposes the same local
+benchmark without requiring any config:
+
+```bash
+yume --quickbench
+yume --fullbench
+yume --fullbench --duration-sec 120
+```
+
+`--fullbench` is local and scored. It does not contact a server, read the
+normal client config, or require `--auth`.
+
 ## Real Endpoint Benchmark
 
 `yume --bench` measures an authenticated YUME stream against a real `yumed`
 endpoint without Chromium, curl, SOCKS apps, or an external echo server.
-`yume --fullbench` is the longer final-user profile; it uses the same built-in
-endpoint with larger payloads and more streams.
+Use `yume --bench-full` when you want the longer authenticated endpoint profile
+with larger payloads and more streams. Endpoint benchmarks always require the
+normal server and identity configuration.
 
 Use portable binaries for real endpoints. `YUME_NATIVE_OPT` is off by default;
 only turn it on for same-machine experiments. A binary configured with
@@ -86,20 +101,21 @@ different x86_64 CPU that lacks the builder's AVX/BMI/AES-class features.
 Enable the virtual benchmark endpoint on the server:
 
 ```bash
-yumed --fullbench --config config/yumed.json
+yumed --bench --config config/yumed.json
 ```
 
 Run from the client:
 
 ```bash
 yume --config config/yume.json --bench
-yume --config config/yume.json --fullbench
+yume --config config/yume.json --bench-full
 yume --config config/yume.json --bench --bench-mib 1024
 yume --config config/yume.json --bench --bench-mib 1024 --bench-chunk-kib 256
 ```
 
-The server rejects benchmark streams unless `--bench`, `--fullbench`, or
-`"benchmark_enable": true` is set. The benchmark uses the current TLS profile,
+The server rejects benchmark streams unless `--bench`, the compatibility alias
+`--fullbench`, or `"benchmark_enable": true` is set. The benchmark uses the
+current TLS profile,
 obfs carrier, inner crypto, and hopping settings, then opens two synthetic
 streams: one upload sink and one download source. It does not include browser,
 local SOCKS client, remote website, CDN, or provider routing behavior beyond

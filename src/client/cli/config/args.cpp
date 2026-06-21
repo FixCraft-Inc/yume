@@ -139,6 +139,15 @@ ParsedArgs parse_args(int argc, char** argv) {
         out = parsed;
         return true;
     };
+    auto pass_local_benchmark_value = [&](const std::string& flag) -> bool {
+        const char* raw = take_value(flag);
+        if (!raw) {
+            return false;
+        }
+        args.local_benchmark_args.push_back(flag);
+        args.local_benchmark_args.emplace_back(raw);
+        return true;
+    };
     for (; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--") {
@@ -227,10 +236,39 @@ ParsedArgs parse_args(int argc, char** argv) {
         } else if (arg == "--bench") {
             args.bench = true;
             args.non_interactive = true;
-        } else if (arg == "--fullbench" || arg == "--full-bench") {
+        } else if (arg == "--bench-full" || arg == "--endpoint-fullbench" || arg == "--endpoint-full-bench") {
             args.bench = true;
             args.bench_full = true;
             args.non_interactive = true;
+        } else if (arg == "--fullbench" || arg == "--full-bench" || arg == "--local-fullbench") {
+            args.local_benchmark = true;
+            args.local_benchmark_full = true;
+            args.non_interactive = true;
+        } else if (arg == "--quickbench" || arg == "--quick-bench" || arg == "--localbench") {
+            args.local_benchmark = true;
+            args.local_benchmark_full = false;
+            args.non_interactive = true;
+        } else if (arg == "--duration-sec" ||
+                   arg == "--latency-iters" ||
+                   arg == "--bulk-mib" ||
+                   arg == "--argon-mem-kib" ||
+                   arg == "--argon-parallelism" ||
+                   arg == "--streams" ||
+                   arg == "--client-threads" ||
+                   arg == "--server-threads" ||
+                   arg == "--cooldown-ms" ||
+                   arg == "--repeat" ||
+                   arg == "--repeats" ||
+                   arg == "--configs" ||
+                   arg == "--json") {
+            if (!pass_local_benchmark_value(arg)) {
+                return args;
+            }
+        } else if (arg == "--one-way" ||
+                   arg == "--json-stdout" ||
+                   arg == "--keep-workdir" ||
+                   arg == "--list-configs") {
+            args.local_benchmark_args.push_back(arg);
         } else if (arg == "--bench-mib") {
             if (!parse_int_value("--bench-mib", args.bench_mib)) {
                 return args;

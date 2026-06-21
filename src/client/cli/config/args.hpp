@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace yume::client {
 
@@ -74,6 +75,9 @@ struct ParsedArgs {
     std::string tls_fingerprint_test_endpoint{"tls.peet.ws"};
     bool self_dpi{false};
     bool self_dpi_override{false};
+    bool local_benchmark{false};
+    bool local_benchmark_full{false};
+    std::vector<std::string> local_benchmark_args;
     bool bench{false};
     bool bench_full{false};
     int bench_mib{256};

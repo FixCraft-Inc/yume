@@ -32,6 +32,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <cerrno>
 #include <cctype>
 #include <cstdint>
 #include <utility>
@@ -40,6 +41,7 @@
 #include <cstdlib>
 #include <thread>
 #if !defined(_WIN32)
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 #if defined(_WIN32)
@@ -95,6 +97,71 @@ std::string join_items(const std::vector<std::string>& items) {
     return out;
 }
 
+int run_local_benchmark(const char* argv0, const ParsedArgs& args) {
+#if defined(_WIN32)
+    (void)argv0;
+    (void)args;
+    util::log_error("--fullbench local benchmark is currently available on POSIX desktop builds only");
+    return 1;
+#else
+    std::filesystem::path tool;
+    const std::string self_path = get_self_path(argv0);
+    if (!self_path.empty()) {
+        tool = std::filesystem::path(self_path).parent_path() / "yume-selftest";
+    } else if (argv0 && *argv0) {
+        std::error_code ec;
+        tool = std::filesystem::absolute(argv0, ec).parent_path() / "yume-selftest";
+    }
+    if (tool.empty() || !file_exists(tool.string())) {
+        util::log_error("--fullbench is a local device benchmark, but yume-selftest is not built next to yume. "
+                        "Rebuild with ./ezbuild.sh --selftest or CMake -DYUME_BUILD_SELFTEST=ON.");
+        return 1;
+    }
+
+    std::vector<std::string> child_args;
+    child_args.push_back(tool.string());
+    child_args.push_back(args.local_benchmark_full ? "--full" : "--quick");
+    child_args.insert(child_args.end(), args.local_benchmark_args.begin(), args.local_benchmark_args.end());
+
+    util::log_info(std::string("starting local ") +
+                   (args.local_benchmark_full ? "full benchmark" : "quick benchmark") +
+                   " via " + tool.string());
+
+    std::vector<char*> raw;
+    raw.reserve(child_args.size() + 1);
+    for (auto& item : child_args) {
+        raw.push_back(item.data());
+    }
+    raw.push_back(nullptr);
+
+    const pid_t child = ::fork();
+    if (child < 0) {
+        util::log_error("failed to start yume-selftest");
+        return 1;
+    }
+    if (child == 0) {
+        ::execv(raw[0], raw.data());
+        _exit(127);
+    }
+
+    int status = 0;
+    while (::waitpid(child, &status, 0) < 0) {
+        if (errno == EINTR) {
+            continue;
+        }
+        util::log_error("failed while waiting for yume-selftest");
+        return 1;
+    }
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    if (WIFSIGNALED(status)) {
+        return 128 + WTERMSIG(status);
+    }
+    return 1;
+#endif
+}
+
 }  // namespace
 
 void Cli::set_runtime_ready_callback(RuntimeReadyCallback cb) {
@@ -107,6 +174,10 @@ int Cli::run(int argc, char** argv) {
     ParsedArgs args = parse_args(argc, argv);
     if (!args.parse_error.empty()) {
         util::log_error(args.parse_error);
+        return 1;
+    }
+    if (args.local_benchmark && args.bench) {
+        util::log_error("--fullbench is local-only; use --bench-full for the authenticated endpoint long profile");
         return 1;
     }
     if (args.timing) {
@@ -179,6 +250,9 @@ int Cli::run(int argc, char** argv) {
     if (args.credits) {
         print_credits();
         return 0;
+    }
+    if (args.local_benchmark) {
+        return run_local_benchmark(argv[0], args);
     }
     std::string cli_cwd;
     {
@@ -283,7 +357,7 @@ int Cli::run(int argc, char** argv) {
          !args.admin_target.empty() ||
          args.attach_local ||
          args.share_export)) {
-        util::log_error("--bench/--fullbench is a one-shot mode; do not combine it with SOCKS, forwards, relay, or control modes");
+        util::log_error("--bench/--bench-full is a one-shot endpoint mode; do not combine it with SOCKS, forwards, relay, or control modes");
         return 1;
     }
     const bool has_active_mode =
@@ -302,7 +376,7 @@ int Cli::run(int argc, char** argv) {
         args.attach_local ||
         args.share_export;  // export is a one-shot, not a connection
     if (!has_active_mode) {
-        util::log_error("no mode selected (use --bench, --fullbench, --socks, -L, -R, --run, --directory, --chat, --send-file, --send-bytes, --admin-attach, --control, or --attach-local)");
+        util::log_error("no mode selected (use --fullbench, --quickbench, --bench, --socks, -L, -R, --run, --directory, --chat, --send-file, --send-bytes, --admin-attach, --control, or --attach-local)");
         return 1;
     }
 
@@ -315,7 +389,7 @@ int Cli::run(int argc, char** argv) {
             missing.emplace_back("--auth <identity-key>");
         }
         if (!missing.empty()) {
-            const std::string flag = args.bench_full ? "--fullbench" : "--bench";
+            const std::string flag = args.bench_full ? "--bench-full" : "--bench";
             util::log_error(flag + " needs " + join_items(missing) +
                             ". The server must also be running yumed with --bench enabled.");
             return 1;

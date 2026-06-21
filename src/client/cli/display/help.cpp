@@ -26,7 +26,7 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --credits --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --bench --fullbench --full-bench --bench-mib --bench-chunk-kib --bench-streams --bench-direction --threads --tunnels --obfs --no-obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms export import --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-name --tls-server-name --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --self-dpi --no-self-dpi --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
+  local opts="--help -h --version --credits --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --quickbench --fullbench --full-bench --localbench --bench --bench-full --endpoint-fullbench --bench-mib --bench-chunk-kib --bench-streams --bench-direction --duration-sec --latency-iters --bulk-mib --streams --cooldown-ms --repeat --configs --one-way --json --json-stdout --keep-workdir --list-configs --threads --tunnels --obfs --no-obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms export import --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-name --tls-server-name --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --self-dpi --no-self-dpi --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
   local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path --relay-key-file"
   case "$prev" in
     --completion)
@@ -107,9 +107,13 @@ void print_help() {
         << "  -i, --auth <path>        Identity key\n\n"
         << "Modes:\n"
         << "  --socks <port>           Start a SOCKS5 proxy\n"
+        << "  --quickbench             Run the local device benchmark smoke profile;\n"
+        << "                             no server, auth key, or config required.\n"
+        << "  --fullbench              Run the local scored device benchmark via\n"
+        << "                             yume-selftest; no server or auth key required.\n"
         << "  --bench                  Run authenticated endpoint up/down benchmark\n"
         << "                             against yumed --bench, then exit.\n"
-        << "  --fullbench              Longer endpoint benchmark profile; currently\n"
+        << "  --bench-full             Longer endpoint benchmark profile; currently\n"
         << "                             defaults to 1024 MiB and 64 streams.\n"
         << "  --bench-mib <N>          Benchmark payload per direction (default 256).\n"
         << "  --bench-chunk-kib <N>    DATA chunk size (default 1024, max 1024).\n"

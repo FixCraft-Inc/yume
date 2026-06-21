@@ -604,7 +604,7 @@ int run_endpoint_benchmark(const std::shared_ptr<Tunnel>& tunnel,
         std::cout << "  tls-name=" << tls_name;
     }
     std::cout << "\n"
-              << "Profile  " << (options.full_profile ? "fullbench" : "standard")
+              << "Profile  " << (options.full_profile ? "bench-full" : "standard")
               << "  direction=" << options.bench_direction
               << "  streams=" << options.bench_streams << "\n"
               << "Payload  " << options.bench_mib << " MiB per direction"

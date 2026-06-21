@@ -81,34 +81,34 @@ std::string ansi_wrap(const Args& args, std::string_view code, std::string value
 }
 
 std::string grade_color_code(std::string_view grade, long long score) {
-    if (score > 0 && score < 2500) return "30;47;1";      // critical: black on white
-    if (grade == "F-") return "38;5;52;1";                 // darkest red
-    if (grade == "F") return "38;5;88;1";
-    if (grade == "F+") return "38;5;124;1";
-    if (grade == "D-") return "38;5;160;1";                // red
-    if (grade == "D") return "38;5;196;1";
-    if (grade == "D+") return "38;5;202;1";                // dark orange
-    if (grade == "C-") return "38;5;208;1";
-    if (grade == "C") return "38;5;214;1";                 // orange
-    if (grade == "C+") return "38;5;220;1";
-    if (grade == "B-") return "38;5;136;1";                // dark yellow
-    if (grade == "B") return "38;5;178;1";
-    if (grade == "B+") return "38;5;226;1";                // light yellow
-    if (grade == "A-") return "38;5;190;1";
-    if (grade == "A") return "38;5;154;1";                 // light green
-    if (grade == "A+") return "38;5;118;1";
-    if (grade == "AAA-") return "38;5;82;1";
-    if (grade == "AAA") return "38;5;34;1";                // green
-    if (grade == "AAA+") return "38;5;28;1";               // dark green
-    if (grade == "S-") return "38;5;24;1";
-    if (grade == "S") return "38;5;25;1";                  // dark blue
-    if (grade == "S+") return "38;5;26;1";
-    if (grade == "SS-") return "38;5;27;1";
-    if (grade == "SS") return "38;5;33;1";
-    if (grade == "SS+") return "38;5;39;1";
-    if (grade == "SSS-") return "38;5;45;1";
-    if (grade == "SSS") return "38;5;51;1";
-    return "96;1";                                         // SSS+ light blue
+    if (score > 0 && score < 2500) return "1;30;47";       // critical: black on white
+    if (grade == "F-") return "1;38;2;80;0;0";             // darkest red
+    if (grade == "F") return "1;38;2;120;0;0";
+    if (grade == "F+") return "1;38;2;160;18;18";
+    if (grade == "D-") return "1;38;2;196;32;32";          // red
+    if (grade == "D") return "1;38;2;224;44;28";
+    if (grade == "D+") return "1;38;2;212;82;0";           // dark orange
+    if (grade == "C-") return "1;38;2;236;112;0";
+    if (grade == "C") return "1;38;2;246;146;0";           // orange
+    if (grade == "C+") return "1;38;2;255;176;24";
+    if (grade == "B-") return "1;38;2;144;112;0";          // dark yellow
+    if (grade == "B") return "1;38;2;190;156;0";
+    if (grade == "B+") return "1;38;2;242;218;34";         // light yellow
+    if (grade == "A-") return "1;38;2;190;238;64";
+    if (grade == "A") return "1;38;2;124;220;68";          // light green
+    if (grade == "A+") return "1;38;2;80;200;64";
+    if (grade == "AAA-") return "1;38;2;32;168;72";
+    if (grade == "AAA") return "1;38;2;18;132;62";         // green
+    if (grade == "AAA+") return "1;38;2;0;92;54";          // dark green
+    if (grade == "S-") return "1;38;2;0;64;116";
+    if (grade == "S") return "1;38;2;0;76;156";            // dark blue
+    if (grade == "S+") return "1;38;2;0;92;190";
+    if (grade == "SS-") return "1;38;2;0;122;224";
+    if (grade == "SS") return "1;38;2;0;158;242";
+    if (grade == "SS+") return "1;38;2;34;190;255";
+    if (grade == "SSS-") return "1;38;2;78;214;255";
+    if (grade == "SSS") return "1;38;2;128;232;255";
+    return "1;38;2;178;244;255";                           // SSS+ light blue
 }
 
 std::string color_grade(const Args& args, std::string grade, long long score) {
@@ -773,7 +773,7 @@ double score_scale(double ratio) {
     if (ratio <= 1.0) {
         return std::pow(ratio, 0.95);
     }
-    return 1.0 + std::log1p(ratio - 1.0) * 0.12;
+    return std::pow(ratio, 0.68);
 }
 
 double scaled_metric_points(double value, double reference, double reference_points) {
@@ -1166,50 +1166,98 @@ HotPathRow run_disk_write(const fs::path& workdir, std::uint64_t total_bytes) {
 }
 
 HotPathRow run_sustained_mix(long target_ms,
+                             int thread_count,
                              const std::function<void(double)>& progress) {
-    const auto key = patterned_bytes(32, 11);
-    const std::vector<std::uint8_t> aad{
-        'y', 'u', 'm', 'e', '-', 'd', 'e', 's', 'k', 't', 'o', 'p', '-', 'b', 'e', 'n', 'c', 'h'};
-    const auto plaintext = patterned_bytes(64 * kKiB);
-    auto batch = packet_batch();
-    const auto encoded_packet_bytes = yume::protocol::packet_bulk::encoded_size(batch);
-    const auto started = Clock::now();
-    const auto deadline = started + std::chrono::milliseconds(std::max<long>(1, target_ms));
+    struct WorkerResult {
+        std::uint64_t bytes{0};
+        std::uint64_t rounds{0};
+        int guard{0};
+        std::string error;
+    };
+
+    const int workers = std::clamp(thread_count, 1, 256);
+    std::atomic<bool> start_flag{false};
+    std::vector<WorkerResult> results(static_cast<std::size_t>(workers));
+    std::vector<std::thread> threads;
+    threads.reserve(static_cast<std::size_t>(workers));
+
+    Clock::time_point started;
+    Clock::time_point deadline;
+
+    for (int worker = 0; worker < workers; ++worker) {
+        threads.emplace_back([&, worker] {
+            try {
+                const auto key = patterned_bytes(32, 11 + worker);
+                const std::vector<std::uint8_t> aad{
+                    'y', 'u', 'm', 'e', '-', 'd', 'e', 's', 'k', 't', 'o', 'p', '-', 'b', 'e', 'n', 'c', 'h'};
+                const auto plaintext = patterned_bytes(64 * kKiB, 31 + worker);
+                auto batch = packet_batch();
+                const auto encoded_packet_bytes = yume::protocol::packet_bulk::encoded_size(batch);
+                WorkerResult local;
+                while (!start_flag.load(std::memory_order_acquire)) {
+                    std::this_thread::yield();
+                }
+                while (Clock::now() < deadline) {
+                    auto encrypted = basefwx::crypto::AeadEncrypt(key, plaintext, aad);
+                    auto decrypted = basefwx::crypto::AeadDecrypt(key, encrypted, aad);
+                    batch.sequence = (static_cast<std::uint64_t>(worker) << 48) | local.rounds;
+                    auto encoded = yume::protocol::packet_bulk::encode_batch(batch);
+                    auto decoded = yume::protocol::packet_bulk::decode_batch(encoded);
+                    const std::string info = "yume-sustain:" + std::to_string(worker) + ":" +
+                                             std::to_string(local.rounds);
+                    auto derived = basefwx::crypto::HkdfSha256(key, info, 32);
+                    if (!decoded.has_value()) {
+                        throw std::runtime_error("packet bulk sustained decode failed");
+                    }
+                    local.guard ^= decrypted[local.rounds & (decrypted.size() - 1)];
+                    local.guard ^= decoded->packets.back().back();
+                    local.guard ^= derived.front();
+                    local.bytes += static_cast<std::uint64_t>(plaintext.size()) * 2u;
+                    local.bytes += static_cast<std::uint64_t>(encoded_packet_bytes) * 2u;
+                    ++local.rounds;
+                }
+                results[static_cast<std::size_t>(worker)] = std::move(local);
+            } catch (const std::exception& ex) {
+                results[static_cast<std::size_t>(worker)].error = ex.what();
+            }
+        });
+    }
+
+    started = Clock::now();
+    deadline = started + std::chrono::milliseconds(std::max<long>(1, target_ms));
+    start_flag.store(true, std::memory_order_release);
     auto next_progress = started;
-    int guard = 0;
-    std::uint64_t rounds = 0;
-    std::uint64_t bytes = 0;
-    auto now = started;
-    do {
-        auto encrypted = basefwx::crypto::AeadEncrypt(key, plaintext, aad);
-        auto decrypted = basefwx::crypto::AeadDecrypt(key, encrypted, aad);
-        batch.sequence = rounds;
-        auto encoded = yume::protocol::packet_bulk::encode_batch(batch);
-        auto decoded = yume::protocol::packet_bulk::decode_batch(encoded);
-        const std::string info = "yume-sustain:" + std::to_string(rounds);
-        auto derived = basefwx::crypto::HkdfSha256(key, info, 32);
-        if (!decoded.has_value()) {
-            throw std::runtime_error("packet bulk sustained decode failed");
-        }
-        guard ^= decrypted[rounds & (decrypted.size() - 1)];
-        guard ^= decoded->packets.back().back();
-        guard ^= derived.front();
-        bytes += static_cast<std::uint64_t>(plaintext.size()) * 2u;
-        bytes += static_cast<std::uint64_t>(encoded_packet_bytes) * 2u;
-        ++rounds;
-        now = Clock::now();
+    while (Clock::now() < deadline) {
+        const auto now = Clock::now();
         if (now >= next_progress) {
             progress(std::chrono::duration<double>(now - started).count() /
                      (static_cast<double>(target_ms) / 1000.0));
             next_progress = now + std::chrono::milliseconds(500);
         }
-    } while (now < deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+
+    std::uint64_t bytes = 0;
+    std::uint64_t rounds = 0;
+    int guard = 0;
+    for (const auto& result : results) {
+        if (!result.error.empty()) {
+            throw std::runtime_error(result.error);
+        }
+        bytes += result.bytes;
+        rounds += result.rounds;
+        guard ^= result.guard;
+    }
     const double seconds = elapsed_s(started, Clock::now());
     return throughput_row("sustained-mix",
                           bytes,
                           seconds,
                           std::to_string(target_ms) + "ms mixed AES-GCM + packet bulk + HKDF, rounds=" +
-                              std::to_string(rounds) + ", guard=" + std::to_string(guard & 0xff));
+                              std::to_string(rounds) + ", threads=" + std::to_string(workers) +
+                              ", guard=" + std::to_string(guard & 0xff));
 }
 
 std::vector<HotPathRow> run_hot_paths(const Args& args,
@@ -1225,6 +1273,9 @@ std::vector<HotPathRow> run_hot_paths(const Args& args,
     const int hkdf_ops = full ? 100000 : 5000;
     const std::uint64_t disk_bytes = full ? static_cast<std::uint64_t>(256) * kMiB : 0;
     const long sustained_ms = full ? 30000L : 0L;
+    const int sustained_threads = full
+        ? std::clamp(static_cast<int>(std::thread::hardware_concurrency()), 1, 256)
+        : 1;
 
     std::vector<HotPathRow> rows;
     auto step = [&](std::string_view name, auto&& fn) {
@@ -1247,7 +1298,7 @@ std::vector<HotPathRow> run_hot_paths(const Args& args,
     }
     if (sustained_ms > 0) {
         step("sustained-mix", [&] {
-            return run_sustained_mix(sustained_ms, [&](double fraction) {
+            return run_sustained_mix(sustained_ms, sustained_threads, [&](double fraction) {
                 const double base = static_cast<double>(progress_completed);
                 const double pseudo = std::clamp(
                     base + std::clamp(fraction, 0.0, 0.999),
@@ -1292,6 +1343,7 @@ BenchmarkScore compute_hot_path_score(const Args& args,
         {"disk-write", 3500.0, 100000.0},
         {"sustained-mix", 12000.0, 3900000.0},
     };
+    constexpr double kGlobalReferenceMultiplier = 2.0;
 
     std::vector<std::string> missing;
     for (const auto& ref : refs) {
@@ -1300,7 +1352,7 @@ BenchmarkScore compute_hot_path_score(const Args& args,
             missing.emplace_back(ref.name);
             continue;
         }
-        const double reference = global ? ref.league_ref * 10.0 : ref.league_ref;
+        const double reference = global ? ref.league_ref * kGlobalReferenceMultiplier : ref.league_ref;
         score.components.push_back({
             std::string(ref.name),
             row->value,
@@ -1313,6 +1365,35 @@ BenchmarkScore compute_hot_path_score(const Args& args,
         score.unavailable_reason = "missing common hot-path rows";
         return score;
     }
+    finalize_score(score);
+    return score;
+}
+
+BenchmarkScore compute_desktop_league_score(const Args& args,
+                                            const BenchmarkScore& engine_score,
+                                            const BenchmarkScore& transport_score) {
+    BenchmarkScore score;
+    if (!args.full_benchmark) {
+        return score;
+    }
+    if (!engine_score.available || !transport_score.available) {
+        score.unavailable_reason = "desktop league requires engine and YUME transport scores";
+        return score;
+    }
+    score.components.push_back({
+        "engine-hot-paths",
+        static_cast<double>(engine_score.total),
+        "score",
+        static_cast<double>(engine_score.total) * 0.5,
+        kBenchmarkReferenceScore * 0.5,
+    });
+    score.components.push_back({
+        "yume-transport",
+        static_cast<double>(transport_score.total),
+        "score",
+        static_cast<double>(transport_score.total) * 0.5,
+        kBenchmarkReferenceScore * 0.5,
+    });
     finalize_score(score);
     return score;
 }
@@ -1365,7 +1446,7 @@ void render_score(const Args& args,
         std::cerr << "GLOBAL  " << format_integer(global_score.total)
                   << "  " << color_grade(args, grade, global_score.total);
         if (args.dev_style) {
-            std::cerr << "  model yume-global-v4";
+            std::cerr << "  model yume-global-v5";
         }
         std::cerr << "\n";
     } else {
@@ -1380,7 +1461,7 @@ void render_score(const Args& args,
         std::cerr << "LEAGUE  " << format_integer(league_score.total)
                   << "  " << color_grade(args, grade, league_score.total);
         if (args.dev_style) {
-            std::cerr << "  model yume-desktop-v4";
+            std::cerr << "  model yume-desktop-v5";
         }
         std::cerr << "\n";
     } else {
@@ -1397,7 +1478,7 @@ void render_score(const Args& args,
               << "  repeats=" << args.repeats
               << "  tunnels=" << args.tunnels << "\n";
     std::cerr << "GLOBAL: shared Android/desktop hot paths.\n";
-    std::cerr << "LEAGUE: desktop YUME transport profile.\n";
+    std::cerr << "LEAGUE: desktop overall, 50% engine and 50% YUME transport.\n";
     if (!args.dev_style) {
         std::cerr << "Run again with --dev for component tables and phase timings.\n";
     }
@@ -1628,20 +1709,28 @@ std::string render_json(const Args& args,
                         const std::vector<HotPathRow>& hot_paths,
                         const fs::path& workdir,
                         const BenchmarkScore& global_score,
-                        const BenchmarkScore& league_score) {
+                        const BenchmarkScore& league_score,
+                        const BenchmarkScore& engine_league_score,
+                        const BenchmarkScore& transport_score) {
     std::ostringstream out;
     out << "{\n";
-    out << "  \"schema_version\": 8,\n";
+    out << "  \"schema_version\": 9,\n";
     out << "  \"benchmark_mode\": \"" << (args.full_benchmark ? "full" : "quick") << "\",\n";
     out << "  \"workdir\": \"" << json_escape(workdir.string()) << "\",\n";
     out << "  \"global_score\": ";
-    append_score_json(out, global_score, "yume-global-v4", "  ");
+    append_score_json(out, global_score, "yume-global-v5", "  ");
     out << ",\n";
     out << "  \"league_score\": ";
-    append_score_json(out, league_score, "yume-desktop-v4", "  ");
+    append_score_json(out, league_score, "yume-desktop-v5", "  ");
     out << ",\n";
     out << "  \"score\": ";
-    append_score_json(out, global_score, "yume-global-v4", "  ");
+    append_score_json(out, global_score, "yume-global-v5", "  ");
+    out << ",\n";
+    out << "  \"engine_league_score\": ";
+    append_score_json(out, engine_league_score, "yume-engine-v5", "  ");
+    out << ",\n";
+    out << "  \"transport_score\": ";
+    append_score_json(out, transport_score, "yume-transport-v5", "  ");
     out << ",\n";
     out << "  \"global_score_unavailable_reason\": ";
     if (global_score.available || global_score.unavailable_reason.empty()) {
@@ -1803,7 +1892,12 @@ int run_cli(int argc, char** argv) {
 
         finish_progress_line();
         const BenchmarkScore global_score = compute_hot_path_score(args, hot_paths, true);
-        const BenchmarkScore league_score = compute_score(args, results);
+        const BenchmarkScore engine_league_score = compute_hot_path_score(args, hot_paths, false);
+        const BenchmarkScore transport_score = compute_score(args, results);
+        const BenchmarkScore league_score = compute_desktop_league_score(
+            args,
+            engine_league_score,
+            transport_score);
         if (args.full_benchmark) {
             render_score(args, global_score, league_score);
         }
@@ -1814,7 +1908,15 @@ int run_cli(int argc, char** argv) {
         if (!args.full_benchmark) {
             render_score(args, global_score, league_score);
         }
-        const std::string json = render_json(args, results, hot_paths, tmp->path(), global_score, league_score);
+        const std::string json = render_json(
+            args,
+            results,
+            hot_paths,
+            tmp->path(),
+            global_score,
+            league_score,
+            engine_league_score,
+            transport_score);
         if (!args.json_path.empty()) {
             write_text(args.json_path, json);
             std::cerr << "[bench] wrote JSON " << args.json_path << "\n";

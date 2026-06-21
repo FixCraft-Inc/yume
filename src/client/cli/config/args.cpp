@@ -227,22 +227,29 @@ ParsedArgs parse_args(int argc, char** argv) {
         } else if (arg == "--bench") {
             args.bench = true;
             args.non_interactive = true;
+        } else if (arg == "--fullbench" || arg == "--full-bench") {
+            args.bench = true;
+            args.bench_full = true;
+            args.non_interactive = true;
         } else if (arg == "--bench-mib") {
             if (!parse_int_value("--bench-mib", args.bench_mib)) {
                 return args;
             }
+            args.bench_mib_override = true;
             args.bench = true;
             args.non_interactive = true;
         } else if (arg == "--bench-chunk-kib") {
             if (!parse_int_value("--bench-chunk-kib", args.bench_chunk_kib)) {
                 return args;
             }
+            args.bench_chunk_kib_override = true;
             args.bench = true;
             args.non_interactive = true;
         } else if (arg == "--bench-streams") {
             if (!parse_int_value("--bench-streams", args.bench_streams)) {
                 return args;
             }
+            args.bench_streams_override = true;
             args.bench = true;
             args.non_interactive = true;
         } else if (arg == "--bench-direction") {
@@ -260,6 +267,7 @@ ParsedArgs parse_args(int argc, char** argv) {
                 return args;
             }
             args.bench = true;
+            args.bench_direction_override = true;
             args.non_interactive = true;
         } else if (arg == "--threads") {
             if (!parse_int_value("--threads", args.io_threads)) {

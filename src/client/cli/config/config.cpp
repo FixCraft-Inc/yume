@@ -389,6 +389,20 @@ void normalize_client_config_after_overrides(ParsedArgs* args, ClientConfig* cfg
         cfg->inner_hop = false;
     }
     if (args->bench) {
+        if (args->bench_full) {
+            if (!args->bench_mib_override) {
+                args->bench_mib = 1024;
+            }
+            if (!args->bench_chunk_kib_override) {
+                args->bench_chunk_kib = 1024;
+            }
+            if (!args->bench_streams_override) {
+                args->bench_streams = 64;
+            }
+            if (!args->bench_direction_override) {
+                args->bench_direction = "both";
+            }
+        }
         if (args->bench_mib <= 0) {
             args->bench_mib = 256;
         }

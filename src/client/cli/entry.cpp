@@ -287,7 +287,7 @@ int Cli::run(int argc, char** argv) {
          !args.admin_target.empty() ||
          args.attach_local ||
          args.share_export)) {
-        util::log_error("--bench is a one-shot mode; do not combine it with SOCKS, forwards, relay, or control modes");
+        util::log_error("--bench/--fullbench is a one-shot mode; do not combine it with SOCKS, forwards, relay, or control modes");
         return 1;
     }
     const bool has_active_mode =
@@ -306,7 +306,7 @@ int Cli::run(int argc, char** argv) {
         args.attach_local ||
         args.share_export;  // export is a one-shot, not a connection
     if (!has_active_mode) {
-        util::log_error("no mode selected (use --bench, --socks, -L, -R, --run, --directory, --chat, --send-file, --send-bytes, --admin-attach, --control, or --attach-local)");
+        util::log_error("no mode selected (use --bench, --fullbench, --socks, -L, -R, --run, --directory, --chat, --send-file, --send-bytes, --admin-attach, --control, or --attach-local)");
         return 1;
     }
 

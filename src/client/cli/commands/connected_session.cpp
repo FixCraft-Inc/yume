@@ -807,6 +807,7 @@ int run_connected_session(boost::asio::io_context& io,
             args.bench_chunk_kib,
             args.bench_streams,
             args.bench_direction,
+            args.bench_full,
         };
         const int bench_code = run_endpoint_benchmark(tunnel, cfg, bench_options);
         tunnel_pool->stop_all("benchmark complete");

@@ -19,6 +19,7 @@ struct EndpointBenchOptions {
     int bench_chunk_kib{1024};
     int bench_streams{1};
     std::string bench_direction{"both"};
+    bool full_profile{false};
 };
 
 int run_endpoint_benchmark(const std::shared_ptr<Tunnel>& tunnel,

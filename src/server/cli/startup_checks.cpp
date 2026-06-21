@@ -396,7 +396,7 @@ void log_effective_startup_summary(const yume::server::ServerConfig& cfg) {
                          "; hopping: " + hop_state +
                          "; required: " + (cfg.inner_required ? "yes" : "no"));
     if (cfg.benchmark_enable) {
-        yume::util::log_info("authenticated benchmark endpoint enabled for yume --bench");
+        yume::util::log_info("authenticated benchmark endpoint enabled for yume --bench/--fullbench");
     }
 }
 

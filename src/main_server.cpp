@@ -369,7 +369,7 @@ int main(int argc, char** argv) {
             if (parsed < 0) parsed = 0;
             cfg.packet_mtu = static_cast<std::uint32_t>(parsed);
             packet_mtu_override = true;
-        } else if (arg == "--bench") {
+        } else if (arg == "--bench" || arg == "--fullbench" || arg == "--full-bench") {
             cfg.benchmark_enable = true;
         } else if (arg == "--inner") {
             yume::util::log_warn("--inner is deprecated; use --inner-heavy or --inner-light");

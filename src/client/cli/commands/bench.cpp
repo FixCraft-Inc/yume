@@ -10,17 +10,25 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
+
+#if defined(_WIN32)
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 #include "client/cli/entry.hpp"
 #include "client/transport/tunnel.hpp"
@@ -87,6 +95,42 @@ std::string format_mib(std::uint64_t bytes) {
     return out.str();
 }
 
+std::string format_seconds(double seconds) {
+    std::ostringstream out;
+    out.setf(std::ios::fixed);
+    out << std::setprecision(3) << seconds;
+    return out.str();
+}
+
+void print_result_row(std::string_view label, std::uint64_t bytes, double seconds) {
+    std::cout << std::left << std::setw(8) << label
+              << std::right << std::setw(12) << format_mib(bytes) << " MiB"
+              << std::setw(11) << format_seconds(seconds) << " s  "
+              << format_rate(bytes, seconds) << "\n";
+}
+
+bool stdout_is_tty() {
+#if defined(_WIN32)
+    return _isatty(_fileno(stdout)) != 0;
+#else
+    return ::isatty(fileno(stdout)) != 0;
+#endif
+}
+
+std::string progress_bar(double pct) {
+    constexpr int kWidth = 30;
+    pct = std::clamp(pct, 0.0, 100.0);
+    const int filled = static_cast<int>((pct / 100.0) * kWidth);
+    std::string out;
+    out.reserve(kWidth + 2);
+    out.push_back('[');
+    for (int i = 0; i < kWidth; ++i) {
+        out.push_back(i < filled ? '#' : '.');
+    }
+    out.push_back(']');
+    return out;
+}
+
 class BenchProgressTicker {
 public:
     BenchProgressTicker(std::string label,
@@ -96,6 +140,7 @@ public:
           total_bytes_(total_bytes),
           current_bytes_(current_bytes),
           started_(std::chrono::steady_clock::now()),
+          tty_(stdout_is_tty()),
           thread_([this] { run(); }) {}
 
     ~BenchProgressTicker() {
@@ -117,27 +162,45 @@ public:
         if (thread_.joinable()) {
             thread_.join();
         }
+        if (printed_ && tty_) {
+            std::cout << "\r\033[2K" << std::flush;
+        }
     }
 
 private:
+    void print_progress() {
+        const auto now = std::chrono::steady_clock::now();
+        const double elapsed = std::chrono::duration<double>(now - started_).count();
+        const auto bytes = current_bytes_.load(std::memory_order_relaxed);
+        const double pct = total_bytes_ > 0
+            ? (100.0 * static_cast<double>(bytes) / static_cast<double>(total_bytes_))
+            : 0.0;
+        if (tty_) {
+            std::cout << "\r\033[2K"
+                      << label_ << " " << progress_bar(pct) << " "
+                      << std::fixed << std::setprecision(1) << std::setw(5) << pct << "%  "
+                      << format_mib(bytes) << "/" << format_mib(total_bytes_) << " MiB  "
+                      << format_rate(bytes, elapsed)
+                      << std::flush;
+        } else {
+            std::cout << label_ << ": " << format_mib(bytes)
+                      << "/" << format_mib(total_bytes_) << " MiB, "
+                      << std::fixed << std::setprecision(1) << pct << "%, "
+                      << format_rate(bytes, elapsed) << "\n"
+                      << std::flush;
+        }
+        printed_ = true;
+    }
+
     void run() {
         std::unique_lock<std::mutex> lock(stop_mu_);
         while (!stop_) {
-            if (stop_cv_.wait_for(lock, std::chrono::seconds(2), [this] { return stop_; })) {
+            const auto interval = tty_ ? std::chrono::milliseconds(500) : std::chrono::seconds(5);
+            if (stop_cv_.wait_for(lock, interval, [this] { return stop_; })) {
                 break;
             }
             lock.unlock();
-            const auto now = std::chrono::steady_clock::now();
-            const double elapsed = std::chrono::duration<double>(now - started_).count();
-            const auto bytes = current_bytes_.load(std::memory_order_relaxed);
-            const double pct = total_bytes_ > 0
-                ? (100.0 * static_cast<double>(bytes) / static_cast<double>(total_bytes_))
-                : 0.0;
-            std::cout << label_ << ":   "
-                      << format_mib(bytes) << "/" << format_mib(total_bytes_)
-                      << " MiB (" << std::fixed << std::setprecision(1) << pct
-                      << "%, " << format_rate(bytes, elapsed) << ")\n"
-                      << std::flush;
+            print_progress();
             lock.lock();
         }
     }
@@ -146,6 +209,8 @@ private:
     std::uint64_t total_bytes_{0};
     const std::atomic<std::uint64_t>& current_bytes_;
     std::chrono::steady_clock::time_point started_;
+    bool tty_{false};
+    bool printed_{false};
     std::mutex stop_mu_;
     std::condition_variable stop_cv_;
     bool stop_{false};
@@ -532,44 +597,73 @@ int run_endpoint_benchmark(const std::shared_ptr<Tunnel>& tunnel,
     const std::size_t chunk_size =
         static_cast<std::size_t>(options.bench_chunk_kib) * 1024U;
 
-    std::cout << "\nYUME endpoint benchmark\n"
-              << "server: " << cfg.server << ":" << cfg.port;
+    std::cout << "\nYUME Endpoint Benchmark\n"
+              << "Target   " << cfg.server << ":" << cfg.port;
     const std::string& tls_name = effective_tls_server_name(cfg);
     if (tls_name != cfg.server) {
-        std::cout << " (tls-name: " << tls_name << ")";
+        std::cout << "  tls-name=" << tls_name;
     }
     std::cout << "\n"
-              << "payload: " << options.bench_mib << " MiB per direction"
-              << ", chunk: " << options.bench_chunk_kib << " KiB"
-              << ", streams: " << options.bench_streams << "\n"
-              << "path: authenticated YUME stream over current TLS/obfs/inner settings\n\n";
+              << "Profile  " << (options.full_profile ? "fullbench" : "standard")
+              << "  direction=" << options.bench_direction
+              << "  streams=" << options.bench_streams << "\n"
+              << "Payload  " << options.bench_mib << " MiB per direction"
+              << "  chunk=" << options.bench_chunk_kib << " KiB\n"
+              << "Path     authenticated YUME stream over current TLS/obfs/inner settings\n\n";
 
+    const auto bench_started = std::chrono::steady_clock::now();
+    EndpointBenchResult up_result;
+    EndpointBenchResult down_result;
+    bool ran_up = false;
+    bool ran_down = false;
     if (options.bench_direction == "both" || options.bench_direction == "up") {
-        std::cout << "UP:   running upload...\n" << std::flush;
-        auto up = run_endpoint_upload_bench_many(tunnel, total_bytes, chunk_size, options.bench_streams);
-        if (!up.ok) {
-            util::log_error("bench upload failed: " + up.error);
+        std::cout << "Upload\n" << std::flush;
+        up_result = run_endpoint_upload_bench_many(tunnel, total_bytes, chunk_size, options.bench_streams);
+        if (!up_result.ok) {
+            util::log_error("bench upload failed: " + up_result.error);
             return 1;
         }
-        std::cout << "UP:   " << format_rate(up.bytes, up.seconds)
-                  << "  (" << format_mib(up.bytes) << " MiB in "
-                  << std::fixed << std::setprecision(3) << up.seconds << " s";
-        if (up.server_bytes > 0 && up.server_seconds > 0.0) {
-            std::cout << ", server " << format_rate(up.server_bytes, up.server_seconds);
-        }
-        std::cout << ")\n";
+        ran_up = true;
+        std::cout << "UP      complete\n";
     }
 
     if (options.bench_direction == "both" || options.bench_direction == "down") {
-        std::cout << "DOWN: running download...\n" << std::flush;
-        auto down = run_endpoint_download_bench_many(tunnel, total_bytes, options.bench_streams);
-        if (!down.ok) {
-            util::log_error("bench download failed: " + down.error);
+        std::cout << "Download\n" << std::flush;
+        down_result = run_endpoint_download_bench_many(tunnel, total_bytes, options.bench_streams);
+        if (!down_result.ok) {
+            util::log_error("bench download failed: " + down_result.error);
             return 1;
         }
-        std::cout << "DOWN: " << format_rate(down.bytes, down.seconds)
-                  << "  (" << format_mib(down.bytes) << " MiB in "
-                  << std::fixed << std::setprecision(3) << down.seconds << " s)\n";
+        ran_down = true;
+        std::cout << "DOWN    complete\n";
+    }
+    const auto bench_finished = std::chrono::steady_clock::now();
+
+    const std::uint64_t total_done =
+        (ran_up ? up_result.bytes : 0ULL) +
+        (ran_down ? down_result.bytes : 0ULL);
+    const double total_seconds =
+        std::chrono::duration<double>(bench_finished - bench_started).count();
+
+    std::cout << "\nResults\n"
+              << "--------------------------------------------------------------------------------\n"
+              << std::left << std::setw(8) << "TOTAL"
+              << std::right << std::setw(12) << format_mib(total_done) << " MiB"
+              << std::setw(11) << format_seconds(total_seconds) << " s  "
+              << format_rate(total_done, total_seconds) << "\n";
+    if (ran_up) {
+        print_result_row("UP", up_result.bytes, up_result.seconds);
+    }
+    if (ran_down) {
+        print_result_row("DOWN", down_result.bytes, down_result.seconds);
+    }
+    std::cout << "--------------------------------------------------------------------------------\n";
+
+    if (ran_up && up_result.server_bytes > 0 && up_result.server_seconds > 0.0) {
+        std::cout << "Server upload drain: "
+                  << format_rate(up_result.server_bytes, up_result.server_seconds)
+                  << " (" << format_mib(up_result.server_bytes) << " MiB in "
+                  << format_seconds(up_result.server_seconds) << " s)\n";
     }
     return 0;
 }

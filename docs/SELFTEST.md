@@ -75,6 +75,8 @@ key.
 
 `yume --bench` measures an authenticated YUME stream against a real `yumed`
 endpoint without Chromium, curl, SOCKS apps, or an external echo server.
+`yume --fullbench` is the longer final-user profile; it uses the same built-in
+endpoint with larger payloads and more streams.
 
 Use portable binaries for real endpoints. `YUME_NATIVE_OPT` is off by default;
 only turn it on for same-machine experiments. A binary configured with
@@ -84,18 +86,19 @@ different x86_64 CPU that lacks the builder's AVX/BMI/AES-class features.
 Enable the virtual benchmark endpoint on the server:
 
 ```bash
-yumed --bench --config config/yumed.json
+yumed --fullbench --config config/yumed.json
 ```
 
 Run from the client:
 
 ```bash
 yume --config config/yume.json --bench
+yume --config config/yume.json --fullbench
 yume --config config/yume.json --bench --bench-mib 1024
 yume --config config/yume.json --bench --bench-mib 1024 --bench-chunk-kib 256
 ```
 
-The server rejects benchmark streams unless `--bench` or
+The server rejects benchmark streams unless `--bench`, `--fullbench`, or
 `"benchmark_enable": true` is set. The benchmark uses the current TLS profile,
 obfs carrier, inner crypto, and hopping settings, then opens two synthetic
 streams: one upload sink and one download source. It does not include browser,

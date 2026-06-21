@@ -75,10 +75,15 @@ struct ParsedArgs {
     bool self_dpi{false};
     bool self_dpi_override{false};
     bool bench{false};
+    bool bench_full{false};
     int bench_mib{256};
     int bench_chunk_kib{1024};
     int bench_streams{1};
     std::string bench_direction{"both"};
+    bool bench_mib_override{false};
+    bool bench_chunk_kib_override{false};
+    bool bench_streams_override{false};
+    bool bench_direction_override{false};
     bool help{false};
     bool version{false};
     bool credits{false};

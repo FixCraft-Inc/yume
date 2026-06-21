@@ -5,12 +5,12 @@
  */
 
 #include "core/security/inner_crypto.hpp"
+#include "core/runtime/system_profile.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <charconv>
-#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -18,19 +18,11 @@
 #include <limits>
 #include <mutex>
 #include <system_error>
-#include <sstream>
 #include <stdexcept>
 #include <string>
-#include <thread>
 
 #if !defined(_WIN32)
 #include <sys/stat.h>
-#endif
-#if defined(__APPLE__)
-#include <sys/sysctl.h>
-#endif
-#if defined(_WIN32)
-#include <windows.h>
 #endif
 
 #if YUME_USE_BASEFWX
@@ -241,83 +233,8 @@ bool read_env_u32_optional(const char* name, std::uint32_t* out) {
     }
 }
 
-double read_env_ratio(const char* name, double fallback) {
-    const char* raw = std::getenv(name);
-    if (!raw || !*raw) {
-        return fallback;
-    }
-    try {
-        double parsed = std::stod(raw);
-        if (parsed <= 0.0) {
-            return fallback;
-        }
-        if (parsed > 1.0) {
-            parsed /= 100.0;
-        }
-        if (parsed <= 0.0) {
-            return fallback;
-        }
-        if (parsed > 1.0) {
-            parsed = 1.0;
-        }
-        return parsed;
-    } catch (...) {
-        return fallback;
-    }
-}
-
 double resource_cap_ratio() {
-    return read_env_ratio("YUME_RESOURCE_CAP", 0.84);
-}
-
-std::uint64_t read_meminfo_kib(const char* key) {
-#if defined(_WIN32) || defined(__APPLE__)
-    (void)key;
-    return 0;
-#else
-    std::ifstream meminfo("/proc/meminfo");
-    if (!meminfo) {
-        return 0;
-    }
-    std::string line;
-    while (std::getline(meminfo, line)) {
-        if (line.rfind(key, 0) != 0) {
-            continue;
-        }
-        std::istringstream iss(line);
-        std::string label;
-        std::uint64_t value = 0;
-        std::string unit;
-        if (iss >> label >> value >> unit) {
-            return value;
-        }
-    }
-    return 0;
-#endif
-}
-
-std::uint64_t available_memory_kib() {
-#if defined(_WIN32)
-    MEMORYSTATUSEX status{};
-    status.dwLength = sizeof(status);
-    if (!GlobalMemoryStatusEx(&status)) {
-        return 0;
-    }
-    return static_cast<std::uint64_t>(status.ullAvailPhys / 1024);
-#elif defined(__APPLE__)
-    std::uint64_t mem = 0;
-    size_t len = sizeof(mem);
-    if (sysctlbyname("hw.memsize", &mem, &len, nullptr, 0) != 0) {
-        return 0;
-    }
-    return static_cast<std::uint64_t>(mem / 1024);
-#else
-    std::uint64_t avail = read_meminfo_kib("MemAvailable:");
-    if (avail == 0) {
-        avail = read_meminfo_kib("MemTotal:");
-    }
-    return avail;
-#endif
+    return yume::runtime::resource_cap_ratio_from_env();
 }
 
 std::uint32_t argon2_time_cost() {
@@ -338,17 +255,17 @@ std::uint32_t argon2_parallelism() {
     // auth payload. This host-tuned fallback is only for locally selected
     // transport params, including the speculative heavy key in dual-mode
     // light sessions; it is not a portable file-format default.
-    const double cap = resource_cap_ratio();
-    auto count = std::thread::hardware_concurrency();
-    if (count == 0) {
 #if !YUME_USE_BASEFWX
-        return 4;
+    constexpr unsigned fallback = 4;
 #else
-        return basefwx::constants::DefaultHeavyArgon2Parallelism();
+    const unsigned fallback = basefwx::constants::DefaultHeavyArgon2Parallelism();
 #endif
-    }
-    std::uint32_t scaled = static_cast<std::uint32_t>(std::floor(static_cast<double>(count) * cap));
-    return scaled > 0 ? scaled : 1u;
+    return static_cast<std::uint32_t>(
+        yume::runtime::scaled_thread_count(yume::runtime::detect_system_profile(),
+                                           resource_cap_ratio(),
+                                           fallback,
+                                           1,
+                                           std::numeric_limits<std::uint32_t>::max()));
 }
 
 void apply_argon2_limits_to_values(std::uint32_t* time_cost,
@@ -397,26 +314,28 @@ KdfParams select_argon2_params(const Argon2Limits& remote_limits = Argon2Limits{
     constexpr std::uint32_t kDefaultHeavyArgon2MemoryCost = basefwx::constants::kHeavyArgon2MemoryCost;
 #endif
 
-    const std::uint32_t default_mem =
-        read_env_u32("YUME_ARGON2_HEAVY_MEM_DEFAULT", kDefaultHeavyArgon2MemoryCost);
+    std::uint32_t default_mem = kDefaultHeavyArgon2MemoryCost;
+    const bool default_mem_env = read_env_u32_optional("YUME_ARGON2_HEAVY_MEM_DEFAULT", &default_mem);
     std::uint32_t mem = 0;
     const bool mem_env = read_env_u32_optional("YUME_ARGON2_MEM", &mem);
     if (!mem_env) {
         mem = default_mem;
     }
-    std::uint64_t avail = available_memory_kib();
-    if (avail > 0) {
-        const double cap = resource_cap_ratio();
-        std::uint64_t cap_mem = static_cast<std::uint64_t>(
-            std::floor(static_cast<double>(avail) * cap));
-        if (cap_mem == 0) {
-            cap_mem = avail;
-        }
-        std::uint64_t bounded = std::min<std::uint64_t>(cap_mem, avail);
-        if (bounded > 0 && mem > bounded) {
-            mem = static_cast<std::uint32_t>(
-                std::min<std::uint64_t>(bounded, std::numeric_limits<std::uint32_t>::max()));
-        }
+    const auto profile = yume::runtime::detect_system_profile();
+    const std::uint64_t max_budget_mib =
+        std::numeric_limits<std::uint32_t>::max() / 1024ull;
+    const std::uint64_t budget_kib =
+        yume::runtime::memory_budget_mib(profile,
+                                         resource_cap_ratio(),
+                                         static_cast<std::uint64_t>(default_mem) / 1024ull,
+                                         max_budget_mib) * 1024ull;
+    if (!mem_env && !default_mem_env && budget_kib > mem) {
+        mem = static_cast<std::uint32_t>(
+            std::min<std::uint64_t>(budget_kib, std::numeric_limits<std::uint32_t>::max()));
+    }
+    if (budget_kib > 0 && mem > budget_kib) {
+        mem = static_cast<std::uint32_t>(
+            std::min<std::uint64_t>(budget_kib, std::numeric_limits<std::uint32_t>::max()));
     } else if (mem == 0) {
         mem = default_mem;
     }

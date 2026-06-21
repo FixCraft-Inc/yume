@@ -753,13 +753,8 @@ std::uint64_t bytes_to_mib(std::uint64_t bytes) {
 }
 
 std::uint64_t profile_available_mib(const yume::runtime::SystemProfile& profile) {
-    if (profile.available_memory_mib > 0) {
-        return profile.available_memory_mib;
-    }
-    if (profile.total_memory_mib > 0) {
-        return profile.total_memory_mib / 2;
-    }
-    return 4096;
+    const std::uint64_t detected = yume::runtime::usable_memory_mib(profile);
+    return detected > 0 ? detected : 4096;
 }
 
 BenchmarkSizing compute_benchmark_sizing(const Args& args, const yume::runtime::SystemProfile& profile) {

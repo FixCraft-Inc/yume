@@ -127,10 +127,18 @@ and pass the generated public key to the temporary client. The harness also
 passes `--accept-monitoring`, because this is an explicit local benchmark
 rather than an anonym-mode trust test.
 
-Heavy mode is still bounded by default: `YUME_ARGON2_MEM` and server caps are
-set to 32768 KiB with parallelism 2 for the child processes. Use
-`--argon-mem-kib` and `--argon-parallelism` when intentionally profiling
-larger KDF settings on a suitable machine.
+Heavy mode is still bounded by default. Quick mode keeps small child-process
+caps: `YUME_ARGON2_MEM=32768` KiB and parallelism 2. Full mode auto-sizes
+those caps from the detected CPU count and available memory, then reports the
+chosen profile/workload in `--dev` output and JSON. Use `--argon-mem-kib` and
+`--argon-parallelism` to pin larger or smaller KDF settings intentionally.
+
+The same shared runtime profile is used outside the benchmark for default
+Argon2 memory and parallelism selection. Explicit `YUME_ARGON2_MEM` and
+`YUME_ARGON2_PAR` values override the auto target, then YUME still applies the
+host budget and normal server caps. When they are omitted, YUME sizes the
+defaults against detected CPU/RAM and `YUME_RESOURCE_CAP` (fraction or percent,
+default `0.84`).
 
 ## Inner Crypto Microbench
 

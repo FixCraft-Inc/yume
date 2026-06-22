@@ -14,6 +14,7 @@
 #include "selftest/hotpath.hpp"
 #include "selftest/scoring.hpp"
 #include "selftest/json.hpp"
+#include "selftest/telemetry.hpp"
 
 #include <basefwx/crypto.hpp>
 
@@ -166,9 +167,9 @@ void print_help() {
         << "Notes:\n"
         << "  Default/no --configs runs every built-in config, including heavy-hop-2hz.\n"
         << "  Config aliases: all expands to the full suite; all-on selects heavy-hop-2hz.\n"
-        << "  Quick mode is an unscored smoke test. Full mode prints GLOBAL and\n"
-        << "  LEAGUE scores. GLOBAL uses rows shared with Android; LEAGUE combines\n"
-        << "  desktop engine and YUME transport behavior against desktop baselines.\n"
+        << "  Quick mode is an unscored smoke test. Full mode prints one GLOBAL\n"
+        << "  score for cross-device comparison. --dev also shows the desktop\n"
+        << "  profile score and raw component tables for audit/debug use.\n"
         << "  Add --dev when you want raw rows, phase timings, component points,\n"
         << "  and other audit/debug details.\n"
         << "  Routed loopback benchmarks require yumed built with\n"
@@ -596,7 +597,7 @@ void render_score(const Args& args,
                   const BenchmarkScore& global_score,
                   const BenchmarkScore& league_score) {
     if (!args.full_benchmark) {
-        std::cerr << "\nQuick benchmark complete. Use --fullbench for scored GLOBAL and LEAGUE results.\n";
+        std::cerr << "\nQuick benchmark complete. Use --fullbench for scored GLOBAL results.\n";
         return;
     }
     if (!global_score.available && !league_score.available) {
@@ -620,16 +621,14 @@ void render_score(const Args& args,
         }
         std::cerr << "\n";
     }
-    if (league_score.available) {
+    if (args.dev_style && league_score.available) {
         const std::string grade = score_grade(league_score.total, ScoreTrack::DesktopLeague);
-        std::cerr << "LEAGUE  " << format_integer(league_score.total)
+        std::cerr << "DESKTOP " << format_integer(league_score.total)
                   << "  " << color_grade(args, grade, league_score.total);
-        if (args.dev_style) {
-            std::cerr << "  model " << kDesktopScoreModel;
-        }
+        std::cerr << "  model " << kDesktopScoreModel;
         std::cerr << "\n";
-    } else {
-        std::cerr << "LEAGUE  not computed";
+    } else if (args.dev_style) {
+        std::cerr << "DESKTOP not computed";
         if (!league_score.unavailable_reason.empty()) {
             std::cerr << " (" << league_score.unavailable_reason << ")";
         }
@@ -654,10 +653,12 @@ void render_score(const Args& args,
                   << "  disk=" << bytes_to_mib(sizing.disk_bytes) << "MiB"
                   << "  sustained=" << (sizing.sustained_ms / 1000) << "s\n";
     }
-    std::cerr << "GLOBAL: shared Android/desktop hot paths.\n";
-    std::cerr << "LEAGUE: desktop overall, 50% engine and 50% YUME transport.\n";
+    std::cerr << "GLOBAL: shared Android/desktop hot paths; no fixed maximum.\n";
+    if (args.dev_style) {
+        std::cerr << "DESKTOP: diagnostic profile, 50% engine and 50% YUME transport.\n";
+    }
     if (!args.dev_style) {
-        std::cerr << "Run again with --dev for component tables and phase timings.\n";
+        std::cerr << "Run again with --dev for component tables, load telemetry, and phase timings.\n";
     }
     std::cerr << "--------------------------------------------------------------------------------\n";
     if (!args.dev_style) {
@@ -687,7 +688,7 @@ void render_score(const Args& args,
         std::cerr << "--------------------------------------------------------------------------------\n";
     };
     render_components("GLOBAL", global_score);
-    render_components("LEAGUE", league_score);
+    render_components("DESKTOP", league_score);
 }
 
 void render_table(const std::vector<Result>& results) {
@@ -875,6 +876,10 @@ int run_cli(int argc, char** argv) {
             1,
             static_cast<int>(configs.size()) * std::max(1, args.repeats) + hot_path_steps);
         int progress_completed = 0;
+        SystemLoadSampler load_sampler;
+        if (args.full_benchmark) {
+            load_sampler.start();
+        }
 
         std::vector<Result> results;
         results.reserve(configs.size());
@@ -905,6 +910,9 @@ int run_cli(int argc, char** argv) {
             tmp->path(),
             progress_completed,
             progress_total);
+        if (args.full_benchmark) {
+            hot_paths.push_back(load_sampler.stop());
+        }
 
         finish_progress_line();
         const BenchmarkScore global_score = compute_hot_path_score(args, hot_paths, true);

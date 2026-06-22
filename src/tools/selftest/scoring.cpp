@@ -35,7 +35,7 @@ double score_scale(double ratio) {
     if (ratio <= 1.0) {
         return std::pow(ratio, 3.0);
     }
-    return std::pow(ratio, 1.15);
+    return 1.0 + std::log2(ratio) * 0.55;
 }
 
 double scaled_metric_points(double value, double reference, double reference_points) {
@@ -85,11 +85,14 @@ std::string format_integer(long long value) {
     return out;
 }
 
-BenchmarkScore compute_score(const Args& args, const std::vector<Result>& results) {
+BenchmarkScore compute_transport_score(const Args& args,
+                                       const std::vector<Result>& results,
+                                       bool global) {
     BenchmarkScore score;
     if (!args.full_benchmark) {
         return score;
     }
+    const double reference_multiplier = global ? kGlobalTransportReferenceMultiplier : 1.0;
 
     std::vector<std::string> missing_required;
     auto add_throughput = [&](std::string_view name, double reference, double weight) {
@@ -102,7 +105,7 @@ BenchmarkScore compute_score(const Args& args, const std::vector<Result>& result
             std::string(name),
             result->throughput_mib_s,
             "MiB/s",
-            scaled_metric_points(result->throughput_mib_s, reference, weight),
+            scaled_metric_points(result->throughput_mib_s, reference * reference_multiplier, weight),
             weight,
         });
     };
@@ -121,7 +124,7 @@ BenchmarkScore compute_score(const Args& args, const std::vector<Result>& result
             "latency-anchor",
             latency_anchor->latency_ms.median,
             "ms",
-            scaled_latency_points(latency_anchor->latency_ms.median, 0.08, 800000.0),
+            scaled_latency_points(latency_anchor->latency_ms.median, 0.08 / reference_multiplier, 800000.0),
             800000.0,
         });
     } else {
@@ -135,6 +138,10 @@ BenchmarkScore compute_score(const Args& args, const std::vector<Result>& result
 
     finalize_score(score);
     return score;
+}
+
+BenchmarkScore compute_score(const Args& args, const std::vector<Result>& results) {
+    return compute_transport_score(args, results, false);
 }
 
 
@@ -229,6 +236,83 @@ BenchmarkScore compute_desktop_league_score(const Args& args,
         static_cast<double>(transport_score.total) * 0.5,
         kBenchmarkReferenceScore * 0.5,
     });
+    finalize_score(score);
+    return score;
+}
+
+BenchmarkScore compute_system_capacity_score(const Args& args) {
+    BenchmarkScore score;
+    if (!args.full_benchmark) {
+        return score;
+    }
+    const auto profile = yume::runtime::detect_system_profile();
+    score.components.push_back({
+        "logical-cpus",
+        static_cast<double>(std::max(1u, profile.logical_cpus)),
+        "count",
+        scaled_metric_points(static_cast<double>(std::max(1u, profile.logical_cpus)), 32.0, 6500000.0),
+        6500000.0,
+    });
+    const std::uint64_t memory_mib = profile.total_memory_mib > 0
+        ? profile.total_memory_mib
+        : yume::runtime::usable_memory_mib(profile) * 2;
+    if (memory_mib > 0) {
+        score.components.push_back({
+            "memory-capacity",
+            static_cast<double>(memory_mib),
+            "MiB",
+            scaled_metric_points(static_cast<double>(memory_mib), 65536.0, 3500000.0),
+            3500000.0,
+        });
+    }
+    finalize_score(score);
+    return score;
+}
+
+BenchmarkScore compute_global_score(const Args& args,
+                                    const BenchmarkScore& engine_score,
+                                    const BenchmarkScore& transport_score,
+                                    const BenchmarkScore& capacity_score,
+                                    double elapsed_seconds) {
+    BenchmarkScore score;
+    if (!args.full_benchmark) {
+        return score;
+    }
+    if (!engine_score.available || !transport_score.available || !capacity_score.available) {
+        score.unavailable_reason = "global score requires engine, YUME transport, and system capacity scores";
+        return score;
+    }
+    score.components.push_back({
+        "engine-hot-paths",
+        static_cast<double>(engine_score.total),
+        "score",
+        static_cast<double>(engine_score.total) * 0.25,
+        kBenchmarkReferenceScore * 0.25,
+    });
+    score.components.push_back({
+        "yume-transport",
+        static_cast<double>(transport_score.total),
+        "score",
+        static_cast<double>(transport_score.total) * 0.25,
+        kBenchmarkReferenceScore * 0.25,
+    });
+    score.components.push_back({
+        "system-capacity",
+        static_cast<double>(capacity_score.total),
+        "score",
+        static_cast<double>(capacity_score.total) * 0.45,
+        kBenchmarkReferenceScore * 0.45,
+    });
+    if (elapsed_seconds > 0.0) {
+        const double reference_seconds = std::max(60.0, static_cast<double>(args.target_duration_sec) * 1.35);
+        score.components.push_back({
+            "elapsed-time",
+            elapsed_seconds,
+            "s",
+            scaled_latency_points(elapsed_seconds, reference_seconds, kBenchmarkReferenceScore * 0.05),
+            kBenchmarkReferenceScore * 0.05,
+        });
+    }
     finalize_score(score);
     return score;
 }

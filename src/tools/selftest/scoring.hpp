@@ -19,7 +19,7 @@
 
 namespace yume::tools::selftest {
 
-inline constexpr std::string_view kGlobalScoreModel = "yume-global-v2";
+inline constexpr std::string_view kGlobalScoreModel = "yume-global-v3";
 inline constexpr std::string_view kDesktopScoreModel = "yume-desktop-v2";
 inline constexpr std::string_view kEngineScoreModel = "yume-engine-v2";
 inline constexpr std::string_view kTransportScoreModel = "yume-transport-v2";
@@ -28,7 +28,8 @@ inline constexpr long long kBenchmarkAboveReferenceScore = 75000000;
 // Global scoring is a reference benchmark, not a device class lookup. Keep
 // references stable and component-based; do not special-case phones, CPUs,
 // vendors, or individual machines when recalibrating the model.
-inline constexpr double kGlobalReferenceMultiplier = 1.5;
+inline constexpr double kGlobalReferenceMultiplier = 4.0;
+inline constexpr double kGlobalTransportReferenceMultiplier = 2.5;
 
 struct ScoreComponent {
     std::string name;
@@ -52,9 +53,18 @@ enum class ScoreTrack {
 
 std::string format_integer(long long value);
 BenchmarkScore compute_score(const Args& args, const std::vector<Result>& results);
+BenchmarkScore compute_transport_score(const Args& args,
+                                       const std::vector<Result>& results,
+                                       bool global);
 BenchmarkScore compute_hot_path_score(const Args& args,
                                       const std::vector<HotPathRow>& rows,
                                       bool global);
+BenchmarkScore compute_system_capacity_score(const Args& args);
+BenchmarkScore compute_global_score(const Args& args,
+                                    const BenchmarkScore& engine_score,
+                                    const BenchmarkScore& transport_score,
+                                    const BenchmarkScore& capacity_score,
+                                    double elapsed_seconds);
 BenchmarkScore compute_desktop_league_score(const Args& args,
                                             const BenchmarkScore& engine_score,
                                             const BenchmarkScore& transport_score);

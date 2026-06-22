@@ -862,6 +862,7 @@ int run_cli(int argc, char** argv) {
 
         const auto configs = select_configs(args);
         apply_full_benchmark_defaults(args, configs.size());
+        const auto benchmark_start = Clock::now();
 
         tmp = std::make_unique<TempDir>(args.keep_workdir);
         EchoServer echo;
@@ -918,9 +919,18 @@ int run_cli(int argc, char** argv) {
         }
 
         finish_progress_line();
-        const BenchmarkScore global_score = compute_hot_path_score(args, hot_paths, true);
+        const double benchmark_elapsed_seconds = elapsed_s(benchmark_start, Clock::now());
         const BenchmarkScore engine_league_score = compute_hot_path_score(args, hot_paths, false);
+        const BenchmarkScore global_engine_score = compute_hot_path_score(args, hot_paths, true);
         const BenchmarkScore transport_score = compute_score(args, results);
+        const BenchmarkScore global_transport_score = compute_transport_score(args, results, true);
+        const BenchmarkScore capacity_score = compute_system_capacity_score(args);
+        const BenchmarkScore global_score = compute_global_score(
+            args,
+            global_engine_score,
+            global_transport_score,
+            capacity_score,
+            benchmark_elapsed_seconds);
         const BenchmarkScore league_score = compute_desktop_league_score(
             args,
             engine_league_score,

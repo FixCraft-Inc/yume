@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <stdexcept>
 
+#include "core/protocol/control_fields.hpp"
+
 namespace yume::control {
 
 namespace {
@@ -99,146 +101,147 @@ ChannelKind channel_kind_from_string(const std::string& value) {
 
 nlohmann::json endpoint_to_json(const EndpointInfo& endpoint, bool include_auth_pubkey) {
     nlohmann::json json;
-    json["endpoint_id"] = endpoint.endpoint_id;
-    json["endpoint_kind"] = to_string(endpoint.endpoint_kind);
-    json["display_name"] = endpoint.display_name;
-    json["hostname"] = endpoint.hostname;
-    json["client_platform"] = normalize_client_platform(endpoint.client_platform);
-    json["client_variant"] = normalize_client_variant(endpoint.client_variant);
-    json["client_version"] = endpoint.client_version;
-    json["server_id"] = endpoint.server_id;
+    json[fields::endpoint_id] = endpoint.endpoint_id;
+    json[fields::endpoint_kind] = to_string(endpoint.endpoint_kind);
+    json[fields::display_name] = endpoint.display_name;
+    json[fields::hostname] = endpoint.hostname;
+    json[fields::client_platform] = normalize_client_platform(endpoint.client_platform);
+    json[fields::client_variant] = normalize_client_variant(endpoint.client_variant);
+    json[fields::client_version] = endpoint.client_version;
+    json[fields::server_id] = endpoint.server_id;
     if (!endpoint.server_name.empty()) {
-        json["server_name"] = endpoint.server_name;
+        json[fields::server_name] = endpoint.server_name;
     }
-    json["relay_mode"] = to_string(endpoint.relay_mode);
-    json["allow_inbound_admin"] = endpoint.allow_inbound_admin;
-    json["allow_outbound_admin"] = endpoint.allow_outbound_admin;
-    json["allow_chat"] = endpoint.allow_chat;
-    json["allow_file"] = endpoint.allow_file;
-    json["allow_bytes"] = endpoint.allow_bytes;
-    json["online"] = endpoint.online;
-    json["controller_ids"] = endpoint.controller_ids;
-    json["controlled_target_ids"] = endpoint.controlled_target_ids;
+    json[fields::relay_mode] = to_string(endpoint.relay_mode);
+    json[fields::allow_inbound_admin] = endpoint.allow_inbound_admin;
+    json[fields::allow_outbound_admin] = endpoint.allow_outbound_admin;
+    json[fields::allow_chat] = endpoint.allow_chat;
+    json[fields::allow_file] = endpoint.allow_file;
+    json[fields::allow_bytes] = endpoint.allow_bytes;
+    json[fields::online] = endpoint.online;
+    json[fields::controller_ids] = endpoint.controller_ids;
+    json[fields::controlled_target_ids] = endpoint.controlled_target_ids;
     if (endpoint.remote) {
-        json["remote"] = true;
-        json["federation_peer_id"] = endpoint.federation_peer_id;
-        json["remote_endpoint_id"] = endpoint.remote_endpoint_id;
+        json[fields::remote] = true;
+        json[fields::federation_peer_id] = endpoint.federation_peer_id;
+        json[fields::remote_endpoint_id] = endpoint.remote_endpoint_id;
     }
     if (include_auth_pubkey && !endpoint.auth_pubkey_b64.empty()) {
-        json["auth_pubkey_b64"] = endpoint.auth_pubkey_b64;
+        json[fields::auth_pubkey_b64] = endpoint.auth_pubkey_b64;
     }
     return json;
 }
 
 EndpointInfo endpoint_from_json(const nlohmann::json& json) {
     EndpointInfo endpoint;
-    endpoint.endpoint_id = json.value("endpoint_id", "");
-    endpoint.endpoint_kind = endpoint_kind_from_string(json.value("endpoint_kind", "client"));
-    endpoint.display_name = json.value("display_name", "");
-    endpoint.hostname = json.value("hostname", "");
-    endpoint.client_platform = normalize_client_platform(json.value("client_platform", "unknown"));
-    endpoint.client_variant = normalize_client_variant(json.value("client_variant", "unknown"));
-    endpoint.client_version = json.value("client_version", "");
-    endpoint.server_id = json.value("server_id", "");
-    endpoint.server_name = json.value("server_name", "");
-    endpoint.relay_mode = relay_mode_from_string(json.value("relay_mode", "untrusted"));
-    endpoint.allow_inbound_admin = json.value("allow_inbound_admin", false);
-    endpoint.allow_outbound_admin = json.value("allow_outbound_admin", false);
-    endpoint.allow_chat = json.value("allow_chat", true);
-    endpoint.allow_file = json.value("allow_file", true);
-    endpoint.allow_bytes = json.value("allow_bytes", true);
-    endpoint.online = json.value("online", true);
-    endpoint.auth_pubkey_b64 = json.value("auth_pubkey_b64", "");
-    endpoint.remote = json.value("remote", false);
-    endpoint.federation_peer_id = json.value("federation_peer_id", "");
-    endpoint.remote_endpoint_id = json.value("remote_endpoint_id", "");
-    if (json.contains("controller_ids") && json["controller_ids"].is_array()) {
-        endpoint.controller_ids = json["controller_ids"].get<std::vector<std::string>>();
+    endpoint.endpoint_id = json.value(fields::endpoint_id, "");
+    endpoint.endpoint_kind = endpoint_kind_from_string(json.value(fields::endpoint_kind, "client"));
+    endpoint.display_name = json.value(fields::display_name, "");
+    endpoint.hostname = json.value(fields::hostname, "");
+    endpoint.client_platform = normalize_client_platform(json.value(fields::client_platform, "unknown"));
+    endpoint.client_variant = normalize_client_variant(json.value(fields::client_variant, "unknown"));
+    endpoint.client_version = json.value(fields::client_version, "");
+    endpoint.server_id = json.value(fields::server_id, "");
+    endpoint.server_name = json.value(fields::server_name, "");
+    endpoint.relay_mode = relay_mode_from_string(json.value(fields::relay_mode, "untrusted"));
+    endpoint.allow_inbound_admin = json.value(fields::allow_inbound_admin, false);
+    endpoint.allow_outbound_admin = json.value(fields::allow_outbound_admin, false);
+    endpoint.allow_chat = json.value(fields::allow_chat, true);
+    endpoint.allow_file = json.value(fields::allow_file, true);
+    endpoint.allow_bytes = json.value(fields::allow_bytes, true);
+    endpoint.online = json.value(fields::online, true);
+    endpoint.auth_pubkey_b64 = json.value(fields::auth_pubkey_b64, "");
+    endpoint.remote = json.value(fields::remote, false);
+    endpoint.federation_peer_id = json.value(fields::federation_peer_id, "");
+    endpoint.remote_endpoint_id = json.value(fields::remote_endpoint_id, "");
+    if (json.contains(fields::controller_ids) && json[fields::controller_ids].is_array()) {
+        endpoint.controller_ids = json[fields::controller_ids].get<std::vector<std::string>>();
     }
-    if (json.contains("controlled_target_ids") && json["controlled_target_ids"].is_array()) {
-        endpoint.controlled_target_ids = json["controlled_target_ids"].get<std::vector<std::string>>();
+    if (json.contains(fields::controlled_target_ids) && json[fields::controlled_target_ids].is_array()) {
+        endpoint.controlled_target_ids = json[fields::controlled_target_ids].get<std::vector<std::string>>();
     }
     return endpoint;
 }
 
 nlohmann::json lifecycle_event_to_json(const ClientLifecycleEvent& event) {
     nlohmann::json json;
-    json["endpoint_id"] = event.endpoint_id;
-    json["display_name"] = event.display_name;
-    json["state"] = normalize_lifecycle_state(event.state);
-    json["message"] = event.message;
-    json["detail"] = event.detail;
-    json["client_platform"] = normalize_client_platform(event.client_platform);
-    json["client_variant"] = normalize_client_variant(event.client_variant);
-    json["client_version"] = event.client_version;
-    json["effective_protection"] = event.effective_protection;
-    json["traffic_verified"] = event.traffic_verified;
-    json["exit_ip"] = event.exit_ip;
-    json["error_code"] = event.error_code;
-    json["server_time_ms"] = event.server_time_ms;
+    json[fields::endpoint_id] = event.endpoint_id;
+    json[fields::display_name] = event.display_name;
+    json[fields::state] = normalize_lifecycle_state(event.state);
+    json[fields::message] = event.message;
+    json[fields::detail] = event.detail;
+    json[fields::client_platform] = normalize_client_platform(event.client_platform);
+    json[fields::client_variant] = normalize_client_variant(event.client_variant);
+    json[fields::client_version] = event.client_version;
+    json[fields::effective_protection] = event.effective_protection;
+    json[fields::traffic_verified] = event.traffic_verified;
+    json[fields::exit_ip] = event.exit_ip;
+    json[fields::error_code] = event.error_code;
+    json[fields::server_time_ms] = event.server_time_ms;
     return json;
 }
 
 ClientLifecycleEvent lifecycle_event_from_json(const nlohmann::json& json) {
     ClientLifecycleEvent event;
-    event.endpoint_id = json.value("endpoint_id", "");
-    event.display_name = json.value("display_name", "");
-    event.state = normalize_lifecycle_state(json.value("state", "unknown"));
-    event.message = json.value("message", "");
-    event.detail = json.value("detail", "");
-    event.client_platform = normalize_client_platform(json.value("client_platform", "unknown"));
-    event.client_variant = normalize_client_variant(json.value("client_variant", "unknown"));
-    event.client_version = json.value("client_version", "");
-    event.effective_protection = json.value("effective_protection", "");
-    event.traffic_verified = json.value("traffic_verified", false);
-    event.exit_ip = json.value("exit_ip", "");
-    event.error_code = json.value("error_code", "");
-    event.server_time_ms = json.value("server_time_ms", 0LL);
+    event.endpoint_id = json.value(fields::endpoint_id, "");
+    event.display_name = json.value(fields::display_name, "");
+    event.state = normalize_lifecycle_state(json.value(fields::state, "unknown"));
+    event.message = json.value(fields::message, "");
+    event.detail = json.value(fields::detail, "");
+    event.client_platform = normalize_client_platform(json.value(fields::client_platform, "unknown"));
+    event.client_variant = normalize_client_variant(json.value(fields::client_variant, "unknown"));
+    event.client_version = json.value(fields::client_version, "");
+    event.effective_protection = json.value(fields::effective_protection, "");
+    event.traffic_verified = json.value(fields::traffic_verified, false);
+    event.exit_ip = json.value(fields::exit_ip, "");
+    event.error_code = json.value(fields::error_code, "");
+    event.server_time_ms = json.value(fields::server_time_ms, 0LL);
     return event;
 }
 
 nlohmann::json endpoint_runtime_status_to_json(const EndpointRuntimeStatus& status,
                                                bool include_auth_pubkey) {
     nlohmann::json json;
-    json["endpoint"] = endpoint_to_json(status.endpoint, include_auth_pubkey);
+    json[fields::endpoint] = endpoint_to_json(status.endpoint, include_auth_pubkey);
     if (status.latest_lifecycle.has_value()) {
-        json["latest_lifecycle"] = lifecycle_event_to_json(*status.latest_lifecycle);
+        json[fields::latest_lifecycle] = lifecycle_event_to_json(*status.latest_lifecycle);
     }
     return json;
 }
 
 nlohmann::json invite_to_json(const PendingInvite& invite, bool include_response) {
     nlohmann::json json;
-    json["invite_id"] = invite.invite_id;
-    json["from_id"] = invite.from_endpoint_id;
-    json["to_id"] = invite.to_endpoint_id;
-    json["channel_kind"] = to_string(invite.channel_kind);
-    json["created_ms"] = invite.created_ms;
-    json["requires_password"] = invite.requires_password;
+    json[fields::invite_id] = invite.invite_id;
+    json[fields::from_id] = invite.from_endpoint_id;
+    json[fields::to_id] = invite.to_endpoint_id;
+    json[fields::channel_kind] = to_string(invite.channel_kind);
+    json[fields::created_ms] = invite.created_ms;
+    json[fields::requires_password] = invite.requires_password;
     if (!invite.metadata_json.empty()) {
         try {
-            json["metadata"] = nlohmann::json::parse(invite.metadata_json);
+            json[fields::metadata] = nlohmann::json::parse(invite.metadata_json);
         } catch (...) {
-            json["metadata_json"] = invite.metadata_json;
+            json[fields::metadata_json] = invite.metadata_json;
         }
     }
-    json["ephemeral_pubkey_b64"] = invite.ephemeral_pubkey_b64;
-    json["ephemeral_signature_b64"] = invite.ephemeral_signature_b64;
-    json["nonce_b64"] = invite.nonce_b64;
-    json["from_display_name"] = invite.from_display_name;
+    json[fields::ephemeral_pubkey_b64] = invite.ephemeral_pubkey_b64;
+    json[fields::ephemeral_signature_b64] = invite.ephemeral_signature_b64;
+    json[fields::nonce_b64] = invite.nonce_b64;
+    json[fields::from_display_name] = invite.from_display_name;
     if (!invite.from_auth_pubkey_b64.empty()) {
-        json["from_auth_pubkey_b64"] = invite.from_auth_pubkey_b64;
+        json[fields::from_auth_pubkey_b64] = invite.from_auth_pubkey_b64;
     }
     if (include_response) {
-        json["accepted"] = invite.accepted;
+        json[fields::accepted] = invite.accepted;
         if (!invite.response_reason.empty()) {
-            json["reason"] = invite.response_reason;
+            json[fields::reason] = invite.response_reason;
         }
         if (!invite.response_ephemeral_pubkey_b64.empty()) {
-            json["response_ephemeral_pubkey_b64"] = invite.response_ephemeral_pubkey_b64;
+            json[fields::response_ephemeral_pubkey_b64] = invite.response_ephemeral_pubkey_b64;
         }
         if (!invite.response_ephemeral_signature_b64.empty()) {
-            json["response_ephemeral_signature_b64"] = invite.response_ephemeral_signature_b64;
+            json[fields::response_ephemeral_signature_b64] =
+                invite.response_ephemeral_signature_b64;
         }
     }
     return json;
@@ -246,41 +249,43 @@ nlohmann::json invite_to_json(const PendingInvite& invite, bool include_response
 
 PendingInvite invite_from_json(const nlohmann::json& json) {
     PendingInvite invite;
-    invite.invite_id = json.value("invite_id", "");
-    invite.from_endpoint_id = json.value("from_id", "");
-    invite.to_endpoint_id = json.value("to_id", "");
-    invite.channel_kind = channel_kind_from_string(json.value("channel_kind", "chat"));
-    invite.created_ms = json.value("created_ms", 0LL);
-    invite.requires_password = json.value("requires_password", true);
-    if (json.contains("metadata")) {
-        invite.metadata_json = json["metadata"].dump();
+    invite.invite_id = json.value(fields::invite_id, "");
+    invite.from_endpoint_id = json.value(fields::from_id, "");
+    invite.to_endpoint_id = json.value(fields::to_id, "");
+    invite.channel_kind = channel_kind_from_string(json.value(fields::channel_kind, "chat"));
+    invite.created_ms = json.value(fields::created_ms, 0LL);
+    invite.requires_password = json.value(fields::requires_password, true);
+    if (json.contains(fields::metadata)) {
+        invite.metadata_json = json[fields::metadata].dump();
     } else {
-        invite.metadata_json = json.value("metadata_json", "");
+        invite.metadata_json = json.value(fields::metadata_json, "");
     }
-    invite.ephemeral_pubkey_b64 = json.value("ephemeral_pubkey_b64", "");
-    invite.ephemeral_signature_b64 = json.value("ephemeral_signature_b64", "");
-    invite.nonce_b64 = json.value("nonce_b64", "");
-    invite.from_display_name = json.value("from_display_name", "");
-    invite.from_auth_pubkey_b64 = json.value("from_auth_pubkey_b64", "");
-    invite.accepted = json.value("accepted", false);
-    invite.response_reason = json.value("reason", "");
-    invite.response_ephemeral_pubkey_b64 = json.value("response_ephemeral_pubkey_b64", "");
-    invite.response_ephemeral_signature_b64 = json.value("response_ephemeral_signature_b64", "");
+    invite.ephemeral_pubkey_b64 = json.value(fields::ephemeral_pubkey_b64, "");
+    invite.ephemeral_signature_b64 = json.value(fields::ephemeral_signature_b64, "");
+    invite.nonce_b64 = json.value(fields::nonce_b64, "");
+    invite.from_display_name = json.value(fields::from_display_name, "");
+    invite.from_auth_pubkey_b64 = json.value(fields::from_auth_pubkey_b64, "");
+    invite.accepted = json.value(fields::accepted, false);
+    invite.response_reason = json.value(fields::reason, "");
+    invite.response_ephemeral_pubkey_b64 =
+        json.value(fields::response_ephemeral_pubkey_b64, "");
+    invite.response_ephemeral_signature_b64 =
+        json.value(fields::response_ephemeral_signature_b64, "");
     return invite;
 }
 
 nlohmann::json channel_to_json(const ActiveRelayChannel& channel) {
     nlohmann::json json;
-    json["channel_id"] = channel.channel_id;
-    json["channel_kind"] = to_string(channel.channel_kind);
-    json["left_endpoint_id"] = channel.left_endpoint_id;
-    json["right_endpoint_id"] = channel.right_endpoint_id;
-    json["left_stream_id"] = channel.left_stream_id;
-    json["right_stream_id"] = channel.right_stream_id;
-    json["e2ee_required"] = channel.e2ee_required;
-    json["pending"] = channel.pending;
-    json["federated"] = channel.federated;
-    json["route_hops"] = channel.route_hops;
+    json[fields::channel_id] = channel.channel_id;
+    json[fields::channel_kind] = to_string(channel.channel_kind);
+    json[fields::left_endpoint_id] = channel.left_endpoint_id;
+    json[fields::right_endpoint_id] = channel.right_endpoint_id;
+    json[fields::left_stream_id] = channel.left_stream_id;
+    json[fields::right_stream_id] = channel.right_stream_id;
+    json[fields::e2ee_required] = channel.e2ee_required;
+    json[fields::pending] = channel.pending;
+    json[fields::federated] = channel.federated;
+    json[fields::route_hops] = channel.route_hops;
     return json;
 }
 

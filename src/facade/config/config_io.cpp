@@ -13,11 +13,13 @@
 #include <nlohmann/json.hpp>
 
 #include "facade/config/detail.hpp"
+#include "facade/config/keys.hpp"
 
 namespace yume::facade::config_io {
 
 using nlohmann::json;
 using detail::read_opt;
+namespace cfg_key = keys;
 
 std::filesystem::path default_data_dir() {
     return detail::home_dir() / ".yume";
@@ -43,7 +45,7 @@ GuiPreferences load_gui_preferences() {
         json j;
         in >> j;
         if (j.is_object()) {
-            read_opt(j, "dark_mode", out.dark_mode);
+            read_opt(j, cfg_key::dark_mode, out.dark_mode);
         }
     } catch (...) {
         // Malformed JSON: fall back to defaults silently. The next save
@@ -56,7 +58,7 @@ bool save_gui_preferences(GuiPreferences const& prefs) {
     const auto path = default_gui_preferences_path();
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
-    json j = {{"dark_mode", prefs.dark_mode}};
+    json j = {{cfg_key::dark_mode, prefs.dark_mode}};
     std::ofstream out(path);
     if (!out) return false;
     out << j.dump(2);

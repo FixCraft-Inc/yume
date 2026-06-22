@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include "facade/config/detail.hpp"
+#include "facade/config/keys.hpp"
 
 namespace yume::facade::config_io {
 
@@ -22,6 +23,7 @@ using nlohmann::json;
 using detail::read_opt;
 using detail::resolve_config_path;
 using detail::resolve_filter_spec_path;
+namespace cfg_key = keys;
 
 std::optional<server::ServerConfig> load_server(
     std::filesystem::path const& path, std::string* err) {
@@ -39,51 +41,51 @@ std::optional<server::ServerConfig> load_server(
     }
 
     server::ServerConfig s;
-    read_opt(j, "listen_port", s.listen_port);
-    read_opt(j, "tls_cert", s.tls_cert);
-    read_opt(j, "tls_key", s.tls_key);
-    read_opt(j, "auth_keys", s.auth_keys);
-    read_opt(j, "auth_keys_meta", s.auth_keys_meta);
-    read_opt(j, "threads", s.threads);
-    read_opt(j, "obfuscation", s.obfuscation);
-    read_opt(j, "obfs_secret", s.obfs_secret);
-    read_opt(j, "inner_crypto", s.inner_crypto);
-    read_opt(j, "inner_heavy", s.inner_heavy);
-    read_opt(j, "inner_dual", s.inner_dual);
-    read_opt(j, "inner_required", s.inner_required);
-    read_opt(j, "inner_hop", s.inner_hop);
-    read_opt(j, "hop_interval_ms", s.hop_interval_ms);
-    read_opt(j, "reverse_port_min", s.reverse_port_min);
-    read_opt(j, "reverse_port_max", s.reverse_port_max);
-    read_opt(j, "dns_server", s.dns_server);
-    read_opt(j, "pq_private_key", s.pq_private_key);
-    read_opt(j, "pq_auto_generate", s.pq_auto_generate);
-    read_opt(j, "allow_embedded_master", s.allow_embedded_master);
-    read_opt(j, "allow_exec", s.allow_exec);
-    read_opt(j, "allow_local_ip", s.allow_local_ip);
-    read_opt(j, "control_full", s.control_full);
-    read_opt(j, "real_http", s.real_http);
-    read_opt(j, "robots_deny", s.robots_deny);
-    read_opt(j, "real_index_path", s.real_index_path);
-    read_opt(j, "real_secret", s.real_secret);
-    read_opt(j, "real_secret_file", s.real_secret_file);
-    read_opt(j, "anonym", s.anonym);
-    read_opt(j, "anonym_proof_mode", s.anonym_proof_mode);
-    read_opt(j, "anonym_api", s.anonym_api);
-    read_opt(j, "anonym_token", s.anonym_token);
-    read_opt(j, "anonym_ca_key", s.anonym_ca_key);
-    read_opt(j, "anonym_ca_cert", s.anonym_ca_cert);
-    read_opt(j, "anonym_sub_key", s.anonym_sub_key);
-    read_opt(j, "anonym_sub_cert", s.anonym_sub_cert);
-    read_opt(j, "server_name", s.server_name);
-    read_opt(j, "server_id", s.server_id);
-    read_opt(j, "outbound_proxy", s.outbound_proxy_url);
-    read_opt(j, "relay_enable", s.relay_enable);
-    read_opt(j, "directory_enable", s.directory_enable);
-    read_opt(j, "ipc_enable", s.ipc_enable);
-    read_opt(j, "ipc_path", s.ipc_path);
-    read_opt(j, "federation_enable", s.federation_enable);
-    if (auto it = j.find("federation_peers"); it != j.end() && it->is_array()) {
+    read_opt(j, cfg_key::listen_port, s.listen_port);
+    read_opt(j, cfg_key::tls_cert, s.tls_cert);
+    read_opt(j, cfg_key::tls_key, s.tls_key);
+    read_opt(j, cfg_key::auth_keys, s.auth_keys);
+    read_opt(j, cfg_key::auth_keys_meta, s.auth_keys_meta);
+    read_opt(j, cfg_key::threads, s.threads);
+    read_opt(j, cfg_key::obfuscation, s.obfuscation);
+    read_opt(j, cfg_key::obfs_secret, s.obfs_secret);
+    read_opt(j, cfg_key::inner_crypto, s.inner_crypto);
+    read_opt(j, cfg_key::inner_heavy, s.inner_heavy);
+    read_opt(j, cfg_key::inner_dual, s.inner_dual);
+    read_opt(j, cfg_key::inner_required, s.inner_required);
+    read_opt(j, cfg_key::inner_hop, s.inner_hop);
+    read_opt(j, cfg_key::hop_interval_ms, s.hop_interval_ms);
+    read_opt(j, cfg_key::reverse_port_min, s.reverse_port_min);
+    read_opt(j, cfg_key::reverse_port_max, s.reverse_port_max);
+    read_opt(j, cfg_key::dns_server, s.dns_server);
+    read_opt(j, cfg_key::pq_private_key, s.pq_private_key);
+    read_opt(j, cfg_key::pq_auto_generate, s.pq_auto_generate);
+    read_opt(j, cfg_key::allow_embedded_master, s.allow_embedded_master);
+    read_opt(j, cfg_key::allow_exec, s.allow_exec);
+    read_opt(j, cfg_key::allow_local_ip, s.allow_local_ip);
+    read_opt(j, cfg_key::control_full, s.control_full);
+    read_opt(j, cfg_key::real_http, s.real_http);
+    read_opt(j, cfg_key::robots_deny, s.robots_deny);
+    read_opt(j, cfg_key::real_index_path, s.real_index_path);
+    read_opt(j, cfg_key::real_secret, s.real_secret);
+    read_opt(j, cfg_key::real_secret_file, s.real_secret_file);
+    read_opt(j, cfg_key::anonym, s.anonym);
+    read_opt(j, cfg_key::anonym_proof_mode, s.anonym_proof_mode);
+    read_opt(j, cfg_key::anonym_api, s.anonym_api);
+    read_opt(j, cfg_key::anonym_token, s.anonym_token);
+    read_opt(j, cfg_key::anonym_ca_key, s.anonym_ca_key);
+    read_opt(j, cfg_key::anonym_ca_cert, s.anonym_ca_cert);
+    read_opt(j, cfg_key::anonym_sub_key, s.anonym_sub_key);
+    read_opt(j, cfg_key::anonym_sub_cert, s.anonym_sub_cert);
+    read_opt(j, cfg_key::server_name, s.server_name);
+    read_opt(j, cfg_key::server_id, s.server_id);
+    read_opt(j, cfg_key::outbound_proxy, s.outbound_proxy_url);
+    read_opt(j, cfg_key::relay_enable, s.relay_enable);
+    read_opt(j, cfg_key::directory_enable, s.directory_enable);
+    read_opt(j, cfg_key::ipc_enable, s.ipc_enable);
+    read_opt(j, cfg_key::ipc_path, s.ipc_path);
+    read_opt(j, cfg_key::federation_enable, s.federation_enable);
+    if (auto it = j.find(cfg_key::federation_peers); it != j.end() && it->is_array()) {
         for (const auto& peer : *it) {
             if (peer.is_string()) {
                 s.federation_peers.push_back(peer.get<std::string>());
@@ -92,27 +94,27 @@ std::optional<server::ServerConfig> load_server(
             }
         }
     }
-    read_opt(j, "federation_auth_key", s.federation_auth_key);
-    read_opt(j, "federation_anonym_ca", s.federation_anonym_ca);
-    read_opt(j, "operator_keys", s.operator_keys);
-    read_opt(j, "operator_keys_meta", s.operator_keys_meta);
-    read_opt(j, "egress_mbps", s.egress_mbps);
-    read_opt(j, "client_filter_mode", s.client_filter_mode);
-    read_opt(j, "egress_filter_mode", s.egress_filter_mode);
-    read_opt(j, "filter_geolite", s.filter_geolite);
-    read_opt(j, "filter_memory_mib", s.filter_memory_mib);
-    if (auto it = j.find("filter_lists"); it != j.end() && it->is_array()) {
+    read_opt(j, cfg_key::federation_auth_key, s.federation_auth_key);
+    read_opt(j, cfg_key::federation_anonym_ca, s.federation_anonym_ca);
+    read_opt(j, cfg_key::operator_keys, s.operator_keys);
+    read_opt(j, cfg_key::operator_keys_meta, s.operator_keys_meta);
+    read_opt(j, cfg_key::egress_mbps, s.egress_mbps);
+    read_opt(j, cfg_key::client_filter_mode, s.client_filter_mode);
+    read_opt(j, cfg_key::egress_filter_mode, s.egress_filter_mode);
+    read_opt(j, cfg_key::filter_geolite, s.filter_geolite);
+    read_opt(j, cfg_key::filter_memory_mib, s.filter_memory_mib);
+    if (auto it = j.find(cfg_key::filter_lists); it != j.end() && it->is_array()) {
         for (const auto& item : *it) {
             if (item.is_string()) {
                 s.filter_lists.push_back(item.get<std::string>());
             }
         }
     }
-    read_opt(j, "packet_egress", s.packet_egress);
-    read_opt(j, "packet_tun_name", s.packet_tun_name);
-    read_opt(j, "packet_cidr", s.packet_cidr);
-    read_opt(j, "packet_mtu", s.packet_mtu);
-    read_opt(j, "boring", s.boring);
+    read_opt(j, cfg_key::packet_egress, s.packet_egress);
+    read_opt(j, cfg_key::packet_tun_name, s.packet_tun_name);
+    read_opt(j, cfg_key::packet_cidr, s.packet_cidr);
+    read_opt(j, cfg_key::packet_mtu, s.packet_mtu);
+    read_opt(j, cfg_key::boring, s.boring);
 
     auto const base = path.parent_path();
     resolve_config_path(s.tls_cert, base);
@@ -141,65 +143,65 @@ bool save_server(server::ServerConfig const& s,
                  std::filesystem::path const& path,
                  std::string* err) {
     json j = {
-        {"listen_port", s.listen_port},
-        {"tls_cert", s.tls_cert},
-        {"tls_key", s.tls_key},
-        {"auth_keys", s.auth_keys},
-        {"auth_keys_meta", s.auth_keys_meta},
-        {"threads", s.threads},
-        {"obfuscation", s.obfuscation},
-        {"obfs_secret", s.obfs_secret},
-        {"inner_crypto", s.inner_crypto},
-        {"inner_heavy", s.inner_heavy},
-        {"inner_dual", s.inner_dual},
-        {"inner_required", s.inner_required},
-        {"inner_hop", s.inner_hop},
-        {"hop_interval_ms", s.hop_interval_ms},
-        {"reverse_port_min", s.reverse_port_min},
-        {"reverse_port_max", s.reverse_port_max},
-        {"dns_server", s.dns_server},
-        {"pq_private_key", s.pq_private_key},
-        {"pq_auto_generate", s.pq_auto_generate},
-        {"allow_embedded_master", s.allow_embedded_master},
-        {"allow_exec", s.allow_exec},
-        {"allow_local_ip", s.allow_local_ip},
-        {"control_full", s.control_full},
-        {"real_http", s.real_http},
-        {"robots_deny", s.robots_deny},
-        {"real_index_path", s.real_index_path},
-        {"real_secret_file", s.real_secret_file},
-        {"anonym", s.anonym},
-        {"anonym_proof_mode", s.anonym_proof_mode},
-        {"anonym_api", s.anonym_api},
-        {"anonym_token", s.anonym_token},
-        {"anonym_ca_key", s.anonym_ca_key},
-        {"anonym_ca_cert", s.anonym_ca_cert},
-        {"anonym_sub_key", s.anonym_sub_key},
-        {"anonym_sub_cert", s.anonym_sub_cert},
-        {"server_name", s.server_name},
-        {"server_id", s.server_id},
-        {"outbound_proxy", s.outbound_proxy_url},
-        {"relay_enable", s.relay_enable},
-        {"directory_enable", s.directory_enable},
-        {"ipc_enable", s.ipc_enable},
-        {"ipc_path", s.ipc_path},
-        {"federation_enable", s.federation_enable},
-        {"federation_peers", s.federation_peers},
-        {"federation_auth_key", s.federation_auth_key},
-        {"federation_anonym_ca", s.federation_anonym_ca},
-        {"operator_keys", s.operator_keys},
-        {"operator_keys_meta", s.operator_keys_meta},
-        {"egress_mbps", s.egress_mbps},
-        {"client_filter_mode", s.client_filter_mode},
-        {"egress_filter_mode", s.egress_filter_mode},
-        {"filter_lists", s.filter_lists},
-        {"filter_geolite", s.filter_geolite},
-        {"filter_memory_mib", s.filter_memory_mib},
-        {"packet_egress", s.packet_egress},
-        {"packet_tun_name", s.packet_tun_name},
-        {"packet_cidr", s.packet_cidr},
-        {"packet_mtu", s.packet_mtu},
-        {"boring", s.boring},
+        {cfg_key::listen_port, s.listen_port},
+        {cfg_key::tls_cert, s.tls_cert},
+        {cfg_key::tls_key, s.tls_key},
+        {cfg_key::auth_keys, s.auth_keys},
+        {cfg_key::auth_keys_meta, s.auth_keys_meta},
+        {cfg_key::threads, s.threads},
+        {cfg_key::obfuscation, s.obfuscation},
+        {cfg_key::obfs_secret, s.obfs_secret},
+        {cfg_key::inner_crypto, s.inner_crypto},
+        {cfg_key::inner_heavy, s.inner_heavy},
+        {cfg_key::inner_dual, s.inner_dual},
+        {cfg_key::inner_required, s.inner_required},
+        {cfg_key::inner_hop, s.inner_hop},
+        {cfg_key::hop_interval_ms, s.hop_interval_ms},
+        {cfg_key::reverse_port_min, s.reverse_port_min},
+        {cfg_key::reverse_port_max, s.reverse_port_max},
+        {cfg_key::dns_server, s.dns_server},
+        {cfg_key::pq_private_key, s.pq_private_key},
+        {cfg_key::pq_auto_generate, s.pq_auto_generate},
+        {cfg_key::allow_embedded_master, s.allow_embedded_master},
+        {cfg_key::allow_exec, s.allow_exec},
+        {cfg_key::allow_local_ip, s.allow_local_ip},
+        {cfg_key::control_full, s.control_full},
+        {cfg_key::real_http, s.real_http},
+        {cfg_key::robots_deny, s.robots_deny},
+        {cfg_key::real_index_path, s.real_index_path},
+        {cfg_key::real_secret_file, s.real_secret_file},
+        {cfg_key::anonym, s.anonym},
+        {cfg_key::anonym_proof_mode, s.anonym_proof_mode},
+        {cfg_key::anonym_api, s.anonym_api},
+        {cfg_key::anonym_token, s.anonym_token},
+        {cfg_key::anonym_ca_key, s.anonym_ca_key},
+        {cfg_key::anonym_ca_cert, s.anonym_ca_cert},
+        {cfg_key::anonym_sub_key, s.anonym_sub_key},
+        {cfg_key::anonym_sub_cert, s.anonym_sub_cert},
+        {cfg_key::server_name, s.server_name},
+        {cfg_key::server_id, s.server_id},
+        {cfg_key::outbound_proxy, s.outbound_proxy_url},
+        {cfg_key::relay_enable, s.relay_enable},
+        {cfg_key::directory_enable, s.directory_enable},
+        {cfg_key::ipc_enable, s.ipc_enable},
+        {cfg_key::ipc_path, s.ipc_path},
+        {cfg_key::federation_enable, s.federation_enable},
+        {cfg_key::federation_peers, s.federation_peers},
+        {cfg_key::federation_auth_key, s.federation_auth_key},
+        {cfg_key::federation_anonym_ca, s.federation_anonym_ca},
+        {cfg_key::operator_keys, s.operator_keys},
+        {cfg_key::operator_keys_meta, s.operator_keys_meta},
+        {cfg_key::egress_mbps, s.egress_mbps},
+        {cfg_key::client_filter_mode, s.client_filter_mode},
+        {cfg_key::egress_filter_mode, s.egress_filter_mode},
+        {cfg_key::filter_lists, s.filter_lists},
+        {cfg_key::filter_geolite, s.filter_geolite},
+        {cfg_key::filter_memory_mib, s.filter_memory_mib},
+        {cfg_key::packet_egress, s.packet_egress},
+        {cfg_key::packet_tun_name, s.packet_tun_name},
+        {cfg_key::packet_cidr, s.packet_cidr},
+        {cfg_key::packet_mtu, s.packet_mtu},
+        {cfg_key::boring, s.boring},
     };
 
     std::error_code ec;

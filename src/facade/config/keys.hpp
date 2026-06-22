@@ -1,0 +1,111 @@
+/*
+ * YUME - Yume Universal Multiprotocol Engine
+ * Copyright (C) 2026  FixCraft Inc.
+ * Licensed under the GNU General Public License v3.0.
+ */
+
+#pragma once
+
+namespace yume::facade::config_io::keys {
+
+inline constexpr char allow_bytes[] = "allow_bytes";
+inline constexpr char allow_chat[] = "allow_chat";
+inline constexpr char allow_embedded_master[] = "allow_embedded_master";
+inline constexpr char allow_exec[] = "allow_exec";
+inline constexpr char allow_file[] = "allow_file";
+inline constexpr char allow_inbound_admin[] = "allow_inbound_admin";
+inline constexpr char allow_local_ip[] = "allow_local_ip";
+inline constexpr char allow_outbound_admin[] = "allow_outbound_admin";
+inline constexpr char allow_udp[] = "allow_udp";
+inline constexpr char anonym[] = "anonym";
+inline constexpr char anonym_api[] = "anonym_api";
+inline constexpr char anonym_ca_cert[] = "anonym_ca_cert";
+inline constexpr char anonym_ca_key[] = "anonym_ca_key";
+inline constexpr char anonym_ca_material_id[] = "anonym_ca_material_id";
+inline constexpr char anonym_proof_mode[] = "anonym_proof_mode";
+inline constexpr char anonym_pubkey[] = "anonym_pubkey";
+inline constexpr char anonym_pubkey_material_id[] = "anonym_pubkey_material_id";
+inline constexpr char anonym_sub_cert[] = "anonym_sub_cert";
+inline constexpr char anonym_sub_key[] = "anonym_sub_key";
+inline constexpr char anonym_token[] = "anonym_token";
+inline constexpr char auth_key_material_id[] = "auth_key_material_id";
+inline constexpr char auth_keys[] = "auth_keys";
+inline constexpr char auth_keys_meta[] = "auth_keys_meta";
+inline constexpr char auto_attach_local[] = "auto_attach_local";
+inline constexpr char boring[] = "boring";
+inline constexpr char client_filter_mode[] = "client_filter_mode";
+inline constexpr char control_full[] = "control_full";
+inline constexpr char dark_mode[] = "dark_mode";
+inline constexpr char directory_enable[] = "directory_enable";
+inline constexpr char dns_server[] = "dns_server";
+inline constexpr char egress_filter_mode[] = "egress_filter_mode";
+inline constexpr char egress_mbps[] = "egress_mbps";
+inline constexpr char federation_anonym_ca[] = "federation_anonym_ca";
+inline constexpr char federation_auth_key[] = "federation_auth_key";
+inline constexpr char federation_enable[] = "federation_enable";
+inline constexpr char federation_peers[] = "federation_peers";
+inline constexpr char filter_geolite[] = "filter_geolite";
+inline constexpr char filter_lists[] = "filter_lists";
+inline constexpr char filter_memory_mib[] = "filter_memory_mib";
+inline constexpr char history_dir[] = "history_dir";
+inline constexpr char history_enabled[] = "history_enabled";
+inline constexpr char hop_interval_ms[] = "hop_interval_ms";
+inline constexpr char identity[] = "identity";
+inline constexpr char inner_crypto[] = "inner_crypto";
+inline constexpr char inner_dual[] = "inner_dual";
+inline constexpr char inner_heavy[] = "inner_heavy";
+inline constexpr char inner_hop[] = "inner_hop";
+inline constexpr char inner_required[] = "inner_required";
+inline constexpr char instance_name[] = "instance_name";
+inline constexpr char io_threads[] = "io_threads";
+inline constexpr char ipc_enable[] = "ipc_enable";
+inline constexpr char ipc_path[] = "ipc_path";
+inline constexpr char listen_port[] = "listen_port";
+inline constexpr char obfuscation[] = "obfuscation";
+inline constexpr char obfs_secret[] = "obfs_secret";
+inline constexpr char operator_keys[] = "operator_keys";
+inline constexpr char operator_keys_meta[] = "operator_keys_meta";
+inline constexpr char outbound_proxy[] = "outbound_proxy";
+inline constexpr char packet_cidr[] = "packet_cidr";
+inline constexpr char packet_egress[] = "packet_egress";
+inline constexpr char packet_mtu[] = "packet_mtu";
+inline constexpr char packet_tun_name[] = "packet_tun_name";
+inline constexpr char port[] = "port";
+inline constexpr char pq_auto_generate[] = "pq_auto_generate";
+inline constexpr char pq_private_key[] = "pq_private_key";
+inline constexpr char pq_public_key[] = "pq_public_key";
+inline constexpr char preferred_id[] = "preferred_id";
+inline constexpr char preferred_name[] = "preferred_name";
+inline constexpr char real_http[] = "real_http";
+inline constexpr char real_index_path[] = "real_index_path";
+inline constexpr char real_secret[] = "real_secret";
+inline constexpr char real_secret_file[] = "real_secret_file";
+inline constexpr char relay_enable[] = "relay_enable";
+inline constexpr char relay_key_file[] = "relay_key_file";
+inline constexpr char relay_mode[] = "relay_mode";
+inline constexpr char require_anonym[] = "require_anonym";
+inline constexpr char reverse_port_max[] = "reverse_port_max";
+inline constexpr char reverse_port_min[] = "reverse_port_min";
+inline constexpr char robots_deny[] = "robots_deny";
+inline constexpr char self_dpi[] = "self_dpi";
+inline constexpr char server[] = "server";
+inline constexpr char server_id[] = "server_id";
+inline constexpr char server_name[] = "server_name";
+inline constexpr char socks_port[] = "socks_port";
+inline constexpr char threads[] = "threads";
+inline constexpr char tls_ca_cert[] = "tls_ca_cert";
+inline constexpr char tls_ca_material_id[] = "tls_ca_material_id";
+inline constexpr char tls_cert[] = "tls_cert";
+inline constexpr char tls_fingerprint_log[] = "tls_fingerprint_log";
+inline constexpr char tls_fingerprint_log_path[] = "tls_fingerprint_log_path";
+inline constexpr char tls_fingerprint_test_endpoint[] = "tls_fingerprint_test_endpoint";
+inline constexpr char tls_fingerprint_verify[] = "tls_fingerprint_verify";
+inline constexpr char tls_key[] = "tls_key";
+inline constexpr char tls_pin_sha256[] = "tls_pin_sha256";
+inline constexpr char tls_server_name[] = "tls_server_name";
+inline constexpr char tls_stealth_enabled[] = "tls_stealth_enabled";
+inline constexpr char tls_stealth_profile[] = "tls_stealth_profile";
+inline constexpr char tls_stealth_rotate[] = "tls_stealth_rotate";
+inline constexpr char tls_stealth_rotation_interval[] = "tls_stealth_rotation_interval";
+
+}  // namespace yume::facade::config_io::keys

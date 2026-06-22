@@ -15,12 +15,14 @@
 #include <nlohmann/json.hpp>
 
 #include "facade/config/detail.hpp"
+#include "facade/config/keys.hpp"
 
 namespace yume::facade::config_io {
 
 using nlohmann::json;
 using detail::read_opt;
 using detail::resolve_config_path;
+namespace cfg_key = keys;
 
 std::optional<client::ClientConfig> load_client(
     std::filesystem::path const& path, std::string* err) {
@@ -38,56 +40,56 @@ std::optional<client::ClientConfig> load_client(
     }
 
     client::ClientConfig c;
-    read_opt(j, "server", c.server);
-    read_opt(j, "port", c.port);
-    read_opt(j, "identity", c.identity);
-    read_opt(j, "socks_port", c.socks_port);
-    read_opt(j, "io_threads", c.io_threads);
-    read_opt(j, "obfuscation", c.obfuscation);
-    read_opt(j, "obfs_secret", c.obfs_secret);
-    read_opt(j, "inner_crypto", c.inner_crypto);
-    read_opt(j, "inner_heavy", c.inner_heavy);
-    read_opt(j, "inner_hop", c.inner_hop);
-    read_opt(j, "hop_interval_ms", c.hop_interval_ms);
-    read_opt(j, "allow_udp", c.allow_udp);
-    read_opt(j, "allow_local_ip", c.allow_local_ip);
-    read_opt(j, "allow_exec", c.allow_exec);
-    read_opt(j, "pq_public_key", c.pq_public_key);
-    read_opt(j, "allow_embedded_master", c.allow_embedded_master);
-    read_opt(j, "anonym_pubkey", c.anonym_pubkey);
-    read_opt(j, "anonym_ca_cert", c.anonym_ca_cert);
-    read_opt(j, "anonym_ca_material_id", c.anonym_ca_material_id);
-    read_opt(j, "anonym_pubkey_material_id", c.anonym_pubkey_material_id);
-    read_opt(j, "tls_ca_material_id", c.tls_ca_material_id);
-    read_opt(j, "auth_key_material_id", c.auth_key_material_id);
-    read_opt(j, "tls_ca_cert", c.tls_ca_cert);
-    read_opt(j, "tls_server_name", c.tls_server_name);
-    read_opt(j, "tls_pin_sha256", c.tls_pin_sha256);
-    read_opt(j, "require_anonym", c.require_anonym);
-    read_opt(j, "boring", c.boring);
-    read_opt(j, "instance_name", c.instance_name);
-    read_opt(j, "preferred_name", c.preferred_name);
-    read_opt(j, "preferred_id", c.preferred_id);
-    read_opt(j, "relay_mode", c.relay_mode);
-    read_opt(j, "allow_inbound_admin", c.allow_inbound_admin);
-    read_opt(j, "allow_outbound_admin", c.allow_outbound_admin);
-    read_opt(j, "allow_chat", c.allow_chat);
-    read_opt(j, "allow_file", c.allow_file);
-    read_opt(j, "allow_bytes", c.allow_bytes);
-    read_opt(j, "history_enabled", c.history_enabled);
-    read_opt(j, "history_dir", c.history_dir);
-    read_opt(j, "relay_key_file", c.relay_key_file);
-    read_opt(j, "auto_attach_local", c.auto_attach_local);
-    read_opt(j, "tls_stealth_enabled", c.tls_stealth_enabled);
-    read_opt(j, "tls_stealth_profile", c.tls_stealth_profile);
-    read_opt(j, "tls_stealth_rotate", c.tls_stealth_rotate);
-    read_opt(j, "tls_stealth_rotation_interval", c.tls_stealth_rotation_interval);
-    read_opt(j, "tls_fingerprint_log", c.tls_fingerprint_log);
-    read_opt(j, "tls_fingerprint_log_path", c.tls_fingerprint_log_path);
-    read_opt(j, "tls_fingerprint_verify", c.tls_fingerprint_verify);
-    read_opt(j, "tls_fingerprint_test_endpoint", c.tls_fingerprint_test_endpoint);
-    read_opt(j, "self_dpi", c.self_dpi);
-    read_opt(j, "outbound_proxy", c.outbound_proxy_url);
+    read_opt(j, cfg_key::server, c.server);
+    read_opt(j, cfg_key::port, c.port);
+    read_opt(j, cfg_key::identity, c.identity);
+    read_opt(j, cfg_key::socks_port, c.socks_port);
+    read_opt(j, cfg_key::io_threads, c.io_threads);
+    read_opt(j, cfg_key::obfuscation, c.obfuscation);
+    read_opt(j, cfg_key::obfs_secret, c.obfs_secret);
+    read_opt(j, cfg_key::inner_crypto, c.inner_crypto);
+    read_opt(j, cfg_key::inner_heavy, c.inner_heavy);
+    read_opt(j, cfg_key::inner_hop, c.inner_hop);
+    read_opt(j, cfg_key::hop_interval_ms, c.hop_interval_ms);
+    read_opt(j, cfg_key::allow_udp, c.allow_udp);
+    read_opt(j, cfg_key::allow_local_ip, c.allow_local_ip);
+    read_opt(j, cfg_key::allow_exec, c.allow_exec);
+    read_opt(j, cfg_key::pq_public_key, c.pq_public_key);
+    read_opt(j, cfg_key::allow_embedded_master, c.allow_embedded_master);
+    read_opt(j, cfg_key::anonym_pubkey, c.anonym_pubkey);
+    read_opt(j, cfg_key::anonym_ca_cert, c.anonym_ca_cert);
+    read_opt(j, cfg_key::anonym_ca_material_id, c.anonym_ca_material_id);
+    read_opt(j, cfg_key::anonym_pubkey_material_id, c.anonym_pubkey_material_id);
+    read_opt(j, cfg_key::tls_ca_material_id, c.tls_ca_material_id);
+    read_opt(j, cfg_key::auth_key_material_id, c.auth_key_material_id);
+    read_opt(j, cfg_key::tls_ca_cert, c.tls_ca_cert);
+    read_opt(j, cfg_key::tls_server_name, c.tls_server_name);
+    read_opt(j, cfg_key::tls_pin_sha256, c.tls_pin_sha256);
+    read_opt(j, cfg_key::require_anonym, c.require_anonym);
+    read_opt(j, cfg_key::boring, c.boring);
+    read_opt(j, cfg_key::instance_name, c.instance_name);
+    read_opt(j, cfg_key::preferred_name, c.preferred_name);
+    read_opt(j, cfg_key::preferred_id, c.preferred_id);
+    read_opt(j, cfg_key::relay_mode, c.relay_mode);
+    read_opt(j, cfg_key::allow_inbound_admin, c.allow_inbound_admin);
+    read_opt(j, cfg_key::allow_outbound_admin, c.allow_outbound_admin);
+    read_opt(j, cfg_key::allow_chat, c.allow_chat);
+    read_opt(j, cfg_key::allow_file, c.allow_file);
+    read_opt(j, cfg_key::allow_bytes, c.allow_bytes);
+    read_opt(j, cfg_key::history_enabled, c.history_enabled);
+    read_opt(j, cfg_key::history_dir, c.history_dir);
+    read_opt(j, cfg_key::relay_key_file, c.relay_key_file);
+    read_opt(j, cfg_key::auto_attach_local, c.auto_attach_local);
+    read_opt(j, cfg_key::tls_stealth_enabled, c.tls_stealth_enabled);
+    read_opt(j, cfg_key::tls_stealth_profile, c.tls_stealth_profile);
+    read_opt(j, cfg_key::tls_stealth_rotate, c.tls_stealth_rotate);
+    read_opt(j, cfg_key::tls_stealth_rotation_interval, c.tls_stealth_rotation_interval);
+    read_opt(j, cfg_key::tls_fingerprint_log, c.tls_fingerprint_log);
+    read_opt(j, cfg_key::tls_fingerprint_log_path, c.tls_fingerprint_log_path);
+    read_opt(j, cfg_key::tls_fingerprint_verify, c.tls_fingerprint_verify);
+    read_opt(j, cfg_key::tls_fingerprint_test_endpoint, c.tls_fingerprint_test_endpoint);
+    read_opt(j, cfg_key::self_dpi, c.self_dpi);
+    read_opt(j, cfg_key::outbound_proxy, c.outbound_proxy_url);
 
     auto const base = path.parent_path();
     resolve_config_path(c.identity, base);
@@ -105,56 +107,56 @@ bool save_client(client::ClientConfig const& c,
                  std::filesystem::path const& path,
                  std::string* err) {
     json j = {
-        {"server", c.server},
-        {"port", c.port},
-        {"identity", c.identity},
-        {"socks_port", c.socks_port},
-        {"io_threads", c.io_threads},
-        {"obfuscation", c.obfuscation},
-        {"obfs_secret", c.obfs_secret},
-        {"inner_crypto", c.inner_crypto},
-        {"inner_heavy", c.inner_heavy},
-        {"inner_hop", c.inner_hop},
-        {"hop_interval_ms", c.hop_interval_ms},
-        {"allow_udp", c.allow_udp},
-        {"allow_local_ip", c.allow_local_ip},
-        {"allow_exec", c.allow_exec},
-        {"pq_public_key", c.pq_public_key},
-        {"allow_embedded_master", c.allow_embedded_master},
-        {"anonym_pubkey", c.anonym_pubkey},
-        {"anonym_ca_cert", c.anonym_ca_cert},
-        {"anonym_ca_material_id", c.anonym_ca_material_id},
-        {"anonym_pubkey_material_id", c.anonym_pubkey_material_id},
-        {"tls_ca_material_id", c.tls_ca_material_id},
-        {"auth_key_material_id", c.auth_key_material_id},
-        {"tls_ca_cert", c.tls_ca_cert},
-        {"tls_server_name", c.tls_server_name},
-        {"tls_pin_sha256", c.tls_pin_sha256},
-        {"require_anonym", c.require_anonym},
-        {"boring", c.boring},
-        {"instance_name", c.instance_name},
-        {"preferred_name", c.preferred_name},
-        {"preferred_id", c.preferred_id},
-        {"relay_mode", c.relay_mode},
-        {"allow_inbound_admin", c.allow_inbound_admin},
-        {"allow_outbound_admin", c.allow_outbound_admin},
-        {"allow_chat", c.allow_chat},
-        {"allow_file", c.allow_file},
-        {"allow_bytes", c.allow_bytes},
-        {"history_enabled", c.history_enabled},
-        {"history_dir", c.history_dir},
-        {"relay_key_file", c.relay_key_file},
-        {"auto_attach_local", c.auto_attach_local},
-        {"tls_stealth_enabled", c.tls_stealth_enabled},
-        {"tls_stealth_profile", c.tls_stealth_profile},
-        {"tls_stealth_rotate", c.tls_stealth_rotate},
-        {"tls_stealth_rotation_interval", c.tls_stealth_rotation_interval},
-        {"tls_fingerprint_log", c.tls_fingerprint_log},
-        {"tls_fingerprint_log_path", c.tls_fingerprint_log_path},
-        {"tls_fingerprint_verify", c.tls_fingerprint_verify},
-        {"tls_fingerprint_test_endpoint", c.tls_fingerprint_test_endpoint},
-        {"self_dpi", c.self_dpi},
-        {"outbound_proxy", c.outbound_proxy_url},
+        {cfg_key::server, c.server},
+        {cfg_key::port, c.port},
+        {cfg_key::identity, c.identity},
+        {cfg_key::socks_port, c.socks_port},
+        {cfg_key::io_threads, c.io_threads},
+        {cfg_key::obfuscation, c.obfuscation},
+        {cfg_key::obfs_secret, c.obfs_secret},
+        {cfg_key::inner_crypto, c.inner_crypto},
+        {cfg_key::inner_heavy, c.inner_heavy},
+        {cfg_key::inner_hop, c.inner_hop},
+        {cfg_key::hop_interval_ms, c.hop_interval_ms},
+        {cfg_key::allow_udp, c.allow_udp},
+        {cfg_key::allow_local_ip, c.allow_local_ip},
+        {cfg_key::allow_exec, c.allow_exec},
+        {cfg_key::pq_public_key, c.pq_public_key},
+        {cfg_key::allow_embedded_master, c.allow_embedded_master},
+        {cfg_key::anonym_pubkey, c.anonym_pubkey},
+        {cfg_key::anonym_ca_cert, c.anonym_ca_cert},
+        {cfg_key::anonym_ca_material_id, c.anonym_ca_material_id},
+        {cfg_key::anonym_pubkey_material_id, c.anonym_pubkey_material_id},
+        {cfg_key::tls_ca_material_id, c.tls_ca_material_id},
+        {cfg_key::auth_key_material_id, c.auth_key_material_id},
+        {cfg_key::tls_ca_cert, c.tls_ca_cert},
+        {cfg_key::tls_server_name, c.tls_server_name},
+        {cfg_key::tls_pin_sha256, c.tls_pin_sha256},
+        {cfg_key::require_anonym, c.require_anonym},
+        {cfg_key::boring, c.boring},
+        {cfg_key::instance_name, c.instance_name},
+        {cfg_key::preferred_name, c.preferred_name},
+        {cfg_key::preferred_id, c.preferred_id},
+        {cfg_key::relay_mode, c.relay_mode},
+        {cfg_key::allow_inbound_admin, c.allow_inbound_admin},
+        {cfg_key::allow_outbound_admin, c.allow_outbound_admin},
+        {cfg_key::allow_chat, c.allow_chat},
+        {cfg_key::allow_file, c.allow_file},
+        {cfg_key::allow_bytes, c.allow_bytes},
+        {cfg_key::history_enabled, c.history_enabled},
+        {cfg_key::history_dir, c.history_dir},
+        {cfg_key::relay_key_file, c.relay_key_file},
+        {cfg_key::auto_attach_local, c.auto_attach_local},
+        {cfg_key::tls_stealth_enabled, c.tls_stealth_enabled},
+        {cfg_key::tls_stealth_profile, c.tls_stealth_profile},
+        {cfg_key::tls_stealth_rotate, c.tls_stealth_rotate},
+        {cfg_key::tls_stealth_rotation_interval, c.tls_stealth_rotation_interval},
+        {cfg_key::tls_fingerprint_log, c.tls_fingerprint_log},
+        {cfg_key::tls_fingerprint_log_path, c.tls_fingerprint_log_path},
+        {cfg_key::tls_fingerprint_verify, c.tls_fingerprint_verify},
+        {cfg_key::tls_fingerprint_test_endpoint, c.tls_fingerprint_test_endpoint},
+        {cfg_key::self_dpi, c.self_dpi},
+        {cfg_key::outbound_proxy, c.outbound_proxy_url},
     };
 
     std::error_code ec;

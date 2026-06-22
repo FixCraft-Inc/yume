@@ -626,6 +626,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             tools/selftest/render.cpp
             tools/selftest/sizing.cpp
             tools/selftest/hotpath.cpp
+            tools/selftest/scoring.cpp
         )
         target_include_directories(yume_selftest_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
         target_link_libraries(yume_selftest_lib PUBLIC yume_core OpenSSL::Crypto Threads::Threads)

@@ -24,6 +24,7 @@ inline constexpr std::string_view kDesktopScoreModel = "yume-desktop-v1";
 inline constexpr std::string_view kEngineScoreModel = "yume-engine-v1";
 inline constexpr std::string_view kTransportScoreModel = "yume-transport-v1";
 inline constexpr double kBenchmarkReferenceScore = 10000000.0;
+inline constexpr double kGlobalReferenceMultiplier = 6.0;
 
 struct ScoreComponent {
     std::string name;

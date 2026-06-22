@@ -654,6 +654,10 @@ void render_score(const Args& args,
                   << "  sustained=" << (sizing.sustained_ms / 1000) << "s\n";
     }
     std::cerr << "GLOBAL: shared Android/desktop hot paths; no fixed maximum.\n";
+    if (global_score.available &&
+        static_cast<double>(global_score.total) >= kBenchmarkReferenceScore) {
+        std::cerr << "Scale: above reference; use --dev/raw rows to rank systems past SSS+.\n";
+    }
     if (args.dev_style) {
         std::cerr << "DESKTOP: diagnostic profile, 50% engine and 50% YUME transport.\n";
     }

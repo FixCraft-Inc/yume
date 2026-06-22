@@ -19,11 +19,14 @@
 
 namespace yume::tools::selftest {
 
-inline constexpr std::string_view kGlobalScoreModel = "yume-global-v1";
-inline constexpr std::string_view kDesktopScoreModel = "yume-desktop-v1";
-inline constexpr std::string_view kEngineScoreModel = "yume-engine-v1";
-inline constexpr std::string_view kTransportScoreModel = "yume-transport-v1";
+inline constexpr std::string_view kGlobalScoreModel = "yume-global-v2";
+inline constexpr std::string_view kDesktopScoreModel = "yume-desktop-v2";
+inline constexpr std::string_view kEngineScoreModel = "yume-engine-v2";
+inline constexpr std::string_view kTransportScoreModel = "yume-transport-v2";
 inline constexpr double kBenchmarkReferenceScore = 10000000.0;
+// Global scoring is a reference benchmark, not a device class lookup. Keep
+// references stable and component-based; do not special-case phones, CPUs,
+// vendors, or individual machines when recalibrating the model.
 inline constexpr double kGlobalReferenceMultiplier = 1.5;
 
 struct ScoreComponent {

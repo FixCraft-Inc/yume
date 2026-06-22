@@ -139,8 +139,20 @@ void append_stat(std::ostringstream& out,
         out << name << "=unavailable";
         return;
     }
-    out << name << "_avg=" << std::fixed << std::setprecision(1) << stats.mean << unit
+    out << name << "_min=" << std::fixed << std::setprecision(1) << stats.min << unit
+        << " " << name << "_avg=" << stats.mean << unit
         << " " << name << "_max=" << stats.max << unit;
+}
+
+double load_headroom_percent(const Stats& cpu, const Stats& memory, const Stats& temp) {
+    const double cpu_avg_headroom = cpu.n > 0 ? std::clamp(100.0 - cpu.mean, 0.0, 100.0) : 0.0;
+    const double cpu_burst_headroom = cpu.n > 0 ? std::clamp(100.0 - cpu.max, 0.0, 100.0) : cpu_avg_headroom;
+    const double mem_headroom = memory.n > 0 ? std::clamp(100.0 - memory.mean, 0.0, 100.0) : 50.0;
+    const double temp_headroom = temp.n > 0 ? std::clamp(((90.0 - temp.max) / 60.0) * 100.0, 0.0, 100.0) : 50.0;
+    return (cpu_avg_headroom * 0.55) +
+           (cpu_burst_headroom * 0.15) +
+           (mem_headroom * 0.20) +
+           (temp_headroom * 0.10);
 }
 
 }  // namespace
@@ -181,12 +193,10 @@ HotPathRow SystemLoadSampler::stop() {
     const Stats temp = stats_for(samples, &SystemLoadSample::temperature_c);
     const double seconds = elapsed_s(started_at_, Clock::now());
 
+    const double headroom = load_headroom_percent(cpu, memory, temp);
+
     std::ostringstream metric;
-    if (cpu.n > 0) {
-        metric << std::fixed << std::setprecision(1) << cpu.mean << "% avg CPU";
-    } else {
-        metric << "unavailable";
-    }
+    metric << std::fixed << std::setprecision(1) << headroom << "% headroom";
 
     std::ostringstream detail;
     detail << "samples=" << samples.size() << " ";
@@ -201,7 +211,7 @@ HotPathRow SystemLoadSampler::stop() {
         metric.str(),
         detail.str(),
         !samples.empty(),
-        cpu.n > 0 ? cpu.mean : 0.0,
+        headroom,
         "%",
         0,
         static_cast<std::uint64_t>(samples.size()),

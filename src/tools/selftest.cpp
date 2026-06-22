@@ -875,7 +875,7 @@ int run_cli(int argc, char** argv) {
             sink_port = sink.start();
         }
         Keyset ks = generate_keyset(args, tmp->path());
-        const int hot_path_steps = args.full_benchmark ? 11 : 9;
+        const int hot_path_steps = args.full_benchmark ? 16 : 9;
         const int progress_total = std::max(
             1,
             static_cast<int>(configs.size()) * std::max(1, args.repeats) + hot_path_steps);

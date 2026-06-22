@@ -9,6 +9,7 @@
 
 #include "tools/selftest/hotpath.hpp"
 
+#include "core/security/inner_crypto.hpp"
 #include "tools/selftest/render.hpp"
 #include "tools/selftest/sizing.hpp"
 
@@ -26,6 +27,7 @@
 #include <fstream>
 #include <functional>
 #include <numeric>
+#include <optional>
 #include <random>
 #include <string>
 #include <string_view>
@@ -86,6 +88,45 @@ HotPathRow throughput_row(std::string name,
         0,
         seconds,
     };
+}
+
+HotPathRow latency_ops_row(std::string name,
+                           std::vector<double> samples_ms,
+                           std::string detail) {
+    const Stats stats = compute_stats(samples_ms);
+    const double median_ms = std::max(stats.median, 0.000001);
+    const double ops_s = 1000.0 / median_ms;
+    std::ostringstream metric;
+    metric << std::fixed << std::setprecision(1) << ops_s << " ops/s";
+    std::ostringstream full_detail;
+    full_detail << detail
+                << ", median_ms=" << std::fixed << std::setprecision(3) << stats.median
+                << ", p95_ms=" << stats.p95
+                << ", samples=" << stats.n;
+    return {
+        std::move(name),
+        metric.str(),
+        full_detail.str(),
+        stats.n > 0,
+        ops_s,
+        "ops/s",
+        0,
+        static_cast<std::uint64_t>(stats.n),
+        (stats.mean * static_cast<double>(stats.n)) / 1000.0,
+    };
+}
+
+template <typename Fn>
+std::vector<double> time_samples_ms(int samples, Fn&& fn) {
+    const int count = std::max(1, samples);
+    std::vector<double> out;
+    out.reserve(static_cast<std::size_t>(count));
+    for (int i = 0; i < count; ++i) {
+        const auto start = Clock::now();
+        fn(i);
+        out.push_back(elapsed_ms(start, Clock::now()));
+    }
+    return out;
 }
 
 HotPathRow run_copy_floor(std::uint64_t total_bytes) {
@@ -459,6 +500,180 @@ HotPathRow run_hop_hkdf(int ops, int thread_count) {
     };
 }
 
+HotPathRow run_inner_aead_encrypt(std::uint64_t total_bytes, int thread_count) {
+    const int workers = std::clamp(thread_count, 1, 256);
+    const auto per_worker = split_work(total_bytes, workers);
+    std::atomic<bool> start_flag{false};
+    std::vector<std::uint64_t> bytes_by_worker(static_cast<std::size_t>(workers), 0);
+    std::vector<int> guards(static_cast<std::size_t>(workers), 0);
+    std::vector<std::thread> threads;
+    threads.reserve(static_cast<std::size_t>(workers));
+
+    for (int worker = 0; worker < workers; ++worker) {
+        threads.emplace_back([&, worker] {
+            const auto key = patterned_bytes(32, 51 + worker);
+            const auto plaintext = patterned_bytes(64 * kKiB, 71 + worker);
+            const int iterations = iterations_for(per_worker[static_cast<std::size_t>(worker)], plaintext.size());
+            int guard = 0;
+            while (!start_flag.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            for (int i = 0; i < iterations; ++i) {
+                auto encrypted = yume::inner::encrypt_payload(key, 0x02, worker + 1, plaintext);
+                guard ^= encrypted.back();
+            }
+            bytes_by_worker[static_cast<std::size_t>(worker)] =
+                static_cast<std::uint64_t>(iterations) * plaintext.size();
+            guards[static_cast<std::size_t>(worker)] = guard;
+        });
+    }
+    const auto start = Clock::now();
+    start_flag.store(true, std::memory_order_release);
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    const double seconds = elapsed_s(start, Clock::now());
+    const auto bytes = std::accumulate(bytes_by_worker.begin(), bytes_by_worker.end(), std::uint64_t{0});
+    const int guard = std::accumulate(guards.begin(), guards.end(), 0, [](int a, int b) { return a ^ b; });
+    return throughput_row("inner-aead-encrypt",
+                          bytes,
+                          seconds,
+                          "YUME inner_crypto AES-GCM seal, threads=" + std::to_string(workers) +
+                              ", " + checksum_detail(guard));
+}
+
+HotPathRow run_inner_aead_decrypt(std::uint64_t total_bytes, int thread_count) {
+    const int workers = std::clamp(thread_count, 1, 256);
+    const auto per_worker = split_work(total_bytes, workers);
+    std::atomic<bool> start_flag{false};
+    std::vector<std::uint64_t> bytes_by_worker(static_cast<std::size_t>(workers), 0);
+    std::vector<int> guards(static_cast<std::size_t>(workers), 0);
+    std::vector<std::thread> threads;
+    threads.reserve(static_cast<std::size_t>(workers));
+
+    for (int worker = 0; worker < workers; ++worker) {
+        threads.emplace_back([&, worker] {
+            const auto key = patterned_bytes(32, 51 + worker);
+            const auto plaintext = patterned_bytes(64 * kKiB, 71 + worker);
+            const auto encrypted = yume::inner::encrypt_payload(key, 0x02, worker + 1, plaintext);
+            const int iterations = iterations_for(per_worker[static_cast<std::size_t>(worker)], plaintext.size());
+            int guard = 0;
+            while (!start_flag.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            for (int i = 0; i < iterations; ++i) {
+                auto decrypted = yume::inner::decrypt_payload(key, 0x02, worker + 1, encrypted);
+                guard ^= decrypted[static_cast<std::size_t>(i) & (decrypted.size() - 1)];
+            }
+            bytes_by_worker[static_cast<std::size_t>(worker)] =
+                static_cast<std::uint64_t>(iterations) * plaintext.size();
+            guards[static_cast<std::size_t>(worker)] = guard;
+        });
+    }
+    const auto start = Clock::now();
+    start_flag.store(true, std::memory_order_release);
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    const double seconds = elapsed_s(start, Clock::now());
+    const auto bytes = std::accumulate(bytes_by_worker.begin(), bytes_by_worker.end(), std::uint64_t{0});
+    const int guard = std::accumulate(guards.begin(), guards.end(), 0, [](int a, int b) { return a ^ b; });
+    return throughput_row("inner-aead-decrypt",
+                          bytes,
+                          seconds,
+                          "YUME inner_crypto AES-GCM open, threads=" + std::to_string(workers) +
+                              ", " + checksum_detail(guard));
+}
+
+struct InnerBenchContext {
+    yume::inner::Config client;
+    yume::inner::Config server;
+    yume::inner::ClientHandshake light_handshake;
+};
+
+InnerBenchContext make_inner_bench_context(const fs::path& workdir, const Args& args) {
+    if (!yume::inner::pq_supported()) {
+        throw std::runtime_error("PQ/BaseFWX support is unavailable in this build");
+    }
+    const fs::path private_key = workdir / "selftest_pq_private.key";
+    const fs::path public_key = workdir / "selftest_pq_public.key";
+    std::string err;
+    if (!yume::inner::generate_pq_keypair(private_key.string(), public_key.string(), &err)) {
+        throw std::runtime_error("PQ key generation failed: " + err);
+    }
+
+    InnerBenchContext ctx;
+    ctx.client.enabled = true;
+    ctx.client.pq_public_key = public_key.string();
+    ctx.client.argon2_limits.memory_max = static_cast<std::uint32_t>(std::max(1024, args.argon_mem_kib));
+    ctx.client.argon2_limits.parallelism_max = static_cast<std::uint32_t>(std::max(1, args.argon_parallelism));
+    ctx.server.enabled = true;
+    ctx.server.pq_private_key = private_key.string();
+    ctx.server.argon2_limits.memory_max = ctx.client.argon2_limits.memory_max;
+    ctx.server.argon2_limits.parallelism_max = ctx.client.argon2_limits.parallelism_max;
+    ctx.light_handshake = yume::inner::client_prepare(ctx.client, false);
+    return ctx;
+}
+
+HotPathRow run_basefwx_pq_client(const InnerBenchContext& ctx, int samples) {
+    auto timings = time_samples_ms(samples, [&](int) {
+        auto h = yume::inner::client_prepare(ctx.client, false);
+        if (!h.enabled || h.key.empty()) {
+            throw std::runtime_error("PQ client produced no key");
+        }
+    });
+    return latency_ops_row("basefwx-pq-client", std::move(timings), "ML-KEM encapsulate + HKDF");
+}
+
+HotPathRow run_basefwx_pq_server(const InnerBenchContext& ctx, int samples) {
+    auto timings = time_samples_ms(samples, [&](int) {
+        auto derived = yume::inner::server_derive_key(ctx.server,
+                                                      ctx.light_handshake.pq_ciphertext,
+                                                      ctx.light_handshake.salt,
+                                                      false,
+                                                      std::nullopt);
+        if (!derived.has_value() || derived->key != ctx.light_handshake.key) {
+            throw std::runtime_error("PQ server derived the wrong key");
+        }
+    });
+    return latency_ops_row("basefwx-pq-server", std::move(timings), "ML-KEM decapsulate + HKDF");
+}
+
+HotPathRow run_basefwx_argon2(const Args& args) {
+#if defined(BASEFWX_HAS_ARGON2) && BASEFWX_HAS_ARGON2
+    const auto password = std::string("yume-selftest-basefwx");
+    const auto salt = patterned_bytes(16, 91);
+    const std::uint32_t memory_kib = static_cast<std::uint32_t>(
+        std::clamp(args.argon_mem_kib, 1024, 262144));
+    const std::uint32_t parallelism = static_cast<std::uint32_t>(
+        std::clamp(args.argon_parallelism, 1, 16));
+    const int samples = std::clamp(args.repeats, 1, 3);
+    int guard = 0;
+    const auto start = Clock::now();
+    for (int i = 0; i < samples; ++i) {
+        auto out = basefwx::crypto::Argon2idHashRaw(password,
+                                                    salt,
+                                                    4,
+                                                    memory_kib,
+                                                    parallelism,
+                                                    32);
+        guard ^= out.front();
+    }
+    const double seconds = elapsed_s(start, Clock::now());
+    const auto memory_bytes = static_cast<std::uint64_t>(memory_kib) * kKiB * 4u *
+                              static_cast<std::uint64_t>(samples);
+    return throughput_row("basefwx-argon2",
+                          memory_bytes,
+                          seconds,
+                          "Argon2id raw, time=4, memory_kib=" + std::to_string(memory_kib) +
+                              ", parallelism=" + std::to_string(parallelism) +
+                              ", samples=" + std::to_string(samples) +
+                              ", " + checksum_detail(guard));
+#else
+    return {"basefwx-argon2", "unavailable", "Argon2 backend unavailable", false, 0.0, "MiB/s", 0, 0, 0.0};
+#endif
+}
+
 HotPathRow run_disk_write(const fs::path& workdir, std::uint64_t total_bytes) {
     const fs::path path = workdir / "disk-write.bin";
     const auto chunk = patterned_bytes(64 * kKiB);
@@ -617,6 +832,10 @@ std::vector<HotPathRow> run_hot_paths(const Args& args,
                                       int& progress_completed,
                                       int progress_total) {
     const BenchmarkSizing sizing = compute_benchmark_sizing(args, yume::runtime::detect_system_profile());
+    std::optional<InnerBenchContext> inner_ctx;
+    if (args.full_benchmark) {
+        inner_ctx = make_inner_bench_context(workdir, args);
+    }
 
     std::vector<HotPathRow> rows;
     auto step = [&](std::string_view name, auto&& fn) {
@@ -637,6 +856,14 @@ std::vector<HotPathRow> run_hot_paths(const Args& args,
     step("packet-bulk-encode", [&] { return run_packet_bulk_encode(sizing.packet_bytes, sizing.hot_threads); });
     step("packet-bulk-decode", [&] { return run_packet_bulk_decode(sizing.packet_bytes, sizing.hot_threads); });
     step("hop-hkdf", [&] { return run_hop_hkdf(sizing.hkdf_ops, sizing.hot_threads); });
+    if (args.full_benchmark && inner_ctx.has_value()) {
+        step("inner-aead-encrypt", [&] { return run_inner_aead_encrypt(sizing.crypto_bytes, sizing.hot_threads); });
+        step("inner-aead-decrypt", [&] { return run_inner_aead_decrypt(sizing.crypto_bytes, sizing.hot_threads); });
+        const int pq_samples = std::clamp(args.latency_iters / 3, 40, 160);
+        step("basefwx-pq-client", [&] { return run_basefwx_pq_client(*inner_ctx, pq_samples); });
+        step("basefwx-pq-server", [&] { return run_basefwx_pq_server(*inner_ctx, pq_samples); });
+        step("basefwx-argon2", [&] { return run_basefwx_argon2(args); });
+    }
     if (sizing.disk_bytes > 0) {
         step("disk-write", [&] { return run_disk_write(workdir, sizing.disk_bytes); });
     }

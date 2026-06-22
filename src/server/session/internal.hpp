@@ -24,22 +24,49 @@
 #pragma once
 
 #include <array>
+#include <algorithm>
+#include <cctype>
+#include <chrono>
 #include <cstdint>
+#include <cstdlib>
+#include <ctime>
+#include <fstream>
 #include <functional>
+#include <iostream>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include <openssl/pem.h>
+
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
+// vcpkg's modularised Boost (x64-mingw-dynamic) does not always pull
+// these through <boost/asio.hpp> like Debian's system Boost does.
 #include <boost/asio/deadline_timer.hpp>
 #include <boost/date_time/posix_time/posix_time_duration.hpp>
+#include <nlohmann/json.hpp>
 
+#include "core/protocol/packet_bulk.hpp"
 #include "core/protocol/protocol.hpp"
+#include "core/protocol/runtime_policy.hpp"
+#include "core/security/inner_crypto.hpp"
+#include "core/stealth/http_profile.hpp"
+#include "core/stealth/obfs_h2.hpp"
+#include "core/stealth/obfs_signal.hpp"
+#include "core/version.hpp"
+#include "server/auth/auth.hpp"
 #include "server/config/config.hpp"
 #include "util.hpp"
+
+#if YUME_USE_BASEFWX
+#include <basefwx/base64.hpp>
+#include <basefwx/constants.hpp>
+#include <basefwx/crypto.hpp>
+#endif
 
 namespace yume::server {
 

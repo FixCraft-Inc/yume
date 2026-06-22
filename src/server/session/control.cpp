@@ -25,43 +25,7 @@
 
 #include "server/session/session.hpp"
 #include "server/runtime/manager.hpp"
-
-#include <openssl/pem.h>
-
-// vcpkg's modularised Boost (x64-mingw-dynamic) doesn't drag these in
-// via <boost/asio.hpp> the way a system Boost on Debian does. Pull
-// them in explicitly so cross-compiling for Windows doesn't fail with
-// "deadline_timer is not a member" / "posix_time::milliseconds is not
-// a member".
-#include <boost/asio/deadline_timer.hpp>
-#include <boost/date_time/posix_time/posix_time_duration.hpp>
-
-#include <chrono>
-#include <algorithm>
-#include <array>
-#include <cctype>
-#include <cstdlib>
-#include <fstream>
-#include <ctime>
-#include <iostream>
-#include <random>
-#include <string>
-#include <string_view>
-
-#include "core/security/inner_crypto.hpp"
-#include "core/stealth/obfs_h2.hpp"
-#include "core/stealth/obfs_signal.hpp"
-#include "core/protocol/protocol.hpp"
-#include "core/protocol/runtime_policy.hpp"
-#include "core/version.hpp"
-#include "server/auth/auth.hpp"
-#include "util.hpp"
-#include <nlohmann/json.hpp>
-#if YUME_USE_BASEFWX
-#include <basefwx/base64.hpp>
-#include <basefwx/crypto.hpp>
-#include <basefwx/constants.hpp>
-#endif
+#include "server/session/internal.hpp"
 
 namespace yume::server {
 

@@ -6,6 +6,7 @@
 
 #include "core/protocol/packet_bulk.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 
@@ -21,21 +22,21 @@ void fail(std::string* error, const std::string& message) {
     }
 }
 
-void put_be16(Bytes& out, std::uint16_t value) {
-    out.push_back(static_cast<std::uint8_t>((value >> 8) & 0xFF));
-    out.push_back(static_cast<std::uint8_t>(value & 0xFF));
+void write_be16(Bytes& out, std::size_t& offset, std::uint16_t value) {
+    out[offset++] = static_cast<std::uint8_t>((value >> 8) & 0xFF);
+    out[offset++] = static_cast<std::uint8_t>(value & 0xFF);
 }
 
-void put_be32(Bytes& out, std::uint32_t value) {
-    out.push_back(static_cast<std::uint8_t>((value >> 24) & 0xFF));
-    out.push_back(static_cast<std::uint8_t>((value >> 16) & 0xFF));
-    out.push_back(static_cast<std::uint8_t>((value >> 8) & 0xFF));
-    out.push_back(static_cast<std::uint8_t>(value & 0xFF));
+void write_be32(Bytes& out, std::size_t& offset, std::uint32_t value) {
+    out[offset++] = static_cast<std::uint8_t>((value >> 24) & 0xFF);
+    out[offset++] = static_cast<std::uint8_t>((value >> 16) & 0xFF);
+    out[offset++] = static_cast<std::uint8_t>((value >> 8) & 0xFF);
+    out[offset++] = static_cast<std::uint8_t>(value & 0xFF);
 }
 
-void put_be64(Bytes& out, std::uint64_t value) {
+void write_be64(Bytes& out, std::size_t& offset, std::uint64_t value) {
     for (int shift = 56; shift >= 0; shift -= 8) {
-        out.push_back(static_cast<std::uint8_t>((value >> shift) & 0xFF));
+        out[offset++] = static_cast<std::uint8_t>((value >> shift) & 0xFF);
     }
 }
 
@@ -113,16 +114,18 @@ bool can_append_packet(std::size_t current_encoded_bytes,
 
 Bytes encode_batch(const Batch& batch) {
     const std::size_t size = encoded_size(batch);
-    Bytes out;
-    out.reserve(size);
-    put_be32(out, kMagic);
-    out.push_back(kVersion);
-    out.push_back(batch.flags);
-    put_be16(out, static_cast<std::uint16_t>(batch.packets.size()));
-    put_be64(out, batch.sequence);
+    Bytes out(size);
+    std::size_t offset = 0;
+    write_be32(out, offset, kMagic);
+    out[offset++] = kVersion;
+    out[offset++] = batch.flags;
+    write_be16(out, offset, static_cast<std::uint16_t>(batch.packets.size()));
+    write_be64(out, offset, batch.sequence);
     for (const auto& packet : batch.packets) {
-        put_be16(out, static_cast<std::uint16_t>(packet.size()));
-        out.insert(out.end(), packet.begin(), packet.end());
+        write_be16(out, offset, static_cast<std::uint16_t>(packet.size()));
+        std::copy(packet.begin(), packet.end(),
+                  out.begin() + static_cast<std::ptrdiff_t>(offset));
+        offset += packet.size();
     }
     return out;
 }

@@ -656,7 +656,7 @@ void render_score(const Args& args,
                   << "  disk=" << bytes_to_mib(sizing.disk_bytes) << "MiB"
                   << "  sustained=" << (sizing.sustained_ms / 1000) << "s\n";
     }
-    std::cerr << "GLOBAL: shared Android/desktop hot paths; no fixed maximum.\n";
+    std::cerr << "GLOBAL: weighted engine, transport/capacity, and efficiency score; no fixed maximum.\n";
     if (args.dev_style) {
         std::cerr << "DESKTOP: diagnostic profile, 50% engine and 50% YUME transport.\n";
     }

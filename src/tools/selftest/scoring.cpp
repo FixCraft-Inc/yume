@@ -33,7 +33,7 @@ double score_scale(double ratio) {
         return 0.0;
     }
     if (ratio <= 1.0) {
-        return std::pow(ratio, 0.95);
+        return std::pow(ratio, 3.0);
     }
     return std::pow(ratio, 1.15);
 }

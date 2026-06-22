@@ -16,6 +16,7 @@
 #include "core/protocol/packet_bulk.hpp"
 #include "core/runtime/system_profile.hpp"
 #include <basefwx/crypto.hpp>
+#include <basefwx/pq.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -43,6 +44,7 @@ namespace yume::tools::selftest {
 namespace {
 namespace fs = std::filesystem;
 constexpr std::string_view kHkdfInfoPrefix = "yume-hop-v1:";
+constexpr std::string_view kInnerHkdfInfo = "yume-inner-v1";
 constexpr std::string_view kBenchmarkAad = "yume-desktop-selftest";
 constexpr std::string_view kSustainedHkdfInfoPrefix = "yume-sustain:";
 }  // namespace
@@ -586,12 +588,12 @@ HotPathRow run_inner_aead_decrypt(std::uint64_t total_bytes, int thread_count) {
 }
 
 struct InnerBenchContext {
-    yume::inner::Config client;
-    yume::inner::Config server;
-    yume::inner::ClientHandshake light_handshake;
+    std::vector<std::uint8_t> public_key;
+    std::vector<std::uint8_t> private_key;
 };
 
 InnerBenchContext make_inner_bench_context(const fs::path& workdir, const Args& args) {
+    (void)args;
     if (!yume::inner::pq_supported()) {
         throw std::runtime_error("PQ/BaseFWX support is unavailable in this build");
     }
@@ -603,22 +605,16 @@ InnerBenchContext make_inner_bench_context(const fs::path& workdir, const Args& 
     }
 
     InnerBenchContext ctx;
-    ctx.client.enabled = true;
-    ctx.client.pq_public_key = public_key.string();
-    ctx.client.argon2_limits.memory_max = static_cast<std::uint32_t>(std::max(1024, args.argon_mem_kib));
-    ctx.client.argon2_limits.parallelism_max = static_cast<std::uint32_t>(std::max(1, args.argon_parallelism));
-    ctx.server.enabled = true;
-    ctx.server.pq_private_key = private_key.string();
-    ctx.server.argon2_limits.memory_max = ctx.client.argon2_limits.memory_max;
-    ctx.server.argon2_limits.parallelism_max = ctx.client.argon2_limits.parallelism_max;
-    ctx.light_handshake = yume::inner::client_prepare(ctx.client, false);
+    ctx.public_key = read_file(public_key);
+    ctx.private_key = read_file(private_key);
     return ctx;
 }
 
 HotPathRow run_basefwx_pq_client(const InnerBenchContext& ctx, int samples) {
     auto timings = time_samples_ms(samples, [&](int) {
-        auto h = yume::inner::client_prepare(ctx.client, false);
-        if (!h.enabled || h.key.empty()) {
+        auto kem = basefwx::pq::KemEncrypt(ctx.public_key);
+        auto key = basefwx::crypto::HkdfSha256(kem.shared, kInnerHkdfInfo, 32);
+        if (kem.ciphertext.empty() || key.empty()) {
             throw std::runtime_error("PQ client produced no key");
         }
     });
@@ -626,13 +622,22 @@ HotPathRow run_basefwx_pq_client(const InnerBenchContext& ctx, int samples) {
 }
 
 HotPathRow run_basefwx_pq_server(const InnerBenchContext& ctx, int samples) {
-    auto timings = time_samples_ms(samples, [&](int) {
-        auto derived = yume::inner::server_derive_key(ctx.server,
-                                                      ctx.light_handshake.pq_ciphertext,
-                                                      ctx.light_handshake.salt,
-                                                      false,
-                                                      std::nullopt);
-        if (!derived.has_value() || derived->key != ctx.light_handshake.key) {
+    const int count = std::max(1, samples);
+    std::vector<std::vector<std::uint8_t>> ciphertexts;
+    std::vector<std::vector<std::uint8_t>> expected_keys;
+    ciphertexts.reserve(static_cast<std::size_t>(count));
+    expected_keys.reserve(static_cast<std::size_t>(count));
+    for (int i = 0; i < count; ++i) {
+        auto kem = basefwx::pq::KemEncrypt(ctx.public_key);
+        expected_keys.push_back(basefwx::crypto::HkdfSha256(kem.shared, kInnerHkdfInfo, 32));
+        ciphertexts.push_back(std::move(kem.ciphertext));
+    }
+
+    auto timings = time_samples_ms(count, [&](int i) {
+        basefwx::crypto::SecureBytes shared{
+            basefwx::pq::KemDecrypt(ctx.private_key, ciphertexts[static_cast<std::size_t>(i)])};
+        auto derived = basefwx::crypto::HkdfSha256(shared.bytes(), kInnerHkdfInfo, 32);
+        if (derived != expected_keys[static_cast<std::size_t>(i)]) {
             throw std::runtime_error("PQ server derived the wrong key");
         }
     });

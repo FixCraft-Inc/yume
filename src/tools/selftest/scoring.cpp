@@ -239,7 +239,7 @@ struct GradeCutoff {
 };
 
 constexpr GradeCutoff kGradeCutoffs[] = {
-    {50000000, 25000000, "SSS+"},
+    {40000000, 25000000, "SSS+"},
     {35000000, 18000000, "SSS"},
     {24000000, 12000000, "SSS-"},
     {17000000, 8500000, "SS+"},

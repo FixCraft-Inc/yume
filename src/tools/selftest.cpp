@@ -610,7 +610,7 @@ void render_score(const Args& args,
         const std::string grade = score_grade(global_score.total, ScoreTrack::Global);
         std::cerr << "GLOBAL  " << format_integer(global_score.total)
                   << "  " << color_grade(args, grade, global_score.total);
-        if (static_cast<double>(global_score.total) >= kBenchmarkReferenceScore) {
+        if (global_score.total >= kBenchmarkAboveReferenceScore) {
             std::cerr << " (above reference)";
         }
         if (args.dev_style) {

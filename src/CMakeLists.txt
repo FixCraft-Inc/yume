@@ -428,6 +428,7 @@ add_library(yume_transport_core
     client/transport/write.cpp
     client/transport/dispatch.cpp
     client/transport/crypto.cpp
+    core/runtime/system_profile.cpp
     core/security/inner_crypto.cpp
     core/protocol/packet_bulk.cpp
     core/protocol/protocol.cpp

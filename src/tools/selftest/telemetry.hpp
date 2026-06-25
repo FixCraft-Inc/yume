@@ -22,6 +22,19 @@ struct SystemLoadSample {
     double temperature_c{-1.0};
 };
 
+// Utilization summary used by the fair "did the machine have headroom to spare"
+// scoring component. Under a YUME-bound workload, throughput saturates on the
+// engine's own code, so the honest signal of hardware superiority is how much
+// CPU/RAM/thermal headroom the machine retained at peak load.
+struct LoadProfile {
+    bool available{false};
+    Stats cpu_percent;        // utilization while the benchmark ran
+    Stats memory_percent;
+    Stats temperature_c;
+    double avg_headroom{0.0};        // headroom averaged over the whole run
+    double peak_load_headroom{0.0};  // headroom retained at peak (p95) load
+};
+
 class SystemLoadSampler {
 public:
     SystemLoadSampler() = default;
@@ -33,6 +46,9 @@ public:
     void start();
     HotPathRow stop();
 
+    // Valid after stop(); summarizes the samples gathered during the run.
+    const LoadProfile& profile() const { return profile_; }
+
 private:
     void loop();
 
@@ -42,6 +58,7 @@ private:
     std::thread thread_;
     std::mutex samples_mutex_;
     std::vector<SystemLoadSample> samples_;
+    LoadProfile profile_;
 };
 
 }  // namespace yume::tools::selftest

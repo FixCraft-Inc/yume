@@ -183,7 +183,9 @@ BenchmarkScore compute_hot_path_score(const Args& args,
         {"basefwx-argon2", 750.0, 900000.0},
         {"disk-write", 3500.0, 100000.0},
         {"sustained-mix", 14000.0, 4300000.0},
-        {"system-load", 50.0, 400000.0, false},
+        // Note: the system-load row is no longer scored here. CPU/RAM headroom
+        // is now a first-class global component (compute_utilization_score) so
+        // it is not double-counted inside the engine score.
     };
     std::vector<std::string> missing;
     for (const auto& ref : refs) {
@@ -269,10 +271,41 @@ BenchmarkScore compute_system_capacity_score(const Args& args) {
     return score;
 }
 
+BenchmarkScore compute_utilization_score(const Args& args, const LoadProfile& load) {
+    BenchmarkScore score;
+    if (!args.full_benchmark) {
+        return score;
+    }
+    if (!load.available) {
+        score.unavailable_reason = "system load telemetry unavailable";
+        return score;
+    }
+    // Reward headroom retained at peak load: a machine the benchmark could not
+    // saturate has real capacity the YUME-bound workload never reached. 50%
+    // peak-load headroom matches the reference; more exceeds it.
+    score.components.push_back({
+        "peak-load-headroom",
+        load.peak_load_headroom,
+        "%",
+        scaled_metric_points(load.peak_load_headroom, 50.0, 7000000.0),
+        7000000.0,
+    });
+    score.components.push_back({
+        "sustained-headroom",
+        load.avg_headroom,
+        "%",
+        scaled_metric_points(load.avg_headroom, 60.0, 3000000.0),
+        3000000.0,
+    });
+    finalize_score(score);
+    return score;
+}
+
 BenchmarkScore compute_global_score(const Args& args,
                                     const BenchmarkScore& engine_score,
                                     const BenchmarkScore& transport_score,
                                     const BenchmarkScore& capacity_score,
+                                    const BenchmarkScore& utilization_score,
                                     double elapsed_seconds) {
     BenchmarkScore score;
     if (!args.full_benchmark) {
@@ -282,27 +315,40 @@ BenchmarkScore compute_global_score(const Args& args,
         score.unavailable_reason = "global score requires engine, YUME transport, and system capacity scores";
         return score;
     }
+    // YUME's own code caps throughput, so engine/transport barely separate a
+    // monster from a laptop. Weight the hardware-truth signals - raw capacity
+    // and headroom retained under load - above the YUME-bound throughput, and
+    // let the grade fall out of the data (no per-machine cutoff maps).
     score.components.push_back({
         "engine-hot-paths",
         static_cast<double>(engine_score.total),
         "score",
-        static_cast<double>(engine_score.total) * 0.25,
-        kBenchmarkReferenceScore * 0.25,
+        static_cast<double>(engine_score.total) * 0.15,
+        kBenchmarkReferenceScore * 0.15,
     });
     score.components.push_back({
         "yume-transport",
         static_cast<double>(transport_score.total),
         "score",
-        static_cast<double>(transport_score.total) * 0.25,
-        kBenchmarkReferenceScore * 0.25,
+        static_cast<double>(transport_score.total) * 0.15,
+        kBenchmarkReferenceScore * 0.15,
     });
     score.components.push_back({
         "system-capacity",
         static_cast<double>(capacity_score.total),
         "score",
-        static_cast<double>(capacity_score.total) * 0.45,
-        kBenchmarkReferenceScore * 0.45,
+        static_cast<double>(capacity_score.total) * 0.35,
+        kBenchmarkReferenceScore * 0.35,
     });
+    if (utilization_score.available) {
+        score.components.push_back({
+            "utilization-headroom",
+            static_cast<double>(utilization_score.total),
+            "score",
+            static_cast<double>(utilization_score.total) * 0.30,
+            kBenchmarkReferenceScore * 0.30,
+        });
+    }
     if (elapsed_seconds > 0.0) {
         const double reference_seconds = std::max(60.0, static_cast<double>(args.target_duration_sec) * 1.35);
         score.components.push_back({
@@ -317,44 +363,74 @@ BenchmarkScore compute_global_score(const Args& args,
     return score;
 }
 struct GradeCutoff {
-    long long global;
     long long league;
     std::string_view grade;
 };
 
+// Desktop-league cutoffs are a separate diagnostic track and stay a fixed
+// table. The GLOBAL track derives its bands from the reference score instead
+// (see global_grade_threshold) so they are never hand-fit to a specific machine.
 constexpr GradeCutoff kGradeCutoffs[] = {
-    {6800000, 25000000, "SSS+"},
-    {6200000, 18000000, "SSS"},
-    {5600000, 12000000, "SSS-"},
-    {5000000, 8500000, "SS+"},
-    {4400000, 6000000, "SS"},
-    {3900000, 4200000, "SS-"},
-    {3500000, 3000000, "S+"},
-    {3100000, 2200000, "S"},
-    {2800000, 1600000, "S-"},
-    {2650000, 1150000, "AAA+"},
-    {2550000, 850000, "AAA"},
-    {2500000, 620000, "AAA-"},
-    {2450000, 450000, "A+"},
-    {2100000, 320000, "A"},
-    {1750000, 230000, "A-"},
-    {1350000, 165000, "B+"},
-    {950000, 115000, "B"},
-    {650000, 80000, "B-"},
-    {420000, 55000, "C+"},
-    {270000, 36000, "C"},
-    {170000, 23000, "C-"},
-    {100000, 15000, "D+"},
-    {60000, 9000, "D"},
-    {35000, 5000, "D-"},
-    {18000, 2500, "F+"},
-    {8000, 1000, "F"},
+    {25000000, "SSS+"},
+    {18000000, "SSS"},
+    {12000000, "SSS-"},
+    {8500000, "SS+"},
+    {6000000, "SS"},
+    {4200000, "SS-"},
+    {3000000, "S+"},
+    {2200000, "S"},
+    {1600000, "S-"},
+    {1150000, "AAA+"},
+    {850000, "AAA"},
+    {620000, "AAA-"},
+    {450000, "A+"},
+    {320000, "A"},
+    {230000, "A-"},
+    {165000, "B+"},
+    {115000, "B"},
+    {80000, "B-"},
+    {55000, "C+"},
+    {36000, "C"},
+    {23000, "C-"},
+    {15000, "D+"},
+    {9000, "D"},
+    {5000, "D-"},
+    {2500, "F+"},
+    {1000, "F"},
 };
 
+// GLOBAL grade ladder, highest first. The reference machine - one that matches
+// every reference value, scoring kBenchmarkReferenceScore - is defined to earn
+// kGlobalReferenceGrade; each rung multiplies the threshold by kGlobalGradeRatio.
+// This replaces hand-fit per-machine cutoffs: a machine's grade falls out of
+// how far above or below the reference it scores. Tune these two knobs (anchor
+// grade + ratio) against real hardware, never the individual rungs.
+constexpr std::string_view kGlobalGradeLadder[] = {
+    "SSS+", "SSS", "SSS-", "SS+", "SS", "SS-", "S+", "S", "S-",
+    "AAA+", "AAA", "AAA-", "A+", "A", "A-", "B+", "B", "B-",
+    "C+", "C", "C-", "D+", "D", "D-", "F+", "F",
+};
+constexpr std::size_t kGlobalGradeCount =
+    sizeof(kGlobalGradeLadder) / sizeof(kGlobalGradeLadder[0]);
+constexpr std::size_t kGlobalReferenceGradeIndex = 4;  // reference machine -> "SS"
+constexpr double kGlobalGradeRatio = 1.32;
+
+long long global_grade_threshold(std::size_t index) {
+    const int steps = static_cast<int>(kGlobalReferenceGradeIndex) - static_cast<int>(index);
+    return std::llround(kBenchmarkReferenceScore * std::pow(kGlobalGradeRatio, steps));
+}
+
 std::string score_grade(long long score, ScoreTrack track) {
+    if (track == ScoreTrack::Global) {
+        for (std::size_t i = 0; i < kGlobalGradeCount; ++i) {
+            if (score >= global_grade_threshold(i)) {
+                return std::string(kGlobalGradeLadder[i]);
+            }
+        }
+        return "F-";
+    }
     for (const auto& cutoff : kGradeCutoffs) {
-        const long long threshold = track == ScoreTrack::DesktopLeague ? cutoff.league : cutoff.global;
-        if (score >= threshold) {
+        if (score >= cutoff.league) {
             return std::string(cutoff.grade);
         }
     }

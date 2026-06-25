@@ -16,15 +16,18 @@
 
 #include "tools/selftest/hotpath.hpp"
 #include "tools/selftest/runtime.hpp"
+#include "tools/selftest/telemetry.hpp"
 
 namespace yume::tools::selftest {
 
-inline constexpr std::string_view kGlobalScoreModel = "yume-global-v3";
+inline constexpr std::string_view kGlobalScoreModel = "yume-global-v4";
 inline constexpr std::string_view kDesktopScoreModel = "yume-desktop-v2";
 inline constexpr std::string_view kEngineScoreModel = "yume-engine-v2";
 inline constexpr std::string_view kTransportScoreModel = "yume-transport-v2";
+// A machine that matches every reference value scores this; it is the
+// definition of "reference", so the "(above reference)" badge fires at or
+// above it (not below).
 inline constexpr double kBenchmarkReferenceScore = 10000000.0;
-inline constexpr long long kBenchmarkAboveReferenceScore = 7000000;
 // Global scoring is a reference benchmark, not a device class lookup. Keep
 // references stable and component-based; do not special-case phones, CPUs,
 // vendors, or individual machines when recalibrating the model.
@@ -60,10 +63,12 @@ BenchmarkScore compute_hot_path_score(const Args& args,
                                       const std::vector<HotPathRow>& rows,
                                       bool global);
 BenchmarkScore compute_system_capacity_score(const Args& args);
+BenchmarkScore compute_utilization_score(const Args& args, const LoadProfile& load);
 BenchmarkScore compute_global_score(const Args& args,
                                     const BenchmarkScore& engine_score,
                                     const BenchmarkScore& transport_score,
                                     const BenchmarkScore& capacity_score,
+                                    const BenchmarkScore& utilization_score,
                                     double elapsed_seconds);
 BenchmarkScore compute_desktop_league_score(const Args& args,
                                             const BenchmarkScore& engine_score,

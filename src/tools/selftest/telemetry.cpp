@@ -155,6 +155,22 @@ double load_headroom_percent(const Stats& cpu, const Stats& memory, const Stats&
            (temp_headroom * 0.10);
 }
 
+// Headroom retained at peak load. The benchmark can only load CPU/RAM fully in
+// its heaviest phases, so the fair discriminator is how much the machine had
+// left when it was busiest, not the whole-run average (which is diluted by idle
+// setup). p95 is used as the sustained peak so a single transient spike does not
+// dominate; memory and thermal headroom are folded in at lower weight.
+double peak_load_headroom_percent(const Stats& cpu, const Stats& memory, const Stats& temp) {
+    const double cpu_peak = cpu.n > 0 ? std::max(cpu.p95, cpu.mean) : 0.0;
+    const double cpu_peak_headroom = cpu.n > 0 ? std::clamp(100.0 - cpu_peak, 0.0, 100.0) : 0.0;
+    const double mem_peak = memory.n > 0 ? std::max(memory.p95, memory.mean) : 0.0;
+    const double mem_peak_headroom = memory.n > 0 ? std::clamp(100.0 - mem_peak, 0.0, 100.0) : 50.0;
+    const double temp_headroom = temp.n > 0 ? std::clamp(((90.0 - temp.max) / 60.0) * 100.0, 0.0, 100.0) : 50.0;
+    return (cpu_peak_headroom * 0.70) +
+           (mem_peak_headroom * 0.20) +
+           (temp_headroom * 0.10);
+}
+
 }  // namespace
 
 SystemLoadSampler::~SystemLoadSampler() {
@@ -194,6 +210,16 @@ HotPathRow SystemLoadSampler::stop() {
     const double seconds = elapsed_s(started_at_, Clock::now());
 
     const double headroom = load_headroom_percent(cpu, memory, temp);
+    const double peak_headroom = peak_load_headroom_percent(cpu, memory, temp);
+
+    profile_ = LoadProfile{
+        cpu.n > 0,
+        cpu,
+        memory,
+        temp,
+        headroom,
+        peak_headroom,
+    };
 
     std::ostringstream metric;
     metric << std::fixed << std::setprecision(1) << headroom << "% headroom";
@@ -205,6 +231,7 @@ HotPathRow SystemLoadSampler::stop() {
     append_stat(detail, "mem_used", memory, "%");
     detail << " ";
     append_stat(detail, "temp_c", temp, "C");
+    detail << " peak_headroom=" << std::fixed << std::setprecision(1) << peak_headroom << "%";
 
     return {
         "system-load",

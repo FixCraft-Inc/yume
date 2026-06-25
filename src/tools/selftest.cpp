@@ -610,7 +610,7 @@ void render_score(const Args& args,
         const std::string grade = score_grade(global_score.total, ScoreTrack::Global);
         std::cerr << "GLOBAL  " << format_integer(global_score.total)
                   << "  " << color_grade(args, grade, global_score.total);
-        if (global_score.total >= kBenchmarkAboveReferenceScore) {
+        if (static_cast<double>(global_score.total) >= kBenchmarkReferenceScore) {
             std::cerr << " (above reference)";
         }
         if (args.dev_style) {
@@ -656,7 +656,7 @@ void render_score(const Args& args,
                   << "  disk=" << bytes_to_mib(sizing.disk_bytes) << "MiB"
                   << "  sustained=" << (sizing.sustained_ms / 1000) << "s\n";
     }
-    std::cerr << "GLOBAL: weighted engine, transport/capacity, and efficiency score; no fixed maximum.\n";
+    std::cerr << "GLOBAL: weighted engine, transport, capacity, and load-headroom score; no fixed maximum.\n";
     if (args.dev_style) {
         std::cerr << "DESKTOP: diagnostic profile, 50% engine and 50% YUME transport.\n";
     }
@@ -914,8 +914,10 @@ int run_cli(int argc, char** argv) {
             tmp->path(),
             progress_completed,
             progress_total);
+        LoadProfile load_profile;
         if (args.full_benchmark) {
             hot_paths.push_back(load_sampler.stop());
+            load_profile = load_sampler.profile();
         }
 
         finish_progress_line();
@@ -925,11 +927,13 @@ int run_cli(int argc, char** argv) {
         const BenchmarkScore transport_score = compute_score(args, results);
         const BenchmarkScore global_transport_score = compute_transport_score(args, results, true);
         const BenchmarkScore capacity_score = compute_system_capacity_score(args);
+        const BenchmarkScore utilization_score = compute_utilization_score(args, load_profile);
         const BenchmarkScore global_score = compute_global_score(
             args,
             global_engine_score,
             global_transport_score,
             capacity_score,
+            utilization_score,
             benchmark_elapsed_seconds);
         const BenchmarkScore league_score = compute_desktop_league_score(
             args,

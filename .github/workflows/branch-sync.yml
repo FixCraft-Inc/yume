@@ -33,24 +33,26 @@ jobs:
             exit 0
           fi
           target_branch="DEV"
-
           exclude_file=".branch-sync-exclude"
-          if [[ ! -f "${exclude_file}" ]]; then
-            : > "${exclude_file}"
-          fi
 
           git fetch --no-tags origin main DEV
           work_branch="branch-sync-${source_branch}-to-${target_branch}-${GITHUB_RUN_ID}"
           git checkout -B "${work_branch}" "origin/${target_branch}"
 
-          # Start from source snapshot.
-          git checkout "origin/${source_branch}" -- .
-
           mapfile -t exclude_patterns < <(
-            sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "${exclude_file}" \
+            git show "origin/${target_branch}:${exclude_file}" 2>/dev/null \
+              | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
               | grep -v '^$' \
               | grep -v '^#' || true
           )
+          exclude_patterns+=("${exclude_file}")
+
+          # Start from source snapshot.
+          git checkout "origin/${source_branch}" -- .
+
+          if ! git cat-file -e "origin/${source_branch}:${exclude_file}" 2>/dev/null; then
+            git checkout "origin/${target_branch}" -- "${exclude_file}" 2>/dev/null || true
+          fi
 
           matches_exclude() {
             local path="$1"

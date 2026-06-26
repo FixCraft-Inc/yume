@@ -31,7 +31,8 @@ env:
   OPENWRT_SDK_VERSION: "24.10.0"
   OPENWRT_SDK_TARGET: "ath79-nand"
   BASEFWX_REPO: "https://github.com/F1xGOD/basefwx.git"
-  BASEFWX_REF_FILE: ".basefwx-ref"
+  BASEFWX_REF_FILE: "config/refs/basefwx.ref"
+  YUME_VENDOR_ARCHIVE: "third_party/prebuilt/yume-vendor-prebuilt.tar.xz"
 
 jobs:
   preflight:
@@ -206,8 +207,8 @@ jobs:
 
       - name: Extract prebuilt vendor libs
         run: |
-          if [[ -f yume-vendor-prebuilt.tar.xz ]]; then
-            tar -xJf yume-vendor-prebuilt.tar.xz
+          if [[ -f "${YUME_VENDOR_ARCHIVE}" ]]; then
+            tar -xJf "${YUME_VENDOR_ARCHIVE}"
           fi
 
       - name: Provision libargon2 for every reachable target
@@ -685,8 +686,8 @@ jobs:
 
       - name: Extract prebuilt vendor libs
         run: |
-          if [[ -f yume-vendor-prebuilt.tar.xz ]]; then
-            tar -xJf yume-vendor-prebuilt.tar.xz
+          if [[ -f "${YUME_VENDOR_ARCHIVE}" ]]; then
+            tar -xJf "${YUME_VENDOR_ARCHIVE}"
           fi
 
       - name: Build CLI (${{ matrix.yume_target }})

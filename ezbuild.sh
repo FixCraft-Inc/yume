@@ -38,7 +38,7 @@ VCPKG_ROOT="${VCPKG_ROOT:-}"
 VCPKG_PREFIX=""
 BASEFWX_REPO="${BASEFWX_REPO:-https://github.com/F1xGOD/basefwx.git}"
 BASEFWX_REF="${BASEFWX_REF:-${YUME_BASEFWX_REF:-}}"
-BASEFWX_REF_FILE="${BASEFWX_REF_FILE:-${PWD}/.basefwx-ref}"
+BASEFWX_REF_FILE="${BASEFWX_REF_FILE:-${PWD}/config/refs/basefwx.ref}"
 YUME_REQUIRE_ARGON2="${YUME_REQUIRE_ARGON2:-0}"
 YUME_REQUIRE_OQS="${YUME_REQUIRE_OQS:-0}"
 
@@ -234,7 +234,7 @@ YUME_VENDOR_UNPACK_MARKER=".ezbuild-vendor-unpacked"
 # Where the prebuilt tarball lives. The same archive ships every
 # vendored target (linux-x86_64, macos-arm64, …), so a single tarball
 # covers Linux/macOS native and the WINDOWS_CROSS path.
-YUME_VENDOR_ARCHIVE_DEFAULT="${PWD}/yume-vendor-prebuilt.tar.xz"
+YUME_VENDOR_ARCHIVE_DEFAULT="${PWD}/third_party/prebuilt/yume-vendor-prebuilt.tar.xz"
 
 # Extracts yume-vendor-prebuilt.tar.xz into ./vendor/ on demand and
 # remembers (in the marker file) exactly which top-level entries we

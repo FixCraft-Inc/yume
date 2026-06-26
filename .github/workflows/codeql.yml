@@ -16,7 +16,8 @@ permissions:
 
 env:
   BASEFWX_REPO: "https://github.com/F1xGOD/basefwx.git"
-  BASEFWX_REF_FILE: ".basefwx-ref"
+  BASEFWX_REF_FILE: "config/refs/basefwx.ref"
+  YUME_VENDOR_ARCHIVE: "third_party/prebuilt/yume-vendor-prebuilt.tar.xz"
 
 jobs:
   analyze:
@@ -71,13 +72,9 @@ jobs:
       - name: Extract prebuilt vendor libs
         if: matrix.language == 'c-cpp'
         run: |
-          if [[ -f yume-vendor-prebuilt.tar.xz ]]; then
-            tar -xJf yume-vendor-prebuilt.tar.xz
+          if [[ -f "${YUME_VENDOR_ARCHIVE}" ]]; then
+            tar -xJf "${YUME_VENDOR_ARCHIVE}"
           fi
-
-      - name: Build C++ for analysis
-        if: matrix.language == 'c-cpp'
-        run: |
           test -d vendor/linux-x86_64
           cmake -S . -B build-codeql \
             -DCMAKE_BUILD_TYPE=Release \

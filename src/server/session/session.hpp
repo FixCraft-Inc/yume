@@ -19,6 +19,7 @@
 #include <boost/asio/ssl.hpp>
 
 #include "core/protocol/control_protocol.hpp"
+#include "core/app_codec/codec.hpp"
 #include "core/security/crypto.hpp"
 #include "core/stealth/obfs_h2.hpp"
 #include "core/protocol/protocol.hpp"
@@ -107,6 +108,16 @@ private:
     bool handle_bench_close(uint8_t stream_id, const std::string& reason);
     void pump_bench_source(uint8_t stream_id);
     void maybe_finish_bench_source(uint8_t stream_id);
+    bool handle_codec_open(uint8_t stream_id, const nlohmann::json& json);
+    bool handle_codec_data(uint8_t stream_id, const crypto::Bytes& payload);
+    bool handle_codec_close(uint8_t stream_id, const std::string& reason);
+    void send_codec_error(uint8_t stream_id, int http_status, const std::string& message);
+    void start_codec_backend(uint8_t stream_id, const crypto::Bytes& payload);
+    void on_codec_backend_connect(uint8_t stream_id, const boost::system::error_code& ec);
+    void on_codec_backend_write(uint8_t stream_id, const boost::system::error_code& ec, std::size_t bytes);
+    void on_codec_backend_headers(uint8_t stream_id, const boost::system::error_code& ec, std::size_t bytes);
+    void on_codec_backend_body(uint8_t stream_id, const boost::system::error_code& ec, std::size_t bytes);
+    void arm_codec_timer(uint8_t stream_id, std::chrono::milliseconds timeout, std::string reason);
     void handle_close(uint8_t stream_id, const std::string& reason);
     void handle_stream_fin(uint8_t stream_id, const std::string& reason);
     std::string decode_close_reason(const protocol::Frame& frame, bool* ok);
@@ -275,6 +286,31 @@ private:
             , resolver(exec) {}
     };
 
+    struct CodecStream {
+        boost::asio::ip::tcp::socket socket;
+        boost::asio::steady_timer timer;
+        boost::asio::streambuf response_buf;
+        std::string codec_id;
+        std::vector<uint8_t> request_bytes;
+        std::vector<uint8_t> response_body;
+        std::string backend_host;
+        int backend_port{0};
+        int64_t open_started_ms{0};
+        int64_t request_started_ms{0};
+        std::uint64_t upstream_bytes{0};
+        std::uint64_t downstream_bytes{0};
+        int response_status{0};
+        bool response_sent{false};
+        bool close_summary_logged{false};
+
+        explicit CodecStream(boost::asio::any_io_executor exec)
+            : socket(exec)
+            , timer(exec)
+            , response_buf(app_codec::kMaxHttpHeaderBytes + 1) {}
+    };
+
+    std::shared_ptr<CodecStream> find_codec_stream(uint8_t stream_id);
+
     struct PacketStream {
         uint8_t stream_id{0};
         std::uint32_t client_ipv4_be{0};
@@ -295,6 +331,7 @@ private:
 
     std::unordered_map<uint8_t, std::shared_ptr<RemoteStream>> streams_;
     std::unordered_map<uint8_t, std::shared_ptr<UdpStream>> udp_streams_;
+    std::unordered_map<uint8_t, std::shared_ptr<CodecStream>> codec_streams_;
     std::optional<PacketStream> packet_stream_;
     struct BenchStream {
         enum class Mode {
@@ -356,6 +393,8 @@ private:
     bool session_allow_exec_policy_{false};
     bool session_allow_local_ip_{false};
     bool session_control_full_{false};
+    std::unordered_set<std::string> session_allowed_codecs_;
+    bool session_allow_monero_rpc_policy_{false};
     bool session_allow_inbound_admin_policy_{false};
     bool session_allow_outbound_admin_policy_{false};
     bool session_allow_chat_policy_{true};

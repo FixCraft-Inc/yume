@@ -37,6 +37,8 @@ Session::Session(boost::asio::ip::tcp::socket socket,
     session_allow_exec_policy_ = false;
     session_allow_local_ip_ = false;
     session_control_full_ = false;
+    session_allowed_codecs_.clear();
+    session_allow_monero_rpc_policy_ = false;
 }
 
 void Session::start() {
@@ -141,6 +143,12 @@ void Session::on_handshake(const boost::system::error_code& ec) {
     }
     boost::system::error_code nodelay_ec;
     stream_.lowest_layer().set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
+    if (cfg_.obfuscation) {
+        const std::string negotiated = obfs::selected_alpn(stream_.native_handle());
+        util::log_info("session " + std::to_string(session_id_) +
+                       ": TLS ALPN selected: " +
+                       (negotiated.empty() ? std::string("(none)") : negotiated));
+    }
 
     // Preface inspection lets us serve an HTTP disguise (real cover
     // page with --real, or profile-driven 404 otherwise) instead of
@@ -526,6 +534,9 @@ void Session::handle_data(const protocol::Frame& frame) {
     if (handle_bench_data(frame.header.stream_id, *payload)) {
         return;
     }
+    if (handle_codec_data(frame.header.stream_id, *payload)) {
+        return;
+    }
     auto it_udp = udp_streams_.find(frame.header.stream_id);
     if (it_udp != udp_streams_.end()) {
         enqueue_udp_write(frame.header.stream_id, *payload);
@@ -622,6 +633,9 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
         return;
     }
     if (handle_bench_close(stream_id, reason)) {
+        return;
+    }
+    if (handle_codec_close(stream_id, reason)) {
         return;
     }
     {

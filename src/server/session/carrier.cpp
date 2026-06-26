@@ -142,6 +142,11 @@ void Session::on_preface_timeout(const boost::system::error_code& ec) {
 }
 bool Session::handle_http_preface(const std::string& preface) {
     if (cfg_.obfuscation && preface.rfind("PRI * HT", 0) == 0) {
+        const std::string negotiated = obfs::selected_alpn(stream_.native_handle());
+        if (negotiated != "h2") {
+            close_with_reason("h2 carrier preface received without ALPN h2");
+            return true;
+        }
         start_h2_carrier_probe();
         return true;
     }

@@ -20,6 +20,7 @@
 #include "core/stealth/obfs_h2.hpp"
 #include "core/stealth/obfs_signal.hpp"
 #include "core/protocol/protocol_stream.hpp"
+#include "util.hpp"
 
 namespace yume::client {
 namespace {
@@ -248,6 +249,18 @@ void send_auth_response(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& 
 
     protocol::Frame response{{static_cast<uint32_t>(payload.size()), protocol::AUTH, 0, 0}, payload};
     protocol::send_frame(stream, response);
+}
+
+void require_h2_carrier_alpn(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+                             const std::string& server_host,
+                             int server_port) {
+    const std::string negotiated = obfs::selected_alpn(stream.native_handle());
+    const std::string label = negotiated.empty() ? std::string("(none)") : negotiated;
+    util::log_info("TLS ALPN selected: " + label);
+    if (negotiated != "h2") {
+        throw FatalError("HTTPS h2 carrier requires TLS ALPN h2; negotiated " + label +
+                         " with " + server_host + ":" + std::to_string(server_port));
+    }
 }
 
 void perform_h2_carrier_handshake(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,

@@ -18,6 +18,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "core/app_codec/codec.hpp"
+
 namespace yume::server {
 
 namespace {
@@ -63,12 +65,49 @@ std::optional<std::uint32_t> read_policy_uint(const nlohmann::json& entry,
     return std::nullopt;
 }
 
+void read_policy_codecs(const nlohmann::json& entry, std::vector<std::string>* out) {
+    if (!out) {
+        return;
+    }
+    auto read_array = [&](const nlohmann::json& value) {
+        if (!value.is_array()) {
+            return;
+        }
+        for (const auto& item : value) {
+            if (!item.is_string()) {
+                continue;
+            }
+            const std::string codec = app_codec::canonical_codec_id(item.get<std::string>());
+            if (app_codec::is_supported_codec(codec)) {
+                app_codec::add_codec_unique(out, codec);
+            }
+        }
+    };
+    if (entry.contains("permissions") && entry["permissions"].is_object()) {
+        const auto& permissions = entry["permissions"];
+        if (permissions.contains("allow_codecs")) {
+            read_array(permissions["allow_codecs"]);
+        }
+        if (permissions.contains("codec_allow")) {
+            read_array(permissions["codec_allow"]);
+        }
+    }
+    if (entry.contains("allow_codecs")) {
+        read_array(entry["allow_codecs"]);
+    }
+    if (entry.contains("codec_allow")) {
+        read_array(entry["codec_allow"]);
+    }
+}
+
 }  // namespace
 
 bool AuthKeyPolicy::empty() const {
     return !allow_exec.has_value() &&
            !allow_local_ip.has_value() &&
            !control_full.has_value() &&
+           !allow_monero_rpc.has_value() &&
+           allowed_codecs.empty() &&
            !allow_inbound_admin.has_value() &&
            !allow_outbound_admin.has_value() &&
            !allow_chat.has_value() &&
@@ -137,6 +176,11 @@ AuthKeyPolicyMap load_auth_policies(const std::string& meta_path) {
         policy.allow_exec = read_policy_bool(it.value(), "allow_exec");
         policy.allow_local_ip = read_policy_bool(it.value(), "allow_local_ip");
         policy.control_full = read_policy_bool(it.value(), "control_full");
+        policy.allow_monero_rpc = read_policy_bool(it.value(), "allow_monero_rpc");
+        read_policy_codecs(it.value(), &policy.allowed_codecs);
+        if (policy.allow_monero_rpc.value_or(false)) {
+            app_codec::add_codec_unique(&policy.allowed_codecs, app_codec::kMoneroRpcCodecId);
+        }
         policy.allow_inbound_admin = read_policy_bool(it.value(), "allow_inbound_admin");
         policy.allow_outbound_admin = read_policy_bool(it.value(), "allow_outbound_admin");
         policy.allow_chat = read_policy_bool(it.value(), "allow_chat");
@@ -223,6 +267,17 @@ std::string summarize_auth_policy(const AuthKeyPolicy& policy) {
     append("allow_exec", policy.allow_exec);
     append("allow_local_ip", policy.allow_local_ip);
     append("control_full", policy.control_full);
+    append("allow_monero_rpc", policy.allow_monero_rpc);
+    if (!policy.allowed_codecs.empty()) {
+        std::ostringstream joined;
+        for (std::size_t i = 0; i < policy.allowed_codecs.size(); ++i) {
+            if (i > 0) {
+                joined << ',';
+            }
+            joined << policy.allowed_codecs[i];
+        }
+        parts.emplace_back("allow_codecs=" + joined.str());
+    }
     append("allow_inbound_admin", policy.allow_inbound_admin);
     append("allow_outbound_admin", policy.allow_outbound_admin);
     append("allow_chat", policy.allow_chat);

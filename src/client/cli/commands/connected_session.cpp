@@ -14,6 +14,7 @@
 #include "client/cli/config/platform.hpp"
 #include "client/cli/connect/diagnostics.hpp"
 #include "client/cli/connect/secondary_tunnel.hpp"
+#include "client/codec/monero_rpc.hpp"
 #include "client/proxy/forward.hpp"
 #include "client/proxy/socks.hpp"
 #include "client/relay/runtime.hpp"
@@ -293,6 +294,7 @@ bool should_open_secondary_socks_tunnels(const ClientConfig& cfg,
            args.rport <= 0 &&
            !use_reverse &&
            !args.directory_mode &&
+           cfg.app_codec.empty() &&
            args.chat_target.empty() &&
            args.file_target.empty() &&
            args.bytes_target.empty() &&
@@ -658,6 +660,25 @@ int run_socks_mode(const ClientConfig& cfg,
     return wait_for_long_running_mode(io_threads, stop_requested, announce_stopping, close_reason);
 }
 
+int run_app_codec_mode(const ClientConfig& cfg,
+                       boost::asio::io_context& io,
+                       const std::shared_ptr<Tunnel>& tunnel,
+                       IoThreadGroup& io_threads,
+                       std::atomic<bool>& stop_requested,
+                       const std::function<void()>& announce_stopping,
+                       const std::string& close_reason) {
+    if (cfg.app_codec != std::string(app_codec::kMoneroRpcCodecId)) {
+        util::log_error("unsupported application codec: " + cfg.app_codec);
+        return 1;
+    }
+    app_codec::Endpoint listen{cfg.app_codec_listen_host, cfg.app_codec_listen_port};
+    auto server = std::make_shared<codec::MoneroRpcCodecServer>(io, listen, tunnel);
+    server->start();
+    util::log_info("Monero wallets can use --daemon-address " +
+                   listen.host + ":" + std::to_string(listen.port));
+    return wait_for_long_running_mode(io_threads, stop_requested, announce_stopping, close_reason);
+}
+
 }  // namespace
 
 int run_connected_session(boost::asio::io_context& io,
@@ -876,6 +897,11 @@ int run_connected_session(boost::asio::io_context& io,
     if (args.lport > 0 || !args.rhost.empty() || args.rport > 0) {
         return run_local_forward_mode(
             args, cfg, io, tunnel, io_threads, stop_requested, options.announce_stopping, close_reason);
+    }
+
+    if (!cfg.app_codec.empty()) {
+        return run_app_codec_mode(
+            cfg, io, tunnel, io_threads, stop_requested, options.announce_stopping, close_reason);
     }
 
     if (cfg.socks_port > 0) {

@@ -22,7 +22,7 @@ struct ServerConfig {
     std::string tls_key;
     std::string auth_keys;
     int threads{0};
-    bool obfuscation{false};
+    bool obfuscation{true};
     bool inner_crypto{true};
     bool inner_heavy{true};
     bool inner_dual{false};
@@ -38,6 +38,12 @@ struct ServerConfig {
     bool allow_exec{false};
     bool allow_local_ip{false};
     bool control_full{false};
+    std::vector<std::string> allowed_codecs;
+    // Compatibility shim for older config/CLI spellings. New code should use
+    // allowed_codecs plus the app-codec registry.
+    bool allow_monero_rpc_codec{false};
+    std::string monero_rpc_backend_host{"127.0.0.1"};
+    int monero_rpc_backend_port{18089};
     bool real_http{false};
     bool robots_deny{false};
     std::string real_index_path;

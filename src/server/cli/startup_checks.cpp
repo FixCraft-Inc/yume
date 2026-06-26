@@ -7,6 +7,7 @@
 #include "server/cli/startup_checks.hpp"
 
 #include "core/stealth/http_profile.hpp"
+#include "core/app_codec/codec.hpp"
 #include "core/protocol/runtime_policy.hpp"
 #include "core/stealth/tls_fingerprint.hpp"
 #include "core/stealth/tls_stealth.hpp"
@@ -121,6 +122,37 @@ bool validate_packet_egress(const yume::server::ServerConfig& cfg) {
                          " cidr=" + cfg.packet_cidr +
                          " mtu=" + std::to_string(cfg.packet_mtu) +
                          ". The TUN address/NAT must be prepared by the operator before startup.");
+    return true;
+}
+
+bool validate_app_codecs(const yume::server::ServerConfig& cfg) {
+    if (cfg.allowed_codecs.empty()) {
+        return true;
+    }
+    for (const auto& codec_id : cfg.allowed_codecs) {
+        auto codec = yume::app_codec::builtin_codec(codec_id);
+        if (!codec.has_value()) {
+            yume::util::log_error("unsupported application codec enabled: " + codec_id);
+            return false;
+        }
+        if (codec->id == std::string(yume::app_codec::kMoneroRpcCodecId)) {
+            if (!yume::app_codec::is_loopback_host_literal(cfg.monero_rpc_backend_host)) {
+                yume::util::log_error("monero-rpc codec backend must be a loopback IP literal, got " +
+                                      cfg.monero_rpc_backend_host);
+                return false;
+            }
+            if (cfg.monero_rpc_backend_port < 1 || cfg.monero_rpc_backend_port > 65535) {
+                yume::util::log_error("monero-rpc codec backend port must be 1..65535");
+                return false;
+            }
+            yume::util::log_info("application codec enabled: " + codec->id + " -> " +
+                                 cfg.monero_rpc_backend_host + ":" +
+                                 std::to_string(cfg.monero_rpc_backend_port) +
+                                 " (per-key " + codec->permission_key + " or allow_codecs is still required)");
+        } else {
+            yume::util::log_info("application codec enabled: " + codec->id);
+        }
+    }
     return true;
 }
 
@@ -290,6 +322,9 @@ bool apply_public_node_defaults(yume::server::ServerConfig& cfg,
 #endif
 
     std::vector<std::string> violations;
+    if (!cfg.obfuscation) {
+        violations.emplace_back("--no-obfs is forbidden by --public-node (the HTTP/2 carrier must be the outer visible layer)");
+    }
     if (cfg.allow_exec) {
         violations.emplace_back("--allow-exec is forbidden by --public-node (server-side exec on a public node is a remote-shell hole)");
     }
@@ -302,6 +337,9 @@ bool apply_public_node_defaults(yume::server::ServerConfig& cfg,
     if (!cfg.inner_crypto) {
         violations.emplace_back("--no-inner is forbidden by --public-node (inner crypto is the only post-handshake confidentiality; a public node MUST require it)");
     }
+    if (!cfg.inner_required) {
+        violations.emplace_back("--public-node requires --inner-required (clients without inner crypto must be rejected)");
+    }
     if (cfg.auth_keys.empty()) {
         violations.emplace_back("--public-node requires --auth-keys to be set (otherwise the daemon accepts no clients, or worse, accepts everyone if you later loosen this)");
     }
@@ -313,6 +351,7 @@ bool apply_public_node_defaults(yume::server::ServerConfig& cfg,
         return false;
     }
     yume::util::log_info("--public-node active; the following protections are enforced at startup:");
+    yume::util::log_info("  - HTTP/2 carrier obfuscation required (--no-obfs rejected)");
     yume::util::log_info("  - dangerous capability flags (--allow-exec / --allow-local-ip / --control-full) are rejected");
     yume::util::log_info("  - inner crypto required (no plaintext transport)");
     yume::util::log_info("  - --auth-keys required (no anonymous-relay accidents)");
@@ -340,6 +379,9 @@ void log_obfs_tuning(const yume::server::ServerConfig& cfg) {
 }
 
 void log_security_warnings(const yume::server::ServerConfig& cfg) {
+    if (!cfg.obfuscation) {
+        yume::util::log_warn("Security warning: HTTP/2 carrier obfuscation disabled; AUTH starts directly after TLS.");
+    }
     if (!cfg.inner_crypto) {
         if (cfg.boring) {
             yume::util::log_warn("Security warning: BASEFWX / PQ disabled");
@@ -395,6 +437,10 @@ void log_effective_startup_summary(const yume::server::ServerConfig& cfg) {
     yume::util::log_info("effective inner mode: " + effective_inner_mode +
                          "; hopping: " + hop_state +
                          "; required: " + (cfg.inner_required ? "yes" : "no"));
+    yume::util::log_info("effective carrier: " +
+                         std::string(cfg.obfuscation ? "http2-obfs" : "raw-tls") +
+                         "; server disguise: " +
+                         (cfg.http_profile.empty() ? std::string("yumed") : cfg.http_profile));
     if (cfg.benchmark_enable) {
         yume::util::log_info("authenticated benchmark endpoint enabled for yume --bench");
     }
@@ -474,9 +520,10 @@ bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
             "rebuild with that option to enable unrestricted address bridging");
     }
 #endif
-    if ((cfg.allow_exec || cfg.allow_local_ip || cfg.control_full) && cfg.auth_keys_meta.empty()) {
+    if ((cfg.allow_exec || cfg.allow_local_ip || cfg.control_full || !cfg.allowed_codecs.empty()) &&
+        cfg.auth_keys_meta.empty()) {
         yume::util::log_warn(
-            "dangerous server feature enabled but no auth_keys_meta is configured; "
+            "privileged server feature enabled but no auth_keys_meta is configured; "
             "no key will inherit these permissions until you create the meta file and grant per-key access "
             "(see docs/PERMISSIONS.md)");
     }
@@ -493,6 +540,7 @@ bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
     if (!validate_http_profile(cfg) ||
         !validate_filters(cfg) ||
         !validate_packet_egress(cfg) ||
+        !validate_app_codecs(cfg) ||
         !load_upstream_response(cfg) ||
         !validate_upstream_response_dir(cfg)) {
         return false;

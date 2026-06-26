@@ -17,6 +17,8 @@ struct AuthKeyPolicy {
     std::optional<bool> allow_exec;
     std::optional<bool> allow_local_ip;
     std::optional<bool> control_full;
+    std::optional<bool> allow_monero_rpc;
+    std::vector<std::string> allowed_codecs;
     std::optional<bool> allow_inbound_admin;
     std::optional<bool> allow_outbound_admin;
     std::optional<bool> allow_chat;

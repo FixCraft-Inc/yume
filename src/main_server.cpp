@@ -40,8 +40,10 @@
 #include <boost/asio.hpp>
 
 #include "core/protocol/runtime_policy.hpp"
+#include "core/app_codec/codec.hpp"
 #include "server/runtime/manager.hpp"
 #include "server/cli/anonym.hpp"
+#include "server/cli/args.hpp"
 #include "server/cli/cluster.hpp"
 #include "server/cli/config_load.hpp"
 #include "server/cli/key.hpp"
@@ -187,366 +189,14 @@ int main(int argc, char** argv) {
             cli_cwd = cwd.string();
         }
     }
-    auto resolve_cli_path = [&](const std::string& value) {
-        return yume::util::resolve_path(value, cli_cwd, "");
-    };
-    std::string config_path = "config/yumed.json";
-    bool config_specified = false;
-    ServerKeyCommand key_command;
-    bool inner_heavy_override = false;
-    bool inner_heavy_value = true;
-    bool inner_crypto_override = false;
-    bool inner_dual_override = false;
-    bool inner_required_override = false;
-    bool inner_hop_override = false;
-    bool inner_hop_value = true;
-    bool hop_interval_override = false;
-    bool anonym_override = false;
-    bool anonym_proof_mode_override = false;
-    bool pq_auto_generate_override = false;
-    bool allow_embedded_master_override = false;
-    // Track whether operator explicitly set the new hardening knobs so
-    // the --public-node defaults don't overwrite them.
-    bool tls_handshake_timeout_override = false;
-    bool max_sessions_override = false;
-    bool accept_rate_limit_override = false;
-    bool egress_mbps_override = false;
-    bool client_filter_mode_override = false;
-    bool egress_filter_mode_override = false;
-    bool filter_geolite_override = false;
-    bool filter_memory_mib_override = false;
-    bool packet_egress_override = false;
-    bool packet_tun_name_override = false;
-    bool packet_cidr_override = false;
-    bool packet_mtu_override = false;
-    bool relay_enable_override = false;
-    bool directory_enable_override = false;
-    bool attach_local = false;
-    bool keep_root = false;
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        if ((arg == "completion" || arg == "--completion") && i + 1 < argc) {
-            std::string shell = argv[++i];
-            if (shell == "bash") {
-                print_bash_completion();
-                return 0;
-            }
-            yume::util::log_error("unsupported completion shell: " + shell);
-            return 1;
-        }
-        if (arg == "--help" || arg == "-h") {
-            print_help();
-            return 0;
-        }
-        if (arg == "--version") {
-            print_version();
-            return 0;
-        }
-        if (arg == "--credits") {
-            print_credits();
-            return 0;
-        }
-        if (arg == "--config" && i + 1 < argc) {
-            config_path = argv[++i];
-            config_specified = true;
-        } else if (arg == "--listen" && i + 1 < argc) {
-            // Two forms:
-            //   --listen 443           → bind 0.0.0.0:443 (legacy)
-            //   --listen 1.2.3.4:443   → bind specifically to that IP
-            //   --listen [::1]:443     → IPv6 with bracket syntax
-            //   --listen [::]:443      → IPv6 any
-            std::string raw = argv[++i];
-            std::string addr_part;
-            std::string port_part;
-            if (!raw.empty() && raw.front() == '[') {
-                // [addr]:port form
-                auto rbr = raw.find(']');
-                if (rbr == std::string::npos || rbr + 2 > raw.size() || raw[rbr + 1] != ':') {
-                    yume::util::log_error("--listen: bracket form must be [addr]:port");
-                    return 1;
-                }
-                addr_part = raw.substr(1, rbr - 1);
-                port_part = raw.substr(rbr + 2);
-            } else {
-                auto colon = raw.rfind(':');
-                if (colon == std::string::npos) {
-                    // Port-only legacy form
-                    port_part = raw;
-                } else {
-                    addr_part = raw.substr(0, colon);
-                    port_part = raw.substr(colon + 1);
-                }
-            }
-            try {
-                cfg.listen_port = std::stoi(port_part);
-            } catch (const std::exception&) {
-                yume::util::log_error("--listen: cannot parse port '" + port_part + "'");
-                return 1;
-            }
-            if (cfg.listen_port < 1 || cfg.listen_port > 65535) {
-                yume::util::log_error("--listen: port out of range 1..65535: " + port_part);
-                return 1;
-            }
-            cfg.listen_address = addr_part;
-        } else if (arg == "--reverse-port-min" && i + 1 < argc) {
-            cfg.reverse_port_min = std::stoi(argv[++i]);
-        } else if (arg == "--reverse-port-max" && i + 1 < argc) {
-            cfg.reverse_port_max = std::stoi(argv[++i]);
-        } else if (arg == "--dns-server" && i + 1 < argc) {
-            cfg.dns_server = argv[++i];
-        } else if (arg == "--proxy" && i + 1 < argc) {
-            cfg.outbound_proxy_url = argv[++i];
-        } else if ((arg == "--cert" || arg == "--tls_cert") && i + 1 < argc) {
-            cfg.tls_cert = resolve_cli_path(argv[++i]);
-        } else if ((arg == "--key" || arg == "--tls_key") && i + 1 < argc) {
-            cfg.tls_key = resolve_cli_path(argv[++i]);
-        } else if (arg == "--auth-keys" && i + 1 < argc) {
-            cfg.auth_keys = resolve_cli_path(argv[++i]);
-        } else if (arg == "--threads" && i + 1 < argc) {
-            cfg.threads = std::stoi(argv[++i]);
-        } else if (arg == "--obfs") {
-            cfg.obfuscation = true;
-        } else if (arg == "--no-obfs") {
-            cfg.obfuscation = false;
-        } else if (arg == "--obfs-secret" && i + 1 < argc) {
-            cfg.obfs_secret = argv[++i];
-        } else if (arg == "--obfs-pad-multiple" && i + 1 < argc) {
-            int parsed = std::atoi(argv[++i]);
-            if (parsed < 0) parsed = 0;
-            if (parsed > 256) parsed = 256;
-            cfg.obfs_pad_multiple = static_cast<std::uint16_t>(parsed);
-        } else if (arg == "--obfs-jitter-ms" && i + 1 < argc) {
-            int parsed = std::atoi(argv[++i]);
-            if (parsed < 0) parsed = 0;
-            cfg.obfs_jitter_ms = static_cast<std::uint32_t>(parsed);
-        } else if (arg == "--tls-handshake-timeout-ms" && i + 1 < argc) {
-            int parsed = std::atoi(argv[++i]);
-            if (parsed < 0) parsed = 0;
-            cfg.tls_handshake_timeout_ms = static_cast<std::uint32_t>(parsed);
-            tls_handshake_timeout_override = true;
-        } else if (arg == "--max-sessions" && i + 1 < argc) {
-            int parsed = std::atoi(argv[++i]);
-            if (parsed < 0) parsed = 0;
-            cfg.max_sessions = static_cast<std::uint32_t>(parsed);
-            max_sessions_override = true;
-        } else if (arg == "--accept-rate-limit" && i + 1 < argc) {
-            int parsed = std::atoi(argv[++i]);
-            if (parsed < 0) parsed = 0;
-            cfg.accept_rate_limit = static_cast<std::uint32_t>(parsed);
-            accept_rate_limit_override = true;
-        } else if (arg == "--egress-mbps" && i + 1 < argc) {
-            int parsed = std::atoi(argv[++i]);
-            if (parsed < 0) parsed = 0;
-            cfg.egress_mbps = static_cast<std::uint32_t>(parsed);
-            egress_mbps_override = true;
-        } else if (arg == "--filter-list" && i + 1 < argc) {
-            cfg.filter_lists.push_back(resolve_filter_list_spec_path(argv[++i], cli_cwd, ""));
-        } else if (arg == "--filter-geolite" && i + 1 < argc) {
-            cfg.filter_geolite = resolve_cli_path(argv[++i]);
-            filter_geolite_override = true;
-        } else if (arg == "--filter-memory-mib" && i + 1 < argc) {
-            int parsed = std::atoi(argv[++i]);
-            if (parsed < 0) parsed = 0;
-            cfg.filter_memory_mib = static_cast<std::uint32_t>(parsed);
-            filter_memory_mib_override = true;
-        } else if (arg == "--client-filter-mode" && i + 1 < argc) {
-            cfg.client_filter_mode = argv[++i];
-            client_filter_mode_override = true;
-        } else if (arg == "--egress-filter-mode" && i + 1 < argc) {
-            cfg.egress_filter_mode = argv[++i];
-            egress_filter_mode_override = true;
-        } else if (arg == "--packet-egress" && i + 1 < argc) {
-            cfg.packet_egress = argv[++i];
-            packet_egress_override = true;
-        } else if (arg == "--packet-tun-name" && i + 1 < argc) {
-            cfg.packet_tun_name = argv[++i];
-            packet_tun_name_override = true;
-        } else if (arg == "--packet-cidr" && i + 1 < argc) {
-            cfg.packet_cidr = argv[++i];
-            packet_cidr_override = true;
-        } else if (arg == "--packet-mtu" && i + 1 < argc) {
-            int parsed = std::atoi(argv[++i]);
-            if (parsed < 0) parsed = 0;
-            cfg.packet_mtu = static_cast<std::uint32_t>(parsed);
-            packet_mtu_override = true;
-        } else if (arg == "--bench" || arg == "--fullbench" || arg == "--full-bench") {
-            cfg.benchmark_enable = true;
-        } else if (arg == "--inner") {
-            yume::util::log_warn("--inner is deprecated; use --inner-heavy or --inner-light");
-            cfg.inner_crypto = true;
-            inner_crypto_override = true;
-            inner_heavy_override = true;
-            inner_heavy_value = true;
-        } else if (arg == "--no-inner") {
-            cfg.inner_crypto = false;
-            cfg.inner_dual = false;
-            cfg.inner_required = false;
-            cfg.inner_hop = false;
-            inner_crypto_override = true;
-            inner_dual_override = true;
-            inner_required_override = true;
-            inner_hop_override = true;
-            inner_hop_value = false;
-        } else if (arg == "--inner-heavy") {
-            cfg.inner_crypto = true;
-            inner_crypto_override = true;
-            inner_heavy_override = true;
-            inner_heavy_value = true;
-        } else if (arg == "--inner-light") {
-            cfg.inner_crypto = true;
-            inner_crypto_override = true;
-            inner_heavy_override = true;
-            inner_heavy_value = false;
-        } else if (arg == "--inner-dual") {
-            cfg.inner_crypto = true;
-            cfg.inner_dual = true;
-            inner_crypto_override = true;
-            inner_dual_override = true;
-        } else if (arg == "--inner-required") {
-            cfg.inner_crypto = true;
-            cfg.inner_required = true;
-            inner_crypto_override = true;
-            inner_required_override = true;
-        } else if (arg == "--hop") {
-            cfg.inner_hop = true;
-            inner_hop_override = true;
-            inner_hop_value = true;
-        } else if (arg == "--no-hop") {
-            cfg.inner_hop = false;
-            inner_hop_override = true;
-            inner_hop_value = false;
-        } else if (arg == "--hop-interval" && i + 1 < argc) {
-            cfg.hop_interval_ms = static_cast<std::uint32_t>(std::stoul(argv[++i]));
-            hop_interval_override = true;
-        } else if (arg == "--pq-key" && i + 1 < argc) {
-            cfg.pq_private_key = resolve_cli_path(argv[++i]);
-            inner_crypto_override = true;
-        } else if (arg == "--pq-auto-generate") {
-            cfg.pq_auto_generate = true;
-            pq_auto_generate_override = true;
-        } else if (arg == "--use-embedded-master") {
-            cfg.allow_embedded_master = true;
-            allow_embedded_master_override = true;
-        } else if (arg == "--no-embedded-master") {
-            cfg.allow_embedded_master = false;
-            allow_embedded_master_override = true;
-        } else if (arg == "--allow-exec") {
-            cfg.allow_exec = true;
-        } else if (arg == "--allow-local-ip") {
-            cfg.allow_local_ip = true;
-        } else if (arg == "--control-full") {
-            cfg.control_full = true;
-        } else if (arg == "--real") {
-            cfg.real_http = true;
-        } else if (arg == "--robots-deny") {
-            cfg.robots_deny = true;
-        } else if (arg == "--real-index" && i + 1 < argc) {
-            cfg.real_index_path = resolve_cli_path(argv[++i]);
-        } else if (arg == "--real-secret" && i + 1 < argc) {
-            cfg.real_secret = argv[++i];
-        } else if (arg == "--real-secret-file" && i + 1 < argc) {
-            cfg.real_secret_file = resolve_cli_path(argv[++i]);
-        } else if (arg == "--anonym") {
-            cfg.anonym = true;
-            anonym_override = true;
-        } else if (arg == "--anonym-proof-mode" && i + 1 < argc) {
-            cfg.anonym_proof_mode = argv[++i];
-            anonym_proof_mode_override = true;
-        } else if (arg == "--anonym-api" && i + 1 < argc) {
-            cfg.anonym_api = argv[++i];
-        } else if (arg == "--anonym-token" && i + 1 < argc) {
-            cfg.anonym_token = argv[++i];
-        } else if (arg == "--anonym-ca-key" && i + 1 < argc) {
-            cfg.anonym_ca_key = resolve_cli_path(argv[++i]);
-        } else if (arg == "--anonym-ca-cert" && i + 1 < argc) {
-            cfg.anonym_ca_cert = resolve_cli_path(argv[++i]);
-        } else if (arg == "--anonym-sub-key" && i + 1 < argc) {
-            cfg.anonym_sub_key = resolve_cli_path(argv[++i]);
-        } else if (arg == "--anonym-sub-cert" && i + 1 < argc) {
-            cfg.anonym_sub_cert = resolve_cli_path(argv[++i]);
-        } else if (arg == "--server-name" && i + 1 < argc) {
-            cfg.server_name = argv[++i];
-        } else if (arg == "--server-id" && i + 1 < argc) {
-            cfg.server_id = argv[++i];
-        } else if (arg == "--relay-enable") {
-            cfg.relay_enable = true;
-            relay_enable_override = true;
-        } else if (arg == "--relay-disable") {
-            cfg.relay_enable = false;
-            relay_enable_override = true;
-        } else if (arg == "--directory-enable") {
-            cfg.directory_enable = true;
-            directory_enable_override = true;
-        } else if (arg == "--directory-disable") {
-            cfg.directory_enable = false;
-            directory_enable_override = true;
-        } else if (arg == "--allow-remote-server-admin") {
-            yume::util::log_warn("--allow-remote-server-admin was never wired to a check; flag removed (ignored)");
-        } else if (arg == "--operator-keys" && i + 1 < argc) {
-            cfg.operator_keys = resolve_cli_path(argv[++i]);
-        } else if (arg == "--federation-enable") {
-            cfg.federation_enable = true;
-        } else if (arg == "--federation-auth-key" && i + 1 < argc) {
-            cfg.federation_auth_key = resolve_cli_path(argv[++i]);
-        } else if (arg == "--federation-anonym-ca" && i + 1 < argc) {
-            cfg.federation_anonym_ca = resolve_cli_path(argv[++i]);
-        } else if (arg == "--peer" && i + 1 < argc) {
-            cfg.federation_peers.push_back(argv[++i]);
-        } else if (arg == "--cluster-join" && i + 1 < argc) {
-            const std::string spec = argv[++i];
-            try {
-                cfg.federation_peers.push_back(expand_cluster_join_spec(spec));
-            } catch (const std::exception& ex) {
-                yume::util::log_error(ex.what());
-                return 1;
-            }
-            cfg.federation_enable = true;
-        } else if (arg == "--cluster-bootstrap") {
-            cfg.federation_enable = true;
-            cfg.cluster_bootstrap = true;
-        } else if (arg == "--public-node") {
-            cfg.public_node = true;
-        } else if (arg == "--hide-in-the-crowd" && i + 1 < argc) {
-            cfg.http_profile = argv[++i];
-        } else if (arg == "--upstream-response" && i + 1 < argc) {
-            cfg.upstream_response_file = resolve_cli_path(argv[++i]);
-        } else if (arg == "--upstream-response-dir" && i + 1 < argc) {
-            cfg.upstream_response_dir = resolve_cli_path(argv[++i]);
-        } else if (arg == "--upstream-response-ttl" && i + 1 < argc) {
-            int parsed = std::atoi(argv[++i]);
-            if (parsed < 0) parsed = 0;
-            cfg.upstream_response_ttl_s = static_cast<std::uint32_t>(parsed);
-        } else if (arg == "--attach-local") {
-            attach_local = true;
-        } else if (arg == "--root") {
-            keep_root = true;
-        } else if (arg == "--keys-add" && i + 1 < argc) {
-            key_command.add = argv[++i];
-        } else if (arg == "--keys-remove" && i + 1 < argc) {
-            key_command.remove = argv[++i];
-        } else if (arg == "--keys-alias" && i + 2 < argc) {
-            key_command.alias = argv[++i];
-            key_command.alias_value = argv[++i];
-        } else if (arg == "--keys-list") {
-            key_command.list = true;
-        } else if (arg == "--keys-gen" && i + 1 < argc) {
-            key_command.generate_prefix = argv[++i];
-        } else if (arg == "--keys-gen-add") {
-            key_command.generate_and_add = true;
-        } else if (arg == "--ui") {
-            key_command.ui = true;
-        } else if (arg == "--boring") {
-            cfg.boring = true;
-        } else if (arg == "--timing") {
-            yume::util::set_timing_enabled(true);
-        } else {
-            yume::util::log_error("unknown or incomplete option: " + arg);
-            return 1;
-        }
+    yume::server_cli::ServerCliParseResult cli_args;
+    if (!yume::server_cli::parse_server_cli_args(argc, argv, cli_cwd, cfg, &cli_args)) {
+        return 1;
     }
-    ServerConfigLoadContext config_context;
-    config_context.config_path = config_path;
-    config_context.config_specified = config_specified;
+    if (cli_args.handled) {
+        return cli_args.exit_code;
+    }
+    ServerConfigLoadContext config_context = cli_args.config_context;
     {
         std::string self_path = get_self_path(argv[0]);
         if (!self_path.empty()) {
@@ -554,35 +204,19 @@ int main(int argc, char** argv) {
         }
     }
 
-    ServerConfigOverrides config_overrides;
-    config_overrides.inner_crypto = inner_crypto_override;
-    config_overrides.inner_dual = inner_dual_override;
-    config_overrides.inner_required = inner_required_override;
-    config_overrides.inner_hop = inner_hop_override;
-    config_overrides.hop_interval = hop_interval_override;
-    config_overrides.anonym = anonym_override;
-    config_overrides.anonym_proof_mode = anonym_proof_mode_override;
-    config_overrides.pq_auto_generate = pq_auto_generate_override;
-    config_overrides.allow_embedded_master = allow_embedded_master_override;
-    config_overrides.tls_handshake_timeout = tls_handshake_timeout_override;
-    config_overrides.max_sessions = max_sessions_override;
-    config_overrides.accept_rate_limit = accept_rate_limit_override;
-    config_overrides.egress_mbps = egress_mbps_override;
-    config_overrides.client_filter_mode = client_filter_mode_override;
-    config_overrides.egress_filter_mode = egress_filter_mode_override;
-    config_overrides.filter_geolite = filter_geolite_override;
-    config_overrides.filter_memory_mib = filter_memory_mib_override;
-    config_overrides.packet_egress = packet_egress_override;
-    config_overrides.packet_tun_name = packet_tun_name_override;
-    config_overrides.packet_cidr = packet_cidr_override;
-    config_overrides.packet_mtu = packet_mtu_override;
-    config_overrides.relay_enable = relay_enable_override;
-    config_overrides.directory_enable = directory_enable_override;
+    ServerConfigOverrides config_overrides = cli_args.config_overrides;
+    ServerKeyCommand key_command = cli_args.key_command;
+    const bool inner_heavy_override = cli_args.inner_heavy_override;
+    const bool inner_heavy_value = cli_args.inner_heavy_value;
+    const bool inner_hop_override = cli_args.inner_hop_override;
+    const bool inner_hop_value = cli_args.inner_hop_value;
+    const bool attach_local = cli_args.attach_local;
+    const bool keep_root = cli_args.keep_root;
 
     if (!load_server_config_file_and_resolve_paths(cfg, config_context, config_overrides)) {
         return 1;
     }
-    config_path = config_context.config_path;
+    const std::string config_path = config_context.config_path;
     if (cfg.dns_server.empty()) {
         const char* dns_env = std::getenv("YUME_DNS_SERVER");
         if (dns_env && *dns_env) {

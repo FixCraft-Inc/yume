@@ -576,6 +576,32 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.instance_name = value;
         } else if (arg == "--attach-local") {
             args.attach_local = true;
+        } else if (arg == "--codec") {
+            const char* value = take_value("--codec");
+            if (!value) {
+                return args;
+            }
+            args.app_codec = value;
+            args.app_codec_override = true;
+        } else if (arg == "--codec-listen") {
+            const char* value = take_value("--codec-listen");
+            if (!value) {
+                return args;
+            }
+            args.app_codec_listen = value;
+            args.app_codec_listen_override = true;
+        } else if (arg == "--monero-rpc") {
+            args.app_codec = "monero-rpc";
+            args.app_codec_override = true;
+        } else if (arg == "--monero-rpc-listen") {
+            const char* value = take_value("--monero-rpc-listen");
+            if (!value) {
+                return args;
+            }
+            args.app_codec = "monero-rpc";
+            args.app_codec_override = true;
+            args.app_codec_listen = value;
+            args.app_codec_listen_override = true;
         } else if (arg == "--chat") {
             const char* value = take_value("--chat");
             if (!value) {

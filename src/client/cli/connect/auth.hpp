@@ -46,6 +46,10 @@ void send_auth_response(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& 
                         const std::optional<bool>& inner_hop,
                         const std::optional<inner::KdfParams>& inner_kdf);
 
+void require_h2_carrier_alpn(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+                             const std::string& server_host,
+                             int server_port);
+
 void perform_h2_carrier_handshake(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
                                   boost::asio::io_context& io,
                                   const std::string& server_host,

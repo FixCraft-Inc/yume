@@ -64,6 +64,7 @@
 #include "client/relay/secret.hpp"
 #include "client/relay/runtime.hpp"
 #include "client/transport/tunnel.hpp"
+#include "core/app_codec/codec.hpp"
 #include "core/security/crypto.hpp"
 #include "core/stealth/http_profile.hpp"
 #include "core/security/inner_crypto.hpp"
@@ -266,6 +267,20 @@ int Cli::run(int argc, char** argv) {
     load_client_config_file(args, exe_dir, &cfg);
     apply_cli_config_overrides(args, cli_cwd, &cfg);
     normalize_client_config_after_overrides(&args, &cfg);
+    if (!cfg.app_codec.empty()) {
+        if (!app_codec::is_supported_codec(cfg.app_codec)) {
+            util::log_error("unsupported application codec: " + cfg.app_codec);
+            return 1;
+        }
+        if (!app_codec::is_loopback_host_literal(cfg.app_codec_listen_host)) {
+            util::log_error("application codec listener must be a loopback IP literal");
+            return 1;
+        }
+        if (cfg.app_codec_listen_port < 1 || cfg.app_codec_listen_port > 65535) {
+            util::log_error("application codec listen port must be 1..65535");
+            return 1;
+        }
+    }
     if (!use_reverse && cfg.server_in_charge) {
         reverse_server_in_charge_auto = true;
         reverse_host = "127.0.0.1";
@@ -311,6 +326,7 @@ int Cli::run(int argc, char** argv) {
          args.control_mode ||
          args.list_controlled ||
          args.directory_mode ||
+         !cfg.app_codec.empty() ||
          !args.chat_target.empty() ||
          !args.file_target.empty() ||
          !args.bytes_target.empty() ||
@@ -329,6 +345,7 @@ int Cli::run(int argc, char** argv) {
         args.control_mode ||
         args.list_controlled ||
         args.directory_mode ||
+        !cfg.app_codec.empty() ||
         !args.chat_target.empty() ||
         !args.file_target.empty() ||
         !args.bytes_target.empty() ||
@@ -336,7 +353,7 @@ int Cli::run(int argc, char** argv) {
         args.attach_local ||
         args.share_export;  // export is a one-shot, not a connection
     if (!has_active_mode) {
-        util::log_error("no mode selected (use --fullbench, --quickbench, --bench, --socks, -L, -R, --run, --directory, --chat, --send-file, --send-bytes, --admin-attach, --control, or --attach-local)");
+        util::log_error("no mode selected (use --fullbench, --quickbench, --bench, --socks, --monero-rpc, -L, -R, --run, --directory, --chat, --send-file, --send-bytes, --admin-attach, --control, or --attach-local)");
         return 1;
     }
 
@@ -504,8 +521,7 @@ int Cli::run(int argc, char** argv) {
             }
 
             if (cfg.obfuscation) {
-                // CONNECT masking uses HTTP/1.1 framing, so ALPN must not negotiate h2 here.
-                obfs::configure_alpn(*ctx, false, false);
+                obfs::configure_alpn(*ctx, false, true);
             }
 
             ctx->set_verify_mode(boost::asio::ssl::verify_peer);
@@ -713,8 +729,8 @@ int Cli::run(int argc, char** argv) {
 
             if (cfg.tls_stealth_enabled && cfg.tls_fingerprint_log) {
                 if (cfg.obfuscation) {
-                    fingerprint_for_metrics.alpn_protocols = {"http/1.1"};
-                    fingerprint_for_metrics.ja4_components.first_alpn = "http/1.1";
+                    fingerprint_for_metrics.alpn_protocols = obfs::carrier_alpn_protocols(true);
+                    fingerprint_for_metrics.ja4_components.first_alpn = "h2";
                 }
                 tls_metrics::MetricsManager::instance().record_connection_fingerprint(
                     cfg.server,
@@ -731,6 +747,7 @@ int Cli::run(int argc, char** argv) {
             std::vector<uint8_t> prefetched_tls_bytes;
             if (cfg.obfuscation) {
                 util::log_info("starting HTTPS h2 carrier handshake");
+                require_h2_carrier_alpn(stream, tls_name, cfg.port);
                 auto h2_start = std::chrono::steady_clock::now();
                 perform_h2_carrier_handshake(stream, io, tls_name, cfg.port,
                                              cfg.obfs_secret, &prefetched_tls_bytes);

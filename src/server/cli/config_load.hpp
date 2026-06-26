@@ -15,6 +15,7 @@ struct ServerConfig;
 namespace yume::server_cli {
 
 struct ServerConfigOverrides {
+    bool obfuscation = false;
     bool inner_crypto = false;
     bool inner_dual = false;
     bool inner_required = false;

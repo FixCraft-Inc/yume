@@ -209,6 +209,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     endif()
 
     add_library(yume_core
+        core/app_codec/codec.cpp
         core/protocol/control_protocol.cpp
         core/security/crypto.cpp
         core/stealth/http_profile.cpp
@@ -473,6 +474,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/auth/auth.cpp
         server/session/session.cpp
         server/session/control.cpp
+        server/session/codecs.cpp
         server/session/net.cpp
         server/session/carrier.cpp
         server/session/streams.cpp
@@ -537,6 +539,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/runtime/controller.cpp
         client/transport/tunnel.cpp
         client/transport/tunnel_pool.cpp
+        client/codec/monero_rpc.cpp
         client/proxy/socks.cpp
         client/proxy/forward.cpp
         client/proxy/outbound_proxy.cpp

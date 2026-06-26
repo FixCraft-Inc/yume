@@ -183,6 +183,46 @@ YUME stacks four independent layers of byte-shape camouflage:
 
 Limits: this defends against stateless DPI, classifier-based ISP filters, and active probes that complete TLS and inspect the first kilobyte. It does not defend against fully-stateful HTTP/2 middleboxes that track stream and HPACK state, or against ML traffic classifiers trained on joint inter-arrival × size distributions.
 
+### Headless carrier diagnosis
+
+For an opt-in end-to-end carrier check, `scripts/yume_carrier_diagnose.py`
+launches a local `yume` client, starts a packet capture before the TLS
+handshake, drives headless Chromium through the local SOCKS listener, captures
+an optional direct Chromium baseline, and runs `dpi-human-report.py`.
+
+Fully local ephemeral run:
+
+```bash
+scripts/yume_carrier_diagnose.py --inner-heavy --hop --out ~/yume-carrier-diagnose
+```
+
+With no `--server`, the script creates temporary TLS/auth material, starts a
+local `yumed`, generates an obfs secret, runs `yume` against it, probes the
+daemon directly as an HTTPS active scanner, removes the temporary key material
+afterwards, and keeps only the report artifacts. The local daemon defaults to
+`--hide-in-the-crowd nginx`; the client defaults to `--profile firefox` plus a
+matching carrier User-Agent. Override those with `--server-profile`,
+`--client-profile`, or `--client-http-profile`. Pass `--keep-workdir` if you
+want to inspect the generated keys and server material.
+
+Remote-server run:
+
+```bash
+scripts/yume_carrier_diagnose.py \
+  --server origin.fixcraft.jp \
+  --auth ~/main.key \
+  --anonym-ca-cert ~/ca.cert.pem \
+  --inner-heavy \
+  --hop \
+  --obfs-secret 'shared-secret-or-hex' \
+  --out ~/yume-carrier-diagnose
+```
+
+The quick default visits a few lightweight HTTPS pages. Add `--media` for a
+direct MP4 sample that produces larger streaming-like TLS records. The script
+requires Chromium/Chrome plus `dumpcap` or `tcpdump`; capture privileges must
+already be configured. It never runs `sudo` itself.
+
 ## Routing through Tor (or any SOCKS5 proxy)
 
 The CLI can hide the outbound connection behind a SOCKS5 proxy. Hostnames are sent as ATYP_DOMAIN, so `.onion` targets resolve on the proxy side and direct DNS never leaves the client.
@@ -403,12 +443,30 @@ yume --server fixcraft.net --auth id_ed25519 --run "ssh user@host"
 
 Server-side command execution is disabled by default for safety. Use SOCKS or port forwarding.
 
+Application codec, Monero RPC:
+
+```bash
+# server: monerod stays loopback-only
+yumed --listen 443 --codec-allow monero-rpc --monero-rpc-backend 127.0.0.1:18089
+
+# client: wallet sees a normal local monerod-compatible endpoint
+yume --server fixcraft.net --auth id_ed25519 --monero-rpc
+monero-wallet-cli --daemon-address 127.0.0.1:18089
+```
+
+The Monero codec is protocol-aware: it parses local Monero HTTP/RPC, carries
+typed Yume codec frames in transit, and reconstructs restricted HTTP only on the
+trusted server side. Server-side codec enablement uses the modular
+`--codec-allow <name>` path; per-key authorization uses `allow_codecs` or the
+legacy `allow_monero_rpc` permission, not LAN/private-IP bridging. See
+[docs/APP_CODECS.md](docs/APP_CODECS.md).
+
 ## Permissions and key management
 
 Authentication and authorization live in two files, the way SSH splits `authorized_keys` from per-line options:
 
 - `authorized_keys` lists Ed25519 public keys that may **connect**.
-- `auth_keys.meta` is a JSON file mapping each key's fingerprint to **what it may do** (exec / LAN bridge / admin / chat / file / bytes). Default for every dangerous bit is **deny**; a key without a meta entry can connect but cannot exec, cannot reach LAN, cannot administer other clients.
+- `auth_keys.meta` is a JSON file mapping each key's fingerprint to **what it may do** (exec / LAN bridge / app codecs / admin / chat / file / bytes). App codecs use `permissions.allow_codecs`, for example `["monero-rpc"]`. Default for every dangerous bit is **deny**; a key without a meta entry can connect but cannot exec, cannot reach LAN, cannot use privileged codecs, cannot administer other clients.
 
 Dangerous server features (server-side exec, LAN bridging, unrestricted address bridging) sit behind a **three-layer gate** that all must agree:
 

@@ -317,6 +317,17 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         const bool key_exec = auth_policy.allow_exec.value_or(false);
         const bool key_local_ip = auth_policy.allow_local_ip.value_or(false);
         const bool key_control_full = auth_policy.control_full.value_or(false);
+        const bool key_monero_rpc = auth_policy.allow_monero_rpc.value_or(false);
+        session_allowed_codecs_.clear();
+        for (const auto& codec : auth_policy.allowed_codecs) {
+            const std::string id = app_codec::canonical_codec_id(codec);
+            if (app_codec::contains_codec(cfg_.allowed_codecs, id)) {
+                session_allowed_codecs_.insert(id);
+            }
+        }
+        if (key_monero_rpc && app_codec::contains_codec(cfg_.allowed_codecs, app_codec::kMoneroRpcCodecId)) {
+            session_allowed_codecs_.insert(std::string(app_codec::kMoneroRpcCodecId));
+        }
 #if YUME_FEATURE_EXEC
         session_allow_exec_policy_ = key_exec && cfg_.allow_exec;
 #else
@@ -344,6 +355,14 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                           ": full control requested but YUME_FEATURE_FULL_CONTROL is OFF at build time");
         }
 #endif
+        session_allow_monero_rpc_policy_ =
+            session_allowed_codecs_.count(std::string(app_codec::kMoneroRpcCodecId)) != 0;
+        if ((key_monero_rpc ||
+             app_codec::contains_codec(auth_policy.allowed_codecs, app_codec::kMoneroRpcCodecId)) &&
+            !app_codec::contains_codec(cfg_.allowed_codecs, app_codec::kMoneroRpcCodecId)) {
+            util::log_warn("session " + std::to_string(session_id_) +
+                          ": Monero RPC codec requested by key but server has not enabled --codec-allow monero-rpc");
+        }
         session_allow_inbound_admin_policy_ = auth_policy.allow_inbound_admin.value_or(false);
         session_allow_outbound_admin_policy_ = auth_policy.allow_outbound_admin.value_or(false);
         session_allow_chat_policy_ = auth_policy.allow_chat.value_or(true);

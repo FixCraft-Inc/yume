@@ -72,6 +72,9 @@ struct ClientConfig {
     std::string history_dir;
     std::string relay_key_file;
     bool auto_attach_local{true};
+    std::string app_codec;
+    std::string app_codec_listen_host{"127.0.0.1"};
+    int app_codec_listen_port{18089};
     
     // TLS Stealth Mode settings
     bool tls_stealth_enabled{true};  // ON by default

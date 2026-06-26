@@ -10,29 +10,49 @@
 
 #include <openssl/ssl.h>
 
+#include <stdexcept>
+
 namespace yume::obfs {
 
 namespace {
-constexpr unsigned char kAlpnProtos[] = {
-    2, 'h', '2',
-    8, 'h', 't', 't', 'p', '/', '1', '.', '1'
-};
-constexpr unsigned char kAlpnHttp1[] = {
-    8, 'h', 't', 't', 'p', '/', '1', '.', '1'
-};
+bool protocol_list_contains(const unsigned char* protos,
+                            unsigned int protos_len,
+                            const std::string& needle,
+                            const unsigned char** selected,
+                            unsigned char* selected_len) {
+    if (!protos || needle.size() > 255) {
+        return false;
+    }
+    unsigned int pos = 0;
+    while (pos < protos_len) {
+        const unsigned int len = protos[pos++];
+        if (len == 0 || pos + len > protos_len) {
+            return false;
+        }
+        const char* proto = reinterpret_cast<const char*>(protos + pos);
+        if (needle.size() == len && needle.compare(0, needle.size(), proto, len) == 0) {
+            if (selected) {
+                *selected = protos + pos;
+            }
+            if (selected_len) {
+                *selected_len = static_cast<unsigned char>(len);
+            }
+            return true;
+        }
+        pos += len;
+    }
+    return false;
+}
 
 int alpn_select_cb(SSL* /*ssl*/, const unsigned char** out, unsigned char* outlen,
                    const unsigned char* in, unsigned int inlen, void* arg) {
-    const unsigned char* protos = kAlpnProtos;
-    unsigned int protos_len = sizeof(kAlpnProtos);
-    if (arg) {
-        protos = static_cast<const unsigned char*>(arg);
-        protos_len = static_cast<unsigned int>(protos[0]) + 1;
+    const bool allow_h2 = arg ? *static_cast<const bool*>(arg) : true;
+    for (const auto& proto : carrier_alpn_protocols(allow_h2)) {
+        if (protocol_list_contains(in, inlen, proto, out, outlen)) {
+            return SSL_TLSEXT_ERR_OK;
+        }
     }
-    int rc = SSL_select_next_proto(const_cast<unsigned char**>(out), outlen,
-                                   protos, protos_len,
-                                   in, inlen);
-    return (rc == OPENSSL_NPN_NEGOTIATED) ? SSL_TLSEXT_ERR_OK : SSL_TLSEXT_ERR_NOACK;
+    return SSL_TLSEXT_ERR_NOACK;
 }
 }  // namespace
 
@@ -63,17 +83,58 @@ boost::asio::ssl::context create_client_context() {
 
 void configure_alpn(boost::asio::ssl::context& ctx, bool is_server, bool allow_h2) {
     SSL_CTX* native = ctx.native_handle();
-    const unsigned char* protos = kAlpnProtos;
-    unsigned int protos_len = sizeof(kAlpnProtos);
-    if (!allow_h2) {
-        protos = kAlpnHttp1;
-        protos_len = sizeof(kAlpnHttp1);
-    }
     if (is_server) {
-        SSL_CTX_set_alpn_select_cb(native, alpn_select_cb, allow_h2 ? nullptr : const_cast<unsigned char*>(protos));
+        static bool kAllowH2 = true;
+        static bool kHttp1Only = false;
+        SSL_CTX_set_alpn_select_cb(native, alpn_select_cb, allow_h2 ? &kAllowH2 : &kHttp1Only);
     } else {
-        SSL_CTX_set_alpn_protos(native, protos, protos_len);
+        const auto protos = carrier_alpn_wire(allow_h2);
+        if (SSL_CTX_set_alpn_protos(native,
+                                    protos.data(),
+                                    static_cast<unsigned int>(protos.size())) != 0) {
+            throw std::runtime_error("failed to configure TLS ALPN protocols");
+        }
     }
+}
+
+std::vector<std::string> carrier_alpn_protocols(bool allow_h2) {
+    if (allow_h2) {
+        return {"h2", "http/1.1"};
+    }
+    return {"http/1.1"};
+}
+
+std::vector<unsigned char> carrier_alpn_wire(bool allow_h2) {
+    std::vector<unsigned char> out;
+    for (const auto& proto : carrier_alpn_protocols(allow_h2)) {
+        if (proto.empty() || proto.size() > 255) {
+            throw std::invalid_argument("invalid ALPN protocol length");
+        }
+        out.push_back(static_cast<unsigned char>(proto.size()));
+        out.insert(out.end(), proto.begin(), proto.end());
+    }
+    return out;
+}
+
+std::string select_carrier_alpn(const unsigned char* peer_protos,
+                                unsigned int peer_protos_len,
+                                bool allow_h2) {
+    for (const auto& proto : carrier_alpn_protocols(allow_h2)) {
+        if (protocol_list_contains(peer_protos, peer_protos_len, proto, nullptr, nullptr)) {
+            return proto;
+        }
+    }
+    return {};
+}
+
+std::string selected_alpn(const SSL* ssl) {
+    const unsigned char* data = nullptr;
+    unsigned int len = 0;
+    SSL_get0_alpn_selected(ssl, &data, &len);
+    if (!data || len == 0) {
+        return {};
+    }
+    return std::string(reinterpret_cast<const char*>(data), static_cast<std::size_t>(len));
 }
 
 void send_dummy_http_response(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,

@@ -135,6 +135,10 @@ struct ParsedArgs {
     std::string relay_key_file;
     std::string instance_name;
     bool attach_local{false};
+    std::string app_codec;
+    bool app_codec_override{false};
+    std::string app_codec_listen;
+    bool app_codec_listen_override{false};
     std::string chat_target;
     std::string chat_password;
     std::string file_target;

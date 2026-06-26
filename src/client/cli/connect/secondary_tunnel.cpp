@@ -89,6 +89,7 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
 
     std::vector<uint8_t> prefetched_tls_bytes;
     if (cfg.obfuscation) {
+        require_h2_carrier_alpn(stream, tls_name, cfg.port);
         perform_h2_carrier_handshake(stream, io, tls_name, cfg.port,
                                      cfg.obfs_secret, &prefetched_tls_bytes);
     }

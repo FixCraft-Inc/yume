@@ -3,7 +3,7 @@
 YUME splits authentication from authorization the way SSH does:
 
 - `authorized_keys` lists the Ed25519 public keys that may **connect**. Holding one of these is the audience-with-the-king; you get past the door.
-- `auth_keys.meta` (a JSON file) lists what each connected key is **allowed to do** once inside. Without an entry here, a key can talk to the server but cannot exec, cannot reach LAN addresses, cannot administer other clients.
+- `auth_keys.meta` (a JSON file) lists what each connected key is **allowed to do** once inside. Without an entry here, a key can talk to the server but cannot exec, cannot reach LAN addresses, cannot use privileged application codecs, cannot administer other clients.
 
 The current revision uses one Ed25519 key per identity. A second physical key (the "noble's seal" for stronger permission control) is a planned wire-protocol change for a post-1.0 release; in the meantime, the SSH-style split below gives you the same operational separation: connection rights vs. action rights live in different files, can be edited independently, and can be revoked independently.
 
@@ -48,6 +48,7 @@ MCowBQYDK2VwAyEA...visitor...
     "permissions": {
       "allow_exec": true,
       "allow_local_ip": true,
+      "allow_codecs": ["monero-rpc"],
       "control_full": false,
       "allow_inbound_admin": true,
       "allow_outbound_admin": false,
@@ -77,6 +78,8 @@ Generate fingerprints with `yumed --auth-keys /etc/yume/authorized_keys --keys-l
 | `allow_exec` | deny | Run shell commands on the server (server-issued via control channel) | `--allow-exec` and `YUME_FEATURE_EXEC=ON` |
 | `allow_local_ip` | deny | Open TCP/UDP streams to RFC1918 / loopback addresses through the server | `--allow-local-ip` and `YUME_FEATURE_LAN_BRIDGE=ON` |
 | `control_full` | deny | Open TCP/UDP streams to *any* address (superset of `allow_local_ip`) | `--control-full` and `YUME_FEATURE_FULL_CONTROL=ON` |
+| `allow_codecs` | deny | Use named application codecs, for example `["monero-rpc"]` | `--codec-allow <name>` |
+| `allow_monero_rpc` | deny | Compatibility alias for the built-in Monero RPC application codec against the server's loopback monerod backend | `--codec-allow monero-rpc` |
 | `allow_inbound_admin` | deny | Other clients on this server can attach to admin THIS client | none (always honoured) |
 | `allow_outbound_admin` | deny | This client can attach to admin OTHER clients on the server | none (always honoured) |
 | `allow_chat` | allow | This key can use the chat relay | none |
@@ -105,6 +108,7 @@ Two relationships are independent:
 
 - **Editing auth_keys.meta is the recommended way to manage permissions.** The server's interactive `--ui` mode is brittle around per-key permissions; it's documented but you'll have a smoother time with a JSON editor.
 - **Reload after edits.** The meta file is read at server startup. Changes take effect on `systemctl restart yumed`. Hot reload is on the post-1.0 roadmap.
+- **Application codecs.** Codec permissions are intentionally narrower than `allow_local_ip`: they only enable named protocol-aware codecs listed in `allow_codecs`. The Monero built-in validates allowed wallet RPC paths/methods and reconstructs HTTP only to a loopback backend configured by `--monero-rpc-backend`.
 - **Revoke a key.** Remove the public-key block from `authorized_keys`. The meta entry can stay; it'll be ignored.
 - **Audit.** Startup logs `auth policy <permissions summary>` for any key that has a non-empty meta entry. Run `yumed --auth-keys ... --keys-list` to dump all configured keys with their aliases.
 - **CI/scripted setup.** Generate fingerprints with `openssl pkey -pubin -in user.pub -outform DER | sha256sum | cut -d' ' -f1`. The same fingerprint format is used by `yumed --keys-list`.

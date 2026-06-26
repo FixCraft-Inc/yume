@@ -14,6 +14,7 @@
 
 #include "client/cli/connect/cert.hpp"
 #include "client/cli/config/platform.hpp"
+#include "core/app_codec/codec.hpp"
 #include "util.hpp"
 
 namespace yume::client {
@@ -190,6 +191,31 @@ void load_client_config_file(const ParsedArgs& args,
         if (json.contains("auto_attach_local")) {
             cfg->auto_attach_local = json["auto_attach_local"].get<bool>();
         }
+        if (json.contains("app_codec") && !args.app_codec_override) {
+            cfg->app_codec = json["app_codec"].get<std::string>();
+        } else if (json.contains("codec") && !args.app_codec_override) {
+            cfg->app_codec = json["codec"].get<std::string>();
+        }
+        if (json.contains("app_codec_listen") && !args.app_codec_listen_override) {
+            std::string parse_error;
+            auto ep = app_codec::parse_endpoint_spec(json["app_codec_listen"].get<std::string>(),
+                                                     app_codec::kMoneroRpcDefaultHost,
+                                                     app_codec::kMoneroRpcDefaultPort,
+                                                     &parse_error);
+            if (ep.has_value()) {
+                cfg->app_codec_listen_host = ep->host;
+                cfg->app_codec_listen_port = ep->port;
+            } else {
+                util::log_error("app_codec_listen: " + parse_error);
+                cfg->app_codec_listen_port = 0;
+            }
+        }
+        if (json.contains("app_codec_listen_host") && !args.app_codec_listen_override) {
+            cfg->app_codec_listen_host = json["app_codec_listen_host"].get<std::string>();
+        }
+        if (json.contains("app_codec_listen_port") && !args.app_codec_listen_override) {
+            cfg->app_codec_listen_port = json["app_codec_listen_port"].get<int>();
+        }
         if (json.contains("self_dpi") && !args.self_dpi_override) {
             cfg->self_dpi = json["self_dpi"].get<bool>();
         }
@@ -335,6 +361,23 @@ void apply_cli_config_overrides(const ParsedArgs& args,
     if (!args.instance_name.empty()) {
         cfg->instance_name = args.instance_name;
     }
+    if (args.app_codec_override) {
+        cfg->app_codec = args.app_codec;
+    }
+    if (args.app_codec_listen_override) {
+        std::string parse_error;
+        auto ep = app_codec::parse_endpoint_spec(args.app_codec_listen,
+                                                 app_codec::kMoneroRpcDefaultHost,
+                                                 app_codec::kMoneroRpcDefaultPort,
+                                                 &parse_error);
+        if (ep.has_value()) {
+            cfg->app_codec_listen_host = ep->host;
+            cfg->app_codec_listen_port = ep->port;
+        } else {
+            util::log_warn("--codec-listen ignored: " + parse_error);
+            cfg->app_codec_listen_port = 0;
+        }
+    }
     if (args.allow_exec_override) {
         cfg->allow_exec = args.allow_exec;
     }
@@ -447,6 +490,9 @@ void normalize_client_config_after_overrides(ParsedArgs* args, ClientConfig* cfg
     if (cfg->relay_mode != "trusted") {
         cfg->relay_mode = "untrusted";
     }
+    if (!cfg->app_codec.empty()) {
+        cfg->app_codec = app_codec::canonical_codec_id(cfg->app_codec);
+    }
 }
 
 void discover_default_pq_public_key(const char* argv0, ClientConfig* cfg) {
@@ -536,6 +582,11 @@ void save_client_config_file(const ParsedArgs& args, const ClientConfig& cfg) {
     if (!cfg.history_dir.empty()) json["history_dir"] = cfg.history_dir;
     if (!cfg.relay_key_file.empty()) json["relay_key_file"] = cfg.relay_key_file;
     json["auto_attach_local"] = cfg.auto_attach_local;
+    if (!cfg.app_codec.empty()) {
+        json["app_codec"] = cfg.app_codec;
+        json["app_codec_listen"] = cfg.app_codec_listen_host + ":" +
+                                   std::to_string(cfg.app_codec_listen_port);
+    }
     json["self_dpi"] = cfg.self_dpi;
     std::ofstream out(args.config_path);
     if (out) {

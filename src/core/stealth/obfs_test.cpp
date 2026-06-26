@@ -6,6 +6,7 @@
 
 #include "core/stealth/obfs_h2.hpp"
 #include "core/stealth/obfs_signal.hpp"
+#include "core/stealth/obfs.hpp"
 
 #include <cassert>
 #include <cstdio>
@@ -14,6 +15,50 @@
 #include <vector>
 
 namespace {
+
+void test_carrier_alpn_wire_order() {
+    const std::vector<unsigned char> expected_h2{
+        2, 'h', '2',
+        8, 'h', 't', 't', 'p', '/', '1', '.', '1',
+    };
+    const std::vector<unsigned char> expected_http1{
+        8, 'h', 't', 't', 'p', '/', '1', '.', '1',
+    };
+
+    assert(yume::obfs::carrier_alpn_protocols(true) ==
+           std::vector<std::string>({"h2", "http/1.1"}));
+    assert(yume::obfs::carrier_alpn_protocols(false) ==
+           std::vector<std::string>({"http/1.1"}));
+    assert(yume::obfs::carrier_alpn_wire(true) == expected_h2);
+    assert(yume::obfs::carrier_alpn_wire(false) == expected_http1);
+}
+
+void test_carrier_alpn_selection_prefers_h2() {
+    const std::vector<unsigned char> chrome_offer{
+        2, 'h', '2',
+        8, 'h', 't', 't', 'p', '/', '1', '.', '1',
+    };
+    const std::vector<unsigned char> http1_offer{
+        8, 'h', 't', 't', 'p', '/', '1', '.', '1',
+    };
+    const std::vector<unsigned char> reversed_offer{
+        8, 'h', 't', 't', 'p', '/', '1', '.', '1',
+        2, 'h', '2',
+    };
+
+    assert(yume::obfs::select_carrier_alpn(chrome_offer.data(),
+                                           static_cast<unsigned int>(chrome_offer.size()),
+                                           true) == "h2");
+    assert(yume::obfs::select_carrier_alpn(reversed_offer.data(),
+                                           static_cast<unsigned int>(reversed_offer.size()),
+                                           true) == "h2");
+    assert(yume::obfs::select_carrier_alpn(chrome_offer.data(),
+                                           static_cast<unsigned int>(chrome_offer.size()),
+                                           false) == "http/1.1");
+    assert(yume::obfs::select_carrier_alpn(http1_offer.data(),
+                                           static_cast<unsigned int>(http1_offer.size()),
+                                           true) == "http/1.1");
+}
 
 void test_path_token_round_trip() {
     yume::crypto::Bytes signal = yume::obfs::derive_signal_key("alpha-secret");
@@ -420,6 +465,8 @@ void test_encoder_respects_send_window() {
 }  // namespace
 
 int main() {
+    test_carrier_alpn_wire_order();
+    test_carrier_alpn_selection_prefers_h2();
     test_path_token_round_trip();
     test_handshake_extracts_path();
     test_data_round_trip_with_padding();
@@ -440,6 +487,6 @@ int main() {
     test_hpack_encoder_size_update_opcode();
     test_hpack_encoder_drops_oversize_entry();
     test_handshake_round_trip_with_stateful_encoder();
-    std::puts("obfs_test: all 20 cases passed");
+    std::puts("obfs_test: all 22 cases passed");
     return 0;
 }

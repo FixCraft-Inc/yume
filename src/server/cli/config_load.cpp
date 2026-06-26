@@ -14,6 +14,7 @@
 #include <nlohmann/json.hpp>
 
 #include "server/cli/misc.hpp"
+#include "core/app_codec/codec.hpp"
 #include "server/config/config.hpp"
 #include "util.hpp"
 
@@ -154,7 +155,7 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
             if (json.contains("threads") && cfg.threads == 0) {
                 cfg.threads = json["threads"].get<int>();
             }
-            if (json.contains("obfuscation") && !cfg.obfuscation) {
+            if (json.contains("obfuscation") && !overrides.obfuscation) {
                 cfg.obfuscation = json["obfuscation"].get<bool>();
             }
             if (json.contains("inner_crypto") && !overrides.inner_crypto) {
@@ -192,6 +193,65 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
             }
             if (json.contains("control_full")) {
                 cfg.control_full = json["control_full"].get<bool>();
+            }
+            if (json.contains("allow_monero_rpc_codec")) {
+                cfg.allow_monero_rpc_codec = json["allow_monero_rpc_codec"].get<bool>();
+                if (cfg.allow_monero_rpc_codec) {
+                    yume::app_codec::add_codec_unique(&cfg.allowed_codecs, yume::app_codec::kMoneroRpcCodecId);
+                }
+            } else if (json.contains("allow_monero_rpc")) {
+                cfg.allow_monero_rpc_codec = json["allow_monero_rpc"].get<bool>();
+                if (cfg.allow_monero_rpc_codec) {
+                    yume::app_codec::add_codec_unique(&cfg.allowed_codecs, yume::app_codec::kMoneroRpcCodecId);
+                }
+            }
+            const auto read_codec_allow = [&](const char* key) -> bool {
+                if (!json.contains(key)) {
+                    return true;
+                }
+                if (!json[key].is_array()) {
+                    yume::util::log_error(std::string(key) + " must be an array");
+                    return false;
+                }
+                for (const auto& item : json[key]) {
+                    if (!item.is_string()) {
+                        yume::util::log_error(std::string(key) + " entries must be strings");
+                        return false;
+                    }
+                    const std::string codec = yume::app_codec::canonical_codec_id(item.get<std::string>());
+                    if (!yume::app_codec::is_supported_codec(codec)) {
+                        yume::util::log_error(std::string("unsupported application codec in ") + key + ": " + codec);
+                        return false;
+                    }
+                    yume::app_codec::add_codec_unique(&cfg.allowed_codecs, codec);
+                    if (codec == std::string(yume::app_codec::kMoneroRpcCodecId)) {
+                        cfg.allow_monero_rpc_codec = true;
+                    }
+                }
+                return true;
+            };
+            if (!read_codec_allow("codec_allow") || !read_codec_allow("allow_codecs")) {
+                return false;
+            }
+            if (json.contains("monero_rpc_backend")) {
+                std::string parse_error;
+                auto ep = yume::app_codec::parse_endpoint_spec(json["monero_rpc_backend"].get<std::string>(),
+                                                               yume::app_codec::kMoneroRpcDefaultHost,
+                                                               yume::app_codec::kMoneroRpcDefaultPort,
+                                                               &parse_error);
+                if (ep.has_value()) {
+                    cfg.monero_rpc_backend_host = ep->host;
+                    cfg.monero_rpc_backend_port = ep->port;
+                } else {
+                    yume::util::log_error("monero_rpc_backend: " + parse_error);
+                    return false;
+                }
+            }
+            if (json.contains("monero_rpc_backend_host")) {
+                cfg.monero_rpc_backend_host = json["monero_rpc_backend_host"].get<std::string>();
+            }
+            if (json.contains("monero_rpc_backend_port")) {
+                cfg.monero_rpc_backend_port = json["monero_rpc_backend_port"].get<int>();
             }
             if (json.contains("real_http") && !cfg.real_http) {
                 cfg.real_http = json["real_http"].get<bool>();

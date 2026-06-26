@@ -48,6 +48,7 @@ void Session::handle_open(const protocol::Frame& frame) {
     }
     if (streams_.find(frame.header.stream_id) != streams_.end() ||
         udp_streams_.find(frame.header.stream_id) != udp_streams_.end() ||
+        codec_streams_.find(frame.header.stream_id) != codec_streams_.end() ||
         bench_streams_.find(frame.header.stream_id) != bench_streams_.end() ||
         (packet_stream_.has_value() && packet_stream_->stream_id == frame.header.stream_id)) {
         send_open_reply(frame.header.stream_id, false, "stream already exists");
@@ -184,6 +185,11 @@ void Session::handle_open(const protocol::Frame& frame) {
 
     if (proto == kBenchSinkProto || proto == kBenchSourceProto) {
         handle_bench_open(frame.header.stream_id, proto, open_json);
+        return;
+    }
+
+    if (proto == std::string(app_codec::kOpenProto)) {
+        handle_codec_open(frame.header.stream_id, open_json);
         return;
     }
 

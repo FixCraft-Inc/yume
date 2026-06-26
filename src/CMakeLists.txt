@@ -500,6 +500,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_executable(yumed
         main_server.cpp
         server/cli/anonym.cpp
+        server/cli/args.cpp
         server/cli/cluster.cpp
         server/cli/config_load.cpp
         server/cli/key.cpp

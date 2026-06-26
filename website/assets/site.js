@@ -361,8 +361,53 @@ const loadVirusTotal = async () => {
   }
 };
 
+const initNavScrollSpy = () => {
+  const nav = document.querySelector(".site-header nav");
+  if (!nav) {
+    return;
+  }
+  const links = Array.from(nav.querySelectorAll('a[href^="#"]'));
+  if (!links.length) {
+    return;
+  }
+  const sections = links
+    .map((link) => {
+      const id = link.getAttribute("href")?.slice(1);
+      const section = id ? document.getElementById(id) : null;
+      return section ? { link, section } : null;
+    })
+    .filter(Boolean);
+
+  if (!sections.length || !("IntersectionObserver" in window)) {
+    return;
+  }
+
+  const setActive = (id) => {
+    links.forEach((link) => {
+      const href = link.getAttribute("href") || "";
+      link.classList.toggle("active", href === `#${id}`);
+    });
+  };
+
+  const observer = new IntersectionObserver(
+    (entries) => {
+      const visible = entries
+        .filter((entry) => entry.isIntersecting)
+        .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
+      if (visible.length) {
+        setActive(visible[0].target.id);
+      }
+    },
+    { rootMargin: "-20% 0px -55% 0px", threshold: [0.1, 0.35, 0.6] }
+  );
+
+  sections.forEach(({ section }) => observer.observe(section));
+  setActive(sections[0].section.id);
+};
+
 document.addEventListener("DOMContentLoaded", () => {
   initBrandMask();
+  initNavScrollSpy();
   const run = async () => {
     if (document.getElementById("release-version") || document.querySelector("[data-download]")) {
       await loadRelease();

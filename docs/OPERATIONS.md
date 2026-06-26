@@ -89,6 +89,27 @@ Public endpoints should publish:
 
 Do not advertise a public endpoint until users can pin enough metadata to detect replacement or downgrade.
 
+## Website documentation mirror
+
+The GitHub Pages site at `website/` publishes a subset of `docs/` for
+browser reading. The canonical copies live in the repository root
+`docs/` tree; `website/docs/` is a curated mirror, not a second source
+of truth.
+
+Current mirrored pages (under `website/docs/`):
+
+- `QUICKSTART.md`
+- `STEALTH.md`
+- `PERFORMANCE.md`
+- `OPERATIONS.md`
+- `PERMISSIONS.md`
+
+When you change an operator-facing doc that appears on the site, update
+the matching file under `website/docs/` in the same commit, or remove
+the page from the site index until it is synced. Release and packaging
+docs (`PACKAGING.md`, man pages, `ARCHITECTURE.md`) stay repo-only
+unless explicitly added to the mirror list.
+
 ## Troubleshooting
 
 If the client cannot connect:

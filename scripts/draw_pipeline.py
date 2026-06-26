@@ -39,9 +39,12 @@ lines and `--` separators between nodes). Example:
 Usage:
     scripts/draw_pipeline.py < spec.txt
     scripts/draw_pipeline.py spec.txt
+    scripts/draw_pipeline.py --svg spec.txt > diagram.svg
 """
 
 from __future__ import annotations
+import argparse
+import html
 import sys
 from dataclasses import dataclass, field
 
@@ -113,30 +116,31 @@ def _to_node(d: dict[str, str]) -> Node:
     return Node(title=d.get("title", ""), sub=d.get("sub", ""), arrow=d.get("arrow", ""))
 
 
-def render(spec: Spec) -> str:
-    # Two-space left gutter inside the box, one-space right gutter, so
-    # max usable text is (width - 4). Pick NARROW unless something
-    # doesn't fit; explicit `width:` in the spec must be 34 or 72.
+def _choose_width(spec: Spec) -> int:
     longest = 0
     for n in spec.nodes:
         longest = max(longest, len(n.title), len(n.sub))
-    usable_narrow = NARROW_WIDTH - 4  # "|" + " " + text + " " + "|"
+    usable_narrow = NARROW_WIDTH - 4
     if spec.width == 0:
-        chosen = NARROW_WIDTH if longest <= usable_narrow else WIDE_WIDTH
-    elif spec.width in (NARROW_WIDTH, WIDE_WIDTH):
-        chosen = spec.width
-    else:
-        raise SystemExit(
-            f"width must be {NARROW_WIDTH} or {WIDE_WIDTH} "
-            f"(got {spec.width}); these are enforced by "
-            "scripts/check_ascii_diagrams.py")
+        return NARROW_WIDTH if longest <= usable_narrow else WIDE_WIDTH
+    if spec.width in (NARROW_WIDTH, WIDE_WIDTH):
+        return spec.width
+    raise SystemExit(
+        f"width must be {NARROW_WIDTH} or {WIDE_WIDTH} "
+        f"(got {spec.width}); these are enforced by "
+        "scripts/check_ascii_diagrams.py")
+
+
+def render(spec: Spec) -> str:
+    chosen = _choose_width(spec)
+    longest = max(max(len(n.title), len(n.sub)) for n in spec.nodes)
     usable = chosen - 4
     if longest > usable:
         raise SystemExit(
             f"line too long for width {chosen}: longest text is {longest} "
             f"chars but only {usable} fit. Use width: {WIDE_WIDTH} or "
             "shorten the labels.")
-    inner = chosen - 2  # everything between the two `+`
+    inner = chosen - 2
     horizontal = "+" + "-" * inner + "+"
     pad = " " * spec.indent
 
@@ -144,8 +148,6 @@ def render(spec: Spec) -> str:
         lines = [horizontal, _row(node.title, inner), _row(node.sub, inner), horizontal]
         return [pad + line for line in lines]
 
-    # Arrow gutter aligns under column 8 of the box (matches the
-    # EXPLAINED.md spacing of "        |").
     arrow_col = 8
     out: list[str] = []
     for i, node in enumerate(spec.nodes):
@@ -159,24 +161,90 @@ def render(spec: Spec) -> str:
 
 
 def _row(text: str, inner: int) -> str:
-    # Layout: "|" + " " + (two-space gutter + text) + (right pad) + " " + "|".
-    # The trailing single space is required by the checker (right
-    # padding). Inner = width - 2, and we hold one of those for the
-    # right gutter, so the text body fills `inner - 1`.
     body = "  " + text
     body = body.ljust(inner - 1)
     return "|" + body + " |"
 
 
+def render_svg(spec: Spec) -> str:
+    chosen = _choose_width(spec)
+    box_w = chosen * 7
+    box_h = 52
+    gap = 36
+    margin = 24
+    cx = margin + box_w // 2
+    y = margin
+    body: list[str] = []
+
+    for i, node in enumerate(spec.nodes):
+        if i > 0:
+            ay = y
+            y += gap // 2
+            body.append(
+                f'<line x1="{cx}" y1="{ay + box_h}" x2="{cx}" y2="{y}" '
+                f'stroke="#ff7eaa" stroke-width="2"/>'
+            )
+            if node.arrow:
+                body.append(
+                    f'<text x="{cx}" y="{y - 6}" text-anchor="middle" '
+                    f'fill="#b8a6b1" font-size="11">{html.escape(node.arrow)}</text>'
+                )
+            body.append(
+                f'<polygon points="{cx - 5},{y} {cx + 5},{y} {cx},{y + 8}" fill="#ff7eaa"/>'
+            )
+            y += gap // 2
+
+        body.append(
+            f'<rect x="{margin}" y="{y}" width="{box_w}" height="{box_h}" rx="8" '
+            f'fill="url(#box)" stroke="#2c2230" stroke-width="1.5"/>'
+        )
+        body.append(
+            f'<text x="{cx}" y="{y + 22}" text-anchor="middle" font-weight="600">'
+            f"{html.escape(node.title)}</text>"
+        )
+        if node.sub:
+            body.append(
+                f'<text x="{cx}" y="{y + 40}" text-anchor="middle" fill="#b8a6b1" '
+                f'font-size="11">{html.escape(node.sub)}</text>'
+            )
+        y += box_h
+
+    total_h = y + margin
+    return "\n".join([
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'viewBox="0 0 {box_w + margin * 2} {total_h}" '
+        f'font-family="Space Grotesk, system-ui, sans-serif">',
+        "<defs>",
+        '<linearGradient id="box" x1="0" y1="0" x2="1" y2="1">',
+        '<stop offset="0%" stop-color="#1c1620"/>',
+        '<stop offset="100%" stop-color="#110d14"/>',
+        "</linearGradient>",
+        "</defs>",
+        f'<g fill="#f4eef2" font-size="13">',
+        *body,
+        "</g>",
+        "</svg>",
+        "",
+    ])
+
+
 def main() -> int:
-    if len(sys.argv) > 2:
-        print(__doc__, file=sys.stderr)
-        return 2
-    text = (
-        open(sys.argv[1]).read() if len(sys.argv) == 2 and sys.argv[1] != "-"
-        else sys.stdin.read()
-    )
-    sys.stdout.write(render(parse(text)))
+    parser = argparse.ArgumentParser(description="Render YUME pipeline diagrams from .spec files")
+    parser.add_argument("spec", nargs="?", help="spec file path, or read stdin when omitted")
+    parser.add_argument("--svg", action="store_true", help="emit SVG instead of ASCII")
+    args = parser.parse_args()
+
+    if args.spec is None:
+        text = sys.stdin.read()
+    else:
+        text = open(args.spec).read()
+
+    spec = parse(text)
+    if args.svg:
+        sys.stdout.write(render_svg(spec))
+    else:
+        sys.stdout.write(render(spec))
     return 0
 
 

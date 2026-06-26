@@ -503,6 +503,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/cli/args.cpp
         server/cli/cluster.cpp
         server/cli/config_load.cpp
+        server/cli/entry.cpp
         server/cli/key.cpp
         server/cli/local.cpp
         server/cli/misc.cpp

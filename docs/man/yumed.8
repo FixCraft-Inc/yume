@@ -271,6 +271,132 @@ Add a federation peer.
 Attach to a local running
 .B yumed
 instance.
+.SH APPLICATION CODEC OPTIONS
+Application codecs are protocol-aware shims, not raw TCP forwards. The
+server must allow a codec globally and the client key must list it in
+.BR auth_keys.meta .
+.TP
+.BI "--codec-allow " name
+Allow an application codec id or alias (for example
+.BR monero-rpc ).
+Repeat for multiple codecs.
+.TP
+.B --allow-monero-rpc
+Legacy alias for
+.BI "--codec-allow " monero-rpc .
+.TP
+.BI "--monero-rpc-backend " host:port
+Loopback backend for Monero RPC reconstruction. Default:
+.BR 127.0.0.1:18089 .
+Only loopback literals are accepted.
+.SH DISGUISE OPTIONS
+.TP
+.BI "--hide-in-the-crowd " profile
+Serve canned HTTP responses for non-YUME HTTPS probes using a named
+disguise profile. Profiles mimic common CDN or static-site error pages
+instead of closing immediately after TLS.
+.SH FEDERATION AND CLUSTER OPTIONS
+Federation links are mutual TLS 1.3 connections between
+.BR yumed (8)
+peers. Each peer keeps its own
+.B authorized_keys
+and
+.BR auth_keys.meta .
+.TP
+.B --cluster-bootstrap
+Mark this node as a cluster bootstrap that accepts incoming peer dials.
+Implies
+.BR --federation-enable .
+.TP
+.BI "--cluster-join " spec
+Dial a peer using the short form
+.BI [id@]host[:port][?pin=sha256] .
+Bracket IPv6 addresses as
+.BR [2001:db8::1]:443 .
+Repeat for multiple peers.
+.TP
+.B --public-node
+Advertise this node in the directory when directory features are enabled.
+.TP
+.BI "--federation-auth-key " path
+Ed25519 private key used to authenticate federation peer links.
+.TP
+.BI "--federation-anonym-ca " path
+CA certificate peers must present for federated TLS.
+.TP
+.BI "--peer " json
+Add a federation peer using raw JSON (power-user form).
+.SH SESSION LIMITS
+.TP
+.BI "--tls-handshake-timeout-ms " ms
+Abort slow TLS handshakes after
+.I ms
+milliseconds.
+.TP
+.BI "--max-sessions" n
+Cap concurrent authenticated client sessions.
+.TP
+.BI "--accept-rate-limit " n
+Limit new TCP accepts per second (0 disables).
+.SH AUTH_KEYS.META FORMAT
+.B auth_keys.meta
+is JSON keyed by Ed25519 public-key fingerprint (hex). Each entry may
+include an
+.B alias
+and a
+.B permissions
+object. Omitted permission fields default to deny for dangerous
+features and allow for relay-side chat/file/bytes channels.
+.PP
+Example:
+.PP
+.nf
+{
+  "0d4f3a...fingerprint...": {
+    "alias": "alice",
+    "permissions": {
+      "allow_exec": true,
+      "allow_local_ip": true,
+      "allow_codecs": ["monero-rpc"],
+      "control_full": false,
+      "allow_inbound_admin": true,
+      "allow_outbound_admin": false,
+      "allow_chat": true,
+      "allow_file": true,
+      "allow_bytes": true
+    }
+  }
+}
+.fi
+.PP
+Generate fingerprints with
+.BI "yumed --auth-keys " path " --keys-list" .
+See
+.BR docs/PERMISSIONS.md
+for the full field table.
+.SH ENVIRONMENT
+.TP
+.B YUME_DNS_SERVER
+Override the resolver used for server-side outbound opens when
+.B --dns-server
+is not set.
+.TP
+.B YUME_ANONYM_LOCAL_SIGN
+When set to
+.BR 0 ,
+disable local anonym proof signing even if CA/sub keys are configured.
+Set to
+.B 1
+to force local signing on platforms where it is off by default.
+.TP
+.B SUDO_UID
+.BR /
+.B SUDO_GID
+When started under
+.BR sudo ,
+these are read after bind/listen so PQ key files can be
+.BR chown (2)
+ed before privilege drop.
 .SH KEY MANAGEMENT
 .TP
 .B --keys-list

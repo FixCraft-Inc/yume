@@ -1,64 +1,139 @@
-.TH YUME-GUI 1 "May 2026" "yume" "User Commands"
+.TH YUME-GUI 1 "2026-06-26" "YUME 1.0" "YUME Manual"
 .SH NAME
-yume-gui \- desktop UI for the Yume post-quantum stealth transport
+yume-gui \- desktop UI for the YUME post-quantum stealth transport
 .SH SYNOPSIS
 .B yume-gui
-.RI [ options ]
+[
+.I options
+]
 .SH DESCRIPTION
 .B yume-gui
-is an optional Dear ImGui-based desktop application. It embeds the
-server facade for local
+is an optional Dear ImGui desktop application. It embeds the same
+facade sessions used by automation and tests: a
 .BR yumed (8)
-control and starts the real
+server controller and a background
 .BR yume (1)
-client runtime in the background, attaching to it through local IPC.
+client runtime attached through local IPC.
 .PP
-The GUI is a thin layer over the same transport stack used by
+The GUI does not reimplement the transport stack. JSON profiles written
+here are compatible with the CLI binaries.
+.SH WORKSPACES
+The sidebar switches between two workspaces:
+.TP
+.B Client
+Connect, security, logs, settings, and credits for the
 .BR yume (1)
-and
+runtime.
+.TP
+.B Server
+Server control, authorized keys, logs, settings, and credits for
 .BR yumed (8).
-Configuration files written by the GUI are compatible with the CLI.
+.SH PAGES
+.TP
+.B Dashboard
+Connection summary and quick status for the active workspace.
+.TP
+.B Connect
+Server host, identity key, SOCKS port, stealth toggles, and connect /
+disconnect controls.
+.TP
+.B Security
+Inner crypto, TLS profile, obfs secret, and trust material (CA pins,
+anonym CA import).
+.TP
+.B Server
+Listen port, TLS cert paths, auth keys, real HTTP facade, and daemon
+start/stop.
+.TP
+.B Keys
+Generate Ed25519 keypairs and manage
+.B authorized_keys
+entries.
+.TP
+.B Logs
+Live log view for the embedded client or server session.
+.TP
+.B Settings
+Appearance (theme), paths, and runtime preferences.
+.TP
+.B Credits
+Project version and license notice.
 .SH OPTIONS
 .TP
 .B --headless
-Run a no-window smoke test of the embedded facade. Useful for verifying
-the build on systems without a display server.
+Run a no-window smoke test of the embedded facade. Exits after
+verifying that client and server sessions initialize. Useful on CI
+hosts without a display server.
 .TP
 .B --start-minimized
-Open the application hidden. The system tray icon (if present) can be
-used to show the window.
+Open hidden. Use the tray menu (when available) to show the main
+window.
 .TP
 .B --no-tray
-Disable the system tray icon at runtime. Equivalent to a build without
+Disable the system tray icon at runtime even when the build includes
 tray support.
 .TP
-.BI --client-config " path"
-Load the client configuration from
-.IR path
+.BI "--client-config " path
+Load the client JSON profile from
+.I path
 instead of the platform default.
 .TP
-.BI --server-config " path"
-Load the server configuration from
-.IR path
+.BI "--server-config " path
+Load the server JSON profile from
+.I path
 instead of the platform default.
 .TP
 .B -h, --help
 Print a help summary and exit.
+.SH KEYBOARD AND WINDOW
+.PP
+Standard Dear ImGui navigation applies: click fields to edit, Tab to
+move focus, Enter to activate buttons. The main window can be resized;
+the sidebar layout adapts to narrow widths.
+.PP
+There is no global accelerator table yet. Use the sidebar to switch
+pages.
+.SH SYSTEM TRAY
+When tray support is compiled in and not disabled with
+.BR --no-tray ,
+a status icon may appear in the desktop environment's notification
+area.
+.PP
+On Wayland (KDE Plasma, GNOME with certain compositors), tray behavior
+depends on the desktop portal and StatusNotifier implementation. If the
+icon is missing, run with
+.B --no-tray
+and keep the main window visible, or use the CLI binaries directly.
+.SH BUILD
+The GUI is optional:
+.PP
+.nf
+cmake -B build -DYUME_BUILD_GUI=ON
+cmake --build build -j$(nproc)
+.fi
+.PP
+Requires OpenGL, GLFW, and ImGui/ImPlot fetched by CMake. Debian
+packaging skips the GUI when
+.B DEB_BUILD_PROFILES
+contains
+.BR nogui .
 .SH FILES
 .TP
 .I ~/.yume/client.json
-Default GUI client profile.
+Default GUI client profile (Linux). macOS and Windows use the
+platform-specific config directory under the user home.
 .TP
 .I ~/.yume/server.json
 Default GUI server configuration.
 .TP
 .I ~/.yume/secure-materials/
-Trusted anonym CAs and imported client auth keys.
+Imported anonym CAs and client auth keys managed by the Security page.
 .TP
 .I ~/.yume/keys/
 Default key generation directory.
 .SH SEE ALSO
 .BR yume (1),
-.BR yumed (8)
+.BR yumed (8),
+.BR docs/ARCHITECTURE.md
 .SH AUTHOR
 FixCraft Inc.

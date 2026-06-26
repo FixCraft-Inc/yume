@@ -1,0 +1,12 @@
+# Paths that should remain branch-specific and must not be auto-synced.
+AI_gen/**
+docs/dev/**
+docs/debug/**
+diagnose.log
+test_output.txt
+*.log
+scripts/debug/**
+DEV_services/**
+yumedd
+yumedc
+yumeddd

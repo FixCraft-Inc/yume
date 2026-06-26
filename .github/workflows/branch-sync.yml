@@ -33,26 +33,24 @@ jobs:
             exit 0
           fi
           target_branch="DEV"
+
           exclude_file=".branch-sync-exclude"
+          if [[ ! -f "${exclude_file}" ]]; then
+            : > "${exclude_file}"
+          fi
 
           git fetch --no-tags origin main DEV
           work_branch="branch-sync-${source_branch}-to-${target_branch}-${GITHUB_RUN_ID}"
           git checkout -B "${work_branch}" "origin/${target_branch}"
 
-          mapfile -t exclude_patterns < <(
-            git show "origin/${target_branch}:${exclude_file}" 2>/dev/null \
-              | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
-              | grep -v '^$' \
-              | grep -v '^#' || true
-          )
-          exclude_patterns+=("${exclude_file}")
-
           # Start from source snapshot.
           git checkout "origin/${source_branch}" -- .
 
-          if ! git cat-file -e "origin/${source_branch}:${exclude_file}" 2>/dev/null; then
-            git checkout "origin/${target_branch}" -- "${exclude_file}" 2>/dev/null || true
-          fi
+          mapfile -t exclude_patterns < <(
+            sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "${exclude_file}" \
+              | grep -v '^$' \
+              | grep -v '^#' || true
+          )
 
           matches_exclude() {
             local path="$1"
@@ -82,18 +80,6 @@ jobs:
               fi
             done < <(git ls-files)
           fi
-
-          # Remove tracked paths that exist only on the target branch.
-          while IFS= read -r path; do
-            [[ -n "${path}" ]] || continue
-            if matches_exclude "${path}"; then
-              continue
-            fi
-            if ! git cat-file -e "origin/${source_branch}:${path}" 2>/dev/null; then
-              git rm -rf --ignore-unmatch -- "${path}" >/dev/null 2>&1 || true
-              rm -rf -- "${path}" >/dev/null 2>&1 || true
-            fi
-          done < <(git ls-tree -r --name-only "origin/${target_branch}")
 
           if [[ -z "$(git status --porcelain)" ]]; then
             echo "No sync changes from ${source_branch} -> ${target_branch}."

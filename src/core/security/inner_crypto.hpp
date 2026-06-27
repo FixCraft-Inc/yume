@@ -16,19 +16,11 @@ struct Argon2Limits {
 };
 
 struct Config {
-#if YUME_USE_BASEFWX
     bool enabled{false};
     std::string pq_public_key;
     std::string pq_private_key;
     bool allow_embedded_master{false};
     Argon2Limits argon2_limits;
-#else
-    bool enabled{false};
-    std::string pq_public_key;
-    std::string pq_private_key;
-    bool allow_embedded_master{false};
-    Argon2Limits argon2_limits;
-#endif
 };
 
 struct ClientHandshake {

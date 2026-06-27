@@ -45,7 +45,7 @@ struct DialResult {
 // that's exactly what Tor expects. Synchronous (drives `io` internally)
 // so it slots into the existing connect_with_timeout pattern. The
 // caller's resolved endpoints / direct-connect path is unaffected when
-// cfg.type == Type::None — that branch is handled in cli.cpp.
+// cfg.type == Type::None — that branch is handled in entry.cpp.
 DialResult socks5_dial(boost::asio::ip::tcp::socket& sock,
                        boost::asio::io_context& io,
                        Config const& cfg,

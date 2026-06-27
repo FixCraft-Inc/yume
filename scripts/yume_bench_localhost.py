@@ -37,14 +37,14 @@ Outputs a JSON document (default: stdout, or --json <path>) and a
 human-readable summary table on stderr. Exit 0 on success, non-zero
 on setup failure or if any config could not complete.
 
-Resource guards (CPU + memory caps from scripts/lib/resource_guards.sh
-if available) are applied opt-in via --guards. The bench itself is
+Resource guards (optional CPU + memory caps) are not yet implemented in
+this repo; `--guards` is reserved for a future helper script. The bench itself is
 light (small TCP roundtrips), but the yume binary startup involves
 TLS handshake + PQ key derivation, so on weak hosts you may want
 the guards.
 
 This script DOES NOT exercise the full encryption stack at scale —
-test_all.sh already covers byte-level cross-runtime parity. The
+cross-runtime parity suites belong on a dedicated build host. The
 bench's job is to measure the *protocol delay* you'd observe in a
 real interactive workload (one frame in → one frame out).
 """

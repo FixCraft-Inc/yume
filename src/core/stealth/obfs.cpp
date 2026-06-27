@@ -6,8 +6,6 @@
 
 #include "core/stealth/obfs.hpp"
 
-#include "core/stealth/http_profile.hpp"
-
 #include <openssl/ssl.h>
 
 #include <stdexcept>
@@ -135,20 +133,6 @@ std::string selected_alpn(const SSL* ssl) {
         return {};
     }
     return std::string(reinterpret_cast<const char*>(data), static_cast<std::size_t>(len));
-}
-
-void send_dummy_http_response(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
-                              const std::string& profile_name) {
-    // Resolve the profile; fall back to yumed if unknown so a typo
-    // doesn't take down a connection. yumed is the historical default
-    // and preserves pre-1.0 byte-for-byte behavior unless an operator
-    // passed --hide-in-the-crowd.
-    auto profile = yume::http_profile::server(profile_name.empty() ? "yumed" : profile_name);
-    if (!profile.has_value()) {
-        profile = yume::http_profile::server("yumed");
-    }
-    const std::string resp = yume::http_profile::render_404(*profile, /*connection_close=*/true);
-    boost::asio::write(stream, boost::asio::buffer(resp));
 }
 
 }  // namespace yume::obfs

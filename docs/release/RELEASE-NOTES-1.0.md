@@ -387,7 +387,7 @@ Cross-builds and reproducible release tarballs are driven by
 
 ## 13. License
 
-GPL-3.0-only. See [`LICENCE`](LICENCE). BaseFWX (the inner crypto
+GPL-3.0-only. See [`LICENSE`](LICENSE). BaseFWX (the inner crypto
 library) is also GPL-3.0-only; both can be built and redistributed
 freely under those terms.
 

@@ -27,8 +27,8 @@
 namespace yume::client {
 
 // Shared CLI fatal-error exception (used here by read_frame_with_timeout and
-// throughout cli.cpp). Lives in this header because cli/io.hpp is included by
-// cli.cpp, so every call site sees the one definition.
+// throughout entry.cpp). Lives in this header because connect/io.hpp is included
+// by entry.cpp, so every call site sees the one definition.
 struct FatalError : public std::runtime_error {
     using std::runtime_error::runtime_error;
 };

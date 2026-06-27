@@ -488,7 +488,7 @@ Bytes build_aad(std::uint8_t frame_type, std::uint8_t stream_id) {
 }  // namespace
 
 // Safe-by-default Argon2 caps. The server-side guard at
-// session.cpp::on_read_payload calls argon2_params_exceed_limits with
+// server/session/auth.cpp calls argon2_params_exceed_limits with
 // the value returned here — and prior to 1.0.x this function returned
 // {0,0,0} when no env var was set, which the guard interpreted as
 // "no cap". That made the daemon vulnerable to a remote pre-auth
@@ -642,12 +642,13 @@ ClientHandshake client_prepare(const Config& cfg, bool heavy) {
 #else
     Bytes pub = load_pq_public_key(cfg.pq_public_key, cfg.allow_embedded_master);
     auto kem = basefwx::pq::KemEncrypt(pub);
+    basefwx::crypto::SecureBytes kem_shared{std::move(kem.shared)};
     result.enabled = true;
     result.pq_ciphertext = std::move(kem.ciphertext);
     result.salt = basefwx::crypto::RandomBytes(basefwx::constants::kUserKdfSaltSize);
     if (heavy) {
         KdfParams params = select_argon2_params(cfg.argon2_limits);
-        DerivedKey derived = derive_key_heavy(kem.shared, result.salt, params, true);
+        DerivedKey derived = derive_key_heavy(kem_shared.bytes(), result.salt, params, true);
         result.key = derived.key;
         result.kdf = derived.kdf;
         result.pbkdf2_iters = params.pbkdf2_iters;
@@ -657,7 +658,7 @@ ClientHandshake client_prepare(const Config& cfg, bool heavy) {
             result.argon2_parallelism = params.argon2_parallelism;
         }
     } else {
-        result.key = derive_key(kem.shared);
+        result.key = derive_key(kem_shared.bytes());
         result.kdf = "hkdf";
     }
     return result;

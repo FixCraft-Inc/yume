@@ -119,7 +119,7 @@ GUI profile, trust material, generated keys, and runtime data live under `~/.yum
 ### Limitations of the current MVP
 
 - `ServerSession::start()` runs a real in-process `yumed` runtime through the shared server manager. Privileged ports still require root or `cap_net_bind_service`.
-- `ClientSession::start()` currently launches the `yume` binary as a managed background process and communicates with it through the existing local runtime socket. A pure in-process client controller still requires extracting the TLS/auth handshake from `client/cli.cpp`.
+- `ClientSession::start()` currently launches the `yume` binary as a managed background process and communicates with it through the existing local runtime socket. A pure in-process client controller still requires extracting the TLS/auth handshake from `src/client/cli/entry.cpp`.
 - Chat / directory pages depend on a connected background client and use the live `RelayRuntime` IPC surface.
 - The tray code path is present but only assembles when `libayatana-appindicator3-dev` is installed; the rest of the GUI works without it.
 

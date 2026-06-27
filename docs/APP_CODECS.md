@@ -104,7 +104,7 @@ Future plugins should follow the same contract: parse the local app protocol,
 validate it on both ends, carry typed codec envelopes over Yume streams, and
 reconstruct only to a narrow trusted backend.
 
-Alpha 1 registry contract:
+Stable registry contract (since 1.0):
 
 - A codec has a canonical id such as `monero-rpc-v1` plus stable user aliases
   such as `monero-rpc`.

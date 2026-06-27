@@ -21,10 +21,8 @@ std::string select_carrier_alpn(const unsigned char* peer_protos,
                                 bool allow_h2 = true);
 std::string selected_alpn(const SSL* ssl);
 
-// Sends a profile-driven 404 response and returns. `profile_name`
-// is a yume::http_profile::ServerProfile key (e.g. "nginx", "apache",
-// "yumed"). Empty string or unknown name falls back to "yumed" so a
-// typo can't take down a connection.
+// Profile-driven HTTP disguise (404 responses) lives in
+// Session::send_disguise_404 (server/session/carrier.cpp), not here.
 //
 // Per-write traffic shaping (jitter, frame-level padding) is NOT in
 // this header. Send-side jitter lives in:
@@ -33,7 +31,5 @@ std::string selected_alpn(const SSL* ssl);
 // Frame-level padding lives on the wire as protocol::kFlagPadded; see
 // protocol::encode_frame's pad_multiple parameter. Operators enable
 // both via the --obfs-jitter-ms / --obfs-pad-multiple flags.
-void send_dummy_http_response(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
-                              const std::string& profile_name = "yumed");
 
 }  // namespace yume::obfs

@@ -1,7 +1,7 @@
 /*
  * YUME - Yume Universal Multiprotocol Engine
  * Copyright (C) 2026  FixCraft Inc.
- * Licensed under the GNU General Public License v3.0.
+ * Licensed under the GNU Affero General Public License v3.0 or later.
  */
 
 #include "pages/page.hpp"
@@ -49,7 +49,7 @@ constexpr Person kPeople[] = {
 constexpr Component kComponentsAll[] = {
     {"BaseFWX",
      "The core Yume crypto engine - outer auth, inner post-quantum tunnel, key formats.",
-     "GPL-3.0"},
+     "LGPL-3.0-or-later"},
     {"liboqs (Open Quantum Safe)",
      "Post-quantum primitives (ML-KEM, ML-DSA) consumed through BaseFWX.",
      "MIT"},

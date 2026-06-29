@@ -1,7 +1,7 @@
 /*
  * YUME - Yume Universal Multiprotocol Engine
  * Copyright (C) 2026  FixCraft Inc.
- * Licensed under the GNU General Public License v3.0.
+ * Licensed under the GNU Affero General Public License v3.0 or later.
  *
  * Selftest/benchmark terminal presentation: progress bar, ANSI color,
  * and grade colouring. Extracted verbatim from tools/selftest.cpp.

@@ -1,3 +1,9 @@
+/*
+ * YUME - Yume Universal Multiprotocol Engine
+ * Copyright (C) 2020-2026  FixCraft Inc.
+ * Licensed under the GNU Affero General Public License v3.0 or later.
+ */
+
 // HTTP-layer disguise profiles. The TLS stealth layer
 // (core/tls_stealth.*) already rotates JA3/JA4 fingerprints to look
 // like a browser; this module sits one layer above and controls the

@@ -1,7 +1,7 @@
 /*
  * YUME - Yume Universal Multiprotocol Engine
  * Copyright (C) 2026  FixCraft Inc.
- * Licensed under the GNU General Public License v3.0.
+ * Licensed under the GNU Affero General Public License v3.0 or later.
  *
  * Implementations for the benchmark workload sizing declared in
  * tools/selftest/sizing.hpp. Extracted verbatim from tools/selftest.cpp.

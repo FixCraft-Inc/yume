@@ -3,7 +3,7 @@
 /*
  * YUME - Yume Universal Multiprotocol Engine
  * Copyright (C) 2026  FixCraft Inc.
- * Licensed under the GNU General Public License v3.0.
+ * Licensed under the GNU Affero General Public License v3.0 or later.
  *
  * CLI help/usage text and version/credits output, extracted from
  * client/cli/entry.cpp to keep that entrypoint file from carrying ~200 lines

@@ -4,7 +4,7 @@
 
 Yume Universal Multiprotocol Engine. An open-source post-quantum stealth transport. The name is a single character — 夢 — and we use it the way Japanese uses it: a dream of a network you can trust, where the wire shape can't tell yume from any other HTTPS site, and where neither the client nor the server is forced to advertise itself.
 
-YUME tunnels TCP and UDP through TLS 1.3 sessions that look like ordinary Chrome HTTPS to a DPI box, with hybrid ML-KEM-768 + AES-GCM inner crypto, an optional Argon2id heavy KDF, and 1–4 Hz live key hopping. Both the client (`yume`) and the daemon (`yumed`) are GPL-v3 and build from this tree. They run on x86, ARMv7/8, MIPS OpenWRT, BusyBox, macOS, and Windows; the minimal build runs on routers with as little as 128 MiB of RAM.
+YUME tunnels TCP and UDP through TLS 1.3 sessions that look like ordinary Chrome HTTPS to a DPI box, with hybrid ML-KEM-768 + AES-GCM inner crypto, an optional Argon2id heavy KDF, and 1-4 Hz live key hopping. The client (`yume`), daemon (`yumed`), proxy, GUI, and libyume surface are AGPL-3.0-or-later and build from this tree. They run on x86, ARMv7/8, MIPS OpenWRT, BusyBox, macOS, and Windows; the minimal build runs on routers with as little as 128 MiB of RAM.
 
 - Website: https://yume.fixcraft.jp
 - Source: https://github.com/FixCraft-Inc/yume
@@ -26,9 +26,9 @@ YUME tries to do the opposite: a transport that looks like ordinary Chrome HTTPS
 | Anonym / no-log mode        | built in        | n/a            | per-provider             | yes                | n/a             |
 | Free public endpoints       | planned (FixCraft) | none        | none                     | yes                | none            |
 | Embedded / 128 MiB hardware | yes             | yes            | yes                      | partial            | yes             |
-| Self-hostable, fully open   | yes (GPL-v3)    | yes            | yes                      | bridge only        | yes             |
+| Self-hostable, fully open   | yes (AGPL-v3+)  | yes            | yes                      | bridge only        | yes             |
 | Steady-state CPU/byte overhead | <1 % typical, <5 % always | ~0 % | a few %                  | high               | low             |
-| License                     | GPL-v3          | GPL-v2         | GPL-v2                   | BSD-3              | Apache-2        |
+| License                     | AGPL-v3+        | GPL-v2         | GPL-v2                   | BSD-3              | Apache-2        |
 
 YUME's row comes from the live measurement reported in [docs/PERFORMANCE.md](docs/PERFORMANCE.md). The other rows are conservative; anything contested is left blank or hedged.
 
@@ -513,7 +513,7 @@ sudo ./build/bin/yumed \
 
 ## Security posture
 
-- GPL-v3, both client and daemon fully buildable from this tree
+- AGPL-3.0-or-later, with client, daemon, proxy, GUI, and libyume fully buildable from this tree
 - BaseFWX is pinned by commit (see `config/refs/basefwx.ref`); release CI fails if mandatory crypto support is missing
 - Authorized keys verified with OpenSSL `EVP_DigestVerify` ([src/core/security/crypto.cpp:78](src/core/security/crypto.cpp#L78))
 - Inner-frame AEAD verified before plaintext is delivered (OpenSSL `EVP_DecryptFinal_ex`)
@@ -540,4 +540,4 @@ sudo ./build/bin/yumed \
 
 ## License
 
-GNU GPL v3. See [LICENSE](LICENSE).
+YUME source, apps, daemon, proxy, GUI, and libyume are licensed under AGPL-3.0-or-later. See [LICENSE](LICENSE).

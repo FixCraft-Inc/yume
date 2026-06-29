@@ -1,7 +1,7 @@
 /*
  * YUME - Yume Universal Multiprotocol Engine
  * Copyright (C) 2026  FixCraft Inc.
- * Licensed under the GNU General Public License v3.0.
+ * Licensed under the GNU Affero General Public License v3.0 or later.
  *
  * Local hot-path micro-benchmarks (memory copy/bandwidth, AES-GCM, packet-bulk
  * codec, hop HKDF, disk, sustained mix) used by the selftest "engine" scoring.

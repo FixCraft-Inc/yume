@@ -1,7 +1,7 @@
 /*
  * YUME - Yume Universal Multiprotocol Engine
  * Copyright (C) 2026  FixCraft Inc.
- * Licensed under the GNU General Public License v3.0.
+ * Licensed under the GNU Affero General Public License v3.0 or later.
  *
  * TransportCore inner-crypto: AEAD seal/open with live hop-key derivation.
  * Extracted verbatim from client/transport/core.cpp. Same

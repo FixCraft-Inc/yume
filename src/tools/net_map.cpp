@@ -1,3 +1,9 @@
+/*
+ * YUME - Yume Universal Multiprotocol Engine
+ * Copyright (C) 2020-2026  FixCraft Inc.
+ * Licensed under the GNU Affero General Public License v3.0 or later.
+ */
+
 // yume-net-map — ASCII visualization of the local yumed's federation
 // topology. Connects to the local admin socket, reads runtime.status +
 // federation.status, and prints a small fan / hex layout of the

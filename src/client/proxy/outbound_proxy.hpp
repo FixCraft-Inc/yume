@@ -1,7 +1,7 @@
 /*
  * YUME - Yume Universal Multiprotocol Engine
  * Copyright (C) 2026  FixCraft Inc.
- * Licensed under the GNU General Public License v3.0.
+ * Licensed under the GNU Affero General Public License v3.0 or later.
  *
  * Outbound SOCKS5 client: dial through a SOCKS5 proxy (Tor, sshuttle,
  * stunnel, etc.) to reach the Yume server. The destination hostname is

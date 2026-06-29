@@ -3,7 +3,7 @@
 YUME is a **post-quantum stealth transport** that tunnels TCP and UDP
 through real TLS 1.3 sessions, shaped to look like ordinary Chrome
 HTTPS to a DPI box. Both ends — the client `yume` and the daemon
-`yumed` — are open-source under GPL-3.0 and build from this tree.
+`yumed` — are open-source under AGPL-3.0-or-later and build from this tree.
 
 This is the planned stable release after the public `v1.0` test release.
 The `v1.0` GitHub tag is intentionally left as published; `v1.1` is the
@@ -390,9 +390,11 @@ Cross-builds and reproducible release tarballs are driven by
 
 ## 13. License
 
-GPL-3.0-only. See [`LICENSE`](LICENSE). BaseFWX (the inner crypto
-library) is also GPL-3.0-only; both can be built and redistributed
-freely under those terms.
+AGPL-3.0-or-later for YUME source, apps, daemon, proxy, GUI, and
+libyume. See [`LICENSE`](LICENSE). BaseFWX has its own split license:
+core library/API/runtime code and plugin ABI/SPI surfaces are
+LGPL-3.0-or-later, standalone CLI/tools/benchmarks/scripts are
+GPL-3.0-or-later, and example plugin templates are MIT OR Apache-2.0.
 
 ---
 

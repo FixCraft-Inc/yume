@@ -1,7 +1,7 @@
 /*
  * YUME - Yume Universal Multiprotocol Engine
  * Copyright (C) 2026  FixCraft Inc.
- * Licensed under the GNU General Public License v3.0.
+ * Licensed under the GNU Affero General Public License v3.0 or later.
  *
  * CLI help / version / credits / bash-completion output, extracted
  * verbatim from client/cli/entry.cpp. No behavior change.
@@ -76,7 +76,7 @@ void print_credits() {
         << "  Claude (Anthropic) - Yume/BaseFWX engineering partner.\n"
         << "  ChatGPT / Codex - implementation and debugging support.\n"
         << "Core open-source components:\n"
-        << "  BaseFWX - GPL-3.0\n"
+        << "  BaseFWX core/runtime - LGPL-3.0-or-later\n"
         << "  liboqs (Open Quantum Safe) - MIT\n"
         << "  OpenSSL - Apache-2.0\n"
         << "  Boost.Asio - Boost Software License 1.0\n"

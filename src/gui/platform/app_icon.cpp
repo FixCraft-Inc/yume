@@ -1,7 +1,7 @@
 /*
  * YUME - Yume Universal Multiprotocol Engine
  * Copyright (C) 2026  FixCraft Inc.
- * Licensed under the GNU General Public License v3.0.
+ * Licensed under the GNU Affero General Public License v3.0 or later.
  *
  * Window-icon plumbing for both X11/Win32/Cocoa (rasterise SVG + push
  * via glfwSetWindowIcon) and Wayland (XDG install + app_id hint so the

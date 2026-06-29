@@ -1,7 +1,7 @@
 /*
  * YUME - Yume Universal Multiprotocol Engine
  * Copyright (C) 2026  FixCraft Inc.
- * Licensed under the GNU General Public License v3.0.
+ * Licensed under the GNU Affero General Public License v3.0 or later.
  *
  * Stateless HTTP/2 carrier codec used by --obfs. We forge the byte-shape of a
  * Chrome 135 client/server exchange so a stateless DPI box classifies the

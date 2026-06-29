@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# YUME - Yume Universal Multiprotocol Engine
+# Copyright (C) 2020-2026  FixCraft Inc.
+# Licensed under the GNU Affero General Public License v3.0 or later.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

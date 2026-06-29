@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# YUME - Yume Universal Multiprotocol Engine
+# Copyright (C) 2020-2026  FixCraft Inc.
+# Licensed under the GNU Affero General Public License v3.0 or later.
 # bundle-windows.sh - take the yume*.exe binaries from a Linux cross-
 # build and pack them with every DLL they actually depend on into a
 # single zip. The dependency walk is iterative (a DLL can pull more

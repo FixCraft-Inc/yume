@@ -6,8 +6,8 @@
 """Dry-run/apply license header updates for YUME and bundled BaseFWX.
 
 Default mode is dry-run. Use --apply only after reviewing the planned changes.
-This script intentionally edits only source-file header lines, not LICENSE,
-LICENCE, README, Debian metadata, or longer licensing docs.
+This script updates source-file header lines and prepends missing headers.
+It does not rewrite LICENSE, LICENCE, README, Debian metadata, or long docs.
 """
 
 from __future__ import annotations
@@ -26,6 +26,12 @@ BASEFWX_LGPL_NEW = "Licensed under the GNU Lesser General Public License v3.0 or
 BASEFWX_EXAMPLE_NEW = "SPDX-License-Identifier: MIT OR Apache-2.0"
 BASEFWX_MIXED_NEW = "SPDX-License-Identifier: LGPL-3.0-or-later AND GPL-3.0-or-later"
 
+YUME_HEADER = [
+    "YUME - Yume Universal Multiprotocol Engine",
+    "Copyright (C) 2020-2026  FixCraft Inc.",
+    YUME_NEW,
+]
+
 TEXT_EXTENSIONS = {
     ".c",
     ".cc",
@@ -39,7 +45,6 @@ TEXT_EXTENSIONS = {
     ".mm",
     ".py",
     ".sh",
-    ".txt",
 }
 
 SKIP_DIR_NAMES = {
@@ -51,19 +56,84 @@ SKIP_DIR_NAMES = {
     "build-fix",
     "build-rf",
     "vendor",
+    "third_party",
+    "basefwx",
+    "website",
+    ".claude",
+    ".codex",
+    ".wrangler",
 }
 
+YUME_EXTRA_FILES = (
+    ROOT / "CMakeLists.txt",
+    ROOT / "ezbuild.sh",
+    ROOT / "fullau.sh",
+)
 
-def is_skipped(path: Path) -> bool:
-    parts = set(path.relative_to(ROOT).parts)
-    if parts & SKIP_DIR_NAMES:
+YUME_SCAN_DIRS = (
+    ROOT / "include",
+    ROOT / "src",
+    ROOT / "scripts",
+    ROOT / "tools",
+)
+
+
+def is_skipped(path: Path, base: Path = ROOT) -> bool:
+    rel_parts = path.relative_to(base).parts
+    name = path.name
+    if name.startswith("LICENSE") or name.startswith("LICENCE"):
         return True
-    return any(part.startswith("build-") for part in parts)
+    for index, part in enumerate(rel_parts):
+        if part in SKIP_DIR_NAMES:
+            return True
+        if index < len(rel_parts) - 1 and part.startswith("build-"):
+            return True
+    return False
+
+
+def comment_prefix(path: Path) -> str:
+    if path.suffix == ".py" or path.suffix == ".sh" or path.name.endswith(".sh"):
+        return "# "
+    return "# "
+
+
+def format_header(path: Path, lines: list[str]) -> str:
+    prefix = comment_prefix(path)
+    return "".join(f"{prefix}{line}\n" for line in lines)
+
+
+def has_license_marker(text: str, replacement: str) -> bool:
+    head = text[:1200]
+    if replacement in head:
+        return True
+    if replacement == YUME_NEW:
+        return "GNU Affero General Public License v3.0 or later" in head
+    if replacement == BASEFWX_LGPL_NEW:
+        return "GNU Lesser General Public License v3.0 or later" in head
+    if replacement == BASEFWX_GPL_NEW:
+        return "GNU General Public License v3.0 or later" in head and "Lesser" not in head
+    if replacement == BASEFWX_EXAMPLE_NEW:
+        return BASEFWX_EXAMPLE_NEW in head
+    if replacement == BASEFWX_MIXED_NEW:
+        return BASEFWX_MIXED_NEW in head
+    return False
+
+
+def prepend_header(text: str, path: Path, header_lines: list[str]) -> tuple[str, int]:
+    block = format_header(path, header_lines)
+    if text.startswith("#!"):
+        first_newline = text.find("\n")
+        if first_newline == -1:
+            return block + text, 1
+        return text[: first_newline + 1] + block + text[first_newline + 1 :], 1
+    if text.startswith("\ufeff"):
+        return text[:1] + block + text[1:], 1
+    return block + text, 1
 
 
 def source_files_under(base: Path):
     for path in base.rglob("*"):
-        if not path.is_file() or is_skipped(path):
+        if not path.is_file() or is_skipped(path, base=base):
             continue
         if path.suffix in TEXT_EXTENSIONS or path.name == "CMakeLists.txt":
             yield path
@@ -104,6 +174,10 @@ def basefwx_license_for(path: Path) -> str | None:
     if rel.startswith("basefwx/tools/"):
         return BASEFWX_GPL_NEW
     if rel.startswith("basefwx/scripts/") or rel.startswith("basefwx/python/scripts/"):
+        return BASEFWX_GPL_NEW
+    if rel.startswith("basefwx/python/tools/") or rel.startswith("basefwx/python/tests/"):
+        return BASEFWX_GPL_NEW
+    if rel.startswith("basefwx/.github/scripts/"):
         return BASEFWX_GPL_NEW
 
     if rel.startswith("basefwx/cpp/"):
@@ -148,10 +222,10 @@ def update_example_plugin_header(text: str, path: Path) -> tuple[str, int]:
             or "Plugin under any license" in lines[j]
         ):
             j += 1
-        if path.suffix == ".txt" or path.name == "CMakeLists.txt" or line.lstrip().startswith("#"):
-            note = f"{prefix}This file is intentionally permissive so plugin authors can use it as a starting template.\n"
-        else:
-            note = f"{prefix}This file is intentionally permissive so plugin authors can use it as a starting template.\n"
+        note = (
+            f"{prefix}This file is intentionally permissive so plugin authors "
+            "can use it as a starting template.\n"
+        )
         updated_lines = lines[:i] + [f"{prefix}{BASEFWX_EXAMPLE_NEW}\n", note] + lines[j:]
         updated = "".join(updated_lines)
         return (updated, 1) if updated != text else (text, 0)
@@ -159,28 +233,52 @@ def update_example_plugin_header(text: str, path: Path) -> tuple[str, int]:
     return text, 0
 
 
-def process_file(path: Path, replacement: str, apply: bool) -> int:
+def process_file(path: Path, replacement: str, apply: bool, header_lines: list[str] | None = None) -> int:
     text = path.read_text(encoding="utf-8")
+    updated = text
+    count = 0
+
     if replacement == BASEFWX_EXAMPLE_NEW:
         updated, count = update_example_plugin_header(text, path)
     else:
         updated, count = update_license_line(text, replacement)
+
+    if count == 0 and header_lines is not None and not has_license_marker(updated, replacement):
+        updated, count = prepend_header(updated, path, header_lines)
+
     if count and apply:
         path.write_text(updated, encoding="utf-8")
     return count
 
 
+def yume_files():
+    seen: set[Path] = set()
+    for extra in YUME_EXTRA_FILES:
+        if extra.is_file():
+            seen.add(extra.resolve())
+            yield extra
+    for base in YUME_SCAN_DIRS:
+        if not base.is_dir():
+            continue
+        for path in source_files_under(base):
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            if path.name == "prepare_license_update.py":
+                continue
+            yield path
+
+
 def run_yume(apply: bool) -> tuple[int, int]:
-    roots = [ROOT / "include", ROOT / "src"]
     files = 0
     edits = 0
-    for base in roots:
-        for path in source_files_under(base):
-            count = process_file(path, YUME_NEW, apply)
-            if count:
-                files += 1
-                edits += count
-                print(f"yume     {path.relative_to(ROOT)} -> AGPL-3.0-or-later")
+    for path in yume_files():
+        count = process_file(path, YUME_NEW, apply, header_lines=YUME_HEADER)
+        if count:
+            files += 1
+            edits += count
+            print(f"yume     {path.relative_to(ROOT)} -> AGPL-3.0-or-later")
     return files, edits
 
 
@@ -191,7 +289,26 @@ def run_basefwx(apply: bool) -> tuple[int, int]:
         replacement = basefwx_license_for(path)
         if replacement is None:
             continue
-        count = process_file(path, replacement, apply)
+        header_lines = None
+        if replacement == BASEFWX_GPL_NEW:
+            header_lines = [
+                "BaseFWX - Cryptography Engine",
+                "Copyright (C) 2020-2026  FixCraft Inc.",
+                BASEFWX_GPL_NEW,
+            ]
+        elif replacement == BASEFWX_LGPL_NEW:
+            header_lines = [
+                "BaseFWX - Cryptography Engine",
+                "Copyright (C) 2020-2026  FixCraft Inc.",
+                BASEFWX_LGPL_NEW,
+            ]
+        elif replacement == BASEFWX_MIXED_NEW:
+            header_lines = [
+                "BaseFWX - Cryptography Engine",
+                "Copyright (C) 2020-2026  FixCraft Inc.",
+                BASEFWX_MIXED_NEW,
+            ]
+        count = process_file(path, replacement, apply, header_lines=header_lines)
         if count:
             files += 1
             edits += count

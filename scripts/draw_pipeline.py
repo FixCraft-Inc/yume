@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# YUME - Yume Universal Multiprotocol Engine
+# Copyright (C) 2020-2026  FixCraft Inc.
+# Licensed under the GNU Affero General Public License v3.0 or later.
 """
 draw_pipeline.py - render a vertical pipeline diagram in the EXPLAINED.md
 ASCII style. Output is deterministic so the diagrams stay byte-identical

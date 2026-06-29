@@ -5,6 +5,11 @@
 Target: `v1.1`. Do not tag until the remaining release work and remote
 validation are complete.
 
+### Changed
+- **License**: YUME source, apps, daemon, proxy, GUI, and libyume are
+  AGPL-3.0-or-later. Build scripts and CMake entry points now carry
+  matching source headers.
+
 ## [v1.1] - TBD
 
 ### Added

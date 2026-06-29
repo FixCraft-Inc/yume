@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# YUME - Yume Universal Multiprotocol Engine
+# Copyright (C) 2020-2026  FixCraft Inc.
+# Licensed under the GNU Affero General Public License v3.0 or later.
 # Regenerate ASCII pipeline diagrams from docs/diagrams/*.spec.
 # Usage: scripts/regen_diagrams.sh [spec ...]
 # With no args, renders every .spec in docs/diagrams/.

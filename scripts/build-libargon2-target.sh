@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# YUME - Yume Universal Multiprotocol Engine
+# Copyright (C) 2020-2026  FixCraft Inc.
+# Licensed under the GNU Affero General Public License v3.0 or later.
 # Build libargon2 for a specific target (host or cross-arch) and install
 # the static archive + header into the appropriate prefix so yume's
 # CMake build can find it on link.

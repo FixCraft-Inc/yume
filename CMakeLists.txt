@@ -1,3 +1,6 @@
+# YUME - Yume Universal Multiprotocol Engine
+# Copyright (C) 2020-2026  FixCraft Inc.
+# Licensed under the GNU Affero General Public License v3.0 or later.
 cmake_minimum_required(VERSION 3.20)
 project(YUME LANGUAGES CXX)
 

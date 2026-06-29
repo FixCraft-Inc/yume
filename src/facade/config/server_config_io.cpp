@@ -10,12 +10,14 @@
 #include <fstream>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 
 #include <nlohmann/json.hpp>
 
 #include "facade/config/detail.hpp"
 #include "facade/config/keys.hpp"
+#include "core/app_codec/codec.hpp"
 
 namespace yume::facade::config_io {
 
@@ -25,21 +27,9 @@ using detail::resolve_config_path;
 using detail::resolve_filter_spec_path;
 namespace cfg_key = keys;
 
-std::optional<server::ServerConfig> load_server(
-    std::filesystem::path const& path, std::string* err) {
-    std::ifstream in(path);
-    if (!in) {
-        if (err) *err = "cannot open " + path.string();
-        return std::nullopt;
-    }
-    json j;
-    try {
-        in >> j;
-    } catch (std::exception const& e) {
-        if (err) *err = std::string{"invalid JSON: "} + e.what();
-        return std::nullopt;
-    }
+namespace {
 
+server::ServerConfig server_from_json(json const& j, std::filesystem::path const& base) {
     server::ServerConfig s;
     read_opt(j, cfg_key::listen_port, s.listen_port);
     read_opt(j, cfg_key::tls_cert, s.tls_cert);
@@ -64,6 +54,50 @@ std::optional<server::ServerConfig> load_server(
     read_opt(j, cfg_key::allow_exec, s.allow_exec);
     read_opt(j, cfg_key::allow_local_ip, s.allow_local_ip);
     read_opt(j, cfg_key::control_full, s.control_full);
+    read_opt(j, cfg_key::allow_services, s.allowed_services);
+    if (j.contains(cfg_key::allow_monero_rpc_codec)) {
+        s.allow_monero_rpc_codec = j[cfg_key::allow_monero_rpc_codec].get<bool>();
+        if (s.allow_monero_rpc_codec) {
+            yume::app_codec::add_codec_unique(&s.allowed_codecs,
+                                              yume::app_codec::kMoneroRpcCodecId);
+        }
+    } else if (j.contains(cfg_key::allow_monero_rpc)) {
+        s.allow_monero_rpc_codec = j[cfg_key::allow_monero_rpc].get<bool>();
+        if (s.allow_monero_rpc_codec) {
+            yume::app_codec::add_codec_unique(&s.allowed_codecs,
+                                              yume::app_codec::kMoneroRpcCodecId);
+        }
+    }
+    auto const read_codec_allow = [&](char const* key) {
+        auto it = j.find(key);
+        if (it == j.end()) return;
+        if (!it->is_array()) return;
+        for (auto const& item : *it) {
+            if (!item.is_string()) continue;
+            auto const codec = yume::app_codec::canonical_codec_id(item.get<std::string>());
+            if (!yume::app_codec::is_supported_codec(codec)) continue;
+            yume::app_codec::add_codec_unique(&s.allowed_codecs, codec);
+            if (codec == std::string(yume::app_codec::kMoneroRpcCodecId)) {
+                s.allow_monero_rpc_codec = true;
+            }
+        }
+    };
+    read_codec_allow(cfg_key::codec_allow);
+    read_codec_allow(cfg_key::allow_codecs);
+    if (j.contains(cfg_key::monero_rpc_backend)) {
+        std::string parse_error;
+        auto ep = yume::app_codec::parse_endpoint_spec(
+            j[cfg_key::monero_rpc_backend].get<std::string>(),
+            yume::app_codec::kMoneroRpcDefaultHost,
+            yume::app_codec::kMoneroRpcDefaultPort,
+            &parse_error);
+        if (ep.has_value()) {
+            s.monero_rpc_backend_host = ep->host;
+            s.monero_rpc_backend_port = ep->port;
+        }
+    }
+    read_opt(j, cfg_key::monero_rpc_backend_host, s.monero_rpc_backend_host);
+    read_opt(j, cfg_key::monero_rpc_backend_port, s.monero_rpc_backend_port);
     read_opt(j, cfg_key::real_http, s.real_http);
     read_opt(j, cfg_key::robots_deny, s.robots_deny);
     read_opt(j, cfg_key::real_index_path, s.real_index_path);
@@ -116,7 +150,6 @@ std::optional<server::ServerConfig> load_server(
     read_opt(j, cfg_key::packet_mtu, s.packet_mtu);
     read_opt(j, cfg_key::boring, s.boring);
 
-    auto const base = path.parent_path();
     resolve_config_path(s.tls_cert, base);
     resolve_config_path(s.tls_key, base);
     resolve_config_path(s.auth_keys, base);
@@ -137,6 +170,40 @@ std::optional<server::ServerConfig> load_server(
         resolve_filter_spec_path(spec, base);
     }
     return s;
+}
+
+}  // namespace
+
+std::optional<server::ServerConfig> load_server(
+    std::filesystem::path const& path, std::string* err) {
+    std::ifstream in(path);
+    if (!in) {
+        if (err) *err = "cannot open " + path.string();
+        return std::nullopt;
+    }
+    json j;
+    try {
+        in >> j;
+    } catch (std::exception const& e) {
+        if (err) *err = std::string{"invalid JSON: "} + e.what();
+        return std::nullopt;
+    }
+
+    return server_from_json(j, path.parent_path());
+}
+
+std::optional<server::ServerConfig> parse_server_json(
+    std::string_view text,
+    std::filesystem::path const& base_dir,
+    std::string* err) {
+    json j;
+    try {
+        j = json::parse(text.begin(), text.end());
+    } catch (std::exception const& e) {
+        if (err) *err = std::string{"invalid JSON: "} + e.what();
+        return std::nullopt;
+    }
+    return server_from_json(j, base_dir);
 }
 
 bool save_server(server::ServerConfig const& s,
@@ -166,6 +233,11 @@ bool save_server(server::ServerConfig const& s,
         {cfg_key::allow_exec, s.allow_exec},
         {cfg_key::allow_local_ip, s.allow_local_ip},
         {cfg_key::control_full, s.control_full},
+        {cfg_key::allow_codecs, s.allowed_codecs},
+        {cfg_key::allow_services, s.allowed_services},
+        {cfg_key::allow_monero_rpc_codec, s.allow_monero_rpc_codec},
+        {cfg_key::monero_rpc_backend_host, s.monero_rpc_backend_host},
+        {cfg_key::monero_rpc_backend_port, s.monero_rpc_backend_port},
         {cfg_key::real_http, s.real_http},
         {cfg_key::robots_deny, s.robots_deny},
         {cfg_key::real_index_path, s.real_index_path},

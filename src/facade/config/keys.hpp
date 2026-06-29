@@ -8,6 +8,11 @@
 
 namespace yume::facade::config_io::keys {
 
+inline constexpr char allow_codecs[] = "allow_codecs";
+inline constexpr char allow_monero_rpc[] = "allow_monero_rpc";
+inline constexpr char allow_monero_rpc_codec[] = "allow_monero_rpc_codec";
+inline constexpr char allow_services[] = "allow_services";
+inline constexpr char codec_allow[] = "codec_allow";
 inline constexpr char allow_bytes[] = "allow_bytes";
 inline constexpr char allow_chat[] = "allow_chat";
 inline constexpr char allow_embedded_master[] = "allow_embedded_master";
@@ -61,6 +66,10 @@ inline constexpr char io_threads[] = "io_threads";
 inline constexpr char ipc_enable[] = "ipc_enable";
 inline constexpr char ipc_path[] = "ipc_path";
 inline constexpr char listen_port[] = "listen_port";
+inline constexpr char minimize_to_tray_on_close[] = "minimize_to_tray_on_close";
+inline constexpr char monero_rpc_backend[] = "monero_rpc_backend";
+inline constexpr char monero_rpc_backend_host[] = "monero_rpc_backend_host";
+inline constexpr char monero_rpc_backend_port[] = "monero_rpc_backend_port";
 inline constexpr char obfuscation[] = "obfuscation";
 inline constexpr char obfs_secret[] = "obfs_secret";
 inline constexpr char operator_keys[] = "operator_keys";

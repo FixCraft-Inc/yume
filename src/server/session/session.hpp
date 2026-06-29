@@ -20,6 +20,7 @@
 
 #include "core/protocol/control_protocol.hpp"
 #include "core/app_codec/codec.hpp"
+#include "core/runtime/service_stream.hpp"
 #include "core/security/crypto.hpp"
 #include "core/stealth/obfs_h2.hpp"
 #include "core/protocol/protocol.hpp"
@@ -111,6 +112,13 @@ private:
     bool handle_codec_open(uint8_t stream_id, const nlohmann::json& json);
     bool handle_codec_data(uint8_t stream_id, const crypto::Bytes& payload);
     bool handle_codec_close(uint8_t stream_id, const std::string& reason);
+    bool handle_service_open(uint8_t stream_id, const nlohmann::json& json);
+    bool handle_service_data(uint8_t stream_id, const crypto::Bytes& payload);
+    bool handle_service_close(uint8_t stream_id, const std::string& reason);
+    bool handle_service_fin(uint8_t stream_id, const std::string& reason);
+    void send_service_data(uint8_t stream_id, runtime::ServiceStream::Bytes payload);
+    void send_service_close(uint8_t stream_id, std::string reason);
+    void send_service_fin(uint8_t stream_id, std::string reason);
     void send_codec_error(uint8_t stream_id, int http_status, const std::string& message);
     void start_codec_backend(uint8_t stream_id, const crypto::Bytes& payload);
     void on_codec_backend_connect(uint8_t stream_id, const boost::system::error_code& ec);
@@ -332,6 +340,7 @@ private:
     std::unordered_map<uint8_t, std::shared_ptr<RemoteStream>> streams_;
     std::unordered_map<uint8_t, std::shared_ptr<UdpStream>> udp_streams_;
     std::unordered_map<uint8_t, std::shared_ptr<CodecStream>> codec_streams_;
+    std::unordered_map<uint8_t, std::shared_ptr<runtime::ServiceStream>> service_streams_;
     std::optional<PacketStream> packet_stream_;
     struct BenchStream {
         enum class Mode {
@@ -394,6 +403,7 @@ private:
     bool session_allow_local_ip_{false};
     bool session_control_full_{false};
     std::unordered_set<std::string> session_allowed_codecs_;
+    std::unordered_set<std::string> session_allowed_services_;
     bool session_allow_monero_rpc_policy_{false};
     bool session_allow_inbound_admin_policy_{false};
     bool session_allow_outbound_admin_policy_{false};

@@ -10,6 +10,7 @@
 #include <fstream>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 
 #include <nlohmann/json.hpp>
@@ -24,21 +25,9 @@ using detail::read_opt;
 using detail::resolve_config_path;
 namespace cfg_key = keys;
 
-std::optional<client::ClientConfig> load_client(
-    std::filesystem::path const& path, std::string* err) {
-    std::ifstream in(path);
-    if (!in) {
-        if (err) *err = "cannot open " + path.string();
-        return std::nullopt;
-    }
-    json j;
-    try {
-        in >> j;
-    } catch (std::exception const& e) {
-        if (err) *err = std::string{"invalid JSON: "} + e.what();
-        return std::nullopt;
-    }
+namespace {
 
+client::ClientConfig client_from_json(json const& j, std::filesystem::path const& base) {
     client::ClientConfig c;
     read_opt(j, cfg_key::server, c.server);
     read_opt(j, cfg_key::port, c.port);
@@ -91,7 +80,6 @@ std::optional<client::ClientConfig> load_client(
     read_opt(j, cfg_key::self_dpi, c.self_dpi);
     read_opt(j, cfg_key::outbound_proxy, c.outbound_proxy_url);
 
-    auto const base = path.parent_path();
     resolve_config_path(c.identity, base);
     resolve_config_path(c.pq_public_key, base);
     resolve_config_path(c.anonym_pubkey, base);
@@ -101,6 +89,40 @@ std::optional<client::ClientConfig> load_client(
     resolve_config_path(c.relay_key_file, base);
     resolve_config_path(c.tls_fingerprint_log_path, base);
     return c;
+}
+
+}  // namespace
+
+std::optional<client::ClientConfig> load_client(
+    std::filesystem::path const& path, std::string* err) {
+    std::ifstream in(path);
+    if (!in) {
+        if (err) *err = "cannot open " + path.string();
+        return std::nullopt;
+    }
+    json j;
+    try {
+        in >> j;
+    } catch (std::exception const& e) {
+        if (err) *err = std::string{"invalid JSON: "} + e.what();
+        return std::nullopt;
+    }
+
+    return client_from_json(j, path.parent_path());
+}
+
+std::optional<client::ClientConfig> parse_client_json(
+    std::string_view text,
+    std::filesystem::path const& base_dir,
+    std::string* err) {
+    json j;
+    try {
+        j = json::parse(text.begin(), text.end());
+    } catch (std::exception const& e) {
+        if (err) *err = std::string{"invalid JSON: "} + e.what();
+        return std::nullopt;
+    }
+    return client_from_json(j, base_dir);
 }
 
 bool save_client(client::ClientConfig const& c,

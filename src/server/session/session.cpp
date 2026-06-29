@@ -537,6 +537,9 @@ void Session::handle_data(const protocol::Frame& frame) {
     if (handle_codec_data(frame.header.stream_id, *payload)) {
         return;
     }
+    if (handle_service_data(frame.header.stream_id, *payload)) {
+        return;
+    }
     auto it_udp = udp_streams_.find(frame.header.stream_id);
     if (it_udp != udp_streams_.end()) {
         enqueue_udp_write(frame.header.stream_id, *payload);
@@ -563,6 +566,9 @@ std::string Session::decode_close_reason(const protocol::Frame& frame, bool* ok)
 
 void Session::handle_stream_fin(uint8_t stream_id, const std::string& reason) {
     if (handle_bench_close(stream_id, reason)) {
+        return;
+    }
+    if (handle_service_fin(stream_id, reason)) {
         return;
     }
     std::shared_ptr<RemoteStream> remote;
@@ -636,6 +642,9 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
         return;
     }
     if (handle_codec_close(stream_id, reason)) {
+        return;
+    }
+    if (handle_service_close(stream_id, reason)) {
         return;
     }
     {
@@ -858,6 +867,10 @@ void Session::begin_close() {
         entry.second->socket.close(ec);
     }
     streams_.clear();
+    for (auto& entry : service_streams_) {
+        entry.second->receive_close(close_reason_);
+    }
+    service_streams_.clear();
     for (auto& entry : reverse_listeners_) {
         entry.second->close(ec);
     }

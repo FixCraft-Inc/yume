@@ -20,6 +20,8 @@
 #include "server/runtime/manager.hpp"
 #include "server/session/internal.hpp"
 
+#include <algorithm>
+
 namespace yume::server {
 
 using namespace detail;
@@ -323,6 +325,13 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             const std::string id = app_codec::canonical_codec_id(codec);
             if (app_codec::contains_codec(cfg_.allowed_codecs, id)) {
                 session_allowed_codecs_.insert(id);
+            }
+        }
+        session_allowed_services_.clear();
+        for (const auto& service : auth_policy.allowed_services) {
+            if (std::find(cfg_.allowed_services.begin(), cfg_.allowed_services.end(), service) !=
+                cfg_.allowed_services.end()) {
+                session_allowed_services_.insert(service);
             }
         }
         if (key_monero_rpc && app_codec::contains_codec(cfg_.allowed_codecs, app_codec::kMoneroRpcCodecId)) {

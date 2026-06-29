@@ -19,6 +19,7 @@
 #include <iostream>
 #include <random>
 #include <sstream>
+#include <string_view>
 #include <stdexcept>
 #include <vector>
 
@@ -99,6 +100,22 @@ private:
     std::mutex mutex_;
     std::unordered_map<std::string, ClientState> clients_;
 };
+
+namespace {
+
+bool valid_service_name(std::string_view service) {
+    if (service.empty() || service.size() > 128) {
+        return false;
+    }
+    return std::all_of(service.begin(), service.end(), [](unsigned char ch) {
+        return (ch >= 'a' && ch <= 'z') ||
+               (ch >= 'A' && ch <= 'Z') ||
+               (ch >= '0' && ch <= '9') ||
+               ch == '-' || ch == '_' || ch == '.' || ch == ':';
+    });
+}
+
+}  // namespace
 
 Manager::Manager(boost::asio::io_context& io, const ServerConfig& cfg)
     : io_(io)
@@ -252,6 +269,26 @@ void Manager::stop() {
     }
     boost::system::error_code ec;
     acceptor_.close(ec);
+
+    std::vector<std::shared_ptr<runtime::ServiceStream>> pending_services;
+    {
+        std::lock_guard<std::mutex> lock(service_mutex_);
+        services_stopping_ = true;
+        registered_services_.clear();
+        for (auto& [_, queue] : pending_service_streams_) {
+            while (!queue.empty()) {
+                pending_services.push_back(std::move(queue.front()));
+                queue.pop_front();
+            }
+        }
+        pending_service_streams_.clear();
+    }
+    service_cv_.notify_all();
+    for (const auto& stream : pending_services) {
+        if (stream) {
+            stream->receive_close("server stopping");
+        }
+    }
 
     std::vector<std::shared_ptr<Session>> sessions;
     {
@@ -637,6 +674,88 @@ bool Manager::admit_accept() {
         ++accept_window_count_;
     }
     return true;
+}
+
+bool Manager::register_service(const std::string& service, std::string* error) {
+    if (!valid_service_name(service)) {
+        if (error) *error = "invalid service name";
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> cfg_lock(cfg_mutex_);
+        if (std::find(cfg_.allowed_services.begin(), cfg_.allowed_services.end(), service) ==
+            cfg_.allowed_services.end()) {
+            if (error) *error = "service is not enabled in server config";
+            return false;
+        }
+    }
+    std::lock_guard<std::mutex> lock(service_mutex_);
+    if (services_stopping_) {
+        if (error) *error = "server is stopping";
+        return false;
+    }
+    registered_services_.insert(service);
+    return true;
+}
+
+bool Manager::enqueue_service_stream(const std::string& service,
+                                     std::shared_ptr<runtime::ServiceStream> stream,
+                                     std::string* error) {
+    if (!valid_service_name(service) || !stream) {
+        if (error) *error = "invalid service stream";
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(service_mutex_);
+        if (services_stopping_) {
+            if (error) *error = "server is stopping";
+            return false;
+        }
+        if (registered_services_.find(service) == registered_services_.end()) {
+            if (error) *error = "service is not registered";
+            return false;
+        }
+        pending_service_streams_[service].push_back(std::move(stream));
+    }
+    service_cv_.notify_all();
+    return true;
+}
+
+std::shared_ptr<runtime::ServiceStream> Manager::accept_service_stream(
+    const std::string& service,
+    std::uint32_t timeout_ms,
+    std::string* error) {
+    if (!valid_service_name(service)) {
+        if (error) *error = "invalid service name";
+        return {};
+    }
+    std::unique_lock<std::mutex> lock(service_mutex_);
+    if (registered_services_.find(service) == registered_services_.end()) {
+        if (error) *error = "service is not registered";
+        return {};
+    }
+    auto has_pending = [&]() {
+        auto it = pending_service_streams_.find(service);
+        return services_stopping_ || (it != pending_service_streams_.end() && !it->second.empty());
+    };
+    if (!has_pending()) {
+        if (timeout_ms == 0) {
+            if (error) *error = "no service stream is pending";
+            return {};
+        }
+        if (!service_cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms), has_pending)) {
+            if (error) *error = "timed out waiting for service stream";
+            return {};
+        }
+    }
+    if (services_stopping_) {
+        if (error) *error = "server is stopping";
+        return {};
+    }
+    auto& queue = pending_service_streams_[service];
+    auto stream = std::move(queue.front());
+    queue.pop_front();
+    return stream;
 }
 
 void Manager::do_accept() {

@@ -100,6 +100,39 @@ void read_policy_codecs(const nlohmann::json& entry, std::vector<std::string>* o
     }
 }
 
+void read_policy_strings(const nlohmann::json& entry,
+                         const char* key,
+                         std::vector<std::string>* out) {
+    if (!out) {
+        return;
+    }
+    auto read_array = [&](const nlohmann::json& value) {
+        if (!value.is_array()) {
+            return;
+        }
+        for (const auto& item : value) {
+            if (!item.is_string()) {
+                continue;
+            }
+            const std::string value_text = item.get<std::string>();
+            if (value_text.empty() ||
+                std::find(out->begin(), out->end(), value_text) != out->end()) {
+                continue;
+            }
+            out->push_back(value_text);
+        }
+    };
+    if (entry.contains("permissions") && entry["permissions"].is_object()) {
+        const auto& permissions = entry["permissions"];
+        if (permissions.contains(key)) {
+            read_array(permissions[key]);
+        }
+    }
+    if (entry.contains(key)) {
+        read_array(entry[key]);
+    }
+}
+
 }  // namespace
 
 bool AuthKeyPolicy::empty() const {
@@ -108,6 +141,7 @@ bool AuthKeyPolicy::empty() const {
            !control_full.has_value() &&
            !allow_monero_rpc.has_value() &&
            allowed_codecs.empty() &&
+           allowed_services.empty() &&
            !allow_inbound_admin.has_value() &&
            !allow_outbound_admin.has_value() &&
            !allow_chat.has_value() &&
@@ -178,6 +212,7 @@ AuthKeyPolicyMap load_auth_policies(const std::string& meta_path) {
         policy.control_full = read_policy_bool(it.value(), "control_full");
         policy.allow_monero_rpc = read_policy_bool(it.value(), "allow_monero_rpc");
         read_policy_codecs(it.value(), &policy.allowed_codecs);
+        read_policy_strings(it.value(), "allow_services", &policy.allowed_services);
         if (policy.allow_monero_rpc.value_or(false)) {
             app_codec::add_codec_unique(&policy.allowed_codecs, app_codec::kMoneroRpcCodecId);
         }
@@ -277,6 +312,16 @@ std::string summarize_auth_policy(const AuthKeyPolicy& policy) {
             joined << policy.allowed_codecs[i];
         }
         parts.emplace_back("allow_codecs=" + joined.str());
+    }
+    if (!policy.allowed_services.empty()) {
+        std::ostringstream joined;
+        for (std::size_t i = 0; i < policy.allowed_services.size(); ++i) {
+            if (i > 0) {
+                joined << ',';
+            }
+            joined << policy.allowed_services[i];
+        }
+        parts.emplace_back("allow_services=" + joined.str());
     }
     append("allow_inbound_admin", policy.allow_inbound_admin);
     append("allow_outbound_admin", policy.allow_outbound_admin);

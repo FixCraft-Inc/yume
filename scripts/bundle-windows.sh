@@ -8,7 +8,7 @@
 # Usage:
 #   scripts/bundle-windows.sh                       # uses build/
 #   scripts/bundle-windows.sh build-portable        # custom build dir
-#   YUME_BUNDLE_OUT=yume-1.0-win64 scripts/bundle-windows.sh
+#   YUME_BUNDLE_OUT=yume-1.1-win64 scripts/bundle-windows.sh
 #
 # The dependency walk reads objdump's import table, so anything the
 # linker decided was required ships. System DLLs (kernel32, user32,

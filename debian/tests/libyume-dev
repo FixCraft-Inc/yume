@@ -27,6 +27,31 @@ int main(void) {
     if ((info.feature_flags & YUME_FEATURE_PBKDF2_HKDF) == 0) {
         return 5;
     }
+    if (!yume_strerror(YUME_STATUS_NOT_RUNNING)) {
+        return 6;
+    }
+    yume_client *client = yume_client_create();
+    yume_server *server = yume_server_create();
+    if (!client || !server) {
+        yume_client_destroy(client);
+        yume_server_destroy(server);
+        return 7;
+    }
+    char tiny[1];
+    size_t needed = 0;
+    if (yume_client_status_json(client, tiny, sizeof(tiny), &needed) != YUME_STATUS_BUFFER_TOO_SMALL ||
+        needed <= sizeof(tiny)) {
+        yume_client_destroy(client);
+        yume_server_destroy(server);
+        return 8;
+    }
+    if (yume_server_register_service(server, "example-control-v1") != YUME_STATUS_NOT_RUNNING) {
+        yume_client_destroy(client);
+        yume_server_destroy(server);
+        return 9;
+    }
+    yume_client_destroy(client);
+    yume_server_destroy(server);
     printf("yume abi %u, yume %s, basefwx %s\n",
            info.abi_version,
            info.yume_version,
@@ -62,9 +87,33 @@ cat >"$tmp/expected-symbols" <<'EOF'
 yume_abi_version
 yume_argon2_backend
 yume_basefwx_version
+yume_client_create
+yume_client_destroy
+yume_client_open_stream
+yume_client_request_json
+yume_client_start_file
+yume_client_start_json
+yume_client_status_json
+yume_client_stop
 yume_feature_flags
 yume_get_build_info
+yume_handle_last_error
 yume_pq_backend
+yume_server_accept_stream
+yume_server_create
+yume_server_destroy
+yume_server_register_service
+yume_server_sessions_json
+yume_server_start_file
+yume_server_start_json
+yume_server_status_json
+yume_server_stop
+yume_stream_close
+yume_stream_destroy
+yume_stream_read
+yume_stream_shutdown_write
+yume_stream_write
+yume_strerror
 yume_version
 EOF
 

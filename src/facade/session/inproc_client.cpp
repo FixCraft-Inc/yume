@@ -175,6 +175,11 @@ InProcClient::Status InProcClient::status() const {
     return s;
 }
 
+std::shared_ptr<client::Tunnel> InProcClient::primary_tunnel() const {
+    std::lock_guard<std::mutex> lock(impl_->ready_mtx);
+    return impl_->tunnel;
+}
+
 void InProcClient::set_log_callback(LogCallback cb) {
     impl_->log_callback = std::move(cb);
 }

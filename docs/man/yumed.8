@@ -1,4 +1,4 @@
-.TH YUMED 8 "2026-05-09" "YUME 1.0" "YUME Manual"
+.TH YUMED 8 "2026-06-27" "YUME 1.1" "YUME Manual"
 .SH NAME
 yumed \- YUME server daemon
 .SH SYNOPSIS
@@ -285,6 +285,13 @@ Repeat for multiple codecs.
 Legacy alias for
 .BI "--codec-allow " monero-rpc .
 .TP
+.BI "--service-allow " name
+Allow a native ABI named service stream. The connected key must also
+list the service in
+.B permissions.allow_services
+and the embedding process must call
+.BR yume_server_register_service (3).
+.TP
 .BI "--monero-rpc-backend " host:port
 Loopback backend for Monero RPC reconstruction. Default:
 .BR 127.0.0.1:18089 .
@@ -358,6 +365,7 @@ Example:
       "allow_exec": true,
       "allow_local_ip": true,
       "allow_codecs": ["monero-rpc"],
+      "allow_services": ["example-control-v1"],
       "control_full": false,
       "allow_inbound_admin": true,
       "allow_outbound_admin": false,

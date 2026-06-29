@@ -39,6 +39,7 @@ struct ServerConfig {
     bool allow_local_ip{false};
     bool control_full{false};
     std::vector<std::string> allowed_codecs;
+    std::vector<std::string> allowed_services;
     // Compatibility shim for older config/CLI spellings. New code should use
     // allowed_codecs plus the app-codec registry.
     bool allow_monero_rpc_codec{false};

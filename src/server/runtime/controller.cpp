@@ -46,7 +46,7 @@ struct RuntimeController::Impl {
     ServerConfig cfg;
     Status status;
     std::unique_ptr<boost::asio::io_context> io;
-    std::unique_ptr<Manager> manager;
+    std::shared_ptr<Manager> manager;
     std::shared_ptr<LocalRuntime> local_runtime;
     std::vector<std::thread> workers;
     std::atomic<bool> running{false};
@@ -103,9 +103,9 @@ bool RuntimeController::start(ServerConfig cfg, std::string* error) {
     }
 
     auto io = std::make_unique<boost::asio::io_context>(worker_count_for(cfg));
-    std::unique_ptr<Manager> manager;
+    std::shared_ptr<Manager> manager;
     try {
-        manager = std::make_unique<Manager>(*io, cfg);
+        manager = std::make_shared<Manager>(*io, cfg);
     } catch (std::exception const& ex) {
         return fail_with(ex.what());
     }
@@ -158,7 +158,7 @@ bool RuntimeController::start(ServerConfig cfg, std::string* error) {
 
 bool RuntimeController::stop() {
     std::unique_ptr<boost::asio::io_context> io;
-    std::unique_ptr<Manager> manager;
+    std::shared_ptr<Manager> manager;
     std::shared_ptr<LocalRuntime> local_runtime;
     std::vector<std::thread> workers;
 
@@ -217,6 +217,31 @@ std::vector<RuntimeController::SessionSnapshot> RuntimeController::sessions() co
         out.push_back(std::move(s));
     }
     return out;
+}
+
+bool RuntimeController::register_service(const std::string& service, std::string* error) {
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    if (!impl_->manager) {
+        if (error) *error = "server runtime is not running";
+        return false;
+    }
+    return impl_->manager->register_service(service, error);
+}
+
+std::shared_ptr<runtime::ServiceStream> RuntimeController::accept_service_stream(
+    const std::string& service,
+    std::uint32_t timeout_ms,
+    std::string* error) {
+    std::shared_ptr<Manager> manager;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mtx);
+        manager = impl_->manager;
+    }
+    if (!manager) {
+        if (error) *error = "server runtime is not running";
+        return {};
+    }
+    return manager->accept_service_stream(service, timeout_ms, error);
 }
 
 ServerConfig RuntimeController::config() const {

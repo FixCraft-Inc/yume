@@ -14,11 +14,12 @@ The Debian source packaging currently produces four YUME binary packages:
 
 BaseFWX is packaged separately as `basefwx`, `libbasefwx3`, and
 `libbasefwx-dev`; YUME links to that packaged library for Debian builds.
-`libyume` is intentionally a narrow C ABI for build/version/feature/backend
-information. YUME's `yume_core`, `yume_client_lib`, `yume_server`, and
-`yume_facade` targets remain internal static libraries so CLI/GUI/session
-refactors do not accidentally become ABI breaks. See `docs/ABI.md` for the
-compatibility rules.
+`libyume` is the stable native C embed ABI. In 1.1 it exposes build metadata,
+opaque client/server handles, and direct named service streams for projects
+that need to embed YUME as their secure transport. YUME's `yume_core`,
+`yume_client_lib`, `yume_server`, and `yume_facade` targets remain internal
+static libraries so CLI/GUI/session refactors do not accidentally become ABI
+breaks. See `docs/ABI.md` for the compatibility rules.
 
 ## Install From A Build Tree
 
@@ -218,9 +219,9 @@ yume-gui         optional desktop frontend, omitted by DEB_BUILD_PROFILES=nogui
 
 The source-build default leaves `YUME_BUILD_SHARED_ABI=OFF` so a plain CMake
 build still produces only `yume` and `yumed`. Debian turns it on because
-library packages are part of the distribution contract. The current C ABI is
-small on purpose; expand it with opaque handles only after a client/server
-facade contract is deliberately designed.
+library packages are part of the distribution contract. The C ABI should grow
+through opaque handles and named service streams only; do not install private
+C++ headers or expose raw `Tunnel` / server runtime classes.
 
 CPack follows the same rule: no ABI option means one convenience package;
 ABI enabled means component packages. This keeps quick source builds simple
@@ -249,7 +250,7 @@ rm -rf /tmp/yume-basefwx-prefix
 mkdir -p /tmp/yume-basefwx-prefix
 dpkg-deb -x libbasefwx3_*.deb /tmp/yume-basefwx-prefix
 dpkg-deb -x libbasefwx-dev_*.deb /tmp/yume-basefwx-prefix
-printf 'libbasefwx 3 libbasefwx3 (>= 3.6.4-1)\n' > debian/shlibs.local
+printf 'libbasefwx 3 libbasefwx3 (>= 3.7.0-1)\n' > debian/shlibs.local
 BASEFWX_PREFIX=/tmp/yume-basefwx-prefix/usr \
 BASEFWX_LIBDIR=/tmp/yume-basefwx-prefix/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH) \
 dpkg-buildpackage -d -us -uc -b

@@ -29,6 +29,10 @@ target_link_libraries(yume_facade
         yume_client_lib
 )
 
+if(YUME_BUILD_SHARED_ABI)
+    set_target_properties(yume_facade PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
+
 if(YUME_USE_SPDLOG)
     target_compile_definitions(yume_facade PUBLIC YUME_FACADE_HAVE_SPDLOG=1)
 else()

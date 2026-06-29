@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "client/cli/entry.hpp"
@@ -27,6 +28,10 @@ struct ValidationReport {
 // (forward-compatible). Returns nullopt with *err populated on parse fail.
 std::optional<client::ClientConfig> load_client(
     std::filesystem::path const& path, std::string* err);
+std::optional<client::ClientConfig> parse_client_json(
+    std::string_view text,
+    std::filesystem::path const& base_dir,
+    std::string* err);
 bool save_client(client::ClientConfig const& cfg,
                  std::filesystem::path const& path,
                  std::string* err);
@@ -35,6 +40,10 @@ ValidationReport validate(client::ClientConfig const& cfg);
 // JSON ↔ ServerConfig. Same conventions as load_client/save_client.
 std::optional<server::ServerConfig> load_server(
     std::filesystem::path const& path, std::string* err);
+std::optional<server::ServerConfig> parse_server_json(
+    std::string_view text,
+    std::filesystem::path const& base_dir,
+    std::string* err);
 bool save_server(server::ServerConfig const& cfg,
                  std::filesystem::path const& path,
                  std::string* err);
@@ -52,6 +61,7 @@ std::filesystem::path default_server_config_path();
 // the defaults below.
 struct GuiPreferences {
     bool dark_mode{true};
+    bool minimize_to_tray_on_close{true};
 };
 
 std::filesystem::path default_gui_preferences_path();

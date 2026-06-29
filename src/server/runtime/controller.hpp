@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "core/runtime/service_stream.hpp"
 #include "server/config/config.hpp"
 
 namespace yume::server {
@@ -43,6 +44,11 @@ public:
     Status status() const;
     std::vector<SessionSnapshot> sessions() const;
     ServerConfig config() const;
+    bool register_service(const std::string& service, std::string* error = nullptr);
+    std::shared_ptr<runtime::ServiceStream> accept_service_stream(
+        const std::string& service,
+        std::uint32_t timeout_ms,
+        std::string* error = nullptr);
 
     static std::string instance_key_for(ServerConfig const& cfg,
                                         std::string const& config_path = {});

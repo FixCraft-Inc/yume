@@ -240,7 +240,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         docs/PACKET_NATIVE_BULK.md
         docs/FILTERING_SELF_DPI.md
         docs/release/CHANGELOG.md
-        docs/release/RELEASE-NOTES-1.0.md
+        docs/release/RELEASE-NOTES-1.1.md
         DESTINATION "${YUME_DOC_INSTALL_DIR}"
         COMPONENT yume_cli
     )

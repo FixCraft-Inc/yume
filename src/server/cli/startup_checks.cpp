@@ -520,7 +520,8 @@ bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
             "rebuild with that option to enable unrestricted address bridging");
     }
 #endif
-    if ((cfg.allow_exec || cfg.allow_local_ip || cfg.control_full || !cfg.allowed_codecs.empty()) &&
+    if ((cfg.allow_exec || cfg.allow_local_ip || cfg.control_full ||
+         !cfg.allowed_codecs.empty() || !cfg.allowed_services.empty()) &&
         cfg.auth_keys_meta.empty()) {
         yume::util::log_warn(
             "privileged server feature enabled but no auth_keys_meta is configured; "

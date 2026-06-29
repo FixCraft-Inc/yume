@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+Target: `v1.1`. Do not tag until the remaining release work and remote
+validation are complete.
+
+## [v1.1] - TBD
+
 ### Added
 - **`--cluster-join <spec>`** + **`--cluster-bootstrap`** on `yumed`. Friendly shorthand over the existing `--peer '<json>'` federation surface: `--cluster-join [id@]host[:port][?pin=<sha256>]` parses into the same FederationPeer JSON the daemon already consumes. `--cluster-bootstrap` marks a node as a cluster entry point so federation works without an outbound peer list. Bracketed IPv6 supported. Implies `--federation-enable`.
 - **`--cluster <host[:port]>`** on `yume` (client) as a friendly alias for `--server` + `--port`.
@@ -11,11 +16,15 @@
 - **`yume-net-map`** new read-only CLI tool: connects to a yumed admin socket and renders the current node + its federation peers as an ASCII fan/spoke diagram (Unicode box-drawing or `--ascii` fallback). `--json` mode for downstream tooling. Auto-discovers local sockets under `$XDG_RUNTIME_DIR/yume`, `/run/yume`, `/tmp/yume`.
 - **`scripts/yume_disguise_check.py`** automated profile-fidelity test: spins up yumed once per profile, probes with curl, validates Server header regex / extra headers / body length range / canonical body substrings. `--dpi` mode adds nDPI flow classification (needs `tcpdump` capability and `libndpi-bin`). CI-runnable in <60 s.
 - **`scripts/yume_bench_wan.py`** virtual-WAN benchmark with DPI comparison: two `ip netns` connected by a veth + tc-netem WAN profile, runs the same workload over yume and as a curl/chromium baseline, runs `ndpiReader` on captured pcaps, emits a side-by-side report (markdown or JSON).
+- **Native embed C ABI in `libyume.so.1`.** `include/yume/yume.h` now exposes opaque `yume_client`, `yume_server`, and `yume_stream` handles, JSON lifecycle/status helpers, fixed-buffer last-error reporting, and direct named service stream read/write calls for C/C++ embedders.
+- **Authenticated named service streams.** Clients can open `proto: "service.v1"` streams such as `example-control-v1`; servers must explicitly enable the service in config, authorize it per key with `allow_services`, and register it through the C ABI before accepts are queued.
 
 ### Changed
 
-> **Browser profiles:** The v1.0 release block below documents the TLS profiles shipped at 1.0. Current builds use the bumped versions listed in this section.
+> **Browser profiles:** The v1.0 test-release block below documents the TLS profiles shipped at 1.0. Current builds use the bumped versions listed in this section.
 
+- **Release line moved to 1.1.** The public `v1.0` tag remains the first test release. Current source, packages, man pages, GUI bundle metadata, Android `versionName`, and release notes now target `1.1` as the first stable line.
+- **BaseFWX pin moved to 3.7.0 current main** (`ddf31617aab6bb9ac87129295564d6736e48c601`), carrying Java Argon2id support, fixed Argon2 lane defaults across runtimes, secret-hygiene hardening, and the blackbox plugin ABI surface.
 - **Inner crypto secret hygiene.** Introduced `basefwx::crypto::SecureBytes` — move-only RAII owner that wraps `Bytes` and SecureClears on destruction. Replaces the `SecretGuard` raw-pointer pattern at every KEM-touching call site in yume (`server_derive_key`, `validate_pq_keypair`) and basefwx (`filecodec.cpp` 4 sites, `keywrap.cpp` 2 sites). Eliminates a use-after-free class fixed in 66153f6 by structural change rather than placement discipline. Existing string-secret SecretGuard sites are unchanged.
 - **TLS browser-profile versions bumped** to current stable: Chrome 131, Firefox 133, Safari 18.1, Edge 131 (was Chrome 135 / Firefox 126 / Safari 17 in 1.0).
 - **`X-Yume-Blob` HTTP response header removed.** It had zero consumers in the tree; the substring "Yume" was a passive fingerprint for any layer-7 inspector. The anonym blob still ships in the body (zero-width `<span>` + HTML comment) where the actual readers look.
@@ -27,10 +36,10 @@
 
 ## [v1.0] - 2026-05-16
 
-Compare: <https://github.com/FixCraft-Inc/yume/commits/v1.0> (initial release)
+Compare: <https://github.com/FixCraft-Inc/yume/commits/v1.0> (first public test release)
 
 ### Added
-- **First stable release** of YUME (Yume Universal Multiprotocol Engine) — an open-source post-quantum stealth transport that tunnels TCP and UDP through real TLS 1.3 sessions shaped to look like ordinary Chrome HTTPS to a DPI box. Both the client (`yume`) and the daemon (`yumed`) are GPL-3.0-only and build from this tree.
+- **First public test release** of YUME (Yume Universal Multiprotocol Engine) — an open-source post-quantum stealth transport that tunnels TCP and UDP through real TLS 1.3 sessions shaped to look like ordinary Chrome HTTPS to a DPI box. Both the client (`yume`) and the daemon (`yumed`) are GPL-3.0-only and build from this tree.
 - **Three-layer stealth stack** stacked on top of TLS 1.3, all on by default and toggleable independently:
   - Browser-cluster JA3 / JA4 fingerprint via genuine OpenSSL 3.5 `ClientHello` shaping. `--profile chrome` (Chrome 135) is the default; `--profile firefox` (Firefox 126) and `--profile safari` (Safari 17) are selectable, plus per-N-connection rotation via `--tls-stealth-rotate` / `--tls-stealth-rotation-interval`.
   - HTTP/2 carrier handshake (`--obfs`) with Chrome-shaped `SETTINGS`, `WINDOW_UPDATE`, and a `HEADERS` frame opening a `POST` to `/<token>/<nonce>`. The token is `HMAC-SHA256(K, sni || hour_epoch || "yume-obfs-v2")` truncated to 16 bytes hex with optional peer-pinning via `--obfs-secret`; the server accepts ±1 hour of clock skew.
@@ -59,10 +68,10 @@ Compare: <https://github.com/FixCraft-Inc/yume/commits/v1.0> (initial release)
   - Static-link assertion on every `*-static` artifact (`file` must not say "dynamically linked"; `readelf -d` must show no `NEEDED` entries).
   - `--version` self-test on every published binary (native amd64 directly, ARM via `qemu-aarch64-static`/`qemu-arm-static`, MIPS via `qemu-mips-static`, PE via wine if available else PE32 header check, tar.xz CLI bundles extracted and tested).
   - GPG-signed `*.sig` per artifact plus aggregate `SHA256SUMS.txt`, `MD5SUMS.txt`, `release-manifest.json`.
-- Project documentation: `README.md`, `docs/QUICKSTART.md`, `docs/STEALTH.md`, `docs/EXPLAINED.md` (protocol internals + routing diagrams for federation, Tor egress, Tor-over-YUME, YUME-Tor-YUME, Android), `docs/PERFORMANCE.md`, `docs/OPERATIONS.md`, `docs/PACKAGING.md`, `docs/PERMISSIONS.md`, `docs/release/RELEASE-NOTES-1.0.md`, and the project website at <https://yume.fixcraft.jp>.
+- Project documentation: `README.md`, `docs/QUICKSTART.md`, `docs/STEALTH.md`, `docs/EXPLAINED.md` (protocol internals + routing diagrams for federation, Tor egress, Tor-over-YUME, YUME-Tor-YUME, Android), `docs/PERFORMANCE.md`, `docs/OPERATIONS.md`, `docs/PACKAGING.md`, `docs/PERMISSIONS.md`, release notes, and the project website at <https://yume.fixcraft.jp>.
 
 ### Changed
-- Wire format, authentication key file format, anonym CA / sub-key file format, and the `yume-obfs-v2` HTTP/2 token format are declared **stable** as of 1.0. Subsequent 1.x releases will keep on-the-wire compatibility.
+- Wire format, authentication key file format, anonym CA / sub-key file format, and the `yume-obfs-v2` HTTP/2 token format were test-published in 1.0 and are treated as the compatibility base for the 1.1 stable line.
 - Server-to-server federation links are pinned to **TLS 1.3 only** (no fallback to earlier TLS versions) — see commit `f13fbdb`.
 - Build pipeline rewritten end-to-end vs the BETA cycle: smoke-gate before heavy builds, GUI added for desktop OSes, dynamic "busybox" artifacts dropped (they were misleadingly named — a glibc-dynamic binary can't run on a real busybox/musl target), only verified-static `*-busybox-static` ships, macOS job is matrix-ized so Intel can be added in a follow-up by uncommenting one matrix entry.
 - Website's `assetMap` aligned with the new release-artifact set: GUI download cards for Linux / macOS / Windows added; dynamic-busybox cards dropped.
@@ -77,5 +86,5 @@ Compare: <https://github.com/FixCraft-Inc/yume/commits/v1.0> (initial release)
 - **Intel macOS** is not built in 1.0. The `build-macos` workflow is matrix-ized so an Intel entry is a one-line uncomment in `.github/workflows/release.yml`. Rosetta 2 covers Intel Macs running the arm64 binary.
 - **Windows GUI cross-build is best-effort** in 1.0: marked `continue-on-error: true` because the GUI-specific vcpkg packages (Freetype, GLFW3) on a fresh runner can take significantly longer than the CLI path and may time out. If the cross-build fails the CLI tarball still ships and the GUI lands in a follow-up.
 - **Performance**: steady-state CPU overhead is <1 % typical and <5 % always on the SOCKS path; full methodology and per-link numbers in `docs/PERFORMANCE.md`. The inner-crypto hot path benefits from BaseFWX 3.6.4's perf work (overall test suite −55 % to −60 % faster at constant security strength vs 3.6.3; see `../../basefwx/RELEASE-NOTES-3.6.4.md`).
-- **Compatibility policy for the 1.x line**: authorised-key files (`--auth-keys`), anonym CA / sub-key files, and the `yume-obfs-v2` token format carry forward unchanged. The BaseFWX inner format is byte-compatible across the 3.6.x line per BaseFWX's own compatibility policy.
+- **Compatibility policy for the 1.x line**: authorised-key files (`--auth-keys`), anonym CA / sub-key files, and the `yume-obfs-v2` token format carry forward unchanged. The BaseFWX inner format is byte-compatible across the 3.6.x and 3.7.x lines for non-plugin-tagged blobs per BaseFWX's own compatibility policy.
 - **License**: GPL-3.0-only across all yume binaries, source, and bundled BaseFWX inner crypto. See `LICENSE`.

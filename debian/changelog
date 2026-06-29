@@ -1,5 +1,7 @@
-yume (1.0-1) unstable; urgency=medium
+yume (1.1-1) unstable; urgency=medium
 
-  * Initial Debian packaging. (Closes: #nnnnnn)
+  * Release 1.1 shared embed ABI for native C consumers.
+  * Export opaque client, server, and named service stream handles from
+    libyume.so.1.
 
- -- FixCraft Maintainers <debian@fixcraft.jp>  Sat, 09 May 2026 21:10:00 -0700
+ -- FixCraft Maintainers <debian@fixcraft.jp>  Sun, 28 Jun 2026 12:00:00 -0700

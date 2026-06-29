@@ -89,6 +89,8 @@ public:
                            std::string* error = nullptr,
                            int timeout_ms = 5000);
 
+    std::shared_ptr<client::Tunnel> primary_tunnel() const;
+
     // Subscribe to log lines emitted by the embedded Cli (useful so
     // the GUI's log viewer mirrors what the CLI would show). Lines
     // are pushed from worker threads; do not block in the callback.

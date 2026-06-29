@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -18,6 +19,7 @@
 #include <boost/asio/ssl.hpp>
 
 #include "core/protocol/control_protocol.hpp"
+#include "core/runtime/service_stream.hpp"
 #include "core/security/crypto.hpp"
 #include "core/security/identity.hpp"
 #include "core/stealth/obfs.hpp"
@@ -155,6 +157,15 @@ public:
     // Called once at startup and (if TTL > 0) by the periodic timer.
     std::size_t reload_upstream_responses();
 
+    bool register_service(const std::string& service, std::string* error = nullptr);
+    bool enqueue_service_stream(const std::string& service,
+                                std::shared_ptr<runtime::ServiceStream> stream,
+                                std::string* error = nullptr);
+    std::shared_ptr<runtime::ServiceStream> accept_service_stream(
+        const std::string& service,
+        std::uint32_t timeout_ms,
+        std::string* error = nullptr);
+
 private:
     static constexpr std::size_t kMaxLifecycleEvents = 512;
 
@@ -235,6 +246,11 @@ private:
     std::uint64_t accept_refused_cap_{0};
     std::uint64_t accept_refused_rate_{0};
     std::uint64_t accept_refused_filter_{0};
+    std::mutex service_mutex_;
+    std::condition_variable service_cv_;
+    bool services_stopping_{false};
+    std::unordered_set<std::string> registered_services_;
+    std::unordered_map<std::string, std::deque<std::shared_ptr<runtime::ServiceStream>>> pending_service_streams_;
     // Returns true if the new accept may proceed; false if it must
     // be refused (caller closes the socket). Pure function of
     // (current time, cfg_, live_sessions_.size(), bucket state) —

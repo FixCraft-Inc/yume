@@ -1,28 +1,30 @@
-# YUME 1.0 — First Release
+# YUME 1.1 — First Stable Release
 
 YUME is a **post-quantum stealth transport** that tunnels TCP and UDP
 through real TLS 1.3 sessions, shaped to look like ordinary Chrome
 HTTPS to a DPI box. Both ends — the client `yume` and the daemon
 `yumed` — are open-source under GPL-3.0 and build from this tree.
 
-This is the first stable release after roughly **two-hundred-forty
-commits** across an `ALPHA 0.1 → 1.5 BETA` line. The wire format,
-authentication keys, and CLI surface are now considered stable.
-Future 1.x releases keep on-the-wire compatibility with 1.0.
+This is the planned stable release after the public `v1.0` test release.
+The `v1.0` GitHub tag is intentionally left as published; `v1.1` is the
+roll-forward stable line. The wire format, authentication keys, anonym CA /
+sub-key files, and `yume-obfs-v2` HTTP/2 token format are considered stable
+for the 1.x line starting with 1.1.
 
 ---
 
 ## TL;DR — what shipped
 
-| Area | What's in 1.0 |
+| Area | What's in 1.1 |
 | ---- | ------------- |
 | **Outer transport** | Real TLS 1.3 (OpenSSL 3.5) with browser-cluster JA3/JA4 fingerprints. Chrome 135 by default, Firefox 126 and Safari 17 selectable; rotation supported. |
 | **Carrier camouflage** | HTTP/2 obfs handshake (`PRI * HTTP/2.0`, Chrome-shaped SETTINGS, HEADERS), hourly-rotating HMAC path token, optional `--obfs-secret` peer-pinning. |
 | **Decoy site** | `--real` mode serves a real HTML page (or Wikipedia redirect by default) to non-YUME visitors of the same port. YUME and a website coexist on `:443`. |
-| **Inner crypto** | BaseFWX 3.6.4 — hybrid **ML-KEM-768 + AES-256-GCM** with **HKDF-SHA256**, hardened Argon2id / PBKDF2 password KDF (see [BaseFWX 3.6.4 release notes](../../basefwx/RELEASE-NOTES-3.6.4.md)). |
+| **Inner crypto** | BaseFWX 3.7.0 — hybrid **ML-KEM-768 + AES-256-GCM** with **HKDF-SHA256**, hardened Argon2id / PBKDF2 password KDF, fixed Argon2 lane defaults across runtimes, and the blackbox plugin ABI surface (see [BaseFWX 3.7.0 release notes](../../basefwx/RELEASE-NOTES-3.7.0.md)). |
 | **Live key hopping** | 1–4 Hz over-the-air key rotation. Each window encrypts with a fresh `HKDF(master, hop_index)` derivative; a captured window decrypts only that window. |
 | **Authentication** | Ed25519 client keys. `yumed --auth-keys` is the server's authorised-key file (SSH-style). |
 | **Routing modes** | SOCKS5 (`--socks`), local TCP/UDP forward, `--run <cmd>`, Android VPN capture (separate APK), and server-side `--reverse-port-min/--reverse-port-max` reverse tunneling. |
+| **Native embed ABI** | `libyume.so.1` exposes a stable C ABI with opaque client/server handles and authenticated named service streams for C/C++ embedders. |
 | **Egress options** | Direct, Tor outbound (`yumed --proxy tor://…` with obfs4 bridge support), federation links between yumed instances (mutual TLS 1.3, server-to-server). |
 | **Anonym mode** | `yumed --anonym` strips logs and metadata; designed for run-by-third-party endpoints. Decoupled CA/sub-key flow for operator key management. |
 | **Targets** | Linux x86_64, ARMv7, ARMv8, BusyBox-static (x86, armv7, armv8), OpenWRT MIPS, macOS arm64, Windows amd64. |
@@ -112,7 +114,7 @@ validator; an HTTP/1.1 method-line goes to the HTML server.
 ## 2. Crypto stack
 
 The outer TLS layer is for stealth. The **inner** layer is BaseFWX
-3.6.4 — a separate, audited crypto library that's also published
+3.7.0 — a separate, audited crypto library that's also published
 standalone — and provides:
 
 * **AES-256-GCM** for the data step (AEAD with 96-bit nonce, 128-bit
@@ -120,17 +122,17 @@ standalone — and provides:
 * **ML-KEM-768** (NIST FIPS 203, formerly Kyber-768) hybrid wrap for
   the session keys when a master public key is configured.
 * **Argon2id** or **PBKDF2-HMAC-SHA256** for password-based key
-  derivation, at the 3.6.4 hardened cost (PBKDF2 600 000 iters / 1 M
+  derivation, at the hardened cost (PBKDF2 600 000 iters / 1 M
   short / 2 M heavy; Argon2 4·64 MiB / 5·128 MiB / 6·256 MiB).
 * **HKDF-SHA256** for all subkey derivation.
 * **Ed25519** for client authentication (`--auth`, `--auth-keys`).
 
-The full BaseFWX 3.6.4 security model — including the explanation
+The full BaseFWX 3.7.0 security model — including the explanation
 of why password-only mode is already PQ-resistant (AES-256 under
 Grover is 128-bit equivalent; hardened KDF makes brute force
 expensive) — lives in
 [`basefwx/SECURITY.md`](basefwx/SECURITY.md) and
-[`../../basefwx/RELEASE-NOTES-3.6.4.md`](../../basefwx/RELEASE-NOTES-3.6.4.md).
+[`../../basefwx/RELEASE-NOTES-3.7.0.md`](../../basefwx/RELEASE-NOTES-3.7.0.md).
 
 ### Live key hopping
 
@@ -145,7 +147,7 @@ with `--no-hop` for latency-critical or embedded paths.
 
 ## 3. Routing & egress
 
-YUME is a transport *and* a relay. Five routing modes ship in 1.0;
+YUME is a transport *and* a relay. Five routing modes ship in 1.1;
 they can be combined.
 
 | Mode | What it does | Typical use |
@@ -222,12 +224,12 @@ Steady-state CPU overhead: **<1 % typical, <5 % always** (the
 measurement methodology and per-link numbers are in
 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)).
 
-The hot inner-crypto path benefits directly from the BaseFWX 3.6.4
-performance work. After normalising for the BaseFWX 3.6.4 KDF
-hardening, the overall test suite is **−55 % to −60 % faster** than
-3.6.3 across C++, Java, and Python; KDF-heavy paths are −60 % to
-−80 % faster. Full numbers and methodology:
-[`../../basefwx/RELEASE-NOTES-3.6.4.md`](../../basefwx/RELEASE-NOTES-3.6.4.md).
+The hot inner-crypto path benefits directly from BaseFWX 3.7.0: Java now
+supports Argon2id through BouncyCastle, C++ KEM paths use RAII secret wiping,
+Argon2 parallelism defaults are fixed across runtimes, and the BaseFWX
+blackbox plugin ABI is available for callers that explicitly opt into
+plugin-tagged blobs. Full BaseFWX release details:
+[`../../basefwx/RELEASE-NOTES-3.7.0.md`](../../basefwx/RELEASE-NOTES-3.7.0.md).
 
 ---
 
@@ -337,7 +339,7 @@ gpg --verify yume-amd64-linux.sig yume-amd64-linux
   [`.github/workflows/release.yml`](.github/workflows/release.yml).
 * **Windows GUI is best-effort.** The Windows GUI cross-build via
   MinGW + `x64-mingw-static` vcpkg triplet is marked
-  `continue-on-error: true` for 1.0 because the GUI-specific vcpkg
+  `continue-on-error: true` for 1.1 because the GUI-specific vcpkg
   packages (Freetype, GLFW3) take significantly longer to compile
   on a fresh runner than the CLI path. If the cross-build fails the
   release still publishes the CLI; the GUI lands in a follow-up.
@@ -350,14 +352,15 @@ gpg --verify yume-amd64-linux.sig yume-amd64-linux
 
 ## 11. Compatibility & upgrade
 
-This is the first release; nothing to upgrade from. Future 1.x
-releases keep on-the-wire compatibility:
+Upgrade from the public `v1.0` test release by installing the 1.1 client and
+daemon together. Future 1.x releases keep on-the-wire compatibility:
 
 * Authorised-key files (`--auth-keys`) carry forward unchanged.
 * Anonym CA/sub-key files carry forward unchanged.
 * The HTTP/2 obfs token version is `yume-obfs-v2` and is wire-stable.
-* The BaseFWX inner format is byte-compatible across the 3.6.x line
-  (per BaseFWX's compatibility policy in `basefwx/SECURITY.md`).
+* The BaseFWX inner format is byte-compatible across 3.6.x and 3.7.x for
+  non-plugin-tagged blobs; plugin-tagged blobs require a 3.7.0+ peer with the
+  matching plugin loaded.
 
 ---
 

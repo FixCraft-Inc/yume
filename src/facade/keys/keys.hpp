@@ -61,6 +61,8 @@ struct AuthorizedKeyEntry {
     std::optional<bool> allow_chat;
     std::optional<bool> allow_file;
     std::optional<bool> allow_bytes;
+    std::vector<std::string> allow_codecs;
+    std::vector<std::string> allow_services;
 };
 
 // Reads authorized_keys + meta. Lines starting with `#` are comments.
@@ -82,6 +84,14 @@ bool append_authorized(std::filesystem::path const& auth_keys_file,
 bool remove_authorized(std::filesystem::path const& auth_keys_file,
                        std::filesystem::path const& meta_file,
                        std::string const& fingerprint,
+                       std::string* err);
+
+// Updates metadata for an existing authorized key (alias, permissions).
+// The PEM file is not modified.
+bool update_authorized(std::filesystem::path const& auth_keys_file,
+                       std::filesystem::path const& meta_file,
+                       std::string const& fingerprint,
+                       AuthorizedKeyEntry const& patch,
                        std::string* err);
 
 }  // namespace yume::facade::keys

@@ -233,6 +233,19 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
             if (!read_codec_allow("codec_allow") || !read_codec_allow("allow_codecs")) {
                 return false;
             }
+            if (json.contains("allow_services")) {
+                if (!json["allow_services"].is_array()) {
+                    yume::util::log_error("allow_services must be an array");
+                    return false;
+                }
+                for (const auto& item : json["allow_services"]) {
+                    if (!item.is_string()) {
+                        yume::util::log_error("allow_services entries must be strings");
+                        return false;
+                    }
+                    cfg.allowed_services.push_back(item.get<std::string>());
+                }
+            }
             if (json.contains("monero_rpc_backend")) {
                 std::string parse_error;
                 auto ep = yume::app_codec::parse_endpoint_spec(json["monero_rpc_backend"].get<std::string>(),

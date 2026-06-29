@@ -284,6 +284,13 @@ bool parse_server_cli_args(int argc,
         } else if (arg == "--allow-monero-rpc") {
             cfg.allow_monero_rpc_codec = true;
             yume::app_codec::add_codec_unique(&cfg.allowed_codecs, yume::app_codec::kMoneroRpcCodecId);
+        } else if (arg == "--service-allow" && i + 1 < argc) {
+            std::string service = argv[++i];
+            if (service.empty()) {
+                yume::util::log_error("--service-allow requires a non-empty service name");
+                return false;
+            }
+            cfg.allowed_services.push_back(std::move(service));
         } else if (arg == "--monero-rpc-backend" && i + 1 < argc) {
             std::string parse_error;
             auto ep = yume::app_codec::parse_endpoint_spec(

@@ -14,7 +14,7 @@ REM
 REM Usage:
 REM     bundle-windows.bat
 REM     bundle-windows.bat build-other-dir
-REM     set YUME_BUNDLE_OUT=yume-1.0-win64 && bundle-windows.bat
+REM     set YUME_BUNDLE_OUT=yume-1.1-win64 && bundle-windows.bat
 REM ============================================================================
 
 setlocal enabledelayedexpansion

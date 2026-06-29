@@ -25,7 +25,7 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --credits --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --no-obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms --tls-handshake-timeout-ms --max-sessions --accept-rate-limit --egress-mbps --robots-deny --filter-list --filter-geolite --filter-memory-mib --client-filter-mode --egress-filter-mode --packet-egress --packet-tun-name --packet-cidr --packet-mtu --bench --fullbench --full-bench --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --codec-allow --allow-codec --allow-monero-rpc --monero-rpc-backend --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --upstream-response --upstream-response-dir --upstream-response-ttl --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
+  local opts="--help -h --version --credits --config --listen --cert --tls_cert --key --tls_key --auth-keys --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --no-obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms --tls-handshake-timeout-ms --max-sessions --accept-rate-limit --egress-mbps --robots-deny --filter-list --filter-geolite --filter-memory-mib --client-filter-mode --egress-filter-mode --packet-egress --packet-tun-name --packet-cidr --packet-mtu --bench --fullbench --full-bench --inner --no-inner --inner-heavy --inner-light --inner-dual --inner-required --hop --no-hop --hop-interval --pq-key --pq-auto-generate --use-embedded-master --no-embedded-master --allow-exec --allow-local-ip --control-full --codec-allow --allow-codec --allow-monero-rpc --service-allow --monero-rpc-backend --real --real-index --real-secret --real-secret-file --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --operator-keys --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --hide-in-the-crowd --upstream-response --upstream-response-dir --upstream-response-ttl --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
   local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --pq-key --real-index --real-secret-file --filter-geolite --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --federation-auth-key --federation-anonym-ca --keys-add --keys-gen"
   case "$prev" in
     --completion)
@@ -162,6 +162,9 @@ void print_help() {
         << "                             per-key allow_codecs or allow_monero_rpc).\n"
         << "  --allow-codec <name>     Compatibility alias for --codec-allow\n"
         << "  --allow-monero-rpc       Alias for --codec-allow monero-rpc\n"
+        << "  --service-allow <name>   Enable a native ABI named service stream\n"
+        << "                             (also requires per-key allow_services\n"
+        << "                             and yume_server_register_service).\n"
         << "  --monero-rpc-backend <addr:port>\n"
         << "                           Loopback monerod RPC backend for the codec\n"
         << "                             (default 127.0.0.1:18089).\n"
@@ -252,7 +255,7 @@ void print_help() {
         << "  --keys-alias <id> <a>    Set alias\n"
         << "  --keys-gen <prefix>      Generate Ed25519 keypair (<prefix>.key/.pub)\n"
         << "  --keys-gen-add           Append generated public key to auth_keys\n"
-        << "  auth_keys_meta supports federation_peer_id, priority, permissions.allow_codecs, and permissions.{allow_local_ip,control_full,allow_exec,allow_monero_rpc,allow_chat,allow_file,allow_bytes,allow_inbound_admin,allow_outbound_admin}\n"
+        << "  auth_keys_meta supports federation_peer_id, priority, permissions.allow_codecs, permissions.allow_services, and permissions.{allow_local_ip,control_full,allow_exec,allow_monero_rpc,allow_chat,allow_file,allow_bytes,allow_inbound_admin,allow_outbound_admin}\n"
         << "  --ui                     Interactive server manager\n\n"
         << "Other:\n"
         << "  completion bash\n"

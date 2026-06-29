@@ -343,6 +343,34 @@ void apply_meta_to_entry(nlohmann::json const& meta_root,
     get_opt("allow_chat",           e.allow_chat);
     get_opt("allow_file",           e.allow_file);
     get_opt("allow_bytes",          e.allow_bytes);
+    auto read_codec_array = [&](nlohmann::json const& arr) {
+        if (!arr.is_array()) return;
+        for (auto const& item : arr) {
+            if (item.is_string()) {
+                e.allow_codecs.push_back(item.get<std::string>());
+            }
+        }
+    };
+    if (auto ac = p.find("allow_codecs"); ac != p.end()) {
+        read_codec_array(*ac);
+    }
+    if (auto ac = it->find("allow_codecs"); ac != it->end()) {
+        read_codec_array(*ac);
+    }
+    auto read_string_array = [](nlohmann::json const& arr, std::vector<std::string>& out) {
+        if (!arr.is_array()) return;
+        for (auto const& item : arr) {
+            if (item.is_string()) {
+                out.push_back(item.get<std::string>());
+            }
+        }
+    };
+    if (auto as = p.find("allow_services"); as != p.end()) {
+        read_string_array(*as, e.allow_services);
+    }
+    if (auto as = it->find("allow_services"); as != it->end()) {
+        read_string_array(*as, e.allow_services);
+    }
 }
 
 void entry_meta_to_json(AuthorizedKeyEntry const& e, nlohmann::json& dst) {
@@ -362,6 +390,12 @@ void entry_meta_to_json(AuthorizedKeyEntry const& e, nlohmann::json& dst) {
     put("allow_chat",           e.allow_chat);
     put("allow_file",           e.allow_file);
     put("allow_bytes",          e.allow_bytes);
+    if (!e.allow_codecs.empty()) {
+        perms["allow_codecs"] = e.allow_codecs;
+    }
+    if (!e.allow_services.empty()) {
+        perms["allow_services"] = e.allow_services;
+    }
     if (!perms.empty()) dst["permissions"] = std::move(perms);
 }
 
@@ -473,6 +507,48 @@ bool remove_authorized(std::filesystem::path const& auth_keys_file,
 
     auto meta = read_meta_json(meta_file);
     meta.erase(fingerprint);
+    return write_meta_json(meta_file, meta, err);
+}
+
+bool update_authorized(std::filesystem::path const& auth_keys_file,
+                       std::filesystem::path const& meta_file,
+                       std::string const& fingerprint,
+                       AuthorizedKeyEntry const& patch,
+                       std::string* err) {
+    auto entries = list_authorized(auth_keys_file, meta_file);
+    auto match = std::find_if(entries.begin(), entries.end(),
+                              [&](AuthorizedKeyEntry const& e) {
+                                  return e.fingerprint == fingerprint;
+                              });
+    if (match == entries.end()) {
+        if (err) *err = "fingerprint not found";
+        return false;
+    }
+
+    AuthorizedKeyEntry merged = *match;
+    merged.alias = patch.alias;
+    if (!patch.federation_peer_id.empty()) {
+        merged.federation_peer_id = patch.federation_peer_id;
+    }
+    if (!patch.allow_codecs.empty()) merged.allow_codecs = patch.allow_codecs;
+    if (!patch.allow_services.empty()) merged.allow_services = patch.allow_services;
+    if (patch.allow_exec.has_value()) merged.allow_exec = patch.allow_exec;
+    if (patch.allow_local_ip.has_value()) merged.allow_local_ip = patch.allow_local_ip;
+    if (patch.control_full.has_value()) merged.control_full = patch.control_full;
+    if (patch.allow_inbound_admin.has_value()) {
+        merged.allow_inbound_admin = patch.allow_inbound_admin;
+    }
+    if (patch.allow_outbound_admin.has_value()) {
+        merged.allow_outbound_admin = patch.allow_outbound_admin;
+    }
+    if (patch.allow_chat.has_value()) merged.allow_chat = patch.allow_chat;
+    if (patch.allow_file.has_value()) merged.allow_file = patch.allow_file;
+    if (patch.allow_bytes.has_value()) merged.allow_bytes = patch.allow_bytes;
+
+    auto meta = read_meta_json(meta_file);
+    nlohmann::json entry_json = nlohmann::json::object();
+    entry_meta_to_json(merged, entry_json);
+    meta[fingerprint] = entry_json;
     return write_meta_json(meta_file, meta, err);
 }
 

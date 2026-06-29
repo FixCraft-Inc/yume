@@ -2,9 +2,33 @@ set(_expected
     yume_abi_version
     yume_argon2_backend
     yume_basefwx_version
+    yume_client_create
+    yume_client_destroy
+    yume_client_open_stream
+    yume_client_request_json
+    yume_client_start_file
+    yume_client_start_json
+    yume_client_status_json
+    yume_client_stop
     yume_feature_flags
     yume_get_build_info
+    yume_handle_last_error
     yume_pq_backend
+    yume_server_accept_stream
+    yume_server_create
+    yume_server_destroy
+    yume_server_register_service
+    yume_server_sessions_json
+    yume_server_start_file
+    yume_server_start_json
+    yume_server_status_json
+    yume_server_stop
+    yume_stream_close
+    yume_stream_destroy
+    yume_stream_read
+    yume_stream_shutdown_write
+    yume_stream_write
+    yume_strerror
     yume_version
 )
 

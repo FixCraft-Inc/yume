@@ -3,7 +3,31 @@ libyume.so.1 libyume1 #MINVER#
  yume_abi_version@Base 1.0-1
  yume_argon2_backend@Base 1.0-1
  yume_basefwx_version@Base 1.0-1
+ yume_client_create@Base 1.1-1
+ yume_client_destroy@Base 1.1-1
+ yume_client_open_stream@Base 1.1-1
+ yume_client_request_json@Base 1.1-1
+ yume_client_start_file@Base 1.1-1
+ yume_client_start_json@Base 1.1-1
+ yume_client_status_json@Base 1.1-1
+ yume_client_stop@Base 1.1-1
  yume_feature_flags@Base 1.0-1
  yume_get_build_info@Base 1.0-1
+ yume_handle_last_error@Base 1.1-1
  yume_pq_backend@Base 1.0-1
+ yume_server_accept_stream@Base 1.1-1
+ yume_server_create@Base 1.1-1
+ yume_server_destroy@Base 1.1-1
+ yume_server_register_service@Base 1.1-1
+ yume_server_sessions_json@Base 1.1-1
+ yume_server_start_file@Base 1.1-1
+ yume_server_start_json@Base 1.1-1
+ yume_server_status_json@Base 1.1-1
+ yume_server_stop@Base 1.1-1
+ yume_stream_close@Base 1.1-1
+ yume_stream_destroy@Base 1.1-1
+ yume_stream_read@Base 1.1-1
+ yume_stream_shutdown_write@Base 1.1-1
+ yume_stream_write@Base 1.1-1
+ yume_strerror@Base 1.1-1
  yume_version@Base 1.0-1

@@ -22,6 +22,17 @@ class ChatPage : public Page {
 public:
     std::string_view title() const override { return "Chat"; }
 
+    void on_show(AppContext& ctx) override {
+        if (ctx.pending_jump_arg.empty()) return;
+        std::strncpy(peer_, ctx.pending_jump_arg.c_str(), sizeof(peer_) - 1);
+        peer_[sizeof(peer_) - 1] = 0;
+        if (ctx.client && ctx.client->running()) {
+            std::string err;
+            active_channel_ = ctx.client->open_chat(peer_, &err);
+            last_error_ = err;
+        }
+    }
+
     void render(AppContext& ctx) override {
         auto const& p = ui::colors();
         const float left_w = 220.f;

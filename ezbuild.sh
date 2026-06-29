@@ -349,6 +349,45 @@ apt_update_once() {
     touch "${APT_UPDATED_FLAG}"
 }
 
+dpkg_pkg_installed() {
+    local pkg="$1"
+    dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed'
+}
+
+# Install only packages that are not already on the system. Skips apt-get
+# entirely when the list is satisfied — avoids a full dependency-tree walk
+# per package on repeat ezbuild runs.
+apt_install_if_missing() {
+    local missing=()
+    local pkg
+    for pkg in "$@"; do
+        if ! dpkg_pkg_installed "$pkg"; then
+            missing+=("$pkg")
+        fi
+    done
+    if ((${#missing[@]} == 0)); then
+        return 0
+    fi
+    sudo apt-get install -y "${missing[@]}"
+}
+
+apt_install_gui_package() {
+    local pkg="$1"
+    local backports_suite="${2:-}"
+    if dpkg_pkg_installed "$pkg"; then
+        return 0
+    fi
+    if sudo apt-get install -y "$pkg" 2>/dev/null; then
+        return 0
+    fi
+    if [[ -n "$backports_suite" ]] \
+        && sudo apt-get install -y -t "$backports_suite" "$pkg" 2>/dev/null; then
+        info "Installed '${pkg}' from ${backports_suite}."
+        return 0
+    fi
+    return 1
+}
+
 detect_vcpkg_root() {
     if [[ -n "${VCPKG_ROOT:-}" && -x "${VCPKG_ROOT}/vcpkg" ]]; then
         echo "${VCPKG_ROOT}"
@@ -884,7 +923,7 @@ install_deps_linux() {
     if need_cmd apt-get; then
         step "Detected apt-get (Debian/Ubuntu). Installing dependencies..."
         apt_update_once
-        sudo apt-get install -y \
+        apt_install_if_missing \
             build-essential \
             cmake \
             git \
@@ -945,12 +984,10 @@ install_deps_linux() {
                 backports_suite="${codename}-backports"
             fi
             for pkg in "${gui_packages[@]}"; do
-                if sudo apt-get install -y "$pkg" 2>/dev/null; then
+                if dpkg_pkg_installed "$pkg"; then
                     continue
                 fi
-                if [[ -n "$backports_suite" ]] \
-                    && sudo apt-get install -y -t "$backports_suite" "$pkg" 2>/dev/null; then
-                    info "Installed '${pkg}' from ${backports_suite}."
+                if apt_install_gui_package "$pkg" "$backports_suite"; then
                     continue
                 fi
                 warn "apt-get could not install '${pkg}'; continuing."

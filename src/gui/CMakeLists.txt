@@ -210,6 +210,7 @@ set(YUME_GUI_SOURCES
     platform/app_icon.cpp
     platform/file_dialog.cpp
     platform/tray.cpp
+    platform/tray_icon.cpp
     platform/window.cpp
     theme/material3.cpp
     ui/design.cpp
@@ -233,11 +234,11 @@ set(YUME_GUI_SOURCES
 # being added.)
 if(APPLE)
     list(APPEND YUME_GUI_SOURCES platform/file_dialog_macos.mm)
-    # Compile the .mm through the CXX toolchain (clean include set) as
-    # Objective-C++, rather than as a separate OBJCXX language — see the note
-    # near find_package(OpenGL). -x objective-c++ tells clang to treat the .mm
-    # as ObjC++; -ObjC++ runtime + AppKit framework come from the link step.
+    list(APPEND YUME_GUI_SOURCES platform/tray_macos.mm)
     set_source_files_properties(platform/file_dialog_macos.mm PROPERTIES
+        LANGUAGE CXX
+        COMPILE_OPTIONS "-x;objective-c++")
+    set_source_files_properties(platform/tray_macos.mm PROPERTIES
         LANGUAGE CXX
         COMPILE_OPTIONS "-x;objective-c++")
 endif()
@@ -277,6 +278,9 @@ endif()
 
 if(YUME_GUI_TRAY_AVAILABLE)
     target_compile_definitions(yume-gui PRIVATE YUME_GUI_TRAY=1)
+    if(APPLE)
+        target_compile_definitions(yume-gui PRIVATE YUME_GUI_TRAY_MACOS=1)
+    endif()
     if(UNIX AND NOT APPLE)
         target_include_directories(yume-gui PRIVATE ${APPINDICATOR_INCLUDE_DIRS})
         target_link_libraries(yume-gui PRIVATE ${APPINDICATOR_LIBRARIES})
@@ -329,8 +333,8 @@ if(APPLE)
         OUTPUT_NAME "Yume"
         MACOSX_BUNDLE_BUNDLE_NAME "Yume"
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.fixcraft.yume.gui"
-        MACOSX_BUNDLE_BUNDLE_VERSION "1.0"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
+        MACOSX_BUNDLE_BUNDLE_VERSION "1.1"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.1"
         MACOSX_BUNDLE_COPYRIGHT "Copyright (C) FixCraft Inc.")
 
     # Bake the country-by-IP DB into Contents/Resources/geoip so the lookup

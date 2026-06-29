@@ -12,6 +12,9 @@
 
 namespace yume::gui::platform {
 
+// GLFW window used for nested ImGui picker loops when no native dialog exists.
+void set_dialog_parent_window(void* glfw_window);
+
 std::optional<std::filesystem::path> open_file_dialog(std::string const& title,
                                                        std::string* err = nullptr);
 

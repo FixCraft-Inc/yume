@@ -45,7 +45,7 @@ enum class BundleType : std::uint8_t {
 struct ShareBundle {
     BundleType type{BundleType::Backup};
     std::string created_at_iso8601;          // e.g. "2026-05-25T10:39:10Z"
-    std::string created_by;                  // e.g. "yume 1.0 (linux-x86_64)"
+    std::string created_by;                  // e.g. "yume 1.1 (linux-x86_64)"
     std::string label;                       // free-text, optional
 
     // server endpoint
@@ -112,7 +112,7 @@ bool peek_share_header(const std::vector<std::uint8_t>& blob,
 struct BackupInputs {
     // Display label + provenance (optional but nice in the summary)
     std::string label;
-    std::string created_by;       // e.g. "yume 1.0 (linux-x86_64)"
+    std::string created_by;       // e.g. "yume 1.1 (linux-x86_64)"
     // Server endpoint (required)
     std::string server_host;
     int         server_port{443};

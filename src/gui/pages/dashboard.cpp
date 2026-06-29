@@ -141,7 +141,7 @@ public:
             }
             ImGui::EndDisabled();
             ImGui::Dummy(ImVec2(0, 2 * sc));
-            ui::muted_text("Client runs in the background through local IPC.");
+            ui::muted_text("Client runs in-process in the background.");
             if (!last_error_.empty()) {
                 ui::message_text(c.error, "%s", last_error_.c_str());
             }

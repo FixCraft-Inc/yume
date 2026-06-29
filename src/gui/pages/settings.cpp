@@ -9,7 +9,6 @@
 #include <imgui.h>
 
 #include "facade/config/config_io.hpp"
-#include "theme/theme.hpp"
 #include "ui/design.hpp"
 
 namespace yume::gui {
@@ -27,22 +26,34 @@ public:
         bool dark = ctx.dark_mode;
         if (ui::checkbox("Use dark theme", &dark)) {
             ctx.dark_mode = dark;
-            theme::apply_material3(dark ? theme::Mode::Dark : theme::Mode::Light);
             ui::apply_style(ui::scale(), dark);
-            // Persist so the next launch opens in the same mode.
-            facade::config_io::GuiPreferences prefs;
+            facade::config_io::GuiPreferences prefs =
+                facade::config_io::load_gui_preferences();
             prefs.dark_mode = dark;
             facade::config_io::save_gui_preferences(prefs);
         }
 
         ui::section_label("Window");
-#if YUME_GUI_TRAY
-        ImGui::TextColored(p.muted,
-                           "System tray is available. Close minimises to tray.");
-#else
-        ImGui::TextColored(p.muted,
-                           "System tray is not available on this build.");
-#endif
+        bool minimize = ctx.minimize_to_tray_on_close;
+        if (!ctx.tray_available) ImGui::BeginDisabled();
+        if (ui::checkbox("Minimize to tray on close", &minimize)) {
+            ctx.minimize_to_tray_on_close = minimize;
+            facade::config_io::GuiPreferences prefs =
+                facade::config_io::load_gui_preferences();
+            prefs.minimize_to_tray_on_close = minimize;
+            facade::config_io::save_gui_preferences(prefs);
+        }
+        if (!ctx.tray_available) {
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                ImGui::SetTooltip("System tray is not available on this system.");
+            }
+            ImGui::TextColored(p.muted,
+                               "System tray is not available on this build.");
+        } else {
+            ImGui::TextColored(p.muted,
+                               "When enabled, closing the window hides Yume in the tray.");
+        }
 
         ui::section_label("Data");
         ImGui::TextColored(p.muted, "Configs and keys live in:");

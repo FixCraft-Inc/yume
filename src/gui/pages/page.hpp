@@ -24,6 +24,8 @@ struct AppContext {
     yume::facade::ServerSession* server{nullptr};
     bool dark_mode{true};
     // page-to-app actions
+    bool tray_available{false};
+    bool minimize_to_tray_on_close{true};
     bool request_quit{false};
     bool request_minimize_to_tray{false};
     bool jump_to_directory{false};

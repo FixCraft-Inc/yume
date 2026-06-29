@@ -25,6 +25,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <imgui.h>
@@ -33,6 +34,7 @@
 #include "facade/keys/keys.hpp"
 #include "facade/logging/log_sink.hpp"
 #include "facade/session/server_session.hpp"
+#include "core/app_codec/codec.hpp"
 #include "platform/file_dialog.hpp"
 #include "ui/design.hpp"
 
@@ -285,12 +287,27 @@ private:
                     ui::data_table_headers({"Name", "Fingerprint", ""});
                     int row_idx = 0;
                     std::string revoke_fp;
+                    std::string rename_fp;
+                    std::string rename_alias;
                     for (auto const& k : auth_keys_) {
                         ImGui::TableNextRow();
                         ImGui::PushID(row_idx++);
                         ImGui::TableNextColumn();
-                        ImGui::TextUnformatted(k.alias.empty() ? "(unnamed)"
-                                                              : k.alias.c_str());
+                        char alias_buf[128]{};
+                        auto alias_it = alias_edits_.find(k.fingerprint);
+                        if (alias_it != alias_edits_.end()) {
+                            std::strncpy(alias_buf, alias_it->second.c_str(), sizeof(alias_buf) - 1);
+                        } else {
+                            std::strncpy(alias_buf, k.alias.c_str(), sizeof(alias_buf) - 1);
+                        }
+                        ImGui::SetNextItemWidth(160 * sc);
+                        if (ImGui::InputText("##alias", alias_buf, sizeof(alias_buf))) {
+                            alias_edits_[k.fingerprint] = alias_buf;
+                        }
+                        if (ImGui::IsItemDeactivatedAfterEdit()) {
+                            rename_fp = k.fingerprint;
+                            rename_alias = alias_buf;
+                        }
                         ImGui::TableNextColumn();
                         std::string short_fp = k.fingerprint.substr(
                             0, std::min<std::size_t>(k.fingerprint.size(), 16));
@@ -305,6 +322,7 @@ private:
                     }
                     ui::end_data_table();
                     if (!revoke_fp.empty()) revoke(revoke_fp);
+                    if (!rename_fp.empty()) rename_user(rename_fp, rename_alias);
                 }
             }
 
@@ -484,6 +502,41 @@ private:
             ImGui::EndDisabled();  // closes !cfg_.inner_crypto disabled
 
             ImGui::Dummy(ImVec2(0, 8 * sc));
+            codecs_open_ = ui::disclosure_header("App Codecs", codecs_open_);
+            if (codecs_open_) {
+                ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
+                ImGui::TextWrapped(
+                    "Application codecs parse local app protocols and relay typed "
+                    "envelopes over Yume streams. Each connecting key still needs "
+                    "its own codec permission.");
+                ImGui::PopStyleColor();
+                ImGui::Dummy(ImVec2(0, 4 * sc));
+                if (ui::checkbox("Enable Monero RPC codec", &cfg_.allow_monero_rpc_codec)) {
+                    if (cfg_.allow_monero_rpc_codec) {
+                        yume::app_codec::add_codec_unique(
+                            &cfg_.allowed_codecs, yume::app_codec::kMoneroRpcCodecId);
+                    } else {
+                        auto& codecs = cfg_.allowed_codecs;
+                        codecs.erase(
+                            std::remove_if(codecs.begin(), codecs.end(),
+                                           [](std::string const& id) {
+                                               return yume::app_codec::canonical_codec_id(id) ==
+                                                      std::string(
+                                                          yume::app_codec::kMoneroRpcCodecId);
+                                           }),
+                            codecs.end());
+                    }
+                }
+                ImGui::BeginDisabled(!cfg_.allow_monero_rpc_codec);
+                text_input("Monero RPC backend host", cfg_.monero_rpc_backend_host,
+                           "127.0.0.1");
+                int backend_port = cfg_.monero_rpc_backend_port;
+                int_input("Monero RPC backend port", backend_port);
+                cfg_.monero_rpc_backend_port = backend_port;
+                ImGui::EndDisabled();
+            }
+
+            ImGui::Dummy(ImVec2(0, 8 * sc));
             ui::section_label("External CLI control");
             ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
             ImGui::TextWrapped(
@@ -579,6 +632,23 @@ private:
         } catch (...) {
             auth_keys_.clear();
         }
+    }
+
+    void rename_user(std::string const& fingerprint, std::string const& alias) {
+        facade::keys::AuthorizedKeyEntry patch;
+        patch.alias = alias;
+        std::string err;
+        if (facade::keys::update_authorized(
+                resolved_auth_keys(cfg_), resolved_auth_meta(cfg_),
+                fingerprint, patch, &err)) {
+            users_message_ = "Renamed user.";
+            users_message_error_ = false;
+            alias_edits_.erase(fingerprint);
+        } else {
+            users_message_ = err.empty() ? "Couldn't rename user." : err;
+            users_message_error_ = true;
+        }
+        refresh_auth_keys();
     }
 
     void revoke(std::string const& fingerprint) {
@@ -680,10 +750,12 @@ private:
     server::ServerConfig                       cfg_{};
     bool                                       loaded_{false};
     bool                                       advanced_open_{false};
+    bool                                       codecs_open_{false};
     std::string                                last_message_;
     bool                                       last_error_{false};
 
     std::vector<facade::keys::AuthorizedKeyEntry> auth_keys_;
+    std::unordered_map<std::string, std::string> alias_edits_;
     std::string                                users_message_;
     bool                                       users_message_error_{false};
 };

@@ -6,6 +6,7 @@
 
 #include "ui/design.hpp"
 #include "ui/embedded_fonts.hpp"
+#include "theme/theme.hpp"
 
 #include <algorithm>
 #include <cfloat>
@@ -258,40 +259,23 @@ void install_fonts(float content_scale) {
 
 void apply_style(float content_scale, bool dark_mode) {
     g_scale = std::clamp(content_scale, 1.0f, 2.0f);
-    // Palette mirrors the Android YUME theme (Color.kt + Theme.kt) — dusty
-    // plum / lavender / rose with a soft pink accent, deepened slightly for
-    // desktop contrast on larger surfaces.
-    if (dark_mode) {
-        g_colors.background  = rgb(0x101014);   // YumeNight
-        g_colors.surface     = rgb(0x17171C);   // YumeNightSurface
-        g_colors.surface_high= rgb(0x222129);   // YumeNightRaised
-        g_colors.outline     = rgb(0x3A3340);
-        g_colors.text        = rgb(0xEAE3EA);
-        g_colors.muted       = rgb(0xB5ABB3);
-        // Soft pink primary; the on_accent dark wine matches Android's
-        // on_primary in dark mode so dark text reads cleanly on the
-        // light pink button instead of blending into it.
-        g_colors.accent      = rgb(0xE8BECC);   // YumeBerry-light / soft pink
-        g_colors.accent_hover= rgb(0xF4D2DC);   // lighter rose for hover
-        g_colors.on_accent   = rgb(0x3A1F2E);   // dark wine, ~10:1 contrast on pink
-        g_colors.success     = rgb(0x86E0A8);
-        g_colors.warning     = rgb(0xF2C56B);
-        g_colors.error       = rgb(0xFFB1BD);
-    } else {
-        g_colors.background  = rgb(0xFFFBFE);   // YumePaper
-        g_colors.surface     = rgb(0xFFFFFF);
-        g_colors.surface_high= rgb(0xEDE3EF);   // YumeLilac
-        g_colors.outline     = rgb(0xD9CFDA);
-        g_colors.text        = rgb(0x201A21);   // YumeInk
-        g_colors.muted       = rgb(0x6D6570);   // YumeSlate
-        // Dark plum primary in light mode; white reads cleanly on it.
-        g_colors.accent      = rgb(0x70536B);   // YumePlum
-        g_colors.accent_hover= rgb(0x563E53);   // YumePlumDeep
-        g_colors.on_accent   = rgb(0xFFFBFF);   // near-white, high contrast on plum
-        g_colors.success     = rgb(0x2E7D32);
-        g_colors.warning     = rgb(0xB26A00);
-        g_colors.error       = rgb(0xB72E5C);
-    }
+    theme::apply_material3(dark_mode ? theme::Mode::Dark : theme::Mode::Light);
+    theme::Palette const& p = theme::current_palette();
+
+    g_colors.background   = p.surface;
+    g_colors.surface      = p.surface_container;
+    g_colors.surface_high = p.surface_container_high;
+    g_colors.outline      = p.outline_variant;
+    g_colors.text         = p.on_surface;
+    g_colors.muted        = p.on_surface_variant;
+    g_colors.accent       = p.primary;
+    g_colors.accent_hover = dark_mode ? ImVec4(p.primary.x + 0.04f, p.primary.y + 0.04f,
+                                               p.primary.z + 0.04f, 1.0f)
+                                      : p.primary_container;
+    g_colors.on_accent    = p.on_primary;
+    g_colors.success      = p.success;
+    g_colors.warning      = p.warning;
+    g_colors.error        = p.error;
 
     ImGuiStyle& s = ImGui::GetStyle();
     s.WindowPadding = ImVec2(px(26), px(24));
@@ -314,44 +298,7 @@ void apply_style(float content_scale, bool dark_mode) {
     s.FrameBorderSize = 0.0f;
     s.PopupBorderSize = 1.0f;
 
-    ImVec4* c = s.Colors;
-    c[ImGuiCol_Text] = g_colors.text;
-    c[ImGuiCol_TextDisabled] = alpha(g_colors.muted, 0.62f);
-    c[ImGuiCol_WindowBg] = g_colors.background;
-    c[ImGuiCol_ChildBg] = g_colors.surface;
-    c[ImGuiCol_PopupBg] = g_colors.surface_high;
-    c[ImGuiCol_Border] = g_colors.outline;
-    c[ImGuiCol_BorderShadow] = alpha(rgb(0x000000), 0.0f);
-    c[ImGuiCol_FrameBg] = g_colors.surface_high;
-    c[ImGuiCol_FrameBgHovered] = alpha(g_colors.accent, 0.18f);
-    c[ImGuiCol_FrameBgActive] = alpha(g_colors.accent, 0.26f);
-    c[ImGuiCol_Button] = g_colors.accent;
-    c[ImGuiCol_ButtonHovered] = g_colors.accent_hover;
-    c[ImGuiCol_ButtonActive] = rgb(0xC74D13);
-    c[ImGuiCol_Header] = alpha(g_colors.accent, 0.16f);
-    c[ImGuiCol_HeaderHovered] = alpha(g_colors.accent, 0.24f);
-    c[ImGuiCol_HeaderActive] = alpha(g_colors.accent, 0.32f);
-    c[ImGuiCol_Separator] = g_colors.outline;
-    c[ImGuiCol_SeparatorHovered] = g_colors.accent_hover;
-    c[ImGuiCol_SeparatorActive] = g_colors.accent;
-    c[ImGuiCol_ScrollbarBg] = alpha(rgb(0x000000), 0.0f);
-    c[ImGuiCol_ScrollbarGrab] = alpha(g_colors.muted, 0.28f);
-    c[ImGuiCol_ScrollbarGrabHovered] = alpha(g_colors.muted, 0.45f);
-    c[ImGuiCol_ScrollbarGrabActive] = alpha(g_colors.accent, 0.7f);
-    c[ImGuiCol_CheckMark] = g_colors.accent;
-    c[ImGuiCol_SliderGrab] = g_colors.accent;
-    c[ImGuiCol_SliderGrabActive] = g_colors.accent_hover;
-    c[ImGuiCol_Tab] = g_colors.surface_high;
-    c[ImGuiCol_TabHovered] = alpha(g_colors.accent, 0.2f);
-    c[ImGuiCol_TabActive] = alpha(g_colors.accent, 0.24f);
-    c[ImGuiCol_TableHeaderBg] = g_colors.surface_high;
-    c[ImGuiCol_TableBorderStrong] = g_colors.outline;
-    c[ImGuiCol_TableBorderLight] = g_colors.outline;
-    c[ImGuiCol_TableRowBg] = alpha(rgb(0x000000), 0.0f);
-    c[ImGuiCol_TableRowBgAlt] = alpha(g_colors.surface_high, 0.45f);
-    c[ImGuiCol_TextSelectedBg] = alpha(g_colors.accent, 0.32f);
-    c[ImGuiCol_NavHighlight] = g_colors.accent;
-    c[ImGuiCol_ModalWindowDimBg] = alpha(rgb(0x000000), 0.55f);
+    s.Colors[ImGuiCol_ModalWindowDimBg] = alpha(rgb(0x000000), 0.55f);
 }
 
 Fonts const& fonts() { return g_fonts; }

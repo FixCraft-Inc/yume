@@ -140,8 +140,8 @@ public:
             ImGui::Dummy(ImVec2(0, 6 * sc));
             if (entries_.empty()) {
                 ui::muted_text("No authorized public keys loaded.");
-            } else if (ui::begin_data_table("##keys_table", 4)) {
-                ui::data_table_headers({"Fingerprint", "Alias", "Algorithm", ""});
+            } else if (ui::begin_data_table("##keys_table", 5)) {
+                ui::data_table_headers({"Fingerprint", "Alias", "Codecs", "Algorithm", ""});
                 if (ui::fonts().mono) ImGui::PushFont(ui::fonts().mono);
                 for (auto const& e : entries_) {
                     ImGui::TableNextRow();
@@ -152,6 +152,19 @@ public:
                     if (ui::fonts().body) ImGui::PushFont(ui::fonts().body);
                     ImGui::TextUnformatted(e.alias.empty() ? "—" : e.alias.c_str());
                     if (ui::fonts().body) ImGui::PopFont();
+                    ImGui::TableNextColumn();
+                    if (e.allow_codecs.empty()) {
+                        ImGui::TextUnformatted("—");
+                    } else {
+                        std::string joined;
+                        for (std::size_t i = 0; i < e.allow_codecs.size(); ++i) {
+                            if (i > 0) joined += ", ";
+                            joined += e.allow_codecs[i];
+                        }
+                        ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
+                        ImGui::TextUnformatted(joined.c_str());
+                        ImGui::PopStyleColor();
+                    }
                     ImGui::TableNextColumn();
                     if (ui::fonts().body) ImGui::PushFont(ui::fonts().body);
                     ImGui::TextUnformatted(e.algorithm.c_str());

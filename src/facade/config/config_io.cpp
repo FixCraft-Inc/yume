@@ -46,6 +46,7 @@ GuiPreferences load_gui_preferences() {
         in >> j;
         if (j.is_object()) {
             read_opt(j, cfg_key::dark_mode, out.dark_mode);
+            read_opt(j, cfg_key::minimize_to_tray_on_close, out.minimize_to_tray_on_close);
         }
     } catch (...) {
         // Malformed JSON: fall back to defaults silently. The next save
@@ -58,7 +59,8 @@ bool save_gui_preferences(GuiPreferences const& prefs) {
     const auto path = default_gui_preferences_path();
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
-    json j = {{cfg_key::dark_mode, prefs.dark_mode}};
+    json j = {{cfg_key::dark_mode, prefs.dark_mode},
+              {cfg_key::minimize_to_tray_on_close, prefs.minimize_to_tray_on_close}};
     std::ofstream out(path);
     if (!out) return false;
     out << j.dump(2);

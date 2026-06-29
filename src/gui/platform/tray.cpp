@@ -41,156 +41,25 @@
 #  include <shellapi.h>
 #elif YUME_GUI_TRAY && defined(__APPLE__)
 #  define YUME_GUI_TRAY_MACOS 1
-// macOS uses NSStatusItem (Cocoa). A real implementation needs an
-// Objective-C++ source file. For now we ship the no-op stub so the
-// build is green; tray support comes in a follow-up.
 #endif
 
-// NanoSVG IMPLEMENTATION lives in app_icon.cpp; here we just consume.
-#include <nanosvg.h>
-#include <nanosvgrast.h>
-
-// STB_IMAGE_WRITE_STATIC gives this TU its own file-local copy of the
-// stb_image_write symbols. basefwx (libbasefwxcpp.a, imagecipher.cpp) bundles
-// the same single-header library, and Apple's ld64 rejects the duplicate
-// stbi_write_* / stbi_zlib_compress definitions (GNU ld tolerated it by not
-// pulling the conflicting archive member). Static linkage avoids the clash on
-// every platform; tray.cpp is the only TU that calls these (stbi_write_png).
-#define STB_IMAGE_WRITE_STATIC
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb/stb_image_write.h"
-
-#include "app_icon_data.hpp"
+#include "platform/tray_icon.hpp"
 
 namespace yume::gui {
 
 namespace {
 
-constexpr int kIconSize = 64;
-
-struct Px { std::uint8_t r, g, b, a; };
-
-std::vector<std::uint8_t> rasterise_icon(int size) {
-    std::vector<std::uint8_t> pixels(static_cast<size_t>(size) * size * 4, 0);
-    std::string svg(reinterpret_cast<const char*>(platform::kIconSvgBytes),
-                    platform::kIconSvgSize);
-    NSVGimage* image = nsvgParse(svg.data(), "px", 96.0f);
-    if (!image) return pixels;
-    NSVGrasterizer* rast = nsvgCreateRasterizer();
-    if (!rast) {
-        nsvgDelete(image);
-        return pixels;
-    }
-    const float scale = static_cast<float>(size) /
-                        ((image->width > 0) ? image->width : 256.0f);
-    nsvgRasterize(rast, image, 0.0f, 0.0f, scale,
-                  pixels.data(), size, size, size * 4);
-    nsvgDeleteRasterizer(rast);
-    nsvgDelete(image);
-    return pixels;
+std::string write_icon_for_status(TrayStatus const& st,
+                                  std::filesystem::path const& icon_dir) {
+    return tray_icon::write_status_png(st, icon_dir,
+                                       tray_icon::status_digest(st));
 }
 
-void paint_pixel(Px& dst, Px const& src) {
-    const float a = src.a / 255.0f;
-    const float inv = 1.0f - a;
-    dst.r = static_cast<std::uint8_t>(src.r * a + dst.r * inv);
-    dst.g = static_cast<std::uint8_t>(src.g * a + dst.g * inv);
-    dst.b = static_cast<std::uint8_t>(src.b * a + dst.b * inv);
-    dst.a = std::max<std::uint8_t>(dst.a, src.a);
-}
-
-// Filled circle with a soft rim + thin dark outline for readability on
-// light tray themes.
-void paint_dot(std::uint8_t* pixels, int size, int cx, int cy, int r,
-               Px fill) {
-    const float feather = 1.2f;
-    const float r_outer = static_cast<float>(r);
-    const float r_inner = r_outer - feather;
-    for (int y = cy - r - 2; y <= cy + r + 2; ++y) {
-        if (y < 0 || y >= size) continue;
-        for (int x = cx - r - 2; x <= cx + r + 2; ++x) {
-            if (x < 0 || x >= size) continue;
-            const float dx = static_cast<float>(x - cx) + 0.5f;
-            const float dy = static_cast<float>(y - cy) + 0.5f;
-            const float d  = std::sqrt(dx * dx + dy * dy);
-            if (d > r_outer + 0.5f) continue;
-            // Soft alpha on the outer rim.
-            float a;
-            if (d <= r_inner) a = 1.0f;
-            else a = std::max(0.0f, 1.0f - (d - r_inner) / feather);
-            const auto idx = static_cast<size_t>(y) * size + static_cast<size_t>(x);
-            Px* p = reinterpret_cast<Px*>(pixels) + idx;
-            Px src = fill;
-            src.a = static_cast<std::uint8_t>(255.0f * a);
-            paint_pixel(*p, src);
-        }
+void remove_icon_files(std::vector<std::string> const& paths) {
+    for (auto const& p : paths) {
+        std::error_code ec;
+        std::filesystem::remove(p, ec);
     }
-    // Thin dark outline at r_outer for readability on light backgrounds.
-    const float ring_w = 1.0f;
-    for (int y = cy - r - 2; y <= cy + r + 2; ++y) {
-        if (y < 0 || y >= size) continue;
-        for (int x = cx - r - 2; x <= cx + r + 2; ++x) {
-            if (x < 0 || x >= size) continue;
-            const float dx = static_cast<float>(x - cx) + 0.5f;
-            const float dy = static_cast<float>(y - cy) + 0.5f;
-            const float d  = std::sqrt(dx * dx + dy * dy);
-            const float ring_dist = std::fabs(d - r_outer);
-            if (ring_dist > ring_w) continue;
-            const float a = std::max(0.0f, 1.0f - ring_dist / ring_w);
-            const auto idx = static_cast<size_t>(y) * size + static_cast<size_t>(x);
-            Px* p = reinterpret_cast<Px*>(pixels) + idx;
-            Px outline{0, 0, 0, static_cast<std::uint8_t>(150.0f * a)};
-            paint_pixel(*p, outline);
-        }
-    }
-}
-
-Px state_color(TrayServiceState s) {
-    switch (s) {
-        case TrayServiceState::Connecting: return Px{0xF2, 0xB9, 0x50, 255}; // amber
-        case TrayServiceState::Connected:  return Px{0x53, 0xD1, 0x7C, 255}; // green
-        case TrayServiceState::Error:      return Px{0xFF, 0x6F, 0x6B, 255}; // red
-        case TrayServiceState::Off:
-        default: return Px{0, 0, 0, 0};
-    }
-}
-
-std::string state_tag(TrayServiceState s) {
-    switch (s) {
-        case TrayServiceState::Connecting: return "y";
-        case TrayServiceState::Connected:  return "g";
-        case TrayServiceState::Error:      return "r";
-        case TrayServiceState::Off:
-        default: return "o";
-    }
-}
-
-std::string write_icon_for_status(TrayStatus const& st) {
-    const std::string digest = state_tag(st.client) + state_tag(st.server);
-    const std::string path = "/tmp/yume-gui-tray-" + digest + ".png";
-    if (std::filesystem::exists(path)) return path;
-
-    auto pixels = rasterise_icon(kIconSize);
-    if (pixels.empty()) return {};
-
-    const int dot_r = std::max(6, kIconSize / 7);
-    const int gap   = dot_r / 2;
-    int next_cx = kIconSize - dot_r - 2;
-    int next_cy = kIconSize - dot_r - 2;
-
-    auto plot = [&](TrayServiceState s) {
-        if (s == TrayServiceState::Off) return;
-        paint_dot(pixels.data(), kIconSize, next_cx, next_cy, dot_r, state_color(s));
-        next_cx -= (2 * dot_r + gap);
-    };
-    plot(st.client);
-    plot(st.server);
-
-    if (!stbi_write_png(path.c_str(), kIconSize, kIconSize, 4,
-                        pixels.data(), kIconSize * 4)) {
-        return {};
-    }
-    return path;
 }
 
 }  // namespace
@@ -212,6 +81,8 @@ struct Tray::Impl {
     TrayInfo   last_info;
     std::string last_info_digest;
     std::string last_icon_path;
+    std::filesystem::path icon_dir;
+    std::vector<std::string> temp_icons;
     bool available{false};
     bool gtk_initialised_by_us{false};
 };
@@ -220,6 +91,7 @@ Tray::Tray(std::string app_name, Callbacks cb)
     : impl_(std::make_unique<Impl>()) {
     impl_->name = std::move(app_name);
     impl_->callbacks = std::move(cb);
+    impl_->icon_dir = tray_icon::icon_directory();
 
     // gtk_init can be called multiple times safely if it returns FALSE
     // we treat the tray as unavailable. Pass nullptr to avoid mutating
@@ -247,7 +119,10 @@ Tray::Tray(std::string app_name, Callbacks cb)
     // Initial icon = bare SVG composite with no overlay dots. The
     // app-indicator library expects the icon to be in an icon theme by
     // default but we use the file-path form which is more flexible.
-    const std::string initial = write_icon_for_status(TrayStatus{});
+    const std::string initial = write_icon_for_status(TrayStatus{}, impl_->icon_dir);
+    if (!initial.empty()) {
+        impl_->temp_icons.push_back(initial);
+    }
     // app_indicator_new is marked deprecated in newer ayatana headers but
     // it's still the only documented entry point; the suggested
     // replacement landed only in very recent versions.
@@ -313,6 +188,9 @@ Tray::Tray(std::string app_name, Callbacks cb)
 }
 
 Tray::~Tray() {
+    if (impl_) {
+        remove_icon_files(impl_->temp_icons);
+    }
     if (impl_ && impl_->indicator) {
         // app-indicator owns the menu reference; nullify to detach.
         app_indicator_set_status(impl_->indicator, APP_INDICATOR_STATUS_PASSIVE);
@@ -334,8 +212,12 @@ void Tray::set_status(TrayStatus const& status) {
         return;  // no change
     }
     impl_->last_status = status;
-    const std::string path = write_icon_for_status(status);
+    const std::string path = write_icon_for_status(status, impl_->icon_dir);
     if (path.empty()) return;
+    if (std::find(impl_->temp_icons.begin(), impl_->temp_icons.end(), path) ==
+        impl_->temp_icons.end()) {
+        impl_->temp_icons.push_back(path);
+    }
     impl_->last_icon_path = path;
     app_indicator_set_icon_full(impl_->indicator, path.c_str(), "Yume");
 }
@@ -507,7 +389,7 @@ Tray::Tray(std::string app_name, Callbacks cb)
                                   GetModuleHandleW(nullptr), impl_.get());
     if (!impl_->hwnd) return;
 
-    auto pixels = rasterise_icon(32);
+    auto pixels = tray_icon::rasterise_base(32);
     impl_->hicon = hicon_from_rgba(pixels, 32);
     NOTIFYICONDATAW& nid = impl_->nid;
     nid.cbSize           = sizeof(nid);
@@ -555,26 +437,8 @@ void Tray::set_status(TrayStatus const& status) {
         return;
     }
     impl_->last_status = status;
-    // Repaint the icon with the new overlay dots. Use a bigger raster so
-    // Windows can downscale to whatever tray slot size it wants without
-    // looking soft.
-    auto pixels = rasterise_icon(64);
-    {
-        // Re-derive the overlay dots from the status (same logic as the
-        // Linux path's write_icon_for_status).
-        const int dot_r = std::max(6, 64 / 7);
-        const int gap   = dot_r / 2;
-        int next_cx = 64 - dot_r - 2;
-        int next_cy = 64 - dot_r - 2;
-        auto plot = [&](TrayServiceState s) {
-            if (s == TrayServiceState::Off) return;
-            paint_dot(pixels.data(), 64, next_cx, next_cy, dot_r,
-                      state_color(s));
-            next_cx -= (2 * dot_r + gap);
-        };
-        plot(status.client);
-        plot(status.server);
-    }
+    auto pixels = tray_icon::rasterise_base(64);
+    tray_icon::paint_status_dots(pixels.data(), 64, status);
     HICON fresh = hicon_from_rgba(pixels, 64);
     if (!fresh) return;
     if (impl_->hicon) DestroyIcon(impl_->hicon);
@@ -682,7 +546,10 @@ static LRESULT CALLBACK tray_wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return DefWindowProcW(h, m, w, l);
 }
 
-#else   // YUME_GUI_TRAY == 0 / macOS — stub --------------------------------
+#elif defined(YUME_GUI_TRAY_MACOS)
+// macOS Tray implementation lives in tray_macos.mm.
+
+#else
 
 struct Tray::Impl {
     std::string name;

@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <thread>
 #include <utility>
 
@@ -25,7 +26,7 @@
 #include "facade/session/server_session.hpp"
 #include "facade/model/status.hpp"
 #include "geo/country_lookup.hpp"
-#include "theme/theme.hpp"
+#include "platform/file_dialog.hpp"
 #include "ui/design.hpp"
 
 #include <cstring>
@@ -131,7 +132,9 @@ App::App(Options opts) : opts_(std::move(opts)) {
     // Restore the persisted dark/light preference before the theme is
     // applied, so the very first frame paints with the user's choice
     // instead of flashing the default and then re-applying.
-    dark_mode_ = facade::config_io::load_gui_preferences().dark_mode;
+    auto const gui_prefs = facade::config_io::load_gui_preferences();
+    dark_mode_ = gui_prefs.dark_mode;
+    minimize_to_tray_on_close_ = gui_prefs.minimize_to_tray_on_close;
 
     window_ = std::make_unique<Window>(
         std::string("Yume ") + yume::kVersion, 1280, 800);
@@ -169,6 +172,7 @@ App::App(Options opts) : opts_(std::move(opts)) {
                     auto* app = static_cast<App*>(glfwGetWindowUserPointer(w));
                     if (!app) return;
                     if (app->quit_requested_) return;  // let close proceed
+                    if (!app->minimize_to_tray_on_close_) return;
                     // Cancel the close and hide instead.
                     glfwSetWindowShouldClose(w, GLFW_FALSE);
                     glfwHideWindow(w);
@@ -179,6 +183,8 @@ App::App(Options opts) : opts_(std::move(opts)) {
     pages_.push_back({make_dashboard_page(), NavScope::Common});
     pages_.push_back({make_connect_page(), NavScope::Client});
     pages_.push_back({make_security_page(), NavScope::Client});
+    pages_.push_back({make_directory_page(), NavScope::Client});
+    pages_.push_back({make_chat_page(), NavScope::Client});
     pages_.push_back({make_logs_page(), NavScope::Client});
     pages_.push_back({make_settings_page(), NavScope::Client});
     pages_.push_back({make_credits_page(), NavScope::Client});
@@ -285,13 +291,13 @@ void App::install_imgui() {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigWindowsMoveFromTitleBarOnly = true;
 
-    theme::apply_material3(dark_mode_ ? theme::Mode::Dark : theme::Mode::Light);
     const float scale = window_ ? window_->content_scale() : 1.0f;
     ui::install_fonts(scale);
     ui::apply_style(scale, dark_mode_);
 
     ImGui_ImplGlfw_InitForOpenGL(window_->raw(), true);
     ImGui_ImplOpenGL3_Init("#version 330 core");
+    platform::set_dialog_parent_window(window_->raw());
 }
 
 bool App::page_visible(std::size_t index) const {
@@ -323,6 +329,37 @@ void App::set_workspace(Workspace workspace) {
         return;
     }
     select_page(workspace_ == Workspace::Client ? last_client_page_ : last_server_page_);
+}
+
+std::size_t App::find_page_index(std::string_view title, NavScope scope) const {
+    for (std::size_t i = 0; i < pages_.size(); ++i) {
+        if (pages_[i].scope == scope && pages_[i].page->title() == title) {
+            return i;
+        }
+    }
+    return static_cast<std::size_t>(-1);
+}
+
+void App::handle_page_navigation(AppContext& ctx) {
+    if (ctx.jump_to_directory) {
+        ctx.jump_to_directory = false;
+        auto idx = find_page_index("Directory", NavScope::Client);
+        if (idx < pages_.size()) {
+            set_workspace(Workspace::Client);
+            select_page(idx);
+        }
+    }
+    if (ctx.jump_to_chat) {
+        ctx.jump_to_chat = false;
+        if (!ctx.pending_jump_arg.empty()) {
+            pending_jump_arg_ = std::move(ctx.pending_jump_arg);
+        }
+        auto idx = find_page_index("Chat", NavScope::Client);
+        if (idx < pages_.size()) {
+            set_workspace(Workspace::Client);
+            select_page(idx);
+        }
+    }
 }
 
 void App::render_sidebar() {
@@ -390,6 +427,12 @@ void App::render_content() {
     ctx.client = client_.get();
     ctx.server = server_.get();
     ctx.dark_mode = dark_mode_;
+    ctx.tray_available = tray_ && tray_->available();
+    ctx.minimize_to_tray_on_close = minimize_to_tray_on_close_;
+    if (!pending_jump_arg_.empty()) {
+        ctx.pending_jump_arg = pending_jump_arg_;
+        pending_jump_arg_.clear();
+    }
 
     if (active_page_ < pages_.size()) {
         if (shown_page_ != active_page_) {
@@ -400,8 +443,10 @@ void App::render_content() {
             shown_page_ = active_page_;
         }
         pages_[active_page_].page->render(ctx);
+        handle_page_navigation(ctx);
     }
     dark_mode_ = ctx.dark_mode;
+    minimize_to_tray_on_close_ = ctx.minimize_to_tray_on_close;
 
     ImGui::EndChild();
     ImGui::PopStyleVar(2);
@@ -535,11 +580,69 @@ int App::run() {
     return 0;
 }
 
-int run_headless(Options const& /*opts*/) {
-    std::printf(
-        "yume-gui --headless: GUI facade smoke test passed.\n"
-        "Local server lifecycle is available; GUI client start/stop uses "
-        "the yume runtime through local IPC.\n");
+int run_headless(Options const& opts) {
+    (void)facade::LogSink::instance();
+
+    const auto client_path = opts.client_config_path.empty()
+                                 ? facade::config_io::default_client_config_path()
+                                 : std::filesystem::path(opts.client_config_path);
+    client::ClientConfig client_cfg;
+    if (std::filesystem::exists(client_path)) {
+        std::string err;
+        if (auto c = facade::config_io::load_client(client_path, &err)) {
+            client_cfg = *c;
+        } else {
+            std::fprintf(stderr, "yume-gui --headless: client config: %s\n", err.c_str());
+            return 1;
+        }
+    }
+
+    const auto server_path = opts.server_config_path.empty()
+                                 ? facade::config_io::default_server_config_path()
+                                 : std::filesystem::path(opts.server_config_path);
+    server::ServerConfig server_cfg;
+    if (std::filesystem::exists(server_path)) {
+        std::string err;
+        if (auto s = facade::config_io::load_server(server_path, &err)) {
+            server_cfg = *s;
+        } else {
+            std::fprintf(stderr, "yume-gui --headless: server config: %s\n", err.c_str());
+            return 1;
+        }
+    }
+
+    facade::ServerSession server(server_cfg);
+    facade::ClientSession client(client_cfg);
+
+    auto const server_report = facade::config_io::validate(server_cfg);
+    if (server_report.ok()) {
+        std::string err;
+        if (server.start(&err)) {
+            std::printf("yume-gui --headless: server start/stop OK\n");
+            server.stop();
+        } else {
+            std::printf("yume-gui --headless: server start skipped (%s)\n",
+                        err.empty() ? "unknown error" : err.c_str());
+        }
+    } else {
+        std::printf("yume-gui --headless: server start skipped (config invalid)\n");
+    }
+
+    auto const client_report = facade::config_io::validate(client_cfg);
+    if (client_report.ok()) {
+        std::string err;
+        if (client.start(&err)) {
+            std::printf("yume-gui --headless: client start/stop OK\n");
+            client.stop();
+        } else {
+            std::printf("yume-gui --headless: client start skipped (%s)\n",
+                        err.empty() ? "unknown error" : err.c_str());
+        }
+    } else {
+        std::printf("yume-gui --headless: client start skipped (config invalid)\n");
+    }
+
+    std::printf("yume-gui --headless: facade lifecycle smoke complete.\n");
     return 0;
 }
 

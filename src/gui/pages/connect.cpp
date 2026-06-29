@@ -202,6 +202,8 @@ public:
                     ui::checkbox("Allow bytes", &cfg_.allow_bytes);
                     ImGui::EndTable();
                 }
+                text_input("TLS server name override (SNI)", cfg_.tls_server_name,
+                           "optional — blank uses server host");
             }
 
             auto report = facade::config_io::validate(cfg_);
@@ -257,7 +259,7 @@ public:
             }
             ImGui::EndDisabled();
             ImGui::Dummy(ImVec2(0, 2 * sc));
-            ui::muted_text("The GUI runs yume in the background and attaches through local IPC.");
+            ui::muted_text("Uses the embedded client engine in a background thread.");
             if (!last_message_.empty()) {
                 ui::message_text(last_error_ ? c.error : c.success, "%s", last_message_.c_str());
             }
@@ -325,7 +327,7 @@ private:
         // so the file extension is decoration — any name works.
         ImGui::SameLine(0.0f, 10 * sc);
         ImGui::BeginDisabled(cfg_.server.empty() || cfg_.identity.empty());
-        if (ui::quiet_button("Export…", ImVec2(96 * sc, 40 * sc))) {
+        if (ui::quiet_button("Export...", ImVec2(96 * sc, 40 * sc))) {
             export_pwd_[0] = 0;
             export_pwd2_[0] = 0;
             export_status_.clear();
@@ -333,7 +335,7 @@ private:
         }
         ImGui::EndDisabled();
         ImGui::SameLine(0.0f, 6 * sc);
-        if (ui::quiet_button("Import…", ImVec2(96 * sc, 40 * sc))) {
+        if (ui::quiet_button("Import...", ImVec2(96 * sc, 40 * sc))) {
             import_pwd_[0] = 0;
             import_path_.clear();
             import_status_.clear();
@@ -477,7 +479,7 @@ private:
             ImGui::TextWrapped("Pick a .yss file someone shared with you, or that you "
                                "exported on another device.");
             ImGui::Dummy(ImVec2(0, 6 * sc));
-            if (ui::primary_button("Choose file…", ImVec2(180 * sc, 38 * sc))) {
+            if (ui::primary_button("Choose file...", ImVec2(180 * sc, 38 * sc))) {
                 std::string err;
                 auto src = platform::open_file_dialog("Open yume share file", &err);
                 if (src) {

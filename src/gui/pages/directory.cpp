@@ -45,11 +45,12 @@ public:
         }
         ImGui::Dummy(ImVec2(0, 8 * sc));
 
-        if (ui::begin_data_table("##directory", 6)) {
+        if (ui::begin_data_table("##directory", 7)) {
             ui::data_table_headers({"Name", "Endpoint ID", "Kind",
-                                    "Relay", "Platform", "Capabilities"});
+                                    "Relay", "Platform", "Capabilities", ""});
             for (auto const& entry : entries_) {
                 ImGui::TableNextRow();
+                ImGui::PushID(entry.endpoint_id.c_str());
                 ImGui::TableNextColumn();
                 ImGui::TextUnformatted(entry.display_name.empty() ? "—" : entry.display_name.c_str());
                 ImGui::TableNextColumn();
@@ -72,6 +73,12 @@ public:
                 if (entry.allow_file) caps += caps.empty() ? "file" : ", file";
                 if (entry.allow_bytes) caps += caps.empty() ? "bytes" : ", bytes";
                 ImGui::TextUnformatted(caps.empty() ? "—" : caps.c_str());
+                ImGui::TableNextColumn();
+                if (entry.allow_chat && ui::quiet_button("Chat", ImVec2(72 * sc, 32 * sc))) {
+                    ctx.jump_to_chat = true;
+                    ctx.pending_jump_arg = entry.endpoint_id;
+                }
+                ImGui::PopID();
             }
             ui::end_data_table();
         }

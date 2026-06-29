@@ -84,4 +84,6 @@ std::optional<std::filesystem::path> save_file_dialog(std::string const& title,
     }
 }
 
+void set_dialog_parent_window(void* /*glfw_window*/) {}
+
 }  // namespace yume::gui::platform

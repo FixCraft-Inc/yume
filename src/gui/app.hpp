@@ -68,6 +68,8 @@ private:
     std::size_t first_page_for(NavScope scope) const;
     void select_page(std::size_t index);
     void set_workspace(Workspace workspace);
+    std::size_t find_page_index(std::string_view title, NavScope scope) const;
+    void handle_page_navigation(AppContext& ctx);
 
     Options opts_;
     std::unique_ptr<Window> window_;
@@ -82,6 +84,7 @@ private:
     std::size_t shown_page_{static_cast<std::size_t>(-1)};
     bool tray_minimized_{false};
     bool dark_mode_{true};
+    bool minimize_to_tray_on_close_{true};
     // Set true when the user explicitly chose "Quit Yume" from the tray
     // menu, so the GLFW close interceptor lets the close go through
     // instead of hiding to tray.
@@ -95,6 +98,8 @@ private:
     std::string resolved_host_;
     std::string resolved_ip_;
     std::atomic<bool> resolve_in_flight_{false};
+
+    std::string pending_jump_arg_;
 
     void kick_off_resolve_if_needed(std::string const& host);
 };

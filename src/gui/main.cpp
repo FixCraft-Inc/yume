@@ -19,7 +19,7 @@ void print_help() {
         "Usage:\n"
         "  yume-gui [options]\n\n"
         "Options:\n"
-        "  --headless                Run without opening a window (smoke test)\n"
+        "  --headless                Run without a window; exercise facade start/stop\n"
         "  --start-minimized         Open hidden; show via tray menu\n"
         "  --no-tray                 Disable the system tray icon\n"
         "  --client-config <path>    Path to the client JSON config\n"

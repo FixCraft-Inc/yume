@@ -12,12 +12,15 @@
 #if !defined(__APPLE__)
 
 #include <array>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #if defined(_WIN32)
 #  ifndef WIN32_LEAN_AND_MEAN
@@ -27,13 +30,155 @@
 #  include <commdlg.h>
 #else
 #  include <unistd.h>
+#  define GLFW_INCLUDE_NONE
+#  include <GLFW/glfw3.h>
+#  include <imgui.h>
+#  include <imgui_impl_glfw.h>
+#  include <imgui_impl_opengl3.h>
+#  include <GL/gl.h>
 #endif
 
 namespace yume::gui::platform {
 
+#if !defined(_WIN32)
+GLFWwindow* g_dialog_window = nullptr;
+
+void set_dialog_parent_window(void* glfw_window) {
+    g_dialog_window = static_cast<GLFWwindow*>(glfw_window);
+}
+
 namespace {
 
-#if !defined(_WIN32)
+struct ImGuiPickerState {
+    bool save_mode{false};
+    std::string title;
+    std::string default_name;
+    std::filesystem::path browse_dir;
+    char path_buf[1024]{};
+    bool finished{false};
+    bool cancelled{false};
+    std::optional<std::filesystem::path> result;
+    std::vector<std::filesystem::path> entries;
+};
+
+void refresh_dir_list(ImGuiPickerState& st) {
+    st.entries.clear();
+    std::error_code ec;
+    if (!std::filesystem::exists(st.browse_dir, ec)) {
+        st.browse_dir = std::filesystem::current_path(ec);
+    }
+    for (auto const& entry : std::filesystem::directory_iterator(st.browse_dir, ec)) {
+        st.entries.push_back(entry.path());
+    }
+    std::sort(st.entries.begin(), st.entries.end());
+}
+
+void render_picker_modal(ImGuiPickerState& st) {
+    ImGui::SetNextWindowSize(ImVec2(520, 420), ImGuiCond_FirstUseEver);
+    if (!ImGui::BeginPopupModal(st.save_mode ? "Save file##yume_picker"
+                                             : "Open file##yume_picker",
+                                nullptr,
+                                ImGuiWindowFlags_NoCollapse)) {
+        return;
+    }
+    if (!st.title.empty()) {
+        ImGui::TextWrapped("%s", st.title.c_str());
+        ImGui::Separator();
+    }
+    ImGui::Text("Folder: %s", st.browse_dir.string().c_str());
+    if (ImGui::Button("Up")) {
+        if (st.browse_dir.has_parent_path()) {
+            st.browse_dir = st.browse_dir.parent_path();
+            refresh_dir_list(st);
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Refresh")) {
+        refresh_dir_list(st);
+    }
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputText("Path", st.path_buf, sizeof(st.path_buf));
+    ImGui::BeginChild("##picker_list", ImVec2(0, 220), ImGuiChildFlags_Border);
+    for (auto const& entry : st.entries) {
+        std::error_code ec;
+        const bool is_dir = std::filesystem::is_directory(entry, ec);
+        const std::string label =
+            (is_dir ? "[dir] " : "      ") + entry.filename().string();
+        if (ImGui::Selectable(label.c_str())) {
+            if (is_dir) {
+                st.browse_dir = entry;
+                refresh_dir_list(st);
+                std::strncpy(st.path_buf, entry.string().c_str(), sizeof(st.path_buf) - 1);
+            } else {
+                std::strncpy(st.path_buf, entry.string().c_str(), sizeof(st.path_buf) - 1);
+            }
+        }
+    }
+    ImGui::EndChild();
+    if (ImGui::Button(st.save_mode ? "Save" : "Open", ImVec2(100, 0))) {
+        if (st.path_buf[0] != 0) {
+            st.result = std::filesystem::path(st.path_buf);
+            st.finished = true;
+            ImGui::CloseCurrentPopup();
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(100, 0))) {
+        st.cancelled = true;
+        st.finished = true;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+std::optional<std::filesystem::path> run_imgui_picker(std::string const& title,
+                                                       std::string const& default_name,
+                                                       bool save_mode,
+                                                       std::string* err) {
+    if (!g_dialog_window || !ImGui::GetCurrentContext()) {
+        if (err) *err = "internal file picker unavailable";
+        return std::nullopt;
+    }
+    ImGuiPickerState st;
+    st.save_mode = save_mode;
+    st.title = title;
+    st.default_name = default_name;
+    std::error_code ec;
+    st.browse_dir = std::filesystem::current_path(ec);
+    if (save_mode && !default_name.empty()) {
+        std::strncpy(st.path_buf, default_name.c_str(), sizeof(st.path_buf) - 1);
+    } else {
+        std::strncpy(st.path_buf, st.browse_dir.string().c_str(), sizeof(st.path_buf) - 1);
+    }
+    refresh_dir_list(st);
+    const char* popup_id = save_mode ? "Save file##yume_picker" : "Open file##yume_picker";
+
+    while (!st.finished && !glfwWindowShouldClose(g_dialog_window)) {
+        glfwPollEvents();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui::NewFrame();
+        if (!ImGui::IsPopupOpen(popup_id)) {
+            ImGui::OpenPopup(popup_id);
+        }
+        render_picker_modal(st);
+        ImGui::Render();
+        int fbw = 0;
+        int fbh = 0;
+        glfwGetFramebufferSize(g_dialog_window, &fbw, &fbh);
+        glViewport(0, 0, fbw, fbh);
+        glClearColor(0.08f, 0.08f, 0.10f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        glfwSwapBuffers(g_dialog_window);
+    }
+    if (st.cancelled) {
+        if (err) *err = "file selection cancelled";
+        return std::nullopt;
+    }
+    return st.result;
+}
+
 std::optional<std::filesystem::path> path_lookup(char const* name) {
     char const* raw = std::getenv("PATH");
     if (!raw || !*raw) return std::nullopt;
@@ -83,9 +228,14 @@ std::optional<std::string> run_picker(std::string const& command, std::string* e
     }
     return out;
 }
-#endif
 
 }  // namespace
+
+#endif  // !defined(_WIN32)
+
+#if defined(_WIN32)
+void set_dialog_parent_window(void* /*glfw_window*/) {}
+#endif
 
 std::optional<std::filesystem::path> open_file_dialog(std::string const& title,
                                                        std::string* err) {
@@ -155,8 +305,7 @@ std::optional<std::filesystem::path> open_file_dialog(std::string const& title,
         if (picked) return std::filesystem::path(*picked);
         return std::nullopt;
     }
-    if (err) *err = "install zenity, kdialog, or yad to use the file picker";
-    return std::nullopt;
+    return run_imgui_picker(title, {}, false, err);
 #endif
 }
 
@@ -238,8 +387,7 @@ std::optional<std::filesystem::path> save_file_dialog(std::string const& title,
         if (picked) return std::filesystem::path(*picked);
         return std::nullopt;
     }
-    if (err) *err = "install zenity, kdialog, or yad to use the save-as picker";
-    return std::nullopt;
+    return run_imgui_picker(title, default_name, true, err);
 #endif
 }
 

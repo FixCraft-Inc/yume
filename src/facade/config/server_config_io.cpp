@@ -31,6 +31,7 @@ namespace {
 
 server::ServerConfig server_from_json(json const& j, std::filesystem::path const& base) {
     server::ServerConfig s;
+    read_opt(j, cfg_key::listen_address, s.listen_address);
     read_opt(j, cfg_key::listen_port, s.listen_port);
     read_opt(j, cfg_key::tls_cert, s.tls_cert);
     read_opt(j, cfg_key::tls_key, s.tls_key);
@@ -210,6 +211,7 @@ bool save_server(server::ServerConfig const& s,
                  std::filesystem::path const& path,
                  std::string* err) {
     json j = {
+        {cfg_key::listen_address, s.listen_address},
         {cfg_key::listen_port, s.listen_port},
         {cfg_key::tls_cert, s.tls_cert},
         {cfg_key::tls_key, s.tls_key},

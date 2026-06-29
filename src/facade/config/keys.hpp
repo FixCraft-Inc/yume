@@ -65,6 +65,7 @@ inline constexpr char instance_name[] = "instance_name";
 inline constexpr char io_threads[] = "io_threads";
 inline constexpr char ipc_enable[] = "ipc_enable";
 inline constexpr char ipc_path[] = "ipc_path";
+inline constexpr char listen_address[] = "listen_address";
 inline constexpr char listen_port[] = "listen_port";
 inline constexpr char minimize_to_tray_on_close[] = "minimize_to_tray_on_close";
 inline constexpr char monero_rpc_backend[] = "monero_rpc_backend";

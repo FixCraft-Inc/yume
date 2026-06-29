@@ -740,7 +740,10 @@ int run_connected_session(boost::asio::io_context& io,
     auto relay_runtime = std::make_shared<RelayRuntime>(tunnel, cfg, make_relay_options(cfg));
     if (options.take_runtime_ready_callback) {
         if (auto cb = options.take_runtime_ready_callback()) {
-            cb(tunnel, relay_runtime);
+            RuntimeReadyInfo ready_info;
+            ready_info.server_tls_fingerprint_sha256 =
+                options.server_tls_fingerprint_sha256;
+            cb(tunnel, relay_runtime, std::move(ready_info));
         }
     }
 

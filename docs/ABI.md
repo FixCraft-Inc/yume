@@ -33,12 +33,101 @@ its internal transport code private.
 - Per-handle last-error strings with `yume_handle_last_error`.
 - Direct named service streams with blocking timeout-based C calls:
   `yume_client_open_stream`, `yume_server_register_service`,
-  `yume_server_accept_stream`, `yume_stream_read`, `yume_stream_write`,
-  `yume_stream_shutdown_write`, and `yume_stream_close`.
+  `yume_server_accept_stream`, `yume_stream_peer_json`,
+  `yume_stream_read`, `yume_stream_write`, `yume_stream_shutdown_write`,
+  and `yume_stream_close`.
 
 The ABI v1 stream API is synchronous by design. Async callbacks can be added in
 a later ABI version without forcing embedders into YUME's internal threading
 model now.
+
+`yume_server_stop` and `yume_server_destroy` interrupt an in-flight
+`yume_server_accept_stream` wait. The accept call returns
+`YUME_STATUS_NOT_RUNNING` after the runtime begins stopping.
+
+`yume_client_status_json` returns:
+
+```json
+{
+  "running": true,
+  "ready": true,
+  "message": "",
+  "socket_path": "",
+  "exit_code": 0,
+  "server_tls_fingerprint_sha256": "lowercase-hex-sha256-of-tls-leaf",
+  "started_unix_ms": 1780000000000
+}
+```
+
+The TLS fingerprint field is the actual negotiated server leaf certificate
+fingerprint. It is present as an empty string before the client is connected.
+
+## Start JSON Schema
+
+`yume_client_start_json` and `yume_server_start_json` parse the same JSON keys
+as the facade config files. Relative path fields are resolved against the
+`base_dir` argument. Unknown keys are ignored for forward compatibility.
+
+Minimum server-side embed shape for a named service:
+
+```json
+{
+  "listen_address": "127.0.0.1",
+  "listen_port": 4433,
+  "tls_cert": "server.crt",
+  "tls_key": "server.key",
+  "auth_keys": "authorized_keys",
+  "auth_keys_meta": "auth_keys.meta",
+  "allow_services": ["example-control-v1"],
+  "ipc_enable": false,
+  "obfuscation": true,
+  "obfs_secret": "shared-h2-token",
+  "inner_crypto": true,
+  "inner_required": true,
+  "inner_hop": true,
+  "hop_interval_ms": 500
+}
+```
+
+`listen_address` is optional. Empty or omitted means bind `0.0.0.0`; set
+`127.0.0.1` for loopback-only tests and embedded local services.
+
+Minimum client-side embed shape:
+
+```json
+{
+  "server": "127.0.0.1",
+  "port": 4433,
+  "identity": "client-auth.key",
+  "tls_ca_cert": "server.crt",
+  "tls_server_name": "embedder.local",
+  "tls_pin_sha256": "lowercase-hex-sha256-of-tls-leaf",
+  "auto_attach_local": false,
+  "obfuscation": true,
+  "obfs_secret": "shared-h2-token",
+  "inner_crypto": true,
+  "inner_heavy": true,
+  "inner_hop": true,
+  "hop_interval_ms": 500
+}
+```
+
+`tls_pin_sha256` is optional when `tls_ca_cert`/`tls_server_name` are sufficient,
+but embedders that already have a manifest pin should pass it and may also
+compare `server_tls_fingerprint_sha256` in `yume_client_status_json`.
+
+Per-key service authorization lives in `auth_keys.meta` under the authenticated
+client key fingerprint:
+
+```json
+{
+  "0123456789abcdef...": {
+    "permissions": {
+      "allow_services": ["example-control-v1"]
+    }
+  }
+}
+```
 
 ## Named Service Streams
 
@@ -62,6 +151,26 @@ Server-side accept is explicit and fail-closed:
 
 `allow_services` is separate from `allow_local_ip`, `control_full`,
 application codecs, and exec permissions.
+
+After `yume_server_accept_stream` returns a stream, the embedder can call
+`yume_stream_peer_json`:
+
+```json
+{
+  "service": "example-control-v1",
+  "peer": "authenticated-peer-id",
+  "auth_fingerprint_sha256": "ed25519-spki-sha256",
+  "session_id": "authenticated-peer-id",
+  "server_session_id": "42",
+  "remote_addr": "203.0.113.10"
+}
+```
+
+`auth_fingerprint_sha256` is the authenticated client Ed25519 public-key SPKI
+SHA-256 fingerprint and is the stable field to use for device binding.
+`session_id` is a stable peer id for the accepted stream; `server_session_id` is
+the server's internal numeric session id serialized as a string for log
+correlation only.
 
 ## Compatibility Rules
 

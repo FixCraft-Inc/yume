@@ -101,6 +101,10 @@ inline const std::string& effective_tls_server_name(const ClientConfig& cfg) noe
     return cfg.tls_server_name.empty() ? cfg.server : cfg.tls_server_name;
 }
 
+struct RuntimeReadyInfo {
+    std::string server_tls_fingerprint_sha256;
+};
+
 class Cli {
 public:
     // Fires exactly once, on Cli's io_context worker thread, immediately
@@ -116,7 +120,8 @@ public:
     // join).
     using RuntimeReadyCallback = std::function<void(
         std::shared_ptr<Tunnel>,
-        std::shared_ptr<RelayRuntime>)>;
+        std::shared_ptr<RelayRuntime>,
+        RuntimeReadyInfo)>;
     void set_runtime_ready_callback(RuntimeReadyCallback cb);
 
     // When true, Cli skips its colour-coded "Connected to..." banner

@@ -149,6 +149,7 @@ struct InProcClient::Impl {
     // exit drops Cli's local shared_ptrs; ours persist until stop()).
     std::shared_ptr<client::Tunnel> tunnel;
     std::shared_ptr<client::RelayRuntime> relay;
+    std::string server_tls_fingerprint_sha256;
 
     LogCallback log_callback;
     Status     last_status;
@@ -169,9 +170,14 @@ bool InProcClient::running() const noexcept {
 InProcClient::Status InProcClient::status() const {
     Status s = impl_->last_status;
     s.running       = impl_->running.load(std::memory_order_acquire);
-    s.ipc_available = static_cast<bool>(impl_->relay);
     s.exit_code     = impl_->exit_code.load(std::memory_order_acquire);
     s.started       = impl_->started;
+    {
+        std::lock_guard<std::mutex> lock(impl_->ready_mtx);
+        s.ipc_available = static_cast<bool>(impl_->relay);
+        s.server_tls_fingerprint_sha256 =
+            impl_->server_tls_fingerprint_sha256;
+    }
     return s;
 }
 
@@ -196,6 +202,7 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
         impl_->ready_error.clear();
         impl_->tunnel.reset();
         impl_->relay.reset();
+        impl_->server_tls_fingerprint_sha256.clear();
     }
     impl_->started = std::chrono::system_clock::now();
 
@@ -209,11 +216,14 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
         cli.set_silent(true);
         cli.set_runtime_ready_callback(
             [this](std::shared_ptr<client::Tunnel> tunnel,
-                   std::shared_ptr<client::RelayRuntime> relay) {
+                   std::shared_ptr<client::RelayRuntime> relay,
+                   client::RuntimeReadyInfo ready_info) {
                 {
                     std::lock_guard<std::mutex> lock(impl_->ready_mtx);
                     impl_->tunnel = std::move(tunnel);
                     impl_->relay  = std::move(relay);
+                    impl_->server_tls_fingerprint_sha256 =
+                        std::move(ready_info.server_tls_fingerprint_sha256);
                     impl_->ready  = true;
                 }
                 impl_->ready_cv.notify_all();
@@ -293,6 +303,7 @@ void InProcClient::stop(std::string* /*error*/, std::string const& reason) {
         std::lock_guard<std::mutex> lock(impl_->ready_mtx);
         impl_->tunnel.reset();
         impl_->relay.reset();
+        impl_->server_tls_fingerprint_sha256.clear();
         impl_->ready = false;
         impl_->ready_error.clear();
     }

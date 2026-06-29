@@ -26,6 +26,7 @@ libyume.so.1 libyume1 #MINVER#
  yume_server_stop@Base 1.1-1
  yume_stream_close@Base 1.1-1
  yume_stream_destroy@Base 1.1-1
+ yume_stream_peer_json@Base 1.1-1
  yume_stream_read@Base 1.1-1
  yume_stream_shutdown_write@Base 1.1-1
  yume_stream_write@Base 1.1-1

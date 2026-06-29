@@ -18,6 +18,8 @@ validation are complete.
 - **`scripts/yume_bench_wan.py`** virtual-WAN benchmark with DPI comparison: two `ip netns` connected by a veth + tc-netem WAN profile, runs the same workload over yume and as a curl/chromium baseline, runs `ndpiReader` on captured pcaps, emits a side-by-side report (markdown or JSON).
 - **Native embed C ABI in `libyume.so.1`.** `include/yume/yume.h` now exposes opaque `yume_client`, `yume_server`, and `yume_stream` handles, JSON lifecycle/status helpers, fixed-buffer last-error reporting, and direct named service stream read/write calls for C/C++ embedders.
 - **Authenticated named service streams.** Clients can open `proto: "service.v1"` streams such as `example-control-v1`; servers must explicitly enable the service in config, authorize it per key with `allow_services`, and register it through the C ABI before accepts are queued.
+- **Stream peer metadata in the native ABI.** `yume_stream_peer_json` exposes the accepted stream's service, authenticated Ed25519 SPKI SHA-256 fingerprint, peer/session ids, and remote address so embedders can bind sessions to their own device registry.
+- **Embed JSON bind address support.** `yume_server_start_json` accepts `listen_address` with `listen_port`, allowing loopback-only native tests and embedded local services without a wildcard bind.
 
 ### Changed
 

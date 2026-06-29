@@ -21,7 +21,10 @@ namespace yume::server {
 namespace {
 
 std::string listen_endpoint_for(ServerConfig const& cfg) {
-    return "0.0.0.0:" + std::to_string(cfg.listen_port);
+    const std::string host = cfg.listen_address.empty()
+        ? std::string("0.0.0.0")
+        : cfg.listen_address;
+    return host + ":" + std::to_string(cfg.listen_port);
 }
 
 int worker_count_for(ServerConfig const& cfg) {

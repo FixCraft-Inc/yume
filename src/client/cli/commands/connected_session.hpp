@@ -28,8 +28,7 @@ class RelayRuntime;
 class Tunnel;
 
 struct ConnectedSessionOptions {
-    using RuntimeReadyCallback = std::function<void(std::shared_ptr<Tunnel>,
-                                                    std::shared_ptr<RelayRuntime>)>;
+    using RuntimeReadyCallback = Cli::RuntimeReadyCallback;
     using RuntimeReadyProvider = std::function<RuntimeReadyCallback()>;
     using SetActiveRuntimeCallback = std::function<void(
         boost::asio::io_context*,
@@ -61,6 +60,7 @@ struct ConnectedSessionOptions {
     std::int64_t hop_offset_ms{0};
     std::optional<inner::KdfParams> inner_kdf;
     std::optional<crypto::Bytes> inner_key;
+    std::string server_tls_fingerprint_sha256;
     std::function<std::string()> status_block_builder;
 
     std::function<void()> announce_stopping;

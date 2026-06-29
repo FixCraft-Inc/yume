@@ -17,6 +17,15 @@
 
 namespace yume::runtime {
 
+struct ServicePeerInfo {
+    std::string service;
+    std::string peer;
+    std::string auth_fingerprint_sha256;
+    std::string session_id;
+    std::string server_session_id;
+    std::string remote_addr;
+};
+
 class ServiceStream {
 public:
     using Bytes = std::vector<std::uint8_t>;
@@ -31,6 +40,7 @@ public:
     };
 
     ServiceStream(std::string service, std::string peer);
+    ServiceStream(std::string service, std::string peer, ServicePeerInfo peer_info);
     ~ServiceStream();
 
     ServiceStream(const ServiceStream&) = delete;
@@ -38,6 +48,7 @@ public:
 
     const std::string& service() const noexcept;
     const std::string& peer() const noexcept;
+    ServicePeerInfo peer_info() const;
 
     void set_callbacks(WriteCallback write_cb,
                        CloseCallback close_cb,
@@ -62,6 +73,7 @@ public:
 private:
     std::string service_;
     std::string peer_;
+    ServicePeerInfo peer_info_;
 
     mutable std::mutex mu_;
     std::condition_variable cv_;

@@ -24,7 +24,7 @@ for the 1.x line starting with 1.1.
 | **Live key hopping** | 1–4 Hz over-the-air key rotation. Each window encrypts with a fresh `HKDF(master, hop_index)` derivative; a captured window decrypts only that window. |
 | **Authentication** | Ed25519 client keys. `yumed --auth-keys` is the server's authorised-key file (SSH-style). |
 | **Routing modes** | SOCKS5 (`--socks`), local TCP/UDP forward, `--run <cmd>`, Android VPN capture (separate APK), and server-side `--reverse-port-min/--reverse-port-max` reverse tunneling. |
-| **Native embed ABI** | `libyume.so.1` exposes a stable C ABI with opaque client/server handles and authenticated named service streams for C/C++ embedders. |
+| **Native embed ABI** | `libyume.so.1` exposes a stable C ABI with opaque client/server handles, authenticated named service streams, peer-auth metadata, and fixed-buffer JSON helpers for C/C++ embedders. |
 | **Egress options** | Direct, Tor outbound (`yumed --proxy tor://…` with obfs4 bridge support), federation links between yumed instances (mutual TLS 1.3, server-to-server). |
 | **Anonym mode** | `yumed --anonym` strips logs and metadata; designed for run-by-third-party endpoints. Decoupled CA/sub-key flow for operator key management. |
 | **Targets** | Linux x86_64, ARMv7, ARMv8, BusyBox-static (x86, armv7, armv8), OpenWRT MIPS, macOS arm64, Windows amd64. |

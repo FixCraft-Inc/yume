@@ -50,6 +50,11 @@ int main(void) {
         yume_server_destroy(server);
         return 9;
     }
+    if (yume_stream_peer_json(NULL, tiny, sizeof(tiny), &needed) != YUME_STATUS_INVALID_ARGUMENT) {
+        yume_client_destroy(client);
+        yume_server_destroy(server);
+        return 10;
+    }
     yume_client_destroy(client);
     yume_server_destroy(server);
     printf("yume abi %u, yume %s, basefwx %s\n",
@@ -110,6 +115,7 @@ yume_server_status_json
 yume_server_stop
 yume_stream_close
 yume_stream_destroy
+yume_stream_peer_json
 yume_stream_read
 yume_stream_shutdown_write
 yume_stream_write

@@ -7,7 +7,9 @@
 #include "server/session/session.hpp"
 
 #include <algorithm>
+#include <string>
 #include <string_view>
+#include <utility>
 
 #include "server/runtime/manager.hpp"
 
@@ -54,7 +56,18 @@ bool Session::handle_service_open(uint8_t stream_id, const nlohmann::json& json)
         return true;
     }
 
-    auto stream = std::make_shared<runtime::ServiceStream>(service, client_id_);
+    runtime::ServicePeerInfo peer_info;
+    peer_info.service = service;
+    peer_info.peer = client_id_;
+    peer_info.auth_fingerprint_sha256 = auth_fingerprint_;
+    peer_info.session_id = client_id_;
+    peer_info.server_session_id = std::to_string(session_id_);
+    peer_info.remote_addr = client_wan_ip_;
+
+    auto stream = std::make_shared<runtime::ServiceStream>(
+        service,
+        client_id_,
+        std::move(peer_info));
     std::weak_ptr<Session> weak_self = shared_from_this();
     stream->set_callbacks(
         [weak_self, stream_id](runtime::ServiceStream::Bytes data, std::string* error) {

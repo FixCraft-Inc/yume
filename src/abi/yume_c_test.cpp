@@ -83,5 +83,8 @@ int main() {
     if (yume_stream_read(nullptr, small, sizeof(small), &needed, 0) != YUME_STATUS_INVALID_ARGUMENT) {
         return 18;
     }
+    if (yume_stream_peer_json(nullptr, small, sizeof(small), &needed) != YUME_STATUS_INVALID_ARGUMENT) {
+        return 19;
+    }
     return 0;
 }

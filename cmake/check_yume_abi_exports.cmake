@@ -25,6 +25,7 @@ set(_expected
     yume_server_stop
     yume_stream_close
     yume_stream_destroy
+    yume_stream_peer_json
     yume_stream_read
     yume_stream_shutdown_write
     yume_stream_write

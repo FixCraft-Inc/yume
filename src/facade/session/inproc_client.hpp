@@ -57,6 +57,7 @@ public:
         // surface in ClientSession can distinguish Disconnected vs
         // Failed without bookkeeping its own flag.
         int exit_code{0};
+        std::string server_tls_fingerprint_sha256;
         std::chrono::system_clock::time_point started{};
     };
 

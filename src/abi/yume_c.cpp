@@ -141,7 +141,8 @@ bool contains_text(const std::string& haystack, const char* needle) {
 }
 
 int status_from_error(const std::string& error) {
-    if (contains_text(error, "not running")) {
+    if (contains_text(error, "not running") ||
+        contains_text(error, "stopping")) {
         return YUME_STATUS_NOT_RUNNING;
     }
     if (contains_text(error, "already running") ||
@@ -422,6 +423,7 @@ int yume_client_status_json(yume_client* client,
             {"message", status.message},
             {"socket_path", status.socket_path},
             {"exit_code", status.exit_code},
+            {"server_tls_fingerprint_sha256", status.server_tls_fingerprint_sha256},
             {"started_unix_ms", unix_ms(status.started)}
         };
         return write_json_buffer(&client->base, json, out, out_size, needed);
@@ -790,6 +792,31 @@ int yume_server_accept_stream(yume_server* server,
         return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
     } catch (...) {
         return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
+    }
+}
+
+int yume_stream_peer_json(yume_stream* stream,
+                          char* out,
+                          size_t out_size,
+                          size_t* needed) {
+    if (!stream || !stream->stream) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    try {
+        const auto info = stream->stream->peer_info();
+        nlohmann::json json = {
+            {"service", info.service},
+            {"peer", info.peer},
+            {"auth_fingerprint_sha256", info.auth_fingerprint_sha256},
+            {"session_id", info.session_id},
+            {"server_session_id", info.server_session_id},
+            {"remote_addr", info.remote_addr}
+        };
+        return write_json_buffer(&stream->base, json, out, out_size, needed);
+    } catch (std::exception const& ex) {
+        return set_error(&stream->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
+    } catch (...) {
+        return set_error(&stream->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
     }
 }
 

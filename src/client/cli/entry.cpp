@@ -665,9 +665,11 @@ int Cli::run(int argc, char** argv) {
                 }
                 throw std::runtime_error(msg);
             }
+            const std::string server_tls_fingerprint_sha256 =
+                get_peer_cert_fingerprint(nullptr, stream.native_handle());
             if (!cfg.tls_pin_sha256.empty()) {
-                std::string fp = get_peer_cert_fingerprint(nullptr, stream.native_handle());
-                if (fp.empty() || fp != cfg.tls_pin_sha256) {
+                if (server_tls_fingerprint_sha256.empty() ||
+                    server_tls_fingerprint_sha256 != cfg.tls_pin_sha256) {
                     throw std::runtime_error("TLS pin mismatch");
                 }
             }
@@ -1259,6 +1261,8 @@ int Cli::run(int argc, char** argv) {
             connected_options.hop_offset_ms = hop_offset_ms;
             connected_options.inner_kdf = inner_kdf;
             connected_options.inner_key = inner_key;
+            connected_options.server_tls_fingerprint_sha256 =
+                server_tls_fingerprint_sha256;
             connected_options.status_block_builder = status_block_builder;
             connected_options.announce_stopping = [&stop_controller]() {
                 stop_controller.announce_stopping();

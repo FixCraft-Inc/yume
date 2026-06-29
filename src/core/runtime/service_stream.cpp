@@ -14,8 +14,24 @@
 namespace yume::runtime {
 
 ServiceStream::ServiceStream(std::string service, std::string peer)
+    : ServiceStream(std::move(service), std::move(peer), {}) {}
+
+ServiceStream::ServiceStream(std::string service,
+                             std::string peer,
+                             ServicePeerInfo peer_info)
     : service_(std::move(service))
-    , peer_(std::move(peer)) {}
+    , peer_(std::move(peer))
+    , peer_info_(std::move(peer_info)) {
+    if (peer_info_.service.empty()) {
+        peer_info_.service = service_;
+    }
+    if (peer_info_.peer.empty()) {
+        peer_info_.peer = peer_;
+    }
+    if (peer_info_.session_id.empty()) {
+        peer_info_.session_id = peer_;
+    }
+}
 
 ServiceStream::~ServiceStream() {
     close("stream destroyed");
@@ -27,6 +43,11 @@ const std::string& ServiceStream::service() const noexcept {
 
 const std::string& ServiceStream::peer() const noexcept {
     return peer_;
+}
+
+ServicePeerInfo ServiceStream::peer_info() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return peer_info_;
 }
 
 void ServiceStream::set_callbacks(WriteCallback write_cb,

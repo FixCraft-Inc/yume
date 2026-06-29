@@ -129,6 +129,15 @@ YUME_API int yume_server_accept_stream(yume_server* server,
                                        uint32_t timeout_ms,
                                        yume_stream** out_stream);
 
+/*
+ * Writes stream metadata JSON. Server-accepted streams include
+ * auth_fingerprint_sha256, the authenticated client's Ed25519 SPKI SHA-256
+ * fingerprint, which embedders should use for device binding.
+ */
+YUME_API int yume_stream_peer_json(yume_stream* stream,
+                                   char* out,
+                                   size_t out_size,
+                                   size_t* needed);
 YUME_API int yume_stream_read(yume_stream* stream,
                               void* out,
                               size_t out_size,

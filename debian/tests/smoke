@@ -10,6 +10,11 @@ yumed --version
 man -w yume >/dev/null
 man -w yumed >/dev/null
 
+test -r /etc/yume/yumed.json
+test -r /etc/yume/authorized_keys
+test -r /etc/yume/auth_keys.meta
+test -r /usr/lib/systemd/system/yumed.service || test -r /lib/systemd/system/yumed.service
+
 multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
 test -r /usr/include/yume/yume.h
 test -e "/usr/lib/${multiarch}/libyume.so"

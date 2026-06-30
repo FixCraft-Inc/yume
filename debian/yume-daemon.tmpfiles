@@ -1,0 +1,4 @@
+d /etc/yume 0755 root root -
+d /var/lib/yume 0750 yume yume -
+d /var/log/yume 0750 yume adm -
+d /run/yume 0750 yume yume -

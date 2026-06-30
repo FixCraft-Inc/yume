@@ -3,5 +3,9 @@ yume (1.1-1) unstable; urgency=medium
   * Release 1.1 shared embed ABI for native C consumers.
   * Export opaque client, server, and named service stream handles from
     libyume.so.1.
+  * Split yumed into yume-daemon with disabled systemd service,
+    sysusers/tmpfiles integration, and /etc/yume configuration.
+  * Make auth_keys_meta configurable from JSON and CLI so Debian installs use
+    an explicit /etc/yume/auth_keys.meta permission file.
 
  -- FixCraft Maintainers <debian@fixcraft.jp>  Sun, 28 Jun 2026 12:00:00 -0700

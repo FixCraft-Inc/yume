@@ -64,17 +64,35 @@ Architecture: any
 Depends:
  ${shlibs:Depends},
  ${misc:Depends}
+Recommends:
+ yume-daemon (= ${binary:Version})
 Suggests:
  tor,
  yume-gui
-Description: stealth transport client and server
+Description: stealth transport command-line client
  YUME tunnels application streams through an authenticated TLS 1.3 carrier
- that can use an HTTP/2 camouflage preface. It provides a client, a server
- daemon, SOCKS mode, local and reverse forwarding, relay features, and
- optional routing through external anonymity networks such as Tor.
+ that can use an HTTP/2 camouflage preface. The command-line client supports
+ SOCKS mode, local and reverse forwarding, relay features, and optional
+ routing through external anonymity networks such as Tor.
  .
  This Debian build links against the system-installed libbasefwx, which
  provides AES, Argon2id, and ML-KEM-768 post-quantum inner crypto.
+
+Package: yume-daemon
+Architecture: any
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends}
+Suggests:
+ ssl-cert
+Description: stealth transport server daemon
+ YUME tunnels application streams through an authenticated TLS 1.3 carrier
+ that can use an HTTP/2 camouflage preface.
+ .
+ This package contains the yumed server daemon, a disabled-by-default
+ systemd service, a locked service user, and the default /etc/yume
+ configuration directory. It does not start listening on install; operators
+ must provide TLS material and authorized client keys first.
 
 Package: yume-gui
 Architecture: any

@@ -4,16 +4,20 @@ This page covers local installs, man pages, and Debian package builds.
 
 ## Package Split
 
-The Debian source packaging currently produces four YUME binary packages:
+The Debian source packaging currently produces five YUME binary packages:
 
 - `libyume1`: the stable C ABI runtime library.
 - `libyume-dev`: the public C header, CMake config, and pkg-config file.
-- `yume`: the CLI client and `yumed` server daemon.
+- `yume`: the command-line client, docs, and examples.
+- `yume-daemon`: the `yumed` server daemon, disabled `yumed.service`,
+  locked service user, `/etc/yume` config, and state/log/run directories.
 - `yume-gui`: the optional desktop GUI, built unless
   `DEB_BUILD_PROFILES=nogui` is set.
 
 BaseFWX is packaged separately as `basefwx`, `libbasefwx3`, and
 `libbasefwx-dev`; YUME links to that packaged library for Debian builds.
+BaseFWX Debian archive builds must use packaged dependencies, including
+`liboqs-dev`; vendored liboqs is only a local development override.
 `libyume` is the stable native C embed ABI. In 1.1 it exposes build metadata,
 opaque client/server handles, and direct named service streams for projects
 that need to embed YUME as their secure transport. YUME's `yume_core`,
@@ -87,9 +91,10 @@ The CPack `.deb` is a single upstream convenience package. It includes the
 binaries, man pages, and installed Markdown docs. That means users do not
 need to install the man pages separately when they install `yume_*.deb`.
 When `YUME_BUILD_SHARED_ABI=ON`, CPack switches to component packages for
-DEB/TGZ output and uses the same coarse split as the Debian source package:
+DEB/TGZ output and uses the older upstream convenience split:
 `libyume1`, `libyume-dev`, `yume`, and, when enabled, `yume-gui`.
-Use the `debian/` packaging for archive-style source package review.
+Use the `debian/` packaging for archive-style source package review and the
+`yume-daemon` systemd/sysusers/tmpfiles split.
 
 For a native dynamic Debian build, CPack uses `dpkg-shlibdeps` by default
 to infer shared-library dependencies. If you are building a static or
@@ -213,7 +218,8 @@ libbasefwx3      runtime shared library
 libbasefwx-dev   headers, CMake config, pkg-config metadata
 libyume1         stable C ABI runtime library
 libyume-dev      yume.h, CMake config, pkg-config metadata
-yume             client/server binaries linked to libbasefwx3
+yume             client binary, docs, and examples
+yume-daemon      yumed server, disabled yumed.service, /etc/yume config
 yume-gui         optional desktop frontend, omitted by DEB_BUILD_PROFILES=nogui
 ```
 

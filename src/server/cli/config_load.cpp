@@ -55,6 +55,9 @@ void resolve_server_config_paths(yume::server::ServerConfig& cfg,
     if (!cfg.auth_keys.empty()) {
         cfg.auth_keys = resolve_cfg_path(cfg.auth_keys);
     }
+    if (!cfg.auth_keys_meta.empty()) {
+        cfg.auth_keys_meta = resolve_cfg_path(cfg.auth_keys_meta);
+    }
     if (!cfg.pq_private_key.empty()) {
         cfg.pq_private_key = resolve_cfg_path(cfg.pq_private_key);
     }
@@ -151,6 +154,9 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
             }
             if (json.contains("auth_keys") && cfg.auth_keys.empty()) {
                 cfg.auth_keys = resolve_cfg_path(json["auth_keys"].get<std::string>());
+            }
+            if (json.contains("auth_keys_meta") && cfg.auth_keys_meta.empty()) {
+                cfg.auth_keys_meta = resolve_cfg_path(json["auth_keys_meta"].get<std::string>());
             }
             if (json.contains("threads") && cfg.threads == 0) {
                 cfg.threads = json["threads"].get<int>();

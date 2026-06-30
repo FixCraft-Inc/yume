@@ -1,0 +1,10 @@
+{
+  "listen_port": 443,
+  "tls_cert": "/etc/yume/server.crt",
+  "tls_key": "/etc/yume/server.key",
+  "auth_keys": "/etc/yume/authorized_keys",
+  "auth_keys_meta": "/etc/yume/auth_keys.meta",
+  "threads": 0,
+  "obfuscation": true,
+  "inner_crypto": true
+}

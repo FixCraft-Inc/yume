@@ -1,0 +1,5 @@
+usr/bin/yumed
+usr/share/man/man8/yumed.8
+debian/yumed.json etc/yume/
+debian/authorized_keys etc/yume/
+debian/auth_keys.meta etc/yume/

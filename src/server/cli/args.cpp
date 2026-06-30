@@ -149,6 +149,8 @@ bool parse_server_cli_args(int argc,
             cfg.tls_key = resolve_cli_path(argv[++i]);
         } else if (arg == "--auth-keys" && i + 1 < argc) {
             cfg.auth_keys = resolve_cli_path(argv[++i]);
+        } else if (arg == "--auth-keys-meta" && i + 1 < argc) {
+            cfg.auth_keys_meta = resolve_cli_path(argv[++i]);
         } else if (arg == "--threads" && i + 1 < argc) {
             cfg.threads = std::stoi(argv[++i]);
         } else if (arg == "--obfs") {

@@ -1,8 +1,9 @@
 YUME for Debian
 ===============
 
-The yume package installs the client binary (`yume`), the server daemon
-(`yumed`), documentation, examples, and an empty `/etc/yume` directory.
+The yume package installs the client binary (`yume`), documentation, and
+examples. The server daemon (`yumed`), `/etc/yume`, and the disabled systemd
+unit are shipped separately in the yume-daemon package.
 
 It does not auto-start `yumed`. A public server needs operator-provided TLS
 certificates, `authorized_keys`, optional `auth_keys.meta`, optional PQ key
@@ -13,10 +14,11 @@ Example configuration files are installed under:
 
     /usr/share/doc/yume/examples/
 
-For a first server setup, create `/etc/yume/authorized_keys`, add at least one
-client public key, then run `yumed` explicitly with either a config file or
-CLI flags. See `man yumed`, `man yume`, and `/usr/share/doc/yume/QUICKSTART.md`
-for the current command examples.
+For a first server setup, install yume-daemon, create TLS material and
+`/etc/yume/authorized_keys`, add at least one client public key, then run
+`yumed` explicitly with either `/etc/yume/yumed.json` or CLI flags. See
+`man yumed`, `man yume`, and `/usr/share/doc/yume/QUICKSTART.md` for the
+current command examples.
 
 Binding to TCP port 443 requires root or `cap_net_bind_service`. Avoid putting
 YUME behind an HTTP-mode TLS terminator; use TCP passthrough when a proxy or

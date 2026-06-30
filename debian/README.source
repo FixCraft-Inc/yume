@@ -30,8 +30,11 @@ against vendor/; both are excluded from the Debian source tarball.
 dpkg-shlibdeps should then produce the runtime dependency on libbasefwx3
 from the linked yume binaries and libyume runtime library.
 
-This source package emits libyume1, libyume-dev, yume, and yume-gui binary
-packages. The nogui build profile omits yume-gui only. libyume is a small
-stable C ABI for version/build/feature/backend information; YUME's high-level
-client/server C++ libraries remain internal static CMake targets, and the GUI
-still links its facade directly into the executable.
+This source package emits libyume1, libyume-dev, yume, yume-daemon, and
+yume-gui binary packages. The nogui build profile omits yume-gui only.
+The yume package contains the client CLI; yume-daemon contains yumed, the
+disabled yumed.service unit, sysusers/tmpfiles integration, and /etc/yume
+configuration. libyume is a small stable C ABI for version/build/feature/
+backend information; YUME's high-level client/server C++ libraries remain
+internal static CMake targets, and the GUI still links its facade directly
+into the executable.

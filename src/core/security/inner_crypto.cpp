@@ -696,6 +696,14 @@ std::optional<DerivedKey> server_derive_key(const Config& cfg,
         return out;
     }
     KdfParams params = kdf_params.value_or(KdfParams{});
+    std::string effective_kdf = params.name;
+    if (effective_kdf.empty()) {
+        effective_kdf = select_argon2_params(cfg.argon2_limits).name;
+    }
+    if (effective_kdf == "argon2"
+        && argon2_params_exceed_limits(params, argon2_env_limits(), nullptr)) {
+        return std::nullopt;
+    }
     bool allow_fallback = params.name.empty();
     return derive_key_heavy(shared.bytes(), salt, params, allow_fallback);
 #endif

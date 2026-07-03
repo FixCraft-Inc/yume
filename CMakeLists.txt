@@ -12,7 +12,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(GNUInstallDirs)
 
 if(POLICY CMP0167)
-    cmake_policy(SET CMP0167 NEW)
+    # Debian 13 currently ships Boost headers/libs without upstream
+    # BoostConfig.cmake, so keep CMake's FindBoost module path available.
+    cmake_policy(SET CMP0167 OLD)
 endif()
 # CMP0091: MSVC runtime library selection via CMAKE_MSVC_RUNTIME_LIBRARY
 # and the equivalent per-target property. Required for YUME_GUI_PORTABLE

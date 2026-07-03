@@ -102,6 +102,7 @@ Minimum client-side embed shape:
   "tls_ca_cert": "server.crt",
   "tls_server_name": "embedder.local",
   "tls_pin_sha256": "lowercase-hex-sha256-of-tls-leaf",
+  "accept_monitoring": false,
   "auto_attach_local": false,
   "obfuscation": true,
   "obfs_secret": "shared-h2-token",

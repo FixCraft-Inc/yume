@@ -122,6 +122,9 @@ void IoThreadGroup::stop_and_wait() {
     if (joined_) {
         return;
     }
+    boost::asio::post(io_, [this]() {
+        io_.stop();
+    });
     io_.stop();
     wait();
 }

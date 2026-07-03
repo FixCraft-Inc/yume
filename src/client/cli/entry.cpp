@@ -129,6 +129,10 @@ void Cli::set_runtime_ready_callback(RuntimeReadyCallback cb) {
     runtime_ready_callback_ = std::move(cb);
 }
 
+void Cli::set_runtime_active_callback(RuntimeActiveCallback cb) {
+    runtime_active_callback_ = std::move(cb);
+}
+
 int Cli::run(int argc, char** argv) {
     util::init_logging();
 
@@ -1268,11 +1272,15 @@ int Cli::run(int argc, char** argv) {
                 stop_controller.announce_stopping();
             };
             connected_options.set_active_runtime =
-                [&stop_controller](boost::asio::io_context* io_ptr,
-                                   const std::shared_ptr<Tunnel>& tunnel_ptr,
-                                   const std::shared_ptr<RelayRuntime>& relay_ptr,
-                                   std::function<void(const std::string&)> disconnect_fn) {
+                [this, &stop_controller](boost::asio::io_context* io_ptr,
+                                         const std::shared_ptr<Tunnel>& tunnel_ptr,
+                                         const std::shared_ptr<RelayRuntime>& relay_ptr,
+                                         std::function<void(const std::string&)> disconnect_fn) {
+                    auto embedder_disconnect = disconnect_fn;
                     stop_controller.set_active(io_ptr, tunnel_ptr, relay_ptr, std::move(disconnect_fn));
+                    if (runtime_active_callback_) {
+                        runtime_active_callback_(io_ptr, tunnel_ptr, relay_ptr, std::move(embedder_disconnect));
+                    }
                 };
             connected_options.take_runtime_ready_callback = [this]() {
                 return std::exchange(runtime_ready_callback_, {});

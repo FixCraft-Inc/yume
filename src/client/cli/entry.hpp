@@ -12,6 +12,8 @@
 #include <memory>
 #include <string>
 
+#include <boost/asio/io_context.hpp>
+
 namespace yume::client {
 
 // Forward declarations so the in-process embedder gets handles to the
@@ -63,6 +65,7 @@ struct ClientConfig {
     std::string tls_server_name;
     std::string tls_pin_sha256;
     bool require_anonym{false};
+    bool accept_monitoring{false};
     bool boring{false};
     bool non_interactive{false};
     std::string instance_name;
@@ -130,6 +133,17 @@ public:
         RuntimeReadyInfo)>;
     void set_runtime_ready_callback(RuntimeReadyCallback cb);
 
+    // Fires when the connected-session runtime becomes active, including
+    // the disconnect hook used by the normal CLI signal handler. Embedded
+    // callers use this for clean shutdown without relying on private
+    // tunnel internals.
+    using RuntimeActiveCallback = std::function<void(
+        boost::asio::io_context*,
+        std::shared_ptr<Tunnel>,
+        std::shared_ptr<RelayRuntime>,
+        std::function<void(const std::string&)>)>;
+    void set_runtime_active_callback(RuntimeActiveCallback cb);
+
     // When true, Cli skips its colour-coded "Connected to..." banner
     // and any other unsolicited std::cout writes. spdlog output is
     // separately routed via the spdlog default logger sinks - if the
@@ -143,6 +157,7 @@ public:
 
 private:
     RuntimeReadyCallback runtime_ready_callback_;
+    RuntimeActiveCallback runtime_active_callback_;
     bool silent_{false};
 };
 

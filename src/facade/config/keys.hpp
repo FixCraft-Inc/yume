@@ -12,6 +12,7 @@ inline constexpr char allow_codecs[] = "allow_codecs";
 inline constexpr char allow_monero_rpc[] = "allow_monero_rpc";
 inline constexpr char allow_monero_rpc_codec[] = "allow_monero_rpc_codec";
 inline constexpr char allow_services[] = "allow_services";
+inline constexpr char accept_monitoring[] = "accept_monitoring";
 inline constexpr char codec_allow[] = "codec_allow";
 inline constexpr char allow_bytes[] = "allow_bytes";
 inline constexpr char allow_chat[] = "allow_chat";

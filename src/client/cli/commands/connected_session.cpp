@@ -30,9 +30,11 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
@@ -46,6 +48,27 @@ namespace {
 // Must match the server's kHopDecryptWindow (server/session/session.cpp). 120
 // hops at 500 ms intervals = +/-60 s tolerance for queued-frame staleness.
 constexpr std::uint64_t kHopDecryptWindow = 120;
+
+struct LongRunningWaitState {
+    void signal() {
+        {
+            std::lock_guard<std::mutex> lock(mu);
+            done = true;
+        }
+        cv.notify_all();
+    }
+
+    void wait() {
+        std::unique_lock<std::mutex> lock(mu);
+        cv.wait(lock, [this] { return done; });
+    }
+
+    std::mutex mu;
+    std::condition_variable cv;
+    bool done{false};
+};
+
+using LongRunningWaitStatePtr = std::shared_ptr<LongRunningWaitState>;
 
 crypto::Bytes derive_hop_key(const crypto::Bytes& key,
                              bool hop_enabled,
@@ -381,8 +404,18 @@ void start_live_status_if_needed(bool live_status_enabled,
 int wait_for_long_running_mode(IoThreadGroup& io_threads,
                                std::atomic<bool>& stop_requested,
                                const std::function<void()>& announce_stopping,
-                               const std::string& close_reason) {
-    io_threads.wait();
+                               const std::string& close_reason,
+                               const std::function<void()>& on_ready = {},
+                               const LongRunningWaitStatePtr& wait_state = {}) {
+    if (on_ready) {
+        on_ready();
+    }
+    if (wait_state) {
+        wait_state->wait();
+        io_threads.stop_and_wait();
+    } else {
+        io_threads.wait();
+    }
     if (stop_requested.load()) {
         if (announce_stopping) {
             announce_stopping();
@@ -609,7 +642,9 @@ int run_local_forward_mode(const ParsedArgs& args,
                            IoThreadGroup& io_threads,
                            std::atomic<bool>& stop_requested,
                            const std::function<void()>& announce_stopping,
-                           const std::string& close_reason) {
+                           const std::string& close_reason,
+                           const std::function<void()>& on_ready,
+                           const LongRunningWaitStatePtr& wait_state) {
     if (args.lport <= 0 || args.rhost.empty() || args.rport <= 0) {
         util::log_error("--lport, --rhost, and --rport must be set together");
         return 1;
@@ -621,7 +656,8 @@ int run_local_forward_mode(const ParsedArgs& args,
         forward->start();
         util::log_info("udp forwarding localhost:" + std::to_string(args.lport) + " -> " +
                        args.rhost + ":" + std::to_string(args.rport));
-        return wait_for_long_running_mode(io_threads, stop_requested, announce_stopping, close_reason);
+        return wait_for_long_running_mode(
+            io_threads, stop_requested, announce_stopping, close_reason, on_ready, wait_state);
     }
 
     auto forward = std::make_shared<ForwardServer>(
@@ -629,7 +665,8 @@ int run_local_forward_mode(const ParsedArgs& args,
     forward->start();
     util::log_info("forwarding localhost:" + std::to_string(args.lport) + " -> " +
                    args.rhost + ":" + std::to_string(args.rport));
-    return wait_for_long_running_mode(io_threads, stop_requested, announce_stopping, close_reason);
+    return wait_for_long_running_mode(
+        io_threads, stop_requested, announce_stopping, close_reason, on_ready, wait_state);
 }
 
 int run_socks_mode(const ClientConfig& cfg,
@@ -638,7 +675,9 @@ int run_socks_mode(const ClientConfig& cfg,
                    IoThreadGroup& io_threads,
                    std::atomic<bool>& stop_requested,
                    const std::function<void()>& announce_stopping,
-                   const std::string& close_reason) {
+                   const std::string& close_reason,
+                   const std::function<void()>& on_ready,
+                   const LongRunningWaitStatePtr& wait_state) {
     auto socks = std::make_shared<SocksServer>(io, cfg.socks_port, tunnel_pool, cfg.allow_udp);
     socks->start();
     util::log_info("SOCKS5 listening on 127.0.0.1:" + std::to_string(cfg.socks_port) +
@@ -657,7 +696,8 @@ int run_socks_mode(const ClientConfig& cfg,
             "  (UDP ASSOCIATE is off; pass --udp to allow apps that "
             "negotiate UDP through SOCKS5 - note: most browsers don't.)");
     }
-    return wait_for_long_running_mode(io_threads, stop_requested, announce_stopping, close_reason);
+    return wait_for_long_running_mode(
+        io_threads, stop_requested, announce_stopping, close_reason, on_ready, wait_state);
 }
 
 int run_app_codec_mode(const ClientConfig& cfg,
@@ -666,7 +706,9 @@ int run_app_codec_mode(const ClientConfig& cfg,
                        IoThreadGroup& io_threads,
                        std::atomic<bool>& stop_requested,
                        const std::function<void()>& announce_stopping,
-                       const std::string& close_reason) {
+                       const std::string& close_reason,
+                       const std::function<void()>& on_ready,
+                       const LongRunningWaitStatePtr& wait_state) {
     if (cfg.app_codec != std::string(app_codec::kMoneroRpcCodecId)) {
         util::log_error("unsupported application codec: " + cfg.app_codec);
         return 1;
@@ -676,7 +718,8 @@ int run_app_codec_mode(const ClientConfig& cfg,
     server->start();
     util::log_info("Monero wallets can use --daemon-address " +
                    listen.host + ":" + std::to_string(listen.port));
-    return wait_for_long_running_mode(io_threads, stop_requested, announce_stopping, close_reason);
+    return wait_for_long_running_mode(
+        io_threads, stop_requested, announce_stopping, close_reason, on_ready, wait_state);
 }
 
 }  // namespace
@@ -731,21 +774,32 @@ int run_connected_session(boost::asio::io_context& io,
 
     std::string close_reason;
     auto hop_status_stop = std::make_shared<std::atomic<bool>>(false);
-    tunnel->set_close_handler([&close_reason, &io, hop_status_stop](const std::string& reason) {
+    auto wait_state = std::make_shared<LongRunningWaitState>();
+    tunnel->set_close_handler([&close_reason, &io, hop_status_stop, wait_state](const std::string& reason) {
         close_reason = reason;
         hop_status_stop->store(true);
+        wait_state->signal();
         io.stop();
     });
 
     auto relay_runtime = std::make_shared<RelayRuntime>(tunnel, cfg, make_relay_options(cfg));
-    if (options.take_runtime_ready_callback) {
-        if (auto cb = options.take_runtime_ready_callback()) {
+    bool runtime_ready_signalled = false;
+    auto signal_runtime_ready = [&]() {
+        if (runtime_ready_signalled) {
+            return;
+        }
+        runtime_ready_signalled = true;
+        if (options.take_runtime_ready_callback) {
+            auto cb = options.take_runtime_ready_callback();
+            if (!cb) {
+                return;
+            }
             RuntimeReadyInfo ready_info;
             ready_info.server_tls_fingerprint_sha256 =
                 options.server_tls_fingerprint_sha256;
             cb(tunnel, relay_runtime, std::move(ready_info));
         }
-    }
+    };
 
     const std::string protection_summary = effective_protection_summary(
         cfg,
@@ -765,7 +819,9 @@ int run_connected_session(boost::asio::io_context& io,
     auto request_disconnect = [disconnect_once,
                                relay_runtime,
                                tunnel_pool,
+                               &io,
                                &stop_requested,
+                               wait_state,
                                announce_stopping = options.announce_stopping](const std::string& reason,
                                                                               const std::string& lifecycle_message,
                                                                               bool mark_stop_requested) {
@@ -778,9 +834,11 @@ int run_connected_session(boost::asio::io_context& io,
         if (announce_stopping) {
             announce_stopping();
         }
+        wait_state->signal();
         std::string lifecycle_error;
         relay_runtime->notify_disconnecting(lifecycle_message, &lifecycle_error);
         tunnel_pool->stop_all(reason);
+        io.stop();
     };
 
     relay_runtime->set_stop_callback([request_disconnect]() {
@@ -899,28 +957,33 @@ int run_connected_session(boost::asio::io_context& io,
 
     if (args.lport > 0 || !args.rhost.empty() || args.rport > 0) {
         return run_local_forward_mode(
-            args, cfg, io, tunnel, io_threads, stop_requested, options.announce_stopping, close_reason);
+            args, cfg, io, tunnel, io_threads, stop_requested, options.announce_stopping,
+            close_reason, signal_runtime_ready, wait_state);
     }
 
     if (!cfg.app_codec.empty()) {
         return run_app_codec_mode(
-            cfg, io, tunnel, io_threads, stop_requested, options.announce_stopping, close_reason);
+            cfg, io, tunnel, io_threads, stop_requested, options.announce_stopping,
+            close_reason, signal_runtime_ready, wait_state);
     }
 
     if (cfg.socks_port > 0) {
         return run_socks_mode(
-            cfg, io, tunnel_pool, io_threads, stop_requested, options.announce_stopping, close_reason);
+            cfg, io, tunnel_pool, io_threads, stop_requested, options.announce_stopping,
+            close_reason, signal_runtime_ready, wait_state);
     }
 
     if (options.use_reverse) {
         return wait_for_long_running_mode(
-            io_threads, stop_requested, options.announce_stopping, close_reason);
+            io_threads, stop_requested, options.announce_stopping, close_reason,
+            signal_runtime_ready, wait_state);
     }
 
     if (!args.chat_target.empty() || !args.file_target.empty() ||
         !args.bytes_target.empty() || !args.admin_target.empty()) {
         return wait_for_long_running_mode(
-            io_threads, stop_requested, options.announce_stopping, close_reason);
+            io_threads, stop_requested, options.announce_stopping, close_reason,
+            signal_runtime_ready, wait_state);
     }
 
     util::log_warn("no mode selected");

@@ -80,11 +80,17 @@ std::vector<std::string> build_argv(client::ClientConfig const& cfg) {
     push_flag(a, cfg.obfuscation, "--obfs", "--no-obfs");
     push_arg(a, "--obfs-secret", cfg.obfs_secret);
 
-    push_flag(a, cfg.inner_crypto, "--inner", "--no-inner");
-    push_flag(a, cfg.inner_heavy, "--inner-heavy", "--inner-light");
-    push_flag(a, cfg.inner_hop, "--hop", "--no-hop");
-    if (cfg.hop_interval_ms > 0)
-        push_arg(a, "--hop-interval", std::to_string(cfg.hop_interval_ms));
+    if (cfg.inner_crypto) {
+        a.push_back("--inner");
+        push_flag(a, cfg.inner_heavy, "--inner-heavy", "--inner-light");
+        push_flag(a, cfg.inner_hop, "--hop", "--no-hop");
+        if (cfg.hop_interval_ms > 0) {
+            push_arg(a, "--hop-interval", std::to_string(cfg.hop_interval_ms));
+        }
+    } else {
+        a.push_back("--no-inner");
+        a.push_back("--no-hop");
+    }
 
     if (cfg.allow_udp)        a.push_back("--udp");
     else                      a.push_back("--tcp");
@@ -99,6 +105,7 @@ std::vector<std::string> build_argv(client::ClientConfig const& cfg) {
     push_arg(a, "--tls-name", cfg.tls_server_name);
     push_arg(a, "--tls-pin", cfg.tls_pin_sha256);
     if (cfg.require_anonym) a.push_back("--require-anonym");
+    if (cfg.accept_monitoring) a.push_back("--accept-monitoring");
 
     push_arg(a, "--name", cfg.preferred_name);
     push_arg(a, "--client-id", cfg.preferred_id);
@@ -149,6 +156,8 @@ struct InProcClient::Impl {
     // exit drops Cli's local shared_ptrs; ours persist until stop()).
     std::shared_ptr<client::Tunnel> tunnel;
     std::shared_ptr<client::RelayRuntime> relay;
+    boost::asio::io_context* active_io{nullptr};
+    std::function<void(const std::string&)> active_disconnect;
     std::string server_tls_fingerprint_sha256;
 
     LogCallback log_callback;
@@ -202,6 +211,8 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
         impl_->ready_error.clear();
         impl_->tunnel.reset();
         impl_->relay.reset();
+        impl_->active_io = nullptr;
+        impl_->active_disconnect = {};
         impl_->server_tls_fingerprint_sha256.clear();
     }
     impl_->started = std::chrono::system_clock::now();
@@ -227,6 +238,21 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
                     impl_->ready  = true;
                 }
                 impl_->ready_cv.notify_all();
+            });
+        cli.set_runtime_active_callback(
+            [this](boost::asio::io_context* io,
+                   std::shared_ptr<client::Tunnel> tunnel,
+                   std::shared_ptr<client::RelayRuntime> relay,
+                   std::function<void(const std::string&)> disconnect) {
+                std::lock_guard<std::mutex> lock(impl_->ready_mtx);
+                impl_->active_io = io;
+                if (tunnel) {
+                    impl_->tunnel = std::move(tunnel);
+                }
+                if (relay) {
+                    impl_->relay = std::move(relay);
+                }
+                impl_->active_disconnect = std::move(disconnect);
             });
 
         // Synthetic argv. The vector owns the strings; argv_ptrs only
@@ -260,6 +286,11 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
         }
         impl_->ready_cv.notify_all();
         impl_->running.store(false, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lock(impl_->ready_mtx);
+            impl_->active_io = nullptr;
+            impl_->active_disconnect = {};
+        }
     });
 
     std::unique_lock<std::mutex> lock(impl_->ready_mtx);
@@ -284,17 +315,27 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
 }
 
 void InProcClient::stop(std::string* /*error*/, std::string const& reason) {
-    // Close the tunnel first - that trips Cli's io.stop(), which
-    // returns from Cli::run(), which lets the worker exit. Without
-    // closing the tunnel the worker would block in io.run() forever
-    // and our join would hang.
     std::shared_ptr<client::Tunnel> t;
+    boost::asio::io_context* io = nullptr;
+    std::function<void(const std::string&)> disconnect;
     {
         std::lock_guard<std::mutex> lock(impl_->ready_mtx);
         t = impl_->tunnel;
+        io = impl_->active_io;
+        disconnect = impl_->active_disconnect;
     }
-    if (t) {
-        t->stop(reason);
+    // Use the same forced-close tunnel reason as the CLI signal path.
+    // A normal SSL shutdown can block here if the peer does not send
+    // close_notify, and this API must return synchronously to embedders.
+    constexpr const char* kForcedCloseReason = "interrupt";
+    (void)reason;
+    if (disconnect) {
+        disconnect(kForcedCloseReason);
+    } else if (t) {
+        t->stop(kForcedCloseReason);
+    }
+    if (io) {
+        io->stop();
     }
     if (impl_->cli_thread.joinable()) {
         impl_->cli_thread.join();
@@ -303,6 +344,8 @@ void InProcClient::stop(std::string* /*error*/, std::string const& reason) {
         std::lock_guard<std::mutex> lock(impl_->ready_mtx);
         impl_->tunnel.reset();
         impl_->relay.reset();
+        impl_->active_io = nullptr;
+        impl_->active_disconnect = {};
         impl_->server_tls_fingerprint_sha256.clear();
         impl_->ready = false;
         impl_->ready_error.clear();

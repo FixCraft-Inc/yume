@@ -916,8 +916,16 @@ void Session::handle_rlisten(const protocol::Frame& frame) {
                 } else {
                     auto remote = std::make_shared<RemoteStream>(self->stream_.get_executor());
                     remote->socket = std::move(socket);
+                    remote->open_started_ms = util::now_ms();
+                    remote->connected = true;
                     boost::system::error_code keep_ec;
                     remote->socket.set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
+                    boost::system::error_code nodelay_ec;
+                    remote->socket.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
+                    boost::system::error_code recvbuf_ec;
+                    remote->socket.set_option(boost::asio::socket_base::receive_buffer_size(kSocketBufferBytes), recvbuf_ec);
+                    boost::system::error_code sendbuf_ec;
+                    remote->socket.set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
                     self->streams_[stream_id] = remote;
                     self->pending_reverse_.insert(stream_id);
 

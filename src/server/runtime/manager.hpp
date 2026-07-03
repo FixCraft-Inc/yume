@@ -32,6 +32,9 @@
 #include "server/config/config.hpp"
 #include "server/federation/types.hpp"
 #include "server/filter/ip_filter.hpp"
+#include "server/host/exposure_check.hpp"
+#include "server/host/extra_listeners.hpp"
+#include "server/host/host_routes.hpp"
 #include "server/packet/tun_egress.hpp"
 
 namespace yume::server {
@@ -149,6 +152,13 @@ public:
     void unregister_packet_client(Session* session, std::uint32_t ipv4_be);
     void write_packet_to_egress(std::uint32_t client_ipv4_be, crypto::Bytes packet);
     bool egress_allowed(const boost::asio::ip::address& address, std::string* reason = nullptr) const;
+    bool admit_plain_client(boost::asio::ip::tcp::socket& socket);
+    bool reload_client_filter(std::string* error);
+    bool kill_sessions(const std::string& query, std::string* error);
+    nlohmann::json host_runtime_info() const;
+    const host::HostRouteTable& host_routes() const { return host_routes_; }
+    const host::ExposureResult& exposure_result() const { return exposure_result_; }
+    std::uint64_t accept_refused_filter_total() const { return accept_refused_filter_; }
 
     // Returns one of the loaded upstream-response captures (chosen
     // uniformly), or an empty string if no directory is configured /
@@ -178,6 +188,7 @@ private:
     class WeightedEgressLimiter;
 
     void do_accept();
+    void refuse_client_socket(boost::asio::ip::tcp::socket& socket);
     void append_lifecycle_event_locked(const control::ClientLifecycleEvent& event);
     void schedule_upstream_reload();
 
@@ -226,6 +237,9 @@ private:
     std::unique_ptr<WeightedEgressLimiter> egress_limiter_;
     std::unique_ptr<PacketTunEgress> packet_egress_;
     std::unique_ptr<IpFilter> ip_filter_;
+    host::HostRouteTable host_routes_;
+    std::unique_ptr<ExtraListeners> extra_listeners_;
+    host::ExposureResult exposure_result_;
 
     // Per-probe upstream-response rotation. cache_ is swapped under the
     // mutex; readers (Session::send_disguise_404) atomically load a

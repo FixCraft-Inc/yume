@@ -14,6 +14,7 @@
 #include "server/cli/key.hpp"
 #include "server/config/config.hpp"
 #include "server/filter/ip_filter.hpp"
+#include "server/host/host_types.hpp"
 #include "util.hpp"
 
 #include <algorithm>
@@ -152,6 +153,54 @@ bool validate_app_codecs(const yume::server::ServerConfig& cfg) {
         } else {
             yume::util::log_info("application codec enabled: " + codec->id);
         }
+    }
+    return true;
+}
+
+bool validate_host_controller(const yume::server::ServerConfig& cfg) {
+    if (cfg.host_mode == yume::server::host::HostMode::Off &&
+        (!cfg.host_routes.empty() || !cfg.extra_listeners.empty())) {
+        yume::util::log_error("routes/listeners require host_mode private or relay");
+        return false;
+    }
+    for (const auto& route : cfg.host_routes) {
+        std::string error;
+        if (!yume::server::host::backend_is_loopback_only(route.backend, &error)) {
+            yume::util::log_error("host route backend invalid: " + error);
+            return false;
+        }
+    }
+    for (const auto& listener : cfg.extra_listeners) {
+        if (listener.bind_port < 1 || listener.bind_port > 65535) {
+            yume::util::log_error("extra listener bind port out of range");
+            return false;
+        }
+        if (!listener.bind_address.empty()) {
+            boost::system::error_code addr_ec;
+            boost::asio::ip::make_address(listener.bind_address, addr_ec);
+            if (addr_ec) {
+                yume::util::log_error("extra listener bind address must be an IP literal: " +
+                                      listener.bind_address);
+                return false;
+            }
+        }
+        if (listener.backend.empty()) {
+            yume::util::log_error("extra listener requires backend");
+            return false;
+        }
+        std::string error;
+        if (!yume::server::host::backend_is_loopback_only(listener.backend, &error)) {
+            yume::util::log_error("extra listener backend invalid: " + error);
+            return false;
+        }
+    }
+    if (cfg.host_mode == yume::server::host::HostMode::Private && cfg.accept_yume_clients) {
+        yume::util::log_error("host_mode private requires accept_yume_clients=false; use host_mode relay for YUME clients");
+        return false;
+    }
+    if (cfg.host_mode == yume::server::host::HostMode::Relay && !cfg.accept_yume_clients) {
+        yume::util::log_error("host_mode relay requires accept_yume_clients=true");
+        return false;
     }
     return true;
 }
@@ -542,6 +591,7 @@ bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
         !validate_filters(cfg) ||
         !validate_packet_egress(cfg) ||
         !validate_app_codecs(cfg) ||
+        !validate_host_controller(cfg) ||
         !load_upstream_response(cfg) ||
         !validate_upstream_response_dir(cfg)) {
         return false;

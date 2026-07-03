@@ -10,6 +10,7 @@
 #include "server/federation/manager.hpp"
 #include "server/auth/auth.hpp"
 #include "server/filter/ip_filter.hpp"
+#include "server/host/socket_util.hpp"
 #include "server/packet/tun_egress.hpp"
 #include "server/session/session.hpp"
 #include "util.hpp"
@@ -115,13 +116,20 @@ bool valid_service_name(std::string_view service) {
     });
 }
 
+bool server_context_allows_h2(const ServerConfig& cfg) {
+    if (cfg.host_mode == host::HostMode::Private && !cfg.accept_yume_clients) {
+        return false;
+    }
+    return cfg.obfuscation || !cfg.real_http;
+}
+
 }  // namespace
 
 Manager::Manager(boost::asio::io_context& io, const ServerConfig& cfg)
     : io_(io)
     , cfg_(cfg)
     , acceptor_(io)
-    , ssl_ctx_(obfs::create_server_context(cfg.tls_cert, cfg.tls_key, cfg.obfuscation || !cfg.real_http))
+    , ssl_ctx_(obfs::create_server_context(cfg.tls_cert, cfg.tls_key, server_context_allows_h2(cfg)))
     , authorized_keys_(std::make_shared<std::vector<crypto::Bytes>>())
     , server_id_(cfg.server_id.empty() ? yume::identity::generate_endpoint_id() : cfg.server_id)
     , server_name_(cfg.server_name.empty() ? std::string("yumed") : cfg.server_name) {
@@ -158,6 +166,9 @@ Manager::Manager(boost::asio::io_context& io, const ServerConfig& cfg)
         if (!ip_filter_->load(specs, cfg_.filter_geolite, cfg_.filter_memory_mib, &load_error)) {
             throw std::runtime_error("filter load failed: " + load_error);
         }
+    }
+    if (cfg_.host_mode != host::HostMode::Off) {
+        host_routes_.set_routes(cfg_.host_routes);
     }
     if (!cfg_.packet_egress.empty() && cfg_.packet_egress != "off" && cfg_.packet_egress != "none") {
         packet_egress_ = std::make_unique<PacketTunEgress>(io_, cfg_);
@@ -242,6 +253,25 @@ void Manager::start() {
     if (ip_filter_ && ip_filter_->active()) {
         util::log_info("IP filtering active: " + ip_filter_->summary());
     }
+    if (cfg_.host_mode != host::HostMode::Off) {
+        util::log_info(std::string("host controller mode=") + host::to_string(cfg_.host_mode) +
+                       " accept_yume_clients=" + (cfg_.accept_yume_clients ? "true" : "false") +
+                       " client_deny_action=" + host::to_string(cfg_.client_deny_action) +
+                       " routes=" + std::to_string(cfg_.host_routes.size()));
+    }
+    if (!cfg_.exposure_check_hostname.empty()) {
+        exposure_result_ = host::probe_exposure(cfg_.exposure_check_hostname, cfg_.listen_port);
+        util::log_info("exposure check for " + cfg_.exposure_check_hostname + ": " +
+                       std::string(host::to_string(exposure_result_.kind)) + " (" +
+                       exposure_result_.detail + ")");
+        if (exposure_result_.kind == host::ExposureKind::CfHttpProxy) {
+            util::log_warn("cloudflare HTTP proxy detected: YUME TLS carrier requires TCP passthrough (e.g. Spectrum)");
+        }
+    }
+    if (cfg_.host_mode != host::HostMode::Off && !cfg_.extra_listeners.empty()) {
+        extra_listeners_ = std::make_unique<ExtraListeners>(io_, ssl_ctx_, cfg_, this);
+        extra_listeners_->start();
+    }
     if (packet_egress_) {
         packet_egress_->start();
     }
@@ -253,6 +283,10 @@ void Manager::start() {
 }
 
 void Manager::stop() {
+    if (extra_listeners_) {
+        extra_listeners_->stop();
+        extra_listeners_.reset();
+    }
     if (federation_) {
         federation_->stop();
     }
@@ -775,8 +809,7 @@ void Manager::do_accept() {
                             util::log_info("accept refused by client IP filter (refused-total=" +
                                            std::to_string(accept_refused_filter_) + ")");
                         }
-                        boost::system::error_code close_ec;
-                        socket.close(close_ec);
+                        refuse_client_socket(socket);
                         if (acceptor_.is_open()) {
                             do_accept();
                         }
@@ -785,12 +818,7 @@ void Manager::do_accept() {
                 }
             }
             if (!admit_accept()) {
-                // Close on the spot. Reading nothing then closing
-                // mirrors what a load-balancer would do under
-                // backpressure — the disguise stays consistent
-                // since a real busy nginx also accepts then closes.
-                boost::system::error_code close_ec;
-                socket.close(close_ec);
+                refuse_client_socket(socket);
             } else {
                 uint64_t session_id = next_session_id_.fetch_add(1);
                 ServerConfig cfg_copy;
@@ -809,6 +837,137 @@ void Manager::do_accept() {
             do_accept();
         }
     });
+}
+
+void Manager::refuse_client_socket(boost::asio::ip::tcp::socket& socket) {
+    host::close_socket(cfg_.client_deny_action, socket);
+}
+
+bool Manager::admit_plain_client(boost::asio::ip::tcp::socket& socket) {
+    if (ip_filter_) {
+        boost::system::error_code ep_ec;
+        auto remote = socket.remote_endpoint(ep_ec);
+        if (!ep_ec) {
+            const auto decision = ip_filter_->check_client(remote.address());
+            if (!decision.allowed) {
+                ++accept_refused_filter_;
+                refuse_client_socket(socket);
+                return false;
+            }
+        }
+    }
+    if (!admit_accept()) {
+        refuse_client_socket(socket);
+        return false;
+    }
+    return true;
+}
+
+bool Manager::reload_client_filter(std::string* error) {
+    if (!ip_filter_) {
+        if (error) {
+            *error = "client filter not configured";
+        }
+        return false;
+    }
+    auto client_mode = IpFilter::parse_mode(cfg_.client_filter_mode);
+    auto egress_mode = IpFilter::parse_mode(cfg_.egress_filter_mode);
+    if (!client_mode.has_value() || !egress_mode.has_value()) {
+        if (error) {
+            *error = "invalid filter mode";
+        }
+        return false;
+    }
+    std::vector<FilterListSpec> specs;
+    specs.reserve(cfg_.filter_lists.size());
+    for (const auto& raw : cfg_.filter_lists) {
+        std::string parse_error;
+        auto spec = IpFilter::parse_list_spec(raw, &parse_error);
+        if (!spec.has_value()) {
+            if (error) {
+                *error = parse_error;
+            }
+            return false;
+        }
+        specs.push_back(std::move(*spec));
+    }
+    ip_filter_->configure(*client_mode, *egress_mode);
+    std::string load_error;
+    if (!ip_filter_->load(specs, cfg_.filter_geolite, cfg_.filter_memory_mib, &load_error)) {
+        if (error) {
+            *error = load_error;
+        }
+        return false;
+    }
+    return true;
+}
+
+bool Manager::kill_sessions(const std::string& query, std::string* error) {
+    if (query.empty()) {
+        if (error) {
+            *error = "query required (session id, endpoint id, or client ip)";
+        }
+        return false;
+    }
+    std::vector<std::shared_ptr<Session>> targets;
+    {
+        std::lock_guard<std::mutex> lock(sessions_mutex_);
+        for (auto& [ptr, weak] : live_sessions_) {
+            auto session = weak.lock();
+            if (!session) {
+                continue;
+            }
+            if (std::to_string(session->session_id()) == query ||
+                session->endpoint_id() == query ||
+                session->client_wan_ip() == query) {
+                targets.push_back(session);
+            }
+        }
+    }
+    if (targets.empty()) {
+        if (error) {
+            *error = "no matching session";
+        }
+        return false;
+    }
+    for (auto& session : targets) {
+        session->stop();
+    }
+    return true;
+}
+
+nlohmann::json Manager::host_runtime_info() const {
+    nlohmann::json routes = nlohmann::json::array();
+    for (const auto& route : host_routes_.routes()) {
+        routes.push_back({
+            {"sni", route.sni},
+            {"host", route.host},
+            {"path_prefix", route.path_prefix},
+            {"backend", route.backend},
+        });
+    }
+    nlohmann::json listeners = nlohmann::json::array();
+    for (const auto& listener : cfg_.extra_listeners) {
+        listeners.push_back({
+            {"bind_address", listener.bind_address},
+            {"bind_port", listener.bind_port},
+            {"mode", host::to_string(listener.mode)},
+            {"backend", listener.backend},
+        });
+    }
+    return {
+        {"host_mode", host::to_string(cfg_.host_mode)},
+        {"accept_yume_clients", cfg_.accept_yume_clients},
+        {"client_deny_action", host::to_string(cfg_.client_deny_action)},
+        {"accept_refused_filter", accept_refused_filter_},
+        {"routes", routes},
+        {"extra_listeners", listeners},
+        {"exposure", {
+             {"hostname", exposure_result_.hostname},
+             {"kind", host::to_string(exposure_result_.kind)},
+             {"detail", exposure_result_.detail},
+         }},
+    };
 }
 
 }  // namespace yume::server

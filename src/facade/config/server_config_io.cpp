@@ -15,9 +15,13 @@
 
 #include <nlohmann/json.hpp>
 
+#include <boost/asio/ip/address.hpp>
+
 #include "facade/config/detail.hpp"
 #include "facade/config/keys.hpp"
 #include "core/app_codec/codec.hpp"
+#include "server/host/host_routes.hpp"
+#include "server/host/host_types.hpp"
 
 namespace yume::facade::config_io {
 
@@ -150,6 +154,54 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::packet_cidr, s.packet_cidr);
     read_opt(j, cfg_key::packet_mtu, s.packet_mtu);
     read_opt(j, cfg_key::boring, s.boring);
+    if (j.contains(cfg_key::host_mode)) {
+        auto mode = yume::server::host::parse_host_mode(j[cfg_key::host_mode].get<std::string>());
+        if (mode.has_value()) {
+            s.host_mode = *mode;
+            if (*mode == yume::server::host::HostMode::Private && !j.contains(cfg_key::accept_yume_clients)) {
+                s.accept_yume_clients = false;
+            }
+        } else {
+            throw std::runtime_error("host_mode must be off, private, or relay");
+        }
+    }
+    read_opt(j, cfg_key::accept_yume_clients, s.accept_yume_clients);
+    if (j.contains(cfg_key::deny_default)) {
+        auto action = yume::server::host::parse_deny_action(j[cfg_key::deny_default].get<std::string>());
+        if (action.has_value()) {
+            s.client_deny_action = *action;
+        } else {
+            throw std::runtime_error("deny_default must be close, reset, or drop");
+        }
+    }
+    if (j.contains(cfg_key::client_deny_action)) {
+        auto action = yume::server::host::parse_deny_action(j[cfg_key::client_deny_action].get<std::string>());
+        if (action.has_value()) {
+            s.client_deny_action = *action;
+        } else {
+            throw std::runtime_error("client_deny_action must be close, reset, or drop");
+        }
+    }
+    read_opt(j, cfg_key::exposure_check_hostname, s.exposure_check_hostname);
+    if (j.contains(cfg_key::exposure_check) && s.exposure_check_hostname.empty()) {
+        s.exposure_check_hostname = j[cfg_key::exposure_check].get<std::string>();
+    }
+    if (j.contains(cfg_key::routes)) {
+        std::string route_error;
+        if (!yume::server::host::HostRouteTable::parse_routes_json(j[cfg_key::routes],
+                                                                   &s.host_routes,
+                                                                   &route_error)) {
+            throw std::runtime_error("routes: " + route_error);
+        }
+    }
+    if (j.contains(cfg_key::listeners)) {
+        std::string listener_error;
+        if (!yume::server::host::HostRouteTable::parse_listeners_json(j[cfg_key::listeners],
+                                                                      &s.extra_listeners,
+                                                                      &listener_error)) {
+            throw std::runtime_error("listeners: " + listener_error);
+        }
+    }
 
     resolve_config_path(s.tls_cert, base);
     resolve_config_path(s.tls_key, base);
@@ -190,7 +242,12 @@ std::optional<server::ServerConfig> load_server(
         return std::nullopt;
     }
 
-    return server_from_json(j, path.parent_path());
+    try {
+        return server_from_json(j, path.parent_path());
+    } catch (std::exception const& e) {
+        if (err) *err = e.what();
+        return std::nullopt;
+    }
 }
 
 std::optional<server::ServerConfig> parse_server_json(
@@ -204,7 +261,12 @@ std::optional<server::ServerConfig> parse_server_json(
         if (err) *err = std::string{"invalid JSON: "} + e.what();
         return std::nullopt;
     }
-    return server_from_json(j, base_dir);
+    try {
+        return server_from_json(j, base_dir);
+    } catch (std::exception const& e) {
+        if (err) *err = e.what();
+        return std::nullopt;
+    }
 }
 
 bool save_server(server::ServerConfig const& s,
@@ -276,7 +338,42 @@ bool save_server(server::ServerConfig const& s,
         {cfg_key::packet_cidr, s.packet_cidr},
         {cfg_key::packet_mtu, s.packet_mtu},
         {cfg_key::boring, s.boring},
+        {cfg_key::host_mode, yume::server::host::to_string(s.host_mode)},
+        {cfg_key::accept_yume_clients, s.accept_yume_clients},
+        {cfg_key::client_deny_action, yume::server::host::to_string(s.client_deny_action)},
+        {cfg_key::exposure_check_hostname, s.exposure_check_hostname},
     };
+    json routes = json::array();
+    for (const auto& route : s.host_routes) {
+        routes.push_back({
+            {"sni", route.sni},
+            {"host", route.host},
+            {"path_prefix", route.path_prefix},
+            {"backend", route.backend},
+        });
+    }
+    if (!routes.empty()) {
+        j[cfg_key::routes] = routes;
+    }
+    json listeners = json::array();
+    for (const auto& listener : s.extra_listeners) {
+        std::string bind = listener.bind_address;
+        if (!bind.empty()) {
+            if (bind.find(':') != std::string::npos && bind.front() != '[') {
+                bind = "[" + bind + "]";
+            }
+            bind += ":";
+        }
+        bind += std::to_string(listener.bind_port);
+        listeners.push_back({
+            {"bind", bind},
+            {"mode", yume::server::host::to_string(listener.mode)},
+            {"backend", listener.backend},
+        });
+    }
+    if (!listeners.empty()) {
+        j[cfg_key::listeners] = listeners;
+    }
 
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
@@ -349,6 +446,46 @@ ValidationReport validate(server::ServerConfig const& s) {
         }
         if (s.federation_peers.empty()) {
             r.errors.emplace_back("federation_peers: at least one peer is required when federation_enable=true");
+        }
+    }
+    if (s.host_mode == yume::server::host::HostMode::Off &&
+        (!s.host_routes.empty() || !s.extra_listeners.empty())) {
+        r.errors.emplace_back("host_mode: routes/listeners require private or relay");
+    }
+    if (s.host_mode == yume::server::host::HostMode::Private && s.accept_yume_clients) {
+        r.errors.emplace_back("host_mode private requires accept_yume_clients=false");
+    }
+    if (s.host_mode == yume::server::host::HostMode::Relay && !s.accept_yume_clients) {
+        r.errors.emplace_back("host_mode relay requires accept_yume_clients=true");
+    }
+    for (const auto& route : s.host_routes) {
+        std::string error;
+        if (!yume::server::host::backend_is_loopback_only(route.backend, &error)) {
+            r.errors.emplace_back("routes.backend: " + error);
+            break;
+        }
+    }
+    for (const auto& listener : s.extra_listeners) {
+        if (listener.bind_port < 1 || listener.bind_port > 65535) {
+            r.errors.emplace_back("listeners.bind: port must be 1..65535");
+            break;
+        }
+        if (!listener.bind_address.empty()) {
+            boost::system::error_code ec;
+            boost::asio::ip::make_address(listener.bind_address, ec);
+            if (ec) {
+                r.errors.emplace_back("listeners.bind: address must be an IP literal");
+                break;
+            }
+        }
+        if (listener.backend.empty()) {
+            r.errors.emplace_back("listeners.backend: required");
+            break;
+        }
+        std::string error;
+        if (!yume::server::host::backend_is_loopback_only(listener.backend, &error)) {
+            r.errors.emplace_back("listeners.backend: " + error);
+            break;
         }
     }
     return r;

@@ -3,6 +3,10 @@
 Application codecs are protocol-aware local service shims. They are not raw TCP
 forwards and do not grant LAN/private-IP bridging.
 
+Current implementation and testing status, including the difference between
+registry-driven built-ins and future dynamic plugin codecs, is tracked in
+`docs/IMPLEMENTATION_STATUS.md`.
+
 The first built-in codec is `monero-rpc-v1`:
 
 ```text
@@ -103,6 +107,9 @@ Built-ins live under:
 Future plugins should follow the same contract: parse the local app protocol,
 validate it on both ends, carry typed codec envelopes over Yume streams, and
 reconstruct only to a narrow trusted backend.
+
+Dynamic `.so` / DLL codec plugins are not implemented yet. The current code
+provides a built-in registry shape that future plugin descriptors should reuse.
 
 Stable registry contract (since 1.1):
 

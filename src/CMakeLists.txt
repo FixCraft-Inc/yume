@@ -394,6 +394,12 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/federation/manager.cpp
         server/filter/ip_filter.cpp
         server/filter/ip_filter_mmdb.cpp
+        server/host/host_types.cpp
+        server/host/socket_util.cpp
+        server/host/host_routes.cpp
+        server/host/exposure_check.cpp
+        server/host/http_proxy.cpp
+        server/host/extra_listeners.cpp
         server/runtime/manager.cpp
         server/runtime/manager_relay.cpp
         server/packet/tun_egress.cpp
@@ -718,6 +724,11 @@ yume_apply_perf_opts(yume_packet_bulk_test)
 add_test(NAME yume_packet_bulk_test COMMAND yume_packet_bulk_test)
 
 add_executable(yume_ip_filter_test server/filter/ip_filter_test.cpp server/filter/ip_filter.cpp server/filter/ip_filter_mmdb.cpp)
+add_executable(yume_host_types_test server/host/host_types_test.cpp server/host/host_types.cpp)
+target_link_libraries(yume_host_types_test PRIVATE yume_core)
+yume_link_atomic_if_needed(yume_host_types_test PRIVATE)
+yume_apply_perf_opts(yume_host_types_test)
+add_test(NAME yume_host_types_test COMMAND yume_host_types_test)
 target_link_libraries(yume_ip_filter_test PRIVATE yume_core)
 yume_link_atomic_if_needed(yume_ip_filter_test PRIVATE)
 yume_apply_perf_opts(yume_ip_filter_test)

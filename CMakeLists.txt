@@ -238,6 +238,8 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         docs/STEALTH.md
         docs/THREAT_MODEL.md
         docs/APP_CODECS.md
+        docs/HOST_CONTROLLER.md
+        docs/IMPLEMENTATION_STATUS.md
         docs/SELFTEST.md
         docs/LEAK_TIGHT.md
         docs/PACKET_NATIVE_BULK.md

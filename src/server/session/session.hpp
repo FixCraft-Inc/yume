@@ -58,6 +58,8 @@ public:
     void force_close_reverse_port(int port);
     std::string endpoint_id() const { return client_id_; }
     std::string endpoint_name() const { return client_display_name_; }
+    uint64_t session_id() const { return session_id_; }
+    const std::string& client_wan_ip() const { return client_wan_ip_; }
     const std::string& federation_peer_id() const { return federation_peer_id_; }
     bool is_federation_authenticated() const { return authenticated_ && !federation_peer_id_.empty(); }
     void send_control_json_to_client(const nlohmann::json& json);
@@ -71,6 +73,8 @@ public:
     void complete_federated_open(uint8_t stream_id, bool ok, const std::string& message);
     void send_federated_data(uint8_t stream_id, const crypto::Bytes& payload);
     void send_federated_close(uint8_t stream_id, const std::string& reason);
+
+    std::optional<boost::asio::ssl::stream<boost::asio::ip::tcp::socket>> release_for_host_proxy();
 
 private:
     struct PendingWrite;

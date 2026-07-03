@@ -10,6 +10,10 @@ YUME tunnels TCP and UDP through TLS 1.3 sessions that look like ordinary Chrome
 - Source: https://github.com/FixCraft-Inc/yume
 - Issues: https://github.com/FixCraft-Inc/yume/issues
 
+For the current implementation / testing boundary, including host-controller,
+codec, federation, plugin, and browser status, see
+[docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md).
+
 ## Why YUME
 
 VPN protocols built for performance (WireGuard, OpenVPN) are also built to be recognisable. Their handshakes have static byte signatures that ISPs and national firewalls can match in milliseconds. Commercial VPN services then resell that same recognisable transport for $20/month, bandwidth that costs them pennies, and run it from cheap KVMs that any user could rent directly.
@@ -459,7 +463,9 @@ typed Yume codec frames in transit, and reconstructs restricted HTTP only on the
 trusted server side. Server-side codec enablement uses the modular
 `--codec-allow <name>` path; per-key authorization uses `allow_codecs` or the
 legacy `allow_monero_rpc` permission, not LAN/private-IP bridging. See
-[docs/APP_CODECS.md](docs/APP_CODECS.md).
+[docs/APP_CODECS.md](docs/APP_CODECS.md). Current codec and plugin-loader
+status is tracked in
+[docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md).
 
 ## Permissions and key management
 

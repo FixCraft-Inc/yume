@@ -302,6 +302,51 @@ Only loopback literals are accepted.
 Serve canned HTTP responses for non-YUME HTTPS probes using a named
 disguise profile. Profiles mimic common CDN or static-site error pages
 instead of closing immediately after TLS.
+.SH HOST CONTROLLER
+.TP
+.BI "--host-mode " mode
+WAN host controller mode:
+.BR off ,
+.BR private ,
+or
+.BR relay .
+.B private
+serves routed backends and rejects YUME clients by default.
+.B relay
+adds YUME client tunnel support on the same listener.
+.TP
+.B --accept-yume-clients
+Accept authenticated YUME clients (default when host mode is off or relay).
+.TP
+.B --no-yume-clients
+Reject YUME AUTH and carrier paths; probes receive disguise responses only.
+.TP
+.BI "--client-deny-action " action
+How client IP filter denials close sockets:
+.BR close ,
+.BR reset ,
+or
+.BR drop .
+.TP
+.BI "--exposure-check " hostname
+Probe whether the hostname is reachable via direct TCP or sits behind a
+Cloudflare HTTP proxy. Result is logged at startup and exposed in
+.BR runtime.info .
+.TP
+.B host_mode
+.B accept_yume_clients
+.B client_deny_action
+.B routes
+.B listeners
+.B exposure_check_hostname
+Host-controller fields in
+.BR yumed.json .
+Route and listener backends currently support loopback TCP URIs only
+.RI ( loopback://127.0.0.1:PORT
+or
+.IR loopback://[::1]:PORT ).
+See
+.BR HOST_CONTROLLER.md .
 .SH FEDERATION AND CLUSTER OPTIONS
 Federation links are mutual TLS 1.3 connections between
 .BR yumed (8)
@@ -323,7 +368,9 @@ Bracket IPv6 addresses as
 Repeat for multiple peers.
 .TP
 .B --public-node
-Advertise this node in the directory when directory features are enabled.
+Internet-facing hardening preset. Rejects dangerous server flags, requires
+.BR --auth-keys ,
+defaults disguise profile to nginx, and tightens session limits.
 .TP
 .BI "--federation-auth-key " path
 Ed25519 private key used to authenticate federation peer links.

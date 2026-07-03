@@ -81,6 +81,21 @@ void Session::stop() {
     boost::asio::post(strand_, [self = shared_from_this()]() { self->close(); });
 }
 
+std::optional<boost::asio::ssl::stream<boost::asio::ip::tcp::socket>> Session::release_for_host_proxy() {
+    if (close_state_ != CloseState::Open) {
+        return std::nullopt;
+    }
+    close_state_ = CloseState::Closed;
+    preface_probe_active_ = false;
+    tls_handshake_timer_.cancel();
+    preface_timer_.cancel();
+    idle_timer_.cancel();
+    if (manager_) {
+        manager_->unregister_session(this);
+    }
+    return std::move(stream_);
+}
+
 void Session::notify_server_shutdown(const std::string& reason) {
     boost::asio::post(strand_, [self = shared_from_this(), reason]() {
         if (self->close_state_ != CloseState::Open) {
@@ -161,7 +176,8 @@ void Session::on_handshake(const boost::system::error_code& ec) {
     // who haven't opted in to stealth).
     if (cfg_.real_http || cfg_.robots_deny || cfg_.obfuscation || !cfg_.http_profile.empty()
         || !cfg_.upstream_response_bytes.empty()
-        || !cfg_.upstream_response_dir.empty()) {
+        || !cfg_.upstream_response_dir.empty()
+        || !cfg_.accept_yume_clients) {
         start_preface_read();
         return;
     }

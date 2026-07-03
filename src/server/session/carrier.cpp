@@ -16,6 +16,9 @@
 #include "server/session/session.hpp"
 #include "server/runtime/manager.hpp"
 #include "server/session/internal.hpp"
+#include "server/host/host_routes.hpp"
+#include "server/host/http_proxy.hpp"
+#include "core/app_codec/codec.hpp"
 
 namespace yume::server {
 
@@ -105,6 +108,10 @@ void Session::on_preface_read(const boost::system::error_code& ec, std::size_t b
 
     std::copy(preface_accum_.begin(), preface_accum_.begin() + header_buf_.size(), header_buf_.begin());
     preface_probe_active_ = false;
+    if (!cfg_.accept_yume_clients) {
+        send_disguise_404("/");
+        return;
+    }
     header_prefetched_ = true;
     read_header();
 }
@@ -133,7 +140,8 @@ void Session::on_preface_timeout(const boost::system::error_code& ec) {
         // arrive well under the 200 ms preface timer.
         if (cfg_.real_http || cfg_.robots_deny || cfg_.obfuscation || !cfg_.http_profile.empty()
             || !cfg_.upstream_response_bytes.empty()
-            || !cfg_.upstream_response_dir.empty()) {
+            || !cfg_.upstream_response_dir.empty()
+            || !cfg_.accept_yume_clients) {
             close_with_reason("preface timeout (stealth mode): no recognised preface received");
             return;
         }
@@ -142,6 +150,10 @@ void Session::on_preface_timeout(const boost::system::error_code& ec) {
 }
 bool Session::handle_http_preface(const std::string& preface) {
     if (cfg_.obfuscation && preface.rfind("PRI * HT", 0) == 0) {
+        if (!cfg_.accept_yume_clients) {
+            send_disguise_404("/");
+            return true;
+        }
         const std::string negotiated = obfs::selected_alpn(stream_.native_handle());
         if (negotiated != "h2") {
             close_with_reason("h2 carrier preface received without ALPN h2");
@@ -168,11 +180,16 @@ bool Session::handle_http_preface(const std::string& preface) {
 
     auto self = shared_from_this();
     auto request = std::make_shared<std::string>(preface);
-    boost::asio::async_read_until(stream_, boost::asio::dynamic_buffer(*request), "\r\n\r\n",
+    boost::asio::async_read_until(stream_,
+                                  boost::asio::dynamic_buffer(*request,
+                                                              yume::app_codec::kMaxHttpHeaderBytes + 1),
+                                  "\r\n\r\n",
                                   boost::asio::bind_executor(strand_,
                                                              [self, request](const boost::system::error_code& e, std::size_t) {
-                                                                 if (e) {
-                                                                     self->close_with_reason("HTTP preface read failed: " + e.message());
+                                                                 if (e || request->size() > yume::app_codec::kMaxHttpHeaderBytes) {
+                                                                     self->close_with_reason(
+                                                                         e ? "HTTP preface read failed: " + e.message()
+                                                                           : "HTTP preface read failed: headers too large");
                                                                      return;
                                                                  }
                                                                  std::string line;
@@ -194,6 +211,33 @@ bool Session::handle_http_preface(const std::string& preface) {
                                                                  }
 
                                                                  std::string path = target;
+                                                                 if (self->cfg_.host_mode != host::HostMode::Off &&
+                                                                     self->manager_ &&
+                                                                     !self->manager_->host_routes().empty()) {
+                                                                     const std::string sni = host::tls_sni(self->stream_.native_handle());
+                                                                     const std::string host_header = host::http_header_value(*request, "Host");
+                                                                     auto host_only = host_header;
+                                                                     const auto colon = host_only.find(':');
+                                                                     if (colon != std::string::npos) {
+                                                                         host_only = host_only.substr(0, colon);
+                                                                     }
+                                                                     auto match = self->manager_->host_routes().match(sni, host_only, path);
+                                                                     if (match.has_value()) {
+                                                                         auto backend = host::parse_loopback_backend(match->route->backend);
+                                                                         if (backend.has_value()) {
+                                                                             auto handoff = self->release_for_host_proxy();
+                                                                             if (handoff.has_value()) {
+                                                                                 host::start_http_reverse_proxy(
+                                                                                     std::move(*handoff),
+                                                                                     std::move(*request),
+                                                                                     backend->first,
+                                                                                     backend->second,
+                                                                                     self->manager_);
+                                                                             }
+                                                                             return;
+                                                                         }
+                                                                     }
+                                                                 }
                                                                  if (self->cfg_.robots_deny &&
                                                                      path == "/robots.txt" &&
                                                                      (method == "GET" || method == "HEAD")) {
@@ -506,6 +550,10 @@ void Session::on_h2_probe_read(const boost::system::error_code& ec, std::size_t 
 }
 
 void Session::send_h2_server_handshake_then_continue() {
+    if (!cfg_.accept_yume_clients) {
+        serve_fake_h2_real_index();
+        return;
+    }
     crypto::Bytes hello = obfs::encode_server_handshake();
     auto data = std::make_shared<std::vector<uint8_t>>(hello.begin(), hello.end());
     const auto payload_size = data->size();

@@ -39,6 +39,10 @@ struct ServerConfigOverrides {
     bool packet_mtu = false;
     bool relay_enable = false;
     bool directory_enable = false;
+    bool host_mode = false;
+    bool accept_yume_clients = false;
+    bool client_deny_action = false;
+    bool exposure_check_hostname = false;
 };
 
 struct ServerConfigLoadContext {

@@ -17,6 +17,7 @@
 #include "server/cli/help.hpp"
 #include "server/cli/misc.hpp"
 #include "server/config/config.hpp"
+#include "server/host/host_types.hpp"
 #include "util.hpp"
 
 namespace yume::server_cli {
@@ -376,6 +377,35 @@ bool parse_server_cli_args(int argc,
             cfg.cluster_bootstrap = true;
         } else if (arg == "--public-node") {
             cfg.public_node = true;
+        } else if (arg == "--host-mode" && i + 1 < argc) {
+            auto mode = yume::server::host::parse_host_mode(argv[++i]);
+            if (!mode.has_value()) {
+                yume::util::log_error("--host-mode must be off, private, or relay");
+                return false;
+            }
+            cfg.host_mode = *mode;
+            result.config_overrides.host_mode = true;
+            if (*mode == yume::server::host::HostMode::Private &&
+                !result.config_overrides.accept_yume_clients) {
+                cfg.accept_yume_clients = false;
+            }
+        } else if (arg == "--accept-yume-clients") {
+            cfg.accept_yume_clients = true;
+            result.config_overrides.accept_yume_clients = true;
+        } else if (arg == "--no-yume-clients") {
+            cfg.accept_yume_clients = false;
+            result.config_overrides.accept_yume_clients = true;
+        } else if ((arg == "--client-deny-action" || arg == "--deny-default") && i + 1 < argc) {
+            auto action = yume::server::host::parse_deny_action(argv[++i]);
+            if (!action.has_value()) {
+                yume::util::log_error("--client-deny-action must be close, reset, or drop");
+                return false;
+            }
+            cfg.client_deny_action = *action;
+            result.config_overrides.client_deny_action = true;
+        } else if (arg == "--exposure-check" && i + 1 < argc) {
+            cfg.exposure_check_hostname = argv[++i];
+            result.config_overrides.exposure_check_hostname = true;
         } else if (arg == "--hide-in-the-crowd" && i + 1 < argc) {
             cfg.http_profile = argv[++i];
         } else if (arg == "--upstream-response" && i + 1 < argc) {

@@ -65,6 +65,7 @@ nlohmann::json LocalRuntime::handle_request(const nlohmann::json& request) {
             {"endpoints", manager_->list_endpoints().size()},
             {"channels", manager_->list_active_channels().size()},
         };
+        result["host"] = manager_->host_runtime_info();
         result["endpoint_statuses"] = nlohmann::json::array();
         for (const auto& status : manager_->list_endpoint_statuses()) {
             result["endpoint_statuses"].push_back(control::endpoint_runtime_status_to_json(status, true));
@@ -107,6 +108,21 @@ nlohmann::json LocalRuntime::handle_request(const nlohmann::json& request) {
     if (op == "runtime.disconnect") {
         std::string error;
         if (!manager_->disconnect_endpoint(args.value("endpoint_id", ""), &error)) {
+            return {{"ok", false}, {"error", error}};
+        }
+        return {{"ok", true}, {"result", true}};
+    }
+    if (op == "runtime.sessions.kill") {
+        std::string error;
+        const std::string query = args.value("session_id", args.value("endpoint_id", args.value("ip", "")));
+        if (!manager_->kill_sessions(query, &error)) {
+            return {{"ok", false}, {"error", error}};
+        }
+        return {{"ok", true}, {"result", true}};
+    }
+    if (op == "runtime.rules.reload") {
+        std::string error;
+        if (!manager_->reload_client_filter(&error)) {
             return {{"ok", false}, {"error", error}};
         }
         return {{"ok", true}, {"result", true}};

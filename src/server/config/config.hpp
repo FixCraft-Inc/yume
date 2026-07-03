@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "core/protocol/runtime_policy.hpp"
+#include "server/host/host_types.hpp"
 
 namespace yume::server {
 
@@ -189,6 +190,17 @@ struct ServerConfig {
     std::string operator_keys;
     std::string operator_keys_meta;
     bool boring{false};
+    // Host-controller mode: off (legacy), private (WAN host, no yume clients
+    // by default), relay (host + yume client tunnel).
+    host::HostMode host_mode{host::HostMode::Off};
+    // When false, YUME AUTH / carrier paths are rejected with disguise.
+    bool accept_yume_clients{true};
+    // How client-plane IP filter denials close the socket.
+    host::DenyAction client_deny_action{host::DenyAction::Close};
+    std::vector<host::HostRoute> host_routes;
+    std::vector<host::ListenerSpec> extra_listeners;
+    // Optional hostname for startup exposure self-check (direct tcp vs CF http).
+    std::string exposure_check_hostname;
 };
 
 }  // namespace yume::server

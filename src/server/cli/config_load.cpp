@@ -16,6 +16,7 @@
 #include "server/cli/misc.hpp"
 #include "core/app_codec/codec.hpp"
 #include "server/config/config.hpp"
+#include "server/host/host_routes.hpp"
 #include "util.hpp"
 
 namespace yume::server_cli {
@@ -418,6 +419,65 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
             }
             if (json.contains("operator_keys_meta") && cfg.operator_keys_meta.empty()) {
                 cfg.operator_keys_meta = resolve_cfg_path(json["operator_keys_meta"].get<std::string>());
+            }
+            if (json.contains("host_mode") && !overrides.host_mode) {
+                auto mode = yume::server::host::parse_host_mode(json["host_mode"].get<std::string>());
+                if (mode.has_value()) {
+                    cfg.host_mode = *mode;
+                    if (*mode == yume::server::host::HostMode::Private &&
+                        !json.contains("accept_yume_clients") &&
+                        !overrides.accept_yume_clients) {
+                        cfg.accept_yume_clients = false;
+                    }
+                } else {
+                    yume::util::log_error("host_mode must be off, private, or relay");
+                    return false;
+                }
+            }
+            if (json.contains("accept_yume_clients") && !overrides.accept_yume_clients) {
+                cfg.accept_yume_clients = json["accept_yume_clients"].get<bool>();
+            }
+            if (json.contains("deny_default") && !overrides.client_deny_action) {
+                auto action = yume::server::host::parse_deny_action(json["deny_default"].get<std::string>());
+                if (action.has_value()) {
+                    cfg.client_deny_action = *action;
+                } else {
+                    yume::util::log_error("deny_default must be close, reset, or drop");
+                    return false;
+                }
+            }
+            if (json.contains("client_deny_action") && !overrides.client_deny_action) {
+                auto action = yume::server::host::parse_deny_action(json["client_deny_action"].get<std::string>());
+                if (action.has_value()) {
+                    cfg.client_deny_action = *action;
+                } else {
+                    yume::util::log_error("client_deny_action must be close, reset, or drop");
+                    return false;
+                }
+            }
+            if (json.contains("exposure_check_hostname") && !overrides.exposure_check_hostname) {
+                cfg.exposure_check_hostname = json["exposure_check_hostname"].get<std::string>();
+            }
+            if (json.contains("exposure_check") && !overrides.exposure_check_hostname) {
+                cfg.exposure_check_hostname = json["exposure_check"].get<std::string>();
+            }
+            if (json.contains("routes")) {
+                std::string route_error;
+                if (!yume::server::host::HostRouteTable::parse_routes_json(json["routes"],
+                                                                           &cfg.host_routes,
+                                                                           &route_error)) {
+                    yume::util::log_error("routes: " + route_error);
+                    return false;
+                }
+            }
+            if (json.contains("listeners")) {
+                std::string listener_error;
+                if (!yume::server::host::HostRouteTable::parse_listeners_json(json["listeners"],
+                                                                              &cfg.extra_listeners,
+                                                                              &listener_error)) {
+                    yume::util::log_error("listeners: " + listener_error);
+                    return false;
+                }
             }
         } catch (const std::exception& ex) {
             yume::util::log_error(std::string("config load failed: ") + ex.what());

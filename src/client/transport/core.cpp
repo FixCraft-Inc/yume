@@ -241,6 +241,7 @@ uint8_t TransportCore::reserve_stream_id() {
             candidate = next_stream_id_++;
         }
         if (!has_stream_id_locked(candidate)) {
+            reserved_streams_.insert(candidate);
             return candidate;
         }
     }
@@ -255,11 +256,13 @@ void TransportCore::register_stream(uint8_t stream_id,
     if (stopped_) {
         return;
     }
+    reserved_streams_.erase(stream_id);
     streams_[stream_id] = StreamCallbacks{std::move(on_data), std::move(on_close), std::move(on_half_close)};
 }
 
 void TransportCore::unregister_stream(uint8_t stream_id) {
     std::lock_guard<std::mutex> lock(state_mu_);
+    reserved_streams_.erase(stream_id);
     streams_.erase(stream_id);
     pending_open_.erase(stream_id);
 }
@@ -285,6 +288,7 @@ void TransportCore::open_stream(uint8_t stream_id,
         if (inner_key_.has_value()) {
             flags |= protocol::kFlagInnerEncrypted;
         }
+        reserved_streams_.erase(stream_id);
         pending_open_[stream_id] = std::move(handler);
     }
     if (stopped) {
@@ -317,6 +321,7 @@ void TransportCore::open_relay_stream(uint8_t stream_id, const nlohmann::json& j
         if (inner_key_.has_value()) {
             flags |= protocol::kFlagInnerEncrypted;
         }
+        reserved_streams_.erase(stream_id);
         pending_open_[stream_id] = std::move(handler);
     }
     if (stopped) {
@@ -361,6 +366,7 @@ void TransportCore::request_remote_listen(uint8_t listen_id,
         if (inner_key_.has_value()) {
             flags |= protocol::kFlagInnerEncrypted;
         }
+        reserved_streams_.erase(listen_id);
         pending_rlisten_[listen_id] = std::move(handler);
     }
     if (stopped) {

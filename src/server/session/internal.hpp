@@ -80,6 +80,8 @@ inline constexpr uint8_t kMinFrameType = protocol::AUTH;
 inline constexpr uint8_t kMaxFrameType = protocol::SOPEN;
 inline constexpr int64_t kIdleTimeoutMs = 90 * 1000;
 inline constexpr int64_t kIdleCheckIntervalMs = 30 * 1000;
+inline constexpr int64_t kFrameHeaderTimeoutMs = 90 * 1000;
+inline constexpr int64_t kFramePayloadTimeoutMs = 30 * 1000;
 // Decrypt-time hop-key tolerance. With hop_interval_ms=500 (default),
 // 120 hops = ±60 s of clock-drift / queue-delay tolerance. Wide enough
 // for an Android client whose outbound TLS pipe backs up under congested

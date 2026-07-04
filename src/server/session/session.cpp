@@ -32,7 +32,8 @@ Session::Session(boost::asio::ip::tcp::socket socket,
     , strand_(stream_.get_executor())
     , preface_timer_(stream_.get_executor())
     , tls_handshake_timer_(stream_.get_executor())
-    , idle_timer_(stream_.get_executor()) {
+    , idle_timer_(stream_.get_executor())
+    , frame_read_timer_(stream_.get_executor()) {
     last_activity_ms_.store(steady_now_ms(), std::memory_order_relaxed);
     session_allow_exec_policy_ = false;
     session_allow_local_ip_ = false;
@@ -194,6 +195,8 @@ void Session::read_header() {
         on_read_header({}, header_buf_.size());
         return;
     }
+    arm_frame_read_deadline(std::chrono::milliseconds(kFrameHeaderTimeoutMs),
+                            "frame header read timeout");
     auto self = shared_from_this();
     boost::asio::async_read(stream_, boost::asio::buffer(header_buf_),
                             boost::asio::bind_executor(strand_,
@@ -204,6 +207,7 @@ void Session::read_header() {
 }
 
 void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
+    cancel_frame_read_deadline();
     if (ec) {
         if (close_state_ != CloseState::Open && is_expected_close_ec(ec)) {
             maybe_finish_close();
@@ -300,6 +304,8 @@ void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
     }
 
     auto self = shared_from_this();
+    arm_frame_read_deadline(std::chrono::milliseconds(kFramePayloadTimeoutMs),
+                            "frame payload read timeout");
     boost::asio::async_read(stream_, boost::asio::buffer(payload_buf_),
                             boost::asio::bind_executor(strand_,
                                                        [self](const boost::system::error_code& e,
@@ -309,6 +315,7 @@ void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
 }
 
 void Session::on_read_payload(const boost::system::error_code& ec, std::size_t) {
+    cancel_frame_read_deadline();
     if (ec) {
         if (close_state_ != CloseState::Open && is_expected_close_ec(ec)) {
             maybe_finish_close();
@@ -334,6 +341,30 @@ void Session::on_read_payload(const boost::system::error_code& ec, std::size_t) 
     }
     handle_frame(frame);
     payload_buf_.swap(frame.payload);
+}
+
+void Session::arm_frame_read_deadline(std::chrono::milliseconds timeout, std::string reason) {
+    if (timeout.count() <= 0) {
+        return;
+    }
+    frame_read_timer_.expires_after(timeout);
+    auto self = shared_from_this();
+    frame_read_timer_.async_wait(boost::asio::bind_executor(
+        strand_,
+        [self, reason = std::move(reason)](const boost::system::error_code& ec) {
+            if (ec || self->close_state_ != CloseState::Open) {
+                return;
+            }
+            util::log_warn("session " + std::to_string(self->session_id_) + ": " + reason);
+            boost::system::error_code close_ec;
+            self->stream_.lowest_layer().close(close_ec);
+            self->close_with_reason(reason);
+        }));
+}
+
+void Session::cancel_frame_read_deadline() {
+    boost::system::error_code ec;
+    frame_read_timer_.cancel(ec);
 }
 
 void Session::handle_frame(const protocol::Frame& frame) {
@@ -716,6 +747,12 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
 
         util::log_info("session " + std::to_string(session_id_) + ": stream " + std::to_string(stream_id) + " closed: " + reason);
         auto remote = it->second;
+        boost::system::error_code ec;
+        if (remote->open_timer) {
+            remote->open_timer->cancel(ec);
+            remote->open_timer.reset();
+        }
+        pending_reverse_.erase(stream_id);
         if (!remote->close_summary_logged) {
             remote->close_summary_logged = true;
             const int64_t elapsed = remote->open_started_ms > 0 ? (util::now_ms() - remote->open_started_ms) : 0;
@@ -729,7 +766,6 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
                                  " target=" + remote->host + ":" + std::to_string(remote->port) +
                                  " reason=" + reason);
         }
-        boost::system::error_code ec;
         remote->resolver.cancel();
         remote->socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
         remote->socket.close(ec);
@@ -834,6 +870,7 @@ void Session::begin_close() {
     }
     boost::system::error_code ec;
     idle_timer_.cancel();
+    frame_read_timer_.cancel(ec);
     preface_timer_.cancel();
     if (manager_) {
         manager_->unregister_session(this);

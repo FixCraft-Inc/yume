@@ -105,6 +105,8 @@ private:
     void read_header();
     void on_read_header(const boost::system::error_code& ec, std::size_t bytes);
     void on_read_payload(const boost::system::error_code& ec, std::size_t bytes);
+    void arm_frame_read_deadline(std::chrono::milliseconds timeout, std::string reason);
+    void cancel_frame_read_deadline();
 
     void handle_frame(const protocol::Frame& frame);
     bool handle_auth(const protocol::Frame& frame);
@@ -247,6 +249,7 @@ private:
     std::optional<std::uint64_t> decrypt_hop_id_;
     crypto::Bytes decrypt_hop_key_;
     boost::asio::steady_timer idle_timer_;
+    boost::asio::steady_timer frame_read_timer_;
     std::atomic<int64_t> last_activity_ms_{0};
 
     struct RemoteStream {
@@ -272,6 +275,7 @@ private:
         bool remote_fin_sent{false};
         bool write_shutdown_pending{false};
         bool write_shutdown_sent{false};
+        std::unique_ptr<boost::asio::steady_timer> open_timer;
 
         explicit RemoteStream(boost::asio::any_io_executor exec)
             : socket(exec)

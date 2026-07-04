@@ -86,7 +86,7 @@ public:
                              const std::string& pq_alg);
     void register_reverse_listener(int port, const std::shared_ptr<Session>& session);
     void unregister_reverse_listener(int port, Session* session);
-    bool reclaim_reverse_listener(int port);
+    bool reclaim_reverse_listener(int port, const Session* requester = nullptr);
     void register_controlled_client(const std::shared_ptr<Session>& session, const ControlledClientInfo& info);
     void unregister_controlled_client(Session* session);
     std::vector<ControlledClientInfo> list_controlled_clients(bool anonym_only);

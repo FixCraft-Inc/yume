@@ -550,7 +550,7 @@ void Manager::unregister_reverse_listener(int port, Session* session) {
     }
 }
 
-bool Manager::reclaim_reverse_listener(int port) {
+bool Manager::reclaim_reverse_listener(int port, const Session* requester) {
     std::shared_ptr<Session> session;
     {
         std::lock_guard<std::mutex> lock(reverse_mutex_);
@@ -565,8 +565,17 @@ bool Manager::reclaim_reverse_listener(int port) {
         }
     }
 
-    if (!session->is_stale()) {
+    const bool same_endpoint =
+        requester != nullptr &&
+        session.get() != requester &&
+        !requester->endpoint_id().empty() &&
+        requester->endpoint_id() == session->endpoint_id();
+    if (!session->is_stale() && !same_endpoint) {
         return false;
+    }
+    if (same_endpoint) {
+        util::log_warn("reclaiming reverse listener " + std::to_string(port) +
+                       " for reconnecting endpoint " + requester->endpoint_id());
     }
 
     session->force_close_reverse_port(port);

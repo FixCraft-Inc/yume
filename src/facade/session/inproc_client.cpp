@@ -106,6 +106,7 @@ std::vector<std::string> build_argv(client::ClientConfig const& cfg) {
     push_arg(a, "--tls-pin", cfg.tls_pin_sha256);
     if (cfg.require_anonym) a.push_back("--require-anonym");
     if (cfg.accept_monitoring) a.push_back("--accept-monitoring");
+    if (cfg.service_streams_only) a.push_back("--service-streams-only");
 
     push_arg(a, "--name", cfg.preferred_name);
     push_arg(a, "--client-id", cfg.preferred_id);

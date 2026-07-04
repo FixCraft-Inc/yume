@@ -111,6 +111,7 @@ inline constexpr char self_dpi[] = "self_dpi";
 inline constexpr char server[] = "server";
 inline constexpr char server_id[] = "server_id";
 inline constexpr char server_name[] = "server_name";
+inline constexpr char service_streams_only[] = "service_streams_only";
 inline constexpr char socks_port[] = "socks_port";
 inline constexpr char threads[] = "threads";
 inline constexpr char tls_ca_cert[] = "tls_ca_cert";

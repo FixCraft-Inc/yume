@@ -66,6 +66,7 @@ struct ClientConfig {
     std::string tls_pin_sha256;
     bool require_anonym{false};
     bool accept_monitoring{false};
+    bool service_streams_only{false};
     bool boring{false};
     bool non_interactive{false};
     std::string instance_name;

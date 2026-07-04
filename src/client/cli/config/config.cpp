@@ -149,6 +149,9 @@ void load_client_config_file(const ParsedArgs& args,
         if (json.contains("accept_monitoring")) {
             cfg->accept_monitoring = json["accept_monitoring"].get<bool>();
         }
+        if (json.contains("service_streams_only")) {
+            cfg->service_streams_only = json["service_streams_only"].get<bool>();
+        }
         if (json.contains("boring") && !args.boring_override) {
             cfg->boring = json["boring"].get<bool>();
         }
@@ -339,6 +342,9 @@ void apply_cli_config_overrides(const ParsedArgs& args,
     }
     if (args.accept_monitoring) {
         cfg->accept_monitoring = true;
+    }
+    if (args.service_streams_only) {
+        cfg->service_streams_only = true;
     }
     if (args.allow_inbound_admin_override) {
         cfg->allow_inbound_admin = args.allow_inbound_admin;
@@ -574,6 +580,7 @@ void save_client_config_file(const ParsedArgs& args, const ClientConfig& cfg) {
     if (!cfg.tls_pin_sha256.empty()) json["tls_pin"] = cfg.tls_pin_sha256;
     json["require_anonym"] = cfg.require_anonym;
     json["accept_monitoring"] = cfg.accept_monitoring;
+    json["service_streams_only"] = cfg.service_streams_only;
     json["boring"] = cfg.boring;
     json["non_interactive"] = cfg.non_interactive;
     json["instance_name"] = cfg.instance_name;

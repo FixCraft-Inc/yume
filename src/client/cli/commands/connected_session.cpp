@@ -848,11 +848,14 @@ int run_connected_session(boost::asio::io_context& io,
     });
 
     std::string relay_error;
-    auto local_runtime = std::make_shared<yume::client::LocalRuntime>(
-        options.local_runtime_path, relay_runtime);
-    if (!local_runtime->start(&relay_error)) {
-        util::log_warn("local attach disabled: " + relay_error);
-        relay_error.clear();
+    std::shared_ptr<yume::client::LocalRuntime> local_runtime;
+    if (!args.service_streams_only) {
+        local_runtime = std::make_shared<yume::client::LocalRuntime>(
+            options.local_runtime_path, relay_runtime);
+        if (!local_runtime->start(&relay_error)) {
+            util::log_warn("local attach disabled: " + relay_error);
+            relay_error.clear();
+        }
     }
 
     tunnel->set_control_handler([relay_runtime](const nlohmann::json& json) {
@@ -974,6 +977,12 @@ int run_connected_session(boost::asio::io_context& io,
     }
 
     if (options.use_reverse) {
+        return wait_for_long_running_mode(
+            io_threads, stop_requested, options.announce_stopping, close_reason,
+            signal_runtime_ready, wait_state);
+    }
+
+    if (args.service_streams_only) {
         return wait_for_long_running_mode(
             io_threads, stop_requested, options.announce_stopping, close_reason,
             signal_runtime_ready, wait_state);

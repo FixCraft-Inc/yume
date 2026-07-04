@@ -56,6 +56,7 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::tls_pin_sha256, c.tls_pin_sha256);
     read_opt(j, cfg_key::require_anonym, c.require_anonym);
     read_opt(j, cfg_key::accept_monitoring, c.accept_monitoring);
+    read_opt(j, cfg_key::service_streams_only, c.service_streams_only);
     read_opt(j, cfg_key::boring, c.boring);
     read_opt(j, cfg_key::instance_name, c.instance_name);
     read_opt(j, cfg_key::preferred_name, c.preferred_name);
@@ -157,6 +158,7 @@ bool save_client(client::ClientConfig const& c,
         {cfg_key::tls_pin_sha256, c.tls_pin_sha256},
         {cfg_key::require_anonym, c.require_anonym},
         {cfg_key::accept_monitoring, c.accept_monitoring},
+        {cfg_key::service_streams_only, c.service_streams_only},
         {cfg_key::boring, c.boring},
         {cfg_key::instance_name, c.instance_name},
         {cfg_key::preferred_name, c.preferred_name},

@@ -721,6 +721,8 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.self_dpi_override = true;
         } else if (arg == "--accept-monitoring") {
             args.accept_monitoring = true;
+        } else if (arg == "--service-streams-only") {
+            args.service_streams_only = true;
         } else if (arg == "--save-server") {
             args.save_server = true;
         } else if (arg == "--boring") {

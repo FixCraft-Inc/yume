@@ -336,6 +336,7 @@ int Cli::run(int argc, char** argv) {
          !args.bytes_target.empty() ||
          !args.admin_target.empty() ||
          args.attach_local ||
+         args.service_streams_only ||
          args.share_export)) {
         util::log_error("--bench/--bench-full is a one-shot endpoint mode; do not combine it with SOCKS, forwards, relay, or control modes");
         return 1;
@@ -355,9 +356,10 @@ int Cli::run(int argc, char** argv) {
         !args.bytes_target.empty() ||
         !args.admin_target.empty() ||
         args.attach_local ||
+        args.service_streams_only ||
         args.share_export;  // export is a one-shot, not a connection
     if (!has_active_mode) {
-        util::log_error("no mode selected (use --fullbench, --quickbench, --bench, --socks, --monero-rpc, -L, -R, --run, --directory, --chat, --send-file, --send-bytes, --admin-attach, --control, or --attach-local)");
+        util::log_error("no mode selected (use --fullbench, --quickbench, --bench, --socks, --monero-rpc, -L, -R, --run, --directory, --chat, --send-file, --send-bytes, --admin-attach, --control, --attach-local, or --service-streams-only)");
         return 1;
     }
 

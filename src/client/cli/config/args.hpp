@@ -92,6 +92,7 @@ struct ParsedArgs {
     bool version{false};
     bool credits{false};
     bool accept_monitoring{false};
+    bool service_streams_only{false};
     bool save_server{false};
     bool share_export{false};
     bool share_import{false};

@@ -60,6 +60,7 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::allow_local_ip, s.allow_local_ip);
     read_opt(j, cfg_key::control_full, s.control_full);
     read_opt(j, cfg_key::allow_services, s.allowed_services);
+    read_opt(j, cfg_key::preauth_services, s.preauth_services);
     if (j.contains(cfg_key::allow_monero_rpc_codec)) {
         s.allow_monero_rpc_codec = j[cfg_key::allow_monero_rpc_codec].get<bool>();
         if (s.allow_monero_rpc_codec) {
@@ -299,6 +300,7 @@ bool save_server(server::ServerConfig const& s,
         {cfg_key::control_full, s.control_full},
         {cfg_key::allow_codecs, s.allowed_codecs},
         {cfg_key::allow_services, s.allowed_services},
+        {cfg_key::preauth_services, s.preauth_services},
         {cfg_key::allow_monero_rpc_codec, s.allow_monero_rpc_codec},
         {cfg_key::monero_rpc_backend_host, s.monero_rpc_backend_host},
         {cfg_key::monero_rpc_backend_port, s.monero_rpc_backend_port},

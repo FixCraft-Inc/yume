@@ -308,6 +308,22 @@ const char* yume_strerror(int status) {
     }
 }
 
+int yume_generate_pq_keypair(const char* private_path,
+                             const char* public_path) {
+    if (!private_path || !*private_path || !public_path || !*public_path) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    try {
+        std::string error;
+        if (!yume::inner::generate_pq_keypair(private_path, public_path, &error)) {
+            return YUME_STATUS_INTERNAL_ERROR;
+        }
+        return YUME_STATUS_OK;
+    } catch (...) {
+        return YUME_STATUS_INTERNAL_ERROR;
+    }
+}
+
 yume_client* yume_client_create(void) {
     try {
         return new yume_client();

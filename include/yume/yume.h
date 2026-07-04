@@ -79,6 +79,8 @@ YUME_API const char* yume_pq_backend(void);
 YUME_API const char* yume_argon2_backend(void);
 YUME_API int yume_get_build_info(yume_build_info* out, size_t out_size);
 YUME_API const char* yume_strerror(int status);
+YUME_API int yume_generate_pq_keypair(const char* private_path,
+                                      const char* public_path);
 
 YUME_API yume_client* yume_client_create(void);
 YUME_API void yume_client_destroy(yume_client* client);

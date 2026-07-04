@@ -90,6 +90,7 @@ inline constexpr char packet_egress[] = "packet_egress";
 inline constexpr char packet_mtu[] = "packet_mtu";
 inline constexpr char packet_tun_name[] = "packet_tun_name";
 inline constexpr char port[] = "port";
+inline constexpr char preauth_services[] = "preauth_services";
 inline constexpr char pq_auto_generate[] = "pq_auto_generate";
 inline constexpr char pq_private_key[] = "pq_private_key";
 inline constexpr char pq_public_key[] = "pq_public_key";

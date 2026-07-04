@@ -47,6 +47,11 @@ struct ServerConfig {
     bool control_full{false};
     std::vector<std::string> allowed_codecs;
     std::vector<std::string> allowed_services;
+    // Services that may be opened by a client whose key signature is valid
+    // but whose public key is not yet authorized. This is intended for narrow
+    // bootstrap lanes such as embedder enrollment; all normal relay/control
+    // capability remains denied for these sessions.
+    std::vector<std::string> preauth_services;
     // Compatibility shim for older config/CLI spellings. New code should use
     // allowed_codecs plus the app-codec registry.
     bool allow_monero_rpc_codec{false};

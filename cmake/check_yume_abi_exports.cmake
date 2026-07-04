@@ -11,6 +11,7 @@ set(_expected
     yume_client_status_json
     yume_client_stop
     yume_feature_flags
+    yume_generate_pq_keypair
     yume_get_build_info
     yume_handle_last_error
     yume_pq_backend

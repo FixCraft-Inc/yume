@@ -12,6 +12,7 @@ libyume.so.1 libyume1 #MINVER#
  yume_client_status_json@Base 1.1-1
  yume_client_stop@Base 1.1-1
  yume_feature_flags@Base 1.0-1
+ yume_generate_pq_keypair@Base 1.1-1
  yume_get_build_info@Base 1.0-1
  yume_handle_last_error@Base 1.1-1
  yume_pq_backend@Base 1.0-1

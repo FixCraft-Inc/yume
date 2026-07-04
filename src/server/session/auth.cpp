@@ -281,7 +281,10 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         client_auth_pubkey_b64_ = yume::util::base64_encode(std::string(pub_pem.begin(), pub_pem.end()));
         EVP_PKEY_free(pubkey);
 
-        if (!sig_ok || !auth_ok) {
+        const bool preauth_ok =
+            sig_ok && !auth_ok && !cfg_.preauth_services.empty();
+
+        if (!sig_ok || (!auth_ok && !preauth_ok)) {
             if (!cfg_.anonym || auth_debug_enabled()) {
                 const std::size_t loaded_keys = authorized_keys_ ? authorized_keys_->size() : 0;
                 util::log_warn("session " + std::to_string(session_id_) +
@@ -299,8 +302,9 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             return false;
         }
 
+        const bool preauth_session = preauth_ok;
         AuthKeyPolicy auth_policy;
-        if (!cfg_.auth_keys_meta.empty()) {
+        if (!preauth_session && !cfg_.auth_keys_meta.empty()) {
             try {
                 AuthKeyPolicyMap auth_policies = load_auth_policies(cfg_.auth_keys_meta);
                 auto it = auth_policies.find(fingerprint);
@@ -328,9 +332,11 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             }
         }
         session_allowed_services_.clear();
-        for (const auto& service : auth_policy.allowed_services) {
-            if (std::find(cfg_.allowed_services.begin(), cfg_.allowed_services.end(), service) !=
-                cfg_.allowed_services.end()) {
+        const auto& service_policy =
+            preauth_session ? cfg_.preauth_services : auth_policy.allowed_services;
+        for (const auto& service : service_policy) {
+            if (std::find(cfg_.allowed_services.begin(), cfg_.allowed_services.end(),
+                          service) != cfg_.allowed_services.end()) {
                 session_allowed_services_.insert(service);
             }
         }
@@ -378,7 +384,11 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         session_allow_file_policy_ = auth_policy.allow_file.value_or(true);
         session_allow_bytes_policy_ = auth_policy.allow_bytes.value_or(true);
         federation_peer_id_ = auth_policy.federation_peer_id;
-        if (!auth_policy.empty()) {
+        if (preauth_session) {
+            util::log_info("session " + std::to_string(session_id_) +
+                           ": preauth services enabled for fingerprint=" +
+                           fingerprint);
+        } else if (!auth_policy.empty()) {
             util::log_info("session " + std::to_string(session_id_) + ": auth policy " +
                            summarize_auth_policy(auth_policy));
         }
@@ -530,7 +540,7 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         hop_offset_ms_ = 0;
         clear_hop_key_cache();
 
-        if (!cfg_.anonym) {
+        if (!cfg_.anonym && !preauth_session) {
             update_auth_meta(cfg_.auth_keys_meta, fingerprint);
         }
         return true;

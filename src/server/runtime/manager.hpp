@@ -153,6 +153,7 @@ public:
     void write_packet_to_egress(std::uint32_t client_ipv4_be, crypto::Bytes packet);
     bool egress_allowed(const boost::asio::ip::address& address, std::string* reason = nullptr) const;
     bool admit_plain_client(boost::asio::ip::tcp::socket& socket);
+    bool reload_auth(std::string* error);
     bool reload_client_filter(std::string* error);
     bool kill_sessions(const std::string& query, std::string* error);
     nlohmann::json host_runtime_info() const;
@@ -191,13 +192,15 @@ private:
     void refuse_client_socket(boost::asio::ip::tcp::socket& socket);
     void append_lifecycle_event_locked(const control::ClientLifecycleEvent& event);
     void schedule_upstream_reload();
+    std::shared_ptr<const std::vector<crypto::Bytes>> authorized_keys_snapshot() const;
 
     boost::asio::io_context& io_;
     ServerConfig cfg_;
     std::mutex cfg_mutex_;
     boost::asio::ip::tcp::acceptor acceptor_;
     boost::asio::ssl::context ssl_ctx_;
-    std::shared_ptr<std::vector<crypto::Bytes>> authorized_keys_;
+    mutable std::mutex auth_keys_mutex_;
+    std::shared_ptr<const std::vector<crypto::Bytes>> authorized_keys_;
 
     std::atomic<uint64_t> next_session_id_{1};
     std::mutex sessions_mutex_;

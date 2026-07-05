@@ -705,6 +705,23 @@ int yume_server_stop(yume_server* server) {
     }
 }
 
+int yume_server_reload_auth(yume_server* server) {
+    if (!server) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    try {
+        std::string error;
+        if (!server->runtime.reload_auth(&error)) {
+            return set_error(&server->base, status_from_error(error), error);
+        }
+        return clear_error(&server->base);
+    } catch (std::exception const& ex) {
+        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
+    } catch (...) {
+        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
+    }
+}
+
 int yume_server_status_json(yume_server* server,
                             char* out,
                             size_t out_size,

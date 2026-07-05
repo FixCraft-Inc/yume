@@ -46,6 +46,7 @@ public:
     bool start(ServerConfig cfg, std::string* error = nullptr);
     bool stop();
     bool running() const;
+    bool reload_auth(std::string* error = nullptr);
 
     Status status() const;
     std::vector<SessionSnapshot> sessions() const;

@@ -68,6 +68,10 @@ int main() {
         yume_server_destroy(server);
         return 15;
     }
+    if (yume_server_reload_auth(server) != YUME_STATUS_NOT_RUNNING) {
+        yume_server_destroy(server);
+        return 20;
+    }
     yume_stream* stream = nullptr;
     if (yume_server_accept_stream(server, "example-control-v1", 0, &stream) != YUME_STATUS_NOT_RUNNING ||
         stream != nullptr) {

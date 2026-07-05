@@ -130,7 +130,7 @@ Manager::Manager(boost::asio::io_context& io, const ServerConfig& cfg)
     , cfg_(cfg)
     , acceptor_(io)
     , ssl_ctx_(obfs::create_server_context(cfg.tls_cert, cfg.tls_key, server_context_allows_h2(cfg)))
-    , authorized_keys_(std::make_shared<std::vector<crypto::Bytes>>())
+    , authorized_keys_(std::make_shared<const std::vector<crypto::Bytes>>())
     , server_id_(cfg.server_id.empty() ? yume::identity::generate_endpoint_id() : cfg.server_id)
     , server_name_(cfg.server_name.empty() ? std::string("yumed") : cfg.server_name) {
     cfg_.server_id = server_id_;
@@ -182,16 +182,22 @@ void Manager::start() {
         throw std::runtime_error("auth_keys must be set");
     }
 
+    std::shared_ptr<const std::vector<crypto::Bytes>> loaded_keys;
     try {
-        *authorized_keys_ = load_authorized_keys(cfg_.auth_keys);
+        loaded_keys = std::make_shared<const std::vector<crypto::Bytes>>(
+            load_authorized_keys(cfg_.auth_keys));
     } catch (const std::exception& ex) {
         throw std::runtime_error(std::string("authorized_keys load failed: ") + ex.what());
     }
+    {
+        std::lock_guard<std::mutex> lock(auth_keys_mutex_);
+        authorized_keys_ = loaded_keys;
+    }
 
-    if (authorized_keys_->empty()) {
+    if (loaded_keys->empty()) {
         util::log_warn("authorized_keys is empty");
     } else {
-        util::log_info("loaded " + std::to_string(authorized_keys_->size()) +
+        util::log_info("loaded " + std::to_string(loaded_keys->size()) +
                        " authorized key(s) from " + cfg_.auth_keys);
     }
     if (cfg_.federation_enable) {
@@ -801,6 +807,12 @@ std::shared_ptr<runtime::ServiceStream> Manager::accept_service_stream(
     return stream;
 }
 
+std::shared_ptr<const std::vector<crypto::Bytes>>
+Manager::authorized_keys_snapshot() const {
+    std::lock_guard<std::mutex> lock(auth_keys_mutex_);
+    return authorized_keys_;
+}
+
 void Manager::do_accept() {
     if (!acceptor_.is_open()) {
         return;
@@ -835,7 +847,10 @@ void Manager::do_accept() {
                     std::lock_guard<std::mutex> lock(cfg_mutex_);
                     cfg_copy = cfg_;
                 }
-                auto session = std::make_shared<Session>(std::move(socket), ssl_ctx_, cfg_copy, authorized_keys_, session_id, this);
+                auto session = std::make_shared<Session>(std::move(socket), ssl_ctx_,
+                                                         cfg_copy,
+                                                         authorized_keys_snapshot(),
+                                                         session_id, this);
                 register_session(session);
                 session->start();
             }
@@ -869,6 +884,39 @@ bool Manager::admit_plain_client(boost::asio::ip::tcp::socket& socket) {
         refuse_client_socket(socket);
         return false;
     }
+    return true;
+}
+
+bool Manager::reload_auth(std::string* error) {
+    std::string auth_keys_path;
+    {
+        std::lock_guard<std::mutex> lock(cfg_mutex_);
+        auth_keys_path = cfg_.auth_keys;
+    }
+    if (auth_keys_path.empty()) {
+        if (error) *error = "auth_keys must be set";
+        return false;
+    }
+
+    std::shared_ptr<const std::vector<crypto::Bytes>> loaded_keys;
+    try {
+        loaded_keys = std::make_shared<const std::vector<crypto::Bytes>>(
+            load_authorized_keys(auth_keys_path));
+    } catch (const std::exception& ex) {
+        if (error) {
+            *error = std::string("authorized_keys reload failed: ") + ex.what();
+        }
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(auth_keys_mutex_);
+        authorized_keys_ = loaded_keys;
+    }
+
+    util::log_info("reloaded " + std::to_string(loaded_keys->size()) +
+                   " authorized key(s) from " + auth_keys_path);
+    if (error) error->clear();
     return true;
 }
 

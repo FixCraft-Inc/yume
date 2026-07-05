@@ -116,6 +116,7 @@ YUME_API int yume_server_start_json(yume_server* server,
 YUME_API int yume_server_start_file(yume_server* server,
                                     const char* config_path);
 YUME_API int yume_server_stop(yume_server* server);
+YUME_API int yume_server_reload_auth(yume_server* server);
 YUME_API int yume_server_status_json(yume_server* server,
                                      char* out,
                                      size_t out_size,

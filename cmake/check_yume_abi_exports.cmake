@@ -19,6 +19,7 @@ set(_expected
     yume_server_create
     yume_server_destroy
     yume_server_register_service
+    yume_server_reload_auth
     yume_server_sessions_json
     yume_server_start_file
     yume_server_start_json

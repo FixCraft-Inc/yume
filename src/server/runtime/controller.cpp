@@ -198,6 +198,19 @@ bool RuntimeController::running() const {
     return impl_->running.load();
 }
 
+bool RuntimeController::reload_auth(std::string* error) {
+    std::shared_ptr<Manager> manager;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mtx);
+        manager = impl_->manager;
+    }
+    if (!manager) {
+        if (error) *error = "server runtime is not running";
+        return false;
+    }
+    return manager->reload_auth(error);
+}
+
 RuntimeController::Status RuntimeController::status() const {
     std::lock_guard<std::mutex> lock(impl_->mtx);
     Status out = impl_->status;

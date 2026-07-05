@@ -62,6 +62,10 @@ std::vector<std::string> build_argv(client::ClientConfig const& cfg) {
 
     a.push_back("--non-interactive");
     a.push_back("--boring");
+    // In-process embedders own their process privileges. The CLI binary may
+    // drop privileges for standalone use, but doing that from libyume would
+    // unexpectedly change the host application's uid/gid.
+    a.push_back("--root");
     // Disable attach-local so the embedded Cli always does a fresh
     // connect instead of looking for another yume process's socket.
     // ClientConfig has auto_attach_local true by default; argv overrides.

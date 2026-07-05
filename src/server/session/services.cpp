@@ -90,16 +90,23 @@ bool Session::handle_service_open(uint8_t stream_id, const nlohmann::json& json)
             }
         });
 
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        service_streams_[stream_id] = stream;
+    }
     std::string enqueue_error;
     if (!manager_->enqueue_service_stream(service, stream, &enqueue_error)) {
-        stream->set_callbacks({}, {}, {});
+        {
+            std::lock_guard<std::mutex> lock(streams_mutex_);
+            auto it = service_streams_.find(stream_id);
+            if (it != service_streams_.end()) {
+                it->second->set_callbacks({}, {}, {});
+                service_streams_.erase(it);
+            }
+        }
         send_open_reply(stream_id, false,
                         enqueue_error.empty() ? "service unavailable" : enqueue_error);
         return true;
-    }
-    {
-        std::lock_guard<std::mutex> lock(streams_mutex_);
-        service_streams_[stream_id] = std::move(stream);
     }
     send_open_reply(stream_id, true, "");
     return true;

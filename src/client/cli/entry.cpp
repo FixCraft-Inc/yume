@@ -133,6 +133,10 @@ void Cli::set_runtime_active_callback(RuntimeActiveCallback cb) {
     runtime_active_callback_ = std::move(cb);
 }
 
+void Cli::set_external_stop_flag(std::shared_ptr<std::atomic<bool>> stop_flag) {
+    external_stop_flag_ = std::move(stop_flag);
+}
+
 int Cli::run(int argc, char** argv) {
     util::init_logging();
 
@@ -462,6 +466,17 @@ int Cli::run(int argc, char** argv) {
     }
     RuntimeStopController stop_controller(args.bench);
     stop_controller.install_signal_handler();
+    auto external_stop_requested = [this]() {
+        return external_stop_flag_ &&
+               external_stop_flag_->load(std::memory_order_acquire);
+    };
+    auto should_stop = [&]() {
+        if (!stop_controller.stop_requested() && !external_stop_requested()) {
+            return false;
+        }
+        stop_controller.announce_stopping();
+        return true;
+    };
     int attempt = 0;
     bool pq_warned = false;
     bool pq_reconnect_used = false;
@@ -469,8 +484,7 @@ int Cli::run(int argc, char** argv) {
     bool tls_fingerprint_verification_attempted = false;
     std::optional<tls_fingerprint::FingerprintData> verified_tls_fingerprint;
     for (;;) {
-        if (stop_controller.stop_requested()) {
-            stop_controller.announce_stopping();
+        if (should_stop()) {
             return 130;
         }
         bool summary_once = false;
@@ -1296,21 +1310,23 @@ int Cli::run(int argc, char** argv) {
                 std::move(connected_options),
                 stop_controller.stop_flag());
         } catch (const FatalError& ex) {
-            if (stop_controller.stop_requested()) {
-                stop_controller.announce_stopping();
+            if (should_stop()) {
                 return 130;
             }
             util::log_error(ex.what());
             return 1;
         } catch (const std::exception& ex) {
-            if (stop_controller.stop_requested()) {
-                stop_controller.announce_stopping();
+            if (should_stop()) {
                 return 130;
             }
             std::shared_ptr<RelayRuntime> relay_ptr = stop_controller.active_relay_runtime();
             if ((args.non_interactive || !relay_ptr) && looks_like_endpoint_down(ex.what())) {
                 util::log_error("endpoint appears down (" + cfg.server + ":" +
                                 std::to_string(cfg.port) + "): " + ex.what());
+                return 1;
+            }
+            if (args.service_streams_only) {
+                util::log_error(std::string("connection failed: ") + ex.what());
                 return 1;
             }
             if (relay_ptr) {
@@ -1322,8 +1338,7 @@ int Cli::run(int argc, char** argv) {
             util::log_warn(std::string("connection failed: ") + ex.what());
             util::log_warn("retrying in " + std::to_string(backoff) + "s");
             for (int i = 0; i < backoff * 10; ++i) {
-                if (stop_controller.stop_requested()) {
-                    stop_controller.announce_stopping();
+                if (should_stop()) {
                     return 130;
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));

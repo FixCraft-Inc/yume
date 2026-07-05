@@ -160,6 +160,7 @@ struct InProcClient::Impl {
     boost::asio::io_context* active_io{nullptr};
     std::function<void(const std::string&)> active_disconnect;
     std::string server_tls_fingerprint_sha256;
+    std::shared_ptr<std::atomic<bool>> cancel_requested;
 
     LogCallback log_callback;
     Status     last_status;
@@ -215,10 +216,12 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
         impl_->active_io = nullptr;
         impl_->active_disconnect = {};
         impl_->server_tls_fingerprint_sha256.clear();
+        impl_->cancel_requested = std::make_shared<std::atomic<bool>>(false);
     }
     impl_->started = std::chrono::system_clock::now();
 
-    impl_->cli_thread = std::thread([this, cfg = std::move(cfg)]() mutable {
+    auto cancel_requested = impl_->cancel_requested;
+    impl_->cli_thread = std::thread([this, cfg = std::move(cfg), cancel_requested]() mutable {
         client::Cli cli;
         (void)LogSink::instance();
         // Suppress the colour-coded banner Cli prints after auth — the
@@ -226,6 +229,7 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
         // don't want them duplicated into stdout/stderr of whatever
         // terminal launched the GUI.
         cli.set_silent(true);
+        cli.set_external_stop_flag(cancel_requested);
         cli.set_runtime_ready_callback(
             [this](std::shared_ptr<client::Tunnel> tunnel,
                    std::shared_ptr<client::RelayRuntime> relay,
@@ -319,11 +323,16 @@ void InProcClient::stop(std::string* /*error*/, std::string const& reason) {
     std::shared_ptr<client::Tunnel> t;
     boost::asio::io_context* io = nullptr;
     std::function<void(const std::string&)> disconnect;
+    std::shared_ptr<std::atomic<bool>> cancel_requested;
     {
         std::lock_guard<std::mutex> lock(impl_->ready_mtx);
         t = impl_->tunnel;
         io = impl_->active_io;
         disconnect = impl_->active_disconnect;
+        cancel_requested = impl_->cancel_requested;
+    }
+    if (cancel_requested) {
+        cancel_requested->store(true, std::memory_order_release);
     }
     // Use the same forced-close tunnel reason as the CLI signal path.
     // A normal SSL shutdown can block here if the peer does not send
@@ -348,6 +357,7 @@ void InProcClient::stop(std::string* /*error*/, std::string const& reason) {
         impl_->active_io = nullptr;
         impl_->active_disconnect = {};
         impl_->server_tls_fingerprint_sha256.clear();
+        impl_->cancel_requested.reset();
         impl_->ready = false;
         impl_->ready_error.clear();
     }

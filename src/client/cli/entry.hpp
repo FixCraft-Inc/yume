@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -144,6 +145,7 @@ public:
         std::shared_ptr<RelayRuntime>,
         std::function<void(const std::string&)>)>;
     void set_runtime_active_callback(RuntimeActiveCallback cb);
+    void set_external_stop_flag(std::shared_ptr<std::atomic<bool>> stop_flag);
 
     // When true, Cli skips its colour-coded "Connected to..." banner
     // and any other unsolicited std::cout writes. spdlog output is
@@ -159,6 +161,7 @@ public:
 private:
     RuntimeReadyCallback runtime_ready_callback_;
     RuntimeActiveCallback runtime_active_callback_;
+    std::shared_ptr<std::atomic<bool>> external_stop_flag_;
     bool silent_{false};
 };
 

@@ -19,6 +19,8 @@
 #include <thread>
 #include <vector>
 
+#include <boost/asio/ip/address.hpp>
+
 #if !defined(_WIN32)
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -30,6 +32,7 @@
 #endif
 
 #include "client/runtime/local_runtime.hpp"
+#include "client/cli/parse/endpoints.hpp"
 #include "core/security/identity.hpp"
 #include "platform/platform.hpp"
 
@@ -129,7 +132,9 @@ std::vector<std::string> build_args(std::filesystem::path const& exe,
     add_arg(args, "--server", cfg.server);
     add_arg(args, "--port", cfg.port);
     add_arg(args, "--auth", cfg.identity);
-    add_arg(args, "--socks", cfg.socks_port);
+    if (cfg.socks_port > 0) {
+        add_arg(args, "--socks", format_bind_endpoint(cfg.socks_bind_host, cfg.socks_port));
+    }
     add_arg(args, "--threads", cfg.io_threads);
 
     args.emplace_back(cfg.obfuscation ? "--obfs" : "--no-obfs");
@@ -311,6 +316,14 @@ bool RuntimeController::start(ClientConfig cfg, StartOptions opts, std::string* 
         if (error) *error = "SOCKS5 port must be 0..65535";
         return false;
     }
+    if (!cfg.socks_bind_host.empty()) {
+        boost::system::error_code ec;
+        boost::asio::ip::make_address(cfg.socks_bind_host, ec);
+        if (ec) {
+            if (error) *error = "SOCKS5 bind address must be an IP literal";
+            return false;
+        }
+    }
 
 #if !defined(_WIN32)
     impl_->join_process_threads_if_stopped();
@@ -361,6 +374,9 @@ bool RuntimeController::start(ClientConfig cfg, StartOptions opts, std::string* 
             return false;
         }
         cfg.socks_port = port;
+        if (cfg.socks_bind_host.empty()) {
+            cfg.socks_bind_host = "127.0.0.1";
+        }
         impl_->emit("Auto-selected SOCKS5 port " + std::to_string(port));
     }
 

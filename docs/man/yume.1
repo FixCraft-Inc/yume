@@ -426,8 +426,15 @@ browser traffic before the YUME carrier begins.
 .fi
 .SH MODES
 .TP
-.BI "--socks " port
-Start a local SOCKS5 proxy. Use
+.BI "--socks " [addr:]port
+Start a local SOCKS5 proxy. The optional
+.I addr
+must be an IP literal, for example
+.BR 127.0.0.1:1080 ,
+.BR 0.0.0.0:1080 ,
+or
+.BR [::1]:1080 .
+Without an address YUME keeps the historical wildcard bind. Use
 .B socks5h://
 in clients that support it so DNS is resolved through YUME.
 .TP
@@ -436,12 +443,18 @@ Open an SSH-style local forward. Local connections to
 .I lport
 are relayed through YUME to
 .IR host : port .
+The optional
+.I bind
+must be an IP literal.
 .TP
 .BI "-R " [bind:]rport:host:port
 Open a reverse forward. The server listens on
 .I rport
 and relays accepted connections back to the client's
 .IR host : port .
+The optional
+.I bind
+must be an IP literal on the server side.
 .TP
 .BI "--run " command
 Run a local command with its TCP/UDP sockets routed through YUME.

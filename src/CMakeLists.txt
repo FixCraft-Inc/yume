@@ -501,6 +501,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/cli/connect/pq_bootstrap.cpp
         client/cli/commands/proxy.cpp
         client/cli/commands/relay_secret.cpp
+        client/cli/parse/endpoints.cpp
         client/cli/commands/io_runtime.cpp
         client/cli/connect/server_info.cpp
         client/cli/connect/secondary_tunnel.cpp
@@ -733,6 +734,15 @@ target_link_libraries(yume_ip_filter_test PRIVATE yume_core)
 yume_link_atomic_if_needed(yume_ip_filter_test PRIVATE)
 yume_apply_perf_opts(yume_ip_filter_test)
 add_test(NAME yume_ip_filter_test COMMAND yume_ip_filter_test)
+
+add_executable(yume_cli_endpoint_parse_test
+    client/cli/parse/endpoints_test.cpp
+    client/cli/parse/endpoints.cpp
+)
+target_include_directories(yume_cli_endpoint_parse_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+yume_link_atomic_if_needed(yume_cli_endpoint_parse_test PRIVATE)
+yume_apply_perf_opts(yume_cli_endpoint_parse_test)
+add_test(NAME yume_cli_endpoint_parse_test COMMAND yume_cli_endpoint_parse_test)
 
 if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_executable(yume_obfs_test core/stealth/obfs_test.cpp)

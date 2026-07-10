@@ -126,6 +126,7 @@ private:
 class ForwardServer {
 public:
     ForwardServer(boost::asio::io_context& io,
+                  std::string listen_host,
                   int listen_port,
                   std::string target_host,
                   int target_port,
@@ -140,6 +141,7 @@ private:
     bool is_local_target() const;
 
     boost::asio::ip::tcp::acceptor acceptor_;
+    std::string listen_host_;
     int listen_port_{0};
     std::string pid_path_;
     std::string target_host_;
@@ -151,6 +153,7 @@ private:
 class UdpForwardServer : public std::enable_shared_from_this<UdpForwardServer> {
 public:
     UdpForwardServer(boost::asio::io_context& io,
+                     std::string listen_host,
                      int listen_port,
                      std::string target_host,
                      int target_port,
@@ -177,6 +180,7 @@ private:
     boost::asio::ip::udp::socket socket_;
     boost::asio::strand<boost::asio::any_io_executor> strand_;
     std::shared_ptr<Tunnel> tunnel_;
+    std::string listen_host_;
     int listen_port_{0};
     std::string pid_path_;
     std::string target_host_;

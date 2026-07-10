@@ -7,7 +7,6 @@
 #include "client/cli/commands/io_runtime.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <cstdlib>
 #include <iostream>
 #include <utility>
@@ -21,39 +20,6 @@
 #include "util.hpp"
 
 namespace yume::client {
-
-bool parse_ssh_forward(const std::string& spec, int& lport, std::string& host, int& rport) {
-    if (spec.empty()) {
-        return false;
-    }
-    std::vector<std::string> parts;
-    size_t start = 0;
-    while (true) {
-        size_t pos = spec.find(':', start);
-        if (pos == std::string::npos) {
-            parts.push_back(spec.substr(start));
-            break;
-        }
-        parts.push_back(spec.substr(start, pos - start));
-        start = pos + 1;
-    }
-    if (parts.size() != 3 && parts.size() != 4) {
-        return false;
-    }
-    size_t idx = parts.size() == 4 ? 1 : 0;
-    try {
-        lport = std::stoi(parts[idx]);
-    } catch (...) {
-        return false;
-    }
-    host = parts[idx + 1];
-    try {
-        rport = std::stoi(parts[idx + 2]);
-    } catch (...) {
-        return false;
-    }
-    return lport > 0 && rport > 0 && !host.empty();
-}
 
 int resolve_io_threads(int requested) {
     if (requested > 0) {

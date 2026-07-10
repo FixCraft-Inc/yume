@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <stdexcept>
 
 #include "client/transport/tunnel_pool.hpp"
 #include "util.hpp"
@@ -30,6 +31,25 @@ constexpr uint8_t kAtypV4 = 0x01;
 constexpr uint8_t kAtypDomain = 0x03;
 constexpr uint8_t kAtypV6 = 0x04;
 constexpr int kSocketBufferBytes = 2 * 1024 * 1024;
+
+void validate_listen_port(int port) {
+    if (port < 0 || port > 65535) {
+        throw std::runtime_error("SOCKS listen port must be 0..65535");
+    }
+}
+
+boost::asio::ip::tcp::endpoint make_tcp_listen_endpoint(const std::string& bind_host, int port) {
+    validate_listen_port(port);
+    if (bind_host.empty()) {
+        return {boost::asio::ip::tcp::v4(), static_cast<unsigned short>(port)};
+    }
+    boost::system::error_code ec;
+    auto address = boost::asio::ip::make_address(bind_host, ec);
+    if (ec) {
+        throw std::runtime_error("invalid SOCKS bind address '" + bind_host + "': " + ec.message());
+    }
+    return {address, static_cast<unsigned short>(port)};
+}
 
 std::vector<uint8_t> make_reply(uint8_t reply_code) {
     std::vector<uint8_t> resp(10, 0);
@@ -801,10 +821,17 @@ void SocksSession::close() {
 }
 
 SocksServer::SocksServer(boost::asio::io_context& io, int port, std::shared_ptr<Tunnel> tunnel, bool allow_udp)
+    : SocksServer(io, std::string{}, port, std::move(tunnel), allow_udp) {}
+
+SocksServer::SocksServer(boost::asio::io_context& io,
+                         std::string bind_host,
+                         int port,
+                         std::shared_ptr<Tunnel> tunnel,
+                         bool allow_udp)
     : acceptor_(io)
     , tunnel_(std::move(tunnel))
     , allow_udp_(allow_udp) {
-    boost::asio::ip::tcp::endpoint ep(boost::asio::ip::tcp::v4(), port);
+    auto ep = make_tcp_listen_endpoint(bind_host, port);
     acceptor_.open(ep.protocol());
     acceptor_.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true));
     acceptor_.bind(ep);
@@ -815,10 +842,17 @@ SocksServer::SocksServer(boost::asio::io_context& io,
                          int port,
                          std::shared_ptr<TunnelPool> pool,
                          bool allow_udp)
+    : SocksServer(io, std::string{}, port, std::move(pool), allow_udp) {}
+
+SocksServer::SocksServer(boost::asio::io_context& io,
+                         std::string bind_host,
+                         int port,
+                         std::shared_ptr<TunnelPool> pool,
+                         bool allow_udp)
     : acceptor_(io)
     , pool_(std::move(pool))
     , allow_udp_(allow_udp) {
-    boost::asio::ip::tcp::endpoint ep(boost::asio::ip::tcp::v4(), port);
+    auto ep = make_tcp_listen_endpoint(bind_host, port);
     acceptor_.open(ep.protocol());
     acceptor_.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true));
     acceptor_.bind(ep);

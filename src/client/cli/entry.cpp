@@ -22,6 +22,7 @@
 #include "client/cli/connect/pq_bootstrap.hpp"
 #include "client/cli/commands/proxy.hpp"
 #include "client/cli/commands/io_runtime.hpp"
+#include "client/cli/parse/endpoints.hpp"
 #include "client/cli/connect/server_info.hpp"
 #include "client/cli/commands/share.hpp"
 #include "client/cli/display/status.hpp"
@@ -39,6 +40,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <thread>
+#include <boost/asio/ip/address.hpp>
 #if !defined(_WIN32)
 #include <unistd.h>
 #endif
@@ -245,6 +247,7 @@ int Cli::run(int argc, char** argv) {
     }
 
     int reverse_listen_port = 0;
+    std::string reverse_bind_host;
     std::string reverse_host;
     int reverse_port = 0;
     bool use_reverse = false;
@@ -253,28 +256,46 @@ int Cli::run(int argc, char** argv) {
     int reverse_auto_min_port = yume::policy::kReversePortMinDefault;
     int reverse_auto_max_port = yume::policy::kReversePortMaxDefault;
     if (!args.ssh_R.empty()) {
-        if (!parse_ssh_forward(args.ssh_R, reverse_listen_port, reverse_host, reverse_port)) {
-            util::log_error("invalid -R syntax (expected [bind:]rport:host:port)");
+        SshForwardSpec spec;
+        std::string parse_error;
+        if (!parse_ssh_forward(args.ssh_R, spec, &parse_error)) {
+            util::log_error("invalid -R syntax: " + parse_error);
             return 1;
         }
+        reverse_bind_host = std::move(spec.bind_host);
+        reverse_listen_port = spec.listen_port;
+        reverse_host = std::move(spec.target_host);
+        reverse_port = spec.target_port;
         use_reverse = true;
     }
     if (!args.ssh_L.empty()) {
-        int lport = 0;
-        int rport = 0;
-        std::string host;
-        if (!parse_ssh_forward(args.ssh_L, lport, host, rport)) {
-            util::log_error("invalid -L syntax (expected [bind:]lport:host:port)");
+        SshForwardSpec spec;
+        std::string parse_error;
+        if (!parse_ssh_forward(args.ssh_L, spec, &parse_error)) {
+            util::log_error("invalid -L syntax: " + parse_error);
             return 1;
         }
-        args.lport = lport;
-        args.rhost = host;
-        args.rport = rport;
+        args.lbind_host = std::move(spec.bind_host);
+        args.lport = spec.listen_port;
+        args.rhost = std::move(spec.target_host);
+        args.rport = spec.target_port;
     }
 
     load_client_config_file(args, exe_dir, &cfg);
     apply_cli_config_overrides(args, cli_cwd, &cfg);
     normalize_client_config_after_overrides(&args, &cfg);
+    if (cfg.socks_port < 0 || cfg.socks_port > 65535) {
+        util::log_error("SOCKS5 port must be 0..65535");
+        return 1;
+    }
+    if (!cfg.socks_bind_host.empty()) {
+        boost::system::error_code ec;
+        boost::asio::ip::make_address(cfg.socks_bind_host, ec);
+        if (ec) {
+            util::log_error("SOCKS5 bind address must be an IP literal");
+            return 1;
+        }
+    }
     if (!cfg.app_codec.empty()) {
         if (!app_codec::is_supported_codec(cfg.app_codec)) {
             util::log_error("unsupported application codec: " + cfg.app_codec);
@@ -1266,6 +1287,7 @@ int Cli::run(int argc, char** argv) {
             connected_options.use_reverse = use_reverse;
             connected_options.reverse_server_in_charge_auto = reverse_server_in_charge_auto;
             connected_options.reverse_server_in_charge_manual = reverse_server_in_charge_manual;
+            connected_options.reverse_bind_host = reverse_bind_host;
             connected_options.reverse_listen_port = reverse_listen_port;
             connected_options.reverse_host = reverse_host;
             connected_options.reverse_port = reverse_port;

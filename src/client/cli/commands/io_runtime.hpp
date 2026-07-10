@@ -21,7 +21,6 @@ namespace yume::client {
 class RelayRuntime;
 class Tunnel;
 
-bool parse_ssh_forward(const std::string& spec, int& lport, std::string& host, int& rport);
 int resolve_io_threads(int requested);
 bool parse_env_bool(const char* name, bool fallback);
 std::vector<std::thread> start_io_threads(boost::asio::io_context& io, int requested);

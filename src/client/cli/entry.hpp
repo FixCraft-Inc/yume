@@ -27,6 +27,10 @@ struct ClientConfig {
     std::string server;
     int port{443};
     std::string identity;
+    // Empty keeps the historical wildcard bind. Set an IP literal such
+    // as 127.0.0.1, 0.0.0.0, ::1, or :: to choose the local SOCKS
+    // listener address explicitly.
+    std::string socks_bind_host;
     int socks_port{0};
     int io_threads{0};
     // Number of parallel TLS tunnels the client opens to the server.

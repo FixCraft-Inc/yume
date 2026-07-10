@@ -91,6 +91,7 @@ public:
                      const std::string& proto = "tcp");
     void open_relay_stream(uint8_t stream_id, const nlohmann::json& json, OpenHandler handler);
     void request_remote_listen(uint8_t listen_id,
+                               const std::string& bind_host,
                                int port,
                                OpenHandler handler,
                                bool reclaim = true,

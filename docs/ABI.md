@@ -99,6 +99,8 @@ Minimum client-side embed shape:
   "server": "127.0.0.1",
   "port": 4433,
   "identity": "client-auth.key",
+  "socks_bind": "127.0.0.1",
+  "socks_port": 1080,
   "tls_ca_cert": "server.crt",
   "tls_server_name": "embedder.local",
   "tls_pin_sha256": "lowercase-hex-sha256-of-tls-leaf",
@@ -116,6 +118,10 @@ Minimum client-side embed shape:
 `tls_pin_sha256` is optional when `tls_ca_cert`/`tls_server_name` are sufficient,
 but embedders that already have a manifest pin should pass it and may also
 compare `server_tls_fingerprint_sha256` in `yume_client_status_json`.
+
+`socks_bind` is optional. Empty or omitted keeps the historical wildcard bind;
+set an IP literal such as `127.0.0.1`, `0.0.0.0`, `::1`, or `::` to choose the
+SOCKS listener address explicitly.
 
 Per-key service authorization lives in `auth_keys.meta` under the authenticated
 client key fingerprint:

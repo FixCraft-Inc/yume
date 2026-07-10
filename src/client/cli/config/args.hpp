@@ -20,6 +20,7 @@ struct ParsedArgs {
     std::string server;
     int port{0};
     std::string identity;
+    std::string socks_bind_host;
     int socks_port{0};
     bool socks_port_override{false};
     int io_threads{0};
@@ -34,6 +35,7 @@ struct ParsedArgs {
     std::uint32_t obfs_jitter_ms{0};
     bool obfs_jitter_ms_override{false};
     int lport{0};
+    std::string lbind_host;
     std::string rhost;
     int rport{0};
     std::string run_cmd;

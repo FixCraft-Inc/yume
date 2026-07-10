@@ -127,6 +127,11 @@ public:
     // to the same tunnel. Kept for compatibility with embedders that
     // don't (yet) use the multi-tunnel path.
     SocksServer(boost::asio::io_context& io, int port, std::shared_ptr<Tunnel> tunnel, bool allow_udp);
+    SocksServer(boost::asio::io_context& io,
+                std::string bind_host,
+                int port,
+                std::shared_ptr<Tunnel> tunnel,
+                bool allow_udp);
 
     // Pool-based constructor — each accepted SOCKS session picks a
     // tunnel from the pool at accept time and is bound to it for the
@@ -134,6 +139,11 @@ public:
     // throughput cap that a multiplexed tunnel hits at high
     // concurrency.
     SocksServer(boost::asio::io_context& io,
+                int port,
+                std::shared_ptr<TunnelPool> pool,
+                bool allow_udp);
+    SocksServer(boost::asio::io_context& io,
+                std::string bind_host,
                 int port,
                 std::shared_ptr<TunnelPool> pool,
                 bool allow_udp);

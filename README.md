@@ -71,7 +71,7 @@ Client:
 ./build/bin/yume \
     --server fixcraft.net \
     --auth ~/.yume/id_ed25519 \
-    --socks 1080
+    --socks 127.0.0.1:1080
 ```
 
 Cluster entry-point short form (translates to `--server` + `--port`):

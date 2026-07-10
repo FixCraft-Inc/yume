@@ -152,7 +152,7 @@ they can be combined.
 
 | Mode | What it does | Typical use |
 | ---- | ------------ | ----------- |
-| `--socks <port>` | YUME client exposes a SOCKS5 listener; apps speak SOCKS5 locally, get tunneled out. | Browsers, curl, anything SOCKS-aware. |
+| `--socks [addr:]port` | YUME client exposes a SOCKS5 listener; apps speak SOCKS5 locally, get tunneled out. | Browsers, curl, anything SOCKS-aware. |
 | Local forward (`--proxy host:port -> local:port`) | YUME client opens a local listener; bytes go to `host:port` reachable from the server. | Reach a service behind the server's NAT. |
 | `--run <cmd …>` | YUME client spawns a command and pipes its stdin/stdout through the tunnel. | One-shot CLI tools that don't speak SOCKS. |
 | Android VPN capture | Separate APK ([yume4a](https://github.com/FixCraft-Inc/yume4a)) captures all OS-level traffic. | Phone-wide stealth tunneling. |

@@ -344,12 +344,16 @@ void TransportCore::open_relay_stream(uint8_t stream_id, const nlohmann::json& j
 }
 
 void TransportCore::request_remote_listen(uint8_t listen_id,
+                                          const std::string& bind_host,
                                           int port,
                                           OpenHandler handler,
                                           bool reclaim,
                                           int min_port,
                                           int max_port) {
     nlohmann::json json{{"port", port}, {"reclaim", reclaim}};
+    if (!bind_host.empty()) {
+        json["bind_host"] = bind_host;
+    }
     if (min_port > 0) {
         json["min_port"] = min_port;
     }

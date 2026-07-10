@@ -11,6 +11,7 @@
 #include "client/cli/commands/io_runtime.hpp"
 #include "client/cli/commands/proxy.hpp"
 #include "client/cli/commands/relay_secret.hpp"
+#include "client/cli/parse/endpoints.hpp"
 #include "client/cli/config/platform.hpp"
 #include "client/cli/connect/diagnostics.hpp"
 #include "client/cli/connect/secondary_tunnel.hpp"
@@ -535,13 +536,15 @@ int request_reverse_listener(const ConnectedSessionOptions& options,
         util::log_info("requesting server-in-charge reverse SSH on random port " +
                        std::to_string(min_port) + "-" + std::to_string(max_port));
     } else {
-        util::log_info("requesting remote listener on port " +
-                       std::to_string(options.reverse_listen_port));
+        util::log_info("requesting remote listener on " +
+                       format_display_bind_endpoint(options.reverse_bind_host, options.reverse_listen_port));
     }
     tunnel->request_remote_listen(
         listen_id,
+        options.reverse_bind_host,
         options.reverse_listen_port,
         [listen_port = options.reverse_listen_port,
+         bind_host = options.reverse_bind_host,
          auto_mode = options.reverse_server_in_charge_auto](bool ok, const std::string& reason) {
             if (ok) {
                 int active_port = listen_port;
@@ -556,7 +559,8 @@ int request_reverse_listener(const ConnectedSessionOptions& options,
                         }
                     }
                 }
-                util::log_info("remote listener active on port " + std::to_string(active_port));
+                util::log_info("remote listener active on " +
+                               format_display_bind_endpoint(bind_host, active_port));
                 if (auto_mode) {
                     util::log_info("server-in-charge ready: server can reach client SSH via 127.0.0.1:" +
                                    std::to_string(active_port) + " -> 127.0.0.1:22");
@@ -608,7 +612,7 @@ int run_local_command_mode(const ParsedArgs& args,
                            IoThreadGroup& io_threads,
                            const std::string& argv0) {
     const int port = cfg.socks_port > 0 ? cfg.socks_port : 0;
-    auto socks = std::make_shared<SocksServer>(io, port, tunnel, cfg.allow_udp);
+    auto socks = std::make_shared<SocksServer>(io, std::string("127.0.0.1"), port, tunnel, cfg.allow_udp);
     socks->start();
     const int actual_port = socks->port();
     if (actual_port <= 0) {
@@ -652,18 +656,18 @@ int run_local_forward_mode(const ParsedArgs& args,
 
     if (cfg.allow_udp) {
         auto forward = std::make_shared<UdpForwardServer>(
-            io, args.lport, args.rhost, args.rport, tunnel, cfg.allow_local_ip);
+            io, args.lbind_host, args.lport, args.rhost, args.rport, tunnel, cfg.allow_local_ip);
         forward->start();
-        util::log_info("udp forwarding localhost:" + std::to_string(args.lport) + " -> " +
+        util::log_info("udp forwarding " + format_display_bind_endpoint(args.lbind_host, args.lport) + " -> " +
                        args.rhost + ":" + std::to_string(args.rport));
         return wait_for_long_running_mode(
             io_threads, stop_requested, announce_stopping, close_reason, on_ready, wait_state);
     }
 
     auto forward = std::make_shared<ForwardServer>(
-        io, args.lport, args.rhost, args.rport, tunnel, cfg.allow_local_ip);
+        io, args.lbind_host, args.lport, args.rhost, args.rport, tunnel, cfg.allow_local_ip);
     forward->start();
-    util::log_info("forwarding localhost:" + std::to_string(args.lport) + " -> " +
+    util::log_info("forwarding " + format_display_bind_endpoint(args.lbind_host, args.lport) + " -> " +
                    args.rhost + ":" + std::to_string(args.rport));
     return wait_for_long_running_mode(
         io_threads, stop_requested, announce_stopping, close_reason, on_ready, wait_state);
@@ -678,9 +682,10 @@ int run_socks_mode(const ClientConfig& cfg,
                    const std::string& close_reason,
                    const std::function<void()>& on_ready,
                    const LongRunningWaitStatePtr& wait_state) {
-    auto socks = std::make_shared<SocksServer>(io, cfg.socks_port, tunnel_pool, cfg.allow_udp);
+    auto socks = std::make_shared<SocksServer>(
+        io, cfg.socks_bind_host, cfg.socks_port, tunnel_pool, cfg.allow_udp);
     socks->start();
-    util::log_info("SOCKS5 listening on 127.0.0.1:" + std::to_string(cfg.socks_port) +
+    util::log_info("SOCKS5 listening on " + format_display_bind_endpoint(cfg.socks_bind_host, cfg.socks_port) +
                    " over " + std::to_string(tunnel_pool->size()) + " tunnel(s)");
     // SOCKS5 only covers what the browser/app actually routes through it.
     util::log_warn(

@@ -180,12 +180,13 @@ void Tunnel::open_relay_stream(uint8_t stream_id, const nlohmann::json& payload,
 }
 
 void Tunnel::request_remote_listen(uint8_t listen_id,
+                                   const std::string& bind_host,
                                    int port,
                                    OpenHandler handler,
                                    bool reclaim,
                                    int min_port,
                                    int max_port) {
-    core_.request_remote_listen(listen_id, port, std::move(handler), reclaim, min_port, max_port);
+    core_.request_remote_listen(listen_id, bind_host, port, std::move(handler), reclaim, min_port, max_port);
 }
 
 void Tunnel::stop(const std::string& reason) {

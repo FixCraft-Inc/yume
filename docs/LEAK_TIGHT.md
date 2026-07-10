@@ -1,6 +1,6 @@
 # Leak-tight SOCKS5 setup
 
-If you connect to yume via `--socks <port>` and point a browser at
+If you connect to yume via `--socks [addr:]port` and point a browser at
 `socks5://127.0.0.1:<port>`, **the SOCKS proxy only covers what the
 browser actually routes through it**. Several common things bypass the
 proxy by design and leak your real IP. None of these are yume bugs —

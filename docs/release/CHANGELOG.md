@@ -59,7 +59,7 @@ Compare: <https://github.com/FixCraft-Inc/yume/commits/v1.0> (first public test 
   - **Ed25519** for client authentication via `--auth` / `--auth-keys`.
 - **Live key hopping** at 1–4 Hz (`--hop-interval`, default ~500 ms). Each window encrypts with a fresh `HKDF(master, hop_index || direction)` derivative; compromise of one window's key recovers only that window. Disable for latency-sensitive paths with `--no-hop`.
 - **Five routing modes**, combinable:
-  - `--socks <port>` — SOCKS5 listener on the client side.
+  - `--socks [addr:]port` — SOCKS5 listener on the client side.
   - Local TCP/UDP forward (`--proxy host:port -> local:port`).
   - `--run <cmd …>` — spawn a command and pipe its stdio through the tunnel.
   - Android VPN capture (separate [yume4a](https://github.com/FixCraft-Inc/yume4a) APK that captures all OS-level traffic).

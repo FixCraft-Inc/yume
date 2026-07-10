@@ -13,6 +13,7 @@
 
 #include <boost/asio/post.hpp>
 
+#include "client/cli/parse/endpoints.hpp"
 #include "client/relay/runtime.hpp"
 #include "client/transport/tunnel.hpp"
 #include "facade/logging/log_sink.hpp"
@@ -78,7 +79,9 @@ std::vector<std::string> build_argv(client::ClientConfig const& cfg) {
     push_arg(a, "--server", cfg.server);
     if (cfg.port > 0) push_arg(a, "--port", std::to_string(cfg.port));
     push_arg(a, "--auth", cfg.identity);
-    if (cfg.socks_port > 0) push_arg(a, "--socks", std::to_string(cfg.socks_port));
+    if (cfg.socks_port > 0) {
+        push_arg(a, "--socks", yume::client::format_bind_endpoint(cfg.socks_bind_host, cfg.socks_port));
+    }
     if (cfg.io_threads > 0) push_arg(a, "--threads", std::to_string(cfg.io_threads));
 
     push_flag(a, cfg.obfuscation, "--obfs", "--no-obfs");

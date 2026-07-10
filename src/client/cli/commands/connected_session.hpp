@@ -44,6 +44,7 @@ struct ConnectedSessionOptions {
     bool use_reverse{false};
     bool reverse_server_in_charge_auto{false};
     bool reverse_server_in_charge_manual{false};
+    std::string reverse_bind_host;
     int reverse_listen_port{0};
     std::string reverse_host;
     int reverse_port{0};

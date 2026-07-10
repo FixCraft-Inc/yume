@@ -806,12 +806,14 @@ void Session::handle_rlisten(const protocol::Frame& frame) {
     }
     std::string payload_str(payload.begin(), payload.end());
     int listen_port = 0;
+    std::string bind_host;
     bool reclaim = false;
     int min_port = 0;
     int max_port = 0;
     try {
         auto json = nlohmann::json::parse(payload_str);
         listen_port = json.value("port", 0);
+        bind_host = json.value("bind_host", std::string{});
         reclaim = json.value("reclaim", false);
         min_port = json.value("min_port", 0);
         max_port = json.value("max_port", 0);
@@ -847,6 +849,18 @@ void Session::handle_rlisten(const protocol::Frame& frame) {
         return;
     }
 
+    boost::asio::ip::address bind_address;
+    bool has_bind_address = false;
+    if (!bind_host.empty()) {
+        boost::system::error_code ec;
+        bind_address = boost::asio::ip::make_address(bind_host, ec);
+        if (ec) {
+            send_open_reply(frame.header.stream_id, false, "bind address must be an IP literal");
+            return;
+        }
+        has_bind_address = true;
+    }
+
     bool reclaimed = false;
     std::string bind_error;
     auto try_bind_listener = [&](int candidate_port,
@@ -856,7 +870,11 @@ void Session::handle_rlisten(const protocol::Frame& frame) {
         }
         auto candidate = std::make_shared<boost::asio::ip::tcp::acceptor>(stream_.get_executor());
         boost::system::error_code ec;
-        boost::asio::ip::tcp::endpoint ep(boost::asio::ip::tcp::v4(), candidate_port);
+        boost::asio::ip::tcp::endpoint ep =
+            has_bind_address
+                ? boost::asio::ip::tcp::endpoint(bind_address, static_cast<unsigned short>(candidate_port))
+                : boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(),
+                                                 static_cast<unsigned short>(candidate_port));
         candidate->open(ep.protocol(), ec);
         if (ec) {
             bind_error = "listen failed: " + ec.message();

@@ -13,6 +13,7 @@
 #include <string_view>
 #include <system_error>
 
+#include <boost/asio/ip/address.hpp>
 #include <nlohmann/json.hpp>
 
 #include "facade/config/detail.hpp"
@@ -32,6 +33,7 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::server, c.server);
     read_opt(j, cfg_key::port, c.port);
     read_opt(j, cfg_key::identity, c.identity);
+    read_opt(j, cfg_key::socks_bind, c.socks_bind_host);
     read_opt(j, cfg_key::socks_port, c.socks_port);
     read_opt(j, cfg_key::io_threads, c.io_threads);
     read_opt(j, cfg_key::obfuscation, c.obfuscation);
@@ -134,6 +136,7 @@ bool save_client(client::ClientConfig const& c,
         {cfg_key::server, c.server},
         {cfg_key::port, c.port},
         {cfg_key::identity, c.identity},
+        {cfg_key::socks_bind, c.socks_bind_host},
         {cfg_key::socks_port, c.socks_port},
         {cfg_key::io_threads, c.io_threads},
         {cfg_key::obfuscation, c.obfuscation},
@@ -206,6 +209,13 @@ ValidationReport validate(client::ClientConfig const& c) {
     }
     if (c.socks_port < 0 || c.socks_port > 65535) {
         r.errors.emplace_back("socks_port: must be 0..65535 (0 = auto in GUI)");
+    }
+    if (!c.socks_bind_host.empty()) {
+        boost::system::error_code ec;
+        boost::asio::ip::make_address(c.socks_bind_host, ec);
+        if (ec) {
+            r.errors.emplace_back("socks_bind: address must be an IP literal");
+        }
     }
     if (!c.tls_stealth_profile.empty()
         && c.tls_stealth_profile != "chrome"

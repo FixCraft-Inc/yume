@@ -46,6 +46,40 @@ namespace yume::client {
 namespace {
 constexpr int kSocketBufferBytes = 2 * 1024 * 1024;
 
+void validate_listen_port(int port) {
+    if (port < 0 || port > 65535) {
+        throw std::runtime_error("forward listen port must be 0..65535");
+    }
+}
+
+boost::asio::ip::tcp::endpoint make_tcp_listen_endpoint(const std::string& listen_host,
+                                                        int listen_port) {
+    validate_listen_port(listen_port);
+    if (listen_host.empty()) {
+        return {boost::asio::ip::tcp::v4(), static_cast<unsigned short>(listen_port)};
+    }
+    boost::system::error_code ec;
+    auto address = boost::asio::ip::make_address(listen_host, ec);
+    if (ec) {
+        throw std::runtime_error("invalid forward bind address '" + listen_host + "': " + ec.message());
+    }
+    return {address, static_cast<unsigned short>(listen_port)};
+}
+
+boost::asio::ip::udp::endpoint make_udp_listen_endpoint(const std::string& listen_host,
+                                                        int listen_port) {
+    validate_listen_port(listen_port);
+    if (listen_host.empty()) {
+        return {boost::asio::ip::udp::v4(), static_cast<unsigned short>(listen_port)};
+    }
+    boost::system::error_code ec;
+    auto address = boost::asio::ip::make_address(listen_host, ec);
+    if (ec) {
+        throw std::runtime_error("invalid UDP forward bind address '" + listen_host + "': " + ec.message());
+    }
+    return {address, static_cast<unsigned short>(listen_port)};
+}
+
 void tune_tcp_socket(boost::asio::ip::tcp::socket& socket) {
     boost::system::error_code ec;
     socket.set_option(boost::asio::ip::tcp::no_delay(true), ec);
@@ -455,19 +489,21 @@ void ForwardSession::close() {
 }
 
 ForwardServer::ForwardServer(boost::asio::io_context& io,
+                             std::string listen_host,
                              int listen_port,
                              std::string target_host,
                              int target_port,
                              std::shared_ptr<Tunnel> tunnel,
                              bool allow_local_ip)
     : acceptor_(io)
+    , listen_host_(std::move(listen_host))
     , listen_port_(listen_port)
     , pid_path_(pid_path_for_port("tcp", listen_port))
     , target_host_(std::move(target_host))
     , target_port_(target_port)
     , tunnel_(std::move(tunnel))
     , allow_local_ip_(allow_local_ip) {
-    boost::asio::ip::tcp::endpoint ep(boost::asio::ip::tcp::v4(), listen_port);
+    auto ep = make_tcp_listen_endpoint(listen_host_, listen_port);
     boost::system::error_code ec;
     reclaim_pidfile(pid_path_);
     acceptor_.open(ep.protocol(), ec);
@@ -528,6 +564,7 @@ void ForwardServer::do_accept() {
 }
 
 UdpForwardServer::UdpForwardServer(boost::asio::io_context& io,
+                                   std::string listen_host,
                                    int listen_port,
                                    std::string target_host,
                                    int target_port,
@@ -536,12 +573,13 @@ UdpForwardServer::UdpForwardServer(boost::asio::io_context& io,
     : socket_(io)
     , strand_(io.get_executor())
     , tunnel_(std::move(tunnel))
+    , listen_host_(std::move(listen_host))
     , listen_port_(listen_port)
     , pid_path_(pid_path_for_port("udp", listen_port))
     , target_host_(std::move(target_host))
     , target_port_(target_port)
     , allow_local_ip_(allow_local_ip) {
-    boost::asio::ip::udp::endpoint ep(boost::asio::ip::udp::v4(), listen_port);
+    auto ep = make_udp_listen_endpoint(listen_host_, listen_port);
     boost::system::error_code ec;
     reclaim_pidfile(pid_path_);
     socket_.open(ep.protocol(), ec);

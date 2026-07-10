@@ -69,6 +69,9 @@ void load_client_config_file(const ParsedArgs& args,
         if (json.contains("socks_port") && !args.socks_port_override && cfg->socks_port == 0) {
             cfg->socks_port = json["socks_port"].get<int>();
         }
+        if (json.contains("socks_bind") && !args.socks_port_override) {
+            cfg->socks_bind_host = json["socks_bind"].get<std::string>();
+        }
         if (json.contains("threads") && cfg->io_threads == 0 && !args.io_threads_override) {
             cfg->io_threads = json["threads"].get<int>();
         }
@@ -250,6 +253,7 @@ void apply_cli_config_overrides(const ParsedArgs& args,
         cfg->identity = resolve_cli_path(args.identity);
     }
     if (args.socks_port_override) {
+        cfg->socks_bind_host = args.socks_bind_host;
         cfg->socks_port = args.socks_port;
     }
     if (args.io_threads != 0 || args.io_threads_override) {
@@ -478,6 +482,7 @@ void normalize_client_config_after_overrides(ParsedArgs* args, ClientConfig* cfg
         }
         if (!args->socks_port_override) {
             cfg->socks_port = 0;
+            cfg->socks_bind_host.clear();
         }
         if (!args->server_in_charge_override) {
             cfg->server_in_charge = false;
@@ -558,6 +563,7 @@ void save_client_config_file(const ParsedArgs& args, const ClientConfig& cfg) {
     if (cfg.port > 0) json["port"] = cfg.port;
     if (!cfg.identity.empty()) json["identity"] = cfg.identity;
     if (cfg.socks_port > 0) json["socks_port"] = cfg.socks_port;
+    if (!cfg.socks_bind_host.empty()) json["socks_bind"] = cfg.socks_bind_host;
     if (cfg.io_threads != 0) json["threads"] = cfg.io_threads;
     if (cfg.tunnel_count > 1) json["tunnels"] = cfg.tunnel_count;
     json["obfuscation"] = cfg.obfuscation;

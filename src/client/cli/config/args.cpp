@@ -14,6 +14,7 @@
 #include <string_view>
 #include <utility>
 
+#include "client/cli/parse/endpoints.hpp"
 #include "util.hpp"
 
 namespace yume::client {
@@ -229,9 +230,18 @@ ParsedArgs parse_args(int argc, char** argv) {
             }
             args.identity = identity;
         } else if (arg == "--socks") {
-            if (!parse_int_value("--socks", args.socks_port)) {
+            const char* raw = take_value("--socks");
+            if (!raw) {
                 return args;
             }
+            BindEndpoint endpoint;
+            std::string parse_error;
+            if (!parse_bind_endpoint(raw, endpoint, &parse_error)) {
+                args.parse_error = "--socks: " + parse_error;
+                return args;
+            }
+            args.socks_bind_host = std::move(endpoint.host);
+            args.socks_port = endpoint.port;
             args.socks_port_override = true;
         } else if (arg == "--bench") {
             args.bench = true;

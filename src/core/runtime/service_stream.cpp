@@ -126,6 +126,7 @@ void ServiceStream::close(std::string reason) {
             close_reason_ = reason.empty() ? "stream closed" : std::move(reason);
         }
         incoming_.clear();
+        inbound_budget_.clear();
         current_.clear();
         current_offset_ = 0;
         if (notify_remote) {
@@ -178,6 +179,7 @@ ServiceStream::ReadResult ServiceStream::read(void* out,
             current_offset_ += n;
         }
         if (current_offset_ >= current_.size()) {
+            inbound_budget_.record_dequeue(current_.size());
             current_.clear();
             current_offset_ = 0;
         }
@@ -198,15 +200,21 @@ ServiceStream::ReadResult ServiceStream::read(void* out,
     return ReadResult::Timeout;
 }
 
-void ServiceStream::receive_data(Bytes data) {
+bool ServiceStream::receive_data(Bytes data, std::string* error) {
     {
         std::lock_guard<std::mutex> lock(mu_);
         if (local_closed_ || remote_closed_ || data.empty()) {
-            return;
+            return true;
+        }
+        const std::size_t bytes = data.size();
+        if (!inbound_budget_.can_enqueue(bytes, error)) {
+            return false;
         }
         incoming_.push_back(std::move(data));
+        inbound_budget_.record_enqueue(bytes);
     }
     cv_.notify_all();
+    return true;
 }
 
 void ServiceStream::receive_fin(std::string reason) {
@@ -223,7 +231,7 @@ void ServiceStream::receive_fin(std::string reason) {
     cv_.notify_all();
 }
 
-void ServiceStream::receive_close(std::string reason) {
+void ServiceStream::receive_close(std::string reason, bool discard_buffered) {
     {
         std::lock_guard<std::mutex> lock(mu_);
         if (remote_closed_) {
@@ -232,6 +240,12 @@ void ServiceStream::receive_close(std::string reason) {
         remote_closed_ = true;
         if (close_reason_.empty()) {
             close_reason_ = reason.empty() ? "remote closed" : std::move(reason);
+        }
+        if (discard_buffered) {
+            incoming_.clear();
+            inbound_budget_.clear();
+            current_.clear();
+            current_offset_ = 0;
         }
     }
     cv_.notify_all();

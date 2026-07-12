@@ -15,6 +15,8 @@
 #include <string>
 #include <vector>
 
+#include "core/runtime/stream_queue_limits.hpp"
+
 namespace yume::runtime {
 
 struct ServicePeerInfo {
@@ -64,9 +66,9 @@ public:
                     std::size_t* bytes_read,
                     std::string* reason);
 
-    void receive_data(Bytes data);
+    bool receive_data(Bytes data, std::string* error = nullptr);
     void receive_fin(std::string reason);
-    void receive_close(std::string reason);
+    void receive_close(std::string reason, bool discard_buffered = false);
 
     bool closed() const;
 
@@ -78,6 +80,7 @@ private:
     mutable std::mutex mu_;
     std::condition_variable cv_;
     std::deque<Bytes> incoming_;
+    InboundQueueBudget inbound_budget_;
     Bytes current_;
     std::size_t current_offset_{0};
     bool remote_fin_{false};

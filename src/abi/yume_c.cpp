@@ -545,8 +545,18 @@ int yume_client_open_stream(yume_client* client,
 
         tunnel->register_stream(
             stream_id,
-            [stream](const yume::client::Tunnel::Bytes& data) {
-                stream->receive_data(data);
+            [stream, weak_tunnel, stream_id](const yume::client::Tunnel::Bytes& data) {
+                std::string error;
+                if (stream->receive_data(data, &error)) {
+                    return;
+                }
+                const std::string reason = error.empty() ? "service inbound queue overflow"
+                                                         : "service inbound queue overflow: " + error;
+                stream->receive_close(reason, true);
+                if (auto locked = weak_tunnel.lock()) {
+                    locked->send_close(stream_id, reason);
+                    locked->unregister_stream(stream_id);
+                }
             },
             [stream, weak_tunnel, stream_id](const std::string& reason) {
                 stream->receive_close(reason);

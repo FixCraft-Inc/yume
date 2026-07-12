@@ -724,8 +724,34 @@ yume_link_atomic_if_needed(yume_packet_bulk_test PRIVATE)
 yume_apply_perf_opts(yume_packet_bulk_test)
 add_test(NAME yume_packet_bulk_test COMMAND yume_packet_bulk_test)
 
+add_executable(yume_inner_crypto_limits_test core/security/inner_crypto_limits_test.cpp)
+target_link_libraries(yume_inner_crypto_limits_test PRIVATE yume_transport_core)
+yume_link_atomic_if_needed(yume_inner_crypto_limits_test PRIVATE)
+yume_apply_perf_opts(yume_inner_crypto_limits_test)
+add_test(NAME yume_inner_crypto_limits_test COMMAND yume_inner_crypto_limits_test)
+
+add_executable(yume_stream_queue_limits_test core/runtime/stream_queue_limits_test.cpp)
+target_include_directories(yume_stream_queue_limits_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+yume_link_atomic_if_needed(yume_stream_queue_limits_test PRIVATE)
+yume_apply_perf_opts(yume_stream_queue_limits_test)
+add_test(NAME yume_stream_queue_limits_test COMMAND yume_stream_queue_limits_test)
+
+add_executable(yume_service_stream_test
+    core/runtime/service_stream_test.cpp
+    core/runtime/service_stream.cpp
+)
+target_include_directories(yume_service_stream_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(yume_service_stream_test PRIVATE Threads::Threads)
+yume_link_atomic_if_needed(yume_service_stream_test PRIVATE)
+yume_apply_perf_opts(yume_service_stream_test)
+add_test(NAME yume_service_stream_test COMMAND yume_service_stream_test)
+
 add_executable(yume_ip_filter_test server/filter/ip_filter_test.cpp server/filter/ip_filter.cpp server/filter/ip_filter_mmdb.cpp)
-add_executable(yume_host_types_test server/host/host_types_test.cpp server/host/host_types.cpp)
+add_executable(yume_host_types_test
+    server/host/host_types_test.cpp
+    server/host/host_types.cpp
+    server/host/host_routes.cpp
+)
 target_link_libraries(yume_host_types_test PRIVATE yume_core)
 yume_link_atomic_if_needed(yume_host_types_test PRIVATE)
 yume_apply_perf_opts(yume_host_types_test)

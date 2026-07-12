@@ -126,7 +126,7 @@ private:
     bool handle_codec_close(uint8_t stream_id, const std::string& reason);
     bool handle_service_open(uint8_t stream_id, const nlohmann::json& json);
     bool handle_service_data(uint8_t stream_id, const crypto::Bytes& payload);
-    bool handle_service_close(uint8_t stream_id, const std::string& reason);
+    bool handle_service_close(uint8_t stream_id, const std::string& reason, bool discard_buffered = false);
     bool handle_service_fin(uint8_t stream_id, const std::string& reason);
     void send_service_data(uint8_t stream_id, runtime::ServiceStream::Bytes payload);
     void send_service_close(uint8_t stream_id, std::string reason);
@@ -257,6 +257,7 @@ private:
         boost::asio::ip::tcp::resolver resolver;
         std::vector<uint8_t> read_buf;
         std::deque<std::vector<uint8_t>> write_queue;
+        runtime::InboundQueueBudget inbound_budget;
         std::string host;
         int port{0};
         int64_t open_started_ms{0};
@@ -290,6 +291,7 @@ private:
         boost::asio::ip::udp::endpoint remote;
         std::array<uint8_t, 65535> read_buf{};
         std::deque<crypto::Bytes> write_queue;
+        runtime::InboundQueueBudget inbound_budget;
         std::string host;
         int port{0};
         int64_t open_started_ms{0};

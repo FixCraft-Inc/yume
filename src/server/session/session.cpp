@@ -734,6 +734,8 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
                                      " reason=" + reason);
             }
             boost::system::error_code ec;
+            udp->write_queue.clear();
+            udp->inbound_budget.clear();
             udp->resolver.cancel();
             udp->socket.close(ec);
             udp_streams_.erase(it_udp);
@@ -753,6 +755,8 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
             remote->open_timer.reset();
         }
         pending_reverse_.erase(stream_id);
+        remote->write_queue.clear();
+        remote->inbound_budget.clear();
         if (!remote->close_summary_logged) {
             remote->close_summary_logged = true;
             const int64_t elapsed = remote->open_started_ms > 0 ? (util::now_ms() - remote->open_started_ms) : 0;
@@ -913,10 +917,14 @@ void Session::begin_close() {
     }
 
     for (auto& entry : streams_) {
+        entry.second->write_queue.clear();
+        entry.second->inbound_budget.clear();
         entry.second->socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
         entry.second->socket.close(ec);
     }
     for (auto& entry : udp_streams_) {
+        entry.second->write_queue.clear();
+        entry.second->inbound_budget.clear();
         entry.second->socket.close(ec);
     }
     streams_.clear();

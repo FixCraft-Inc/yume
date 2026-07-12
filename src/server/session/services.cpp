@@ -122,7 +122,15 @@ bool Session::handle_service_data(uint8_t stream_id, const crypto::Bytes& payloa
         }
         stream = it->second;
     }
-    stream->receive_data(payload);
+    std::string error;
+    if (!stream->receive_data(payload, &error)) {
+        const std::string reason = "service inbound queue overflow" +
+                                   (error.empty() ? std::string() : ": " + error);
+        util::log_warn("session " + std::to_string(session_id_) + ": service stream " +
+                       std::to_string(stream_id) + " " + reason);
+        handle_service_close(stream_id, reason, true);
+        send_control_close(stream_id, reason);
+    }
     return true;
 }
 
@@ -140,7 +148,9 @@ bool Session::handle_service_fin(uint8_t stream_id, const std::string& reason) {
     return true;
 }
 
-bool Session::handle_service_close(uint8_t stream_id, const std::string& reason) {
+bool Session::handle_service_close(uint8_t stream_id,
+                                   const std::string& reason,
+                                   bool discard_buffered) {
     std::shared_ptr<runtime::ServiceStream> stream;
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
@@ -151,7 +161,7 @@ bool Session::handle_service_close(uint8_t stream_id, const std::string& reason)
         stream = it->second;
         service_streams_.erase(it);
     }
-    stream->receive_close(reason);
+    stream->receive_close(reason, discard_buffered);
     return true;
 }
 

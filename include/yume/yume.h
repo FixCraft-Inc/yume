@@ -67,6 +67,9 @@ typedef struct yume_stream yume_stream;
  *   required byte count, including the trailing NUL, in *needed.
  * - Timeout values are milliseconds. A timeout of 0 means poll/no wait for
  *   stream open, accept, and read calls.
+ * - yume_stream_write accepts timeout_ms for ABI stability, but ABI v1 writes
+ *   enqueue synchronously and ignore the value. Pass 0 for forward-compatible
+ *   callers that do not require a future write deadline.
  * - Last-error strings are per handle and remain valid until the next
  *   yume_handle_last_error call on the same thread.
  */

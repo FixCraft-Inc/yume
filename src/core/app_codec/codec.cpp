@@ -739,50 +739,59 @@ bool decode_envelope(const Bytes& payload,
         }
         return false;
     }
-    Bytes body(payload.begin() + 16 + meta_len, payload.end());
-    Envelope envelope;
-    envelope.kind = kind;
-    switch (kind) {
-        case EnvelopeKind::Request:
-            envelope.request.method = meta.value("method", "");
-            envelope.request.target = meta.value("target", "");
-            envelope.request.path = meta.value("path", "");
-            envelope.request.query = meta.value("query", "");
-            envelope.request.headers = headers_from_json(meta.value("headers", nlohmann::json::array()));
-            envelope.request.body = std::move(body);
-            if (envelope.request.method.empty() || envelope.request.target.empty() ||
-                envelope.request.path.empty()) {
+    try {
+        Bytes body(payload.begin() + 16 + meta_len, payload.end());
+        Envelope envelope;
+        envelope.kind = kind;
+        switch (kind) {
+            case EnvelopeKind::Request:
+                envelope.request.method = meta.value("method", "");
+                envelope.request.target = meta.value("target", "");
+                envelope.request.path = meta.value("path", "");
+                envelope.request.query = meta.value("query", "");
+                envelope.request.headers =
+                    headers_from_json(meta.value("headers", nlohmann::json::array()));
+                envelope.request.body = std::move(body);
+                if (envelope.request.method.empty() || envelope.request.target.empty() ||
+                    envelope.request.path.empty()) {
+                    if (error) {
+                        *error = "codec request metadata incomplete";
+                    }
+                    return false;
+                }
+                break;
+            case EnvelopeKind::Response:
+                envelope.response.status_code = meta.value("status", 502);
+                envelope.response.reason = meta.value("reason", "Bad Gateway");
+                envelope.response.headers =
+                    headers_from_json(meta.value("headers", nlohmann::json::array()));
+                envelope.response.body = std::move(body);
+                if (envelope.response.status_code < 100 || envelope.response.status_code > 599) {
+                    envelope.response.status_code = 502;
+                    envelope.response.reason = "Bad Gateway";
+                }
+                break;
+            case EnvelopeKind::Error:
+                envelope.error_status = meta.value("status", 502);
+                envelope.error_message = meta.value("message", "codec error");
+                if (envelope.error_status < 400 || envelope.error_status > 599) {
+                    envelope.error_status = 502;
+                }
+                break;
+            default:
                 if (error) {
-                    *error = "codec request metadata incomplete";
+                    *error = "unknown codec frame kind";
                 }
                 return false;
-            }
-            break;
-        case EnvelopeKind::Response:
-            envelope.response.status_code = meta.value("status", 502);
-            envelope.response.reason = meta.value("reason", "Bad Gateway");
-            envelope.response.headers = headers_from_json(meta.value("headers", nlohmann::json::array()));
-            envelope.response.body = std::move(body);
-            if (envelope.response.status_code < 100 || envelope.response.status_code > 599) {
-                envelope.response.status_code = 502;
-                envelope.response.reason = "Bad Gateway";
-            }
-            break;
-        case EnvelopeKind::Error:
-            envelope.error_status = meta.value("status", 502);
-            envelope.error_message = meta.value("message", "codec error");
-            if (envelope.error_status < 400 || envelope.error_status > 599) {
-                envelope.error_status = 502;
-            }
-            break;
-        default:
-            if (error) {
-                *error = "unknown codec frame kind";
-            }
-            return false;
+        }
+        *out = std::move(envelope);
+        return true;
+    } catch (const std::exception&) {
+        if (error) {
+            *error = "invalid codec frame metadata";
+        }
+        return false;
     }
-    *out = std::move(envelope);
-    return true;
 }
 
 bool validate_monero_rpc_request(const HttpRequest& request,

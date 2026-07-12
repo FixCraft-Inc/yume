@@ -70,6 +70,10 @@ Argon2Limits argon2_env_limits();
 bool argon2_params_exceed_limits(const KdfParams& params,
                                  const Argon2Limits& limits,
                                  std::string* reason);
+std::uint32_t pbkdf2_env_iters_max();
+bool pbkdf2_params_exceed_limits(const KdfParams& params,
+                                 std::uint32_t iters_max,
+                                 std::string* reason);
 
 std::uint64_t hop_id_from_time_ms(std::int64_t now_ms, std::uint32_t interval_ms, std::int64_t offset_ms);
 Bytes derive_hop_key(const Bytes& base_key, std::uint64_t hop_id);

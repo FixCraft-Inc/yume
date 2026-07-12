@@ -41,6 +41,10 @@ The ABI v1 stream API is synchronous by design. Async callbacks can be added in
 a later ABI version without forcing embedders into YUME's internal threading
 model now.
 
+`yume_stream_write` accepts `timeout_ms` for ABI stability, but ABI v1 writes
+only synchronously enqueue bytes into the YUME stream and ignore the value. Pass
+`0` unless a future ABI revision documents write-deadline behavior.
+
 `yume_server_stop` and `yume_server_destroy` interrupt an in-flight
 `yume_server_accept_stream` wait. The accept call returns
 `YUME_STATUS_NOT_RUNNING` after the runtime begins stopping.

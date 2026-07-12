@@ -217,6 +217,8 @@ void Session::on_udp_read(uint8_t stream_id, const boost::system::error_code& ec
 
 void Session::enqueue_udp_write(uint8_t stream_id, const crypto::Bytes& data) {
     std::shared_ptr<UdpStream> udp;
+    bool should_write = false;
+    std::string overflow_reason;
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
         auto it = udp_streams_.find(stream_id);
@@ -224,20 +226,34 @@ void Session::enqueue_udp_write(uint8_t stream_id, const crypto::Bytes& data) {
             return;
         }
         udp = it->second;
+        if (!udp->inbound_budget.can_enqueue(data.size(), &overflow_reason)) {
+            udp.reset();
+        } else {
+            udp->write_queue.push_back(data);
+            udp->inbound_budget.record_enqueue(data.size());
+            udp->upstream_bytes += static_cast<std::uint64_t>(data.size());
+            if (udp->first_upstream_ms == 0) {
+                udp->first_upstream_ms = util::now_ms();
+                util::log_timing("server.stream",
+                                 "first_upstream",
+                                 "session=" + std::to_string(session_id_) +
+                                     " stream=" + std::to_string(stream_id) +
+                                     " proto=udp ms=" +
+                                     std::to_string(udp->first_upstream_ms - udp->open_started_ms) +
+                                     " bytes=" + std::to_string(data.size()));
+            }
+            should_write = !udp->write_in_flight;
+        }
     }
-    udp->upstream_bytes += static_cast<std::uint64_t>(data.size());
-    if (udp->first_upstream_ms == 0) {
-        udp->first_upstream_ms = util::now_ms();
-        util::log_timing("server.stream",
-                         "first_upstream",
-                         "session=" + std::to_string(session_id_) +
-                             " stream=" + std::to_string(stream_id) +
-                             " proto=udp ms=" +
-                             std::to_string(udp->first_upstream_ms - udp->open_started_ms) +
-                             " bytes=" + std::to_string(data.size()));
+    if (!udp) {
+        const std::string reason = "udp inbound queue overflow: " + overflow_reason;
+        util::log_warn("session " + std::to_string(session_id_) + ": stream " +
+                       std::to_string(stream_id) + " " + reason);
+        handle_close(stream_id, reason);
+        send_control_close(stream_id, reason);
+        return;
     }
-    udp->write_queue.push_back(data);
-    if (!udp->write_in_flight) {
+    if (should_write) {
         do_udp_write(stream_id);
     }
 }
@@ -264,8 +280,10 @@ void Session::do_udp_write(uint8_t stream_id) {
             return;
         }
         udp->write_in_flight = true;
+        const std::size_t queued_bytes = udp->write_queue.front().size();
         data_to_write = std::move(udp->write_queue.front());
         udp->write_queue.pop_front();
+        udp->inbound_budget.record_dequeue(queued_bytes);
     }
     auto buffer = std::make_shared<crypto::Bytes>(std::move(data_to_write));
     auto self = shared_from_this();
@@ -297,6 +315,8 @@ void Session::do_udp_write(uint8_t stream_id) {
 
 void Session::enqueue_remote_write(uint8_t stream_id, const std::vector<uint8_t>& data) {
     std::shared_ptr<RemoteStream> remote;
+    bool should_write = false;
+    std::string overflow_reason;
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
         auto it = streams_.find(stream_id);
@@ -304,20 +324,34 @@ void Session::enqueue_remote_write(uint8_t stream_id, const std::vector<uint8_t>
             return;
         }
         remote = it->second;
+        if (!remote->inbound_budget.can_enqueue(data.size(), &overflow_reason)) {
+            remote.reset();
+        } else {
+            remote->write_queue.push_back(data);
+            remote->inbound_budget.record_enqueue(data.size());
+            remote->upstream_bytes += static_cast<std::uint64_t>(data.size());
+            if (remote->first_upstream_ms == 0) {
+                remote->first_upstream_ms = util::now_ms();
+                util::log_timing("server.stream",
+                                 "first_upstream",
+                                 "session=" + std::to_string(session_id_) +
+                                     " stream=" + std::to_string(stream_id) +
+                                     " proto=tcp ms=" +
+                                     std::to_string(remote->first_upstream_ms - remote->open_started_ms) +
+                                     " bytes=" + std::to_string(data.size()));
+            }
+            should_write = !remote->write_in_flight;
+        }
     }
-    remote->upstream_bytes += static_cast<std::uint64_t>(data.size());
-    if (remote->first_upstream_ms == 0) {
-        remote->first_upstream_ms = util::now_ms();
-        util::log_timing("server.stream",
-                         "first_upstream",
-                         "session=" + std::to_string(session_id_) +
-                             " stream=" + std::to_string(stream_id) +
-                             " proto=tcp ms=" +
-                             std::to_string(remote->first_upstream_ms - remote->open_started_ms) +
-                             " bytes=" + std::to_string(data.size()));
+    if (!remote) {
+        const std::string reason = "tcp inbound queue overflow: " + overflow_reason;
+        util::log_warn("session " + std::to_string(session_id_) + ": stream " +
+                       std::to_string(stream_id) + " " + reason);
+        handle_close(stream_id, reason);
+        send_control_close(stream_id, reason);
+        return;
     }
-    remote->write_queue.push_back(data);
-    if (!remote->write_in_flight) {
+    if (should_write) {
         do_remote_write(stream_id);
     }
 }
@@ -355,8 +389,10 @@ void Session::do_remote_write(uint8_t stream_id) {
         }
         if (!remote->write_queue.empty()) {
             remote->write_in_flight = true;
+            const std::size_t queued_bytes = remote->write_queue.front().size();
             data_to_write = std::move(remote->write_queue.front());
             remote->write_queue.pop_front();
+            remote->inbound_budget.record_dequeue(queued_bytes);
         }
     }
 

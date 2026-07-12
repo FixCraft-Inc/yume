@@ -20,6 +20,7 @@
 #include <system_error>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 #if !defined(_WIN32)
 #include <sys/stat.h>
@@ -233,6 +234,33 @@ bool read_env_u32_optional(const char* name, std::uint32_t* out) {
     }
 }
 
+bool read_env_u32_strict_optional(const char* name, std::uint32_t* out) {
+    const char* raw = std::getenv(name);
+    if (!raw || !*raw) {
+        return false;
+    }
+    std::string_view text(raw);
+    unsigned long long parsed = 0;
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), parsed);
+    if (result.ec != std::errc() || result.ptr != text.data() + text.size() || parsed == 0) {
+        return false;
+    }
+    if (parsed > std::numeric_limits<std::uint32_t>::max()) {
+        *out = std::numeric_limits<std::uint32_t>::max();
+    } else {
+        *out = static_cast<std::uint32_t>(parsed);
+    }
+    return true;
+}
+
+std::uint32_t default_pbkdf2_iters() {
+#if !YUME_USE_BASEFWX
+    return 2000000;
+#else
+    return basefwx::constants::HeavyPbkdf2Iterations();
+#endif
+}
+
 double resource_cap_ratio() {
     return yume::runtime::resource_cap_ratio_from_env();
 }
@@ -405,7 +433,7 @@ DerivedKey derive_key_heavy(const Bytes& shared,
         params = select_argon2_params();
     }
     if (params.pbkdf2_iters == 0) {
-        params.pbkdf2_iters = basefwx::constants::HeavyPbkdf2Iterations();
+        params.pbkdf2_iters = default_pbkdf2_iters();
     }
 
     if (params.name == "pbkdf2") {
@@ -510,6 +538,7 @@ Bytes build_aad(std::uint8_t frame_type, std::uint8_t stream_id) {
 inline constexpr std::uint32_t kDefaultArgon2TimeMax        = 12;
 inline constexpr std::uint32_t kDefaultArgon2MemoryMaxKib   = 1u << 19;   // 512 MiB
 inline constexpr std::uint32_t kDefaultArgon2ParallelismMax = 8;
+inline constexpr std::uint32_t kDefaultPbkdf2ItersMax       = 4000000;
 
 Argon2Limits argon2_env_limits() {
     Argon2Limits limits;
@@ -551,6 +580,33 @@ bool argon2_params_exceed_limits(const KdfParams& params,
     if (limits.parallelism_max > 0 && params.argon2_parallelism > limits.parallelism_max) {
         return fail("par=" + std::to_string(params.argon2_parallelism) +
                     " > max=" + std::to_string(limits.parallelism_max));
+    }
+    if (reason) {
+        reason->clear();
+    }
+    return false;
+}
+
+std::uint32_t pbkdf2_env_iters_max() {
+    std::uint32_t cap = kDefaultPbkdf2ItersMax;
+    std::uint32_t parsed = 0;
+    if (read_env_u32_strict_optional("YUME_PBKDF2_ITERS_MAX", &parsed)) {
+        cap = std::max(cap, parsed);
+    }
+    return cap;
+}
+
+bool pbkdf2_params_exceed_limits(const KdfParams& params,
+                                 std::uint32_t iters_max,
+                                 std::string* reason) {
+    const std::uint32_t effective_iters =
+        params.pbkdf2_iters == 0 ? default_pbkdf2_iters() : params.pbkdf2_iters;
+    if (iters_max > 0 && effective_iters > iters_max) {
+        if (reason) {
+            *reason = "iters=" + std::to_string(effective_iters) +
+                      " > max=" + std::to_string(iters_max);
+        }
+        return true;
     }
     if (reason) {
         reason->clear();
@@ -702,6 +758,10 @@ std::optional<DerivedKey> server_derive_key(const Config& cfg,
     }
     if (effective_kdf == "argon2"
         && argon2_params_exceed_limits(params, argon2_env_limits(), nullptr)) {
+        return std::nullopt;
+    }
+    if ((effective_kdf == "argon2" || effective_kdf == "pbkdf2") &&
+        pbkdf2_params_exceed_limits(params, pbkdf2_env_iters_max(), nullptr)) {
         return std::nullopt;
     }
     bool allow_fallback = params.name.empty();

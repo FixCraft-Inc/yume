@@ -35,10 +35,20 @@ bool path_matches(const std::string& prefix, const std::string& path) {
     if (prefix.empty()) {
         return true;
     }
+    if (prefix == "/") {
+        return !path.empty() && path.front() == '/';
+    }
     if (path.size() < prefix.size()) {
         return false;
     }
-    return path.compare(0, prefix.size(), prefix) == 0;
+    if (path.compare(0, prefix.size(), prefix) != 0) {
+        return false;
+    }
+    if (path.size() == prefix.size()) {
+        return true;
+    }
+    const char boundary = path[prefix.size()];
+    return boundary == '/' || boundary == '?' || boundary == '#';
 }
 
 bool parse_port(std::string_view text, int* port) {

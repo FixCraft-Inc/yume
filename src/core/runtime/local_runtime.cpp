@@ -14,6 +14,7 @@
 
 #if !defined(_WIN32)
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 #endif
@@ -87,6 +88,25 @@ void set_socket_timeouts(int fd, int timeout_ms) {
     tv.tv_usec = static_cast<suseconds_t>((timeout_ms % 1000) * 1000);
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+}
+
+bool restrict_path_permissions(const std::filesystem::path& path,
+                               std::filesystem::perms perms,
+                               const char* label,
+                               std::string* error) {
+    std::error_code ec;
+    std::filesystem::permissions(path, perms, std::filesystem::perm_options::replace, ec);
+    if (ec) {
+        if (error) {
+            *error = std::string("failed to restrict ") + label + " permissions: " + ec.message();
+        }
+        return false;
+    }
+    return true;
+}
+
+bool is_yume_runtime_dir(const std::filesystem::path& path) {
+    return path.filename() == "yume";
 }
 
 bool connect_socket(const std::string& path, int* fd_out) {
@@ -165,11 +185,19 @@ bool Server::start(std::string* error) {
         return true;
     }
     std::error_code ec;
-    std::filesystem::create_directories(std::filesystem::path(path_).parent_path(), ec);
+    const auto parent_path = std::filesystem::path(path_).parent_path();
+    std::filesystem::create_directories(parent_path, ec);
     if (ec) {
         if (error) {
             *error = "failed to create runtime directory: " + ec.message();
         }
+        return false;
+    }
+    if (is_yume_runtime_dir(parent_path) &&
+        !restrict_path_permissions(parent_path,
+                                   std::filesystem::perms::owner_all,
+                                   "runtime directory",
+                                   error)) {
         return false;
     }
 
@@ -202,12 +230,26 @@ bool Server::start(std::string* error) {
         return false;
     }
     std::strncpy(addr.sun_path, path_.c_str(), sizeof(addr.sun_path) - 1);
-    if (::bind(server_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+    const mode_t previous_umask = ::umask(S_IRWXG | S_IRWXO);
+    const int bind_rc = ::bind(server_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    const int bind_errno = errno;
+    ::umask(previous_umask);
+    if (bind_rc != 0) {
         if (error) {
-            *error = std::string("bind() failed: ") + std::strerror(errno);
+            *error = std::string("bind() failed: ") + std::strerror(bind_errno);
         }
         ::close(server_fd_);
         server_fd_ = -1;
+        return false;
+    }
+    if (!restrict_path_permissions(path_,
+                                   std::filesystem::perms::owner_read |
+                                       std::filesystem::perms::owner_write,
+                                   "runtime socket",
+                                   error)) {
+        ::close(server_fd_);
+        server_fd_ = -1;
+        cleanup_path();
         return false;
     }
     if (::listen(server_fd_, 16) != 0) {

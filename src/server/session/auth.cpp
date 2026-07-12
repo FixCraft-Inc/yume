@@ -441,6 +441,14 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                         auth_error_ = "invalid kdf request";
                         return false;
                     }
+                    if ((inner_kdf->name == "argon2" || inner_kdf->name == "pbkdf2")) {
+                        std::string cap_reason;
+                        if (inner::pbkdf2_params_exceed_limits(
+                                *inner_kdf, inner::pbkdf2_env_iters_max(), &cap_reason)) {
+                            auth_error_ = "client pbkdf2 params exceed server cap: " + cap_reason;
+                            return false;
+                        }
+                    }
                 }
                 inner::Config inner_cfg;
                 inner_cfg.enabled = cfg_.inner_crypto;

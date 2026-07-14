@@ -22,11 +22,13 @@ Session::Session(boost::asio::ip::tcp::socket socket,
                  boost::asio::ssl::context& ssl_ctx,
                  const ServerConfig& cfg,
                  std::shared_ptr<const std::vector<crypto::Bytes>> authorized_keys,
+                 std::shared_ptr<KdfAdmissionController> kdf_admission,
                  uint64_t session_id,
                  Manager* manager)
     : stream_(std::move(socket), ssl_ctx)
     , cfg_(cfg)
     , authorized_keys_(std::move(authorized_keys))
+    , kdf_admission_(std::move(kdf_admission))
     , session_id_(session_id)
     , manager_(manager)
     , strand_(stream_.get_executor())

@@ -38,6 +38,7 @@ find . -mindepth 1 \
      -o -path './debian' \
      -o -path './DEV_services' \
      -o -path './obj-*' \
+     -o -path './.private' \
      -o -path './third_party' \
      -o -path './vendor' \
      -o -path './website/.jekyll-cache' \
@@ -47,9 +48,7 @@ find . -mindepth 1 \
         -o -name '*.trace' \
         -o -name '*.out' \
         -o -name '*.tar.xz' \
-        -o -name '.DS_Store' \
-        -o -name '[local-only development file removed]' \
-        -o -name '[local-only development file removed]' \) -prune \
+        -o -name '.DS_Store' \) -prune \
   -o -print0 \
   | LC_ALL=C sort -z \
   | tar --null --no-recursion --files-from - \

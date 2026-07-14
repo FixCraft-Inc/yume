@@ -34,7 +34,7 @@ struct H2EncodeParams {
 };
 
 // Stateful HPACK encoder (RFC 7541). Real browsers (Chrome 131+,
-// Firefox 133) emit literal headers with the "incremental indexing"
+// Firefox 126) emit literal headers with the "incremental indexing"
 // opcode (0x40 prefix) so they accrete into the dynamic table on
 // first use, then reference by index on subsequent HEADERS frames.
 // The pre-1.x encoder always emitted "literal without indexing"

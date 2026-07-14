@@ -6,7 +6,9 @@
 
 #include "server/session/session.hpp"
 
+#include <algorithm>
 #include <istream>
+#include <new>
 
 #include "core/app_codec/codec.hpp"
 #include "server/session/internal.hpp"
@@ -17,6 +19,8 @@ using namespace detail;
 
 namespace {
 constexpr auto kCodecBackendTimeout = std::chrono::milliseconds(30000);
+constexpr std::size_t kMaxCodecStreamsPerSession = 8;
+constexpr std::size_t kCodecResponseBudgetBytes = 32U * 1024U * 1024U;
 
 }  // namespace
 
@@ -66,6 +70,10 @@ bool Session::handle_codec_open(uint8_t stream_id, const nlohmann::json& json) {
             send_open_reply(stream_id, false, "codec stream already exists");
             return true;
         }
+        if (codec_streams_.size() >= kMaxCodecStreamsPerSession) {
+            send_open_reply(stream_id, false, "too many concurrent codec streams");
+            return true;
+        }
         codec_streams_[stream_id] = codec;
     }
 
@@ -97,6 +105,9 @@ bool Session::handle_codec_close(uint8_t stream_id, const std::string& reason) {
             return false;
         }
         codec = it->second;
+        codec_response_bytes_ -=
+            std::min(codec_response_bytes_, codec->response_reserved_bytes);
+        codec->response_reserved_bytes = 0;
         codec_streams_.erase(it);
     }
 
@@ -170,8 +181,15 @@ void Session::start_codec_backend(uint8_t stream_id, const crypto::Bytes& payloa
     }
 
     app_codec::Endpoint backend{codec->backend_host, codec->backend_port};
-    const std::string http_request = app_codec::build_backend_http_request(envelope.request, backend);
-    codec->request_bytes.assign(http_request.begin(), http_request.end());
+    std::string request_error;
+    const auto http_request = app_codec::build_backend_http_request(
+        envelope.request, backend, &request_error);
+    if (!http_request.has_value()) {
+        send_codec_error(stream_id, 400, request_error.empty() ? "invalid codec request" : request_error);
+        handle_codec_close(stream_id, "invalid codec request reconstruction");
+        return;
+    }
+    codec->request_bytes.assign(http_request->begin(), http_request->end());
     codec->upstream_bytes = envelope.request.body.size();
     codec->request_started_ms = util::now_ms();
 
@@ -309,8 +327,29 @@ void Session::on_codec_backend_headers(uint8_t stream_id,
         handle_codec_close(stream_id, "backend response too large");
         return;
     }
+    bool response_budget_available = false;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        if (codec_response_bytes_ <= kCodecResponseBudgetBytes &&
+            content_len <= kCodecResponseBudgetBytes - codec_response_bytes_) {
+            codec_response_bytes_ += content_len;
+            codec->response_reserved_bytes = content_len;
+            response_budget_available = true;
+        }
+    }
+    if (!response_budget_available) {
+        send_codec_error(stream_id, 503, "codec response budget exhausted");
+        handle_codec_close(stream_id, "codec response budget exhausted");
+        return;
+    }
     codec->response_status = response.status_code;
-    codec->response_body.resize(content_len);
+    try {
+        codec->response_body.resize(content_len);
+    } catch (const std::bad_alloc&) {
+        send_codec_error(stream_id, 503, "codec response allocation failed");
+        handle_codec_close(stream_id, "codec response allocation failed");
+        return;
+    }
     const std::size_t buffered = std::min<std::size_t>(codec->response_buf.size(), content_len);
     if (buffered > 0) {
         input.read(reinterpret_cast<char*>(codec->response_body.data()),

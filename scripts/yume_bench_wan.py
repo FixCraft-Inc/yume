@@ -1231,7 +1231,7 @@ def main() -> int:
         if not p.exists() or not os.access(p, os.X_OK):
             print(
                 f"FATAL: {label} binary not found / not executable: {p}\n"
-                f"       run `cmake --build build` first; see [local-only development file removed] re heavy builds",
+                f"       run `cmake --build build` first; use a remote host for heavy builds",
                 file=sys.stderr,
             )
             return 2

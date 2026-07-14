@@ -1,8 +1,8 @@
 # YUME 1.1 — First Stable Release
 
 YUME is a **post-quantum stealth transport** that tunnels TCP and UDP
-through real TLS 1.3 sessions, shaped to look like ordinary Chrome
-HTTPS to a DPI box. Both ends — the client `yume` and the daemon
+through real TLS 1.3 sessions with browser-profiled ClientHellos and an
+HTTP/2-shaped opening exchange. Both ends — the client `yume` and the daemon
 `yumed` — are open-source under AGPL-3.0-or-later and build from this tree.
 
 This is the planned stable release after the public `v1.0` test release.
@@ -17,11 +17,11 @@ for the 1.x line starting with 1.1.
 
 | Area | What's in 1.1 |
 | ---- | ------------- |
-| **Outer transport** | Real TLS 1.3 (OpenSSL 3.5) with browser-cluster JA3/JA4 fingerprints. Chrome 135 by default, Firefox 126 and Safari 17 selectable; rotation supported. |
+| **Outer transport** | Real TLS 1.3 (OpenSSL 3.5) with browser-oriented ClientHello profiles and canonical JA4 diagnostics. Chrome 131 by default, Firefox 126 and Safari 18 selectable; rotation supported. Stock-OpenSSL/GREASE limitations remain. |
 | **Carrier camouflage** | HTTP/2 obfs handshake (`PRI * HTTP/2.0`, Chrome-shaped SETTINGS, HEADERS), hourly-rotating HMAC path token, optional `--obfs-secret` peer-pinning. |
 | **Decoy site** | `--real` mode serves a real HTML page (or Wikipedia redirect by default) to non-YUME visitors of the same port. YUME and a website coexist on `:443`. |
-| **Inner crypto** | BaseFWX 3.7.0 — hybrid **ML-KEM-768 + AES-256-GCM** with **HKDF-SHA256**, hardened Argon2id / PBKDF2 password KDF, fixed Argon2 lane defaults across runtimes, and the blackbox plugin ABI surface (see [BaseFWX 3.7.0 release notes](../../basefwx/RELEASE-NOTES-3.7.0.md)). |
-| **Live key hopping** | 1–4 Hz over-the-air key rotation. Each window encrypts with a fresh `HKDF(master, hop_index)` derivative; a captured window decrypts only that window. |
+| **Inner crypto** | BaseFWX 3.7.0 — **ML-KEM-768-derived AES-256-GCM** keys with **HKDF-SHA256**, optional Argon2id / PBKDF2 work factor over the KEM secret, and the blackbox plugin ABI surface (see [BaseFWX 3.7.0 release notes](../../basefwx/RELEASE-NOTES-3.7.0.md)). |
+| **Live key hopping** | 1–4 Hz per-window key derivation. Each window encrypts with an `HKDF(master, hop_index)` derivative; compromise of one hop key does not directly reveal another, but compromise of the retained master reveals every window. |
 | **Authentication** | Ed25519 client keys. `yumed --auth-keys` is the server's authorised-key file (SSH-style). |
 | **Routing modes** | SOCKS5 (`--socks`), local TCP/UDP forward, `--run <cmd>`, Android VPN capture (separate APK), and server-side `--reverse-port-min/--reverse-port-max` reverse tunneling. |
 | **Native embed ABI** | `libyume.so.1` exposes a stable C ABI with opaque client/server handles, authenticated named service streams, peer-auth metadata, and fixed-buffer JSON helpers for C/C++ embedders. |
@@ -67,14 +67,15 @@ three are on by default and can be toggled independently.
 
 The TLS 1.3 handshake is **real**, not forged. OpenSSL emits a
 genuine `ClientHello`, but the cipher suites, supported groups,
-signature algorithms, key shares, and ALPN list are pinned to match
-a specific browser profile. JA3 / JA4 hashes fall in the browser
-cluster.
+signature algorithms, key shares, and ALPN list are configured toward
+a specific browser profile. The project checks emitted JA3 against pinned
+build-host baselines, but stock OpenSSL does not reproduce every browser
+ClientHello detail (notably all GREASE positions).
 
 ```
---profile chrome    # default — Chrome 135
+--profile chrome    # default — Chrome 131
 --profile firefox   # Firefox 126
---profile safari    # Safari 17
+--profile safari    # Safari 18
 --no-stealth        # bare OpenSSL defaults (recognisable as YUME)
 ```
 
@@ -92,8 +93,10 @@ and a `HEADERS` frame opening stream 1 with a `POST` to
 replies with canned `SETTINGS`, `SETTINGS-ACK`, and
 `HEADERS :status=200 content-type=application/grpc-web+proto`.
 
-To a stateless DPI box, the first ~150 cleartext bytes of every
-YUME connection look exactly like a Chrome → CDN gRPC-web request.
+Those application bytes resemble a Chrome-to-CDN gRPC-web opening to a
+TLS-terminating observer or active endpoint probe. A passive path observer
+sees encrypted TLS records, and the authenticated payload path does not remain
+a fully conformant HTTP/2 stream after the opening exchange.
 The token rotates every hour; the server accepts ±1 hour of clock
 skew. A replayed token is useless: it cannot decrypt the inner
 stream regardless of its timestamp.
@@ -114,34 +117,35 @@ validator; an HTTP/1.1 method-line goes to the HTML server.
 ## 2. Crypto stack
 
 The outer TLS layer is for stealth. The **inner** layer is BaseFWX
-3.7.0 — a separate, audited crypto library that's also published
+3.7.0 — a separate crypto library that's also published
 standalone — and provides:
 
 * **AES-256-GCM** for the data step (AEAD with 96-bit nonce, 128-bit
   tag).
-* **ML-KEM-768** (NIST FIPS 203, formerly Kyber-768) hybrid wrap for
+* **ML-KEM-768** (NIST FIPS 203, formerly Kyber-768) KEM for
   the session keys when a master public key is configured.
-* **Argon2id** or **PBKDF2-HMAC-SHA256** for password-based key
-  derivation, at the hardened cost (PBKDF2 600 000 iters / 1 M
-  short / 2 M heavy; Argon2 4·64 MiB / 5·128 MiB / 6·256 MiB).
+* **Argon2id** or **PBKDF2-HMAC-SHA256** as an optional work factor over
+  the high-entropy KEM shared secret. The YUME transport handshake does not
+  mix in a user password or PSK. Runtime-selected parameters are carried on
+  the wire and may be adaptively sized up to the server's per-derivation cap.
+  Concurrent Argon2 handshakes additionally share a configurable aggregate
+  memory and job-admission budget that is acquired before allocation.
 * **HKDF-SHA256** for all subkey derivation.
 * **Ed25519** for client authentication (`--auth`, `--auth-keys`).
 
-The full BaseFWX 3.7.0 security model — including the explanation
-of why password-only mode is already PQ-resistant (AES-256 under
-Grover is 128-bit equivalent; hardened KDF makes brute force
-expensive) — lives in
+The full BaseFWX 3.7.0 security model for BaseFWX's own file/password modes
+lives in
 [`basefwx/SECURITY.md`](basefwx/SECURITY.md) and
 [`../../basefwx/RELEASE-NOTES-3.7.0.md`](../../basefwx/RELEASE-NOTES-3.7.0.md).
 
 ### Live key hopping
 
-The session master key is rotated 1–4 times per second over-the-air
+The session derives a new data key 1–4 times per second
 (`--hop-interval`, default ~500 ms). Each hop window's data key is
-`HKDF(master, hop_index || direction)`. An adversary recording the
-wire and later compromising one window's key recovers that window
-only; previous and subsequent windows remain confidential. Disable
-with `--no-hop` for latency-critical or embedded paths.
+`HKDF(master, hop_index)`. Compromise of one derived hop key does not directly
+reveal the other derived keys. This is key separation, not forward secrecy:
+compromise of the retained master permits deriving previous and subsequent
+windows. Disable with `--no-hop` for latency-critical or embedded paths.
 
 ---
 
@@ -153,7 +157,7 @@ they can be combined.
 | Mode | What it does | Typical use |
 | ---- | ------------ | ----------- |
 | `--socks [addr:]port` | YUME client exposes a SOCKS5 listener; apps speak SOCKS5 locally, get tunneled out. | Browsers, curl, anything SOCKS-aware. |
-| Local forward (`--proxy host:port -> local:port`) | YUME client opens a local listener; bytes go to `host:port` reachable from the server. | Reach a service behind the server's NAT. |
+| Local forward (`-L [bind:]lport:host:port` or `--lport` + `--rhost` + `--rport`) | YUME client opens a local listener; bytes go to `host:port` reachable from the server. | Reach a service behind the server's NAT. |
 | `--run <cmd …>` | YUME client spawns a command and pipes its stdin/stdout through the tunnel. | One-shot CLI tools that don't speak SOCKS. |
 | Android VPN capture | Separate APK ([yume4a](https://github.com/FixCraft-Inc/yume4a)) captures all OS-level traffic. | Phone-wide stealth tunneling. |
 | Reverse port (`yumed --reverse-port-min/--reverse-port-max`) | Server opens an inbound port; bytes flow to a connected client. | Expose a local service through the server. |
@@ -220,9 +224,10 @@ attach the MIPS artifacts manually.
 
 ## 6. Performance
 
-Steady-state CPU overhead: **<1 % typical, <5 % always** (the
-measurement methodology and per-link numbers are in
-[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)).
+One April 2026 WAN run measured about 234 Mbps download and 36 Mbps upload
+through YUME. It did not record CPU utilization or provide a same-path bypass,
+so it does not establish a CPU-overhead percentage or an "always" bound. The
+methodology and per-link numbers are in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
 
 The hot inner-crypto path benefits directly from BaseFWX 3.7.0: Java now
 supports Argon2id through BouncyCastle, C++ KEM paths use RAII secret wiping,
@@ -275,16 +280,16 @@ can see the target, and how much trust is placed in the server.
 
 **Defended against:**
 
-- Stateless DPI fingerprinting (post-handshake byte shape, JA3/JA4,
-  HTTP/2 SETTINGS shape).
+- Simple DPI fingerprinting based on known VPN signatures or coarse
+  ClientHello / opening-exchange shape.
 - Active TLS probes that complete TLS and look for a non-browser
   response (with `--real` enabled they get a real HTML page).
 - Passive crypto attacks — both classical (PBKDF2/Argon2 + AES-256
   + Ed25519) and harvest-now-decrypt-later quantum attacks (ML-KEM
   hybrid wrap when a master public key is configured; AES-256 is
   Grover-safe at 128-bit equivalent on its own).
-- Single-window key compromise: live hopping keeps each window's
-  data key independent.
+- Single-hop-key compromise: live hopping separates derived window keys, while
+  retaining the master-key limitation described above.
 - Operator-side log forensics in anonym mode.
 
 **Not defended:**
@@ -347,13 +352,22 @@ gpg --verify yume-amd64-linux.sig yume-amd64-linux
   expects per-request dynamic behaviour (e.g. session cookies,
   AJAX) will notice. Pair `--real` with a real reverse-proxy in
   front of a real site for higher fidelity.
+* **No independent security audit or production-scale adversarial soak is
+  documented yet.** "Stable" describes the intended compatibility/release
+  line; it is not a claim of formal verification or third-party audit.
+* **The HTTP/2 carrier is an opening exchange, not a full-session HTTP/2
+  tunnel.** Stateful TLS-terminating middleboxes can distinguish the
+  authenticated stream after the initial HEADERS exchange.
 
 ---
 
 ## 11. Compatibility & upgrade
 
-Upgrade from the public `v1.0` test release by installing the 1.1 client and
-daemon together. Future 1.x releases keep on-the-wire compatibility:
+Upgrade from the public `v1.0` test release by installing the matching 1.1
+transport core on both client and daemon. The handshake rejects a different
+`kVersion` before carrying traffic; desktop GUI and Android app release
+versions are independent and are not part of that check. Stable artifacts
+continue to carry forward across the 1.x line:
 
 * Authorised-key files (`--auth-keys`) carry forward unchanged.
 * Anonym CA/sub-key files carry forward unchanged.
@@ -367,8 +381,10 @@ daemon together. Future 1.x releases keep on-the-wire compatibility:
 ## 12. Building from source
 
 ```bash
-git clone --recursive https://github.com/FixCraft-Inc/yume.git
+git clone https://github.com/FixCraft-Inc/yume.git
 cd yume
+git clone https://github.com/FixCraft-Inc/basefwx.git basefwx
+git -C basefwx checkout "$(cat config/refs/basefwx.ref)"
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```

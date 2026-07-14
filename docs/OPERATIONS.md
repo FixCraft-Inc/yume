@@ -27,6 +27,12 @@ The manifest records file size, OS, architecture, component, linkage, hashes, an
 
 YUME depends on BaseFWX for post-quantum and AEAD primitives. The release and CI workflows read `config/refs/basefwx.ref`, fetch that exact ref, and fail preflight if it is not reachable. Keep this file pinned to a commit or immutable release ref for production releases.
 
+Fetchability alone does not prove that a SHA belongs to the intended release
+lineage after a history rewrite. Before a stable release, also verify that the
+pin is the chosen canonical tag/commit and build YUME against a clean checkout
+of that exact object; a build against the local sibling's `main` is not proof
+of the pinned dependency.
+
 ## Service deployment
 
 A minimal systemd service can run the daemon with a dedicated user:

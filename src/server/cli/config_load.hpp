@@ -21,6 +21,8 @@ struct ServerConfigOverrides {
     bool inner_required = false;
     bool inner_hop = false;
     bool hop_interval = false;
+    bool argon2_memory_budget = false;
+    bool argon2_max_jobs = false;
     bool anonym = false;
     bool anonym_proof_mode = false;
     bool pq_auto_generate = false;

@@ -5,6 +5,11 @@ This path gets a local client and daemon running with the defaults YUME expects 
 ## Build
 
 ```bash
+git clone https://github.com/FixCraft-Inc/yume.git
+cd yume
+# The crypto engine is a pinned sibling checkout, not a git submodule.
+git clone https://github.com/FixCraft-Inc/basefwx.git basefwx
+git -C basefwx checkout "$(cat config/refs/basefwx.ref)"
 cmake -B build
 cmake --build build -j$(nproc)
 ```

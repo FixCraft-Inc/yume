@@ -313,7 +313,7 @@ void Session::send_disguise_404(const std::string& path) {
     //   1. --upstream-response-dir <dir> (rotation): pick one of N
     //      pre-captured replies. Defeats "probe twice, both replies
     //      identical" inspection.
-    //   2. --upstream-response <file>: single byte-identical replay.
+    //   2. --upstream-response <file>: single normalized captured replay.
     //   3. profile-driven synthetic 404 (--hide-in-the-crowd / yumed).
     std::shared_ptr<std::string> resp;
     std::string reason;

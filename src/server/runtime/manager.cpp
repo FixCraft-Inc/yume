@@ -131,6 +131,8 @@ Manager::Manager(boost::asio::io_context& io, const ServerConfig& cfg)
     , acceptor_(io)
     , ssl_ctx_(obfs::create_server_context(cfg.tls_cert, cfg.tls_key, server_context_allows_h2(cfg)))
     , authorized_keys_(std::make_shared<const std::vector<crypto::Bytes>>())
+    , kdf_admission_(std::make_shared<KdfAdmissionController>(KdfAdmissionLimits{
+          cfg.argon2_memory_budget_kib, cfg.argon2_max_jobs}))
     , server_id_(cfg.server_id.empty() ? yume::identity::generate_endpoint_id() : cfg.server_id)
     , server_name_(cfg.server_name.empty() ? std::string("yumed") : cfg.server_name) {
     cfg_.server_id = server_id_;
@@ -850,6 +852,7 @@ void Manager::do_accept() {
                 auto session = std::make_shared<Session>(std::move(socket), ssl_ctx_,
                                                          cfg_copy,
                                                          authorized_keys_snapshot(),
+                                                         kdf_admission_,
                                                          session_id, this);
                 register_session(session);
                 session->start();

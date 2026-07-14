@@ -3,17 +3,15 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * Stateless HTTP/2 carrier codec used by --obfs. We forge the byte-shape of a
- * Chrome 135 client/server exchange so a stateless DPI box classifies the
- * stream as benign HTTPS-over-h2 traffic. We do not implement a conformant
- * HTTP/2 server: SETTINGS changes are ignored, the HPACK dynamic table is
- * never grown, flow control is not enforced. A peer that fully tracks h2
- * stream state will desync within seconds; that's by design.
+ * HTTP/2 opening-exchange codec used by --obfs. The handshake and decoy paths
+ * parse peer SETTINGS, answer SETTINGS/PING, track the send window used by
+ * fake responses, and maintain the HPACK state they emit. The authenticated
+ * transport is still not a full HTTP/2 tunnel: after the opening HEADERS
+ * exchange it carries YUME frames. A TLS-terminating peer that requires valid
+ * HTTP/2 semantics for the entire connection can distinguish that boundary.
  */
 
 #include "core/stealth/obfs_h2.hpp"
-
-#include <openssl/rand.h>
 
 #include <algorithm>
 #include <cstring>
@@ -270,8 +268,12 @@ std::uint32_t sample_padding(std::uint32_t mean, std::uint32_t cap) {
     if (mean == 0 || cap == 0) {
         return 0;
     }
-    std::uint8_t rand_buf[4];
-    if (RAND_bytes(rand_buf, sizeof(rand_buf)) != 1) {
+    crypto::Bytes rand_buf;
+    try {
+        rand_buf = crypto::random_bytes(4);
+    } catch (...) {
+        // Padding is camouflage, not key material. Preserve the prior
+        // no-padding fallback if the checked RNG helper is unavailable.
         return 0;
     }
     std::uint32_t r = static_cast<std::uint32_t>(rand_buf[0]) |
@@ -422,13 +424,21 @@ crypto::Bytes encode_data_frames(const std::uint8_t* data, std::size_t len,
             std::uint32_t pad = sample_padding(params.padding_mean,
                 std::min(params.padding_max,
                          this_frame_cap - static_cast<std::uint32_t>(chunk) - 1));
+            crypto::Bytes padding_bytes;
+            if (pad > 0) {
+                try {
+                    padding_bytes = crypto::random_bytes(pad);
+                } catch (...) {
+                    // Keep the frame valid and fail soft on an optional
+                    // camouflage feature rather than emitting zero padding.
+                    pad = 0;
+                }
+            }
             std::uint32_t frame_len = static_cast<std::uint32_t>(chunk) + pad + 1;
             append_frame_header(out, frame_len, kFrameData, kFlagPadded, 1);
             out.push_back(static_cast<std::uint8_t>(pad));
             out.insert(out.end(), data + pos, data + pos + chunk);
-            if (pad > 0) {
-                std::vector<std::uint8_t> padding_bytes(pad, 0);
-                RAND_bytes(padding_bytes.data(), static_cast<int>(padding_bytes.size()));
+            if (!padding_bytes.empty()) {
                 out.insert(out.end(), padding_bytes.begin(), padding_bytes.end());
             }
         }

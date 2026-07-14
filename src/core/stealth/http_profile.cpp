@@ -28,9 +28,9 @@ std::string to_lower(std::string_view s) {
     return out;
 }
 
-// Server profile registry. Each entry's headers_404 is the EXACT
-// header block (in the EXACT header order) that the real server
-// software emits, captured from canonical public deployments
+// Server profile registry. Each entry's headers_404 is a profile template
+// whose field order and body shape are based on real server software,
+// captured from public deployments
 // (nginx.org, caddyserver.com, cloudflare.com 2026-05) and / or
 // from the upstream source:
 //   - nginx: src/http/ngx_http_special_response.c

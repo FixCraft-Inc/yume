@@ -9,9 +9,8 @@ Files-Excluded:
  build-*/*
  .claude
  .codex
+ .private
  .wrangler
- [local-only development file removed]
- [local-only development file removed]
  DEV_services
  vendor
  vendor/*

@@ -8,20 +8,47 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstdlib>
 #include <exception>
 #include <string>
+#include <string_view>
 
 #include "core/app_codec/codec.hpp"
 #include "server/cli/cluster.hpp"
 #include "server/cli/help.hpp"
 #include "server/cli/misc.hpp"
+#include "server/cli/numeric_parse.hpp"
 #include "server/config/config.hpp"
 #include "server/host/host_types.hpp"
 #include "util.hpp"
 
 namespace yume::server_cli {
 namespace {
+
+bool parse_non_negative_u32(const char* raw, const char* option, std::uint32_t* out) {
+    if (raw && parse_u32_strict(raw, out)) {
+        return true;
+    }
+    yume::util::log_error(std::string(option) + ": expected an unsigned 32-bit integer");
+    return false;
+}
+
+bool parse_positive_u32(const char* raw, const char* option, std::uint32_t* out) {
+    if (raw && parse_u32_strict(raw, out) && *out > 0) {
+        return true;
+    }
+    yume::util::log_error(std::string(option) + ": expected a positive unsigned 32-bit integer");
+    return false;
+}
+
+bool parse_port(const char* raw, const char* option, int* out) {
+    int value = 0;
+    if (!raw || !parse_int_strict(raw, &value) || value < 1 || value > 65535) {
+        yume::util::log_error(std::string(option) + ": port must be 1..65535");
+        return false;
+    }
+    *out = value;
+    return true;
+}
 
 bool parse_listen_spec(const std::string& raw, yume::server::ServerConfig& cfg) {
     std::string addr_part;
@@ -43,37 +70,20 @@ bool parse_listen_spec(const std::string& raw, yume::server::ServerConfig& cfg) 
             port_part = raw.substr(colon + 1);
         }
     }
-    try {
-        cfg.listen_port = std::stoi(port_part);
-    } catch (const std::exception&) {
-        yume::util::log_error("--listen: cannot parse port '" + port_part + "'");
-        return false;
-    }
-    if (cfg.listen_port < 1 || cfg.listen_port > 65535) {
-        yume::util::log_error("--listen: port out of range 1..65535: " + port_part);
+    if (!parse_port(port_part.c_str(), "--listen", &cfg.listen_port)) {
         return false;
     }
     cfg.listen_address = addr_part;
     return true;
 }
 
-std::uint32_t parse_non_negative_u32(const char* raw) {
-    int parsed = std::atoi(raw);
-    if (parsed < 0) {
-        parsed = 0;
+bool parse_obfs_pad_multiple(const char* raw, std::uint16_t* out) {
+    std::uint32_t parsed = 0;
+    if (!parse_non_negative_u32(raw, "--obfs-pad-multiple", &parsed)) {
+        return false;
     }
-    return static_cast<std::uint32_t>(parsed);
-}
-
-std::uint16_t parse_obfs_pad_multiple(const char* raw) {
-    int parsed = std::atoi(raw);
-    if (parsed < 0) {
-        parsed = 0;
-    }
-    if (parsed > 256) {
-        parsed = 256;
-    }
-    return static_cast<std::uint16_t>(parsed);
+    *out = static_cast<std::uint16_t>(std::min<std::uint32_t>(parsed, 256));
+    return true;
 }
 
 }  // namespace
@@ -137,9 +147,9 @@ bool parse_server_cli_args(int argc,
                 return false;
             }
         } else if (arg == "--reverse-port-min" && i + 1 < argc) {
-            cfg.reverse_port_min = std::stoi(argv[++i]);
+            if (!parse_port(argv[++i], "--reverse-port-min", &cfg.reverse_port_min)) return false;
         } else if (arg == "--reverse-port-max" && i + 1 < argc) {
-            cfg.reverse_port_max = std::stoi(argv[++i]);
+            if (!parse_port(argv[++i], "--reverse-port-max", &cfg.reverse_port_max)) return false;
         } else if (arg == "--dns-server" && i + 1 < argc) {
             cfg.dns_server = argv[++i];
         } else if (arg == "--proxy" && i + 1 < argc) {
@@ -153,7 +163,10 @@ bool parse_server_cli_args(int argc,
         } else if (arg == "--auth-keys-meta" && i + 1 < argc) {
             cfg.auth_keys_meta = resolve_cli_path(argv[++i]);
         } else if (arg == "--threads" && i + 1 < argc) {
-            cfg.threads = std::stoi(argv[++i]);
+            if (!parse_int_strict(argv[++i], &cfg.threads) || cfg.threads < 0) {
+                yume::util::log_error("--threads: expected a non-negative integer");
+                return false;
+            }
         } else if (arg == "--obfs") {
             cfg.obfuscation = true;
             result.config_overrides.obfuscation = true;
@@ -163,20 +176,20 @@ bool parse_server_cli_args(int argc,
         } else if (arg == "--obfs-secret" && i + 1 < argc) {
             cfg.obfs_secret = argv[++i];
         } else if (arg == "--obfs-pad-multiple" && i + 1 < argc) {
-            cfg.obfs_pad_multiple = parse_obfs_pad_multiple(argv[++i]);
+            if (!parse_obfs_pad_multiple(argv[++i], &cfg.obfs_pad_multiple)) return false;
         } else if (arg == "--obfs-jitter-ms" && i + 1 < argc) {
-            cfg.obfs_jitter_ms = parse_non_negative_u32(argv[++i]);
+            if (!parse_non_negative_u32(argv[++i], "--obfs-jitter-ms", &cfg.obfs_jitter_ms)) return false;
         } else if (arg == "--tls-handshake-timeout-ms" && i + 1 < argc) {
-            cfg.tls_handshake_timeout_ms = parse_non_negative_u32(argv[++i]);
+            if (!parse_non_negative_u32(argv[++i], "--tls-handshake-timeout-ms", &cfg.tls_handshake_timeout_ms)) return false;
             result.config_overrides.tls_handshake_timeout = true;
         } else if (arg == "--max-sessions" && i + 1 < argc) {
-            cfg.max_sessions = parse_non_negative_u32(argv[++i]);
+            if (!parse_non_negative_u32(argv[++i], "--max-sessions", &cfg.max_sessions)) return false;
             result.config_overrides.max_sessions = true;
         } else if (arg == "--accept-rate-limit" && i + 1 < argc) {
-            cfg.accept_rate_limit = parse_non_negative_u32(argv[++i]);
+            if (!parse_non_negative_u32(argv[++i], "--accept-rate-limit", &cfg.accept_rate_limit)) return false;
             result.config_overrides.accept_rate_limit = true;
         } else if (arg == "--egress-mbps" && i + 1 < argc) {
-            cfg.egress_mbps = parse_non_negative_u32(argv[++i]);
+            if (!parse_non_negative_u32(argv[++i], "--egress-mbps", &cfg.egress_mbps)) return false;
             result.config_overrides.egress_mbps = true;
         } else if (arg == "--filter-list" && i + 1 < argc) {
             cfg.filter_lists.push_back(resolve_filter_list_spec_path(argv[++i], cli_cwd, ""));
@@ -184,7 +197,7 @@ bool parse_server_cli_args(int argc,
             cfg.filter_geolite = resolve_cli_path(argv[++i]);
             result.config_overrides.filter_geolite = true;
         } else if (arg == "--filter-memory-mib" && i + 1 < argc) {
-            cfg.filter_memory_mib = parse_non_negative_u32(argv[++i]);
+            if (!parse_non_negative_u32(argv[++i], "--filter-memory-mib", &cfg.filter_memory_mib)) return false;
             result.config_overrides.filter_memory_mib = true;
         } else if (arg == "--client-filter-mode" && i + 1 < argc) {
             cfg.client_filter_mode = argv[++i];
@@ -202,7 +215,7 @@ bool parse_server_cli_args(int argc,
             cfg.packet_cidr = argv[++i];
             result.config_overrides.packet_cidr = true;
         } else if (arg == "--packet-mtu" && i + 1 < argc) {
-            cfg.packet_mtu = parse_non_negative_u32(argv[++i]);
+            if (!parse_non_negative_u32(argv[++i], "--packet-mtu", &cfg.packet_mtu)) return false;
             result.config_overrides.packet_mtu = true;
         } else if (arg == "--bench" || arg == "--fullbench" || arg == "--full-bench") {
             cfg.benchmark_enable = true;
@@ -254,8 +267,16 @@ bool parse_server_cli_args(int argc,
             result.inner_hop_override = true;
             result.inner_hop_value = false;
         } else if (arg == "--hop-interval" && i + 1 < argc) {
-            cfg.hop_interval_ms = static_cast<std::uint32_t>(std::stoul(argv[++i]));
+            if (!parse_non_negative_u32(argv[++i], "--hop-interval", &cfg.hop_interval_ms)) return false;
             result.config_overrides.hop_interval = true;
+        } else if (arg == "--argon2-memory-budget-kib" && i + 1 < argc) {
+            if (!parse_positive_u32(argv[++i], "--argon2-memory-budget-kib",
+                                    &cfg.argon2_memory_budget_kib)) return false;
+            result.config_overrides.argon2_memory_budget = true;
+        } else if (arg == "--argon2-max-jobs" && i + 1 < argc) {
+            if (!parse_positive_u32(argv[++i], "--argon2-max-jobs",
+                                    &cfg.argon2_max_jobs)) return false;
+            result.config_overrides.argon2_max_jobs = true;
         } else if (arg == "--pq-key" && i + 1 < argc) {
             cfg.pq_private_key = resolve_cli_path(argv[++i]);
             result.config_overrides.inner_crypto = true;
@@ -413,7 +434,8 @@ bool parse_server_cli_args(int argc,
         } else if (arg == "--upstream-response-dir" && i + 1 < argc) {
             cfg.upstream_response_dir = resolve_cli_path(argv[++i]);
         } else if (arg == "--upstream-response-ttl" && i + 1 < argc) {
-            cfg.upstream_response_ttl_s = parse_non_negative_u32(argv[++i]);
+            if (!parse_non_negative_u32(argv[++i], "--upstream-response-ttl",
+                                        &cfg.upstream_response_ttl_s)) return false;
         } else if (arg == "--attach-local") {
             result.attach_local = true;
         } else if (arg == "--root") {

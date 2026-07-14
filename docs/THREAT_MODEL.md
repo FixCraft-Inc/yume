@@ -8,8 +8,8 @@ where operator configuration matters. Read it alongside
 
 | Actor | Typical capability | What they can see without extra routing |
 | --- | --- | --- |
-| Path observer (ISP, Wi‑Fi, hotel gateway) | Passive or shallow DPI on the carrier | TLS metadata, timing, volume; with obfs enabled, cleartext bytes look like Chrome → CDN gRPC-web |
-| Active prober | HTTPS probe to the same host:port | Real HTML facade when `--real` is configured; otherwise a closed or minimal response |
+| Path observer (ISP, Wi‑Fi, hotel gateway) | Passive or shallow DPI on the carrier | TLS ClientHello/server metadata, encrypted-record sizes, timing, and volume; the HTTP/2 opening is encrypted inside TLS |
+| Active prober | HTTPS probe to the same host:port | Real HTML facade when `--real` is configured; otherwise a profile-driven 404 (`yumed` by default, `nginx` under `--public-node`) |
 | YUME server operator | Runs `yumed`, holds TLS cert, sees auth keys | Authenticated client identity, requested targets, byte counts unless anonym mode strips logs |
 | Client host | Runs `yume`, holds client private key | All local app traffic before it enters the carrier |
 | Target site | Receives outbound TCP/UDP from server egress | Server IP (or Tor exit IP when server-side Tor is configured) |
@@ -20,20 +20,24 @@ routing choices, not properties baked into the carrier alone.
 
 ## What the carrier protects
 
-When inner crypto is negotiated (default on current builds):
+When inner crypto is negotiated and a deployment PQ key is configured or
+securely bootstrapped (enabled by default in full builds, but only mandatory
+when the server uses `--inner-required`):
 
 - **Confidentiality and integrity** of multiplexed stream payloads via
-  hybrid ML-KEM-768 key agreement and AES-256-GCM frame encryption.
+  ML-KEM-768-derived keys and AES-256-GCM frame encryption.
 - **Authentication** of the client to the server via Ed25519-signed
   handshake material bound to `authorized_keys`.
-- **Forward secrecy within a session** when live key hopping is enabled
-  (1–4 Hz rekey on the inner channel).
+- **Per-window key separation** when live key hopping is enabled (1–4 Hz
+  derivation on the inner channel). This is not forward secrecy: the retained
+  base key can derive every hop key.
 - **Stealth against many classifiers** via real TLS 1.3 with browser
   fingerprint profiles, optional HTTP/2 carrier camouflage, and optional
   HTTP disguise for non-YUME probes.
 
-The outer TLS session is also real. A passive observer sees a normal
-HTTPS connection shape, not a custom UDP or WireGuard signature.
+The outer TLS session is real TLS 1.3 and avoids a custom UDP/WireGuard
+handshake signature. Browser-profile shaping is partial; it should not be
+treated as proof that every observer sees a byte-identical browser connection.
 
 ## What YUME does not protect
 
@@ -48,18 +52,31 @@ HTTPS connection shape, not a custom UDP or WireGuard signature.
 - **Traffic-analysis resistance.** Packet sizes and timing are not padded
   to constant rate by default. `--obfs-pad-multiple` and jitter exist on
   the client but are opt-in and peer-dependent.
-- **Denial of service on the server** from unauthenticated peers when
-  Argon2 heavy KDF is enabled — see below.
+- **Denial of service on the server** from authorized or preauth-enabled peers
+  when the Argon2 heavy work factor is enabled — see below.
 
 ## Argon2 gate (DoS boundary)
 
-Peers can advertise Argon2id KDF parameters on the wire. The server
+After signature/key authorization (or admission to an explicitly configured
+preauth service lane), peers can advertise Argon2id KDF parameters on the wire. The server
 **must** call `argon2_params_exceed_limits` before honoring them. Params
 above the compiled limits are rejected; the handshake fails instead of
-allocating multi-gigabyte memory for an unauthenticated remote.
+allocating multi-gigabyte memory from a peer-controlled request.
 
-Operators should keep default limits in production. Raising them is a
-deliberate capacity decision, not a client convenience knob.
+The default per-derivation memory ceiling is 512 MiB. Positive
+`YUME_ARGON2_*_MAX` values can deliberately lower or raise the corresponding
+time, memory, and parallelism ceilings; invalid or zero values retain the
+compiled defaults.
+
+Before Argon2 allocation, the server also acquires a manager-owned RAII
+reservation. By default, all concurrent authorized/preauth handshakes share a
+512 MiB aggregate budget and at most four admitted Argon2 jobs. Operators can
+set lower or higher positive values with `--argon2-memory-budget-kib` and
+`--argon2-max-jobs` (or the matching JSON fields). Requests that cannot reserve
+both limits fail immediately, and every success, exception, cancellation, or
+early return releases its reservation. These controls bound admitted Argon2
+work; they do not make compromised authorized keys or intentionally enabled
+preauth lanes harmless, and connection/session caps remain separate controls.
 
 ## Dangerous features and permission gates
 

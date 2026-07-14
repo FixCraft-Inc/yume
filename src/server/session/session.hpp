@@ -31,6 +31,7 @@
 #include "core/stealth/obfs_h2.hpp"
 #include "core/protocol/protocol.hpp"
 #include "server/config/config.hpp"
+#include "server/runtime/kdf_admission.hpp"
 #include "util.hpp"
 
 namespace yume::server {
@@ -48,6 +49,7 @@ public:
             boost::asio::ssl::context& ssl_ctx,
             const ServerConfig& cfg,
             std::shared_ptr<const std::vector<crypto::Bytes>> authorized_keys,
+            std::shared_ptr<KdfAdmissionController> kdf_admission,
             uint64_t session_id,
             Manager* manager);
 
@@ -87,9 +89,9 @@ private:
     void send_real_http_response(const std::string& path);
     void send_robots_txt_response(bool head_only = false);
     // Profile-driven 404 served on any non-yume probe (HTTP or otherwise)
-    // so a passive DPI inspector sees TLS handshake + valid 404, never
-    // the TLS-handshake-followed-by-immediate-close fingerprint that the
-    // pre-1.0 close-on-probe path used to leak. Profile comes from
+    // so an active probe or TLS-terminating inspector gets a valid HTTP
+    // response rather than the TLS-handshake-followed-by-immediate-close
+    // fingerprint that the pre-1.0 path used to leak. Profile comes from
     // cfg_.http_profile (defaults to "yumed" for back-compat, overridden
     // by --hide-in-the-crowd <name> or --public-node which forces nginx).
     void send_disguise_404(const std::string& path);
@@ -208,6 +210,7 @@ private:
     boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream_;
     ServerConfig cfg_;
     std::shared_ptr<const std::vector<crypto::Bytes>> authorized_keys_;
+    std::shared_ptr<KdfAdmissionController> kdf_admission_;
     uint64_t session_id_{0};
     Manager* manager_{nullptr};
 
@@ -323,6 +326,10 @@ private:
         int64_t request_started_ms{0};
         std::uint64_t upstream_bytes{0};
         std::uint64_t downstream_bytes{0};
+        // Accounted in Session::codec_response_bytes_ until close. Keep the
+        // reservation separate from vector size so allocation failures and
+        // cancellation release the exact admitted amount.
+        std::size_t response_reserved_bytes{0};
         int response_status{0};
         bool response_sent{false};
         bool close_summary_logged{false};
@@ -356,6 +363,10 @@ private:
     std::unordered_map<uint8_t, std::shared_ptr<RemoteStream>> streams_;
     std::unordered_map<uint8_t, std::shared_ptr<UdpStream>> udp_streams_;
     std::unordered_map<uint8_t, std::shared_ptr<CodecStream>> codec_streams_;
+    // Protected by streams_mutex_. Codec responses are fully buffered before
+    // their typed envelope is sent, so cap the aggregate reservation rather
+    // than allowing an authenticated peer to multiply the per-response limit.
+    std::size_t codec_response_bytes_{0};
     std::unordered_map<uint8_t, std::shared_ptr<runtime::ServiceStream>> service_streams_;
     std::optional<PacketStream> packet_stream_;
     struct BenchStream {

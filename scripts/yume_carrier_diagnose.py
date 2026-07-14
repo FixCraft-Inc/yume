@@ -757,7 +757,11 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--browser-timeout", type=int, default=45)
     ap.add_argument("--virtual-time-ms", type=int, default=12000)
     ap.add_argument("--startup-timeout", type=int, default=20)
-    ap.add_argument("--report-script", default="/home/user/dpi-human-report.py")
+    ap.add_argument(
+        "--report-script",
+        default="dpi-human-report.py",
+        help="path to the optional DPI report generator (default: ./dpi-human-report.py)",
+    )
     return ap.parse_args()
 
 

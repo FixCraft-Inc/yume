@@ -400,6 +400,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/host/exposure_check.cpp
         server/host/http_proxy.cpp
         server/host/extra_listeners.cpp
+        server/runtime/kdf_admission.cpp
         server/runtime/manager.cpp
         server/runtime/manager_relay.cpp
         server/packet/tun_egress.cpp
@@ -723,6 +724,40 @@ target_link_libraries(yume_packet_bulk_test PRIVATE yume_transport_core)
 yume_link_atomic_if_needed(yume_packet_bulk_test PRIVATE)
 yume_apply_perf_opts(yume_packet_bulk_test)
 add_test(NAME yume_packet_bulk_test COMMAND yume_packet_bulk_test)
+
+add_executable(yume_app_codec_test core/app_codec/codec_test.cpp)
+target_link_libraries(yume_app_codec_test PRIVATE yume_core)
+yume_link_atomic_if_needed(yume_app_codec_test PRIVATE)
+yume_apply_perf_opts(yume_app_codec_test)
+add_test(NAME yume_app_codec_test COMMAND yume_app_codec_test)
+
+add_executable(yume_tls_fingerprint_test core/stealth/tls_fingerprint_test.cpp)
+target_link_libraries(yume_tls_fingerprint_test PRIVATE yume_core)
+yume_link_atomic_if_needed(yume_tls_fingerprint_test PRIVATE)
+yume_apply_perf_opts(yume_tls_fingerprint_test)
+add_test(NAME yume_tls_fingerprint_test COMMAND yume_tls_fingerprint_test)
+
+add_executable(yume_kdf_admission_test
+    server/runtime/kdf_admission_test.cpp
+    server/runtime/kdf_admission.cpp
+)
+target_include_directories(yume_kdf_admission_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(yume_kdf_admission_test PRIVATE Threads::Threads)
+yume_link_atomic_if_needed(yume_kdf_admission_test PRIVATE)
+yume_apply_perf_opts(yume_kdf_admission_test)
+add_test(NAME yume_kdf_admission_test COMMAND yume_kdf_admission_test)
+
+add_executable(yume_server_config_values_test
+    server/cli/config_values_test.cpp
+)
+target_include_directories(yume_server_config_values_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(yume_server_config_values_test PRIVATE
+    nlohmann_json::nlohmann_json
+)
+yume_apply_perf_opts(yume_server_config_values_test)
+add_test(NAME yume_server_config_values_test COMMAND yume_server_config_values_test)
 
 add_executable(yume_inner_crypto_limits_test core/security/inner_crypto_limits_test.cpp)
 target_link_libraries(yume_inner_crypto_limits_test PRIVATE yume_transport_core)

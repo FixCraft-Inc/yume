@@ -16,6 +16,7 @@
 #include "server/cli/misc.hpp"
 #include "core/app_codec/codec.hpp"
 #include "server/config/config.hpp"
+#include "server/config/json_values.hpp"
 #include "server/host/host_routes.hpp"
 #include "util.hpp"
 
@@ -179,6 +180,16 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
             }
             if (json.contains("hop_interval_ms") && !overrides.hop_interval) {
                 cfg.hop_interval_ms = static_cast<std::uint32_t>(json["hop_interval_ms"].get<int>());
+            }
+            if (json.contains("argon2_memory_budget_kib") &&
+                !overrides.argon2_memory_budget) {
+                cfg.argon2_memory_budget_kib =
+                    yume::server::json_positive_u32(
+                        json, "argon2_memory_budget_kib");
+            }
+            if (json.contains("argon2_max_jobs") && !overrides.argon2_max_jobs) {
+                cfg.argon2_max_jobs =
+                    yume::server::json_positive_u32(json, "argon2_max_jobs");
             }
             if (json.contains("inner_heavy")) {
                 cfg.inner_heavy = json["inner_heavy"].get<bool>();

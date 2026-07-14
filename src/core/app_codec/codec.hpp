@@ -101,8 +101,9 @@ std::optional<std::size_t> content_length(const std::vector<HttpHeader>& headers
                                           std::string* error = nullptr);
 bool has_transfer_encoding_chunked(const std::vector<HttpHeader>& headers);
 
-std::string build_backend_http_request(const HttpRequest& request,
-                                       const Endpoint& backend);
+std::optional<std::string> build_backend_http_request(const HttpRequest& request,
+                                                      const Endpoint& backend,
+                                                      std::string* error = nullptr);
 std::string build_client_http_response(const HttpResponse& response);
 
 Bytes encode_request(const HttpRequest& request);

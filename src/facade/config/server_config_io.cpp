@@ -20,6 +20,7 @@
 #include "facade/config/detail.hpp"
 #include "facade/config/keys.hpp"
 #include "core/app_codec/codec.hpp"
+#include "server/config/json_values.hpp"
 #include "server/host/host_routes.hpp"
 #include "server/host/host_types.hpp"
 
@@ -50,6 +51,14 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::inner_required, s.inner_required);
     read_opt(j, cfg_key::inner_hop, s.inner_hop);
     read_opt(j, cfg_key::hop_interval_ms, s.hop_interval_ms);
+    if (j.contains(cfg_key::argon2_memory_budget_kib)) {
+        s.argon2_memory_budget_kib = server::json_positive_u32(
+            j, cfg_key::argon2_memory_budget_kib);
+    }
+    if (j.contains(cfg_key::argon2_max_jobs)) {
+        s.argon2_max_jobs = server::json_positive_u32(
+            j, cfg_key::argon2_max_jobs);
+    }
     read_opt(j, cfg_key::reverse_port_min, s.reverse_port_min);
     read_opt(j, cfg_key::reverse_port_max, s.reverse_port_max);
     read_opt(j, cfg_key::dns_server, s.dns_server);
@@ -289,6 +298,8 @@ bool save_server(server::ServerConfig const& s,
         {cfg_key::inner_required, s.inner_required},
         {cfg_key::inner_hop, s.inner_hop},
         {cfg_key::hop_interval_ms, s.hop_interval_ms},
+        {cfg_key::argon2_memory_budget_kib, s.argon2_memory_budget_kib},
+        {cfg_key::argon2_max_jobs, s.argon2_max_jobs},
         {cfg_key::reverse_port_min, s.reverse_port_min},
         {cfg_key::reverse_port_max, s.reverse_port_max},
         {cfg_key::dns_server, s.dns_server},

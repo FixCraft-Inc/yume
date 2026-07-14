@@ -191,7 +191,7 @@ void print_help() {
         << "  --obfs / --no-obfs       HTTPS masking tunnel preface on/off\n"
         << "  --obfs-pad-multiple <N>  Pad every outbound frame payload to a\n"
         << "                             multiple of N bytes (0-256, default 0).\n"
-        << "                             Defeats per-packet size classifiers.\n"
+        << "                             Reduces stable payload-size features.\n"
         << "                             Requires the same yume version on the\n"
         << "                             server (kFlagPadded support).\n"
         << "  --obfs-jitter-ms <ms>    Defer each batched write by a uniform\n"

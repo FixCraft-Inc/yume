@@ -12,8 +12,10 @@
 #include <array>
 #include <cstdint>
 #include <iomanip>
+#include <iterator>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <cstring>
 #include <vector>
 
@@ -48,6 +50,61 @@ std::string sha256_hash(const std::string& input) {
     return digest_hex(input, EVP_sha256());
 }
 
+bool is_grease_value(uint16_t value) {
+    return ((value & 0x0f0fU) == 0x0a0aU) && ((value >> 8) == (value & 0x00ffU));
+}
+
+std::string hex_u16(uint16_t value) {
+    std::ostringstream out;
+    out << std::hex << std::setw(4) << std::setfill('0') << value;
+    return out.str();
+}
+
+std::string join_hex_codes(std::vector<uint16_t> values, bool sort_values) {
+    values.erase(std::remove_if(values.begin(), values.end(), is_grease_value),
+                 values.end());
+    if (sort_values) {
+        std::sort(values.begin(), values.end());
+    }
+    std::ostringstream out;
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            out << ',';
+        }
+        out << hex_u16(values[i]);
+    }
+    return out.str();
+}
+
+bool is_ascii_alphanumeric(unsigned char value) {
+    return (value >= '0' && value <= '9') ||
+           (value >= 'A' && value <= 'Z') ||
+           (value >= 'a' && value <= 'z');
+}
+
+char lower_hex_digit(unsigned value) {
+    constexpr std::string_view kDigits = "0123456789abcdef";
+    return kDigits[value & 0x0fU];
+}
+
+std::string ja4_alpn_token(std::string_view alpn) {
+    if (alpn.empty()) {
+        return "00";
+    }
+    const auto first = static_cast<unsigned char>(alpn.front());
+    const auto last = static_cast<unsigned char>(alpn.back());
+    if (is_ascii_alphanumeric(first) && is_ascii_alphanumeric(last)) {
+        return std::string{static_cast<char>(first), static_cast<char>(last)};
+    }
+    return std::string{lower_hex_digit(first >> 4U), lower_hex_digit(last)};
+}
+
+std::string ja4_count(std::size_t value) {
+    std::ostringstream out;
+    out << std::setw(2) << std::setfill('0') << std::min<std::size_t>(value, 99);
+    return out.str();
+}
+
 template<typename T>
 std::string join_numbers(const std::vector<T>& nums, const std::string& sep = "-") {
     std::ostringstream oss;
@@ -56,10 +113,6 @@ std::string join_numbers(const std::vector<T>& nums, const std::string& sep = "-
         oss << static_cast<uint32_t>(nums[i]);
     }
     return oss.str();
-}
-
-bool is_grease_value(uint16_t value) {
-    return ((value & 0x0f0fU) == 0x0a0aU) && ((value >> 8) == (value & 0x00ffU));
 }
 
 struct Cursor {
@@ -134,6 +187,9 @@ void append_extension_id(std::vector<uint16_t>& extensions, uint16_t type) {
 }
 
 void parse_server_name_extension(Cursor ext_cursor, JA4Components& ja4) {
+    // Canonical JA4 records whether the extension exists. Its payload is still
+    // parsed below so malformed input cannot influence any other component.
+    ja4.sni_present = "d";
     uint16_t list_len = 0;
     if (!read_u16(ext_cursor, list_len)) {
         return;
@@ -330,26 +386,39 @@ std::string calculate_ja3_hash(const JA3Components& components) {
 }
 
 std::string calculate_ja4_hash(const JA4Components& components) {
-    // JA4 format: <protocol><sni><cipher_count><ext_count>_<cipher_hash>_<ext_hash>_<alpn>
-    std::ostringstream ja4_string;
-    
-    ja4_string << components.protocol_version;
-    ja4_string << components.sni_present;
-    ja4_string << std::setw(2) << std::setfill('0') << static_cast<int>(components.cipher_count);
-    ja4_string << std::setw(2) << std::setfill('0') << static_cast<int>(components.extension_count);
-    ja4_string << "_";
-    
-    std::string cipher_str = join_numbers(components.cipher_suites, ",");
-    std::string cipher_hash = sha256_hash(cipher_str).substr(0, 12);
-    ja4_string << cipher_hash << "_";
-    
-    std::string ext_str = join_numbers(components.extensions, ",");
-    std::string ext_hash = sha256_hash(ext_str).substr(0, 12);
-    ja4_string << ext_hash << "_";
-    
-    ja4_string << (components.first_alpn.empty() ? "00" : components.first_alpn);
-    
-    return ja4_string.str();
+    // Canonical JA4 is a_b_c. FoxIO's definition sorts lower-case, four-digit
+    // hex cipher/extension identifiers, excludes SNI and ALPN from c, and
+    // appends signature algorithms in their original order before hashing c.
+    const std::string a = components.protocol_version + components.sni_present +
+        ja4_count(components.cipher_count) + ja4_count(components.extension_count) +
+        ja4_alpn_token(components.first_alpn);
+
+    const std::string cipher_codes = join_hex_codes(components.cipher_suites, true);
+    const std::string b = cipher_codes.empty()
+        ? std::string("000000000000")
+        : sha256_hash(cipher_codes).substr(0, 12);
+
+    std::vector<uint16_t> extensions;
+    extensions.reserve(components.extensions.size());
+    std::copy_if(components.extensions.begin(), components.extensions.end(),
+                 std::back_inserter(extensions), [](uint16_t extension) {
+                     return extension != static_cast<uint16_t>(ExtensionType::SERVER_NAME) &&
+                            extension != static_cast<uint16_t>(ExtensionType::ALPN) &&
+                            !is_grease_value(extension);
+                 });
+    const std::string extension_codes = join_hex_codes(std::move(extensions), true);
+    std::string c_input = extension_codes;
+    const std::string signature_codes =
+        join_hex_codes(components.signature_algorithms, false);
+    if (!signature_codes.empty() && !extension_codes.empty()) {
+        c_input += "_";
+        c_input += signature_codes;
+    }
+    const std::string c = extension_codes.empty()
+        ? std::string("000000000000")
+        : sha256_hash(c_input).substr(0, 12);
+
+    return a + "_" + b + "_" + c;
 }
 
 std::string calculate_akamai_hash(const JA3Components& components) {
@@ -380,7 +449,7 @@ std::vector<BrowserFingerprint> get_known_browser_fingerprints() {
     // is what we need for per-profile JA3 divergence.
     {
         BrowserFingerprint fp;
-        fp.profile = BrowserProfile::CHROME_135;
+        fp.profile = BrowserProfile::CHROME_131;
         fp.name = "Chrome 131";
         fp.tls_version = 0x0303;  // TLS 1.2 in ClientHello, upgrades to 1.3
         fp.cipher_suites = {
@@ -446,8 +515,8 @@ std::vector<BrowserFingerprint> get_known_browser_fingerprints() {
         JA4Components ja4;
         ja4.protocol_version = "t13";
         ja4.sni_present = "d";
-        ja4.cipher_count = static_cast<uint8_t>(fp.cipher_suites.size());
-        ja4.extension_count = static_cast<uint8_t>(fp.extensions.size());
+        ja4.cipher_count = fp.cipher_suites.size();
+        ja4.extension_count = fp.extensions.size();
         ja4.first_alpn = "h2";
         ja4.cipher_suites = fp.cipher_suites;
         ja4.extensions = fp.extensions;
@@ -517,8 +586,8 @@ std::vector<BrowserFingerprint> get_known_browser_fingerprints() {
         JA4Components ja4;
         ja4.protocol_version = "t13";
         ja4.sni_present = "d";
-        ja4.cipher_count = static_cast<uint8_t>(fp.cipher_suites.size());
-        ja4.extension_count = static_cast<uint8_t>(fp.extensions.size());
+        ja4.cipher_count = fp.cipher_suites.size();
+        ja4.extension_count = fp.extensions.size();
         ja4.first_alpn = "h2";
         ja4.cipher_suites = fp.cipher_suites;
         ja4.extensions = fp.extensions;
@@ -528,10 +597,10 @@ std::vector<BrowserFingerprint> get_known_browser_fingerprints() {
         fingerprints.push_back(fp);
     }
     
-    // Safari 17
+    // Safari 18
     {
         BrowserFingerprint fp;
-        fp.profile = BrowserProfile::SAFARI_17;
+        fp.profile = BrowserProfile::SAFARI_18;
         fp.name = "Safari 18";
         fp.tls_version = 0x0303;
         // Safari 18 cipher list captured from real Safari on macOS 15
@@ -603,8 +672,8 @@ std::vector<BrowserFingerprint> get_known_browser_fingerprints() {
         JA4Components ja4;
         ja4.protocol_version = "t13";
         ja4.sni_present = "d";
-        ja4.cipher_count = static_cast<uint8_t>(fp.cipher_suites.size());
-        ja4.extension_count = static_cast<uint8_t>(fp.extensions.size());
+        ja4.cipher_count = fp.cipher_suites.size();
+        ja4.extension_count = fp.extensions.size();
         ja4.first_alpn = "h2";
         ja4.cipher_suites = fp.cipher_suites;
         ja4.extensions = fp.extensions;
@@ -661,11 +730,11 @@ std::optional<BrowserFingerprint> get_browser_profile_info(BrowserProfile profil
 
 std::string browser_profile_name(BrowserProfile profile) {
     switch (profile) {
-        case BrowserProfile::CHROME_135: return "Chrome 135";
+        case BrowserProfile::CHROME_131: return "Chrome 131";
         case BrowserProfile::CHROME_123: return "Chrome 123";
         case BrowserProfile::FIREFOX_126: return "Firefox 126";
         case BrowserProfile::FIREFOX_115_ESR: return "Firefox 115 ESR";
-        case BrowserProfile::SAFARI_17: return "Safari 17";
+        case BrowserProfile::SAFARI_18: return "Safari 18";
         case BrowserProfile::EDGE_123: return "Edge 123";
         case BrowserProfile::UNKNOWN: return "Unknown";
     }
@@ -674,16 +743,15 @@ std::string browser_profile_name(BrowserProfile profile) {
 
 FingerprintData parse_client_hello(const uint8_t* data, size_t length) {
     FingerprintData result;
+    if (!data || length == 0) {
+        return result;
+    }
 
     std::ostringstream oss;
     for (size_t i = 0; i < std::min(length, size_t(256)); ++i) {
         oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(data[i]);
     }
     result.client_hello_hex = oss.str();
-
-    if (!data || length == 0) {
-        return result;
-    }
 
     std::vector<uint8_t> handshake = extract_handshake_bytes(data, length);
     if (handshake.size() < 4) {
@@ -797,8 +865,8 @@ FingerprintData parse_client_hello(const uint8_t* data, size_t length) {
 
     result.ja4_components.cipher_suites = result.ja3_components.cipher_suites;
     result.ja4_components.extensions = result.ja3_components.extensions;
-    result.ja4_components.cipher_count = static_cast<uint8_t>(result.ja4_components.cipher_suites.size());
-    result.ja4_components.extension_count = static_cast<uint8_t>(result.ja4_components.extensions.size());
+    result.ja4_components.cipher_count = result.ja4_components.cipher_suites.size();
+    result.ja4_components.extension_count = result.ja4_components.extensions.size();
 
     result.ja3_hash = calculate_ja3_hash(result.ja3_components);
     result.ja4_hash = calculate_ja4_hash(result.ja4_components);
@@ -821,7 +889,7 @@ FingerprintEvaluation evaluate_fingerprint(const FingerprintData& fingerprint) {
     eval.needs_stealth_mode = !eval.looks_like_browser;
     eval.recommended_profile = (profile != BrowserProfile::UNKNOWN) 
         ? profile 
-        : BrowserProfile::CHROME_135;
+        : BrowserProfile::CHROME_131;
     
     if (!eval.looks_like_browser) {
         eval.warnings.push_back("TLS fingerprint does not match known browser profiles");

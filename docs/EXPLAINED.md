@@ -484,7 +484,7 @@ Simplified key setup:
 ```text
 +--------------------------------+
 |  CLIENT INPUTS                 |
-|  server PQ pub + PSK/password  |
+|  server PQ public key          |
 +--------------------------------+
         |
         | ML-KEM encapsulates to the server public key
@@ -498,7 +498,7 @@ Simplified key setup:
         v
 +--------------------------------+
 |  SERVER INPUTS                 |
-|  PQ private key + PSK/password |
+|  server PQ private key         |
 +--------------------------------+
         |
         v
@@ -507,7 +507,7 @@ Simplified key setup:
 |  both sides compute same value |
 +--------------------------------+
         |
-        | Argon2id or HKDF
+        | optional Argon2id work factor or HKDF
         v
 +--------------------------------+
 |  BASE KEY                      |
@@ -553,6 +553,10 @@ The default interval is 500 ms. Hopping limits how long any one derived
 key is useful and adds churn inside the already encrypted carrier. It can
 cost a little latency, so performance tests should compare hopping on and
 off on the same route.
+
+This is derived-key separation, not forward secrecy. Both endpoints retain
+the base inner key for the session; compromise of that base key permits
+deriving every time-window key.
 
 ## HTTP/2 Obfs
 

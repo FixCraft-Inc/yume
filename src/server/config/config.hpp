@@ -36,6 +36,10 @@ struct ServerConfig {
     bool inner_required{false};
     bool inner_hop{true};
     std::uint32_t hop_interval_ms{500};
+    // Aggregate admission bounds for authorized/preauth Argon2 handshake
+    // work. These are reservations made before Argon2 allocates memory.
+    std::uint32_t argon2_memory_budget_kib{1u << 19};  // 512 MiB
+    std::uint32_t argon2_max_jobs{4};
     int reverse_port_min{yume::policy::kReversePortMinDefault};
     int reverse_port_max{yume::policy::kReversePortMaxDefault};
     std::string dns_server;
@@ -115,19 +119,18 @@ struct ServerConfig {
     // --upstream-response <path>. Path to a pre-captured real HTTP/1.1
     // response (operator captures it once via tcpdump or curl -i
     // against a real nginx/apache/etc and points this flag at the
-    // file). When set, Session::send_disguise_404 emits those bytes
-    // verbatim instead of the synthetic profile-driven 404 — probes
-    // see a byte-identical-to-the-real-upstream response, defeating
-    // any DPI inspector that compares body bytes against a known
-    // capture. Loaded at startup; line endings are normalised so
+    // file). When set, Session::send_disguise_404 emits the normalized
+    // capture instead of the synthetic profile-driven 404. This can improve
+    // fidelity but does not guarantee equivalence to a live upstream.
+    // Loaded at startup; line endings are normalised so
     // operators can capture with curl -i (which prints \n) without
     // breaking HTTP wire format. Empty = use synthetic profile.
     std::string upstream_response_file;
     std::string upstream_response_bytes;
     // --upstream-response-dir <dir>. Sibling of --upstream-response that
     // loads every *.http / *.response file in the directory and rotates
-    // per-probe. Defeats the "replay yumed twice, get the same Date /
-    // ETag / body" tell from --upstream-response. Files are normalised
+    // per-probe. Avoids the simplest "every probe gets the same capture"
+    // tell from --upstream-response. Files are normalised
     // (lone \n → \r\n) the same way --upstream-response handles them.
     // If both --upstream-response and --upstream-response-dir are set,
     // the directory wins and the single file is ignored.
@@ -139,8 +142,8 @@ struct ServerConfig {
     std::uint32_t upstream_response_ttl_s{0};
     // --obfs-pad-multiple <N>. When > 0, every outbound frame's payload
     // is padded with trailing zeros + a 1-byte length to round its
-    // on-wire size up to a multiple of N. Defeats classifiers that
-    // train on per-packet payload-size histograms. 0 = off. Receivers
+    // on-wire size up to a multiple of N. Reduces the stability of features
+    // used by payload-size classifiers; it is not a complete defense. 0 = off. Receivers
     // always strip padding transparently — but both ends must run a
     // version that knows about kFlagPadded, so enabling this on a new
     // sender talking to a pre-padding peer is a hard break. Clamped to

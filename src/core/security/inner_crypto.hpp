@@ -55,11 +55,25 @@ struct KdfParams {
     std::uint32_t pbkdf2_iters{0};
 };
 
+// Resolves zero/omitted KDF fields to the exact values server_derive_key will
+// use. Callers that reserve resources or enforce caps before derivation must
+// use this rather than accounting the peer's raw zeros.
+KdfParams resolve_server_kdf_params(const Config& cfg,
+                                    bool heavy,
+                                    const std::optional<KdfParams>& kdf_params);
+
 std::optional<DerivedKey> server_derive_key(const Config& cfg,
                                             const Bytes& pq_ciphertext,
                                             const Bytes& salt,
                                             bool heavy,
                                             const std::optional<KdfParams>& kdf_params);
+std::optional<DerivedKey> server_derive_key_resolved(
+    const Config& cfg,
+    const Bytes& pq_ciphertext,
+    const Bytes& salt,
+    bool heavy,
+    const KdfParams& resolved_params,
+    bool allow_kdf_fallback);
 
 bool pq_supported();
 bool argon2_supported();

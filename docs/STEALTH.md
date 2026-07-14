@@ -4,14 +4,14 @@ YUME stacks four independent layers of byte-shape camouflage on top of TLS 1.3. 
 
 ## Layer 1: real TLS 1.3 with a browser fingerprint
 
-The TLS handshake is real, not forged. OpenSSL emits a genuine ClientHello, but its cipher suites, supported groups, signature algorithms, and ALPN list are configured to match a specific browser profile. JA3 / JA4 hashes fall in the browser cluster, and a passive TLS-fingerprint observer sees the same handshake shape they'd see from the configured browser.
+The TLS handshake is real, not forged. OpenSSL emits a genuine ClientHello whose cipher suites, supported groups, signature algorithms, and ALPN list are configured toward a browser profile. The project checks the resulting JA3 against pinned build-host baselines and computes [canonical JA4](https://github.com/FoxIO-LLC/ja4/blob/main/technical_details/JA4.md) for diagnostics. This is browser-oriented shaping, not a byte-identical browser ClientHello: stock OpenSSL and the partial GREASE support leave observable differences described below.
 
 Source: [src/core/stealth/tls_stealth.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/stealth/tls_stealth.cpp), [src/core/stealth/tls_fingerprint.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/stealth/tls_fingerprint.cpp).
 
 | Profile flag | Mimics |
 | --- | --- |
 | `--profile chrome` (default) | Chrome 131 |
-| `--profile firefox` | Firefox 133 |
+| `--profile firefox` | Firefox 126 |
 | `--profile safari` | Safari 18 |
 | `--no-stealth` | Bare OpenSSL defaults; distinguishable as YUME, not recommended in hostile networks |
 
@@ -21,7 +21,7 @@ Profile rotation per N connections is available via `--tls-stealth-rotate` and `
 
 After TLS handshake, the client emits the bytes a real Chrome would: an HTTP/2 connection preface (`PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n`), Chrome-shaped `SETTINGS`, a `WINDOW_UPDATE`, and a `HEADERS` frame opening stream 1 with a `POST` request. The path is `/<token>/<nonce>` where `<token>` = `HMAC-SHA256(K, sni || hour_epoch || "yume-obfs-v2")` truncated to 16 bytes hex, and `K` is HKDF-derived from `--obfs-secret`. The server replies with canned `SETTINGS` + `SETTINGS-ACK` + `HEADERS :status=200 content-type=application/grpc-web+proto`.
 
-To a stateless DPI box, the first ~150 cleartext bytes of every YUME connection look exactly like a Chrome → CDN gRPC-web request.
+The exchange resembles a Chrome-to-CDN gRPC-web opening to an observer that terminates TLS or to an active probe at the endpoint. A passive path observer does not see these plaintext bytes; it sees the TLS handshake plus encrypted record sizes and timing. After this opening exchange, the current authenticated tunnel carries YUME frames rather than maintaining a fully conformant long-lived HTTP/2 stream.
 
 Source: [src/core/stealth/obfs_h2.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/stealth/obfs_h2.cpp), [src/core/stealth/obfs_signal.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/stealth/obfs_signal.cpp).
 
@@ -37,9 +37,9 @@ The token rotates every hour. The verifier accepts ±1 hour of clock skew. A cap
 
 ## Layer 3: HTTP-layer server disguise (`--hide-in-the-crowd`)
 
-The TLS-fingerprint layer fools a passive JA3 / JA4 inspector. The HTTP/2 carrier fools a stateless cleartext-byte-shape DPI. But an active prober that just sends a regular `curl https://yumed.example.com/` got — before 1.0 — TLS handshake plus immediate TCP close. **Real web servers don't do that.** They answer 404 / 503 / something. The close-on-probe was itself a strong DPI fingerprint.
+The TLS-fingerprint layer is intended to reduce coarse JA3-based blocking, while the HTTP/2-shaped opening makes an endpoint probe less obviously proprietary. Neither is a guarantee against a current JA4 implementation or a stateful classifier. An active prober that just sends a regular `curl https://yumed.example.com/` got — before 1.0 — TLS handshake plus immediate TCP close. **Real web servers don't do that.** They answer 404 / 503 / something. The close-on-probe was itself a strong DPI fingerprint.
 
-`--hide-in-the-crowd <profile>` makes yumed serve a profile-driven 404 to non-YUME probes, with the EXACT header order, charset, and body shape that the chosen real-server software emits. Captured from upstream source — not just the Server header — so a header-level DPI inspector sees what nginx/Apache/Caddy/etc would send.
+`--hide-in-the-crowd <profile>` makes yumed serve a synthetic profile-driven 404 to non-YUME probes, with header order, charset, and body templates based on the chosen server software. This is higher fidelity than changing only the `Server` header, but generated fields and repeated behaviour can still differ from a real deployment. Use `--upstream-response` or `--upstream-response-dir` when replay of operator-captured responses is required.
 
 Server profiles:
 
@@ -79,25 +79,25 @@ A browser that hits the same hostname and port with `GET / HTTP/1.1` is served t
 
 ## What this defends against, what it doesn't
 
-**Defends well against:**
+**Designed to help against:**
 
-- Stateless DPI that classifies traffic by the first N cleartext bytes after TLS
-- ML classifiers trained on TLS-handshake fingerprints (JA3 / JA4)
-- Active probes that complete TLS and inspect the application layer for non-HTTP traffic
+- Simple blocking based on known VPN wire signatures or coarse TLS fingerprints
+- TLS-terminating inspection that checks only the first application exchange
+- Casual active probes that complete TLS and expect an immediate non-HTTP close
 - ISP-level "OpenVPN/WireGuard signature" filters that block known VPN protocols
 
 **Partial defense (depends on the depth of the attack):**
 
-- **Stateful HTTP/2 middleboxes** that fully track stream and HPACK dynamic-table state. SETTINGS frame ACKs and PING ACKs are emitted with the right payload echo. Peer SETTINGS are parsed (not just ACKed): the decoder tracks `SETTINGS_HEADER_TABLE_SIZE`, `SETTINGS_MAX_CONCURRENT_STREAMS`, `SETTINGS_INITIAL_WINDOW_SIZE`, `SETTINGS_MAX_FRAME_SIZE` (clamped to RFC 7540 §6.5.2's [16384, 16777215] range), and `SETTINGS_MAX_HEADER_LIST_SIZE`. Connection-level and per-stream flow control (§6.9) are tracked: `WINDOW_UPDATE` increments propagate to the send-window state, `SETTINGS_INITIAL_WINDOW_SIZE` deltas apply to every existing per-stream window per §6.9.2, and `Session::serve_fake_h2_real_index` consults the budget before emitting DATA so a peer-advertised window isn't exceeded. HPACK is stateful: the encoder uses the "Literal Header Field with Incremental Indexing" opcode (§6.2.1, 0x40 prefix) — the same opcode real Chrome / Firefox emit — and maintains the dynamic table per §4 with size accounting (§4.1), eviction on shrink (§4.2 + §4.4), and the §6.3 dynamic-table-size-update opcode when the peer changes `SETTINGS_HEADER_TABLE_SIZE`. The remaining tell is that the carrier only ever emits one HEADERS frame per connection — that's a fingerprint of the carrier's purpose (one-shot fake gRPC-web request), not a protocol bug. Replacing the byte-shape-preserving static-table indices in `encode_client_handshake` with their semantically-correct counterparts (16=`accept-encoding`, 17=`accept-language`, 31=`content-type`) is a post-1.x change since it alters HEADERS-frame size.
+- **Stateful HTTP/2 middleboxes.** The opening decoder parses peer SETTINGS, answers SETTINGS/PING frames, tracks send windows for fake HTTP responses, and has stateful HPACK helpers. Those pieces improve the handshake and decoy response, but the authenticated carrier deliberately switches to YUME framing after the initial HEADERS exchange. A TLS-terminating middlebox that requires valid HTTP/2 for the full connection can therefore distinguish or reject it. Per-payload HTTP/2 DATA carriage is not enabled in the current transport path.
 - **ML traffic classifiers** trained on joint inter-arrival × packet-size distributions over the full session. Mitigations are opt-in (both knobs default to 0 because they need a matching-version peer / cost latency):
     - `--obfs-pad-multiple <N>` (0..256) — rounds every outbound frame payload up to a multiple of N bytes via trailing pad + a 1-byte length (`kFlagPadded`). Both ends must run a yume that knows `kFlagPadded`; enable it on both sides or leave it off.
     - `--obfs-jitter-ms <ms>` — defers each batched TLS write by a uniform random 0..ms delay. Strand-serialised, so the cadence offset propagates and the inter-arrival ML feature stops being constant. Adds latency.
     - `YUME_AUTH_JITTER_MS=<ms>` env — server-side jitter on the single AUTH challenge frame, separate from `--obfs-jitter-ms`. Cheap because it only fires once per session.
     
     None of these close the gap against arbitrarily sensitive classifiers; they raise the training cost.
-- **Active probers** that send arbitrary HTTP/1.1 requests to the server: served a profile-driven 404 by `--hide-in-the-crowd <profile>` (see [Layer 3](#layer-3-http-layer-server-disguise---hide-in-the-crowd)) whose header order, charset, body shape, and profile-specific extras (`Alt-Svc` for Caddy, `CF-RAY` + `alt-svc` for Cloudflare, `Content-Security-Policy` + `nosniff` + `X-Powered-By` for Express, etc.) match the real-server bytes captured from upstream source. For byte-identical replay of a real captured response, use `--upstream-response <file>` (single capture, replayed verbatim every probe) or `--upstream-response-dir <dir>` + optional `--upstream-response-ttl <s>` (loads every `*.http` / `*.response` in the directory and rotates one per probe; TTL reloads the directory periodically so operators can refresh captures without restarting). Rotation defeats the "probe twice, get byte-identical Date / ETag / body" tell that single-capture replay leaves behind.
-- **TLS-fingerprint regressions** if OpenSSL is upgraded to a version whose default extension order drifts from the compiled-in browser profiles. Mitigated: yumed runs a startup JA3 self-check that hashes its own ClientHello via the configured profile and compares to a pinned per-profile baseline. Drift is logged loudly with the observed vs expected JA3.
-- **Real-browser GREASE values** (RFC 8701) in the ClientHello. **Extensions slot: closed.** `apply_stealth_profile` registers a custom extension via `SSL_CTX_add_custom_ext` at a GREASE-range type (one of `{0x0A0A, 0x1A1A, …, 0xFAFA}`, rotated per-connection through a process-local seed so each ClientHello picks a different value) with an empty payload. Verified against OpenSSL 3.5.6 by hex-dumping the rendered ClientHello: the extension appears at the front of the extensions block (`7a 7a 00 00`, `8a 8a 00 00`, …) — exactly the shape real Chrome emits. The JA3 parser correctly normalizes GREASE values out of the hash, so the pinned baselines in `main_server.cpp` continue to match. **Still partial:** Chrome additionally puts GREASE values at index 0 of the cipher_suites list, the supported_groups list, and the ALPN list. Stock OpenSSL's `SSL_CTX_set_cipher_list` / `SSL_CTX_set_ciphersuites` / `SSL_CTX_set_alpn_protos` reject unknown names, and `SSL_CTX_set1_groups` (uint16-array form) silently drops unknown IDs and falls back to defaults (observed: it injected `0x11ec` X25519MLKEM768 instead). Closing those three slots needs either a BoringSSL backend (days, link-layer swap) or a custom BIO wrapper that rewrites the cipher/groups/ALPN lists post-construction (~400-700 LOC). The extensions-slot win alone defeats DPI engines that key on "GREASE present somewhere in the ClientHello" without checking position; a classifier that specifically tracks GREASE-at-cipher-index-0 will still see the difference.
+- **Active probers** that send arbitrary HTTP/1.1 requests to the server: served a profile-driven 404 by `--hide-in-the-crowd <profile>` (see [Layer 3](#layer-3-http-layer-server-disguise---hide-in-the-crowd)) whose header order, charset, body shape, and profile-specific extras (`Alt-Svc` for Caddy, `CF-RAY` + `alt-svc` for Cloudflare, `Content-Security-Policy` + `nosniff` + `X-Powered-By` for Express, etc.) are based on captured upstream behaviour. For higher-fidelity replay, use `--upstream-response <file>` (single capture, normalized to valid HTTP line endings and replayed every probe) or `--upstream-response-dir <dir>` + optional `--upstream-response-ttl <s>` (loads every `*.http` / `*.response` in the directory and rotates one per probe; TTL reloads the directory periodically). Rotation avoids the simplest "every probe returns the same capture" tell, but it is not proof against a stateful prober.
+- **TLS-fingerprint regressions** if OpenSSL is upgraded to a version whose emitted ClientHello drifts from the compiled profiles. Mitigation is diagnostic: yumed generates a local ClientHello at startup and compares its JA3 with a pinned project baseline. A mismatch is logged but does not fail startup, and a match proves consistency with that baseline rather than equivalence to a current browser release.
+- **Real-browser GREASE values** (RFC 8701) in the ClientHello. **Extension slot implemented, overall support partial.** `apply_stealth_profile` registers an empty custom extension at a GREASE-range type and rotates the selected value. Chrome also places GREASE values in the cipher-suite and supported-group lists; stock OpenSSL's public configuration APIs do not preserve those unknown values. A classifier that tracks GREASE position or the complete ClientHello can still distinguish YUME's OpenSSL-generated shape.
 
 ## Quick recipes
 
@@ -125,7 +125,7 @@ yumed --listen 443 --cert … --key … --auth-keys … \
 yume --server … --auth … --socks 1080 --tls-stealth-rotate --tls-stealth-rotation-interval 50
 ```
 
-**Per-frame padding + send-side jitter.** Defeats ML classifiers that fingerprint by inter-arrival × packet-size joints. Enable on BOTH ends — `--obfs-pad-multiple` flips on `kFlagPadded` and an old peer can't parse the stream:
+**Per-frame padding + send-side jitter.** Reduces stable features available to classifiers that use inter-arrival × packet-size joints. Enable on BOTH ends — `--obfs-pad-multiple` flips on `kFlagPadded` and an old peer can't parse the stream:
 
 ```bash
 # server
@@ -164,4 +164,4 @@ Run a local-loopback yumed and capture with `tcpdump`:
 sudo tcpdump -A -i lo -s 0 'port 18443'
 ```
 
-The TLS handshake and ciphertext are encrypted, but the plaintext bytes that the local TLS code writes can be observed in the application's own logs. With `--obfs` on, the post-handshake plaintext should begin with `PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n` followed by a `SETTINGS` frame; that's the byte-shape DPI sees after decryption (or that any active TLS-MITM probe would see if the network can do TLS interception).
+The ClientHello is visible on the wire, while application data is encrypted after the TLS handshake. With `--obfs` on, the local plaintext passed into TLS begins with `PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n` followed by a `SETTINGS` frame. A passive capture sees only the resulting TLS records; inspecting the HTTP/2 bytes requires endpoint instrumentation or TLS termination/interception.

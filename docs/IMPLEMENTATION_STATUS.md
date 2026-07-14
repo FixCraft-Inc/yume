@@ -102,7 +102,7 @@ Planned but not implemented:
 Status: separate repo scaffolded; no production browser exists in this
 tree.
 
-- The separate Linux-first browser repo is `/home/user/yume-browser`.
+- The separate Linux-first browser repository is not part of this tree.
 - It currently contains a Qt Quick / Qt WebEngine scaffold, renderer adapter
   interfaces, a `libyume` wrapper boundary, and a placeholder `yume://` scheme
   handler.

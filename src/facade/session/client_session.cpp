@@ -123,6 +123,8 @@ struct ClientSession::Impl {
 
     std::thread worker;
     std::atomic<bool> worker_busy{false};
+    std::thread stop_worker;
+    std::atomic<bool> stop_busy{false};
 
     // Periodic IPC poll task: asks the runtime for bytes_in/bytes_out
     // every ~500 ms, deltas into the TrafficMeter so the dashboard
@@ -136,6 +138,10 @@ struct ClientSession::Impl {
 
     void join_previous_worker() {
         if (worker.joinable()) worker.join();
+    }
+
+    void join_previous_stop_worker() {
+        if (stop_worker.joinable()) stop_worker.join();
     }
 
     void stop_stats_thread() {
@@ -172,6 +178,7 @@ ClientSession::~ClientSession() {
     stop();
     impl_->stop_stats_thread();
     impl_->join_previous_worker();
+    impl_->join_previous_stop_worker();
 }
 
 bool ClientSession::start(std::string* err) {
@@ -203,6 +210,9 @@ bool ClientSession::start(std::string* err) {
     // so the GUI thread never stalls on click.
     impl_->worker = std::thread([this, cfg = std::move(cfg)]() mutable {
         auto fail = [this](std::string msg) {
+            if (impl_->stop_busy.load(std::memory_order_acquire)) {
+                return;
+            }
             StatusCallback fcb;
             ClientStatus fsnap;
             {
@@ -298,7 +308,8 @@ bool ClientSession::start(std::string* err) {
 }
 
 void ClientSession::stop() {
-    if (!impl_->runtime.running() && !impl_->worker_busy.load()) return;
+    if ((!impl_->runtime.running() && !impl_->worker_busy.load()) ||
+        impl_->stop_busy.exchange(true)) return;
 
     // Mark intent immediately so the UI shows "Disconnecting".
     StatusCallback cb;
@@ -314,10 +325,12 @@ void ClientSession::stop() {
 
     impl_->stop_stats_thread();
 
-    impl_->join_previous_worker();
-    impl_->worker_busy.store(true);
-
-    impl_->worker = std::thread([this]() {
+    // Do not join the startup worker here. It may be waiting for the full
+    // connect/auth timeout, and ClientSession::stop() is called directly from
+    // the GUI action path. The runtime cancellation and its join happen off
+    // that thread instead.
+    impl_->join_previous_stop_worker();
+    impl_->stop_worker = std::thread([this]() {
         std::string stop_error;
         impl_->runtime.stop(&stop_error);
         StatusCallback done_cb;
@@ -332,6 +345,7 @@ void ClientSession::stop() {
         }
         if (done_cb) done_cb(done_snap);
         impl_->worker_busy.store(false);
+        impl_->stop_busy.store(false);
     });
 }
 

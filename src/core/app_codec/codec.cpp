@@ -13,6 +13,7 @@
 #include <limits>
 #include <set>
 #include <sstream>
+#include <unordered_set>
 
 #include <boost/asio/ip/address.hpp>
 #include <nlohmann/json.hpp>
@@ -79,6 +80,49 @@ bool valid_header_value(std::string_view value) {
     return true;
 }
 
+bool valid_reason_phrase(std::string_view reason) {
+    if (reason.empty() || reason.size() > 128) {
+        return false;
+    }
+    return std::all_of(reason.begin(), reason.end(), [](unsigned char c) {
+        return c >= 0x20 && c <= 0x7e;
+    });
+}
+
+bool parse_origin_form_target(std::string_view target,
+                              std::string* path,
+                              std::string* query,
+                              std::string* error) {
+    if (path) path->clear();
+    if (query) query->clear();
+    if (target.empty() || target.front() != '/') {
+        if (error) *error = "HTTP target must be origin-form";
+        return false;
+    }
+    for (unsigned char c : target) {
+        if (c <= 0x20 || c == 0x7f) {
+            if (error) *error = "HTTP target contains control characters";
+            return false;
+        }
+    }
+    if (target.find('#') != std::string_view::npos ||
+        target.find("://") != std::string_view::npos) {
+        if (error) *error = "HTTP target is not origin-form";
+        return false;
+    }
+    const auto question = target.find('?');
+    const std::string_view parsed_path = target.substr(0, question);
+    if (parsed_path.empty() || parsed_path.find("..") != std::string_view::npos) {
+        if (error) *error = "HTTP target path is not allowed";
+        return false;
+    }
+    if (path) *path = std::string(parsed_path);
+    if (query && question != std::string_view::npos) {
+        *query = std::string(target.substr(question + 1));
+    }
+    return true;
+}
+
 bool hop_by_hop_header(std::string_view name) {
     const std::string lower = lower_ascii(name);
     return lower == "connection" ||
@@ -93,13 +137,31 @@ bool hop_by_hop_header(std::string_view name) {
 }
 
 std::vector<HttpHeader> sanitized_headers(const std::vector<HttpHeader>& headers) {
+    std::unordered_set<std::string> connection_nominated;
+    for (const auto& header : headers) {
+        if (lower_ascii(header.name) != "connection" || !valid_header_value(header.value)) {
+            continue;
+        }
+        std::size_t pos = 0;
+        while (pos < header.value.size()) {
+            const auto comma = header.value.find(',', pos);
+            const std::string token = trim_ascii(header.value.substr(
+                pos, comma == std::string::npos ? std::string::npos : comma - pos));
+            if (valid_header_name(token)) {
+                connection_nominated.insert(lower_ascii(token));
+            }
+            if (comma == std::string::npos) break;
+            pos = comma + 1;
+        }
+    }
     std::vector<HttpHeader> out;
     out.reserve(std::min(headers.size(), kMaxHeaders));
     for (const auto& header : headers) {
         if (out.size() >= kMaxHeaders) {
             break;
         }
-        if (hop_by_hop_header(header.name)) {
+        if (hop_by_hop_header(header.name) ||
+            connection_nominated.count(lower_ascii(header.name)) != 0) {
             continue;
         }
         if (!valid_header_name(header.name) || !valid_header_value(header.value)) {
@@ -108,24 +170,6 @@ std::vector<HttpHeader> sanitized_headers(const std::vector<HttpHeader>& headers
         out.push_back(header);
     }
     return out;
-}
-
-std::string path_from_target(std::string_view target, std::string* query) {
-    if (query) {
-        query->clear();
-    }
-    const auto hash = target.find('#');
-    const std::string_view no_fragment = hash == std::string_view::npos
-        ? target
-        : target.substr(0, hash);
-    const auto q = no_fragment.find('?');
-    if (q == std::string_view::npos) {
-        return std::string(no_fragment);
-    }
-    if (query) {
-        *query = std::string(no_fragment.substr(q + 1));
-    }
-    return std::string(no_fragment.substr(0, q));
 }
 
 bool append_headers_from_lines(std::string_view lines,
@@ -194,23 +238,36 @@ nlohmann::json headers_to_json(const std::vector<HttpHeader>& headers) {
     return array;
 }
 
-std::vector<HttpHeader> headers_from_json(const nlohmann::json& json) {
-    std::vector<HttpHeader> headers;
+bool headers_from_json(const nlohmann::json& json,
+                       std::vector<HttpHeader>* headers,
+                       std::string* error) {
+    if (!headers) {
+        return false;
+    }
+    headers->clear();
     if (!json.is_array()) {
-        return headers;
+        if (error) *error = "codec headers must be an array";
+        return false;
     }
     for (const auto& item : json) {
         if (!item.is_array() || item.size() != 2 ||
             !item[0].is_string() || !item[1].is_string()) {
-            continue;
+            if (error) *error = "codec header metadata is malformed";
+            return false;
+        }
+        if (headers->size() >= kMaxHeaders) {
+            if (error) *error = "too many codec headers";
+            return false;
         }
         std::string name = item[0].get<std::string>();
         std::string value = item[1].get<std::string>();
-        if (valid_header_name(name) && valid_header_value(value)) {
-            headers.push_back(HttpHeader{std::move(name), std::move(value)});
+        if (!valid_header_name(name) || !valid_header_value(value)) {
+            if (error) *error = "codec header is invalid";
+            return false;
         }
+        headers->push_back(HttpHeader{std::move(name), std::move(value)});
     }
-    return headers;
+    return true;
 }
 
 Bytes encode_envelope(EnvelopeKind kind, nlohmann::json meta, const Bytes& body) {
@@ -507,15 +564,9 @@ bool parse_http_request_head(std::string_view header_block,
         }
         return false;
     }
-    if (req.target.empty() || req.target.front() != '/' ||
-        req.target.find("..") != std::string::npos ||
-        req.target.find("://") != std::string::npos) {
-        if (error) {
-            *error = "invalid HTTP target";
-        }
+    if (!parse_origin_form_target(req.target, &req.path, &req.query, error)) {
         return false;
     }
-    req.path = path_from_target(req.target, &req.query);
     if (!append_headers_from_lines(header_block.substr(first_eol + 2), &req.headers, error)) {
         return false;
     }
@@ -543,21 +594,23 @@ bool parse_http_response_head(std::string_view header_block,
         return false;
     }
     std::string_view status_line = header_block.substr(0, first_eol);
-    if (!status_line.starts_with("HTTP/1.")) {
+    if (!(status_line.starts_with("HTTP/1.0 ") || status_line.starts_with("HTTP/1.1 "))) {
         if (error) {
             *error = "invalid HTTP status line";
         }
         return false;
     }
-    const auto sp1 = status_line.find(' ');
-    if (sp1 == std::string_view::npos || sp1 + 4 > status_line.size()) {
+    constexpr std::size_t kStatusPrefixBytes = 9;
+    if (status_line.size() < kStatusPrefixBytes + 3 ||
+        (status_line.size() > kStatusPrefixBytes + 3 &&
+         status_line[kStatusPrefixBytes + 3] != ' ')) {
         if (error) {
             *error = "malformed HTTP status line";
         }
         return false;
     }
     int code = 0;
-    const auto code_text = status_line.substr(sp1 + 1, 3);
+    const auto code_text = status_line.substr(kStatusPrefixBytes, 3);
     auto [ptr, ec] = std::from_chars(code_text.data(), code_text.data() + code_text.size(), code);
     if (ec != std::errc() || ptr != code_text.data() + code_text.size() || code < 100 || code > 599) {
         if (error) {
@@ -567,13 +620,16 @@ bool parse_http_response_head(std::string_view header_block,
     }
     HttpResponse resp;
     resp.status_code = code;
-    if (sp1 + 5 <= status_line.size()) {
-        resp.reason = trim_ascii(status_line.substr(sp1 + 5));
+    if (status_line.size() > kStatusPrefixBytes + 3) {
+        resp.reason = std::string(status_line.substr(kStatusPrefixBytes + 4));
     } else {
         resp.reason.clear();
     }
     if (resp.reason.empty()) {
         resp.reason = code == 200 ? "OK" : "Upstream Response";
+    } else if (!valid_reason_phrase(resp.reason)) {
+        if (error) *error = "invalid HTTP reason phrase";
+        return false;
     }
     if (!append_headers_from_lines(header_block.substr(first_eol + 2), &resp.headers, error)) {
         return false;
@@ -631,8 +687,16 @@ bool has_transfer_encoding_chunked(const std::vector<HttpHeader>& headers) {
     return false;
 }
 
-std::string build_backend_http_request(const HttpRequest& request,
-                                       const Endpoint& backend) {
+std::optional<std::string> build_backend_http_request(const HttpRequest& request,
+                                                      const Endpoint& backend,
+                                                      std::string* error) {
+    std::string path;
+    std::string query;
+    if (!parse_origin_form_target(request.target, &path, &query, error) ||
+        request.path != path || request.query != query) {
+        if (error && error->empty()) *error = "codec request target metadata mismatch";
+        return std::nullopt;
+    }
     std::ostringstream out;
     out << request.method << " " << request.target << " HTTP/1.1\r\n";
     out << "Host: " << backend.host << ":" << backend.port << "\r\n";
@@ -648,7 +712,10 @@ std::string build_backend_http_request(const HttpRequest& request,
 
 std::string build_client_http_response(const HttpResponse& response) {
     std::ostringstream out;
-    out << "HTTP/1.1 " << response.status_code << " " << response.reason << "\r\n";
+    const std::string_view reason = valid_reason_phrase(response.reason)
+        ? std::string_view(response.reason)
+        : std::string_view("Upstream Response");
+    out << "HTTP/1.1 " << response.status_code << " " << reason << "\r\n";
     for (const auto& header : sanitized_headers(response.headers)) {
         out << header.name << ": " << header.value << "\r\n";
     }
@@ -749,8 +816,10 @@ bool decode_envelope(const Bytes& payload,
                 envelope.request.target = meta.value("target", "");
                 envelope.request.path = meta.value("path", "");
                 envelope.request.query = meta.value("query", "");
-                envelope.request.headers =
-                    headers_from_json(meta.value("headers", nlohmann::json::array()));
+                if (!headers_from_json(meta.value("headers", nlohmann::json::array()),
+                                       &envelope.request.headers, error)) {
+                    return false;
+                }
                 envelope.request.body = std::move(body);
                 if (envelope.request.method.empty() || envelope.request.target.empty() ||
                     envelope.request.path.empty()) {
@@ -759,16 +828,36 @@ bool decode_envelope(const Bytes& payload,
                     }
                     return false;
                 }
+                {
+                    std::string canonical_path;
+                    std::string canonical_query;
+                    if (!parse_origin_form_target(envelope.request.target,
+                                                  &canonical_path,
+                                                  &canonical_query,
+                                                  error) ||
+                        envelope.request.path != canonical_path ||
+                        envelope.request.query != canonical_query) {
+                        if (error && error->empty()) {
+                            *error = "codec request target metadata mismatch";
+                        }
+                        return false;
+                    }
+                }
                 break;
             case EnvelopeKind::Response:
                 envelope.response.status_code = meta.value("status", 502);
                 envelope.response.reason = meta.value("reason", "Bad Gateway");
-                envelope.response.headers =
-                    headers_from_json(meta.value("headers", nlohmann::json::array()));
+                if (!headers_from_json(meta.value("headers", nlohmann::json::array()),
+                                       &envelope.response.headers, error)) {
+                    return false;
+                }
                 envelope.response.body = std::move(body);
                 if (envelope.response.status_code < 100 || envelope.response.status_code > 599) {
                     envelope.response.status_code = 502;
                     envelope.response.reason = "Bad Gateway";
+                } else if (!valid_reason_phrase(envelope.response.reason)) {
+                    if (error) *error = "codec response reason is invalid";
+                    return false;
                 }
                 break;
             case EnvelopeKind::Error:

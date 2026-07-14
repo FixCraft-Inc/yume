@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -35,11 +36,11 @@ enum class ExtensionType : uint16_t {
 
 // Browser profile identifiers
 enum class BrowserProfile {
-    CHROME_135,
+    CHROME_131,
     CHROME_123,
     FIREFOX_126,
     FIREFOX_115_ESR,
-    SAFARI_17,
+    SAFARI_18,
     EDGE_123,
     UNKNOWN
 };
@@ -53,12 +54,13 @@ struct JA3Components {
     std::vector<uint8_t> ec_point_formats;
 };
 
-// JA4 fingerprint components (simplified)
+// JA4 TLS-client fingerprint components. The protocol_version field includes
+// the transport prefix (for example, "t13" for TLS 1.3 over TCP).
 struct JA4Components {
-    std::string protocol_version;        // e.g., "t13" for TLS 1.3
+    std::string protocol_version;
     std::string sni_present;             // "d" or "i"
-    uint8_t cipher_count{0};
-    uint8_t extension_count{0};
+    std::size_t cipher_count{0};
+    std::size_t extension_count{0};
     std::string first_alpn;              // first ALPN value
     std::vector<uint16_t> cipher_suites;
     std::vector<uint16_t> extensions;
@@ -106,7 +108,7 @@ FingerprintData parse_client_hello(const uint8_t* data, size_t length);
 struct FingerprintEvaluation {
     bool looks_like_browser{false};
     bool needs_stealth_mode{true};
-    BrowserProfile recommended_profile{BrowserProfile::CHROME_135};
+    BrowserProfile recommended_profile{BrowserProfile::CHROME_131};
     std::vector<std::string> warnings;
     std::vector<std::string> recommendations;
 };

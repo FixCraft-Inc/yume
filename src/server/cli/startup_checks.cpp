@@ -404,7 +404,7 @@ bool apply_public_node_defaults(yume::server::ServerConfig& cfg,
     yume::util::log_info("  - dangerous capability flags (--allow-exec / --allow-local-ip / --control-full) are rejected");
     yume::util::log_info("  - inner crypto required (no plaintext transport)");
     yume::util::log_info("  - --auth-keys required (no anonymous-relay accidents)");
-    yume::util::log_info("  - Argon2 caps locked to safe defaults (env vars can only RAISE, never lower)");
+    yume::util::log_info("  - Argon2 has per-derivation caps plus bounded aggregate memory/jobs");
     yume::util::log_info("  - private-IP bind refusal (--listen explicit-addr in RFC 1918 / loopback / link-local / ULA → startup error)");
     yume::util::log_info("  - TLS handshake deadline (--tls-handshake-timeout-ms; default 10s, slow-loris guard)");
     yume::util::log_info("  - accept-side rate-limit + max-concurrent-session cap (--accept-rate-limit 100/s, --max-sessions 4096)");
@@ -486,6 +486,9 @@ void log_effective_startup_summary(const yume::server::ServerConfig& cfg) {
     yume::util::log_info("effective inner mode: " + effective_inner_mode +
                          "; hopping: " + hop_state +
                          "; required: " + (cfg.inner_required ? "yes" : "no"));
+    yume::util::log_info("Argon2 admission: aggregate-memory-kib=" +
+                         std::to_string(cfg.argon2_memory_budget_kib) +
+                         "; max-jobs=" + std::to_string(cfg.argon2_max_jobs));
     yume::util::log_info("effective carrier: " +
                          std::string(cfg.obfuscation ? "http2-obfs" : "raw-tls") +
                          "; server disguise: " +
@@ -505,9 +508,9 @@ void run_ja3_self_check() {
         const char* expected_ja3;
     };
     constexpr Baseline kBaselines[] = {
-        {yume::tls_fingerprint::BrowserProfile::CHROME_135, "chrome", "51dc1deffb716cb50b5b0e5449c4e28f"},
+        {yume::tls_fingerprint::BrowserProfile::CHROME_131, "chrome", "51dc1deffb716cb50b5b0e5449c4e28f"},
         {yume::tls_fingerprint::BrowserProfile::FIREFOX_126, "firefox", "b2f1f8aa44e9d9510358e21055e2a3c2"},
-        {yume::tls_fingerprint::BrowserProfile::SAFARI_17, "safari", "96244ebd33ea0991b081300f27a9a6b3"},
+        {yume::tls_fingerprint::BrowserProfile::SAFARI_18, "safari", "96244ebd33ea0991b081300f27a9a6b3"},
     };
     for (const auto& b : kBaselines) {
         auto self = yume::tls_stealth::compute_self_fingerprint(b.profile);
@@ -548,6 +551,12 @@ bool load_real_http_secret(yume::server::ServerConfig& cfg, const std::string& d
 
 bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
                                    const StartupCheckOptions& options) {
+    if (cfg.argon2_memory_budget_kib == 0 || cfg.argon2_max_jobs == 0) {
+        yume::util::log_error(
+            "Argon2 admission limits must be positive; use "
+            "--argon2-memory-budget-kib and --argon2-max-jobs");
+        return false;
+    }
 #if !YUME_FEATURE_EXEC
     if (cfg.allow_exec) {
         yume::util::log_warn(

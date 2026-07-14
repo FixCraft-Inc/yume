@@ -2,9 +2,9 @@
 
 **yume** *(Japanese: 夢)*: a dream.
 
-Yume Universal Multiprotocol Engine. An open-source post-quantum stealth transport. The name is a single character — 夢 — and we use it the way Japanese uses it: a dream of a network you can trust, where the wire shape can't tell yume from any other HTTPS site, and where neither the client nor the server is forced to advertise itself.
+Yume Universal Multiprotocol Engine. An open-source post-quantum stealth transport. The name is a single character — 夢 — and we use it the way Japanese uses it: a dream of a network you can trust, where the wire shape blends into ordinary HTTPS and neither endpoint has to advertise YUME by name.
 
-YUME tunnels TCP and UDP through TLS 1.3 sessions that look like ordinary Chrome HTTPS to a DPI box, with hybrid ML-KEM-768 + AES-GCM inner crypto, an optional Argon2id heavy KDF, and 1-4 Hz live key hopping. The client (`yume`), daemon (`yumed`), proxy, GUI, and libyume surface are AGPL-3.0-or-later and build from this tree. They run on x86, ARMv7/8, MIPS OpenWRT, BusyBox, macOS, and Windows; the minimal build runs on routers with as little as 128 MiB of RAM.
+YUME tunnels TCP and UDP through TLS 1.3 sessions with browser-profiled ClientHellos and an HTTP/2-shaped opening exchange. Its optional inner channel derives AES-256-GCM keys from ML-KEM-768, can add an Argon2id work factor, and supports 1-4 Hz per-window key derivation. The client (`yume`), daemon (`yumed`), proxy, GUI, and libyume surface are AGPL-3.0-or-later and build from this tree. They run on x86, ARMv7/8, MIPS OpenWRT, BusyBox, macOS, and Windows; the minimal build runs on routers with as little as 128 MiB of RAM.
 
 - Website: https://yume.fixcraft.jp
 - Source: https://github.com/FixCraft-Inc/yume
@@ -24,21 +24,26 @@ YUME tries to do the opposite: a transport that looks like ordinary Chrome HTTPS
 
 |                             | YUME            | WireGuard      | OpenVPN                  | Tor (with bridges) | Shadowsocks     |
 | --------------------------- | --------------- | -------------- | ------------------------ | ------------------ | --------------- |
-| Hybrid post-quantum (ML-KEM-768) | yes        | no             | no                       | no                 | no              |
+| Post-quantum KEM/DEM (ML-KEM-768 + AES-GCM) | yes | no | no | no | no |
 | Live key hopping            | 1–4 Hz, OTA     | no             | no                       | no                 | no              |
-| Looks like real HTTPS to DPI | yes (Chrome JA3 + HTTP/2 carrier) | UDP signature | TLS-on-OpenVPN-port signature | obfs4 bridge | random-prefix |
+| HTTPS-shaped carrier | browser-profiled TLS + H2 opening; known limits | UDP signature | TLS-on-OpenVPN-port signature | obfs4 bridge | random-prefix |
 | Anonym / no-log mode        | built in        | n/a            | per-provider             | yes                | n/a             |
 | Free public endpoints       | planned (FixCraft) | none        | none                     | yes                | none            |
 | Embedded / 128 MiB hardware | yes             | yes            | yes                      | partial            | yes             |
 | Self-hostable, fully open   | yes (AGPL-v3+)  | yes            | yes                      | bridge only        | yes             |
-| Steady-state CPU/byte overhead | <1 % typical, <5 % always | ~0 % | a few %                  | high               | low             |
+| Published YUME transport measurement | 234 Mbps download in one WAN run | — | — | — | — |
 | License                     | AGPL-v3+        | GPL-v2         | GPL-v2                   | BSD-3              | Apache-2        |
 
-YUME's row comes from the live measurement reported in [docs/PERFORMANCE.md](docs/PERFORMANCE.md). The other rows are conservative; anything contested is left blank or hedged.
+YUME's measured row comes from the single live run reported in [docs/PERFORMANCE.md](docs/PERFORMANCE.md). That run did not isolate CPU cost or establish an all-hardware upper bound.
 
 ## Quick start
 
 ```bash
+git clone https://github.com/FixCraft-Inc/yume.git
+cd yume
+# BaseFWX is a pinned sibling checkout, not a submodule.
+git clone https://github.com/FixCraft-Inc/basefwx.git basefwx
+git -C basefwx checkout "$(cat config/refs/basefwx.ref)"
 cmake -B build
 cmake --build build -j$(nproc)
 ```
@@ -61,7 +66,7 @@ sudo ./build/bin/yumed \
     --listen 443 \
     --cert certs/server.crt --key certs/server.key \
     --auth-keys /etc/yume/authorized_keys \
-    --public-node                      # rejects dangerous flags, locks Argon2 floors
+    --public-node                      # rejects dangerous flags; Argon2 admission is bounded
     --hide-in-the-crowd nginx          # implicit when --public-node is set
 ```
 
@@ -84,7 +89,7 @@ For a privileged port 443 on Linux, run `yumed` with `sudo` or grant `cap_net_bi
 
 ## Optional desktop GUI (`yume-gui`)
 
-A Dear ImGui + GLFW desktop application is available in the same tree and is **off** by default. It uses the shared facade library for local server control and starts the real `yume` client runtime in the background, attaching to it through local IPC. The GUI is intended for desktop users; the CLI remains the supported automation surface.
+A Dear ImGui + GLFW desktop application is available in the same tree and is **off** by default. It uses the shared facade library and drives the same linked, in-process client runtime as the CLI; no client subprocess or local IPC round trip is required. The GUI is intended for desktop users; the CLI remains the supported automation surface.
 
 ### Build
 
@@ -123,7 +128,7 @@ GUI profile, trust material, generated keys, and runtime data live under `~/.yum
 ### Limitations of the current MVP
 
 - `ServerSession::start()` runs a real in-process `yumed` runtime through the shared server manager. Privileged ports still require root or `cap_net_bind_service`.
-- `ClientSession::start()` currently launches the `yume` binary as a managed background process and communicates with it through the existing local runtime socket. A pure in-process client controller still requires extracting the TLS/auth handshake from `src/client/cli/entry.cpp`.
+- `ClientSession::start()` hosts the current CLI connection runtime in-process. Its lifecycle remains deliberately isolated from the GUI thread; CLI parsing and terminal-only commands stay in the `yume` executable.
 - Chat / directory pages depend on a connected background client and use the live `RelayRuntime` IPC surface.
 - The tray code path is present but only assembles when `libayatana-appindicator3-dev` is installed; the rest of the GUI works without it.
 
@@ -180,12 +185,12 @@ Specific hostnames will land here once the fleet is up.
 
 YUME stacks four independent layers of byte-shape camouflage:
 
-1. **TLS 1.3 with browser fingerprint.** `--profile chrome|firefox|safari` configures cipher suites, supported groups, signature algorithms, and ALPN to match Chrome 131 / Firefox 133 / Safari 18. The handshake is a real TLS 1.3 handshake (OpenSSL emits the ClientHello against the configured profile), so JA3/JA4 fall in the browser cluster. Source: [src/core/stealth/tls_stealth.cpp](src/core/stealth/tls_stealth.cpp), [src/core/stealth/tls_fingerprint.cpp](src/core/stealth/tls_fingerprint.cpp).
-2. **HTTP/2 carrier handshake (`--obfs`, default on).** After the TLS handshake the client emits a real HTTP/2 connection preface (`PRI * HTTP/2.0…`), Chrome-shaped SETTINGS, a WINDOW_UPDATE, and a HEADERS frame for `POST /<token>/<nonce>` with realistic Chrome request headers. The server validates the token (HMAC-SHA256 over `(SNI || hour || "yume-obfs-v2")` keyed by `--obfs-secret`), replies with canned SETTINGS / SETTINGS-ACK / HEADERS `:status=200`, and the YUME tunnel resumes underneath. To a stateless DPI box the first ~150 cleartext bytes of every connection look exactly like a Chrome → CDN gRPC-web request. The codec lives in [src/core/stealth/obfs_h2.cpp](src/core/stealth/obfs_h2.cpp); the token derivation in [src/core/stealth/obfs_signal.cpp](src/core/stealth/obfs_signal.cpp). Disable with `--no-obfs`. Per-frame DATA wrapping with PADDED frames and PING keepalive is implemented in the codec and is on the post-1.1 roadmap to enable by default.
+1. **TLS 1.3 with browser-oriented parameters.** `--profile chrome|firefox|safari` configures cipher suites, supported groups, signature algorithms, and ALPN toward Chrome 131 / Firefox 126 / Safari 18. OpenSSL emits the real ClientHello; YUME computes JA3 and canonical JA4 diagnostics from it. Stock OpenSSL does not reproduce every current-browser detail, so these profiles do not prove browser-cluster membership. Source: [src/core/stealth/tls_stealth.cpp](src/core/stealth/tls_stealth.cpp), [src/core/stealth/tls_fingerprint.cpp](src/core/stealth/tls_fingerprint.cpp).
+2. **HTTP/2 carrier handshake (`--obfs`, default on).** After the TLS handshake the client emits a real HTTP/2 connection preface (`PRI * HTTP/2.0…`), Chrome-shaped SETTINGS, a WINDOW_UPDATE, and a HEADERS frame for `POST /<token>/<nonce>` with realistic request headers. The server validates the token (HMAC-SHA256 over `(SNI || hour || "yume-obfs-v2")` keyed by `--obfs-secret`), replies with SETTINGS / SETTINGS-ACK / HEADERS `:status=200`, and the YUME tunnel then carries its own frames. These HTTP/2 bytes are inside TLS: a passive ISP sees TLS records and handshake metadata, while a TLS-terminating observer or endpoint probe sees an opening exchange shaped like a browser-to-CDN request. The authenticated payload stream is not currently a fully conformant long-lived HTTP/2 session. The codec lives in [src/core/stealth/obfs_h2.cpp](src/core/stealth/obfs_h2.cpp); the token derivation in [src/core/stealth/obfs_signal.cpp](src/core/stealth/obfs_signal.cpp). Disable with `--no-obfs`.
 3. **HTTP-layer server disguise (`--hide-in-the-crowd <profile>`).** Before 1.0 a non-YUME probe (curl / scanner) saw TLS handshake + immediate TCP close — one of the strongest DPI fingerprints. With this flag yumed instead serves a profile-driven 404 whose header order, charset, and body shape match a real install of the chosen software, captured from upstream source: `nginx`, `nginx-stable`, `apache`, `caddy` (with `Alt-Svc: h3=":443"`), `cloudflare` (with `CF-RAY` + `alt-svc`), `express` (with `X-Powered-By` + `Content-Security-Policy` + `X-Content-Type-Options`), `gunicorn`, `none` (no Server header), and `yumed` (legacy). Same flag on the client picks the User-Agent (`chrome`, `firefox`, `safari`, `edge`, `curl`, `wget`, `yume`); when unspecified, the UA is derived from `--profile` so the JA3 and the UA stay consistent. Codec: [src/core/stealth/http_profile.cpp](src/core/stealth/http_profile.cpp); fidelity check: [scripts/yume_disguise_check.py](scripts/yume_disguise_check.py).
 4. **Real HTML facade (`--real --real-index <html>`).** A browser that hits the same port with `GET / HTTP/1.1` is served the configured HTML page (or a Wikipedia redirect by default). YUME clients and browsers cohabit on port 443.
 
-Limits: this defends against stateless DPI, classifier-based ISP filters, and active probes that complete TLS and inspect the first kilobyte. It does not defend against fully-stateful HTTP/2 middleboxes that track stream and HPACK state, or against ML traffic classifiers trained on joint inter-arrival × size distributions.
+Limits: this raises the cost of simple TLS-fingerprint blocking and casual active probing. It does not make YUME indistinguishable from a browser, preserve valid HTTP/2 semantics for the full authenticated stream, or defeat stateful and ML classifiers trained on record sizes, timing, or repeated connection behaviour.
 
 ### Headless carrier diagnosis
 
@@ -318,10 +323,12 @@ Local proof setup is in [scripts/gen_anonym_sub.sh](scripts/gen_anonym_sub.sh). 
 
 Optional inner encryption sits inside the TLS tunnel and runs end-to-end:
 
-- ML-KEM-768 KEM (post-quantum) combined with the user's password / PSK via HKDF-SHA256
+- ML-KEM-768 KEM (post-quantum); the KEM shared secret is the input to the selected KDF
 - AES-256-GCM AEAD (BaseFWX) on every YUME frame
-- Argon2id heavy KDF (`--inner-heavy`, default on for full builds) or HKDF-SHA256 light KDF
+- Argon2id heavy work factor (`--inner-heavy`, default on for full builds) or HKDF-SHA256 light derivation. The transport handshake does not include a user password / PSK.
 - Live key hopping: a fresh 32-byte key derived from the base key every `--hop-interval` ms (default 500, i.e. 2 Hz). Tested up to 4 Hz; configurable down to 0 (off).
+
+Hopping separates traffic into derived-key windows, but it is not forward secrecy: possession of the retained base key permits deriving every window key.
 
 ```jsonc
 // client config
@@ -356,7 +363,7 @@ Numbers below are from a live run reported in [docs/PERFORMANCE.md](docs/PERFORM
 | Throughput retained vs relay capacity | 78 %         | 78 %         |
 | Client upload retained vs direct      | 92 %         | 92 %         |
 
-The throughput loss on long routes is dominated by the relay path's own capacity, not by YUME's CPU or framing. With hopping disabled, YUME's steady-state overhead is below the noise floor of the measurement.
+In that run the relay path and its bandwidth ceiling dominated the result. The data does not isolate YUME's CPU/framing cost, and it should not be read as a universal throughput or latency guarantee.
 
 ## Cluster federation
 
@@ -522,13 +529,13 @@ sudo ./build/bin/yumed \
 - AGPL-3.0-or-later, with client, daemon, proxy, GUI, and libyume fully buildable from this tree
 - BaseFWX is pinned by commit (see `config/refs/basefwx.ref`); release CI fails if mandatory crypto support is missing
 - Authorized keys verified with OpenSSL `EVP_DigestVerify` ([src/core/security/crypto.cpp:78](src/core/security/crypto.cpp#L78))
-- Inner-frame AEAD verified before plaintext is delivered (OpenSSL `EVP_DecryptFinal_ex`)
+- Inner-frame AEAD is verified by BaseFWX before plaintext is delivered ([basefwx/cpp/src/crypto/crypto.cpp](basefwx/cpp/src/crypto/crypto.cpp))
 - Master PQ keypair off by default; explicit `--use-embedded-master` required and warned about at startup on both ends
 - Server-side exec / LAN bridging / unrestricted bridging are off at compile time by default ([CMakeLists.txt](CMakeLists.txt) `YUME_FEATURE_EXEC` / `_LAN_BRIDGE` / `_FULL_CONTROL`); enabling them requires opting in at build, runtime flag, AND per-key meta (see [docs/PERMISSIONS.md](docs/PERMISSIONS.md))
 - Per-key admin permissions (`allow_inbound_admin`, `allow_outbound_admin`) default to deny
 - Frame size capped at 16 MiB across all read paths
 - New obfs path-token verifier uses `CRYPTO_memcmp` ([src/core/stealth/obfs_signal.cpp](src/core/stealth/obfs_signal.cpp))
-- No security-by-obscurity: every claim above points at code. Features are either implemented or absent; no placeholders that pretend to protect anything.
+- No independent security audit or production-scale adversarial soak is documented yet. The implementation and threat boundary are open for review, but that is not equivalent to a completed audit.
 
 ## Scalability notes
 

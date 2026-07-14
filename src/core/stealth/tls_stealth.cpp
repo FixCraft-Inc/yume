@@ -461,9 +461,9 @@ StealthContext::StealthContext(const StealthConfig& config)
     , ssl_context_(boost::asio::ssl::context::tlsv12_client)
     , current_profile_(config.target_profile) {
     available_profiles_ = {
-        tls_fingerprint::BrowserProfile::CHROME_135,
+        tls_fingerprint::BrowserProfile::CHROME_131,
         tls_fingerprint::BrowserProfile::FIREFOX_126,
-        tls_fingerprint::BrowserProfile::SAFARI_17,
+        tls_fingerprint::BrowserProfile::SAFARI_18,
     };
 
     ssl_context_.set_options(boost::asio::ssl::context::default_workarounds);
@@ -485,7 +485,7 @@ void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profi
     auto profile_info = tls_fingerprint::get_browser_profile_info(profile);
     if (!profile_info) {
         profile_info = tls_fingerprint::get_browser_profile_info(
-            tls_fingerprint::BrowserProfile::CHROME_135);
+            tls_fingerprint::BrowserProfile::CHROME_131);
         if (!profile_info) return;
     }
 

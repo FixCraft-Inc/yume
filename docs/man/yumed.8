@@ -392,6 +392,13 @@ Cap concurrent authenticated client sessions.
 .TP
 .BI "--accept-rate-limit " n
 Limit new TCP accepts per second (0 disables).
+.TP
+.BI "--argon2-memory-budget-kib " kib
+Cap aggregate memory admitted for concurrent Argon2 handshake work. Requests
+that would exceed the budget are rejected before Argon2 allocates memory.
+.TP
+.BI "--argon2-max-jobs " n
+Cap concurrent admitted Argon2 handshake jobs. The value must be positive.
 .SH AUTH_KEYS.META FORMAT
 .B auth_keys.meta
 is JSON keyed by Ed25519 public-key fingerprint (hex). Each entry may

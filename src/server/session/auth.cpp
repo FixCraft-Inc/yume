@@ -26,6 +26,58 @@ namespace yume::server {
 
 using namespace detail;
 
+namespace {
+
+std::optional<inner::DerivedKey> derive_inner_key_with_admission(
+    const std::shared_ptr<KdfAdmissionController>& admission,
+    const inner::Config& config,
+    const crypto::Bytes& ciphertext,
+    const crypto::Bytes& salt,
+    bool heavy,
+    const std::optional<inner::KdfParams>& requested_params,
+    std::string* error) {
+    if (error) error->clear();
+    const bool allow_fallback = !requested_params.has_value() ||
+                                requested_params->name.empty();
+    const inner::KdfParams resolved =
+        inner::resolve_server_kdf_params(config, heavy, requested_params);
+    if (!heavy) {
+        return inner::server_derive_key_resolved(
+            config, ciphertext, salt, false, resolved, allow_fallback);
+    }
+
+    if (resolved.name != "argon2" || !inner::argon2_supported()) {
+        return inner::server_derive_key_resolved(
+            config, ciphertext, salt, true, resolved, allow_fallback);
+    }
+
+    std::string cap_reason;
+    if (inner::argon2_params_exceed_limits(
+            resolved, inner::argon2_env_limits(), &cap_reason)) {
+        if (error) *error = "client argon2 params exceed server cap: " + cap_reason;
+        return std::nullopt;
+    }
+    if (!admission) {
+        if (error) *error = "server Argon2 admission controller unavailable";
+        return std::nullopt;
+    }
+
+    std::string admission_reason;
+    auto lease = admission->try_acquire_argon2(
+        resolved.argon2_memory, &admission_reason);
+    if (!lease.has_value()) {
+        if (error) *error = "server Argon2 capacity unavailable: " + admission_reason;
+        return std::nullopt;
+    }
+
+    // The move-only lease remains in scope through KEM/KDF execution. Its
+    // destructor releases both counters on success, exception, or early return.
+    return inner::server_derive_key_resolved(
+        config, ciphertext, salt, true, resolved, allow_fallback);
+}
+
+}  // namespace
+
 void Session::send_auth_challenge() {
     challenge_ = crypto::random_bytes(32);
     if (cfg_.inner_crypto) {
@@ -460,15 +512,27 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                     if (inner_kdf.has_value() && !inner_kdf->name.empty() && inner_kdf->name != "hkdf") {
                         heavy_kdf = inner_kdf;
                     }
-                    auto heavy = inner::server_derive_key(inner_cfg, *pq_ciphertext, *pq_salt, true, heavy_kdf);
-                    auto light = inner::server_derive_key(inner_cfg, *pq_ciphertext, *pq_salt, false, std::nullopt);
-                    if ((!heavy.has_value() || heavy->key.empty()) && (!light.has_value() || light->key.empty())) {
-                        util::log_warn("session " + std::to_string(session_id_) + ": PQ key derivation failed");
-                        auth_error_ = "access denied: pq key derivation failed";
+                    std::string heavy_error;
+                    auto heavy = derive_inner_key_with_admission(
+                        kdf_admission_, inner_cfg, *pq_ciphertext, *pq_salt,
+                        true, heavy_kdf, &heavy_error);
+                    auto light = derive_inner_key_with_admission(
+                        kdf_admission_, inner_cfg, *pq_ciphertext, *pq_salt,
+                        false, std::nullopt, nullptr);
+                    const bool prefer_light = inner_mode.has_value() && *inner_mode == "light";
+                    const bool prefer_heavy = inner_mode.has_value() && *inner_mode == "heavy";
+                    const bool heavy_required = prefer_heavy || (!prefer_light && cfg_.inner_heavy);
+                    if (!heavy.has_value() && !heavy_error.empty() && heavy_required) {
+                        auth_error_ = heavy_error;
                         return false;
                     }
-                    bool prefer_light = (inner_mode.has_value() && *inner_mode == "light");
-                    bool prefer_heavy = (inner_mode.has_value() && *inner_mode == "heavy");
+                    if ((!heavy.has_value() || heavy->key.empty()) && (!light.has_value() || light->key.empty())) {
+                        util::log_warn("session " + std::to_string(session_id_) + ": PQ key derivation failed");
+                        auth_error_ = heavy_error.empty()
+                            ? "access denied: pq key derivation failed"
+                            : heavy_error;
+                        return false;
+                    }
                     if (prefer_light && light.has_value() && !light->key.empty()) {
                         inner_key_ = light->key;
                         inner_mode_ = "light";
@@ -507,10 +571,15 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                         }
                     }
                 } else {
-                    auto derived = inner::server_derive_key(inner_cfg, *pq_ciphertext, *pq_salt, cfg_.inner_heavy, inner_kdf);
+                    std::string derive_error;
+                    auto derived = derive_inner_key_with_admission(
+                        kdf_admission_, inner_cfg, *pq_ciphertext, *pq_salt,
+                        cfg_.inner_heavy, inner_kdf, &derive_error);
                     if (!derived.has_value() || derived->key.empty()) {
                         util::log_warn("session " + std::to_string(session_id_) + ": PQ key derivation failed");
-                        auth_error_ = "access denied: pq key derivation failed";
+                        auth_error_ = derive_error.empty()
+                            ? "access denied: pq key derivation failed"
+                            : derive_error;
                         return false;
                     }
                     inner_key_ = derived->key;

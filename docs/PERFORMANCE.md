@@ -1,6 +1,6 @@
 # YUME performance
 
-One fair benchmark run, April 2026. This is not a universal benchmark (single client, single relay, single network), but it is the working baseline for what YUME's overhead looks like on a real path with a distant relay.
+One benchmark run, April 2026. This is a useful real-path datapoint, not a universal benchmark or an isolated measurement of YUME's CPU/framing overhead. It used one client, one relay, and one network, and the repository does not contain the raw result artifacts or enough host detail to reproduce the exact run.
 
 ## Setup
 
@@ -21,7 +21,7 @@ One fair benchmark run, April 2026. This is not a universal benchmark (single cl
 | RTT, relay ↔ fixed endpoint | 145.74 ms |
 | RTT, client ↔ fixed endpoint | 55.53 ms |
 
-The expected RTT for any traffic that's *forced* through the relay, even with zero proxy overhead, is the sum of the two relay legs: **265.68 ms**. That's the honest baseline to compare YUME against, not the 55.53 ms direct path.
+The sum of the two separately measured relay legs is **265.68 ms**. It is a better geographic reference than the 55.53 ms direct path, but it is still an estimate assembled from separate measurements rather than a simultaneous end-to-end control through the same proxy path.
 
 ## Through YUME (SOCKS proxy)
 
@@ -34,11 +34,11 @@ The expected RTT for any traffic that's *forced* through the relay, even with ze
 
 Latency was sampled with TCP-connect timing through the YUME SOCKS proxy to the fixed endpoint, two 20-sample runs at 2 Hz. Each run had one outlier > 400 ms (typical jitter spike on the client's local network). Filtered averages remove that single outlier.
 
-## YUME-only overhead
+## Routed-latency comparison
 
-Against the 265.68 ms routed baseline:
+Against the estimated 265.68 ms routed reference:
 
-| Mode | YUME-only overhead |
+| Mode | Difference from routed reference |
 | --- | --- |
 | 0 Hz hopping | effectively 0 ms |
 | 2 Hz hopping | +1.4 ms typical (+2.7 ms vs 0 Hz) |
@@ -51,11 +51,11 @@ Against the 265.68 ms routed baseline:
 | Download (vs relay capacity) | 298.79 Mbps | 233.99 Mbps | **78.3 %** |
 | Upload | 39.34 Mbps | 36.10 Mbps | **91.8 %** |
 
-The naive "25 % retained" download number compares to the client's local internet. That is the wrong comparison; even a perfect zero-overhead proxy that routes through Japan can't deliver more bandwidth than the relay itself has. Against the relay's own measured download capacity, YUME retained 78 %. Upload was bottlenecked by the client uplink, not by YUME.
+The 25.9 % figure compares the distant routed result to the client's local access link and therefore includes geography and relay capacity. Comparing against the relay's separately measured download gives useful context (78.3 % retained), but it still does not isolate YUME: the target, route, test timing, and TCP behaviour are not controlled as a same-path bypass. Upload was close to the client uplink result in this run.
 
 ## Takeaways
 
-- With hopping off, YUME's steady-state latency overhead is below the noise floor of the measurement.
-- 2 Hz key hopping adds about 1–4 ms of typical latency.
-- Throughput loss on a long route is dominated by the relay path and the relay's own bandwidth ceiling, not by YUME's framing or crypto.
-- The headline "<1 % typical, <5 % always" claim refers to YUME's own processing overhead measured against the routed baseline. The total wall-clock latency a user sees is mostly geography.
+- This route carried about 234 Mbps down and 36 Mbps up through YUME, which is enough for common interactive and streaming workloads.
+- The two small latency samples are consistent with low added latency and a roughly 2.7 ms difference between hopping off and 2 Hz, but they are not strong enough to establish an "always" bound.
+- Geography and relay capacity clearly mattered. This run cannot attribute the remaining throughput difference among YUME, TCP path effects, the relay, and the target.
+- CPU utilization, cycles per byte, memory use, concurrency scaling, and a same-path non-YUME control were not recorded. Claims such as "<1 % typical, <5 % always" are therefore unsupported by this dataset.

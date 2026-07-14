@@ -24,7 +24,7 @@ namespace yume::tls_stealth {
 
 struct StealthConfig {
     bool enabled{false};
-    tls_fingerprint::BrowserProfile target_profile{tls_fingerprint::BrowserProfile::CHROME_135};
+    tls_fingerprint::BrowserProfile target_profile{tls_fingerprint::BrowserProfile::CHROME_131};
     bool rotate_profiles{false};
     uint32_t rotation_interval_connections{100};
     bool log_fingerprints{true};

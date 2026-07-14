@@ -36,6 +36,7 @@
 #include "server/host/extra_listeners.hpp"
 #include "server/host/host_routes.hpp"
 #include "server/packet/tun_egress.hpp"
+#include "server/runtime/kdf_admission.hpp"
 
 namespace yume::server {
 
@@ -201,6 +202,7 @@ private:
     boost::asio::ssl::context ssl_ctx_;
     mutable std::mutex auth_keys_mutex_;
     std::shared_ptr<const std::vector<crypto::Bytes>> authorized_keys_;
+    std::shared_ptr<KdfAdmissionController> kdf_admission_;
 
     std::atomic<uint64_t> next_session_id_{1};
     std::mutex sessions_mutex_;

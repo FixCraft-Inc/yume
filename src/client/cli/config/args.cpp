@@ -68,22 +68,22 @@ bool parse_cluster_spec(const std::string& spec, std::string* host, int* port, s
                 if (err) *err = "--cluster: expected ':port' after ']' in " + spec;
                 return false;
             }
-            try {
-                p = std::stoi(spec.substr(close + 2));
-            } catch (const std::exception&) {
+            if (!parse_int_strict(spec.substr(close + 2), p)) {
                 if (err) *err = "--cluster: invalid port in " + spec;
                 return false;
             }
         }
     } else {
+        if (std::count(spec.begin(), spec.end(), ':') > 1) {
+            if (err) *err = "--cluster: IPv6 addresses must use [addr]:port syntax";
+            return false;
+        }
         auto colon = spec.rfind(':');
         if (colon == std::string::npos) {
             h = spec;
         } else {
             h = spec.substr(0, colon);
-            try {
-                p = std::stoi(spec.substr(colon + 1));
-            } catch (const std::exception&) {
+            if (!parse_int_strict(spec.substr(colon + 1), p)) {
                 if (err) *err = "--cluster: invalid port in " + spec;
                 return false;
             }

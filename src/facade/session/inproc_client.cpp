@@ -164,8 +164,6 @@ struct InProcClient::Impl {
     // exit drops Cli's local shared_ptrs; ours persist until stop()).
     std::shared_ptr<client::Tunnel> tunnel;
     std::shared_ptr<client::RelayRuntime> relay;
-    boost::asio::io_context* active_io{nullptr};
-    std::function<void(const std::string&)> active_disconnect;
     std::string server_tls_fingerprint_sha256;
     std::shared_ptr<std::atomic<bool>> cancel_requested;
 
@@ -186,17 +184,17 @@ bool InProcClient::running() const noexcept {
 }
 
 InProcClient::Status InProcClient::status() const {
-    Status s = impl_->last_status;
-    s.running       = impl_->running.load(std::memory_order_acquire);
-    s.exit_code     = impl_->exit_code.load(std::memory_order_acquire);
-    s.started       = impl_->started;
     {
         std::lock_guard<std::mutex> lock(impl_->ready_mtx);
+        Status s = impl_->last_status;
+        s.running       = impl_->running.load(std::memory_order_acquire);
+        s.exit_code     = impl_->exit_code.load(std::memory_order_acquire);
+        s.started       = impl_->started;
         s.ipc_available = static_cast<bool>(impl_->relay);
         s.server_tls_fingerprint_sha256 =
             impl_->server_tls_fingerprint_sha256;
+        return s;
     }
-    return s;
 }
 
 std::shared_ptr<client::Tunnel> InProcClient::primary_tunnel() const {
@@ -214,18 +212,22 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
         if (error) *error = "in-process client is already running";
         return false;
     }
+    // A completed Cli worker remains joinable until its owner reaps it. Joining
+    // before assigning a replacement is mandatory: assigning over a joinable
+    // std::thread terminates the process after a natural disconnect/reconnect.
+    if (impl_->cli_thread.joinable()) {
+        impl_->cli_thread.join();
+    }
     {
         std::lock_guard<std::mutex> lock(impl_->ready_mtx);
         impl_->ready       = false;
         impl_->ready_error.clear();
         impl_->tunnel.reset();
         impl_->relay.reset();
-        impl_->active_io = nullptr;
-        impl_->active_disconnect = {};
         impl_->server_tls_fingerprint_sha256.clear();
         impl_->cancel_requested = std::make_shared<std::atomic<bool>>(false);
+        impl_->started = std::chrono::system_clock::now();
     }
-    impl_->started = std::chrono::system_clock::now();
 
     auto cancel_requested = impl_->cancel_requested;
     impl_->cli_thread = std::thread([this, cfg = std::move(cfg), cancel_requested]() mutable {
@@ -252,19 +254,17 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
                 impl_->ready_cv.notify_all();
             });
         cli.set_runtime_active_callback(
-            [this](boost::asio::io_context* io,
+            [this](boost::asio::io_context*,
                    std::shared_ptr<client::Tunnel> tunnel,
                    std::shared_ptr<client::RelayRuntime> relay,
-                   std::function<void(const std::string&)> disconnect) {
+                   std::function<void(const std::string&)>) {
                 std::lock_guard<std::mutex> lock(impl_->ready_mtx);
-                impl_->active_io = io;
                 if (tunnel) {
                     impl_->tunnel = std::move(tunnel);
                 }
                 if (relay) {
                     impl_->relay = std::move(relay);
                 }
-                impl_->active_disconnect = std::move(disconnect);
             });
 
         // Synthetic argv. The vector owns the strings; argv_ptrs only
@@ -298,11 +298,6 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
         }
         impl_->ready_cv.notify_all();
         impl_->running.store(false, std::memory_order_release);
-        {
-            std::lock_guard<std::mutex> lock(impl_->ready_mtx);
-            impl_->active_io = nullptr;
-            impl_->active_disconnect = {};
-        }
     });
 
     std::unique_lock<std::mutex> lock(impl_->ready_mtx);
@@ -328,14 +323,10 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
 
 void InProcClient::stop(std::string* /*error*/, std::string const& reason) {
     std::shared_ptr<client::Tunnel> t;
-    boost::asio::io_context* io = nullptr;
-    std::function<void(const std::string&)> disconnect;
     std::shared_ptr<std::atomic<bool>> cancel_requested;
     {
         std::lock_guard<std::mutex> lock(impl_->ready_mtx);
         t = impl_->tunnel;
-        io = impl_->active_io;
-        disconnect = impl_->active_disconnect;
         cancel_requested = impl_->cancel_requested;
     }
     if (cancel_requested) {
@@ -346,13 +337,8 @@ void InProcClient::stop(std::string* /*error*/, std::string const& reason) {
     // close_notify, and this API must return synchronously to embedders.
     constexpr const char* kForcedCloseReason = "interrupt";
     (void)reason;
-    if (disconnect) {
-        disconnect(kForcedCloseReason);
-    } else if (t) {
+    if (t) {
         t->stop(kForcedCloseReason);
-    }
-    if (io) {
-        io->stop();
     }
     if (impl_->cli_thread.joinable()) {
         impl_->cli_thread.join();
@@ -361,8 +347,6 @@ void InProcClient::stop(std::string* /*error*/, std::string const& reason) {
         std::lock_guard<std::mutex> lock(impl_->ready_mtx);
         impl_->tunnel.reset();
         impl_->relay.reset();
-        impl_->active_io = nullptr;
-        impl_->active_disconnect = {};
         impl_->server_tls_fingerprint_sha256.clear();
         impl_->cancel_requested.reset();
         impl_->ready = false;

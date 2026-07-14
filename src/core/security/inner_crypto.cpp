@@ -522,19 +522,19 @@ Bytes build_aad(std::uint8_t frame_type, std::uint8_t stream_id) {
 // "no cap". That made the daemon vulnerable to a remote pre-auth
 // resource-exhaustion: a hostile client could request
 // argon2_memory = UINT32_MAX KiB and the server would attempt to
-// allocate it before the AUTH frame had succeeded.
+// allocate it after an authorized or explicitly preauth-admitted AUTH frame.
+// The cap still matters because a compromised authorized key or enabled
+// preauth service must not be able to request unbounded work.
 //
-// The defaults below are deliberately generous (2× the existing HEAVY
+// The compiled defaults below are deliberately generous (2× the existing HEAVY
 // mode constants in basefwx::constants — kHeavyArgon2TimeCost=6,
 // kHeavyArgon2MemoryCost=1<<18 KiB, kHeavyArgon2Parallelism=4) so any
-// legitimate client request, including the heaviest documented mode,
-// passes the guard untouched. They only block obvious abuse.
+// standard client request, including the heaviest documented mode, passes the
+// guard untouched until an operator deliberately chooses lower ceilings.
 //
-// Operators who genuinely need to allow heavier params can raise the
-// caps via env vars; setting an env var to a value LARGER than the
-// default wins. Setting an env var to 0 keeps the field at the
-// default — there's no way to disable the cap entirely from the env,
-// which is the safe direction.
+// Operators can deliberately lower or raise these per-derivation ceilings via
+// environment variables. Zero/invalid values retain the compiled defaults, so
+// the cap cannot be disabled accidentally.
 inline constexpr std::uint32_t kDefaultArgon2TimeMax        = 12;
 inline constexpr std::uint32_t kDefaultArgon2MemoryMaxKib   = 1u << 19;   // 512 MiB
 inline constexpr std::uint32_t kDefaultArgon2ParallelismMax = 8;
@@ -545,18 +545,17 @@ Argon2Limits argon2_env_limits() {
     limits.time_max        = kDefaultArgon2TimeMax;
     limits.memory_max      = kDefaultArgon2MemoryMaxKib;
     limits.parallelism_max = kDefaultArgon2ParallelismMax;
-    // Env vars can only raise the defaults. A too-small value is ignored
-    // so operators cannot accidentally lock out legitimate default-heavy
-    // clients by setting, for example, YUME_ARGON2_MEM_MAX=1024.
-    auto raise_from_env = [](const char* name, std::uint32_t& cap) {
+    // This is a per-derivation cap. The server runtime separately accounts an
+    // aggregate reservation before Argon2 allocation begins.
+    auto override_from_env = [](const char* name, std::uint32_t& cap) {
         std::uint32_t parsed = 0;
-        if (read_env_u32_optional(name, &parsed)) {
-            cap = std::max(cap, parsed);
+        if (read_env_u32_strict_optional(name, &parsed)) {
+            cap = parsed;
         }
     };
-    raise_from_env("YUME_ARGON2_TIME_MAX", limits.time_max);
-    raise_from_env("YUME_ARGON2_MEM_MAX", limits.memory_max);
-    raise_from_env("YUME_ARGON2_PAR_MAX", limits.parallelism_max);
+    override_from_env("YUME_ARGON2_TIME_MAX", limits.time_max);
+    override_from_env("YUME_ARGON2_MEM_MAX", limits.memory_max);
+    override_from_env("YUME_ARGON2_PAR_MAX", limits.parallelism_max);
     return limits;
 }
 
@@ -721,11 +720,59 @@ ClientHandshake client_prepare(const Config& cfg, bool heavy) {
 #endif
 }
 
+KdfParams resolve_server_kdf_params(const Config& cfg,
+                                    bool heavy,
+                                    const std::optional<KdfParams>& kdf_params) {
+    if (!heavy) {
+        KdfParams light;
+        light.name = "hkdf";
+        return light;
+    }
+
+    KdfParams params = kdf_params.value_or(KdfParams{});
+    if (params.name.empty()) {
+        return select_argon2_params(cfg.argon2_limits);
+    }
+    if (params.name == "argon2") {
+        if (params.argon2_time == 0) {
+            params.argon2_time = argon2_time_cost();
+        }
+        if (params.argon2_memory == 0) {
+#if !YUME_USE_BASEFWX
+            params.argon2_memory = 1u << 18;
+#else
+            params.argon2_memory = basefwx::constants::kHeavyArgon2MemoryCost;
+#endif
+        }
+        if (params.argon2_parallelism == 0) {
+            params.argon2_parallelism = argon2_parallelism();
+        }
+    }
+    if ((params.name == "argon2" || params.name == "pbkdf2") &&
+        params.pbkdf2_iters == 0) {
+        params.pbkdf2_iters = default_pbkdf2_iters();
+    }
+    return params;
+}
+
 std::optional<DerivedKey> server_derive_key(const Config& cfg,
                                             const Bytes& pq_ciphertext,
                                             const Bytes& salt,
                                             bool heavy,
                                             const std::optional<KdfParams>& kdf_params) {
+    const bool allow_fallback = !kdf_params.has_value() || kdf_params->name.empty();
+    const KdfParams resolved = resolve_server_kdf_params(cfg, heavy, kdf_params);
+    return server_derive_key_resolved(
+        cfg, pq_ciphertext, salt, heavy, resolved, allow_fallback);
+}
+
+std::optional<DerivedKey> server_derive_key_resolved(
+    const Config& cfg,
+    const Bytes& pq_ciphertext,
+    const Bytes& salt,
+    bool heavy,
+    const KdfParams& resolved_params,
+    bool allow_kdf_fallback) {
     if (!cfg.enabled) {
         return std::nullopt;
     }
@@ -734,7 +781,8 @@ std::optional<DerivedKey> server_derive_key(const Config& cfg,
     (void)pq_ciphertext;
     (void)salt;
     (void)heavy;
-    (void)kdf_params;
+    (void)resolved_params;
+    (void)allow_kdf_fallback;
     throw std::runtime_error("inner crypto not available: BaseFWX disabled");
 #else
     // priv (PQ private key) and shared (KEM secret) are key material;
@@ -751,21 +799,16 @@ std::optional<DerivedKey> server_derive_key(const Config& cfg,
         out.key = derive_key(shared.bytes());
         return out;
     }
-    KdfParams params = kdf_params.value_or(KdfParams{});
-    std::string effective_kdf = params.name;
-    if (effective_kdf.empty()) {
-        effective_kdf = select_argon2_params(cfg.argon2_limits).name;
-    }
-    if (effective_kdf == "argon2"
+    KdfParams params = resolved_params;
+    if (params.name == "argon2"
         && argon2_params_exceed_limits(params, argon2_env_limits(), nullptr)) {
         return std::nullopt;
     }
-    if ((effective_kdf == "argon2" || effective_kdf == "pbkdf2") &&
+    if ((params.name == "argon2" || params.name == "pbkdf2") &&
         pbkdf2_params_exceed_limits(params, pbkdf2_env_iters_max(), nullptr)) {
         return std::nullopt;
     }
-    bool allow_fallback = params.name.empty();
-    return derive_key_heavy(shared.bytes(), salt, params, allow_fallback);
+    return derive_key_heavy(shared.bytes(), salt, params, allow_kdf_fallback);
 #endif
 }
 

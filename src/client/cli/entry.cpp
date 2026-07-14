@@ -530,16 +530,18 @@ int Cli::run(int argc, char** argv) {
                     tls_metrics::MetricsManager::instance().initialize(cfg.tls_fingerprint_log_path);
                 }
 
-                tls_fingerprint::BrowserProfile profile = tls_fingerprint::BrowserProfile::CHROME_135;
+                tls_fingerprint::BrowserProfile profile = tls_fingerprint::BrowserProfile::CHROME_131;
                 std::string profile_lower = cfg.tls_stealth_profile;
                 std::transform(profile_lower.begin(), profile_lower.end(), profile_lower.begin(), ::tolower);
 
-                if (profile_lower == "chrome" || profile_lower == "chrome135" || profile_lower == "chrome_135") {
-                    profile = tls_fingerprint::BrowserProfile::CHROME_135;
+                if (profile_lower == "chrome" || profile_lower == "chrome131" || profile_lower == "chrome_131" ||
+                    profile_lower == "chrome135" || profile_lower == "chrome_135") {
+                    profile = tls_fingerprint::BrowserProfile::CHROME_131;
                 } else if (profile_lower == "firefox" || profile_lower == "firefox126" || profile_lower == "firefox_126") {
                     profile = tls_fingerprint::BrowserProfile::FIREFOX_126;
-                } else if (profile_lower == "safari" || profile_lower == "safari17" || profile_lower == "safari_17") {
-                    profile = tls_fingerprint::BrowserProfile::SAFARI_17;
+                } else if (profile_lower == "safari" || profile_lower == "safari18" || profile_lower == "safari_18" ||
+                           profile_lower == "safari17" || profile_lower == "safari_17") {
+                    profile = tls_fingerprint::BrowserProfile::SAFARI_18;
                 }
                 active_tls_profile = profile;
 

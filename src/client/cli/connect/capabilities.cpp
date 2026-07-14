@@ -16,7 +16,7 @@ ServerCapabilityResult evaluate_server_capabilities(const ServerCapabilityInput&
     if (input.server_version != yume::kVersion) {
         result.error = "server is version " + input.server_version + ", you are " +
                        std::string(yume::kVersion) +
-                       ", please install a matching version to connect to this server";
+                       ", transport core versions must match";
         return result;
     }
 

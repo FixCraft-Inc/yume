@@ -560,8 +560,9 @@ deriving every time-window key.
 
 ## HTTP/2 Obfs
 
-With `--obfs` enabled, the bytes after TLS look like a normal HTTP/2
-client request before YUME frames begin.
+With `--obfs` enabled, the bytes after TLS form a standards-conformant HTTP/2
+opening exchange before YUME frames begin. The settings and headers are YUME
+project templates, not byte-identical output from a named browser.
 
 ```text
 +--------------------------------+
@@ -577,7 +578,7 @@ client request before YUME frames begin.
         |
         v
 +--------------------------------+
-|  CHROME-LIKE H2                |
+|  PROJECT H2 SETTINGS           |
 |  SETTINGS + WINDOW_UPDATE      |
 +--------------------------------+
         |
@@ -594,11 +595,12 @@ client request before YUME frames begin.
 +--------------------------------+
 ```
 
-The token can be bound to `--obfs-secret`, SNI, and time. This helps
-reject casual probes and makes the connection shape look like common
-browser HTTPS traffic instead of a custom VPN handshake. It does not make
-traffic invisible to every possible classifier; packet timing and sizes
-can still leak patterns.
+With a nonempty `--obfs-secret`, the token is bound to that shared secret,
+SNI, and an accepted hourly time window. `--public-node` requires this keyed
+mode. Empty-secret structural admission remains available only in non-public
+development mode and does not authenticate the probe. The opening can reject
+casual probes, but the subsequent carrier is not a full-session HTTP/2 tunnel;
+packet timing and sizes can still distinguish it.
 
 ## Real HTTPS Facade
 
@@ -656,8 +658,9 @@ hardening.
   protects against passive network reading and many middlebox checks. It
   does not protect against a malicious or compromised endpoint.
 - HTTP/2 obfs:
-  hides simple protocol signatures and rejects casual probes. It does not
-  defeat perfect traffic analysis or endpoint compromise.
+  gives active probes a benign HTTP response and, in keyed mode, gates AUTH
+  behind the shared admission token. It does not defeat traffic analysis,
+  full-session HTTP/2 validation, or endpoint compromise.
 - AUTH:
   keeps unauthorized clients off the server. It does not help if the auth
   key is stolen.
@@ -762,7 +765,8 @@ Operational checklist:
 - Configure clients with `require_anonym: true` and the expected anonym
   CA when relying on anonym proof.
 - Keep `--obfs` enabled and set the same private `--obfs-secret` on both
-  ends when strict carrier pinning is desired.
+  ends for keyed carrier admission. A nonempty value is mandatory under
+  `--public-node`.
 - Use your own PQ keypair with `--pq-pub` and `--pq-key`; avoid
   `--use-embedded-master` outside explicit tests.
 - Keep inner crypto, heavy KDF, and hopping enabled unless performance

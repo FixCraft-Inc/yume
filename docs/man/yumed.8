@@ -136,7 +136,10 @@ Packet-native MTU. Default:
 Enable HTTP/2 carrier obfuscation.
 .TP
 .BI "--obfs-secret " string
-Secret used to validate obfs path tokens.
+Shared HMAC secret used to validate obfs path tokens. Clients must match it.
+It is required and must be nonempty under
+.BR --public-node ;
+an empty secret is for non-public structural development checks only.
 .TP
 .B --allow-local-ip
 Allow private and loopback destinations when key policy permits it.
@@ -299,9 +302,9 @@ Only loopback literals are accepted.
 .SH DISGUISE OPTIONS
 .TP
 .BI "--hide-in-the-crowd " profile
-Serve canned HTTP responses for non-YUME HTTPS probes using a named
-disguise profile. Profiles mimic common CDN or static-site error pages
-instead of closing immediately after TLS.
+Serve synthetic HTTP responses for non-YUME HTTPS probes using a named
+disguise profile. Templates use common CDN or static-site error-page shapes
+but are not native server implementations.
 .SH HOST CONTROLLER
 .TP
 .BI "--host-mode " mode
@@ -369,7 +372,9 @@ Repeat for multiple peers.
 .TP
 .B --public-node
 Internet-facing hardening preset. Rejects dangerous server flags, requires
-.BR --auth-keys ,
+.BR --auth-keys
+and a nonempty
+.BR --obfs-secret ,
 defaults disguise profile to nginx, and tightens session limits.
 .TP
 .BI "--federation-auth-key " path
@@ -419,7 +424,7 @@ Example:
       "allow_exec": true,
       "allow_local_ip": true,
       "allow_codecs": ["monero-rpc"],
-      "allow_services": ["example-control-v1"],
+      "allow_services": ["example-service-v1"],
       "control_full": false,
       "allow_inbound_admin": true,
       "allow_outbound_admin": false,

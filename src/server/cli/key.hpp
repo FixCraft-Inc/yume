@@ -12,7 +12,7 @@ namespace yume::server {
 struct ServerConfig;
 }
 
-namespace yume::server_cli {
+namespace yume::server::cli {
 
 struct ServerKeyCommand {
     std::string add;
@@ -44,4 +44,4 @@ bool append_authorized_public_key(const yume::server::ServerConfig& cfg,
 CliCommandResult run_server_manager_ui(yume::server::ServerConfig& cfg, ServerKeyCommand& command);
 CliCommandResult run_server_key_command(yume::server::ServerConfig& cfg, const ServerKeyCommand& command);
 
-}  // namespace yume::server_cli
+}  // namespace yume::server::cli

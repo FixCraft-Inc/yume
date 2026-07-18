@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 
+#include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
 #include "server/cli/cluster.hpp"
 #include "server/cli/help.hpp"
@@ -21,7 +22,7 @@
 #include "server/host/host_types.hpp"
 #include "util.hpp"
 
-namespace yume::server_cli {
+namespace yume::server::cli {
 namespace {
 
 bool parse_non_negative_u32(const char* raw, const char* option, std::uint32_t* out) {
@@ -302,12 +303,12 @@ bool parse_server_cli_args(int argc,
                 return false;
             }
             yume::app_codec::add_codec_unique(&cfg.allowed_codecs, codec);
-            if (codec == std::string(yume::app_codec::kMoneroRpcCodecId)) {
+            if (codec == std::string(yume::app_codec::builtin::kMoneroRpcCodecId)) {
                 cfg.allow_monero_rpc_codec = true;
             }
         } else if (arg == "--allow-monero-rpc") {
             cfg.allow_monero_rpc_codec = true;
-            yume::app_codec::add_codec_unique(&cfg.allowed_codecs, yume::app_codec::kMoneroRpcCodecId);
+            yume::app_codec::add_codec_unique(&cfg.allowed_codecs, yume::app_codec::builtin::kMoneroRpcCodecId);
         } else if (arg == "--service-allow" && i + 1 < argc) {
             std::string service = argv[++i];
             if (service.empty()) {
@@ -319,8 +320,8 @@ bool parse_server_cli_args(int argc,
             std::string parse_error;
             auto ep = yume::app_codec::parse_endpoint_spec(
                 argv[++i],
-                yume::app_codec::kMoneroRpcDefaultHost,
-                yume::app_codec::kMoneroRpcDefaultPort,
+                yume::app_codec::builtin::kMoneroRpcDefaultHost,
+                yume::app_codec::builtin::kMoneroRpcDefaultPort,
                 &parse_error);
             if (!ep.has_value()) {
                 yume::util::log_error("--monero-rpc-backend: " + parse_error);
@@ -469,4 +470,4 @@ bool parse_server_cli_args(int argc,
     return true;
 }
 
-}  // namespace yume::server_cli
+}  // namespace yume::server::cli

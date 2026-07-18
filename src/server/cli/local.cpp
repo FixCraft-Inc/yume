@@ -24,7 +24,7 @@
 #include "server/runtime/manager.hpp"
 #include "util.hpp"
 
-namespace yume::server_cli {
+namespace yume::server::cli {
 namespace {
 
 std::string trim_copy(std::string s) {
@@ -211,4 +211,4 @@ int run_local_server_attach(const std::string& socket_path, bool non_interactive
     }
 }
 
-}  // namespace yume::server_cli
+}  // namespace yume::server::cli

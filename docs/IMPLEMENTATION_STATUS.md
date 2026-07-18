@@ -9,6 +9,49 @@ YUME raises the cost of blocking and can reduce metadata exposure depending on
 the route. It should not be described as impossible to block, impossible to
 trace, or a replacement for a full anonymity network by itself.
 
+## Masquerade and authorization hardening
+
+Status: implemented with focused unit/build validation; external protocol and
+long-running concurrency validation remain.
+
+- `PreauthServiceOnly` is persisted on the session and enforced by one
+  post-auth dispatcher gate. Its allowlist is service.v1 OPEN, DATA/CLOSE on
+  accepted service streams, and PING/PONG.
+- Modern and legacy admin attach use the same trusted-relay, caller-outbound,
+  target-inbound predicate. Federation still trusts the authenticated source
+  server to enforce the caller half; adding a caller-policy proof would require
+  an explicit wire-compatibility decision.
+- AUTH rejects imported keys that are not Ed25519.
+- Public-node startup requires obfs and a nonempty secret. Raw frame-looking,
+  partial-timeout, malformed, wrong-key, bad-order, and authority/SNI mismatch
+  paths remain in masquerade and do not receive AUTH.
+- The H2 opening uses corrected HPACK indexes, SETTINGS/ACK ordering,
+  END_STREAM handling, serialized writes, and client-side decoy classification.
+  Wrong-path responses use configured upstream/real/profile identity.
+- Client profile rotation advances after successful TLS connections; the HTTP
+  User-Agent follows the active preset unless explicitly overridden.
+- Session transport close has a five-second deadline, pending service opens are
+  capped at 64 per service and 256 total, and client EXEC dispatch is capped at
+  four concurrent workers. Principal shutdown paths use best-effort buffer
+  erasure.
+
+Focused validation in the current development tree covers the obfs codec and
+decoy classifier, authorization predicate/tier, public-node policy, TLS profile
+rotation, transport core, and service-queue policy. `yume`, `yumed`, and
+`yume_facade` also link in the focused build tree.
+
+Not done / not fully tested:
+
+- Version-pinned Chrome/Firefox captures or an external HTTP/2 conformance
+  client against both accepted and decoy paths.
+- A full live TLS/obfs client-server integration smoke after these changes.
+- Sanitizer, thread-race, long-running close/reconnect, or resource-pressure
+  soak testing.
+- Detached EXEC workers are bounded but are not cancellable/joined at shutdown.
+- Best-effort erasure is not a locked allocator and cannot erase prior copies.
+- Full-session HTTP/2, a dual-key admission wire redesign, exact native
+  browser/web-server identity, and ML/DPI immunity are not implemented claims.
+
 ## Host controller
 
 Status: implemented, lightly validated.
@@ -56,19 +99,32 @@ Not done / not fully tested:
 
 Status: registry-driven built-ins exist; external plugin codecs do not.
 
-- `monero-rpc-v1` is the first built-in application codec.
+- `monero-rpc-v1` is the first built-in application codec. It lives entirely in
+  `src/core/app_codec/builtin/monero_rpc.cpp` and reaches generic lookup through
+  the explicit registry entry assembled in `src/core/app_codec/codec.cpp`.
+- Codec identity, permission, request policy, body caps, and backend policy are
+  carried on `CodecDescriptor`. Request dispatch reads those descriptor fields;
+  the current config adapter still maps the Monero-specific backend option to
+  its endpoint.
 - Codec enablement flows through `--codec-allow <name>` / `allow_codecs` plus
   per-key `permissions.allow_codecs`.
 - Codec streams use typed app-codec envelopes over normal YUME frames instead of
   raw TCP forwarding.
 
+Codec plugin format decision: built-in C++ units now, sandboxed out-of-process
+runner later. Dynamic `.so` / DLL loading is deliberately not planned as the
+third-party path, because a dlopen'd codec would execute in `yumed` alongside
+identity and session key material, and would freeze a C ABI for a surface that
+is still moving. See `docs/APP_CODECS.md`.
+
 Not done / not fully tested:
 
 - Live `monero-wallet-cli` / `monerod` smoke against a real daemon.
 - Regression tests for allowed/denied RPC paths and backend failures.
-- Dynamic `.so` / DLL codec loader.
-- Stable external plugin ABI/SPI for third-party codecs.
-- Sandboxed out-of-process plugin runner.
+- A second built-in codec. The registry is generic and covered by
+  `yume_app_codec_test`, but the multi-codec path has not been exercised in
+  production.
+- Sandboxed out-of-process plugin runner and its SPI for third-party codecs.
 
 ## Host-controller backend schemes
 

@@ -7,6 +7,7 @@
 #include "server/session/session.hpp"
 #include "server/runtime/manager.hpp"
 #include "server/session/internal.hpp"
+#include "core/security/secure_erase.hpp"
 
 namespace yume::server {
 
@@ -35,7 +36,8 @@ Session::Session(boost::asio::ip::tcp::socket socket,
     , preface_timer_(stream_.get_executor())
     , tls_handshake_timer_(stream_.get_executor())
     , idle_timer_(stream_.get_executor())
-    , frame_read_timer_(stream_.get_executor()) {
+    , frame_read_timer_(stream_.get_executor())
+    , transport_shutdown_timer_(stream_.get_executor()) {
     last_activity_ms_.store(steady_now_ms(), std::memory_order_relaxed);
     session_allow_exec_policy_ = false;
     session_allow_local_ip_ = false;
@@ -369,6 +371,36 @@ void Session::cancel_frame_read_deadline() {
     frame_read_timer_.cancel(ec);
 }
 
+bool Session::frame_allowed_by_authorization_tier(const protocol::Frame& frame) {
+    authorization::FrameContext context;
+    const auto type = static_cast<protocol::FrameType>(frame.header.type);
+
+    if (authorization_tier_ == authorization::SessionTier::PreauthServiceOnly) {
+        if (type == protocol::OPEN) {
+            crypto::Bytes payload = frame.payload;
+            if (inner_key_.has_value() &&
+                (frame.header.flags & protocol::kFlagInnerEncrypted) != 0) {
+                if (!decrypt_inner_payload(type,
+                                           frame.header.stream_id,
+                                           frame.payload,
+                                           &payload)) {
+                    return false;
+                }
+            }
+            const std::string payload_text(payload.begin(), payload.end());
+            context.service_open =
+                authorization::preauth_service_open_payload(payload_text);
+        } else if (type == protocol::DATA || type == protocol::CLOSE) {
+            std::lock_guard<std::mutex> lock(streams_mutex_);
+            context.existing_service_stream =
+                service_streams_.find(frame.header.stream_id) != service_streams_.end();
+        }
+    }
+
+    return authorization::post_auth_frame_allowed(
+        authorization_tier_, type, context);
+}
+
 void Session::handle_frame(const protocol::Frame& frame) {
     if (close_state_ != CloseState::Open) {
         return;
@@ -483,6 +515,14 @@ void Session::handle_frame(const protocol::Frame& frame) {
                               std::to_string(frame.header.type));
             return;
         }
+    }
+
+    if (!frame_allowed_by_authorization_tier(frame)) {
+        util::log_warn("session " + std::to_string(session_id_) +
+                       ": authorization tier rejected frame type " +
+                       std::to_string(frame.header.type));
+        close_with_reason("frame not permitted for session authorization tier");
+        return;
     }
 
     switch (frame.header.type) {
@@ -939,6 +979,17 @@ void Session::begin_close() {
     }
     reverse_listeners_.clear();
 
+    security::secure_erase(challenge_);
+    if (inner_key_.has_value()) {
+        security::secure_erase(*inner_key_);
+        inner_key_.reset();
+    }
+    if (inner_key_alt_.has_value()) {
+        security::secure_erase(*inner_key_alt_);
+        inner_key_alt_.reset();
+    }
+    clear_hop_key_cache();
+
     maybe_finish_close();
 }
 
@@ -958,15 +1009,28 @@ void Session::shutdown_transport() {
     }
     transport_shutdown_in_flight_ = true;
     auto self = shared_from_this();
+    transport_shutdown_timer_.expires_after(
+        std::chrono::milliseconds(kCloseTimeoutMs));
+    transport_shutdown_timer_.async_wait(boost::asio::bind_executor(
+        strand_, [self](const boost::system::error_code& ec) {
+            if (!ec) self->finish_transport_close();
+        }));
     stream_.async_shutdown(boost::asio::bind_executor(
         strand_,
         [self](const boost::system::error_code&) {
-            boost::system::error_code ec;
-            self->closed_ = true;
-            self->close_state_ = CloseState::Closed;
-            self->stream_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
-            self->stream_.lowest_layer().close(ec);
+            self->finish_transport_close();
         }));
+}
+
+void Session::finish_transport_close() {
+    if (close_state_ == CloseState::Closed) return;
+    boost::system::error_code ec;
+    transport_shutdown_timer_.cancel(ec);
+    closed_ = true;
+    close_state_ = CloseState::Closed;
+    transport_shutdown_in_flight_ = false;
+    stream_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
+    stream_.lowest_layer().close(ec);
 }
 
 void Session::close() {

@@ -8,8 +8,8 @@
 
 #include <string>
 
-namespace yume::server_cli {
+namespace yume::server::cli {
 
 std::string expand_cluster_join_spec(const std::string& spec);
 
-}  // namespace yume::server_cli
+}  // namespace yume::server::cli

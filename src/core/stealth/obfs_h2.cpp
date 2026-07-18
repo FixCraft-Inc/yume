@@ -14,6 +14,8 @@
 #include "core/stealth/obfs_h2.hpp"
 
 #include <algorithm>
+#include <charconv>
+#include <cctype>
 #include <cstring>
 
 namespace yume::obfs {
@@ -83,10 +85,6 @@ void append_frame_header(std::vector<std::uint8_t>& out,
     put_be32(out, stream_id & 0x7FFFFFFFu);
 }
 
-void append_hpack_indexed(std::vector<std::uint8_t>& out, std::uint8_t static_idx) {
-    out.push_back(0x80 | (static_idx & 0x7F));
-}
-
 // HPACK §5.1 integer encoding. `prefix_bits` (4-7) is the number of
 // bits available in the first byte after the opcode pattern. `first_byte_high`
 // is the opcode bit pattern that occupies the high bits.
@@ -120,23 +118,6 @@ void append_hpack_string(std::vector<std::uint8_t>& out, std::string_view s) {
         out.push_back(static_cast<std::uint8_t>(remaining));
         out.insert(out.end(), s.begin(), s.end());
     }
-}
-
-void append_hpack_literal_indexed_name(std::vector<std::uint8_t>& out,
-                                       std::uint16_t name_index,
-                                       std::string_view value) {
-    if (name_index < 16) {
-        out.push_back(static_cast<std::uint8_t>(name_index & 0x0F));
-    } else {
-        out.push_back(0x0F);
-        std::size_t remaining = name_index - 15;
-        while (remaining >= 0x80) {
-            out.push_back(static_cast<std::uint8_t>((remaining & 0x7F) | 0x80));
-            remaining >>= 7;
-        }
-        out.push_back(static_cast<std::uint8_t>(remaining));
-    }
-    append_hpack_string(out, value);
 }
 
 bool decode_hpack_varint(const std::uint8_t* data, std::size_t len,
@@ -191,8 +172,56 @@ bool decode_hpack_string(const std::uint8_t* data, std::size_t len,
     return true;
 }
 
-void scan_headers_block(const std::uint8_t* data, std::size_t len,
-                        std::string* path_out, std::string* authority_out) {
+std::pair<std::string_view, std::string_view> static_header(std::uint64_t index) {
+    // RFC 7541 Appendix A. Only values used by the carrier/decoy paths need a
+    // nonempty second field; every static name remains available for literals.
+    static constexpr std::pair<std::string_view, std::string_view> table[] = {
+        {},
+        {":authority", ""}, {":method", "GET"}, {":method", "POST"},
+        {":path", "/"}, {":path", "/index.html"}, {":scheme", "http"},
+        {":scheme", "https"}, {":status", "200"}, {":status", "204"},
+        {":status", "206"}, {":status", "304"}, {":status", "400"},
+        {":status", "404"}, {":status", "500"}, {"accept-charset", ""},
+        {"accept-encoding", "gzip, deflate"}, {"accept-language", ""},
+        {"accept-ranges", ""}, {"accept", ""},
+        {"access-control-allow-origin", ""}, {"age", ""}, {"allow", ""},
+        {"authorization", ""}, {"cache-control", ""},
+        {"content-disposition", ""}, {"content-encoding", ""},
+        {"content-language", ""}, {"content-length", ""},
+        {"content-location", ""}, {"content-range", ""},
+        {"content-type", ""}, {"cookie", ""}, {"date", ""},
+        {"etag", ""}, {"expect", ""}, {"expires", ""}, {"from", ""},
+        {"host", ""}, {"if-match", ""}, {"if-modified-since", ""},
+        {"if-none-match", ""}, {"if-range", ""},
+        {"if-unmodified-since", ""}, {"last-modified", ""}, {"link", ""},
+        {"location", ""}, {"max-forwards", ""}, {"proxy-authenticate", ""},
+        {"proxy-authorization", ""}, {"range", ""}, {"referer", ""},
+        {"refresh", ""}, {"retry-after", ""}, {"server", ""},
+        {"set-cookie", ""}, {"strict-transport-security", ""},
+        {"transfer-encoding", ""}, {"user-agent", ""}, {"vary", ""},
+        {"via", ""}, {"www-authenticate", ""},
+    };
+    if (index >= std::size(table)) {
+        return {};
+    }
+    return table[index];
+}
+
+std::uint16_t static_name_index(std::string_view name) {
+    for (std::uint16_t i = 1; i <= 61; ++i) {
+        if (static_header(i).first == name) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+bool scan_headers_block(
+    const std::uint8_t* data,
+    std::size_t len,
+    std::vector<std::pair<std::string, std::string>>* headers_out,
+    std::string* path_out,
+    std::string* authority_out) {
     std::size_t pos = 0;
     while (pos < len) {
         std::uint8_t b = data[pos];
@@ -200,41 +229,54 @@ void scan_headers_block(const std::uint8_t* data, std::size_t len,
             std::size_t cons = 0;
             std::uint64_t idx = 0;
             if (!decode_hpack_varint(data + pos, len - pos, 0x7F, &cons, &idx)) {
-                return;
+                return false;
             }
             pos += cons;
+            const auto [name, value] = static_header(idx);
+            if (name.empty()) {
+                return false;
+            }
+            if (headers_out) {
+                headers_out->emplace_back(name, value);
+            }
+            if (name == ":authority" && authority_out) *authority_out = value;
+            if (name == ":path" && path_out) *path_out = value;
             continue;
         }
         if ((b & 0xC0) == 0x40) {
             std::size_t cons = 0;
             std::uint64_t name_idx = 0;
             if (!decode_hpack_varint(data + pos, len - pos, 0x3F, &cons, &name_idx)) {
-                return;
+                return false;
             }
             pos += cons;
             std::string name;
             if (name_idx == 0) {
                 std::size_t scons = 0;
                 if (!decode_hpack_string(data + pos, len - pos, &scons, &name)) {
-                    return;
+                    return false;
                 }
                 pos += scons;
+            } else {
+                name = std::string(static_header(name_idx).first);
+                if (name.empty()) return false;
             }
             std::string value;
             std::size_t vcons = 0;
             if (!decode_hpack_string(data + pos, len - pos, &vcons, &value)) {
-                return;
+                return false;
             }
             pos += vcons;
-            if (name_idx == 1 && authority_out) *authority_out = value;
-            if (name_idx == 4 && path_out) *path_out = value;
+            if (headers_out) headers_out->emplace_back(name, value);
+            if (name == ":authority" && authority_out) *authority_out = value;
+            if (name == ":path" && path_out) *path_out = value;
             continue;
         }
         if ((b & 0xE0) == 0x20) {
             std::size_t cons = 0;
             std::uint64_t cap = 0;
             if (!decode_hpack_varint(data + pos, len - pos, 0x1F, &cons, &cap)) {
-                return;
+                return false;
             }
             pos += cons;
             continue;
@@ -242,26 +284,73 @@ void scan_headers_block(const std::uint8_t* data, std::size_t len,
         std::size_t cons = 0;
         std::uint64_t name_idx = 0;
         if (!decode_hpack_varint(data + pos, len - pos, 0x0F, &cons, &name_idx)) {
-            return;
+            return false;
         }
         pos += cons;
         std::string name;
         if (name_idx == 0) {
             std::size_t scons = 0;
             if (!decode_hpack_string(data + pos, len - pos, &scons, &name)) {
-                return;
+                return false;
             }
             pos += scons;
+        } else {
+            name = std::string(static_header(name_idx).first);
+            if (name.empty()) return false;
         }
         std::string value;
         std::size_t vcons = 0;
         if (!decode_hpack_string(data + pos, len - pos, &vcons, &value)) {
-            return;
+            return false;
         }
         pos += vcons;
-        if (name_idx == 1 && authority_out) *authority_out = value;
-        if (name_idx == 4 && path_out) *path_out = value;
+        if (headers_out) headers_out->emplace_back(name, value);
+        if (name == ":authority" && authority_out) *authority_out = value;
+        if (name == ":path" && path_out) *path_out = value;
     }
+    return true;
+}
+
+std::string lower_ascii(std::string_view text) {
+    std::string out(text);
+    std::transform(out.begin(), out.end(), out.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return out;
+}
+
+std::string_view trim_ascii(std::string_view text) {
+    while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) {
+        text.remove_prefix(1);
+    }
+    while (!text.empty() && (text.back() == ' ' || text.back() == '\t')) {
+        text.remove_suffix(1);
+    }
+    return text;
+}
+
+bool valid_header_name(std::string_view name) {
+    if (name.empty() || name.size() > 128) return false;
+    return std::all_of(name.begin(), name.end(), [](unsigned char ch) {
+        return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
+               ch == '!' || ch == '#' || ch == '$' || ch == '%' ||
+               ch == '&' || ch == '\'' || ch == '*' || ch == '+' ||
+               ch == '-' || ch == '.' || ch == '^' || ch == '_' ||
+               ch == '`' || ch == '|' || ch == '~';
+    });
+}
+
+bool valid_header_value(std::string_view value) {
+    return value.size() <= 4096 &&
+           std::none_of(value.begin(), value.end(), [](unsigned char ch) {
+               return (ch < 0x20 && ch != '\t') || ch == 0x7f;
+           });
+}
+
+bool h2_forbidden_header(std::string_view name) {
+    return name == "connection" || name == "keep-alive" ||
+           name == "proxy-connection" || name == "transfer-encoding" ||
+           name == "upgrade" || name == "te";
 }
 
 std::uint32_t sample_padding(std::uint32_t mean, std::uint32_t cap) {
@@ -313,14 +402,9 @@ crypto::Bytes encode_client_handshake(std::string_view sni,
     append_frame_header(out, 4, kFrameWindowUpdate, 0, 0);
     out.insert(out.end(), wu_payload.begin(), wu_payload.end());
 
-    // Real Chrome 131 emits literal headers with the "incremental
-    // indexing" opcode (0x40 prefix) so they enter the per-connection
-    // HPACK dynamic table on first use. The pre-stateful encoder
-    // used 0x00 ("without indexing"), which is RFC-conformant but
-    // visibly not what a browser sends. Switch to HpackEncoder, which
-    // emits the 0x40 prefix and accretes the same dynamic-table state
-    // a real Chrome client would build (so a stateful H2 middlebox
-    // that asserts dynamic-table consistency sees the right table).
+    // Use a stateful RFC 7541 encoder so the incremental-indexing opcodes and
+    // dynamic-table accounting are internally consistent. The SETTINGS and
+    // header order are a generic carrier profile, not an exact browser trace.
     std::vector<std::uint8_t> hb;
     HpackEncoder enc;
     enc.emit_size_update_if_needed(hb);  // no-op unless caller set
@@ -331,24 +415,26 @@ crypto::Bytes encode_client_handshake(std::string_view sni,
     enc.emit_literal_with_indexing(hb, 4, std::string_view(), path);               // :path
     enc.emit_literal_with_indexing(hb, 19, std::string_view(),
         std::string_view("application/grpc-web+proto"));
-    enc.emit_literal_with_indexing(hb, 22, std::string_view(),
+    enc.emit_literal_with_indexing(hb, 16, std::string_view(),
         std::string_view("gzip, deflate, br, zstd"));
-    enc.emit_literal_with_indexing(hb, 23, std::string_view(),
+    enc.emit_literal_with_indexing(hb, 17, std::string_view(),
         std::string_view("en-US,en;q=0.9"));
-    enc.emit_literal_with_indexing(hb, 50, std::string_view(),
+    enc.emit_literal_with_indexing(hb, 31, std::string_view(),
         std::string_view("application/grpc-web+proto"));
     enc.emit_literal_with_indexing(hb, 58, std::string_view(), user_agent);
 
     append_frame_header(out, static_cast<std::uint32_t>(hb.size()),
-                        kFrameHeaders, kFlagEndHeaders, 1);
+                        kFrameHeaders,
+                        static_cast<std::uint8_t>(kFlagEndHeaders | kFlagEndStream),
+                        1);
     out.insert(out.end(), hb.begin(), hb.end());
 
     return out;
 }
 
-crypto::Bytes encode_server_handshake() {
+crypto::Bytes encode_server_settings() {
     crypto::Bytes out;
-    out.reserve(128);
+    out.reserve(64);
 
     std::vector<std::uint8_t> settings_payload;
     auto add_setting = [&](std::uint16_t id, std::uint32_t value) {
@@ -362,20 +448,126 @@ crypto::Bytes encode_server_handshake() {
                         kFrameSettings, 0, 0);
     out.insert(out.end(), settings_payload.begin(), settings_payload.end());
 
-    append_frame_header(out, 0, kFrameSettings, kFlagAck, 0);
+    return out;
+}
 
+crypto::Bytes encode_response_headers(const H2ResponseSpec& response,
+                                      std::optional<std::size_t> content_length,
+                                      bool end_stream) {
     std::vector<std::uint8_t> hb;
+    hb.reserve(256);
     HpackEncoder enc;
     enc.emit_size_update_if_needed(hb);
-    enc.emit_indexed(hb, 8);  // :status 200
-    enc.emit_literal_with_indexing(hb, 31, std::string_view(),
-        std::string_view("application/grpc-web+proto"));            // content-type
-    enc.emit_literal_with_indexing(hb, 54, std::string_view(),
-        std::string_view("cloudflare"));                              // server
-    append_frame_header(out, static_cast<std::uint32_t>(hb.size()),
-                        kFrameHeaders, kFlagEndHeaders, 1);
-    out.insert(out.end(), hb.begin(), hb.end());
 
+    switch (response.status) {
+        case 200: enc.emit_indexed(hb, 8); break;
+        case 204: enc.emit_indexed(hb, 9); break;
+        case 206: enc.emit_indexed(hb, 10); break;
+        case 304: enc.emit_indexed(hb, 11); break;
+        case 400: enc.emit_indexed(hb, 12); break;
+        case 404: enc.emit_indexed(hb, 13); break;
+        case 500: enc.emit_indexed(hb, 14); break;
+        default:
+            enc.emit_literal_without_indexing(hb, 8, std::to_string(response.status));
+            break;
+    }
+
+    std::size_t emitted_headers = 0;
+    for (const auto& [raw_name, raw_value] : response.headers) {
+        if (emitted_headers >= 64) break;
+        const std::string name = lower_ascii(raw_name);
+        if (name.empty() || name.front() == ':' || name == "content-length" ||
+            h2_forbidden_header(name) || !valid_header_name(name) ||
+            !valid_header_value(raw_value)) {
+            continue;
+        }
+        const std::uint16_t index = static_name_index(name);
+        if (index != 0) {
+            enc.emit_literal_without_indexing(hb, index, raw_value);
+        } else {
+            enc.emit_literal_with_indexing(hb, 0, name, raw_value);
+        }
+        ++emitted_headers;
+    }
+    if (content_length.has_value()) {
+        enc.emit_literal_without_indexing(hb, 28, std::to_string(*content_length));
+    }
+
+    crypto::Bytes out;
+    const std::uint8_t flags = static_cast<std::uint8_t>(
+        kFlagEndHeaders | (end_stream ? kFlagEndStream : 0));
+    append_frame_header(out, static_cast<std::uint32_t>(hb.size()),
+                        kFrameHeaders, flags, 1);
+    out.insert(out.end(), hb.begin(), hb.end());
+    return out;
+}
+
+std::optional<H2ResponseSpec> parse_http1_response_for_h2(
+    std::string_view response,
+    std::size_t body_cap) {
+    constexpr std::size_t kMaxHeaderBytes = 64u * 1024u;
+    const auto headers_end = response.find("\r\n\r\n");
+    if (headers_end == std::string_view::npos || headers_end > kMaxHeaderBytes) {
+        return std::nullopt;
+    }
+    const auto first_line_end = response.find("\r\n");
+    if (first_line_end == std::string_view::npos || first_line_end > headers_end) {
+        return std::nullopt;
+    }
+    const std::string_view status_line = response.substr(0, first_line_end);
+    if (!status_line.starts_with("HTTP/1.")) {
+        return std::nullopt;
+    }
+    const auto first_space = status_line.find(' ');
+    if (first_space == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const auto second_space = status_line.find(' ', first_space + 1);
+    const auto status_text = status_line.substr(
+        first_space + 1,
+        (second_space == std::string_view::npos ? status_line.size() : second_space) -
+            first_space - 1);
+    unsigned int status = 0;
+    const auto parsed = std::from_chars(
+        status_text.data(), status_text.data() + status_text.size(), status);
+    if (parsed.ec != std::errc() || parsed.ptr != status_text.data() + status_text.size() ||
+        status < 100 || status > 599) {
+        return std::nullopt;
+    }
+
+    H2ResponseSpec out;
+    out.status = static_cast<std::uint16_t>(status);
+    std::size_t pos = first_line_end + 2;
+    while (pos < headers_end) {
+        const auto end = response.find("\r\n", pos);
+        if (end == std::string_view::npos || end > headers_end) {
+            return std::nullopt;
+        }
+        const auto line = response.substr(pos, end - pos);
+        pos = end + 2;
+        if (line.empty() || line.front() == ' ' || line.front() == '\t') {
+            return std::nullopt;
+        }
+        const auto colon = line.find(':');
+        if (colon == std::string_view::npos) {
+            return std::nullopt;
+        }
+        std::string name = lower_ascii(trim_ascii(line.substr(0, colon)));
+        const auto value = trim_ascii(line.substr(colon + 1));
+        if (!valid_header_name(name) || !valid_header_value(value)) {
+            return std::nullopt;
+        }
+        if (!h2_forbidden_header(name) && name != "content-length") {
+            out.headers.emplace_back(std::move(name), std::string(value));
+        }
+        if (out.headers.size() > 64) {
+            return std::nullopt;
+        }
+    }
+
+    const auto body = response.substr(headers_end + 4);
+    const std::size_t keep = std::min(body.size(), body_cap);
+    out.body.assign(body.begin(), body.begin() + static_cast<std::ptrdiff_t>(keep));
     return out;
 }
 
@@ -402,46 +594,47 @@ crypto::Bytes encode_data_frames(const std::uint8_t* data, std::size_t len,
 
     std::size_t pos = 0;
     while (pos < effective_len) {
-        std::size_t chunk = std::min<std::size_t>(effective_len - pos,
-            static_cast<std::size_t>(max_payload) - 1);
-        // Budget for this DATA frame's total length (including the
-        // 1-byte pad-length and the pad bytes themselves). Window
-        // is whatever the caller said minus what we've already
-        // emitted.
-        std::uint32_t emitted = static_cast<std::uint32_t>(pos);
-        std::uint32_t window_remaining = params.send_window > emitted
+        const std::uint32_t emitted = static_cast<std::uint32_t>(pos);
+        const std::uint32_t window_remaining = params.send_window > emitted
             ? params.send_window - emitted
             : 0u;
-        std::uint32_t this_frame_cap = std::min(max_payload, window_remaining);
-        if (this_frame_cap <= static_cast<std::uint32_t>(chunk) + 1) {
-            // No room for padding; skip pad entirely.
-            std::uint32_t pad = 0;
-            std::uint32_t frame_len = static_cast<std::uint32_t>(chunk) + pad + 1;
-            append_frame_header(out, frame_len, kFrameData, kFlagPadded, 1);
-            out.push_back(static_cast<std::uint8_t>(pad));
-            out.insert(out.end(), data + pos, data + pos + chunk);
-        } else {
-            std::uint32_t pad = sample_padding(params.padding_mean,
+        const std::uint32_t this_frame_cap = std::min(max_payload, window_remaining);
+        const std::size_t chunk = std::min<std::size_t>(
+            effective_len - pos, static_cast<std::size_t>(this_frame_cap));
+        if (chunk == 0) break;
+
+        std::uint32_t pad = 0;
+        if (this_frame_cap > static_cast<std::uint32_t>(chunk) + 1) {
+            pad = sample_padding(
+                params.padding_mean,
                 std::min(params.padding_max,
                          this_frame_cap - static_cast<std::uint32_t>(chunk) - 1));
-            crypto::Bytes padding_bytes;
-            if (pad > 0) {
-                try {
-                    padding_bytes = crypto::random_bytes(pad);
-                } catch (...) {
-                    // Keep the frame valid and fail soft on an optional
-                    // camouflage feature rather than emitting zero padding.
-                    pad = 0;
-                }
-            }
-            std::uint32_t frame_len = static_cast<std::uint32_t>(chunk) + pad + 1;
-            append_frame_header(out, frame_len, kFrameData, kFlagPadded, 1);
-            out.push_back(static_cast<std::uint8_t>(pad));
-            out.insert(out.end(), data + pos, data + pos + chunk);
-            if (!padding_bytes.empty()) {
-                out.insert(out.end(), padding_bytes.begin(), padding_bytes.end());
+        }
+        crypto::Bytes padding_bytes;
+        if (pad > 0) {
+            try {
+                padding_bytes = crypto::random_bytes(pad);
+            } catch (...) {
+                // Padding is optional camouflage. If the RNG helper fails,
+                // emit an ordinary unpadded DATA frame.
+                pad = 0;
             }
         }
+
+        const bool last = pos + chunk == effective_len;
+        std::uint8_t flags = (params.end_stream && last) ? kFlagEndStream : 0;
+        if (pad > 0) {
+            flags = static_cast<std::uint8_t>(flags | kFlagPadded);
+            append_frame_header(
+                out, static_cast<std::uint32_t>(chunk) + pad + 1,
+                kFrameData, flags, 1);
+            out.push_back(static_cast<std::uint8_t>(pad));
+        } else {
+            append_frame_header(
+                out, static_cast<std::uint32_t>(chunk), kFrameData, flags, 1);
+        }
+        out.insert(out.end(), data + pos, data + pos + chunk);
+        out.insert(out.end(), padding_bytes.begin(), padding_bytes.end());
         pos += chunk;
     }
 
@@ -449,8 +642,9 @@ crypto::Bytes encode_data_frames(const std::uint8_t* data, std::size_t len,
     // was actually no input AND we have budget for the frame at all
     // (an empty DATA frame is 9 header bytes of cleartext, no payload
     // — payload size 0 doesn't draw from the flow-control window).
-    if (len == 0) {
-        append_frame_header(out, 0, kFrameData, 0, 1);
+    if (effective_len == 0) {
+        append_frame_header(out, 0, kFrameData,
+                            params.end_stream ? kFlagEndStream : 0, 1);
     }
 
     return out;
@@ -522,7 +716,7 @@ bool H2InboundDecoder::parse_one_frame(std::size_t* consumed) {
     std::uint8_t flags = inbound_buf_[4];
     std::uint32_t stream_id = read_be31(inbound_buf_.data() + 5);
 
-    if (length > 16384u + 256u) {
+    if (length > 16384u) {
         error_ = "frame length exceeds carrier max";
         return false;
     }
@@ -532,8 +726,27 @@ bool H2InboundDecoder::parse_one_frame(std::size_t* consumed) {
 
     const std::uint8_t* payload = inbound_buf_.data() + kFrameHeaderLen;
 
+    if (!first_frame_seen_) {
+        first_frame_seen_ = true;
+        if (type != kFrameSettings || (flags & kFlagAck) != 0 || stream_id != 0) {
+            error_ = "first HTTP/2 frame must be non-ACK SETTINGS on stream 0";
+        }
+    }
+
     switch (type) {
         case kFrameSettings: {
+            if (stream_id != 0) {
+                error_ = "SETTINGS on nonzero stream";
+                break;
+            }
+            if ((flags & kFlagAck) != 0) {
+                if (length != 0) {
+                    error_ = "SETTINGS ACK with payload";
+                    break;
+                }
+                peer_settings_ack_seen_ = true;
+                break;
+            }
             if (!(flags & kFlagAck)) {
                 // Parse the SETTINGS payload (6 bytes per setting:
                 // 2-byte id + 4-byte value, RFC 7540 §6.5.1) and
@@ -603,6 +816,10 @@ bool H2InboundDecoder::parse_one_frame(std::size_t* consumed) {
             break;
         }
         case kFrameWindowUpdate: {
+            if (!peer_settings_seen_) {
+                error_ = "WINDOW_UPDATE before peer SETTINGS";
+                break;
+            }
             if (length != 4) {
                 error_ = "WINDOW_UPDATE with bad length";
                 break;
@@ -646,6 +863,10 @@ bool H2InboundDecoder::parse_one_frame(std::size_t* consumed) {
             break;
         }
         case kFramePing: {
+            if (stream_id != 0) {
+                error_ = "PING on nonzero stream";
+                break;
+            }
             if (length != 8) {
                 error_ = "PING with bad length";
                 break;
@@ -667,6 +888,18 @@ bool H2InboundDecoder::parse_one_frame(std::size_t* consumed) {
             break;
         }
         case kFrameHeaders: {
+            if (!peer_settings_seen_) {
+                error_ = "HEADERS before peer SETTINGS";
+                break;
+            }
+            if (stream_id != 1) {
+                error_ = "carrier HEADERS must use stream 1";
+                break;
+            }
+            if ((flags & kFlagEndHeaders) == 0) {
+                error_ = "carrier HEADERS continuation is unsupported";
+                break;
+            }
             std::size_t hb_off = 0;
             std::size_t hb_len = length;
             if (flags & kFlagPadded) {
@@ -691,8 +924,12 @@ bool H2InboundDecoder::parse_one_frame(std::size_t* consumed) {
                 hb_len -= 5;
             }
             if (state_ == State::kAwaitingHeaders) {
-                handle_headers_block(payload + hb_off, hb_len);
+                if (!handle_headers_block(payload + hb_off, hb_len)) {
+                    error_ = "invalid or unsupported HPACK header block";
+                    break;
+                }
                 headers_seen_ = true;
+                headers_end_stream_ = (flags & kFlagEndStream) != 0;
             }
             break;
         }
@@ -701,7 +938,14 @@ bool H2InboundDecoder::parse_one_frame(std::size_t* consumed) {
                 error_ = "DATA before HEADERS";
                 break;
             }
+            if (stream_id != 1) {
+                error_ = "carrier DATA must use stream 1";
+                break;
+            }
             handle_data_payload(payload, length, flags);
+            if (!failed() && (flags & kFlagEndStream) != 0) {
+                data_end_stream_ = true;
+            }
             break;
         }
         default: {
@@ -714,12 +958,17 @@ bool H2InboundDecoder::parse_one_frame(std::size_t* consumed) {
     return true;
 }
 
-void H2InboundDecoder::handle_headers_block(const std::uint8_t* block, std::size_t len) {
+bool H2InboundDecoder::handle_headers_block(const std::uint8_t* block, std::size_t len) {
     std::string path;
     std::string authority;
-    scan_headers_block(block, len, &path, &authority);
+    std::vector<std::pair<std::string, std::string>> headers;
+    if (!scan_headers_block(block, len, &headers, &path, &authority)) {
+        return false;
+    }
+    decoded_headers_ = std::move(headers);
     if (!path.empty()) extracted_path_ = path;
     if (!authority.empty()) extracted_authority_ = authority;
+    return true;
 }
 
 void H2InboundDecoder::handle_data_payload(const std::uint8_t* payload, std::size_t len,
@@ -755,7 +1004,30 @@ std::size_t H2InboundDecoder::decoded_available() const {
 }
 
 void H2InboundDecoder::mark_carrier_active() {
+    // This transition is also used by data-framing unit tests that start after
+    // the opening exchange. Production callers have already parsed SETTINGS.
+    first_frame_seen_ = true;
     state_ = State::kCarrierActive;
+    process_inbound();
+}
+
+std::string H2InboundDecoder::header_value(std::string_view name) const {
+    for (const auto& [header_name, value] : decoded_headers_) {
+        if (header_name == name) {
+            return value;
+        }
+    }
+    return {};
+}
+
+bool H2InboundDecoder::is_carrier_accept_response() const {
+    if (!headers_seen_ || headers_end_stream_) return false;
+    if (header_value(":status") != "200") return false;
+    if (lower_ascii(trim_ascii(header_value("content-type"))) !=
+        "application/grpc-web+proto") {
+        return false;
+    }
+    return header_value("content-length").empty();
 }
 
 crypto::Bytes H2InboundDecoder::take_outbound_replies() {

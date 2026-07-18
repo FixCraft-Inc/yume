@@ -31,7 +31,9 @@
 #include <iostream>
 #include <functional>
 #include <memory>
+#include <map>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <cctype>
 #include <cstdint>
@@ -147,6 +149,7 @@ int Cli::run(int argc, char** argv) {
         util::log_error(args.parse_error);
         return 1;
     }
+    const bool explicit_http_profile = !args.http_profile.empty();
     if (args.local_benchmark && args.bench) {
         util::log_error("--fullbench is local-only; use --bench-full for the authenticated endpoint long profile");
         return 1;
@@ -502,8 +505,10 @@ int Cli::run(int argc, char** argv) {
     bool pq_warned = false;
     bool pq_reconnect_used = false;
     bool verified_once = false;
-    bool tls_fingerprint_verification_attempted = false;
-    std::optional<tls_fingerprint::FingerprintData> verified_tls_fingerprint;
+    std::uint64_t completed_tls_connections = 0;
+    std::set<tls_fingerprint::BrowserProfile> tls_verification_attempted;
+    std::map<tls_fingerprint::BrowserProfile, tls_fingerprint::FingerprintData>
+        verified_tls_fingerprints;
     for (;;) {
         if (should_stop()) {
             return 130;
@@ -525,6 +530,7 @@ int Cli::run(int argc, char** argv) {
             std::unique_ptr<boost::asio::ssl::context> owned_ctx;
             boost::asio::ssl::context* ctx = nullptr;
             tls_fingerprint::BrowserProfile active_tls_profile = tls_fingerprint::BrowserProfile::UNKNOWN;
+            tls_fingerprint::BrowserProfile base_tls_profile = tls_fingerprint::BrowserProfile::UNKNOWN;
             if (cfg.tls_stealth_enabled) {
                 if (cfg.tls_fingerprint_log) {
                     tls_metrics::MetricsManager::instance().initialize(cfg.tls_fingerprint_log_path);
@@ -543,12 +549,33 @@ int Cli::run(int argc, char** argv) {
                            profile_lower == "safari17" || profile_lower == "safari_17") {
                     profile = tls_fingerprint::BrowserProfile::SAFARI_18;
                 }
+                base_tls_profile = profile;
+                profile = tls_stealth::profile_for_connection(
+                    profile,
+                    cfg.tls_stealth_rotate,
+                    cfg.tls_stealth_rotation_interval,
+                    completed_tls_connections);
                 active_tls_profile = profile;
+                if (!explicit_http_profile) {
+                    const char* http_profile_name = "chrome";
+                    if (profile == tls_fingerprint::BrowserProfile::FIREFOX_126) {
+                        http_profile_name = "firefox";
+                    } else if (profile == tls_fingerprint::BrowserProfile::SAFARI_18) {
+                        http_profile_name = "safari";
+                    }
+                    if (auto selected_http = yume::http_profile::client(http_profile_name);
+                        selected_http.has_value()) {
+                        yume::http_profile::set_active_client_ua(selected_http->user_agent);
+                    }
+                }
 
                 tls_stealth::StealthConfig stealth_config;
                 stealth_config.enabled = true;
                 stealth_config.target_profile = profile;
-                stealth_config.rotate_profiles = cfg.tls_stealth_rotate;
+                // The reconnect loop owns profile selection because each TLS
+                // context is rebuilt per attempt. Avoid resetting a second,
+                // unreachable rotation counter inside StealthContext.
+                stealth_config.rotate_profiles = false;
                 stealth_config.rotation_interval_connections = cfg.tls_stealth_rotation_interval;
                 stealth_config.log_fingerprints = cfg.tls_fingerprint_log;
                 stealth_config.log_file_path = cfg.tls_fingerprint_log_path;
@@ -708,6 +735,9 @@ int Cli::run(int argc, char** argv) {
                 }
                 throw std::runtime_error(msg);
             }
+            if (cfg.tls_stealth_enabled) {
+                ++completed_tls_connections;
+            }
             const std::string server_tls_fingerprint_sha256 =
                 get_peer_cert_fingerprint(nullptr, stream.native_handle());
             if (!cfg.tls_pin_sha256.empty()) {
@@ -719,14 +749,15 @@ int Cli::run(int argc, char** argv) {
 
             tls_fingerprint::FingerprintData fingerprint_for_metrics;
             if (cfg.tls_stealth_enabled) {
-                if (cfg.tls_fingerprint_verify && !tls_fingerprint_verification_attempted) {
+                if (cfg.tls_fingerprint_verify &&
+                    tls_verification_attempted.insert(active_tls_profile).second) {
                     auto verification = tls_stealth::evaluate_tls_fingerprint(
                         cfg.tls_fingerprint_test_endpoint,
                         443,
                         active_tls_profile);
-                    tls_fingerprint_verification_attempted = true;
                     if (verification.success) {
-                        verified_tls_fingerprint = verification.detected_fingerprint;
+                        verified_tls_fingerprints[active_tls_profile] =
+                            verification.detected_fingerprint;
                         util::log_info("TLS fingerprint verified via " + cfg.tls_fingerprint_test_endpoint
                             + ": JA3=" + verification.ja3_from_server
                             + " JA4=" + verification.ja4_from_server);
@@ -742,8 +773,9 @@ int Cli::run(int argc, char** argv) {
                     }
                 }
 
-                if (verified_tls_fingerprint.has_value()) {
-                    fingerprint_for_metrics = *verified_tls_fingerprint;
+                if (auto verified = verified_tls_fingerprints.find(active_tls_profile);
+                    verified != verified_tls_fingerprints.end()) {
+                    fingerprint_for_metrics = verified->second;
                 } else if (auto profile_info = tls_fingerprint::get_browser_profile_info(active_tls_profile);
                            profile_info.has_value()) {
                     fingerprint_for_metrics.ja3_hash = profile_info->ja3_hash;
@@ -795,7 +827,9 @@ int Cli::run(int argc, char** argv) {
                 require_h2_carrier_alpn(stream, tls_name, cfg.port);
                 auto h2_start = std::chrono::steady_clock::now();
                 perform_h2_carrier_handshake(stream, io, tls_name, cfg.port,
-                                             cfg.obfs_secret, &prefetched_tls_bytes);
+                                             cfg.obfs_secret,
+                                             http_profile::active_client_ua(),
+                                             &prefetched_tls_bytes);
                 auto h2_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - h2_start).count();
                 util::log_timing("client.connect",
@@ -1307,6 +1341,10 @@ int Cli::run(int argc, char** argv) {
             connected_options.inner_key = inner_key;
             connected_options.server_tls_fingerprint_sha256 =
                 server_tls_fingerprint_sha256;
+            connected_options.base_tls_profile = base_tls_profile;
+            connected_options.completed_tls_connections =
+                &completed_tls_connections;
+            connected_options.explicit_http_profile = explicit_http_profile;
             connected_options.status_block_builder = status_block_builder;
             connected_options.announce_stopping = [&stop_controller]() {
                 stop_controller.announce_stopping();

@@ -130,6 +130,7 @@ struct ClientSession::Impl {
     // every ~500 ms, deltas into the TrafficMeter so the dashboard
     // graph has live samples to plot. Stopped via stats_stop.
     std::thread stats_thread;
+    std::mutex stats_thread_mtx;
     std::atomic<bool> stats_stop{false};
     std::uint64_t last_bytes_in{0};
     std::uint64_t last_bytes_out{0};
@@ -144,10 +145,43 @@ struct ClientSession::Impl {
         if (stop_worker.joinable()) stop_worker.join();
     }
 
+    void start_stats_thread() {
+        std::lock_guard<std::mutex> lock(stats_thread_mtx);
+        if (stats_thread.joinable()) return;
+        stats_stop.store(false);
+        stats_thread = std::thread([this]() {
+            while (!stats_stop.load()) {
+                std::string ipc_err;
+                auto resp = runtime.request("runtime.status",
+                    nlohmann::json::object(), &ipc_err, 1500);
+                if (resp.is_object() && resp.value("ok", false)) {
+                    auto const& r = resp["result"];
+                    const std::uint64_t in  = r.value("bytes_in",  0ULL);
+                    const std::uint64_t out = r.value("bytes_out", 0ULL);
+                    const std::uint64_t d_in = in > last_bytes_in
+                        ? in - last_bytes_in : 0ULL;
+                    const std::uint64_t d_out = out > last_bytes_out
+                        ? out - last_bytes_out : 0ULL;
+                    last_bytes_in = in;
+                    last_bytes_out = out;
+                    if (d_in) traffic.record_rx(d_in);
+                    if (d_out) traffic.record_tx(d_out);
+                }
+                traffic.tick();
+                for (int i = 0; i < 5 && !stats_stop.load(); ++i) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
+            }
+        });
+    }
+
     void stop_stats_thread() {
+        // Creation, joinability checks, move/assignment, and join all share one
+        // lock. The worker never takes this lock, so joining while holding it
+        // cannot deadlock with the polling loop.
+        std::lock_guard<std::mutex> lock(stats_thread_mtx);
         stats_stop.store(true);
         if (stats_thread.joinable()) stats_thread.join();
-        stats_stop.store(false);
         last_bytes_in = 0;
         last_bytes_out = 0;
     }
@@ -187,8 +221,11 @@ bool ClientSession::start(std::string* err) {
     ClientStatus snapshot;
     {
         std::lock_guard<std::mutex> lock(impl_->mtx);
-        if (impl_->runtime.running() || impl_->worker_busy.load()) {
-            if (err) *err = "client runtime is already running";
+        if (impl_->runtime.running() || impl_->worker_busy.load() ||
+            impl_->stop_busy.load(std::memory_order_acquire)) {
+            if (err) *err = impl_->stop_busy.load(std::memory_order_relaxed)
+                ? "client runtime is still stopping"
+                : "client runtime is already running";
             return false;
         }
         cfg = impl_->cfg;
@@ -202,6 +239,7 @@ bool ClientSession::start(std::string* err) {
     if (cb) cb(snapshot);
 
     // Reap any previous worker (start/stop alternation).
+    impl_->join_previous_stop_worker();
     impl_->join_previous_worker();
     impl_->worker_busy.store(true);
 
@@ -274,31 +312,8 @@ bool ClientSession::start(std::string* err) {
         // Spin up the stats-poll thread now that IPC is up. It loops
         // until stats_stop flips; each pass asks the runtime for
         // bytes_in/bytes_out and feeds the delta into the meter.
-        if (!impl_->stats_thread.joinable()) {
-            impl_->stats_thread = std::thread([this]() {
-                while (!impl_->stats_stop.load()) {
-                    std::string ipc_err;
-                    auto resp = impl_->runtime.request("runtime.status",
-                        nlohmann::json::object(), &ipc_err, 1500);
-                    if (resp.is_object() && resp.value("ok", false)) {
-                        auto const& r = resp["result"];
-                        const std::uint64_t in  = r.value("bytes_in",  0ULL);
-                        const std::uint64_t out = r.value("bytes_out", 0ULL);
-                        std::uint64_t d_in  = in  > impl_->last_bytes_in
-                            ? in  - impl_->last_bytes_in  : 0ULL;
-                        std::uint64_t d_out = out > impl_->last_bytes_out
-                            ? out - impl_->last_bytes_out : 0ULL;
-                        impl_->last_bytes_in  = in;
-                        impl_->last_bytes_out = out;
-                        if (d_in)  impl_->traffic.record_rx(d_in);
-                        if (d_out) impl_->traffic.record_tx(d_out);
-                    }
-                    impl_->traffic.tick();
-                    for (int i = 0; i < 5 && !impl_->stats_stop.load(); ++i) {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                    }
-                }
-            });
+        if (!impl_->stop_busy.load(std::memory_order_acquire)) {
+            impl_->start_stats_thread();
         }
 
         impl_->worker_busy.store(false);

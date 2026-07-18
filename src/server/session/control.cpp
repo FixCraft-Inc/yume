@@ -390,15 +390,12 @@ void Session::handle_control(const protocol::Frame& frame) {
             send_json(resp);
             return;
         }
-        if (client_relay_mode_ != control::RelayMode::trusted) {
+        if (!authorization::admin_attach_allowed(
+                client_relay_mode_ == control::RelayMode::trusted,
+                client_allow_outbound_admin_,
+                target_info.allow_inbound_admin)) {
             resp["ok"] = false;
-            resp["error"] = "admin attach requires trusted relay mode";
-            send_json(resp);
-            return;
-        }
-        if (!target_info.allow_inbound_admin || !target_info.allow_outbound_admin) {
-            resp["ok"] = false;
-            resp["error"] = "target does not allow inbound admin";
+            resp["error"] = "admin attach requires caller outbound-admin and target inbound-admin permission in trusted relay mode";
             send_json(resp);
             return;
         }
@@ -432,6 +429,15 @@ void Session::handle_control(const protocol::Frame& frame) {
         if (!info.server_in_charge) {
             resp["ok"] = false;
             resp["error"] = "client did not grant server-in-charge";
+            send_json(resp);
+            return;
+        }
+        if (!authorization::admin_attach_allowed(
+                client_relay_mode_ == control::RelayMode::trusted,
+                client_allow_outbound_admin_,
+                target->allows_inbound_admin())) {
+            resp["ok"] = false;
+            resp["error"] = "legacy attach requires caller outbound-admin and target inbound-admin permission in trusted relay mode";
             send_json(resp);
             return;
         }

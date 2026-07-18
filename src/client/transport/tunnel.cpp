@@ -256,8 +256,28 @@ void Tunnel::on_read_tls(const boost::system::error_code& ec, std::size_t bytes)
 }
 
 void Tunnel::start_exec(uint8_t stream_id, std::string command) {
+    std::uint32_t active = active_execs_.load(std::memory_order_relaxed);
+    while (active < kMaxConcurrentExecs &&
+           !active_execs_.compare_exchange_weak(
+               active, active + 1,
+               std::memory_order_acq_rel,
+               std::memory_order_relaxed)) {
+    }
+    if (active >= kMaxConcurrentExecs) {
+        send_data(stream_id, Bytes({'E', 'X', 'E', 'C', ' ', 'b', 'u', 's', 'y'}));
+        send_close(stream_id, "exec concurrency limit reached");
+        core_.release_reserved_stream(stream_id);
+        return;
+    }
+
     auto self = shared_from_this();
     std::thread([self, stream_id, command = std::move(command)]() {
+        struct ExecSlotGuard {
+            Tunnel* tunnel;
+            ~ExecSlotGuard() {
+                tunnel->active_execs_.fetch_sub(1, std::memory_order_acq_rel);
+            }
+        } slot{self.get()};
 #if defined(_WIN32)
         std::string exec_cmd = "cmd /C " + command;
         FILE* pipe = _popen(exec_cmd.c_str(), "r");

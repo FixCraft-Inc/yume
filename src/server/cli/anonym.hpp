@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace yume::server_cli {
+namespace yume::server::cli {
 
 struct AnonymProof {
     std::string hash;
@@ -52,4 +52,4 @@ AnonymProof fetch_anonym_proof(const std::string& hash,
                                bool enable_local_sign,
                                const std::string& outbound_proxy_url);
 
-}  // namespace yume::server_cli
+}  // namespace yume::server::cli

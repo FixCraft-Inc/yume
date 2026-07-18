@@ -14,6 +14,7 @@
 
 #include "client/cli/connect/cert.hpp"
 #include "client/cli/config/platform.hpp"
+#include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
 #include "util.hpp"
 
@@ -208,8 +209,8 @@ void load_client_config_file(const ParsedArgs& args,
         if (json.contains("app_codec_listen") && !args.app_codec_listen_override) {
             std::string parse_error;
             auto ep = app_codec::parse_endpoint_spec(json["app_codec_listen"].get<std::string>(),
-                                                     app_codec::kMoneroRpcDefaultHost,
-                                                     app_codec::kMoneroRpcDefaultPort,
+                                                     app_codec::builtin::kMoneroRpcDefaultHost,
+                                                     app_codec::builtin::kMoneroRpcDefaultPort,
                                                      &parse_error);
             if (ep.has_value()) {
                 cfg->app_codec_listen_host = ep->host;
@@ -383,8 +384,8 @@ void apply_cli_config_overrides(const ParsedArgs& args,
     if (args.app_codec_listen_override) {
         std::string parse_error;
         auto ep = app_codec::parse_endpoint_spec(args.app_codec_listen,
-                                                 app_codec::kMoneroRpcDefaultHost,
-                                                 app_codec::kMoneroRpcDefaultPort,
+                                                 app_codec::builtin::kMoneroRpcDefaultHost,
+                                                 app_codec::builtin::kMoneroRpcDefaultPort,
                                                  &parse_error);
         if (ep.has_value()) {
             cfg->app_codec_listen_host = ep->host;

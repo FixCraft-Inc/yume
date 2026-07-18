@@ -18,19 +18,20 @@ namespace yume::app_codec {
 using Bytes = std::vector<std::uint8_t>;
 
 inline constexpr std::string_view kOpenProto = "app-codec-v1";
-inline constexpr std::string_view kMoneroRpcCodecId = "monero-rpc-v1";
-inline constexpr std::string_view kMoneroRpcAlias = "monero-rpc";
 
 inline constexpr std::size_t kMaxHttpHeaderBytes = 32U * 1024U;
-inline constexpr std::size_t kMoneroRpcMaxRequestBody = 8U * 1024U * 1024U;
-inline constexpr std::size_t kMoneroRpcMaxResponseBody = 15U * 1024U * 1024U;
-inline constexpr int kMoneroRpcDefaultPort = 18089;
-inline constexpr std::string_view kMoneroRpcDefaultHost = "127.0.0.1";
 
 struct Endpoint {
-    std::string host{std::string(kMoneroRpcDefaultHost)};
-    int port{kMoneroRpcDefaultPort};
+    std::string host;
+    int port{0};
 };
+
+struct HttpRequest;
+
+// Codec-specific admission policy, run before a request reaches the backend.
+// Returns false and sets *reason to refuse. Codecs must supply one: dispatch is
+// fail-closed, so a descriptor without a validator refuses every request.
+using RequestValidator = bool (*)(const HttpRequest& request, std::string* reason);
 
 struct CodecDescriptor {
     std::string id;
@@ -40,6 +41,9 @@ struct CodecDescriptor {
     Endpoint default_endpoint;
     std::size_t max_request_body{0};
     std::size_t max_response_body{0};
+    RequestValidator validate_request{nullptr};
+    // Backends are loopback-only unless a codec deliberately opts out.
+    bool require_loopback_backend{true};
 };
 
 struct HttpHeader {
@@ -77,6 +81,8 @@ struct Envelope {
     std::string error_message{"codec error"};
 };
 
+// Registry lookup. Every codec-identity question resolves through the registry;
+// core never compares against a specific codec id.
 std::string canonical_codec_id(std::string_view value);
 bool is_supported_codec(std::string_view value);
 std::vector<std::string> builtin_codec_ids();
@@ -113,8 +119,5 @@ bool decode_envelope(const Bytes& payload,
                      std::size_t max_body_bytes,
                      Envelope* out,
                      std::string* error = nullptr);
-
-bool validate_monero_rpc_request(const HttpRequest& request,
-                                 std::string* reason = nullptr);
 
 }  // namespace yume::app_codec

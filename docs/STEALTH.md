@@ -2,26 +2,28 @@
 
 YUME stacks four independent layers of byte-shape camouflage on top of TLS 1.3. Each one defends against a different kind of observer; they're orthogonal and can be enabled or disabled independently.
 
-## Layer 1: real TLS 1.3 with a browser fingerprint
+## Layer 1: real TLS 1.3 with browser-oriented presets
 
 The TLS handshake is real, not forged. OpenSSL emits a genuine ClientHello whose cipher suites, supported groups, signature algorithms, and ALPN list are configured toward a browser profile. The project checks the resulting JA3 against pinned build-host baselines and computes [canonical JA4](https://github.com/FoxIO-LLC/ja4/blob/main/technical_details/JA4.md) for diagnostics. This is browser-oriented shaping, not a byte-identical browser ClientHello: stock OpenSSL and the partial GREASE support leave observable differences described below.
 
 Source: [src/core/stealth/tls_stealth.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/stealth/tls_stealth.cpp), [src/core/stealth/tls_fingerprint.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/stealth/tls_fingerprint.cpp).
 
-| Profile flag | Mimics |
+| Profile flag | Preset orientation |
 | --- | --- |
-| `--profile chrome` (default) | Chrome 131 |
-| `--profile firefox` | Firefox 126 |
-| `--profile safari` | Safari 18 |
+| `--profile chrome` (default) | Project baseline labelled Chrome 131 |
+| `--profile firefox` | Project baseline labelled Firefox 126 |
+| `--profile safari` | Project baseline labelled Safari 18 |
 | `--no-stealth` | Bare OpenSSL defaults; distinguishable as YUME, not recommended in hostile networks |
 
-Profile rotation per N connections is available via `--tls-stealth-rotate` and `--tls-stealth-rotation-interval <N>`.
+Profile rotation is available via `--tls-stealth-rotate` and `--tls-stealth-rotation-interval <N>`. The configured starting profile advances through chrome/firefox/safari after every N successful TLS connections. Unless `--hide-in-the-crowd` explicitly selects a client HTTP profile, the carrier User-Agent follows the active TLS preset.
 
 ## Layer 2: HTTP/2 carrier handshake (`--obfs`)
 
-After TLS handshake, the client emits the bytes a real Chrome would: an HTTP/2 connection preface (`PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n`), Chrome-shaped `SETTINGS`, a `WINDOW_UPDATE`, and a `HEADERS` frame opening stream 1 with a `POST` request. The path is `/<token>/<nonce>` where `<token>` = `HMAC-SHA256(K, sni || hour_epoch || "yume-obfs-v2")` truncated to 16 bytes hex, and `K` is HKDF-derived from `--obfs-secret`. The server replies with canned `SETTINGS` + `SETTINGS-ACK` + `HEADERS :status=200 content-type=application/grpc-web+proto`.
+After TLS handshake, the client emits an HTTP/2 connection preface (`PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n`), a project-defined browser-oriented `SETTINGS` block, a `WINDOW_UPDATE`, and a `HEADERS` frame opening stream 1 with a `POST` request. The request uses valid HPACK static-table indexes, carries `END_HEADERS|END_STREAM`, and requires `:authority` to match the TLS SNI after canonical host normalization. The path is `/<token>/<nonce>` where `<token>` = `HMAC-SHA256(K, sni || hour_epoch || "yume-obfs-v2")` truncated to 16 bytes hex, and `K` is HKDF-derived from `--obfs-secret`.
 
-The exchange resembles a Chrome-to-CDN gRPC-web opening to an observer that terminates TLS or to an active probe at the endpoint. A passive path observer does not see these plaintext bytes; it sees the TLS handshake plus encrypted record sizes and timing. After this opening exchange, the current authenticated tunnel carries YUME frames rather than maintaining a fully conformant long-lived HTTP/2 stream.
+On an accepted request the server writes one ordered sequence: server `SETTINGS`, an ACK for the client's `SETTINGS`, and bodyless `:status=200` response `HEADERS` with `content-type: application/grpc-web+proto`. The current client ACKs the server settings before the server emits YUME `AUTH`. Missing, malformed, or wrong admission data stays in the masquerade path and receives a complete benign HTTP/2 response with `END_STREAM`; yumed uses a captured upstream response when configured, then the real HTML/profile identity, then its synthetic profile fallback. The client classifies this as an ordinary HTTPS decoy before attempting to parse YUME framing.
+
+This is a standards-conformant opening exchange covered by the project decoder tests, not a claim of exact Chrome/Firefox bytes or native nginx/Apache output. It has not yet been validated against a version-pinned external browser or HTTP/2 conformance capture. A passive path observer does not see these plaintext bytes; it sees the TLS handshake plus encrypted record sizes and timing. After this opening exchange, the authenticated tunnel carries YUME frames rather than maintaining a fully conformant long-lived HTTP/2 stream.
 
 Source: [src/core/stealth/obfs_h2.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/stealth/obfs_h2.cpp), [src/core/stealth/obfs_signal.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/stealth/obfs_signal.cpp).
 
@@ -29,11 +31,11 @@ Source: [src/core/stealth/obfs_h2.cpp](https://github.com/FixCraft-Inc/yume/blob
 | --- | --- |
 | `--obfs` (default on) | enable HTTP/2 carrier handshake |
 | `--no-obfs` | disable; tunnel goes raw YUME after TLS |
-| `--obfs-secret <string>` | shared secret used to bind the path token to a peer; client and server must agree |
+| `--obfs-secret <string>` | shared secret used to bind the path token to a peer; client and server must agree; required by `--public-node` |
 
-If `--obfs-secret` is unset on either side, the server falls back to a structural check (path matches `/<32hex>/<16hex>`). That defeats casual probes but doesn't pin the tunnel to a specific authorised peer; set `--obfs-secret` on both ends for strict pinning.
+In non-public development mode, an empty secret permits only a structural admission check (`/<32hex>/<16hex>`). This is not probe authentication and must not be described as strict masquerade. `--public-node` rejects startup unless obfs is enabled with a nonempty secret. There is no separate dual-key wire format: clients connecting to a keyed server must use the same secret.
 
-The token rotates every hour. The verifier accepts ±1 hour of clock skew. A captured token cannot be replayed beyond that window and cannot decrypt the inner stream regardless.
+The token rotates every hour and the verifier accepts ±1 hour of clock skew. There is no nonce-reuse database, so a captured valid path can be replayed during an accepted time window to reach the separate Ed25519 challenge. It cannot authenticate the client or decrypt the inner stream by itself.
 
 ## Layer 3: HTTP-layer server disguise (`--hide-in-the-crowd`)
 
@@ -43,7 +45,7 @@ The TLS-fingerprint layer is intended to reduce coarse JA3-based blocking, while
 
 Server profiles:
 
-| Profile | What it mimics |
+| Profile | Synthetic response identity |
 | --- | --- |
 | `nginx` (default under `--public-node`) | `Server: nginx/1.24.0`, `Content-Type: text/html; charset=utf-8`, nginx's `<hr><center>nginx/1.24.0</center>` 404 body |
 | `nginx-stable` | `Server: nginx` (no version), same body shape |
@@ -55,7 +57,7 @@ Server profiles:
 | `none` | No `Server` header at all |
 | `yumed` | Pre-1.0 default: `Server: yumed`. Not stealthy; for operators who explicitly want the brand. |
 
-Client profiles select the User-Agent in stealth probes (and any other HTTP-layer code the client runs): `chrome`, `firefox`, `safari`, `edge`, `curl`, `wget`, `yume`. When unset, the UA is derived from `--profile` so the JA3 and the UA stay consistent.
+Client profiles select the User-Agent in stealth probes (and any other HTTP-layer code the client runs): `chrome`, `firefox`, `safari`, `edge`, `curl`, `wget`, `yume`. When unset, the UA is derived from the active `--profile` preset so profile rotation updates both layers. These are project templates, not proof that a native browser or server produced the exchange.
 
 Source: [src/core/stealth/http_profile.cpp](https://github.com/FixCraft-Inc/yume/blob/main/src/core/stealth/http_profile.cpp). Automated fidelity test (verifies header order, charset, body length, profile-specific extras): [scripts/yume_disguise_check.py](https://github.com/FixCraft-Inc/yume/blob/main/scripts/yume_disguise_check.py).
 
@@ -91,10 +93,10 @@ A browser that hits the same hostname and port with `GET / HTTP/1.1` is served t
 - **Stateful HTTP/2 middleboxes.** The opening decoder parses peer SETTINGS, answers SETTINGS/PING frames, tracks send windows for fake HTTP responses, and has stateful HPACK helpers. Those pieces improve the handshake and decoy response, but the authenticated carrier deliberately switches to YUME framing after the initial HEADERS exchange. A TLS-terminating middlebox that requires valid HTTP/2 for the full connection can therefore distinguish or reject it. Per-payload HTTP/2 DATA carriage is not enabled in the current transport path.
 - **ML traffic classifiers** trained on joint inter-arrival × packet-size distributions over the full session. Mitigations are opt-in (both knobs default to 0 because they need a matching-version peer / cost latency):
     - `--obfs-pad-multiple <N>` (0..256) — rounds every outbound frame payload up to a multiple of N bytes via trailing pad + a 1-byte length (`kFlagPadded`). Both ends must run a yume that knows `kFlagPadded`; enable it on both sides or leave it off.
-    - `--obfs-jitter-ms <ms>` — defers each batched TLS write by a uniform random 0..ms delay. Strand-serialised, so the cadence offset propagates and the inter-arrival ML feature stops being constant. Adds latency.
+    - `--obfs-jitter-ms <ms>` — defers each batched TLS write by a uniform random 0..ms delay. Strand-serialised, so it adds bounded cadence variation and latency.
     - `YUME_AUTH_JITTER_MS=<ms>` env — server-side jitter on the single AUTH challenge frame, separate from `--obfs-jitter-ms`. Cheap because it only fires once per session.
     
-    None of these close the gap against arbitrarily sensitive classifiers; they raise the training cost.
+    These use ordinary pseudo-random scheduling rather than a claimed TRNG, and none establishes ML/DPI immunity.
 - **Active probers** that send arbitrary HTTP/1.1 requests to the server: served a profile-driven 404 by `--hide-in-the-crowd <profile>` (see [Layer 3](#layer-3-http-layer-server-disguise---hide-in-the-crowd)) whose header order, charset, body shape, and profile-specific extras (`Alt-Svc` for Caddy, `CF-RAY` + `alt-svc` for Cloudflare, `Content-Security-Policy` + `nosniff` + `X-Powered-By` for Express, etc.) are based on captured upstream behaviour. For higher-fidelity replay, use `--upstream-response <file>` (single capture, normalized to valid HTTP line endings and replayed every probe) or `--upstream-response-dir <dir>` + optional `--upstream-response-ttl <s>` (loads every `*.http` / `*.response` in the directory and rotates one per probe; TTL reloads the directory periodically). Rotation avoids the simplest "every probe returns the same capture" tell, but it is not proof against a stateful prober.
 - **TLS-fingerprint regressions** if OpenSSL is upgraded to a version whose emitted ClientHello drifts from the compiled profiles. Mitigation is diagnostic: yumed generates a local ClientHello at startup and compares its JA3 with a pinned project baseline. A mismatch is logged but does not fail startup, and a match proves consistency with that baseline rather than equivalence to a current browser release.
 - **Real-browser GREASE values** (RFC 8701) in the ClientHello. **Extension slot implemented, overall support partial.** `apply_stealth_profile` registers an empty custom extension at a GREASE-range type and rotates the selected value. Chrome also places GREASE values in the cipher-suite and supported-group lists; stock OpenSSL's public configuration APIs do not preserve those unknown values. A classifier that tracks GREASE position or the complete ClientHello can still distinguish YUME's OpenSSL-generated shape.
@@ -108,7 +110,7 @@ A browser that hits the same hostname and port with `GET / HTTP/1.1` is served t
 yumed --listen 443 --cert … --key … --auth-keys … --obfs --obfs-secret 'shared-string'
 
 # client
-yume --server fixcraft.net --auth id_ed25519 --socks 1080 --obfs --obfs-secret 'shared-string'
+yume --server yume.example.com --auth id_ed25519 --socks 1080 --obfs --obfs-secret 'shared-string'
 ```
 
 **Coexisting with a real website.** Port 443 serves both browsers and YUME clients:
@@ -130,11 +132,13 @@ yume --server … --auth … --socks 1080 --tls-stealth-rotate --tls-stealth-rot
 ```bash
 # server
 yumed --listen 443 --cert … --key … --auth-keys … \
-      --obfs --obfs-pad-multiple 32 --obfs-jitter-ms 25
+      --obfs --obfs-secret 'shared-string' \
+      --obfs-pad-multiple 32 --obfs-jitter-ms 25
 
 # client
 yume --server … --auth … --socks 1080 \
-     --obfs --obfs-pad-multiple 32 --obfs-jitter-ms 25
+     --obfs --obfs-secret 'shared-string' \
+     --obfs-pad-multiple 32 --obfs-jitter-ms 25
 ```
 
 **Rotating real-server replay for probes.** Capture N real upstream responses once and let yumed rotate one per probe; refresh the cache every 30 min without restarting:

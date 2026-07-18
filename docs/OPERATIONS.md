@@ -123,7 +123,8 @@ If the client cannot connect:
 - confirm direct TCP reachability to the daemon port
 - confirm no HTTP proxy is terminating TLS in front of `yumed`
 - run the client with `--no-obfs` only as a diagnostic comparison
-- ensure client and server agree on `--obfs-secret` when strict pinning is enabled
+- ensure client and server use the same nonempty `--obfs-secret` for keyed
+  carrier admission; `--public-node` requires it
 - check that the client's public key is present in `authorized_keys`
 - verify that the server certificate chain matches what the client expects
 

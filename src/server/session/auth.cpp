@@ -17,6 +17,8 @@
  * ---------------------------------------------------------------- */
 
 #include "server/session/session.hpp"
+#include "core/security/secure_erase.hpp"
+#include "core/app_codec/builtin/monero_rpc.hpp"
 #include "server/runtime/manager.hpp"
 #include "server/session/internal.hpp"
 
@@ -112,10 +114,9 @@ void Session::send_auth_challenge() {
     // Optional opt-in send-side jitter on the AUTH challenge. Read the
     // env once per call (cheap; getenv is fast and there's exactly one
     // AUTH per session). YUME_AUTH_JITTER_MS=N adds a uniform random
-    // 0..N ms delay before writing AUTH, which breaks the
-    // "server always emits AUTH at exactly T ms after TLS finish"
-    // ML signature without costing latency for operators who don't
-    // care. Default 0 = no delay.
+    // 0..N ms delay before writing AUTH. This adds bounded timing
+    // variation; it is not a claim of classifier resistance or a
+    // cryptographically secure random schedule. Default 0 = no delay.
     int jitter_max = 0;
     if (const char* raw = std::getenv("YUME_AUTH_JITTER_MS")) {
         try { jitter_max = std::max(0, std::stoi(raw)); }
@@ -136,10 +137,8 @@ void Session::send_auth_challenge() {
 }
 
 void Session::clear_hop_key_cache() {
-    std::fill(encrypt_hop_key_.begin(), encrypt_hop_key_.end(), 0);
-    std::fill(decrypt_hop_key_.begin(), decrypt_hop_key_.end(), 0);
-    encrypt_hop_key_.clear();
-    decrypt_hop_key_.clear();
+    security::secure_erase(encrypt_hop_key_);
+    security::secure_erase(decrypt_hop_key_);
     encrypt_hop_id_.reset();
     decrypt_hop_id_.reset();
 }
@@ -257,6 +256,7 @@ std::uint64_t Session::current_hop_id() const {
 
 bool Session::handle_auth(const protocol::Frame& frame) {
     auth_error_.clear();
+    authorization_tier_ = authorization::SessionTier::Unauthenticated;
     try {
         size_t offset = 0;
         crypto::Bytes pub_pem = read_field(frame.payload, offset);
@@ -313,25 +313,31 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             }
         }
 
-        BIO* pub_bio = BIO_new_mem_buf(pub_pem.data(), static_cast<int>(pub_pem.size()));
+        std::unique_ptr<BIO, decltype(&BIO_free)> pub_bio(
+            BIO_new_mem_buf(pub_pem.data(), static_cast<int>(pub_pem.size())),
+            BIO_free);
         if (!pub_bio) {
             auth_error_ = "access denied: invalid key";
             return false;
         }
-        EVP_PKEY* pubkey = PEM_read_bio_PUBKEY(pub_bio, nullptr, nullptr, nullptr);
-        BIO_free(pub_bio);
+        crypto::EVP_PKEY_ptr pubkey(
+            PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr),
+            EVP_PKEY_free);
         if (!pubkey) {
             auth_error_ = "access denied: invalid key";
             return false;
         }
+        if (EVP_PKEY_base_id(pubkey.get()) != EVP_PKEY_ED25519) {
+            auth_error_ = "access denied: unsupported key type";
+            return false;
+        }
 
-        bool sig_ok = crypto::verify_key(pubkey, challenge_, sig);
-        bool auth_ok = authorized_keys_ ? is_authorized(pubkey, *authorized_keys_) : false;
-        std::string fingerprint = fingerprint_pubkey(pubkey);
+        bool sig_ok = crypto::verify_key(pubkey.get(), challenge_, sig);
+        bool auth_ok = authorized_keys_ ? is_authorized(pubkey.get(), *authorized_keys_) : false;
+        std::string fingerprint = fingerprint_pubkey(pubkey.get());
         client_id_ = fingerprint;
         auth_fingerprint_ = fingerprint;
         client_auth_pubkey_b64_ = yume::util::base64_encode(std::string(pub_pem.begin(), pub_pem.end()));
-        EVP_PKEY_free(pubkey);
 
         const bool preauth_ok =
             sig_ok && !auth_ok && !cfg_.preauth_services.empty();
@@ -392,8 +398,8 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                 session_allowed_services_.insert(service);
             }
         }
-        if (key_monero_rpc && app_codec::contains_codec(cfg_.allowed_codecs, app_codec::kMoneroRpcCodecId)) {
-            session_allowed_codecs_.insert(std::string(app_codec::kMoneroRpcCodecId));
+        if (key_monero_rpc && app_codec::contains_codec(cfg_.allowed_codecs, app_codec::builtin::kMoneroRpcCodecId)) {
+            session_allowed_codecs_.insert(std::string(app_codec::builtin::kMoneroRpcCodecId));
         }
 #if YUME_FEATURE_EXEC
         session_allow_exec_policy_ = key_exec && cfg_.allow_exec;
@@ -423,10 +429,10 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         }
 #endif
         session_allow_monero_rpc_policy_ =
-            session_allowed_codecs_.count(std::string(app_codec::kMoneroRpcCodecId)) != 0;
+            session_allowed_codecs_.count(std::string(app_codec::builtin::kMoneroRpcCodecId)) != 0;
         if ((key_monero_rpc ||
-             app_codec::contains_codec(auth_policy.allowed_codecs, app_codec::kMoneroRpcCodecId)) &&
-            !app_codec::contains_codec(cfg_.allowed_codecs, app_codec::kMoneroRpcCodecId)) {
+             app_codec::contains_codec(auth_policy.allowed_codecs, app_codec::builtin::kMoneroRpcCodecId)) &&
+            !app_codec::contains_codec(cfg_.allowed_codecs, app_codec::builtin::kMoneroRpcCodecId)) {
             util::log_warn("session " + std::to_string(session_id_) +
                           ": Monero RPC codec requested by key but server has not enabled --codec-allow monero-rpc");
         }
@@ -620,6 +626,9 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         if (!cfg_.anonym && !preauth_session) {
             update_auth_meta(cfg_.auth_keys_meta, fingerprint);
         }
+        authorization_tier_ = preauth_session
+            ? authorization::SessionTier::PreauthServiceOnly
+            : authorization::SessionTier::Authorized;
         return true;
     } catch (const std::exception& ex) {
         const std::string detail = ex.what();

@@ -22,6 +22,8 @@
 #include "client/transport/tunnel.hpp"
 #include "core/security/inner_crypto.hpp"
 #include "core/protocol/protocol.hpp"
+#include "core/stealth/obfs.hpp"
+#include "core/stealth/tls_stealth.hpp"
 #include "core/version.hpp"
 #include "util.hpp"
 
@@ -36,8 +38,33 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
                                                  boost::asio::ssl::context& ctx,
                                                  const ClientConfig& cfg,
                                                  const outbound_proxy::Config& proxy_cfg,
-                                                 int index) {
-    boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, ctx);
+                                                 int index,
+                                                 std::optional<tls_fingerprint::BrowserProfile> profile,
+                                                 std::string carrier_user_agent,
+                                                 std::uint64_t* completed_tls_connections) {
+    std::unique_ptr<tls_stealth::StealthContext> owned_stealth_context;
+    boost::asio::ssl::context* connection_ctx = &ctx;
+    if (profile.has_value()) {
+        tls_stealth::StealthConfig stealth_config;
+        stealth_config.enabled = true;
+        stealth_config.target_profile = *profile;
+        owned_stealth_context =
+            std::make_unique<tls_stealth::StealthContext>(stealth_config);
+        connection_ctx = &owned_stealth_context->get_context();
+        if (cfg.obfuscation) {
+            obfs::configure_alpn(*connection_ctx, false, true);
+        }
+        connection_ctx->set_verify_mode(boost::asio::ssl::verify_peer);
+        connection_ctx->set_default_verify_paths();
+        if (!cfg.tls_ca_cert.empty()) {
+            connection_ctx->load_verify_file(cfg.tls_ca_cert);
+        }
+    }
+
+    // SSL_new holds a reference to SSL_CTX, so the stream remains valid after
+    // this function returns even when the per-connection StealthContext owner
+    // below goes out of scope.
+    boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, *connection_ctx);
     const std::string& tls_name = effective_tls_server_name(cfg);
     if (proxy_cfg.type == outbound_proxy::Type::Socks5) {
         auto dr = outbound_proxy::socks5_dial(
@@ -80,6 +107,9 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
     if (hr.ec) {
         throw std::runtime_error("TLS handshake failed: " + hr.ec.message());
     }
+    if (completed_tls_connections) {
+        ++*completed_tls_connections;
+    }
     if (!cfg.tls_pin_sha256.empty()) {
         std::string fp = get_peer_cert_fingerprint(nullptr, stream.native_handle());
         if (fp.empty() || fp != cfg.tls_pin_sha256) {
@@ -91,7 +121,8 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
     if (cfg.obfuscation) {
         require_h2_carrier_alpn(stream, tls_name, cfg.port);
         perform_h2_carrier_handshake(stream, io, tls_name, cfg.port,
-                                     cfg.obfs_secret, &prefetched_tls_bytes);
+                                     cfg.obfs_secret, carrier_user_agent,
+                                     &prefetched_tls_bytes);
     }
 
     protocol::Frame auth_challenge = read_auth_challenge(

@@ -19,7 +19,7 @@
 #include "server/cli/misc.hpp"
 #include "util.hpp"
 
-namespace yume::server_cli {
+namespace yume::server::cli {
 namespace {
 
 bool parse_env_bool_local(const char* name, bool fallback) {
@@ -161,4 +161,4 @@ int prepare_server_runtime_files(yume::server::ServerConfig& cfg, const char* ar
     return 0;
 }
 
-}  // namespace yume::server_cli
+}  // namespace yume::server::cli

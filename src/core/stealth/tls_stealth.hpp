@@ -33,6 +33,17 @@ struct StealthConfig {
     std::string test_endpoint{"tls.peet.ws"};
 };
 
+// Select the profile for a completed-connection sequence. Rotation begins at
+// the configured base profile and advances through the supported profile set
+// every `interval` successful TLS connections. This selects YUME's
+// browser-oriented configuration presets; it does not promise byte-identical
+// output from any browser version.
+tls_fingerprint::BrowserProfile profile_for_connection(
+    tls_fingerprint::BrowserProfile base_profile,
+    bool rotate,
+    std::uint32_t interval,
+    std::uint64_t completed_connections);
+
 struct ConnectionMetrics {
     uint64_t connection_id{0};
     std::string timestamp;

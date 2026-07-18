@@ -59,27 +59,27 @@
 namespace {
 constexpr const char kDefaultSecretPath[] = "./.secrets/html_secret";
 
-using yume::server_cli::anonym_local_sign_default;
-using yume::server_cli::derive_pq_public_path;
-using yume::server_cli::expand_cluster_join_spec;
-using yume::server_cli::fetch_anonym_proof;
-using yume::server_cli::cert_fingerprint_sha256;
-using yume::server_cli::get_self_path;
-using yume::server_cli::load_server_config_file_and_resolve_paths;
-using yume::server_cli::load_pq_public_b64;
-using yume::server_cli::parse_proof_ts;
-using yume::server_cli::prepare_server_runtime_files;
-using yume::server_cli::read_file_bytes;
-using yume::server_cli::resolve_filter_list_spec_path;
-using yume::server_cli::run_server_key_command;
-using yume::server_cli::run_server_manager_ui;
-using yume::server_cli::ServerConfigLoadContext;
-using yume::server_cli::ServerConfigOverrides;
-using yume::server_cli::ServerKeyCommand;
-using yume::server_cli::sha256_hex;
-using yume::server_cli::sign_pq_pub_with_key;
-using yume::server_cli::StartupCheckOptions;
-using yume::server_cli::prepare_server_startup_config;
+using yume::server::cli::anonym_local_sign_default;
+using yume::server::cli::derive_pq_public_path;
+using yume::server::cli::expand_cluster_join_spec;
+using yume::server::cli::fetch_anonym_proof;
+using yume::server::cli::cert_fingerprint_sha256;
+using yume::server::cli::get_self_path;
+using yume::server::cli::load_server_config_file_and_resolve_paths;
+using yume::server::cli::load_pq_public_b64;
+using yume::server::cli::parse_proof_ts;
+using yume::server::cli::prepare_server_runtime_files;
+using yume::server::cli::read_file_bytes;
+using yume::server::cli::resolve_filter_list_spec_path;
+using yume::server::cli::run_server_key_command;
+using yume::server::cli::run_server_manager_ui;
+using yume::server::cli::ServerConfigLoadContext;
+using yume::server::cli::ServerConfigOverrides;
+using yume::server::cli::ServerKeyCommand;
+using yume::server::cli::sha256_hex;
+using yume::server::cli::sign_pq_pub_with_key;
+using yume::server::cli::StartupCheckOptions;
+using yume::server::cli::prepare_server_startup_config;
 
 bool parse_env_bool(const char* name, bool fallback) {
     const char* raw = std::getenv(name);
@@ -193,8 +193,8 @@ int Server::run(int argc, char** argv) {
             cli_cwd = cwd.string();
         }
     }
-    yume::server_cli::ServerCliParseResult cli_args;
-    if (!yume::server_cli::parse_server_cli_args(argc, argv, cli_cwd, cfg, &cli_args)) {
+    yume::server::cli::ServerCliParseResult cli_args;
+    if (!yume::server::cli::parse_server_cli_args(argc, argv, cli_cwd, cfg, &cli_args)) {
         return 1;
     }
     if (cli_args.handled) {
@@ -396,18 +396,18 @@ int Server::run(int argc, char** argv) {
         }
     }
 
-    const std::string local_instance_key = yume::server_cli::effective_server_instance_key(cfg, config_path);
+    const std::string local_instance_key = yume::server::cli::effective_server_instance_key(cfg, config_path);
     const std::string local_runtime_path = cfg.ipc_path.empty()
         ? yume::server::LocalRuntime::socket_path_for(local_instance_key)
         : cfg.ipc_path;
     const bool local_runtime_exists =
         cfg.ipc_enable && yume::server::LocalRuntime::available(local_runtime_path);
     if (cfg.ipc_enable && local_runtime_exists) {
-        const bool should_attach = attach_local || yume::server_cli::prompt_attach_existing("yumed");
+        const bool should_attach = attach_local || yume::server::cli::prompt_attach_existing("yumed");
         if (should_attach) {
-            return yume::server_cli::run_local_server_attach(
+            return yume::server::cli::run_local_server_attach(
                 local_runtime_path,
-                !yume::server_cli::stdin_is_tty());
+                !yume::server::cli::stdin_is_tty());
         }
         yume::util::log_error("yumed is already running for this instance; use --attach-local to interact with it");
         return 1;

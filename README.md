@@ -18,7 +18,7 @@ codec, federation, plugin, and browser status, see
 
 VPN protocols built for performance (WireGuard, OpenVPN) are also built to be recognisable. Their handshakes have static byte signatures that ISPs and national firewalls can match in milliseconds. Commercial VPN services then resell that same recognisable transport for $20/month, bandwidth that costs them pennies, and run it from cheap KVMs that any user could rent directly.
 
-YUME tries to do the opposite: a transport that looks like ordinary Chrome HTTPS to a CDN, with crypto that survives the move to post-quantum, with both ends fully open-source so anyone can audit, build, and self-host. FixCraft will run a fleet of free public endpoints (no signup, no payment), but the endpoints run the same `yumed` you can build right here.
+YUME tries to do the opposite: a transport with browser-oriented TLS presets, keyed active-probe admission, and an ordinary HTTPS decoy path, with crypto that survives the move to post-quantum and both ends open for audit and self-hosting. These layers reduce obvious signatures; they do not make YUME byte-identical to Chrome or immune to stateful DPI. FixCraft will run a fleet of free public endpoints (no signup, no payment), but the endpoints run the same `yumed` you can build right here.
 
 ## Compared to other tools
 
@@ -66,23 +66,30 @@ sudo ./build/bin/yumed \
     --listen 443 \
     --cert certs/server.crt --key certs/server.key \
     --auth-keys /etc/yume/authorized_keys \
-    --public-node                      # rejects dangerous flags; Argon2 admission is bounded
+    --public-node \
+    --obfs-secret 'replace-with-a-long-shared-secret' \
     --hide-in-the-crowd nginx          # implicit when --public-node is set
 ```
+
+`--public-node` requires a nonempty obfs secret; every client for that endpoint must use the same `--obfs-secret` value. Distribute it out of band rather than committing a production secret.
 
 Client:
 
 ```bash
 ./build/bin/yume \
-    --server fixcraft.net \
+    --server yume.example.com \
     --auth ~/.yume/id_ed25519 \
+    --obfs-secret 'replace-with-a-long-shared-secret' \
     --socks 127.0.0.1:1080
 ```
 
 Cluster entry-point short form (translates to `--server` + `--port`):
 
 ```bash
-./build/bin/yume --cluster fixcraft.net:443 --auth ~/.yume/id_ed25519 --socks 1080
+./build/bin/yume --cluster yume.example.com:443 \
+    --auth ~/.yume/id_ed25519 \
+    --obfs-secret 'replace-with-a-long-shared-secret' \
+    --socks 1080
 ```
 
 For a privileged port 443 on Linux, run `yumed` with `sudo` or grant `cap_net_bind_service`. Cloudflare HTTP-mode proxies will terminate TLS and break YUME. Use Spectrum or another TCP passthrough if you front the daemon with Cloudflare.
@@ -186,8 +193,8 @@ Specific hostnames will land here once the fleet is up.
 YUME stacks four independent layers of byte-shape camouflage:
 
 1. **TLS 1.3 with browser-oriented parameters.** `--profile chrome|firefox|safari` configures cipher suites, supported groups, signature algorithms, and ALPN toward Chrome 131 / Firefox 126 / Safari 18. OpenSSL emits the real ClientHello; YUME computes JA3 and canonical JA4 diagnostics from it. Stock OpenSSL does not reproduce every current-browser detail, so these profiles do not prove browser-cluster membership. Source: [src/core/stealth/tls_stealth.cpp](src/core/stealth/tls_stealth.cpp), [src/core/stealth/tls_fingerprint.cpp](src/core/stealth/tls_fingerprint.cpp).
-2. **HTTP/2 carrier handshake (`--obfs`, default on).** After the TLS handshake the client emits a real HTTP/2 connection preface (`PRI * HTTP/2.0…`), Chrome-shaped SETTINGS, a WINDOW_UPDATE, and a HEADERS frame for `POST /<token>/<nonce>` with realistic request headers. The server validates the token (HMAC-SHA256 over `(SNI || hour || "yume-obfs-v2")` keyed by `--obfs-secret`), replies with SETTINGS / SETTINGS-ACK / HEADERS `:status=200`, and the YUME tunnel then carries its own frames. These HTTP/2 bytes are inside TLS: a passive ISP sees TLS records and handshake metadata, while a TLS-terminating observer or endpoint probe sees an opening exchange shaped like a browser-to-CDN request. The authenticated payload stream is not currently a fully conformant long-lived HTTP/2 session. The codec lives in [src/core/stealth/obfs_h2.cpp](src/core/stealth/obfs_h2.cpp); the token derivation in [src/core/stealth/obfs_signal.cpp](src/core/stealth/obfs_signal.cpp). Disable with `--no-obfs`.
-3. **HTTP-layer server disguise (`--hide-in-the-crowd <profile>`).** Before 1.0 a non-YUME probe (curl / scanner) saw TLS handshake + immediate TCP close — one of the strongest DPI fingerprints. With this flag yumed instead serves a profile-driven 404 whose header order, charset, and body shape match a real install of the chosen software, captured from upstream source: `nginx`, `nginx-stable`, `apache`, `caddy` (with `Alt-Svc: h3=":443"`), `cloudflare` (with `CF-RAY` + `alt-svc`), `express` (with `X-Powered-By` + `Content-Security-Policy` + `X-Content-Type-Options`), `gunicorn`, `none` (no Server header), and `yumed` (legacy). Same flag on the client picks the User-Agent (`chrome`, `firefox`, `safari`, `edge`, `curl`, `wget`, `yume`); when unspecified, the UA is derived from `--profile` so the JA3 and the UA stay consistent. Codec: [src/core/stealth/http_profile.cpp](src/core/stealth/http_profile.cpp); fidelity check: [scripts/yume_disguise_check.py](scripts/yume_disguise_check.py).
+2. **HTTP/2 carrier admission (`--obfs`, default on).** After TLS, the client emits an HTTP/2 preface, project-defined SETTINGS, WINDOW_UPDATE, and a valid HPACK HEADERS request for `POST /<token>/<nonce>`. The server validates HMAC token, path shape, frame order, and SNI/authority; then returns server SETTINGS, ACK of client SETTINGS, and bodyless accepted response HEADERS. The client ACKs the server settings before YUME AUTH. Missing, malformed, or wrong paths remain in masquerade and receive a complete benign H2 response using configured upstream/real/profile identity. `--public-node` requires a nonempty shared `--obfs-secret`; empty-secret structural admission exists only for non-public development. The authenticated payload stream is not a fully conformant long-lived HTTP/2 session, and the opening is not claimed to be exact Chrome/Firefox traffic. Code: [src/core/stealth/obfs_h2.cpp](src/core/stealth/obfs_h2.cpp), [src/core/stealth/obfs_signal.cpp](src/core/stealth/obfs_signal.cpp).
+3. **HTTP-layer server disguise (`--hide-in-the-crowd <profile>`).** Before 1.0 a non-YUME probe (curl / scanner) saw TLS handshake + immediate TCP close. With this flag yumed instead serves a synthetic profile-driven response whose header order, charset, and body template are based on expected software shapes: `nginx`, `nginx-stable`, `apache`, `caddy`, `cloudflare`, `express`, `gunicorn`, `none`, and `yumed`. These are not native nginx/Apache/etc. implementations; use operator-captured `--upstream-response` data when higher fidelity matters. The same flag on the client explicitly selects the User-Agent; otherwise the UA follows the active TLS profile, including rotation. Codec: [src/core/stealth/http_profile.cpp](src/core/stealth/http_profile.cpp).
 4. **Real HTML facade (`--real --real-index <html>`).** A browser that hits the same port with `GET / HTTP/1.1` is served the configured HTML page (or a Wikipedia redirect by default). YUME clients and browsers cohabit on port 443.
 
 Limits: this raises the cost of simple TLS-fingerprint blocking and casual active probing. It does not make YUME indistinguishable from a browser, preserve valid HTTP/2 semantics for the full authenticated stream, or defeat stateful and ML classifiers trained on record sizes, timing, or repeated connection behaviour.
@@ -377,6 +384,7 @@ sudo yumed --listen 443 \
     --federation-auth-key /etc/yume/fed.key \
     --federation-anonym-ca /etc/yume/fed-ca.pem \
     --auth-keys /etc/yume/authorized_keys \
+    --obfs-secret 'replace-with-a-long-shared-cluster-secret' \
     --public-node
 ```
 
@@ -389,6 +397,7 @@ sudo yumed --listen 443 \
     --federation-auth-key /etc/yume/fed.key \
     --federation-anonym-ca /etc/yume/fed-ca.pem \
     --auth-keys /etc/yume/authorized_keys \
+    --obfs-secret 'replace-with-a-long-shared-cluster-secret' \
     --public-node
 ```
 
@@ -419,7 +428,7 @@ $ yume-net-map
 SOCKS proxy (default):
 
 ```bash
-yume --server fixcraft.net --auth id_ed25519 --socks 1080
+yume --server yume.example.com --auth id_ed25519 --socks 1080
 ```
 
 Port-forward, SSH-style:
@@ -437,19 +446,19 @@ yume -R 7437:127.0.0.1:22
 Local run. Every TCP/UDP socket the command opens is routed through YUME:
 
 ```bash
-yume --server fixcraft.net --auth id_ed25519 --run "curl https://1.1.1.1"
+yume --server yume.example.com --auth id_ed25519 --run "curl https://1.1.1.1"
 ```
 
 Force IPv4 for `--run` (adds `-4 --http1.1` to curl/wget):
 
 ```bash
-yume --server fixcraft.net --auth id_ed25519 --run-ipv4 --run "curl https://ifconfig.me"
+yume --server yume.example.com --auth id_ed25519 --run-ipv4 --run "curl https://ifconfig.me"
 ```
 
 SSH (auto-wrapped to route via local SOCKS when `nc`, `ncat`, or `connect-proxy` is available):
 
 ```bash
-yume --server fixcraft.net --auth id_ed25519 --run "ssh user@host"
+yume --server yume.example.com --auth id_ed25519 --run "ssh user@host"
 ```
 
 Server-side command execution is disabled by default for safety. Use SOCKS or port forwarding.
@@ -461,7 +470,7 @@ Application codec, Monero RPC:
 yumed --listen 443 --codec-allow monero-rpc --monero-rpc-backend 127.0.0.1:18089
 
 # client: wallet sees a normal local monerod-compatible endpoint
-yume --server fixcraft.net --auth id_ed25519 --monero-rpc
+yume --server yume.example.com --auth id_ed25519 --monero-rpc
 monero-wallet-cli --daemon-address 127.0.0.1:18089
 ```
 
@@ -479,7 +488,9 @@ status is tracked in
 Authentication and authorization live in two files, the way SSH splits `authorized_keys` from per-line options:
 
 - `authorized_keys` lists Ed25519 public keys that may **connect**.
-- `auth_keys.meta` is a JSON file mapping each key's fingerprint to **what it may do** (exec / LAN bridge / app codecs / admin / chat / file / bytes). App codecs use `permissions.allow_codecs`, for example `["monero-rpc"]`. Default for every dangerous bit is **deny**; a key without a meta entry can connect but cannot exec, cannot reach LAN, cannot use privileged codecs, cannot administer other clients.
+- `auth_keys.meta` is a JSON file mapping each key's fingerprint to **what it may do** (exec control / LAN bridge / app codecs / admin / chat / file / bytes). App codecs use `permissions.allow_codecs`, for example `["monero-rpc"]`. Default for every dangerous bit is **deny**; a key without a meta entry can connect but cannot exec, cannot reach LAN, cannot use privileged codecs, and cannot administer other clients.
+
+An explicitly configured `preauth_services` peer is not a normally authorized key. It remains in a persisted `PreauthServiceOnly` tier that admits only registered named-service OPEN/DATA/CLOSE plus PING/PONG. Admin attach separately requires trusted relay mode, caller outbound policy and opt-in, and target inbound policy and opt-in; the legacy attach form uses the same predicate.
 
 Dangerous server features (server-side exec, LAN bridging, unrestricted address bridging) sit behind a **three-layer gate** that all must agree:
 
@@ -532,7 +543,10 @@ sudo ./build/bin/yumed \
 - Inner-frame AEAD is verified by BaseFWX before plaintext is delivered ([basefwx/cpp/src/crypto/crypto.cpp](basefwx/cpp/src/crypto/crypto.cpp))
 - Master PQ keypair off by default; explicit `--use-embedded-master` required and warned about at startup on both ends
 - Server-side exec / LAN bridging / unrestricted bridging are off at compile time by default ([CMakeLists.txt](CMakeLists.txt) `YUME_FEATURE_EXEC` / `_LAN_BRIDGE` / `_FULL_CONTROL`); enabling them requires opting in at build, runtime flag, AND per-key meta (see [docs/PERMISSIONS.md](docs/PERMISSIONS.md))
-- Per-key admin permissions (`allow_inbound_admin`, `allow_outbound_admin`) default to deny
+- Preauth service peers are centrally confined to the named-service frame family
+- Admin attach requires caller outbound and target inbound permission/opt-in; both default to deny
+- Public-node masquerade requires a nonempty obfs secret; wrong/malformed paths receive a benign H2 response instead of AUTH
+- Session close has a five-second deadline, pending service queues are capped, and detached client EXEC work is capped at four concurrent workers; sanitizer/soak validation is still outstanding
 - Frame size capped at 16 MiB across all read paths
 - New obfs path-token verifier uses `CRYPTO_memcmp` ([src/core/stealth/obfs_signal.cpp](src/core/stealth/obfs_signal.cpp))
 - No independent security audit or production-scale adversarial soak is documented yet. The implementation and threat boundary are open for review, but that is not equivalent to a completed audit.

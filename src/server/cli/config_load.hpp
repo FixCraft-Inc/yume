@@ -12,7 +12,7 @@ namespace yume::server {
 struct ServerConfig;
 }
 
-namespace yume::server_cli {
+namespace yume::server::cli {
 
 struct ServerConfigOverrides {
     bool obfuscation = false;
@@ -58,4 +58,4 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
                                                ServerConfigLoadContext& context,
                                                const ServerConfigOverrides& overrides);
 
-}  // namespace yume::server_cli
+}  // namespace yume::server::cli

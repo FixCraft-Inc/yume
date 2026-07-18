@@ -10,6 +10,7 @@
 #include <istream>
 #include <new>
 
+#include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
 #include "server/session/internal.hpp"
 
@@ -21,6 +22,19 @@ namespace {
 constexpr auto kCodecBackendTimeout = std::chrono::milliseconds(30000);
 constexpr std::size_t kMaxCodecStreamsPerSession = 8;
 constexpr std::size_t kCodecResponseBudgetBytes = 32U * 1024U * 1024U;
+
+// Maps a codec to the config fields that spell its backend override. Codecs may
+// name their own flags on the product surface, so this is the single place that
+// translation happens; dispatch below stays descriptor-driven. A codec without
+// an entry uses its descriptor's default endpoint.
+app_codec::Endpoint resolve_codec_backend(const ServerConfig& cfg,
+                                          const app_codec::CodecDescriptor& descriptor) {
+    if (descriptor.id == std::string(app_codec::builtin::kMoneroRpcCodecId)) {
+        return app_codec::Endpoint{cfg.monero_rpc_backend_host,
+                                   cfg.monero_rpc_backend_port};
+    }
+    return descriptor.default_endpoint;
+}
 
 }  // namespace
 
@@ -46,17 +60,15 @@ bool Session::handle_codec_open(uint8_t stream_id, const nlohmann::json& json) {
         return true;
     }
 
-    app_codec::Endpoint backend = descriptor->default_endpoint;
-    if (descriptor->id == std::string(app_codec::kMoneroRpcCodecId)) {
-        backend = app_codec::Endpoint{cfg_.monero_rpc_backend_host, cfg_.monero_rpc_backend_port};
-        if (!app_codec::is_loopback_host_literal(backend.host)) {
-            send_open_reply(stream_id, false, descriptor->id + " backend must be a loopback IP literal");
-            return true;
-        }
-        if (backend.port < 1 || backend.port > 65535) {
-            send_open_reply(stream_id, false, descriptor->id + " backend port invalid");
-            return true;
-        }
+    const app_codec::Endpoint backend = resolve_codec_backend(cfg_, *descriptor);
+    if (descriptor->require_loopback_backend &&
+        !app_codec::is_loopback_host_literal(backend.host)) {
+        send_open_reply(stream_id, false, descriptor->id + " backend must be a loopback IP literal");
+        return true;
+    }
+    if (backend.port < 1 || backend.port > 65535) {
+        send_open_reply(stream_id, false, descriptor->id + " backend port invalid");
+        return true;
     }
 
     auto codec = std::make_shared<CodecStream>(stream_.get_executor());
@@ -172,10 +184,13 @@ void Session::start_codec_backend(uint8_t stream_id, const crypto::Bytes& payloa
         handle_codec_close(stream_id, "invalid codec request");
         return;
     }
+    // Fail-closed: a codec that ships no request policy admits nothing.
     std::string deny_reason;
-    if (descriptor->id != std::string(app_codec::kMoneroRpcCodecId) ||
-        !app_codec::validate_monero_rpc_request(envelope.request, &deny_reason)) {
-        send_codec_error(stream_id, 403, deny_reason.empty() ? "Monero RPC request denied" : deny_reason);
+    if (descriptor->validate_request == nullptr ||
+        !descriptor->validate_request(envelope.request, &deny_reason)) {
+        send_codec_error(stream_id, 403,
+                         deny_reason.empty() ? descriptor->display_name + " request denied"
+                                             : deny_reason);
         handle_codec_close(stream_id, "codec request denied");
         return;
     }

@@ -8,7 +8,7 @@
 
 #include <string>
 
-namespace yume::server_cli {
+namespace yume::server::cli {
 
 std::string read_file_bytes(const std::string& path);
 std::string cert_fingerprint_sha256(const std::string& cert_path);
@@ -18,4 +18,4 @@ std::string resolve_filter_list_spec_path(const std::string& spec,
                                           const std::string& base_dir,
                                           const std::string& exe_dir);
 
-}  // namespace yume::server_cli
+}  // namespace yume::server::cli

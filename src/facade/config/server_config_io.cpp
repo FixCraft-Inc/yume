@@ -19,6 +19,7 @@
 
 #include "facade/config/detail.hpp"
 #include "facade/config/keys.hpp"
+#include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
 #include "server/config/json_values.hpp"
 #include "server/host/host_routes.hpp"
@@ -74,13 +75,13 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
         s.allow_monero_rpc_codec = j[cfg_key::allow_monero_rpc_codec].get<bool>();
         if (s.allow_monero_rpc_codec) {
             yume::app_codec::add_codec_unique(&s.allowed_codecs,
-                                              yume::app_codec::kMoneroRpcCodecId);
+                                              yume::app_codec::builtin::kMoneroRpcCodecId);
         }
     } else if (j.contains(cfg_key::allow_monero_rpc)) {
         s.allow_monero_rpc_codec = j[cfg_key::allow_monero_rpc].get<bool>();
         if (s.allow_monero_rpc_codec) {
             yume::app_codec::add_codec_unique(&s.allowed_codecs,
-                                              yume::app_codec::kMoneroRpcCodecId);
+                                              yume::app_codec::builtin::kMoneroRpcCodecId);
         }
     }
     auto const read_codec_allow = [&](char const* key) {
@@ -92,7 +93,7 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
             auto const codec = yume::app_codec::canonical_codec_id(item.get<std::string>());
             if (!yume::app_codec::is_supported_codec(codec)) continue;
             yume::app_codec::add_codec_unique(&s.allowed_codecs, codec);
-            if (codec == std::string(yume::app_codec::kMoneroRpcCodecId)) {
+            if (codec == std::string(yume::app_codec::builtin::kMoneroRpcCodecId)) {
                 s.allow_monero_rpc_codec = true;
             }
         }
@@ -103,8 +104,8 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
         std::string parse_error;
         auto ep = yume::app_codec::parse_endpoint_spec(
             j[cfg_key::monero_rpc_backend].get<std::string>(),
-            yume::app_codec::kMoneroRpcDefaultHost,
-            yume::app_codec::kMoneroRpcDefaultPort,
+            yume::app_codec::builtin::kMoneroRpcDefaultHost,
+            yume::app_codec::builtin::kMoneroRpcDefaultPort,
             &parse_error);
         if (ep.has_value()) {
             s.monero_rpc_backend_host = ep->host;

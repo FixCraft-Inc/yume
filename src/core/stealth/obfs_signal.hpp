@@ -27,6 +27,20 @@ std::string derive_path_token(const crypto::Bytes& signal_key,
 
 std::string build_path(const std::string& token, const std::string& nonce_hex);
 
+bool valid_path_shape(std::string_view path);
+
+bool authority_matches_tls_sni(std::string_view authority,
+                               std::string_view tls_sni);
+
+// Complete opening-path decision used by yumed. A nonempty secret requires a
+// valid HMAC token. Empty-secret structural admission exists only for
+// non-public development; public policy rejects that configuration earlier.
+bool carrier_path_admitted(std::string_view secret,
+                           std::string_view authority,
+                           std::string_view tls_sni,
+                           std::string_view path,
+                           std::int64_t now_seconds);
+
 bool verify_path_token(const std::vector<crypto::Bytes>& signal_keys,
                        std::string_view sni,
                        std::string_view path,

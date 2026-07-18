@@ -64,7 +64,7 @@ int main() {
     if (!server) {
         return 14;
     }
-    if (yume_server_register_service(server, "example-control-v1") != YUME_STATUS_NOT_RUNNING) {
+    if (yume_server_register_service(server, "example-service-v1") != YUME_STATUS_NOT_RUNNING) {
         yume_server_destroy(server);
         return 15;
     }
@@ -73,7 +73,7 @@ int main() {
         return 20;
     }
     yume_stream* stream = nullptr;
-    if (yume_server_accept_stream(server, "example-control-v1", 0, &stream) != YUME_STATUS_NOT_RUNNING ||
+    if (yume_server_accept_stream(server, "example-service-v1", 0, &stream) != YUME_STATUS_NOT_RUNNING ||
         stream != nullptr) {
         yume_server_destroy(server);
         return 16;

@@ -18,6 +18,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
 
 namespace yume::server {
@@ -214,7 +215,7 @@ AuthKeyPolicyMap load_auth_policies(const std::string& meta_path) {
         read_policy_codecs(it.value(), &policy.allowed_codecs);
         read_policy_strings(it.value(), "allow_services", &policy.allowed_services);
         if (policy.allow_monero_rpc.value_or(false)) {
-            app_codec::add_codec_unique(&policy.allowed_codecs, app_codec::kMoneroRpcCodecId);
+            app_codec::add_codec_unique(&policy.allowed_codecs, app_codec::builtin::kMoneroRpcCodecId);
         }
         policy.allow_inbound_admin = read_policy_bool(it.value(), "allow_inbound_admin");
         policy.allow_outbound_admin = read_policy_bool(it.value(), "allow_outbound_admin");

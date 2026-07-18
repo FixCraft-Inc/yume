@@ -18,7 +18,8 @@ for the 1.x line starting with 1.1.
 | Area | What's in 1.1 |
 | ---- | ------------- |
 | **Outer transport** | Real TLS 1.3 (OpenSSL 3.5) with browser-oriented ClientHello profiles and canonical JA4 diagnostics. Chrome 131 by default, Firefox 126 and Safari 18 selectable; rotation supported. Stock-OpenSSL/GREASE limitations remain. |
-| **Carrier camouflage** | HTTP/2 obfs handshake (`PRI * HTTP/2.0`, Chrome-shaped SETTINGS, HEADERS), hourly-rotating HMAC path token, optional `--obfs-secret` peer-pinning. |
+| **Carrier masquerade** | HTTP/2 opening with valid frame/HPACK ordering in focused project tests, hourly HMAC path token, benign wrong-path response, and mandatory nonempty `--obfs-secret` under `--public-node`. It is not a full-session H2 tunnel or exact-browser claim. |
+| **Authorization** | Persisted `PreauthServiceOnly` dispatcher tier; directional caller-outbound plus target-inbound admin policy, including the legacy attach path; Ed25519-only AUTH key import. |
 | **Decoy site** | `--real` mode serves a real HTML page (or Wikipedia redirect by default) to non-YUME visitors of the same port. YUME and a website coexist on `:443`. |
 | **Inner crypto** | BaseFWX 3.7.0 — **ML-KEM-768-derived AES-256-GCM** keys with **HKDF-SHA256**, optional Argon2id / PBKDF2 work factor over the KEM secret, and the blackbox plugin ABI surface (see [BaseFWX 3.7.0 release notes](../../basefwx/RELEASE-NOTES-3.7.0.md)). |
 | **Live key hopping** | 1–4 Hz per-window key derivation. Each window encrypts with an `HKDF(master, hop_index)` derivative; compromise of one hop key does not directly reveal another, but compromise of the retained master reveals every window. |
@@ -44,7 +45,9 @@ the same cheap KVMs any user could rent directly.
 
 YUME tries to do the opposite:
 
-- A transport that looks like ordinary Chrome HTTPS to a CDN.
+- A transport with browser-oriented TLS presets, keyed active-probe admission,
+  and an ordinary HTTPS decoy path. It is not claimed to be byte-identical to
+  Chrome or immune to stateful DPI.
 - Crypto that survives the move to post-quantum (ML-KEM-768 + AES-256
   + Grover-safe symmetric keys).
 - Both ends fully open-source so anyone can audit, build, and self-host.
@@ -80,26 +83,52 @@ ClientHello detail (notably all GREASE positions).
 ```
 
 Per-N-connection profile rotation is available via
-`--tls-stealth-rotate` and `--tls-stealth-rotation-interval`.
+`--tls-stealth-rotate` and `--tls-stealth-rotation-interval`. Rotation advances
+after successful TLS connections, and the carrier User-Agent follows the
+active profile unless explicitly overridden.
 
 ### Layer 2 — HTTP/2 carrier handshake (`--obfs`)
 
-After the TLS handshake the client emits the bytes a real Chrome
-would: HTTP/2 preface, Chrome-shaped `SETTINGS`, a `WINDOW_UPDATE`,
-and a `HEADERS` frame opening stream 1 with a `POST` to
-`/<token>/<nonce>`. The token is
+After the TLS handshake the client emits an HTTP/2 preface, a
+project-defined browser-oriented `SETTINGS` block, a `WINDOW_UPDATE`, and a
+valid HPACK `HEADERS` frame opening stream 1 with a `POST` to
+`/<token>/<nonce>`. The request authority must match the TLS SNI. The token is
 `HMAC-SHA256(K, sni || hour_epoch || "yume-obfs-v2")` truncated to
 16 bytes hex; `K` is HKDF-derived from `--obfs-secret`. The server
-replies with canned `SETTINGS`, `SETTINGS-ACK`, and
-`HEADERS :status=200 content-type=application/grpc-web+proto`.
+replies in one serialized write with server `SETTINGS`, an ACK of the client
+settings, and bodyless `HEADERS :status=200
+content-type=application/grpc-web+proto`. The client ACKs the server settings
+before the server switches to YUME AUTH.
 
-Those application bytes resemble a Chrome-to-CDN gRPC-web opening to a
-TLS-terminating observer or active endpoint probe. A passive path observer
-sees encrypted TLS records, and the authenticated payload path does not remain
-a fully conformant HTTP/2 stream after the opening exchange.
-The token rotates every hour; the server accepts ±1 hour of clock
-skew. A replayed token is useless: it cannot decrypt the inner
-stream regardless of its timestamp.
+Missing, malformed, wrong-key, frame-order-invalid, or SNI-mismatched requests
+stay in masquerade and receive a complete benign H2 response with `END_STREAM`
+using configured upstream/real/profile identity. The client classifies this
+decoy before attempting YUME parsing. `--public-node` requires obfs with a
+nonempty shared secret; empty-secret structural admission remains only for
+non-public development.
+
+These application bytes are covered by focused project decoder tests, not a
+version-pinned external Chrome/Firefox or HTTP/2-conformance capture. A passive
+path observer sees encrypted TLS records, and the authenticated payload path
+does not remain a conformant HTTP/2 stream after the opening exchange. The
+token rotates hourly and the server accepts ±1 hour of clock skew. A captured
+valid path may be replayed within that accepted window to reach the separate
+Ed25519 challenge, but it cannot authenticate or decrypt the inner stream.
+
+### Authorization boundary
+
+Peers admitted through configured `preauth_services` now remain in a persisted
+`PreauthServiceOnly` tier. A central frame gate permits only named
+`service.v1` OPEN, DATA/CLOSE for accepted service streams, and PING/PONG;
+control, relay/admin, generic egress, codecs, benchmarks, and packet paths are
+rejected. Pending service opens are capped at 64 per service and 256 total.
+
+Admin attach now requires trusted relay mode plus the caller's server-capped
+and runtime outbound permission and the target's server-capped and runtime
+inbound permission. The legacy attach form uses the same predicate and retains
+its target `--server-in-charge` requirement. Federation still trusts the
+authenticated source server to enforce the caller half because the 1.x wire
+does not carry a separate caller-policy proof.
 
 ### Layer 3 — Real HTML facade (`--real`)
 
@@ -301,6 +330,11 @@ can see the target, and how much trust is placed in the server.
   trustworthy hardware.
 - A YUME server operator who is part of the threat. Use anonym
   mode, run your own, or chain through Tor.
+- Full-session HTTP/2 conformance, exact native browser/web-server identity,
+  or ML/DPI immunity. Those require separate version-pinned captures and tests.
+- Complete secret-copy erasure or cancellation of detached EXEC workers.
+  Shutdown/queue/worker bounds and best-effort erasure are implemented, but
+  sanitizer and long-running race/soak validation remain outstanding.
 
 Full threat-model discussion lives in `docs/STEALTH.md` ("What this
 defends against, what it doesn't") and the `docs/EXPLAINED.md`
@@ -433,9 +467,9 @@ reporting policy.
 
 YUME's core team is FixCraft. Several pieces of crypto and the
 inner-codec engine come from
-[BaseFWX](https://github.com/F1xGOD/basefwx). Stealth fingerprinting
-profiles were calibrated against a Chrome / Firefox / Safari sample
-captured on real hardware. The Dear ImGui-based desktop GUI uses
+[BaseFWX](https://github.com/F1xGOD/basefwx). Stealth fingerprinting profiles
+use project-labelled browser-oriented baselines; stock OpenSSL differences
+remain and no exact current-browser claim is made. The Dear ImGui-based desktop GUI uses
 [Dear ImGui](https://github.com/ocornut/imgui), [GLFW](https://www.glfw.org),
 [ImPlot](https://github.com/epezent/implot), and [Freetype](https://freetype.org).
 PQ KEM is [ML-KEM-768](https://csrc.nist.gov/pubs/fips/203/final) via

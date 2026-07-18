@@ -276,6 +276,7 @@ private:
     bool services_stopping_{false};
     std::unordered_set<std::string> registered_services_;
     std::unordered_map<std::string, std::deque<std::shared_ptr<runtime::ServiceStream>>> pending_service_streams_;
+    std::size_t pending_service_stream_count_{0};
     // Returns true if the new accept may proceed; false if it must
     // be refused (caller closes the socket). Pure function of
     // (current time, cfg_, live_sessions_.size(), bucket state) —

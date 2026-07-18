@@ -11,7 +11,7 @@
 #include <limits>
 #include <string_view>
 
-namespace yume::server_cli {
+namespace yume::server::cli {
 
 inline bool parse_int_strict(std::string_view raw, int* out) {
     if (!out || raw.empty()) {
@@ -42,4 +42,4 @@ inline bool parse_u32_strict(std::string_view raw, std::uint32_t* out) {
     return true;
 }
 
-}  // namespace yume::server_cli
+}  // namespace yume::server::cli

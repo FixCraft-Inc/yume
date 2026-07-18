@@ -38,8 +38,8 @@ namespace {
 
 // RFC 8701 §2.1: GREASE values reserved for cipher_suites,
 // supported_groups, extensions, and ALPN. We pick one per category
-// per-connection (via a rotating process-local counter), exactly
-// like Chrome. Different categories use different "buckets" of the
+// per-connection (via a rotating process-local counter). Different categories
+// use different "buckets" of the
 // wheel so they don't collide in a single ClientHello (RFC 8701
 // §3.3: "the GREASE value used for one extension SHOULD be
 // different from any other GREASE value used in the same
@@ -393,6 +393,25 @@ tls_fingerprint::FingerprintData parse_tls_verify_response(const std::string& bo
 
 }  // namespace
 
+tls_fingerprint::BrowserProfile profile_for_connection(
+    tls_fingerprint::BrowserProfile base_profile,
+    bool rotate,
+    std::uint32_t interval,
+    std::uint64_t completed_connections) {
+    constexpr std::array profiles{
+        tls_fingerprint::BrowserProfile::CHROME_131,
+        tls_fingerprint::BrowserProfile::FIREFOX_126,
+        tls_fingerprint::BrowserProfile::SAFARI_18,
+    };
+    if (!rotate || interval == 0) return base_profile;
+    auto base = std::find(profiles.begin(), profiles.end(), base_profile);
+    if (base == profiles.end()) return base_profile;
+    const std::size_t base_index = static_cast<std::size_t>(
+        std::distance(profiles.begin(), base));
+    const std::uint64_t rotations = completed_connections / interval;
+    return profiles[(base_index + rotations) % profiles.size()];
+}
+
 std::map<uint16_t, std::string> cipher_name_map = {
     {0x1301, "TLS_AES_128_GCM_SHA256"},
     {0x1302, "TLS_AES_256_GCM_SHA384"},
@@ -455,8 +474,9 @@ std::string groups_to_openssl_string(const std::vector<uint16_t>& groups) {
 
 StealthContext::StealthContext(const StealthConfig& config)
     : config_(config)
-      // tlsv12_client: enable TLS 1.2 + 1.3. The stealth path mimics browser
-      // handshakes; some CDN destinations still negotiate 1.2, so we keep both
+      // tlsv12_client: enable TLS 1.2 + 1.3. The stealth path applies
+      // browser-oriented presets; some CDN destinations still negotiate 1.2,
+      // so we keep both
       // versions enabled while rejecting everything older than 1.2.
     , ssl_context_(boost::asio::ssl::context::tlsv12_client)
     , current_profile_(config.target_profile) {
@@ -501,8 +521,8 @@ void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profi
     // RFC 8701 GREASE: register one extension at a GREASE-range type
     // (0x0A0A, 0x1A1A, …, 0xFAFA, rotated per-connection via
     // pick_grease). add_cb returning 1 + setting *out_len=0 emits
-    // the extension with an empty payload, exactly the shape real
-    // Chrome / Firefox use. SSL_EXT_CLIENT_HELLO scopes it to
+    // the extension with an empty payload, a standards-conformant GREASE
+    // shape. SSL_EXT_CLIENT_HELLO scopes it to
     // outbound ClientHellos only. Registration once per CTX; the
     // callback is invoked per handshake.
     static const auto grease_add_cb =
@@ -522,8 +542,7 @@ void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profi
     // rendered ClientHello via the JA3-self-check BIO-mem pattern:
     // returns 1, and the extension appears at the front of the
     // extensions block (e.g. "7a 7a 00 00" — GREASE type, length 0
-    // payload — exactly the shape real Chrome emits for its GREASE
-    // extension). Best-effort: a 0 return (already registered on
+    // payload). Best-effort: a 0 return (already registered on
     // rotate_profile re-entry, or hypothetical future OpenSSL that
     // rejects the type) is harmless — handshake proceeds normally.
     (void)SSL_CTX_add_custom_ext(

@@ -12,11 +12,11 @@ namespace yume::server {
 struct ServerConfig;
 }
 
-namespace yume::server_cli {
+namespace yume::server::cli {
 
 bool prompt_attach_existing(const std::string& kind);
 bool stdin_is_tty();
 std::string effective_server_instance_key(const yume::server::ServerConfig& cfg, const std::string& config_path);
 int run_local_server_attach(const std::string& socket_path, bool non_interactive);
 
-}  // namespace yume::server_cli
+}  // namespace yume::server::cli

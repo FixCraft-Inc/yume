@@ -114,7 +114,9 @@ private:
     std::atomic<std::uint64_t> bytes_in_{0};
     std::atomic<std::uint64_t> bytes_out_{0};
     std::atomic<std::uint32_t> obfs_jitter_ms_max_{0};
+    std::atomic<std::uint32_t> active_execs_{0};
     std::atomic<bool> closed_{false};
+    static constexpr std::uint32_t kMaxConcurrentExecs = 4;
 };
 
 }  // namespace yume::client

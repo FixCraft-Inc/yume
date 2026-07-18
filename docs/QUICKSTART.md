@@ -55,18 +55,19 @@ Port 443 normally requires root or `cap_net_bind_service` on Linux. Cloudflare H
 
 ### Public-facing daemon
 
-For a `yumed` reachable from the open internet, add `--public-node` to bundle the hardening preset (rejects `--allow-exec`, `--allow-local-ip`, `--control-full`, `--no-inner`; requires `--auth-keys`; defaults the HTTP disguise to `nginx`):
+For a `yumed` reachable from the open internet, add `--public-node` to bundle the hardening preset. It rejects `--allow-exec`, `--allow-local-ip`, `--control-full`, `--no-inner`, and `--no-obfs`; requires `--auth-keys` plus a nonempty `--obfs-secret`; and defaults the synthetic HTTP disguise to `nginx`:
 
 ```bash
 sudo ./build/bin/yumed \
   --listen 443 \
   --cert certs/server.crt --key certs/server.key \
   --auth-keys /etc/yume/authorized_keys \
-  --public-node                       # hardening bundle
+  --public-node \
+  --obfs-secret 'replace-with-a-long-shared-secret' \
   --hide-in-the-crowd nginx           # implicit under --public-node
 ```
 
-A probe (`curl https://your-host/`) gets a real-looking nginx 404 — header order, charset, body all match upstream nginx's defaults captured from source. See [STEALTH.md § Layer 3](STEALTH.md#layer-3-http-layer-server-disguise---hide-in-the-crowd) for the full profile list.
+A normal HTTPS probe receives the selected synthetic nginx-shaped response. A missing, malformed, or wrong HTTP/2 admission request also remains in the masquerade responder and never receives YUME AUTH. The template is not a native nginx implementation; use an operator-captured upstream response when higher fidelity matters. See [STEALTH.md § Layer 3](STEALTH.md#layer-3-http-layer-server-disguise---hide-in-the-crowd) for the full profile list.
 
 ### Federation cluster
 
@@ -76,7 +77,9 @@ Multiple `yumed` instances can join one cluster. Bootstrap node:
 sudo yumed --listen 443 --cluster-bootstrap \
   --federation-auth-key /etc/yume/fed.key \
   --federation-anonym-ca /etc/yume/fed-ca.pem \
-  --auth-keys /etc/yume/authorized_keys --public-node
+  --auth-keys /etc/yume/authorized_keys \
+  --obfs-secret 'replace-with-a-long-shared-cluster-secret' \
+  --public-node
 ```
 
 Joining node (dials out to the bootstrap):
@@ -86,12 +89,18 @@ sudo yumed --listen 443 \
   --cluster-join alice@bootstrap.example.com:443 \
   --federation-auth-key /etc/yume/fed.key \
   --federation-anonym-ca /etc/yume/fed-ca.pem \
-  --auth-keys /etc/yume/authorized_keys --public-node
+  --auth-keys /etc/yume/authorized_keys \
+  --obfs-secret 'replace-with-a-long-shared-cluster-secret' \
+  --public-node
 ```
 
 ASCII view of the cluster from any node: `yume-net-map`.
 
 ## Connect a client
+
+For the public-node example above, append
+`--obfs-secret 'replace-with-a-long-shared-secret'` to each client command.
+The value must match the server and should be distributed out of band.
 
 SOCKS mode:
 
@@ -135,7 +144,7 @@ Signatures are present when the release workflow has GPG signing secrets configu
 ## Production checklist
 
 - Use your own TLS certificate and private key.
-- Set `--obfs-secret` on both ends when you want strict carrier token pinning.
+- Set the same nonempty `--obfs-secret` on both ends for keyed carrier admission; it is mandatory under `--public-node`. Empty-secret structural admission is development-only.
 - Use your own PQ key files for inner crypto; `--use-embedded-master` is only for explicit test/dev use.
 - Keep `YUME_FEATURE_EXEC`, `YUME_FEATURE_LAN_BRIDGE`, and `YUME_FEATURE_FULL_CONTROL` off unless that server truly needs them.
 - Restart `yumed` after changing `authorized_keys` or `auth_keys.meta`.

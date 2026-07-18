@@ -9,20 +9,41 @@ validation are complete.
 - **License**: YUME source, apps, daemon, proxy, GUI, and libyume are
   AGPL-3.0-or-later. Build scripts and CMake entry points now carry
   matching source headers.
+- **Masquerade is now the active-probe boundary.** `--public-node` requires
+  obfs plus a nonempty shared secret. Missing, malformed, wrong-key, bad-order,
+  or SNI-mismatched H2 admission stays in the benign responder and never
+  receives AUTH. Empty-secret structural admission remains development-only.
+- **The H2 opening is standards-oriented, not exact-browser branding.** HPACK
+  indexes, SETTINGS/ACK ordering, END_STREAM behavior, authority validation,
+  serialized fallback writes, and client decoy classification were corrected.
+  Synthetic web profiles are not native nginx/Apache/etc. implementations.
+- **TLS profile rotation now advances after successful connections.** The
+  carrier User-Agent follows the active profile unless explicitly overridden.
+
+### Fixed
+- **Preauth privilege promotion.** Self-signed peers admitted for configured
+  named services now persist as `PreauthServiceOnly`; a central gate confines
+  them to service.v1 OPEN/DATA/CLOSE and PING/PONG.
+- **Caller-blind admin attach.** Modern and legacy paths now share the trusted
+  relay + caller outbound + target inbound authorization predicate.
+- **Bounded shutdown and queues.** Added a five-second session-close deadline,
+  64-per-service/256-total pending service limits, four-worker client EXEC cap,
+  and best-effort sensitive-buffer erasure. Sanitizer and soak validation remain
+  outstanding; detached EXEC workers are bounded but not cancellable/joined.
 
 ## [v1.1] - TBD
 
 ### Added
 - **`--cluster-join <spec>`** + **`--cluster-bootstrap`** on `yumed`. Friendly shorthand over the existing `--peer '<json>'` federation surface: `--cluster-join [id@]host[:port][?pin=<sha256>]` parses into the same FederationPeer JSON the daemon already consumes. `--cluster-bootstrap` marks a node as a cluster entry point so federation works without an outbound peer list. Bracketed IPv6 supported. Implies `--federation-enable`.
 - **`--cluster <host[:port]>`** on `yume` (client) as a friendly alias for `--server` + `--port`.
-- **`--public-node`** on `yumed`: hardening preset for internet-facing daemons. Rejects `--allow-exec` / `--allow-local-ip` / `--control-full` / `--no-inner`, requires `--auth-keys`, defaults `--hide-in-the-crowd` to `nginx`, logs both enforced and not-yet-enforced protections.
-- **`--hide-in-the-crowd <profile>`** on both binaries: HTTP-layer disguise. Server profiles (`nginx`, `nginx-stable`, `apache`, `caddy`, `cloudflare`, `express`, `gunicorn`, `none`, `yumed`) carry byte-accurate header templates from upstream source — header order, charset, profile-specific extras (`Alt-Svc` for Caddy, `CF-RAY` for cloudflare, `X-Powered-By` + `Content-Security-Policy` + `X-Content-Type-Options` for express), and canonical 404 bodies. Client profiles (`chrome`, `firefox`, `safari`, `edge`, `curl`, `wget`, `yume`) set the User-Agent in stealth probes; when unspecified, derived from `--profile` so JA3 + UA stay consistent.
+- **`--public-node`** on `yumed`: hardening preset for internet-facing daemons. Rejects `--allow-exec` / `--allow-local-ip` / `--control-full` / `--no-inner` / `--no-obfs`, requires `--auth-keys` and a nonempty `--obfs-secret`, defaults `--hide-in-the-crowd` to `nginx`, and applies bounded session/Argon2 defaults.
+- **`--hide-in-the-crowd <profile>`** on both binaries: HTTP-layer disguise. Server profiles (`nginx`, `nginx-stable`, `apache`, `caddy`, `cloudflare`, `express`, `gunicorn`, `none`, `yumed`) are synthetic templates with profile-specific header order, charset, extras, and body shapes; they are not native server implementations. Client profiles (`chrome`, `firefox`, `safari`, `edge`, `curl`, `wget`, `yume`) set the User-Agent in stealth probes; when unspecified, the UA follows the active TLS preset.
 - **Profile-driven disguise on every non-YUME probe.** Pre-1.0 yumed closed the connection on HTTP probes when `--real` wasn't set — TLS-handshake-then-immediate-close is a textbook DPI signal. Now serves a profile-matching 404 even without `--real`, by routing through `Session::send_disguise_404`.
 - **`yume-net-map`** new read-only CLI tool: connects to a yumed admin socket and renders the current node + its federation peers as an ASCII fan/spoke diagram (Unicode box-drawing or `--ascii` fallback). `--json` mode for downstream tooling. Auto-discovers local sockets under `$XDG_RUNTIME_DIR/yume`, `/run/yume`, `/tmp/yume`.
 - **`scripts/yume_disguise_check.py`** automated profile-fidelity test: spins up yumed once per profile, probes with curl, validates Server header regex / extra headers / body length range / canonical body substrings. `--dpi` mode adds nDPI flow classification (needs `tcpdump` capability and `libndpi-bin`). CI-runnable in <60 s.
 - **`scripts/yume_bench_wan.py`** virtual-WAN benchmark with DPI comparison: two `ip netns` connected by a veth + tc-netem WAN profile, runs the same workload over yume and as a curl/chromium baseline, runs `ndpiReader` on captured pcaps, emits a side-by-side report (markdown or JSON).
 - **Native embed C ABI in `libyume.so.1`.** `include/yume/yume.h` now exposes opaque `yume_client`, `yume_server`, and `yume_stream` handles, JSON lifecycle/status helpers, fixed-buffer last-error reporting, and direct named service stream read/write calls for C/C++ embedders.
-- **Authenticated named service streams.** Clients can open `proto: "service.v1"` streams such as `example-control-v1`; servers must explicitly enable the service in config, authorize it per key with `allow_services`, and register it through the C ABI before accepts are queued.
+- **Authenticated named service streams.** Clients can open project-neutral `proto: "service.v1"` streams such as `example-service-v1`; servers must explicitly enable the application-defined service in config, authorize it per key with `allow_services`, and register it through the C ABI before accepts are queued.
 - **Stream peer metadata in the native ABI.** `yume_stream_peer_json` exposes the accepted stream's service, authenticated Ed25519 SPKI SHA-256 fingerprint, peer/session ids, and remote address so embedders can bind sessions to their own device registry.
 - **Embed JSON bind address support.** `yume_server_start_json` accepts `listen_address` with `listen_port`, allowing loopback-only native tests and embedded local services without a wildcard bind.
 
@@ -47,10 +68,10 @@ validation are complete.
 Compare: <https://github.com/FixCraft-Inc/yume/commits/v1.0> (first public test release)
 
 ### Added
-- **First public test release** of YUME (Yume Universal Multiprotocol Engine) — an open-source post-quantum stealth transport that tunnels TCP and UDP through real TLS 1.3 sessions shaped to look like ordinary Chrome HTTPS to a DPI box. The client (`yume`), daemon (`yumed`), proxy, GUI, and libyume surface are AGPL-3.0-or-later and build from this tree.
+- **First public test release** of YUME (Yume Universal Multiprotocol Engine) — an open-source post-quantum stealth transport that tunnels TCP and UDP through real TLS 1.3 sessions using the project's browser-oriented presets. The client (`yume`), daemon (`yumed`), proxy, GUI, and libyume surface are AGPL-3.0-or-later and build from this tree.
 - **Three-layer stealth stack** stacked on top of TLS 1.3, all on by default and toggleable independently:
   - Browser-oriented JA3 shaping plus the original project-local, pre-canonical JA4-like diagnostic via genuine OpenSSL 3.5 `ClientHello` configuration. `--profile chrome` (Chrome 131) is the default; `--profile firefox` (Firefox 126) and `--profile safari` (Safari 18) are selectable, plus per-N-connection rotation via `--tls-stealth-rotate` / `--tls-stealth-rotation-interval`.
-  - HTTP/2 carrier handshake (`--obfs`) with Chrome-shaped `SETTINGS`, `WINDOW_UPDATE`, and a `HEADERS` frame opening a `POST` to `/<token>/<nonce>`. The token is `HMAC-SHA256(K, sni || hour_epoch || "yume-obfs-v2")` truncated to 16 bytes hex with optional peer-pinning via `--obfs-secret`; the server accepts ±1 hour of clock skew.
+  - HTTP/2 carrier handshake (`--obfs`) with the then-current project SETTINGS, `WINDOW_UPDATE`, and a `HEADERS` frame opening a `POST` to `/<token>/<nonce>`. The token is `HMAC-SHA256(K, sni || hour_epoch || "yume-obfs-v2")` truncated to 16 bytes hex; 1.0 allowed optional peer-pinning via `--obfs-secret` and accepted ±1 hour of clock skew.
   - Real HTML facade (`--real`) so a browser hitting the same `:443` with `GET / HTTP/1.1` is served a real HTML page (or a Wikipedia redirect by default). YUME and a normal website coexist on a single port.
 - **Post-quantum KEM/DEM inner crypto** via BaseFWX 3.6.4 (separate library, pinned via `config/refs/basefwx.ref`):
   - **ML-KEM-768** (NIST FIPS 203 / Kyber-768) encapsulation for session keys when a master public key is configured.

@@ -89,6 +89,13 @@ void Session::handle_open(const protocol::Frame& frame) {
 
     try {
         open_json = nlohmann::json::parse(payload_str);
+        // Service routing must precede every generic/relay interpretation.
+        // Preauth admits only the exact {proto, service} shape, while normal
+        // authorized callers may carry future service metadata without ever
+        // falling into a different OPEN branch.
+        if (handle_service_open(frame.header.stream_id, open_json)) {
+            return;
+        }
         if (open_json.contains("target_id") && open_json.contains("channel_kind") && open_json.contains("channel_id")) {
             const std::string target_id = open_json.value("target_id", "");
             const std::string from_id = open_json.value("from_id", client_id_);
@@ -100,6 +107,10 @@ void Session::handle_open(const protocol::Frame& frame) {
             }
             if (target_id.empty() || channel_id.empty() || from_id.empty()) {
                 send_open_reply(frame.header.stream_id, false, "invalid relay open");
+                return;
+            }
+            if (!is_federation_authenticated() && from_id != client_id_) {
+                send_open_reply(frame.header.stream_id, false, "relay origin mismatch");
                 return;
             }
             std::string federated_error;
@@ -204,10 +215,6 @@ void Session::handle_open(const protocol::Frame& frame) {
 
     if (proto == std::string(app_codec::kOpenProto)) {
         handle_codec_open(frame.header.stream_id, open_json);
-        return;
-    }
-
-    if (handle_service_open(frame.header.stream_id, open_json)) {
         return;
     }
 

@@ -60,6 +60,8 @@ typedef struct yume_stream yume_stream;
 
 /*
  * ABI conventions:
+ * - Named services are application-defined byte streams. YUME does not assign
+ *   project-specific names, message schemas, or application semantics to them.
  * - All handles are opaque and owned by the caller.
  * - Destroy functions accept NULL.
  * - JSON output helpers write a NUL-terminated string to caller-owned memory.

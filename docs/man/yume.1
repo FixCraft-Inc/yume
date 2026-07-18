@@ -395,7 +395,7 @@ metadata from a server that is asked to open the target directly.
         |
         v
 +--------------------------------+
-|  CHROME-LIKE H2                |
+|  PROJECT H2 SETTINGS           |
 |  SETTINGS + WINDOW_UPDATE      |
 +--------------------------------+
         |
@@ -412,8 +412,10 @@ metadata from a server that is asked to open the target directly.
 +--------------------------------+
 .fi
 .PP
-The obfs path helps the post-TLS byte shape look like normal HTTP/2
-browser traffic before the YUME carrier begins.
+The obfs path uses a standards-conformant HTTP/2 opening before the YUME
+carrier begins. Its settings and headers are project templates, not
+byte-identical output from a named browser, and the later carrier is not a
+full-session HTTP/2 tunnel.
 .SS Stream multiplexing
 .nf
 +----------------------------------------------------------------------+
@@ -548,7 +550,8 @@ Disable the HTTP/2 carrier handshake. This is useful for diagnostics but
 is more recognizable.
 .TP
 .BI "--obfs-secret " string
-Shared secret used to bind the obfs path token to the expected peer.
+Shared HMAC secret used to bind the obfs path token to the expected peer.
+It must match yumed and is required for public-node endpoints.
 .TP
 .BI "--pq-pub " path
 Server PQ public key for inner crypto.
@@ -584,10 +587,11 @@ or
 Disable TLS stealth profile shaping.
 .TP
 .B --tls-stealth-rotate
-Rotate stealth profiles over repeated connections.
+Rotate stealth profiles after successful TLS connections. Unless explicitly
+overridden, the carrier User-Agent follows the active profile.
 .TP
 .BI "--tls-stealth-rotation-interval " n
-Number of connections between stealth profile rotations.
+Number of successful connections per active profile.
 .TP
 .B --tls-fingerprint-log
 Log TLS fingerprint metrics.

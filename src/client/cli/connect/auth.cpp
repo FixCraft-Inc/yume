@@ -19,6 +19,7 @@
 #include "core/stealth/obfs.hpp"
 #include "core/stealth/obfs_h2.hpp"
 #include "core/stealth/obfs_signal.hpp"
+#include "core/stealth/http_profile.hpp"
 #include "core/protocol/protocol_stream.hpp"
 #include "util.hpp"
 
@@ -268,16 +269,15 @@ void perform_h2_carrier_handshake(boost::asio::ssl::stream<boost::asio::ip::tcp:
                                   const std::string& server_host,
                                   int server_port,
                                   const std::string& obfs_secret,
+                                  std::string_view user_agent,
                                   std::vector<uint8_t>* prefetched) {
     crypto::Bytes signal = obfs::derive_signal_key(obfs_secret);
     std::int64_t hour = static_cast<std::int64_t>(std::time(nullptr)) / 3600;
     std::string token = obfs::derive_path_token(signal, server_host, hour);
     std::string nonce = obfs::random_nonce_hex();
     std::string path = obfs::build_path(token, nonce);
-    static const std::string kUserAgent =
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
-    crypto::Bytes hello = obfs::encode_client_handshake(server_host, path, kUserAgent);
+    crypto::Bytes hello = obfs::encode_client_handshake(
+        server_host, path, user_agent);
 
     auto cancel = [&]() {
         boost::system::error_code ignored;
@@ -341,6 +341,30 @@ void perform_h2_carrier_handshake(boost::asio::ssl::stream<boost::asio::ip::tcp:
         if (decoder.failed()) {
             throw FatalError("this endpoint is not a yume obfs endpoint (" + server_host + ":" +
                              std::to_string(server_port) + "; h2 decode failed: " + decoder.error() + ")");
+        }
+    }
+
+    // A wrong/missing token receives an ordinary benign H2 response. Classify
+    // that response before interpreting any remaining bytes as YUME frames.
+    // Successful admission is deliberately bodyless and leaves stream 1 open.
+    if (!decoder.is_carrier_accept_response()) {
+        throw FatalError("endpoint responded as ordinary HTTPS; carrier admission was not accepted");
+    }
+
+    // ACK the server SETTINGS before it crosses the masquerade/auth boundary.
+    // The server keeps a short compatibility grace for older clients, but new
+    // clients complete the conforming opening exchange immediately.
+    crypto::Bytes replies = decoder.take_outbound_replies();
+    if (!replies.empty()) {
+        IoOpResult ack_write = write_all_with_timeout(
+            stream, io, boost::asio::buffer(replies.data(), replies.size()),
+            kAuthChallengeTimeout, cancel);
+        if (ack_write.timed_out) {
+            throw FatalError("h2 SETTINGS acknowledgement timed out");
+        }
+        if (ack_write.ec) {
+            throw FatalError("h2 SETTINGS acknowledgement failed: " +
+                             ack_write.ec.message());
         }
     }
 

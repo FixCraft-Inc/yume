@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -31,18 +32,21 @@ struct H2EncodeParams {
     // means "no flow-control limit" — appropriate when the caller has
     // not opted into window tracking.
     std::uint32_t send_window{0xFFFFFFFFu};
+    bool end_stream{false};
 };
 
-// Stateful HPACK encoder (RFC 7541). Real browsers (Chrome 131+,
-// Firefox 126) emit literal headers with the "incremental indexing"
-// opcode (0x40 prefix) so they accrete into the dynamic table on
-// first use, then reference by index on subsequent HEADERS frames.
-// The pre-1.x encoder always emitted "literal without indexing"
-// (0x00 prefix), which is RFC-conformant but visibly not what a
-// browser sends. This class lets the carrier handshake emit the
-// browser-shaped opcode, maintain a per-connection dynamic table,
-// and honor SETTINGS_HEADER_TABLE_SIZE changes from the peer
-// (RFC 7541 §4.2 + §6.3 size-update opcode).
+inline constexpr std::size_t kMaxH2DecoyBodyBytes = 1u << 20;
+
+struct H2ResponseSpec {
+    std::uint16_t status{200};
+    std::vector<std::pair<std::string, std::string>> headers;
+    crypto::Bytes body;
+};
+
+// Stateful HPACK encoder (RFC 7541). The carrier uses incremental-indexing
+// literals for its opening request and maintains the corresponding dynamic
+// table state. This is standards-conformant generic HTTP/2 behavior; it is not
+// a claim that the emitted bytes reproduce a version-pinned browser capture.
 //
 // The encoder is stateful but pure: every method writes into the
 // caller's buffer. The lifetime of a HpackEncoder matches one H2
@@ -113,7 +117,15 @@ crypto::Bytes encode_client_handshake(std::string_view sni,
                                       const std::string& path,
                                       std::string_view user_agent);
 
-crypto::Bytes encode_server_handshake();
+crypto::Bytes encode_server_settings();
+
+crypto::Bytes encode_response_headers(const H2ResponseSpec& response,
+                                      std::optional<std::size_t> content_length,
+                                      bool end_stream);
+
+std::optional<H2ResponseSpec> parse_http1_response_for_h2(
+    std::string_view response,
+    std::size_t body_cap = kMaxH2DecoyBodyBytes);
 
 crypto::Bytes encode_data_frames(const std::uint8_t* data,
                                  std::size_t len,
@@ -141,8 +153,19 @@ public:
     bool client_preface_seen() const { return preface_seen_; }
     bool path_extracted() const { return !extracted_path_.empty(); }
     bool headers_seen() const { return headers_seen_; }
+    bool headers_end_stream() const { return headers_end_stream_; }
+    bool data_end_stream() const { return data_end_stream_; }
+    bool response_complete() const {
+        return headers_end_stream_ || data_end_stream_;
+    }
+    bool peer_settings_ack_seen() const { return peer_settings_ack_seen_; }
     const std::string& extracted_path() const { return extracted_path_; }
     const std::string& extracted_authority() const { return extracted_authority_; }
+    const std::vector<std::pair<std::string, std::string>>& decoded_headers() const {
+        return decoded_headers_;
+    }
+    std::string header_value(std::string_view name) const;
+    bool is_carrier_accept_response() const;
     std::size_t inbound_buffered() const { return inbound_buf_.size(); }
     void drain_inbound_buffer(std::vector<std::uint8_t>* out);
 
@@ -186,7 +209,7 @@ public:
 private:
     void process_inbound();
     bool parse_one_frame(std::size_t* consumed);
-    void handle_headers_block(const std::uint8_t* block, std::size_t len);
+    bool handle_headers_block(const std::uint8_t* block, std::size_t len);
     void handle_data_payload(const std::uint8_t* payload, std::size_t len, std::uint8_t flags);
     void enqueue_reply(const crypto::Bytes& bytes);
 
@@ -194,11 +217,16 @@ private:
     State state_{State::kAwaitingPreface};
     bool preface_seen_{false};
     bool headers_seen_{false};
+    bool headers_end_stream_{false};
+    bool data_end_stream_{false};
+    bool first_frame_seen_{false};
+    bool peer_settings_ack_seen_{false};
     std::vector<std::uint8_t> inbound_buf_;
     std::vector<std::uint8_t> decoded_buf_;
     std::vector<std::uint8_t> outbound_replies_;
     std::string extracted_path_;
     std::string extracted_authority_;
+    std::vector<std::pair<std::string, std::string>> decoded_headers_;
     std::string error_;
 
     // Peer SETTINGS, initialised to RFC 7540 §6.5.2 defaults. Updated

@@ -3,7 +3,7 @@
 YUME splits authentication from authorization the way SSH does:
 
 - `authorized_keys` lists the Ed25519 public keys that may **connect**. Holding one of these is the audience-with-the-king; you get past the door.
-- `auth_keys.meta` (a JSON file) lists what each connected key is **allowed to do** once inside. Without an entry here, a key can talk to the server but cannot exec, cannot reach LAN addresses, cannot use privileged application codecs, cannot administer other clients.
+- `auth_keys.meta` (a JSON file) lists what each connected key is **allowed to do** once inside. Without an entry here, a normally authorized key can use unprivileged transport features but cannot exec, cannot reach LAN addresses, cannot use privileged application codecs, and cannot administer other clients.
 
 The current revision uses one Ed25519 key per identity. A second physical key (the "noble's seal" for stronger permission control) is a planned wire-protocol change for a post-1.1 release; in the meantime, the SSH-style split below gives you the same operational separation: connection rights vs. action rights live in different files, can be edited independently, and can be revoked independently.
 
@@ -49,7 +49,7 @@ MCowBQYDK2VwAyEA...visitor...
       "allow_exec": true,
       "allow_local_ip": true,
       "allow_codecs": ["monero-rpc"],
-      "allow_services": ["example-control-v1"],
+      "allow_services": ["example-service-v1"],
       "control_full": false,
       "allow_inbound_admin": true,
       "allow_outbound_admin": false,
@@ -76,11 +76,11 @@ Generate fingerprints with `yumed --auth-keys /etc/yume/authorized_keys --keys-l
 
 | Field | Default | What it grants | Server flag required |
 | --- | --- | --- | --- |
-| `allow_exec` | deny | Run shell commands on the server (server-issued via control channel) | `--allow-exec` and `YUME_FEATURE_EXEC=ON` |
+| `allow_exec` | deny | Permit the EXEC control feature. The active runtime forwards the request to an opted-in client; yumed does not execute arbitrary shell commands locally. | `--allow-exec` and `YUME_FEATURE_EXEC=ON` |
 | `allow_local_ip` | deny | Open TCP/UDP streams to RFC1918 / loopback addresses through the server | `--allow-local-ip` and `YUME_FEATURE_LAN_BRIDGE=ON` |
 | `control_full` | deny | Open TCP/UDP streams to *any* address (superset of `allow_local_ip`) | `--control-full` and `YUME_FEATURE_FULL_CONTROL=ON` |
 | `allow_codecs` | deny | Use named application codecs, for example `["monero-rpc"]` | `--codec-allow <name>` |
-| `allow_services` | deny | Use native embed named-service streams, for example `["example-control-v1"]` | server config `allow_services` plus `yume_server_register_service` |
+| `allow_services` | deny | Use native embed named-service streams, for example `["example-service-v1"]` | server config `allow_services` plus `yume_server_register_service` |
 | `allow_monero_rpc` | deny | Compatibility alias for the built-in Monero RPC application codec against the server's loopback monerod backend | `--codec-allow monero-rpc` |
 | `allow_inbound_admin` | deny | Other clients on this server can attach to admin THIS client | none (always honoured) |
 | `allow_outbound_admin` | deny | This client can attach to admin OTHER clients on the server | none (always honoured) |
@@ -99,19 +99,39 @@ Two relationships are independent:
 
 | Mode | Server side | Client side | Use case |
 | --- | --- | --- | --- |
-| **S→C, C→S (full bridge)** | `--allow-exec` (with key `allow_exec` and `allow_inbound_admin`) | `--accept-server-control` AND open SOCKS/forward | Operator's own laptop tunnelling through their own server, with the server able to dispatch local commands |
-| **S→C only** | `--allow-exec` (with key `allow_exec`) | `--accept-server-control`, no `--socks`/`-L`/`-R` | Server sends remote-admin commands to a client; the client doesn't tunnel anything outbound |
-| **C→S only** | normal flags, key `allow_local_ip` etc. as needed | `--socks` / `-L` / `-R` (no `--accept-server-control`) | Most common: user wants a SOCKS proxy / port forward, server cannot push commands back |
-| **neither (pure transport)** | no `--allow-exec`, no `--control-full`, no `--allow-local-ip`; key has no per-key permissions | no `--accept-server-control`, no SOCKS | Probe / handshake test only; useful for smoke-testing the tunnel without exposing either side |
+| **S→C, C→S (full bridge)** | `--allow-exec` (with key `allow_exec`) plus directional admin policy as described below | `--server-in-charge` AND open SOCKS/forward | Operator's own laptop tunnelling through their own server, with the server able to dispatch opted-in control requests |
+| **S→C only** | `--allow-exec` (with key `allow_exec`) | `--server-in-charge`, no `--socks`/`-L`/`-R` | Server dispatches control requests to an opted-in client; the client doesn't tunnel anything outbound |
+| **C→S only** | normal flags, key `allow_local_ip` etc. as needed | `--socks` / `-L` / `-R` (no `--server-in-charge`) | Most common: user wants a SOCKS proxy / port forward, server cannot push requests back |
+| **neither (pure transport)** | no `--allow-exec`, no `--control-full`, no `--allow-local-ip`; key has no per-key permissions | no `--server-in-charge`, no SOCKS | Probe / handshake test only; useful for smoke-testing the tunnel without exposing either side |
 
-`--accept-server-control` is the new, intuitive name for what was previously `--server-in-charge` (the old name still works as a deprecated alias). The "admin attach" channel between two relayed clients is governed independently by `allow_inbound_admin` / `allow_outbound_admin` on the per-key meta. Neither of these ever defaults to true.
+The implemented client flag is `--server-in-charge`; there is no `--accept-server-control` alias in this release.
+
+An admin channel between relayed clients is admitted only when all of these are true:
+
+1. the caller registered `relay_mode=trusted`;
+2. the caller key's server-capped `allow_outbound_admin` policy and the caller's runtime opt-in are both true; and
+3. the target key's server-capped `allow_inbound_admin` policy and the target's runtime opt-in are both true.
+
+Modern `admin.attach` also requires the target to accept the signed invite. The legacy attach message is retained for compatibility but is no longer caller-blind: it applies the same caller/target predicate and additionally requires the target's `--server-in-charge` opt-in. In federation, the authenticated source server enforces the caller half and the target server rechecks the target half; the current wire format does not carry an independently verifiable caller-policy proof across servers.
+
+## Pre-authenticated service-only tier
+
+`preauth_services` is a deliberately narrower admission path for embedded named services. A peer with any valid self-signed Ed25519 key may enter it only when the server explicitly configures at least one preauth service. That peer is persisted as `PreauthServiceOnly`, not promoted to the normal authorized dispatcher.
+
+The central post-auth gate permits only:
+
+- `OPEN` for `proto=service.v1` when the requested service is in the configured preauth list and registered by the embedder;
+- `DATA` and `CLOSE` on an already accepted named-service stream; and
+- `PING` / `PONG` connection liveness frames.
+
+Control, relay, admin, generic TCP/UDP opens, codecs, benchmark streams, packet egress, and every other frame family are rejected for this tier. Normal `allow_services` metadata still applies to keys admitted through `authorized_keys`; it does not broaden a preauth session.
 
 ## Operational tips
 
 - **Editing auth_keys.meta is the recommended way to manage permissions.** The server's interactive `--ui` mode is brittle around per-key permissions; it's documented but you'll have a smoother time with a JSON editor.
 - **Reload after edits.** The meta file is read at server startup. Changes take effect on `systemctl restart yumed`. Hot reload is on the post-1.1 roadmap.
 - **Application codecs.** Codec permissions are intentionally narrower than `allow_local_ip`: they only enable named protocol-aware codecs listed in `allow_codecs`. The Monero built-in validates allowed wallet RPC paths/methods and reconstructs HTTP only to a loopback backend configured by `--monero-rpc-backend`.
-- **Native service streams.** `allow_services` is for embedded C ABI users and is intentionally separate from `allow_local_ip`, `control_full`, `allow_codecs`, and exec. A service stream opens only when the server config lists the service, the connected key metadata lists the same service, and the embedding process registered it with `yume_server_register_service`.
+- **Native service streams.** `allow_services` is for embedded C ABI users and is intentionally separate from `allow_local_ip`, `control_full`, `allow_codecs`, and exec. For a normally authorized key, a service stream opens only when the server config lists the service, the key metadata lists the same service, and the embedding process registered it with `yume_server_register_service`. The separately configured preauth tier follows the narrower rules above.
 - **Revoke a key.** Remove the public-key block from `authorized_keys`. The meta entry can stay; it'll be ignored.
 - **Audit.** Startup logs `auth policy <permissions summary>` for any key that has a non-empty meta entry. Run `yumed --auth-keys ... --keys-list` to dump all configured keys with their aliases.
 - **CI/scripted setup.** Generate fingerprints with `openssl pkey -pubin -in user.pub -outform DER | sha256sum | cut -d' ' -f1`. The same fingerprint format is used by `yumed --keys-list`.
@@ -122,5 +142,5 @@ Two relationships are independent:
 - A server built with `YUME_FEATURE_EXEC=ON` but without `--allow-exec` cannot run user commands.
 - A server with `--allow-exec` but no `auth_keys.meta` entry granting `allow_exec` cannot run user commands.
 - The same applies to LAN bridging and unrestricted bridging.
-- Admin (inbound/outbound) defaults to deny; chat/file/bytes default to allow.
-- All key signatures are verified with constant-time `EVP_DigestVerify`. The `auth_keys` file is loaded once at startup; the `auth_keys.meta` file is parsed once at startup.
+- Admin (inbound/outbound) defaults to deny and is checked directionally for both caller and target; chat/file/bytes default to allow.
+- AUTH imports only Ed25519 public keys and verifies the challenge signature with OpenSSL before either normal or preauth admission.

@@ -106,6 +106,37 @@ void test_rejects_over_limit_headers_and_non_http11_response() {
         "HTTP/1.9 200 OK\r\n\r\n", &response, &error));
 }
 
+// Every registry entry must resolve through the generic lookups. This caught a
+// hardcoded is_supported_codec() that accepted only the first built-in and
+// would have silently rejected any codec added after it.
+void test_registry_drives_every_codec_lookup() {
+    const auto ids = yume::app_codec::builtin_codec_ids();
+    assert(!ids.empty());
+    for (const auto& id : ids) {
+        assert(yume::app_codec::is_supported_codec(id));
+        const auto descriptor = yume::app_codec::builtin_codec(id);
+        assert(descriptor.has_value());
+        assert(descriptor->id == id);
+        assert(yume::app_codec::canonical_codec_id(id) == id);
+        // Dispatch is fail-closed: a codec with no policy admits nothing, so a
+        // registered codec must carry a validator to be usable at all.
+        assert(descriptor->validate_request != nullptr);
+        for (const auto& alias : descriptor->aliases) {
+            assert(yume::app_codec::canonical_codec_id(alias) == id);
+            assert(yume::app_codec::is_supported_codec(alias));
+        }
+    }
+    assert(!yume::app_codec::is_supported_codec("not-a-real-codec"));
+    assert(!yume::app_codec::builtin_codec("not-a-real-codec").has_value());
+}
+
+// The generic Endpoint must not carry any codec's defaults.
+void test_generic_endpoint_has_no_codec_defaults() {
+    const yume::app_codec::Endpoint endpoint;
+    assert(endpoint.host.empty());
+    assert(endpoint.port == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -113,6 +144,8 @@ int main() {
     test_rejects_target_injection_and_response_reason_injection();
     test_strips_connection_nominated_headers();
     test_rejects_over_limit_headers_and_non_http11_response();
+    test_registry_drives_every_codec_lookup();
+    test_generic_endpoint_has_no_codec_defaults();
     std::cout << "codec_test ok\n";
     return 0;
 }

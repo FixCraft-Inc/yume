@@ -18,15 +18,12 @@
 #include <boost/asio/ip/address.hpp>
 #include <nlohmann/json.hpp>
 
-namespace yume::app_codec {
-namespace {
+#include "core/app_codec/builtin/monero_rpc.hpp"
+#include "core/app_codec/internal.hpp"
 
-constexpr std::array<std::uint8_t, 4> kEnvelopeMagic{{'Y', 'A', 'C', '1'}};
-constexpr std::uint8_t kEnvelopeVersion = 1;
-constexpr std::size_t kMaxMetaBytes = 64U * 1024U;
-constexpr std::size_t kMaxHeaders = 96;
-constexpr std::size_t kMaxHeaderNameBytes = 64;
-constexpr std::size_t kMaxHeaderValueBytes = 8192;
+namespace yume::app_codec {
+
+namespace detail {
 
 std::string lower_ascii(std::string_view value) {
     std::string out;
@@ -50,6 +47,20 @@ std::string trim_ascii(std::string_view value) {
     }
     return std::string(value.substr(first, last - first));
 }
+
+}  // namespace detail
+
+namespace {
+
+using detail::lower_ascii;
+using detail::trim_ascii;
+
+constexpr std::array<std::uint8_t, 4> kEnvelopeMagic{{'Y', 'A', 'C', '1'}};
+constexpr std::uint8_t kEnvelopeVersion = 1;
+constexpr std::size_t kMaxMetaBytes = 64U * 1024U;
+constexpr std::size_t kMaxHeaders = 96;
+constexpr std::size_t kMaxHeaderNameBytes = 64;
+constexpr std::size_t kMaxHeaderValueBytes = 8192;
 
 bool valid_header_name(std::string_view name) {
     if (name.empty() || name.size() > kMaxHeaderNameBytes) {
@@ -287,122 +298,11 @@ Bytes encode_envelope(EnvelopeKind kind, nlohmann::json meta, const Bytes& body)
     return out;
 }
 
-bool json_rpc_method_allowed(std::string_view method) {
-    static const std::set<std::string> kAllowed{
-        "get_alternate_chains",
-        "get_block",
-        "get_block_count",
-        "get_block_header_by_hash",
-        "get_block_header_by_height",
-        "get_block_headers_range",
-        "get_coinbase_tx_sum",
-        "get_connections",
-        "get_fee_estimate",
-        "get_height",
-        "get_info",
-        "get_last_block_header",
-        "get_output_distribution",
-        "get_output_histogram",
-        "get_outs",
-        "get_peer_list",
-        "get_transaction_pool",
-        "get_transaction_pool_hashes",
-        "get_transaction_pool_stats",
-        "get_transactions",
-        "get_txpool_backlog",
-        "get_version",
-        "hard_fork_info",
-        "is_key_image_spent",
-        "on_get_block_hash",
-        "relay_tx",
-        "send_raw_transaction",
-        "sync_info",
-    };
-    return kAllowed.count(std::string(method)) != 0;
-}
-
-bool rpc_path_allowed(std::string_view path) {
-    static const std::set<std::string> kAllowed{
-        "/json_rpc",
-        "/get_height",
-        "/get_blocks.bin",
-        "/get_hashes.bin",
-        "/get_o_indexes.bin",
-        "/get_outs.bin",
-        "/gettransactions",
-        "/get_alt_blocks_hashes",
-        "/is_key_image_spent",
-        "/send_raw_transaction",
-        "/sendrawtransaction",
-        "/get_transaction_pool",
-        "/get_transaction_pool_hashes.bin",
-        "/get_transaction_pool_stats",
-        "/get_output_distribution",
-        "/get_fee_estimate",
-        "/get_version",
-        "/get_info",
-    };
-    return kAllowed.count(std::string(path)) != 0;
-}
-
-bool validate_json_rpc_body(const Bytes& body, std::string* reason) {
-    if (body.empty()) {
-        if (reason) {
-            *reason = "empty JSON-RPC body";
-        }
-        return false;
-    }
-    try {
-        const auto json = nlohmann::json::parse(body.begin(), body.end());
-        auto validate_one = [&](const nlohmann::json& item) {
-            if (!item.is_object() || !item.contains("method") || !item["method"].is_string()) {
-                return false;
-            }
-            return json_rpc_method_allowed(item["method"].get<std::string>());
-        };
-        if (json.is_array()) {
-            if (json.empty() || json.size() > 16) {
-                if (reason) {
-                    *reason = "JSON-RPC batch size not allowed";
-                }
-                return false;
-            }
-            for (const auto& item : json) {
-                if (!validate_one(item)) {
-                    if (reason) {
-                        *reason = "JSON-RPC method not allowed";
-                    }
-                    return false;
-                }
-            }
-            return true;
-        }
-        if (!validate_one(json)) {
-            if (reason) {
-                *reason = "JSON-RPC method not allowed";
-            }
-            return false;
-        }
-        return true;
-    } catch (const std::exception&) {
-        if (reason) {
-            *reason = "invalid JSON-RPC body";
-        }
-        return false;
-    }
-}
-
 const std::vector<CodecDescriptor>& builtin_registry() {
+    // The one place built-in codecs are wired in. Adding a codec is adding its
+    // descriptor here; removing one is removing its line and its unit.
     static const std::vector<CodecDescriptor> kRegistry{
-        CodecDescriptor{
-            std::string(kMoneroRpcCodecId),
-            {std::string(kMoneroRpcAlias), "monero"},
-            "allow_monero_rpc",
-            "Monero RPC",
-            Endpoint{std::string(kMoneroRpcDefaultHost), kMoneroRpcDefaultPort},
-            kMoneroRpcMaxRequestBody,
-            kMoneroRpcMaxResponseBody,
-        },
+        builtin::monero_rpc_descriptor(),
     };
     return kRegistry;
 }
@@ -426,7 +326,7 @@ std::string canonical_codec_id(std::string_view value) {
 }
 
 bool is_supported_codec(std::string_view value) {
-    return canonical_codec_id(value) == std::string(kMoneroRpcCodecId);
+    return builtin_codec(value).has_value();
 }
 
 std::vector<std::string> builtin_codec_ids() {
@@ -881,47 +781,6 @@ bool decode_envelope(const Bytes& payload,
         }
         return false;
     }
-}
-
-bool validate_monero_rpc_request(const HttpRequest& request,
-                                 std::string* reason) {
-    const std::string method = lower_ascii(request.method);
-    if (method != "get" && method != "post") {
-        if (reason) {
-            *reason = "HTTP method not allowed";
-        }
-        return false;
-    }
-    if (request.body.size() > kMoneroRpcMaxRequestBody) {
-        if (reason) {
-            *reason = "request body too large";
-        }
-        return false;
-    }
-    if (request.path.empty() || request.path.front() != '/' ||
-        request.path.find("..") != std::string::npos ||
-        request.path.find("://") != std::string::npos) {
-        if (reason) {
-            *reason = "RPC path not allowed";
-        }
-        return false;
-    }
-    if (!rpc_path_allowed(request.path)) {
-        if (reason) {
-            *reason = "RPC path not allowed";
-        }
-        return false;
-    }
-    if (request.path == "/json_rpc") {
-        if (method != "post") {
-            if (reason) {
-                *reason = "JSON-RPC requires POST";
-            }
-            return false;
-        }
-        return validate_json_rpc_body(request.body, reason);
-    }
-    return true;
 }
 
 }  // namespace yume::app_codec

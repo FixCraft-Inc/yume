@@ -25,6 +25,8 @@
 #include "core/protocol/protocol.hpp"
 #include "core/protocol/protocol_stream.hpp"
 #include "core/security/identity.hpp"
+#include "core/stealth/http_profile.hpp"
+#include "core/stealth/tls_stealth.hpp"
 #include "core/version.hpp"
 #include "util.hpp"
 
@@ -333,7 +335,8 @@ std::vector<std::shared_ptr<Tunnel>> open_secondary_socks_tunnels(
     const outbound_proxy::Config& proxy_cfg,
     const ParsedArgs& args,
     bool use_reverse,
-    const std::shared_ptr<TunnelPool>& tunnel_pool) {
+    const std::shared_ptr<TunnelPool>& tunnel_pool,
+    const ConnectedSessionOptions& options) {
     std::vector<std::shared_ptr<Tunnel>> secondary_tunnels;
     if (!should_open_secondary_socks_tunnels(cfg, args, use_reverse) || cfg.tunnel_count <= 1) {
         return secondary_tunnels;
@@ -343,7 +346,34 @@ std::vector<std::shared_ptr<Tunnel>> open_secondary_socks_tunnels(
             util::log_info("opening SOCKS secondary tunnel " +
                            std::to_string(i) + "/" +
                            std::to_string(cfg.tunnel_count));
-            auto extra = connect_secondary_tunnel(io, ctx, cfg, proxy_cfg, i);
+            std::optional<tls_fingerprint::BrowserProfile> profile;
+            std::string carrier_user_agent = http_profile::active_client_ua();
+            if (cfg.tls_stealth_enabled && cfg.tls_stealth_rotate &&
+                options.completed_tls_connections &&
+                options.base_tls_profile != tls_fingerprint::BrowserProfile::UNKNOWN) {
+                profile = tls_stealth::profile_for_connection(
+                    options.base_tls_profile,
+                    true,
+                    cfg.tls_stealth_rotation_interval,
+                    *options.completed_tls_connections);
+                if (!options.explicit_http_profile) {
+                    const char* profile_name = "chrome";
+                    if (*profile == tls_fingerprint::BrowserProfile::FIREFOX_126) {
+                        profile_name = "firefox";
+                    } else if (*profile == tls_fingerprint::BrowserProfile::SAFARI_18) {
+                        profile_name = "safari";
+                    }
+                    if (auto http = http_profile::client(profile_name);
+                        http.has_value()) {
+                        carrier_user_agent = http->user_agent;
+                    }
+                }
+            }
+            auto extra = connect_secondary_tunnel(
+                io, ctx, cfg, proxy_cfg, i, profile,
+                std::move(carrier_user_agent),
+                cfg.tls_stealth_enabled ? options.completed_tls_connections
+                                        : nullptr);
             tunnel_pool->add(extra);
             secondary_tunnels.push_back(extra);
         } catch (const std::exception& ex) {
@@ -714,7 +744,7 @@ int run_app_codec_mode(const ClientConfig& cfg,
                        const std::string& close_reason,
                        const std::function<void()>& on_ready,
                        const LongRunningWaitStatePtr& wait_state) {
-    if (cfg.app_codec != std::string(app_codec::kMoneroRpcCodecId)) {
+    if (cfg.app_codec != std::string(app_codec::builtin::kMoneroRpcCodecId)) {
         util::log_error("unsupported application codec: " + cfg.app_codec);
         return 1;
     }
@@ -818,7 +848,8 @@ int run_connected_session(boost::asio::io_context& io,
     auto tunnel_pool = std::make_shared<TunnelPool>(TunnelPool::Policy::LeastLoaded);
     tunnel_pool->add(tunnel);
     auto secondary_tunnels = open_secondary_socks_tunnels(
-        io, ctx, cfg, proxy_cfg, args, options.use_reverse, tunnel_pool);
+        io, ctx, cfg, proxy_cfg, args, options.use_reverse, tunnel_pool,
+        options);
 
     auto disconnect_once = std::make_shared<std::atomic<bool>>(false);
     auto request_disconnect = [disconnect_once,

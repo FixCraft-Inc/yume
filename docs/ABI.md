@@ -15,6 +15,15 @@ External projects must include only `<yume/yume.h>`. They must not include
 `server::RuntimeController`, Boost.Asio types, OpenSSL handles, STL types, or
 any other private C++ implementation header.
 
+## Project-Neutral Boundary
+
+This ABI belongs to YUME and is not tied to any application that embeds it.
+Service names and payload schemas are defined by each embedder; YUME provides
+authenticated, policy-gated byte streams and does not assign application
+meaning to them. Examples in this document use `example-service-v1` only as a
+placeholder. No external project's names, message schemas, or authorization
+rules are part of the YUME ABI contract.
+
 ## Why C ABI First
 
 The CLI, GUI, facade, and transport internals can keep evolving without
@@ -82,7 +91,7 @@ Minimum server-side embed shape for a named service:
   "tls_key": "server.key",
   "auth_keys": "authorized_keys",
   "auth_keys_meta": "auth_keys.meta",
-  "allow_services": ["example-control-v1"],
+  "allow_services": ["example-service-v1"],
   "ipc_enable": false,
   "obfuscation": true,
   "obfs_secret": "shared-h2-token",
@@ -134,7 +143,7 @@ client key fingerprint:
 {
   "0123456789abcdef...": {
     "permissions": {
-      "allow_services": ["example-control-v1"]
+      "allow_services": ["example-service-v1"]
     }
   }
 }
@@ -146,7 +155,7 @@ Native service streams are not raw TCP forwards and do not expose `Tunnel`.
 Clients open an authenticated `OPEN` payload with:
 
 ```json
-{"proto":"service.v1","service":"example-control-v1"}
+{"proto":"service.v1","service":"example-service-v1"}
 ```
 
 The stream then rides through the same TLS 1.3, HTTP/2 obfs, inner crypto,
@@ -168,7 +177,7 @@ After `yume_server_accept_stream` returns a stream, the embedder can call
 
 ```json
 {
-  "service": "example-control-v1",
+  "service": "example-service-v1",
   "peer": "authenticated-peer-id",
   "auth_fingerprint_sha256": "ed25519-spki-sha256",
   "session_id": "authenticated-peer-id",

@@ -27,22 +27,22 @@ void assert_invalid(Fn&& fn) {
 
 void test_strict_cli_numbers() {
     int signed_value = 0;
-    assert(yume::server_cli::parse_int_strict("-1", &signed_value));
+    assert(yume::server::cli::parse_int_strict("-1", &signed_value));
     assert(signed_value == -1);
-    assert(!yume::server_cli::parse_int_strict(" 1", &signed_value));
-    assert(!yume::server_cli::parse_int_strict("1 ", &signed_value));
-    assert(!yume::server_cli::parse_int_strict("1x", &signed_value));
-    assert(!yume::server_cli::parse_int_strict("2147483648", &signed_value));
+    assert(!yume::server::cli::parse_int_strict(" 1", &signed_value));
+    assert(!yume::server::cli::parse_int_strict("1 ", &signed_value));
+    assert(!yume::server::cli::parse_int_strict("1x", &signed_value));
+    assert(!yume::server::cli::parse_int_strict("2147483648", &signed_value));
 
     std::uint32_t unsigned_value = 0;
-    assert(yume::server_cli::parse_u32_strict("0", &unsigned_value));
+    assert(yume::server::cli::parse_u32_strict("0", &unsigned_value));
     assert(unsigned_value == 0);
-    assert(yume::server_cli::parse_u32_strict("4294967295", &unsigned_value));
+    assert(yume::server::cli::parse_u32_strict("4294967295", &unsigned_value));
     assert(unsigned_value == std::numeric_limits<std::uint32_t>::max());
-    assert(!yume::server_cli::parse_u32_strict("-1", &unsigned_value));
-    assert(!yume::server_cli::parse_u32_strict("+1", &unsigned_value));
-    assert(!yume::server_cli::parse_u32_strict("1 ", &unsigned_value));
-    assert(!yume::server_cli::parse_u32_strict("4294967296", &unsigned_value));
+    assert(!yume::server::cli::parse_u32_strict("-1", &unsigned_value));
+    assert(!yume::server::cli::parse_u32_strict("+1", &unsigned_value));
+    assert(!yume::server::cli::parse_u32_strict("1 ", &unsigned_value));
+    assert(!yume::server::cli::parse_u32_strict("4294967296", &unsigned_value));
 }
 
 void test_positive_json_numbers() {

@@ -213,6 +213,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
 
     add_library(yume_core
         core/app_codec/codec.cpp
+        core/app_codec/builtin/monero_rpc.cpp
         core/protocol/control_protocol.cpp
         core/security/crypto.cpp
         core/stealth/http_profile.cpp
@@ -415,6 +416,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/session/ext.cpp
         server/session/open.cpp
         server/session/auth.cpp
+        server/session/authorization.cpp
         server/runtime/controller.cpp
         client/proxy/outbound_proxy.cpp
     )
@@ -746,6 +748,29 @@ target_link_libraries(yume_kdf_admission_test PRIVATE Threads::Threads)
 yume_link_atomic_if_needed(yume_kdf_admission_test PRIVATE)
 yume_apply_perf_opts(yume_kdf_admission_test)
 add_test(NAME yume_kdf_admission_test COMMAND yume_kdf_admission_test)
+
+add_executable(yume_session_authorization_test
+    server/session/authorization_test.cpp
+    server/session/authorization.cpp
+)
+target_include_directories(yume_session_authorization_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+yume_link_atomic_if_needed(yume_session_authorization_test PRIVATE)
+yume_apply_perf_opts(yume_session_authorization_test)
+add_test(NAME yume_session_authorization_test COMMAND yume_session_authorization_test)
+
+add_executable(yume_server_security_policy_test
+    server/cli/security_policy_test.cpp
+)
+target_include_directories(yume_server_security_policy_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+yume_apply_perf_opts(yume_server_security_policy_test)
+add_test(NAME yume_server_security_policy_test COMMAND yume_server_security_policy_test)
+
+add_executable(yume_service_queue_policy_test
+    server/runtime/service_queue_policy_test.cpp
+)
+target_include_directories(yume_service_queue_policy_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+yume_apply_perf_opts(yume_service_queue_policy_test)
+add_test(NAME yume_service_queue_policy_test COMMAND yume_service_queue_policy_test)
 
 add_executable(yume_server_config_values_test
     server/cli/config_values_test.cpp

@@ -444,7 +444,8 @@ std::vector<BrowserFingerprint> get_known_browser_fingerprints() {
     // Chrome 131 (captured from a real Chrome 131 ClientHello 2026-05).
     // Real Chrome additionally prefixes a GREASE value (RFC 8701); we
     // can't add GREASE through stock OpenSSL so we drop it here. The
-    // remaining 16 ciphers are byte-identical to the captured shape
+    // Remaining ciphers follow the stored project baseline ordering. This is
+    // not a byte-identical current-browser claim.
     // and differ from Safari's list in both content and order, which
     // is what we need for per-profile JA3 divergence.
     {

@@ -65,8 +65,13 @@ void Session::on_preface_read(const boost::system::error_code& ec, std::size_t b
         return;
     }
 
-    if (preface_accum_.size() < preface_buf_.size()) {
+    if (preface_accum_.size() < header_buf_.size()) {
         auto self = shared_from_this();
+        preface_timer_.expires_after(std::chrono::milliseconds(200));
+        preface_timer_.async_wait(boost::asio::bind_executor(
+            strand_, [self](const boost::system::error_code& timer_ec) {
+                self->on_preface_timeout(timer_ec);
+            }));
         stream_.async_read_some(boost::asio::buffer(preface_buf_),
                                 boost::asio::bind_executor(strand_,
                                                            [self](const boost::system::error_code& e, std::size_t n) {
@@ -75,13 +80,18 @@ void Session::on_preface_read(const boost::system::error_code& ec, std::size_t b
         return;
     }
 
-    if (preface_accum_.size() < header_buf_.size()) {
-        auto self = shared_from_this();
-        stream_.async_read_some(boost::asio::buffer(preface_buf_),
-                                boost::asio::bind_executor(strand_,
-                                                           [self](const boost::system::error_code& e, std::size_t n) {
-                                                               self->on_preface_read(e, n);
-                                                           }));
+    // In obfs mode, only the validated H2 opening exchange may cross into the
+    // YUME AUTH path. A raw frame-shaped prefix is an active probe and remains
+    // entirely inside the configured masquerade response behavior.
+    if (cfg_.obfuscation) {
+        preface_probe_active_ = false;
+        if (obfs::selected_alpn(stream_.native_handle()) == "h2") {
+            serve_fake_h2_real_index();
+        } else if (cfg_.real_http) {
+            send_real_http_response("/");
+        } else {
+            send_disguise_404("/");
+        }
         return;
     }
 
@@ -120,10 +130,23 @@ void Session::on_preface_timeout(const boost::system::error_code& ec) {
     if (ec == boost::asio::error::operation_aborted) {
         return;
     }
-    if (!preface_received_ && preface_probe_active_) {
+    if (preface_probe_active_) {
         preface_probe_active_ = false;
         boost::system::error_code cancel_ec;
         stream_.lowest_layer().cancel(cancel_ec);
+        if (preface_received_) {
+            // A partial/malformed opening never falls through to AUTH. Return
+            // the same cover behavior as other active probes, then close.
+            if (cfg_.obfuscation &&
+                obfs::selected_alpn(stream_.native_handle()) == "h2") {
+                serve_fake_h2_real_index();
+            } else if (cfg_.real_http) {
+                send_real_http_response("/");
+            } else {
+                send_disguise_404("/");
+            }
+            return;
+        }
         // When ANY stealth mode is enabled, we must NEVER send the
         // AUTH challenge to a connection that hasn't proven it's a
         // Yume client by sending a recognised preface. Browsers
@@ -151,12 +174,22 @@ void Session::on_preface_timeout(const boost::system::error_code& ec) {
 bool Session::handle_http_preface(const std::string& preface) {
     if (cfg_.obfuscation && preface.rfind("PRI * HT", 0) == 0) {
         if (!cfg_.accept_yume_clients) {
-            send_disguise_404("/");
+            if (obfs::selected_alpn(stream_.native_handle()) == "h2") {
+                serve_fake_h2_real_index();
+            } else if (cfg_.real_http) {
+                send_real_http_response("/");
+            } else {
+                send_disguise_404("/");
+            }
             return true;
         }
         const std::string negotiated = obfs::selected_alpn(stream_.native_handle());
         if (negotiated != "h2") {
-            close_with_reason("h2 carrier preface received without ALPN h2");
+            if (cfg_.real_http) {
+                send_real_http_response("/");
+            } else {
+                send_disguise_404("/");
+            }
             return true;
         }
         start_h2_carrier_probe();
@@ -448,12 +481,6 @@ void Session::start_h2_carrier_probe() {
         carrier_decoder_->feed(preface_accum_.data(), preface_accum_.size());
         preface_accum_.clear();
     }
-    auto replies = carrier_decoder_->take_outbound_replies();
-    if (!replies.empty()) {
-        auto data = std::make_shared<std::vector<uint8_t>>(std::move(replies));
-        const auto payload_size = data->size();
-        queue_encoded_write_on_strand(std::move(data), protocol::CONTROL, 0, payload_size);
-    }
     auto self = shared_from_this();
     stream_.async_read_some(
         boost::asio::buffer(carrier_scratch_),
@@ -475,37 +502,31 @@ void Session::on_h2_probe_read(const boost::system::error_code& ec, std::size_t 
         carrier_decoder_->feed(carrier_scratch_.data(), bytes);
     }
     if (carrier_decoder_->failed()) {
-        close_with_reason("h2 carrier decode failed: " + carrier_decoder_->error());
+        util::log_warn("session " + std::to_string(session_id_) +
+                       ": h2 carrier decode rejected; serving masquerade response: " +
+                       carrier_decoder_->error());
+        carrier_probe_active_ = false;
+        serve_fake_h2_real_index();
         return;
-    }
-    auto replies = carrier_decoder_->take_outbound_replies();
-    if (!replies.empty()) {
-        auto data = std::make_shared<std::vector<uint8_t>>(std::move(replies));
-        const auto payload_size = data->size();
-        queue_encoded_write_on_strand(std::move(data), protocol::CONTROL, 0, payload_size);
     }
 
     if (carrier_decoder_->headers_seen()) {
+        if (!carrier_decoder_->headers_end_stream()) {
+            util::log_warn("session " + std::to_string(session_id_) +
+                           ": h2 carrier request did not end stream; serving masquerade response");
+            carrier_probe_active_ = false;
+            serve_fake_h2_real_index();
+            return;
+        }
         std::string path = carrier_decoder_->extracted_path();
         std::string authority = carrier_decoder_->extracted_authority();
-        std::vector<crypto::Bytes> keys;
-        if (!cfg_.obfs_secret.empty()) {
-            keys.push_back(obfs::derive_signal_key(cfg_.obfs_secret));
-        }
+        const std::string tls_sni = host::tls_sni(stream_.native_handle());
         std::int64_t now_s = static_cast<std::int64_t>(std::time(nullptr));
-        bool token_ok = false;
-        if (path.size() == obfs::kH2PathLen) {
-            if (!keys.empty()) {
-                token_ok = obfs::verify_path_token(keys, authority, path, now_s);
-            } else {
-                token_ok = (path[0] == '/' && path[1 + obfs::kH2TokenHexLen] == '/');
-            }
-        }
-
-        std::vector<uint8_t> leftover;
-        carrier_decoder_->drain_inbound_buffer(&leftover);
+        const bool authority_ok =
+            obfs::authority_matches_tls_sni(authority, tls_sni);
+        const bool token_ok = obfs::carrier_path_admitted(
+            cfg_.obfs_secret, authority, tls_sni, path, now_s);
         carrier_probe_active_ = false;
-        carrier_decoder_.reset();
 
         if (!token_ok) {
             std::string sanitized;
@@ -515,23 +536,14 @@ void Session::on_h2_probe_read(const boost::system::error_code& ec, std::size_t 
             }
             util::log_warn("session " + std::to_string(session_id_) +
                           ": h2 carrier path token rejected (size=" +
-                          std::to_string(path.size()) + ", path=" + sanitized + ")");
+                          std::to_string(path.size()) + ", authority_sni=" +
+                          (authority_ok ? std::string("match") : std::string("mismatch")) +
+                          ", path=" + sanitized + ")");
             serve_fake_h2_real_index();
             return;
         }
 
         send_h2_server_handshake_then_continue();
-        if (!leftover.empty()) {
-            preface_accum_.assign(leftover.begin(), leftover.end());
-            if (preface_accum_.size() >= header_buf_.size()) {
-                std::copy(preface_accum_.begin(),
-                          preface_accum_.begin() + header_buf_.size(),
-                          header_buf_.begin());
-                preface_accum_.erase(preface_accum_.begin(),
-                                     preface_accum_.begin() + header_buf_.size());
-                header_prefetched_ = true;
-            }
-        }
         return;
     }
 
@@ -554,20 +566,183 @@ void Session::send_h2_server_handshake_then_continue() {
         serve_fake_h2_real_index();
         return;
     }
-    crypto::Bytes hello = obfs::encode_server_handshake();
-    auto data = std::make_shared<std::vector<uint8_t>>(hello.begin(), hello.end());
+    obfs::H2ResponseSpec accepted;
+    accepted.status = 200;
+    accepted.headers.emplace_back("content-type", "application/grpc-web+proto");
+    auto profile = yume::http_profile::server(
+        cfg_.http_profile.empty() ? "yumed" : cfg_.http_profile);
+    if (profile.has_value() && !profile->server_header_value.empty()) {
+        accepted.headers.emplace_back("server", profile->server_header_value);
+    }
+
+    crypto::Bytes combined = obfs::encode_server_settings();
+    if (carrier_decoder_) {
+        crypto::Bytes replies = carrier_decoder_->take_outbound_replies();
+        combined.insert(combined.end(), replies.begin(), replies.end());
+    }
+    crypto::Bytes headers = obfs::encode_response_headers(
+        accepted, std::nullopt, false);
+    combined.insert(combined.end(), headers.begin(), headers.end());
+
+    auto data = std::make_shared<std::vector<uint8_t>>(std::move(combined));
     const auto payload_size = data->size();
-    queue_encoded_write_on_strand(std::move(data), protocol::CONTROL, 0, payload_size);
-    util::log_info("session " + std::to_string(session_id_) + ": h2 carrier handshake established");
+    queue_encoded_write_on_strand(
+        std::move(data), protocol::CONTROL, 0, payload_size,
+        [self = shared_from_this()](const boost::system::error_code& ec, std::size_t) {
+            if (ec) {
+                self->close_with_reason("h2 carrier response write failed: " + ec.message());
+                return;
+            }
+            self->start_h2_settings_ack_wait();
+        });
+}
+
+void Session::start_h2_settings_ack_wait() {
+    if (!carrier_decoder_) {
+        close_with_reason("h2 carrier decoder unavailable after response");
+        return;
+    }
+    carrier_decoder_->mark_carrier_active();
+    if (carrier_decoder_->failed()) {
+        close_with_reason("h2 carrier post-headers decode failed: " +
+                          carrier_decoder_->error());
+        return;
+    }
+    if (carrier_decoder_->peer_settings_ack_seen()) {
+        finish_h2_settings_ack_wait();
+        return;
+    }
+
+    carrier_settings_ack_wait_active_ = true;
+    preface_timer_.expires_after(std::chrono::milliseconds(250));
+    preface_timer_.async_wait(boost::asio::bind_executor(
+        strand_, [self = shared_from_this()](const boost::system::error_code& ec) {
+            if (ec || !self->carrier_settings_ack_wait_active_) return;
+            // Compatibility grace for pre-hardening clients that discarded
+            // the server SETTINGS ACK they owed. New clients ACK immediately.
+            boost::system::error_code cancel_ec;
+            self->stream_.lowest_layer().cancel(cancel_ec);
+            self->finish_h2_settings_ack_wait();
+        }));
+    stream_.async_read_some(
+        boost::asio::buffer(carrier_scratch_),
+        boost::asio::bind_executor(
+            strand_, [self = shared_from_this()](const boost::system::error_code& ec,
+                                                  std::size_t bytes) {
+                self->on_h2_settings_ack_read(ec, bytes);
+            }));
+}
+
+void Session::on_h2_settings_ack_read(const boost::system::error_code& ec,
+                                      std::size_t bytes) {
+    if (!carrier_settings_ack_wait_active_) return;
+    if (ec) {
+        if (ec == boost::asio::error::operation_aborted) return;
+        close_with_reason("h2 SETTINGS ACK read failed: " + ec.message());
+        return;
+    }
+    if (bytes > 0 && carrier_decoder_) {
+        carrier_decoder_->feed(carrier_scratch_.data(), bytes);
+    }
+    if (!carrier_decoder_ || carrier_decoder_->failed()) {
+        close_with_reason("h2 SETTINGS ACK decode failed" +
+                          (carrier_decoder_ ? ": " + carrier_decoder_->error()
+                                            : std::string{}));
+        return;
+    }
+    if (carrier_decoder_->peer_settings_ack_seen()) {
+        finish_h2_settings_ack_wait();
+        return;
+    }
+    stream_.async_read_some(
+        boost::asio::buffer(carrier_scratch_),
+        boost::asio::bind_executor(
+            strand_, [self = shared_from_this()](const boost::system::error_code& read_ec,
+                                                  std::size_t read_bytes) {
+                self->on_h2_settings_ack_read(read_ec, read_bytes);
+            }));
+}
+
+void Session::finish_h2_settings_ack_wait() {
+    carrier_settings_ack_wait_active_ = false;
+    preface_timer_.cancel();
+    carrier_decoder_.reset();
+    util::log_info("session " + std::to_string(session_id_) +
+                   ": h2 carrier admission accepted");
     send_auth_challenge();
 }
 
 void Session::serve_fake_h2_real_index() {
-    std::string body = load_real_index();
-    crypto::Bytes hello = obfs::encode_server_handshake();
+    obfs::H2ResponseSpec response;
+    bool have_response = false;
+
+    std::string upstream;
+    if (manager_) {
+        upstream = manager_->upstream_response_pick();
+    }
+    if (upstream.empty()) {
+        upstream = cfg_.upstream_response_bytes;
+    }
+    if (!upstream.empty()) {
+        auto parsed = obfs::parse_http1_response_for_h2(upstream);
+        if (parsed.has_value()) {
+            response = std::move(*parsed);
+            have_response = true;
+        } else {
+            util::log_warn("session " + std::to_string(session_id_) +
+                           ": configured upstream response could not be converted to h2; using profile fallback");
+        }
+    }
+
+    auto profile = yume::http_profile::server(
+        cfg_.http_profile.empty() ? "yumed" : cfg_.http_profile);
+    if (!profile.has_value()) {
+        profile = yume::http_profile::server("yumed");
+    }
+
+    if (!have_response && cfg_.real_http) {
+        std::string body = load_real_index();
+        const std::string hidden = build_hidden_blob();
+        if (!hidden.empty()) {
+            body += "<span style=\"display:none\" aria-hidden=\"true\">" + hidden + "</span>";
+            body += "<!--" + hidden + "-->";
+        }
+        std::string http1 = "HTTP/1.1 200 OK\r\n";
+        if (profile.has_value() && !profile->server_header_value.empty()) {
+            http1 += "Server: " + profile->server_header_value + "\r\n";
+        }
+        if (profile.has_value()) {
+            http1 += profile->extra_response_headers;
+        }
+        http1 += "Content-Type: text/html; charset=utf-8\r\n";
+        http1 += "Cache-Control: no-store\r\n";
+        http1 += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+        http1 += body;
+        auto parsed = obfs::parse_http1_response_for_h2(http1);
+        if (parsed.has_value()) {
+            response = std::move(*parsed);
+            have_response = true;
+        }
+    }
+
+    if (!have_response && profile.has_value()) {
+        auto parsed = obfs::parse_http1_response_for_h2(
+            yume::http_profile::render_404(*profile, /*connection_close=*/true));
+        if (parsed.has_value()) {
+            response = std::move(*parsed);
+            have_response = true;
+        }
+    }
+    if (!have_response) {
+        response.status = 404;
+        response.headers.emplace_back("content-type", "text/html; charset=utf-8");
+        response.body.assign({'N', 'o', 't', ' ', 'F', 'o', 'u', 'n', 'd', '\n'});
+    }
+
     obfs::H2EncodeParams params;
     params.padding_mean = 0;
     params.padding_max = 0;
+    params.end_stream = true;
     // Honour the peer's SETTINGS_MAX_FRAME_SIZE so a stateful H2
     // middlebox doesn't see a DATA frame oversize relative to what
     // the client advertised. Fall back to the protocol default
@@ -594,26 +769,42 @@ void Session::serve_fake_h2_real_index() {
             params.send_window = static_cast<std::uint32_t>(budget);
         }
     }
-    crypto::Bytes data_frames = obfs::encode_data_frames(
-        reinterpret_cast<const uint8_t*>(body.data()), body.size(), params);
+    const std::size_t body_size = std::min<std::size_t>(
+        response.body.size(), params.send_window);
+    response.body.resize(body_size);
+    crypto::Bytes headers = obfs::encode_response_headers(
+        response, response.body.size(), response.body.empty());
+    crypto::Bytes data_frames;
+    if (!response.body.empty()) {
+        data_frames = obfs::encode_data_frames(
+            response.body.data(), response.body.size(), params);
+    }
     if (carrier_decoder_) {
         // Account for what we just emitted so any subsequent emit on
         // this decoder (none today, but kept for hygiene) sees the
         // updated windows.
-        const std::size_t emitted = std::min<std::size_t>(body.size(), params.send_window);
+        const std::size_t emitted = response.body.size();
         carrier_decoder_->on_local_data_sent(1, static_cast<std::uint32_t>(emitted));
     }
+    crypto::Bytes settings = obfs::encode_server_settings();
+    crypto::Bytes replies;
+    if (carrier_decoder_) {
+        replies = carrier_decoder_->take_outbound_replies();
+    }
     std::vector<uint8_t> combined;
-    combined.reserve(hello.size() + data_frames.size());
-    combined.insert(combined.end(), hello.begin(), hello.end());
+    combined.reserve(settings.size() + replies.size() + headers.size() + data_frames.size());
+    combined.insert(combined.end(), settings.begin(), settings.end());
+    combined.insert(combined.end(), replies.begin(), replies.end());
+    combined.insert(combined.end(), headers.begin(), headers.end());
     combined.insert(combined.end(), data_frames.begin(), data_frames.end());
     auto buf = std::make_shared<std::vector<uint8_t>>(std::move(combined));
-    auto self = shared_from_this();
-    boost::asio::async_write(stream_, boost::asio::buffer(*buf),
-                             boost::asio::bind_executor(strand_,
-                                                        [self, buf](const boost::system::error_code&, std::size_t) {
-                                                            self->close_with_reason("served fake h2 page to non-yume probe");
-                                                        }));
+    const auto payload_size = buf->size();
+    queue_encoded_write_on_strand(
+        std::move(buf), protocol::CONTROL, 0, payload_size,
+        [self = shared_from_this()](const boost::system::error_code&, std::size_t) {
+            self->carrier_decoder_.reset();
+            self->close_with_reason("served h2 masquerade response to non-yume probe");
+        });
 }
 
 }  // namespace yume::server

@@ -5,7 +5,7 @@ packet VPN under load without giving up the current DPI profile.
 
 ## Shape
 
-- Outer carrier stays the existing Chrome-shaped TLS 1.3 / HTTP/2-ish
+- Outer carrier stays the existing browser-oriented TLS 1.3 / HTTP/2-opening
   connection. No raw UDP mode is introduced for the default stealth path.
 - Inner crypto stays mandatory when the peer requires it. Packet batches
   are carried inside normal encrypted `DATA` frames, so the AEAD AAD still

@@ -7,11 +7,13 @@
 #include "server/cli/startup_checks.hpp"
 
 #include "core/stealth/http_profile.hpp"
+#include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
 #include "core/protocol/runtime_policy.hpp"
 #include "core/stealth/tls_fingerprint.hpp"
 #include "core/stealth/tls_stealth.hpp"
 #include "server/cli/key.hpp"
+#include "server/cli/security_policy.hpp"
 #include "server/config/config.hpp"
 #include "server/filter/ip_filter.hpp"
 #include "server/host/host_types.hpp"
@@ -33,7 +35,7 @@
 #include <sys/stat.h>
 #endif
 
-namespace yume::server_cli {
+namespace yume::server::cli {
 namespace {
 
 bool require_readable(const char* label, const std::string& path) {
@@ -136,7 +138,7 @@ bool validate_app_codecs(const yume::server::ServerConfig& cfg) {
             yume::util::log_error("unsupported application codec enabled: " + codec_id);
             return false;
         }
-        if (codec->id == std::string(yume::app_codec::kMoneroRpcCodecId)) {
+        if (codec->id == std::string(yume::app_codec::builtin::kMoneroRpcCodecId)) {
             if (!yume::app_codec::is_loopback_host_literal(cfg.monero_rpc_backend_host)) {
                 yume::util::log_error("monero-rpc codec backend must be a loopback IP literal, got " +
                                       cfg.monero_rpc_backend_host);
@@ -374,6 +376,10 @@ bool apply_public_node_defaults(yume::server::ServerConfig& cfg,
     if (!cfg.obfuscation) {
         violations.emplace_back("--no-obfs is forbidden by --public-node (the HTTP/2 carrier must be the outer visible layer)");
     }
+    if (!public_obfs_admission_valid(
+            cfg.public_node, cfg.obfuscation, cfg.obfs_secret)) {
+        violations.emplace_back("--public-node requires a nonempty --obfs-secret so active probes cannot reach AUTH through structural path matching");
+    }
     if (cfg.allow_exec) {
         violations.emplace_back("--allow-exec is forbidden by --public-node (server-side exec on a public node is a remote-shell hole)");
     }
@@ -401,6 +407,7 @@ bool apply_public_node_defaults(yume::server::ServerConfig& cfg,
     }
     yume::util::log_info("--public-node active; the following protections are enforced at startup:");
     yume::util::log_info("  - HTTP/2 carrier obfuscation required (--no-obfs rejected)");
+    yume::util::log_info("  - nonempty --obfs-secret required (missing/wrong admission stays in the web masquerade)");
     yume::util::log_info("  - dangerous capability flags (--allow-exec / --allow-local-ip / --control-full) are rejected");
     yume::util::log_info("  - inner crypto required (no plaintext transport)");
     yume::util::log_info("  - --auth-keys required (no anonymous-relay accidents)");
@@ -423,7 +430,7 @@ void log_obfs_tuning(const yume::server::ServerConfig& cfg) {
         yume::util::log_info("--obfs-jitter-ms " + std::to_string(cfg.obfs_jitter_ms) +
                              ": each batched write is deferred by 0.." +
                              std::to_string(cfg.obfs_jitter_ms) +
-                             " ms. Adds latency, breaks the constant-cadence ML signature.");
+                             " ms. Adds bounded timing variation and latency; no ML/DPI immunity is implied.");
     }
 }
 
@@ -623,4 +630,4 @@ bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
     return load_real_http_secret(cfg, options.default_secret_path);
 }
 
-}  // namespace yume::server_cli
+}  // namespace yume::server::cli

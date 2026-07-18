@@ -11,6 +11,7 @@
 #include <thread>
 
 #include "core/security/inner_crypto.hpp"
+#include "core/security/secure_erase.hpp"
 #include "client/transport/internal.hpp"
 
 namespace yume::client {
@@ -128,8 +129,13 @@ std::vector<TransportCore::CloseHandler> TransportCore::shutdown() {
         pending_open_.clear();
         pending_rlisten_.clear();
         reserved_streams_.clear();
-        incoming_bytes_.clear();
+        security::secure_erase(incoming_bytes_);
         incoming_offset_ = 0;
+        if (inner_key_.has_value()) {
+            security::secure_erase(*inner_key_);
+            inner_key_.reset();
+        }
+        clear_hop_key_cache_locked();
     }
     {
         std::lock_guard<std::mutex> write_lock(write_mu_);
@@ -145,10 +151,8 @@ bool TransportCore::is_stopped() const {
 }
 
 void TransportCore::clear_hop_key_cache_locked() {
-    std::fill(encrypt_hop_key_.begin(), encrypt_hop_key_.end(), 0);
-    std::fill(decrypt_hop_key_.begin(), decrypt_hop_key_.end(), 0);
-    encrypt_hop_key_.clear();
-    decrypt_hop_key_.clear();
+    security::secure_erase(encrypt_hop_key_);
+    security::secure_erase(decrypt_hop_key_);
     encrypt_hop_id_.reset();
     decrypt_hop_id_.reset();
 }

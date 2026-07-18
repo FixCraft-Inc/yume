@@ -11,7 +11,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace yume::server_cli {
+namespace yume::server::cli {
 
 std::string expand_cluster_join_spec(const std::string& spec) {
     if (spec.empty()) {
@@ -96,4 +96,4 @@ std::string expand_cluster_join_spec(const std::string& spec) {
     return peer.dump();
 }
 
-}  // namespace yume::server_cli
+}  // namespace yume::server::cli

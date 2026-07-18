@@ -45,7 +45,7 @@ int main(void) {
         yume_server_destroy(server);
         return 8;
     }
-    if (yume_server_register_service(server, "example-control-v1") != YUME_STATUS_NOT_RUNNING) {
+    if (yume_server_register_service(server, "example-service-v1") != YUME_STATUS_NOT_RUNNING) {
         yume_client_destroy(client);
         yume_server_destroy(server);
         return 9;

@@ -14,13 +14,14 @@
 #include <nlohmann/json.hpp>
 
 #include "server/cli/misc.hpp"
+#include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
 #include "server/config/config.hpp"
 #include "server/config/json_values.hpp"
 #include "server/host/host_routes.hpp"
 #include "util.hpp"
 
-namespace yume::server_cli {
+namespace yume::server::cli {
 namespace {
 
 std::uint32_t json_non_negative_u32(const nlohmann::json& json, const char* key) {
@@ -215,12 +216,12 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
             if (json.contains("allow_monero_rpc_codec")) {
                 cfg.allow_monero_rpc_codec = json["allow_monero_rpc_codec"].get<bool>();
                 if (cfg.allow_monero_rpc_codec) {
-                    yume::app_codec::add_codec_unique(&cfg.allowed_codecs, yume::app_codec::kMoneroRpcCodecId);
+                    yume::app_codec::add_codec_unique(&cfg.allowed_codecs, yume::app_codec::builtin::kMoneroRpcCodecId);
                 }
             } else if (json.contains("allow_monero_rpc")) {
                 cfg.allow_monero_rpc_codec = json["allow_monero_rpc"].get<bool>();
                 if (cfg.allow_monero_rpc_codec) {
-                    yume::app_codec::add_codec_unique(&cfg.allowed_codecs, yume::app_codec::kMoneroRpcCodecId);
+                    yume::app_codec::add_codec_unique(&cfg.allowed_codecs, yume::app_codec::builtin::kMoneroRpcCodecId);
                 }
             }
             const auto read_codec_allow = [&](const char* key) -> bool {
@@ -242,7 +243,7 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
                         return false;
                     }
                     yume::app_codec::add_codec_unique(&cfg.allowed_codecs, codec);
-                    if (codec == std::string(yume::app_codec::kMoneroRpcCodecId)) {
+                    if (codec == std::string(yume::app_codec::builtin::kMoneroRpcCodecId)) {
                         cfg.allow_monero_rpc_codec = true;
                     }
                 }
@@ -267,8 +268,8 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
             if (json.contains("monero_rpc_backend")) {
                 std::string parse_error;
                 auto ep = yume::app_codec::parse_endpoint_spec(json["monero_rpc_backend"].get<std::string>(),
-                                                               yume::app_codec::kMoneroRpcDefaultHost,
-                                                               yume::app_codec::kMoneroRpcDefaultPort,
+                                                               yume::app_codec::builtin::kMoneroRpcDefaultHost,
+                                                               yume::app_codec::builtin::kMoneroRpcDefaultPort,
                                                                &parse_error);
                 if (ep.has_value()) {
                     cfg.monero_rpc_backend_host = ep->host;
@@ -500,4 +501,4 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
     return true;
 }
 
-}  // namespace yume::server_cli
+}  // namespace yume::server::cli

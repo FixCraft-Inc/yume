@@ -87,29 +87,58 @@ HTTP request bytes on the Yume data path.
 ## Safety rules
 
 - Codec listeners must bind loopback.
-- Monero backend must be loopback.
+- Codec backends must be loopback unless the descriptor sets
+  `require_loopback_backend = false`. The check is applied from the descriptor,
+  so it covers every codec rather than only the Monero handler.
+- Dispatch is fail-closed. A descriptor without a `validate_request` hook admits
+  no requests at all, so an unfinished codec cannot reach a backend by default.
 - `allow_codecs` and legacy `allow_monero_rpc` do not imply `allow_local_ip`
   or `control_full`.
 - The codec reconstructs HTTP and strips hop-by-hop headers.
-- Request bodies are capped at 8 MiB; response bodies at 15 MiB.
+- Body caps come from the descriptor. Monero RPC uses 8 MiB requests and 15 MiB
+  responses.
 - Client and backend operations use timeouts.
 - Logs include method/path, byte counts, backend endpoint, and close reason; full
   request/response bodies are not logged by default.
 
-## Extension point
+## Codec layout
 
-Built-ins live under:
+- `src/core/app_codec/codec.{hpp,cpp}` — codec-neutral envelope, HTTP parsing,
+  lookup behavior, and the explicit built-in registry assembly point.
+- `src/core/app_codec/builtin/` — one unit per built-in codec. Each owns its
+  constants, its request policy, and its descriptor.
+- `src/client/codec/` — local client-side service shims.
+- `src/server/session/codecs.cpp` — server-side trusted reconstruction. Request
+  validation, limits, and loopback policy come from the descriptor. A small
+  adapter maps current codec-specific configuration fields to an endpoint.
 
-- `src/core/app_codec/` for shared envelope, HTTP, validation, and registry logic.
-- `src/client/codec/` for local client-side service shims.
-- `src/server/session/codecs.cpp` for server-side trusted reconstruction.
+A codec reaches the engine only by contributing a `CodecDescriptor` to
+`builtin_registry()` in `codec.cpp`. That function is the single wiring point:
+adding a codec adds a line, and removing one removes a line plus its unit.
 
-Future plugins should follow the same contract: parse the local app protocol,
-validate it on both ends, carry typed codec envelopes over Yume streams, and
-reconstruct only to a narrow trusted backend.
+## Writing a codec
 
-Dynamic `.so` / DLL codec plugins are not implemented yet. The current code
-provides a built-in registry shape that future plugin descriptors should reuse.
+Codecs are C++ units compiled into the binary. There is deliberately no
+`dlopen()` path: a codec plugin would run inside `yumed`, which holds identity
+and session key material, so in-process third-party code is not an acceptable
+trade. Untrusted third-party codecs are planned as a sandboxed out-of-process
+runner instead — see `docs/IMPLEMENTATION_STATUS.md`.
+
+To add one:
+
+1. Create `src/core/app_codec/builtin/<name>.{hpp,cpp}` in namespace
+   `yume::app_codec::builtin`. Keep every codec-specific constant there.
+2. Implement a `RequestValidator`. Allow-list what you accept — method, path,
+   body size, and any payload rules. Returning `false` with a reason denies.
+3. Expose a `const CodecDescriptor& <name>_descriptor()` carrying the id,
+   aliases, permission key, display name, default endpoint, body caps, the
+   validator, and the backend policy.
+4. Add the descriptor to `builtin_registry()` and the `.cpp` to
+   `src/CMakeLists.txt`.
+5. If the codec needs a client-side shim, add it under `src/client/codec/`.
+
+Users who want a local codec follow the same steps and rebuild; the compiler
+enforces the contract.
 
 Stable registry contract (since 1.1):
 
@@ -118,5 +147,6 @@ Stable registry contract (since 1.1):
 - Server config enables codecs by name with `--codec-allow <name>` or
   `codec_allow: ["name"]`.
 - Per-key auth grants codec use with `permissions.allow_codecs`.
-- Built-ins and future plugin descriptors share the same id/alias/permission
-  shape; the Monero handler is the first built-in implementation.
+- Every identity question (`is_supported_codec`, `canonical_codec_id`,
+  `builtin_codec`) resolves through the registry, so a codec added to the
+  registry is immediately visible to config, auth, and dispatch.

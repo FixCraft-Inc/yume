@@ -32,7 +32,7 @@
 #include "server/cli/misc.hpp"
 #include "util.hpp"
 
-namespace yume::server_cli {
+namespace yume::server::cli {
 namespace {
 
 constexpr const char kAnonMsgPrefix[] = "YUME-ANON-V1:";
@@ -623,4 +623,4 @@ AnonymProof fetch_anonym_proof(const std::string& hash,
     return proof;
 }
 
-}  // namespace yume::server_cli
+}  // namespace yume::server::cli

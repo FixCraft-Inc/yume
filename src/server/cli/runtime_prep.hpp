@@ -10,8 +10,8 @@ namespace yume::server {
 struct ServerConfig;
 }
 
-namespace yume::server_cli {
+namespace yume::server::cli {
 
 int prepare_server_runtime_files(yume::server::ServerConfig& cfg, const char* argv0, bool key_command_active);
 
-}  // namespace yume::server_cli
+}  // namespace yume::server::cli

@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <boost/asio.hpp>
@@ -55,6 +56,7 @@ void perform_h2_carrier_handshake(boost::asio::ssl::stream<boost::asio::ip::tcp:
                                   const std::string& server_host,
                                   int server_port,
                                   const std::string& obfs_secret,
+                                  std::string_view user_agent,
                                   std::vector<uint8_t>* prefetched = nullptr);
 
 }  // namespace yume::client

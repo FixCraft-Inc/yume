@@ -21,6 +21,7 @@
 #include "client/proxy/outbound_proxy.hpp"
 #include "core/security/crypto.hpp"
 #include "core/security/inner_crypto.hpp"
+#include "core/stealth/tls_fingerprint.hpp"
 
 namespace yume::client {
 
@@ -62,6 +63,10 @@ struct ConnectedSessionOptions {
     std::optional<inner::KdfParams> inner_kdf;
     std::optional<crypto::Bytes> inner_key;
     std::string server_tls_fingerprint_sha256;
+    tls_fingerprint::BrowserProfile base_tls_profile{
+        tls_fingerprint::BrowserProfile::UNKNOWN};
+    std::uint64_t* completed_tls_connections{nullptr};
+    bool explicit_http_profile{false};
     std::function<std::string()> status_block_builder;
 
     std::function<void()> announce_stopping;

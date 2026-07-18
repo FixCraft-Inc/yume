@@ -32,6 +32,7 @@
 #include "core/protocol/protocol.hpp"
 #include "server/config/config.hpp"
 #include "server/runtime/kdf_admission.hpp"
+#include "server/session/authorization.hpp"
 #include "util.hpp"
 
 namespace yume::server {
@@ -64,6 +65,11 @@ public:
     const std::string& client_wan_ip() const { return client_wan_ip_; }
     const std::string& federation_peer_id() const { return federation_peer_id_; }
     bool is_federation_authenticated() const { return authenticated_ && !federation_peer_id_.empty(); }
+    bool is_trusted_relay_endpoint() const {
+        return client_relay_mode_ == control::RelayMode::trusted;
+    }
+    bool allows_outbound_admin() const { return client_allow_outbound_admin_; }
+    bool allows_inbound_admin() const { return client_allow_inbound_admin_; }
     void send_control_json_to_client(const nlohmann::json& json);
     bool attach_federated_stream(uint8_t stream_id,
                                  control::ChannelKind channel_kind,
@@ -102,6 +108,10 @@ private:
     void start_h2_carrier_probe();
     void on_h2_probe_read(const boost::system::error_code& ec, std::size_t bytes);
     void send_h2_server_handshake_then_continue();
+    void start_h2_settings_ack_wait();
+    void on_h2_settings_ack_read(const boost::system::error_code& ec,
+                                 std::size_t bytes);
+    void finish_h2_settings_ack_wait();
     void serve_fake_h2_real_index();
 
     void read_header();
@@ -111,6 +121,7 @@ private:
     void cancel_frame_read_deadline();
 
     void handle_frame(const protocol::Frame& frame);
+    bool frame_allowed_by_authorization_tier(const protocol::Frame& frame);
     bool handle_auth(const protocol::Frame& frame);
     void handle_open(const protocol::Frame& frame);
     void handle_data(const protocol::Frame& frame);
@@ -203,6 +214,7 @@ private:
     void begin_close();
     void maybe_finish_close();
     void shutdown_transport();
+    void finish_transport_close();
     void close();
     void touch_activity();
     void schedule_idle_check();
@@ -224,6 +236,7 @@ private:
     bool header_prefetched_{false};
 
     bool carrier_probe_active_{false};
+    bool carrier_settings_ack_wait_active_{false};
     std::unique_ptr<obfs::H2InboundDecoder> carrier_decoder_;
     std::array<uint8_t, 4096> carrier_scratch_{};
     boost::asio::steady_timer preface_timer_;
@@ -237,6 +250,8 @@ private:
     std::vector<uint8_t> payload_buf_;
     crypto::Bytes challenge_;
     bool authenticated_{false};
+    authorization::SessionTier authorization_tier_{
+        authorization::SessionTier::Unauthenticated};
     std::string auth_error_;
     std::optional<crypto::Bytes> inner_key_;
     std::optional<crypto::Bytes> inner_key_alt_;
@@ -253,6 +268,7 @@ private:
     crypto::Bytes decrypt_hop_key_;
     boost::asio::steady_timer idle_timer_;
     boost::asio::steady_timer frame_read_timer_;
+    boost::asio::steady_timer transport_shutdown_timer_;
     std::atomic<int64_t> last_activity_ms_{0};
 
     struct RemoteStream {

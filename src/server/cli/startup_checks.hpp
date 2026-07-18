@@ -12,7 +12,7 @@ namespace yume::server {
 struct ServerConfig;
 }
 
-namespace yume::server_cli {
+namespace yume::server::cli {
 
 struct StartupCheckOptions {
     bool tls_handshake_timeout_overridden{false};
@@ -25,4 +25,4 @@ struct StartupCheckOptions {
 bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
                                    const StartupCheckOptions& options);
 
-}  // namespace yume::server_cli
+}  // namespace yume::server::cli

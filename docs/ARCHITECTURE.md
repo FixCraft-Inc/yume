@@ -64,7 +64,7 @@ Used by client, server, facade, and ABI. No UI, no `main()`.
 | `security/` | Auth crypto, identity, inner ML-KEM + AES-GCM channel |
 | `protocol/` | Wire format, frames, control protocol, runtime policy |
 | `stealth/` | TLS fingerprint shaping, HTTP/2 obfs carrier, disguise |
-| `app_codec/` | Application-codec envelope and registry |
+| `app_codec/` | Codec-neutral envelope and registry; `builtin/` holds one unit per codec |
 | `runtime/` | Local IPC / runtime socket helpers |
 
 `src/core/version.hpp` holds `kVersion` — protocol compatibility bump

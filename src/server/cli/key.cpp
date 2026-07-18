@@ -27,7 +27,7 @@
 #include "server/runtime/manager.hpp"
 #include "util.hpp"
 
-namespace yume::server_cli {
+namespace yume::server::cli {
 namespace {
 
 bool write_file_secure(const std::string& path, const std::string& contents) {
@@ -581,4 +581,4 @@ CliCommandResult run_server_key_command(yume::server::ServerConfig& cfg, const S
     return {};
 }
 
-}  // namespace yume::server_cli
+}  // namespace yume::server::cli

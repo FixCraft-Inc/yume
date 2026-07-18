@@ -9,6 +9,7 @@
 #include <tuple>
 
 #include "core/stealth/tls_fingerprint.hpp"
+#include "core/stealth/tls_stealth.hpp"
 
 namespace {
 
@@ -67,12 +68,33 @@ void test_browser_match_thresholds() {
     assert(!yume::tls_fingerprint::evaluate_fingerprint(observed).looks_like_browser);
 }
 
+void test_connection_profile_rotation() {
+    using yume::tls_fingerprint::BrowserProfile;
+    using yume::tls_stealth::profile_for_connection;
+
+    assert(profile_for_connection(BrowserProfile::CHROME_131, false, 2, 100) ==
+           BrowserProfile::CHROME_131);
+    assert(profile_for_connection(BrowserProfile::CHROME_131, true, 2, 0) ==
+           BrowserProfile::CHROME_131);
+    assert(profile_for_connection(BrowserProfile::CHROME_131, true, 2, 1) ==
+           BrowserProfile::CHROME_131);
+    assert(profile_for_connection(BrowserProfile::CHROME_131, true, 2, 2) ==
+           BrowserProfile::FIREFOX_126);
+    assert(profile_for_connection(BrowserProfile::CHROME_131, true, 2, 4) ==
+           BrowserProfile::SAFARI_18);
+    assert(profile_for_connection(BrowserProfile::CHROME_131, true, 2, 6) ==
+           BrowserProfile::CHROME_131);
+    assert(profile_for_connection(BrowserProfile::FIREFOX_126, true, 1, 1) ==
+           BrowserProfile::SAFARI_18);
+}
+
 }  // namespace
 
 int main() {
     test_official_ja4_vector();
     test_empty_components_and_count_clamp();
     test_browser_match_thresholds();
+    test_connection_profile_rotation();
     std::cout << "tls_fingerprint_test ok\n";
     return 0;
 }

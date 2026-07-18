@@ -34,6 +34,7 @@
 #include "facade/keys/keys.hpp"
 #include "facade/logging/log_sink.hpp"
 #include "facade/session/server_session.hpp"
+#include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
 #include "platform/file_dialog.hpp"
 #include "ui/design.hpp"
@@ -514,7 +515,7 @@ private:
                 if (ui::checkbox("Enable Monero RPC codec", &cfg_.allow_monero_rpc_codec)) {
                     if (cfg_.allow_monero_rpc_codec) {
                         yume::app_codec::add_codec_unique(
-                            &cfg_.allowed_codecs, yume::app_codec::kMoneroRpcCodecId);
+                            &cfg_.allowed_codecs, yume::app_codec::builtin::kMoneroRpcCodecId);
                     } else {
                         auto& codecs = cfg_.allowed_codecs;
                         codecs.erase(
@@ -522,7 +523,7 @@ private:
                                            [](std::string const& id) {
                                                return yume::app_codec::canonical_codec_id(id) ==
                                                       std::string(
-                                                          yume::app_codec::kMoneroRpcCodecId);
+                                                          yume::app_codec::builtin::kMoneroRpcCodecId);
                                            }),
                             codecs.end());
                     }

@@ -19,7 +19,7 @@
 #include "platform/platform.hpp"
 #include "util.hpp"
 
-namespace yume::server_cli {
+namespace yume::server::cli {
 
 std::string read_file_bytes(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
@@ -95,4 +95,4 @@ std::string resolve_filter_list_spec_path(const std::string& spec,
     return prefix + path;
 }
 
-}  // namespace yume::server_cli
+}  // namespace yume::server::cli

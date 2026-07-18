@@ -22,6 +22,7 @@
 #include "server/auth/auth.hpp"
 #include "server/filter/ip_filter.hpp"
 #include "server/packet/tun_egress.hpp"
+#include "server/session/authorization.hpp"
 #include "server/session/session.hpp"
 #include "util.hpp"
 
@@ -296,6 +297,17 @@ bool Manager::route_invite(const std::shared_ptr<Session>& from_session,
     control::EndpointInfo target_info;
     auto target = find_endpoint_session(invite.to_endpoint_id, &target_info);
     if (target) {
+        if (invite.channel_kind == control::ChannelKind::admin &&
+            (!from_session ||
+             !authorization::admin_attach_allowed(
+                 from_session->is_trusted_relay_endpoint(),
+                 from_session->allows_outbound_admin(),
+                 target_info.allow_inbound_admin))) {
+            if (error) {
+                *error = "admin invite requires caller outbound-admin and target inbound-admin permission in trusted relay mode";
+            }
+            return false;
+        }
         std::lock_guard<std::mutex> lock(endpoint_mutex_);
         InviteEntry entry;
         entry.invite = invite;
@@ -311,7 +323,20 @@ bool Manager::route_invite(const std::shared_ptr<Session>& from_session,
     if (federation_) {
         std::string peer_id;
         std::string remote_id;
-        if (federation_->resolve_remote_endpoint(invite.to_endpoint_id, &peer_id, &remote_id, nullptr)) {
+        control::EndpointInfo remote_info;
+        if (federation_->resolve_remote_endpoint(
+                invite.to_endpoint_id, &peer_id, &remote_id, &remote_info)) {
+            if (invite.channel_kind == control::ChannelKind::admin &&
+                (!from_session ||
+                 !authorization::admin_attach_allowed(
+                     from_session->is_trusted_relay_endpoint(),
+                     from_session->allows_outbound_admin(),
+                     remote_info.allow_inbound_admin))) {
+                if (error) {
+                    *error = "admin invite requires caller outbound-admin and target inbound-admin permission in trusted relay mode";
+                }
+                return false;
+            }
             {
                 std::lock_guard<std::mutex> lock(endpoint_mutex_);
                 InviteEntry entry;
@@ -352,6 +377,13 @@ bool Manager::route_federated_invite(const std::shared_ptr<Session>& from_sessio
     if (!target) {
         if (error) {
             *error = "target not found";
+        }
+        return false;
+    }
+    if (invite.channel_kind == control::ChannelKind::admin &&
+        !target_info.allow_inbound_admin) {
+        if (error) {
+            *error = "admin invite target does not allow inbound admin";
         }
         return false;
     }
@@ -493,6 +525,31 @@ bool Manager::can_open_channel(const std::string& channel_id,
         invites_.erase(it);
         return false;
     }
+    if (channel_kind == control::ChannelKind::admin) {
+        bool allowed = false;
+        auto target_it = endpoints_.find(to_id);
+        if (target_it != endpoints_.end() && target_it->second.info.allow_inbound_admin) {
+            if (it->second.inbound_federated) {
+                // The originating federation peer enforces its local caller's
+                // trusted/outbound half; this server rechecks its local target.
+                allowed = true;
+            } else {
+                auto caller_it = endpoints_.find(from_id);
+                if (caller_it != endpoints_.end()) {
+                    allowed = authorization::admin_attach_allowed(
+                        caller_it->second.info.relay_mode == control::RelayMode::trusted,
+                        caller_it->second.info.allow_outbound_admin,
+                        target_it->second.info.allow_inbound_admin);
+                }
+            }
+        }
+        if (!allowed) {
+            if (error) {
+                *error = "admin channel no longer satisfies caller outbound-admin and target inbound-admin policy";
+            }
+            return false;
+        }
+    }
     if (target_session) {
         *target_session = target;
     }
@@ -515,8 +572,20 @@ bool Manager::open_federated_channel(const std::shared_ptr<Session>& origin,
     const auto channel_kind = control::channel_kind_from_string(open_json.value("channel_kind", "chat"));
     std::string peer_id;
     std::string remote_id;
-    if (!federation_->resolve_remote_endpoint(target_id, &peer_id, &remote_id, nullptr)) {
+    control::EndpointInfo remote_info;
+    if (!federation_->resolve_remote_endpoint(
+            target_id, &peer_id, &remote_id, &remote_info)) {
         return false;
+    }
+    if (channel_kind == control::ChannelKind::admin &&
+        !authorization::admin_attach_allowed(
+            origin->is_trusted_relay_endpoint(),
+            origin->allows_outbound_admin(),
+            remote_info.allow_inbound_admin)) {
+        if (error) {
+            *error = "admin channel no longer satisfies caller outbound-admin and target inbound-admin policy";
+        }
+        return true;
     }
     control::PendingInvite invite;
     {

@@ -12,6 +12,7 @@
 #include <boost/asio.hpp>
 
 #include "client/transport/tunnel.hpp"
+#include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
 
 namespace yume::client::codec {

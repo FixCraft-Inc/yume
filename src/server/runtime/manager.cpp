@@ -5,6 +5,7 @@
  */
 
 #include "server/runtime/manager.hpp"
+#include "server/runtime/service_queue_policy.hpp"
 
 #include <algorithm>
 #include "server/federation/manager.hpp"
@@ -324,6 +325,7 @@ void Manager::stop() {
             }
         }
         pending_service_streams_.clear();
+        pending_service_stream_count_ = 0;
     }
     service_cv_.notify_all();
     for (const auto& stream : pending_services) {
@@ -766,7 +768,14 @@ bool Manager::enqueue_service_stream(const std::string& service,
             if (error) *error = "service is not registered";
             return false;
         }
-        pending_service_streams_[service].push_back(std::move(stream));
+        auto& queue = pending_service_streams_[service];
+        if (!service_queue_policy::admission_allowed(
+                pending_service_stream_count_, queue.size())) {
+            if (error) *error = "pending service stream limit reached";
+            return false;
+        }
+        queue.push_back(std::move(stream));
+        ++pending_service_stream_count_;
     }
     service_cv_.notify_all();
     return true;
@@ -806,6 +815,12 @@ std::shared_ptr<runtime::ServiceStream> Manager::accept_service_stream(
     auto& queue = pending_service_streams_[service];
     auto stream = std::move(queue.front());
     queue.pop_front();
+    if (pending_service_stream_count_ > 0) {
+        --pending_service_stream_count_;
+    }
+    if (queue.empty()) {
+        pending_service_streams_.erase(service);
+    }
     return stream;
 }
 

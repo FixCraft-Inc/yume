@@ -9,7 +9,7 @@ where operator configuration matters. Read it alongside
 | Actor | Typical capability | What they can see without extra routing |
 | --- | --- | --- |
 | Path observer (ISP, Wi‑Fi, hotel gateway) | Passive or shallow DPI on the carrier | TLS ClientHello/server metadata, encrypted-record sizes, timing, and volume; the HTTP/2 opening is encrypted inside TLS |
-| Active prober | HTTPS probe to the same host:port | Real HTML facade when `--real` is configured; otherwise a profile-driven 404 (`yumed` by default, `nginx` under `--public-node`) |
+| Active prober | HTTPS probe to the same host:port | Real HTML facade when `--real` is configured; otherwise a synthetic profile-driven response (`yumed` by default, `nginx` under `--public-node`) |
 | YUME server operator | Runs `yumed`, holds TLS cert, sees auth keys | Authenticated client identity, requested targets, byte counts unless anonym mode strips logs |
 | Client host | Runs `yume`, holds client private key | All local app traffic before it enters the carrier |
 | Target site | Receives outbound TCP/UDP from server egress | Server IP (or Tor exit IP when server-side Tor is configured) |
@@ -31,13 +31,20 @@ when the server uses `--inner-required`):
 - **Per-window key separation** when live key hopping is enabled (1–4 Hz
   derivation on the inner channel). This is not forward secrecy: the retained
   base key can derive every hop key.
-- **Stealth against many classifiers** via real TLS 1.3 with browser
-  fingerprint profiles, optional HTTP/2 carrier camouflage, and optional
-  HTTP disguise for non-YUME probes.
+- **Masquerade against simple active probes** via keyed HTTP/2 carrier
+  admission and complete benign responses for missing, malformed, or wrong
+  tokens, plus optional HTTP disguise for ordinary non-YUME probes.
+- **Passive feature reduction** via browser-oriented TLS presets and optional
+  padding/jitter. These are mimicry layers, not ML/DPI immunity claims.
 
 The outer TLS session is real TLS 1.3 and avoids a custom UDP/WireGuard
 handshake signature. Browser-profile shaping is partial; it should not be
 treated as proof that every observer sees a byte-identical browser connection.
+The HTTP/2 opening uses valid frame/HPACK ordering in focused project tests,
+but the authenticated stream is not a full-session HTTP/2 tunnel and the
+opening has not yet been certified against a version-pinned external browser
+or conformance suite. Synthetic nginx/Apache/etc. templates are not native
+server implementations.
 
 ## What YUME does not protect
 
@@ -52,8 +59,25 @@ treated as proof that every observer sees a byte-identical browser connection.
 - **Traffic-analysis resistance.** Packet sizes and timing are not padded
   to constant rate by default. `--obfs-pad-multiple` and jitter exist on
   the client but are opt-in and peer-dependent.
-- **Denial of service on the server** from authorized or preauth-enabled peers
-  when the Argon2 heavy work factor is enabled — see below.
+- **Denial of service on the server.** Argon2 admission, session caps, service
+  queue caps, and close deadlines bound specific resources; they do not make
+  authorized or explicitly preauth-enabled peers harmless.
+
+## Masquerade admission boundary
+
+With obfs enabled, yumed does not emit YUME `AUTH` for a raw frame-looking
+prefix, a partial prefix that times out, a malformed HTTP/2 request, an
+authority/SNI mismatch, or a wrong keyed token. These paths stay in the
+masquerade responder. The successful opening is server `SETTINGS`, ACK of the
+client settings, bodyless accepted response headers; the client ACKs the
+server settings before the transport switches to YUME framing.
+
+`--public-node` requires obfs plus a nonempty `--obfs-secret`. An empty secret
+is retained only for non-public development and performs a structural path
+check, not authentication. The hourly token verifier accepts a +/-1-hour
+window and does not store nonce reuse, so a captured valid path can be replayed
+within an accepted window to reach the separate Ed25519 challenge. It cannot
+authenticate or decrypt the inner channel by itself.
 
 ## Argon2 gate (DoS boundary)
 
@@ -78,6 +102,16 @@ early return releases its reservation. These controls bound admitted Argon2
 work; they do not make compromised authorized keys or intentionally enabled
 preauth lanes harmless, and connection/session caps remain separate controls.
 
+## Preauth service boundary and queue limits
+
+A self-signed Ed25519 key admitted by `preauth_services` is persisted as
+`PreauthServiceOnly`. A central dispatcher gate permits only named
+`service.v1` OPEN, DATA/CLOSE on accepted service streams, and PING/PONG.
+It cannot enter control, relay/admin, generic egress, codec, benchmark, or
+packet paths. Pending service opens are capped at 64 per service and 256 total;
+the limits bound queue ownership but are not a substitute for application-level
+rate limits inside the registered service implementation.
+
 ## Dangerous features and permission gates
 
 Server-side command execution, LAN/private-IP bridging, unrestricted
@@ -98,6 +132,25 @@ raw TCP forwards. They parse local app protocols, carry typed envelopes
 over normal `DATA` frames, and reconstruct only to a narrow loopback
 backend on the server. Grant them with `allow_codecs`, not
 `allow_local_ip`.
+
+Relayed admin attach is directional: the caller must be a trusted relay with
+server-capped plus runtime `allow_outbound_admin`, and the target must have
+server-capped plus runtime `allow_inbound_admin`. The legacy attach form uses
+the same predicate and also requires the target's `--server-in-charge` opt-in.
+For federation, the source server enforces the caller half and the target
+server enforces the target half; the current wire trusts the authenticated
+source server rather than carrying a separate caller-policy proof.
+
+## Lifetime and concurrency bounds
+
+Session shutdown has a five-second transport-close deadline, pending named
+service queues are bounded as above, and client EXEC dispatch admits at most
+four concurrent workers. Sensitive byte buffers are best-effort overwritten
+before release on the principal shutdown paths. This is not a locked allocator
+or a guarantee that prior copies were erased, and detached EXEC workers are
+bounded but are not yet cancellable/joined during shutdown. These changes have
+focused build/unit coverage; sanitizer and long-running race/soak validation
+remain outstanding.
 
 ## Anonym mode limits
 

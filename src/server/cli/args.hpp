@@ -15,7 +15,7 @@ namespace yume::server {
 struct ServerConfig;
 }
 
-namespace yume::server_cli {
+namespace yume::server::cli {
 
 struct ServerCliParseResult {
     bool handled{false};
@@ -39,4 +39,4 @@ bool parse_server_cli_args(int argc,
                            yume::server::ServerConfig& cfg,
                            ServerCliParseResult* out);
 
-}  // namespace yume::server_cli
+}  // namespace yume::server::cli

@@ -123,7 +123,7 @@ private:
             fail_local(400, length_error);
             return;
         }
-        if (content_len > app_codec::kMoneroRpcMaxRequestBody) {
+        if (content_len > app_codec::builtin::kMoneroRpcMaxRequestBody) {
             fail_local(413, "Monero RPC request body too large");
             return;
         }
@@ -155,7 +155,7 @@ private:
 
     void process_request() {
         std::string deny_reason;
-        if (!app_codec::validate_monero_rpc_request(request_, &deny_reason)) {
+        if (!app_codec::builtin::validate_monero_rpc_request(request_, &deny_reason)) {
             fail_local(403, deny_reason.empty() ? "Monero RPC request denied" : deny_reason);
             return;
         }
@@ -180,7 +180,7 @@ private:
 
         nlohmann::json open_json{
             {"proto", std::string(app_codec::kOpenProto)},
-            {"codec", std::string(app_codec::kMoneroRpcCodecId)},
+            {"codec", std::string(app_codec::builtin::kMoneroRpcCodecId)},
         };
         tunnel_->open_relay_stream(
             stream_id_,
@@ -214,7 +214,7 @@ private:
         }
         app_codec::Envelope envelope;
         std::string error;
-        if (!app_codec::decode_envelope(data, app_codec::kMoneroRpcMaxResponseBody, &envelope, &error)) {
+        if (!app_codec::decode_envelope(data, app_codec::builtin::kMoneroRpcMaxResponseBody, &envelope, &error)) {
             fail_local(502, error.empty() ? "invalid codec response" : error);
             return;
         }

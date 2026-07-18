@@ -418,6 +418,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/session/auth.cpp
         server/session/authorization.cpp
         server/session/static_site.cpp
+        server/session/http_masq.cpp
         server/runtime/controller.cpp
         client/proxy/outbound_proxy.cpp
     )
@@ -767,6 +768,15 @@ target_include_directories(yume_static_site_test PRIVATE ${CMAKE_CURRENT_SOURCE_
 yume_link_atomic_if_needed(yume_static_site_test PRIVATE)
 yume_apply_perf_opts(yume_static_site_test)
 add_test(NAME yume_static_site_test COMMAND yume_static_site_test)
+
+add_executable(yume_http_masq_test
+    server/session/http_masq_test.cpp
+    server/session/http_masq.cpp
+)
+target_include_directories(yume_http_masq_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+yume_link_atomic_if_needed(yume_http_masq_test PRIVATE)
+yume_apply_perf_opts(yume_http_masq_test)
+add_test(NAME yume_http_masq_test COMMAND yume_http_masq_test)
 
 add_executable(yume_server_security_policy_test
     server/cli/security_policy_test.cpp

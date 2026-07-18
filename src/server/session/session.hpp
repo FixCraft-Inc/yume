@@ -97,20 +97,37 @@ private:
     void on_preface_read(const boost::system::error_code& ec, std::size_t bytes);
     void on_preface_timeout(const boost::system::error_code& ec);
     bool handle_http_preface(const std::string& preface);
-    void send_real_http_response(const std::string& path, const std::string& method);
+    // HTTP/1.x masquerade responder with keep-alive. begin_http_masquerade
+    // seeds the request buffer with the preface bytes; read/on_read/dispatch
+    // form a bounded request loop, and finish_masq_write either reads the next
+    // request (keep-alive) or closes. Keep-alive is gated by http_masq so the
+    // byte stream never desyncs (bodyless GET/HEAD only, per-connection cap).
+    void begin_http_masquerade(std::string initial);
+    void read_http_request();
+    void on_http_request_read(const boost::system::error_code& ec, std::size_t n);
+    void dispatch_http_request(std::string request);
+    void finish_masq_write(std::shared_ptr<std::string> resp,
+                           bool keep_alive,
+                           std::string close_reason);
+    void send_real_http_response(const std::string& path, const std::string& method,
+                                 bool keep_alive = false);
     // Emit a static file under --real-root as an nginx-shaped 200 (Server,
     // Date, Content-Type, Content-Length, Last-Modified, ETag, Accept-Ranges).
-    // HEAD keeps the headers but drops the body. Terminal: closes after write.
+    // HEAD keeps the headers but drops the body.
     void send_static_file(const std::string& rel_path,
                           static_site::FileContents file,
-                          bool head_only);
-    void send_robots_txt_response(bool head_only = false);
+                          bool head_only,
+                          bool keep_alive = false);
+    void send_robots_txt_response(bool head_only = false, bool keep_alive = false);
     // Profile-driven 404 served on any non-yume probe (HTTP or otherwise)
     // so an active probe or TLS-terminating inspector gets a valid HTTP
     // response rather than the TLS-handshake-followed-by-immediate-close
     // fingerprint that the pre-1.0 path used to leak. Profile comes from
     // cfg_.http_profile (defaults to "yumed" for back-compat, overridden
     // by --hide-in-the-crowd <name> or --public-node which forces nginx).
+    // Always closes after the write: the profile template owns its own
+    // Connection header, so a 404 ends the (possibly keep-alive) connection
+    // rather than lie about reuse.
     void send_disguise_404(const std::string& path);
     std::string load_real_index();
     std::string build_hidden_blob();
@@ -248,6 +265,11 @@ private:
     bool preface_probe_active_{false};
     bool header_prefetched_{false};
 
+    // HTTP/1.x masquerade keep-alive loop state. http_request_buf_ holds the
+    // current request plus any over-read/pipelined bytes between iterations.
+    std::string http_request_buf_;
+    int http_requests_served_{0};
+
     bool carrier_probe_active_{false};
     bool carrier_settings_ack_wait_active_{false};
     std::unique_ptr<obfs::H2InboundDecoder> carrier_decoder_;
@@ -282,6 +304,7 @@ private:
     boost::asio::steady_timer idle_timer_;
     boost::asio::steady_timer frame_read_timer_;
     boost::asio::steady_timer transport_shutdown_timer_;
+    boost::asio::steady_timer http_idle_timer_;
     std::atomic<int64_t> last_activity_ms_{0};
 
     struct RemoteStream {

@@ -37,7 +37,8 @@ Session::Session(boost::asio::ip::tcp::socket socket,
     , tls_handshake_timer_(stream_.get_executor())
     , idle_timer_(stream_.get_executor())
     , frame_read_timer_(stream_.get_executor())
-    , transport_shutdown_timer_(stream_.get_executor()) {
+    , transport_shutdown_timer_(stream_.get_executor())
+    , http_idle_timer_(stream_.get_executor()) {
     last_activity_ms_.store(steady_now_ms(), std::memory_order_relaxed);
     session_allow_exec_policy_ = false;
     session_allow_local_ip_ = false;

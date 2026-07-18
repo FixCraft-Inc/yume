@@ -13,8 +13,10 @@ validation are complete.
   Path resolution rejects traversal, encoded-slash/backslash, control bytes,
   over-length targets, and symlink escape (canonicalized against the root); a
   per-response size cap bounds one cover reply. The same root/index backs both
-  the HTTP/1.1 probe and the H2 decoy. Implies `--real`; pair with
-  `--hide-in-the-crowd nginx` for the closest header fit.
+  the HTTP/1.1 probe and the H2 decoy, with HTTP/1.1 keep-alive across a page's
+  assets (bodyless GET/HEAD only, bounded by a per-connection request cap and an
+  idle timeout). Implies `--real`; pair with `--hide-in-the-crowd nginx` for the
+  closest header fit.
 
 ### Changed
 - **License**: YUME source, apps, daemon, proxy, GUI, and libyume are

@@ -25,6 +25,7 @@
 #include "server/host/host_routes.hpp"
 #include "server/host/http_proxy.hpp"
 #include "server/session/static_site.hpp"
+#include "server/session/http_masq.hpp"
 #include "core/app_codec/codec.hpp"
 #include "core/stealth/http_profile.hpp"
 
@@ -37,6 +38,26 @@ namespace {
 // this; the bound keeps one connection from mapping an operator's large file
 // into memory. Misses/oversize fall through to the profile 404.
 constexpr std::size_t kMaxRealFileBytes = 8U * 1024U * 1024U;
+
+// Keep-alive bounds for the masquerade responder. A real nginx keeps the
+// connection open across a page's assets; these cap how long/how many so a
+// decoy connection cannot be held open indefinitely.
+constexpr int kMaxKeepAliveRequests = 100;
+constexpr int kKeepAliveIdleMs = 10000;
+
+// Whether a parsed request carries a message body we would have to consume to
+// stay framed. Keep-alive is refused for these (see http_masq). Conservative:
+// any nonzero Content-Length digit or a Transfer-Encoding counts as a body.
+bool request_has_message_body(const std::string& headers) {
+    if (!host::http_header_value(headers, "Transfer-Encoding").empty()) {
+        return true;
+    }
+    const std::string cl = host::http_header_value(headers, "Content-Length");
+    for (char c : cl) {
+        if (c >= '1' && c <= '9') return true;
+    }
+    return false;
+}
 
 std::string etag_hex(std::uintmax_t value) {
     if (value == 0) return "0";
@@ -238,83 +259,132 @@ bool Session::handle_http_preface(const std::string& preface) {
         return false;
     }
 
-    auto self = shared_from_this();
-    auto request = std::make_shared<std::string>(preface);
-    boost::asio::async_read_until(stream_,
-                                  boost::asio::dynamic_buffer(*request,
-                                                              yume::app_codec::kMaxHttpHeaderBytes + 1),
-                                  "\r\n\r\n",
-                                  boost::asio::bind_executor(strand_,
-                                                             [self, request](const boost::system::error_code& e, std::size_t) {
-                                                                 if (e || request->size() > yume::app_codec::kMaxHttpHeaderBytes) {
-                                                                     self->close_with_reason(
-                                                                         e ? "HTTP preface read failed: " + e.message()
-                                                                           : "HTTP preface read failed: headers too large");
-                                                                     return;
-                                                                 }
-                                                                 std::string line;
-                                                                 auto pos = request->find("\r\n");
-                                                                 if (pos != std::string::npos) {
-                                                                     line = request->substr(0, pos);
-                                                                 }
-                                                                 std::string method;
-                                                                 std::string target = "/";
-                                                                 if (!line.empty()) {
-                                                                     auto p1 = line.find(' ');
-                                                                     if (p1 != std::string::npos) {
-                                                                         method = line.substr(0, p1);
-                                                                         auto p2 = line.find(' ', p1 + 1);
-                                                                         if (p2 != std::string::npos && p2 > p1 + 1) {
-                                                                             target = line.substr(p1 + 1, p2 - p1 - 1);
-                                                                         }
-                                                                     }
-                                                                 }
-
-                                                                 std::string path = target;
-                                                                 if (self->cfg_.host_mode != host::HostMode::Off &&
-                                                                     self->manager_ &&
-                                                                     !self->manager_->host_routes().empty()) {
-                                                                     const std::string sni = host::tls_sni(self->stream_.native_handle());
-                                                                     const std::string host_header = host::http_header_value(*request, "Host");
-                                                                     auto host_only = host_header;
-                                                                     const auto colon = host_only.find(':');
-                                                                     if (colon != std::string::npos) {
-                                                                         host_only = host_only.substr(0, colon);
-                                                                     }
-                                                                     auto match = self->manager_->host_routes().match(sni, host_only, path);
-                                                                     if (match.has_value()) {
-                                                                         auto backend = host::parse_loopback_backend(match->route->backend);
-                                                                         if (backend.has_value()) {
-                                                                             auto handoff = self->release_for_host_proxy();
-                                                                             if (handoff.has_value()) {
-                                                                                 host::start_http_reverse_proxy(
-                                                                                     std::move(*handoff),
-                                                                                     std::move(*request),
-                                                                                     backend->first,
-                                                                                     backend->second,
-                                                                                     self->manager_);
-                                                                             }
-                                                                             return;
-                                                                         }
-                                                                     }
-                                                                 }
-                                                                 if (self->cfg_.robots_deny &&
-                                                                     path == "/robots.txt" &&
-                                                                     (method == "GET" || method == "HEAD")) {
-                                                                     self->send_robots_txt_response(method == "HEAD");
-                                                                     return;
-                                                                 }
-                                                                 if (self->cfg_.real_http) {
-                                                                     self->send_real_http_response(path, method);
-                                                                 } else {
-                                                                     // Pre-1.0 this path closed immediately, which is a
-                                                                     // strong DPI signal. Serve a profile-driven 404 so
-                                                                     // the probe sees what looks like a real web server
-                                                                     // with nothing at that path.
-                                                                     self->send_disguise_404(path);
-                                                                 }
-                                                             }));
+    // The preface bytes are the start of the request; hand off to the
+    // keep-alive request loop, which reads the rest and then either serves the
+    // next request on the same connection or closes.
+    begin_http_masquerade(preface);
     return true;
+}
+
+void Session::begin_http_masquerade(std::string initial) {
+    http_request_buf_ = std::move(initial);
+    http_requests_served_ = 0;
+    read_http_request();
+}
+
+void Session::read_http_request() {
+    auto self = shared_from_this();
+    // Idle deadline between requests: a real keep-alive connection is not held
+    // open forever. Cancels the pending read on expiry.
+    http_idle_timer_.expires_after(std::chrono::milliseconds(kKeepAliveIdleMs));
+    http_idle_timer_.async_wait(boost::asio::bind_executor(
+        strand_, [self](const boost::system::error_code& ec) {
+            if (ec) return;  // cancelled by a completed read
+            boost::system::error_code cancel_ec;
+            self->stream_.lowest_layer().cancel(cancel_ec);
+            self->close_with_reason("http keepalive idle timeout");
+        }));
+    boost::asio::async_read_until(
+        stream_,
+        boost::asio::dynamic_buffer(http_request_buf_,
+                                    yume::app_codec::kMaxHttpHeaderBytes + 1),
+        "\r\n\r\n",
+        boost::asio::bind_executor(
+            strand_, [self](const boost::system::error_code& ec, std::size_t n) {
+                self->on_http_request_read(ec, n);
+            }));
+}
+
+void Session::on_http_request_read(const boost::system::error_code& ec, std::size_t n) {
+    http_idle_timer_.cancel();
+    if (ec) {
+        if (ec == boost::asio::error::operation_aborted) return;
+        // not_found (headers too large / cap hit), EOF, or reset: close quietly
+        // like a web server dropping an unusable or finished connection.
+        close_with_reason("http masquerade read ended: " + ec.message());
+        return;
+    }
+    // n covers the request line + headers up to and including "\r\n\r\n"; keep
+    // any over-read/pipelined bytes as the seed for the next request.
+    std::string request = http_request_buf_.substr(0, n);
+    http_request_buf_.erase(0, n);
+    dispatch_http_request(std::move(request));
+}
+
+void Session::dispatch_http_request(std::string request) {
+    ++http_requests_served_;
+
+    std::string line;
+    const auto pos = request.find("\r\n");
+    if (pos != std::string::npos) line = request.substr(0, pos);
+    const auto req = http_masq::parse_request_line(line);
+    const std::string& method = req.method;
+    std::string path = req.target;
+
+    // Host-route reverse proxy stays terminal (it takes over the socket); the
+    // keep-alive loop only governs the local decoy responses below. Forward the
+    // header block plus any bytes we already read past it.
+    if (cfg_.host_mode != host::HostMode::Off && manager_ &&
+        !manager_->host_routes().empty()) {
+        const std::string sni = host::tls_sni(stream_.native_handle());
+        std::string host_only = host::http_header_value(request, "Host");
+        const auto colon = host_only.find(':');
+        if (colon != std::string::npos) host_only = host_only.substr(0, colon);
+        auto match = manager_->host_routes().match(sni, host_only, path);
+        if (match.has_value()) {
+            auto backend = host::parse_loopback_backend(match->route->backend);
+            if (backend.has_value()) {
+                auto handoff = release_for_host_proxy();
+                if (handoff.has_value()) {
+                    host::start_http_reverse_proxy(std::move(*handoff),
+                                                   request + http_request_buf_,
+                                                   backend->first, backend->second,
+                                                   manager_);
+                }
+                return;
+            }
+        }
+    }
+
+    const bool keep_alive = http_masq::response_keep_alive(
+        method, req.version, host::http_header_value(request, "Connection"),
+        request_has_message_body(request), http_requests_served_,
+        kMaxKeepAliveRequests);
+
+    if (cfg_.robots_deny && path == "/robots.txt" &&
+        (method == "GET" || method == "HEAD")) {
+        send_robots_txt_response(method == "HEAD", keep_alive);
+        return;
+    }
+    if (cfg_.real_http) {
+        send_real_http_response(path, method, keep_alive);
+    } else {
+        // Pre-1.0 this path closed immediately, which is a strong DPI signal.
+        // Serve a profile-driven 404 so the probe sees a real-looking web
+        // server with nothing at that path. (Terminal: closes the connection.)
+        send_disguise_404(path);
+    }
+}
+
+void Session::finish_masq_write(std::shared_ptr<std::string> resp,
+                                bool keep_alive,
+                                std::string close_reason) {
+    auto self = shared_from_this();
+    boost::asio::async_write(
+        stream_, boost::asio::buffer(*resp),
+        boost::asio::bind_executor(
+            strand_, [self, resp, keep_alive, close_reason](
+                         const boost::system::error_code& ec, std::size_t) {
+                if (ec) {
+                    self->close_with_reason("masquerade write failed: " + ec.message());
+                    return;
+                }
+                if (keep_alive) {
+                    self->read_http_request();
+                } else {
+                    self->close_with_reason(close_reason);
+                }
+            }));
 }
 
 std::string Session::load_real_index() {
@@ -414,10 +484,11 @@ void Session::send_disguise_404(const std::string& path) {
                                                         }));
 }
 
-void Session::send_real_http_response(const std::string& path, const std::string& method) {
+void Session::send_real_http_response(const std::string& path, const std::string& method,
+                                      bool keep_alive) {
     const bool head_only = method == "HEAD";
     if (cfg_.robots_deny && path == "/robots.txt") {
-        send_robots_txt_response(head_only);
+        send_robots_txt_response(head_only, keep_alive);
         return;
     }
 
@@ -433,7 +504,7 @@ void Session::send_real_http_response(const std::string& path, const std::string
                 auto file = static_site::read_under_root(
                     cfg_.real_root, resolved->rel_path, kMaxRealFileBytes);
                 if (file.has_value()) {
-                    send_static_file(resolved->rel_path, std::move(*file), head_only);
+                    send_static_file(resolved->rel_path, std::move(*file), head_only, keep_alive);
                     return;
                 }
             }
@@ -489,20 +560,16 @@ void Session::send_real_http_response(const std::string& path, const std::string
     headers += "Content-Type: text/html; charset=utf-8\r\n";
     headers += "Cache-Control: no-store\r\n";
     headers += "Content-Length: " + std::to_string(body.size()) + "\r\n";
-    headers += "Connection: close\r\n\r\n";
+    headers += keep_alive ? "Connection: keep-alive\r\n\r\n" : "Connection: close\r\n\r\n";
 
-    auto resp = std::make_shared<std::string>(head_only ? headers : headers + body);
-    auto self = shared_from_this();
-    boost::asio::async_write(stream_, boost::asio::buffer(*resp),
-                             boost::asio::bind_executor(strand_,
-                                                        [self, resp](const boost::system::error_code&, std::size_t) {
-                                                            self->close_with_reason("served HTTP disguise response");
-                                                        }));
+    auto resp = std::make_shared<std::string>(head_only ? std::move(headers) : headers + body);
+    finish_masq_write(std::move(resp), keep_alive, "served HTTP disguise response");
 }
 
 void Session::send_static_file(const std::string& rel_path,
                                static_site::FileContents file,
-                               bool head_only) {
+                               bool head_only,
+                               bool keep_alive) {
     auto profile = yume::http_profile::server(
         cfg_.http_profile.empty() ? "yumed" : cfg_.http_profile);
     if (!profile.has_value()) {
@@ -537,21 +604,16 @@ void Session::send_static_file(const std::string& rel_path,
         headers += "Last-Modified: " +
                    yume::http_profile::http_date(static_cast<std::time_t>(mtime_secs)) + "\r\n";
     }
-    headers += "Connection: close\r\n";
+    headers += keep_alive ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
     headers += "ETag: \"" + etag_hex(mtime_secs) + "-" + etag_hex(len) + "\"\r\n";
     headers += "Accept-Ranges: bytes\r\n\r\n";
 
     auto resp = std::make_shared<std::string>(head_only ? std::move(headers)
                                                         : headers + file.bytes);
-    auto self = shared_from_this();
-    boost::asio::async_write(stream_, boost::asio::buffer(*resp),
-                             boost::asio::bind_executor(strand_,
-                                                        [self, resp](const boost::system::error_code&, std::size_t) {
-                                                            self->close_with_reason("served static file");
-                                                        }));
+    finish_masq_write(std::move(resp), keep_alive, "served static file");
 }
 
-void Session::send_robots_txt_response(bool head_only) {
+void Session::send_robots_txt_response(bool head_only, bool keep_alive) {
     const std::string body = "User-agent: *\nDisallow: /\n";
     auto profile = yume::http_profile::server(
         cfg_.http_profile.empty() ? "yumed" : cfg_.http_profile);
@@ -570,15 +632,10 @@ void Session::send_robots_txt_response(bool head_only) {
     headers += "Content-Type: text/plain; charset=utf-8\r\n";
     headers += "Cache-Control: no-store\r\n";
     headers += "Content-Length: " + std::to_string(body.size()) + "\r\n";
-    headers += "Connection: close\r\n\r\n";
+    headers += keep_alive ? "Connection: keep-alive\r\n\r\n" : "Connection: close\r\n\r\n";
 
-    auto resp = std::make_shared<std::string>(head_only ? headers : headers + body);
-    auto self = shared_from_this();
-    boost::asio::async_write(stream_, boost::asio::buffer(*resp),
-                             boost::asio::bind_executor(strand_,
-                                                        [self, resp](const boost::system::error_code&, std::size_t) {
-                                                            self->close_with_reason("served robots.txt");
-                                                        }));
+    auto resp = std::make_shared<std::string>(head_only ? std::move(headers) : headers + body);
+    finish_masq_write(std::move(resp), keep_alive, "served robots.txt");
 }
 
 void Session::start_h2_carrier_probe() {

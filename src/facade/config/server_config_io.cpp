@@ -117,6 +117,7 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::real_http, s.real_http);
     read_opt(j, cfg_key::robots_deny, s.robots_deny);
     read_opt(j, cfg_key::real_index_path, s.real_index_path);
+    read_opt(j, cfg_key::real_root, s.real_root);
     read_opt(j, cfg_key::real_secret, s.real_secret);
     read_opt(j, cfg_key::real_secret_file, s.real_secret_file);
     read_opt(j, cfg_key::anonym, s.anonym);
@@ -219,6 +220,7 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     resolve_config_path(s.auth_keys, base);
     resolve_config_path(s.pq_private_key, base);
     resolve_config_path(s.real_index_path, base);
+    resolve_config_path(s.real_root, base);
     resolve_config_path(s.real_secret_file, base);
     resolve_config_path(s.anonym_ca_key, base);
     resolve_config_path(s.anonym_ca_cert, base);
@@ -319,6 +321,7 @@ bool save_server(server::ServerConfig const& s,
         {cfg_key::real_http, s.real_http},
         {cfg_key::robots_deny, s.robots_deny},
         {cfg_key::real_index_path, s.real_index_path},
+        {cfg_key::real_root, s.real_root},
         {cfg_key::real_secret_file, s.real_secret_file},
         {cfg_key::anonym, s.anonym},
         {cfg_key::anonym_proof_mode, s.anonym_proof_mode},

@@ -1,0 +1,117 @@
+/*
+ * YUME - Yume Universal Multiprotocol Engine
+ * Copyright (C) 2026  FixCraft Inc.
+ * Licensed under the GNU Affero General Public License v3.0 or later.
+ */
+
+#include "server/session/static_site.hpp"
+
+#include <cassert>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <random>
+#include <string>
+
+namespace {
+
+namespace fs = std::filesystem;
+using yume::server::static_site::mime_type;
+using yume::server::static_site::read_under_root;
+using yume::server::static_site::resolve_target;
+
+std::string resolved_or_empty(std::string_view target) {
+    auto r = resolve_target(target, "index.html");
+    return r.has_value() ? r->rel_path : std::string("<reject>");
+}
+
+void test_resolve_index_and_simple_paths() {
+    assert(resolved_or_empty("/") == "index.html");
+    assert(resolved_or_empty("/index.html") == "index.html");
+    assert(resolved_or_empty("/style.css") == "style.css");
+    assert(resolved_or_empty("/assets/app.js") == "assets/app.js");
+    assert(resolved_or_empty("/img/logo.png?v=3") == "img/logo.png");
+    assert(resolved_or_empty("/a/b/c.txt#frag") == "a/b/c.txt");
+    // Directory targets resolve to the index file.
+    assert(resolved_or_empty("/docs/") == "docs/index.html");
+    // "." and empty segments normalize away without escaping.
+    assert(resolved_or_empty("/./a//b.js") == "a/b.js");
+    // Percent-decoding of ordinary characters is allowed.
+    assert(resolved_or_empty("/a%20b.txt") == "a b.txt");
+}
+
+void test_resolve_rejects_traversal_and_tricks() {
+    assert(!resolve_target("", "index.html").has_value());
+    assert(!resolve_target("*", "index.html").has_value());
+    assert(!resolve_target("http://evil/x", "index.html").has_value());
+    assert(!resolve_target("/../etc/passwd", "index.html").has_value());
+    assert(!resolve_target("/a/../../etc/passwd", "index.html").has_value());
+    assert(!resolve_target("/a/../b", "index.html").has_value());  // any ".." rejected
+    assert(!resolve_target("/%2e%2e/passwd", "index.html").has_value());
+    assert(!resolve_target("/%2fetc/passwd", "index.html").has_value());  // encoded slash
+    assert(!resolve_target("/%5cwindows", "index.html").has_value());     // encoded backslash
+    assert(!resolve_target("/a\\b", "index.html").has_value());           // literal backslash
+    assert(!resolve_target("/a%00b", "index.html").has_value());          // NUL
+    assert(!resolve_target("/a%01b", "index.html").has_value());          // control
+    assert(!resolve_target("/a%zz", "index.html").has_value());           // bad escape
+    assert(!resolve_target("/a%2", "index.html").has_value());            // truncated escape
+    assert(!resolve_target(std::string("/") + std::string(3000, 'a'), "index.html").has_value());
+}
+
+void test_mime_types() {
+    assert(mime_type("index.html") == "text/html; charset=utf-8");
+    assert(mime_type("a/b/app.JS") == "text/javascript; charset=utf-8");
+    assert(mime_type("style.css") == "text/css; charset=utf-8");
+    assert(mime_type("logo.png") == "image/png");
+    assert(mime_type("photo.JPEG") == "image/jpeg");
+    assert(mime_type("font.woff2") == "font/woff2");
+    assert(mime_type("data.json") == "application/json");
+    assert(mime_type("archive.bin") == "application/octet-stream");
+    assert(mime_type("noext") == "application/octet-stream");
+    assert(mime_type("trailing.") == "application/octet-stream");
+}
+
+void test_read_under_root_and_symlink_escape() {
+    const fs::path base =
+        fs::temp_directory_path() /
+        ("yume_static_site_test_" + std::to_string(std::random_device{}()));
+    fs::remove_all(base);
+    const fs::path root = base / "www";
+    fs::create_directories(root / "assets");
+    const fs::path secret = base / "secret.txt";
+    {
+        std::ofstream(root / "index.html") << "<h1>hi</h1>";
+        std::ofstream(root / "assets" / "app.js") << "console.log(1)";
+        std::ofstream(secret) << "TOP SECRET";
+    }
+
+    auto index = read_under_root(root.string(), "index.html", 1 << 20);
+    assert(index.has_value() && index->bytes == "<h1>hi</h1>");
+    auto app = read_under_root(root.string(), "assets/app.js", 1 << 20);
+    assert(app.has_value() && app->bytes == "console.log(1)");
+
+    // Missing file, oversize cap, and directory targets all fail closed.
+    assert(!read_under_root(root.string(), "missing.txt", 1 << 20).has_value());
+    assert(!read_under_root(root.string(), "index.html", 4).has_value());
+    assert(!read_under_root(root.string(), "assets", 1 << 20).has_value());
+
+    // A symlink inside the root that points outside must not be served.
+    std::error_code ec;
+    fs::create_symlink(secret, root / "leak.txt", ec);
+    if (!ec) {  // some filesystems/permissions forbid symlink creation
+        assert(!read_under_root(root.string(), "leak.txt", 1 << 20).has_value());
+    }
+
+    fs::remove_all(base);
+}
+
+}  // namespace
+
+int main() {
+    test_resolve_index_and_simple_paths();
+    test_resolve_rejects_traversal_and_tricks();
+    test_mime_types();
+    test_read_under_root_and_symlink_escape();
+    std::puts("static_site_test: all cases passed");
+    return 0;
+}

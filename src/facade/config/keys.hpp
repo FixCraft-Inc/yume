@@ -100,6 +100,7 @@ inline constexpr char preferred_id[] = "preferred_id";
 inline constexpr char preferred_name[] = "preferred_name";
 inline constexpr char real_http[] = "real_http";
 inline constexpr char real_index_path[] = "real_index_path";
+inline constexpr char real_root[] = "real_root";
 inline constexpr char real_secret[] = "real_secret";
 inline constexpr char real_secret_file[] = "real_secret_file";
 inline constexpr char relay_enable[] = "relay_enable";

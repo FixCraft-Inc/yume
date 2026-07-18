@@ -208,6 +208,27 @@ Serve real HTTP for non-YUME requests on the same port.
 HTML file served for
 .BR / .
 .TP
+.BI "--real-root " dir
+Serve GET/HEAD static files under
+.IR dir
+as the masquerade cover (implies
+.BR --real ).
+Files are returned with the correct MIME type,
+.BR Content-Length ,
+.BR Last-Modified ,
+an nginx-style
+.BR ETag ,
+and
+.BR "Accept-Ranges: bytes" ;
+.B /
+and directory paths serve
+.IR dir /index.html.
+Path resolution rejects traversal, encoded-slash tricks, control bytes, and
+symlinks that escape the root; misses and non-GET/HEAD methods return the
+profile 404. The same root backs the HTTP/1.1 probe and the H2 decoy. Pair with
+.B --hide-in-the-crowd nginx
+for the closest header fit.
+.TP
 .BI "--real-secret " string
 Hidden metadata secret used by YUME tooling.
 .TP

@@ -35,6 +35,11 @@
 #include "server/session/authorization.hpp"
 #include "util.hpp"
 
+namespace yume::server::static_site {
+struct FileContents;  // full definition in static_site.hpp; forward-declared
+                      // here so session.hpp need not pull in <filesystem>.
+}
+
 namespace yume::server {
 
 class Manager;
@@ -92,7 +97,13 @@ private:
     void on_preface_read(const boost::system::error_code& ec, std::size_t bytes);
     void on_preface_timeout(const boost::system::error_code& ec);
     bool handle_http_preface(const std::string& preface);
-    void send_real_http_response(const std::string& path);
+    void send_real_http_response(const std::string& path, const std::string& method);
+    // Emit a static file under --real-root as an nginx-shaped 200 (Server,
+    // Date, Content-Type, Content-Length, Last-Modified, ETag, Accept-Ranges).
+    // HEAD keeps the headers but drops the body. Terminal: closes after write.
+    void send_static_file(const std::string& rel_path,
+                          static_site::FileContents file,
+                          bool head_only);
     void send_robots_txt_response(bool head_only = false);
     // Profile-driven 404 served on any non-yume probe (HTTP or otherwise)
     // so an active probe or TLS-terminating inspector gets a valid HTTP

@@ -13,16 +13,43 @@
  * change. Shared helpers come from server/session/internal.hpp.
  * ---------------------------------------------------------------- */
 
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <ctime>
+#include <filesystem>
+
 #include "server/session/session.hpp"
 #include "server/runtime/manager.hpp"
 #include "server/session/internal.hpp"
 #include "server/host/host_routes.hpp"
 #include "server/host/http_proxy.hpp"
+#include "server/session/static_site.hpp"
 #include "core/app_codec/codec.hpp"
+#include "core/stealth/http_profile.hpp"
 
 namespace yume::server {
 
 using namespace detail;
+
+namespace {
+// Cap on a single static-file cover response. A real asset page is far under
+// this; the bound keeps one connection from mapping an operator's large file
+// into memory. Misses/oversize fall through to the profile 404.
+constexpr std::size_t kMaxRealFileBytes = 8U * 1024U * 1024U;
+
+std::string etag_hex(std::uintmax_t value) {
+    if (value == 0) return "0";
+    static const char kDigits[] = "0123456789abcdef";
+    std::string out;
+    while (value != 0) {
+        out.push_back(kDigits[value & 0xF]);
+        value >>= 4;
+    }
+    std::reverse(out.begin(), out.end());
+    return out;
+}
+}  // namespace
 
 void Session::start_preface_read() {
     preface_accum_.clear();
@@ -88,7 +115,7 @@ void Session::on_preface_read(const boost::system::error_code& ec, std::size_t b
         if (obfs::selected_alpn(stream_.native_handle()) == "h2") {
             serve_fake_h2_real_index();
         } else if (cfg_.real_http) {
-            send_real_http_response("/");
+            send_real_http_response("/", "GET");
         } else {
             send_disguise_404("/");
         }
@@ -109,7 +136,7 @@ void Session::on_preface_read(const boost::system::error_code& ec, std::size_t b
         // pre-1.0 close path used to leak).
         preface_probe_active_ = false;
         if (cfg_.real_http) {
-            send_real_http_response("/");
+            send_real_http_response("/", "GET");
         } else {
             send_disguise_404("/");
         }
@@ -141,7 +168,7 @@ void Session::on_preface_timeout(const boost::system::error_code& ec) {
                 obfs::selected_alpn(stream_.native_handle()) == "h2") {
                 serve_fake_h2_real_index();
             } else if (cfg_.real_http) {
-                send_real_http_response("/");
+                send_real_http_response("/", "GET");
             } else {
                 send_disguise_404("/");
             }
@@ -177,7 +204,7 @@ bool Session::handle_http_preface(const std::string& preface) {
             if (obfs::selected_alpn(stream_.native_handle()) == "h2") {
                 serve_fake_h2_real_index();
             } else if (cfg_.real_http) {
-                send_real_http_response("/");
+                send_real_http_response("/", "GET");
             } else {
                 send_disguise_404("/");
             }
@@ -186,7 +213,7 @@ bool Session::handle_http_preface(const std::string& preface) {
         const std::string negotiated = obfs::selected_alpn(stream_.native_handle());
         if (negotiated != "h2") {
             if (cfg_.real_http) {
-                send_real_http_response("/");
+                send_real_http_response("/", "GET");
             } else {
                 send_disguise_404("/");
             }
@@ -278,7 +305,7 @@ bool Session::handle_http_preface(const std::string& preface) {
                                                                      return;
                                                                  }
                                                                  if (self->cfg_.real_http) {
-                                                                     self->send_real_http_response(path);
+                                                                     self->send_real_http_response(path, method);
                                                                  } else {
                                                                      // Pre-1.0 this path closed immediately, which is a
                                                                      // strong DPI signal. Serve a profile-driven 404 so
@@ -291,7 +318,16 @@ bool Session::handle_http_preface(const std::string& preface) {
 }
 
 std::string Session::load_real_index() {
-    if (!cfg_.real_index_path.empty()) {
+    // With --real-root, the H2 decoy and the HTTP/1.1 "/" path must present the
+    // same index bytes so an active probe sees one web identity across both
+    // carriers. Serve <root>/index.html; fall back to the redirect stub only
+    // when no index file is present.
+    if (!cfg_.real_root.empty()) {
+        auto file = static_site::read_under_root(cfg_.real_root, "index.html", kMaxRealFileBytes);
+        if (file.has_value()) {
+            return std::move(file->bytes);
+        }
+    } else if (!cfg_.real_index_path.empty()) {
         std::ifstream in(cfg_.real_index_path, std::ios::binary);
         if (in) {
             std::string contents((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -378,18 +414,38 @@ void Session::send_disguise_404(const std::string& path) {
                                                         }));
 }
 
-void Session::send_real_http_response(const std::string& path) {
+void Session::send_real_http_response(const std::string& path, const std::string& method) {
+    const bool head_only = method == "HEAD";
     if (cfg_.robots_deny && path == "/robots.txt") {
-        send_robots_txt_response(false);
+        send_robots_txt_response(head_only);
         return;
     }
-    // Non-`/` paths get an nginx-style 404 via the same disguise
-    // pipeline that --hide-in-the-crowd uses without --real. The
-    // previous behaviour (302 Location: / on every unknown path)
-    // was a soft fingerprint: a real nginx returns 404 for
-    // /random-path, not "Redirecting to /". The 302-everywhere
-    // pattern is recognisable to any prober that GETs more than
-    // one URL on the same TLS connection.
+
+    // --real-root: serve GET/HEAD for any real file under the root so the cover
+    // is a coherent multi-asset site, not "/ => 200, everything else => 404".
+    // Resolution rejects traversal/encoded-slash/symlink escape; a miss or a
+    // non-GET/HEAD method falls through to the profile 404, which is what a
+    // real nginx returns for an unrouted path.
+    if (!cfg_.real_root.empty()) {
+        if (method == "GET" || method == "HEAD") {
+            auto resolved = static_site::resolve_target(path, "index.html");
+            if (resolved.has_value()) {
+                auto file = static_site::read_under_root(
+                    cfg_.real_root, resolved->rel_path, kMaxRealFileBytes);
+                if (file.has_value()) {
+                    send_static_file(resolved->rel_path, std::move(*file), head_only);
+                    return;
+                }
+            }
+        }
+        send_disguise_404(path);
+        return;
+    }
+
+    // Legacy single-page mode (--real-index / default): only "/" is a page;
+    // everything else is a profile 404. The pre-1.0 "302 Location: /" on every
+    // unknown path was a soft fingerprint (real nginx returns 404 for
+    // /random-path), recognisable to any prober that GETs more than one URL.
     if (path != "/") {
         send_disguise_404(path);
         return;
@@ -435,12 +491,63 @@ void Session::send_real_http_response(const std::string& path) {
     headers += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     headers += "Connection: close\r\n\r\n";
 
-    auto resp = std::make_shared<std::string>(headers + body);
+    auto resp = std::make_shared<std::string>(head_only ? headers : headers + body);
     auto self = shared_from_this();
     boost::asio::async_write(stream_, boost::asio::buffer(*resp),
                              boost::asio::bind_executor(strand_,
                                                         [self, resp](const boost::system::error_code&, std::size_t) {
                                                             self->close_with_reason("served HTTP disguise response");
+                                                        }));
+}
+
+void Session::send_static_file(const std::string& rel_path,
+                               static_site::FileContents file,
+                               bool head_only) {
+    auto profile = yume::http_profile::server(
+        cfg_.http_profile.empty() ? "yumed" : cfg_.http_profile);
+    if (!profile.has_value()) {
+        profile = yume::http_profile::server("yumed");
+    }
+
+    // nginx-style static 200: header order and the ETag "<mtime>-<len>" shape
+    // match ngx_http_static_module so a byte-level comparison against real
+    // nginx lines up. Non-nginx profiles reuse this framing with their own
+    // Server value; per-profile static templates are a later refinement.
+    const std::uintmax_t len = file.bytes.size();
+    // file_time_type has no portable epoch, so convert through both clocks'
+    // current now() (the standard pre-C++20 bridge). Approximate to the second,
+    // which is all HTTP dates and nginx's ETag carry anyway.
+    std::uintmax_t mtime_secs = 0;
+    {
+        const auto sys = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+            file.mtime - std::filesystem::file_time_type::clock::now() +
+            std::chrono::system_clock::now());
+        const std::time_t t = std::chrono::system_clock::to_time_t(sys);
+        if (t > 0) mtime_secs = static_cast<std::uintmax_t>(t);
+    }
+
+    std::string headers = "HTTP/1.1 200 OK\r\n";
+    if (!profile->server_header_value.empty()) {
+        headers += "Server: " + profile->server_header_value + "\r\n";
+    }
+    headers += "Date: " + yume::http_profile::http_date_now() + "\r\n";
+    headers += "Content-Type: " + static_site::mime_type(rel_path) + "\r\n";
+    headers += "Content-Length: " + std::to_string(len) + "\r\n";
+    if (mtime_secs != 0) {
+        headers += "Last-Modified: " +
+                   yume::http_profile::http_date(static_cast<std::time_t>(mtime_secs)) + "\r\n";
+    }
+    headers += "Connection: close\r\n";
+    headers += "ETag: \"" + etag_hex(mtime_secs) + "-" + etag_hex(len) + "\"\r\n";
+    headers += "Accept-Ranges: bytes\r\n\r\n";
+
+    auto resp = std::make_shared<std::string>(head_only ? std::move(headers)
+                                                        : headers + file.bytes);
+    auto self = shared_from_this();
+    boost::asio::async_write(stream_, boost::asio::buffer(*resp),
+                             boost::asio::bind_executor(strand_,
+                                                        [self, resp](const boost::system::error_code&, std::size_t) {
+                                                            self->close_with_reason("served static file");
                                                         }));
 }
 

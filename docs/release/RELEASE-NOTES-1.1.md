@@ -139,6 +139,20 @@ gets the configured HTML page (or a Wikipedia redirect by default).
 YUME and a normal website coexist on `:443`. An active prober that
 completes TLS and sends a browser request gets a browser response.
 
+`--real-root <dir>` upgrades this from a single page to a coherent static
+site: GET/HEAD for any real file under `<dir>` is served with the correct
+MIME type, `Content-Length`, `Last-Modified`, an nginx-style `ETag`, and
+`Accept-Ranges: bytes`; `/` and directory paths serve `index.html`, and
+misses fall through to the profile 404. This closes the "single page returns
+200 but every asset 404s" tell for a prober that walks more than one URL. The
+same root/index is presented on both the HTTP/1.1 probe and the H2 decoy, so an
+active probe sees one web identity. Resolution rejects traversal, encoded-slash
+tricks, control bytes, over-length targets, and symlink escape (canonicalized
+against the root), and a per-response size cap bounds one cover reply. Static
+200s currently use nginx-style header framing (pair with `--hide-in-the-crowd
+nginx`); keep-alive across assets and per-profile static templates are not yet
+implemented.
+
 `--real` and `--obfs` are independent. They're demuxed by the first
 cleartext bytes after TLS: an HTTP/2 preface goes to the obfs
 validator; an HTTP/1.1 method-line goes to the HTML server.

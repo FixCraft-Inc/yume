@@ -28,6 +28,7 @@
 
 #pragma once
 
+#include <ctime>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -72,6 +73,11 @@ std::optional<ClientProfile> client(std::string_view name);
 // For --help text + validation messages.
 std::vector<std::string> server_names();
 std::vector<std::string> client_names();
+
+// RFC 7231 IMF-fixdate, e.g. "Sun, 06 Nov 1994 08:49:37 GMT". Used for the
+// Date / Last-Modified headers of disguise and static-file responses.
+std::string http_date(std::time_t when);
+std::string http_date_now();
 
 // Render a complete 404 response as a single string ready for
 // boost::asio::write — substitutes the placeholders in headers_404

@@ -67,6 +67,9 @@ void resolve_server_config_paths(yume::server::ServerConfig& cfg,
     if (!cfg.real_index_path.empty()) {
         cfg.real_index_path = resolve_cfg_path(cfg.real_index_path);
     }
+    if (!cfg.real_root.empty()) {
+        cfg.real_root = resolve_cfg_path(cfg.real_root);
+    }
     if (!cfg.real_secret_file.empty()) {
         cfg.real_secret_file = resolve_cfg_path(cfg.real_secret_file);
     }
@@ -290,6 +293,10 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
             }
             if (json.contains("real_index_path") && cfg.real_index_path.empty()) {
                 cfg.real_index_path = resolve_cfg_path(json["real_index_path"].get<std::string>());
+            }
+            if (json.contains("real_root") && cfg.real_root.empty()) {
+                cfg.real_root = resolve_cfg_path(json["real_root"].get<std::string>());
+                cfg.real_http = true;
             }
             if (json.contains("real_secret") && cfg.real_secret.empty()) {
                 cfg.real_secret = json["real_secret"].get<std::string>();

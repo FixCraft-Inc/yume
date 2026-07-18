@@ -335,6 +335,11 @@ bool parse_server_cli_args(int argc,
             cfg.robots_deny = true;
         } else if (arg == "--real-index" && i + 1 < argc) {
             cfg.real_index_path = resolve_cli_path(argv[++i]);
+        } else if (arg == "--real-root" && i + 1 < argc) {
+            // A static-site cover directory implies --real; the carrier only
+            // serves real files/paths when real_http is on.
+            cfg.real_root = resolve_cli_path(argv[++i]);
+            cfg.real_http = true;
         } else if (arg == "--real-secret" && i + 1 < argc) {
             cfg.real_secret = argv[++i];
         } else if (arg == "--real-secret-file" && i + 1 < argc) {

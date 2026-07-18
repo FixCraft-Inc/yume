@@ -5,6 +5,17 @@
 Target: `v1.1`. Do not tag until the remaining release work and remote
 validation are complete.
 
+### Added
+- **Static-site masquerade cover (`--real-root <dir>`).** yumed serves GET/HEAD
+  for real files under one root with correct MIME, `Content-Length`,
+  `Last-Modified`, nginx-style `ETag`, and `Accept-Ranges`, so the decoy is a
+  coherent multi-asset site instead of "`/` => 200, everything else => 404".
+  Path resolution rejects traversal, encoded-slash/backslash, control bytes,
+  over-length targets, and symlink escape (canonicalized against the root); a
+  per-response size cap bounds one cover reply. The same root/index backs both
+  the HTTP/1.1 probe and the H2 decoy. Implies `--real`; pair with
+  `--hide-in-the-crowd nginx` for the closest header fit.
+
 ### Changed
 - **License**: YUME source, apps, daemon, proxy, GUI, and libyume are
   AGPL-3.0-or-later. Build scripts and CMake entry points now carry

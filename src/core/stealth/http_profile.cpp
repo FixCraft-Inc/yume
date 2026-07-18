@@ -278,21 +278,6 @@ const std::unordered_map<std::string, ClientProfile>& client_registry() {
     return kRegistry;
 }
 
-std::string http_date_now() {
-    using namespace std::chrono;
-    auto t = system_clock::to_time_t(system_clock::now());
-    std::tm gm{};
-#if defined(_WIN32)
-    gmtime_s(&gm, &t);
-#else
-    gmtime_r(&t, &gm);
-#endif
-    char buf[64];
-    // RFC 7231 IMF-fixdate, e.g. "Sun, 06 Nov 1994 08:49:37 GMT"
-    std::strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S GMT", &gm);
-    return std::string(buf);
-}
-
 std::string generate_cf_ray() {
     // CF-RAY format: 16-char lowercase hex, dash, 3-char POP code.
     thread_local std::mt19937_64 rng{std::random_device{}()};
@@ -328,6 +313,24 @@ std::string replace_placeholders(std::string s, const std::string& body) {
 }
 
 }  // namespace
+
+std::string http_date(std::time_t when) {
+    std::tm gm{};
+#if defined(_WIN32)
+    gmtime_s(&gm, &when);
+#else
+    gmtime_r(&when, &gm);
+#endif
+    char buf[64];
+    // RFC 7231 IMF-fixdate, e.g. "Sun, 06 Nov 1994 08:49:37 GMT"
+    std::strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S GMT", &gm);
+    return std::string(buf);
+}
+
+std::string http_date_now() {
+    return http_date(std::chrono::system_clock::to_time_t(
+        std::chrono::system_clock::now()));
+}
 
 std::optional<ServerProfile> server(std::string_view name) {
     const auto& reg = server_registry();

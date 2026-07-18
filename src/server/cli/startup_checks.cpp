@@ -49,6 +49,18 @@ bool require_readable(const char* label, const std::string& path) {
     return true;
 }
 
+bool require_directory(const char* label, const std::string& path) {
+    if (path.empty()) {
+        return true;
+    }
+    std::error_code ec;
+    if (!std::filesystem::is_directory(std::filesystem::path(path), ec) || ec) {
+        yume::util::log_error(std::string(label) + " is not a directory: " + path);
+        return false;
+    }
+    return true;
+}
+
 bool validate_required_files(const yume::server::ServerConfig& cfg, bool key_management_only) {
     if (key_management_only) {
         return true;
@@ -58,6 +70,7 @@ bool validate_required_files(const yume::server::ServerConfig& cfg, bool key_man
            require_readable("auth_keys", cfg.auth_keys) &&
            require_readable("pq_private_key", cfg.pq_private_key) &&
            require_readable("real_index_path", cfg.real_index_path) &&
+           require_directory("real_root", cfg.real_root) &&
            require_readable("real_secret_file", cfg.real_secret_file) &&
            require_readable("anonym_ca_key", cfg.anonym_ca_key) &&
            require_readable("anonym_ca_cert", cfg.anonym_ca_cert) &&

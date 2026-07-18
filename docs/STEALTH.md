@@ -73,11 +73,14 @@ A browser that hits the same hostname and port with `GET / HTTP/1.1` is served t
 | Flag | Effect |
 | --- | --- |
 | `--real` | serve a real HTML page to non-YUME requests |
-| `--real-index <path>` | HTML file to serve for `GET /` |
+| `--real-index <path>` | HTML file to serve for `GET /` (single-page mode) |
+| `--real-root <dir>` | serve GET/HEAD static files under `<dir>` (implies `--real`) |
 | `--real-secret <string>` | embed an HMAC-derived hidden blob in the HTML (used for downstream identification by other YUME tools, unrelated to `--obfs-secret`) |
 | `--real-secret-file <path>` | load (or auto-generate) the secret from a file |
 
-`--real`, `--obfs`, and `--hide-in-the-crowd` are independent and combine. They're demuxed by the first cleartext bytes after TLS: a `PRI * HTTP/2.0` preface goes to the `--obfs` validator; an HTTP/1.1 method-line gets the `--real` HTML page for `GET /` or the `--hide-in-the-crowd` 404 for anything else.
+`--real-root <dir>` upgrades the facade from a single page to a coherent static site: `GET`/`HEAD` for any real file under `<dir>` is served with the correct MIME type, `Content-Length`, `Last-Modified`, an nginx-style `ETag` (`"<hex-mtime>-<hex-len>"`), and `Accept-Ranges: bytes`. `/` and directory paths serve `index.html`; misses and non-GET/HEAD methods fall through to the profile 404, exactly as a real server behaves for an unrouted path. This matters because a single page that returns `200` for `/` but `404` for every asset is itself a tell to any prober that walks more than one URL. The same root/index is presented on both HTTP/1.1 probes and the H2 decoy so an active probe sees one web identity, not two different sites. Path resolution rejects traversal (`..`), percent-encoded slash/backslash, control bytes, over-length targets, and symlinks that escape the root (enforced by canonicalization); a per-response size cap bounds a single cover reply. Static 200s currently use nginx-shaped header framing, so pair `--real-root` with `--hide-in-the-crowd nginx` (the default under `--public-node`) for the closest fit. Keep-alive across assets is not yet implemented — each cover response closes the connection.
+
+`--real`, `--obfs`, and `--hide-in-the-crowd` are independent and combine. They're demuxed by the first cleartext bytes after TLS: a `PRI * HTTP/2.0` preface goes to the `--obfs` validator; an HTTP/1.1 method-line gets the `--real`/`--real-root` page for `GET /` (or the resolved static file) and the `--hide-in-the-crowd` 404 for anything else.
 
 ## What this defends against, what it doesn't
 

@@ -9,7 +9,7 @@ where operator configuration matters. Read it alongside
 | Actor | Typical capability | What they can see without extra routing |
 | --- | --- | --- |
 | Path observer (ISP, Wi‑Fi, hotel gateway) | Passive or shallow DPI on the carrier | TLS ClientHello/server metadata, encrypted-record sizes, timing, and volume; the HTTP/2 opening is encrypted inside TLS |
-| Active prober | HTTPS probe to the same host:port | Real HTML facade when `--real` is configured; otherwise a synthetic profile-driven response (`yumed` by default, `nginx` under `--public-node`) |
+| Active prober | HTTPS probe to the same host:port | Real HTML facade when `--real` is configured, or a coherent static site under `--real-root <dir>` (correct MIME/`ETag`/`Last-Modified`, one identity across HTTP/1.1 and the H2 decoy); otherwise a synthetic profile-driven response (`yumed` by default, `nginx` under `--public-node`) |
 | YUME server operator | Runs `yumed`, holds TLS cert, sees auth keys | Authenticated client identity, requested targets, byte counts unless anonym mode strips logs |
 | Client host | Runs `yume`, holds client private key | All local app traffic before it enters the carrier |
 | Target site | Receives outbound TCP/UDP from server egress | Server IP (or Tor exit IP when server-side Tor is configured) |

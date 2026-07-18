@@ -64,6 +64,10 @@ struct ServerConfig {
     bool real_http{false};
     bool robots_deny{false};
     std::string real_index_path;
+    // Static-site cover root (`--real-root`). When set, GET/HEAD under this
+    // directory is served with real files/MIME so the decoy is a coherent
+    // multi-asset site instead of a single index page. Implies real_http.
+    std::string real_root;
     std::string real_secret;
     std::string real_secret_file;
     std::string obfs_secret;

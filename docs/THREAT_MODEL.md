@@ -67,10 +67,10 @@ server implementations.
 
 With obfs enabled, yumed does not emit YUME `AUTH` for a raw frame-looking
 prefix, a partial prefix that times out, a malformed HTTP/2 request, an
-authority/SNI mismatch, or a wrong keyed token. These paths stay in the
-masquerade responder. The successful opening is server `SETTINGS`, ACK of the
-client settings, bodyless accepted response headers; the client ACKs the
-server settings before the transport switches to YUME framing.
+authority/SNI/listener-port mismatch, a missing server-SETTINGS ACK, or a wrong
+keyed token. These paths stay outside AUTH. The successful opening is server
+`SETTINGS`, ACK of the client settings, bodyless accepted response headers; the
+client ACKs the server settings before the transport switches to YUME framing.
 
 `--public-node` requires obfs plus a nonempty `--obfs-secret`. An empty secret
 is retained only for non-public development and performs a structural path
@@ -143,7 +143,7 @@ source server rather than carrying a separate caller-policy proof.
 
 ## Lifetime and concurrency bounds
 
-Session shutdown has a five-second transport-close deadline, pending named
+Session shutdown has a five-second whole-close deadline, pending named
 service queues are bounded as above, and client EXEC dispatch admits at most
 four concurrent workers. Sensitive byte buffers are best-effort overwritten
 before release on the principal shutdown paths. This is not a locked allocator

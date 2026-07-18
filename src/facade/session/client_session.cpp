@@ -132,6 +132,7 @@ struct ClientSession::Impl {
     std::thread stats_thread;
     std::mutex stats_thread_mtx;
     std::atomic<bool> stats_stop{false};
+    bool stats_start_enabled{true};
     std::uint64_t last_bytes_in{0};
     std::uint64_t last_bytes_out{0};
 
@@ -147,6 +148,7 @@ struct ClientSession::Impl {
 
     void start_stats_thread() {
         std::lock_guard<std::mutex> lock(stats_thread_mtx);
+        if (!stats_start_enabled) return;
         if (stats_thread.joinable()) return;
         stats_stop.store(false);
         stats_thread = std::thread([this]() {
@@ -175,11 +177,14 @@ struct ClientSession::Impl {
         });
     }
 
-    void stop_stats_thread() {
+    void stop_stats_thread(bool disable_future_starts = false) {
         // Creation, joinability checks, move/assignment, and join all share one
         // lock. The worker never takes this lock, so joining while holding it
         // cannot deadlock with the polling loop.
         std::lock_guard<std::mutex> lock(stats_thread_mtx);
+        if (disable_future_starts) {
+            stats_start_enabled = false;
+        }
         stats_stop.store(true);
         if (stats_thread.joinable()) stats_thread.join();
         last_bytes_in = 0;
@@ -210,7 +215,7 @@ ClientSession::ClientSession(client::ClientConfig cfg)
 
 ClientSession::~ClientSession() {
     stop();
-    impl_->stop_stats_thread();
+    impl_->stop_stats_thread(true);
     impl_->join_previous_worker();
     impl_->join_previous_stop_worker();
 }

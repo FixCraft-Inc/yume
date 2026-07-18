@@ -23,14 +23,14 @@ long-running concurrency validation remain.
   an explicit wire-compatibility decision.
 - AUTH rejects imported keys that are not Ed25519.
 - Public-node startup requires obfs and a nonempty secret. Raw frame-looking,
-  partial-timeout, malformed, wrong-key, bad-order, and authority/SNI mismatch
-  paths remain in masquerade and do not receive AUTH.
+  partial-timeout, malformed, wrong-key, bad-order, missing server-SETTINGS ACK,
+  and authority/SNI/listener-port mismatch paths remain outside AUTH.
 - The H2 opening uses corrected HPACK indexes, SETTINGS/ACK ordering,
   END_STREAM handling, serialized writes, and client-side decoy classification.
   Wrong-path responses use configured upstream/real/profile identity.
 - Client profile rotation advances after successful TLS connections; the HTTP
   User-Agent follows the active preset unless explicitly overridden.
-- Session transport close has a five-second deadline, pending service opens are
+- Whole-session close has a five-second deadline, pending service opens are
   capped at 64 per service and 256 total, and client EXEC dispatch is capped at
   four concurrent workers. Principal shutdown paths use best-effort buffer
   erasure.

@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -30,7 +31,8 @@ std::string build_path(const std::string& token, const std::string& nonce_hex);
 bool valid_path_shape(std::string_view path);
 
 bool authority_matches_tls_sni(std::string_view authority,
-                               std::string_view tls_sni);
+                               std::string_view tls_sni,
+                               std::optional<std::uint16_t> listener_port = std::nullopt);
 
 // Complete opening-path decision used by yumed. A nonempty secret requires a
 // valid HMAC token. Empty-secret structural admission exists only for
@@ -39,7 +41,8 @@ bool carrier_path_admitted(std::string_view secret,
                            std::string_view authority,
                            std::string_view tls_sni,
                            std::string_view path,
-                           std::int64_t now_seconds);
+                           std::int64_t now_seconds,
+                           std::optional<std::uint16_t> listener_port = std::nullopt);
 
 bool verify_path_token(const std::vector<crypto::Bytes>& signal_keys,
                        std::string_view sni,

@@ -170,6 +170,7 @@ private:
     void send_control_close(uint8_t stream_id, const std::string& reason);
     void send_control_fin(uint8_t stream_id, const std::string& reason);
     uint8_t reserve_stream_id();
+    bool stream_id_in_use_locked(uint8_t stream_id) const;
     bool decrypt_inner_payload(uint8_t frame_type,
                                uint8_t stream_id,
                                const crypto::Bytes& input,
@@ -213,6 +214,7 @@ private:
     void close_with_reason(const std::string& reason);
     void begin_close();
     void maybe_finish_close();
+    void arm_close_deadline();
     void shutdown_transport();
     void finish_transport_close();
     void close();

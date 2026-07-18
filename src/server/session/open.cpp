@@ -25,6 +25,10 @@ namespace yume::server {
 using namespace detail;
 
 void Session::handle_open(const protocol::Frame& frame) {
+    if (frame.header.stream_id == 0) {
+        send_open_reply(frame.header.stream_id, false, "invalid stream id");
+        return;
+    }
     if (pending_reverse_.find(frame.header.stream_id) != pending_reverse_.end()) {
         bool ok = (frame.header.flags & protocol::kFlagOpenOk) != 0;
         crypto::Bytes payload = frame.payload;
@@ -59,12 +63,24 @@ void Session::handle_open(const protocol::Frame& frame) {
         pending_reverse_.erase(frame.header.stream_id);
         return;
     }
-    if (streams_.find(frame.header.stream_id) != streams_.end() ||
-        udp_streams_.find(frame.header.stream_id) != udp_streams_.end() ||
-        codec_streams_.find(frame.header.stream_id) != codec_streams_.end() ||
-        service_streams_.find(frame.header.stream_id) != service_streams_.end() ||
-        bench_streams_.find(frame.header.stream_id) != bench_streams_.end() ||
-        (packet_stream_.has_value() && packet_stream_->stream_id == frame.header.stream_id)) {
+    bool stream_id_in_use = false;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        stream_id_in_use = stream_id_in_use_locked(frame.header.stream_id);
+    }
+    if (stream_id_in_use) {
+        send_open_reply(frame.header.stream_id, false, "stream already exists");
+        return;
+    }
+    bool control_stream_id_in_use = false;
+    {
+        std::lock_guard<std::mutex> lock(control_mutex_);
+        control_stream_id_in_use =
+            control_outbound_.find(frame.header.stream_id) != control_outbound_.end() ||
+            control_inbound_.find(frame.header.stream_id) != control_inbound_.end() ||
+            federated_streams_.find(frame.header.stream_id) != federated_streams_.end();
+    }
+    if (control_stream_id_in_use) {
         send_open_reply(frame.header.stream_id, false, "stream already exists");
         return;
     }
@@ -143,7 +159,7 @@ void Session::handle_open(const protocol::Frame& frame) {
                 send_open_reply(frame.header.stream_id, false, "byte relay disabled");
                 return;
             }
-            if (frame.header.stream_id == 0 || target.get() == this) {
+            if (target.get() == this) {
                 send_open_reply(frame.header.stream_id, false, "invalid relay target");
                 return;
             }
@@ -786,16 +802,38 @@ void Session::handle_open(const protocol::Frame& frame) {
     }
 }
 
+bool Session::stream_id_in_use_locked(uint8_t stream_id) const {
+    return stream_id == 0 ||
+           streams_.find(stream_id) != streams_.end() ||
+           udp_streams_.find(stream_id) != udp_streams_.end() ||
+           codec_streams_.find(stream_id) != codec_streams_.end() ||
+           service_streams_.find(stream_id) != service_streams_.end() ||
+           bench_streams_.find(stream_id) != bench_streams_.end() ||
+           reverse_listeners_.find(stream_id) != reverse_listeners_.end() ||
+           pending_reverse_.find(stream_id) != pending_reverse_.end() ||
+           (packet_stream_.has_value() && packet_stream_->stream_id == stream_id);
+}
+
 uint8_t Session::reserve_stream_id() {
-    std::lock_guard<std::mutex> lock(streams_mutex_);
     for (int i = 1; i < 255; ++i) {
         uint8_t candidate = static_cast<uint8_t>(i);
-        if (streams_.find(candidate) == streams_.end() &&
-            udp_streams_.find(candidate) == udp_streams_.end() &&
-            pending_reverse_.find(candidate) == pending_reverse_.end() &&
-            reverse_listeners_.find(candidate) == reverse_listeners_.end()) {
-            return candidate;
+        bool streams_free = false;
+        {
+            std::lock_guard<std::mutex> lock(streams_mutex_);
+            streams_free = !stream_id_in_use_locked(candidate);
         }
+        if (!streams_free) {
+            continue;
+        }
+        {
+            std::lock_guard<std::mutex> lock(control_mutex_);
+            if (control_outbound_.find(candidate) != control_outbound_.end() ||
+                control_inbound_.find(candidate) != control_inbound_.end() ||
+                federated_streams_.find(candidate) != federated_streams_.end()) {
+                continue;
+            }
+        }
+        return candidate;
     }
     return 0;
 }

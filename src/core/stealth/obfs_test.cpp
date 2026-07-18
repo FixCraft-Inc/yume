@@ -103,9 +103,19 @@ void test_authority_matches_tls_sni() {
     assert(yume::obfs::authority_matches_tls_sni("Example.COM", "example.com"));
     assert(yume::obfs::authority_matches_tls_sni("example.com:443", "example.com"));
     assert(yume::obfs::authority_matches_tls_sni("example.com.", "example.com"));
+    assert(yume::obfs::authority_matches_tls_sni("example.com", "example.com", 443));
+    assert(yume::obfs::authority_matches_tls_sni("example.com:443", "example.com", 443));
+    assert(yume::obfs::authority_matches_tls_sni("[::1]", "::1", 443));
+    assert(yume::obfs::authority_matches_tls_sni("[::1]:443", "::1", 443));
     assert(!yume::obfs::authority_matches_tls_sni("other.example", "example.com"));
     assert(!yume::obfs::authority_matches_tls_sni("", "example.com"));
     assert(!yume::obfs::authority_matches_tls_sni("user@example.com", "example.com"));
+    assert(!yume::obfs::authority_matches_tls_sni("::1", "::1", 443));
+    assert(!yume::obfs::authority_matches_tls_sni("[::1]:bad", "::1", 443));
+    assert(!yume::obfs::authority_matches_tls_sni("[::1]:443:evil", "::1", 443));
+    assert(!yume::obfs::authority_matches_tls_sni("example.com:444", "example.com", 443));
+    assert(!yume::obfs::authority_matches_tls_sni("example.com:99999", "example.com", 443));
+    assert(!yume::obfs::authority_matches_tls_sni("example.com:443:evil", "example.com", 443));
 }
 
 void test_carrier_path_admission_boundary() {
@@ -119,6 +129,10 @@ void test_carrier_path_admission_boundary() {
         "shared-secret", sni, sni, path, now_s));
     assert(yume::obfs::carrier_path_admitted(
         "shared-secret", sni + ":443", sni, path, now_s));
+    assert(yume::obfs::carrier_path_admitted(
+        "shared-secret", sni + ":443", sni, path, now_s, 443));
+    assert(!yume::obfs::carrier_path_admitted(
+        "shared-secret", sni + ":444", sni, path, now_s, 443));
     assert(!yume::obfs::carrier_path_admitted(
         "wrong-secret", sni, sni, path, now_s));
     assert(!yume::obfs::carrier_path_admitted(

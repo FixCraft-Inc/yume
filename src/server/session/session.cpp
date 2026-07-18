@@ -897,6 +897,8 @@ void Session::begin_close() {
         return;
     }
     close_state_ = CloseState::Closing;
+    close_started_at_ = std::chrono::steady_clock::now();
+    arm_close_deadline();
     if (close_reason_.empty()) {
         close_reason_ = "session closed";
     }
@@ -993,6 +995,18 @@ void Session::begin_close() {
     maybe_finish_close();
 }
 
+void Session::arm_close_deadline() {
+    transport_shutdown_timer_.expires_after(
+        std::chrono::milliseconds(kCloseTimeoutMs));
+    transport_shutdown_timer_.async_wait(boost::asio::bind_executor(
+        strand_, [self = shared_from_this()](const boost::system::error_code& ec) {
+            if (ec || self->close_state_ == CloseState::Closed) {
+                return;
+            }
+            self->finish_transport_close();
+        }));
+}
+
 void Session::maybe_finish_close() {
     if (close_state_ != CloseState::Closing || transport_shutdown_in_flight_) {
         return;
@@ -1009,12 +1023,6 @@ void Session::shutdown_transport() {
     }
     transport_shutdown_in_flight_ = true;
     auto self = shared_from_this();
-    transport_shutdown_timer_.expires_after(
-        std::chrono::milliseconds(kCloseTimeoutMs));
-    transport_shutdown_timer_.async_wait(boost::asio::bind_executor(
-        strand_, [self](const boost::system::error_code& ec) {
-            if (!ec) self->finish_transport_close();
-        }));
     stream_.async_shutdown(boost::asio::bind_executor(
         strand_,
         [self](const boost::system::error_code&) {

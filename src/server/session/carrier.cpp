@@ -482,6 +482,17 @@ void Session::start_h2_carrier_probe() {
         preface_accum_.clear();
     }
     auto self = shared_from_this();
+    preface_timer_.expires_after(std::chrono::milliseconds(200));
+    preface_timer_.async_wait(boost::asio::bind_executor(
+        strand_, [self](const boost::system::error_code& ec) {
+            if (ec || !self->carrier_probe_active_) {
+                return;
+            }
+            self->carrier_probe_active_ = false;
+            boost::system::error_code cancel_ec;
+            self->stream_.lowest_layer().cancel(cancel_ec);
+            self->serve_fake_h2_real_index();
+        }));
     stream_.async_read_some(
         boost::asio::buffer(carrier_scratch_),
         boost::asio::bind_executor(strand_,
@@ -492,6 +503,9 @@ void Session::start_h2_carrier_probe() {
 
 void Session::on_h2_probe_read(const boost::system::error_code& ec, std::size_t bytes) {
     if (ec) {
+        if (ec == boost::asio::error::operation_aborted) {
+            return;
+        }
         close_with_reason("h2 carrier probe read failed: " + ec.message());
         return;
     }
@@ -506,6 +520,7 @@ void Session::on_h2_probe_read(const boost::system::error_code& ec, std::size_t 
                        ": h2 carrier decode rejected; serving masquerade response: " +
                        carrier_decoder_->error());
         carrier_probe_active_ = false;
+        preface_timer_.cancel();
         serve_fake_h2_real_index();
         return;
     }
@@ -515,18 +530,26 @@ void Session::on_h2_probe_read(const boost::system::error_code& ec, std::size_t 
             util::log_warn("session " + std::to_string(session_id_) +
                            ": h2 carrier request did not end stream; serving masquerade response");
             carrier_probe_active_ = false;
+            preface_timer_.cancel();
             serve_fake_h2_real_index();
             return;
         }
         std::string path = carrier_decoder_->extracted_path();
         std::string authority = carrier_decoder_->extracted_authority();
         const std::string tls_sni = host::tls_sni(stream_.native_handle());
+        std::optional<std::uint16_t> listener_port;
+        boost::system::error_code endpoint_ec;
+        const auto local_endpoint = stream_.lowest_layer().local_endpoint(endpoint_ec);
+        if (!endpoint_ec && local_endpoint.port() > 0) {
+            listener_port = local_endpoint.port();
+        }
         std::int64_t now_s = static_cast<std::int64_t>(std::time(nullptr));
         const bool authority_ok =
-            obfs::authority_matches_tls_sni(authority, tls_sni);
+            obfs::authority_matches_tls_sni(authority, tls_sni, listener_port);
         const bool token_ok = obfs::carrier_path_admitted(
-            cfg_.obfs_secret, authority, tls_sni, path, now_s);
+            cfg_.obfs_secret, authority, tls_sni, path, now_s, listener_port);
         carrier_probe_active_ = false;
+        preface_timer_.cancel();
 
         if (!token_ok) {
             std::string sanitized;
@@ -618,11 +641,10 @@ void Session::start_h2_settings_ack_wait() {
     preface_timer_.async_wait(boost::asio::bind_executor(
         strand_, [self = shared_from_this()](const boost::system::error_code& ec) {
             if (ec || !self->carrier_settings_ack_wait_active_) return;
-            // Compatibility grace for pre-hardening clients that discarded
-            // the server SETTINGS ACK they owed. New clients ACK immediately.
+            self->carrier_settings_ack_wait_active_ = false;
             boost::system::error_code cancel_ec;
             self->stream_.lowest_layer().cancel(cancel_ec);
-            self->finish_h2_settings_ack_wait();
+            self->close_with_reason("h2 SETTINGS ACK timeout");
         }));
     stream_.async_read_some(
         boost::asio::buffer(carrier_scratch_),

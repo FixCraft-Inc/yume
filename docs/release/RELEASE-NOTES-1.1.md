@@ -92,18 +92,20 @@ active profile unless explicitly overridden.
 After the TLS handshake the client emits an HTTP/2 preface, a
 project-defined browser-oriented `SETTINGS` block, a `WINDOW_UPDATE`, and a
 valid HPACK `HEADERS` frame opening stream 1 with a `POST` to
-`/<token>/<nonce>`. The request authority must match the TLS SNI. The token is
-`HMAC-SHA256(K, sni || hour_epoch || "yume-obfs-v2")` truncated to
-16 bytes hex; `K` is HKDF-derived from `--obfs-secret`. The server
+`/<token>/<nonce>`. The request authority must match the TLS SNI, and any
+authority port must be decimal, in range, and equal to the accepted listener
+port. The token is `HMAC-SHA256(K, sni || hour_epoch || "yume-obfs-v2")`
+truncated to 16 bytes hex; `K` is HKDF-derived from `--obfs-secret`. The server
 replies in one serialized write with server `SETTINGS`, an ACK of the client
 settings, and bodyless `HEADERS :status=200
-content-type=application/grpc-web+proto`. The client ACKs the server settings
-before the server switches to YUME AUTH.
+content-type=application/grpc-web+proto`. The client must ACK the server
+settings before the server switches to YUME AUTH.
 
-Missing, malformed, wrong-key, frame-order-invalid, or SNI-mismatched requests
-stay in masquerade and receive a complete benign H2 response with `END_STREAM`
-using configured upstream/real/profile identity. The client classifies this
-decoy before attempting YUME parsing. `--public-node` requires obfs with a
+Missing, malformed, wrong-key, frame-order-invalid, or SNI/authority/listener
+mismatched requests stay in masquerade and receive a complete benign H2
+response with `END_STREAM` using configured upstream/real/profile identity. A
+missing server-SETTINGS ACK is closed without YUME AUTH. The client classifies
+decoys before attempting YUME parsing. `--public-node` requires obfs with a
 nonempty shared secret; empty-secret structural admission remains only for
 non-public development.
 

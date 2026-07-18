@@ -11,12 +11,13 @@ validation are complete.
   matching source headers.
 - **Masquerade is now the active-probe boundary.** `--public-node` requires
   obfs plus a nonempty shared secret. Missing, malformed, wrong-key, bad-order,
-  or SNI-mismatched H2 admission stays in the benign responder and never
-  receives AUTH. Empty-secret structural admission remains development-only.
+  or SNI/authority/listener-port-mismatched H2 admission stays outside AUTH.
+  Empty-secret structural admission remains development-only.
 - **The H2 opening is standards-oriented, not exact-browser branding.** HPACK
   indexes, SETTINGS/ACK ordering, END_STREAM behavior, authority validation,
-  serialized fallback writes, and client decoy classification were corrected.
-  Synthetic web profiles are not native nginx/Apache/etc. implementations.
+  mandatory client ACK of server settings, serialized fallback writes, and
+  client decoy classification were corrected. Synthetic web profiles are not
+  native nginx/Apache/etc. implementations.
 - **TLS profile rotation now advances after successful connections.** The
   carrier User-Agent follows the active profile unless explicitly overridden.
 

@@ -64,6 +64,14 @@ void test_preauth_service_open_payload_is_unambiguous() {
         R"({"proto":"service.v1","service":"bootstrap-v1","host":"127.0.0.1","port":22})"));
     assert(!preauth_service_open_payload(
         R"({"proto":"service.v1","service":""})"));
+    assert(!preauth_service_open_payload(
+        R"({"proto":"tcp","proto":"service.v1","service":"bootstrap-v1"})"));
+    assert(!preauth_service_open_payload(
+        R"({"proto":"service.v1","proto":"tcp","service":"bootstrap-v1"})"));
+    assert(!preauth_service_open_payload(
+        R"({"proto":"service.v1","service":"blocked","service":"bootstrap-v1"})"));
+    assert(!preauth_service_open_payload(
+        R"({"proto":"service.v1","service":"bootstrap-v1","service":"blocked"})"));
     assert(!preauth_service_open_payload("not-json"));
 }
 

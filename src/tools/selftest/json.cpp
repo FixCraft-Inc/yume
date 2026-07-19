@@ -3,14 +3,14 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * JSON result serialization declared in tools/selftest/json.hpp.
- * Extracted verbatim from tools/selftest.cpp.
+ * JSON output for local benchmark results.
  */
 
 #include "tools/selftest/json.hpp"
 
 #include "tools/selftest/sizing.hpp"
 #include "core/runtime/system_profile.hpp"
+#include "core/version.hpp"
 
 #include <filesystem>
 #include <sstream>
@@ -20,7 +20,7 @@
 namespace yume::tools::selftest {
 
 namespace fs = std::filesystem;
-constexpr int kJsonSchemaVersion = 1;
+constexpr int kJsonSchemaVersion = 2;
 
 std::string json_escape(const std::string& value) {
     std::ostringstream out;
@@ -108,6 +108,7 @@ std::string render_json(const Args& args,
     const auto sizing = compute_benchmark_sizing(args, profile);
     out << "{\n";
     out << "  \"schema_version\": " << kJsonSchemaVersion << ",\n";
+    out << "  \"transport_version\": \"" << yume::kTransportVersion << "\",\n";
     out << "  \"benchmark_mode\": \"" << (args.full_benchmark ? "full" : "quick") << "\",\n";
     out << "  \"workdir\": \"" << json_escape(workdir.string()) << "\",\n";
     out << "  \"system_profile\": ";
@@ -146,8 +147,6 @@ std::string render_json(const Args& args,
     out << "  \"latency_iters\": " << args.latency_iters << ",\n";
     out << "  \"bulk_mib\": " << args.bulk_mib << ",\n";
     out << "  \"streams\": " << args.streams << ",\n";
-    out << "  \"argon_mem_kib\": " << args.argon_mem_kib << ",\n";
-    out << "  \"argon_parallelism\": " << args.argon_parallelism << ",\n";
     out << "  \"cooldown_ms\": " << args.cooldown_ms << ",\n";
     out << "  \"repeat\": " << args.repeats << ",\n";
     out << "  \"hot_paths\": [\n";
@@ -201,7 +200,6 @@ std::string render_json(const Args& args,
         out << "],\n";
         out << "      \"breakdown\": {\n";
         out << "        \"server_listen_ms\": " << r.breakdown.server_listen_ms << ",\n";
-        out << "        \"pq_ready_ms\": " << r.breakdown.pq_ready_ms << ",\n";
         out << "        \"client_socks_ms\": " << r.breakdown.client_socks_ms << ",\n";
         out << "        \"connect_ms\": " << r.breakdown.connect_ms << ",\n";
         out << "        \"warmup_ms\": " << r.breakdown.warmup_ms << ",\n";

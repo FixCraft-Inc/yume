@@ -348,7 +348,9 @@ apt_update_once() {
     if [[ -f "${APT_UPDATED_FLAG}" ]]; then
         return 0
     fi
-    sudo apt-get update -y
+    if ! sudo apt-get update -y; then
+        return 1
+    fi
     touch "${APT_UPDATED_FLAG}"
 }
 
@@ -371,6 +373,7 @@ apt_install_if_missing() {
     if ((${#missing[@]} == 0)); then
         return 0
     fi
+    apt_update_once || return 1
     sudo apt-get install -y "${missing[@]}"
 }
 
@@ -925,7 +928,6 @@ cleanup_vendor() {
 install_deps_linux() {
     if need_cmd apt-get; then
         step "Detected apt-get (Debian/Ubuntu). Installing dependencies..."
-        apt_update_once
         apt_install_if_missing \
             build-essential \
             cmake \
@@ -950,7 +952,7 @@ install_deps_linux() {
             zlib1g-dev \
             libzstd-dev \
             libargon2-dev \
-            liblzma-dev
+            liblzma-dev || return 1
         if [[ ${BUILD_GUI} -eq 1 ]]; then
             step "GUI build requested; installing Dear ImGui / GLFW host deps..."
             # Install one package at a time so a missing one (e.g.
@@ -1043,6 +1045,7 @@ install_deps_linux() {
             zlib \
             zstd \
             argon2 \
+            libnghttp2 \
             liboqs \
             xz
         if [[ ${BUILD_GUI} -eq 1 ]]; then
@@ -1079,6 +1082,7 @@ install_deps_linux() {
             zlib-devel \
             libzstd-devel \
             argon2-devel \
+            libnghttp2-devel \
             liboqs-devel \
             xz-devel
         if [[ ${BUILD_GUI} -eq 1 ]]; then
@@ -1117,6 +1121,7 @@ install_deps_linux() {
             zlib-devel \
             libzstd-devel \
             libargon2-devel \
+            libnghttp2-devel \
             liboqs-devel \
             xz-devel
         if [[ ${BUILD_GUI} -eq 1 ]]; then
@@ -1161,6 +1166,7 @@ install_deps_macos() {
         zlib \
         zstd \
         argon2 \
+        nghttp2 \
         liboqs \
         xz
     if [[ ${BUILD_GUI} -eq 1 ]]; then
@@ -1191,6 +1197,7 @@ install_deps_windows() {
             mingw-w64-x86_64-nlohmann-json \
             mingw-w64-x86_64-zstd \
             mingw-w64-x86_64-spdlog \
+            mingw-w64-x86_64-nghttp2 \
             mingw-w64-x86_64-liboqs \
             mingw-w64-x86_64-argon2 \
             git zip
@@ -1790,6 +1797,22 @@ EOF
         esac
     fi
 
+    # YUME 2.0 uses nghttp2's v2 receive/submit APIs. Native desktop builds
+    # require >= 1.64; older stable distributions get a pinned, checksum-
+    # verified lib-only build in the user's cache. Cross targets need their
+    # own target-architecture nghttp2 and are intentionally handled by their
+    # toolchain/vendor prefix instead of this host fallback.
+    if [[ $OPENWRT -eq 0 && $BUSYBOX -eq 0 \
+          && "${WINDOWS_CROSS}" != "1" && "${YUME_MACOS_CROSS:-0}" != "1" ]]; then
+        if [[ ! -f "${PWD}/scripts/ensure-nghttp2.sh" ]]; then
+            error "Missing scripts/ensure-nghttp2.sh; cannot verify the HTTP/2 dependency."
+            exit 1
+        fi
+        # shellcheck disable=SC1091
+        source "${PWD}/scripts/ensure-nghttp2.sh"
+        yume_nghttp2_ensure || { error "libnghttp2 dependency setup failed."; exit 1; }
+    fi
+
     # Set macOS CMAKE paths (even when skipping deps)
     if [[ "$(uname -s)" == "Darwin" ]] && need_cmd brew; then
         local homebrew_prefix
@@ -1951,7 +1974,10 @@ EOF
         fi
         if detect_liboqs; then
             info "liboqs detected; enabling PQ in BaseFWX."
-            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=ON")
+            CMAKE_ARGS+=(
+                "-DBASEFWX_REQUIRE_OQS=ON"
+                "-DBASEFWX_USE_VENDOR_OQS=OFF"
+            )
             IFS='|' read -r _oqs_inc _oqs_lib < <(resolve_oqs_host_paths)
             if [[ -n "${_oqs_inc}" && -n "${_oqs_lib}" ]]; then
                 CMAKE_ARGS+=(
@@ -2008,7 +2034,10 @@ EOF
         fi
         if detect_argon2; then
             info "libargon2 detected; enabling Argon2 in BaseFWX."
-            CMAKE_ARGS+=("-DBASEFWX_REQUIRE_ARGON2=ON")
+            CMAKE_ARGS+=(
+                "-DBASEFWX_REQUIRE_ARGON2=ON"
+                "-DBASEFWX_USE_VENDOR_ARGON2=OFF"
+            )
         else
             # Same vendor fallback as liboqs above. ensure_vendor_for_host
             # may have run already above; calling it again is a no-op
@@ -2053,8 +2082,8 @@ EOF
     echo -e "${COLOR_GREEN}Run:${COLOR_RESET} ./${build_dir}/bin/yumed${exe_suffix} --config config/yumed.json"
     echo -e "${COLOR_GREEN}Then:${COLOR_RESET} ./${build_dir}/bin/yume${exe_suffix} --config config/yume.json --socks 1080"
     if [[ $BUILD_SELFTEST -eq 1 ]]; then
-        echo -e "${COLOR_GREEN}Self-test:${COLOR_RESET} ./${build_dir}/bin/yume-selftest --quick"
-        echo -e "${COLOR_GREEN}Bench:${COLOR_RESET} ./${build_dir}/bin/yume-selftest --full"
+        echo -e "${COLOR_GREEN}Benchmark smoke:${COLOR_RESET} ./${build_dir}/bin/yume${exe_suffix} --quick-bench"
+        echo -e "${COLOR_GREEN}Full benchmark:${COLOR_RESET} ./${build_dir}/bin/yume${exe_suffix} --full-bench"
     fi
 }
 

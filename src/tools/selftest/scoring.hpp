@@ -3,9 +3,7 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * Selftest/benchmark scoring: maps measured results + hot-path rows to the
- * GLOBAL / engine / transport / desktop-league scores and letter grades.
- * Extracted from tools/selftest.cpp. No behavior change.
+ * Maps benchmark results to versioned engine, transport and global scores.
  */
 
 #pragma once
@@ -20,10 +18,10 @@
 
 namespace yume::tools::selftest {
 
-inline constexpr std::string_view kGlobalScoreModel = "yume-global-v4";
-inline constexpr std::string_view kDesktopScoreModel = "yume-desktop-v2";
-inline constexpr std::string_view kEngineScoreModel = "yume-engine-v2";
-inline constexpr std::string_view kTransportScoreModel = "yume-transport-v2";
+inline constexpr std::string_view kGlobalScoreModel = "yume-global-v5-v2";
+inline constexpr std::string_view kDesktopScoreModel = "yume-desktop-v3-v2";
+inline constexpr std::string_view kEngineScoreModel = "yume-engine-v3-v2";
+inline constexpr std::string_view kTransportScoreModel = "yume-transport-v3-v2";
 // A machine that matches every reference value scores this; it is the
 // definition of "reference", so the "(above reference)" badge fires at or
 // above it (not below).

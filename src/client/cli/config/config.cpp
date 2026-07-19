@@ -465,7 +465,7 @@ void normalize_client_config_after_overrides(ParsedArgs* args, ClientConfig* cfg
                 args->bench_mib = 1024;
             }
             if (!args->bench_chunk_kib_override) {
-                args->bench_chunk_kib = 1024;
+                args->bench_chunk_kib = 256;
             }
             if (!args->bench_streams_override) {
                 args->bench_streams = 64;
@@ -483,8 +483,8 @@ void normalize_client_config_after_overrides(ParsedArgs* args, ClientConfig* cfg
         if (args->bench_chunk_kib <= 0) {
             args->bench_chunk_kib = 64;
         }
-        if (args->bench_chunk_kib > 1024) {
-            args->bench_chunk_kib = 1024;
+        if (args->bench_chunk_kib > 256) {
+            args->bench_chunk_kib = 256;
         }
         if (args->bench_streams <= 0) {
             args->bench_streams = 1;

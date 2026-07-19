@@ -4,7 +4,13 @@
 
 Yume Universal Multiprotocol Engine. An open-source post-quantum stealth transport. The name is a single character — 夢 — and we use it the way Japanese uses it: a dream of a network you can trust, where the wire shape blends into ordinary HTTPS and neither endpoint has to advertise YUME by name.
 
-YUME tunnels TCP and UDP through TLS 1.3 sessions with browser-profiled ClientHellos and an HTTP/2-shaped opening exchange. Its optional inner channel derives AES-256-GCM keys from ML-KEM-768, can add an Argon2id work factor, and supports 1-4 Hz per-window key derivation. The client (`yume`), daemon (`yumed`), proxy, GUI, and libyume surface are AGPL-3.0-or-later and build from this tree. They run on x86, ARMv7/8, MIPS OpenWRT, BusyBox, macOS, and Windows; the minimal build runs on routers with as little as 128 MiB of RAM.
+YUME 2.0-dev1 tunnels TCP and UDP through a persistent TLS 1.3 + HTTP/2 +
+WebSocket connection. The focused Linux desktop slice uses mandatory
+ML-KEM-1024 + X25519 + random-PSK key establishment, per-message AES-256-GCM
+keys, and independent directional epochs bounded by 256 KiB, 512 DATA frames,
+or 500 ms of active traffic. The client (`yume`) and daemon (`yumed`) are
+AGPL-3.0-or-later and build from this tree. Other platforms and the optional GUI
+have not yet passed the 2.0 release gates.
 
 - Website: https://yume.fixcraft.jp
 - Source: https://github.com/FixCraft-Inc/yume
@@ -24,17 +30,18 @@ YUME tries to do the opposite: a transport with browser-oriented TLS presets, ke
 
 |                             | YUME            | WireGuard      | OpenVPN                  | Tor (with bridges) | Shadowsocks     |
 | --------------------------- | --------------- | -------------- | ------------------------ | ------------------ | --------------- |
-| Post-quantum KEM/DEM (ML-KEM-768 + AES-GCM) | yes | no | no | no | no |
-| Live key hopping            | 1–4 Hz, OTA     | no             | no                       | no                 | no              |
-| HTTPS-shaped carrier | browser-profiled TLS + H2 opening; known limits | UDP signature | TLS-on-OpenVPN-port signature | obfs4 bridge | random-prefix |
+| Hybrid post-quantum inner channel | ML-KEM-1024 + X25519 + AES-GCM | no | no | no | no |
+| Directional epoch ratchet   | ≤256 KiB / 512 frames / 500 ms active | no | no | no | no |
+| HTTPS-shaped carrier | persistent TLS + H2/WebSocket; known TLS residual | UDP signature | TLS-on-OpenVPN-port signature | obfs4 bridge | random-prefix |
 | Anonym / no-log mode        | built in        | n/a            | per-provider             | yes                | n/a             |
 | Free public endpoints       | planned (FixCraft) | none        | none                     | yes                | none            |
-| Embedded / 128 MiB hardware | yes             | yes            | yes                      | partial            | yes             |
+| First 2.0 target            | Linux x86-64 CLI | broad          | broad                    | broad              | broad           |
 | Self-hostable, fully open   | yes (AGPL-v3+)  | yes            | yes                      | bridge only        | yes             |
-| Published YUME transport measurement | 234 Mbps download in one WAN run | — | — | — | — |
+| Published 2.0 transport measurement | release gate pending | — | — | — | — |
 | License                     | AGPL-v3+        | GPL-v2         | GPL-v2                   | BSD-3              | Apache-2        |
 
-YUME's measured row comes from the single live run reported in [docs/PERFORMANCE.md](docs/PERFORMANCE.md). That run did not isolate CPU cost or establish an all-hardware upper bound.
+The older WAN run in [docs/PERFORMANCE.md](docs/PERFORMANCE.md) used 1.x and is
+not a 2.0 release measurement.
 
 ## Quick start
 
@@ -42,13 +49,16 @@ YUME's measured row comes from the single live run reported in [docs/PERFORMANCE
 git clone https://github.com/FixCraft-Inc/yume.git
 cd yume
 # BaseFWX is a pinned sibling checkout, not a submodule.
-git clone https://github.com/FixCraft-Inc/basefwx.git basefwx
+git clone https://github.com/F1xGOD/basefwx.git basefwx
 git -C basefwx checkout "$(cat config/refs/basefwx.ref)"
-cmake -B build
-cmake --build build -j$(nproc)
+./ezbuild.sh
 ```
 
 The build produces `build/bin/yume` and `build/bin/yumed`.
+
+`yume --version` and `yumed --version` are offline by default. Set
+`YUME_UPDATE_CHECK=1` for an explicit one-shot GitHub release check;
+`YUME_NO_UPDATE_CHECK=1` remains a hard disable for managed environments.
 
 Server:
 
@@ -56,22 +66,16 @@ Server:
 sudo ./build/bin/yumed \
     --listen 443 \
     --cert certs/server.crt --key certs/server.key \
-    --auth-keys /etc/yume/authorized_keys
-```
-
-Public-facing server, hardened defaults bundle:
-
-```bash
-sudo ./build/bin/yumed \
-    --listen 443 \
-    --cert certs/server.crt --key certs/server.key \
     --auth-keys /etc/yume/authorized_keys \
-    --public-node \
-    --obfs-secret 'replace-with-a-long-shared-secret' \
-    --hide-in-the-crowd nginx          # implicit when --public-node is set
+    --obfs-secret-file /etc/yume/secrets/admission.hex \
+    --inner-psk-file /etc/yume/secrets/inner.hex \
+    --real-backend loopback://127.0.0.1:3000
 ```
 
-`--public-node` requires a nonempty obfs secret; every client for that endpoint must use the same `--obfs-secret` value. Distribute it out of band rather than committing a production secret.
+The Node.js 24 LTS cover site is a separate supervised process bound only to
+loopback. Both secret files contain exactly 64 lowercase hex characters (32
+random bytes), have no group/world permission bits, and must be distributed to
+clients out of band. There is no public-key-only 2.0 mode.
 
 Client:
 
@@ -79,7 +83,9 @@ Client:
 ./build/bin/yume \
     --server yume.example.com \
     --auth ~/.yume/id_ed25519 \
-    --obfs-secret 'replace-with-a-long-shared-secret' \
+    --obfs-secret-file ~/.config/yume/admission.hex \
+    --inner-psk-file ~/.config/yume/inner.hex \
+    --profile chrome \
     --socks 127.0.0.1:1080
 ```
 
@@ -88,7 +94,9 @@ Cluster entry-point short form (translates to `--server` + `--port`):
 ```bash
 ./build/bin/yume --cluster yume.example.com:443 \
     --auth ~/.yume/id_ed25519 \
-    --obfs-secret 'replace-with-a-long-shared-secret' \
+    --obfs-secret-file ~/.config/yume/admission.hex \
+    --inner-psk-file ~/.config/yume/inner.hex \
+    --profile chrome \
     --socks 1080
 ```
 
@@ -190,54 +198,28 @@ Specific hostnames will land here once the fleet is up.
 
 ## Stealth and obfuscation
 
-YUME stacks four independent layers of byte-shape camouflage:
+The first 2.0 profile is fixed to a captured Chrome 150 client and Node.js 24
+LTS cover. After a normal priming page load, the client opens an RFC 8441
+extended CONNECT stream. Encrypted YUME records remain WebSocket binary
+messages inside valid HTTP/2 DATA frames for the entire connection.
 
-1. **TLS 1.3 with browser-oriented parameters.** `--profile chrome|firefox|safari` configures cipher suites, supported groups, signature algorithms, and ALPN toward Chrome 131 / Firefox 126 / Safari 18. OpenSSL emits the real ClientHello; YUME computes JA3 and canonical JA4 diagnostics from it. Stock OpenSSL does not reproduce every current-browser detail, so these profiles do not prove browser-cluster membership. Source: [src/core/stealth/tls_stealth.cpp](src/core/stealth/tls_stealth.cpp), [src/core/stealth/tls_fingerprint.cpp](src/core/stealth/tls_fingerprint.cpp).
-2. **HTTP/2 carrier admission (`--obfs`, default on).** After TLS, the client emits an HTTP/2 preface, project-defined SETTINGS, WINDOW_UPDATE, and a valid HPACK HEADERS request for `POST /<token>/<nonce>`. The server validates HMAC token, path shape, frame order, SNI/authority, and any supplied authority port against the accepted listener port; then returns server SETTINGS, ACK of client SETTINGS, and bodyless accepted response HEADERS. The client must ACK the server settings before YUME AUTH. Missing, malformed, or wrong paths remain in masquerade and receive a complete benign H2 response using configured upstream/real/profile identity. `--public-node` requires a nonempty shared `--obfs-secret`; empty-secret structural admission exists only for non-public development. The authenticated payload stream is not a fully conformant long-lived HTTP/2 session, and the opening is not claimed to be exact Chrome/Firefox traffic. Code: [src/core/stealth/obfs_h2.cpp](src/core/stealth/obfs_h2.cpp), [src/core/stealth/obfs_signal.cpp](src/core/stealth/obfs_signal.cpp).
-3. **HTTP-layer server disguise (`--hide-in-the-crowd <profile>`).** Before 1.0 a non-YUME probe (curl / scanner) saw TLS handshake + immediate TCP close. With this flag yumed instead serves a synthetic profile-driven response whose header order, charset, and body template are based on expected software shapes: `nginx`, `nginx-stable`, `apache`, `caddy`, `cloudflare`, `express`, `gunicorn`, `none`, and `yumed`. These are not native nginx/Apache/etc. implementations; use operator-captured `--upstream-response` data when higher fidelity matters. The same flag on the client explicitly selects the User-Agent; otherwise the UA follows the active TLS profile, including rotation. Codec: [src/core/stealth/http_profile.cpp](src/core/stealth/http_profile.cpp).
-4. **Real HTML facade (`--real --real-index <html>`) / static site (`--real-root <dir>`).** A browser that hits the same port with `GET / HTTP/1.1` is served the configured HTML page (or a Wikipedia redirect by default). With `--real-root <dir>`, yumed serves GET/HEAD for any real file under `<dir>` with the correct MIME type, `Content-Length`, `Last-Modified`, nginx-style `ETag`, and `Accept-Ranges` — a coherent multi-asset site rather than a single page, so a prober that walks more than one URL still sees a real web property. Path resolution rejects traversal, encoded-slash tricks, and symlink escape; the same root/index backs both the HTTP/1.1 probe and the H2 decoy. YUME clients and browsers cohabit on port 443.
+`yumed` terminates public TLS/H2 and proxies ordinary GET/HEAD cover requests
+to the configured loopback Node process. Admission failures follow the normal
+cover path and never receive AUTH. Node never sees tunnel data, identities, or
+secret material.
 
-Limits: this raises the cost of simple TLS-fingerprint blocking and casual active probing. It does not make YUME indistinguishable from a browser, preserve valid HTTP/2 semantics for the full authenticated stream, or defeat stateful and ML classifiers trained on record sizes, timing, or repeated connection behaviour.
+This raises the cost of custom-protocol matching and casual active probing; it
+does not make YUME byte-identical to Chrome. OpenSSL still differs from Chrome's
+BoringSSL ClientHello upstream of the H2 carrier. See [docs/STEALTH.md](docs/STEALTH.md)
+for the measured scope and [docs/YUME_2_0_IMPLEMENTATION_STATUS.md](docs/YUME_2_0_IMPLEMENTATION_STATUS.md)
+for unfinished release gates.
 
 ### Headless carrier diagnosis
 
-For an opt-in end-to-end carrier check, `scripts/yume_carrier_diagnose.py`
-launches a local `yume` client, starts a packet capture before the TLS
-handshake, drives headless Chromium through the local SOCKS listener, captures
-an optional direct Chromium baseline, and runs `dpi-human-report.py`.
-
-Fully local ephemeral run:
-
-```bash
-scripts/yume_carrier_diagnose.py --inner-heavy --hop --out ~/yume-carrier-diagnose
-```
-
-With no `--server`, the script creates temporary TLS/auth material, starts a
-local `yumed`, generates an obfs secret, runs `yume` against it, probes the
-daemon directly as an HTTPS active scanner, removes the temporary key material
-afterwards, and keeps only the report artifacts. The local daemon defaults to
-`--hide-in-the-crowd nginx`; the client defaults to `--profile firefox` plus a
-matching carrier User-Agent. Override those with `--server-profile`,
-`--client-profile`, or `--client-http-profile`. Pass `--keep-workdir` if you
-want to inspect the generated keys and server material.
-
-Remote-server run:
-
-```bash
-scripts/yume_carrier_diagnose.py \
-  --server origin.fixcraft.jp \
-  --auth ~/main.key \
-  --anonym-ca-cert ~/ca.cert.pem \
-  --inner-heavy \
-  --hop \
-  --obfs-secret 'shared-secret-or-hex' \
-  --out ~/yume-carrier-diagnose
-```
-
-The quick default visits a few lightweight HTTPS pages. Add `--media` for a
-direct MP4 sample that produces larger streaming-like TLS records. The script
-requires Chromium/Chrome plus `dumpcap` or `tcpdump`; capture privileges must
-already be configured. It never runs `sudo` itself.
+The older diagnosis script still targets the retired 1.x carrier and is not a
+2.0 validation tool. Use the committed Chrome/Node fixture and the release
+evidence procedure in [docs/STEALTH.md](docs/STEALTH.md); do not interpret a
+1.x diagnosis run as 2.0 fingerprint evidence.
 
 ## Routing through Tor (or any SOCKS5 proxy)
 
@@ -328,53 +310,60 @@ Local proof setup is in [scripts/gen_anonym_sub.sh](scripts/gen_anonym_sub.sh). 
 
 ## Inner crypto
 
-Optional inner encryption sits inside the TLS tunnel and runs end-to-end:
+Inner encryption is mandatory in the 2.0 tunnel path:
 
-- ML-KEM-768 KEM (post-quantum); the KEM shared secret is the input to the selected KDF
-- AES-256-GCM AEAD (BaseFWX) on every YUME frame
-- Argon2id heavy work factor (`--inner-heavy`, default on for full builds) or HKDF-SHA256 light derivation. The transport handshake does not include a user password / PSK.
-- Live key hopping: a fresh 32-byte key derived from the base key every `--hop-interval` ms (default 500, i.e. 2 Hz). Tested up to 4 Hz; configurable down to 0 (off).
+- ML-KEM-1024 and X25519 contributions are combined with a random 32-byte PSK
+  using versioned salted HKDF-SHA256 labels.
+- AES-256-GCM uses a derived, one-use key for every protected frame.
+- Client-to-server and server-to-client chains advance independently before
+  256 KiB, 512 DATA frames, or 500 ms of active epoch time.
+- Rekeys perform fresh ML-KEM-1024 and X25519 exchanges. Application data waits
+  behind the boundary and the retired root is erased after the first valid
+  new-epoch record.
 
-Hopping separates traffic into derived-key windows, but it is not forward secrecy: possession of the retained base key permits deriving every window key.
+Argon2id is not used at establishment or per epoch: the required PSK is already
+uniform high-entropy key material, not a human password.
 
 ```jsonc
 // client config
 {
-  "inner_crypto": true,
-  "inner_heavy": true,
-  "pq_public_key": "/etc/yume/master_pq.pk",
-  "inner_hop": true,
-  "hop_interval_ms": 500
+  "obfs_secret_file": "/home/alice/.config/yume/admission.hex",
+  "inner_psk_file": "/home/alice/.config/yume/inner.hex",
+  "tls_stealth_profile": "chrome"
 }
 ```
 
 ```jsonc
 // server config
 {
-  "inner_crypto": true,
-  "inner_heavy": true,
-  "pq_private_key": "/etc/yume/master_pq.sk",
+  "obfs_secret_file": "/etc/yume/secrets/admission.hex",
+  "inner_psk_file": "/etc/yume/secrets/inner.hex",
+  "real_backend": "loopback://127.0.0.1:3000",
   "allow_exec": false
 }
 ```
 
-The embedded BaseFWX master PQ keypair is **off by default** ([src/core/security/inner_crypto.hpp:17](src/core/security/inner_crypto.hpp#L17)). It is only loaded when the operator explicitly passes `--use-embedded-master`, and both client and server log a warning at startup when that flag is in effect. Provide your own `--pq-pub` / `--pq-key` for production deployments.
-
 ## Performance
 
-Numbers below are from a live run reported in [docs/PERFORMANCE.md](docs/PERFORMANCE.md). Client in the United States, relay in Japan, fixed endpoint for fair RTT.
+The 2.0 tools report MiB/s at three different layers:
 
-| Metric                                | 0 Hz hopping | 2 Hz hopping |
-| ------------------------------------- | ------------ | ------------ |
-| YUME-only ping overhead (filtered)    | ≈ 0 ms       | +1.4 ms      |
-| Throughput retained vs relay capacity | 78 %         | 78 %         |
-| Client upload retained vs direct      | 92 %         | 92 %         |
+- `yume --full-bench`: local `yume` ↔ `yumed` process path through the complete
+  H2/WebSocket carrier and hybrid ratchet.
+- `yume --bench` or `--bench-full`: authenticated upload/download against a
+  real server started with `yumed --bench`.
+- `yume-basefwx-bench`: in-memory key establishment, rekey, and ratchet ceiling;
+  it intentionally excludes TLS, H2, WebSocket, sockets, and process overhead.
 
-In that run the relay path and its bandwidth ceiling dominated the result. The data does not isolate YUME's CPU/framing cost, and it should not be read as a universal throughput or latency guarantee.
+See [docs/SELFTEST.md](docs/SELFTEST.md) for commands and how to compare the
+numbers. The older WAN results in [docs/PERFORMANCE.md](docs/PERFORMANCE.md)
+describe 1.x and are not evidence for the 2.0 release gates.
 
 ## Cluster federation
 
-Multiple `yumed` instances can join a single federated cluster so any client can reach any peer's clients through any entry point. Each peer keeps its own auth keys and config; the federation link is a mutual TLS 1.3 server-to-server connection with per-peer permissions.
+Federation is unchanged at the control-protocol level, but it has not passed the
+focused 2.0 desktop validation gates. The examples below show configuration
+shape, not a 2.0 support claim. Each public entry point still needs its own
+mandatory transport secret files and loopback cover.
 
 Bootstrap node (cluster entry point, accepts incoming peer dials):
 
@@ -384,7 +373,9 @@ sudo yumed --listen 443 \
     --federation-auth-key /etc/yume/fed.key \
     --federation-anonym-ca /etc/yume/fed-ca.pem \
     --auth-keys /etc/yume/authorized_keys \
-    --obfs-secret 'replace-with-a-long-shared-cluster-secret' \
+    --obfs-secret-file /etc/yume/secrets/admission.hex \
+    --inner-psk-file /etc/yume/secrets/inner.hex \
+    --real-backend loopback://127.0.0.1:3000 \
     --public-node
 ```
 
@@ -397,7 +388,9 @@ sudo yumed --listen 443 \
     --federation-auth-key /etc/yume/fed.key \
     --federation-anonym-ca /etc/yume/fed-ca.pem \
     --auth-keys /etc/yume/authorized_keys \
-    --obfs-secret 'replace-with-a-long-shared-cluster-secret' \
+    --obfs-secret-file /etc/yume/secrets/admission.hex \
+    --inner-psk-file /etc/yume/secrets/inner.hex \
+    --real-backend loopback://127.0.0.1:3000 \
     --public-node
 ```
 
@@ -552,30 +545,34 @@ sudo ./build/bin/yumed \
 - AGPL-3.0-or-later, with client, daemon, proxy, GUI, and libyume fully buildable from this tree
 - BaseFWX is pinned by commit (see `config/refs/basefwx.ref`); release CI fails if mandatory crypto support is missing
 - Authorized keys verified with OpenSSL `EVP_DigestVerify` ([src/core/security/crypto.cpp:78](src/core/security/crypto.cpp#L78))
-- Inner-frame AEAD is verified by BaseFWX before plaintext is delivered ([basefwx/cpp/src/crypto/crypto.cpp](basefwx/cpp/src/crypto/crypto.cpp))
-- Master PQ keypair off by default; explicit `--use-embedded-master` required and warned about at startup on both ends
+- Inner-frame AEAD is verified before plaintext is delivered ([basefwx/cpp/src/crypto/crypto.cpp](basefwx/cpp/src/crypto/crypto.cpp))
+- Mandatory ML-KEM-1024 + X25519 + random-PSK establishment; no 1.x downgrade or public-key-only mode
 - Server-side exec / LAN bridging / unrestricted bridging are off at compile time by default ([CMakeLists.txt](CMakeLists.txt) `YUME_FEATURE_EXEC` / `_LAN_BRIDGE` / `_FULL_CONTROL`); enabling them requires opting in at build, runtime flag, AND per-key meta (see [docs/PERMISSIONS.md](docs/PERMISSIONS.md))
 - Preauth service peers are centrally confined to the named-service frame family
 - Admin attach requires caller outbound and target inbound permission/opt-in; both default to deny
-- Public-node masquerade requires a nonempty obfs secret; wrong/malformed paths receive a benign H2 response instead of AUTH
+- Admission and inner secrets are separate owner-only files; wrong, malformed,
+  expired, replayed, or authority-mismatched admission follows the cover path
+  instead of receiving AUTH
 - Session close has a five-second deadline, pending service queues are capped, and detached client EXEC work is capped at four concurrent workers; sanitizer/soak validation is still outstanding
-- Frame size capped at 16 MiB across all read paths
-- New obfs path-token verifier uses `CRYPTO_memcmp` ([src/core/stealth/obfs_signal.cpp](src/core/stealth/obfs_signal.cpp))
+- Protected application payloads are capped at 256 KiB so one frame cannot
+  cross a directional epoch byte limit
+- The admission path-token verifier uses `CRYPTO_memcmp` ([src/core/stealth/obfs_signal.cpp](src/core/stealth/obfs_signal.cpp))
 - No independent security audit or production-scale adversarial soak is documented yet. The implementation and threat boundary are open for review, but that is not equivalent to a completed audit.
 
 ## Scalability notes
 
 - Server sessions are fully async on a shared `io_context` thread pool (no per-connection threads)
 - Authorized keys are loaded once at startup
-- Frames are capped at 16 MiB per message to limit memory pressure
-- Carrier-mode handshake adds one extra HEADERS frame per session, no per-frame cost in current default
+- Protected DATA frames are capped at 256 KiB and carrier/proxy queues are bounded
+- Every authenticated record remains inside H2/WebSocket and uses a one-use AEAD key
 
 ## Release guarantees
 
 - Release workflows run preflight validation against the pinned BaseFWX commit
 - Release artifacts are inspected after build for linkage / runtime expectations
 - Missing mandatory BaseFWX crypto support is a release failure, not a degraded release
-- Full releases require Argon2, PQ/OQS, and LZMA support in the bundled BaseFWX dependency path
+- The 2.0 Linux desktop transport additionally requires nghttp2 >= 1.64 and
+  ML-KEM-1024 support from the pinned BaseFWX/liboqs path
 
 ## License
 

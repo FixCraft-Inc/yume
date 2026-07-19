@@ -7,27 +7,26 @@
  *
  * The end-to-end `yume-selftest` measures the whole stack:
  *   bench TCP -> SOCKS -> TransportCore -> TLS/OpenSSL -> ... -> echo.
- * `yume-basefwx-bench` measures only the inner AEAD/KDF crypto.
+ * `yume-basefwx-bench` measures the production 2.0 hybrid ratchet.
  *
  * The piece in between -- the TransportCore framing layer (encode/decode,
- * the per-frame owning-vector copies, inner-encrypt, hop derivation) -- was
- * never measured on its own. This tool drives two TransportCore instances
- * directly, with NO sockets, NO strands, NO SOCKS, and (optionally) NO TLS,
- * so we can attribute the single-stream throughput gap precisely:
+ * and the per-frame owning-vector copies -- is useful to measure separately.
+ * This tool drives two unencrypted TransportCore instances directly, with no
+ * sockets, strands, SOCKS, H2, WebSocket, or ratchet, and optionally adds an
+ * in-memory TLS record layer:
  *
  *   mode=core : encode (client core) -> feed_tls_bytes (server core).
- *               Pure framing + copies (+ inner crypto if requested).
+ *               Pure framing + copies.
  *   mode=tls  : same, but the encoded frames cross a real in-memory
  *               OpenSSL TLS 1.3 BIO pair, isolating the OpenSSL record
  *               cost on top of framing -- still no sockets/strands.
  *
- * Comparing core vs tls vs the existing base-direct / no-inner-raw numbers
+ * Comparing core vs TLS vs the local base-direct / yume-v2 numbers
  * decomposes the missing speed into framing-copy cost, TLS cost, and
  * socket/strand/kernel cost.
  */
 
 #include "client/transport/core.hpp"
-#include "core/security/inner_crypto.hpp"
 #include "core/protocol/protocol.hpp"
 
 #include <algorithm>
@@ -64,9 +63,6 @@ struct Args {
     std::string mode{"core"};   // core | tls
     int bytes_mib{256};
     int chunk_kib{64};
-    std::string inner{"none"};  // none | light
-    bool hop{false};
-    std::uint32_t hop_interval_ms{500};
 };
 
 void print_help() {
@@ -78,14 +74,12 @@ void print_help() {
         << "  --mode <core|tls>     core: framing only; tls: framing + in-mem TLS (default core)\n"
         << "  --bytes-mib <N>       Total payload per direction (default 256)\n"
         << "  --chunk-kib <N>       DATA frame payload size, like a 64 KiB socket read (default 64)\n"
-        << "  --inner <none|light>  Inner AEAD off, or light PQ-derived key (default none)\n"
-        << "  --hop                 Enable per-frame hop key derivation (implies inner)\n"
-        << "  --hop-interval <ms>   Hop interval when --hop (default 500)\n"
         << "  -h, --help            Show this help\n\n"
         << "Notes:\n"
         << "  No sockets, no strands, no SOCKS. Single-threaded, synchronous.\n"
-        << "  Measures the encode + decode framing path that sits between the\n"
-        << "  SOCKS relay and the TLS carrier in the real client/server.\n";
+        << "  This is a framing/TLS isolation ceiling, not the full YUME 2.0 path.\n"
+        << "  Use yume-basefwx-bench for ratchet crypto and yume --full-bench\n"
+        << "  for the process-level carrier result.\n";
 }
 
 Args parse_args(int argc, char** argv) {
@@ -107,22 +101,10 @@ Args parse_args(int argc, char** argv) {
         } else if (arg == "--bytes-mib") {
             args.bytes_mib = std::max(1, std::stoi(value(i, arg)));
         } else if (arg == "--chunk-kib") {
-            args.chunk_kib = std::max(1, std::stoi(value(i, arg)));
-        } else if (arg == "--inner") {
-            args.inner = value(i, arg);
-            if (args.inner != "none" && args.inner != "light") {
-                throw std::runtime_error("--inner must be none or light");
-            }
-        } else if (arg == "--hop") {
-            args.hop = true;
-        } else if (arg == "--hop-interval") {
-            args.hop_interval_ms = static_cast<std::uint32_t>(std::max(1, std::stoi(value(i, arg))));
+            args.chunk_kib = std::clamp(std::stoi(value(i, arg)), 1, 256);
         } else {
             throw std::runtime_error("unknown option: " + arg);
         }
-    }
-    if (args.hop && args.inner == "none") {
-        args.inner = "light";  // hopping is meaningless without an inner key
     }
     return args;
 }
@@ -132,22 +114,6 @@ Bytes random_bytes(std::size_t len) {
     std::mt19937_64 rng(0xC0FFEEu);  // fixed seed: deterministic, no Date/random env needed
     for (auto& b : out) b = static_cast<std::uint8_t>(rng() & 0xff);
     return out;
-}
-
-// Derive a real "light" inner key the way the live stack does: an ML-KEM
-// encapsulate + HKDF. Falls back to a fixed 32-byte key if PQ is unavailable
-// so the framing path is still exercised.
-Bytes make_inner_key() {
-    if (!yume::inner::pq_supported()) {
-        Bytes k(32);
-        for (std::size_t i = 0; i < k.size(); ++i) k[i] = static_cast<std::uint8_t>(i + 1);
-        return k;
-    }
-    // No PQ keypair handy here; the AEAD only needs a 32-byte symmetric key,
-    // and encrypt/decrypt parity is all this bench checks. Use a stable key.
-    Bytes k(32);
-    for (std::size_t i = 0; i < k.size(); ++i) k[i] = static_cast<std::uint8_t>((i * 7 + 3) & 0xff);
-    return k;
 }
 
 // ---- In-memory TLS 1.3 endpoint pair -------------------------------------
@@ -293,7 +259,7 @@ struct Endpoints {
     std::uint64_t frames_out{0};
 };
 
-Endpoints make_endpoints(const Args& args, std::uint8_t sid) {
+Endpoints make_endpoints(std::uint8_t sid) {
     Endpoints ep;
     ep.sender = std::make_shared<yume::client::TransportCore>();
     ep.receiver = std::make_shared<yume::client::TransportCore>();
@@ -316,15 +282,6 @@ Endpoints make_endpoints(const Args& args, std::uint8_t sid) {
         throw std::runtime_error("receiver requested transport close: " + r);
     });
 
-    if (args.inner == "light") {
-        const Bytes key = make_inner_key();
-        ep.sender->set_inner_key(key);
-        ep.receiver->set_inner_key(key);
-        if (args.hop) {
-            ep.sender->set_hop(true, args.hop_interval_ms, 0);
-            ep.receiver->set_hop(true, args.hop_interval_ms, 0);
-        }
-    }
     ep.sender->start();
     ep.receiver->start();
     ep.receiver->register_stream(
@@ -343,7 +300,7 @@ struct Row {
 
 Row run_direction(const Args& args, const char* label) {
     constexpr std::uint8_t kSid = 9;
-    Endpoints ep = make_endpoints(args, kSid);
+    Endpoints ep = make_endpoints(kSid);
 
     const std::size_t chunk = static_cast<std::size_t>(args.chunk_kib) * 1024u;
     const std::size_t total = static_cast<std::size_t>(args.bytes_mib) * 1024u * 1024u;
@@ -352,8 +309,7 @@ Row run_direction(const Args& args, const char* label) {
     std::unique_ptr<TlsPair> tls;
     if (args.mode == "tls") tls = std::make_unique<TlsPair>();
 
-    // Warm-up: one chunk through the whole path (also forces hop key / TLS
-    // session state to settle before timing).
+    // Warm up vector/TLS state before timing.
     {
         Bytes warm = chunk_template;
         ep.sender->send_data(kSid, std::move(warm));
@@ -402,11 +358,11 @@ Row run_direction(const Args& args, const char* label) {
 
 void render(const Args& args, const Row& row) {
     std::cerr << "\nYUME relay framing microbench\n";
-    std::cerr << "mode=" << args.mode << " inner=" << args.inner
-              << (args.hop ? " hop=on" : " hop=off")
+    std::cerr << "mode=" << args.mode
               << " chunk=" << args.chunk_kib << "KiB"
               << " total=" << args.bytes_mib << "MiB\n";
-    std::cerr << "PQ backend:     " << yume::inner::pq_backend_version() << "\n";
+    std::cerr << "scope=framing" << (args.mode == "tls" ? "+TLS" : "")
+              << " (ratchet/H2/WebSocket excluded)\n";
     std::cerr << "--------------------------------------------------------------------------------\n";
     std::cerr << std::left << std::setw(22) << "path"
               << std::right << std::setw(12) << "MiB/s"

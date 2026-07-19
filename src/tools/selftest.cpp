@@ -51,9 +51,6 @@ namespace {
 using namespace yume::tools::selftest;
 namespace fs = std::filesystem;
 
-
-
-
 const std::vector<Config>& builtin_configs() {
     static const std::vector<Config> configs{
         {
@@ -64,46 +61,11 @@ const std::vector<Config>& builtin_configs() {
             {},
         },
         {
-            "no-inner-raw",
-            "YUME SOCKS over plain TLS carrier, no inner crypto or H2 disguise.",
+            "yume-v2",
+            "Mandatory YUME 2.0 H2/WebSocket carrier and hybrid ratchet.",
             false,
-            {"--no-obfs", "--no-inner"},
-            {"--no-obfs", "--no-inner"},
-        },
-        {
-            "no-inner-obfs",
-            "YUME SOCKS over TLS/H2 carrier, no inner crypto.",
-            false,
-            {"--obfs", "--no-inner"},
-            {"--obfs", "--no-inner"},
-        },
-        {
-            "light-no-hop",
-            "Inner light crypto with hopping disabled.",
-            false,
-            {"--obfs", "--inner-light", "--inner-required", "--no-hop"},
-            {"--obfs", "--inner-light", "--no-hop"},
-        },
-        {
-            "light-hop-2hz",
-            "Inner light crypto with live hopping every 500 ms.",
-            false,
-            {"--obfs", "--inner-light", "--inner-required", "--hop", "--hop-interval", "500"},
-            {"--obfs", "--inner-light", "--hop", "--hop-interval", "500"},
-        },
-        {
-            "heavy-hop-2hz",
-            "HTTPS/H2 disguise, heavy inner KDF, live hopping every 500 ms.",
-            false,
-            {"--obfs", "--inner-heavy", "--inner-required", "--hop", "--hop-interval", "500"},
-            {"--obfs", "--inner-heavy", "--hop", "--hop-interval", "500"},
-        },
-        {
-            "heavy-no-hop",
-            "HTTPS/H2 disguise and inner heavy KDF with hopping disabled.",
-            false,
-            {"--obfs", "--inner-heavy", "--inner-required", "--no-hop"},
-            {"--obfs", "--inner-heavy", "--no-hop"},
+            {"--obfs"},
+            {"--obfs", "--profile", "chrome"},
         },
     };
     return configs;
@@ -146,10 +108,6 @@ void print_help() {
         << "                            default 180; scales payload size)\n"
         << "  --latency-iters <N>       Echo round trips per config (default 120; full uses 360)\n"
         << "  --bulk-mib <N>            Bulk echo size per config (default 32)\n"
-        << "  --argon-mem-kib <N>       Heavy KDF memory cap/env; full mode auto-sizes\n"
-        << "                            when this is omitted (quick default 32768)\n"
-        << "  --argon-parallelism <N>   Heavy KDF parallelism; full mode auto-sizes\n"
-        << "                            when this is omitted (quick default 2)\n"
         << "  --tunnels <N>             Client TLS tunnel count (default 1)\n"
         << "  --streams <N>             Concurrent bulk streams per config (default 1)\n"
         << "  --client-threads <N>      Client io threads (0=auto/hw concurrency)\n"
@@ -165,8 +123,8 @@ void print_help() {
         << "  --list-configs            Print config names and exit\n"
         << "  -h, --help                Show this help\n\n"
         << "Notes:\n"
-        << "  Default/no --configs runs every built-in config, including heavy-hop-2hz.\n"
-        << "  Config aliases: all expands to the full suite; all-on selects heavy-hop-2hz.\n"
+        << "  Default/no --configs runs the direct baseline and mandatory yume-v2 stack.\n"
+        << "  The local cover backend is a bounded health fixture, not Node fingerprint evidence.\n"
         << "  Quick mode is an unscored smoke test. Full mode prints one GLOBAL\n"
         << "  score for cross-device comparison. --dev also shows the desktop\n"
         << "  profile score and raw component tables for audit/debug use.\n"
@@ -221,12 +179,6 @@ Args parse_args(int argc, char** argv) {
         } else if (arg == "--bulk-mib") {
             args.bulk_mib = std::max(1, std::stoi(require_value(i, arg)));
             args.bulk_mib_override = true;
-        } else if (arg == "--argon-mem-kib") {
-            args.argon_mem_kib = std::max(1024, std::stoi(require_value(i, arg)));
-            args.argon_mem_override = true;
-        } else if (arg == "--argon-parallelism") {
-            args.argon_parallelism = std::max(1, std::stoi(require_value(i, arg)));
-            args.argon_parallelism_override = true;
         } else if (arg == "--tunnels") {
             args.tunnels = std::max(1, std::stoi(require_value(i, arg)));
             args.tunnel_count_override = true;
@@ -273,8 +225,44 @@ struct Keyset {
     fs::path key;
     fs::path authorized_keys;
     fs::path client_key;
-    fs::path pq_public;
+    fs::path obfs_secret;
+    fs::path inner_psk;
 };
+
+void write_secret_file(const fs::path& path) {
+    fs::create_directories(path.parent_path());
+    fs::permissions(path.parent_path(), fs::perms::owner_all,
+                    fs::perm_options::replace);
+    basefwx::crypto::SecureBytes bytes{basefwx::crypto::RandomBytes(32)};
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string encoded;
+    encoded.reserve(bytes.size() * 2);
+    for (std::uint8_t byte : bytes.bytes()) {
+        encoded.push_back(kHex[byte >> 4]);
+        encoded.push_back(kHex[byte & 0x0f]);
+    }
+    basefwx::crypto::SecretGuard guard;
+    guard.Add(encoded);
+    const int fd = ::open(path.c_str(), O_CREAT | O_EXCL | O_WRONLY, 0600);
+    if (fd < 0) {
+        throw std::runtime_error("cannot create benchmark secret file: " +
+                                 path.string());
+    }
+    FileDescriptor output(fd);
+    std::size_t written = 0;
+    while (written < encoded.size()) {
+        const ssize_t count = ::write(output.get(), encoded.data() + written,
+                                      encoded.size() - written);
+        if (count < 0 && errno == EINTR) {
+            continue;
+        }
+        if (count <= 0) {
+            throw std::runtime_error("cannot write benchmark secret file: " +
+                                     path.string());
+        }
+        written += static_cast<std::size_t>(count);
+    }
+}
 
 Keyset generate_keyset(const Args& args, const fs::path& workdir) {
     Keyset ks{
@@ -282,7 +270,8 @@ Keyset generate_keyset(const Args& args, const fs::path& workdir) {
         workdir / "server.key",
         workdir / "authorized_keys",
         workdir / "client.key",
-        workdir / ".secrets" / "pq_public.key",
+        workdir / ".secrets" / "obfs.hex",
+        workdir / ".secrets" / "inner-psk.hex",
     };
 
     run_checked({
@@ -318,24 +307,19 @@ Keyset generate_keyset(const Args& args, const fs::path& workdir) {
          << "  }\n"
          << "}\n";
     write_text(ks.authorized_keys.string() + ".json", meta.str());
+    write_secret_file(ks.obfs_secret);
+    write_secret_file(ks.inner_psk);
     return ks;
 }
 
 std::vector<std::pair<std::string, std::string>> run_env(const Args& args,
                                                          const fs::path& workdir,
                                                          bool server) {
-    const std::string mem = std::to_string(args.argon_mem_kib);
-    const std::string par = std::to_string(args.argon_parallelism);
+    (void)args;
+    (void)server;
     std::vector<std::pair<std::string, std::string>> env{
         {"HOME", (workdir / "home").string()},
     };
-    if (server) {
-        env.emplace_back("YUME_ARGON2_MEM_MAX", mem);
-        env.emplace_back("YUME_ARGON2_PAR_MAX", par);
-    } else {
-        env.emplace_back("YUME_ARGON2_MEM", mem);
-        env.emplace_back("YUME_ARGON2_PAR", par);
-    }
     return env;
 }
 
@@ -346,18 +330,17 @@ public:
               const Config& cfg,
               const fs::path& workdir,
               int yumed_port,
-              int socks_port)
+              int socks_port,
+              int cover_port)
         : args_(args)
         , ks_(ks)
         , cfg_(cfg)
         , workdir_(workdir)
         , yumed_port_(yumed_port)
-        , socks_port_(socks_port) {}
+        , socks_port_(socks_port)
+        , cover_port_(cover_port) {}
 
     void start(Breakdown& breakdown) {
-        const bool needs_pq_file =
-            !has_flag(cfg_.client_flags, "--no-inner") &&
-            !has_flag(cfg_.client_flags, "--use-embedded-master");
         std::vector<std::string> server_argv{
             args_.yumed.string(),
             "--listen", "127.0.0.1:" + std::to_string(yumed_port_),
@@ -366,11 +349,11 @@ public:
             "--auth-keys", ks_.authorized_keys.string(),
             "--allow-local-ip",
             "--threads", std::to_string(args_.server_threads),
+            "--obfs-secret-file", ks_.obfs_secret.string(),
+            "--inner-psk-file", ks_.inner_psk.string(),
+            "--real-backend", "loopback://127.0.0.1:" + std::to_string(cover_port_),
             "--boring",
         };
-        if (needs_pq_file) {
-            server_argv.push_back("--pq-auto-generate");
-        }
         server_argv.insert(server_argv.end(), cfg_.server_flags.begin(), cfg_.server_flags.end());
         server_ = std::make_unique<ChildProcess>(
             server_argv,
@@ -384,14 +367,6 @@ public:
             throw std::runtime_error("yumed did not listen; see " + server_->log_path().string());
         }
         breakdown.server_listen_ms = elapsed_ms(server_start, Clock::now());
-        if (needs_pq_file && !wait_for_path(ks_.pq_public, std::chrono::seconds(12))) {
-            breakdown.pq_ready_ms = elapsed_ms(server_start, Clock::now()) - breakdown.server_listen_ms;
-            throw std::runtime_error("server did not generate pq_public.key; see " + server_->log_path().string());
-        }
-        if (needs_pq_file) {
-            breakdown.pq_ready_ms = elapsed_ms(server_start, Clock::now()) - breakdown.server_listen_ms;
-        }
-
         std::vector<std::string> client_argv{
             args_.yume.string(),
             "--server", "127.0.0.1",
@@ -404,14 +379,12 @@ public:
             "--accept-monitoring",
             "--boring",
             "--tls-ca", ks_.cert.string(),
+            "--obfs-secret-file", ks_.obfs_secret.string(),
+            "--inner-psk-file", ks_.inner_psk.string(),
         };
         if (args_.client_threads > 0) {
             client_argv.push_back("--threads");
             client_argv.push_back(std::to_string(args_.client_threads));
-        }
-        if (needs_pq_file) {
-            client_argv.push_back("--pq-pub");
-            client_argv.push_back(ks_.pq_public.string());
         }
         client_argv.insert(client_argv.end(), cfg_.client_flags.begin(), cfg_.client_flags.end());
         client_ = std::make_unique<ChildProcess>(
@@ -441,6 +414,7 @@ private:
     fs::path workdir_;
     int yumed_port_{0};
     int socks_port_{0};
+    int cover_port_{0};
     std::unique_ptr<ChildProcess> server_;
     std::unique_ptr<ChildProcess> client_;
 };
@@ -450,7 +424,8 @@ Result run_config(const Args& args,
                   const Config& cfg,
                   const fs::path& workdir,
                   int echo_port,
-                  int sink_port) {
+                  int sink_port,
+                  int cover_port) {
     Result result;
     result.config = cfg;
     const auto start = Clock::now();
@@ -470,7 +445,8 @@ Result run_config(const Args& args,
         } else {
             const int yumed_port = pick_free_port();
             const int socks_port = pick_free_port();
-            YumeStack stack(args, ks, cfg, workdir, yumed_port, socks_port);
+            YumeStack stack(args, ks, cfg, workdir, yumed_port, socks_port,
+                            cover_port);
             stack.start(result.breakdown);
             LatencyMeasurement latency = measure_latency(socks_port, echo_port, args.latency_iters, true);
             result.latency_ms = latency.stats;
@@ -500,6 +476,7 @@ Result run_config_repeated(const Args& args,
                            const fs::path& workdir,
                            int echo_port,
                            int sink_port,
+                           int cover_port,
                            int& progress_completed,
                            int progress_total) {
     if (!progress_inline_enabled()) {
@@ -507,7 +484,8 @@ Result run_config_repeated(const Args& args,
     }
     if (args.repeats <= 1) {
         render_progress_bar(progress_completed, progress_total, cfg.name);
-        Result result = run_config(args, ks, cfg, workdir, echo_port, sink_port);
+        Result result = run_config(args, ks, cfg, workdir, echo_port, sink_port,
+                                   cover_port);
         ++progress_completed;
         render_progress_bar(progress_completed, progress_total, cfg.name);
         return result;
@@ -531,7 +509,8 @@ Result run_config_repeated(const Args& args,
         const std::string progress_label = cfg.name + " trial " +
             std::to_string(trial + 1) + "/" + std::to_string(args.repeats);
         render_progress_bar(progress_completed, progress_total, progress_label);
-        Result result = run_config(args, ks, cfg, workdir, echo_port, sink_port);
+        Result result = run_config(args, ks, cfg, workdir, echo_port, sink_port,
+                                   cover_port);
         ++progress_completed;
         render_progress_bar(progress_completed, progress_total, progress_label);
         result.repeat_count = trial + 1;
@@ -581,11 +560,8 @@ std::vector<Config> select_configs(const Args& args) {
             for (const auto& cfg : builtin_configs()) append_once(cfg);
             continue;
         }
-        const std::string resolved = (name == "all-on" || name == "heavy-obfs-2hz" || name == "heavy-obfs-hop-2hz")
-            ? "heavy-hop-2hz"
-            : name;
         auto it = std::find_if(builtin_configs().begin(), builtin_configs().end(), [&](const Config& cfg) {
-            return cfg.name == resolved;
+            return cfg.name == name;
         });
         if (it == builtin_configs().end()) throw std::runtime_error("unknown config: " + name);
         append_once(*it);
@@ -597,7 +573,7 @@ void render_score(const Args& args,
                   const BenchmarkScore& global_score,
                   const BenchmarkScore& league_score) {
     if (!args.full_benchmark) {
-        std::cerr << "\nQuick benchmark complete. Use --fullbench for scored GLOBAL results.\n";
+        std::cerr << "\nQuick benchmark complete. Use --full-bench for scored GLOBAL results.\n";
         return;
     }
     if (!global_score.available && !league_score.available) {
@@ -742,7 +718,6 @@ void render_table(const std::vector<Result>& results) {
     std::cerr << "------------------------------------------------------------------------------------------------\n";
     std::cerr << std::left << std::setw(18) << "config"
               << std::right << std::setw(10) << "srv ms"
-              << std::setw(10) << "pq ms"
               << std::setw(10) << "cli ms"
               << std::setw(10) << "conn ms"
               << std::setw(10) << "warm ms"
@@ -763,7 +738,6 @@ void render_table(const std::vector<Result>& results) {
             : 0.0;
         std::cerr << std::fixed << std::setprecision(1)
                   << std::setw(10) << r.breakdown.server_listen_ms
-                  << std::setw(10) << r.breakdown.pq_ready_ms
                   << std::setw(10) << r.breakdown.client_socks_ms
                   << std::setw(10) << r.breakdown.connect_ms
                   << std::setw(10) << r.breakdown.warmup_ms
@@ -776,7 +750,7 @@ void render_table(const std::vector<Result>& results) {
                   << "\n";
     }
     std::cerr << "------------------------------------------------------------------------------------------------\n";
-    std::cerr << "srv/pq/cli are startup waits. conn is TCP+SOCKS connect. warm is first echo.\n";
+    std::cerr << "srv/cli are startup waits. conn is TCP+SOCKS connect. warm is first echo.\n";
     std::cerr << "send% near 100 means writes are backpressured for most of the bulk transfer.\n";
 
     const bool has_repeats = std::any_of(results.begin(), results.end(), [](const Result& r) {
@@ -808,6 +782,32 @@ void render_table(const std::vector<Result>& results) {
                   << "\n";
     }
     std::cerr << "--------------------------------------------------------------------------------\n";
+}
+
+void render_throughput_summary(const std::vector<Result>& results) {
+    std::cerr << "\nYUME 2.0 transport results\n";
+    std::cerr << "--------------------------------------------------------------------------\n";
+    std::cerr << std::left << std::setw(18) << "config"
+              << std::right << std::setw(12) << "median ms"
+              << std::setw(12) << "p95 ms"
+              << std::setw(14) << "MiB/s"
+              << std::setw(14) << "Mbit/s" << "\n";
+    std::cerr << "--------------------------------------------------------------------------\n";
+    for (const auto& result : results) {
+        std::cerr << std::left << std::setw(18) << result.config.name;
+        if (!result.ok) {
+            std::cerr << "FAILED  " << result.error << "\n";
+            continue;
+        }
+        std::cerr << std::right << std::fixed << std::setprecision(3)
+                  << std::setw(12) << result.latency_ms.median
+                  << std::setw(12) << result.latency_ms.p95
+                  << std::setprecision(2)
+                  << std::setw(14) << result.throughput_mib_s
+                  << std::setw(14) << result.throughput_mib_s * 8.388608
+                  << "\n";
+    }
+    std::cerr << "--------------------------------------------------------------------------\n";
 }
 
 void render_hot_path_table(const std::vector<HotPathRow>& rows) {
@@ -874,8 +874,10 @@ int run_cli(int argc, char** argv) {
             sink.set_sink(true);
             sink_port = sink.start();
         }
+        CoverServer cover;
+        const int cover_port = cover.start();
         Keyset ks = generate_keyset(args, tmp->path());
-        const int hot_path_steps = args.full_benchmark ? 16 : 9;
+        const int hot_path_steps = args.full_benchmark ? 14 : 9;
         const int progress_total = std::max(
             1,
             static_cast<int>(configs.size()) * std::max(1, args.repeats) + hot_path_steps);
@@ -902,6 +904,7 @@ int run_cli(int argc, char** argv) {
                 tmp->path(),
                 echo_port,
                 sink_port,
+                cover_port,
                 progress_completed,
                 progress_total);
             if (!result.ok) tmp->keep();
@@ -909,6 +912,7 @@ int run_cli(int argc, char** argv) {
         }
         sink.stop();
         echo.stop();
+        cover.stop();
         std::vector<HotPathRow> hot_paths = run_hot_paths(
             args,
             tmp->path(),
@@ -921,6 +925,7 @@ int run_cli(int argc, char** argv) {
         }
 
         finish_progress_line();
+        render_throughput_summary(results);
         const double benchmark_elapsed_seconds = elapsed_s(benchmark_start, Clock::now());
         const BenchmarkScore engine_league_score = compute_hot_path_score(args, hot_paths, false);
         const BenchmarkScore global_engine_score = compute_hot_path_score(args, hot_paths, true);

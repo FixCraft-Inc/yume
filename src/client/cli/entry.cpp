@@ -121,7 +121,7 @@ int run_local_benchmark(const char* argv0, const ParsedArgs& args) {
 #else
     (void)argv0;
     (void)args;
-    util::log_error("--fullbench is a local device benchmark, but this yume binary was built without it. "
+    util::log_error("--full-bench is a local device benchmark, but this yume binary was built without it. "
                     "Rebuild with ./ezbuild.sh --selftest or CMake -DYUME_BUILD_SELFTEST=ON.");
     return 1;
 #endif
@@ -151,7 +151,7 @@ int Cli::run(int argc, char** argv) {
     }
     const bool explicit_http_profile = !args.http_profile.empty();
     if (args.local_benchmark && args.bench) {
-        util::log_error("--fullbench is local-only; use --bench-full for the authenticated endpoint long profile");
+        util::log_error("--full-bench is local-only; use --bench-full for the authenticated endpoint long profile");
         return 1;
     }
     if (args.timing) {
@@ -387,7 +387,7 @@ int Cli::run(int argc, char** argv) {
         args.service_streams_only ||
         args.share_export;  // export is a one-shot, not a connection
     if (!has_active_mode) {
-        util::log_error("no mode selected (use --fullbench, --quickbench, --bench, --socks, --monero-rpc, -L, -R, --run, --directory, --chat, --send-file, --send-bytes, --admin-attach, --control, --attach-local, or --service-streams-only)");
+        util::log_error("no mode selected (use --full-bench, --quick-bench, --bench, --socks, --monero-rpc, -L, -R, --run, --directory, --chat, --send-file, --send-bytes, --admin-attach, --control, --attach-local, or --service-streams-only)");
         return 1;
     }
 

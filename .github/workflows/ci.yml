@@ -91,8 +91,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake ninja-build pkg-config \
-            libssl-dev zlib1g-dev liblzma-dev libzstd-dev libargon2-dev \
+            libssl-dev zlib1g-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
             libboost-all-dev libspdlog-dev nlohmann-json3-dev
+          bash scripts/ensure-nghttp2.sh
 
       - name: Extract prebuilt vendor libs
         run: |

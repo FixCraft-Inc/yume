@@ -3,8 +3,7 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * Implementations for the benchmark workload sizing declared in
- * tools/selftest/sizing.hpp. Extracted verbatim from tools/selftest.cpp.
+ * Benchmark workload sizing.
  */
 
 #include "tools/selftest/sizing.hpp"
@@ -91,16 +90,6 @@ void apply_full_benchmark_defaults(Args& args, std::size_t config_count) {
     }
     if (!args.latency_iters_override) {
         args.latency_iters = 360;
-    }
-    if (!args.argon_mem_override) {
-        const std::uint64_t adaptive_mib = std::clamp<std::uint64_t>(
-            profile_available_mib(profile) / 256,
-            32,
-            256);
-        args.argon_mem_kib = static_cast<int>(adaptive_mib * 1024);
-    }
-    if (!args.argon_parallelism_override) {
-        args.argon_parallelism = std::clamp(static_cast<int>(profile.logical_cpus / 4), 2, 8);
     }
     if (!args.bulk_mib_override) {
         const int divisor = std::max(1, static_cast<int>(config_count) * args.repeats);

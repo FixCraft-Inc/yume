@@ -3,8 +3,7 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * Scoring implementations declared in tools/selftest/scoring.hpp.
- * Extracted verbatim from tools/selftest.cpp.
+ * Versioned local benchmark scoring.
  */
 
 #include "tools/selftest/scoring.hpp"
@@ -110,21 +109,17 @@ BenchmarkScore compute_transport_score(const Args& args,
         });
     };
 
-    add_throughput("base-direct", 25000.0, 300000.0);
-    add_throughput("no-inner-raw", 1600.0, 900000.0);
-    add_throughput("no-inner-obfs", 1450.0, 1200000.0);
-    add_throughput("light-no-hop", 1300.0, 1400000.0);
-    add_throughput("light-hop-2hz", 1150.0, 1900000.0);
-    add_throughput("heavy-no-hop", 1050.0, 1500000.0);
-    add_throughput("heavy-hop-2hz", 950.0, 2000000.0);
+    add_throughput("base-direct", 25000.0, 1000000.0);
+    // The versioned 2.0 baseline is not comparable with retired 1.x scores.
+    add_throughput("yume-v2", 25.0, 8200000.0);
 
-    const Result* latency_anchor = find_result(results, "heavy-hop-2hz");
+    const Result* latency_anchor = find_result(results, "yume-v2");
     if (latency_anchor && latency_anchor->latency_ms.median > 0.0) {
         score.components.push_back({
             "latency-anchor",
             latency_anchor->latency_ms.median,
             "ms",
-            scaled_latency_points(latency_anchor->latency_ms.median, 0.08 / reference_multiplier, 800000.0),
+            scaled_latency_points(latency_anchor->latency_ms.median, 1.0 / reference_multiplier, 800000.0),
             800000.0,
         });
     } else {
@@ -175,12 +170,10 @@ BenchmarkScore compute_hot_path_score(const Args& args,
         {"aes-gcm-decrypt", 6000.0, 1300000.0},
         {"packet-bulk-encode", 12000.0, 1100000.0},
         {"packet-bulk-decode", 12000.0, 1100000.0},
-        {"hop-hkdf", 2500000.0, 800000.0},
-        {"inner-aead-encrypt", 8000.0, 800000.0},
-        {"inner-aead-decrypt", 8000.0, 800000.0},
-        {"basefwx-pq-client", 40000.0, 1100000.0},
-        {"basefwx-pq-server", 40000.0, 1100000.0},
-        {"basefwx-argon2", 750.0, 900000.0},
+        {"hkdf-sha256", 2500000.0, 800000.0},
+        {"ratchet-duplex", 1200.0, 2100000.0},
+        {"hybrid-establishment", 200.0, 1300000.0},
+        {"directional-rekey", 200.0, 1300000.0},
         {"disk-write", 3500.0, 100000.0},
         {"sustained-mix", 14000.0, 4300000.0},
         // Note: the system-load row is no longer scored here. CPU/RAM headroom

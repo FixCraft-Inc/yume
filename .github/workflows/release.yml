@@ -90,8 +90,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake ninja-build pkg-config \
-            libssl-dev zlib1g-dev liblzma-dev libzstd-dev libargon2-dev \
+            libssl-dev zlib1g-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
             libboost-all-dev libspdlog-dev nlohmann-json3-dev
+          bash scripts/ensure-nghttp2.sh
 
       - name: Configure + build host (CLI only, fast)
         run: |
@@ -148,7 +149,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake ninja-build pkg-config \
-            libssl-dev zlib1g-dev liblzma-dev libzstd-dev libargon2-dev \
+            libssl-dev zlib1g-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
             libboost-all-dev libspdlog-dev nlohmann-json3-dev \
             mingw-w64 gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
@@ -157,6 +158,7 @@ jobs:
             zstd curl wget git tar xz-utils \
             qemu-user-static binfmt-support \
             clang lld
+          bash scripts/ensure-nghttp2.sh
 
       - name: Restore vcpkg binary cache
         if: contains(github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,openwrt-mips,windows-x86_64', 'windows-x86_64')

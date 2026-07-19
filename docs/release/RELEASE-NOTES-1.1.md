@@ -438,7 +438,7 @@ continue to carry forward across the 1.x line:
 ```bash
 git clone https://github.com/FixCraft-Inc/yume.git
 cd yume
-git clone https://github.com/FixCraft-Inc/basefwx.git basefwx
+git clone https://github.com/F1xGOD/basefwx.git basefwx
 git -C basefwx checkout "$(cat config/refs/basefwx.ref)"
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)

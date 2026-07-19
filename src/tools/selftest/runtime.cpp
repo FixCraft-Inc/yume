@@ -381,6 +381,105 @@ EchoServer::~EchoServer() {
     stop();
 }
 
+CoverServer::~CoverServer() {
+    stop();
+}
+
+int CoverServer::start() {
+    listener_.reset(::socket(AF_INET, SOCK_STREAM, 0));
+    if (!listener_) {
+        throw std::runtime_error("cover HTTP socket failed");
+    }
+    set_reuseaddr(listener_.get());
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    if (::bind(listener_.get(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
+        ::listen(listener_.get(), 16) != 0) {
+        throw std::runtime_error("cover HTTP listen failed");
+    }
+    socklen_t len = sizeof(addr);
+    if (::getsockname(listener_.get(), reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+        throw std::runtime_error("cover HTTP getsockname failed");
+    }
+    port_ = ntohs(addr.sin_port);
+    running_.store(true);
+    accept_thread_ = std::thread([this] { accept_loop(); });
+    return port_;
+}
+
+void CoverServer::stop() {
+    if (!running_.exchange(false)) {
+        return;
+    }
+    if (listener_) {
+        ::shutdown(listener_.get(), SHUT_RDWR);
+        listener_.reset();
+    }
+    if (accept_thread_.joinable()) {
+        accept_thread_.join();
+    }
+}
+
+void CoverServer::accept_loop() {
+    while (running_.load()) {
+        const int fd = ::accept(listener_.get(), nullptr, nullptr);
+        if (fd < 0) {
+            if (!running_.load()) break;
+            if (errno == EINTR) continue;
+            break;
+        }
+        handle_client(fd);
+        ::close(fd);
+    }
+}
+
+void CoverServer::handle_client(int fd) {
+    constexpr std::size_t kMaxRequest = 32U * 1024U;
+    timeval timeout{};
+    timeout.tv_sec = 2;
+    (void)::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    (void)::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    std::string request;
+    request.reserve(1024);
+    std::array<char, 1024> buffer{};
+    while (request.size() < kMaxRequest && request.find("\r\n\r\n") == std::string::npos) {
+        const std::size_t room = kMaxRequest - request.size();
+        const ssize_t got = ::recv(fd, buffer.data(), std::min(room, buffer.size()), 0);
+        if (got < 0 && errno == EINTR) continue;
+        if (got <= 0) return;
+        request.append(buffer.data(), static_cast<std::size_t>(got));
+    }
+    if (request.find("\r\n\r\n") == std::string::npos) return;
+
+    constexpr std::string_view body =
+        "<!doctype html><html><head><title>Yume</title></head>"
+        "<body><h1>Welcome</h1></body></html>";
+    const bool head = request.rfind("HEAD ", 0) == 0;
+    const bool get = request.rfind("GET ", 0) == 0;
+    if (!head && !get) return;
+    std::ostringstream response;
+    response << "HTTP/1.1 200 OK\r\n"
+             << "Content-Type: text/html; charset=utf-8\r\n"
+             << "Content-Length: " << body.size() << "\r\n"
+             << "Connection: close\r\n\r\n";
+    if (!head) response << body;
+    const std::string wire = response.str();
+    std::size_t sent = 0;
+    while (sent < wire.size()) {
+        int flags = 0;
+#if defined(MSG_NOSIGNAL)
+        flags = MSG_NOSIGNAL;
+#endif
+        const ssize_t count = ::send(fd, wire.data() + sent,
+                                     wire.size() - sent, flags);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) return;
+        sent += static_cast<std::size_t>(count);
+    }
+}
+
 void EchoServer::set_sink(bool sink) {
     sink_ = sink;
 }

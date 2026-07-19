@@ -53,6 +53,21 @@ or admin/control validation.
   directional keys/AAD/ciphertext, threshold transitions, idle behavior,
   simultaneous rekeys, rekey timeout, secret files, WebSocket framing, HTTP/2
   header/stream shape, and admission handling.
+- The local benchmark harness now starts only `base-direct` and the mandatory
+  `yume-v2` stack. Its 1.x raw/light/heavy/hop and Argon2/PQ-file rows were
+  removed. Short development-laptop smokes measured about 79-96 MiB/s for
+  `yume-v2`, depending on payload and concurrency; these are functional
+  datapoints, not the pending full or sustained release benchmark.
+- The crypto microbenchmark now uses the production SessionRatchet. A 2 MiB
+  per-direction smoke with 64 KiB DATA frames measured about 415-440 MiB/s and
+  performed seven authenticated hybrid rekeys per direction.
+- The full profile passed on an approved 32-core Debian 13 host using liboqs
+  0.16.0 and the pinned nghttp2 1.69.0 fallback. Across three 8 GiB, 64-stream,
+  four-tunnel trials, `yume-v2` measured 226.19 MiB/s (1,897.44 Mbit/s) median
+  with 0.709 ms median loopback RTT. Hybrid establishment measured 0.175 ms
+  median and directional rekey 0.219 ms median. This proves ample local
+  throughput, not WAN performance, Chrome TLS parity, or the pending bulk-wire
+  overhead gate.
 
 ## Required before `2.0-rc1`
 

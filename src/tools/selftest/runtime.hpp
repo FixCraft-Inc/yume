@@ -40,8 +40,6 @@ struct Args {
     std::vector<std::string> configs;
     int latency_iters{120};
     int bulk_mib{32};
-    int argon_mem_kib{32768};
-    int argon_parallelism{2};
     int tunnels{1};
     int client_threads{0};
     int server_threads{2};
@@ -63,8 +61,6 @@ struct Args {
     bool cooldown_ms_override{false};
     bool repeat_count_override{false};
     bool stream_count_override{false};
-    bool argon_mem_override{false};
-    bool argon_parallelism_override{false};
     bool one_way_override{false};
     bool target_duration_override{false};
     std::filesystem::path json_path;
@@ -84,7 +80,6 @@ Stats compute_stats(std::vector<double> samples);
 
 struct Breakdown {
     double server_listen_ms{0.0};
-    double pq_ready_ms{0.0};
     double client_socks_ms{0.0};
     double connect_ms{0.0};
     double warmup_ms{0.0};
@@ -189,6 +184,27 @@ private:
     FileDescriptor listener_;
     std::atomic<bool> running_{false};
     std::atomic<bool> sink_{false};
+    std::thread accept_thread_;
+    int port_{0};
+};
+
+// Minimal bounded HTTP/1.1 site used only to satisfy yumed's loopback cover
+// health check during local benchmarks. Fingerprint capture still uses the
+// committed Node fixture; this class is not a Node-behavior substitute.
+class CoverServer {
+public:
+    CoverServer() = default;
+    ~CoverServer();
+
+    int start();
+    void stop();
+
+private:
+    void accept_loop();
+    static void handle_client(int fd);
+
+    FileDescriptor listener_;
+    std::atomic<bool> running_{false};
     std::thread accept_thread_;
     int port_{0};
 };

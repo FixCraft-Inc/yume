@@ -79,6 +79,11 @@ std::vector<std::string> client_names();
 std::string http_date(std::time_t when);
 std::string http_date_now();
 
+// Parse an HTTP date (IMF-fixdate; also accepts the RFC 850 and asctime forms)
+// to a UTC time_t. Returns nullopt on any parse failure. Used to evaluate
+// If-Modified-Since conditional requests.
+std::optional<std::time_t> parse_http_date(std::string_view value);
+
 // Render a complete 404 response as a single string ready for
 // boost::asio::write — substitutes the placeholders in headers_404
 // and appends body_404. `connection_close` does nothing; the

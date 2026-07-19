@@ -148,12 +148,15 @@ misses fall through to the profile 404. This closes the "single page returns
 same root/index is presented on both the HTTP/1.1 probe and the H2 decoy, so an
 active probe sees one web identity. Resolution rejects traversal, encoded-slash
 tricks, control bytes, over-length targets, and symlink escape (canonicalized
-against the root), and a per-response size cap bounds one cover reply. HTTP/1.1
-keep-alive is honored so a browser pulls the page and its assets over one
-connection (bounded by a per-connection request cap and an idle timeout); only
-bodyless GET/HEAD keep the connection open. Static 200s currently use
-nginx-style header framing (pair with `--hide-in-the-crowd nginx`); per-profile
-static templates are not yet implemented.
+against the root), and a per-response size cap bounds one cover reply. The
+server also honors the cache/range semantics of a real static host: conditional
+GET (`If-None-Match`/`If-Modified-Since`) returns `304`, and byte `Range`
+requests return `206 Partial Content`/`416`. HTTP/1.1 keep-alive is honored so a
+browser pulls the page and its assets over one connection (bounded by a
+per-connection request cap and an idle timeout); only bodyless GET/HEAD keep the
+connection open. Static 200s currently use nginx-style header framing (pair with
+`--hide-in-the-crowd nginx`); per-profile static templates are not yet
+implemented.
 
 `--real` and `--obfs` are independent. They're demuxed by the first
 cleartext bytes after TLS: an HTTP/2 preface goes to the obfs

@@ -13,9 +13,13 @@
 #include <cstdio>
 #include <ctime>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <string>
 #include <unordered_map>
+
+// strptime / timegm are POSIX/GNU extensions not guaranteed by <ctime>.
+#include <time.h>
 
 namespace yume::http_profile {
 
@@ -330,6 +334,41 @@ std::string http_date(std::time_t when) {
 std::string http_date_now() {
     return http_date(std::chrono::system_clock::to_time_t(
         std::chrono::system_clock::now()));
+}
+
+std::optional<std::time_t> parse_http_date(std::string_view value) {
+    // Trim surrounding whitespace; strptime wants a NUL-terminated string.
+    while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) {
+        value.remove_prefix(1);
+    }
+    while (!value.empty() && (value.back() == ' ' || value.back() == '\t' ||
+                              value.back() == '\r' || value.back() == '\n')) {
+        value.remove_suffix(1);
+    }
+    if (value.empty() || value.size() > 64) {
+        return std::nullopt;
+    }
+    const std::string text(value);
+    // The three HTTP-date formats (RFC 7231 §7.1.1.1).
+    static const char* kFormats[] = {
+        "%a, %d %b %Y %H:%M:%S GMT",  // IMF-fixdate
+        "%A, %d-%b-%y %H:%M:%S GMT",  // RFC 850
+        "%a %b %e %H:%M:%S %Y",       // asctime
+    };
+    for (const char* fmt : kFormats) {
+        std::tm tm{};
+        if (::strptime(text.c_str(), fmt, &tm) != nullptr) {
+#if defined(_WIN32)
+            const std::time_t t = _mkgmtime(&tm);
+#else
+            const std::time_t t = ::timegm(&tm);  // interpret tm as UTC
+#endif
+            if (t != static_cast<std::time_t>(-1)) {
+                return t;
+            }
+        }
+    }
+    return std::nullopt;
 }
 
 std::optional<ServerProfile> server(std::string_view name) {

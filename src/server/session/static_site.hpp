@@ -20,6 +20,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -48,6 +49,19 @@ std::optional<Resolved> resolve_target(std::string_view target,
 // Content-Type for a filename, matched on the final extension
 // (case-insensitive). Unknown extensions map to application/octet-stream.
 std::string mime_type(std::string_view path);
+
+// Evaluation of a single-range HTTP `Range` header against a known file size.
+// Multi-range and malformed values report Absent so the caller serves the full
+// 200 (we do not emit multipart/byteranges). Satisfiable ranges are clamped to
+// the file; a start past the end is Unsatisfiable (416).
+struct ByteRange {
+    enum class Status { Absent, Satisfiable, Unsatisfiable };
+    Status status = Status::Absent;
+    std::uint64_t start = 0;  // inclusive
+    std::uint64_t end = 0;    // inclusive
+    std::uint64_t length() const { return end - start + 1; }
+};
+ByteRange parse_byte_range(std::string_view range_header, std::uint64_t file_size);
 
 struct FileContents {
     std::string bytes;

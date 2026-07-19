@@ -102,6 +102,11 @@ std::string format_seconds(double seconds) {
     return out.str();
 }
 
+std::string color(std::string_view text, std::string_view code) {
+    if (!util::stdout_colors_enabled()) return std::string(text);
+    return "\033[" + std::string(code) + "m" + std::string(text) + "\033[0m";
+}
+
 void print_result_row(std::string_view label, std::uint64_t bytes, double seconds) {
     std::cout << std::left << std::setw(8) << label
               << std::right << std::setw(12) << format_mib(bytes) << " MiB"
@@ -597,7 +602,8 @@ int run_endpoint_benchmark(const std::shared_ptr<Tunnel>& tunnel,
     const std::size_t chunk_size =
         static_cast<std::size_t>(options.bench_chunk_kib) * 1024U;
 
-    std::cout << "\nYUME Endpoint Benchmark\n"
+    std::cout << "\n" << color("YUME", "1;35") << " / "
+              << color("ENDPOINT BENCHMARK", "1;36") << "\n"
               << "Target   " << cfg.server << ":" << cfg.port;
     const std::string& tls_name = effective_tls_server_name(cfg);
     if (tls_name != cfg.server) {
@@ -609,7 +615,7 @@ int run_endpoint_benchmark(const std::shared_ptr<Tunnel>& tunnel,
               << "  streams=" << options.bench_streams << "\n"
               << "Payload  " << options.bench_mib << " MiB per direction"
               << "  chunk=" << options.bench_chunk_kib << " KiB\n"
-              << "Path     authenticated YUME stream over current TLS/obfs/inner settings\n\n";
+              << "Path     YUME 2.0 H2/WebSocket carrier + mandatory hybrid ratchet\n\n";
 
     const auto bench_started = std::chrono::steady_clock::now();
     EndpointBenchResult up_result;

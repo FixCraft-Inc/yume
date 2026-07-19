@@ -12,12 +12,9 @@
 #include <iostream>
 #include <string>
 
-#include <openssl/crypto.h>
-#include <openssl/opensslv.h>
-
-#include "core/security/inner_crypto.hpp"
 #include "core/protocol/runtime_policy.hpp"
-#include "core/version.hpp"
+#include "core/release/terminal.hpp"
+#include "util.hpp"
 
 void print_bash_completion() {
     std::cout << R"(# bash completion for yumed
@@ -54,12 +51,7 @@ complete -F _yumed_complete yumed
 }
 
 void print_version() {
-    std::cout
-        << "yumed " << yume::kVersion << "\n"
-        << "BaseFWX: " << yume::kBasefwxVersion << "\n"
-        << "OpenSSL: " << OpenSSL_version(OPENSSL_VERSION) << "\n"
-        << "PQ/ML-KEM: " << yume::inner::pq_backend_version() << "\n"
-        << "Inner suite: ML-KEM-1024 + X25519 + HKDF-SHA256 + AES-256-GCM\n";
+    yume::release::print_version_report("Yume Server");
 }
 
 void print_credits() {
@@ -80,8 +72,9 @@ void print_credits() {
 }
 
 void print_help() {
-    std::cout
-        << "yumed - YUME server\n\n"
+    std::cout << yume::release::render_brand_header(
+                     "SERVER", yume::util::stdout_colors_enabled())
+        << "\n"
         << "Usage:\n"
         << "  yumed [--config <path>] [options]\n"
         << "  yumed completion bash\n"
@@ -147,8 +140,8 @@ void print_help() {
         << "  --packet-mtu <N>         Packet-native MTU (default 1420).\n"
         << "  --bench                 Enable authenticated built-in up/down\n"
         << "                             benchmark streams for yume --bench.\n"
-        << "  --fullbench             Alias for --bench on yumed. Client-side\n"
-        << "                             yume --fullbench is a local benchmark.\n"
+        << "  --full-bench            Alias for --bench on yumed. Client-side\n"
+        << "                             yume --full-bench benchmarks local YUME 2.0.\n"
         << "  --allow-local-ip         Allow private/loopback destinations\n"
         << "  --control-full           Allow full server-side network control\n"
         << "  --codec-allow <name>     Enable a built-in/plugin application codec\n"
@@ -258,6 +251,7 @@ void print_help() {
         << "Other:\n"
         << "  completion bash\n"
         << "  -h, --help               Show help\n"
-        << "  --version                Show version and compiled crypto capabilities\n"
+        << "  --version                Show local versions and crypto capabilities\n"
+        << "                             (YUME_UPDATE_CHECK=1 enables the GitHub check)\n"
         << "  --credits                Show credits and bundled component acknowledgements\n";
 }

@@ -1,45 +1,70 @@
-# YUME quick start
+# YUME 2.0 desktop quick start
 
-This path gets a local client and daemon running with the defaults YUME expects in normal operation.
+This starts the focused Linux desktop client/server slice on one machine. It
+uses the real HTTP/2 carrier, mandatory hybrid ratchet, and a separate Node.js
+cover bound to loopback.
 
 ## Build
 
 ```bash
 git clone https://github.com/FixCraft-Inc/yume.git
 cd yume
-# The crypto engine is a pinned sibling checkout, not a git submodule.
-git clone https://github.com/FixCraft-Inc/basefwx.git basefwx
+git clone https://github.com/F1xGOD/basefwx.git basefwx
 git -C basefwx checkout "$(cat config/refs/basefwx.ref)"
-cmake -B build
-cmake --build build -j$(nproc)
+./ezbuild.sh
 ```
 
-The build produces:
+`ezbuild.sh` requires nghttp2 1.64 or newer. When the system package is too
+old, it builds the pinned, checksum-verified nghttp2 1.69.0 library under the
+user cache. The build produces `build/bin/yume` and `build/bin/yumed`.
 
-- `build/bin/yume`: client
-- `build/bin/yumed`: daemon
+## Create local test material
 
-Full builds require OpenSSL, Argon2, liboqs, LZMA, Boost, spdlog, and nlohmann-json. Release CI fails if mandatory Argon2 or OQS support is missing.
-
-## Create a client key
-
-YUME uses Ed25519 keys for client authentication.
+Generate a client identity:
 
 ```bash
-openssl genpkey -algorithm Ed25519 -out ~/.yume/id_ed25519
-openssl pkey -in ~/.yume/id_ed25519 -pubout -out ~/.yume/id_ed25519.pub
-```
-
-Install the public key on the server:
-
-```bash
+install -d -m 0700 ~/.config/yume
+./build/bin/yumed --keys-gen ~/.config/yume/client
 sudo install -d -m 0755 /etc/yume
-sudo tee -a /etc/yume/authorized_keys < ~/.yume/id_ed25519.pub
+sudo install -m 0644 ~/.config/yume/client.pub /etc/yume/authorized_keys
 ```
 
-Use `auth_keys.meta` only when a key needs extra permissions such as LAN bridging, admin attach, or exec. A key without a meta entry can connect but does not receive dangerous permissions.
+Create the two independent 32-byte random secrets:
 
-## Start the daemon
+```bash
+umask 077
+openssl rand -hex 32 | tr -d '\n' > ~/.config/yume/admission.hex
+openssl rand -hex 32 | tr -d '\n' > ~/.config/yume/inner.hex
+chmod 0600 ~/.config/yume/admission.hex ~/.config/yume/inner.hex
+```
+
+Each file must contain exactly 64 lowercase hex characters and must not be
+group/world-readable. Production clients receive both files through a secure
+out-of-band channel; there is no public-key-only 2.0 mode.
+
+Create a local TLS certificate if you do not already have one:
+
+```bash
+install -d -m 0700 certs
+openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
+  -keyout certs/server.key -out certs/server.crt \
+  -subj /CN=localhost \
+  -addext subjectAltName=DNS:localhost,IP:127.0.0.1
+chmod 0600 certs/server.key
+```
+
+## Start the cover and daemon
+
+Run the pinned development cover in one terminal:
+
+```bash
+npx --yes node@24.18.0 tools/cover-node/backend.mjs
+```
+
+It listens on `127.0.0.1:3000`. In production, supervise the Node process
+separately and never expose its port publicly.
+
+Start `yumed` in another terminal:
 
 ```bash
 sudo ./build/bin/yumed \
@@ -47,104 +72,61 @@ sudo ./build/bin/yumed \
   --cert certs/server.crt \
   --key certs/server.key \
   --auth-keys /etc/yume/authorized_keys \
-  --real \
-  --real-index certs/index.html
+  --obfs-secret-file "$HOME/.config/yume/admission.hex" \
+  --inner-psk-file "$HOME/.config/yume/inner.hex" \
+  --real-backend loopback://127.0.0.1:3000
 ```
 
-Port 443 normally requires root or `cap_net_bind_service` on Linux. Cloudflare HTTP-mode proxies terminate TLS and will break the tunnel; use TCP passthrough if a proxy sits in front of `yumed`.
+`yumed` terminates public TLS/H2 and proxies ordinary GET/HEAD cover requests
+to Node. Node never receives tunnel payloads, identities, or secret material.
 
-### Public-facing daemon
-
-For a `yumed` reachable from the open internet, add `--public-node` to bundle the hardening preset. It rejects `--allow-exec`, `--allow-local-ip`, `--control-full`, `--no-inner`, and `--no-obfs`; requires `--auth-keys` plus a nonempty `--obfs-secret`; and defaults the synthetic HTTP disguise to `nginx`:
-
-```bash
-sudo ./build/bin/yumed \
-  --listen 443 \
-  --cert certs/server.crt --key certs/server.key \
-  --auth-keys /etc/yume/authorized_keys \
-  --public-node \
-  --obfs-secret 'replace-with-a-long-shared-secret' \
-  --hide-in-the-crowd nginx           # implicit under --public-node
-```
-
-A normal HTTPS probe receives the selected synthetic nginx-shaped response. A missing, malformed, or wrong HTTP/2 admission request also remains in the masquerade responder and never receives YUME AUTH. The template is not a native nginx implementation; use an operator-captured upstream response when higher fidelity matters. See [STEALTH.md § Layer 3](STEALTH.md#layer-3-http-layer-server-disguise---hide-in-the-crowd) for the full profile list.
-
-### Federation cluster
-
-Multiple `yumed` instances can join one cluster. Bootstrap node:
-
-```bash
-sudo yumed --listen 443 --cluster-bootstrap \
-  --federation-auth-key /etc/yume/fed.key \
-  --federation-anonym-ca /etc/yume/fed-ca.pem \
-  --auth-keys /etc/yume/authorized_keys \
-  --obfs-secret 'replace-with-a-long-shared-cluster-secret' \
-  --public-node
-```
-
-Joining node (dials out to the bootstrap):
-
-```bash
-sudo yumed --listen 443 \
-  --cluster-join alice@bootstrap.example.com:443 \
-  --federation-auth-key /etc/yume/fed.key \
-  --federation-anonym-ca /etc/yume/fed-ca.pem \
-  --auth-keys /etc/yume/authorized_keys \
-  --obfs-secret 'replace-with-a-long-shared-cluster-secret' \
-  --public-node
-```
-
-ASCII view of the cluster from any node: `yume-net-map`.
-
-## Connect a client
-
-For the public-node example above, append
-`--obfs-secret 'replace-with-a-long-shared-secret'` to each client command.
-The value must match the server and should be distributed out of band.
-
-SOCKS mode:
+## Connect the client
 
 ```bash
 ./build/bin/yume \
-  --server example.com \
-  --auth ~/.yume/id_ed25519 \
+  --server 127.0.0.1 \
+  --port 443 \
+  --tls-name localhost \
+  --tls-ca certs/server.crt \
+  --auth ~/.config/yume/client.key \
+  --obfs-secret-file ~/.config/yume/admission.hex \
+  --inner-psk-file ~/.config/yume/inner.hex \
+  --profile chrome \
   --socks 127.0.0.1:1080
 ```
 
-Local forward:
+Point an application at the local SOCKS5 listener on `127.0.0.1:1080`.
+
+## Verify the tools
+
+Version output is offline by default:
 
 ```bash
-./build/bin/yume \
-  --server example.com \
-  --auth ~/.yume/id_ed25519 \
-  --lport 2222 \
-  --rhost 127.0.0.1 \
-  --rport 22
+./build/bin/yume --version
+YUME_UPDATE_CHECK=1 ./build/bin/yume --version
 ```
 
-Reverse forward:
+Build and run the optional benchmark path:
 
 ```bash
-./build/bin/yume \
-  --server example.com \
-  --auth ~/.yume/id_ed25519 \
-  -R 7437:127.0.0.1:22
+./ezbuild.sh --selftest --tests
+./build/bin/yume --quick-bench
+./build/bin/yume --full-bench
+ctest --test-dir build --output-on-failure
 ```
 
-## Verify a release binary
+The full benchmark is intentionally heavy. Use an approved benchmark host, not
+a daily-driver laptop. See [SELFTEST.md](SELFTEST.md) for the local transport,
+real endpoint, and crypto-only benchmark boundaries.
 
-```bash
-sha256sum -c yume-amd64-linux.sha256
-md5sum -c yume-amd64-linux.md5
-gpg --verify yume-amd64-linux.sig yume-amd64-linux
-```
+## Production notes
 
-Signatures are present when the release workflow has GPG signing secrets configured. Hash files and `release-manifest.json` are always generated by the release workflow.
-
-## Production checklist
-
-- Use your own TLS certificate and private key.
-- Set the same nonempty `--obfs-secret` on both ends for keyed carrier admission; it is mandatory under `--public-node`. Empty-secret structural admission is development-only.
-- Use your own PQ key files for inner crypto; `--use-embedded-master` is only for explicit test/dev use.
-- Keep `YUME_FEATURE_EXEC`, `YUME_FEATURE_LAN_BRIDGE`, and `YUME_FEATURE_FULL_CONTROL` off unless that server truly needs them.
-- Restart `yumed` after changing `authorized_keys` or `auth_keys.meta`.
+- Keep Node on a loopback IP literal and supervise it separately from `yumed`.
+- Keep TLS private keys and both shared secret files owner-readable only.
+- Distribute the admission and inner PSK files out of band to every client.
+- Do not place an HTTP-mode reverse proxy in front of `yumed`; it must receive
+  the original TLS connection. Use TCP passthrough when a fronting layer is
+  required.
+- `2.0-dev1` is not release-complete. Check
+  [YUME_2_0_IMPLEMENTATION_STATUS.md](YUME_2_0_IMPLEMENTATION_STATUS.md) before
+  treating a test result as a production support claim.

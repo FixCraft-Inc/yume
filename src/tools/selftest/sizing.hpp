@@ -3,9 +3,7 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * Selftest/benchmark workload sizing: scales the per-test byte counts and
- * thread counts to the detected system profile. Extracted from
- * tools/selftest.cpp. No behavior change.
+ * Scales benchmark byte counts and thread counts to the detected system.
  */
 
 #pragma once

@@ -49,7 +49,7 @@ Group=yume
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
-ExecStart=/usr/local/bin/yumed --listen 443 --cert /etc/yume/server.crt --key /etc/yume/server.key --auth-keys /etc/yume/authorized_keys --real --real-index /var/www/yume/index.html
+ExecStart=/usr/local/bin/yumed --listen 443 --cert /etc/yume/server.crt --key /etc/yume/server.key --auth-keys /etc/yume/authorized_keys --obfs-secret-file /etc/yume/secrets/admission.hex --inner-psk-file /etc/yume/secrets/inner.hex --real-backend loopback://127.0.0.1:3000
 Restart=on-failure
 RestartSec=3
 
@@ -57,7 +57,11 @@ RestartSec=3
 WantedBy=multi-user.target
 ```
 
-For a hardened service, keep `auth_keys.meta`, TLS private keys, and PQ private keys readable only by the daemon user.
+The Node.js 24 LTS cover site is a separate service bound only to the configured
+loopback address. Start and health-check it before `yumed`; do not expose its
+port publicly. Keep `auth_keys.meta`, TLS private keys, and both 32-byte secret
+files readable only by the daemon user. Each secret file is exactly 64 lowercase
+hex characters with no group/world permission bits.
 
 ## Key and permission operations
 
@@ -122,9 +126,10 @@ If the client cannot connect:
 
 - confirm direct TCP reachability to the daemon port
 - confirm no HTTP proxy is terminating TLS in front of `yumed`
-- run the client with `--no-obfs` only as a diagnostic comparison
-- ensure client and server use the same nonempty `--obfs-secret` for keyed
-  carrier admission; `--public-node` requires it
+- ensure client and server use the same `--obfs-secret-file` and
+  `--inner-psk-file` contents; there is no accepted 2.0 no-inner/no-obfs mode
+- verify the separately supervised Node cover is listening on the configured
+  loopback IP and passes `yumed`'s startup health check
 - check that the client's public key is present in `authorized_keys`
 - verify that the server certificate chain matches what the client expects
 

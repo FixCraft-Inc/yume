@@ -1,108 +1,74 @@
-# Local Self-Test Benchmark
+# YUME benchmarks
 
-`yume-selftest` is an optional desktop developer tool. It starts temporary
-local `yumed` and `yume` processes, routes SOCKS traffic to a loopback echo
-server, and reports protocol-only latency and throughput against direct
-loopback.
+YUME has three separate benchmark paths. They answer different questions and
+their numbers should not be compared as if they measured the same layer.
 
-Build it explicitly:
+## Local transport benchmark
+
+`yume --full-bench` starts temporary `yume` and `yumed` processes, routes data
+through SOCKS on loopback, and prints MiB/s for:
+
+- `base-direct`: the host/kernel TCP floor.
+- `yume-v2`: the mandatory 2.0 TLS + H2 + WebSocket + hybrid-ratchet path.
+
+There are no raw, no-inner, light, heavy, hop, persistent-PQ, or Argon2
+variants in the 2.0 benchmark. Those were 1.x transports and their results are
+not comparable with 2.0.
+
+Build the optional tools with an optimized configuration:
 
 ```bash
-cmake -B build-selftest \
+cmake -S . -B build-selftest \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DYUME_BUILD_SELFTEST=ON \
   -DYUME_FEATURE_LAN_BRIDGE=ON
-cmake --build build-selftest --target yume-selftest yume-basefwx-bench yume yumed
+cmake --build build-selftest --target \
+  yume yumed yume-selftest yume-basefwx-bench
 ```
 
-`YUME_BUILD_SELFTEST=ON` defaults an otherwise unset single-config CMake build
-to `RelWithDebInfo`. Benchmark numbers from an empty `CMAKE_BUILD_TYPE` are not
-meaningful because the transport/proxy path is then built without optimization.
-
-Run a quick local benchmark:
+Run a short smoke or the full profile:
 
 ```bash
-build-selftest/bin/yume-selftest --configs base-direct,heavy-hop-2hz
+build-selftest/bin/yume --quick-bench
+build-selftest/bin/yume --full-bench
+build-selftest/bin/yume --full-bench --duration-sec 120
+build-selftest/bin/yume --full-bench --dev --json selftest.json
 ```
 
-Useful options:
+The standalone entry point accepts the same benchmark options:
 
 ```bash
 build-selftest/bin/yume-selftest --list-configs
-build-selftest/bin/yume-selftest --latency-iters 200 --bulk-mib 64
-build-selftest/bin/yume-selftest --json selftest.json
-build-selftest/bin/yume-selftest --keep-workdir
+build-selftest/bin/yume-selftest --full --no-color
 ```
 
-Useful isolation configs:
+The normal result table always shows median/p95 latency, MiB/s, and Mbit/s.
+`--dev` adds hot-path rows, startup timing, backpressure timing, repeat detail,
+and score components. JSON schema 2 records the 2.0 workload without retired
+Argon2/PQ-file fields.
+
+The harness creates temporary Ed25519 identity material plus separate 32-byte
+admission and inner PSK files. Both secret files contain exactly 64 lowercase
+hex characters and have owner-only permissions. A small bounded loopback HTTP
+fixture satisfies `yumed`'s required cover-backend health check; it is not used
+as evidence of Node fingerprint parity. Chrome/Node fingerprint work uses the
+committed reference fixture.
+
+`YUME_FEATURE_LAN_BRIDGE=ON` is required because the temporary server must
+reach the loopback echo target. The generated authorization grants
+`allow_local_ip` only to the temporary benchmark identity.
+
+## Real endpoint benchmark
+
+`yume --bench` measures authenticated upload and download streams against a
+deployed `yumed`. `yume --bench-full` uses the longer 1024 MiB / 64-stream
+profile. This path includes the live YUME 2.0 carrier, server, and network, but
+does not include a browser, SOCKS application, public cover site, or CDN.
+
+Enable the server endpoint:
 
 ```bash
-build-selftest/bin/yume-selftest \
-  --configs base-direct,no-inner-raw,no-inner-obfs,light-no-hop,light-hop-2hz \
-  --latency-iters 40 --bulk-mib 8
-```
-
-Interpret the comparisons this way:
-
-- `base-direct`: kernel/host TCP echo floor. Very small `--bulk-mib` values can
-  under-report this baseline because setup noise dominates the transfer.
-- `no-inner-raw`: SOCKS + YUME framing over TLS without the H2 disguise.
-- `no-inner-obfs`: adds the browser-shaped H2 carrier handshake and obfs TLS
-  profile path; compare to `no-inner-raw` to estimate stealth-path cost.
-- `light-no-hop` and `light-hop-2hz`: compare these to estimate live hopping
-  cost after inner crypto is enabled.
-- `heavy-hop-2hz` and `heavy-no-hop`: include the heavy KDF setup path, still
-  bounded by the local Argon2 caps below.
-
-The self-test prints a second phase-breakdown table:
-
-- `srv ms`: time until temporary `yumed` accepts TCP.
-- `pq ms`: extra wait for the generated PQ public key when inner crypto is used.
-- `cli ms`: time until temporary `yume` starts the local SOCKS listener.
-- `conn ms`: direct TCP connect or TCP+SOCKS connect to the echo target.
-- `warm ms`: first echo round trip before sampled latency begins.
-- `bulk s`: total bulk echo transfer time.
-- `send s` and `send%`: how long the benchmark writer was blocked sending.
-  `send%` near 100 means the upstream write path is backpressured for most of
-  the transfer; a much lower value points at the return/read path instead.
-
-The routed benchmark requires `YUME_FEATURE_LAN_BRIDGE=ON` because the server
-must connect to a loopback echo target. The tool creates a temporary
-`authorized_keys.json` and grants `allow_local_ip` only to the generated test
-key.
-
-## Client Shortcut
-
-When `yume` is built with `YUME_BUILD_SELFTEST=ON`, the client exposes the same
-local benchmark without requiring any config:
-
-```bash
-yume --quickbench
-yume --fullbench
-yume --fullbench --duration-sec 120
-```
-
-`--fullbench` is local and scored. It runs inside the `yume` process, starts
-temporary local `yume`/`yumed` children for routed configs, and does not contact
-a remote server, read the normal client config, or require `--auth`.
-
-## Real Endpoint Benchmark
-
-`yume --bench` measures an authenticated YUME stream against a real `yumed`
-endpoint without Chromium, curl, SOCKS apps, or an external echo server.
-Use `yume --bench-full` when you want the longer authenticated endpoint profile
-with larger payloads and more streams. Endpoint benchmarks always require the
-normal server and identity configuration.
-
-Use portable binaries for real endpoints. `YUME_NATIVE_OPT` is off by default;
-only turn it on for same-machine experiments. A binary configured with
-`-DYUME_NATIVE_OPT=ON` can crash with `Illegal instruction` when copied to a
-different x86_64 CPU that lacks the builder's AVX/BMI/AES-class features.
-
-Enable the virtual benchmark endpoint on the server:
-
-```bash
-yumed --bench --config config/yumed.json
+yumed --config config/yumed.json --bench
 ```
 
 Run from the client:
@@ -110,72 +76,46 @@ Run from the client:
 ```bash
 yume --config config/yume.json --bench
 yume --config config/yume.json --bench-full
-yume --config config/yume.json --bench --bench-mib 1024
-yume --config config/yume.json --bench --bench-mib 1024 --bench-chunk-kib 256
+yume --config config/yume.json --bench \
+  --bench-mib 1024 --bench-streams 32 --bench-chunk-kib 256
 ```
 
-The server rejects benchmark streams unless `--bench`, the compatibility alias
-`--fullbench`, or `"benchmark_enable": true` is set. The benchmark uses the
-current TLS profile,
-obfs carrier, inner crypto, and hopping settings, then opens two synthetic
-streams: one upload sink and one download source. It does not include browser,
-local SOCKS client, remote website, CDN, or provider routing behavior beyond
-the path between `yume` and `yumed`.
+The server rejects synthetic benchmark streams unless `--bench`, its
+`--full-bench` compatibility alias, or `"benchmark_enable": true` is enabled.
+The client prints total, upload, download, and server-drain rates in MiB/s and
+Mbit/s.
 
-Inner-crypto configs let the temporary `yumed` generate a throwaway PQ keypair
-and pass the generated public key to the temporary client. The harness also
-passes `--accept-monitoring`, because this is an explicit local benchmark
-rather than an anonym-mode trust test.
+Keep release binaries portable for cross-machine tests. `YUME_NATIVE_OPT` is
+off by default; a binary built with `-DYUME_NATIVE_OPT=ON` may use instructions
+that do not exist on the destination CPU.
 
-Heavy mode is still bounded by default. Quick mode keeps small child-process
-caps: `YUME_ARGON2_MEM=32768` KiB and parallelism 2. Full mode auto-sizes
-those caps from the detected CPU count and available memory, then reports the
-chosen profile/workload in `--dev` output and JSON. Use `--argon-mem-kib` and
-`--argon-parallelism` to pin larger or smaller KDF settings intentionally.
+## Crypto microbenchmark
 
-The same shared runtime profile is used outside the benchmark for default
-Argon2 memory and parallelism selection. Explicit `YUME_ARGON2_MEM` and
-`YUME_ARGON2_PAR` values override the auto target, then YUME still applies the
-host budget and normal server caps. When they are omitted, YUME sizes the
-defaults against detected CPU/RAM and `YUME_RESOURCE_CAP` (fraction or percent,
-default `0.84`).
+`yume-basefwx-bench` runs the production 2.0 crypto schedule in memory:
 
-## Inner Crypto Microbench
-
-`yume-basefwx-bench` measures the same YUME `inner_crypto` API used by the
-transport, but without TLS, H2 obfs, SOCKS, loopback routing, or child process
-startup:
+- ML-KEM-1024 + X25519 + random-PSK salted-HKDF establishment.
+- Directional ML-KEM-1024 + X25519 epoch rekey.
+- Per-message AES-256-GCM ratchet transfer with real 256 KiB rekey boundaries.
 
 ```bash
 build-selftest/bin/yume-basefwx-bench
-build-selftest/bin/yume-basefwx-bench --bytes-mib 256 --light-iters 100 --no-heavy
-build-selftest/bin/yume-basefwx-bench --heavy-iters 5 --argon-mem-kib 65536
+build-selftest/bin/yume-basefwx-bench \
+  --bytes-mib 256 --chunk-kib 64 \
+  --establishment-samples 50 --rekey-samples 50
 ```
 
-Use it with `yume-selftest` to localize bottlenecks:
+This is a crypto-only ceiling. It excludes TLS, H2, WebSocket, socket I/O,
+SOCKS, process startup, and scheduling between `yume` and `yumed`. Use the
+local transport benchmark to find carrier/process overhead, then use the real
+endpoint benchmark to measure the deployed path.
 
-- If `inner-aead-encrypt`/`inner-aead-decrypt` are far faster than
-  `yume-selftest` throughput, steady-state payload crypto is not the main cap.
-- If `pq-client-heavy` or `pq-server-heavy` are large but the payload rows are
-  fast, the slowdown is handshake/KDF setup rather than transfer speed.
-- If `no-inner-raw` is already slow compared with BaseFWX AEAD, inspect SOCKS,
-  stream framing, TLS writes, and process scheduling.
-- If `no-inner-obfs` is much slower than `no-inner-raw`, inspect the H2 carrier,
-  padding, flush behavior, and stealth shaping.
+## Reading results
 
-Current desktop interpretation:
-
-- BaseFWX AEAD in the same process should be several GiB/s on a normal desktop
-  CPU. If `yume-selftest` is hundreds of MiB/s while `yume-basefwx-bench` is
-  multiple GiB/s, inspect the proxy/carrier path first.
-- Heavy Argon2 is visible in `cli ms` because the client prepares inner crypto
-  before the SOCKS listener becomes ready. It should not materially change
-  steady-state throughput after the tunnel is authenticated.
-- Low `send%` during bulk means the benchmark writer is not waiting on local
-  `send()` for most of the transfer. The limiter is then downstream receive,
-  carrier parsing, proxy forwarding, or scheduling rather than the local upload
-  syscall path.
-- The desktop `--obfs` path performs an H2-shaped carrier handshake, then
-  carries normal YUME frames over the established TLS session. Treat
-  `no-inner-raw` vs `no-inner-obfs` as a whole-carrier/profile comparison, not
-  as per-payload HTTP/2 DATA frame cost.
+- Use payloads large enough that setup noise does not dominate `base-direct`.
+- `send%` near 100 means the local writer is backpressured for most of the
+  transfer. A low value points toward receive, carrier, proxy, or scheduling
+  limits instead.
+- A fast crypto microbenchmark with a slower `yume-v2` row usually means the
+  bottleneck is outside the ratchet primitive.
+- Quick mode is a smoke test. Use a stable, approved machine for full scores,
+  sustained throughput, sanitizers, or WAN capture.

@@ -3,8 +3,7 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * Selftest/benchmark JSON result serialization. Extracted from
- * tools/selftest.cpp. No behavior change.
+ * JSON report declarations for the local benchmark.
  */
 
 #pragma once

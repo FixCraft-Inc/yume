@@ -87,7 +87,7 @@ struct ParsedArgs {
     bool bench{false};
     bool bench_full{false};
     int bench_mib{256};
-    int bench_chunk_kib{1024};
+    int bench_chunk_kib{256};
     int bench_streams{1};
     std::string bench_direction{"both"};
     bool bench_mib_override{false};

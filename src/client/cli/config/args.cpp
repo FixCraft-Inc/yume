@@ -266,8 +266,6 @@ ParsedArgs parse_args(int argc, char** argv) {
         } else if (arg == "--duration-sec" ||
                    arg == "--latency-iters" ||
                    arg == "--bulk-mib" ||
-                   arg == "--argon-mem-kib" ||
-                   arg == "--argon-parallelism" ||
                    arg == "--streams" ||
                    arg == "--client-threads" ||
                    arg == "--server-threads" ||

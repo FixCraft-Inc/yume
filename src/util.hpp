@@ -36,6 +36,8 @@ void log_timing(const std::string& component,
 void set_status_enabled(bool enabled);
 void set_status_line(const std::string& line);
 void clear_status_line();
+bool stdout_is_terminal();
+bool stdout_colors_enabled();
 bool drop_privileges(std::string* error = nullptr, std::string* summary = nullptr);
 std::string random_hex(size_t bytes);
 int64_t now_ms();

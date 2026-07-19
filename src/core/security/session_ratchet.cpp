@@ -25,9 +25,13 @@ constexpr auto kRekeyTimeout = std::chrono::seconds(5);
 constexpr std::size_t kEnvelopePrefix = 16;
 constexpr std::size_t kGcmTagBytes = 16;
 
-void AppendU64(Bytes& out, std::uint64_t value) {
-    for (int shift = 56; shift >= 0; shift -= 8) {
-        out.push_back(static_cast<std::uint8_t>(value >> shift));
+void WriteU64(Bytes& out, std::size_t offset, std::uint64_t value) {
+    if (offset > out.size() || out.size() - offset < 8) {
+        throw std::runtime_error("ratchet envelope output is too small");
+    }
+    for (std::size_t i = 0; i < 8; ++i) {
+        out[offset + i] = static_cast<std::uint8_t>(
+            value >> (56U - static_cast<unsigned>(i) * 8U));
     }
 }
 
@@ -237,10 +241,10 @@ private:
         SealedFrame sealed = outbound_.Encrypt(
             plaintext.header.type, plaintext.header.stream_id, flags,
             plaintext.payload, now, application);
-        Bytes envelope;
+        Bytes envelope(kEnvelopePrefix);
         envelope.reserve(kEnvelopePrefix + sealed.ciphertext.size());
-        AppendU64(envelope, sealed.epoch);
-        AppendU64(envelope, sealed.sequence);
+        WriteU64(envelope, 0, sealed.epoch);
+        WriteU64(envelope, 8, sealed.sequence);
         envelope.insert(envelope.end(), sealed.ciphertext.begin(),
                         sealed.ciphertext.end());
         return protocol::Frame{{static_cast<std::uint32_t>(envelope.size()),

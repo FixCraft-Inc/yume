@@ -322,6 +322,18 @@ bool should_log_rate_limited(const std::string& key, int64_t interval_ms) {
 }
 }  // namespace
 
+bool stdout_is_terminal() {
+    return is_tty_stdout();
+}
+
+bool stdout_colors_enabled() {
+    if (!is_tty_stdout() || std::getenv("NO_COLOR") != nullptr) {
+        return false;
+    }
+    return env_var_enabled("YUME_COLOR", true) &&
+           !env_var_enabled("YUME_NO_COLOR", false);
+}
+
 nlohmann::json read_json_config(const std::string& path) {
     std::ifstream in(expand_user(path));
     if (!in.is_open()) {
@@ -609,7 +621,10 @@ std::size_t relay_read_buf_size() {
         if (const char* raw = std::getenv("YUME_RELAY_READ_BUF")) {
             try {
                 const long v = std::stol(raw);
-                if (v >= 4 && v <= 16384) {
+                // Transport 2.0 cannot protect an application frame larger
+                // than one 256 KiB epoch. Keep the read buffer within that
+                // invariant even when an old 1.x tuning value is present.
+                if (v >= 4 && v <= 256) {
                     kib = static_cast<std::size_t>(v);
                 }
             } catch (...) {

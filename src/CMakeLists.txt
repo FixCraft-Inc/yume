@@ -214,6 +214,10 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_library(yume_core
         core/app_codec/codec.cpp
         core/app_codec/builtin/monero_rpc.cpp
+        core/release/github_client.cpp
+        core/release/terminal.cpp
+        core/release/version_report.cpp
+        core/release/version_status.cpp
         core/protocol/control_protocol.cpp
         core/security/crypto.cpp
         core/security/auth_v2.cpp
@@ -577,12 +581,16 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         if(WIN32)
             message(FATAL_ERROR "YUME_BUILD_SELFTEST currently supports POSIX desktop hosts only")
         endif()
+        if(NOT TARGET basefwxcpp)
+            message(FATAL_ERROR "YUME_BUILD_SELFTEST requires BaseFWX for the mandatory 2.0 ratchet")
+        endif()
         if(NOT YUME_FEATURE_LAN_BRIDGE)
             message(WARNING
                 "yume-selftest can be built, but routed loopback benchmarks require "
                 "-DYUME_FEATURE_LAN_BRIDGE=ON in the yume/yumed binaries under test")
         endif()
         add_library(yume_selftest_lib STATIC
+            tools/benchmark/v2_crypto_bench.cpp
             tools/selftest.cpp
             tools/selftest/runtime.cpp
             tools/selftest/render.cpp
@@ -605,6 +613,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         yume_apply_perf_opts(yume-selftest)
         add_executable(yume-basefwx-bench
             tools/basefwx_bench.cpp
+            tools/benchmark/v2_crypto_bench.cpp
         )
         target_link_libraries(yume-basefwx-bench PRIVATE yume_core)
         yume_apply_perf_opts(yume-basefwx-bench)
@@ -745,6 +754,20 @@ target_link_libraries(yume_app_codec_test PRIVATE yume_core)
 yume_link_atomic_if_needed(yume_app_codec_test PRIVATE)
 yume_apply_perf_opts(yume_app_codec_test)
 add_test(NAME yume_app_codec_test COMMAND yume_app_codec_test)
+
+add_executable(yume_version_status_test
+    core/release/version_status_test.cpp
+    core/release/version_status.cpp
+)
+target_include_directories(yume_version_status_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+yume_apply_perf_opts(yume_version_status_test)
+add_test(NAME yume_version_status_test COMMAND yume_version_status_test)
+
+add_executable(yume_terminal_test core/release/terminal_test.cpp)
+target_link_libraries(yume_terminal_test PRIVATE yume_core)
+yume_link_atomic_if_needed(yume_terminal_test PRIVATE)
+yume_apply_perf_opts(yume_terminal_test)
+add_test(NAME yume_terminal_test COMMAND yume_terminal_test)
 
 add_executable(yume_tls_fingerprint_test core/stealth/tls_fingerprint_test.cpp)
 target_link_libraries(yume_tls_fingerprint_test PRIVATE yume_core)

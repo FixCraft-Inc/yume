@@ -95,3 +95,4 @@ bins/
 
 # Local benchmark captures and reports
 /yume-bench-results/
+/yume-lan-kit/

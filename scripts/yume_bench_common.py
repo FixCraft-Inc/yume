@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import pwd
 import re
 import signal
 import shutil
@@ -17,6 +18,14 @@ from pathlib import Path
 from typing import BinaryIO
 
 
+PINNED_NODE_VERSION = "24.18.0"
+RATE_RE = re.compile(
+    r"^(TOTAL|UP|DOWN)\s+([0-9.]+) MiB\s+([0-9.]+) s\s+"
+    r"([0-9.]+) MiB/s /\s+([0-9.]+) Mbit/s$",
+    re.MULTILINE,
+)
+
+
 @dataclass(frozen=True)
 class BenchKeyset:
     server_cert: Path
@@ -25,6 +34,13 @@ class BenchKeyset:
     authorized_keys: Path
     admission_secret: Path
     inner_psk: Path
+
+
+@dataclass(frozen=True)
+class RuntimeIdentity:
+    uid: int
+    gid: int
+    home: Path
 
 
 @dataclass
@@ -213,3 +229,121 @@ def command_version(argv: list[str]) -> str:
         if re.fullmatch(r"Yume\s+\d[^\s]*", line):
             return line
     return lines[0] if lines else "unknown"
+
+
+def invoking_identity() -> RuntimeIdentity:
+    uid = os.geteuid()
+    gid = os.getegid()
+    if uid == 0:
+        sudo_uid = os.environ.get("SUDO_UID")
+        sudo_gid = os.environ.get("SUDO_GID")
+        if sudo_uid and sudo_gid and int(sudo_uid) > 0:
+            uid = int(sudo_uid)
+            gid = int(sudo_gid)
+        else:
+            account = pwd.getpwnam("nobody")
+            uid = account.pw_uid
+            gid = account.pw_gid
+    account = pwd.getpwuid(uid)
+    return RuntimeIdentity(uid, gid, Path(account.pw_dir))
+
+
+def drop_prefix(identity: RuntimeIdentity) -> list[str]:
+    return [
+        "setpriv",
+        f"--reuid={identity.uid}",
+        f"--regid={identity.gid}",
+        "--clear-groups",
+        "--",
+    ]
+
+
+def chown_tree(path: Path, identity: RuntimeIdentity) -> None:
+    os.chown(path, identity.uid, identity.gid)
+    for item in path.rglob("*"):
+        os.chown(item, identity.uid, identity.gid, follow_symlinks=False)
+
+
+def resolve_pinned_node(
+    explicit: Path | None,
+    *,
+    allow_mismatch: bool,
+    bootstrap: bool,
+) -> tuple[Path, str, bool]:
+    node: Path | None = None
+    if explicit:
+        candidate = explicit.expanduser().resolve()
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            node = candidate
+        else:
+            raise RuntimeError(f"Node executable not found: {candidate}")
+    else:
+        found = shutil.which("node")
+        if found:
+            node = Path(found).resolve()
+
+    version = command_version([str(node), "--version"]) if node else "unavailable"
+    expected_prefix = f"v{PINNED_NODE_VERSION.rsplit('.', 1)[0]}."
+    if node and (version.startswith(expected_prefix) or allow_mismatch):
+        return node, version, False
+    if explicit:
+        raise RuntimeError(
+            f"Node {expected_prefix[1:]}x is required (found {version}); "
+            "use --allow-node-version-mismatch only for functional testing"
+        )
+    if not bootstrap:
+        raise RuntimeError(
+            f"Node {expected_prefix[1:]}x is required (found {version}); "
+            "remove --no-node-bootstrap or pass --node"
+        )
+
+    npx = shutil.which("npx")
+    if not npx:
+        raise RuntimeError(
+            f"Node {expected_prefix[1:]}x is required (found {version}) and npx is unavailable"
+        )
+    identity = invoking_identity()
+    argv: list[str] = []
+    if os.geteuid() == 0:
+        argv.extend(drop_prefix(identity))
+    argv.extend([
+        "env",
+        f"HOME={identity.home}",
+        npx,
+        "--yes",
+        f"node@{PINNED_NODE_VERSION}",
+        "-p",
+        "process.execPath",
+    ])
+    result = subprocess.run(
+        argv,
+        cwd=identity.home,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"could not provision Node {PINNED_NODE_VERSION} through npx:\n"
+            f"{result.stdout.strip()}"
+        )
+    for line in reversed(result.stdout.splitlines()):
+        candidate = Path(line.strip())
+        if candidate.is_absolute() and candidate.is_file() and os.access(candidate, os.X_OK):
+            resolved_version = command_version([str(candidate), "--version"])
+            if resolved_version.startswith(expected_prefix):
+                return candidate.resolve(), resolved_version, True
+    raise RuntimeError("npx completed but did not return a usable Node executable")
+
+
+def parse_rates(output: str) -> dict[str, dict[str, float]]:
+    rates: dict[str, dict[str, float]] = {}
+    for row, mib, seconds, mib_s, mbit_s in RATE_RE.findall(output):
+        rates[row.lower()] = {
+            "mib": float(mib),
+            "seconds": float(seconds),
+            "mib_per_second": float(mib_s),
+            "mbit_per_second": float(mbit_s),
+        }
+    return rates

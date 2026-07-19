@@ -7,7 +7,6 @@ import argparse
 import atexit
 import json
 import os
-import pwd
 import re
 import shutil
 import subprocess
@@ -22,8 +21,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from yume_bench_common import (  # noqa: E402
     BenchKeyset,
     ManagedProcess,
+    RuntimeIdentity,
+    chown_tree,
     command_version,
+    drop_prefix,
     generate_keyset,
+    invoking_identity,
+    parse_rates,
+    resolve_pinned_node,
     start_logged_process,
     wait_for_tcp,
 )
@@ -143,6 +148,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--browser", type=Path, help="Chromium/Chrome executable")
     parser.add_argument("--node", type=Path, help="Node executable")
     parser.add_argument("--allow-node-version-mismatch", action="store_true")
+    parser.add_argument(
+        "--no-node-bootstrap",
+        action="store_true",
+        help="do not resolve pinned Node through npx when the system version differs",
+    )
     parser.add_argument("--yume", type=Path, default=REPO_ROOT / "build" / "bin" / "yume")
     parser.add_argument("--yumed", type=Path, default=REPO_ROOT / "build" / "bin" / "yumed")
     parser.add_argument("--output-dir", type=Path)
@@ -192,35 +202,13 @@ def validate_args(args: argparse.Namespace, profile: WanProfile) -> None:
         raise SystemExit("--bench-chunk-kib must be 1..256")
 
 
-def unprivileged_identity() -> tuple[int, int]:
-    uid = int(os.environ.get("SUDO_UID", "0"))
-    gid = int(os.environ.get("SUDO_GID", "0"))
-    if uid > 0:
-        return uid, gid
-    account = pwd.getpwnam("nobody")
-    return account.pw_uid, account.pw_gid
-
-
-def chown_tree(path: Path, uid: int, gid: int) -> None:
-    os.chown(path, uid, gid)
-    for item in path.rglob("*"):
-        os.chown(item, uid, gid, follow_symlinks=False)
-
-
-def drop_prefix(uid: int, gid: int) -> list[str]:
-    return [
-        "setpriv", f"--reuid={uid}", f"--regid={gid}", "--clear-groups", "--",
-    ]
-
-
 def start_node(
     lab: NetworkLab,
     node: Path,
     log: Path,
-    uid: int,
-    gid: int,
+    identity: RuntimeIdentity,
 ) -> ManagedProcess:
-    argv = lab.command(lab.server_ns, [*drop_prefix(uid, gid),
+    argv = lab.command(lab.server_ns, [*drop_prefix(identity),
         "env", "YUME_COVER_HOST=127.0.0.1", f"YUME_COVER_PORT={COVER_PORT}",
         str(node), str(REPO_ROOT / "tools" / "cover-node" / "backend.mjs"),
     ])
@@ -325,11 +313,10 @@ def run_browser_cover(
     browser: Path,
     workdir: Path,
     output: Path,
-    uid: int,
-    gid: int,
+    identity: RuntimeIdentity,
 ) -> tuple[int, list[str]]:
     profile = workdir / "chromium-profile"
-    argv = lab.command(lab.client_ns, [*drop_prefix(uid, gid),
+    argv = lab.command(lab.client_ns, [*drop_prefix(identity),
         "env", f"HOME={workdir / 'home'}", f"XDG_RUNTIME_DIR={workdir / 'runtime'}",
         str(browser), "--headless", "--disable-gpu", "--no-sandbox",
         "--disable-breakpad", "--disable-crash-reporter",
@@ -356,25 +343,6 @@ def run_browser_cover(
     return code, argv
 
 
-RATE_RE = re.compile(
-    r"^(TOTAL|UP|DOWN)\s+([0-9.]+) MiB\s+([0-9.]+) s\s+"
-    r"([0-9.]+) MiB/s /\s+([0-9.]+) Mbit/s$",
-    re.MULTILINE,
-)
-
-
-def parse_rates(output: str) -> dict[str, dict[str, float]]:
-    rates: dict[str, dict[str, float]] = {}
-    for row, mib, seconds, mib_s, mbit_s in RATE_RE.findall(output):
-        rates[row.lower()] = {
-            "mib": float(mib),
-            "seconds": float(seconds),
-            "mib_per_second": float(mib_s),
-            "mbit_per_second": float(mbit_s),
-        }
-    return rates
-
-
 def restore_output_owner(path: Path) -> None:
     uid = os.environ.get("SUDO_UID")
     gid = os.environ.get("SUDO_GID")
@@ -395,17 +363,18 @@ def main() -> int:
 
     yume = executable(args.yume, ())
     yumed = executable(args.yumed, ())
-    node = executable(args.node, ("node",))
     if not yume or not yumed:
         raise SystemExit("build/bin/yume and build/bin/yumed are required")
-    if not node:
-        raise SystemExit("Node.js is required for the real loopback cover")
-    node_version = command_version([str(node), "--version"])
-    if not args.allow_node_version_mismatch and not node_version.startswith("v24.18."):
-        raise SystemExit(
-            f"Node 24.18.x is required for the pinned cover profile (found {node_version}); "
-            "use --allow-node-version-mismatch only for non-fingerprint testing"
+    try:
+        node, node_version, node_bootstrapped = resolve_pinned_node(
+            args.node,
+            allow_mismatch=args.allow_node_version_mismatch,
+            bootstrap=not args.no_node_bootstrap,
         )
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+    if node_bootstrapped:
+        print(f"[bench] using pinned {node_version} from the invoking user's npm cache")
 
     browser = None if args.no_browser or args.quick else executable(
         args.browser, ("chromium", "chromium-browser", "google-chrome")
@@ -427,7 +396,7 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=False, mode=0o750)
     workdir = Path(tempfile.mkdtemp(prefix="yume-bench-2-"))
     os.chmod(workdir, 0o700)
-    run_uid, run_gid = unprivileged_identity()
+    run_identity = invoking_identity()
 
     lab = NetworkLab(profile)
     processes: list[ManagedProcess] = []
@@ -451,10 +420,10 @@ def main() -> int:
         )
         (workdir / "home").mkdir(mode=0o700)
         (workdir / "runtime").mkdir(mode=0o700)
-        chown_tree(workdir, run_uid, run_gid)
+        chown_tree(workdir, run_identity)
         lab.create()
         node_process = start_node(
-            lab, node, output_dir / "node.log", run_uid, run_gid
+            lab, node, output_dir / "node.log", run_identity
         )
         processes.append(node_process)
         yumed_process = start_yumed(lab, yumed, keys, output_dir / "yumed.log")
@@ -490,8 +459,7 @@ def main() -> int:
                 browser,
                 workdir,
                 output_dir / "cover-chromium.log",
-                run_uid,
-                run_gid,
+                run_identity,
             )
             if capture:
                 capture.stop(interrupt=True)

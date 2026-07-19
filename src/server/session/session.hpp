@@ -110,14 +110,18 @@ private:
                            bool keep_alive,
                            std::string close_reason);
     void send_real_http_response(const std::string& path, const std::string& method,
-                                 bool keep_alive = false);
-    // Emit a static file under --real-root as an nginx-shaped 200 (Server,
-    // Date, Content-Type, Content-Length, Last-Modified, ETag, Accept-Ranges).
+                                 bool keep_alive = false,
+                                 const std::string& request_headers = "");
+    // Emit a static file under --real-root as an nginx-shaped response. Honors
+    // conditional GET (If-None-Match / If-Modified-Since -> 304) and byte Range
+    // requests (-> 206, or 416 when unsatisfiable); otherwise a 200 with Server,
+    // Date, Content-Type, Content-Length, Last-Modified, ETag, Accept-Ranges.
     // HEAD keeps the headers but drops the body.
     void send_static_file(const std::string& rel_path,
                           static_site::FileContents file,
                           bool head_only,
-                          bool keep_alive = false);
+                          bool keep_alive,
+                          const std::string& request_headers);
     void send_robots_txt_response(bool head_only = false, bool keep_alive = false);
     // Profile-driven 404 served on any non-yume probe (HTTP or otherwise)
     // so an active probe or TLS-terminating inspector gets a valid HTTP

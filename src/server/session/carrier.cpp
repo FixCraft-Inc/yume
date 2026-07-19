@@ -357,7 +357,7 @@ void Session::dispatch_http_request(std::string request) {
         return;
     }
     if (cfg_.real_http) {
-        send_real_http_response(path, method, keep_alive);
+        send_real_http_response(path, method, keep_alive, request);
     } else {
         // Pre-1.0 this path closed immediately, which is a strong DPI signal.
         // Serve a profile-driven 404 so the probe sees a real-looking web
@@ -485,7 +485,7 @@ void Session::send_disguise_404(const std::string& path) {
 }
 
 void Session::send_real_http_response(const std::string& path, const std::string& method,
-                                      bool keep_alive) {
+                                      bool keep_alive, const std::string& request_headers) {
     const bool head_only = method == "HEAD";
     if (cfg_.robots_deny && path == "/robots.txt") {
         send_robots_txt_response(head_only, keep_alive);
@@ -504,7 +504,8 @@ void Session::send_real_http_response(const std::string& path, const std::string
                 auto file = static_site::read_under_root(
                     cfg_.real_root, resolved->rel_path, kMaxRealFileBytes);
                 if (file.has_value()) {
-                    send_static_file(resolved->rel_path, std::move(*file), head_only, keep_alive);
+                    send_static_file(resolved->rel_path, std::move(*file), head_only,
+                                     keep_alive, request_headers);
                     return;
                 }
             }
@@ -569,17 +570,14 @@ void Session::send_real_http_response(const std::string& path, const std::string
 void Session::send_static_file(const std::string& rel_path,
                                static_site::FileContents file,
                                bool head_only,
-                               bool keep_alive) {
+                               bool keep_alive,
+                               const std::string& request_headers) {
     auto profile = yume::http_profile::server(
         cfg_.http_profile.empty() ? "yumed" : cfg_.http_profile);
     if (!profile.has_value()) {
         profile = yume::http_profile::server("yumed");
     }
 
-    // nginx-style static 200: header order and the ETag "<mtime>-<len>" shape
-    // match ngx_http_static_module so a byte-level comparison against real
-    // nginx lines up. Non-nginx profiles reuse this framing with their own
-    // Server value; per-profile static templates are a later refinement.
     const std::uintmax_t len = file.bytes.size();
     // file_time_type has no portable epoch, so convert through both clocks'
     // current now() (the standard pre-C++20 bridge). Approximate to the second,
@@ -592,25 +590,94 @@ void Session::send_static_file(const std::string& rel_path,
         const std::time_t t = std::chrono::system_clock::to_time_t(sys);
         if (t > 0) mtime_secs = static_cast<std::uintmax_t>(t);
     }
+    // nginx computes the ETag as "<hex-mtime>-<hex-length>"; match it so a
+    // byte-level comparison against real nginx lines up.
+    const std::string etag = "\"" + etag_hex(mtime_secs) + "-" + etag_hex(len) + "\"";
+    const std::string conn = keep_alive ? "Connection: keep-alive\r\n"
+                                        : "Connection: close\r\n";
 
-    std::string headers = "HTTP/1.1 200 OK\r\n";
-    if (!profile->server_header_value.empty()) {
-        headers += "Server: " + profile->server_header_value + "\r\n";
+    // Common validator headers present on every static reply.
+    auto server_and_date = [&]() {
+        std::string h;
+        if (!profile->server_header_value.empty()) {
+            h += "Server: " + profile->server_header_value + "\r\n";
+        }
+        h += "Date: " + yume::http_profile::http_date_now() + "\r\n";
+        return h;
+    };
+    auto last_modified = [&]() {
+        if (mtime_secs == 0) return std::string();
+        return "Last-Modified: " +
+               yume::http_profile::http_date(static_cast<std::time_t>(mtime_secs)) + "\r\n";
+    };
+
+    // Conditional GET (RFC 7232): If-None-Match wins over If-Modified-Since. A
+    // match means the client already has this representation -> 304, no body.
+    const std::string inm = host::http_header_value(request_headers, "If-None-Match");
+    bool not_modified = false;
+    if (!inm.empty()) {
+        not_modified = inm == "*" || inm.find(etag) != std::string::npos;
+    } else {
+        const std::string ims = host::http_header_value(request_headers, "If-Modified-Since");
+        if (!ims.empty() && mtime_secs != 0) {
+            const auto since = yume::http_profile::parse_http_date(ims);
+            if (since.has_value() &&
+                static_cast<std::time_t>(mtime_secs) <= *since) {
+                not_modified = true;
+            }
+        }
     }
-    headers += "Date: " + yume::http_profile::http_date_now() + "\r\n";
+    if (not_modified) {
+        std::string headers = "HTTP/1.1 304 Not Modified\r\n";
+        headers += server_and_date();
+        headers += last_modified();
+        headers += conn;
+        headers += "ETag: " + etag + "\r\n\r\n";
+        finish_masq_write(std::make_shared<std::string>(std::move(headers)),
+                          keep_alive, "served static 304");
+        return;
+    }
+
+    // Byte-range request. Absent -> full 200; Unsatisfiable -> 416; else 206.
+    const auto range = static_site::parse_byte_range(
+        host::http_header_value(request_headers, "Range"), len);
+    if (range.status == static_site::ByteRange::Status::Unsatisfiable) {
+        std::string headers = "HTTP/1.1 416 Range Not Satisfiable\r\n";
+        headers += server_and_date();
+        headers += "Content-Range: bytes */" + std::to_string(len) + "\r\n";
+        headers += "Content-Length: 0\r\n";
+        headers += conn;
+        headers += "\r\n";
+        finish_masq_write(std::make_shared<std::string>(std::move(headers)),
+                          keep_alive, "served static 416");
+        return;
+    }
+
+    const bool partial = range.status == static_site::ByteRange::Status::Satisfiable;
+    const std::uint64_t body_start = partial ? range.start : 0;
+    const std::uint64_t body_len = partial ? range.length() : len;
+
+    std::string headers = partial ? "HTTP/1.1 206 Partial Content\r\n"
+                                   : "HTTP/1.1 200 OK\r\n";
+    headers += server_and_date();
     headers += "Content-Type: " + static_site::mime_type(rel_path) + "\r\n";
-    headers += "Content-Length: " + std::to_string(len) + "\r\n";
-    if (mtime_secs != 0) {
-        headers += "Last-Modified: " +
-                   yume::http_profile::http_date(static_cast<std::time_t>(mtime_secs)) + "\r\n";
+    headers += "Content-Length: " + std::to_string(body_len) + "\r\n";
+    headers += last_modified();
+    if (partial) {
+        headers += "Content-Range: bytes " + std::to_string(range.start) + "-" +
+                   std::to_string(range.end) + "/" + std::to_string(len) + "\r\n";
     }
-    headers += keep_alive ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
-    headers += "ETag: \"" + etag_hex(mtime_secs) + "-" + etag_hex(len) + "\"\r\n";
+    headers += conn;
+    headers += "ETag: " + etag + "\r\n";
     headers += "Accept-Ranges: bytes\r\n\r\n";
 
-    auto resp = std::make_shared<std::string>(head_only ? std::move(headers)
-                                                        : headers + file.bytes);
-    finish_masq_write(std::move(resp), keep_alive, "served static file");
+    std::string out = std::move(headers);
+    if (!head_only) {
+        out.append(file.bytes, static_cast<std::size_t>(body_start),
+                   static_cast<std::size_t>(body_len));
+    }
+    finish_masq_write(std::make_shared<std::string>(std::move(out)), keep_alive,
+                      partial ? "served static 206" : "served static file");
 }
 
 void Session::send_robots_txt_response(bool head_only, bool keep_alive) {

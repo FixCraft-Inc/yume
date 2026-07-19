@@ -141,6 +141,84 @@ std::string mime_type(std::string_view path) {
     return "application/octet-stream";
 }
 
+ByteRange parse_byte_range(std::string_view range_header, std::uint64_t file_size) {
+    ByteRange out;
+    // Trim leading/trailing spaces and require the "bytes=" unit.
+    while (!range_header.empty() && (range_header.front() == ' ' || range_header.front() == '\t')) {
+        range_header.remove_prefix(1);
+    }
+    constexpr std::string_view kUnit = "bytes=";
+    if (range_header.size() < kUnit.size() || range_header.substr(0, kUnit.size()) != kUnit) {
+        return out;  // Absent
+    }
+    std::string_view spec = range_header.substr(kUnit.size());
+    // We only serve a single range; a comma means a multi-range request, which
+    // we answer with the full 200 instead of multipart/byteranges.
+    if (spec.find(',') != std::string_view::npos) {
+        return out;  // Absent
+    }
+    const auto dash = spec.find('-');
+    if (dash == std::string_view::npos) {
+        return out;  // malformed -> Absent
+    }
+    const std::string_view first = spec.substr(0, dash);
+    const std::string_view last = spec.substr(dash + 1);
+
+    auto to_u64 = [](std::string_view s, std::uint64_t& v) -> bool {
+        if (s.empty()) return false;
+        std::uint64_t acc = 0;
+        for (char c : s) {
+            if (c < '0' || c > '9') return false;
+            acc = acc * 10 + static_cast<std::uint64_t>(c - '0');
+        }
+        v = acc;
+        return true;
+    };
+
+    if (file_size == 0) {
+        out.status = ByteRange::Status::Unsatisfiable;
+        return out;
+    }
+
+    if (first.empty()) {
+        // Suffix form "bytes=-N": the final N bytes.
+        std::uint64_t n = 0;
+        if (!to_u64(last, n) || n == 0) {
+            out.status = ByteRange::Status::Unsatisfiable;
+            return out;
+        }
+        out.start = n >= file_size ? 0 : file_size - n;
+        out.end = file_size - 1;
+        out.status = ByteRange::Status::Satisfiable;
+        return out;
+    }
+
+    std::uint64_t start = 0;
+    if (!to_u64(first, start)) {
+        return out;  // malformed -> Absent
+    }
+    if (start >= file_size) {
+        out.status = ByteRange::Status::Unsatisfiable;
+        return out;
+    }
+    std::uint64_t end = file_size - 1;
+    if (!last.empty()) {
+        if (!to_u64(last, end)) {
+            return out;  // malformed -> Absent
+        }
+        if (end < start) {
+            return out;  // malformed -> Absent
+        }
+        if (end >= file_size) {
+            end = file_size - 1;  // clamp to the file
+        }
+    }
+    out.start = start;
+    out.end = end;
+    out.status = ByteRange::Status::Satisfiable;
+    return out;
+}
+
 std::optional<FileContents> read_under_root(const std::string& root,
                                             const std::string& rel_path,
                                             std::size_t max_bytes) {

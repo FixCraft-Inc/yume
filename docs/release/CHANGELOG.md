@@ -15,8 +15,10 @@ validation are complete.
   per-response size cap bounds one cover reply. The same root/index backs both
   the HTTP/1.1 probe and the H2 decoy, with HTTP/1.1 keep-alive across a page's
   assets (bodyless GET/HEAD only, bounded by a per-connection request cap and an
-  idle timeout). Implies `--real`; pair with `--hide-in-the-crowd nginx` for the
-  closest header fit.
+  idle timeout), conditional GET (`If-None-Match`/`If-Modified-Since` -> 304),
+  and byte `Range` requests (-> 206 Partial Content, or 416 when unsatisfiable).
+  Implies `--real`; pair with `--hide-in-the-crowd nginx` for the closest header
+  fit.
 
 ### Changed
 - **License**: YUME source, apps, daemon, proxy, GUI, and libyume are

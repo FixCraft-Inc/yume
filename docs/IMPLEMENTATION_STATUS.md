@@ -32,8 +32,9 @@ long-running concurrency validation remain.
   resolution, MIME, `Content-Length`/`Last-Modified`/nginx `ETag`, size cap),
   shared across the HTTP/1.1 probe and the H2 decoy, with HTTP/1.1 keep-alive
   across a page's assets (bodyless GET/HEAD only; per-connection request cap +
-  idle timeout). Static 200s use nginx-style framing; per-profile static
-  templates are not yet implemented.
+  idle timeout), conditional GET (`If-None-Match`/`If-Modified-Since` -> 304),
+  and byte `Range` requests (-> 206 / 416). Static 200s use nginx-style framing;
+  per-profile static templates are not yet implemented.
 - Client profile rotation advances after successful TLS connections; the HTTP
   User-Agent follows the active preset unless explicitly overridden.
 - Whole-session close has a five-second deadline, pending service opens are

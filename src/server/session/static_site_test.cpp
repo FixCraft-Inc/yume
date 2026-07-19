@@ -16,7 +16,9 @@
 namespace {
 
 namespace fs = std::filesystem;
+using yume::server::static_site::ByteRange;
 using yume::server::static_site::mime_type;
+using yume::server::static_site::parse_byte_range;
 using yume::server::static_site::read_under_root;
 using yume::server::static_site::resolve_target;
 
@@ -71,6 +73,37 @@ void test_mime_types() {
     assert(mime_type("trailing.") == "application/octet-stream");
 }
 
+void test_parse_byte_range() {
+    using S = ByteRange::Status;
+    // No/!bytes header -> Absent (serve full 200).
+    assert(parse_byte_range("", 1000).status == S::Absent);
+    assert(parse_byte_range("items=0-1", 1000).status == S::Absent);
+    // Simple closed range.
+    auto a = parse_byte_range("bytes=0-99", 1000);
+    assert(a.status == S::Satisfiable && a.start == 0 && a.end == 99 && a.length() == 100);
+    // Open-ended range to EOF.
+    auto b = parse_byte_range("bytes=100-", 1000);
+    assert(b.status == S::Satisfiable && b.start == 100 && b.end == 999);
+    // Suffix (last N bytes), including N larger than the file.
+    auto c = parse_byte_range("bytes=-100", 1000);
+    assert(c.status == S::Satisfiable && c.start == 900 && c.end == 999);
+    auto d = parse_byte_range("bytes=-5000", 1000);
+    assert(d.status == S::Satisfiable && d.start == 0 && d.end == 999);
+    // End past EOF clamps.
+    auto e = parse_byte_range("bytes=990-100000", 1000);
+    assert(e.status == S::Satisfiable && e.start == 990 && e.end == 999);
+    // Whitespace tolerated.
+    assert(parse_byte_range("  bytes=0-0", 1000).status == S::Satisfiable);
+    // Unsatisfiable: start at/after EOF, empty suffix, empty file.
+    assert(parse_byte_range("bytes=1000-", 1000).status == S::Unsatisfiable);
+    assert(parse_byte_range("bytes=-0", 1000).status == S::Unsatisfiable);
+    assert(parse_byte_range("bytes=0-0", 0).status == S::Unsatisfiable);
+    // Malformed / multi-range -> Absent (fall back to full 200).
+    assert(parse_byte_range("bytes=abc-1", 1000).status == S::Absent);
+    assert(parse_byte_range("bytes=5-1", 1000).status == S::Absent);
+    assert(parse_byte_range("bytes=0-9,20-29", 1000).status == S::Absent);
+}
+
 void test_read_under_root_and_symlink_escape() {
     const fs::path base =
         fs::temp_directory_path() /
@@ -111,6 +144,7 @@ int main() {
     test_resolve_index_and_simple_paths();
     test_resolve_rejects_traversal_and_tricks();
     test_mime_types();
+    test_parse_byte_range();
     test_read_under_root_and_symlink_escape();
     std::puts("static_site_test: all cases passed");
     return 0;

@@ -129,9 +129,11 @@ Results are written under `yume-bench-results/<UTC timestamp>/` by default:
 - `report.json` records versions, network settings, commands, exit codes, and
   parsed MiB/s and Mbit/s rows.
 
-The helper requires Node 24.18.x for the pinned cover profile. A different Node
-version can be used for functional testing with
-`--allow-node-version-mismatch`, but that run is not Node-profile evidence.
+The helper requires Node 24.18.x for the pinned cover profile. When the system
+Node is older and `npx` is available, it resolves the exact pinned runtime in
+the invoking user's npm cache automatically. Pass `--no-node-bootstrap` to
+forbid that download, or `--allow-node-version-mismatch` for a functional-only
+run with the system Node.
 Likewise, the browser version recorded in `report.json` must match the pinned
 Chrome fixture before its PCAP is used as fingerprint evidence.
 
@@ -144,6 +146,61 @@ python3 scripts/yume_bench_localhost.py --full --duration-sec 120 --dev
 ```
 
 ### Two-host LAN or WAN
+
+Do not reuse the generic example JSON for a two-host endpoint benchmark: it
+does not contain a matching server identity, admission secret, PSK, or TLS
+trust anchor. Generate a minimal matching bundle on the client instead:
+
+```bash
+# local-workstation
+scripts/yume_bench_lan.py prepare \
+  --server build-host.example \
+  --output ~/yume-lan-kit
+
+scp -r ~/yume-lan-kit/server \
+  f1xgod@build-host.example:~/yume-lan-server
+```
+
+The existing `~/yume` checkout on remote-builder may contain benchmark work or
+other local changes. Use a clean sibling checkout instead of resetting it:
+
+```bash
+# remote-builder
+git clone https://github.com/FixCraft-Inc/yume.git ~/yume-main
+cd ~/yume-main
+./ezbuild.sh
+
+sudo scripts/yume_bench_lan.py server \
+  --bundle ~/yume-lan-server
+```
+
+Then run the client and capture its physical LAN flow:
+
+```bash
+# local-workstation
+cd ~/yume
+sudo scripts/yume_bench_lan.py client \
+  --bundle ~/yume-lan-kit/client \
+  --full --capture --cover
+```
+
+Use `--quick` on the client for the 32 MiB/four-stream smoke before committing
+to the full 1024 MiB/64-stream run. `--cover` follows the endpoint test with a
+real Chrome/Chromium page load and records it separately from the tunnel PCAP.
+Client artifacts are written under `yume-bench-results/lan-<UTC timestamp>/`.
+A full bidirectional capture can exceed 2 GiB. The server command stays in the
+foreground and should be stopped with Ctrl-C after the client finishes.
+
+The endpoint run always exercises the 2.0 ML-KEM-1024 + X25519 + PSK suite,
+directional ratchets, H2/WebSocket carrier, and Node masquerade. `--cover` is a
+separate real-browser request to the same public endpoint. Hop mode and nginx
+are intentionally absent because neither is part of the focused 2.0 wire path.
+
+The bundle contains shared high-entropy admission and inner PSK files. Treat
+the SCP step as out-of-band secret distribution: do not publish or commit the
+bundle, and delete it when the benchmark is finished.
+
+### Manually configured endpoint
 
 For a physical endpoint, provision the identity, admission secret, inner PSK,
 TLS certificate, and real Node service as described in

@@ -18,6 +18,7 @@ env:
   BASEFWX_REPO: "https://github.com/F1xGOD/basefwx.git"
   BASEFWX_REF_FILE: "config/refs/basefwx.ref"
   YUME_VENDOR_ARCHIVE: "third_party/prebuilt/yume-vendor-prebuilt.tar.xz"
+  CODEQL_BUILD_JOBS: "2"
 
 jobs:
   analyze:
@@ -77,14 +78,26 @@ jobs:
             tar -xJf "${YUME_VENDOR_ARCHIVE}"
           fi
           test -d vendor/linux-x86_64
+
+      - name: Configure C++ CodeQL build
+        if: matrix.language == 'c-cpp'
+        run: |
           cmake -S . -B build-codeql \
-            -DCMAKE_BUILD_TYPE=Release \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DYUME_LTO=OFF \
             -DBASEFWX_USE_VENDOR_DEPS=ON \
             -DBASEFWX_VENDOR_DIR="${GITHUB_WORKSPACE}/vendor/linux-x86_64" \
             -DBASEFWX_REQUIRE_ARGON2=ON \
             -DBASEFWX_REQUIRE_OQS=ON \
             -DBASEFWX_REQUIRE_LZMA=ON
-          cmake --build build-codeql --parallel
+
+      - name: Build C++ production targets
+        if: matrix.language == 'c-cpp'
+        run: |
+          cmake --build build-codeql \
+            --target yume yumed yume_facade \
+            --parallel "${CODEQL_BUILD_JOBS}"
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v4

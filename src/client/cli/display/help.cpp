@@ -26,15 +26,15 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --credits --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --codec --codec-listen --monero-rpc --monero-rpc-listen --quickbench --fullbench --full-bench --localbench --bench --bench-full --endpoint-fullbench --bench-mib --bench-chunk-kib --bench-streams --bench-direction --duration-sec --latency-iters --bulk-mib --streams --cooldown-ms --repeat --configs --one-way --json --json-stdout --dev --color --no-color --keep-workdir --list-configs --threads --tunnels --obfs --no-obfs --obfs-secret --obfs-pad-multiple --obfs-jitter-ms export import --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --inner --no-inner --inner-heavy --inner-light --hop --no-hop --hop-interval --pq-pub --use-embedded-master --no-embedded-master --anonym-ca-cert --tls-ca --tls-name --tls-server-name --tls-pin --profile --no-stealth --tls-stealth-rotate --tls-stealth-rotation-interval --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --self-dpi --no-self-dpi --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --service-streams-only --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
-  local file_opts="--config --auth -i --pq-pub --anonym-ca-cert --tls-ca --tls-fingerprint-log-path --relay-key-file"
+  local opts="--help -h --version --credits --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --codec --codec-listen --monero-rpc --monero-rpc-listen --quickbench --fullbench --full-bench --localbench --bench --bench-full --endpoint-fullbench --bench-mib --bench-chunk-kib --bench-streams --bench-direction --duration-sec --latency-iters --bulk-mib --streams --cooldown-ms --repeat --configs --one-way --json --json-stdout --dev --color --no-color --keep-workdir --list-configs --threads --tunnels --obfs --obfs-secret-file --inner-psk-file export import --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --anonym-ca-cert --tls-ca --tls-name --tls-server-name --tls-pin --profile --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --self-dpi --no-self-dpi --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --service-streams-only --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
+  local file_opts="--config --auth -i --obfs-secret-file --inner-psk-file --anonym-ca-cert --tls-ca --tls-fingerprint-log-path --relay-key-file"
   case "$prev" in
     --completion)
       COMPREPLY=( $(compgen -W "bash" -- "$cur") )
       return 0
       ;;
     --profile)
-      COMPREPLY=( $(compgen -W "chrome firefox safari" -- "$cur") )
+      COMPREPLY=( $(compgen -W "chrome" -- "$cur") )
       return 0
       ;;
     --codec)
@@ -64,8 +64,7 @@ void print_version() {
         << "BaseFWX: " << yume::kBasefwxVersion << "\n"
         << "OpenSSL: " << OpenSSL_version(OPENSSL_VERSION) << "\n"
         << "PQ/ML-KEM: " << inner::pq_backend_version() << "\n"
-        << "Argon2id: " << inner::argon2_backend_version() << "\n"
-        << "PBKDF2/HKDF fallback: " << (inner::pbkdf2_supported() ? "available" : "unavailable") << "\n";
+        << "Inner suite: ML-KEM-1024 + X25519 + HKDF-SHA256 + AES-256-GCM\n";
 }
 
 void print_credits() {
@@ -101,12 +100,9 @@ void print_help() {
         << "                             host:port\n"
         << "                             [ipv6]:port\n"
         << "                           Sets --server + --port together.\n"
-        << "  --hide-in-the-crowd <p>  HTTP-layer disguise profile. Sets the\n"
-        << "                             User-Agent emitted in stealth probes.\n"
-        << "                             Values: chrome, firefox, safari, edge,\n"
-        << "                             curl, wget, yume.\n"
-        << "                             When omitted, derived from --profile so the\n"
-        << "                             HTTP UA stays consistent with the TLS JA3.\n"
+        << "  --hide-in-the-crowd chrome\n"
+        << "                           Explicit spelling for the pinned Chrome 150\n"
+        << "                             HTTP profile; other profiles are rejected.\n"
         << "  --config <path>          Config file\n"
         << "  -i, --auth <path>        Identity key\n\n"
         << "Modes:\n"
@@ -182,27 +178,12 @@ void print_help() {
         << "  --boring                 Minimal output\n"
         << "  --                        Service-safe launch\n\n"
         << "Security:\n"
-        << "  --inner                  Enable inner PQ encryption\n"
-        << "  --no-inner               Disable inner PQ encryption and hopping\n"
-        << "  --inner-heavy            Heavy KDF mode\n"
-        << "  --inner-light            Light KDF mode\n"
-        << "  --hop / --no-hop         Inner key hopping on/off\n"
-        << "  --hop-interval <ms>      Hop interval\n"
-        << "  --obfs / --no-obfs       HTTPS masking tunnel preface on/off\n"
-        << "  --obfs-secret <string>   Shared HMAC admission secret; must match\n"
-        << "                             yumed. Required for public-node endpoints.\n"
-        << "  --obfs-pad-multiple <N>  Pad every outbound frame payload to a\n"
-        << "                             multiple of N bytes (0-256, default 0).\n"
-        << "                             Reduces stable payload-size features.\n"
-        << "                             Requires the same yume version on the\n"
-        << "                             server (kFlagPadded support).\n"
-        << "  --obfs-jitter-ms <ms>    Defer each batched write by a uniform\n"
-        << "                             pseudo-random 0..ms delay (default 0).\n"
-        << "                             Adds bounded variation and latency; it\n"
-        << "                             does not claim ML/DPI immunity.\n"
-        << "  --pq-pub <path>          PQ public key\n"
-        << "  --use-embedded-master    Allow embedded BaseFWX master fallback\n"
-        << "  --no-embedded-master     Disable embedded BaseFWX master fallback\n"
+        << "  --obfs                   Use the mandatory HTTP/2 carrier (default)\n"
+        << "  --obfs-secret-file <p>  32-byte admission secret as exactly 64\n"
+        << "                             lowercase hex characters in a protected file\n"
+        << "  --inner-psk-file <p>    Mandatory 32-byte inner PSK in the same format\n"
+        << "  The inner suite and 256 KiB / 512-frame / 500 ms directional\n"
+        << "  ratchet limits are mandatory and have no 1.x downgrade switches.\n"
         << "  --require-anonym, --anonym\n"
         << "                           Require anonym proof\n"
         << "  --anonym-ca-cert <path>  Anonym CA certificate\n"
@@ -219,11 +200,7 @@ void print_help() {
         << "TLS:\n"
         << "  --tls-name <host>       SNI/certificate/HTTP Host name when\n"
         << "                           --server is an IP or alternate route\n"
-        << "  --profile <name>         chrome, firefox, safari\n"
-        << "  --no-stealth             Disable TLS stealth mode\n"
-        << "  --tls-stealth-rotate     Rotate stealth profiles after successful TLS connections\n"
-        << "  --tls-stealth-rotation-interval <n>\n"
-        << "                           Successful connections per active profile\n"
+        << "  --profile <name>         chrome (the only 2.0 dev1 fixture)\n"
         << "  --tls-fingerprint-log    Log TLS fingerprint metrics\n"
         << "  --tls-fingerprint-log-path <path>\n"
         << "                           Fingerprint log path\n"

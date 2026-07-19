@@ -6,6 +6,8 @@
 
 #include "core/stealth/obfs_signal.hpp"
 
+#include "core/version.hpp"
+
 #include <openssl/crypto.h>
 
 #include <cstdio>
@@ -31,9 +33,34 @@ struct ParsedAuthority {
 };
 
 bool is_hex(unsigned char ch) {
-    return (ch >= '0' && ch <= '9') ||
-           (ch >= 'a' && ch <= 'f') ||
-           (ch >= 'A' && ch <= 'F');
+    return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+}
+
+void append_u16(crypto::Bytes& out, std::uint16_t value) {
+    out.push_back(static_cast<std::uint8_t>((value >> 8) & 0xffU));
+    out.push_back(static_cast<std::uint8_t>(value & 0xffU));
+}
+
+void append_u64(crypto::Bytes& out, std::uint64_t value) {
+    for (int shift = 56; shift >= 0; shift -= 8) {
+        out.push_back(static_cast<std::uint8_t>((value >> shift) & 0xffU));
+    }
+}
+
+std::optional<crypto::Bytes> decode_lower_hex(std::string_view text) {
+    if ((text.size() & 1U) != 0 || !std::all_of(text.begin(), text.end(), is_hex)) {
+        return std::nullopt;
+    }
+    auto nibble = [](char ch) -> std::uint8_t {
+        return ch <= '9' ? static_cast<std::uint8_t>(ch - '0')
+                         : static_cast<std::uint8_t>(ch - 'a' + 10);
+    };
+    crypto::Bytes out(text.size() / 2);
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        out[i] = static_cast<std::uint8_t>((nibble(text[2 * i]) << 4) |
+                                           nibble(text[2 * i + 1]));
+    }
+    return out;
 }
 
 std::optional<std::uint16_t> parse_port(std::string_view text) {
@@ -137,31 +164,31 @@ std::string to_hex(const std::uint8_t* data, std::size_t len) {
 }  // namespace
 
 crypto::Bytes derive_signal_key(std::string_view secret) {
-    crypto::Bytes ikm(secret.begin(), secret.end());
-    if (ikm.empty()) {
-        ikm.push_back(0);
-    }
-    crypto::Bytes salt{'y', 'u', 'm', 'e', '-', 'o', 'b', 'f', 's', '-', 'p', 'a', 't', 'h'};
-    return crypto::hkdf_sha256(ikm, "yume-obfs-v2-K", 32, salt);
+    return crypto::Bytes(secret.begin(), secret.end());
 }
 
 std::string derive_path_token(const crypto::Bytes& signal_key,
                               std::string_view sni,
-                              std::int64_t hour_epoch) {
-    crypto::Bytes msg;
-    msg.reserve(sni.size() + 32);
-    msg.insert(msg.end(), sni.begin(), sni.end());
-    msg.push_back('|');
-    char hour_buf[32];
-    int n = std::snprintf(hour_buf, sizeof(hour_buf), "%lld", static_cast<long long>(hour_epoch));
-    if (n > 0) {
-        msg.insert(msg.end(), hour_buf, hour_buf + n);
+                              std::int64_t hour_epoch,
+                              std::string_view nonce_hex) {
+    const auto nonce = decode_lower_hex(nonce_hex);
+    auto normalized_sni = normalized_authority_host(sni, false);
+    if (signal_key.empty() || !normalized_sni.has_value() ||
+        !nonce.has_value() || nonce->size() != kH2NonceHexLen / 2) {
+        return {};
     }
-    msg.push_back('|');
-    static const char kInfo[] = "yume-obfs-v2";
-    msg.insert(msg.end(), kInfo, kInfo + sizeof(kInfo) - 1);
+    crypto::Bytes msg;
+    msg.reserve(yume::kTransportVersion.size() + normalized_sni->size() +
+                nonce->size() + 20);
+    append_u16(msg, static_cast<std::uint16_t>(yume::kTransportVersion.size()));
+    msg.insert(msg.end(), yume::kTransportVersion.begin(),
+               yume::kTransportVersion.end());
+    append_u16(msg, static_cast<std::uint16_t>(normalized_sni->size()));
+    msg.insert(msg.end(), normalized_sni->begin(), normalized_sni->end());
+    append_u64(msg, static_cast<std::uint64_t>(hour_epoch));
+    msg.insert(msg.end(), nonce->begin(), nonce->end());
     crypto::Bytes mac = crypto::hmac_sha256(msg, signal_key);
-    return to_hex(mac.data(), 16);
+    return to_hex(mac.data(), mac.size());
 }
 
 std::string build_path(const std::string& token, const std::string& nonce_hex) {
@@ -208,7 +235,7 @@ bool authority_matches_tls_sni(std::string_view authority,
     return true;
 }
 
-bool carrier_path_admitted(std::string_view secret,
+bool carrier_path_admitted(const crypto::Bytes& secret,
                            std::string_view authority,
                            std::string_view tls_sni,
                            std::string_view path,
@@ -218,11 +245,8 @@ bool carrier_path_admitted(std::string_view secret,
         !valid_path_shape(path)) {
         return false;
     }
-    if (secret.empty()) {
-        return true;
-    }
-    const crypto::Bytes signal_key = derive_signal_key(secret);
-    return verify_path_token({signal_key}, tls_sni, path, now_seconds);
+    if (secret.empty()) return false;
+    return verify_path_token({secret}, tls_sni, path, now_seconds);
 }
 
 bool verify_path_token(const std::vector<crypto::Bytes>& signal_keys,
@@ -233,11 +257,12 @@ bool verify_path_token(const std::vector<crypto::Bytes>& signal_keys,
         return false;
     }
     std::string_view received_token = path.substr(1, kH2TokenHexLen);
+    std::string_view nonce = path.substr(2 + kH2TokenHexLen, kH2NonceHexLen);
     std::int64_t hour = now_seconds / kHourSeconds;
     int matched = 0;
-    for (std::int64_t bucket : {hour - 1, hour, hour + 1}) {
+    for (std::int64_t bucket : {hour - 1, hour}) {
         for (const auto& key : signal_keys) {
-            std::string expected = derive_path_token(key, sni, bucket);
+            std::string expected = derive_path_token(key, sni, bucket, nonce);
             if (expected.size() == received_token.size() &&
                 CRYPTO_memcmp(expected.data(), received_token.data(), expected.size()) == 0) {
                 matched = 1;
@@ -250,6 +275,51 @@ bool verify_path_token(const std::vector<crypto::Bytes>& signal_keys,
 std::string random_nonce_hex() {
     crypto::Bytes raw = crypto::random_bytes(kH2NonceHexLen / 2);
     return to_hex(raw.data(), raw.size());
+}
+
+AdmissionReplayCache::AdmissionReplayCache(std::size_t max_entries,
+                                           std::int64_t ttl_seconds)
+    : max_entries_(std::max<std::size_t>(1, max_entries)),
+      ttl_seconds_(std::max<std::int64_t>(1, ttl_seconds)) {}
+
+bool AdmissionReplayCache::AcceptPath(std::string_view path,
+                                      std::int64_t now_seconds) {
+    if (!valid_path_shape(path)) return false;
+    const std::string nonce(path.substr(2 + kH2TokenHexLen, kH2NonceHexLen));
+    std::lock_guard<std::mutex> lock(mutex_);
+    Evict(now_seconds);
+    const auto found = expiry_by_nonce_.find(nonce);
+    if (found != expiry_by_nonce_.end() && found->second > now_seconds) {
+        return false;
+    }
+    const std::int64_t expiry = now_seconds + ttl_seconds_;
+    expiry_by_nonce_[nonce] = expiry;
+    expiry_order_.emplace_back(nonce, expiry);
+    while (expiry_by_nonce_.size() > max_entries_ && !expiry_order_.empty()) {
+        const auto oldest = std::move(expiry_order_.front());
+        expiry_order_.pop_front();
+        const auto it = expiry_by_nonce_.find(oldest.first);
+        if (it != expiry_by_nonce_.end() && it->second == oldest.second) {
+            expiry_by_nonce_.erase(it);
+        }
+    }
+    return true;
+}
+
+std::size_t AdmissionReplayCache::size() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return expiry_by_nonce_.size();
+}
+
+void AdmissionReplayCache::Evict(std::int64_t now_seconds) {
+    while (!expiry_order_.empty() && expiry_order_.front().second <= now_seconds) {
+        const auto oldest = std::move(expiry_order_.front());
+        expiry_order_.pop_front();
+        const auto it = expiry_by_nonce_.find(oldest.first);
+        if (it != expiry_by_nonce_.end() && it->second == oldest.second) {
+            expiry_by_nonce_.erase(it);
+        }
+    }
 }
 
 }  // namespace yume::obfs

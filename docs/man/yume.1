@@ -1,4 +1,4 @@
-.TH YUME 1 "2026-06-27" "YUME 1.1" "YUME Manual"
+.TH YUME 1 "2026-07-18" "YUME 2.0-dev1" "YUME Manual"
 .SH NAME
 yume \- stealth post-quantum transport client
 .SH SYNOPSIS
@@ -34,11 +34,12 @@ yume \- stealth post-quantum transport client
 .B yume
 is the YUME client. It opens an authenticated carrier to
 .BR yumed (8)
-and sends local application streams through that carrier. The carrier is
-TLS 1.3, can use an HTTP/2 camouflage preface, and can carry an
-additional BaseFWX-backed inner encryption layer with ML-KEM key
-agreement, AES-256-GCM frame encryption, Argon2id or HKDF key derivation,
-and live key hopping.
+and sends local application streams through that carrier. The mandatory 2.0
+carrier remains HTTP/2 for the full connection and carries masked WebSocket
+binary messages after a Chrome-shaped page/asset prime and RFC 8441 extended
+CONNECT. Its mandatory inner channel combines ephemeral ML-KEM-1024, X25519,
+and a random file PSK with salted HKDF, then uses one-use AES-256-GCM message
+keys and independent directional epochs.
 .PP
 The client can expose a local SOCKS5 proxy, run one command through the
 tunnel, create local or reverse forwards, attach to relay clients, or
@@ -518,50 +519,19 @@ Prefer IPv4 behavior for
 Keep root privileges instead of dropping them where supported.
 .SH SECURITY OPTIONS
 .TP
-.B --inner
-Enable inner encryption. This option is kept for compatibility; prefer
-.B --inner-heavy
-or
-.BR --inner-light .
-.TP
-.B --no-inner
-Disable inner encryption and hopping.
-.TP
-.B --inner-heavy
-Use the heavy inner KDF path when available.
-.TP
-.B --inner-light
-Use the light inner KDF path.
-.TP
-.B --hop
-Enable live inner key hopping.
-.TP
-.B --no-hop
-Disable live inner key hopping.
-.TP
-.BI "--hop-interval " ms
-Set key hopping interval in milliseconds. The usual default is 500 ms.
-.TP
 .B --obfs
-Enable the HTTP/2 carrier handshake.
+Use the mandatory full-session HTTP/2 carrier. This is always enabled for
+accepted 2.0 tunnels.
 .TP
-.B --no-obfs
-Disable the HTTP/2 carrier handshake. This is useful for diagnostics but
-is more recognizable.
+.BI "--obfs-secret-file " path
+Load the mandatory admission secret. The file must contain exactly 64
+lowercase hexadecimal characters encoding 32 random bytes, with no newline
+and no group/world permissions.
 .TP
-.BI "--obfs-secret " string
-Shared HMAC secret used to bind the obfs path token to the expected peer.
-It must match yumed and is required for public-node endpoints.
-.TP
-.BI "--pq-pub " path
-Server PQ public key for inner crypto.
-.TP
-.B --use-embedded-master
-Allow the embedded BaseFWX master fallback. This is intended for explicit
-test/development use, not production deployments.
-.TP
-.B --no-embedded-master
-Disable the embedded BaseFWX master fallback.
+.BI "--inner-psk-file " path
+Load the separate mandatory inner PSK in the same strict file format. It is
+mixed by salted HKDF; Argon2 is not used. The 256 KiB, 512-frame, and 500 ms
+active directional rekey limits are fixed.
 .TP
 .B "--require-anonym, --anonym"
 Require the server to provide an accepted anonym proof.
@@ -577,21 +547,22 @@ Pin the server TLS certificate fingerprint.
 .SH TLS STEALTH OPTIONS
 .TP
 .BI "--profile " name
-Select a TLS browser profile:
-.BR chrome ,
-.BR firefox ,
-or
-.BR safari .
+Select the pinned Chrome 150 Linux profile. In 2.0-dev1,
+.B chrome
+is the only accepted value.
+.TP
+.B "--hide-in-the-crowd chrome"
+Explicit spelling for the same pinned Chrome 150 HTTP User-Agent profile.
+Other HTTP profiles are rejected for 2.0-dev1.
 .TP
 .B --no-stealth
-Disable TLS stealth profile shaping.
+Retired for 2.0 tunnels and rejected.
 .TP
 .B --tls-stealth-rotate
-Rotate stealth profiles after successful TLS connections. Unless explicitly
-overridden, the carrier User-Agent follows the active profile.
+Retired for the fixed 2.0 profile and rejected.
 .TP
 .BI "--tls-stealth-rotation-interval " n
-Number of successful connections per active profile.
+Retired for the fixed 2.0 profile and rejected.
 .TP
 .B --tls-fingerprint-log
 Log TLS fingerprint metrics.

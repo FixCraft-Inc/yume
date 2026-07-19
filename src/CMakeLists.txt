@@ -216,9 +216,14 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         core/app_codec/builtin/monero_rpc.cpp
         core/protocol/control_protocol.cpp
         core/security/crypto.cpp
+        core/security/auth_v2.cpp
         core/stealth/http_profile.cpp
+        core/stealth/h2_carrier.cpp
         core/security/identity.cpp
         core/security/inner_crypto.cpp
+        core/security/ratchet.cpp
+        core/security/session_ratchet.cpp
+        core/security/secret_file.cpp
         core/runtime/local_runtime.cpp
         core/runtime/service_stream.cpp
         core/runtime/system_profile.cpp
@@ -227,6 +232,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         core/stealth/obfs.cpp
         core/stealth/obfs_h2.cpp
         core/stealth/obfs_signal.cpp
+        core/stealth/websocket_codec.cpp
         core/stealth/tls_fingerprint.cpp
         core/stealth/tls_stealth.cpp
         core/stealth/tls_metrics.cpp
@@ -242,6 +248,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             OpenSSL::Crypto
             Threads::Threads
             nlohmann_json::nlohmann_json
+            PkgConfig::NGHTTP2
     )
     if(TARGET Boost::system)
         target_link_libraries(yume_core PUBLIC Boost::system)
@@ -355,6 +362,9 @@ add_library(yume_transport_core
     client/transport/crypto.cpp
     core/runtime/system_profile.cpp
     core/security/inner_crypto.cpp
+    core/security/auth_v2.cpp
+    core/security/ratchet.cpp
+    core/security/session_ratchet.cpp
     core/protocol/packet_bulk.cpp
     core/protocol/protocol.cpp
 )
@@ -400,6 +410,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/host/host_routes.cpp
         server/host/exposure_check.cpp
         server/host/http_proxy.cpp
+        server/host/http_backend_client.cpp
         server/host/extra_listeners.cpp
         server/runtime/kdf_admission.cpp
         server/runtime/manager.cpp
@@ -810,6 +821,24 @@ yume_link_atomic_if_needed(yume_inner_crypto_limits_test PRIVATE)
 yume_apply_perf_opts(yume_inner_crypto_limits_test)
 add_test(NAME yume_inner_crypto_limits_test COMMAND yume_inner_crypto_limits_test)
 
+add_executable(yume_ratchet_test core/security/ratchet_test.cpp)
+target_link_libraries(yume_ratchet_test PRIVATE yume_transport_core)
+yume_link_atomic_if_needed(yume_ratchet_test PRIVATE)
+yume_apply_perf_opts(yume_ratchet_test)
+add_test(NAME yume_ratchet_test COMMAND yume_ratchet_test)
+
+add_executable(yume_auth_v2_test core/security/auth_v2_test.cpp)
+target_link_libraries(yume_auth_v2_test PRIVATE yume_transport_core)
+yume_link_atomic_if_needed(yume_auth_v2_test PRIVATE)
+yume_apply_perf_opts(yume_auth_v2_test)
+add_test(NAME yume_auth_v2_test COMMAND yume_auth_v2_test)
+
+add_executable(yume_session_ratchet_test core/security/session_ratchet_test.cpp)
+target_link_libraries(yume_session_ratchet_test PRIVATE yume_transport_core)
+yume_link_atomic_if_needed(yume_session_ratchet_test PRIVATE)
+yume_apply_perf_opts(yume_session_ratchet_test)
+add_test(NAME yume_session_ratchet_test COMMAND yume_session_ratchet_test)
+
 add_executable(yume_stream_queue_limits_test core/runtime/stream_queue_limits_test.cpp)
 target_include_directories(yume_stream_queue_limits_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 yume_link_atomic_if_needed(yume_stream_queue_limits_test PRIVATE)
@@ -851,6 +880,24 @@ yume_apply_perf_opts(yume_cli_endpoint_parse_test)
 add_test(NAME yume_cli_endpoint_parse_test COMMAND yume_cli_endpoint_parse_test)
 
 if(NOT YUME_TRANSPORT_CORE_ONLY)
+    add_executable(yume_websocket_codec_test core/stealth/websocket_codec_test.cpp)
+    target_link_libraries(yume_websocket_codec_test PRIVATE yume_core)
+    yume_link_atomic_if_needed(yume_websocket_codec_test PRIVATE)
+    yume_apply_perf_opts(yume_websocket_codec_test)
+    add_test(NAME yume_websocket_codec_test COMMAND yume_websocket_codec_test)
+
+    add_executable(yume_secret_file_test core/security/secret_file_test.cpp)
+    target_link_libraries(yume_secret_file_test PRIVATE yume_core)
+    yume_link_atomic_if_needed(yume_secret_file_test PRIVATE)
+    yume_apply_perf_opts(yume_secret_file_test)
+    add_test(NAME yume_secret_file_test COMMAND yume_secret_file_test)
+
+    add_executable(yume_h2_carrier_test core/stealth/h2_carrier_test.cpp)
+    target_link_libraries(yume_h2_carrier_test PRIVATE yume_core)
+    yume_link_atomic_if_needed(yume_h2_carrier_test PRIVATE)
+    yume_apply_perf_opts(yume_h2_carrier_test)
+    add_test(NAME yume_h2_carrier_test COMMAND yume_h2_carrier_test)
+
     add_executable(yume_obfs_test core/stealth/obfs_test.cpp)
     target_link_libraries(yume_obfs_test PRIVATE yume_core)
     yume_link_atomic_if_needed(yume_obfs_test PRIVATE)

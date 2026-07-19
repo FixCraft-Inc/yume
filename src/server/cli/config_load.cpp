@@ -70,6 +70,12 @@ void resolve_server_config_paths(yume::server::ServerConfig& cfg,
     if (!cfg.real_root.empty()) {
         cfg.real_root = resolve_cfg_path(cfg.real_root);
     }
+    if (!cfg.obfs_secret_file.empty()) {
+        cfg.obfs_secret_file = resolve_cfg_path(cfg.obfs_secret_file);
+    }
+    if (!cfg.inner_psk_file.empty()) {
+        cfg.inner_psk_file = resolve_cfg_path(cfg.inner_psk_file);
+    }
     if (!cfg.real_secret_file.empty()) {
         cfg.real_secret_file = resolve_cfg_path(cfg.real_secret_file);
     }
@@ -298,13 +304,25 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
                 cfg.real_root = resolve_cfg_path(json["real_root"].get<std::string>());
                 cfg.real_http = true;
             }
+            if (json.contains("real_backend") && cfg.real_backend.empty()) {
+                cfg.real_backend = json["real_backend"].get<std::string>();
+                cfg.real_http = true;
+            }
             if (json.contains("real_secret") && cfg.real_secret.empty()) {
                 cfg.real_secret = json["real_secret"].get<std::string>();
             }
             if (json.contains("real_secret_file") && cfg.real_secret_file.empty()) {
                 cfg.real_secret_file = resolve_cfg_path(json["real_secret_file"].get<std::string>());
             }
-            if (json.contains("obfs_secret") && cfg.obfs_secret.empty()) {
+            if (json.contains("obfs_secret_file") && cfg.obfs_secret_file.empty()) {
+                cfg.obfs_secret_file = resolve_cfg_path(
+                    json["obfs_secret_file"].get<std::string>());
+            }
+            if (json.contains("inner_psk_file") && cfg.inner_psk_file.empty()) {
+                cfg.inner_psk_file = resolve_cfg_path(
+                    json["inner_psk_file"].get<std::string>());
+            }
+            if (json.contains("obfs_secret")) {
                 cfg.obfs_secret = json["obfs_secret"].get<std::string>();
             }
             if (json.contains("obfs_pad_multiple") && cfg.obfs_pad_multiple == 0) {

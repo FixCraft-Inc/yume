@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
@@ -22,6 +23,8 @@
 #include "core/security/crypto.hpp"
 #include "core/security/inner_crypto.hpp"
 #include "core/stealth/tls_fingerprint.hpp"
+#include "core/stealth/h2_carrier.hpp"
+#include "core/security/session_ratchet.hpp"
 
 namespace yume::client {
 
@@ -62,6 +65,9 @@ struct ConnectedSessionOptions {
     std::int64_t hop_offset_ms{0};
     std::optional<inner::KdfParams> inner_kdf;
     std::optional<crypto::Bytes> inner_key;
+    std::unique_ptr<obfs::H2Carrier> h2_carrier;
+    crypto::Bytes prefetched_carrier_bytes;
+    std::unique_ptr<ratchet::SessionRatchet> ratchet;
     std::string server_tls_fingerprint_sha256;
     tls_fingerprint::BrowserProfile base_tls_profile{
         tls_fingerprint::BrowserProfile::UNKNOWN};

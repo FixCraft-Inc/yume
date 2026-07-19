@@ -77,7 +77,7 @@ namespace detail {
 // ---- Constants (formerly session.cpp anonymous namespace) ----------------
 inline constexpr uint32_t kMaxFrameSize = 16 * 1024 * 1024;
 inline constexpr uint8_t kMinFrameType = protocol::AUTH;
-inline constexpr uint8_t kMaxFrameType = protocol::SOPEN;
+inline constexpr uint8_t kMaxFrameType = protocol::REKEY_ACK;
 inline constexpr int64_t kIdleTimeoutMs = 90 * 1000;
 inline constexpr int64_t kIdleCheckIntervalMs = 30 * 1000;
 inline constexpr int64_t kFrameHeaderTimeoutMs = 90 * 1000;

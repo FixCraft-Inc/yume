@@ -6,13 +6,9 @@
 
 #include "client/cli/display/status.hpp"
 
-#include <cctype>
-#include <iomanip>
-#include <sstream>
 #include <utility>
 
 #include "client/cli/connect/diagnostics.hpp"
-#include "util.hpp"
 
 namespace yume::client {
 namespace {
@@ -21,63 +17,17 @@ std::string color_wrap(const std::string& text, const char* code) {
     return std::string("\033[") + code + "m" + text + "\033[0m";
 }
 
-std::string to_upper(std::string value) {
-    for (char& c : value) {
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    }
-    return value;
-}
-
-std::string hop_status_line(const HopStatusSnapshot& hop) {
-    const std::string hop_state = hop.enabled ? "ON" : "OFF";
-    const std::string hop_line = color_wrap(hop_state, hop.enabled ? "1;32" : "1;31");
-
-    std::ostringstream hop_freq_stream;
-    hop_freq_stream.setf(std::ios::fixed);
-    hop_freq_stream << std::setprecision(2)
-                    << (hop.enabled && hop.interval_ms > 0
-                            ? (1000.0 / static_cast<double>(hop.interval_ms))
-                            : 0.0);
-    const std::string hop_freq = color_wrap(hop_freq_stream.str() + "Hz", "1;33");
-
-    std::int64_t adjusted = util::now_ms() + hop.offset_ms;
-    if (adjusted < 0) {
-        adjusted = 0;
-    }
-    const std::int64_t last_change = (hop.enabled && hop.interval_ms > 0)
-                                         ? (adjusted % static_cast<std::int64_t>(hop.interval_ms))
-                                         : 0;
-    const std::string hop_last = color_wrap(std::to_string(last_change) + "ms", "1;34");
-    return color_wrap("Hopping", "1;36") + ": " + hop_line + " - " + hop_freq + " | " + hop_last;
-}
-
 std::string build_status_block(const ConnectionStatusSummary& summary) {
     std::string protection_line = "TLS";
     if (summary.inner_established) {
-        std::vector<std::string> protections;
-        protections.push_back("PQ");
-        std::string kdf_name = summary.inner_kdf_name;
-        if (kdf_name.empty()) {
-            kdf_name = summary.inner_heavy ? "argon2" : "hkdf";
-        }
-        protections.push_back(to_upper(kdf_name));
-        protection_line.clear();
-        for (std::size_t i = 0; i < protections.size(); ++i) {
-            if (i != 0) {
-                protection_line += "/";
-            }
-            protection_line += protections[i];
-        }
+        protection_line = "ML-KEM-1024+X25519/PSK/AES-256-GCM";
     }
 
     const std::string inner_state =
         (summary.inner_established || summary.server_inner_active) ? "ON" : "OFF";
     std::string inner_line = color_wrap(inner_state, (inner_state == "ON") ? "1;32" : "1;31");
     if (summary.inner_established) {
-        inner_line += color_wrap(summary.inner_heavy ? " (heavy)" : " (light)", "1;35");
-        if (summary.have_inner_caps && summary.server_inner_dual) {
-            inner_line += color_wrap(", dual", "1;35");
-        }
+        inner_line += color_wrap(" (directional ratchet)", "1;35");
     }
 
     const std::string server_display = color_wrap(summary.server, "1;33");
@@ -98,7 +48,8 @@ std::string build_status_block(const ConnectionStatusSummary& summary) {
            color_wrap("Protection", "1;36") + ": " + protection_value + "\n" +
            color_wrap("Obfuscation", "1;36") + ": " + obfs_value + "\n" +
            color_wrap("Inner", "1;36") + ": " + inner_line + "\n" +
-           hop_status_line(summary.hop) + "\n" +
+           color_wrap("Epochs", "1;36") + ": " +
+               color_wrap("256 KiB / 512 frames / 500 ms active", "1;35") + "\n" +
            color_wrap("Verity", "1;36") + ": " + verity_line + "\n" +
            border + "\n";
 }

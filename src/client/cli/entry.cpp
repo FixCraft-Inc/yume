@@ -406,11 +406,6 @@ int Cli::run(int argc, char** argv) {
             return 1;
         }
     }
-    discover_default_pq_public_key(argv[0], &cfg);
-    if (args.bench && cfg.inner_crypto && !cfg.pq_public_key.empty() && !file_exists(cfg.pq_public_key)) {
-        util::log_warn("configured pq_public_key is missing; benchmark will try signed PQ auto-bootstrap");
-        cfg.pq_public_key.clear();
-    }
     if (!require_file("identity", cfg.identity)) {
         return 1;
     }
@@ -423,7 +418,48 @@ int Cli::run(int argc, char** argv) {
     if (!require_file("anonym_pubkey", cfg.anonym_pubkey)) {
         return 1;
     }
-    if (!args.bench && !require_file("pq_public_key", cfg.pq_public_key)) {
+    if (!cfg.obfs_secret.empty()) {
+        util::log_error(
+            "literal obfs_secret is not accepted by YUME 2.0; use --obfs-secret-file");
+        return 1;
+    }
+    if (cfg.obfs_secret_file.empty() || cfg.inner_psk_file.empty()) {
+        util::log_error(
+            "YUME 2.0 requires --obfs-secret-file and --inner-psk-file");
+        return 1;
+    }
+    if (!cfg.obfuscation || !cfg.inner_crypto) {
+        util::log_error(
+            "YUME 2.0 requires the H2 carrier and mandatory inner encryption; "
+            "legacy no-obfs/no-inner configuration is not accepted");
+        return 1;
+    }
+    if (cfg.obfs_pad_multiple != 0 || cfg.obfs_jitter_ms != 0) {
+        util::log_error(
+            "YUME 2.0 Chrome profile rejects configured obfs padding/jitter; "
+            "the committed capture contains neither");
+        return 1;
+    }
+    std::string profile_name = cfg.tls_stealth_profile;
+    std::transform(profile_name.begin(), profile_name.end(), profile_name.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (!cfg.tls_stealth_enabled || profile_name != "chrome") {
+        util::log_error(
+            "YUME 2.0 dev1 requires --profile chrome with TLS stealth enabled");
+        return 1;
+    }
+    if (cfg.tls_stealth_rotate) {
+        util::log_error(
+            "YUME 2.0 dev1 rejects TLS profile rotation; the Chrome fixture is pinned");
+        return 1;
+    }
+    try {
+        cfg.obfs_secret_material = std::make_shared<security::Secret32>(
+            security::LoadSecretFile32(cfg.obfs_secret_file));
+        cfg.inner_psk_material = std::make_shared<security::Secret32>(
+            security::LoadSecretFile32(cfg.inner_psk_file));
+    } catch (const std::exception& ex) {
+        util::log_error(std::string("YUME 2.0 secret-file validation failed: ") + ex.what());
         return 1;
     }
 
@@ -822,14 +858,19 @@ int Cli::run(int argc, char** argv) {
             }
 
             std::vector<uint8_t> prefetched_tls_bytes;
+            std::unique_ptr<obfs::H2Carrier> h2_carrier;
             if (cfg.obfuscation) {
                 util::log_info("starting HTTPS h2 carrier handshake");
                 require_h2_carrier_alpn(stream, tls_name, cfg.port);
                 auto h2_start = std::chrono::steady_clock::now();
+                if (!cfg.obfs_secret_material) {
+                    throw FatalError("YUME 2.0 admission secret was not loaded");
+                }
                 perform_h2_carrier_handshake(stream, io, tls_name, cfg.port,
-                                             cfg.obfs_secret,
+                                             *cfg.obfs_secret_material,
                                              http_profile::active_client_ua(),
-                                             &prefetched_tls_bytes);
+                                             &prefetched_tls_bytes,
+                                             &h2_carrier);
                 auto h2_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - h2_start).count();
                 util::log_timing("client.connect",
@@ -851,7 +892,8 @@ int Cli::run(int argc, char** argv) {
                 io,
                 tls_name,
                 cfg.port,
-                &prefetched_tls_bytes);
+                &prefetched_tls_bytes,
+                h2_carrier.get());
             auto auth_challenge_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - auth_challenge_start).count();
             util::log_timing("client.auth",
@@ -859,106 +901,23 @@ int Cli::run(int argc, char** argv) {
                              "ms=" + std::to_string(auth_challenge_ms) +
                                  " bytes=" + std::to_string(auth_challenge.payload.size()));
             util::log_info("AUTH challenge received");
-            inner::Argon2Limits server_argon2_limits =
-                parse_auth_challenge_argon2_limits(auth_challenge);
-            const bool server_advertised_argon2_limits =
-                server_argon2_limits.time_max > 0 ||
-                server_argon2_limits.memory_max > 0 ||
-                server_argon2_limits.parallelism_max > 0;
-            if (server_advertised_argon2_limits) {
-                util::log_info("server Argon2 caps: " + describe_argon2_limits(server_argon2_limits));
-            }
-
-            inner::Config inner_cfg;
-            inner_cfg.enabled = cfg.inner_crypto;
-            inner_cfg.pq_public_key = cfg.pq_public_key;
-            inner_cfg.allow_embedded_master = cfg.allow_embedded_master;
-            inner_cfg.argon2_limits = server_argon2_limits;
-
-            std::optional<crypto::Bytes> pq_ciphertext;
-            std::optional<crypto::Bytes> pq_salt;
             std::optional<crypto::Bytes> inner_key;
-            std::optional<std::string> inner_mode;
-            std::optional<bool> inner_hop;
             std::optional<inner::KdfParams> inner_kdf;
+            inner::KdfParams v2_kdf;
+            v2_kdf.name = "hkdf";
+            inner_kdf = v2_kdf;
             bool inner_disabled_for_session = false;
             bool pq_need_key = false;
             bool pq_not_supported = false;
             std::string inner_disable_reason;
-            if (inner_cfg.enabled) {
-                try {
-                    if (cfg.inner_heavy) {
-                        util::log_info("preparing inner crypto (heavy KDF); this can take a few seconds");
-                    } else {
-                        util::log_info("preparing inner crypto");
-                    }
-                    auto inner_start = std::chrono::steady_clock::now();
-                    auto hs = inner::client_prepare(inner_cfg, cfg.inner_heavy);
-                    auto inner_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now() - inner_start).count();
-                    if (!hs.enabled || hs.key.empty()) {
-                        throw std::runtime_error("inner crypto init failed");
-                    }
-                    util::log_timing("client.auth",
-                                     "inner_prepare",
-                                     "ms=" + std::to_string(inner_ms) +
-                                         " mode=" + std::string(cfg.inner_heavy ? "heavy" : "light") +
-                                         " kdf=" + (hs.kdf.empty() ? std::string("unknown") : hs.kdf));
-                    pq_ciphertext = hs.pq_ciphertext;
-                    pq_salt = hs.salt;
-                    inner_key = hs.key;
-                    inner_mode = cfg.inner_heavy ? std::optional<std::string>("heavy") : std::optional<std::string>("light");
-                    if (!hs.kdf.empty()) {
-                        inner::KdfParams params;
-                        params.name = hs.kdf;
-                        params.argon2_time = hs.argon2_time;
-                        params.argon2_memory = hs.argon2_memory;
-                        params.argon2_parallelism = hs.argon2_parallelism;
-                        params.pbkdf2_iters = hs.pbkdf2_iters;
-                        inner_kdf = params;
-                    }
-                    std::string prepared = "inner crypto prepared: mode=" +
-                                           std::string(cfg.inner_heavy ? "heavy" : "light") +
-                                           ", kdf=" + (hs.kdf.empty() ? std::string("unknown") : hs.kdf);
-                    if (hs.kdf == "argon2") {
-                        prepared += " time=" + std::to_string(hs.argon2_time) +
-                                    " mem=" + std::to_string(hs.argon2_memory) +
-                                    " par=" + std::to_string(hs.argon2_parallelism);
-                    } else if (hs.kdf == "pbkdf2") {
-                        prepared += " iters=" + std::to_string(hs.pbkdf2_iters);
-                    }
-                    util::log_info(prepared);
-                } catch (const std::exception& ex) {
-                    std::string msg = ex.what();
-                    if (msg.find("PQ public key not configured") != std::string::npos) {
-                        pq_need_key = true;
-                        inner_disabled_for_session = true;
-                        inner_disable_reason =
-                            "inner crypto disabled: PQ public key not configured (use --pq-pub, provide pq_public.key, or enable --use-embedded-master)";
-                    } else if (msg.find("ML-KEM-768 support is not enabled") != std::string::npos) {
-                        pq_not_supported = true;
-                        inner_disabled_for_session = true;
-                        inner_disable_reason =
-                            "inner crypto disabled: PQ not supported in this build (rebuild with liboqs/BaseFWX PQ enabled)";
-                    } else {
-                        throw;
-                    }
-                }
-            }
-            if (pq_ciphertext.has_value()) {
-                inner_hop = cfg.inner_hop;
-            }
-
             util::log_info("sending auth response");
             auto auth_send_start = std::chrono::steady_clock::now();
-            send_auth_response(stream,
-                               cfg.identity,
-                               auth_challenge,
-                               pq_ciphertext,
-                               pq_salt,
-                               inner_mode,
-                               inner_hop,
-                               inner_kdf);
+            if (!h2_carrier || !cfg.inner_psk_material) {
+                throw FatalError("YUME 2.0 requires H2 carrier and inner PSK");
+            }
+            auto v2_ratchet = send_auth_v2_response(
+                stream, io, cfg.identity, auth_challenge,
+                *cfg.inner_psk_material, *h2_carrier);
             auto auth_send_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - auth_send_start).count();
             util::log_timing("client.auth",
@@ -968,12 +927,15 @@ int Cli::run(int argc, char** argv) {
 
             protocol::Frame anon_frame;
             auto server_info_timeout = kServerInfoTimeout;
-            if (pq_ciphertext.has_value() && cfg.inner_crypto) {
-                server_info_timeout = cfg.inner_heavy ? kServerInfoTimeoutInnerHeavy : kServerInfoTimeoutInner;
-            }
             try {
                 auto server_info_start = std::chrono::steady_clock::now();
-                anon_frame = read_frame_with_timeout(stream, io, server_info_timeout, "server info", cfg.server, cfg.port, true);
+                anon_frame = h2_carrier
+                    ? read_frame_over_h2_with_timeout(
+                          stream, io, *h2_carrier, &prefetched_tls_bytes,
+                          server_info_timeout, "server info", cfg.server, cfg.port)
+                    : read_frame_with_timeout(stream, io, server_info_timeout,
+                                              "server info", cfg.server, cfg.port,
+                                              true, &prefetched_tls_bytes);
                 auto server_info_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - server_info_start).count();
                 util::log_timing("client.auth",
@@ -985,6 +947,7 @@ int Cli::run(int argc, char** argv) {
             } catch (const std::exception&) {
                 throw FatalError("this endpoint is not a yume server (failed to read server info); please check the origin and try again");
             }
+            anon_frame = open_auth_ok_v2(*v2_ratchet, anon_frame);
             if (anon_frame.header.type != protocol::ANON) {
                 throw FatalError("this endpoint is not a yume server (unexpected response type); please check the origin and try again");
             }
@@ -1100,15 +1063,12 @@ int Cli::run(int argc, char** argv) {
                 }
                 std::cout << "\033[1;32m" << out << "\033[0m" << std::endl;
             };
-            bool allow_pq_bootstrap = server_error.empty() ||
-                                      server_error.find("requires inner") != std::string::npos ||
-                                      server_error.find("pq key") != std::string::npos ||
-                                      (cfg.inner_crypto &&
-                                       !pq_pub_b64.empty() &&
-                                       server_error.find("invalid key") != std::string::npos);
+            // YUME 2.0 uses an ephemeral ML-KEM-1024 key in AUTH. The 1.x
+            // long-lived PQ bootstrap/reconnect path is intentionally absent.
+            bool allow_pq_bootstrap = false;
             PqBootstrapInput pq_bootstrap_input;
             pq_bootstrap_input.allow_bootstrap = allow_pq_bootstrap;
-            pq_bootstrap_input.inner_crypto_requested = cfg.inner_crypto;
+            pq_bootstrap_input.inner_crypto_requested = false;
             pq_bootstrap_input.pq_not_supported = pq_not_supported;
             pq_bootstrap_input.pq_need_key = pq_need_key;
             pq_bootstrap_input.pq_pub_b64 = pq_pub_b64;
@@ -1158,11 +1118,11 @@ int Cli::run(int argc, char** argv) {
             if (inner_kdf.has_value()) {
                 capability_input.inner_kdf_name = inner_kdf->name;
             }
-            capability_input.inner_crypto_requested = cfg.inner_crypto;
+            capability_input.inner_crypto_requested = true;
             capability_input.inner_disabled_for_session = inner_disabled_for_session;
-            capability_input.inner_heavy = cfg.inner_heavy;
-            capability_input.inner_hop = cfg.inner_hop;
-            capability_input.inner_key_established = inner_key.has_value();
+            capability_input.inner_heavy = false;
+            capability_input.inner_hop = false;
+            capability_input.inner_key_established = v2_ratchet != nullptr;
             capability_input.have_inner_caps = have_inner_caps;
             capability_input.server_inner_supported = server_inner_supported;
             capability_input.server_inner_required = server_inner_required;
@@ -1290,8 +1250,8 @@ int Cli::run(int argc, char** argv) {
                 summary.verified_proof_sources = verified_proof_sources;
                 summary.hop = {hop_enabled, hop_interval_ms, hop_offset_ms};
                 summary.obfuscation_enabled = cfg.obfuscation;
-                summary.inner_established = inner_key.has_value();
-                summary.inner_heavy = cfg.inner_heavy;
+                summary.inner_established = v2_ratchet != nullptr;
+                summary.inner_heavy = false;
                 summary.have_inner_caps = have_inner_caps;
                 summary.server_inner_dual = server_inner_dual;
                 summary.server_inner_active = server_inner_active;
@@ -1339,6 +1299,10 @@ int Cli::run(int argc, char** argv) {
             connected_options.hop_offset_ms = hop_offset_ms;
             connected_options.inner_kdf = inner_kdf;
             connected_options.inner_key = inner_key;
+            connected_options.ratchet = std::move(v2_ratchet);
+            connected_options.h2_carrier = std::move(h2_carrier);
+            connected_options.prefetched_carrier_bytes =
+                std::move(prefetched_tls_bytes);
             connected_options.server_tls_fingerprint_sha256 =
                 server_tls_fingerprint_sha256;
             connected_options.base_tls_profile = base_tls_profile;

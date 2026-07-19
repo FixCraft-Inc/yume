@@ -172,14 +172,22 @@ bool parse_server_cli_args(int argc,
             cfg.obfuscation = true;
             result.config_overrides.obfuscation = true;
         } else if (arg == "--no-obfs") {
-            cfg.obfuscation = false;
-            result.config_overrides.obfuscation = true;
-        } else if (arg == "--obfs-secret" && i + 1 < argc) {
-            cfg.obfs_secret = argv[++i];
-        } else if (arg == "--obfs-pad-multiple" && i + 1 < argc) {
-            if (!parse_obfs_pad_multiple(argv[++i], &cfg.obfs_pad_multiple)) return false;
-        } else if (arg == "--obfs-jitter-ms" && i + 1 < argc) {
-            if (!parse_non_negative_u32(argv[++i], "--obfs-jitter-ms", &cfg.obfs_jitter_ms)) return false;
+            yume::util::log_error(
+                "--no-obfs is not accepted by YUME 2.0; the H2 carrier is mandatory");
+            return false;
+        } else if (arg == "--obfs-secret-file" && i + 1 < argc) {
+            cfg.obfs_secret_file = resolve_cli_path(argv[++i]);
+        } else if (arg == "--inner-psk-file" && i + 1 < argc) {
+            cfg.inner_psk_file = resolve_cli_path(argv[++i]);
+        } else if (arg == "--obfs-secret") {
+            yume::util::log_error(
+                "--obfs-secret is not accepted by YUME 2.0; use --obfs-secret-file");
+            return false;
+        } else if (arg == "--obfs-pad-multiple" || arg == "--obfs-jitter-ms") {
+            yume::util::log_error(
+                arg + " is not accepted by the pinned YUME 2.0 Chrome profile; "
+                      "the capture contains no random padding or timing jitter");
+            return false;
         } else if (arg == "--tls-handshake-timeout-ms" && i + 1 < argc) {
             if (!parse_non_negative_u32(argv[++i], "--tls-handshake-timeout-ms", &cfg.tls_handshake_timeout_ms)) return false;
             result.config_overrides.tls_handshake_timeout = true;
@@ -220,76 +228,26 @@ bool parse_server_cli_args(int argc,
             result.config_overrides.packet_mtu = true;
         } else if (arg == "--bench" || arg == "--fullbench" || arg == "--full-bench") {
             cfg.benchmark_enable = true;
-        } else if (arg == "--inner") {
-            yume::util::log_warn("--inner is deprecated; use --inner-heavy or --inner-light");
-            cfg.inner_crypto = true;
-            result.config_overrides.inner_crypto = true;
-            result.inner_heavy_override = true;
-            result.inner_heavy_value = true;
-        } else if (arg == "--no-inner") {
-            cfg.inner_crypto = false;
-            cfg.inner_dual = false;
-            cfg.inner_required = false;
-            cfg.inner_hop = false;
-            result.config_overrides.inner_crypto = true;
-            result.config_overrides.inner_dual = true;
-            result.config_overrides.inner_required = true;
-            result.config_overrides.inner_hop = true;
-            result.inner_hop_override = true;
-            result.inner_hop_value = false;
-        } else if (arg == "--inner-heavy") {
-            cfg.inner_crypto = true;
-            result.config_overrides.inner_crypto = true;
-            result.inner_heavy_override = true;
-            result.inner_heavy_value = true;
-        } else if (arg == "--inner-light") {
-            cfg.inner_crypto = true;
-            result.config_overrides.inner_crypto = true;
-            result.inner_heavy_override = true;
-            result.inner_heavy_value = false;
-        } else if (arg == "--inner-dual") {
-            cfg.inner_crypto = true;
-            cfg.inner_dual = true;
-            result.config_overrides.inner_crypto = true;
-            result.config_overrides.inner_dual = true;
+        } else if (arg == "--inner" || arg == "--no-inner" ||
+                   arg == "--inner-heavy" || arg == "--inner-light" ||
+                   arg == "--inner-dual" || arg == "--hop" ||
+                   arg == "--no-hop" || arg == "--hop-interval") {
+            yume::util::log_error(
+                arg + " is not accepted by YUME 2.0; the hybrid directional ratchet is mandatory");
+            return false;
         } else if (arg == "--inner-required") {
             cfg.inner_crypto = true;
             cfg.inner_required = true;
             result.config_overrides.inner_crypto = true;
             result.config_overrides.inner_required = true;
-        } else if (arg == "--hop") {
-            cfg.inner_hop = true;
-            result.config_overrides.inner_hop = true;
-            result.inner_hop_override = true;
-            result.inner_hop_value = true;
-        } else if (arg == "--no-hop") {
-            cfg.inner_hop = false;
-            result.config_overrides.inner_hop = true;
-            result.inner_hop_override = true;
-            result.inner_hop_value = false;
-        } else if (arg == "--hop-interval" && i + 1 < argc) {
-            if (!parse_non_negative_u32(argv[++i], "--hop-interval", &cfg.hop_interval_ms)) return false;
-            result.config_overrides.hop_interval = true;
-        } else if (arg == "--argon2-memory-budget-kib" && i + 1 < argc) {
-            if (!parse_positive_u32(argv[++i], "--argon2-memory-budget-kib",
-                                    &cfg.argon2_memory_budget_kib)) return false;
-            result.config_overrides.argon2_memory_budget = true;
-        } else if (arg == "--argon2-max-jobs" && i + 1 < argc) {
-            if (!parse_positive_u32(argv[++i], "--argon2-max-jobs",
-                                    &cfg.argon2_max_jobs)) return false;
-            result.config_overrides.argon2_max_jobs = true;
-        } else if (arg == "--pq-key" && i + 1 < argc) {
-            cfg.pq_private_key = resolve_cli_path(argv[++i]);
-            result.config_overrides.inner_crypto = true;
-        } else if (arg == "--pq-auto-generate") {
-            cfg.pq_auto_generate = true;
-            result.config_overrides.pq_auto_generate = true;
-        } else if (arg == "--use-embedded-master") {
-            cfg.allow_embedded_master = true;
-            result.config_overrides.allow_embedded_master = true;
-        } else if (arg == "--no-embedded-master") {
-            cfg.allow_embedded_master = false;
-            result.config_overrides.allow_embedded_master = true;
+        } else if (arg == "--argon2-memory-budget-kib" ||
+                   arg == "--argon2-max-jobs" || arg == "--pq-key" ||
+                   arg == "--pq-auto-generate" ||
+                   arg == "--use-embedded-master" ||
+                   arg == "--no-embedded-master") {
+            yume::util::log_error(
+                arg + " is a retired 1.x option and is not accepted by YUME 2.0");
+            return false;
         } else if (arg == "--allow-exec") {
             cfg.allow_exec = true;
         } else if (arg == "--allow-local-ip") {
@@ -339,6 +297,9 @@ bool parse_server_cli_args(int argc,
             // A static-site cover directory implies --real; the carrier only
             // serves real files/paths when real_http is on.
             cfg.real_root = resolve_cli_path(argv[++i]);
+            cfg.real_http = true;
+        } else if (arg == "--real-backend" && i + 1 < argc) {
+            cfg.real_backend = argv[++i];
             cfg.real_http = true;
         } else if (arg == "--real-secret" && i + 1 < argc) {
             cfg.real_secret = argv[++i];

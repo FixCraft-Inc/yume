@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -22,6 +23,8 @@
 #include <nlohmann/json.hpp>
 
 #include "client/transport/core.hpp"
+#include "core/stealth/h2_carrier.hpp"
+#include "core/security/session_ratchet.hpp"
 
 namespace yume::client {
 
@@ -38,7 +41,11 @@ public:
     using InboundOpenHandler = std::function<void(uint8_t stream_id, const nlohmann::json&)>;
     using ActivityHandler = std::function<void()>;
 
-    explicit Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream);
+    explicit Tunnel(
+        boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream,
+        std::unique_ptr<obfs::H2Carrier> carrier = {},
+        Bytes prefetched_carrier_bytes = {},
+        std::unique_ptr<ratchet::SessionRatchet> ratchet = {});
 
     void start();
     void set_inner_key(const Bytes& key);
@@ -100,14 +107,38 @@ public:
 private:
     void read_tls();
     void on_read_tls(const boost::system::error_code& ec, std::size_t bytes);
+    using WireCompletion = std::function<void(const boost::system::error_code&,
+                                              std::size_t)>;
+    struct WireWrite {
+        std::shared_ptr<Bytes> data;
+        WireCompletion completion;
+    };
+    struct CarrierCompletion {
+        TransportCore::WriteCompletion completion;
+        std::size_t application_bytes{0};
+    };
+    void enqueue_wire_write(std::shared_ptr<Bytes> data,
+                            WireCompletion completion = {});
+    void start_wire_write();
+    void flush_carrier_output();
+    void complete_carrier_writes(std::size_t count,
+                                 bool ok,
+                                 const std::string& error);
     void start_exec(uint8_t stream_id, std::string command);
     void close_all(const std::string& reason);
     void schedule_keepalive();
+    void schedule_ratchet_check();
 
     boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream_;
     boost::asio::strand<boost::asio::any_io_executor> strand_;
     boost::asio::steady_timer keepalive_timer_{stream_.get_executor()};
+    boost::asio::steady_timer ratchet_timer_{stream_.get_executor()};
     std::vector<uint8_t> read_buf_;
+    std::unique_ptr<obfs::H2Carrier> carrier_;
+    Bytes prefetched_carrier_bytes_;
+    std::deque<WireWrite> wire_writes_;
+    std::deque<CarrierCompletion> carrier_completions_;
+    bool wire_write_active_{false};
     TransportCore core_;
     TunnelCloseHandler close_handler_;
     std::mutex close_handler_mu_;

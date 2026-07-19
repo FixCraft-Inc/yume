@@ -842,7 +842,7 @@ std::string pq_backend_version() {
     out += "liboqs";
 #endif
     out += ", ";
-    out.append(basefwx::constants::kMasterPqAlg.data(), basefwx::constants::kMasterPqAlg.size());
+    out += "ML-KEM-768/1024";
     out += ")";
     return out;
 #else

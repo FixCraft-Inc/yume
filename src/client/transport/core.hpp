@@ -21,6 +21,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/protocol/protocol.hpp"
+#include "core/security/session_ratchet.hpp"
 
 namespace yume::client {
 
@@ -52,10 +53,12 @@ public:
 
     void start(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
     bool handle_keepalive_tick(std::chrono::steady_clock::time_point now, std::string* close_reason);
+    bool rekey_timed_out(std::chrono::steady_clock::time_point now) const;
     std::vector<CloseHandler> shutdown();
     bool is_stopped() const;
 
     void set_inner_key(const Bytes& key);
+    void set_ratchet(std::unique_ptr<ratchet::SessionRatchet> ratchet);
     void set_hop(bool enabled, std::uint32_t interval_ms, std::int64_t offset_ms);
     // Send-side traffic-shape obfuscation. `pad_multiple` (clamped to
     // [0, 256]) rounds every outbound frame payload up to that multiple
@@ -113,6 +116,7 @@ private:
     struct PendingWrite {
         protocol::Frame frame;
         WriteCompletion handler;
+        bool already_protected{false};
     };
 
     struct StreamCallbacks {
@@ -122,11 +126,16 @@ private:
     };
 
     bool has_stream_id_locked(uint8_t stream_id) const;
-    void queue_frame(protocol::Frame frame, WriteCompletion handler = {});
+    void queue_frame(protocol::Frame frame, WriteCompletion handler = {},
+                     bool already_protected = false);
     void dispatch_next_write();
-    std::deque<PendingWrite>::iterator select_next_write_locked(std::size_t current_batch_bytes,
-                                                                const std::unordered_set<uint8_t>& batch_streams);
-    std::shared_ptr<Bytes> encode_outgoing_frame(const protocol::Frame& frame);
+    std::deque<PendingWrite>::iterator select_next_write_locked(
+        std::size_t current_batch_bytes,
+        const std::unordered_set<uint8_t>& batch_streams,
+        bool rekey_blocked);
+    std::shared_ptr<Bytes> encode_outgoing_frame(
+        const protocol::Frame& frame, bool already_protected);
+    void resume_writes_after_rekey();
     void handle_frame(const protocol::Frame& frame);
     Bytes encrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const Bytes& input);
     bool decrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const Bytes& input, Bytes* output);
@@ -154,6 +163,7 @@ private:
     uint8_t next_stream_id_{1};
     bool stopped_{false};
     std::optional<Bytes> inner_key_;
+    std::unique_ptr<ratchet::SessionRatchet> ratchet_;
     bool hop_enabled_{false};
     std::uint32_t hop_interval_ms_{0};
     std::int64_t hop_offset_ms_{0};

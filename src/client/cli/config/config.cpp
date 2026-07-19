@@ -82,7 +82,15 @@ void load_client_config_file(const ParsedArgs& args,
         if (json.contains("obfuscation") && !args.obfuscation_override) {
             cfg->obfuscation = json["obfuscation"].get<bool>();
         }
-        if (json.contains("obfs_secret") && !args.obfs_secret_override) {
+        if (json.contains("obfs_secret_file") && !args.obfs_secret_file_override) {
+            cfg->obfs_secret_file = resolve_cfg_path(
+                json["obfs_secret_file"].get<std::string>());
+        }
+        if (json.contains("inner_psk_file") && !args.inner_psk_file_override) {
+            cfg->inner_psk_file = resolve_cfg_path(
+                json["inner_psk_file"].get<std::string>());
+        }
+        if (json.contains("obfs_secret")) {
             cfg->obfs_secret = json["obfs_secret"].get<std::string>();
         }
         if (json.contains("obfs_pad_multiple") && !args.obfs_pad_multiple_override) {
@@ -279,8 +287,11 @@ void apply_cli_config_overrides(const ParsedArgs& args,
     if (args.obfuscation_override) {
         cfg->obfuscation = args.obfuscation;
     }
-    if (args.obfs_secret_override) {
-        cfg->obfs_secret = args.obfs_secret;
+    if (args.obfs_secret_file_override) {
+        cfg->obfs_secret_file = resolve_cli_path(args.obfs_secret_file);
+    }
+    if (args.inner_psk_file_override) {
+        cfg->inner_psk_file = resolve_cli_path(args.inner_psk_file);
     }
     if (args.obfs_pad_multiple_override) {
         cfg->obfs_pad_multiple = args.obfs_pad_multiple;
@@ -568,6 +579,8 @@ void save_client_config_file(const ParsedArgs& args, const ClientConfig& cfg) {
     if (cfg.io_threads != 0) json["threads"] = cfg.io_threads;
     if (cfg.tunnel_count > 1) json["tunnels"] = cfg.tunnel_count;
     json["obfuscation"] = cfg.obfuscation;
+    if (!cfg.obfs_secret_file.empty()) json["obfs_secret_file"] = cfg.obfs_secret_file;
+    if (!cfg.inner_psk_file.empty()) json["inner_psk_file"] = cfg.inner_psk_file;
     if (cfg.obfs_pad_multiple > 0) json["obfs_pad_multiple"] = cfg.obfs_pad_multiple;
     if (cfg.obfs_jitter_ms > 0) json["obfs_jitter_ms"] = cfg.obfs_jitter_ms;
     json["inner_crypto"] = cfg.inner_crypto;

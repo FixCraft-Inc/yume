@@ -65,11 +65,11 @@ void test_path_token_round_trip() {
     std::int64_t now_s = static_cast<std::int64_t>(std::time(nullptr));
     std::int64_t hour = now_s / 3600;
 
-    std::string token = yume::obfs::derive_path_token(signal, "carrier.example", hour);
-    assert(token.size() == yume::obfs::kH2TokenHexLen);
-
     std::string nonce = yume::obfs::random_nonce_hex();
     assert(nonce.size() == yume::obfs::kH2NonceHexLen);
+    std::string token = yume::obfs::derive_path_token(
+        signal, "carrier.example", hour, nonce);
+    assert(token.size() == yume::obfs::kH2TokenHexLen);
 
     std::string path = yume::obfs::build_path(token, nonce);
     assert(path.size() == yume::obfs::kH2PathLen);
@@ -79,11 +79,23 @@ void test_path_token_round_trip() {
     std::vector<yume::crypto::Bytes> keys{signal};
     assert(yume::obfs::verify_path_token(keys, "carrier.example", path, now_s));
 
-    assert(yume::obfs::verify_path_token(keys, "carrier.example", path, now_s - 1800));
+    const auto previous_token = yume::obfs::derive_path_token(
+        signal, "carrier.example", hour - 1, nonce);
+    const auto previous_path = yume::obfs::build_path(previous_token, nonce);
+    assert(yume::obfs::verify_path_token(
+        keys, "carrier.example", previous_path, now_s));
 
-    assert(!yume::obfs::verify_path_token(keys, "carrier.example", path, now_s - 7200));
+    const auto expired_token = yume::obfs::derive_path_token(
+        signal, "carrier.example", hour - 2, nonce);
+    assert(!yume::obfs::verify_path_token(
+        keys, "carrier.example", yume::obfs::build_path(expired_token, nonce), now_s));
 
     assert(!yume::obfs::verify_path_token(keys, "different.host", path, now_s));
+
+    std::string tampered_nonce = path;
+    tampered_nonce.back() = tampered_nonce.back() == '0' ? '1' : '0';
+    assert(!yume::obfs::verify_path_token(
+        keys, "carrier.example", tampered_nonce, now_s));
 
     yume::crypto::Bytes other = yume::obfs::derive_signal_key("different-secret");
     assert(!yume::obfs::verify_path_token({other}, "carrier.example", path, now_s));
@@ -122,8 +134,10 @@ void test_carrier_path_admission_boundary() {
     const std::string sni = "admission.example";
     const std::int64_t now_s = static_cast<std::int64_t>(std::time(nullptr));
     const auto key = yume::obfs::derive_signal_key("shared-secret");
-    const auto token = yume::obfs::derive_path_token(key, sni, now_s / 3600);
-    const auto path = yume::obfs::build_path(token, "0123456789abcdef");
+    const std::string nonce(yume::obfs::kH2NonceHexLen, '1');
+    const auto token = yume::obfs::derive_path_token(
+        key, sni, now_s / 3600, nonce);
+    const auto path = yume::obfs::build_path(token, nonce);
 
     assert(yume::obfs::carrier_path_admitted(
         "shared-secret", sni, sni, path, now_s));
@@ -140,19 +154,22 @@ void test_carrier_path_admission_boundary() {
     assert(!yume::obfs::carrier_path_admitted(
         "shared-secret", sni, sni, "/malformed", now_s));
 
-    // Empty-secret structural admission is deliberately confined to
-    // non-public development; startup policy tests reject it for public mode.
-    assert(yume::obfs::carrier_path_admitted("", sni, sni, path, now_s));
+    assert(!yume::obfs::carrier_path_admitted("", sni, sni, path, now_s));
     assert(!yume::obfs::carrier_path_admitted(
         "", sni, sni, "/malformed", now_s));
+
+    yume::obfs::AdmissionReplayCache replay(2, 7200);
+    assert(replay.AcceptPath(path, now_s));
+    assert(!replay.AcceptPath(path, now_s));
 }
 
 void test_handshake_extracts_path() {
     const std::string sni = "stealth.example";
     yume::crypto::Bytes signal = yume::obfs::derive_signal_key("test-secret");
     std::int64_t hour = static_cast<std::int64_t>(std::time(nullptr)) / 3600;
-    std::string token = yume::obfs::derive_path_token(signal, sni, hour);
-    std::string path = yume::obfs::build_path(token, yume::obfs::random_nonce_hex());
+    std::string nonce = yume::obfs::random_nonce_hex();
+    std::string token = yume::obfs::derive_path_token(signal, sni, hour, nonce);
+    std::string path = yume::obfs::build_path(token, nonce);
 
     auto handshake = yume::obfs::encode_client_handshake(sni, path,
         "Mozilla/5.0 Chrome/135.0");
@@ -201,8 +218,9 @@ void test_decoder_handles_streamed_input() {
     const std::string sni = "split.example";
     yume::crypto::Bytes signal = yume::obfs::derive_signal_key("");
     std::int64_t hour = static_cast<std::int64_t>(std::time(nullptr)) / 3600;
-    std::string token = yume::obfs::derive_path_token(signal, sni, hour);
-    std::string path = yume::obfs::build_path(token, yume::obfs::random_nonce_hex());
+    std::string nonce = yume::obfs::random_nonce_hex();
+    std::string token = yume::obfs::derive_path_token(signal, sni, hour, nonce);
+    std::string path = yume::obfs::build_path(token, nonce);
     auto bytes = yume::obfs::encode_client_handshake(sni, path, "ua");
 
     yume::obfs::H2InboundDecoder decoder(true);
@@ -653,8 +671,9 @@ void test_handshake_round_trip_with_stateful_encoder() {
     const std::string sni = "stateful.example";
     yume::crypto::Bytes signal = yume::obfs::derive_signal_key("");
     std::int64_t hour = static_cast<std::int64_t>(std::time(nullptr)) / 3600;
-    std::string token = yume::obfs::derive_path_token(signal, sni, hour);
-    std::string path = yume::obfs::build_path(token, yume::obfs::random_nonce_hex());
+    std::string nonce = yume::obfs::random_nonce_hex();
+    std::string token = yume::obfs::derive_path_token(signal, sni, hour, nonce);
+    std::string path = yume::obfs::build_path(token, nonce);
     auto bytes = yume::obfs::encode_client_handshake(sni, path, "Mozilla/5.0 Chrome/131.0");
 
     yume::obfs::H2InboundDecoder decoder(true);

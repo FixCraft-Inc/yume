@@ -70,6 +70,34 @@ IoOpResult read_exact_with_timeout(AsyncStream& stream,
 }
 
 template <typename AsyncStream, typename CancelFn>
+IoOpResult read_some_with_timeout(AsyncStream& stream,
+                                  boost::asio::io_context& io,
+                                  const boost::asio::mutable_buffer& buf,
+                                  std::chrono::milliseconds timeout,
+                                  CancelFn cancel) {
+    IoOpResult res{};
+    bool done = false;
+    boost::asio::steady_timer timer(io);
+    timer.expires_after(timeout);
+    timer.async_wait([&](const boost::system::error_code& ec) {
+        if (!ec && !done) {
+            res.timed_out = true;
+            cancel();
+        }
+    });
+    stream.async_read_some(buf, [&](const boost::system::error_code& ec,
+                                    std::size_t bytes) {
+        res.ec = ec;
+        res.bytes = bytes;
+        done = true;
+        (void)timer.cancel();
+    });
+    io.restart();
+    io.run();
+    return res;
+}
+
+template <typename AsyncStream, typename CancelFn>
 IoOpResult read_exact_with_timeout_prefetched(AsyncStream& stream,
                                               boost::asio::io_context& io,
                                               const boost::asio::mutable_buffer& buf,

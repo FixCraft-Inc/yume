@@ -14,6 +14,7 @@
 #include "client/cli/parse/endpoints.hpp"
 #include "client/cli/config/platform.hpp"
 #include "client/cli/connect/diagnostics.hpp"
+#include "client/cli/connect/auth.hpp"
 #include "client/cli/connect/secondary_tunnel.hpp"
 #include "client/codec/monero_rpc.hpp"
 #include "client/proxy/forward.hpp"
@@ -119,37 +120,80 @@ crypto::Bytes decrypt_control_payload(const crypto::Bytes& key,
 class ControlFrameClient {
 public:
     ControlFrameClient(ClientTlsStream& stream,
+                       boost::asio::io_context& io,
                        const std::optional<crypto::Bytes>& inner_key,
                        bool hop_enabled,
                        std::uint32_t hop_interval_ms,
-                       std::int64_t hop_offset_ms)
+                       std::int64_t hop_offset_ms,
+                       obfs::H2Carrier* carrier,
+                       crypto::Bytes* prefetched,
+                       ratchet::SessionRatchet* ratchet)
         : stream_(stream),
+          io_(io),
           inner_key_(inner_key),
           hop_enabled_(hop_enabled),
           hop_interval_ms_(hop_interval_ms),
-          hop_offset_ms_(hop_offset_ms) {}
+          hop_offset_ms_(hop_offset_ms),
+          carrier_(carrier),
+          prefetched_(prefetched),
+          ratchet_(ratchet) {}
 
     void send(const nlohmann::json& req) {
         std::string payload_str = req.dump();
         crypto::Bytes payload(payload_str.begin(), payload_str.end());
         uint16_t flags = 0;
-        if (inner_key_.has_value()) {
+        if (inner_key_.has_value() && !ratchet_) {
             crypto::Bytes key = derive_hop_key(*inner_key_, hop_enabled_, hop_interval_ms_, hop_offset_ms_);
             payload = inner::encrypt_payload(key, protocol::CONTROL, 0, payload);
             flags |= protocol::kFlagInnerEncrypted;
         }
         protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::CONTROL, 0, flags}, payload};
-        protocol::send_frame(stream_, frame);
+        if (ratchet_) {
+            frame = ratchet_->Seal(frame, std::chrono::steady_clock::now());
+        }
+        if (carrier_) {
+            send_frame_over_h2_with_timeout(stream_, io_, *carrier_, frame,
+                                            kServerInfoTimeout, "control request");
+        } else {
+            protocol::send_frame(stream_, frame);
+        }
     }
 
     nlohmann::json request(const nlohmann::json& req) {
         send(req);
-        auto resp_frame = protocol::read_frame(stream_);
+        auto resp_frame = carrier_
+            ? read_frame_over_h2_with_timeout(
+                  stream_, io_, *carrier_, prefetched_, kServerInfoTimeout,
+                  "control response", "server", 0)
+            : protocol::read_frame(stream_);
+        if (ratchet_) {
+            auto opened = ratchet_->Open(resp_frame,
+                                         std::chrono::steady_clock::now());
+            if (opened.control_response.has_value()) {
+                if (!carrier_) {
+                    throw std::runtime_error("ratchet control response requires H2 carrier");
+                }
+                send_frame_over_h2_with_timeout(
+                    stream_, io_, *carrier_, *opened.control_response,
+                    kServerInfoTimeout, "rekey acknowledgement");
+                resp_frame = carrier_
+                    ? read_frame_over_h2_with_timeout(
+                          stream_, io_, *carrier_, prefetched_,
+                          kServerInfoTimeout, "control response", "server", 0)
+                    : protocol::read_frame(stream_);
+                opened = ratchet_->Open(resp_frame,
+                                         std::chrono::steady_clock::now());
+            }
+            if (!opened.application_frame.has_value()) {
+                throw std::runtime_error("missing control application response");
+            }
+            resp_frame = std::move(*opened.application_frame);
+        }
         if (resp_frame.header.type != protocol::CONTROL) {
             throw std::runtime_error("unexpected control response");
         }
         crypto::Bytes payload = resp_frame.payload;
-        if (inner_key_.has_value()) {
+        if (inner_key_.has_value() && !ratchet_) {
             if ((resp_frame.header.flags & protocol::kFlagInnerEncrypted) == 0) {
                 throw std::runtime_error("control response missing inner encryption");
             }
@@ -167,10 +211,14 @@ public:
 
 private:
     ClientTlsStream& stream_;
+    boost::asio::io_context& io_;
     const std::optional<crypto::Bytes>& inner_key_;
     bool hop_enabled_{false};
     std::uint32_t hop_interval_ms_{0};
     std::int64_t hop_offset_ms_{0};
+    obfs::H2Carrier* carrier_{nullptr};
+    crypto::Bytes* prefetched_{nullptr};
+    ratchet::SessionRatchet* ratchet_{nullptr};
 };
 
 void register_control_client_if_needed(const ClientConfig& cfg, ControlFrameClient& control_client) {
@@ -773,10 +821,14 @@ int run_connected_session(boost::asio::io_context& io,
 
     ControlFrameClient control_client(
         stream,
+        io,
         options.inner_key,
         options.hop_enabled,
         options.hop_interval_ms,
-        options.hop_offset_ms);
+        options.hop_offset_ms,
+        options.h2_carrier.get(),
+        &options.prefetched_carrier_bytes,
+        options.ratchet.get());
     register_control_client_if_needed(cfg, control_client);
 
     if (args.list_controlled) {
@@ -790,7 +842,10 @@ int run_connected_session(boost::asio::io_context& io,
         }
     }
 
-    auto tunnel = std::make_shared<Tunnel>(std::move(stream));
+    auto tunnel = std::make_shared<Tunnel>(
+        std::move(stream), std::move(options.h2_carrier),
+        std::move(options.prefetched_carrier_bytes),
+        std::move(options.ratchet));
     if (options.set_active_runtime) {
         options.set_active_runtime(&io, tunnel, nullptr, {});
     }
@@ -932,6 +987,16 @@ int run_connected_session(boost::asio::io_context& io,
         };
         const int bench_code = run_endpoint_benchmark(tunnel, cfg, bench_options);
         tunnel_pool->stop_all("benchmark complete");
+        // stop_all posts onto each tunnel strand. Let the primary close
+        // handler begin (and emit its H2/WebSocket graceful close) before
+        // stopping the io_context; otherwise the posted close can be discarded
+        // and the peer observes a truncated TLS stream.
+        const auto stop_deadline = std::chrono::steady_clock::now() +
+                                   std::chrono::seconds(1);
+        while (tunnel->is_alive() &&
+               std::chrono::steady_clock::now() < stop_deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
         io.stop();
         io_threads.wait();
         return bench_code;

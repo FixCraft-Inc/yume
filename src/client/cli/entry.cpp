@@ -1255,6 +1255,7 @@ int Cli::run(int argc, char** argv) {
                 summary.have_inner_caps = have_inner_caps;
                 summary.server_inner_dual = server_inner_dual;
                 summary.server_inner_active = server_inner_active;
+                summary.verity_applicable = (mode == "anonym");
                 summary.verity_ok = verity_ok;
                 status_block_builder = make_connection_status_block(std::move(summary));
                 if (!live_status_enabled) {

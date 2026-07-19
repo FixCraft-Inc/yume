@@ -31,6 +31,7 @@ struct ConnectionStatusSummary {
     bool have_inner_caps = false;
     bool server_inner_dual = false;
     bool server_inner_active = false;
+    bool verity_applicable = false;
     bool verity_ok = false;
 };
 

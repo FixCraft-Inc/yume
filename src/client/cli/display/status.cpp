@@ -9,11 +9,15 @@
 #include <utility>
 
 #include "client/cli/connect/diagnostics.hpp"
+#include "util.hpp"
 
 namespace yume::client {
 namespace {
 
 std::string color_wrap(const std::string& text, const char* code) {
+    if (!util::stdout_colors_enabled()) {
+        return text;
+    }
     return std::string("\033[") + code + "m" + text + "\033[0m";
 }
 
@@ -37,8 +41,13 @@ std::string build_status_block(const ConnectionStatusSummary& summary) {
     const std::string obfs_value = summary.obfuscation_enabled
         ? color_wrap("ON", "1;32") + color_wrap(" (HTTPS mask)", "1;35")
         : color_wrap("OFF", "1;31");
-    const std::string verity_state = format_verified_sources(summary.verified_proof_sources);
-    const std::string verity_line = color_wrap(verity_state, summary.verity_ok ? "1;32" : "1;31");
+    const std::string verity_state = summary.verity_applicable
+        ? format_verified_sources(summary.verified_proof_sources)
+        : "N/A (normal mode)";
+    const char* verity_color = summary.verity_applicable
+        ? (summary.verity_ok ? "1;32" : "1;31")
+        : "1;90";
+    const std::string verity_line = color_wrap(verity_state, verity_color);
     const std::string border = color_wrap("------------------------------------------", "1;34");
 
     return border + "\n" +

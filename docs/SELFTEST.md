@@ -89,6 +89,139 @@ Keep release binaries portable for cross-machine tests. `YUME_NATIVE_OPT` is
 off by default; a binary built with `-DYUME_NATIVE_OPT=ON` may use instructions
 that do not exist on the destination CPU.
 
+### One-machine virtual WAN
+
+The virtual-WAN helper creates isolated client and server network namespaces,
+applies a `tc netem` profile in both directions, provisions temporary 2.0
+identity and secret files, starts the real loopback Node cover, enables the
+authenticated endpoint benchmark, and retains the outer captures and logs.
+
+Build first, then run it as root on a benchmark host:
+
+```bash
+./ezbuild.sh --selftest --tests
+sudo python3 scripts/yume_bench_wan.py --profile mobile-4g
+```
+
+The default workload transfers 128 MiB per direction over eight streams with
+256 KiB application chunks. It also loads the public cover through an installed
+Chrome/Chromium binary. Useful variants are:
+
+```bash
+# Short carrier smoke; 32 MiB, four streams, no browser arm
+sudo python3 scripts/yume_bench_wan.py --quick --profile broadband
+
+# Sustained endpoint run
+sudo python3 scripts/yume_bench_wan.py --full --profile mobile-4g
+
+# Reproduce a custom path
+sudo python3 scripts/yume_bench_wan.py \
+  --rtt 120 --jitter 30 --loss 2 --bandwidth 20 \
+  --bench-mib 256 --bench-streams 16
+```
+
+Results are written under `yume-bench-results/<UTC timestamp>/` by default:
+
+- `endpoint.pcap` contains the authenticated YUME 2.0 carrier.
+- `cover-chromium.pcap` contains a real browser page load through `yumed` to
+  the loopback Node site.
+- `endpoint.log`, `yumed.log`, and `node.log` retain the corresponding output.
+- `report.json` records versions, network settings, commands, exit codes, and
+  parsed MiB/s and Mbit/s rows.
+
+The helper requires Node 24.18.x for the pinned cover profile. A different Node
+version can be used for functional testing with
+`--allow-node-version-mismatch`, but that run is not Node-profile evidence.
+Likewise, the browser version recorded in `report.json` must match the pinned
+Chrome fixture before its PCAP is used as fingerprint evidence.
+
+`scripts/yume_bench_localhost.py` is now only a convenience wrapper for the
+canonical built-in local benchmark:
+
+```bash
+python3 scripts/yume_bench_localhost.py
+python3 scripts/yume_bench_localhost.py --full --duration-sec 120 --dev
+```
+
+### Two-host LAN or WAN
+
+For a physical endpoint, provision the identity, admission secret, inner PSK,
+TLS certificate, and real Node service as described in
+[QUICKSTART.md](QUICKSTART.md). Enable the benchmark only for the test window:
+
+```bash
+# Server; Node is already bound to 127.0.0.1:3000
+sudo ./build/bin/yumed \
+  --listen 0.0.0.0:443 \
+  --cert /etc/yume/server.crt \
+  --key /etc/yume/server.key \
+  --auth-keys /etc/yume/authorized_keys \
+  --obfs-secret-file /etc/yume/secrets/admission.hex \
+  --inner-psk-file /etc/yume/secrets/inner.hex \
+  --real-backend loopback://127.0.0.1:3000 \
+  --bench
+```
+
+Run a moderate measurement from the client:
+
+```bash
+./build/bin/yume \
+  --server edge.example.net --port 443 \
+  --tls-ca ~/.config/yume/server-ca.crt \
+  --auth ~/.config/yume/client.key \
+  --obfs-secret-file ~/.config/yume/admission.hex \
+  --inner-psk-file ~/.config/yume/inner.hex \
+  --profile chrome \
+  --bench --bench-mib 128 --bench-streams 8 \
+  --bench-chunk-kib 256 --bench-direction both \
+  --boring --no-color
+```
+
+Capture the public interface at either end:
+
+```bash
+sudo tcpdump -i eth0 -n -s 0 -U \
+  -w yume-2-endpoint.pcap \
+  'host CLIENT_OR_SERVER_IP and tcp port 443'
+```
+
+For the cover baseline, start a second capture and open
+`https://edge.example.net/` in the pinned Chrome build. That request travels
+through public `yumed` and the loopback Node backend, but it is intentionally a
+separate workload from `yume --bench`. nginx is not part of this carrier or
+cover path.
+
+To capture an application-like browser session instead of synthetic benchmark
+streams, start the normal client SOCKS listener:
+
+```bash
+./build/bin/yume \
+  --server edge.example.net --port 443 \
+  --tls-ca ~/.config/yume/server-ca.crt \
+  --auth ~/.config/yume/client.key \
+  --obfs-secret-file ~/.config/yume/admission.hex \
+  --inner-psk-file ~/.config/yume/inner.hex \
+  --profile chrome --socks 127.0.0.1:1080 \
+  --non-interactive --accept-monitoring
+
+chromium \
+  --user-data-dir=/tmp/yume-browser-profile \
+  --proxy-server=socks5://127.0.0.1:1080 \
+  --host-resolver-rules='MAP * ~NOTFOUND, EXCLUDE localhost' \
+  https://example.com/
+```
+
+Capture only the client-to-`yumed` address and port. The destination browser
+traffic then appears inside the encrypted YUME carrier rather than as extra
+public flows in the same PCAP. Use a disposable browser profile so extensions,
+sync, and an existing service worker do not add unrelated traffic.
+
+No `--pq`, `--hop`, or masquerade switch is needed. ML-KEM-1024 + X25519,
+per-message encryption, the 256 KiB / 512-frame / 500 ms directional epochs,
+the Chrome-shaped H2 carrier, and the Node cover routing are mandatory in every
+accepted 2.0 endpoint benchmark. The capture verifies on-wire behavior; the
+benchmark output reports application throughput, not protocol overhead.
+
 ## Crypto microbenchmark
 
 `yume-basefwx-bench` runs the production 2.0 crypto schedule in memory:

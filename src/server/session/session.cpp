@@ -8,6 +8,7 @@
 #include "server/runtime/manager.hpp"
 #include "server/session/internal.hpp"
 #include "core/security/secure_erase.hpp"
+#include "core/security/auth_v2.hpp"
 
 namespace yume::server {
 
@@ -24,12 +25,14 @@ Session::Session(boost::asio::ip::tcp::socket socket,
                  const ServerConfig& cfg,
                  std::shared_ptr<const std::vector<crypto::Bytes>> authorized_keys,
                  std::shared_ptr<KdfAdmissionController> kdf_admission,
+                 std::shared_ptr<obfs::AdmissionReplayCache> admission_replay_cache,
                  uint64_t session_id,
                  Manager* manager)
     : stream_(std::move(socket), ssl_ctx)
     , cfg_(cfg)
     , authorized_keys_(std::move(authorized_keys))
     , kdf_admission_(std::move(kdf_admission))
+    , admission_replay_cache_(std::move(admission_replay_cache))
     , session_id_(session_id)
     , manager_(manager)
     , strand_(stream_.get_executor())
@@ -37,6 +40,7 @@ Session::Session(boost::asio::ip::tcp::socket socket,
     , tls_handshake_timer_(stream_.get_executor())
     , idle_timer_(stream_.get_executor())
     , frame_read_timer_(stream_.get_executor())
+    , ratchet_timer_(stream_.get_executor())
     , transport_shutdown_timer_(stream_.get_executor())
     , http_idle_timer_(stream_.get_executor()) {
     last_activity_ms_.store(steady_now_ms(), std::memory_order_relaxed);
@@ -96,6 +100,7 @@ std::optional<boost::asio::ssl::stream<boost::asio::ip::tcp::socket>> Session::r
     tls_handshake_timer_.cancel();
     preface_timer_.cancel();
     idle_timer_.cancel();
+    ratchet_timer_.cancel();
     if (manager_) {
         manager_->unregister_session(this);
     }
@@ -115,32 +120,16 @@ void Session::notify_server_shutdown(const std::string& reason) {
             };
             std::string payload_text = notice.dump();
             crypto::Bytes payload(payload_text.begin(), payload_text.end());
-            uint16_t flags = 0;
-            if (self->inner_key_.has_value()) {
-                payload = self->encrypt_inner_payload(protocol::CONTROL, 0, payload);
-                flags |= protocol::kFlagInnerEncrypted;
-            }
-            auto data = std::make_shared<std::vector<uint8_t>>(protocol::encode_frame(
-                protocol::CONTROL,
-                0,
-                flags,
-                payload,
-                self->cfg_.obfs_pad_multiple));
-            self->queue_encoded_write_on_strand(data, protocol::CONTROL, 0, payload.size());
+            protocol::Frame notice_frame{{static_cast<std::uint32_t>(payload.size()),
+                                          protocol::CONTROL, 0, 0},
+                                         std::move(payload)};
+            self->queue_frame_on_strand(notice_frame);
 
             crypto::Bytes close_payload(reason.begin(), reason.end());
-            uint16_t close_flags = 0;
-            if (self->inner_key_.has_value()) {
-                close_payload = self->encrypt_inner_payload(protocol::CLOSE, 0, close_payload);
-                close_flags |= protocol::kFlagInnerEncrypted;
-            }
-            auto close_frame = std::make_shared<std::vector<uint8_t>>(protocol::encode_frame(
-                protocol::CLOSE,
-                0,
-                close_flags,
-                close_payload,
-                self->cfg_.obfs_pad_multiple));
-            self->queue_encoded_write_on_strand(close_frame, protocol::CLOSE, 0, close_payload.size());
+            protocol::Frame close_frame{{static_cast<std::uint32_t>(close_payload.size()),
+                                         protocol::CLOSE, 0, 0},
+                                        std::move(close_payload)};
+            self->queue_frame_on_strand(close_frame);
         }
         self->close_with_reason(reason);
     });
@@ -203,6 +192,14 @@ void Session::read_header() {
     arm_frame_read_deadline(std::chrono::milliseconds(kFrameHeaderTimeoutMs),
                             "frame header read timeout");
     auto self = shared_from_this();
+    if (v2_h2_tunnel_active_) {
+        start_v2_h2_exact_read(
+            header_buf_.data(), header_buf_.size(),
+            [self](const boost::system::error_code& ec, std::size_t bytes) {
+                self->on_read_header(ec, bytes);
+            });
+        return;
+    }
     boost::asio::async_read(stream_, boost::asio::buffer(header_buf_),
                             boost::asio::bind_executor(strand_,
                                                        [self](const boost::system::error_code& ec,
@@ -311,6 +308,14 @@ void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
     auto self = shared_from_this();
     arm_frame_read_deadline(std::chrono::milliseconds(kFramePayloadTimeoutMs),
                             "frame payload read timeout");
+    if (v2_h2_tunnel_active_) {
+        start_v2_h2_exact_read(
+            payload_buf_.data(), payload_buf_.size(),
+            [self](const boost::system::error_code& e, std::size_t bytes) {
+                self->on_read_payload(e, bytes);
+            });
+        return;
+    }
     boost::asio::async_read(stream_, boost::asio::buffer(payload_buf_),
                             boost::asio::bind_executor(strand_,
                                                        [self](const boost::system::error_code& e,
@@ -402,7 +407,7 @@ bool Session::frame_allowed_by_authorization_tier(const protocol::Frame& frame) 
         authorization_tier_, type, context);
 }
 
-void Session::handle_frame(const protocol::Frame& frame) {
+void Session::handle_frame(protocol::Frame frame) {
     if (close_state_ != CloseState::Open) {
         return;
     }
@@ -416,6 +421,12 @@ void Session::handle_frame(const protocol::Frame& frame) {
 
             if (!handle_auth(frame)) {
                 util::log_warn("session " + std::to_string(session_id_) + ": auth failed");
+                if (v2_h2_tunnel_active_) {
+                    // Once admission has succeeded, authentication failures
+                    // still emit no plaintext YUME error or downgrade marker.
+                    close_with_reason("authentication rejected");
+                    return;
+                }
                 std::string reason = auth_error_.empty() ? "access denied: invalid key" : auth_error_;
                 nlohmann::json anon_error = {
                     {"error", reason},
@@ -470,31 +481,26 @@ void Session::handle_frame(const protocol::Frame& frame) {
             {"pq_sig", cfg_.pq_sig},
             {"pq_alg", cfg_.pq_alg}
         };
-        std::string inner_mode = "off";
-        if (inner_key_.has_value()) {
-            inner_mode = inner_mode_.empty() ? (cfg_.inner_heavy ? "heavy" : "light") : inner_mode_;
-        } else if (cfg_.inner_crypto) {
-            inner_mode = cfg_.inner_heavy ? "heavy" : "light";
-        }
-        anon["inner_supported"] = cfg_.inner_crypto;
-        anon["inner_required"] = cfg_.inner_required;
-        anon["inner_dual"] = cfg_.inner_dual;
-        anon["inner_active"] = inner_key_.has_value();
-        anon["inner_mode"] = inner_mode;
+        anon["inner_supported"] = true;
+        anon["inner_required"] = true;
+        anon["inner_dual"] = false;
+        anon["inner_active"] = ratchet_ != nullptr;
+        anon["inner_mode"] = "ratchet";
         if (!inner_kdf_.empty()) {
             anon["inner_kdf"] = inner_kdf_;
         }
-        anon["hop_enabled"] = hop_enabled_;
-        anon["hop_interval_ms"] = cfg_.hop_interval_ms;
+        anon["hop_enabled"] = false;
+        anon["hop_interval_ms"] = 0;
         anon["server_time_ms"] = epoch_now_ms();
-        anon["cap_pq"] = inner::pq_supported();
-        anon["cap_argon2"] = inner::argon2_supported();
-        anon["cap_pbkdf2"] = inner::pbkdf2_supported();
+        anon["cap_pq"] = true;
+        anon["cap_argon2"] = false;
+        anon["cap_pbkdf2"] = false;
         if (manager_ && manager_->packet_egress_active()) {
             anon["capabilities"] = nlohmann::json::array({std::string(protocol::packet_bulk::kCapability)});
         }
         std::string payload_str = anon.dump();
-        crypto::Bytes payload(payload_str.begin(), payload_str.end());
+        crypto::Bytes server_info(payload_str.begin(), payload_str.end());
+        crypto::Bytes payload = auth_v2::BuildAuthOk(server_info);
         protocol::Frame anon_frame{{static_cast<uint32_t>(payload.size()), protocol::ANON, 0, 0}, payload};
         async_write_frame(anon_frame, [self = shared_from_this()](const boost::system::error_code& ec, std::size_t) {
             if (ec) {
@@ -504,6 +510,28 @@ void Session::handle_frame(const protocol::Frame& frame) {
             self->read_header();
         });
         return;
+    }
+
+    if (ratchet_) {
+        try {
+            auto opened = ratchet_->Open(frame,
+                                         std::chrono::steady_clock::now());
+            if (opened.control_response.has_value()) {
+                queue_frame_on_strand(*opened.control_response, {}, true);
+            }
+            if (opened.outbound_rekey_completed) {
+                ratchet_timer_.cancel();
+                flush_ratchet_blocked_writes_on_strand();
+            }
+            if (!opened.application_frame.has_value()) {
+                if (close_state_ == CloseState::Open) read_header();
+                return;
+            }
+            frame = std::move(*opened.application_frame);
+        } catch (const std::exception& ex) {
+            close_with_reason("ratchet open failed: " + std::string(ex.what()));
+            return;
+        }
     }
 
     if (inner_key_.has_value() &&
@@ -920,6 +948,7 @@ void Session::begin_close() {
     boost::system::error_code ec;
     idle_timer_.cancel();
     frame_read_timer_.cancel(ec);
+    ratchet_timer_.cancel();
     preface_timer_.cancel();
     if (manager_) {
         manager_->unregister_session(this);
@@ -983,6 +1012,14 @@ void Session::begin_close() {
     reverse_listeners_.clear();
 
     security::secure_erase(challenge_);
+    auth_v2_ephemeral_.reset();
+    ratchet_.reset();
+    for (auto& write : ratchet_blocked_writes_) {
+        if (write.handler) {
+            write.handler(boost::asio::error::operation_aborted, 0);
+        }
+    }
+    ratchet_blocked_writes_.clear();
     if (inner_key_.has_value()) {
         security::secure_erase(*inner_key_);
         inner_key_.reset();

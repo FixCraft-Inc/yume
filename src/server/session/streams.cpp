@@ -472,39 +472,139 @@ void Session::finish_remote_stream_if_done(uint8_t stream_id) {
 
 void Session::async_write_frame(const protocol::Frame& frame,
                                 std::function<void(const boost::system::error_code&, std::size_t)> handler) {
-    auto data = std::make_shared<std::vector<uint8_t>>(protocol::encode_frame(
-        static_cast<protocol::FrameType>(frame.header.type),
-        frame.header.stream_id,
-        frame.header.flags,
-        frame.payload,
-        cfg_.obfs_pad_multiple));
-
     boost::asio::post(strand_, [self = shared_from_this(),
-                                data,
-                                frame_type = frame.header.type,
-                                stream_id = frame.header.stream_id,
-                                payload_size = frame.payload.size(),
+                                frame,
                                 handler = std::move(handler)]() mutable {
-        self->queue_encoded_write_on_strand(data, frame_type, stream_id, payload_size, std::move(handler));
+        self->queue_frame_on_strand(frame, std::move(handler));
     });
 }
 
 void Session::queue_frame_on_strand(const protocol::Frame& frame,
-                                    std::function<void(const boost::system::error_code&, std::size_t)> handler) {
+                                    std::function<void(const boost::system::error_code&, std::size_t)> handler,
+                                    bool already_protected) {
+    protocol::Frame effective = frame;
+    if (ratchet_) {
+        try {
+            const bool application =
+                ratchet::SessionRatchet::IsApplicationFrame(frame.header.type);
+            if (application && ratchet_->outbound_rekey_pending()) {
+                if (ratchet_blocked_writes_.size() >= kMaxWriteQueueSize) {
+                    if (handler) handler(boost::asio::error::no_buffer_space, 0);
+                    close_with_reason("ratchet application queue overrun");
+                    return;
+                }
+                ratchet_blocked_writes_.push_back(
+                    {frame, std::move(handler)});
+                return;
+            }
+            if (!already_protected && application &&
+                ratchet_->ShouldStartRekey(
+                    frame, std::chrono::steady_clock::now())) {
+                protocol::Frame init = ratchet_->BeginOutboundRekey(
+                    std::chrono::steady_clock::now());
+                if (ratchet_blocked_writes_.size() >= kMaxWriteQueueSize) {
+                    if (handler) handler(boost::asio::error::no_buffer_space, 0);
+                    close_with_reason("ratchet application queue overrun");
+                    return;
+                }
+                ratchet_blocked_writes_.push_back(
+                    {frame, std::move(handler)});
+                arm_ratchet_timeout_on_strand();
+                queue_frame_on_strand(init, {}, true);
+                return;
+            }
+            if (!already_protected) {
+                effective = ratchet_->Seal(
+                    frame, std::chrono::steady_clock::now());
+            } else if (frame.header.type != protocol::REKEY_INIT &&
+                       frame.header.type != protocol::REKEY_ACK) {
+                throw std::runtime_error("unexpected pre-protected frame type");
+            }
+        } catch (const std::exception& ex) {
+            if (handler) handler(boost::asio::error::fault, 0);
+            close_with_reason("ratchet seal failed: " + std::string(ex.what()));
+            return;
+        }
+    }
     auto data = std::make_shared<std::vector<uint8_t>>(protocol::encode_frame(
-        static_cast<protocol::FrameType>(frame.header.type),
-        frame.header.stream_id,
-        frame.header.flags,
-        frame.payload,
+        static_cast<protocol::FrameType>(effective.header.type),
+        effective.header.stream_id,
+        effective.header.flags,
+        effective.payload,
         cfg_.obfs_pad_multiple));
     queue_encoded_write_on_strand(std::move(data),
-                                  frame.header.type,
-                                  frame.header.stream_id,
-                                  frame.payload.size(),
+                                  effective.header.type,
+                                  effective.header.stream_id,
+                                  effective.payload.size(),
                                   std::move(handler));
 }
 
+void Session::flush_ratchet_blocked_writes_on_strand() {
+    if (!ratchet_ || ratchet_->outbound_rekey_pending()) return;
+    auto pending = std::move(ratchet_blocked_writes_);
+    ratchet_blocked_writes_.clear();
+    for (auto& write : pending) {
+        if (close_state_ != CloseState::Open) {
+            if (write.handler) {
+                write.handler(boost::asio::error::operation_aborted, 0);
+            }
+            continue;
+        }
+        queue_frame_on_strand(write.frame, std::move(write.handler));
+    }
+}
+
+void Session::arm_ratchet_timeout_on_strand() {
+    if (!ratchet_) return;
+    const auto deadline = ratchet_->rekey_deadline();
+    if (!deadline.has_value()) return;
+    ratchet_timer_.expires_at(*deadline);
+    auto self = shared_from_this();
+    ratchet_timer_.async_wait(boost::asio::bind_executor(
+        strand_, [self](const boost::system::error_code& ec) {
+            if (ec || self->close_state_ != CloseState::Open || !self->ratchet_) {
+                return;
+            }
+            if (self->ratchet_->rekey_timed_out(
+                    std::chrono::steady_clock::now())) {
+                self->close_with_reason("YUME 2.0 rekey timeout");
+            }
+        }));
+}
+
 void Session::queue_encoded_write_on_strand(
+    std::shared_ptr<std::vector<uint8_t>> data,
+    uint8_t frame_type,
+    uint8_t stream_id,
+    std::size_t payload_size,
+    std::function<void(const boost::system::error_code&, std::size_t)> handler) {
+    if (v2_h2_tunnel_active_) {
+        if (!v2_h2_carrier_ || close_state_ != CloseState::Open) {
+            if (handler) handler(boost::asio::error::operation_aborted, 0);
+            return;
+        }
+        if (v2_h2_pending_app_writes_.size() >= kMaxWriteQueueSize) {
+            if (handler) handler(boost::asio::error::no_buffer_space, 0);
+            close_with_reason("v2 H2 application write queue overrun");
+            return;
+        }
+        if (!v2_h2_carrier_->SendBinary(*data)) {
+            if (handler) handler(boost::asio::error::fault, 0);
+            close_with_reason("v2 H2 carrier write failed: " +
+                              v2_h2_carrier_->error());
+            return;
+        }
+        v2_h2_pending_app_writes_.push_back(
+            {std::move(data), frame_type, stream_id, payload_size,
+             std::move(handler)});
+        flush_v2_h2_wire_on_strand();
+        return;
+    }
+    enqueue_tls_write_on_strand(std::move(data), frame_type, stream_id,
+                                payload_size, std::move(handler));
+}
+
+void Session::enqueue_tls_write_on_strand(
     std::shared_ptr<std::vector<uint8_t>> data,
     uint8_t frame_type,
     uint8_t stream_id,

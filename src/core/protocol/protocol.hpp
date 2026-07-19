@@ -13,7 +13,22 @@
 
 namespace yume::protocol {
 
-enum FrameType : uint8_t { AUTH = 1, OPEN, DATA, CLOSE, EXEC, ANON, RLISTEN, ROPEN, PING, PONG, CONTROL, SOPEN };
+enum FrameType : uint8_t {
+    AUTH = 1,
+    OPEN,
+    DATA,
+    CLOSE,
+    EXEC,
+    ANON,
+    RLISTEN,
+    ROPEN,
+    PING,
+    PONG,
+    CONTROL,
+    SOPEN,
+    REKEY_INIT,
+    REKEY_ACK,
+};
 
 inline constexpr uint16_t kFlagOpenOk = 0x0001;
 // CLOSE with this flag is a TCP half-close/FIN for the stream's send side.

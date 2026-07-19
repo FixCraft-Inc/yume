@@ -38,6 +38,8 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::io_threads, c.io_threads);
     read_opt(j, cfg_key::obfuscation, c.obfuscation);
     read_opt(j, cfg_key::obfs_secret, c.obfs_secret);
+    read_opt(j, cfg_key::obfs_secret_file, c.obfs_secret_file);
+    read_opt(j, cfg_key::inner_psk_file, c.inner_psk_file);
     read_opt(j, cfg_key::inner_crypto, c.inner_crypto);
     read_opt(j, cfg_key::inner_heavy, c.inner_heavy);
     read_opt(j, cfg_key::inner_hop, c.inner_hop);
@@ -85,6 +87,8 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::outbound_proxy, c.outbound_proxy_url);
 
     resolve_config_path(c.identity, base);
+    resolve_config_path(c.obfs_secret_file, base);
+    resolve_config_path(c.inner_psk_file, base);
     resolve_config_path(c.pq_public_key, base);
     resolve_config_path(c.anonym_pubkey, base);
     resolve_config_path(c.anonym_ca_cert, base);
@@ -141,6 +145,8 @@ bool save_client(client::ClientConfig const& c,
         {cfg_key::io_threads, c.io_threads},
         {cfg_key::obfuscation, c.obfuscation},
         {cfg_key::obfs_secret, c.obfs_secret},
+        {cfg_key::obfs_secret_file, c.obfs_secret_file},
+        {cfg_key::inner_psk_file, c.inner_psk_file},
         {cfg_key::inner_crypto, c.inner_crypto},
         {cfg_key::inner_heavy, c.inner_heavy},
         {cfg_key::inner_hop, c.inner_hop},

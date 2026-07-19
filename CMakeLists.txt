@@ -166,6 +166,8 @@ endif()
 
 if(NOT YUME_TRANSPORT_CORE_ONLY)
     find_package(OpenSSL REQUIRED)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(NGHTTP2 REQUIRED IMPORTED_TARGET libnghttp2>=1.64)
     find_package(Boost CONFIG QUIET COMPONENTS system)
     if(NOT Boost_FOUND)
         find_package(Boost REQUIRED COMPONENTS system)

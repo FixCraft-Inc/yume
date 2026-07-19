@@ -1,4 +1,4 @@
-.TH YUMED 8 "2026-06-27" "YUME 1.1" "YUME Manual"
+.TH YUMED 8 "2026-07-18" "YUME 2.0-dev1" "YUME Manual"
 .SH NAME
 yumed \- YUME server daemon
 .SH SYNOPSIS
@@ -27,6 +27,10 @@ their auth keys, negotiates transport capabilities, and opens outbound
 target sockets for allowed streams. It can also serve a real HTTP facade
 for non-YUME requests, enforce anonym/no-log mode, manage authorized
 keys, and expose relay/directory features when enabled.
+.PP
+For an accepted 2.0 tunnel, yumed is the public TLS/HTTP/2 endpoint. A
+separately supervised Node.js 24 process on loopback supplies the genuine
+cover site and never receives tunnel records or secrets.
 .SH BASIC SETUP
 .PP
 .nf
@@ -34,7 +38,10 @@ sudo yumed \
     --listen 443 \
     --cert /etc/yume/server.crt \
     --key /etc/yume/server.key \
-    --auth-keys /etc/yume/authorized_keys
+    --auth-keys /etc/yume/authorized_keys \
+    --obfs-secret-file /etc/yume/obfs.hex \
+    --inner-psk-file /etc/yume/inner.hex \
+    --real-backend loopback://127.0.0.1:3000
 .fi
 .PP
 Port 443 requires root or
@@ -133,13 +140,19 @@ Packet-native MTU. Default:
 .BR 1420 .
 .TP
 .B --obfs
-Enable HTTP/2 carrier obfuscation.
+Use the mandatory full-session HTTP/2 carrier.
 .TP
-.BI "--obfs-secret " string
-Shared HMAC secret used to validate obfs path tokens. Clients must match it.
-It is required and must be nonempty under
-.BR --public-node ;
-an empty secret is for non-public structural development checks only.
+.BI "--obfs-secret-file " path
+Load the mandatory admission secret from a protected file containing exactly
+64 lowercase hexadecimal characters encoding 32 random bytes, with no newline.
+.TP
+.BI "--inner-psk-file " path
+Load the separate mandatory random inner PSK in the same strict format.
+.TP
+.BI "--real-backend " url
+Use the required genuine Node cover at
+.BI loopback:// IP-literal : port .
+DNS names, redirects, and non-loopback targets are rejected.
 .TP
 .B --allow-local-ip
 Allow private and loopback destinations when key policy permits it.
@@ -158,48 +171,12 @@ Use minimal logs.
 Emit lightweight timing diagnostics.
 .SH SECURITY OPTIONS
 .TP
-.B --inner
-Enable inner PQ crypto. Kept for compatibility; prefer
-.B --inner-heavy
-or
-.BR --inner-light .
-.TP
-.B --no-inner
-Disable inner crypto and hopping.
-.TP
-.B --inner-heavy
-Use the heavy KDF path when available.
-.TP
-.B --inner-light
-Use the light KDF path.
-.TP
-.B --inner-dual
-Accept heavy and light clients.
-.TP
 .B --inner-required
-Reject clients that do not negotiate inner crypto.
-.TP
-.B --hop
-Enable live inner key hopping.
-.TP
-.B --no-hop
-Disable live inner key hopping.
-.TP
-.BI "--hop-interval " ms
-Set key hopping interval in milliseconds.
-.TP
-.BI "--pq-key " path
-PQ private key for inner crypto.
-.TP
-.B --pq-auto-generate
-Generate a PQ keypair when needed.
-.TP
-.B --use-embedded-master
-Allow the embedded BaseFWX master fallback. This is for explicit
-test/development use, not production.
-.TP
-.B --no-embedded-master
-Disable the embedded BaseFWX master fallback.
+Redundant compatibility spelling for the mandatory 2.0 inner channel. The
+ML-KEM-1024 + X25519 + PSK suite and the 256 KiB, 512-frame, and 500 ms active
+directional rekey limits cannot be disabled or peer-selected. The retired
+inner-heavy/light/dual, hop, PQ-key, embedded-master, and Argon2 options are
+rejected.
 .SH HTTP FACADE AND ANONYM OPTIONS
 .TP
 .B --real
@@ -395,8 +372,9 @@ Repeat for multiple peers.
 Internet-facing hardening preset. Rejects dangerous server flags, requires
 .BR --auth-keys
 and a nonempty
-.BR --obfs-secret ,
-defaults disguise profile to nginx, and tightens session limits.
+.BR --obfs-secret-file ,
+a mandatory inner PSK file, and the loopback Node backend, and tightens session
+limits.
 .TP
 .BI "--federation-auth-key " path
 Ed25519 private key used to authenticate federation peer links.
@@ -418,13 +396,6 @@ Cap concurrent authenticated client sessions.
 .TP
 .BI "--accept-rate-limit " n
 Limit new TCP accepts per second (0 disables).
-.TP
-.BI "--argon2-memory-budget-kib " kib
-Cap aggregate memory admitted for concurrent Argon2 handshake work. Requests
-that would exceed the budget are rejected before Argon2 allocates memory.
-.TP
-.BI "--argon2-max-jobs " n
-Cap concurrent admitted Argon2 handshake jobs. The value must be positive.
 .SH AUTH_KEYS.META FORMAT
 .B auth_keys.meta
 is JSON keyed by Ed25519 public-key fingerprint (hex). Each entry may
@@ -530,21 +501,19 @@ to deny.
 Start a basic server:
 .nf
 sudo yumed --listen 443 --cert /etc/yume/server.crt \
-    --key /etc/yume/server.key --auth-keys /etc/yume/authorized_keys
+    --key /etc/yume/server.key --auth-keys /etc/yume/authorized_keys \
+    --obfs-secret-file /etc/yume/obfs.hex \
+    --inner-psk-file /etc/yume/inner.hex \
+    --real-backend loopback://127.0.0.1:3000
 .fi
 .TP
-Require inner crypto:
+Start the mandatory 2.0 carrier with the real loopback Node cover:
 .nf
 sudo yumed --listen 443 --cert server.crt --key server.key \
-    --auth-keys authorized_keys --inner-heavy --inner-required \
-    --pq-key /etc/yume/master_pq.sk
-.fi
-.TP
-Enable obfs and real HTTP facade on the same port:
-.nf
-sudo yumed --listen 443 --cert server.crt --key server.key \
-    --auth-keys authorized_keys --obfs --obfs-secret shared \
-    --real --real-index /var/www/yume/index.html
+    --auth-keys authorized_keys \
+    --obfs-secret-file /etc/yume/obfs.hex \
+    --inner-psk-file /etc/yume/inner.hex \
+    --real-backend loopback://127.0.0.1:3000
 .fi
 .TP
 Block VPN-provider egress destinations using an operator-supplied archive:

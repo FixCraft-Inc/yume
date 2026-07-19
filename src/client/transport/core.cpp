@@ -20,7 +20,8 @@ using namespace detail;
 
 std::deque<TransportCore::PendingWrite>::iterator TransportCore::select_next_write_locked(
     std::size_t current_batch_bytes,
-    const std::unordered_set<uint8_t>& batch_streams) {
+    const std::unordered_set<uint8_t>& batch_streams,
+    bool rekey_blocked) {
     auto select = [&](bool allow_already_selected_stream) {
         auto best = write_queue_.end();
         int best_priority = 999;
@@ -29,6 +30,12 @@ std::deque<TransportCore::PendingWrite>::iterator TransportCore::select_next_wri
         std::size_t index = 0;
         for (auto it = write_queue_.begin(); it != write_queue_.end(); ++it, ++index) {
             const auto& frame = it->frame;
+            if (rekey_blocked &&
+                !(it->already_protected &&
+                  (frame.header.type == protocol::REKEY_INIT ||
+                   frame.header.type == protocol::REKEY_ACK))) {
+                continue;
+            }
             const std::size_t estimated_size = frame.payload.size() + 8U;
             if (current_batch_bytes > 0 && current_batch_bytes + estimated_size > kMaxWriteBatchBytes) {
                 continue;
@@ -111,6 +118,12 @@ bool TransportCore::handle_keepalive_tick(std::chrono::steady_clock::time_point 
     return true;
 }
 
+bool TransportCore::rekey_timed_out(
+    std::chrono::steady_clock::time_point now) const {
+    std::lock_guard<std::mutex> lock(state_mu_);
+    return ratchet_ && ratchet_->rekey_timed_out(now);
+}
+
 std::vector<TransportCore::CloseHandler> TransportCore::shutdown() {
     std::vector<CloseHandler> close_callbacks;
     {
@@ -135,6 +148,7 @@ std::vector<TransportCore::CloseHandler> TransportCore::shutdown() {
             security::secure_erase(*inner_key_);
             inner_key_.reset();
         }
+        ratchet_.reset();
         clear_hop_key_cache_locked();
     }
     {
@@ -161,6 +175,16 @@ void TransportCore::set_inner_key(const Bytes& key) {
     std::lock_guard<std::mutex> lock(state_mu_);
     inner_key_ = key;
     clear_hop_key_cache_locked();
+}
+
+void TransportCore::set_ratchet(
+    std::unique_ptr<ratchet::SessionRatchet> ratchet) {
+    if (!ratchet) throw std::invalid_argument("ratchet must not be null");
+    std::lock_guard<std::mutex> lock(state_mu_);
+    if (inner_key_.has_value()) {
+        throw std::runtime_error("legacy inner key and YUME 2.0 ratchet are exclusive");
+    }
+    ratchet_ = std::move(ratchet);
 }
 
 void TransportCore::set_hop(bool enabled, std::uint32_t interval_ms, std::int64_t offset_ms) {
@@ -581,6 +605,40 @@ void TransportCore::feed_tls_bytes(const uint8_t* data, std::size_t size) {
 
         if (!have_frame) {
             return;
+        }
+        std::optional<protocol::Frame> opened_frame;
+        std::optional<protocol::Frame> ratchet_response;
+        bool rekey_completed = false;
+        try {
+            std::lock_guard<std::mutex> lock(state_mu_);
+            if (ratchet_) {
+                auto result = ratchet_->Open(
+                    frame, std::chrono::steady_clock::now());
+                opened_frame = std::move(result.application_frame);
+                ratchet_response = std::move(result.control_response);
+                rekey_completed = result.outbound_rekey_completed;
+            }
+        } catch (const std::exception& ex) {
+            request_transport_close("ratchet open failed: " +
+                                    std::string(ex.what()));
+            return;
+        }
+        if (ratchet_response.has_value()) {
+            queue_frame(std::move(*ratchet_response), {}, true);
+        }
+        if (rekey_completed) {
+            resume_writes_after_rekey();
+        }
+        bool has_ratchet = false;
+        {
+            std::lock_guard<std::mutex> lock(state_mu_);
+            has_ratchet = ratchet_ != nullptr;
+        }
+        if (has_ratchet) {
+            if (!opened_frame.has_value()) {
+                continue;
+            }
+            frame = std::move(*opened_frame);
         }
         handle_frame(frame);
         if (is_stopped()) {

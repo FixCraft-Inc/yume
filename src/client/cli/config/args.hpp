@@ -30,6 +30,10 @@ struct ParsedArgs {
     bool obfuscation_override{false};
     std::string obfs_secret;
     bool obfs_secret_override{false};
+    std::string obfs_secret_file;
+    bool obfs_secret_file_override{false};
+    std::string inner_psk_file;
+    bool inner_psk_file_override{false};
     std::uint16_t obfs_pad_multiple{0};
     bool obfs_pad_multiple_override{false};
     std::uint32_t obfs_jitter_ms{0};

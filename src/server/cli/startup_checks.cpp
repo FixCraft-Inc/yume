@@ -10,13 +10,14 @@
 #include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
 #include "core/protocol/runtime_policy.hpp"
-#include "core/stealth/tls_fingerprint.hpp"
-#include "core/stealth/tls_stealth.hpp"
+#include "core/security/secret_file.hpp"
 #include "server/cli/key.hpp"
 #include "server/cli/security_policy.hpp"
 #include "server/config/config.hpp"
 #include "server/filter/ip_filter.hpp"
 #include "server/host/host_types.hpp"
+#include "server/host/host_routes.hpp"
+#include "server/host/http_backend_client.hpp"
 #include "util.hpp"
 
 #include <algorithm>
@@ -72,12 +73,73 @@ bool validate_required_files(const yume::server::ServerConfig& cfg, bool key_man
            require_readable("real_index_path", cfg.real_index_path) &&
            require_directory("real_root", cfg.real_root) &&
            require_readable("real_secret_file", cfg.real_secret_file) &&
+           require_readable("obfs_secret_file", cfg.obfs_secret_file) &&
+           require_readable("inner_psk_file", cfg.inner_psk_file) &&
            require_readable("anonym_ca_key", cfg.anonym_ca_key) &&
            require_readable("anonym_ca_cert", cfg.anonym_ca_cert) &&
            require_readable("anonym_sub_key", cfg.anonym_sub_key) &&
            require_readable("anonym_sub_cert", cfg.anonym_sub_cert) &&
            require_readable("federation_auth_key", cfg.federation_auth_key) &&
            require_readable("federation_anonym_ca", cfg.federation_anonym_ca);
+}
+
+bool prepare_v2_secrets(yume::server::ServerConfig& cfg,
+                        bool key_management_only) {
+    if (key_management_only) return true;
+    if (!cfg.obfs_secret.empty()) {
+        yume::util::log_error(
+            "literal obfs_secret is not accepted by YUME 2.0; configure obfs_secret_file");
+        return false;
+    }
+    if (cfg.obfs_secret_file.empty() || cfg.inner_psk_file.empty()) {
+        yume::util::log_error(
+            "YUME 2.0 requires --obfs-secret-file and --inner-psk-file");
+        return false;
+    }
+    if (!cfg.obfuscation || !cfg.inner_crypto) {
+        yume::util::log_error(
+            "YUME 2.0 requires the H2 carrier and mandatory inner encryption; "
+            "--no-obfs/--no-inner are not accepted");
+        return false;
+    }
+    if (cfg.obfs_pad_multiple != 0 || cfg.obfs_jitter_ms != 0) {
+        yume::util::log_error(
+            "YUME 2.0 Chrome profile rejects configured obfs padding/jitter; "
+            "the committed capture contains neither");
+        return false;
+    }
+    cfg.inner_required = true;
+    if (cfg.real_backend.empty()) {
+        yume::util::log_error(
+            "YUME 2.0 requires --real-backend "
+            "loopback://<loopback-ip-literal>:<port>");
+        return false;
+    }
+    if (!yume::server::host::parse_loopback_backend(cfg.real_backend).has_value()) {
+        yume::util::log_error(
+            "--real-backend must be loopback://<loopback-ip-literal>:<port>");
+        return false;
+    }
+    const auto backend = yume::server::host::parse_loopback_backend(
+        cfg.real_backend);
+    std::string probe_error;
+    if (!yume::server::host::probe_loopback_http(
+            backend->first, backend->second, &probe_error)) {
+        yume::util::log_error("--real-backend startup health check failed: " +
+                              probe_error);
+        return false;
+    }
+    try {
+        cfg.obfs_secret_material = std::make_shared<yume::security::Secret32>(
+            yume::security::LoadSecretFile32(cfg.obfs_secret_file));
+        cfg.inner_psk_material = std::make_shared<yume::security::Secret32>(
+            yume::security::LoadSecretFile32(cfg.inner_psk_file));
+    } catch (const std::exception& ex) {
+        yume::util::log_error(std::string("YUME 2.0 secret-file validation failed: ") +
+                              ex.what());
+        return false;
+    }
+    return true;
 }
 
 bool validate_http_profile(const yume::server::ServerConfig& cfg) {
@@ -390,8 +452,8 @@ bool apply_public_node_defaults(yume::server::ServerConfig& cfg,
         violations.emplace_back("--no-obfs is forbidden by --public-node (the HTTP/2 carrier must be the outer visible layer)");
     }
     if (!public_obfs_admission_valid(
-            cfg.public_node, cfg.obfuscation, cfg.obfs_secret)) {
-        violations.emplace_back("--public-node requires a nonempty --obfs-secret so active probes cannot reach AUTH through structural path matching");
+            cfg.public_node, cfg.obfuscation, cfg.obfs_secret_file)) {
+        violations.emplace_back("--public-node requires --obfs-secret-file so active probes cannot reach AUTH through structural path matching");
     }
     if (cfg.allow_exec) {
         violations.emplace_back("--allow-exec is forbidden by --public-node (server-side exec on a public node is a remote-shell hole)");
@@ -420,11 +482,11 @@ bool apply_public_node_defaults(yume::server::ServerConfig& cfg,
     }
     yume::util::log_info("--public-node active; the following protections are enforced at startup:");
     yume::util::log_info("  - HTTP/2 carrier obfuscation required (--no-obfs rejected)");
-    yume::util::log_info("  - nonempty --obfs-secret required (missing/wrong admission stays in the web masquerade)");
+    yume::util::log_info("  - protected --obfs-secret-file required (missing/wrong admission stays in the web masquerade)");
     yume::util::log_info("  - dangerous capability flags (--allow-exec / --allow-local-ip / --control-full) are rejected");
     yume::util::log_info("  - inner crypto required (no plaintext transport)");
     yume::util::log_info("  - --auth-keys required (no anonymous-relay accidents)");
-    yume::util::log_info("  - Argon2 has per-derivation caps plus bounded aggregate memory/jobs");
+    yume::util::log_info("  - random inner PSK is expanded once with HKDF; no transport Argon2 admission surface");
     yume::util::log_info("  - private-IP bind refusal (--listen explicit-addr in RFC 1918 / loopback / link-local / ULA → startup error)");
     yume::util::log_info("  - TLS handshake deadline (--tls-handshake-timeout-ms; default 10s, slow-loris guard)");
     yume::util::log_info("  - accept-side rate-limit + max-concurrent-session cap (--accept-rate-limit 100/s, --max-sessions 4096)");
@@ -495,66 +557,21 @@ void log_security_warnings(const yume::server::ServerConfig& cfg) {
 }
 
 void log_effective_startup_summary(const yume::server::ServerConfig& cfg) {
-    const std::string effective_inner_mode =
-        !cfg.inner_crypto ? "off"
-        : cfg.inner_dual ? "dual"
-        : cfg.inner_heavy ? "heavy"
-        : "light";
-    const std::string hop_state =
-        cfg.inner_hop ? "on (" + std::to_string(cfg.hop_interval_ms) + "ms)"
-                      : "off";
-    yume::util::log_info("effective inner mode: " + effective_inner_mode +
-                         "; hopping: " + hop_state +
-                         "; required: " + (cfg.inner_required ? "yes" : "no"));
-    yume::util::log_info("Argon2 admission: aggregate-memory-kib=" +
-                         std::to_string(cfg.argon2_memory_budget_kib) +
-                         "; max-jobs=" + std::to_string(cfg.argon2_max_jobs));
-    yume::util::log_info("effective carrier: " +
-                         std::string(cfg.obfuscation ? "http2-obfs" : "raw-tls") +
-                         "; server disguise: " +
-                         (cfg.http_profile.empty() ? std::string("yumed") : cfg.http_profile));
+    yume::util::log_info(
+        "effective inner suite: ML-KEM-1024 + X25519 + mandatory PSK; "
+        "HKDF-only; AES-256-GCM per message");
+    yume::util::log_info(
+        "directional epoch limits: 256 KiB / 512 application frames / "
+        "500 ms active; idle silent");
+    yume::util::log_info("effective carrier: h2 RFC8441 WebSocket; cover backend: " +
+                         cfg.real_backend);
     if (cfg.benchmark_enable) {
         yume::util::log_info("authenticated benchmark endpoint enabled for yume --bench");
     }
 }
 
-void run_ja3_self_check() {
-    // Baselines captured 2026-05 on the build-host build (OpenSSL 3.5,
-    // Debian 13). Drift here means a dependency/profile edit may have
-    // changed the daemon's browser-cluster fingerprint.
-    struct Baseline {
-        yume::tls_fingerprint::BrowserProfile profile;
-        const char* name;
-        const char* expected_ja3;
-    };
-    constexpr Baseline kBaselines[] = {
-        {yume::tls_fingerprint::BrowserProfile::CHROME_131, "chrome", "51dc1deffb716cb50b5b0e5449c4e28f"},
-        {yume::tls_fingerprint::BrowserProfile::FIREFOX_126, "firefox", "b2f1f8aa44e9d9510358e21055e2a3c2"},
-        {yume::tls_fingerprint::BrowserProfile::SAFARI_18, "safari", "96244ebd33ea0991b081300f27a9a6b3"},
-    };
-    for (const auto& b : kBaselines) {
-        auto self = yume::tls_stealth::compute_self_fingerprint(b.profile);
-        if (!self.has_value()) {
-            yume::util::log_warn(std::string("ja3 self-check ") + b.name + ": could not generate ClientHello");
-            continue;
-        }
-        const std::string& got = self->ja3_hash;
-        if (*b.expected_ja3 == '\0') {
-            yume::util::log_info(std::string("ja3 self-check ") + b.name + ": " + got +
-                                 " (no pinned baseline — record this hash if it should be pinned)");
-        } else if (got == b.expected_ja3) {
-            yume::util::log_info(std::string("ja3 self-check ") + b.name + ": " + got + " (matches baseline)");
-        } else {
-            yume::util::log_warn(std::string("ja3 self-check ") + b.name +
-                                 ": DRIFT — observed " + got +
-                                 " vs pinned " + b.expected_ja3 +
-                                 ". OpenSSL extension order may have changed; verify the JA3 still falls in the browser cluster before publishing.");
-        }
-    }
-}
-
 bool load_real_http_secret(yume::server::ServerConfig& cfg, const std::string& default_secret_path) {
-    if (!cfg.real_http || !cfg.real_secret.empty()) {
+    if (!cfg.real_http || !cfg.real_backend.empty() || !cfg.real_secret.empty()) {
         return true;
     }
     const std::string secret_path = cfg.real_secret_file.empty() ? default_secret_path : cfg.real_secret_file;
@@ -571,12 +588,6 @@ bool load_real_http_secret(yume::server::ServerConfig& cfg, const std::string& d
 
 bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
                                    const StartupCheckOptions& options) {
-    if (cfg.argon2_memory_budget_kib == 0 || cfg.argon2_max_jobs == 0) {
-        yume::util::log_error(
-            "Argon2 admission limits must be positive; use "
-            "--argon2-memory-budget-kib and --argon2-max-jobs");
-        return false;
-    }
 #if !YUME_FEATURE_EXEC
     if (cfg.allow_exec) {
         yume::util::log_warn(
@@ -622,7 +633,8 @@ bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
         !validate_app_codecs(cfg) ||
         !validate_host_controller(cfg) ||
         !load_upstream_response(cfg) ||
-        !validate_upstream_response_dir(cfg)) {
+        !validate_upstream_response_dir(cfg) ||
+        !prepare_v2_secrets(cfg, options.key_management_only)) {
         return false;
     }
     log_obfs_tuning(cfg);
@@ -639,7 +651,9 @@ bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
 
     log_security_warnings(cfg);
     log_effective_startup_summary(cfg);
-    run_ja3_self_check();
+    yume::util::log_warn(
+        "TLS residual: OpenSSL ClientHello is not byte-identical to Chrome 150; "
+        "BoringSSL is the likely future requirement");
     return load_real_http_secret(cfg, options.default_secret_path);
 }
 

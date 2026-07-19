@@ -134,6 +134,7 @@ Manager::Manager(boost::asio::io_context& io, const ServerConfig& cfg)
     , authorized_keys_(std::make_shared<const std::vector<crypto::Bytes>>())
     , kdf_admission_(std::make_shared<KdfAdmissionController>(KdfAdmissionLimits{
           cfg.argon2_memory_budget_kib, cfg.argon2_max_jobs}))
+    , admission_replay_cache_(std::make_shared<obfs::AdmissionReplayCache>())
     , server_id_(cfg.server_id.empty() ? yume::identity::generate_endpoint_id() : cfg.server_id)
     , server_name_(cfg.server_name.empty() ? std::string("yumed") : cfg.server_name) {
     cfg_.server_id = server_id_;
@@ -868,6 +869,7 @@ void Manager::do_accept() {
                                                          cfg_copy,
                                                          authorized_keys_snapshot(),
                                                          kdf_admission_,
+                                                         admission_replay_cache_,
                                                          session_id, this);
                 register_session(session);
                 session->start();

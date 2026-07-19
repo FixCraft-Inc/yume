@@ -7,10 +7,12 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "core/protocol/runtime_policy.hpp"
+#include "core/security/secret_file.hpp"
 #include "server/host/host_types.hpp"
 
 namespace yume::server {
@@ -68,8 +70,16 @@ struct ServerConfig {
     // directory is served with real files/MIME so the decoy is a coherent
     // multi-asset site instead of a single index page. Implies real_http.
     std::string real_root;
+    // YUME 2.0 dynamic cover. Operator-selected loopback IP literal only;
+    // never derived from a peer request.
+    std::string real_backend;
     std::string real_secret;
     std::string real_secret_file;
+    std::string obfs_secret_file;
+    std::string inner_psk_file;
+    std::shared_ptr<yume::security::Secret32> obfs_secret_material;
+    std::shared_ptr<yume::security::Secret32> inner_psk_material;
+    // Legacy 1.x literal. YUME 2.0 startup rejects nonempty values.
     std::string obfs_secret;
     bool anonym{false};
     std::string anonym_proof_mode{std::string(yume::policy::kAnonymProofModeAuto)};

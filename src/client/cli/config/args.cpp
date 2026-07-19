@@ -204,7 +204,12 @@ ParsedArgs parse_args(int argc, char** argv) {
             if (!value) {
                 return args;
             }
-            args.http_profile = value;
+            if (std::string(value) != "chrome") {
+                args.parse_error =
+                    "YUME 2.0 dev1 supports only the pinned Chrome HTTP profile";
+                return args;
+            }
+            args.http_profile = "chrome";
         } else if (arg == "--cluster") {
             const char* spec = take_value("--cluster");
             if (!spec) {
@@ -336,30 +341,28 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.obfuscation = true;
             args.obfuscation_override = true;
         } else if (arg == "--no-obfs") {
-            args.obfuscation = false;
-            args.obfuscation_override = true;
-        } else if (arg == "--obfs-secret") {
-            const char* v = take_value("--obfs-secret");
+            args.parse_error =
+                "--no-obfs is not accepted by YUME 2.0; the H2 carrier is mandatory";
+            return args;
+        } else if (arg == "--obfs-secret-file") {
+            const char* v = take_value("--obfs-secret-file");
             if (!v) return args;
-            args.obfs_secret = v;
-            args.obfs_secret_override = true;
-        } else if (arg == "--obfs-pad-multiple") {
-            int parsed = 0;
-            if (!parse_int_value("--obfs-pad-multiple", parsed)) {
-                return args;
-            }
-            if (parsed < 0) parsed = 0;
-            if (parsed > 256) parsed = 256;
-            args.obfs_pad_multiple = static_cast<std::uint16_t>(parsed);
-            args.obfs_pad_multiple_override = true;
-        } else if (arg == "--obfs-jitter-ms") {
-            int parsed = 0;
-            if (!parse_int_value("--obfs-jitter-ms", parsed)) {
-                return args;
-            }
-            if (parsed < 0) parsed = 0;
-            args.obfs_jitter_ms = static_cast<std::uint32_t>(parsed);
-            args.obfs_jitter_ms_override = true;
+            args.obfs_secret_file = v;
+            args.obfs_secret_file_override = true;
+        } else if (arg == "--inner-psk-file") {
+            const char* v = take_value("--inner-psk-file");
+            if (!v) return args;
+            args.inner_psk_file = v;
+            args.inner_psk_file_override = true;
+        } else if (arg == "--obfs-secret") {
+            args.parse_error =
+                "--obfs-secret is not accepted by YUME 2.0; use --obfs-secret-file";
+            return args;
+        } else if (arg == "--obfs-pad-multiple" || arg == "--obfs-jitter-ms") {
+            args.parse_error =
+                arg + " is not accepted by the pinned YUME 2.0 Chrome profile; "
+                      "the capture contains no random padding or timing jitter";
+            return args;
         } else if (arg == "--lport") {
             if (!parse_int_value("--lport", args.lport)) {
                 return args;
@@ -414,34 +417,13 @@ ParsedArgs parse_args(int argc, char** argv) {
                 return args;
             }
             args.ssh_R = value;
-        } else if (arg == "--inner") {
-            util::log_warn("--inner is deprecated; use --inner-heavy or --inner-light");
-            args.inner_crypto = true;
-            args.inner_crypto_override = true;
-        } else if (arg == "--no-inner") {
-            args.inner_crypto = false;
-            args.inner_crypto_override = true;
-            args.inner_hop = false;
-            args.inner_hop_override = true;
-        } else if (arg == "--inner-heavy") {
-            args.inner_crypto = true;
-            args.inner_crypto_override = true;
-            args.inner_heavy = true;
-        } else if (arg == "--inner-light") {
-            args.inner_crypto = true;
-            args.inner_crypto_override = true;
-            args.inner_heavy = false;
-        } else if (arg == "--hop") {
-            args.inner_hop = true;
-            args.inner_hop_override = true;
-        } else if (arg == "--no-hop") {
-            args.inner_hop = false;
-            args.inner_hop_override = true;
-        } else if (arg == "--hop-interval") {
-            if (!parse_u32_value("--hop-interval", args.hop_interval_ms)) {
-                return args;
-            }
-            args.hop_interval_override = true;
+        } else if (arg == "--inner" || arg == "--no-inner" ||
+                   arg == "--inner-heavy" || arg == "--inner-light" ||
+                   arg == "--hop" || arg == "--no-hop" ||
+                   arg == "--hop-interval") {
+            args.parse_error = arg +
+                " is not accepted by YUME 2.0; the hybrid directional ratchet is mandatory";
+            return args;
         } else if (arg == "--udp") {
             args.use_udp = true;
             args.udp_override = true;
@@ -648,18 +630,11 @@ ParsedArgs parse_args(int argc, char** argv) {
                 return args;
             }
             args.admin_target = value;
-        } else if (arg == "--pq-pub") {
-            const char* value = take_value("--pq-pub");
-            if (!value) {
-                return args;
-            }
-            args.pq_public_key = value;
-        } else if (arg == "--use-embedded-master") {
-            args.allow_embedded_master = true;
-            args.allow_embedded_master_override = true;
-        } else if (arg == "--no-embedded-master") {
-            args.allow_embedded_master = false;
-            args.allow_embedded_master_override = true;
+        } else if (arg == "--pq-pub" || arg == "--use-embedded-master" ||
+                   arg == "--no-embedded-master") {
+            args.parse_error =
+                arg + " is a retired 1.x option and is not accepted by YUME 2.0";
+            return args;
         } else if (arg == "--tls-ca") {
             const char* value = take_value("--tls-ca");
             if (!value) {
@@ -693,20 +668,29 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.outbound_proxy_url = "socks5://127.0.0.1:9050";
             args.outbound_proxy_override = true;
         } else if (arg == "--no-stealth") {
-            args.tls_stealth = false;
-            args.tls_stealth_override = true;
+            args.parse_error =
+                "--no-stealth is not accepted by YUME 2.0 dev1; the Chrome profile is mandatory";
+            return args;
         } else if (arg == "--profile") {
             const char* value = take_value("--profile");
             if (!value) {
                 return args;
             }
-            args.tls_stealth_profile = value;
-        } else if (arg == "--tls-stealth-rotate") {
-            args.tls_stealth_rotate = true;
-        } else if (arg == "--tls-stealth-rotation-interval") {
-            if (!parse_u32_value("--tls-stealth-rotation-interval", args.tls_stealth_rotation_interval)) {
+            if (std::string(value) != "chrome") {
+                args.parse_error =
+                    "YUME 2.0 dev1 supports only --profile chrome";
                 return args;
             }
+            args.tls_stealth_profile = "chrome";
+        } else if (arg == "--tls-stealth-rotate") {
+            args.parse_error =
+                "--tls-stealth-rotate is not accepted by YUME 2.0 dev1; the Chrome fixture is pinned";
+            return args;
+        } else if (arg == "--tls-stealth-rotation-interval") {
+            args.parse_error =
+                "--tls-stealth-rotation-interval is not accepted by YUME 2.0 dev1; "
+                "the Chrome fixture is pinned";
+            return args;
         } else if (arg == "--tls-fingerprint-log") {
             args.tls_fingerprint_log = true;
         } else if (arg == "--tls-fingerprint-log-path") {

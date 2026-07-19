@@ -9,7 +9,6 @@
 #include <array>
 #include <chrono>
 #include <cstdio>
-#include <random>
 #include <thread>
 
 #include "client/proxy/forward.hpp"
@@ -21,14 +20,20 @@ namespace {
 constexpr int kSocketBufferBytes = 2 * 1024 * 1024;
 }
 
-Tunnel::Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream)
+Tunnel::Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream,
+               std::unique_ptr<obfs::H2Carrier> carrier,
+               Bytes prefetched_carrier_bytes,
+               std::unique_ptr<ratchet::SessionRatchet> ratchet)
     : stream_(std::move(stream))
-    , strand_(stream_.get_executor()) {
+    , strand_(stream_.get_executor())
+    , carrier_(std::move(carrier))
+    , prefetched_carrier_bytes_(std::move(prefetched_carrier_bytes)) {
     read_buf_.resize(util::relay_read_buf_size());
     boost::system::error_code recvbuf_ec;
     stream_.lowest_layer().set_option(boost::asio::socket_base::receive_buffer_size(kSocketBufferBytes), recvbuf_ec);
     boost::system::error_code sendbuf_ec;
     stream_.lowest_layer().set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
+    if (ratchet) core_.set_ratchet(std::move(ratchet));
     core_.set_write_handler([this](std::shared_ptr<Bytes> data, TransportCore::WriteCompletion completion) {
         auto self = shared_from_this();
         boost::asio::post(
@@ -40,45 +45,31 @@ Tunnel::Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream)
                     }
                     return;
                 }
-                auto write_data = std::move(data);
-                auto write_handler = boost::asio::bind_executor(
-                    self->strand_,
-                    [self, write_data, completion = std::move(completion)](
-                        const boost::system::error_code& ec,
-                        std::size_t bytes) mutable {
-                        if (!ec && bytes > 0) {
-                            self->bytes_out_.fetch_add(bytes,
-                                std::memory_order_relaxed);
-                        }
+                if (self->carrier_) {
+                    const std::size_t application_bytes = data->size();
+                    if (!self->carrier_->SendBinary(*data)) {
                         if (completion) {
-                            completion(!ec, bytes, ec ? ec.message() : std::string{});
+                            completion(false, 0, self->carrier_->error());
                         }
-                    });
-                auto fire = [self, write_data, write_handler = std::move(write_handler)]() mutable {
-                    boost::asio::async_write(
-                        self->stream_,
-                        boost::asio::buffer(*write_data),
-                        std::move(write_handler));
-                };
-                // Per-batch send-side jitter. The strand serialises
-                // dispatches, so a delay on batch N delays the write
-                // strand's next batch by the same amount — breaks the
-                // tight inter-arrival ML signature without losing
-                // payload ordering. 0 = bypass entirely.
-                const std::uint32_t jitter_max =
-                    self->obfs_jitter_ms_max_.load(std::memory_order_relaxed);
-                if (jitter_max == 0) {
-                    fire();
+                        self->close_all("H2 carrier write failed: " +
+                                        self->carrier_->error());
+                        return;
+                    }
+                    self->carrier_completions_.push_back(
+                        {std::move(completion), application_bytes});
+                    self->flush_carrier_output();
                     return;
                 }
-                thread_local std::mt19937 jitter_rng{std::random_device{}()};
-                std::uniform_int_distribution<std::uint32_t> dist(0, jitter_max);
-                const auto delay = std::chrono::milliseconds(dist(jitter_rng));
-                auto timer = std::make_shared<boost::asio::steady_timer>(self->strand_);
-                timer->expires_after(delay);
-                timer->async_wait([timer, fire = std::move(fire)](const boost::system::error_code& ec) mutable {
-                    if (!ec) fire();
-                });
+                self->enqueue_wire_write(
+                    std::move(data),
+                    [completion = std::move(completion)](
+                        const boost::system::error_code& ec,
+                        std::size_t bytes) mutable {
+                        if (completion) {
+                            completion(!ec, bytes,
+                                       ec ? ec.message() : std::string{});
+                        }
+                    });
             });
     });
     core_.set_close_transport_handler([this](const std::string& reason) {
@@ -102,7 +93,14 @@ Tunnel::Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream)
 
 void Tunnel::start() {
     core_.start();
-    schedule_keepalive();
+    if (!carrier_) {
+        schedule_keepalive();
+    } else if (!prefetched_carrier_bytes_.empty()) {
+        core_.feed_tls_bytes(prefetched_carrier_bytes_.data(),
+                             prefetched_carrier_bytes_.size());
+        prefetched_carrier_bytes_.clear();
+    }
+    if (carrier_) schedule_ratchet_check();
     read_tls();
 }
 
@@ -248,10 +246,101 @@ void Tunnel::on_read_tls(const boost::system::error_code& ec, std::size_t bytes)
     }
     if (bytes > 0) {
         bytes_in_.fetch_add(bytes, std::memory_order_relaxed);
-        core_.feed_tls_bytes(read_buf_.data(), bytes);
+        if (carrier_) {
+            carrier_->Feed(read_buf_.data(), bytes);
+            if (carrier_->failed()) {
+                close_all("H2 carrier read failed: " + carrier_->error());
+                return;
+            }
+            Bytes decoded = carrier_->TakeTunnelBytes();
+            if (!decoded.empty()) {
+                core_.feed_tls_bytes(decoded.data(), decoded.size());
+            }
+            flush_carrier_output();
+            if (carrier_->carrier_closed()) {
+                close_all("H2 carrier closed");
+                return;
+            }
+        } else {
+            core_.feed_tls_bytes(read_buf_.data(), bytes);
+        }
     }
     if (!closed_.load(std::memory_order_relaxed)) {
         read_tls();
+    }
+}
+
+void Tunnel::enqueue_wire_write(std::shared_ptr<Bytes> data,
+                                WireCompletion completion) {
+    if (!data || data->empty()) {
+        if (completion) completion({}, 0);
+        return;
+    }
+    wire_writes_.push_back({std::move(data), std::move(completion)});
+    if (!wire_write_active_) start_wire_write();
+}
+
+void Tunnel::start_wire_write() {
+    if (wire_write_active_ || wire_writes_.empty() ||
+        closed_.load(std::memory_order_relaxed)) {
+        return;
+    }
+    wire_write_active_ = true;
+    auto self = shared_from_this();
+    auto data = wire_writes_.front().data;
+    boost::asio::async_write(
+        stream_, boost::asio::buffer(*data),
+        boost::asio::bind_executor(
+            strand_, [self, data](const boost::system::error_code& ec,
+                                  std::size_t bytes) {
+                self->wire_write_active_ = false;
+                if (!ec && bytes > 0) {
+                    self->bytes_out_.fetch_add(bytes,
+                                               std::memory_order_relaxed);
+                }
+                WireCompletion completion;
+                if (!self->wire_writes_.empty()) {
+                    completion = std::move(self->wire_writes_.front().completion);
+                    self->wire_writes_.pop_front();
+                }
+                if (completion) completion(ec, bytes);
+                if (ec) {
+                    self->complete_carrier_writes(
+                        self->carrier_completions_.size(), false, ec.message());
+                    self->close_all("write failed: " + ec.message());
+                    return;
+                }
+                self->start_wire_write();
+            }));
+}
+
+void Tunnel::flush_carrier_output() {
+    if (!carrier_ || carrier_->failed()) return;
+    Bytes output = carrier_->TakeOutbound();
+    if (output.empty()) return;
+    const std::size_t completion_count =
+        carrier_->queued_output_bytes() == 0 ? carrier_completions_.size() : 0;
+    auto data = std::make_shared<Bytes>(std::move(output));
+    auto self = shared_from_this();
+    enqueue_wire_write(
+        std::move(data),
+        [self, completion_count](const boost::system::error_code& ec,
+                                 std::size_t) {
+            self->complete_carrier_writes(
+                completion_count, !ec, ec ? ec.message() : std::string{});
+        });
+}
+
+void Tunnel::complete_carrier_writes(std::size_t count,
+                                     bool ok,
+                                     const std::string& error) {
+    count = std::min(count, carrier_completions_.size());
+    while (count-- > 0) {
+        CarrierCompletion pending = std::move(carrier_completions_.front());
+        carrier_completions_.pop_front();
+        if (pending.completion) {
+            pending.completion(ok, ok ? pending.application_bytes : 0, error);
+        }
     }
 }
 
@@ -318,6 +407,24 @@ void Tunnel::close_all(const std::string& reason) {
         return;
     }
 
+    // For an orderly locally initiated close, emit the captured Chrome H2
+    // PING, masked WebSocket CLOSE, and GOAWAY before TLS close_notify. This is
+    // a small terminal write and is only attempted after the normal output
+    // queue has drained; error/interrupt paths still close immediately.
+    if (carrier_ && reason != "interrupt" && !wire_write_active_ &&
+        wire_writes_.empty()) {
+        carrier_->GracefulClose();
+        Bytes close_wire = carrier_->TakeOutbound();
+        if (!close_wire.empty() && !carrier_->failed()) {
+            boost::system::error_code close_write_ec;
+            const std::size_t written = boost::asio::write(
+                stream_, boost::asio::buffer(close_wire), close_write_ec);
+            if (!close_write_ec) {
+                bytes_out_.fetch_add(written, std::memory_order_relaxed);
+            }
+        }
+    }
+
     auto close_callbacks = core_.shutdown();
     TunnelCloseHandler close_handler;
     {
@@ -331,6 +438,13 @@ void Tunnel::close_all(const std::string& reason) {
         util::log_warn("tunnel closed: " + reason);
     }
     keepalive_timer_.cancel();
+    ratchet_timer_.cancel();
+    complete_carrier_writes(carrier_completions_.size(), false, reason);
+    const auto aborted = boost::asio::error::operation_aborted;
+    for (auto& write : wire_writes_) {
+        if (write.completion) write.completion(aborted, 0);
+    }
+    wire_writes_.clear();
     if (close_handler) {
         close_handler(reason);
     }
@@ -364,6 +478,20 @@ void Tunnel::schedule_keepalive() {
                 return;
             }
             self->schedule_keepalive();
+        }));
+}
+
+void Tunnel::schedule_ratchet_check() {
+    ratchet_timer_.expires_after(std::chrono::milliseconds(250));
+    auto self = shared_from_this();
+    ratchet_timer_.async_wait(boost::asio::bind_executor(
+        strand_, [self](const boost::system::error_code& ec) {
+            if (ec || self->closed_.load(std::memory_order_relaxed)) return;
+            if (self->core_.rekey_timed_out(std::chrono::steady_clock::now())) {
+                self->close_all("YUME 2.0 rekey timeout");
+                return;
+            }
+            self->schedule_ratchet_check();
         }));
 }
 

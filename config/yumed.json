@@ -4,5 +4,8 @@
   "tls_key": "/etc/ssl/fixcraft.key",
   "auth_keys": "/etc/yume/authorized_keys",
   "threads": 8,
-  "obfuscation": true
+  "obfuscation": true,
+  "obfs_secret_file": "/etc/yume/obfs.hex",
+  "inner_psk_file": "/etc/yume/inner.hex",
+  "real_backend": "loopback://127.0.0.1:3000"
 }

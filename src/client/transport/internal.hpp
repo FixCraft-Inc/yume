@@ -39,6 +39,8 @@ inline int frame_write_priority(const protocol::Frame& frame) {
         case protocol::PING:
         case protocol::PONG:
         case protocol::CONTROL:
+        case protocol::REKEY_INIT:
+        case protocol::REKEY_ACK:
             return 0;
         case protocol::OPEN:
         case protocol::CLOSE:

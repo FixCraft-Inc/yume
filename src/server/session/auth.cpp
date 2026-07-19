@@ -18,122 +18,61 @@
 
 #include "server/session/session.hpp"
 #include "core/security/secure_erase.hpp"
+#include "core/security/auth_v2.hpp"
 #include "core/app_codec/builtin/monero_rpc.hpp"
 #include "server/runtime/manager.hpp"
 #include "server/session/internal.hpp"
 
 #include <algorithm>
 
+#if YUME_USE_BASEFWX
+#include <basefwx/crypto.hpp>
+#include <basefwx/pq.hpp>
+#include <basefwx/x25519.hpp>
+#endif
+
 namespace yume::server {
 
 using namespace detail;
 
-namespace {
-
-std::optional<inner::DerivedKey> derive_inner_key_with_admission(
-    const std::shared_ptr<KdfAdmissionController>& admission,
-    const inner::Config& config,
-    const crypto::Bytes& ciphertext,
-    const crypto::Bytes& salt,
-    bool heavy,
-    const std::optional<inner::KdfParams>& requested_params,
-    std::string* error) {
-    if (error) error->clear();
-    const bool allow_fallback = !requested_params.has_value() ||
-                                requested_params->name.empty();
-    const inner::KdfParams resolved =
-        inner::resolve_server_kdf_params(config, heavy, requested_params);
-    if (!heavy) {
-        return inner::server_derive_key_resolved(
-            config, ciphertext, salt, false, resolved, allow_fallback);
-    }
-
-    if (resolved.name != "argon2" || !inner::argon2_supported()) {
-        return inner::server_derive_key_resolved(
-            config, ciphertext, salt, true, resolved, allow_fallback);
-    }
-
-    std::string cap_reason;
-    if (inner::argon2_params_exceed_limits(
-            resolved, inner::argon2_env_limits(), &cap_reason)) {
-        if (error) *error = "client argon2 params exceed server cap: " + cap_reason;
-        return std::nullopt;
-    }
-    if (!admission) {
-        if (error) *error = "server Argon2 admission controller unavailable";
-        return std::nullopt;
-    }
-
-    std::string admission_reason;
-    auto lease = admission->try_acquire_argon2(
-        resolved.argon2_memory, &admission_reason);
-    if (!lease.has_value()) {
-        if (error) *error = "server Argon2 capacity unavailable: " + admission_reason;
-        return std::nullopt;
-    }
-
-    // The move-only lease remains in scope through KEM/KDF execution. Its
-    // destructor releases both counters on success, exception, or early return.
-    return inner::server_derive_key_resolved(
-        config, ciphertext, salt, true, resolved, allow_fallback);
-}
-
-}  // namespace
-
 void Session::send_auth_challenge() {
-    challenge_ = crypto::random_bytes(32);
-    if (cfg_.inner_crypto) {
-        inner::Argon2Limits limits = inner::argon2_env_limits();
-        nlohmann::json meta{
-            {"challenge_meta", 1}
-        };
-        if (limits.time_max > 0) {
-            meta["argon2_time_max"] = limits.time_max;
-        }
-        if (limits.memory_max > 0) {
-            meta["argon2_mem_max"] = limits.memory_max;
-        }
-        if (limits.parallelism_max > 0) {
-            meta["argon2_par_max"] = limits.parallelism_max;
-        }
-        std::string meta_text = meta.dump();
-        challenge_.insert(challenge_.end(), meta_text.begin(), meta_text.end());
-    }
-    protocol::Frame frame{{static_cast<uint32_t>(challenge_.size()), protocol::AUTH, 0, 0}, challenge_};
-    auto self = shared_from_this();
-    auto do_write = [self, frame]() {
-        self->async_write_frame(frame, [self](const boost::system::error_code& ec, std::size_t) {
-            if (ec) {
-                self->close_with_reason("AUTH challenge write failed: " + ec.message());
-                return;
-            }
-            self->read_header();
-        });
-    };
-
-    // Optional opt-in send-side jitter on the AUTH challenge. Read the
-    // env once per call (cheap; getenv is fast and there's exactly one
-    // AUTH per session). YUME_AUTH_JITTER_MS=N adds a uniform random
-    // 0..N ms delay before writing AUTH. This adds bounded timing
-    // variation; it is not a claim of classifier resistance or a
-    // cryptographically secure random schedule. Default 0 = no delay.
-    int jitter_max = 0;
-    if (const char* raw = std::getenv("YUME_AUTH_JITTER_MS")) {
-        try { jitter_max = std::max(0, std::stoi(raw)); }
-        catch (const std::exception&) { jitter_max = 0; }
-    }
-    if (jitter_max == 0) {
-        do_write();
+#if YUME_USE_BASEFWX
+    if (!v2_h2_tunnel_active_ || !cfg_.inner_psk_material) {
+        close_with_reason("YUME 2.0 AUTH requires admitted H2 carrier and PSK");
         return;
     }
-    thread_local std::mt19937 rng{std::random_device{}()};
-    std::uniform_int_distribution<int> dist(0, jitter_max);
-    int delay_ms = dist(rng);
-    auto timer = std::make_shared<boost::asio::steady_timer>(strand_);
-    timer->expires_after(std::chrono::milliseconds(delay_ms));
-    timer->async_wait([timer, do_write](const boost::system::error_code& ec) {
-        if (!ec) do_write();
+    try {
+        auto ephemeral = std::make_unique<AuthV2Ephemeral>();
+        ephemeral->mlkem = basefwx::pq::GenerateKeyPair(
+            basefwx::pq::KemAlgorithm::MlKem1024);
+        ephemeral->x25519 = basefwx::x25519::GenerateKeyPair();
+        ephemeral->psk_salt = basefwx::crypto::RandomBytes(32);
+        ephemeral->transcript_salt = basefwx::crypto::RandomBytes(32);
+        crypto::Bytes random_challenge = basefwx::crypto::RandomBytes(32);
+        challenge_ = auth_v2::BuildChallenge(
+            random_challenge, ephemeral->mlkem.public_key,
+            ephemeral->x25519.public_key, ephemeral->psk_salt,
+            ephemeral->transcript_salt);
+        auth_v2_ephemeral_ = std::move(ephemeral);
+    } catch (const std::exception& ex) {
+        close_with_reason("AUTH v2 challenge creation failed: " +
+                          std::string(ex.what()));
+        return;
+    }
+    protocol::Frame frame{{static_cast<uint32_t>(challenge_.size()),
+                           protocol::AUTH, 0, 0}, challenge_};
+    auto self = shared_from_this();
+    async_write_frame(frame, [self](const boost::system::error_code& ec,
+                                    std::size_t) {
+        if (ec) {
+            self->close_with_reason("AUTH challenge write failed: " + ec.message());
+            return;
+        }
+        self->read_header();
     });
+#else
+    close_with_reason("YUME 2.0 AUTH requires BaseFWX");
+#endif
 }
 
 void Session::clear_hop_key_cache() {
@@ -258,60 +197,12 @@ bool Session::handle_auth(const protocol::Frame& frame) {
     auth_error_.clear();
     authorization_tier_ = authorization::SessionTier::Unauthenticated;
     try {
-        size_t offset = 0;
-        crypto::Bytes pub_pem = read_field(frame.payload, offset);
-        crypto::Bytes sig = read_field(frame.payload, offset);
-        std::optional<crypto::Bytes> pq_ciphertext;
-        std::optional<crypto::Bytes> pq_salt;
-        std::optional<std::string> inner_mode;
-        std::optional<bool> inner_hop;
-        std::optional<inner::KdfParams> inner_kdf;
-        if (offset < frame.payload.size()) {
-            pq_ciphertext = read_field(frame.payload, offset);
+        if (!auth_v2_ephemeral_ || !cfg_.inner_psk_material) {
+            auth_error_ = "access denied: invalid authentication state";
+            return false;
         }
-        if (offset < frame.payload.size()) {
-            pq_salt = read_field(frame.payload, offset);
-        }
-        if (offset < frame.payload.size()) {
-            crypto::Bytes mode_bytes = read_field(frame.payload, offset);
-            if (!mode_bytes.empty()) {
-                inner_mode.emplace(mode_bytes.begin(), mode_bytes.end());
-            }
-        }
-        if (offset < frame.payload.size()) {
-            crypto::Bytes hop_bytes = read_field(frame.payload, offset);
-            if (!hop_bytes.empty()) {
-                inner_hop = (hop_bytes[0] != static_cast<uint8_t>('0'));
-            } else {
-                inner_hop = false;
-            }
-        }
-        if (offset < frame.payload.size()) {
-            crypto::Bytes kdf_bytes = read_field(frame.payload, offset);
-            if (!kdf_bytes.empty()) {
-                inner::KdfParams params;
-                params.name.assign(kdf_bytes.begin(), kdf_bytes.end());
-                if (offset < frame.payload.size()) {
-                    crypto::Bytes param_bytes = read_field(frame.payload, offset);
-                    if (param_bytes.size() == 16) {
-                        auto read_u32 = [&](size_t off) -> std::uint32_t {
-                            if (off + 4 > param_bytes.size()) {
-                                return 0;
-                            }
-                            return (static_cast<std::uint32_t>(param_bytes[off]) << 24) |
-                                   (static_cast<std::uint32_t>(param_bytes[off + 1]) << 16) |
-                                   (static_cast<std::uint32_t>(param_bytes[off + 2]) << 8) |
-                                   static_cast<std::uint32_t>(param_bytes[off + 3]);
-                        };
-                        params.argon2_time = read_u32(0);
-                        params.argon2_memory = read_u32(4);
-                        params.argon2_parallelism = read_u32(8);
-                        params.pbkdf2_iters = read_u32(12);
-                    }
-                }
-                inner_kdf = params;
-            }
-        }
+        const auth_v2::Response response = auth_v2::ParseResponse(frame.payload);
+        const crypto::Bytes& pub_pem = response.identity;
 
         std::unique_ptr<BIO, decltype(&BIO_free)> pub_bio(
             BIO_new_mem_buf(pub_pem.data(), static_cast<int>(pub_pem.size())),
@@ -332,7 +223,13 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             return false;
         }
 
-        bool sig_ok = crypto::verify_key(pubkey.get(), challenge_, sig);
+        crypto::Bytes unsigned_response = auth_v2::BuildUnsignedResponse(
+            response.x25519_public_key, response.mlkem_ciphertext,
+            response.identity);
+        crypto::Bytes signature_input = auth_v2::BuildSignatureInput(
+            challenge_, unsigned_response);
+        bool sig_ok = crypto::verify_key(pubkey.get(), signature_input,
+                                         response.signature);
         bool auth_ok = authorized_keys_ ? is_authorized(pubkey.get(), *authorized_keys_) : false;
         std::string fingerprint = fingerprint_pubkey(pubkey.get());
         client_id_ = fingerprint;
@@ -451,177 +348,44 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                            summarize_auth_policy(auth_policy));
         }
 
-        if (cfg_.inner_crypto) {
-            if (!pq_ciphertext.has_value() || !pq_salt.has_value()) {
-                if (cfg_.inner_required) {
-                    auth_error_ = "server requires inner crypto";
-                    return false;
-                }
-                util::log_warn("session " + std::to_string(session_id_) + ": missing PQ fields; inner crypto disabled for this session");
-            } else if (pq_salt->empty()) {
-                if (cfg_.inner_required) {
-                    auth_error_ = "server requires inner crypto";
-                    return false;
-                }
-                util::log_warn("session " + std::to_string(session_id_) + ": missing PQ salt; inner crypto disabled for this session");
-            } else {
-                if (inner_mode.has_value() && !cfg_.inner_dual) {
-                    bool wants_heavy = (*inner_mode == "heavy");
-                    bool wants_light = (*inner_mode == "light");
-                    if ((wants_heavy && !cfg_.inner_heavy) || (wants_light && cfg_.inner_heavy)) {
-                        auth_error_ = "server does not support requested inner mode";
-                        return false;
-                    }
-                }
-                if (inner_kdf.has_value() && !inner_kdf->name.empty()) {
-                    if (inner_kdf->name == "argon2") {
-                        if (!inner::argon2_supported()) {
-                            auth_error_ = "server does not support argon2";
-                            return false;
-                        }
-                        std::string cap_reason;
-                        if (inner::argon2_params_exceed_limits(
-                                *inner_kdf, inner::argon2_env_limits(), &cap_reason)) {
-                            auth_error_ = "client argon2 params exceed server cap: " + cap_reason;
-                            return false;
-                        }
-                    } else if (inner_kdf->name == "pbkdf2") {
-                        if (!inner::pbkdf2_supported()) {
-                            auth_error_ = "server does not support pbkdf2";
-                            return false;
-                        }
-                    } else if (inner_kdf->name == "hkdf") {
-                        if (!inner_mode.has_value() || *inner_mode != "light") {
-                            auth_error_ = "invalid kdf request";
-                            return false;
-                        }
-                    } else {
-                        auth_error_ = "invalid kdf request";
-                        return false;
-                    }
-                    if ((inner_kdf->name == "argon2" || inner_kdf->name == "pbkdf2")) {
-                        std::string cap_reason;
-                        if (inner::pbkdf2_params_exceed_limits(
-                                *inner_kdf, inner::pbkdf2_env_iters_max(), &cap_reason)) {
-                            auth_error_ = "client pbkdf2 params exceed server cap: " + cap_reason;
-                            return false;
-                        }
-                    }
-                }
-                inner::Config inner_cfg;
-                inner_cfg.enabled = cfg_.inner_crypto;
-                inner_cfg.pq_private_key = cfg_.pq_private_key;
-                inner_cfg.allow_embedded_master = cfg_.allow_embedded_master;
-                auto server_inner_start = std::chrono::steady_clock::now();
-                if (cfg_.inner_dual) {
-                    std::optional<inner::KdfParams> heavy_kdf;
-                    if (inner_kdf.has_value() && !inner_kdf->name.empty() && inner_kdf->name != "hkdf") {
-                        heavy_kdf = inner_kdf;
-                    }
-                    std::string heavy_error;
-                    auto heavy = derive_inner_key_with_admission(
-                        kdf_admission_, inner_cfg, *pq_ciphertext, *pq_salt,
-                        true, heavy_kdf, &heavy_error);
-                    auto light = derive_inner_key_with_admission(
-                        kdf_admission_, inner_cfg, *pq_ciphertext, *pq_salt,
-                        false, std::nullopt, nullptr);
-                    const bool prefer_light = inner_mode.has_value() && *inner_mode == "light";
-                    const bool prefer_heavy = inner_mode.has_value() && *inner_mode == "heavy";
-                    const bool heavy_required = prefer_heavy || (!prefer_light && cfg_.inner_heavy);
-                    if (!heavy.has_value() && !heavy_error.empty() && heavy_required) {
-                        auth_error_ = heavy_error;
-                        return false;
-                    }
-                    if ((!heavy.has_value() || heavy->key.empty()) && (!light.has_value() || light->key.empty())) {
-                        util::log_warn("session " + std::to_string(session_id_) + ": PQ key derivation failed");
-                        auth_error_ = heavy_error.empty()
-                            ? "access denied: pq key derivation failed"
-                            : heavy_error;
-                        return false;
-                    }
-                    if (prefer_light && light.has_value() && !light->key.empty()) {
-                        inner_key_ = light->key;
-                        inner_mode_ = "light";
-                        inner_kdf_ = light->kdf;
-                        if (heavy.has_value() && !heavy->key.empty()) {
-                            inner_key_alt_ = heavy->key;
-                            inner_alt_mode_ = "heavy";
-                            inner_alt_kdf_ = heavy->kdf;
-                        }
-                    } else if (prefer_heavy && heavy.has_value() && !heavy->key.empty()) {
-                        inner_key_ = heavy->key;
-                        inner_mode_ = "heavy";
-                        inner_kdf_ = heavy->kdf;
-                        if (light.has_value() && !light->key.empty()) {
-                            inner_key_alt_ = light->key;
-                            inner_alt_mode_ = "light";
-                            inner_alt_kdf_ = light->kdf;
-                        }
-                    } else if (cfg_.inner_heavy && heavy.has_value() && !heavy->key.empty()) {
-                        inner_key_ = heavy->key;
-                        inner_mode_ = "heavy";
-                        inner_kdf_ = heavy->kdf;
-                        if (light.has_value() && !light->key.empty()) {
-                            inner_key_alt_ = light->key;
-                            inner_alt_mode_ = "light";
-                            inner_alt_kdf_ = light->kdf;
-                        }
-                    } else if (light.has_value() && !light->key.empty()) {
-                        inner_key_ = light->key;
-                        inner_mode_ = "light";
-                        inner_kdf_ = light->kdf;
-                        if (heavy.has_value() && !heavy->key.empty()) {
-                            inner_key_alt_ = heavy->key;
-                            inner_alt_mode_ = "heavy";
-                            inner_alt_kdf_ = heavy->kdf;
-                        }
-                    }
-                } else {
-                    std::string derive_error;
-                    auto derived = derive_inner_key_with_admission(
-                        kdf_admission_, inner_cfg, *pq_ciphertext, *pq_salt,
-                        cfg_.inner_heavy, inner_kdf, &derive_error);
-                    if (!derived.has_value() || derived->key.empty()) {
-                        util::log_warn("session " + std::to_string(session_id_) + ": PQ key derivation failed");
-                        auth_error_ = derive_error.empty()
-                            ? "access denied: pq key derivation failed"
-                            : derive_error;
-                        return false;
-                    }
-                    inner_key_ = derived->key;
-                    inner_mode_ = cfg_.inner_heavy ? "heavy" : "light";
-                    inner_kdf_ = derived->kdf;
-                }
-                auto server_inner_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - server_inner_start).count();
-                util::log_timing("server.auth",
-                                 "inner_prepare",
-                                 "session=" + std::to_string(session_id_) +
-                                     " ms=" + std::to_string(server_inner_ms) +
-                                     " mode=" + (inner_mode_.empty() ? std::string("none") : inner_mode_) +
-                                     " kdf=" + (inner_kdf_.empty() ? std::string("unknown") : inner_kdf_) +
-                                     " alt_mode=" + (inner_alt_mode_.empty() ? std::string("none") : inner_alt_mode_) +
-                                     " alt_kdf=" + (inner_alt_kdf_.empty() ? std::string("none") : inner_alt_kdf_));
-            }
-        } else if (pq_ciphertext.has_value()) {
-            auth_error_ = "server does not support inner crypto";
-            return false;
-        }
-
-        bool client_hop = inner_hop.value_or(false);
-        if (cfg_.inner_hop) {
-            if (!client_hop) {
-                auth_error_ = "server requires hopping";
-                return false;
-            }
-        } else if (client_hop) {
-            auth_error_ = "server does not support hopping";
-            return false;
-        }
-        hop_enabled_ = (cfg_.inner_hop && client_hop && inner_key_.has_value());
-        hop_interval_ms_ = cfg_.hop_interval_ms;
+#if YUME_USE_BASEFWX
+        auto crypto_start = std::chrono::steady_clock::now();
+        basefwx::crypto::SecureBytes kem_shared{
+            basefwx::pq::KemDecrypt(
+                basefwx::pq::KemAlgorithm::MlKem1024,
+                auth_v2_ephemeral_->mlkem.private_key,
+                response.mlkem_ciphertext)};
+        basefwx::crypto::SecureBytes x_shared{
+            basefwx::x25519::DeriveSharedSecret(
+                auth_v2_ephemeral_->x25519.private_key,
+                response.x25519_public_key)};
+        basefwx::crypto::SecureBytes file_psk{
+            cfg_.inner_psk_material->CopyBytes()};
+        basefwx::crypto::SecureBytes psk_key{
+            ratchet::DerivePskKey(file_psk.bytes(),
+                                 auth_v2_ephemeral_->psk_salt)};
+        crypto::Bytes initial_root = ratchet::DeriveInitialRoot(
+            kem_shared.bytes(), x_shared.bytes(), psk_key.bytes(),
+            auth_v2_ephemeral_->transcript_salt);
+        ratchet_ = std::make_unique<ratchet::SessionRatchet>(
+            ratchet::EndpointRole::Server, std::move(initial_root),
+            psk_key.Release());
+        auth_v2_ephemeral_.reset();
+        inner_mode_ = "ratchet";
+        inner_kdf_ = "hkdf";
+        hop_enabled_ = false;
+        hop_interval_ms_ = 0;
         hop_offset_ms_ = 0;
         clear_hop_key_cache();
+        const auto crypto_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - crypto_start).count();
+        util::log_timing("server.auth", "v2_hybrid",
+                         "session=" + std::to_string(session_id_) +
+                         " ms=" + std::to_string(crypto_ms));
+#else
+        auth_error_ = "access denied: BaseFWX unavailable";
+        return false;
+#endif
 
         if (!cfg_.anonym && !preauth_session) {
             update_auth_meta(cfg_.auth_keys_meta, fingerprint);

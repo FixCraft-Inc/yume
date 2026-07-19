@@ -19,11 +19,15 @@
 #include <ctime>
 #include <filesystem>
 
+#include <boost/beast/http/status.hpp>
+
 #include "server/session/session.hpp"
+#include "core/security/secure_erase.hpp"
 #include "server/runtime/manager.hpp"
 #include "server/session/internal.hpp"
 #include "server/host/host_routes.hpp"
 #include "server/host/http_proxy.hpp"
+#include "server/host/http_backend_client.hpp"
 #include "server/session/static_site.hpp"
 #include "server/session/http_masq.hpp"
 #include "core/app_codec/codec.hpp"
@@ -57,6 +61,57 @@ bool request_has_message_body(const std::string& headers) {
         if (c >= '1' && c <= '9') return true;
     }
     return false;
+}
+
+std::string backend_status_line(unsigned status) {
+    if (status < 100 || status > 599) status = 502;
+    const auto reason = boost::beast::http::obsolete_reason(
+        static_cast<boost::beast::http::status>(status));
+    return "HTTP/1.1 " + std::to_string(status) + " " +
+           std::string(reason.data(), reason.size()) + "\r\n";
+}
+
+std::shared_ptr<std::string> render_backend_h1_response(
+    host::BackendHttpResponse response,
+    bool head_only,
+    bool keep_alive) {
+    auto wire = std::make_shared<std::string>();
+    wire->reserve(response.body.size() + 1024);
+    *wire += backend_status_line(response.status);
+    bool content_length_seen = false;
+    for (const auto& [name, value] : response.headers) {
+        if (name.empty() || name.front() == ':' ||
+            name.find_first_of("\r\n") != std::string::npos ||
+            value.find_first_of("\r\n") != std::string::npos) {
+            continue;
+        }
+        if (name == "connection") continue;
+        if (name == "content-length") content_length_seen = true;
+        *wire += name + ": " + value + "\r\n";
+    }
+    if (!content_length_seen) {
+        *wire += "content-length: " + std::to_string(response.body.size()) +
+                 "\r\n";
+    }
+    *wire += keep_alive ? "connection: keep-alive\r\n\r\n"
+                        : "connection: close\r\n\r\n";
+    if (!head_only) {
+        wire->append(reinterpret_cast<const char*>(response.body.data()),
+                     response.body.size());
+    }
+    return wire;
+}
+
+host::BackendHttpResponse node_gateway_failure() {
+    host::BackendHttpResponse response;
+    response.status = 502;
+    response.headers = {
+        {"content-type", "text/plain; charset=utf-8"},
+        {"date", yume::http_profile::http_date_now()},
+        {"content-length", "12"},
+    };
+    response.body = {'B', 'a', 'd', ' ', 'G', 'a', 't', 'e', 'w', 'a', 'y', '\n'};
+    return response;
 }
 
 std::string etag_hex(std::uintmax_t value) {
@@ -240,7 +295,7 @@ bool Session::handle_http_preface(const std::string& preface) {
             }
             return true;
         }
-        start_h2_carrier_probe();
+        start_v2_h2_session();
         return true;
     }
 
@@ -492,6 +547,42 @@ void Session::send_real_http_response(const std::string& path, const std::string
         return;
     }
 
+    // The evidence-backed 2.0 facade is the separately supervised Node
+    // process. H1 and H2 take the same bounded structured-proxy route; neither
+    // hands the public socket, peer-selected Host, or tunnel bytes to Node.
+    if (!cfg_.real_backend.empty()) {
+        if (method != "GET" && method != "HEAD") {
+            send_disguise_404(path);
+            return;
+        }
+        const auto backend = host::parse_loopback_backend(cfg_.real_backend);
+        if (!backend.has_value()) {
+            finish_masq_write(
+                render_backend_h1_response(node_gateway_failure(), head_only,
+                                           false),
+                false, "Node cover backend configuration rejected");
+            return;
+        }
+        auto self = shared_from_this();
+        host::fetch_loopback_http(
+            strand_, backend->first, backend->second, method,
+            path.empty() ? std::string("/") : path, {},
+            [self, head_only, keep_alive](
+                std::string error, host::BackendHttpResponse response) mutable {
+                if (self->close_state_ != CloseState::Open) return;
+                const bool backend_ok = error.empty();
+                if (!backend_ok) response = node_gateway_failure();
+                const bool response_keep_alive = backend_ok && keep_alive;
+                self->finish_masq_write(
+                    render_backend_h1_response(std::move(response), head_only,
+                                               response_keep_alive),
+                    response_keep_alive,
+                    backend_ok ? "served loopback Node cover response"
+                               : "loopback Node cover unavailable");
+            });
+        return;
+    }
+
     // --real-root: serve GET/HEAD for any real file under the root so the cover
     // is a coherent multi-asset site, not "/ => 200, everything else => 404".
     // Resolution rejects traversal/encoded-slash/symlink escape; a miss or a
@@ -705,6 +796,260 @@ void Session::send_robots_txt_response(bool head_only, bool keep_alive) {
     finish_masq_write(std::move(resp), keep_alive, "served robots.txt");
 }
 
+void Session::start_v2_h2_session() {
+    carrier_probe_active_ = false;
+    carrier_settings_ack_wait_active_ = false;
+    carrier_decoder_.reset();
+    preface_timer_.cancel();
+    v2_h2_carrier_ = std::make_unique<obfs::H2Carrier>(
+        obfs::H2CarrierRole::Server);
+    if (!preface_accum_.empty()) {
+        v2_h2_carrier_->Feed(preface_accum_.data(), preface_accum_.size());
+        preface_accum_.clear();
+    }
+    if (v2_h2_carrier_->failed()) {
+        close_with_reason("v2 HTTP/2 opening rejected: " +
+                          v2_h2_carrier_->error());
+        return;
+    }
+    flush_v2_h2_wire_on_strand();
+    process_v2_h2_requests();
+}
+
+void Session::read_v2_h2_cover() {
+    if (!v2_h2_carrier_ || v2_h2_tunnel_active_ ||
+        v2_h2_tls_read_in_flight_ || close_state_ != CloseState::Open) {
+        return;
+    }
+    v2_h2_tls_read_in_flight_ = true;
+    auto self = shared_from_this();
+    stream_.async_read_some(
+        boost::asio::buffer(carrier_scratch_),
+        boost::asio::bind_executor(
+            strand_, [self](const boost::system::error_code& ec, std::size_t bytes) {
+                self->on_v2_h2_cover_read(ec, bytes);
+            }));
+}
+
+void Session::on_v2_h2_cover_read(const boost::system::error_code& ec,
+                                   std::size_t bytes) {
+    v2_h2_tls_read_in_flight_ = false;
+    if (ec) {
+        close_with_reason("v2 HTTP/2 cover read failed: " + ec.message());
+        return;
+    }
+    if (!v2_h2_carrier_) {
+        close_with_reason("v2 HTTP/2 state disappeared");
+        return;
+    }
+    v2_h2_carrier_->Feed(carrier_scratch_.data(), bytes);
+    if (v2_h2_carrier_->failed()) {
+        close_with_reason("v2 HTTP/2 protocol error: " +
+                          v2_h2_carrier_->error());
+        return;
+    }
+    flush_v2_h2_wire_on_strand();
+    process_v2_h2_requests();
+}
+
+void Session::process_v2_h2_requests() {
+    if (!v2_h2_carrier_ || close_state_ != CloseState::Open) return;
+    auto requests = v2_h2_carrier_->TakeRequests();
+    for (auto& request : requests) {
+        if (request.method == "GET" || request.method == "HEAD") {
+            const auto backend = host::parse_loopback_backend(cfg_.real_backend);
+            if (!backend.has_value()) {
+                v2_h2_carrier_->RespondHttp(
+                    request.stream_id, 502,
+                    {{"content-type", "text/plain; charset=utf-8"},
+                     {"date", yume::http_profile::http_date_now()}},
+                    crypto::Bytes{'B', 'a', 'd', ' ', 'G', 'a', 't', 'e', 'w', 'a', 'y', '\n'},
+                    request.method == "HEAD");
+                flush_v2_h2_wire_on_strand();
+                continue;
+            }
+            auto self = shared_from_this();
+            host::fetch_loopback_http(
+                strand_, backend->first, backend->second, request.method,
+                request.path.empty() ? std::string("/") : request.path,
+                {},
+                [self, stream_id = request.stream_id,
+                 head = request.method == "HEAD"](
+                    std::string error, host::BackendHttpResponse response) mutable {
+                    if (!self->v2_h2_carrier_ ||
+                        self->close_state_ != CloseState::Open) return;
+                    if (!error.empty()) {
+                        self->v2_h2_carrier_->RespondHttp(
+                            stream_id, 502,
+                            {{"content-type", "text/plain; charset=utf-8"},
+                             {"date", yume::http_profile::http_date_now()}},
+                            crypto::Bytes{'B', 'a', 'd', ' ', 'G', 'a', 't', 'e', 'w', 'a', 'y', '\n'},
+                            head);
+                    } else {
+                        self->v2_h2_carrier_->RespondHttp(
+                            stream_id, response.status, response.headers,
+                            std::move(response.body), head);
+                    }
+                    if (self->v2_h2_carrier_->failed()) {
+                        self->close_with_reason("Node cover response failed: " +
+                                                self->v2_h2_carrier_->error());
+                        return;
+                    }
+                    self->flush_v2_h2_wire_on_strand();
+                });
+            continue;
+        }
+
+        if (request.method == "CONNECT" && request.protocol == "websocket" &&
+            !v2_h2_tunnel_active_) {
+            const std::string tls_sni = host::tls_sni(stream_.native_handle());
+            std::optional<std::uint16_t> listener_port;
+            boost::system::error_code endpoint_ec;
+            const auto endpoint = stream_.lowest_layer().local_endpoint(endpoint_ec);
+            if (!endpoint_ec && endpoint.port() > 0) listener_port = endpoint.port();
+            const auto now_s = static_cast<std::int64_t>(std::time(nullptr));
+            crypto::Bytes admission_secret;
+            if (cfg_.obfs_secret_material) {
+                admission_secret = cfg_.obfs_secret_material->CopyBytes();
+            }
+            const bool hmac_ok = obfs::carrier_path_admitted(
+                admission_secret, request.authority, tls_sni, request.path,
+                now_s, listener_port);
+            security::secure_erase(admission_secret);
+            const bool replay_ok = hmac_ok && admission_replay_cache_ &&
+                admission_replay_cache_->AcceptPath(request.path, now_s);
+            if (!replay_ok) {
+                v2_h2_carrier_->RejectCarrier(
+                    request.stream_id, 404,
+                    {{"content-type", "text/plain; charset=utf-8"},
+                     {"date", yume::http_profile::http_date_now()}},
+                    crypto::Bytes{'N', 'o', 't', ' ', 'F', 'o', 'u', 'n', 'd', '\n'});
+                flush_v2_h2_wire_on_strand();
+                continue;
+            }
+            if (!v2_h2_carrier_->AcceptCarrier(request.stream_id)) {
+                close_with_reason("failed to accept v2 extended CONNECT: " +
+                                  v2_h2_carrier_->error());
+                return;
+            }
+            v2_h2_tunnel_active_ = true;
+            flush_v2_h2_wire_on_strand();
+            send_auth_challenge();
+            return;
+        }
+
+        v2_h2_carrier_->RespondHttp(
+            request.stream_id, 404,
+            {{"content-type", "text/plain; charset=utf-8"},
+             {"date", yume::http_profile::http_date_now()}},
+            crypto::Bytes{'N', 'o', 't', ' ', 'F', 'o', 'u', 'n', 'd', '\n'});
+        flush_v2_h2_wire_on_strand();
+    }
+    read_v2_h2_cover();
+}
+
+void Session::flush_v2_h2_wire_on_strand() {
+    if (!v2_h2_carrier_ || close_state_ != CloseState::Open) return;
+    auto wire = v2_h2_carrier_->TakeOutbound();
+    if (v2_h2_carrier_->failed()) {
+        close_with_reason("v2 HTTP/2 output failed: " + v2_h2_carrier_->error());
+        return;
+    }
+    if (wire.empty()) return;
+
+    auto data = std::make_shared<std::vector<std::uint8_t>>(std::move(wire));
+    std::deque<PendingWrite> completed_app_writes;
+    if (v2_h2_carrier_->queued_output_bytes() == 0) {
+        completed_app_writes.swap(v2_h2_pending_app_writes_);
+    }
+    enqueue_tls_write_on_strand(
+        data, protocol::DATA, 0, data->size(),
+        [completed = std::move(completed_app_writes)](
+            const boost::system::error_code& ec, std::size_t bytes) mutable {
+            for (auto& item : completed) {
+                if (item.handler) {
+                    item.handler(ec, !ec && item.data ? item.data->size() : bytes);
+                }
+            }
+        });
+}
+
+void Session::start_v2_h2_exact_read(
+    std::uint8_t* target, std::size_t size,
+    std::function<void(const boost::system::error_code&, std::size_t)> handler) {
+    if (!v2_h2_tunnel_active_ || !v2_h2_carrier_ || v2_h2_read_handler_) {
+        handler(boost::asio::error::operation_not_supported, 0);
+        return;
+    }
+    v2_h2_read_target_ = target;
+    v2_h2_read_size_ = size;
+    v2_h2_read_copied_ = 0;
+    v2_h2_read_handler_ = std::move(handler);
+    continue_v2_h2_exact_read();
+}
+
+void Session::continue_v2_h2_exact_read() {
+    if (!v2_h2_read_handler_ || !v2_h2_carrier_) return;
+    if (v2_h2_decoded_offset_ == v2_h2_decoded_.size()) {
+        v2_h2_decoded_ = v2_h2_carrier_->TakeTunnelBytes();
+        v2_h2_decoded_offset_ = 0;
+    }
+    const std::size_t available = v2_h2_decoded_.size() - v2_h2_decoded_offset_;
+    const std::size_t need = v2_h2_read_size_ - v2_h2_read_copied_;
+    const std::size_t take = std::min(available, need);
+    if (take > 0) {
+        std::copy_n(v2_h2_decoded_.data() + v2_h2_decoded_offset_, take,
+                    v2_h2_read_target_ + v2_h2_read_copied_);
+        v2_h2_decoded_offset_ += take;
+        v2_h2_read_copied_ += take;
+    }
+    if (v2_h2_read_copied_ == v2_h2_read_size_) {
+        auto handler = std::move(v2_h2_read_handler_);
+        const std::size_t complete = v2_h2_read_copied_;
+        v2_h2_read_target_ = nullptr;
+        v2_h2_read_size_ = 0;
+        v2_h2_read_copied_ = 0;
+        handler({}, complete);
+        return;
+    }
+    if (v2_h2_carrier_->carrier_closed()) {
+        auto handler = std::move(v2_h2_read_handler_);
+        handler(boost::asio::error::eof, v2_h2_read_copied_);
+        return;
+    }
+    if (v2_h2_tls_read_in_flight_) return;
+    v2_h2_tls_read_in_flight_ = true;
+    auto self = shared_from_this();
+    stream_.async_read_some(
+        boost::asio::buffer(carrier_scratch_),
+        boost::asio::bind_executor(
+            strand_, [self](const boost::system::error_code& ec, std::size_t bytes) {
+                self->on_v2_h2_exact_tls_read(ec, bytes);
+            }));
+}
+
+void Session::on_v2_h2_exact_tls_read(const boost::system::error_code& ec,
+                                      std::size_t bytes) {
+    v2_h2_tls_read_in_flight_ = false;
+    if (ec) {
+        if (v2_h2_read_handler_) {
+            auto handler = std::move(v2_h2_read_handler_);
+            handler(ec, v2_h2_read_copied_);
+        }
+        return;
+    }
+    v2_h2_carrier_->Feed(carrier_scratch_.data(), bytes);
+    if (v2_h2_carrier_->failed()) {
+        if (v2_h2_read_handler_) {
+            auto handler = std::move(v2_h2_read_handler_);
+            handler(boost::asio::error::fault, v2_h2_read_copied_);
+        }
+        return;
+    }
+    flush_v2_h2_wire_on_strand();
+    continue_v2_h2_exact_read();
+}
+
 void Session::start_h2_carrier_probe() {
     carrier_probe_active_ = true;
     carrier_decoder_ = std::make_unique<obfs::H2InboundDecoder>(true);
@@ -777,22 +1122,25 @@ void Session::on_h2_probe_read(const boost::system::error_code& ec, std::size_t 
         std::int64_t now_s = static_cast<std::int64_t>(std::time(nullptr));
         const bool authority_ok =
             obfs::authority_matches_tls_sni(authority, tls_sni, listener_port);
-        const bool token_ok = obfs::carrier_path_admitted(
-            cfg_.obfs_secret, authority, tls_sni, path, now_s, listener_port);
+        crypto::Bytes admission_secret;
+        if (cfg_.obfs_secret_material) {
+            admission_secret = cfg_.obfs_secret_material->CopyBytes();
+        }
+        const bool hmac_ok = obfs::carrier_path_admitted(
+            admission_secret, authority, tls_sni, path, now_s, listener_port);
+        security::secure_erase(admission_secret);
+        const bool token_ok = hmac_ok && admission_replay_cache_ &&
+                              admission_replay_cache_->AcceptPath(path, now_s);
         carrier_probe_active_ = false;
         preface_timer_.cancel();
 
         if (!token_ok) {
-            std::string sanitized;
-            sanitized.reserve(path.size());
-            for (unsigned char c : path) {
-                sanitized.push_back((c >= 0x20 && c < 0x7f) ? static_cast<char>(c) : '?');
-            }
             util::log_warn("session " + std::to_string(session_id_) +
                           ": h2 carrier path token rejected (size=" +
                           std::to_string(path.size()) + ", authority_sni=" +
                           (authority_ok ? std::string("match") : std::string("mismatch")) +
-                          ", path=" + sanitized + ")");
+                          ", replay_or_hmac=" +
+                          (hmac_ok ? std::string("replay") : std::string("hmac")) + ")");
             serve_fake_h2_real_index();
             return;
         }

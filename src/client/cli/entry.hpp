@@ -15,6 +15,8 @@
 
 #include <boost/asio/io_context.hpp>
 
+#include "core/security/secret_file.hpp"
+
 namespace yume::client {
 
 // Forward declarations so the in-process embedder gets handles to the
@@ -40,6 +42,11 @@ struct ClientConfig {
     // multi-tunnel and matches the pre-3.7.1 single-tunnel layout.
     int tunnel_count{4};
     bool obfuscation{true};
+    std::string obfs_secret_file;
+    std::string inner_psk_file;
+    std::shared_ptr<yume::security::Secret32> obfs_secret_material;
+    std::shared_ptr<yume::security::Secret32> inner_psk_material;
+    // Legacy 1.x literal. The 2.0 connection path rejects it.
     std::string obfs_secret;
     // --obfs-pad-multiple <N>. Round every outbound frame payload up to
     // a multiple of N bytes via trailing pad bytes + 1-byte length. 0 =

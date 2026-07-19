@@ -24,11 +24,19 @@
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 
+#if YUME_USE_BASEFWX
+#include <basefwx/pq.hpp>
+#include <basefwx/x25519.hpp>
+#endif
+
 #include "core/protocol/control_protocol.hpp"
 #include "core/app_codec/codec.hpp"
 #include "core/runtime/service_stream.hpp"
 #include "core/security/crypto.hpp"
+#include "core/security/session_ratchet.hpp"
 #include "core/stealth/obfs_h2.hpp"
+#include "core/stealth/h2_carrier.hpp"
+#include "core/stealth/obfs_signal.hpp"
 #include "core/protocol/protocol.hpp"
 #include "server/config/config.hpp"
 #include "server/runtime/kdf_admission.hpp"
@@ -56,6 +64,7 @@ public:
             const ServerConfig& cfg,
             std::shared_ptr<const std::vector<crypto::Bytes>> authorized_keys,
             std::shared_ptr<KdfAdmissionController> kdf_admission,
+            std::shared_ptr<obfs::AdmissionReplayCache> admission_replay_cache,
             uint64_t session_id,
             Manager* manager);
 
@@ -145,6 +154,19 @@ private:
                                  std::size_t bytes);
     void finish_h2_settings_ack_wait();
     void serve_fake_h2_real_index();
+    void start_v2_h2_session();
+    void read_v2_h2_cover();
+    void on_v2_h2_cover_read(const boost::system::error_code& ec,
+                             std::size_t bytes);
+    void process_v2_h2_requests();
+    void flush_v2_h2_wire_on_strand();
+    void start_v2_h2_exact_read(
+        std::uint8_t* target,
+        std::size_t size,
+        std::function<void(const boost::system::error_code&, std::size_t)> handler);
+    void continue_v2_h2_exact_read();
+    void on_v2_h2_exact_tls_read(const boost::system::error_code& ec,
+                                 std::size_t bytes);
 
     void read_header();
     void on_read_header(const boost::system::error_code& ec, std::size_t bytes);
@@ -152,7 +174,7 @@ private:
     void arm_frame_read_deadline(std::chrono::milliseconds timeout, std::string reason);
     void cancel_frame_read_deadline();
 
-    void handle_frame(const protocol::Frame& frame);
+    void handle_frame(protocol::Frame frame);
     bool frame_allowed_by_authorization_tier(const protocol::Frame& frame);
     bool handle_auth(const protocol::Frame& frame);
     void handle_open(const protocol::Frame& frame);
@@ -228,8 +250,17 @@ private:
     void async_write_frame(const protocol::Frame& frame,
                            std::function<void(const boost::system::error_code&, std::size_t)> handler = {});
     void queue_frame_on_strand(const protocol::Frame& frame,
-                               std::function<void(const boost::system::error_code&, std::size_t)> handler = {});
+                               std::function<void(const boost::system::error_code&, std::size_t)> handler = {},
+                               bool already_protected = false);
+    void flush_ratchet_blocked_writes_on_strand();
+    void arm_ratchet_timeout_on_strand();
     void queue_encoded_write_on_strand(
+        std::shared_ptr<std::vector<uint8_t>> data,
+        uint8_t frame_type,
+        uint8_t stream_id,
+        std::size_t payload_size,
+        std::function<void(const boost::system::error_code&, std::size_t)> handler = {});
+    void enqueue_tls_write_on_strand(
         std::shared_ptr<std::vector<uint8_t>> data,
         uint8_t frame_type,
         uint8_t stream_id,
@@ -257,6 +288,7 @@ private:
     ServerConfig cfg_;
     std::shared_ptr<const std::vector<crypto::Bytes>> authorized_keys_;
     std::shared_ptr<KdfAdmissionController> kdf_admission_;
+    std::shared_ptr<obfs::AdmissionReplayCache> admission_replay_cache_;
     uint64_t session_id_{0};
     Manager* manager_{nullptr};
 
@@ -277,6 +309,16 @@ private:
     bool carrier_probe_active_{false};
     bool carrier_settings_ack_wait_active_{false};
     std::unique_ptr<obfs::H2InboundDecoder> carrier_decoder_;
+    std::unique_ptr<obfs::H2Carrier> v2_h2_carrier_;
+    bool v2_h2_tunnel_active_{false};
+    bool v2_h2_tls_read_in_flight_{false};
+    crypto::Bytes v2_h2_decoded_;
+    std::size_t v2_h2_decoded_offset_{0};
+    std::uint8_t* v2_h2_read_target_{nullptr};
+    std::size_t v2_h2_read_size_{0};
+    std::size_t v2_h2_read_copied_{0};
+    std::function<void(const boost::system::error_code&, std::size_t)>
+        v2_h2_read_handler_;
     std::array<uint8_t, 4096> carrier_scratch_{};
     boost::asio::steady_timer preface_timer_;
     // Per-connection TLS handshake deadline (RFC 7540 has none; this
@@ -288,6 +330,16 @@ private:
     protocol::FrameHeader current_header_{};
     std::vector<uint8_t> payload_buf_;
     crypto::Bytes challenge_;
+    struct AuthV2Ephemeral {
+#if YUME_USE_BASEFWX
+        basefwx::pq::KemKeyPair mlkem;
+        basefwx::x25519::KeyPair x25519;
+#endif
+        crypto::Bytes psk_salt;
+        crypto::Bytes transcript_salt;
+    };
+    std::unique_ptr<AuthV2Ephemeral> auth_v2_ephemeral_;
+    std::unique_ptr<ratchet::SessionRatchet> ratchet_;
     bool authenticated_{false};
     authorization::SessionTier authorization_tier_{
         authorization::SessionTier::Unauthenticated};
@@ -307,6 +359,7 @@ private:
     crypto::Bytes decrypt_hop_key_;
     boost::asio::steady_timer idle_timer_;
     boost::asio::steady_timer frame_read_timer_;
+    boost::asio::steady_timer ratchet_timer_;
     boost::asio::steady_timer transport_shutdown_timer_;
     boost::asio::steady_timer http_idle_timer_;
     std::atomic<int64_t> last_activity_ms_{0};
@@ -514,7 +567,14 @@ private:
         std::function<void(const boost::system::error_code&, std::size_t)> handler;
     };
 
+    struct RatchetBlockedWrite {
+        protocol::Frame frame;
+        std::function<void(const boost::system::error_code&, std::size_t)> handler;
+    };
+
     std::deque<PendingWrite> write_queue_;
+    std::deque<PendingWrite> v2_h2_pending_app_writes_;
+    std::deque<RatchetBlockedWrite> ratchet_blocked_writes_;
     bool write_in_flight_{false};
     uint32_t write_queue_depth_{0};
     

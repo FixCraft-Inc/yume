@@ -1,0 +1,12 @@
+{
+  "name": "yume-node24-cover-reference",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.18.x"
+  },
+  "scripts": {
+    "start": "node backend.mjs",
+    "capture-reference": "node server.mjs"
+  }
+}

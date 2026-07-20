@@ -8,10 +8,12 @@ import json
 import os
 import pwd
 import re
+import selectors
 import signal
 import shutil
 import socket
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +43,14 @@ class RuntimeIdentity:
     uid: int
     gid: int
     home: Path
+
+
+@dataclass(frozen=True)
+class StreamedCommandResult:
+    returncode: int
+    output: str
+    interrupted: bool = False
+    timed_out: bool = False
 
 
 @dataclass
@@ -104,6 +114,105 @@ def start_logged_process(
         log_file.close()
         raise
     return ManagedProcess(process, log_file, log_path)
+
+
+def _emit_output(chunk: bytes, captured: bytearray, *, echo: bool) -> None:
+    if not chunk:
+        return
+    captured.extend(chunk)
+    if echo:
+        sys.stdout.buffer.write(chunk)
+        sys.stdout.buffer.flush()
+
+
+def _finish_streamed_process(
+    process: subprocess.Popen[bytes],
+    captured: bytearray,
+    *,
+    echo: bool,
+    stop_signal: signal.Signals,
+) -> None:
+    if process.poll() is None:
+        try:
+            os.killpg(process.pid, stop_signal)
+        except ProcessLookupError:
+            pass
+    try:
+        remainder, _ = process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        remainder, _ = process.communicate()
+    _emit_output(remainder, captured, echo=echo)
+
+
+def run_streamed_command(
+    argv: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    timeout: float,
+    echo: bool = True,
+    interrupt_message: str = "interrupted; stopping child process",
+) -> StreamedCommandResult:
+    """Run a command while teeing merged output and retaining it for reports."""
+    process = subprocess.Popen(
+        argv,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    assert process.stdout is not None
+    captured = bytearray()
+    deadline = time.monotonic() + timeout
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                message = f"\ncommand timed out after {timeout:g}s\n".encode()
+                _emit_output(message, captured, echo=echo)
+                _finish_streamed_process(
+                    process,
+                    captured,
+                    echo=echo,
+                    stop_signal=signal.SIGTERM,
+                )
+                return StreamedCommandResult(
+                    124,
+                    captured.decode("utf-8", errors="replace"),
+                    timed_out=True,
+                )
+            events = selector.select(timeout=min(remaining, 0.25))
+            if not events:
+                continue
+            chunk = os.read(process.stdout.fileno(), 65536)
+            if not chunk:
+                return StreamedCommandResult(
+                    process.wait(),
+                    captured.decode("utf-8", errors="replace"),
+                )
+            _emit_output(chunk, captured, echo=echo)
+    except KeyboardInterrupt:
+        message = f"\n{interrupt_message}\n".encode()
+        _emit_output(message, captured, echo=True)
+        _finish_streamed_process(
+            process,
+            captured,
+            echo=echo,
+            stop_signal=signal.SIGINT,
+        )
+        return StreamedCommandResult(
+            130,
+            captured.decode("utf-8", errors="replace"),
+            interrupted=True,
+        )
+    finally:
+        selector.close()
 
 
 def _write_secret(path: Path) -> None:

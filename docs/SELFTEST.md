@@ -190,6 +190,10 @@ real Chrome/Chromium page load and records it separately from the tunnel PCAP.
 Client artifacts are written under `yume-bench-results/lan-<UTC timestamp>/`.
 A full bidirectional capture can exceed 2 GiB. The server command stays in the
 foreground and should be stopped with Ctrl-C after the client finishes.
+Client output is streamed while the benchmark runs; non-interactive progress
+updates appear every five seconds. Ctrl-C stops the endpoint and capture
+cleanly, returns status 130, and retains a partial `endpoint.log` and
+`report.json` instead of printing a Python traceback.
 
 The endpoint run always exercises the 2.0 ML-KEM-1024 + X25519 + PSK suite,
 directional ratchets, H2/WebSocket carrier, and Node masquerade. `--cover` is a

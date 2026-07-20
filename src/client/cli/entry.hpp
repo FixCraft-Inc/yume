@@ -11,7 +11,9 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include <boost/asio/io_context.hpp>
 
@@ -24,6 +26,7 @@ namespace yume::client {
 // relay_runtime.hpp into every TU that includes cli.hpp.
 class Tunnel;
 class RelayRuntime;
+struct ParsedArgs;
 
 struct ClientConfig {
     std::string server;
@@ -34,6 +37,9 @@ struct ClientConfig {
     // listener address explicitly.
     std::string socks_bind_host;
     int socks_port{0};
+    // Operator-created Linux IFF_TUN|IFF_NO_PI device. Yume only attaches;
+    // interface addresses, routes, DNS, firewall, and NAT stay external.
+    std::string packet_tun_name;
     int io_threads{0};
     // Number of parallel TLS tunnels the client opens to the server.
     // The first is the "primary" — owns control / relay / activity
@@ -125,6 +131,7 @@ inline const std::string& effective_tls_server_name(const ClientConfig& cfg) noe
 
 struct RuntimeReadyInfo {
     std::string server_tls_fingerprint_sha256;
+    std::vector<std::string> server_capabilities;
 };
 
 class Cli {
@@ -168,11 +175,17 @@ public:
     bool silent() const noexcept { return silent_; }
 
     int run(int argc, char** argv);
+    // In-process/ABI entrypoint: consumes an already parsed and path-resolved
+    // configuration and starts the same authenticated engine without
+    // reconstructing CLI arguments or implicitly enabling SOCKS.
+    int run_config(ClientConfig cfg);
 
 private:
+    int run_parsed(ParsedArgs args, std::string executable_arg);
     RuntimeReadyCallback runtime_ready_callback_;
     RuntimeActiveCallback runtime_active_callback_;
     std::shared_ptr<std::atomic<bool>> external_stop_flag_;
+    std::optional<ClientConfig> config_override_;
     bool silent_{false};
 };
 

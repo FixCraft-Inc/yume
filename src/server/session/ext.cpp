@@ -9,7 +9,7 @@
  *                        send_federated_data / send_federated_close)
  *   - packet egress     (handle_packet_open / handle_packet_data,
  *                        queue_packet_downstream, flush_packet_downstream)
- *   - throughput bench  (handle_bench_open / data / close, pump_bench_source,
+ *   - throughput bench  (handle_bench_open / data / close, pump_bench_sources,
  *                        maybe_finish_bench_source)
  *
  * Same Session:: class, same wire output, no behavior change. Shared
@@ -19,6 +19,8 @@
 #include "server/session/session.hpp"
 #include "server/runtime/manager.hpp"
 #include "server/session/internal.hpp"
+
+#include <stdexcept>
 
 namespace yume::server {
 
@@ -168,18 +170,37 @@ bool Session::handle_packet_data(uint8_t stream_id, const crypto::Bytes& payload
     auto batch = protocol::packet_bulk::decode_batch(payload, &error);
     if (!batch.has_value()) {
         util::log_warn("session " + std::to_string(session_id_) +
-                       ": dropped malformed packet-bulk DATA on stream " +
+                       ": closing malformed packet-bulk stream " +
                        std::to_string(stream_id) + ": " + error);
+        handle_close(stream_id, error);
+        send_control_close(stream_id, error);
         return true;
     }
-    packet_stream_->upstream_batches += 1;
-    for (auto& packet : batch->packets) {
+    if (packet_stream_->upstream_sequence_exhausted ||
+        batch->sequence != packet_stream_->next_upstream_sequence) {
+        const std::string reason = "packet-bulk sequence mismatch";
+        handle_close(stream_id, reason);
+        send_control_close(stream_id, reason);
+        return true;
+    }
+    if (packet_stream_->next_upstream_sequence == 0x7FFF'FFFF'FFFF'FFFFull) {
+        packet_stream_->upstream_sequence_exhausted = true;
+    } else {
+        packet_stream_->next_upstream_sequence += 1;
+    }
+    for (const auto& packet : batch->packets) {
         std::string reason;
-        if (!validate_client_ipv4_packet(packet, packet_stream_->client_ipv4_be, &reason)) {
+        if (packet.size() > packet_stream_->mtu) {
+            reason = "packet exceeds assigned MTU";
+        }
+        if (!reason.empty() ||
+            !validate_client_ipv4_packet(packet, packet_stream_->client_ipv4_be, &reason)) {
             util::log_warn("session " + std::to_string(session_id_) +
-                           ": dropped packet-bulk packet on stream " +
+                           ": closing invalid packet-bulk stream " +
                            std::to_string(stream_id) + ": " + reason);
-            continue;
+            handle_close(stream_id, reason);
+            send_control_close(stream_id, reason);
+            return true;
         }
         if (manager_) {
             const std::uint32_t dst_be = read_ipv4_be(packet, 16);
@@ -192,19 +213,25 @@ bool Session::handle_packet_data(uint8_t stream_id, const crypto::Bytes& payload
             const boost::asio::ip::address dst = boost::asio::ip::address_v4(dst_bytes);
             std::string filter_reason;
             if (!manager_->egress_allowed(dst, &filter_reason)) {
-                util::log_info_rate_limited(
-                    "packet-egress-filter",
-                    "egress filter dropped packet-native IPv4 packet to " +
-                        dst.to_string() +
-                        (filter_reason.empty() ? "" : " (" + filter_reason + ")"),
-                    30000);
-                continue;
+                const std::string reason = "packet destination rejected" +
+                    (filter_reason.empty() ? std::string{} : ": " + filter_reason);
+                util::log_info("session " + std::to_string(session_id_) +
+                               ": closing packet-bulk stream for destination " +
+                               dst.to_string() + ": " + reason);
+                handle_close(stream_id, reason);
+                send_control_close(stream_id, reason);
+                return true;
             }
         }
-        packet_stream_->upstream_packets += 1;
-        if (manager_) {
-            manager_->write_packet_to_egress(packet_stream_->client_ipv4_be, std::move(packet));
-        }
+    }
+    packet_stream_->upstream_batches += 1;
+    packet_stream_->upstream_packets += batch->packets.size();
+    if (manager_ && !manager_->write_packets_to_egress(
+            packet_stream_->client_ipv4_be, std::move(batch->packets))) {
+        const std::string reason = "packet egress queue saturated or unavailable";
+        handle_close(stream_id, reason);
+        send_control_close(stream_id, reason);
+        return true;
     }
     return true;
 }
@@ -311,6 +338,9 @@ bool Session::handle_bench_open(uint8_t stream_id, const std::string& proto, con
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
         bench_streams_[stream_id] = bench;
+        if (bench.mode == BenchStream::Mode::Source) {
+            bench_source_budget_.activate(stream_id);
+        }
     }
 
     send_open_reply(stream_id, true, "");
@@ -319,7 +349,7 @@ bool Session::handle_bench_open(uint8_t stream_id, const std::string& proto, con
                    " proto=" + proto +
                    " bytes=" + std::to_string(requested));
     if (bench.mode == BenchStream::Mode::Source) {
-        pump_bench_source(stream_id);
+        pump_bench_sources();
     }
     return true;
 }
@@ -338,6 +368,9 @@ bool Session::handle_bench_data(uint8_t stream_id, const crypto::Bytes& payload)
 
 bool Session::handle_bench_close(uint8_t stream_id, const std::string& reason) {
     BenchStream bench;
+    std::size_t reservation_current = 0;
+    std::size_t reservation_peak = 0;
+    std::size_t reservation_ready_sources = 0;
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
         auto it = bench_streams_.find(stream_id);
@@ -346,6 +379,10 @@ bool Session::handle_bench_close(uint8_t stream_id, const std::string& reason) {
         }
         bench = it->second;
         bench_streams_.erase(it);
+        bench_source_budget_.deactivate(stream_id);
+        reservation_current = bench_source_budget_.reserved();
+        reservation_peak = bench_source_budget_.peak_reserved();
+        reservation_ready_sources = bench_source_budget_.ready_sources();
     }
 
     const int64_t elapsed_ms = bench.open_started_ms > 0 ? (util::now_ms() - bench.open_started_ms) : 0;
@@ -369,27 +406,42 @@ bool Session::handle_bench_close(uint8_t stream_id, const std::string& reason) {
                          " ms=" + std::to_string(elapsed_ms) +
                          " upstream=" + std::to_string(bench.upstream_bytes) +
                          " downstream=" + std::to_string(bench.downstream_bytes) +
-                         " requested=" + std::to_string(bench.requested_bytes));
+                         " requested=" + std::to_string(bench.requested_bytes) +
+                         " reservation_current=" + std::to_string(reservation_current) +
+                         " reservation_peak=" + std::to_string(reservation_peak) +
+                         " reservation_ready_sources=" +
+                             std::to_string(reservation_ready_sources));
     return true;
 }
 
-void Session::pump_bench_source(uint8_t stream_id) {
-    for (;;) {
+void Session::pump_bench_sources() {
+    while (true) {
+        uint8_t stream_id = 0;
         std::uint64_t offset = 0;
         std::size_t chunk_size = 0;
         {
             std::lock_guard<std::mutex> lock(streams_mutex_);
+            if (bench_source_budget_.full()) {
+                return;
+            }
+
+            // Only a stream head is considered on each pass. Re-queueing the
+            // chosen source at the tail makes the aggregate 64-frame window
+            // fair even when many sources become active at once.
+            const auto next_stream = bench_source_budget_.pop_ready();
+            if (!next_stream.has_value()) {
+                return;
+            }
+            stream_id = *next_stream;
             auto it = bench_streams_.find(stream_id);
             if (it == bench_streams_.end() ||
                 it->second.mode != BenchStream::Mode::Source ||
                 it->second.close_sent) {
-                return;
+                continue;
             }
             auto& bench = it->second;
-            if (bench.downstream_bytes >= bench.requested_bytes ||
-                bench.in_flight_frames >= kBenchSourceWindowFrames ||
-                write_queue_depth_ >= kWriteQueueHighWatermark) {
-                break;
+            if (bench.downstream_bytes >= bench.requested_bytes) {
+                continue;
             }
             const std::uint64_t remaining = bench.requested_bytes - bench.downstream_bytes;
             chunk_size = static_cast<std::size_t>(
@@ -397,6 +449,12 @@ void Session::pump_bench_source(uint8_t stream_id) {
             offset = bench.downstream_bytes;
             bench.downstream_bytes += static_cast<std::uint64_t>(chunk_size);
             bench.in_flight_frames += 1;
+            if (!bench_source_budget_.reserve()) {
+                throw std::logic_error("benchmark reservation budget raced");
+            }
+            if (bench.downstream_bytes < bench.requested_bytes) {
+                bench_source_budget_.activate(stream_id);
+            }
         }
 
         crypto::Bytes payload(chunk_size);
@@ -410,27 +468,31 @@ void Session::pump_bench_source(uint8_t stream_id) {
             payload,
             0,
             [self, stream_id](const boost::system::error_code& ec, std::size_t) {
-                bool should_continue = false;
+                bool stream_exists = false;
+                bool should_close = false;
                 {
                     std::lock_guard<std::mutex> lock(self->streams_mutex_);
+                    self->bench_source_budget_.release();
                     auto it = self->bench_streams_.find(stream_id);
-                    if (it == self->bench_streams_.end()) {
-                        return;
+                    if (it != self->bench_streams_.end()) {
+                        stream_exists = true;
+                        if (it->second.in_flight_frames > 0) {
+                            it->second.in_flight_frames -= 1;
+                        }
+                        if (ec && !it->second.close_sent) {
+                            it->second.close_sent = true;
+                            should_close = true;
+                        }
                     }
-                    if (it->second.in_flight_frames > 0) {
-                        it->second.in_flight_frames -= 1;
-                    }
-                    should_continue = !ec;
                 }
-                if (!should_continue) {
+                if (should_close) {
                     self->handle_bench_close(stream_id, "benchmark write failed");
-                    return;
+                } else if (stream_exists) {
+                    self->maybe_finish_bench_source(stream_id);
                 }
-                self->maybe_finish_bench_source(stream_id);
-                self->pump_bench_source(stream_id);
+                self->pump_bench_sources();
             });
     }
-    maybe_finish_bench_source(stream_id);
 }
 
 void Session::maybe_finish_bench_source(uint8_t stream_id) {

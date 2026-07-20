@@ -22,6 +22,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -91,6 +92,7 @@ public:
                            int timeout_ms = 5000);
 
     std::shared_ptr<client::Tunnel> primary_tunnel() const;
+    std::vector<std::string> server_capabilities() const;
 
     // Subscribe to log lines emitted by the embedded Cli (useful so
     // the GUI's log viewer mirrors what the CLI would show). Lines

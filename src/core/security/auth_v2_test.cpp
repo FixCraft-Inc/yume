@@ -50,9 +50,9 @@ int main() {
     const Bytes transcript_salt(32, 0x55);
     const Bytes encoded = BuildChallenge(challenge, kem_public, x_public,
                                          psk_salt, transcript_salt);
-    assert(encoded.size() == 1739);
+    assert(encoded.size() == 1744);
     assert(Sha256Hex(encoded) ==
-           "3060dcdc143a769d66b420b1074d4df995f05827129fa99f335f2c04b8074e95");
+           "c3b8010ba56d0d26b9215b38c60e183de87bd4558b0e45b880543af2e4efbc43");
     const auto parsed = ParseChallenge(encoded);
     assert(parsed.challenge == challenge);
     assert(parsed.mlkem_public_key == kem_public);
@@ -69,9 +69,9 @@ int main() {
         x_public, ciphertext, identity, signature));
     assert(response.signature == signature);
     const Bytes signature_input = BuildSignatureInput(encoded, unsigned_response);
-    assert(signature_input.size() == 3397);
+    assert(signature_input.size() == 3402);
     assert(Sha256Hex(signature_input) ==
-           "6e34f38c1e08c968088a721f49fd80c70bb6d4d11be58a2095ac7f3d902fed25");
+           "a24a8e4fdebc92adf629d23118a3e00857fb3a5aaa14d1b7620ce6f6bb0c658f");
 
     const Bytes info{'{', '}'};
     assert(ParseAuthOk(BuildAuthOk(info)) == info);

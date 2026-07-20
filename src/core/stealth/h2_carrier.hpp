@@ -32,6 +32,19 @@ struct H2Request {
     H2Headers headers;
 };
 
+struct H2CarrierStats {
+    std::uint64_t h2_feed_calls{0};
+    std::uint64_t h2_feed_bytes{0};
+    std::uint64_t h2_feed_ns{0};
+    std::uint64_t h2_flush_calls{0};
+    std::uint64_t h2_flush_bytes{0};
+    std::uint64_t h2_flush_ns{0};
+    std::uint64_t websocket_encode_bytes{0};
+    std::uint64_t websocket_encode_ns{0};
+    std::uint64_t websocket_decode_bytes{0};
+    std::uint64_t websocket_decode_ns{0};
+};
+
 // A complete in-memory HTTP/2 endpoint around libnghttp2. Socket ownership and
 // async scheduling remain with the client/server session. Feed() consumes TLS
 // plaintext; TakeOutbound() returns serialized H2 bytes for the single
@@ -45,6 +58,8 @@ public:
     H2Carrier(H2Carrier&&) noexcept;
     H2Carrier& operator=(H2Carrier&&) noexcept;
     ~H2Carrier();
+
+    void set_timing_enabled(bool enabled) noexcept;
 
     // Client only. Submits the Chrome-profiled SETTINGS and priming GET. The
     // extended CONNECT cannot be submitted until priming_complete() is true.
@@ -63,6 +78,11 @@ public:
                      bool head_request = false);
     bool AcceptCarrier(std::int32_t stream_id,
                        const H2Headers& response_headers = {});
+    // Server only. Expands the admitted carrier's receive credit after YUME
+    // authentication so a ratchet epoch does not require multiple reverse
+    // WINDOW_UPDATE turns. The window remains bounded and H2 flow control
+    // remains enabled.
+    bool EnableAuthenticatedReceiveWindow();
     bool RejectCarrier(std::int32_t stream_id,
                        unsigned status,
                        const H2Headers& headers,
@@ -82,6 +102,7 @@ public:
     bool carrier_closed() const noexcept;
     std::int32_t carrier_stream_id() const noexcept;
     std::size_t queued_output_bytes() const noexcept;
+    H2CarrierStats stats() const noexcept;
 
     void GracefulClose(std::uint16_t websocket_code = 1000);
 

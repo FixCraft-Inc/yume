@@ -360,6 +360,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
 endif()
 
 add_library(yume_transport_core
+    client/packet/engine.cpp
     client/transport/core.cpp
     client/transport/write.cpp
     client/transport/dispatch.cpp
@@ -498,6 +499,8 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/transport/tunnel.cpp
         client/transport/tunnel_pool.cpp
         client/codec/monero_rpc.cpp
+        client/packet/channel.cpp
+        client/packet/tun_adapter.cpp
         client/proxy/socks.cpp
         client/proxy/forward.cpp
         client/proxy/outbound_proxy.cpp
@@ -725,6 +728,17 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig"
             COMPONENT libyume_development
         )
+
+        if(YUME_BUILD_TOOLS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            add_executable(yume-abi-tun tools/abi_tun.cpp)
+            target_link_libraries(yume-abi-tun PRIVATE yume_abi Threads::Threads)
+            target_include_directories(yume-abi-tun PRIVATE ${CMAKE_SOURCE_DIR}/include)
+            yume_apply_perf_opts(yume-abi-tun)
+            install(TARGETS yume-abi-tun
+                RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+                COMPONENT yume_cli
+            )
+        endif()
     endif()
     if(YUME_BUILD_GUI)
         add_subdirectory(gui)
@@ -732,6 +746,17 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
 endif()
 
 if(YUME_BUILD_TESTING)
+
+# Most of the focused native tests use the standard assert() facility. CMake
+# defines NDEBUG for Release and RelWithDebInfo, which would otherwise turn
+# those checks into no-ops while still reporting a passing test executable.
+# This directory's production targets are all declared above this block, so
+# the undefinition applies only to test targets created below.
+if(MSVC)
+    add_compile_options(/UNDEBUG)
+else()
+    add_compile_options(-UNDEBUG)
+endif()
 
 add_executable(yume_transport_core_test
     client/transport/core_test.cpp
@@ -748,6 +773,30 @@ target_link_libraries(yume_packet_bulk_test PRIVATE yume_transport_core)
 yume_link_atomic_if_needed(yume_packet_bulk_test PRIVATE)
 yume_apply_perf_opts(yume_packet_bulk_test)
 add_test(NAME yume_packet_bulk_test COMMAND yume_packet_bulk_test)
+
+add_executable(yume_packet_engine_test client/packet/engine_test.cpp)
+target_link_libraries(yume_packet_engine_test PRIVATE yume_transport_core)
+yume_link_atomic_if_needed(yume_packet_engine_test PRIVATE)
+yume_apply_perf_opts(yume_packet_engine_test)
+add_test(NAME yume_packet_engine_test COMMAND yume_packet_engine_test)
+
+if(TARGET yume_client_lib)
+    add_executable(yume_packet_channel_contract_test
+        client/packet/channel_contract_test.cpp)
+    target_link_libraries(yume_packet_channel_contract_test PRIVATE yume_client_lib)
+    yume_link_atomic_if_needed(yume_packet_channel_contract_test PRIVATE)
+    yume_apply_perf_opts(yume_packet_channel_contract_test)
+    add_test(NAME yume_packet_channel_contract_test
+        COMMAND yume_packet_channel_contract_test)
+endif()
+
+add_executable(yume_fair_frame_budget_test
+    server/session/fair_frame_budget_test.cpp)
+target_include_directories(yume_fair_frame_budget_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(yume_fair_frame_budget_test PRIVATE yume_core)
+yume_link_atomic_if_needed(yume_fair_frame_budget_test PRIVATE)
+yume_apply_perf_opts(yume_fair_frame_budget_test)
+add_test(NAME yume_fair_frame_budget_test COMMAND yume_fair_frame_budget_test)
 
 add_executable(yume_app_codec_test core/app_codec/codec_test.cpp)
 target_link_libraries(yume_app_codec_test PRIVATE yume_core)

@@ -23,6 +23,8 @@ struct ParsedArgs {
     std::string socks_bind_host;
     int socks_port{0};
     bool socks_port_override{false};
+    std::string packet_tun_name;
+    bool packet_tun_override{false};
     int io_threads{0};
     int tunnel_count{0};
     bool tunnel_count_override{false};
@@ -87,7 +89,7 @@ struct ParsedArgs {
     bool bench{false};
     bool bench_full{false};
     int bench_mib{256};
-    int bench_chunk_kib{256};
+    int bench_chunk_kib{64};
     int bench_streams{1};
     std::string bench_direction{"both"};
     bool bench_mib_override{false};

@@ -34,6 +34,14 @@ Tunnel::Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream,
     boost::system::error_code sendbuf_ec;
     stream_.lowest_layer().set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
     if (ratchet) core_.set_ratchet(std::move(ratchet));
+    if (util::timing_enabled()) {
+        core_.set_timing_handler(
+            [](const std::string& component,
+               const std::string& event,
+               const std::string& details) {
+                util::log_timing(component, event, details);
+            });
+    }
     core_.set_write_handler([this](std::shared_ptr<Bytes> data, TransportCore::WriteCompletion completion) {
         auto self = shared_from_this();
         boost::asio::post(
@@ -208,6 +216,13 @@ void Tunnel::send_data(uint8_t stream_id,
     core_.send_data(stream_id, std::move(data), std::move(completion));
 }
 
+bool Tunnel::try_send_data(uint8_t stream_id,
+                           Bytes&& data,
+                           TransportCore::WriteCompletion completion) {
+    return core_.try_send_data(
+        stream_id, std::move(data), std::move(completion));
+}
+
 void Tunnel::send_close(uint8_t stream_id, const std::string& reason) {
     core_.send_close(stream_id, reason);
 }
@@ -288,15 +303,29 @@ void Tunnel::start_wire_write() {
     wire_write_active_ = true;
     auto self = shared_from_this();
     auto data = wire_writes_.front().data;
+    const bool collect_timing = util::timing_enabled();
+    const auto write_started = collect_timing
+        ? std::chrono::steady_clock::now()
+        : std::chrono::steady_clock::time_point{};
     boost::asio::async_write(
         stream_, boost::asio::buffer(*data),
         boost::asio::bind_executor(
-            strand_, [self, data](const boost::system::error_code& ec,
+            strand_, [self, data, write_started, collect_timing](const boost::system::error_code& ec,
                                   std::size_t bytes) {
                 self->wire_write_active_ = false;
                 if (!ec && bytes > 0) {
                     self->bytes_out_.fetch_add(bytes,
                                                std::memory_order_relaxed);
+                }
+                if (collect_timing) {
+                    const auto elapsed_us =
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - write_started).count();
+                    util::log_timing(
+                        "client.tls", "write",
+                        "bytes=" + std::to_string(bytes) +
+                        " requested=" + std::to_string(data->size()) +
+                        " us=" + std::to_string(elapsed_us));
                 }
                 WireCompletion completion;
                 if (!self->wire_writes_.empty()) {
@@ -423,6 +452,26 @@ void Tunnel::close_all(const std::string& reason) {
                 bytes_out_.fetch_add(written, std::memory_order_relaxed);
             }
         }
+    }
+
+    if (carrier_ && util::timing_enabled()) {
+        const auto stats = carrier_->stats();
+        util::log_timing(
+            "client.carrier", "summary",
+            "h2_feed_calls=" + std::to_string(stats.h2_feed_calls) +
+            " h2_feed_bytes=" + std::to_string(stats.h2_feed_bytes) +
+            " h2_feed_us=" + std::to_string(stats.h2_feed_ns / 1000U) +
+            " h2_flush_calls=" + std::to_string(stats.h2_flush_calls) +
+            " h2_flush_bytes=" + std::to_string(stats.h2_flush_bytes) +
+            " h2_flush_us=" + std::to_string(stats.h2_flush_ns / 1000U) +
+            " websocket_encode_bytes=" +
+                std::to_string(stats.websocket_encode_bytes) +
+            " websocket_encode_us=" +
+                std::to_string(stats.websocket_encode_ns / 1000U) +
+            " websocket_decode_bytes=" +
+                std::to_string(stats.websocket_decode_bytes) +
+            " websocket_decode_us=" +
+                std::to_string(stats.websocket_decode_ns / 1000U));
     }
 
     auto close_callbacks = core_.shutdown();

@@ -26,9 +26,11 @@ from yume_bench_common import (  # noqa: E402
     chown_tree,
     command_version,
     drop_prefix,
+    endpoint_contract,
     generate_keyset,
     invoking_identity,
     parse_rates,
+    relay_chunk_kib,
     resolve_pinned_node,
     run_streamed_command,
     start_logged_process,
@@ -140,7 +142,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bandwidth", type=int, metavar="MBIT", help="override link rate")
     parser.add_argument("--bench-mib", type=int, default=128, help="MiB per direction")
     parser.add_argument("--bench-streams", type=int, default=8)
-    parser.add_argument("--bench-chunk-kib", type=int, default=256)
+    parser.add_argument(
+        "--bench-chunk-kib",
+        type=int,
+        help="explicit DATA chunk size; omit to match the production relay buffer",
+    )
     parser.add_argument("--bench-direction", choices=("both", "up", "down"), default="both")
     size = parser.add_mutually_exclusive_group()
     size.add_argument("--quick", action="store_true", help="32 MiB, 4 streams; skip browser")
@@ -200,7 +206,7 @@ def validate_args(args: argparse.Namespace, profile: WanProfile) -> None:
         raise SystemExit("--bench-mib must be 1..16384")
     if not 1 <= args.bench_streams <= 240:
         raise SystemExit("--bench-streams must be 1..240")
-    if not 1 <= args.bench_chunk_kib <= 256:
+    if args.bench_chunk_kib is not None and not 1 <= args.bench_chunk_kib <= 256:
         raise SystemExit("--bench-chunk-kib must be 1..256")
 
 
@@ -286,10 +292,11 @@ def run_endpoint(
         "--bench",
         "--bench-mib", str(mib),
         "--bench-streams", str(streams),
-        "--bench-chunk-kib", str(args.bench_chunk_kib),
         "--bench-direction", args.bench_direction,
         "--non-interactive", "--accept-monitoring", "--boring", "--no-color",
     ])
+    if args.bench_chunk_kib is not None:
+        argv.extend(["--bench-chunk-kib", str(args.bench_chunk_kib)])
     directions = 2 if args.bench_direction == "both" else 1
     transfer_seconds = mib * 8 * directions / max(1, lab.profile.bandwidth_mbit)
     timeout = max(120, int(transfer_seconds * 4 + 90))
@@ -376,6 +383,8 @@ def main() -> int:
             file=sys.stderr,
         )
 
+    production_chunk_kib = relay_chunk_kib()
+    effective_chunk_kib = args.bench_chunk_kib or production_chunk_kib
     profile = choose_profile(args)
     validate_args(args, profile)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -473,6 +482,17 @@ def main() -> int:
             "endpoint": {
                 "exit_code": endpoint_code,
                 "command": endpoint_command,
+                "chunk_kib": effective_chunk_kib,
+                "requested_chunk_kib": args.bench_chunk_kib,
+                "chunk_source": (
+                    "production-relay-buffer"
+                    if args.bench_chunk_kib is None
+                    else "explicit"
+                ),
+                "contract": endpoint_contract(
+                    args.bench_chunk_kib,
+                    production_chunk_kib,
+                ),
                 "rates": parse_rates(endpoint_output),
                 "pcap": "endpoint.pcap" if not args.no_pcap else None,
             },

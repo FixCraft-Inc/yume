@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -38,13 +39,16 @@ public:
     using ControlHandler = std::function<void(const nlohmann::json&)>;
     using InboundOpenHandler = std::function<void(uint8_t stream_id, const nlohmann::json&)>;
     using ActivityHandler = std::function<void()>;
+    using TimingHandler = std::function<void(const std::string&,
+                                             const std::string&,
+                                             const std::string&)>;
     using ServerStreamOpenHandler = std::function<bool(uint8_t stream_id,
                                                        const std::string& host,
                                                        int port,
                                                        std::string* reason)>;
     using ExecHandler = std::function<void(uint8_t stream_id, const std::string& command)>;
 
-    TransportCore() = default;
+    TransportCore();
     explicit TransportCore(WriteHandler write_handler,
                            std::function<void(const std::string&)> close_transport_handler);
 
@@ -76,6 +80,7 @@ public:
     void set_control_handler(ControlHandler handler);
     void set_inbound_open_handler(InboundOpenHandler handler);
     void set_activity_handler(ActivityHandler handler);
+    void set_timing_handler(TimingHandler handler);
     void set_server_stream_open_handler(ServerStreamOpenHandler handler);
     void set_exec_handler(ExecHandler handler);
 
@@ -103,6 +108,10 @@ public:
     void send_data(uint8_t stream_id, const Bytes& data);
     void send_data(uint8_t stream_id, Bytes&& data);
     void send_data(uint8_t stream_id, Bytes&& data, WriteCompletion handler);
+    // Packet and benchmark producers use this overload to receive immediate,
+    // explicit backpressure instead of growing the transport queue without a
+    // bound. A rejected completion is invoked exactly once before return.
+    bool try_send_data(uint8_t stream_id, Bytes&& data, WriteCompletion handler = {});
     void send_close(uint8_t stream_id, const std::string& reason);
     void send_stream_fin(uint8_t stream_id, const std::string& reason);
     void send_open_ack(uint8_t stream_id, bool ok, const std::string& reason);
@@ -117,6 +126,9 @@ private:
         protocol::Frame frame;
         WriteCompletion handler;
         bool already_protected{false};
+        bool bulk_reservation{false};
+        std::size_t reserved_bytes{0};
+        std::uint64_t enqueue_order{0};
     };
 
     struct StreamCallbacks {
@@ -126,15 +138,20 @@ private:
     };
 
     bool has_stream_id_locked(uint8_t stream_id) const;
-    void queue_frame(protocol::Frame frame, WriteCompletion handler = {},
+    bool queue_frame(protocol::Frame frame, WriteCompletion handler = {},
                      bool already_protected = false);
     void dispatch_next_write();
-    std::deque<PendingWrite>::iterator select_next_write_locked(
+    std::optional<uint8_t> select_next_write_locked(
         std::size_t current_batch_bytes,
         const std::unordered_set<uint8_t>& batch_streams,
         bool rekey_blocked);
+    void mark_stream_ready_locked(uint8_t stream_id);
+    bool write_queues_empty_locked() const noexcept;
+    PendingWrite pop_stream_head_locked(uint8_t stream_id);
+    void release_write_reservation_locked(const PendingWrite& write) noexcept;
     std::shared_ptr<Bytes> encode_outgoing_frame(
-        const protocol::Frame& frame, bool already_protected);
+        const protocol::Frame& frame, bool already_protected,
+        std::uint64_t* seal_ns);
     void resume_writes_after_rekey();
     void handle_frame(const protocol::Frame& frame);
     Bytes encrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const Bytes& input);
@@ -147,7 +164,15 @@ private:
     std::mutex write_mu_;
     WriteHandler write_handler_;
     std::function<void(const std::string&)> close_transport_handler_;
-    std::deque<PendingWrite> write_queue_;
+    std::array<std::deque<PendingWrite>, 256> write_queues_;
+    std::array<std::deque<uint8_t>, 5> ready_streams_;
+    std::array<std::int8_t, 256> ready_priority_{};
+    std::size_t queued_frames_{0};
+    std::size_t outstanding_bulk_frames_{0};
+    std::size_t outstanding_bulk_bytes_{0};
+    std::size_t outstanding_control_frames_{0};
+    std::size_t outstanding_control_bytes_{0};
+    std::uint64_t next_enqueue_order_{0};
     bool write_in_flight_{false};
 
     std::unordered_map<uint8_t, StreamCallbacks> streams_;
@@ -158,12 +183,17 @@ private:
     ControlHandler control_handler_;
     InboundOpenHandler inbound_open_handler_;
     ActivityHandler activity_handler_;
+    TimingHandler timing_handler_;
     ServerStreamOpenHandler server_stream_open_handler_;
     ExecHandler exec_handler_;
     uint8_t next_stream_id_{1};
     bool stopped_{false};
     std::optional<Bytes> inner_key_;
     std::unique_ptr<ratchet::SessionRatchet> ratchet_;
+    std::optional<std::chrono::steady_clock::time_point>
+        outbound_rekey_wait_started_;
+    std::uint64_t timing_open_ns_{0};
+    std::uint64_t timing_open_frames_{0};
     bool hop_enabled_{false};
     std::uint32_t hop_interval_ms_{0};
     std::int64_t hop_offset_ms_{0};

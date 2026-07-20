@@ -1,5 +1,9 @@
 # YUME benchmarks
 
+Native CTest executables keep `assert()` enabled even in Release and
+RelWithDebInfo builds. A test configuration must not report success merely
+because CMake defined `NDEBUG` and compiled its checks away.
+
 YUME has three separate benchmark paths. They answer different questions and
 their numbers should not be compared as if they measured the same layer.
 
@@ -62,8 +66,11 @@ reach the loopback echo target. The generated authorization grants
 
 `yume --bench` measures authenticated upload and download streams against a
 deployed `yumed`. `yume --bench-full` uses the longer 1024 MiB / 64-stream
-profile. This path includes the live YUME 2.0 carrier, server, and network, but
-does not include a browser, SOCKS application, public cover site, or CDN.
+profile. Its default 64 KiB upload DATA size is taken from the same
+`YUME_RELAY_READ_BUF` setting used by SOCKS, forwards, and server upstream
+reads. This path includes the live YUME 2.0 carrier, server, and network, but
+does not include the local SOCKS socket, the server target TCP socket, a
+browser, public cover site, or CDN.
 
 Enable the server endpoint:
 
@@ -77,13 +84,46 @@ Run from the client:
 yume --config config/yume.json --bench
 yume --config config/yume.json --bench-full
 yume --config config/yume.json --bench \
+  --bench-mib 1024 --bench-streams 32
+
+# Explicit transport-max diagnostic; do not label this SOCKS-equivalent.
+yume --config config/yume.json --bench \
   --bench-mib 1024 --bench-streams 32 --bench-chunk-kib 256
 ```
 
 The server rejects synthetic benchmark streams unless `--bench`, its
 `--full-bench` compatibility alias, or `"benchmark_enable": true` is enabled.
 The client prints total, upload, download, and server-drain rates in MiB/s and
-Mbit/s.
+Mbit/s. It also prints the measured boundary, frame profile, and immutable
+security/carrier features so a custom 256 KiB run cannot be mistaken for a
+production-shaped result.
+
+### Fair comparison contract
+
+No one synthetic number is valid for every adapter. Use the benchmark that
+actually crosses the boundary being claimed:
+
+| Claim | Required benchmark | Included boundary |
+|---|---|---|
+| Deployed tunnel core | `yume --bench` | DATA, ratchet, H2, WebSocket, TLS, network, server |
+| SOCKS end to end | `yume --full-bench --configs yume-v2` | Actual SOCKS socket and target TCP socket on loopback |
+| Custom tunnel maximum | `yume --bench --bench-chunk-kib 256` | Same core with non-production DATA geometry |
+| Packet C ABI | `yume-abi-tun` plus `iperf3` through a configured server TUN | Public ABI copies, packet batching, tunnel, and TUN egress |
+
+The endpoint benchmark deliberately records `adapter=authenticated-stream-core`
+and lists SOCKS, target TCP, and packet ABI as exclusions. The packet codec
+rows in `--full-bench --dev` are component ceilings, not packet-ABI network
+throughput. A packet result is publishable only after a live
+`yume-abi-tun`/`iperf3` test uses the public `yume_packet_*` symbols and the
+real `packet-bulk-v1`/TUN path; see `PACKET_NATIVE_BULK.md`.
+
+Security layers are not benchmark toggles in YUME 2.0. The hybrid
+ML-KEM-1024/X25519/PSK ratchet, AES-256-GCM, TLS 1.3, H2, and WebSocket carrier
+remain enabled. Legacy time-key hopping is absent (therefore already off), and
+padding/jitter are off in the pinned Chrome profile. Change workload size,
+direction, stream count, DATA geometry, capture, timing counters, or benchmark
+boundary; use the crypto/carrier component rows to isolate cost without
+creating an insecure network mode.
 
 Keep release binaries portable for cross-machine tests. `YUME_NATIVE_OPT` is
 off by default; a binary built with `-DYUME_NATIVE_OPT=ON` may use instructions
@@ -104,8 +144,9 @@ sudo python3 scripts/yume_bench_wan.py --profile mobile-4g
 ```
 
 The default workload transfers 128 MiB per direction over eight streams with
-256 KiB application chunks. It also loads the public cover through an installed
-Chrome/Chromium binary. Useful variants are:
+the production relay DATA shape (64 KiB unless `YUME_RELAY_READ_BUF` is set).
+It also loads the public cover through an installed Chrome/Chromium binary.
+Useful variants are:
 
 ```bash
 # Short carrier smoke; 32 MiB, four streams, no browser arm
@@ -184,6 +225,11 @@ sudo scripts/yume_bench_lan.py client \
   --full --capture --cover
 ```
 
+Pass `--timing` to both the `server` and `client` subcommands when profiling.
+The client refuses a capture before startup when the selected payload plus
+packet overhead would leave too little filesystem space for the final logs and
+`report.json`. Uncaptured endpoint runs remain the preferred throughput sweep.
+
 Use `--quick` on the client for the 32 MiB/four-stream smoke before committing
 to the full 1024 MiB/64-stream run. `--cover` follows the endpoint test with a
 real Chrome/Chromium page load and records it separately from the tunnel PCAP.
@@ -234,9 +280,11 @@ Run a moderate measurement from the client:
   --inner-psk-file ~/.config/yume/inner.hex \
   --profile chrome \
   --bench --bench-mib 128 --bench-streams 8 \
-  --bench-chunk-kib 256 --bench-direction both \
+  --bench-direction both \
   --boring --no-color
 ```
+
+Add `--bench-chunk-kib 256` only for a separately labelled transport-max run.
 
 Capture the public interface at either end:
 
@@ -277,7 +325,7 @@ traffic then appears inside the encrypted YUME carrier rather than as extra
 public flows in the same PCAP. Use a disposable browser profile so extensions,
 sync, and an existing service worker do not add unrelated traffic.
 
-No `--pq`, `--hop`, or masquerade switch is needed. ML-KEM-1024 + X25519,
+No `--pq`, `--hop`, or masquerade switch is accepted. ML-KEM-1024 + X25519,
 per-message encryption, the 256 KiB / 512-frame / 500 ms directional epochs,
 the Chrome-shaped H2 carrier, and the Node cover routing are mandatory in every
 accepted 2.0 endpoint benchmark. The capture verifies on-wire behavior; the

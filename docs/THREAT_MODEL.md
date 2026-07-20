@@ -71,6 +71,11 @@ performs a fresh ML-KEM-1024 + X25519 hybrid rekey. The PSK contribution is a
 cheap epoch-labeled HKDF from the connection PSK key; no memory-hard operation
 runs at establishment or per epoch.
 
+Receivers independently reject authenticated byte/frame overruns. The active
+time limit is sender-local because delayed delivery is indistinguishable from
+late sealing without a wire timestamp, so the 500 ms part assumes a conforming
+sender.
+
 Application data waits behind a bounded rekey barrier. Timeout closes the
 session rather than using an expired epoch. The previous receiving chain is
 retained only until the first authenticated new-epoch frame and then erased

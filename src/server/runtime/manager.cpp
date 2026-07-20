@@ -464,10 +464,13 @@ void Manager::unregister_packet_client(Session* session, std::uint32_t ipv4_be) 
     }
 }
 
-void Manager::write_packet_to_egress(std::uint32_t client_ipv4_be, crypto::Bytes packet) {
+bool Manager::write_packets_to_egress(std::uint32_t client_ipv4_be,
+                                      std::vector<crypto::Bytes> packets) {
     if (packet_egress_) {
-        packet_egress_->write_packet(client_ipv4_be, std::move(packet));
+        return packet_egress_->write_packets(
+            client_ipv4_be, std::move(packets));
     }
+    return false;
 }
 
 bool Manager::egress_allowed(const boost::asio::ip::address& address, std::string* reason) const {

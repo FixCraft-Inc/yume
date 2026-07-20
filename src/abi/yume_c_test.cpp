@@ -18,6 +18,10 @@ int main() {
     if ((yume_feature_flags() & YUME_FEATURE_PBKDF2_HKDF) == 0) {
         return 3;
     }
+    if ((yume_feature_flags() & YUME_FEATURE_PACKET_BULK) == 0 ||
+        (yume_feature_flags() & YUME_FEATURE_PQ_MLKEM1024) == 0) {
+        return 21;
+    }
     if (yume_get_build_info(nullptr, sizeof(yume_build_info)) != YUME_STATUS_INVALID_ARGUMENT) {
         return 4;
     }
@@ -50,6 +54,11 @@ int main() {
     if (!yume_handle_last_error(client) || yume_handle_last_error(client)[0] == '\0') {
         yume_client_destroy(client);
         return 12;
+    }
+    yume_packet* packet = nullptr;
+    if (yume_client_open_packet(client, 0, &packet) != YUME_STATUS_WOULD_BLOCK || packet) {
+        yume_client_destroy(client);
+        return 22;
     }
     char small[2];
     size_t needed = 0;

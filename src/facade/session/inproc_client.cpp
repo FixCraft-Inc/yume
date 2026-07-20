@@ -13,7 +13,6 @@
 
 #include <boost/asio/post.hpp>
 
-#include "client/cli/parse/endpoints.hpp"
 #include "client/relay/runtime.hpp"
 #include "client/transport/tunnel.hpp"
 #include "facade/logging/log_sink.hpp"
@@ -21,20 +20,6 @@
 namespace yume::facade {
 
 namespace {
-
-// Helper: append argv slot only when value is non-empty / non-default.
-// argv is owned as a vector<string> so the pointers handed to Cli are
-// stable for the lifetime of the call.
-void push_arg(std::vector<std::string>& args, std::string flag, std::string value) {
-    if (value.empty()) return;
-    args.push_back(std::move(flag));
-    args.push_back(std::move(value));
-}
-
-void push_flag(std::vector<std::string>& args, bool on, char const* on_flag, char const* off_flag) {
-    if (on && on_flag)  args.push_back(on_flag);
-    if (!on && off_flag) args.push_back(off_flag);
-}
 
 std::string latest_startup_error(std::chrono::system_clock::time_point since) {
     auto logs = LogSink::instance().snapshot(32);
@@ -49,100 +34,6 @@ std::string latest_startup_error(std::chrono::system_clock::time_point since) {
         }
     }
     return {};
-}
-
-// Translate a fully-populated ClientConfig back into a synthetic argv
-// for Cli::run. We go through argv (rather than calling an internal
-// Cli entrypoint) because Cli's option parsing is the canonical source
-// of truth for config defaults, validation, and path resolution -
-// duplicating any of that in the facade would drift over time.
-std::vector<std::string> build_argv(client::ClientConfig const& cfg) {
-    std::vector<std::string> a;
-    a.reserve(64);
-    a.push_back("yume");  // argv[0]
-
-    a.push_back("--non-interactive");
-    a.push_back("--boring");
-    // In-process embedders own their process privileges. The CLI binary may
-    // drop privileges for standalone use, but doing that from libyume would
-    // unexpectedly change the host application's uid/gid.
-    a.push_back("--root");
-    // Disable attach-local so the embedded Cli always does a fresh
-    // connect instead of looking for another yume process's socket.
-    // ClientConfig has auto_attach_local true by default; argv overrides.
-    // (There's no explicit --no-attach-local; we set an env-style
-    // workaround through the config below by clearing auto_attach_local
-    // before serializing... actually the simplest path is to leave it
-    // and trust that no other yume is running on the same instance_key
-    // when the GUI starts.)
-
-    push_arg(a, "--server", cfg.server);
-    if (cfg.port > 0) push_arg(a, "--port", std::to_string(cfg.port));
-    push_arg(a, "--auth", cfg.identity);
-    if (cfg.socks_port > 0) {
-        push_arg(a, "--socks", yume::client::format_bind_endpoint(cfg.socks_bind_host, cfg.socks_port));
-    }
-    if (cfg.io_threads > 0) push_arg(a, "--threads", std::to_string(cfg.io_threads));
-
-    push_flag(a, cfg.obfuscation, "--obfs", "--no-obfs");
-    push_arg(a, "--obfs-secret", cfg.obfs_secret);
-
-    if (cfg.inner_crypto) {
-        a.push_back("--inner");
-        push_flag(a, cfg.inner_heavy, "--inner-heavy", "--inner-light");
-        push_flag(a, cfg.inner_hop, "--hop", "--no-hop");
-        if (cfg.hop_interval_ms > 0) {
-            push_arg(a, "--hop-interval", std::to_string(cfg.hop_interval_ms));
-        }
-    } else {
-        a.push_back("--no-inner");
-        a.push_back("--no-hop");
-    }
-
-    if (cfg.allow_udp)        a.push_back("--udp");
-    else                      a.push_back("--tcp");
-    if (cfg.allow_local_ip)   a.push_back("--allow-local-ip");
-    if (cfg.allow_exec)       a.push_back("--allow-exec");
-
-    push_arg(a, "--pq-pub", cfg.pq_public_key);
-    push_flag(a, cfg.allow_embedded_master, "--use-embedded-master", "--no-embedded-master");
-
-    push_arg(a, "--anonym-ca-cert", cfg.anonym_ca_cert);
-    push_arg(a, "--tls-ca", cfg.tls_ca_cert);
-    push_arg(a, "--tls-name", cfg.tls_server_name);
-    push_arg(a, "--tls-pin", cfg.tls_pin_sha256);
-    if (cfg.require_anonym) a.push_back("--require-anonym");
-    if (cfg.accept_monitoring) a.push_back("--accept-monitoring");
-    if (cfg.service_streams_only) a.push_back("--service-streams-only");
-
-    push_arg(a, "--name", cfg.preferred_name);
-    push_arg(a, "--client-id", cfg.preferred_id);
-    push_arg(a, "--relay-mode", cfg.relay_mode);
-    push_flag(a, cfg.allow_inbound_admin,  "--allow-inbound-admin",  "--deny-inbound-admin");
-    push_flag(a, cfg.allow_outbound_admin, "--allow-outbound-admin", "--deny-outbound-admin");
-    push_flag(a, cfg.allow_chat,  "--allow-chat",  "--deny-chat");
-    push_flag(a, cfg.allow_file,  "--allow-file",  "--deny-file");
-    push_flag(a, cfg.allow_bytes, "--allow-bytes", "--deny-bytes");
-    if (!cfg.history_enabled) a.push_back("--no-history");
-    push_arg(a, "--history-dir", cfg.history_dir);
-    push_arg(a, "--relay-key-file", cfg.relay_key_file);
-    push_arg(a, "--instance", cfg.instance_name);
-
-    push_flag(a, cfg.tls_stealth_enabled, nullptr, "--no-stealth");
-    push_arg(a, "--profile", cfg.tls_stealth_profile);
-    if (cfg.tls_stealth_rotate) a.push_back("--tls-stealth-rotate");
-    if (cfg.tls_stealth_rotation_interval > 0) {
-        push_arg(a, "--tls-stealth-rotation-interval",
-                 std::to_string(cfg.tls_stealth_rotation_interval));
-    }
-    if (cfg.tls_fingerprint_log) a.push_back("--tls-fingerprint-log");
-    push_arg(a, "--tls-fingerprint-log-path", cfg.tls_fingerprint_log_path);
-    if (cfg.tls_fingerprint_verify) a.push_back("--tls-fingerprint-verify");
-    push_arg(a, "--tls-fingerprint-test-endpoint", cfg.tls_fingerprint_test_endpoint);
-
-    push_arg(a, "--proxy", cfg.outbound_proxy_url);
-
-    return a;
 }
 
 }  // namespace
@@ -165,6 +56,7 @@ struct InProcClient::Impl {
     std::shared_ptr<client::Tunnel> tunnel;
     std::shared_ptr<client::RelayRuntime> relay;
     std::string server_tls_fingerprint_sha256;
+    std::vector<std::string> server_capabilities;
     std::shared_ptr<std::atomic<bool>> cancel_requested;
 
     LogCallback log_callback;
@@ -202,6 +94,11 @@ std::shared_ptr<client::Tunnel> InProcClient::primary_tunnel() const {
     return impl_->tunnel;
 }
 
+std::vector<std::string> InProcClient::server_capabilities() const {
+    std::lock_guard<std::mutex> lock(impl_->ready_mtx);
+    return impl_->server_capabilities;
+}
+
 void InProcClient::set_log_callback(LogCallback cb) {
     impl_->log_callback = std::move(cb);
 }
@@ -225,6 +122,7 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
         impl_->tunnel.reset();
         impl_->relay.reset();
         impl_->server_tls_fingerprint_sha256.clear();
+        impl_->server_capabilities.clear();
         impl_->cancel_requested = std::make_shared<std::atomic<bool>>(false);
         impl_->started = std::chrono::system_clock::now();
     }
@@ -249,6 +147,8 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
                     impl_->relay  = std::move(relay);
                     impl_->server_tls_fingerprint_sha256 =
                         std::move(ready_info.server_tls_fingerprint_sha256);
+                    impl_->server_capabilities =
+                        std::move(ready_info.server_capabilities);
                     impl_->ready  = true;
                 }
                 impl_->ready_cv.notify_all();
@@ -267,16 +167,7 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
                 }
             });
 
-        // Synthetic argv. The vector owns the strings; argv_ptrs only
-        // points into them. Lifetime is the lambda's scope, which
-        // ends when Cli::run returns - exactly what we need.
-        std::vector<std::string> argv = build_argv(cfg);
-        std::vector<char*> argv_ptrs;
-        argv_ptrs.reserve(argv.size() + 1);
-        for (auto& s : argv) argv_ptrs.push_back(s.data());
-        argv_ptrs.push_back(nullptr);
-
-        int rc = cli.run(static_cast<int>(argv.size()), argv_ptrs.data());
+        int rc = cli.run_config(std::move(cfg));
         impl_->exit_code.store(rc, std::memory_order_release);
 
         // Cli::run has returned. If we got here without ever signalling
@@ -348,6 +239,7 @@ void InProcClient::stop(std::string* /*error*/, std::string const& reason) {
         impl_->tunnel.reset();
         impl_->relay.reset();
         impl_->server_tls_fingerprint_sha256.clear();
+        impl_->server_capabilities.clear();
         impl_->cancel_requested.reset();
         impl_->ready = false;
         impl_->ready_error.clear();

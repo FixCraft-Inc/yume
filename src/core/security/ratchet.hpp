@@ -103,6 +103,7 @@ public:
                  const Bytes& established_psk_key);
 
 private:
+    bool WouldExceedUsage(std::size_t next_plaintext_bytes) const;
     Bytes BuildAad(std::uint8_t frame_type,
                    std::uint8_t stream_id,
                    std::uint16_t flags,

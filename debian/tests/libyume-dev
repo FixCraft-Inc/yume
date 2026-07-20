@@ -24,7 +24,9 @@ int main(void) {
     if (!info.yume_version || !info.basefwx_version || !info.pq_backend || !info.argon2_backend) {
         return 4;
     }
-    if ((info.feature_flags & YUME_FEATURE_PBKDF2_HKDF) == 0) {
+    if ((info.feature_flags & YUME_FEATURE_PBKDF2_HKDF) == 0 ||
+        (info.feature_flags & YUME_FEATURE_PACKET_BULK) == 0 ||
+        (info.feature_flags & YUME_FEATURE_PQ_MLKEM1024) == 0) {
         return 5;
     }
     if (!yume_strerror(YUME_STATUS_NOT_RUNNING)) {
@@ -54,6 +56,12 @@ int main(void) {
         yume_client_destroy(client);
         yume_server_destroy(server);
         return 10;
+    }
+    yume_packet *packet = NULL;
+    if (yume_client_open_packet(client, 0, &packet) != YUME_STATUS_WOULD_BLOCK || packet != NULL) {
+        yume_client_destroy(client);
+        yume_server_destroy(server);
+        return 11;
     }
     yume_client_destroy(client);
     yume_server_destroy(server);
@@ -94,6 +102,7 @@ yume_argon2_backend
 yume_basefwx_version
 yume_client_create
 yume_client_destroy
+yume_client_open_packet
 yume_client_open_stream
 yume_client_request_json
 yume_client_start_file
@@ -104,6 +113,11 @@ yume_feature_flags
 yume_generate_pq_keypair
 yume_get_build_info
 yume_handle_last_error
+yume_packet_close
+yume_packet_destroy
+yume_packet_read_batch
+yume_packet_status_json
+yume_packet_write_batch
 yume_pq_backend
 yume_server_accept_stream
 yume_server_create

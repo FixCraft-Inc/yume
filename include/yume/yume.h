@@ -38,11 +38,14 @@ extern "C" {
 #define YUME_STATUS_NOT_FOUND -7
 #define YUME_STATUS_PERMISSION_DENIED -8
 #define YUME_STATUS_PARSE_ERROR -9
+#define YUME_STATUS_WOULD_BLOCK -10
 
 #define YUME_FEATURE_BASEFWX 0x00000001u
 #define YUME_FEATURE_PQ_MLKEM768 0x00000002u
 #define YUME_FEATURE_ARGON2ID 0x00000004u
 #define YUME_FEATURE_PBKDF2_HKDF 0x00000008u
+#define YUME_FEATURE_PQ_MLKEM1024 0x00000010u
+#define YUME_FEATURE_PACKET_BULK 0x00000020u
 
 typedef struct yume_build_info {
     size_t struct_size;
@@ -57,6 +60,7 @@ typedef struct yume_build_info {
 typedef struct yume_client yume_client;
 typedef struct yume_server yume_server;
 typedef struct yume_stream yume_stream;
+typedef struct yume_packet yume_packet;
 
 /*
  * ABI conventions:
@@ -112,6 +116,39 @@ YUME_API int yume_client_open_stream(yume_client* client,
                                      const char* service,
                                      uint32_t timeout_ms,
                                      yume_stream** out_stream);
+YUME_API int yume_client_open_packet(yume_client* client,
+                                     uint32_t timeout_ms,
+                                     yume_packet** out_packet);
+
+YUME_API int yume_packet_status_json(yume_packet* packet,
+                                     char* out,
+                                     size_t out_size,
+                                     size_t* needed);
+/*
+ * Copies every input before returning. Admission is all-or-none. A zero
+ * timeout polls queue capacity; a positive timeout waits up to that deadline.
+ */
+YUME_API int yume_packet_write_batch(yume_packet* packet,
+                                     const void* const* packets,
+                                     const size_t* lengths,
+                                     size_t packet_count,
+                                     uint32_t timeout_ms);
+/*
+ * Writes complete packets into storage and reports their offsets/lengths.
+ * If the first packet does not fit, required_storage receives its required
+ * size and the packet remains queued.
+ */
+YUME_API int yume_packet_read_batch(yume_packet* packet,
+                                    void* storage,
+                                    size_t storage_size,
+                                    size_t* offsets,
+                                    size_t* lengths,
+                                    size_t array_capacity,
+                                    size_t* packet_count,
+                                    size_t* required_storage,
+                                    uint32_t timeout_ms);
+YUME_API int yume_packet_close(yume_packet* packet);
+YUME_API void yume_packet_destroy(yume_packet* packet);
 
 YUME_API yume_server* yume_server_create(void);
 YUME_API void yume_server_destroy(yume_server* server);

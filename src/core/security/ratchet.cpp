@@ -160,12 +160,8 @@ bool DirectionalRatchet::ShouldRekey(
     if (!active_) {
         return false;
     }
-    const bool bytes_exhausted =
-        epoch_bytes_ > kEpochByteLimit ||
-        next_plaintext_bytes > (kEpochByteLimit - epoch_bytes_);
-    const bool messages_exhausted = epoch_messages_ >= kEpochMessageLimit;
     const bool time_exhausted = now - first_active_ >= kEpochActiveLimit;
-    return bytes_exhausted || messages_exhausted || time_exhausted;
+    return WouldExceedUsage(next_plaintext_bytes) || time_exhausted;
 }
 
 SealedFrame DirectionalRatchet::Encrypt(
@@ -206,7 +202,12 @@ Bytes DirectionalRatchet::Decrypt(
     std::chrono::steady_clock::time_point now,
     bool application) {
     if (sealed.epoch != epoch_ || sealed.sequence != sequence_) {
-        throw std::runtime_error("YUME 2.0 replay or unexpected epoch/sequence");
+        throw std::runtime_error(
+            "YUME 2.0 replay or unexpected epoch/sequence"
+            " (expected epoch=" + std::to_string(epoch_) +
+            " sequence=" + std::to_string(sequence_) +
+            ", received epoch=" + std::to_string(sealed.epoch) +
+            " sequence=" + std::to_string(sealed.sequence) + ")");
     }
     if (sequence_ == std::numeric_limits<std::uint64_t>::max()) {
         throw std::runtime_error("YUME 2.0 sequence exhausted");
@@ -225,10 +226,27 @@ Bytes DirectionalRatchet::Decrypt(
     if (plaintext.size() > kMaxProtectedPayload) {
         throw std::runtime_error("YUME 2.0 decrypted payload exceeds 256 KiB");
     }
+    // The sender normally rekeys before reaching either usage boundary, but
+    // the receiver must not rely on a malicious or buggy peer to preserve the
+    // advertised epoch blast radius. Check only authenticated plaintext. The
+    // wall-clock boundary remains sender-local because queued network data can
+    // arrive more than 500 ms after it was sealed without violating the wire.
+    if (application && active_ && WouldExceedUsage(plaintext.size())) {
+        throw std::runtime_error("YUME 2.0 inbound epoch usage limit exceeded");
+    }
     StepChain();
     ++sequence_;
     if (application) Account(plaintext.size(), now);
     return plaintext;
+}
+
+bool DirectionalRatchet::WouldExceedUsage(
+    std::size_t next_plaintext_bytes) const {
+    const bool bytes_exhausted =
+        epoch_bytes_ > kEpochByteLimit ||
+        next_plaintext_bytes > (kEpochByteLimit - epoch_bytes_);
+    const bool messages_exhausted = epoch_messages_ >= kEpochMessageLimit;
+    return bytes_exhausted || messages_exhausted;
 }
 
 std::unique_ptr<DirectionalRatchet> DirectionalRatchet::MakeAdvanced(

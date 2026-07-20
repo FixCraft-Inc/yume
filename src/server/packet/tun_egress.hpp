@@ -40,7 +40,8 @@ public:
 
     std::optional<PacketTunAssignment> register_client(void* owner, PacketHandler handler);
     void unregister_client(void* owner, std::uint32_t ipv4_be);
-    void write_packet(std::uint32_t client_ipv4_be, crypto::Bytes packet);
+    bool write_packets(std::uint32_t client_ipv4_be,
+                       std::vector<crypto::Bytes> packets);
 
 private:
     class Impl;

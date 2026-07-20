@@ -9,6 +9,7 @@ import ipaddress
 import json
 import os
 import re
+import signal
 import shutil
 import subprocess
 import sys
@@ -26,9 +27,11 @@ from yume_bench_common import (  # noqa: E402
     chown_tree,
     command_version,
     drop_prefix,
+    endpoint_contract,
     generate_keyset,
     invoking_identity,
     parse_rates,
+    relay_chunk_kib,
     resolve_pinned_node,
     run_streamed_command,
     start_logged_process,
@@ -42,6 +45,8 @@ DEFAULT_YUMED = REPO_ROOT / "build" / "bin" / "yumed"
 DEFAULT_COVER = REPO_ROOT / "tools" / "cover-node" / "backend.mjs"
 DEFAULT_TLS_NAME = "yume-lan.test"
 DEFAULT_COVER_PORT = 3000
+MIB = 1024 * 1024
+CAPTURE_SAFETY_BYTES = 256 * MIB
 
 
 def executable(path: Path, label: str) -> Path:
@@ -98,6 +103,65 @@ def require_secret(path: Path) -> None:
         raise SystemExit(f"secret file must contain exactly 64 lowercase hex characters: {path}")
     if mode & 0o077:
         raise SystemExit(f"secret file must not be group/world-readable: {path}")
+
+
+def capture_required_bytes(mib: int, direction: str) -> int:
+    directions = 2 if direction == "both" else 1
+    payload_bytes = mib * directions * MIB
+    # Preserve room for packet overhead and for the final logs/report.
+    return payload_bytes + payload_bytes // 3 + CAPTURE_SAFETY_BYTES
+
+
+def available_bytes(path: Path) -> int:
+    existing = path
+    while not existing.exists() and existing != existing.parent:
+        existing = existing.parent
+    return shutil.disk_usage(existing).free
+
+
+def require_capture_space(output: Path, mib: int, direction: str) -> None:
+    required = capture_required_bytes(mib, direction)
+    available = available_bytes(output.parent)
+    if available >= required:
+        return
+    raise SystemExit(
+        "--capture needs approximately "
+        f"{required / MIB:.0f} MiB free for this workload, but only "
+        f"{available / MIB:.0f} MiB is available; move or remove old captures "
+        "or run without --capture"
+    )
+
+
+def capture_error(process: ManagedProcess) -> str | None:
+    return_code = process.process.returncode
+    try:
+        log_text = process.log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return f"cannot read tcpdump log: {exc}"
+    if "No space left on device" in log_text:
+        return "tcpdump exhausted filesystem space"
+    if return_code not in (0, -signal.SIGINT):
+        return f"tcpdump exited with status {return_code}"
+    return None
+
+
+def install_server_shutdown_handlers() -> dict[signal.Signals, signal.Handlers]:
+    previous: dict[signal.Signals, signal.Handlers] = {}
+
+    def interrupt_server(_signum: int, _frame: object) -> None:
+        raise KeyboardInterrupt
+
+    for signum in (signal.SIGHUP, signal.SIGTERM):
+        previous[signum] = signal.getsignal(signum)
+        signal.signal(signum, interrupt_server)
+    return previous
+
+
+def restore_signal_handlers(
+    previous: dict[signal.Signals, signal.Handlers],
+) -> None:
+    for signum, handler in previous.items():
+        signal.signal(signum, handler)
 
 
 def prepare_bundle(args: argparse.Namespace) -> int:
@@ -250,17 +314,21 @@ def run_server(args: argparse.Namespace) -> int:
         cwd=REPO_ROOT,
     )
     yumed_process: ManagedProcess | None = None
+    previous_signal_handlers = install_server_shutdown_handlers()
     try:
         if not wait_for_tcp("127.0.0.1", DEFAULT_COVER_PORT, 10):
             raise RuntimeError(f"Node cover did not start; see {output / 'node.log'}")
         if node_process.process.poll() is not None:
             raise RuntimeError(f"Node cover exited during startup; see {output / 'node.log'}")
-        yumed_process = start_logged_process([
+        yumed_argv = [
             str(yumed),
             "--config", str(config_path),
             "--listen", f"0.0.0.0:{port}",
             "--bench", "--boring",
-        ], output / "yumed.log")
+        ]
+        if args.timing:
+            yumed_argv.append("--timing")
+        yumed_process = start_logged_process(yumed_argv, output / "yumed.log")
         if not wait_for_tcp("127.0.0.1", port, 15):
             raise RuntimeError(f"yumed did not start; see {output / 'yumed.log'}")
         if yumed_process.process.poll() is not None:
@@ -286,6 +354,7 @@ def run_server(args: argparse.Namespace) -> int:
         if yumed_process:
             yumed_process.stop(interrupt=True)
         node_process.stop(interrupt=True)
+        restore_signal_handlers(previous_signal_handlers)
         if os.geteuid() == 0:
             chown_tree(output, identity)
 
@@ -337,10 +406,13 @@ def run_endpoint(
         str(yume), "--config", str(config_path), mode,
         "--bench-mib", str(mib),
         "--bench-streams", str(streams),
-        "--bench-chunk-kib", str(args.bench_chunk_kib),
         "--bench-direction", args.bench_direction,
         "--boring", "--no-color",
     ]
+    if args.bench_chunk_kib is not None:
+        argv.extend(["--bench-chunk-kib", str(args.bench_chunk_kib)])
+    if args.timing:
+        argv.append("--timing")
     directions = 2 if args.bench_direction == "both" else 1
     timeout = max(120, int(mib * directions * 8 / 5 + 120))
     result = run_streamed_command(
@@ -411,6 +483,8 @@ def run_client(args: argparse.Namespace) -> int:
     output = (args.output_dir or REPO_ROOT / "yume-bench-results" / f"lan-{timestamp}").resolve()
     if output.exists():
         raise SystemExit(f"output already exists; choose a new directory: {output}")
+    if args.capture:
+        require_capture_space(output, mib, args.bench_direction)
     output.mkdir(parents=True, mode=0o750)
     runtime = output / "runtime"
     home = output / "home"
@@ -425,16 +499,24 @@ def run_client(args: argparse.Namespace) -> int:
         "XDG_RUNTIME_DIR": str(runtime),
         "NO_COLOR": "1",
     })
+    production_chunk_kib = relay_chunk_kib(environment)
+    effective_chunk_kib = args.bench_chunk_kib or production_chunk_kib
     interface = (args.interface or infer_interface(server)) if args.capture else ""
     print(
         f"[lan] endpoint {server}:{port}: {mib} MiB per direction, "
-        f"{streams} stream(s)",
+        f"{streams} stream(s), "
+        + (
+            "production relay DATA shape"
+            if args.bench_chunk_kib is None
+            else f"explicit {args.bench_chunk_kib} KiB DATA shape"
+        ),
         flush=True,
     )
     if args.capture:
         print(f"[lan] capturing {interface} to {output / 'endpoint.pcap'}", flush=True)
     print(f"[lan] artifacts: {output}", flush=True)
     capture: ManagedProcess | None = None
+    endpoint_capture_error: str | None = None
     try:
         if args.capture:
             capture = start_capture(interface, server, port, output / "endpoint.pcap")
@@ -444,12 +526,14 @@ def run_client(args: argparse.Namespace) -> int:
     finally:
         if capture:
             capture.stop(interrupt=True)
+            endpoint_capture_error = capture_error(capture)
     (output / "endpoint.log").write_text(endpoint_result.output, encoding="utf-8")
 
     browser_code: int | None = None
     browser_version: str | None = None
     browser_argv: list[str] = []
     browser_result: StreamedCommandResult | None = None
+    cover_capture_error: str | None = None
     if browser and endpoint_result.returncode == 0:
         browser_version = command_version([str(browser), "--version"])
         if not re.search(r"\b(?:Chrome|Chromium)\s+150\.", browser_version):
@@ -477,6 +561,7 @@ def run_client(args: argparse.Namespace) -> int:
         finally:
             if capture:
                 capture.stop(interrupt=True)
+                cover_capture_error = capture_error(capture)
         browser_code = browser_result.returncode
         (output / "cover-chromium.log").write_text(
             browser_result.output, encoding="utf-8"
@@ -495,10 +580,26 @@ def run_client(args: argparse.Namespace) -> int:
             "command": endpoint_argv,
             "mib_per_direction": mib,
             "streams": streams,
-            "chunk_kib": args.bench_chunk_kib,
+            "chunk_kib": effective_chunk_kib,
+            "requested_chunk_kib": args.bench_chunk_kib,
+            "chunk_source": (
+                "production-relay-buffer"
+                if args.bench_chunk_kib is None
+                else "explicit"
+            ),
             "direction": args.bench_direction,
+            "timing": args.timing,
+            "contract": endpoint_contract(
+                args.bench_chunk_kib,
+                production_chunk_kib,
+            ),
             "rates": parse_rates(endpoint_result.output),
-            "pcap": "endpoint.pcap" if args.capture else None,
+            "pcap": (
+                "endpoint.pcap"
+                if args.capture and not endpoint_capture_error
+                else None
+            ),
+            "capture_error": endpoint_capture_error,
         },
         "cover": {
             "exit_code": browser_code,
@@ -506,7 +607,12 @@ def run_client(args: argparse.Namespace) -> int:
             "timed_out": browser_result.timed_out if browser_result else False,
             "browser": browser_version,
             "command": browser_argv,
-            "pcap": "cover-chromium.pcap" if browser and args.capture else None,
+            "pcap": (
+                "cover-chromium.pcap"
+                if browser and args.capture and not cover_capture_error
+                else None
+            ),
+            "capture_error": cover_capture_error,
         },
     }
     (output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
@@ -520,6 +626,11 @@ def run_client(args: argparse.Namespace) -> int:
     if endpoint_result.returncode != 0:
         print(f"[lan] partial artifacts: {output}")
         return endpoint_result.returncode
+    if endpoint_capture_error or cover_capture_error:
+        error = endpoint_capture_error or cover_capture_error
+        print(f"[lan] capture failed: {error}", file=sys.stderr)
+        print(f"[lan] partial artifacts: {output}")
+        return 1
     if browser_code:
         print(f"[lan] partial artifacts: {output}")
         return browser_code
@@ -546,6 +657,7 @@ def parse_args() -> argparse.Namespace:
     server.add_argument("--cover", type=Path, default=DEFAULT_COVER)
     server.add_argument("--allow-node-version-mismatch", action="store_true")
     server.add_argument("--no-node-bootstrap", action="store_true")
+    server.add_argument("--timing", action="store_true", help="enable yumed timing counters")
     server.add_argument("--output-dir", type=Path)
     server.set_defaults(handler=run_server)
 
@@ -557,8 +669,13 @@ def parse_args() -> argparse.Namespace:
     size.add_argument("--full", action="store_true", help="1024 MiB and 64 streams")
     client.add_argument("--bench-mib", type=int, default=128)
     client.add_argument("--bench-streams", type=int, default=8)
-    client.add_argument("--bench-chunk-kib", type=int, default=256)
+    client.add_argument(
+        "--bench-chunk-kib",
+        type=int,
+        help="explicit DATA chunk size; omit to match the production relay buffer",
+    )
     client.add_argument("--bench-direction", choices=("both", "up", "down"), default="both")
+    client.add_argument("--timing", action="store_true", help="enable yume timing counters")
     client.add_argument("--capture", action="store_true")
     client.add_argument("--interface")
     client.add_argument("--cover", action="store_true", help="also load and capture the Node cover with Chrome")
@@ -576,7 +693,11 @@ def main() -> int:
         raise SystemExit("--bench-mib must be 1..16384")
     if hasattr(args, "bench_streams") and not 1 <= args.bench_streams <= 240:
         raise SystemExit("--bench-streams must be 1..240")
-    if hasattr(args, "bench_chunk_kib") and not 1 <= args.bench_chunk_kib <= 256:
+    if (
+        hasattr(args, "bench_chunk_kib")
+        and args.bench_chunk_kib is not None
+        and not 1 <= args.bench_chunk_kib <= 256
+    ):
         raise SystemExit("--bench-chunk-kib must be 1..256")
     try:
         return args.handler(args)

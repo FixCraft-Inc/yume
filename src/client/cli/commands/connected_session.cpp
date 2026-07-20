@@ -17,6 +17,8 @@
 #include "client/cli/connect/auth.hpp"
 #include "client/cli/connect/secondary_tunnel.hpp"
 #include "client/codec/monero_rpc.hpp"
+#include "client/packet/channel.hpp"
+#include "client/packet/tun_adapter.hpp"
 #include "client/proxy/forward.hpp"
 #include "client/proxy/socks.hpp"
 #include "client/relay/runtime.hpp"
@@ -887,6 +889,7 @@ int run_connected_session(boost::asio::io_context& io,
             RuntimeReadyInfo ready_info;
             ready_info.server_tls_fingerprint_sha256 =
                 options.server_tls_fingerprint_sha256;
+            ready_info.server_capabilities = options.server_capabilities;
             cb(tunnel, relay_runtime, std::move(ready_info));
         }
     };
@@ -940,7 +943,7 @@ int run_connected_session(boost::asio::io_context& io,
 
     std::string relay_error;
     std::shared_ptr<yume::client::LocalRuntime> local_runtime;
-    if (!args.service_streams_only) {
+    if (!args.service_streams_only && cfg.packet_tun_name.empty()) {
         local_runtime = std::make_shared<yume::client::LocalRuntime>(
             options.local_runtime_path, relay_runtime);
         if (!local_runtime->start(&relay_error)) {
@@ -1000,6 +1003,38 @@ int run_connected_session(boost::asio::io_context& io,
         io.stop();
         io_threads.wait();
         return bench_code;
+    }
+
+    if (!cfg.packet_tun_name.empty()) {
+        std::string packet_error;
+        auto packet_channel = packet::PacketChannel::open(
+            tunnel, options.server_capabilities,
+            std::chrono::seconds(30), &packet_error);
+        if (!packet_channel) {
+            util::log_error("packet channel failed: " + packet_error);
+            tunnel_pool->stop_all("packet channel failed");
+            io.stop();
+            io_threads.wait();
+            return 1;
+        }
+        const auto& assignment = packet_channel->assignment();
+        std::cout << "Packet TUN " << cfg.packet_tun_name
+                  << "  IPv4=" << assignment.ipv4
+                  << "  MTU=" << assignment.mtu;
+        if (!assignment.dns_servers.empty()) {
+            std::cout << "  DNS=" << assignment.dns_servers.front();
+        }
+        std::cout << "\nConfigure interface addresses, routes, DNS, firewall, and NAT externally.\n";
+        signal_runtime_ready();
+        const int packet_code = packet::run_packet_tun_adapter(
+            cfg.packet_tun_name, packet_channel, stop_requested, &packet_error);
+        if (packet_code != 0 && !packet_error.empty()) {
+            util::log_error(packet_error);
+        }
+        tunnel_pool->stop_all("packet TUN stopped");
+        io.stop();
+        io_threads.wait();
+        return packet_code;
     }
 
     if (!relay_runtime->announce_presence(&relay_error)) {

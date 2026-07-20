@@ -69,7 +69,10 @@ void TransportCore::handle_frame(const protocol::Frame& frame) {
                     if (activity_handler) {
                         activity_handler();
                     }
-                    handler(true, is_remote_listen ? payload_to_string(*payload) : std::string{});
+                    // Successful OPEN payloads carry protocol-specific
+                    // acknowledgements (for example packet-bulk address/MTU
+                    // assignment). Preserve them for every adapter.
+                    handler(true, payload_to_string(*payload));
                 } else {
                     handler(false, payload_to_string(*payload));
                 }

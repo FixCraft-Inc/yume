@@ -41,6 +41,7 @@
 #include "server/config/config.hpp"
 #include "server/runtime/kdf_admission.hpp"
 #include "server/session/authorization.hpp"
+#include "server/session/fair_frame_budget.hpp"
 #include "util.hpp"
 
 namespace yume::server::static_site {
@@ -186,7 +187,7 @@ private:
     bool handle_bench_open(uint8_t stream_id, const std::string& proto, const nlohmann::json& json);
     bool handle_bench_data(uint8_t stream_id, const crypto::Bytes& payload);
     bool handle_bench_close(uint8_t stream_id, const std::string& reason);
-    void pump_bench_source(uint8_t stream_id);
+    void pump_bench_sources();
     void maybe_finish_bench_source(uint8_t stream_id);
     bool handle_codec_open(uint8_t stream_id, const nlohmann::json& json);
     bool handle_codec_data(uint8_t stream_id, const crypto::Bytes& payload);
@@ -266,9 +267,12 @@ private:
         uint8_t stream_id,
         std::size_t payload_size,
         std::function<void(const boost::system::error_code&, std::size_t)> handler = {});
-    std::deque<PendingWrite>::iterator select_next_write_on_strand(
+    std::optional<std::uint8_t> select_next_write_on_strand(
         std::size_t current_batch_bytes,
         const std::unordered_set<uint8_t>& batch_streams);
+    void mark_write_stream_ready_on_strand(std::uint8_t stream_id);
+    PendingWrite pop_write_stream_head_on_strand(std::uint8_t stream_id);
+    bool write_queues_empty_on_strand() const noexcept;
     void do_write();
     std::chrono::milliseconds reserve_egress_delay(std::size_t bytes) const;
     bool should_pause_inbound_reads_on_strand() const;
@@ -340,6 +344,12 @@ private:
     };
     std::unique_ptr<AuthV2Ephemeral> auth_v2_ephemeral_;
     std::unique_ptr<ratchet::SessionRatchet> ratchet_;
+    std::optional<std::chrono::steady_clock::time_point>
+        outbound_rekey_wait_started_;
+    std::uint64_t timing_seal_ns_{0};
+    std::uint64_t timing_seal_frames_{0};
+    std::uint64_t timing_open_ns_{0};
+    std::uint64_t timing_open_frames_{0};
     bool authenticated_{false};
     authorization::SessionTier authorization_tier_{
         authorization::SessionTier::Unauthenticated};
@@ -460,6 +470,8 @@ private:
         std::deque<crypto::Bytes> downstream_packets;
         std::size_t downstream_encoded_bytes{0};
         std::uint64_t downstream_sequence{0};
+        std::uint64_t next_upstream_sequence{0};
+        bool upstream_sequence_exhausted{false};
         std::uint64_t upstream_batches{0};
         std::uint64_t upstream_packets{0};
         std::uint64_t downstream_batches{0};
@@ -492,6 +504,11 @@ private:
         bool close_sent{false};
     };
     std::unordered_map<uint8_t, BenchStream> bench_streams_;
+    // Source frames are admitted per session, not per logical benchmark
+    // stream. A reservation lives from scheduling until the final carrier/TLS
+    // completion, so posted, ratchet-blocked, H2-pending, and TLS-pending work
+    // all consume the same bounded budget.
+    FairFrameBudget bench_source_budget_{64};
     std::unordered_map<uint8_t, std::shared_ptr<boost::asio::ip::tcp::acceptor>> reverse_listeners_;
     std::unordered_map<uint8_t, int> reverse_listener_ports_;
     std::unordered_map<int, uint8_t> reverse_port_streams_;
@@ -572,10 +589,14 @@ private:
         std::function<void(const boost::system::error_code&, std::size_t)> handler;
     };
 
-    std::deque<PendingWrite> write_queue_;
+    std::array<std::deque<PendingWrite>, 256> write_queues_;
+    std::array<std::deque<std::uint8_t>, 5> write_ready_streams_;
+    std::array<std::int8_t, 256> write_ready_priority_{};
     std::deque<PendingWrite> v2_h2_pending_app_writes_;
     std::deque<RatchetBlockedWrite> ratchet_blocked_writes_;
     bool write_in_flight_{false};
+    std::uint32_t write_queued_frames_{0};
+    std::size_t write_queued_bytes_{0};
     uint32_t write_queue_depth_{0};
     
     enum class CloseState {

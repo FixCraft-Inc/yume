@@ -29,6 +29,7 @@ from yume_bench_common import (  # noqa: E402
     invoking_identity,
     parse_rates,
     resolve_pinned_node,
+    run_streamed_command,
     start_logged_process,
     wait_for_tcp,
 )
@@ -291,21 +292,13 @@ def run_endpoint(
     directions = 2 if args.bench_direction == "both" else 1
     transfer_seconds = mib * 8 * directions / max(1, lab.profile.bandwidth_mbit)
     timeout = max(120, int(transfer_seconds * 4 + 90))
-    try:
-        result = subprocess.run(
-            argv,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout,
-        )
-        text = result.stdout
-        code = result.returncode
-    except subprocess.TimeoutExpired as exc:
-        text = (exc.stdout or "") + f"\nbenchmark timed out after {timeout}s\n"
-        code = 124
-    output.write_text(text, encoding="utf-8")
-    return code, text, argv
+    result = run_streamed_command(
+        argv,
+        timeout=timeout,
+        interrupt_message="[bench] interrupted; stopping the endpoint benchmark",
+    )
+    output.write_text(result.output, encoding="utf-8")
+    return result.returncode, result.output, argv
 
 
 def run_browser_cover(
@@ -326,21 +319,14 @@ def run_browser_cover(
         f"--host-resolver-rules=MAP {TLS_NAME} {SERVER_IP}",
         "--ignore-certificate-errors", "--dump-dom", f"https://{TLS_NAME}/",
     ])
-    try:
-        result = subprocess.run(
-            argv,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=30,
-        )
-        text = result.stdout
-        code = result.returncode
-    except subprocess.TimeoutExpired as exc:
-        text = (exc.stdout or "") + "\nChrome cover load timed out\n"
-        code = 124
-    output.write_text(text, encoding="utf-8")
-    return code, argv
+    result = run_streamed_command(
+        argv,
+        timeout=30,
+        echo=False,
+        interrupt_message="[bench] interrupted; stopping the Chrome cover load",
+    )
+    output.write_text(result.output, encoding="utf-8")
+    return result.returncode, argv
 
 
 def restore_output_owner(path: Path) -> None:
@@ -442,9 +428,7 @@ def main() -> int:
         if capture:
             capture.stop(interrupt=True)
             processes.remove(capture)
-        print(endpoint_output.rstrip())
-
-        if browser:
+        if browser and endpoint_code == 0:
             capture = None
             if not args.no_pcap:
                 capture = start_capture(
@@ -464,6 +448,9 @@ def main() -> int:
             if capture:
                 capture.stop(interrupt=True)
                 processes.remove(capture)
+    except KeyboardInterrupt:
+        endpoint_code = 130
+        print("\n[bench] interrupted; stopping the benchmark lab", file=sys.stderr)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         print(f"[bench] failed: {exc}", file=sys.stderr)
     finally:

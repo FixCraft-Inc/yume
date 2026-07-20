@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from yume_bench_common import (  # noqa: E402
     ManagedProcess,
     RuntimeIdentity,
+    StreamedCommandResult,
     chown_tree,
     command_version,
     drop_prefix,
@@ -28,6 +29,7 @@ from yume_bench_common import (  # noqa: E402
     invoking_identity,
     parse_rates,
     resolve_pinned_node,
+    run_streamed_command,
     start_logged_process,
     wait_for_tcp,
 )
@@ -321,14 +323,6 @@ def start_capture(interface: str, server: str, port: int, output: Path) -> Manag
     return capture
 
 
-def timeout_text(output: str | bytes | None, message: str) -> str:
-    if isinstance(output, bytes):
-        prefix = output.decode("utf-8", errors="replace")
-    else:
-        prefix = output or ""
-    return prefix + f"\n{message}\n"
-
-
 def run_endpoint(
     args: argparse.Namespace,
     yume: Path,
@@ -336,7 +330,7 @@ def run_endpoint(
     environment: dict[str, str],
     mib: int,
     streams: int,
-) -> tuple[int, str, list[str]]:
+) -> tuple[StreamedCommandResult, list[str]]:
     mode = "--bench-full" if args.full else "--bench"
     argv = [
         str(yume), "--config", str(config_path), mode,
@@ -348,18 +342,13 @@ def run_endpoint(
     ]
     directions = 2 if args.bench_direction == "both" else 1
     timeout = max(120, int(mib * directions * 8 / 5 + 120))
-    try:
-        result = subprocess.run(
-            argv,
-            env=environment,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout,
-        )
-        return result.returncode, result.stdout, argv
-    except subprocess.TimeoutExpired as exc:
-        return 124, timeout_text(exc.stdout, f"benchmark timed out after {timeout}s"), argv
+    result = run_streamed_command(
+        argv,
+        env=environment,
+        timeout=timeout,
+        interrupt_message="[lan] interrupted; stopping the endpoint benchmark",
+    )
+    return result, argv
 
 
 def run_browser_cover(
@@ -371,7 +360,7 @@ def run_browser_cover(
     server: str,
     port: int,
     tls_name: str,
-) -> tuple[int, str, list[str]]:
+) -> tuple[StreamedCommandResult, list[str]]:
     authority = tls_name if port == 443 else f"{tls_name}:{port}"
     argv: list[str] = []
     if os.geteuid() == 0:
@@ -386,17 +375,13 @@ def run_browser_cover(
         f"--host-resolver-rules=MAP {tls_name} {server}",
         "--ignore-certificate-errors", "--dump-dom", f"https://{authority}/",
     ])
-    try:
-        result = subprocess.run(
-            argv,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=30,
-        )
-        return result.returncode, result.stdout, argv
-    except subprocess.TimeoutExpired as exc:
-        return 124, timeout_text(exc.stdout, "Chrome cover load timed out"), argv
+    result = run_streamed_command(
+        argv,
+        timeout=30,
+        echo=False,
+        interrupt_message="[lan] interrupted; stopping the Chrome cover load",
+    )
+    return result, argv
 
 
 def run_client(args: argparse.Namespace) -> int:
@@ -440,22 +425,31 @@ def run_client(args: argparse.Namespace) -> int:
         "NO_COLOR": "1",
     })
     interface = (args.interface or infer_interface(server)) if args.capture else ""
+    print(
+        f"[lan] endpoint {server}:{port}: {mib} MiB per direction, "
+        f"{streams} stream(s)",
+        flush=True,
+    )
+    if args.capture:
+        print(f"[lan] capturing {interface} to {output / 'endpoint.pcap'}", flush=True)
+    print(f"[lan] artifacts: {output}", flush=True)
     capture: ManagedProcess | None = None
     try:
         if args.capture:
             capture = start_capture(interface, server, port, output / "endpoint.pcap")
-        return_code, output_text, endpoint_argv = run_endpoint(
+        endpoint_result, endpoint_argv = run_endpoint(
             args, yume, config_path, environment, mib, streams
         )
     finally:
         if capture:
             capture.stop(interrupt=True)
-    (output / "endpoint.log").write_text(output_text, encoding="utf-8")
+    (output / "endpoint.log").write_text(endpoint_result.output, encoding="utf-8")
 
     browser_code: int | None = None
     browser_version: str | None = None
     browser_argv: list[str] = []
-    if browser:
+    browser_result: StreamedCommandResult | None = None
+    if browser and endpoint_result.returncode == 0:
         browser_version = command_version([str(browser), "--version"])
         if not re.search(r"\b(?:Chrome|Chromium)\s+150\.", browser_version):
             print(
@@ -469,7 +463,7 @@ def run_client(args: argparse.Namespace) -> int:
                 capture = start_capture(
                     interface, server, port, output / "cover-chromium.pcap"
                 )
-            browser_code, browser_text, browser_argv = run_browser_cover(
+            browser_result, browser_argv = run_browser_cover(
                 browser,
                 identity,
                 home,
@@ -482,7 +476,10 @@ def run_client(args: argparse.Namespace) -> int:
         finally:
             if capture:
                 capture.stop(interrupt=True)
-        (output / "cover-chromium.log").write_text(browser_text, encoding="utf-8")
+        browser_code = browser_result.returncode
+        (output / "cover-chromium.log").write_text(
+            browser_result.output, encoding="utf-8"
+        )
 
     report = {
         "schema": 1,
@@ -491,17 +488,21 @@ def run_client(args: argparse.Namespace) -> int:
         "port": port,
         "yume": command_version([str(yume), "--version"]),
         "endpoint": {
-            "exit_code": return_code,
+            "exit_code": endpoint_result.returncode,
+            "interrupted": endpoint_result.interrupted,
+            "timed_out": endpoint_result.timed_out,
             "command": endpoint_argv,
             "mib_per_direction": mib,
             "streams": streams,
             "chunk_kib": args.bench_chunk_kib,
             "direction": args.bench_direction,
-            "rates": parse_rates(output_text),
+            "rates": parse_rates(endpoint_result.output),
             "pcap": "endpoint.pcap" if args.capture else None,
         },
         "cover": {
             "exit_code": browser_code,
+            "interrupted": browser_result.interrupted if browser_result else False,
+            "timed_out": browser_result.timed_out if browser_result else False,
             "browser": browser_version,
             "command": browser_argv,
             "pcap": "cover-chromium.pcap" if browser and args.capture else None,
@@ -512,12 +513,17 @@ def run_client(args: argparse.Namespace) -> int:
     shutil.rmtree(home, ignore_errors=True)
     if os.geteuid() == 0:
         chown_tree(output, identity)
-    print(output_text.rstrip())
-    if browser:
+    if browser_result:
         status = "passed" if browser_code == 0 else f"failed ({browser_code})"
         print(f"[lan] Chrome cover load: {status}")
-    print(f"[lan] artifacts: {output}")
-    return return_code if return_code != 0 else (browser_code or 0)
+    if endpoint_result.returncode != 0:
+        print(f"[lan] partial artifacts: {output}")
+        return endpoint_result.returncode
+    if browser_code:
+        print(f"[lan] partial artifacts: {output}")
+        return browser_code
+    print(f"[lan] complete; artifacts: {output}")
+    return 0
 
 
 def parse_args() -> argparse.Namespace:
@@ -571,7 +577,11 @@ def main() -> int:
         raise SystemExit("--bench-streams must be 1..240")
     if hasattr(args, "bench_chunk_kib") and not 1 <= args.bench_chunk_kib <= 256:
         raise SystemExit("--bench-chunk-kib must be 1..256")
-    return args.handler(args)
+    try:
+        return args.handler(args)
+    except KeyboardInterrupt:
+        print("\n[lan] interrupted", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":

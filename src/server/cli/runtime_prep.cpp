@@ -75,7 +75,9 @@ int prepare_server_runtime_files(yume::server::ServerConfig& cfg, const char* ar
     }
     if (!require_file("tls_cert", cfg.tls_cert) ||
         !require_file("tls_key", cfg.tls_key) ||
-        !require_file("auth_keys", cfg.auth_keys)) {
+        !require_file("auth_keys", cfg.auth_keys) ||
+        (!cfg.operator_keys.empty() &&
+         !require_file("operator_keys", cfg.operator_keys))) {
         return 1;
     }
     if ((cfg.anonym && !require_file("anonym_ca_key", cfg.anonym_ca_key)) ||
@@ -89,6 +91,9 @@ int prepare_server_runtime_files(yume::server::ServerConfig& cfg, const char* ar
 
     if (cfg.auth_keys_meta.empty() && !cfg.auth_keys.empty()) {
         cfg.auth_keys_meta = cfg.auth_keys + ".json";
+    }
+    if (cfg.operator_keys_meta.empty() && !cfg.operator_keys.empty()) {
+        cfg.operator_keys_meta = cfg.operator_keys + ".json";
     }
     return 0;
 }

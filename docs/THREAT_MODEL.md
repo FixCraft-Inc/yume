@@ -11,7 +11,7 @@ or other out-of-scope subsystems to 2.0 status.
 | --- | --- |
 | Path observer | Sees the TLS ClientHello, server certificate metadata, encrypted record sizes, timing, and volume. |
 | Active prober | Can open TLS/H1/H2 requests to the public endpoint and sees the genuine Node cover path unless it proves admission. |
-| YUME server operator | Holds TLS material, admission and inner PSK files, authorized client keys, and sees requested targets and traffic metadata. |
+| YUME server operator | Holds TLS material, admission and inner PSK files, regular/operator public-key stores, and sees requested targets and traffic metadata. |
 | Loopback Node process | Receives bounded ordinary GET/HEAD cover requests only; it must never receive tunnel records, client identities, or YUME secrets. |
 | Client host | Holds both shared secret files and the client Ed25519 private key; compromise exposes local plaintext and live session state. |
 | Target service | Sees the server egress identity, or another configured routing exit. |
@@ -97,6 +97,32 @@ The public TLS/H2 endpoint remains `yumed`. Node is separately supervised and
 never terminates YUME admission or inner encryption. A failed backend produces
 ordinary cover failure behavior, never a plaintext YUME diagnostic.
 
+## Identity admission and resource containment
+
+Regular user identities and operator/controller identities live in physically
+separate trust stores. A public key present in both stores is rejected. Only an
+individual operator key with explicit operator metadata may receive outbound
+admin policy; regular keys cannot acquire it through metadata alone.
+
+Regular keys are individual by default and therefore admit one authenticated
+session. An administrator can explicitly create a bounded `bulk` key when
+issuing one credential per client is impractical. A bulk credential does not
+identify which human holds it: theft or abuse by any holder affects the whole
+shared identity. YUME limits that blast radius by applying a per-key cap,
+counting each connection separately in the global cap, giving each connection
+its own fair-egress identity, and rejecting privileged bulk policy. It cannot
+distinguish an authorized holder from a thief who possesses the same private
+key and both shared secret files.
+
+The global tracked-session cap defaults to 256, the per-bulk-key cap defaults
+to 64, and one accept-rate budget covers all listeners. Queues and protected
+frame sizes are bounded. Administrators can additionally place aggregate
+weighted egress below the physical link rate and apply service-manager CPU,
+memory, task, and file-descriptor ceilings. These controls bound supported
+work; they do not make the public TLS socket available against an attacker who
+can saturate the link, exhaust external kernel state, or consume TLS handshake
+capacity before authenticated admission.
+
 ## What YUME does not protect
 
 - Endpoint compromise, key theft, malicious server operators, or plaintext
@@ -125,7 +151,7 @@ integration and runtime evidence.
 ## Release claims
 
 The transport stays `2.0-dev1` or `2.0-rc1` until the release gates in
-`docs/YUME_2.0_IMPLEMENTATION_STATUS.md` pass. Unit tests and a short loopback
+`docs/YUME_2_0_IMPLEMENTATION_STATUS.md` pass. Unit tests and a short loopback
 smoke are not evidence for WAN behavior, a 30-minute lifetime, sanitizer safety,
 external conformance, or sustained overhead. Release documentation must separate
 implemented behavior from those pending validations.

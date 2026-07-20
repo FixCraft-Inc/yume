@@ -44,6 +44,9 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::auth_keys, s.auth_keys);
     read_opt(j, cfg_key::auth_keys_meta, s.auth_keys_meta);
     read_opt(j, cfg_key::threads, s.threads);
+    read_opt(j, cfg_key::tls_handshake_timeout_ms, s.tls_handshake_timeout_ms);
+    read_opt(j, cfg_key::max_sessions, s.max_sessions);
+    read_opt(j, cfg_key::accept_rate_limit, s.accept_rate_limit);
     read_opt(j, cfg_key::obfuscation, s.obfuscation);
     read_opt(j, cfg_key::obfs_secret, s.obfs_secret);
     read_opt(j, cfg_key::obfs_secret_file, s.obfs_secret_file);
@@ -153,6 +156,7 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::operator_keys, s.operator_keys);
     read_opt(j, cfg_key::operator_keys_meta, s.operator_keys_meta);
     read_opt(j, cfg_key::egress_mbps, s.egress_mbps);
+    read_opt(j, cfg_key::bulk_key_max_sessions, s.bulk_key_max_sessions);
     read_opt(j, cfg_key::client_filter_mode, s.client_filter_mode);
     read_opt(j, cfg_key::egress_filter_mode, s.egress_filter_mode);
     read_opt(j, cfg_key::filter_geolite, s.filter_geolite);
@@ -298,6 +302,9 @@ bool save_server(server::ServerConfig const& s,
         {cfg_key::auth_keys, s.auth_keys},
         {cfg_key::auth_keys_meta, s.auth_keys_meta},
         {cfg_key::threads, s.threads},
+        {cfg_key::tls_handshake_timeout_ms, s.tls_handshake_timeout_ms},
+        {cfg_key::max_sessions, s.max_sessions},
+        {cfg_key::accept_rate_limit, s.accept_rate_limit},
         {cfg_key::obfuscation, s.obfuscation},
         {cfg_key::obfs_secret, s.obfs_secret},
         {cfg_key::obfs_secret_file, s.obfs_secret_file},
@@ -353,6 +360,7 @@ bool save_server(server::ServerConfig const& s,
         {cfg_key::operator_keys, s.operator_keys},
         {cfg_key::operator_keys_meta, s.operator_keys_meta},
         {cfg_key::egress_mbps, s.egress_mbps},
+        {cfg_key::bulk_key_max_sessions, s.bulk_key_max_sessions},
         {cfg_key::client_filter_mode, s.client_filter_mode},
         {cfg_key::egress_filter_mode, s.egress_filter_mode},
         {cfg_key::filter_lists, s.filter_lists},
@@ -430,8 +438,11 @@ ValidationReport validate(server::ServerConfig const& s) {
         r.errors.emplace_back(
             "reverse_port_min must be <= reverse_port_max");
     }
-    if (s.threads < 0) {
-        r.errors.emplace_back("threads: must be >= 0 (0 = auto)");
+    if (s.threads < 0 || s.threads > 256) {
+        r.errors.emplace_back("threads: must be in 0..256 (0 = auto)");
+    }
+    if (s.bulk_key_max_sessions == 0 || s.bulk_key_max_sessions > 65535) {
+        r.errors.emplace_back("bulk_key_max_sessions: must be in 1..65535");
     }
     auto valid_filter_mode = [](const std::string& value) {
         return value == "blacklist" || value == "denylist" ||

@@ -69,6 +69,7 @@ bool validate_required_files(const yume::server::ServerConfig& cfg, bool key_man
     return require_readable("tls_cert", cfg.tls_cert) &&
            require_readable("tls_key", cfg.tls_key) &&
            require_readable("auth_keys", cfg.auth_keys) &&
+           require_readable("operator_keys", cfg.operator_keys) &&
            require_readable("pq_private_key", cfg.pq_private_key) &&
            require_readable("real_index_path", cfg.real_index_path) &&
            require_directory("real_root", cfg.real_root) &&
@@ -176,6 +177,18 @@ bool validate_filters(const yume::server::ServerConfig& cfg) {
             yume::util::log_error("--filter-list " + spec + ": " + parse_error);
             return false;
         }
+    }
+    return true;
+}
+
+bool validate_resource_limits(const yume::server::ServerConfig& cfg) {
+    if (cfg.threads < 0 || cfg.threads > 256) {
+        yume::util::log_error("threads must be in 0..256");
+        return false;
+    }
+    if (cfg.bulk_key_max_sessions == 0 || cfg.bulk_key_max_sessions > 65535) {
+        yume::util::log_error("bulk_key_max_sessions must be in 1..65535");
+        return false;
     }
     return true;
 }
@@ -407,10 +420,6 @@ bool apply_public_node_defaults(yume::server::ServerConfig& cfg,
         cfg.tls_handshake_timeout_ms = 10000;
         yume::util::log_info("--public-node: defaulting --tls-handshake-timeout-ms to 10000 (pass --tls-handshake-timeout-ms 0 to disable)");
     }
-    if (!options.max_sessions_overridden && cfg.max_sessions == 0) {
-        cfg.max_sessions = 4096;
-        yume::util::log_info("--public-node: defaulting --max-sessions to 4096 (pass --max-sessions <N> to override; 0 = unlimited)");
-    }
     if (!options.accept_rate_limit_overridden && cfg.accept_rate_limit == 0) {
         cfg.accept_rate_limit = 100;
         yume::util::log_info("--public-node: defaulting --accept-rate-limit to 100/s (pass --accept-rate-limit <N> to override; 0 = unlimited)");
@@ -489,7 +498,10 @@ bool apply_public_node_defaults(yume::server::ServerConfig& cfg,
     yume::util::log_info("  - random inner PSK is expanded once with HKDF; no transport Argon2 admission surface");
     yume::util::log_info("  - private-IP bind refusal (--listen explicit-addr in RFC 1918 / loopback / link-local / ULA → startup error)");
     yume::util::log_info("  - TLS handshake deadline (--tls-handshake-timeout-ms; default 10s, slow-loris guard)");
-    yume::util::log_info("  - accept-side rate-limit + max-concurrent-session cap (--accept-rate-limit 100/s, --max-sessions 4096)");
+    yume::util::log_info(
+        "  - configured accept/session controls (--accept-rate-limit " +
+        std::to_string(cfg.accept_rate_limit) + "/s, --max-sessions " +
+        std::to_string(cfg.max_sessions) + "; 0 = unlimited)");
     yume::util::log_info("  - process umask locked to 0077 (secret files + IPC socket land at 0600/0700)");
     return true;
 }
@@ -627,7 +639,8 @@ bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
         return false;
     }
 
-    if (!validate_http_profile(cfg) ||
+    if (!validate_resource_limits(cfg) ||
+        !validate_http_profile(cfg) ||
         !validate_filters(cfg) ||
         !validate_packet_egress(cfg) ||
         !validate_app_codecs(cfg) ||

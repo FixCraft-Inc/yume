@@ -6,6 +6,7 @@
 
 #include "server/runtime/manager.hpp"
 #include "server/runtime/service_queue_policy.hpp"
+#include "server/runtime/weighted_egress_limiter.hpp"
 
 #include <algorithm>
 #include "server/federation/manager.hpp"
@@ -26,82 +27,6 @@
 #include <vector>
 
 namespace yume::server {
-
-class Manager::WeightedEgressLimiter {
-public:
-    explicit WeightedEgressLimiter(std::uint32_t cap_mbps)
-        : bytes_per_second_(std::max<double>(1.0, static_cast<double>(cap_mbps) * 1'000'000.0 / 8.0)) {}
-
-    std::chrono::milliseconds reserve(const std::string& key, std::uint32_t priority, std::size_t bytes) {
-        if (key.empty() || bytes == 0 || bytes_per_second_ <= 0.0) {
-            return std::chrono::milliseconds(0);
-        }
-
-        const std::uint32_t weight = std::clamp<std::uint32_t>(priority == 0 ? 50 : priority, 1, 100);
-        const auto now = std::chrono::steady_clock::now();
-        std::lock_guard<std::mutex> lock(mutex_);
-        prune_inactive_locked(now);
-
-        auto& current = clients_[key];
-        current.weight = weight;
-
-        std::uint64_t active_weight = 0;
-        bool current_counted = false;
-        for (const auto& [client_key, state] : clients_) {
-            if (state.next_available > now) {
-                active_weight += state.weight;
-                if (client_key == key) {
-                    current_counted = true;
-                }
-            }
-        }
-        if (!current_counted) {
-            active_weight += weight;
-        }
-        if (active_weight == 0) {
-            active_weight = weight;
-        }
-
-        const double share = static_cast<double>(weight) / static_cast<double>(active_weight);
-        const double fair_rate = std::max(1.0, bytes_per_second_ * share);
-        const auto start = current.next_available > now ? current.next_available : now;
-        const std::chrono::duration<double> service_seconds(static_cast<double>(bytes) / fair_rate);
-        auto service_duration = std::chrono::duration_cast<std::chrono::steady_clock::duration>(service_seconds);
-        if (service_duration.count() <= 0) {
-            service_duration = std::chrono::milliseconds(1);
-        }
-        current.next_available = start + service_duration;
-
-        if (start <= now) {
-            return std::chrono::milliseconds(0);
-        }
-        return std::chrono::duration_cast<std::chrono::milliseconds>(start - now);
-    }
-
-private:
-    struct ClientState {
-        std::uint32_t weight{50};
-        std::chrono::steady_clock::time_point next_available{};
-    };
-
-    void prune_inactive_locked(std::chrono::steady_clock::time_point now) {
-        if (clients_.size() <= 4096) {
-            return;
-        }
-        const auto cutoff = now - std::chrono::minutes(5);
-        for (auto it = clients_.begin(); it != clients_.end();) {
-            if (it->second.next_available < cutoff) {
-                it = clients_.erase(it);
-            } else {
-                ++it;
-            }
-        }
-    }
-
-    double bytes_per_second_{0.0};
-    std::mutex mutex_;
-    std::unordered_map<std::string, ClientState> clients_;
-};
 
 namespace {
 
@@ -124,6 +49,32 @@ bool server_context_allows_h2(const ServerConfig& cfg) {
     return cfg.obfuscation || !cfg.real_http;
 }
 
+bool key_sets_overlap(const std::vector<crypto::Bytes>& regular,
+                      const std::vector<crypto::Bytes>& operators) {
+    for (const auto& regular_key : regular) {
+        if (std::find(operators.begin(), operators.end(), regular_key) !=
+            operators.end()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void validate_auth_policy_store(const AuthKeyPolicyMap& policies,
+                                bool operator_store) {
+    for (const auto& [fingerprint, policy] : policies) {
+        if (operator_store && policy.key_type == AuthKeyType::Bulk) {
+            throw std::runtime_error(
+                "operator key " + fingerprint + " cannot use key_type 'bulk'");
+        }
+        if (!operator_store && policy.allow_outbound_admin.value_or(false)) {
+            throw std::runtime_error(
+                "regular key " + fingerprint +
+                " cannot grant allow_outbound_admin; move the key to operator_keys");
+        }
+    }
+}
+
 }  // namespace
 
 Manager::Manager(boost::asio::io_context& io, const ServerConfig& cfg)
@@ -132,6 +83,9 @@ Manager::Manager(boost::asio::io_context& io, const ServerConfig& cfg)
     , acceptor_(io)
     , ssl_ctx_(obfs::create_server_context(cfg.tls_cert, cfg.tls_key, server_context_allows_h2(cfg)))
     , authorized_keys_(std::make_shared<const std::vector<crypto::Bytes>>())
+    , auth_policies_(std::make_shared<const AuthKeyPolicyMap>())
+    , operator_keys_(std::make_shared<const std::vector<crypto::Bytes>>())
+    , operator_policies_(std::make_shared<const AuthKeyPolicyMap>())
     , kdf_admission_(std::make_shared<KdfAdmissionController>(KdfAdmissionLimits{
           cfg.argon2_memory_budget_kib, cfg.argon2_max_jobs}))
     , admission_replay_cache_(std::make_shared<obfs::AdmissionReplayCache>())
@@ -187,15 +141,46 @@ void Manager::start() {
     }
 
     std::shared_ptr<const std::vector<crypto::Bytes>> loaded_keys;
+    std::shared_ptr<const AuthKeyPolicyMap> loaded_policies;
+    std::shared_ptr<const std::vector<crypto::Bytes>> loaded_operator_keys;
+    std::shared_ptr<const AuthKeyPolicyMap> loaded_operator_policies;
     try {
         loaded_keys = std::make_shared<const std::vector<crypto::Bytes>>(
             load_authorized_keys(cfg_.auth_keys));
     } catch (const std::exception& ex) {
-        throw std::runtime_error(std::string("authorized_keys load failed: ") + ex.what());
+        throw std::runtime_error(std::string("authorized_keys load failed: ") +
+                                 ex.what());
+    }
+    try {
+        loaded_policies = std::make_shared<const AuthKeyPolicyMap>(
+            load_auth_policies(cfg_.auth_keys_meta));
+        validate_auth_policy_store(*loaded_policies, false);
+    } catch (const std::exception& ex) {
+        throw std::runtime_error(std::string("auth_keys_meta load failed: ") +
+                                 ex.what());
+    }
+    try {
+        loaded_operator_keys = std::make_shared<const std::vector<crypto::Bytes>>(
+            cfg_.operator_keys.empty()
+                ? std::vector<crypto::Bytes>{}
+                : load_authorized_keys(cfg_.operator_keys));
+        loaded_operator_policies = std::make_shared<const AuthKeyPolicyMap>(
+            load_auth_policies(cfg_.operator_keys_meta));
+        validate_auth_policy_store(*loaded_operator_policies, true);
+    } catch (const std::exception& ex) {
+        throw std::runtime_error(std::string("operator key store load failed: ") +
+                                 ex.what());
+    }
+    if (key_sets_overlap(*loaded_keys, *loaded_operator_keys)) {
+        throw std::runtime_error(
+            "the same public key is present in auth_keys and operator_keys");
     }
     {
         std::lock_guard<std::mutex> lock(auth_keys_mutex_);
         authorized_keys_ = loaded_keys;
+        auth_policies_ = loaded_policies;
+        operator_keys_ = loaded_operator_keys;
+        operator_policies_ = loaded_operator_policies;
     }
 
     if (loaded_keys->empty()) {
@@ -203,6 +188,10 @@ void Manager::start() {
     } else {
         util::log_info("loaded " + std::to_string(loaded_keys->size()) +
                        " authorized key(s) from " + cfg_.auth_keys);
+    }
+    if (!loaded_operator_keys->empty()) {
+        util::log_info("loaded " + std::to_string(loaded_operator_keys->size()) +
+                       " operator key(s) from " + cfg_.operator_keys);
     }
     if (cfg_.federation_enable) {
         if (cfg_.federation_auth_key.empty() || cfg_.federation_anonym_ca.empty() || cfg_.federation_peers.empty()) {
@@ -258,7 +247,7 @@ void Manager::start() {
     if (egress_limiter_) {
         util::log_info("weighted egress fairness enabled: cap=" +
                        std::to_string(cfg_.egress_mbps) +
-                       " Mbps, grouped by auth key, priority weight range=1..100 (default 50)");
+                       " Mbps, grouped by authenticated identity, weight range=0.1..100 (default 1.0)");
     }
     if (ip_filter_ && ip_filter_->active()) {
         util::log_info("IP filtering active: " + ip_filter_->summary());
@@ -437,12 +426,20 @@ bool Manager::egress_fairness_enabled() const {
 }
 
 std::chrono::milliseconds Manager::reserve_egress_write(const std::string& client_key,
-                                                        std::uint32_t priority,
+                                                        double weight,
                                                         std::size_t bytes) {
     if (!egress_limiter_) {
         return std::chrono::milliseconds(0);
     }
-    return egress_limiter_->reserve(client_key, priority, bytes);
+    return egress_limiter_->reserve(client_key, weight, bytes);
+}
+
+bool Manager::admit_authenticated_identity(std::uint64_t session_id,
+                                           const std::string& fingerprint,
+                                           std::uint32_t max_sessions,
+                                           std::string* error) {
+    return identity_admission_.admit(
+        session_id, fingerprint, max_sessions, error);
 }
 
 bool Manager::packet_egress_active() const {
@@ -510,6 +507,7 @@ void Manager::unregister_session(Session* session) {
     if (!session) {
         return;
     }
+    identity_admission_.release(session->session_id());
     std::lock_guard<std::mutex> lock(sessions_mutex_);
     live_sessions_.erase(session);
 }
@@ -683,6 +681,8 @@ void Manager::append_lifecycle_event_locked(const control::ClientLifecycleEvent&
 }
 
 bool Manager::admit_accept() {
+    std::lock_guard<std::mutex> admission_lock(accept_admission_mutex_);
+
     // Hard session cap first — cheap to check, and it's the absolute
     // ceiling regardless of any rate concerns.
     if (cfg_.max_sessions > 0) {
@@ -692,21 +692,22 @@ bool Manager::admit_accept() {
             live = live_sessions_.size();
         }
         if (live >= cfg_.max_sessions) {
-            ++accept_refused_cap_;
+            const auto refused_total =
+                accept_refused_cap_.fetch_add(1, std::memory_order_relaxed) + 1;
             // Throttle the warn line to once per 64 refusals so a
             // sustained DoS doesn't fill the log faster than it
             // exhausts memory.
-            if ((accept_refused_cap_ & 0x3F) == 1) {
+            if ((refused_total & 0x3F) == 1) {
                 util::log_warn("accept refused: max_sessions cap " +
                               std::to_string(cfg_.max_sessions) +
                               " reached (live=" + std::to_string(live) +
-                              ", refused-total=" + std::to_string(accept_refused_cap_) + ")");
+                              ", refused-total=" + std::to_string(refused_total) + ")");
             }
             return false;
         }
     }
 
-    // Token bucket over a 1 s rolling window.
+    // Fixed one-second accounting window shared by all listeners.
     if (cfg_.accept_rate_limit > 0) {
         const auto now = std::chrono::steady_clock::now();
         if (accept_window_start_.time_since_epoch().count() == 0 ||
@@ -719,12 +720,13 @@ bool Manager::admit_accept() {
             accept_window_count_ = 0;
         }
         if (accept_window_count_ >= cfg_.accept_rate_limit) {
-            ++accept_refused_rate_;
-            if ((accept_refused_rate_ & 0x3F) == 1) {
+            const auto refused_total =
+                accept_refused_rate_.fetch_add(1, std::memory_order_relaxed) + 1;
+            if ((refused_total & 0x3F) == 1) {
                 util::log_warn("accept refused: rate-limit " +
                               std::to_string(cfg_.accept_rate_limit) +
                               "/s exceeded (refused-total=" +
-                              std::to_string(accept_refused_rate_) + ")");
+                              std::to_string(refused_total) + ")");
             }
             return false;
         }
@@ -828,10 +830,9 @@ std::shared_ptr<runtime::ServiceStream> Manager::accept_service_stream(
     return stream;
 }
 
-std::shared_ptr<const std::vector<crypto::Bytes>>
-Manager::authorized_keys_snapshot() const {
+Manager::AuthStateSnapshot Manager::auth_state_snapshot() const {
     std::lock_guard<std::mutex> lock(auth_keys_mutex_);
-    return authorized_keys_;
+    return {authorized_keys_, auth_policies_, operator_keys_, operator_policies_};
 }
 
 void Manager::do_accept() {
@@ -846,10 +847,12 @@ void Manager::do_accept() {
                 if (!ep_ec) {
                     const auto decision = ip_filter_->check_client(remote.address());
                     if (!decision.allowed) {
-                        ++accept_refused_filter_;
-                        if ((accept_refused_filter_ & 0x3F) == 1) {
+                        const auto refused_total =
+                            accept_refused_filter_.fetch_add(
+                                1, std::memory_order_relaxed) + 1;
+                        if ((refused_total & 0x3F) == 1) {
                             util::log_info("accept refused by client IP filter (refused-total=" +
-                                           std::to_string(accept_refused_filter_) + ")");
+                                           std::to_string(refused_total) + ")");
                         }
                         refuse_client_socket(socket);
                         if (acceptor_.is_open()) {
@@ -868,9 +871,13 @@ void Manager::do_accept() {
                     std::lock_guard<std::mutex> lock(cfg_mutex_);
                     cfg_copy = cfg_;
                 }
+                const auto auth_state = auth_state_snapshot();
                 auto session = std::make_shared<Session>(std::move(socket), ssl_ctx_,
                                                          cfg_copy,
-                                                         authorized_keys_snapshot(),
+                                                         auth_state.keys,
+                                                         auth_state.policies,
+                                                         auth_state.operator_keys,
+                                                         auth_state.operator_policies,
                                                          kdf_admission_,
                                                          admission_replay_cache_,
                                                          session_id, this);
@@ -897,7 +904,7 @@ bool Manager::admit_plain_client(boost::asio::ip::tcp::socket& socket) {
         if (!ep_ec) {
             const auto decision = ip_filter_->check_client(remote.address());
             if (!decision.allowed) {
-                ++accept_refused_filter_;
+                accept_refused_filter_.fetch_add(1, std::memory_order_relaxed);
                 refuse_client_socket(socket);
                 return false;
             }
@@ -912,9 +919,15 @@ bool Manager::admit_plain_client(boost::asio::ip::tcp::socket& socket) {
 
 bool Manager::reload_auth(std::string* error) {
     std::string auth_keys_path;
+    std::string auth_keys_meta_path;
+    std::string operator_keys_path;
+    std::string operator_keys_meta_path;
     {
         std::lock_guard<std::mutex> lock(cfg_mutex_);
         auth_keys_path = cfg_.auth_keys;
+        auth_keys_meta_path = cfg_.auth_keys_meta;
+        operator_keys_path = cfg_.operator_keys;
+        operator_keys_meta_path = cfg_.operator_keys_meta;
     }
     if (auth_keys_path.empty()) {
         if (error) *error = "auth_keys must be set";
@@ -922,6 +935,9 @@ bool Manager::reload_auth(std::string* error) {
     }
 
     std::shared_ptr<const std::vector<crypto::Bytes>> loaded_keys;
+    std::shared_ptr<const AuthKeyPolicyMap> loaded_policies;
+    std::shared_ptr<const std::vector<crypto::Bytes>> loaded_operator_keys;
+    std::shared_ptr<const AuthKeyPolicyMap> loaded_operator_policies;
     try {
         loaded_keys = std::make_shared<const std::vector<crypto::Bytes>>(
             load_authorized_keys(auth_keys_path));
@@ -931,14 +947,51 @@ bool Manager::reload_auth(std::string* error) {
         }
         return false;
     }
+    try {
+        loaded_policies = std::make_shared<const AuthKeyPolicyMap>(
+            load_auth_policies(auth_keys_meta_path));
+        validate_auth_policy_store(*loaded_policies, false);
+    } catch (const std::exception& ex) {
+        if (error) {
+            *error = std::string("auth_keys_meta reload failed: ") + ex.what();
+        }
+        return false;
+    }
+    try {
+        loaded_operator_keys = std::make_shared<const std::vector<crypto::Bytes>>(
+            operator_keys_path.empty()
+                ? std::vector<crypto::Bytes>{}
+                : load_authorized_keys(operator_keys_path));
+        loaded_operator_policies = std::make_shared<const AuthKeyPolicyMap>(
+            load_auth_policies(operator_keys_meta_path));
+        validate_auth_policy_store(*loaded_operator_policies, true);
+    } catch (const std::exception& ex) {
+        if (error) {
+            *error = std::string("operator key store reload failed: ") + ex.what();
+        }
+        return false;
+    }
+    if (key_sets_overlap(*loaded_keys, *loaded_operator_keys)) {
+        if (error) {
+            *error = "the same public key is present in auth_keys and operator_keys";
+        }
+        return false;
+    }
 
     {
         std::lock_guard<std::mutex> lock(auth_keys_mutex_);
         authorized_keys_ = loaded_keys;
+        auth_policies_ = loaded_policies;
+        operator_keys_ = loaded_operator_keys;
+        operator_policies_ = loaded_operator_policies;
     }
 
     util::log_info("reloaded " + std::to_string(loaded_keys->size()) +
-                   " authorized key(s) from " + auth_keys_path);
+                   " authorized key(s) and " +
+                   std::to_string(loaded_policies->size()) +
+                   " regular policy entries and " +
+                   std::to_string(loaded_operator_keys->size()) +
+                   " operator key(s)");
     if (error) error->clear();
     return true;
 }
@@ -1039,7 +1092,8 @@ nlohmann::json Manager::host_runtime_info() const {
         {"host_mode", host::to_string(cfg_.host_mode)},
         {"accept_yume_clients", cfg_.accept_yume_clients},
         {"client_deny_action", host::to_string(cfg_.client_deny_action)},
-        {"accept_refused_filter", accept_refused_filter_},
+        {"accept_refused_filter",
+         accept_refused_filter_.load(std::memory_order_relaxed)},
         {"routes", routes},
         {"extra_listeners", listeners},
         {"exposure", {

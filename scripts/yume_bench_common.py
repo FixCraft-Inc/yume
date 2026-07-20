@@ -14,10 +14,13 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
+
+from yume_bench_resources import ProcessResourceSampler
 
 
 PINNED_NODE_VERSION = "24.18.0"
@@ -51,6 +54,7 @@ class StreamedCommandResult:
     output: str
     interrupted: bool = False
     timed_out: bool = False
+    resources: dict[str, object] | None = None
 
 
 @dataclass
@@ -58,8 +62,11 @@ class ManagedProcess:
     process: subprocess.Popen[bytes]
     log_file: BinaryIO
     log_path: Path
+    resource_sampler: ProcessResourceSampler | None = None
 
     def stop(self, timeout: float = 5.0, *, interrupt: bool = False) -> None:
+        if self.resource_sampler:
+            self.resource_sampler.capture()
         if self.process.poll() is None:
             stop_signal = signal.SIGINT if interrupt else signal.SIGTERM
             try:
@@ -75,6 +82,11 @@ class ManagedProcess:
                     pass
                 self.process.wait()
         self.log_file.close()
+        if self.resource_sampler:
+            self.resource_sampler.stop()
+
+    def resource_summary(self) -> dict[str, object] | None:
+        return self.resource_sampler.summary() if self.resource_sampler else None
 
 
 def relay_chunk_kib(environment: dict[str, str] | None = None) -> int:
@@ -131,6 +143,8 @@ def start_logged_process(
     log_path: Path,
     *,
     cwd: Path | None = None,
+    resource_sampling: bool = False,
+    resource_sample_ms: int = 250,
 ) -> ManagedProcess:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_file = log_path.open("wb")
@@ -146,7 +160,11 @@ def start_logged_process(
     except Exception:
         log_file.close()
         raise
-    return ManagedProcess(process, log_file, log_path)
+    sampler = None
+    if resource_sampling:
+        sampler = ProcessResourceSampler(process.pid, resource_sample_ms)
+        sampler.start()
+    return ManagedProcess(process, log_file, log_path, sampler)
 
 
 def _emit_output(chunk: bytes, captured: bytearray, *, echo: bool) -> None:
@@ -185,9 +203,12 @@ def run_streamed_command(
     argv: list[str],
     *,
     env: dict[str, str] | None = None,
-    timeout: float,
+    timeout: float | None,
     echo: bool = True,
     interrupt_message: str = "interrupted; stopping child process",
+    resource_sampling: bool = True,
+    resource_sample_ms: int = 250,
+    cancel_event: threading.Event | None = None,
 ) -> StreamedCommandResult:
     """Run a command while teeing merged output and retaining it for reports."""
     process = subprocess.Popen(
@@ -198,54 +219,89 @@ def run_streamed_command(
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
+    sampler = None
+    if resource_sampling:
+        sampler = ProcessResourceSampler(process.pid, resource_sample_ms)
+        sampler.start()
     assert process.stdout is not None
     captured = bytearray()
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + timeout if timeout is not None else None
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
+
+    def finish_result(
+        returncode: int,
+        *,
+        interrupted: bool = False,
+        timed_out: bool = False,
+    ) -> StreamedCommandResult:
+        if sampler:
+            sampler.stop()
+        return StreamedCommandResult(
+            returncode,
+            captured.decode("utf-8", errors="replace"),
+            interrupted=interrupted,
+            timed_out=timed_out,
+            resources=sampler.summary() if sampler else None,
+        )
+
     try:
         while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            if cancel_event is not None and cancel_event.is_set():
+                message = f"\n{interrupt_message}\n".encode()
+                _emit_output(message, captured, echo=echo)
+                if sampler:
+                    sampler.capture()
+                _finish_streamed_process(
+                    process,
+                    captured,
+                    echo=echo,
+                    stop_signal=signal.SIGINT,
+                )
+                return finish_result(130, interrupted=True)
+            remaining = (
+                deadline - time.monotonic() if deadline is not None else None
+            )
+            if remaining is not None and remaining <= 0:
                 message = f"\ncommand timed out after {timeout:g}s\n".encode()
                 _emit_output(message, captured, echo=echo)
+                if sampler:
+                    sampler.capture()
                 _finish_streamed_process(
                     process,
                     captured,
                     echo=echo,
                     stop_signal=signal.SIGTERM,
                 )
-                return StreamedCommandResult(
-                    124,
-                    captured.decode("utf-8", errors="replace"),
-                    timed_out=True,
-                )
-            events = selector.select(timeout=min(remaining, 0.25))
+                return finish_result(124, timed_out=True)
+            events = selector.select(
+                timeout=min(remaining, 0.25) if remaining is not None else 0.25
+            )
             if not events:
                 continue
             chunk = os.read(process.stdout.fileno(), 65536)
             if not chunk:
-                return StreamedCommandResult(
-                    process.wait(),
-                    captured.decode("utf-8", errors="replace"),
-                )
+                if sampler:
+                    sampler.capture()
+                return finish_result(process.wait())
             _emit_output(chunk, captured, echo=echo)
     except KeyboardInterrupt:
         message = f"\n{interrupt_message}\n".encode()
         _emit_output(message, captured, echo=True)
+        if sampler:
+            sampler.capture()
         _finish_streamed_process(
             process,
             captured,
             echo=echo,
             stop_signal=signal.SIGINT,
         )
-        return StreamedCommandResult(
-            130,
-            captured.decode("utf-8", errors="replace"),
-            interrupted=True,
-        )
+        return finish_result(130, interrupted=True)
     finally:
         selector.close()
+        process.stdout.close()
+        if sampler:
+            sampler.stop()
 
 
 def _write_secret(path: Path) -> None:
@@ -307,6 +363,8 @@ def generate_keyset(
     metadata = {
         fingerprint: {
             "alias": "benchmark",
+            "key_type": "bulk",
+            "max_sessions": 128,
             "permissions": {},
         }
     }

@@ -164,10 +164,12 @@ bool parse_server_cli_args(int argc,
         } else if (arg == "--auth-keys-meta" && i + 1 < argc) {
             cfg.auth_keys_meta = resolve_cli_path(argv[++i]);
         } else if (arg == "--threads" && i + 1 < argc) {
-            if (!parse_int_strict(argv[++i], &cfg.threads) || cfg.threads < 0) {
-                yume::util::log_error("--threads: expected a non-negative integer");
+            if (!parse_int_strict(argv[++i], &cfg.threads) ||
+                cfg.threads < 0 || cfg.threads > 256) {
+                yume::util::log_error("--threads: expected an integer in 0..256");
                 return false;
             }
+            result.config_overrides.threads = true;
         } else if (arg == "--obfs") {
             cfg.obfuscation = true;
             result.config_overrides.obfuscation = true;
@@ -194,6 +196,13 @@ bool parse_server_cli_args(int argc,
         } else if (arg == "--max-sessions" && i + 1 < argc) {
             if (!parse_non_negative_u32(argv[++i], "--max-sessions", &cfg.max_sessions)) return false;
             result.config_overrides.max_sessions = true;
+        } else if (arg == "--bulk-key-max-sessions" && i + 1 < argc) {
+            if (!parse_non_negative_u32(argv[++i], "--bulk-key-max-sessions", &cfg.bulk_key_max_sessions) ||
+                cfg.bulk_key_max_sessions == 0 || cfg.bulk_key_max_sessions > 65535) {
+                yume::util::log_error("--bulk-key-max-sessions: expected an integer in 1..65535");
+                return false;
+            }
+            result.config_overrides.bulk_key_max_sessions = true;
         } else if (arg == "--accept-rate-limit" && i + 1 < argc) {
             if (!parse_non_negative_u32(argv[++i], "--accept-rate-limit", &cfg.accept_rate_limit)) return false;
             result.config_overrides.accept_rate_limit = true;
@@ -348,6 +357,8 @@ bool parse_server_cli_args(int argc,
             yume::util::log_warn("--allow-remote-server-admin was never wired to a check; flag removed (ignored)");
         } else if (arg == "--operator-keys" && i + 1 < argc) {
             cfg.operator_keys = resolve_cli_path(argv[++i]);
+        } else if (arg == "--operator-keys-meta" && i + 1 < argc) {
+            cfg.operator_keys_meta = resolve_cli_path(argv[++i]);
         } else if (arg == "--federation-enable") {
             cfg.federation_enable = true;
         } else if (arg == "--federation-auth-key" && i + 1 < argc) {

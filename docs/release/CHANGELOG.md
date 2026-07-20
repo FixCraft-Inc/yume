@@ -1,6 +1,49 @@
 # Changelog
 
-## [Unreleased]
+## [Unreleased 2.0-dev1]
+
+Current development is the hard-break 2.0 desktop transport line. It remains a
+development version until the release gates in
+`docs/YUME_2_0_IMPLEMENTATION_STATUS.md` pass.
+
+### Added
+
+- **Bounded server capacity controls.** Administrators can set worker threads,
+  aggregate tracked sessions, default bulk-key sessions, aggregate accepts per
+  second, and an optional weighted-fair egress cap. Default tracked and bulk
+  limits are 256 and 64 respectively; unlimited behavior must be explicit.
+- **Regular individual/bulk keys and a physical operator trust store.** Shared
+  bulk credentials are separately counted per connection and cannot receive
+  controller, exec, LAN/full-control, privileged codec/service, or federation
+  policy. Only individual keys in the separate operator store may receive
+  outbound admin policy.
+- **External benchmark resource telemetry.** Localhost, LAN, and WAN harnesses
+  can sample server/client CPU time, fair per-core CPU, RSS/peak RSS, threads,
+  and host CPU/RAM context. Multi-client runs are bounded by default and require
+  explicit acknowledgement above the safe local ceiling.
+
+### Changed
+
+- **AUTH policy lookup uses immutable snapshots.** Regular and operator
+  key/policy files are parsed and validated before atomic startup/reload
+  publication. Failed reloads preserve the complete previous snapshot, and the
+  same public key cannot appear in both stores.
+- **Capacity logic is modular.** Thread-safe identity admission and weighted
+  egress controllers are independent server runtime units with focused tests.
+  The optional limiter is not constructed when egress shaping is disabled.
+- **Benchmark diagnostics stay out of production binaries.** `/proc` sampling,
+  timing aggregation, and extra reporting run only in the external Python
+  harness; the normal client/server build receives no sampling thread or
+  logging branch from this work.
+
+### Security
+
+- Authentication remains Ed25519 over the existing canonical transcript, and
+  admission still occurs before ML-KEM decapsulation. This capacity/auth-policy
+  work does not change the 2.0 wire format, AEAD AAD, HKDF schedule, hybrid
+  handshake, or directional ratchet.
+
+## [Unreleased 1.1 historical work]
 
 Target: `v1.1`. Do not tag until the remaining release work and remote
 validation are complete.

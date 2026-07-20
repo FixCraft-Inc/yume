@@ -15,6 +15,7 @@ struct ServerConfig;
 namespace yume::server::cli {
 
 struct ServerConfigOverrides {
+    bool threads = false;
     bool obfuscation = false;
     bool inner_crypto = false;
     bool inner_dual = false;
@@ -29,6 +30,7 @@ struct ServerConfigOverrides {
     bool allow_embedded_master = false;
     bool tls_handshake_timeout = false;
     bool max_sessions = false;
+    bool bulk_key_max_sessions = false;
     bool accept_rate_limit = false;
     bool egress_mbps = false;
     bool client_filter_mode = false;

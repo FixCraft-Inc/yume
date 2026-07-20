@@ -28,6 +28,7 @@
 #include "core/runtime/service_stream.hpp"
 #include "core/security/crypto.hpp"
 #include "core/security/identity.hpp"
+#include "server/auth/auth.hpp"
 #include "core/stealth/obfs.hpp"
 #include "core/stealth/obfs_signal.hpp"
 #include "server/config/config.hpp"
@@ -37,6 +38,7 @@
 #include "server/host/extra_listeners.hpp"
 #include "server/host/host_routes.hpp"
 #include "server/packet/tun_egress.hpp"
+#include "server/runtime/identity_admission.hpp"
 #include "server/runtime/kdf_admission.hpp"
 
 namespace yume::server {
@@ -45,6 +47,7 @@ class FederationManager;
 class FederationLink;
 class PacketTunEgress;
 class Session;
+class WeightedEgressLimiter;
 
 struct ControlledClientInfo {
     std::string id;
@@ -145,8 +148,12 @@ public:
     const std::string& server_name() const { return server_name_; }
     bool egress_fairness_enabled() const;
     std::chrono::milliseconds reserve_egress_write(const std::string& client_key,
-                                                   std::uint32_t priority,
+                                                   double weight,
                                                    std::size_t bytes);
+    bool admit_authenticated_identity(std::uint64_t session_id,
+                                      const std::string& fingerprint,
+                                      std::uint32_t max_sessions,
+                                      std::string* error = nullptr);
     bool packet_egress_active() const;
     std::optional<PacketTunAssignment> register_packet_client(
         Session* session,
@@ -162,7 +169,9 @@ public:
     nlohmann::json host_runtime_info() const;
     const host::HostRouteTable& host_routes() const { return host_routes_; }
     const host::ExposureResult& exposure_result() const { return exposure_result_; }
-    std::uint64_t accept_refused_filter_total() const { return accept_refused_filter_; }
+    std::uint64_t accept_refused_filter_total() const {
+        return accept_refused_filter_.load(std::memory_order_relaxed);
+    }
 
     // Returns one of the loaded upstream-response captures (chosen
     // uniformly), or an empty string if no directory is configured /
@@ -189,13 +198,18 @@ public:
 private:
     static constexpr std::size_t kMaxLifecycleEvents = 512;
 
-    class WeightedEgressLimiter;
+    struct AuthStateSnapshot {
+        std::shared_ptr<const std::vector<crypto::Bytes>> keys;
+        std::shared_ptr<const AuthKeyPolicyMap> policies;
+        std::shared_ptr<const std::vector<crypto::Bytes>> operator_keys;
+        std::shared_ptr<const AuthKeyPolicyMap> operator_policies;
+    };
 
     void do_accept();
     void refuse_client_socket(boost::asio::ip::tcp::socket& socket);
     void append_lifecycle_event_locked(const control::ClientLifecycleEvent& event);
     void schedule_upstream_reload();
-    std::shared_ptr<const std::vector<crypto::Bytes>> authorized_keys_snapshot() const;
+    AuthStateSnapshot auth_state_snapshot() const;
 
     boost::asio::io_context& io_;
     ServerConfig cfg_;
@@ -204,6 +218,10 @@ private:
     boost::asio::ssl::context ssl_ctx_;
     mutable std::mutex auth_keys_mutex_;
     std::shared_ptr<const std::vector<crypto::Bytes>> authorized_keys_;
+    std::shared_ptr<const AuthKeyPolicyMap> auth_policies_;
+    std::shared_ptr<const std::vector<crypto::Bytes>> operator_keys_;
+    std::shared_ptr<const AuthKeyPolicyMap> operator_policies_;
+    IdentityAdmissionController identity_admission_;
     std::shared_ptr<KdfAdmissionController> kdf_admission_;
     std::shared_ptr<obfs::AdmissionReplayCache> admission_replay_cache_;
 
@@ -259,21 +277,21 @@ private:
     std::unique_ptr<boost::asio::steady_timer> upstream_reload_timer_;
     bool upstream_reload_stopped_{false};
 
-    // --accept-rate-limit token bucket. Single-threaded by do_accept
-    // (which always runs on io_'s default executor) so no lock needed.
+    // --accept-rate-limit fixed-window accounting. The main and optional plain
+    // listeners can complete concurrently on worker threads, so all bucket
+    // state is protected by accept_admission_mutex_.
     // accept_window_start_ is the steady_clock millisecond timestamp
     // when the current 1000 ms window opened; accept_window_count_ is
-    // the number of accepts admitted in that window. When the window
-    // expires we roll forward by adding 1000 ms (not snapping to now)
-    // so a burst doesn't get punished by an idle gap right after.
+    // the number of accepts admitted in that window. An expired window
+    // restarts at the next arrival.
     std::chrono::steady_clock::time_point accept_window_start_{};
     std::uint32_t accept_window_count_{0};
-    // Counters surfaced via the next start-up banner / future status
-    // RPC: how many accepts we've refused for each reason since
-    // start(). Lock-free because do_accept is single-reader.
-    std::uint64_t accept_refused_cap_{0};
-    std::uint64_t accept_refused_rate_{0};
-    std::uint64_t accept_refused_filter_{0};
+    std::mutex accept_admission_mutex_;
+    // Refusal counters are also read by status reporting outside the accept
+    // path, so keep them atomic rather than extending the bucket lock.
+    std::atomic<std::uint64_t> accept_refused_cap_{0};
+    std::atomic<std::uint64_t> accept_refused_rate_{0};
+    std::atomic<std::uint64_t> accept_refused_filter_{0};
     std::mutex service_mutex_;
     std::condition_variable service_cv_;
     bool services_stopping_{false};
@@ -282,8 +300,7 @@ private:
     std::size_t pending_service_stream_count_{0};
     // Returns true if the new accept may proceed; false if it must
     // be refused (caller closes the socket). Pure function of
-    // (current time, cfg_, live_sessions_.size(), bucket state) —
-    // safe to call in the accept handler with no extra locks.
+    // (current time, cfg_, live_sessions_.size(), bucket state).
     bool admit_accept();
 };
 

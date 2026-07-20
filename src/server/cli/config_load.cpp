@@ -170,7 +170,7 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
             if (json.contains("auth_keys_meta") && cfg.auth_keys_meta.empty()) {
                 cfg.auth_keys_meta = resolve_cfg_path(json["auth_keys_meta"].get<std::string>());
             }
-            if (json.contains("threads") && cfg.threads == 0) {
+            if (json.contains("threads") && !overrides.threads) {
                 cfg.threads = json["threads"].get<int>();
             }
             if (json.contains("obfuscation") && !overrides.obfuscation) {
@@ -336,6 +336,16 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
             }
             if (json.contains("max_sessions") && !overrides.max_sessions) {
                 cfg.max_sessions = json_non_negative_u32(json, "max_sessions");
+            }
+            if (json.contains("bulk_key_max_sessions") &&
+                !overrides.bulk_key_max_sessions) {
+                cfg.bulk_key_max_sessions = json_non_negative_u32(
+                    json, "bulk_key_max_sessions");
+                if (cfg.bulk_key_max_sessions == 0) {
+                    yume::util::log_error(
+                        "bulk_key_max_sessions must be a positive integer");
+                    return false;
+                }
             }
             if (json.contains("accept_rate_limit") && !overrides.accept_rate_limit) {
                 cfg.accept_rate_limit = json_non_negative_u32(json, "accept_rate_limit");

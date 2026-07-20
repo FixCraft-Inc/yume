@@ -177,24 +177,32 @@ struct ServerConfig {
     // generous enough that any legitimate client finishes in time.
     std::uint32_t tls_handshake_timeout_ms{0};
     // --max-sessions <N>. Hard cap on simultaneously-tracked sessions
-    // (entries in Manager::live_sessions_). 0 = unlimited (legacy).
+    // (entries in Manager::live_sessions_). Defaults to 256 so an
+    // unconfigured daemon still has a bounded connection footprint.
+    // 0 explicitly disables the cap.
     // When the cap is reached, new accepts are immediately closed —
     // the TCP connection sees a successful accept then a fast RST/FIN,
     // which is what an over-capacity nginx looks like, so this stays
-    // disguise-consistent. --public-node defaults to 4096 (generous
-    // for typical operator use; raise via --max-sessions <N>).
-    std::uint32_t max_sessions{0};
-    // --accept-rate-limit <conns-per-sec>. Token bucket on the accept
-    // loop: at most this many new connections per second over a 1s
-    // sliding window. 0 = unlimited (legacy). --public-node defaults
+    // disguise-consistent. Raise deliberately via --max-sessions <N>.
+    std::uint32_t max_sessions{256};
+    // --bulk-key-max-sessions <N>. Default concurrent authenticated
+    // sessions for a regular key whose metadata has key_type="bulk".
+    // A per-key max_sessions value overrides this default. Individual
+    // and operator keys remain limited to one authenticated session.
+    std::uint32_t bulk_key_max_sessions{64};
+    // --accept-rate-limit <conns-per-sec>. Shared fixed-window accounting on
+    // all accept paths: at most this many new connections in each 1 s
+    // accounting interval. 0 = unlimited (legacy). --public-node defaults
     // to 100 (legitimate clients reconnect once on disconnect, not
     // hundreds per second; pure scanner / DoS traffic does). Refused
     // connections are closed immediately on accept.
     std::uint32_t accept_rate_limit{0};
     // --egress-mbps <N>. Optional weighted fair egress shaper across
     // authenticated client keys. 0 = disabled. When enabled, one active
-    // key can use the full cap; N equal-priority active keys converge to
-    // 1/N of the cap. auth_keys_meta priority values act as weights.
+    // identity can use the full cap; N equal-weight active identities
+    // converge to 1/N. auth_keys_meta weight values act as multipliers.
+    // Bulk-key sessions are separate identities so one shared key does
+    // not collapse all of its clients into a single fair-share slot.
     std::uint32_t egress_mbps{0};
     std::string client_filter_mode{"blacklist"};
     std::string egress_filter_mode{"blacklist"};

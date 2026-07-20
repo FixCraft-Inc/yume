@@ -418,6 +418,8 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/host/http_backend_client.cpp
         server/host/extra_listeners.cpp
         server/runtime/kdf_admission.cpp
+        server/runtime/identity_admission.cpp
+        server/runtime/weighted_egress_limiter.cpp
         server/runtime/manager.cpp
         server/runtime/manager_relay.cpp
         server/packet/tun_egress.cpp
@@ -841,6 +843,26 @@ yume_link_atomic_if_needed(yume_kdf_admission_test PRIVATE)
 yume_apply_perf_opts(yume_kdf_admission_test)
 add_test(NAME yume_kdf_admission_test COMMAND yume_kdf_admission_test)
 
+add_executable(yume_identity_admission_test
+    server/runtime/identity_admission_test.cpp
+    server/runtime/identity_admission.cpp
+)
+target_include_directories(yume_identity_admission_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(yume_identity_admission_test PRIVATE Threads::Threads)
+yume_link_atomic_if_needed(yume_identity_admission_test PRIVATE)
+yume_apply_perf_opts(yume_identity_admission_test)
+add_test(NAME yume_identity_admission_test COMMAND yume_identity_admission_test)
+
+add_executable(yume_weighted_egress_limiter_test
+    server/runtime/weighted_egress_limiter_test.cpp
+    server/runtime/weighted_egress_limiter.cpp
+)
+target_include_directories(yume_weighted_egress_limiter_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+yume_link_atomic_if_needed(yume_weighted_egress_limiter_test PRIVATE)
+yume_apply_perf_opts(yume_weighted_egress_limiter_test)
+add_test(NAME yume_weighted_egress_limiter_test
+    COMMAND yume_weighted_egress_limiter_test)
+
 add_executable(yume_session_authorization_test
     server/session/authorization_test.cpp
     server/session/authorization.cpp
@@ -849,6 +871,26 @@ target_include_directories(yume_session_authorization_test PRIVATE ${CMAKE_CURRE
 yume_link_atomic_if_needed(yume_session_authorization_test PRIVATE)
 yume_apply_perf_opts(yume_session_authorization_test)
 add_test(NAME yume_session_authorization_test COMMAND yume_session_authorization_test)
+
+if(TARGET yume_server)
+    add_executable(yume_auth_policy_values_test
+        server/auth/auth_policy_values_test.cpp)
+    target_link_libraries(yume_auth_policy_values_test
+        PRIVATE yume_server Threads::Threads)
+    yume_link_atomic_if_needed(yume_auth_policy_values_test PRIVATE)
+    yume_apply_perf_opts(yume_auth_policy_values_test)
+    add_test(NAME yume_auth_policy_values_test
+        COMMAND yume_auth_policy_values_test)
+
+    add_executable(yume_auth_policy_concurrency_test
+        server/auth/auth_policy_concurrency_test.cpp)
+    target_link_libraries(yume_auth_policy_concurrency_test
+        PRIVATE yume_server Threads::Threads)
+    yume_link_atomic_if_needed(yume_auth_policy_concurrency_test PRIVATE)
+    yume_apply_perf_opts(yume_auth_policy_concurrency_test)
+    add_test(NAME yume_auth_policy_concurrency_test
+        COMMAND yume_auth_policy_concurrency_test)
+endif()
 
 add_executable(yume_static_site_test
     server/session/static_site_test.cpp

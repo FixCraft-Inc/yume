@@ -108,6 +108,13 @@ Minimum server-side embed shape for a named service:
   "tls_key": "server.key",
   "auth_keys": "authorized_keys",
   "auth_keys_meta": "auth_keys.meta",
+  "operator_keys": "operator_keys",
+  "operator_keys_meta": "operator_keys.meta",
+  "threads": 0,
+  "max_sessions": 256,
+  "bulk_key_max_sessions": 64,
+  "accept_rate_limit": 100,
+  "egress_mbps": 0,
   "allow_services": ["example-service-v1"],
   "ipc_enable": false,
   "obfuscation": true,
@@ -118,6 +125,14 @@ Minimum server-side embed shape for a named service:
 
 `listen_address` is optional. Empty or omitted means bind `0.0.0.0`; set
 `127.0.0.1` for loopback-only tests and embedded local services.
+
+`operator_keys` and `operator_keys_meta` are optional and physically separate
+from regular user authorization. The capacity fields have the same meaning as
+the daemon flags: `threads: 0` selects hardware-aware automatic sizing,
+`max_sessions` is the aggregate tracked-session cap,
+`bulk_key_max_sessions` is the default for explicitly shared regular keys,
+`accept_rate_limit` is aggregate accepts per second, and `egress_mbps` is the
+optional weighted-fair link cap (`0` disables shaping).
 
 Minimum client-side embed shape:
 

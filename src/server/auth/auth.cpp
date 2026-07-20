@@ -13,6 +13,7 @@
 #include <fstream>
 #include <ctime>
 #include <algorithm>
+#include <cmath>
 #include <sstream>
 #include <stdexcept>
 
@@ -24,6 +25,8 @@
 namespace yume::server {
 
 namespace {
+
+std::mutex auth_meta_file_mutex;
 
 std::optional<bool> read_policy_bool(const nlohmann::json& entry, const char* key) {
     if (entry.contains("permissions") && entry["permissions"].is_object()) {
@@ -64,6 +67,77 @@ std::optional<std::uint32_t> read_policy_uint(const nlohmann::json& entry,
         return read_value(entry[key]);
     }
     return std::nullopt;
+}
+
+AuthKeyType read_key_type(const nlohmann::json& entry) {
+    const auto it = entry.find("key_type");
+    if (it == entry.end()) {
+        return AuthKeyType::Individual;
+    }
+    if (!it->is_string()) {
+        throw std::runtime_error("auth key policy key_type must be 'individual' or 'bulk'");
+    }
+    const std::string value = it->get<std::string>();
+    if (value == "individual") {
+        return AuthKeyType::Individual;
+    }
+    if (value == "bulk") {
+        return AuthKeyType::Bulk;
+    }
+    throw std::runtime_error("auth key policy key_type must be 'individual' or 'bulk'");
+}
+
+std::optional<double> read_policy_weight(const nlohmann::json& entry) {
+    const auto it = entry.find("weight");
+    if (it == entry.end()) {
+        return std::nullopt;
+    }
+    if (!it->is_number()) {
+        throw std::runtime_error("auth key policy weight must be a number in 0.1..100");
+    }
+    const double value = it->get<double>();
+    if (!std::isfinite(value) || value < 0.1 || value > 100.0) {
+        throw std::runtime_error("auth key policy weight must be in 0.1..100");
+    }
+    return value;
+}
+
+std::optional<std::uint32_t> read_policy_max_sessions(const nlohmann::json& entry) {
+    const auto it = entry.find("max_sessions");
+    if (it == entry.end()) {
+        return std::nullopt;
+    }
+    if (!it->is_number_integer() && !it->is_number_unsigned()) {
+        throw std::runtime_error("auth key policy max_sessions must be a positive integer");
+    }
+    const auto value = it->get<std::int64_t>();
+    if (value <= 0 || value > 65535) {
+        throw std::runtime_error("auth key policy max_sessions must be in 1..65535");
+    }
+    return static_cast<std::uint32_t>(value);
+}
+
+void validate_key_policy(const AuthKeyPolicy& policy) {
+    if (policy.key_type == AuthKeyType::Individual &&
+        policy.max_sessions.value_or(1) != 1) {
+        throw std::runtime_error(
+            "individual auth key max_sessions must be 1; use key_type 'bulk' for sharing");
+    }
+    if (policy.key_type != AuthKeyType::Bulk) {
+        return;
+    }
+    if (policy.allow_exec.value_or(false) ||
+        policy.allow_local_ip.value_or(false) ||
+        policy.control_full.value_or(false) ||
+        policy.allow_monero_rpc.value_or(false) ||
+        !policy.allowed_codecs.empty() ||
+        !policy.allowed_services.empty() ||
+        policy.allow_inbound_admin.value_or(false) ||
+        policy.allow_outbound_admin.value_or(false) ||
+        !policy.federation_peer_id.empty()) {
+        throw std::runtime_error(
+            "bulk auth keys cannot grant exec, local-ip, full-control, codec, service, admin, or federation privileges");
+    }
 }
 
 void read_policy_codecs(const nlohmann::json& entry, std::vector<std::string>* out) {
@@ -149,7 +223,20 @@ bool AuthKeyPolicy::empty() const {
            !allow_file.has_value() &&
            !allow_bytes.has_value() &&
            !priority.has_value() &&
+           !weight.has_value() &&
+           !max_sessions.has_value() &&
+           key_type == AuthKeyType::Individual &&
            federation_peer_id.empty();
+}
+
+double AuthKeyPolicy::effective_weight() const {
+    if (weight.has_value()) {
+        return *weight;
+    }
+    if (priority.has_value()) {
+        return std::clamp(static_cast<double>(*priority) / 50.0, 0.1, 100.0);
+    }
+    return 1.0;
 }
 
 std::vector<crypto::Bytes> load_authorized_keys(const std::string& path) {
@@ -183,6 +270,7 @@ std::vector<crypto::Bytes> load_authorized_keys(const std::string& path) {
 }
 
 AuthKeyPolicyMap load_auth_policies(const std::string& meta_path) {
+    std::lock_guard<std::mutex> lock(auth_meta_file_mutex);
     AuthKeyPolicyMap policies;
     if (meta_path.empty()) {
         return policies;
@@ -223,9 +311,13 @@ AuthKeyPolicyMap load_auth_policies(const std::string& meta_path) {
         policy.allow_file = read_policy_bool(it.value(), "allow_file");
         policy.allow_bytes = read_policy_bool(it.value(), "allow_bytes");
         policy.priority = read_policy_uint(it.value(), "priority", 1, 100);
+        policy.weight = read_policy_weight(it.value());
+        policy.max_sessions = read_policy_max_sessions(it.value());
+        policy.key_type = read_key_type(it.value());
         if (it.value().contains("federation_peer_id") && it.value()["federation_peer_id"].is_string()) {
             policy.federation_peer_id = it.value()["federation_peer_id"].get<std::string>();
         }
+        validate_key_policy(policy);
         if (!policy.empty()) {
             policies[it.key()] = std::move(policy);
         }
@@ -292,6 +384,16 @@ std::string fingerprint_pubkey(EVP_PKEY* pubkey) {
     return out;
 }
 
+const char* auth_key_type_name(AuthKeyType type) {
+    switch (type) {
+        case AuthKeyType::Individual:
+            return "individual";
+        case AuthKeyType::Bulk:
+            return "bulk";
+    }
+    return "individual";
+}
+
 std::string summarize_auth_policy(const AuthKeyPolicy& policy) {
     std::vector<std::string> parts;
     auto append = [&](const char* key, const std::optional<bool>& value) {
@@ -332,6 +434,17 @@ std::string summarize_auth_policy(const AuthKeyPolicy& policy) {
     if (policy.priority.has_value()) {
         parts.emplace_back("priority=" + std::to_string(*policy.priority));
     }
+    if (policy.weight.has_value()) {
+        std::ostringstream value;
+        value << *policy.weight;
+        parts.emplace_back("weight=" + value.str());
+    }
+    if (policy.max_sessions.has_value()) {
+        parts.emplace_back("max_sessions=" + std::to_string(*policy.max_sessions));
+    }
+    if (policy.key_type != AuthKeyType::Individual) {
+        parts.emplace_back(std::string("key_type=") + auth_key_type_name(policy.key_type));
+    }
     if (!policy.federation_peer_id.empty()) {
         parts.emplace_back("federation_peer_id=" + policy.federation_peer_id);
     }
@@ -350,8 +463,7 @@ void update_auth_meta(const std::string& meta_path, const std::string& fingerpri
     if (meta_path.empty() || fingerprint.empty()) {
         return;
     }
-    static std::mutex meta_mutex;
-    std::lock_guard<std::mutex> lock(meta_mutex);
+    std::lock_guard<std::mutex> lock(auth_meta_file_mutex);
 
     nlohmann::json meta = nlohmann::json::object();
     std::ifstream in(meta_path);

@@ -262,7 +262,7 @@ std::chrono::milliseconds Session::reserve_egress_delay(std::size_t bytes) const
     if (!authenticated_ || !manager_ || bandwidth_fair_key_.empty() || bytes == 0) {
         return std::chrono::milliseconds(0);
     }
-    return manager_->reserve_egress_write(bandwidth_fair_key_, bandwidth_priority_, bytes);
+    return manager_->reserve_egress_write(bandwidth_fair_key_, bandwidth_weight_, bytes);
 }
 
 void Session::do_udp_write(uint8_t stream_id) {

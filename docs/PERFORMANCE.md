@@ -1,5 +1,11 @@
 # YUME performance
 
+This page preserves a historical 1.x WAN datapoint. It does not describe the
+current 2.0 transport or its new multi-client resource telemetry. For current
+2.0 throughput, concurrency, CPU, and RSS evidence, use
+[YUME_2_0_IMPLEMENTATION_STATUS.md](YUME_2_0_IMPLEMENTATION_STATUS.md) and
+[SELFTEST.md](SELFTEST.md).
+
 One benchmark run, April 2026. This is a useful real-path datapoint, not a universal benchmark or an isolated measurement of YUME's CPU/framing overhead. It used one client, one relay, and one network, and the repository does not contain the raw result artifacts or enough host detail to reproduce the exact run.
 
 ## Setup

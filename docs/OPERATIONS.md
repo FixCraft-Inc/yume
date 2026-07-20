@@ -63,6 +63,67 @@ port publicly. Keep `auth_keys.meta`, TLS private keys, and both 32-byte secret
 files readable only by the daemon user. Each secret file is exactly 64 lowercase
 hex characters with no group/world permission bits.
 
+## Capacity, fairness, and process limits
+
+Set `egress_mbps` at or below the server's measured upload/link capacity. Leave
+headroom for TLS overhead, the cover service, SSH, and normal host traffic. For
+example, start around `900` on a stable 1-Gbit/s link or `2200` on a 2.5-Gbit/s
+link, then verify from a remote client. `0` disables shaping and is not
+recommended for a shared public server.
+
+```jsonc
+{
+  "threads": 8,
+  "max_sessions": 256,
+  "bulk_key_max_sessions": 64,
+  "accept_rate_limit": 100,
+  "egress_mbps": 900,
+  "filter_memory_mib": 64
+}
+```
+
+The matching CLI flags are `--threads`, `--max-sessions`,
+`--bulk-key-max-sessions`, `--accept-rate-limit`, `--egress-mbps`,
+and `--filter-memory-mib`. The daemon defaults to 256 live sessions and 64
+authenticated sessions per bulk key. An administrator can explicitly use
+`--max-sessions 0` to remove the global cap, but should normally raise a finite
+limit instead.
+
+`threads` bounds YUME worker concurrency; it is not a hard machine-wide CPU
+percentage. Per-session queue bounds, the filter memory limit, and session
+limits constrain known allocations, but no portable
+in-process setting can guarantee a final RSS ceiling for OpenSSL, the C++
+runtime, socket buffers, and plugins. Use systemd/cgroup controls for hard
+process limits:
+
+```ini
+# systemctl edit yume-daemon.service (unit name may be yumed.service)
+[Service]
+# At most eight logical CPUs.
+CPUQuota=800%
+# Reclaim/throttle pressure before the hard limit.
+MemoryHigh=768M
+# Hard cgroup memory ceiling.
+MemoryMax=1G
+TasksMax=1024
+LimitNOFILE=65536
+```
+
+Run `systemctl daemon-reload && systemctl restart yume-daemon`, then confirm
+with `systemctl show yume-daemon -p CPUQuotaPerSecUSec -p MemoryHigh -p
+MemoryMax -p TasksMax`. Keep `MemoryMax` comfortably above expected
+session/socket, TLS, and runtime-library memory; setting it too tightly can
+cause the kernel to terminate the daemon rather than gently reject work.
+
+With `egress_mbps` enabled, active identities receive weighted shares. Put a
+top-level decimal `weight` in the fingerprint's metadata; `1.5` receives 1.5
+times the share of a simultaneously active `1.0` identity. Individual and
+operator keys form one identity each. Every authenticated bulk-key session is
+counted separately and receives its own fair-share slot. See
+`docs/PERMISSIONS.md` for safe bulk/operator examples and restrictions. The
+packet-native TUN uplink must additionally be capped on its TUN/physical
+interface with Linux `tc`; it does not traverse every socket-shaper hook.
+
 ## Key and permission operations
 
 List keys and aliases:
@@ -83,7 +144,11 @@ Remove a key or alias:
 yumed --auth-keys /etc/yume/authorized_keys --keys-remove alice
 ```
 
-`authorized_keys` controls connection admission. `auth_keys.meta` controls post-auth permissions. The daemon reads both at startup, so restart after editing.
+`authorized_keys` and `auth_keys.meta` control regular admission and policy.
+Controller keys live separately in `operator_keys` and `operator_keys.meta`.
+Restart after editing, or use the authenticated reload operation; reload swaps
+all four files as one validated snapshot and preserves the previous snapshot if
+any new file is malformed.
 
 ## Public endpoint policy
 

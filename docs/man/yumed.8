@@ -1,4 +1,4 @@
-.TH YUMED 8 "2026-07-18" "YUME 2.0-dev1" "YUME Manual"
+.TH YUMED 8 "2026-07-20" "YUME 2.0-dev1" "YUME Manual"
 .SH NAME
 yumed \- YUME server daemon
 .SH SYNOPSIS
@@ -66,10 +66,44 @@ TLS private key.
 .BI "--auth-keys " path
 Authorized client public keys.
 .TP
+.BI "--auth-keys-meta " path
+Regular-key policy JSON. Supports individual/bulk type, decimal fair-share
+weight, per-key session caps, and permissions.
+.TP
+.BI "--operator-keys " path
+Physically separate operator/controller public keys. Operator keys cannot be
+bulk and do not receive privileges without matching operator metadata.
+.TP
+.BI "--operator-keys-meta " path
+Operator-key policy JSON. Only this trust store may grant outbound admin.
+.TP
 .BI "--threads " n
-Worker thread count. Use
+Worker thread count in the range 0..256. Use
 .B 0
 for automatic selection.
+.TP
+.BI "--max-sessions " n
+Hard cap on all simultaneously tracked sessions. Default 256. Use 0 only to
+explicitly disable the cap.
+.TP
+.BI "--bulk-key-max-sessions " n
+Default authenticated-session cap for each regular key marked
+.BR key_type=bulk .
+Default 64; per-key metadata may override it.
+.TP
+.BI "--accept-rate-limit " n
+Maximum newly accepted TCP connections per second. Use 0 for unlimited.
+.TP
+.BI "--tls-handshake-timeout-ms " ms
+Abort slow TLS handshakes after
+.I ms
+milliseconds.
+.TP
+.BI "--egress-mbps " n
+Aggregate weighted fair server egress cap in Mbit/s. Set it at or below the
+real link limit. Active identities split the cap using metadata
+.B weight
+values; every bulk-key session is a separate identity.
 .TP
 .BI "--reverse-port-min " port
 Minimum port for reverse forwards.
@@ -259,9 +293,6 @@ Enable endpoint directory.
 .B --directory-disable
 Disable endpoint directory.
 .TP
-.BI "--operator-keys " path
-Operator key metadata file.
-.TP
 .B --federation-enable
 Enable static federation mode.
 .TP
@@ -384,27 +415,27 @@ CA certificate peers must present for federated TLS.
 .TP
 .BI "--peer " json
 Add a federation peer using raw JSON (power-user form).
-.SH SESSION LIMITS
-.TP
-.BI "--tls-handshake-timeout-ms " ms
-Abort slow TLS handshakes after
-.I ms
-milliseconds.
-.TP
-.BI "--max-sessions" n
-Cap concurrent authenticated client sessions.
-.TP
-.BI "--accept-rate-limit " n
-Limit new TCP accepts per second (0 disables).
 .SH AUTH_KEYS.META FORMAT
 .B auth_keys.meta
 is JSON keyed by Ed25519 public-key fingerprint (hex). Each entry may
 include an
-.B alias
+.BR alias ,
+.BR key_type
+(
+.B individual
+or
+.BR bulk ),
+decimal fair-share
+.BR weight ,
+optional
+.BR max_sessions ,
 and a
 .B permissions
-object. Omitted permission fields default to deny for dangerous
-features and allow for relay-side chat/file/bytes channels.
+object. Individual keys default to one session. Bulk keys use the server bulk
+default unless a lower per-key cap is supplied, and they cannot receive
+privileged controller, exec, LAN/full-control, codec/service, or federation
+policy. Omitted dangerous permissions default to deny; relay-side
+chat/file/bytes default to allow for individual keys and deny for bulk keys.
 .PP
 Example:
 .PP
@@ -412,6 +443,8 @@ Example:
 {
   "0d4f3a...fingerprint...": {
     "alias": "alice",
+    "key_type": "individual",
+    "weight": 1.5,
     "permissions": {
       "allow_exec": true,
       "allow_local_ip": true,
@@ -419,7 +452,6 @@ Example:
       "allow_services": ["example-service-v1"],
       "control_full": false,
       "allow_inbound_admin": true,
-      "allow_outbound_admin": false,
       "allow_chat": true,
       "allow_file": true,
       "allow_bytes": true
@@ -427,6 +459,10 @@ Example:
   }
 }
 .fi
+.PP
+Outbound administrator policy belongs only in the physically separate
+.B operator_keys.meta
+store. A public key present in both regular and operator stores is rejected.
 .PP
 Generate fingerprints with
 .BI "yumed --auth-keys " path " --keys-list" .
@@ -534,7 +570,13 @@ yumed --auth-keys /etc/yume/authorized_keys --keys-gen /tmp/alice --keys-gen-add
 Authorized client public keys.
 .TP
 .I /etc/yume/auth_keys.meta
-Per-key permissions and metadata.
+Regular-key permissions, type, fair weight, and session cap metadata.
+.TP
+.I /etc/yume/operator_keys
+Physically separate operator/controller public keys.
+.TP
+.I /etc/yume/operator_keys.meta
+Explicit operator policy metadata.
 .TP
 .I /etc/yume/vpn_db.tar.xz
 Optional private VPN-provider blocklist archive. This file is

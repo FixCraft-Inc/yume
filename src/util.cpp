@@ -608,14 +608,12 @@ int64_t now_ms() {
 
 std::size_t relay_read_buf_size() {
     // Size (in bytes) of the per-stream relay read buffers that set the
-    // outgoing DATA frame size: the client SOCKS read, the client TLS read,
-    // and the server upstream-socket read. Larger buffers coalesce more
-    // bytes per read into fewer, larger frames, which cuts the per-frame
-    // cost that dominates the real relay path (syscalls, TLS records,
-    // strand posts, the server's 2-read-per-frame inbound parse). Tunable
-    // via YUME_RELAY_READ_BUF (in KiB) so the sweet spot can be swept
-    // without a rebuild; default 64 KiB preserves historical behaviour.
-    // Read once and cached.
+    // outgoing DATA frame size for client SOCKS/forward reads. Larger buffers
+    // coalesce more bytes per read into fewer, larger frames, which cuts
+    // per-frame overhead. Server target/source reads apply their own bounded
+    // record size in server_relay_read_buf_size(). Tunable via
+    // YUME_RELAY_READ_BUF (in KiB); default 64 KiB preserves historical
+    // client behavior. Read once and cached.
     static const std::size_t cached = [] {
         std::size_t kib = 64;
         if (const char* raw = std::getenv("YUME_RELAY_READ_BUF")) {
@@ -633,6 +631,15 @@ std::size_t relay_read_buf_size() {
         return kib * 1024u;
     }();
     return cached;
+}
+
+std::size_t server_relay_read_buf_size() {
+    // Eight 32 KiB DATA records retain the exact 256 KiB rekey boundary while
+    // allowing TLS/H2 receive, AEAD open, and application delivery to overlap.
+    // Preserve smaller operator-selected records, but do not let the generic
+    // tuning knob recreate the server-to-client head-of-line stall.
+    constexpr std::size_t kServerDataRecordBytes = 32U * 1024U;
+    return std::min(relay_read_buf_size(), kServerDataRecordBytes);
 }
 
 std::string base64_decode(const std::string& input) {

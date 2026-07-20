@@ -445,7 +445,8 @@ void Session::pump_bench_sources() {
             }
             const std::uint64_t remaining = bench.requested_bytes - bench.downstream_bytes;
             chunk_size = static_cast<std::size_t>(
-                std::min<std::uint64_t>(remaining, util::relay_read_buf_size()));
+                std::min<std::uint64_t>(remaining,
+                                        util::server_relay_read_buf_size()));
             offset = bench.downstream_bytes;
             bench.downstream_bytes += static_cast<std::uint64_t>(chunk_size);
             bench.in_flight_frames += 1;

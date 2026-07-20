@@ -506,9 +506,12 @@ def run_client(args: argparse.Namespace) -> int:
         f"[lan] endpoint {server}:{port}: {mib} MiB per direction, "
         f"{streams} stream(s), "
         + (
-            "production relay DATA shape"
+            "production upload DATA shape; download server-selected"
             if args.bench_chunk_kib is None
-            else f"explicit {args.bench_chunk_kib} KiB DATA shape"
+            else (
+                f"explicit {args.bench_chunk_kib} KiB upload DATA shape; "
+                "download server-selected"
+            )
         ),
         flush=True,
     )
@@ -580,6 +583,8 @@ def run_client(args: argparse.Namespace) -> int:
             "command": endpoint_argv,
             "mib_per_direction": mib,
             "streams": streams,
+            # Retain chunk_kib/chunk_source as upload aliases for existing
+            # report consumers. Download DATA records are selected by yumed.
             "chunk_kib": effective_chunk_kib,
             "requested_chunk_kib": args.bench_chunk_kib,
             "chunk_source": (
@@ -587,6 +592,14 @@ def run_client(args: argparse.Namespace) -> int:
                 if args.bench_chunk_kib is None
                 else "explicit"
             ),
+            "upload_chunk_kib": effective_chunk_kib,
+            "upload_chunk_source": (
+                "client-production-relay-buffer"
+                if args.bench_chunk_kib is None
+                else "explicit"
+            ),
+            "download_chunk_kib": None,
+            "download_chunk_source": "server-target/source-policy",
             "direction": args.bench_direction,
             "timing": args.timing,
             "contract": endpoint_contract(
@@ -672,7 +685,7 @@ def parse_args() -> argparse.Namespace:
     client.add_argument(
         "--bench-chunk-kib",
         type=int,
-        help="explicit DATA chunk size; omit to match the production relay buffer",
+        help="explicit upload DATA chunk size; omit to match the client relay buffer",
     )
     client.add_argument("--bench-direction", choices=("both", "up", "down"), default="both")
     client.add_argument("--timing", action="store_true", help="enable yume timing counters")

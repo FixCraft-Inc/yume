@@ -798,6 +798,13 @@ yume_link_atomic_if_needed(yume_fair_frame_budget_test PRIVATE)
 yume_apply_perf_opts(yume_fair_frame_budget_test)
 add_test(NAME yume_fair_frame_budget_test COMMAND yume_fair_frame_budget_test)
 
+add_executable(yume_relay_read_buf_test util_test.cpp)
+target_include_directories(yume_relay_read_buf_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(yume_relay_read_buf_test PRIVATE yume_core)
+yume_link_atomic_if_needed(yume_relay_read_buf_test PRIVATE)
+yume_apply_perf_opts(yume_relay_read_buf_test)
+add_test(NAME yume_relay_read_buf_test COMMAND yume_relay_read_buf_test)
+
 add_executable(yume_app_codec_test core/app_codec/codec_test.cpp)
 target_link_libraries(yume_app_codec_test PRIVATE yume_core)
 yume_link_atomic_if_needed(yume_app_codec_test PRIVATE)

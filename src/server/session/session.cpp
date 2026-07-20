@@ -983,6 +983,14 @@ void Session::begin_close() {
         maybe_finish_close();
         return;
     }
+    // A tunnel write flush is normally posted once per strand turn so DATA
+    // and its immediately following rekey control record share one H2/TLS
+    // write. Drain it before transitioning to Closing so accepted writes keep
+    // their normal completion path during graceful shutdown.
+    if (v2_h2_flush_scheduled_) {
+        v2_h2_flush_scheduled_ = false;
+        flush_v2_h2_wire_on_strand();
+    }
     close_state_ = CloseState::Closing;
     close_started_at_ = std::chrono::steady_clock::now();
     arm_close_deadline();

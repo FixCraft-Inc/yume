@@ -134,6 +134,45 @@ void test_inner_crypto_round_trip() {
 #endif
 }
 
+void test_incremental_frame_decoder_handles_fragmented_concatenated_frames() {
+    Recorder recorder;
+    yume::client::TransportCore core(recorder.writer(), recorder.closer());
+    core.start();
+
+    std::vector<std::vector<std::uint8_t>> received;
+    core.register_stream(
+        7,
+        [&](const std::vector<std::uint8_t>& payload) {
+            received.push_back(payload);
+        },
+        [&](const std::string&) {});
+
+    std::vector<std::uint8_t> first(256U * 1024U);
+    for (std::size_t i = 0; i < first.size(); ++i) {
+        first[i] = static_cast<std::uint8_t>((i * 29U + 7U) & 0xffU);
+    }
+    const std::vector<std::uint8_t> second{0x10, 0x20, 0x30, 0x40};
+    auto wire = yume::protocol::encode_frame(
+        yume::protocol::DATA, 7, 0, first);
+    auto tail = yume::protocol::encode_frame(
+        yume::protocol::DATA, 7, 0, second);
+    wire.insert(wire.end(), tail.begin(), tail.end());
+
+    const std::array<std::size_t, 5> fragments{1, 7, 4093, 16381, 65537};
+    std::size_t offset = 0;
+    std::size_t fragment = 0;
+    while (offset < wire.size()) {
+        const std::size_t bytes = std::min(
+            fragments[fragment++ % fragments.size()], wire.size() - offset);
+        core.feed_tls_bytes(wire.data() + offset, bytes);
+        offset += bytes;
+    }
+
+    assert(received.size() == 2);
+    assert(received[0] == first);
+    assert(received[1] == second);
+}
+
 void test_padded_frame_round_trip() {
     using namespace yume::protocol;
     // Pick a payload whose size is *not* a multiple of any test M.
@@ -406,6 +445,7 @@ void test_ratchet_batches_cross_rekeys_in_wire_order() {
 int main() {
     test_open_round_trip();
     test_inner_crypto_round_trip();
+    test_incremental_frame_decoder_handles_fragmented_concatenated_frames();
     test_padded_frame_round_trip();
     test_padded_frame_rejects_bad_length();
     test_packet_bulk_round_trip();

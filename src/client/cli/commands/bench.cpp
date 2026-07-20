@@ -740,20 +740,24 @@ int run_endpoint_benchmark(const std::shared_ptr<Tunnel>& tunnel,
               << "Profile  " << (options.full_profile ? "bench-full" : "standard")
               << "  direction=" << options.bench_direction
               << "  streams=" << options.bench_streams << "\n"
-              << "Workload "
+              << "Workload upload="
               << (production_stream_shape ? "production-stream" : "custom-stream")
+              << "  download=server-production-stream"
               << "  adapter=authenticated-stream-core\n"
               << "Payload  " << options.bench_mib << " MiB per direction"
-              << "  chunk=" << options.bench_chunk_kib << " KiB\n"
+              << "  upload-chunk=" << options.bench_chunk_kib << " KiB"
+              << "  download-chunk=server-selected\n"
               << "Boundary exact DATA/ratchet/H2/WebSocket/TLS path; excludes local SOCKS"
                  " and target TCP sockets\n"
               << "Security ML-KEM-1024+X25519+PSK ratchet=on  AES-256-GCM=on"
                  "  legacy-hop=off\n"
               << "Carrier  TLS1.3=on  H2/WebSocket=on  padding=off  jitter=off\n";
     if (production_stream_shape) {
-        std::cout << "Compare  DATA geometry matches this process's SOCKS/forward relay buffer\n\n";
+        std::cout << "Compare  upload DATA geometry matches this process's SOCKS/forward"
+                     " relay buffer; download uses yumed target/source policy\n\n";
     } else {
-        std::cout << "Compare  custom DATA geometry; do not label this result SOCKS-equivalent\n\n";
+        std::cout << "Compare  custom upload DATA geometry; download uses yumed target/source"
+                     " policy; do not label upload SOCKS-equivalent\n\n";
     }
 
     const auto bench_started = std::chrono::steady_clock::now();

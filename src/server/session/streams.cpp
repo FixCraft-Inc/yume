@@ -620,7 +620,7 @@ void Session::queue_encoded_write_on_strand(
         v2_h2_pending_app_writes_.push_back(
             {std::move(data), frame_type, stream_id, payload_size,
              std::move(handler)});
-        flush_v2_h2_wire_on_strand();
+        schedule_v2_h2_wire_flush_on_strand();
         return;
     }
     enqueue_tls_write_on_strand(std::move(data), frame_type, stream_id,

@@ -206,8 +206,10 @@ private:
     std::uint16_t obfs_pad_multiple_{0};
     std::uint32_t obfs_jitter_ms_max_{0};
     std::chrono::steady_clock::time_point last_pong_{};
-    Bytes incoming_bytes_;
-    std::size_t incoming_offset_{0};
+    std::array<std::uint8_t, 8> incoming_header_{};
+    std::size_t incoming_header_bytes_{0};
+    std::optional<protocol::Frame> incoming_frame_;
+    std::size_t incoming_payload_bytes_{0};
 };
 
 }  // namespace yume::client

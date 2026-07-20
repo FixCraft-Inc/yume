@@ -76,7 +76,19 @@ or admin/control validation.
   download 149.0-158.3 Mbit/s. This validates the DATA/ratchet/H2/WebSocket/TLS
   boundary on that single-tunnel LAN path; it excludes local SOCKS and target
   sockets, the packet ABI/TUN path, WAN behavior, and Android. The persistent
-  download asymmetry remains a profiling target.
+  download asymmetry in that historical build became the next profiling target.
+- Receive-path profiling found that one maximum-size 256 KiB server DATA record
+  consumed an entire byte epoch and delayed client delivery until the whole
+  H2/WebSocket/AEAD record had arrived. Server target and benchmark-source reads
+  are now capped at 32 KiB records; the 256 KiB / 512-frame / 500 ms ratchet
+  limits and wire format are unchanged. In a controlled three-run loopback
+  comparison with both processes configured with `YUME_RELAY_READ_BUF=256`,
+  128 MiB per direction, and 16 streams, uncapped download measured 284.9
+  Mbit/s median and capped download measured 1,077.7 Mbit/s median, a 278%
+  increase. The capped upload median was 1,267.9 Mbit/s. This local functional
+  run used Node 20.19.2 rather than the pinned Node 24 fixture; the direct
+  Ethernet matrix must still be rerun before claiming the hardware asymmetry is
+  closed.
 
 ## Required before `2.0-rc1`
 

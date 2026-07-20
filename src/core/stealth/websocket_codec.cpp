@@ -217,8 +217,12 @@ void WebSocketCodec::Process() {
                         Fail("decoded WebSocket buffer limit exceeded");
                         return;
                     }
-                    decoded_.insert(decoded_.end(), fragmented_.begin(), fragmented_.end());
-                    fragmented_.clear();
+                    if (decoded_.empty()) {
+                        decoded_ = std::move(fragmented_);
+                    } else {
+                        decoded_.insert(decoded_.end(), fragmented_.begin(), fragmented_.end());
+                        fragmented_.clear();
+                    }
                     fragmented_binary_ = false;
                 }
                 break;
@@ -232,7 +236,11 @@ void WebSocketCodec::Process() {
                         Fail("decoded WebSocket buffer limit exceeded");
                         return;
                     }
-                    decoded_.insert(decoded_.end(), payload.begin(), payload.end());
+                    if (decoded_.empty()) {
+                        decoded_ = std::move(payload);
+                    } else {
+                        decoded_.insert(decoded_.end(), payload.begin(), payload.end());
+                    }
                 } else {
                     fragmented_ = std::move(payload);
                     fragmented_binary_ = true;

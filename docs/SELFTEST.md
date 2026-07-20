@@ -66,9 +66,11 @@ reach the loopback echo target. The generated authorization grants
 
 `yume --bench` measures authenticated upload and download streams against a
 deployed `yumed`. `yume --bench-full` uses the longer 1024 MiB / 64-stream
-profile. Its default 64 KiB upload DATA size is taken from the same
-`YUME_RELAY_READ_BUF` setting used by SOCKS, forwards, and server upstream
-reads. This path includes the live YUME 2.0 carrier, server, and network, but
+profile. Its default 64 KiB upload DATA size is taken from
+`YUME_RELAY_READ_BUF`, as are client SOCKS and forward reads. Server target and
+benchmark-source reads are capped at 32 KiB so one 256 KiB directional epoch
+is delivered incrementally instead of becoming one head-of-line-blocking DATA
+record. This path includes the live YUME 2.0 carrier, server, and network, but
 does not include the local SOCKS socket, the server target TCP socket, a
 browser, public cover site, or CDN.
 

@@ -949,6 +949,20 @@ void Session::process_v2_h2_requests() {
     read_v2_h2_cover();
 }
 
+void Session::schedule_v2_h2_wire_flush_on_strand() {
+    if (v2_h2_flush_scheduled_ || close_state_ != CloseState::Open) {
+        return;
+    }
+    v2_h2_flush_scheduled_ = true;
+    boost::asio::post(strand_, [self = shared_from_this()]() {
+        if (!self->v2_h2_flush_scheduled_) {
+            return;
+        }
+        self->v2_h2_flush_scheduled_ = false;
+        self->flush_v2_h2_wire_on_strand();
+    });
+}
+
 void Session::flush_v2_h2_wire_on_strand() {
     if (!v2_h2_carrier_ || close_state_ != CloseState::Open) return;
     auto wire = v2_h2_carrier_->TakeOutbound();

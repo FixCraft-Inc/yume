@@ -713,7 +713,11 @@ private:
             Fail("decoded tunnel input queue exceeded 32 MiB");
             return;
         }
-        tunnel_bytes_.insert(tunnel_bytes_.end(), decoded.begin(), decoded.end());
+        if (tunnel_bytes_.empty()) {
+            tunnel_bytes_ = std::move(decoded);
+        } else {
+            tunnel_bytes_.insert(tunnel_bytes_.end(), decoded.begin(), decoded.end());
+        }
         auto replies = websocket_.TakeWireReplies();
         if (!replies.empty()) QueueStreamBytes(stream_id, std::move(replies));
         if (role_ == H2CarrierRole::Server && !server_active_ping_sent_ &&

@@ -160,6 +160,7 @@ private:
     void on_v2_h2_cover_read(const boost::system::error_code& ec,
                              std::size_t bytes);
     void process_v2_h2_requests();
+    void schedule_v2_h2_wire_flush_on_strand();
     void flush_v2_h2_wire_on_strand();
     void start_v2_h2_exact_read(
         std::uint8_t* target,
@@ -403,7 +404,7 @@ private:
         explicit RemoteStream(boost::asio::any_io_executor exec)
             : socket(exec)
             , resolver(exec) {
-            read_buf.resize(util::relay_read_buf_size());
+            read_buf.resize(util::server_relay_read_buf_size());
         }
     };
 
@@ -593,6 +594,7 @@ private:
     std::array<std::deque<std::uint8_t>, 5> write_ready_streams_;
     std::array<std::int8_t, 256> write_ready_priority_{};
     std::deque<PendingWrite> v2_h2_pending_app_writes_;
+    bool v2_h2_flush_scheduled_{false};
     std::deque<RatchetBlockedWrite> ratchet_blocked_writes_;
     bool write_in_flight_{false};
     std::uint32_t write_queued_frames_{0};

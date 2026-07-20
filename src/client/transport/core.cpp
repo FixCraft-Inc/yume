@@ -134,8 +134,13 @@ std::vector<TransportCore::CloseHandler> TransportCore::shutdown() {
         pending_open_.clear();
         pending_rlisten_.clear();
         reserved_streams_.clear();
-        security::secure_erase(incoming_bytes_);
-        incoming_offset_ = 0;
+        if (incoming_frame_.has_value()) {
+            security::secure_erase(incoming_frame_->payload);
+            incoming_frame_.reset();
+        }
+        incoming_header_.fill(0);
+        incoming_header_bytes_ = 0;
+        incoming_payload_bytes_ = 0;
         if (inner_key_.has_value()) {
             security::secure_erase(*inner_key_);
             inner_key_.reset();
@@ -574,15 +579,10 @@ void TransportCore::feed_tls_bytes(const uint8_t* data, std::size_t size) {
     if (!data || size == 0) {
         return;
     }
-    {
-        std::lock_guard<std::mutex> lock(state_mu_);
-        if (stopped_) {
-            return;
-        }
-        incoming_bytes_.insert(incoming_bytes_.end(), data, data + size);
-    }
 
-    while (true) {
+    const std::uint8_t* cursor = data;
+    std::size_t remaining = size;
+    while (remaining > 0) {
         protocol::Frame frame{};
         bool have_frame = false;
         const char* fatal_reason = nullptr;
@@ -591,40 +591,56 @@ void TransportCore::feed_tls_bytes(const uint8_t* data, std::size_t size) {
             if (stopped_) {
                 return;
             }
-            const std::size_t available = incoming_bytes_.size() - incoming_offset_;
-            if (available < 8) {
-                return;
-            }
-            const auto* frame_start = incoming_bytes_.data() + incoming_offset_;
-            const auto header = parse_header(frame_start);
-            if (header.len > kMaxFramePayloadBytes) {
-                incoming_bytes_.clear();
-                incoming_offset_ = 0;
-                fatal_reason = "frame too large";
-            } else {
-                const std::size_t frame_bytes = 8U + static_cast<std::size_t>(header.len);
-                if (available < frame_bytes) {
+            if (!incoming_frame_.has_value()) {
+                const std::size_t header_bytes = std::min(
+                    remaining, incoming_header_.size() - incoming_header_bytes_);
+                std::copy_n(cursor, header_bytes,
+                            incoming_header_.begin() +
+                                static_cast<std::ptrdiff_t>(incoming_header_bytes_));
+                cursor += header_bytes;
+                remaining -= header_bytes;
+                incoming_header_bytes_ += header_bytes;
+                if (incoming_header_bytes_ < incoming_header_.size()) {
                     return;
                 }
-                frame.header = header;
-                frame.payload.assign(frame_start + 8, frame_start + frame_bytes);
-                incoming_offset_ += frame_bytes;
-                if (incoming_offset_ == incoming_bytes_.size()) {
-                    incoming_bytes_.clear();
-                    incoming_offset_ = 0;
-                } else if (incoming_offset_ >= 1024 * 1024 ||
-                           incoming_offset_ * 2 >= incoming_bytes_.size()) {
-                    incoming_bytes_.erase(incoming_bytes_.begin(),
-                                          incoming_bytes_.begin() + static_cast<std::ptrdiff_t>(incoming_offset_));
-                    incoming_offset_ = 0;
-                }
-                if ((frame.header.flags & protocol::kFlagPadded) != 0 &&
-                    !protocol::strip_padding(frame)) {
-                    incoming_bytes_.clear();
-                    incoming_offset_ = 0;
-                    fatal_reason = "malformed padded frame: pad length exceeds payload";
+
+                const auto header = parse_header(incoming_header_.data());
+                incoming_header_bytes_ = 0;
+                if (header.len > kMaxFramePayloadBytes) {
+                    fatal_reason = "frame too large";
                 } else {
-                    have_frame = true;
+                    incoming_frame_.emplace();
+                    incoming_frame_->header = header;
+                    incoming_frame_->payload.resize(header.len);
+                    incoming_payload_bytes_ = 0;
+                }
+            }
+
+            if (!fatal_reason && incoming_frame_.has_value()) {
+                const std::size_t payload_remaining =
+                    incoming_frame_->payload.size() - incoming_payload_bytes_;
+                const std::size_t payload_bytes =
+                    std::min(remaining, payload_remaining);
+                if (payload_bytes > 0) {
+                    std::copy_n(
+                        cursor, payload_bytes,
+                        incoming_frame_->payload.begin() +
+                            static_cast<std::ptrdiff_t>(incoming_payload_bytes_));
+                    cursor += payload_bytes;
+                    remaining -= payload_bytes;
+                    incoming_payload_bytes_ += payload_bytes;
+                }
+                if (incoming_payload_bytes_ == incoming_frame_->payload.size()) {
+                    frame = std::move(*incoming_frame_);
+                    incoming_frame_.reset();
+                    incoming_payload_bytes_ = 0;
+                    if ((frame.header.flags & protocol::kFlagPadded) != 0 &&
+                        !protocol::strip_padding(frame)) {
+                        fatal_reason =
+                            "malformed padded frame: pad length exceeds payload";
+                    } else {
+                        have_frame = true;
+                    }
                 }
             }
         }

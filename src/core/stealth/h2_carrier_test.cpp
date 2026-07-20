@@ -143,8 +143,15 @@ void FullSessionRoundTrip() {
 
     // The server's first full-size message uses the captured 8-KiB + 8-KiB
     // fragmentation, transparently reassembled by the client codec.
-    const H2Bytes down(40000, 0x72);
-    assert(server.SendBinary(down));
+    H2Bytes down(40000, 0x72);
+    const H2Bytes control_like(1662, 0x39);
+    down.insert(down.end(), control_like.begin(), control_like.end());
+    assert(server.SendBinary(down.data(), 40000));
+    // The server transport deliberately queues the following ratchet control
+    // record before taking H2 output. Preserve both SendBinary calls across a
+    // single drain so the control record is not stranded behind another TLS
+    // write.
+    assert(server.SendBinary(control_like));
     Pump(server, client);
     assert(client.TakeTunnelBytes() == down);
 

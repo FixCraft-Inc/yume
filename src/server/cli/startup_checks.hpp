@@ -16,7 +16,6 @@ namespace yume::server::cli {
 
 struct StartupCheckOptions {
     bool tls_handshake_timeout_overridden{false};
-    bool max_sessions_overridden{false};
     bool accept_rate_limit_overridden{false};
     bool key_management_only{false};
     std::string default_secret_path;

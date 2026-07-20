@@ -169,8 +169,10 @@ Results are written under `yume-bench-results/<UTC timestamp>/` by default:
 - `cover-chromium.pcap` contains a real browser page load through `yumed` to
   the loopback Node site.
 - `endpoint.log`, `yumed.log`, and `node.log` retain the corresponding output.
-- `report.json` records versions, network settings, commands, exit codes, and
-  parsed MiB/s and Mbit/s rows.
+- `report.json` records versions, network settings, commands, exit codes,
+  parsed MiB/s and Mbit/s rows, host capacity, and client/server CPU and RAM.
+- `yumed-resources.jsonl` and `node-resources.jsonl` retain the external server
+  process-group samples used by the summary.
 
 The helper requires Node 24.18.x for the pinned cover profile. When the system
 Node is older and `npx` is available, it resolves the exact pinned runtime in
@@ -181,12 +183,22 @@ Likewise, the browser version recorded in `report.json` must match the pinned
 Chrome fixture before its PCAP is used as fingerprint evidence.
 
 `scripts/yume_bench_localhost.py` is now only a convenience wrapper for the
-canonical built-in local benchmark:
+canonical built-in local benchmark. It additionally samples the benchmark
+process from the outside and writes a resource report under
+`yume-bench-results/local-<UTC>/resources.json`:
 
 ```bash
 python3 scripts/yume_bench_localhost.py
 python3 scripts/yume_bench_localhost.py --full --duration-sec 120 --dev
 ```
+
+The report records CPU user/system/core-seconds, core-hours, average cores,
+single-core and whole-machine percentages, average/peak RSS in MiB, peak
+threads/processes, CPU model/topology/frequency, affinity, and host RAM. These
+absolute fields make results comparable across machines without relying on an
+ambiguous percentage alone. Use `--resource-json PATH` to select the artifact,
+`--resource-sample-ms 500` to lower sampling frequency, or
+`--no-resource-sampling` for a measurement with no external sampler.
 
 ### Two-host LAN or WAN
 
@@ -227,7 +239,53 @@ sudo scripts/yume_bench_lan.py client \
   --full --capture --cover
 ```
 
-Pass `--timing` to both the `server` and `client` subcommands when profiling.
+LAN client `report.json` records the client process resources. When the server
+is stopped, its result directory receives `resources.json` plus bounded
+`yumed-resources.jsonl` and `node-resources.jsonl` sample streams. The JSONL
+timeline is useful because a two-host server may sit idle before or after the
+actual client load; lifetime CPU percentages alone would dilute the busy
+window. Match its UTC samples to `endpoint.started_utc` and
+`endpoint.finished_utc` in the client report when comparing concurrency steps.
+
+For an explicitly bounded server-scaling run, start the server as above and
+launch several independent authenticated client processes:
+
+```bash
+# 4 GiB aggregate payload: 16 clients * 128 MiB * two directions.
+scripts/yume_bench_lan.py client \
+  --bundle ~/yume-lan-kit/client \
+  --bench-mib 128 --bench-streams 16 \
+  --clients 16 --client-stagger-ms 25
+
+# Deliberate high-concurrency run on a host with capacity for 100 processes.
+scripts/yume_bench_lan.py client \
+  --bundle ~/yume-lan-kit/client \
+  --bench-mib 32 --bench-streams 4 \
+  --clients 100 --client-stagger-ms 10 --allow-high-client-count
+```
+
+The default remains one client. More than 64 clients requires the explicit
+`--allow-high-client-count` acknowledgement, the hard limit is 128, and more
+than 16 GiB of aggregate payload separately requires `--allow-large-workload`.
+Cancellation stops every client process group. For a new machine, ramp through
+`--clients 1`, `2`, `4`, `8`, and `16` while watching the server JSONL rather
+than starting at the maximum. `wall_throughput` in the client report is total
+application payload divided by full ramp wall time; `rates` separately retains
+the sum of each client's own reported rates. Use server `--threads N` to compare
+worker counts without editing the bundle; this changes scheduling only, not the
+cryptographic protocol.
+
+Resource sampling is implemented only in the Python benchmark harness through
+Linux `/proc`; it adds no counters, logging, timer calls, branches, or threads
+to normal `yume` and `yumed` execution. The default 250 ms sampler is external
+to the measured process group. `--timing` is separate, opt-in in-process
+diagnostics and should be passed to both server and client only for profiling,
+not for an uninstrumented throughput comparison.
+Multi-client peak RSS is intentionally reported as an upper bound: it sums
+each process group's independently observed peak, so the peaks may not coincide
+and shared pages can be counted once per process. Use proportional-set-size
+tooling for a dedicated memory study rather than interpreting that upper bound
+as exact simultaneous physical RAM.
 The client refuses a capture before startup when the selected payload plus
 packet overhead would leave too little filesystem space for the final logs and
 `report.json`. Uncaptured endpoint runs remain the preferred throughput sweep.

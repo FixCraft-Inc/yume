@@ -478,10 +478,29 @@ status is tracked in
 
 ## Permissions and key management
 
-Authentication and authorization live in two files, the way SSH splits `authorized_keys` from per-line options:
+Authentication and authorization use separate regular-user and operator trust
+stores, each split into public keys and policy metadata:
 
 - `authorized_keys` lists Ed25519 public keys that may **connect**.
-- `auth_keys.meta` is a JSON file mapping each key's fingerprint to **what it may do** (exec control / LAN bridge / app codecs / admin / chat / file / bytes). App codecs use `permissions.allow_codecs`, for example `["monero-rpc"]`. Default for every dangerous bit is **deny**; a key without a meta entry can connect but cannot exec, cannot reach LAN, cannot use privileged codecs, and cannot administer other clients.
+- `auth_keys.meta` maps each regular-key fingerprint to its permissions,
+  identity type, per-key session cap, and fair-egress weight.
+- `operator_keys` is a physically separate set of controller identities.
+- `operator_keys.meta` holds their explicit policy. Only this store may grant
+  outbound administration, and operator keys cannot be bulk keys.
+
+Regular keys default to `key_type: "individual"` and one authenticated session.
+An administrator may explicitly mark a regular key as `bulk` for many users who
+must share one credential. Each bulk connection is still counted and shaped as
+a separate session; the server-wide and per-key caps remain enforced. Bulk keys
+cannot receive exec, LAN/private access, full control, privileged codecs or
+services, administration, or federation identity. Their chat/file/bytes
+permissions also default to deny.
+
+App codecs use `permissions.allow_codecs`, for example `["monero-rpc"]`.
+Every dangerous permission defaults to **deny**; a regular key without a meta
+entry can connect but cannot exec, reach LAN, use privileged codecs, or
+administer other clients. See [docs/PERMISSIONS.md](docs/PERMISSIONS.md) for the
+full schema and privilege matrix.
 
 An explicitly configured `preauth_services` peer is not a normally authorized key. It remains in a persisted `PreauthServiceOnly` tier that admits only registered named-service OPEN/DATA/CLOSE plus PING/PONG. Admin attach separately requires trusted relay mode, caller outbound policy and opt-in, and target inbound policy and opt-in; the legacy attach form uses the same predicate.
 
@@ -500,7 +519,11 @@ Removing any one layer is enough to keep the feature off. The bridge / admin mat
 ./build/bin/yumed --auth-keys /etc/yume/authorized_keys --keys-gen ./keys/user1 --keys-gen-add
 ```
 
-Authorized keys are loaded once at startup. Verification uses `EVP_DigestVerify` (constant-time at the OpenSSL level). The `auth_keys.meta` file is also read once at startup; restart `yumed` after editing.
+The four key/policy files are parsed into immutable snapshots at startup.
+Authenticated runtime reload atomically replaces all four together; a parse,
+validation, or duplicate-store failure leaves the previous complete snapshot
+active. Restarting `yumed` is the fallback when runtime reload is unavailable.
+Ed25519 authentication uses OpenSSL `EVP_DigestVerify`.
 
 ## Real HTTP facade examples
 
@@ -562,9 +585,17 @@ sudo ./build/bin/yumed \
 ## Scalability notes
 
 - Server sessions are fully async on a shared `io_context` thread pool (no per-connection threads)
-- Authorized keys are loaded once at startup
+- Regular/operator keys and policies are immutable shared snapshots, so AUTH
+  does not reread policy JSON for every connection
+- Global sessions default to a bounded 256; individual keys default to one
+  session and bulk keys default to 64, with explicit administrator overrides
+- `--accept-rate-limit` bounds aggregate connection admission across listeners
+- Optional `--egress-mbps` weighted fairness divides an administrator-chosen
+  link cap among active identities without adding shaping work when unset
 - Protected DATA frames are capped at 256 KiB and carrier/proxy queues are bounded
 - Every authenticated record remains inside H2/WebSocket and uses a one-use AEAD key
+- Hard process CPU and memory containment belongs to the service manager; see
+  [docs/OPERATIONS.md](docs/OPERATIONS.md) for systemd examples
 
 ## Release guarantees
 

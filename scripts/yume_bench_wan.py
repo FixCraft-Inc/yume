@@ -23,6 +23,7 @@ from yume_bench_common import (  # noqa: E402
     BenchKeyset,
     ManagedProcess,
     RuntimeIdentity,
+    StreamedCommandResult,
     chown_tree,
     command_version,
     drop_prefix,
@@ -35,6 +36,12 @@ from yume_bench_common import (  # noqa: E402
     run_streamed_command,
     start_logged_process,
     wait_for_tcp,
+)
+from yume_bench_resources import (  # noqa: E402
+    host_resource_info,
+    print_host_resources,
+    print_process_resources,
+    write_resource_samples,
 )
 
 
@@ -145,7 +152,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--bench-chunk-kib",
         type=int,
-        help="explicit DATA chunk size; omit to match the production relay buffer",
+        help="explicit upload DATA chunk size; omit to match the client relay buffer",
     )
     parser.add_argument("--bench-direction", choices=("both", "up", "down"), default="both")
     size = parser.add_mutually_exclusive_group()
@@ -165,6 +172,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--yumed", type=Path, default=REPO_ROOT / "build" / "bin" / "yumed")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--keep-workdir", action="store_true")
+    parser.add_argument("--resource-sample-ms", type=int, default=250)
+    parser.add_argument("--no-resource-sampling", action="store_true")
     return parser.parse_args()
 
 
@@ -208,6 +217,8 @@ def validate_args(args: argparse.Namespace, profile: WanProfile) -> None:
         raise SystemExit("--bench-streams must be 1..240")
     if args.bench_chunk_kib is not None and not 1 <= args.bench_chunk_kib <= 256:
         raise SystemExit("--bench-chunk-kib must be 1..256")
+    if not 100 <= args.resource_sample_ms <= 5000:
+        raise SystemExit("--resource-sample-ms must be 100..5000")
 
 
 def start_node(
@@ -215,12 +226,21 @@ def start_node(
     node: Path,
     log: Path,
     identity: RuntimeIdentity,
+    *,
+    resource_sampling: bool,
+    resource_sample_ms: int,
 ) -> ManagedProcess:
     argv = lab.command(lab.server_ns, [*drop_prefix(identity),
         "env", "YUME_COVER_HOST=127.0.0.1", f"YUME_COVER_PORT={COVER_PORT}",
         str(node), str(REPO_ROOT / "tools" / "cover-node" / "backend.mjs"),
     ])
-    process = start_logged_process(argv, log, cwd=REPO_ROOT)
+    process = start_logged_process(
+        argv,
+        log,
+        cwd=REPO_ROOT,
+        resource_sampling=resource_sampling,
+        resource_sample_ms=resource_sample_ms,
+    )
     if not wait_for_tcp("127.0.0.1", COVER_PORT, 10, namespace=lab.server_ns):
         process.stop()
         raise RuntimeError(f"Node cover failed to listen; see {log}")
@@ -232,6 +252,9 @@ def start_yumed(
     yumed: Path,
     keys: BenchKeyset,
     log: Path,
+    *,
+    resource_sampling: bool,
+    resource_sample_ms: int,
 ) -> ManagedProcess:
     argv = lab.command(lab.server_ns, [
         str(yumed),
@@ -244,7 +267,12 @@ def start_yumed(
         "--real-backend", f"loopback://127.0.0.1:{COVER_PORT}",
         "--bench", "--boring",
     ])
-    process = start_logged_process(argv, log)
+    process = start_logged_process(
+        argv,
+        log,
+        resource_sampling=resource_sampling,
+        resource_sample_ms=resource_sample_ms,
+    )
     if not wait_for_tcp(SERVER_IP, YUME_PORT, 15, namespace=lab.client_ns):
         process.stop()
         raise RuntimeError(f"yumed failed to listen; see {log}")
@@ -271,7 +299,7 @@ def run_endpoint(
     keys: BenchKeyset,
     workdir: Path,
     output: Path,
-) -> tuple[int, str, list[str]]:
+) -> tuple[StreamedCommandResult, list[str]]:
     if args.quick:
         mib, streams = 32, 4
     elif args.full:
@@ -304,9 +332,11 @@ def run_endpoint(
         argv,
         timeout=timeout,
         interrupt_message="[bench] interrupted; stopping the endpoint benchmark",
+        resource_sampling=not args.no_resource_sampling,
+        resource_sample_ms=args.resource_sample_ms,
     )
     output.write_text(result.output, encoding="utf-8")
-    return result.returncode, result.output, argv
+    return result, argv
 
 
 def run_browser_cover(
@@ -332,6 +362,7 @@ def run_browser_cover(
         timeout=30,
         echo=False,
         interrupt_message="[bench] interrupted; stopping the Chrome cover load",
+        resource_sampling=False,
     )
     output.write_text(result.output, encoding="utf-8")
     return result.returncode, argv
@@ -393,6 +424,7 @@ def main() -> int:
     workdir = Path(tempfile.mkdtemp(prefix="yume-bench-2-"))
     os.chmod(workdir, 0o700)
     run_identity = invoking_identity()
+    host = host_resource_info()
 
     lab = NetworkLab(profile)
     processes: list[ManagedProcess] = []
@@ -404,12 +436,19 @@ def main() -> int:
         f"jitter {profile.jitter_ms} ms, loss {profile.loss_pct:g}%, "
         f"rate {profile.bandwidth_mbit} Mbit/s"
     )
+    if not args.no_resource_sampling:
+        print_host_resources("[bench]", host)
 
     endpoint_code = 1
+    endpoint_result: StreamedCommandResult | None = None
+    endpoint_started_utc: str | None = None
+    endpoint_finished_utc: str | None = None
     browser_code: int | None = None
     endpoint_command: list[str] = []
     browser_command: list[str] = []
     endpoint_output = ""
+    node_process: ManagedProcess | None = None
+    yumed_process: ManagedProcess | None = None
     try:
         keys = generate_keyset(
             workdir / "keys", yumed, tls_name=TLS_NAME, server_ip=SERVER_IP
@@ -419,10 +458,22 @@ def main() -> int:
         chown_tree(workdir, run_identity)
         lab.create()
         node_process = start_node(
-            lab, node, output_dir / "node.log", run_identity
+            lab,
+            node,
+            output_dir / "node.log",
+            run_identity,
+            resource_sampling=not args.no_resource_sampling,
+            resource_sample_ms=args.resource_sample_ms,
         )
         processes.append(node_process)
-        yumed_process = start_yumed(lab, yumed, keys, output_dir / "yumed.log")
+        yumed_process = start_yumed(
+            lab,
+            yumed,
+            keys,
+            output_dir / "yumed.log",
+            resource_sampling=not args.no_resource_sampling,
+            resource_sample_ms=args.resource_sample_ms,
+        )
         processes.append(yumed_process)
 
         capture = None
@@ -432,9 +483,13 @@ def main() -> int:
             )
             processes.append(capture)
         print("[bench] running authenticated YUME 2.0 endpoint benchmark")
-        endpoint_code, endpoint_output, endpoint_command = run_endpoint(
+        endpoint_started_utc = datetime.now(timezone.utc).isoformat()
+        endpoint_result, endpoint_command = run_endpoint(
             args, lab, yume, keys, workdir, output_dir / "endpoint.log"
         )
+        endpoint_finished_utc = datetime.now(timezone.utc).isoformat()
+        endpoint_code = endpoint_result.returncode
+        endpoint_output = endpoint_result.output
         if capture:
             capture.stop(interrupt=True)
             processes.remove(capture)
@@ -468,18 +523,37 @@ def main() -> int:
             processes.pop().stop(interrupt=True)
         lab.close()
 
+        yumed_resources = (
+            yumed_process.resource_summary() if yumed_process else None
+        )
+        node_resources = node_process.resource_summary() if node_process else None
+        if not args.no_resource_sampling:
+            if yumed_process:
+                write_resource_samples(
+                    output_dir / "yumed-resources.jsonl",
+                    yumed_process.resource_sampler,
+                )
+            if node_process:
+                write_resource_samples(
+                    output_dir / "node-resources.jsonl",
+                    node_process.resource_sampler,
+                )
+
         report = {
-            "schema": 1,
+            "schema": 2,
             "started_utc": started,
             "finished_utc": datetime.now(timezone.utc).isoformat(),
             "profile_name": args.profile,
             "network": asdict(profile),
+            "host": host,
             "versions": {
                 "yume": command_version([str(yume), "--version"]),
                 "node": node_version,
                 "browser": browser_version,
             },
             "endpoint": {
+                "started_utc": endpoint_started_utc,
+                "finished_utc": endpoint_finished_utc,
                 "exit_code": endpoint_code,
                 "command": endpoint_command,
                 "chunk_kib": effective_chunk_kib,
@@ -489,12 +563,25 @@ def main() -> int:
                     if args.bench_chunk_kib is None
                     else "explicit"
                 ),
+                "upload_chunk_kib": effective_chunk_kib,
+                "upload_chunk_source": (
+                    "client-production-relay-buffer"
+                    if args.bench_chunk_kib is None
+                    else "explicit"
+                ),
+                "download_chunk_kib": None,
+                "download_chunk_source": "server-target/source-policy",
                 "contract": endpoint_contract(
                     args.bench_chunk_kib,
                     production_chunk_kib,
                 ),
                 "rates": parse_rates(endpoint_output),
+                "resources": endpoint_result.resources if endpoint_result else None,
                 "pcap": "endpoint.pcap" if not args.no_pcap else None,
+            },
+            "server": {
+                "yumed_resources": yumed_resources,
+                "node_resources": node_resources,
             },
             "cover": {
                 "exit_code": browser_code,
@@ -511,6 +598,13 @@ def main() -> int:
         else:
             shutil.rmtree(workdir, ignore_errors=True)
         restore_output_owner(output_dir)
+
+    if not args.no_resource_sampling:
+        print_process_resources(
+            "[bench] yume client",
+            endpoint_result.resources if endpoint_result else None,
+        )
+        print_process_resources("[bench] yumed server", yumed_resources)
 
     if endpoint_code != 0:
         print(f"[bench] endpoint benchmark failed; inspect {output_dir}", file=sys.stderr)

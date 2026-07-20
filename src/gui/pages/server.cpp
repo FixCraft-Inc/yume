@@ -24,6 +24,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -65,6 +66,14 @@ void int_input(const char* label, int& value) {
     ImGui::SetNextItemWidth(ui::form_width());
     ImGui::InputInt("##value", &value, 0, 0);
     ImGui::PopID();
+}
+
+void u32_input(const char* label, std::uint32_t& value, bool allow_zero = true) {
+    int editable = static_cast<int>(std::min<std::uint32_t>(
+        value, static_cast<std::uint32_t>(std::numeric_limits<int>::max())));
+    int_input(label, editable);
+    const int minimum = allow_zero ? 0 : 1;
+    value = static_cast<std::uint32_t>(std::max(editable, minimum));
 }
 
 // A path + Browse button. Renders the current value (or a friendly
@@ -362,7 +371,15 @@ private:
             text_input("DNS resolver IP", cfg_.dns_server, "1.1.1.1");
             text_input("Outbound SOCKS5 proxy", cfg_.outbound_proxy_url,
                        "socks5://127.0.0.1:9050");
+            ui::section_label("Capacity & fair use");
             int_input("Worker threads (0 = auto)", cfg_.threads);
+            u32_input("Maximum live sessions (0 = unlimited)", cfg_.max_sessions);
+            u32_input("Default sessions per bulk key",
+                      cfg_.bulk_key_max_sessions, false);
+            u32_input("Server egress cap (Mbit/s, 0 = unlimited)",
+                      cfg_.egress_mbps);
+            u32_input("Accepted connections per second (0 = unlimited)",
+                      cfg_.accept_rate_limit);
 
             ImGui::Dummy(ImVec2(0, 8 * sc));
             ui::section_label("Features");

@@ -89,11 +89,11 @@ Entry: `main_client.cpp` → `client/cli/entry.cpp`.
 | --- | --- |
 | `cli/` | Args, config load, keys, cluster, startup checks |
 | `session/` | Per-client sessions: auth, carrier, codecs, streams |
-| `runtime/` | `ServerManager`, local runtime controller |
+| `runtime/` | `ServerManager`, local runtime controller, identity admission, optional weighted egress |
 | `federation/` | Cluster peer links |
 | `filter/` | IP / robots filtering, optional GeoIP |
 | `packet/` | TUN egress for packet-bulk mode |
-| `auth/` | Authorized-keys verification |
+| `auth/` | Ed25519 key verification plus validated immutable regular/operator policy snapshots |
 
 Entry: `main_server.cpp` → `server/cli/entry.cpp`.
 

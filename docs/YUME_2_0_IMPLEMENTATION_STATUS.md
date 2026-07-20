@@ -89,6 +89,46 @@ or admin/control validation.
   run used Node 20.19.2 rather than the pinned Node 24 fixture; the direct
   Ethernet matrix must still be rerun before claiming the hardware asymmetry is
   closed.
+- The external `/proc` benchmark sampler and bounded multi-client LAN harness
+  passed a 1/2/4/8/16-process loopback ramp on a 24-core/32-thread x86-64 desktop
+  host with 64 MiB per direction and 16 streams per client. At 16 clients the
+  full-wall application rate was 9,023.5 Mbit/s; clients used 14.65 core-seconds
+  (7.695 average cores, 24.046% of the machine) with a conservative 494.83 MiB
+  summed peak-RSS bound. Over the matching sampled window, `yumed` averaged
+  12.001 cores (37.502% of the machine), 70.34 MiB RSS, and 101.18 MiB peak
+  RSS. All stages completed normally. This is same-host scaling evidence, not
+  physical-LAN or WAN throughput evidence.
+- Authorization keys and per-key policies are now loaded together into an
+  immutable server snapshot at startup/reload instead of reparsing the metadata
+  file in every session. A 50-client burst previously lost one authentication
+  when a concurrent `last_seen` update overlapped a policy-file read; the same
+  run passed 50/50 after the snapshot fix. A single bounded 100-client run then
+  passed 100/100 with full ML-KEM-1024/X25519 authentication and ratcheted
+  traffic. With 24 server workers, the 10.98-Gbit/s load window used 14.48
+  average `yumed` cores (45.25% of the 32-thread host), 155.1 MiB average RSS,
+  and 233.1 MiB peak RSS. This validates 100 same-host active clients; it is not
+  an idle-connection soak or a physical-network result.
+- On the same 50-client workload, 24 server workers slightly improved full-wall
+  throughput over the 32-worker default (11.30 versus 11.21 Gbit/s) while
+  reducing sampled `yumed` CPU from 15.51 to 14.65 average cores. Sixteen
+  workers used 13.21 cores and 161.35 MiB peak RSS at 10.95 Gbit/s. This supports
+  deployment-specific worker tuning; it does not justify a universal thread cap
+  from one hybrid-CPU host.
+- Server capacity policy now has an operator-facing bounded model: 256 live
+  sessions by default, configurable bulk-key concurrency (64 by default),
+  weighted fair egress through decimal per-key `weight`, and separate physical
+  `operator_keys` authentication. Individual and operator keys admit one
+  authenticated session; explicitly marked bulk-key sessions are counted and
+  shaped separately. Bulk policies fail closed if they request exec, LAN,
+  full-control, codecs/services, admin, or federation privileges. Process-wide hard CPU/RSS
+  ceilings remain the job of systemd/cgroups; `threads`, accept/session limits,
+  and filter memory bounds constrain YUME-owned work.
+- A focused live policy smoke passed two simultaneous clients using one bulk
+  key. Under a 64-Mbit/s egress cap their download shares were 30.8 and 32.6
+  Mbit/s (63.4 Mbit/s combined). A separate smoke with an empty regular store
+  authenticated through `operator_keys` and logged the explicit outbound-admin
+  policy. These prove standard authenticated benchmark traffic and the physical
+  operator store; they do not constitute a full GUI admin-attach workflow test.
 
 ## Required before `2.0-rc1`
 

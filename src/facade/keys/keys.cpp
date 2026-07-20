@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <string_view>
@@ -320,6 +321,7 @@ bool write_meta_json(std::filesystem::path const& meta_file,
 void apply_meta_to_entry(nlohmann::json const& meta_root,
                          std::string const& fingerprint,
                          AuthorizedKeyEntry& e) {
+    e.key_type = "individual";
     auto it = meta_root.find(fingerprint);
     if (it == meta_root.end() || !it->is_object()) return;
     if (auto a = it->find("alias"); a != it->end() && a->is_string()) {
@@ -327,6 +329,20 @@ void apply_meta_to_entry(nlohmann::json const& meta_root,
     }
     if (auto p = it->find("federation_peer_id"); p != it->end() && p->is_string()) {
         e.federation_peer_id = p->get<std::string>();
+    }
+    if (auto p = it->find("key_type"); p != it->end() && p->is_string()) {
+        e.key_type = p->get<std::string>();
+    }
+    if (auto p = it->find("weight"); p != it->end() && p->is_number()) {
+        e.weight = p->get<double>();
+    }
+    if (auto p = it->find("max_sessions");
+        p != it->end() && (p->is_number_integer() || p->is_number_unsigned())) {
+        const auto value = p->get<std::int64_t>();
+        if (value > 0 && static_cast<std::uint64_t>(value) <=
+                             std::numeric_limits<std::uint32_t>::max()) {
+            e.max_sessions = static_cast<std::uint32_t>(value);
+        }
     }
     auto p_it = it->find("permissions");
     if (p_it == it->end() || !p_it->is_object()) return;
@@ -377,6 +393,13 @@ void entry_meta_to_json(AuthorizedKeyEntry const& e, nlohmann::json& dst) {
     dst["alias"] = e.alias;
     if (!e.federation_peer_id.empty()) {
         dst["federation_peer_id"] = e.federation_peer_id;
+    }
+    dst["key_type"] = e.key_type.empty() ? "individual" : e.key_type;
+    if (e.weight.has_value()) {
+        dst["weight"] = *e.weight;
+    }
+    if (e.max_sessions.has_value()) {
+        dst["max_sessions"] = *e.max_sessions;
     }
     nlohmann::json perms = nlohmann::json::object();
     auto put = [&](const char* k, std::optional<bool> const& v) {
@@ -530,6 +553,9 @@ bool update_authorized(std::filesystem::path const& auth_keys_file,
     if (!patch.federation_peer_id.empty()) {
         merged.federation_peer_id = patch.federation_peer_id;
     }
+    if (!patch.key_type.empty()) merged.key_type = patch.key_type;
+    if (patch.weight.has_value()) merged.weight = patch.weight;
+    if (patch.max_sessions.has_value()) merged.max_sessions = patch.max_sessions;
     if (!patch.allow_codecs.empty()) merged.allow_codecs = patch.allow_codecs;
     if (!patch.allow_services.empty()) merged.allow_services = patch.allow_services;
     if (patch.allow_exec.has_value()) merged.allow_exec = patch.allow_exec;

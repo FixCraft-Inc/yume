@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -51,6 +52,11 @@ struct AuthorizedKeyEntry {
     std::string algorithm;      // typically "ed25519"
     std::string pem;            // full PEM block (PUBLIC KEY)
     std::string federation_peer_id;
+    // Empty in an update patch means "preserve". Listed/new metadata is
+    // normalized to "individual" by the facade implementation.
+    std::string key_type;
+    std::optional<double> weight;
+    std::optional<std::uint32_t> max_sessions;
 
     // permission overrides; nullopt means "inherit server default"
     std::optional<bool> allow_exec;

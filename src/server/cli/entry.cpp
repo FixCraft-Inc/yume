@@ -271,7 +271,6 @@ int Server::run(int argc, char** argv) {
     const bool key_management_only = key_command.ui || key_command.has_action();
     StartupCheckOptions startup_checks;
     startup_checks.tls_handshake_timeout_overridden = config_overrides.tls_handshake_timeout;
-    startup_checks.max_sessions_overridden = config_overrides.max_sessions;
     startup_checks.accept_rate_limit_overridden = config_overrides.accept_rate_limit;
     startup_checks.key_management_only = key_management_only;
     startup_checks.default_secret_path = kDefaultSecretPath;

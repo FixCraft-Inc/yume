@@ -33,6 +33,7 @@
 #include "core/app_codec/codec.hpp"
 #include "core/runtime/service_stream.hpp"
 #include "core/security/crypto.hpp"
+#include "server/auth/auth.hpp"
 #include "core/security/session_ratchet.hpp"
 #include "core/stealth/obfs_h2.hpp"
 #include "core/stealth/h2_carrier.hpp"
@@ -64,6 +65,9 @@ public:
             boost::asio::ssl::context& ssl_ctx,
             const ServerConfig& cfg,
             std::shared_ptr<const std::vector<crypto::Bytes>> authorized_keys,
+            std::shared_ptr<const AuthKeyPolicyMap> auth_policies,
+            std::shared_ptr<const std::vector<crypto::Bytes>> operator_keys,
+            std::shared_ptr<const AuthKeyPolicyMap> operator_policies,
             std::shared_ptr<KdfAdmissionController> kdf_admission,
             std::shared_ptr<obfs::AdmissionReplayCache> admission_replay_cache,
             uint64_t session_id,
@@ -292,6 +296,9 @@ private:
     boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream_;
     ServerConfig cfg_;
     std::shared_ptr<const std::vector<crypto::Bytes>> authorized_keys_;
+    std::shared_ptr<const AuthKeyPolicyMap> auth_policies_;
+    std::shared_ptr<const std::vector<crypto::Bytes>> operator_keys_;
+    std::shared_ptr<const AuthKeyPolicyMap> operator_policies_;
     std::shared_ptr<KdfAdmissionController> kdf_admission_;
     std::shared_ptr<obfs::AdmissionReplayCache> admission_replay_cache_;
     uint64_t session_id_{0};
@@ -549,7 +556,9 @@ private:
     std::string client_display_name_;
     std::string auth_fingerprint_;
     std::string bandwidth_fair_key_;
-    std::uint32_t bandwidth_priority_{50};
+    double bandwidth_weight_{1.0};
+    AuthKeyType auth_key_type_{AuthKeyType::Individual};
+    bool operator_authenticated_{false};
     std::string federation_peer_id_;
     std::string client_auth_pubkey_b64_;
     std::deque<std::int64_t> federation_directory_hits_;

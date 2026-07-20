@@ -5,6 +5,10 @@
   "auth_keys": "/etc/yume/authorized_keys",
   "auth_keys_meta": "/etc/yume/auth_keys.meta",
   "threads": 0,
+  "max_sessions": 256,
+  "bulk_key_max_sessions": 64,
+  "accept_rate_limit": 100,
+  "egress_mbps": 0,
   "obfuscation": true,
   "inner_crypto": true
 }

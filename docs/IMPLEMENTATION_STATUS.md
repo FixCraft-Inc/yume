@@ -47,17 +47,52 @@ decoy classifier, authorization predicate/tier, public-node policy, TLS profile
 rotation, transport core, and service-queue policy. `yume`, `yumed`, and
 `yume_facade` also link in the focused build tree.
 
+## Capacity, admission, and key tiers
+
+Status: implemented with unit and bounded multi-client runtime validation;
+long-running adversarial resource-pressure testing remains.
+
+- Regular and operator keys/policies are loaded as immutable shared snapshots.
+  Runtime reload validates a complete replacement before atomically publishing
+  it; failed reloads preserve the previous snapshot, and a public key appearing
+  in both physical trust stores is rejected.
+- Regular keys are either `individual` (one session by default) or explicitly
+  shared `bulk` identities. Bulk keys have a server default cap (64), support a
+  lower per-key cap, and cannot receive controller, exec, LAN/full-control,
+  privileged codec/service, or federation policy. Their chat/file/bytes policy
+  defaults to deny.
+- The server has one aggregate tracked-session cap (256 by default) and one
+  accept-rate controller shared by all listeners. Authenticated per-key
+  admission is maintained by a dedicated thread-safe controller and released
+  idempotently when sessions close.
+- Optional `--egress-mbps` shaping uses a dedicated weighted-fair controller.
+  Decimal per-key weights are bounded, and each bulk connection participates
+  as a separately counted identity. With the cap unset, the limiter is not
+  constructed and the existing data path only performs the null check.
+- CPU and memory telemetry lives in the external benchmark harness, not the
+  client/server binaries. Linux `/proc` sampling reports process CPU time,
+  fair per-core utilization, RSS/peak RSS, thread counts, and host CPU/RAM
+  context at a bounded interval.
+
+Focused coverage includes concurrent auth snapshot reads/reloads, policy value
+validation, identity admission/release races, weighted limiter behavior, and
+resource-sampler aggregation. The approved 2026-07-20 `remote-builder` run admitted
+100/100 full-auth clients and exercised two simultaneous bulk clients below the
+64-session cap; see `docs/YUME_2_0_IMPLEMENTATION_STATUS.md` for the exact
+throughput and host-resource evidence.
+
 Not done / not fully tested:
 
 - Version-pinned Chrome/Firefox captures or an external HTTP/2 conformance
   client against both accepted and decoy paths.
-- A full live TLS/obfs client-server integration smoke after these changes.
 - Sanitizer, thread-race, long-running close/reconnect, or resource-pressure
   soak testing.
 - Detached EXEC workers are bounded but are not cancellable/joined at shutdown.
 - Best-effort erasure is not a locked allocator and cannot erase prior copies.
-- Full-session HTTP/2, a dual-key admission wire redesign, exact native
-  browser/web-server identity, and ML/DPI immunity are not implemented claims.
+- External HTTP/2 conformance, exact native browser/web-server identity, and
+  ML/DPI immunity are not implemented claims. Full-session HTTP/2 is present in
+  `2.0-dev1`, but external conformance and sustained-session release gates are
+  still open.
 
 ## Host controller
 

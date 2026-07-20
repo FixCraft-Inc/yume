@@ -24,6 +24,9 @@ Session::Session(boost::asio::ip::tcp::socket socket,
                  boost::asio::ssl::context& ssl_ctx,
                  const ServerConfig& cfg,
                  std::shared_ptr<const std::vector<crypto::Bytes>> authorized_keys,
+                 std::shared_ptr<const AuthKeyPolicyMap> auth_policies,
+                 std::shared_ptr<const std::vector<crypto::Bytes>> operator_keys,
+                 std::shared_ptr<const AuthKeyPolicyMap> operator_policies,
                  std::shared_ptr<KdfAdmissionController> kdf_admission,
                  std::shared_ptr<obfs::AdmissionReplayCache> admission_replay_cache,
                  uint64_t session_id,
@@ -31,6 +34,9 @@ Session::Session(boost::asio::ip::tcp::socket socket,
     : stream_(std::move(socket), ssl_ctx)
     , cfg_(cfg)
     , authorized_keys_(std::move(authorized_keys))
+    , auth_policies_(std::move(auth_policies))
+    , operator_keys_(std::move(operator_keys))
+    , operator_policies_(std::move(operator_policies))
     , kdf_admission_(std::move(kdf_admission))
     , admission_replay_cache_(std::move(admission_replay_cache))
     , session_id_(session_id)

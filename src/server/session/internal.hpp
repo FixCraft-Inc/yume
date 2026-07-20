@@ -101,9 +101,6 @@ inline constexpr const char kBenchSinkProto[] = "bench-sink-v1";
 inline constexpr const char kBenchSourceProto[] = "bench-source-v1";
 inline constexpr std::uint64_t kBenchMaxBytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint32_t kBenchSourceWindowFrames = 64;
-inline constexpr std::uint32_t kDefaultBandwidthPriority = 50;
-inline constexpr std::uint32_t kMinBandwidthPriority = 1;
-inline constexpr std::uint32_t kMaxBandwidthPriority = 100;
 inline constexpr int64_t kDirectDnsTimeoutMs = 1500;
 
 // ---- Free helpers (defined in session_net.cpp) ---------------------------

@@ -72,6 +72,9 @@ sudo ./build/bin/yumed \
   --cert certs/server.crt \
   --key certs/server.key \
   --auth-keys /etc/yume/authorized_keys \
+  --max-sessions 256 \
+  --bulk-key-max-sessions 64 \
+  --accept-rate-limit 100 \
   --obfs-secret-file "$HOME/.config/yume/admission.hex" \
   --inner-psk-file "$HOME/.config/yume/inner.hex" \
   --real-backend loopback://127.0.0.1:3000
@@ -124,6 +127,14 @@ real endpoint, and crypto-only benchmark boundaries.
 - Keep Node on a loopback IP literal and supervise it separately from `yumed`.
 - Keep TLS private keys and both shared secret files owner-readable only.
 - Distribute the admission and inner PSK files out of band to every client.
+- Treat regular keys as individual by default. If many clients must share one
+  private key, explicitly configure a bounded `bulk` policy; privileged
+  permissions are rejected for bulk keys. Keep operator/controller keys in the
+  separate operator trust store. See [PERMISSIONS.md](PERMISSIONS.md).
+- Set `--egress-mbps` at or below the server's measured upstream limit when
+  clients should share a bounded link fairly. Size session and accept-rate
+  limits for the host, and enforce hard process CPU/RAM ceilings through the
+  service manager. See [OPERATIONS.md](OPERATIONS.md).
 - Do not place an HTTP-mode reverse proxy in front of `yumed`; it must receive
   the original TLS connection. Use TCP passthrough when a fronting layer is
   required.

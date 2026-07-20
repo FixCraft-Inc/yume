@@ -1,11 +1,20 @@
 # YUME permission model
 
-YUME splits authentication from authorization the way SSH does:
+YUME splits authentication from authorization the way SSH does, and uses a
+separate physical trust store for operator/controller keys:
 
-- `authorized_keys` lists the Ed25519 public keys that may **connect**. Holding one of these is the audience-with-the-king; you get past the door.
+- `authorized_keys` lists regular Ed25519 public keys. Regular keys are either
+  `individual` (the default, one authenticated session) or explicitly `bulk`
+  (several separately counted sessions sharing one credential).
 - `auth_keys.meta` (a JSON file) lists what each connected key is **allowed to do** once inside. Without an entry here, a normally authorized key can use unprivileged transport features but cannot exec, cannot reach LAN addresses, cannot use privileged application codecs, and cannot administer other clients.
+- `operator_keys` and `operator_keys.meta` are the separate controller-key
+  layer. Only an operator key may receive `allow_outbound_admin`. Target-side
+  `allow_inbound_admin` remains on the regular individual key being managed.
 
-The current revision uses one Ed25519 key per identity. A second physical key (the "noble's seal" for stronger permission control) is a planned wire-protocol change for a post-1.1 release; in the meantime, the SSH-style split below gives you the same operational separation: connection rights vs. action rights live in different files, can be edited independently, and can be revoked independently.
+The server rejects a public key present in both trust stores, rejects bulk
+operator keys, and rejects `allow_outbound_admin` in regular metadata. This is
+a server-side authorization change only; the authenticated YUME 2.0 wire and
+PQ handshake are unchanged.
 
 ## The three-layer gate for dangerous features
 
@@ -23,6 +32,8 @@ A request is allowed only when all three layers say yes. Removing the build swit
 /etc/yume/
   authorized_keys           # one PEM-encoded public key per block; "who may connect"
   auth_keys.meta            # JSON mapping fingerprint → permissions; "what each may do"
+  operator_keys             # physically separate controller public keys
+  operator_keys.meta        # explicit operator permissions
 ```
 
 A typical layout:
@@ -45,6 +56,8 @@ MCowBQYDK2VwAyEA...visitor...
 {
   "0d4f3a...alice-fingerprint...": {
     "alias": "alice",
+    "key_type": "individual",
+    "weight": 1.5,
     "permissions": {
       "allow_exec": true,
       "allow_local_ip": true,
@@ -65,12 +78,64 @@ MCowBQYDK2VwAyEA...visitor...
       "allow_chat": true,
       "allow_file": true
     }
+  },
+  "73ac12...shared-fingerprint...": {
+    "alias": "shared-public-users",
+    "key_type": "bulk",
+    "weight": 1.0,
+    "max_sessions": 100,
+    "permissions": {
+      "allow_chat": false,
+      "allow_file": false
+    }
   }
   // visitor key omitted (connects only, no extra permissions)
 }
 ```
 
-Generate fingerprints with `yumed --auth-keys /etc/yume/authorized_keys --keys-list`. Any field you omit defaults to the safe choice (deny for admin/exec/LAN; allow for the relay-side `chat` / `file` / `bytes` channels which never carry server-side actions).
+Generate fingerprints with `yumed --auth-keys /etc/yume/authorized_keys --keys-list`. Any field you omit defaults to the safe choice. Privileged permissions always default to deny; relay-side `chat` / `file` / `bytes` default to allow for individual keys and deny for bulk keys.
+
+An operator controller is configured separately:
+
+```jsonc
+// /etc/yume/operator_keys.meta
+{
+  "a1092c...operator-fingerprint...": {
+    "alias": "primary-admin",
+    "weight": 0.5,
+    "permissions": {
+      "allow_outbound_admin": true
+    }
+  }
+}
+```
+
+Start the daemon with `--operator-keys /etc/yume/operator_keys` and
+`--operator-keys-meta /etc/yume/operator_keys.meta`. Operator keys are
+individual-only and default to one concurrent authenticated session. Merely
+placing a key in `operator_keys` does not silently grant exec, LAN, full-control,
+or admin permission; those remain explicit policy gates.
+
+## Individual and bulk regular keys
+
+An individual key represents one identity and admits one authenticated session.
+Use a bulk key only when distributing one credential to many ordinary tunnel
+users is an intentional operational tradeoff. Every bulk connection receives a
+unique server session identity and a separate fair-share slot, and is counted
+against all three limits:
+
+- global `max_sessions` / `--max-sessions` (default 256);
+- server `bulk_key_max_sessions` / `--bulk-key-max-sessions` (default 64); and
+- optional per-key `max_sessions`, which overrides the bulk default.
+
+A shared private key cannot cryptographically distinguish the humans holding
+it. A user who has that key can open several sessions up to the configured cap.
+For that reason, bulk policies are rejected if they request exec, LAN/private
+access, full control, privileged codecs/services, inbound/outbound admin, or
+federation identity. Bulk chat/file/bytes relay permissions default to deny and
+must be explicitly enabled if the shared-identity risk is acceptable. Use
+individual keys for privileged users and use the bulk cap to bound credential
+abuse.
 
 ## Permission fields
 
@@ -83,10 +148,19 @@ Generate fingerprints with `yumed --auth-keys /etc/yume/authorized_keys --keys-l
 | `allow_services` | deny | Use native embed named-service streams, for example `["example-service-v1"]` | server config `allow_services` plus `yume_server_register_service` |
 | `allow_monero_rpc` | deny | Compatibility alias for the built-in Monero RPC application codec against the server's loopback monerod backend | `--codec-allow monero-rpc` |
 | `allow_inbound_admin` | deny | Other clients on this server can attach to admin THIS client | none (always honoured) |
-| `allow_outbound_admin` | deny | This client can attach to admin OTHER clients on the server | none (always honoured) |
-| `allow_chat` | allow | This key can use the chat relay | none |
-| `allow_file` | allow | This key can use the file relay | none |
-| `allow_bytes` | allow | This key can use the raw-bytes relay | none |
+| `allow_outbound_admin` | deny | This operator can attach to admin OTHER clients on the server | separate `operator_keys` trust store |
+| `allow_chat` | individual: allow; bulk: deny | This key can use the chat relay | none |
+| `allow_file` | individual: allow; bulk: deny | This key can use the file relay | none |
+| `allow_bytes` | individual: allow; bulk: deny | This key can use the raw-bytes relay | none |
+
+Top-level resource fields are separate from `permissions`:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `key_type` | `individual` | `individual` or explicitly shared `bulk` regular key |
+| `weight` | `1.0` | Fair-egress multiplier in `0.1..100`; `1.5` receives 1.5 times the share of a competing `1.0` identity |
+| `max_sessions` | 1 / server bulk default | Per-key authenticated-session cap; values above 1 require `key_type: bulk` |
+| `priority` | unset | Legacy integer weight compatibility; prefer decimal `weight` |
 
 `alias` is a free-form label used in logs.
 
@@ -109,7 +183,7 @@ The implemented client flag is `--server-in-charge`; there is no `--accept-serve
 An admin channel between relayed clients is admitted only when all of these are true:
 
 1. the caller registered `relay_mode=trusted`;
-2. the caller key's server-capped `allow_outbound_admin` policy and the caller's runtime opt-in are both true; and
+2. the caller authenticated with an `operator_keys` key, its server-capped `allow_outbound_admin` policy is true, and the caller's runtime opt-in is true; and
 3. the target key's server-capped `allow_inbound_admin` policy and the target's runtime opt-in are both true.
 
 Modern `admin.attach` also requires the target to accept the signed invite. The legacy attach message is retained for compatibility but is no longer caller-blind: it applies the same caller/target predicate and additionally requires the target's `--server-in-charge` opt-in. In federation, the authenticated source server enforces the caller half and the target server rechecks the target half; the current wire format does not carry an independently verifiable caller-policy proof across servers.
@@ -129,7 +203,7 @@ Control, relay, admin, generic TCP/UDP opens, codecs, benchmark streams, packet 
 ## Operational tips
 
 - **Editing auth_keys.meta is the recommended way to manage permissions.** The server's interactive `--ui` mode is brittle around per-key permissions; it's documented but you'll have a smoother time with a JSON editor.
-- **Reload after edits.** The meta file is read at server startup. Changes take effect on `systemctl restart yumed`. Hot reload is on the post-1.1 roadmap.
+- **Reload after edits.** Both regular and operator stores are immutable runtime snapshots. Use the authenticated reload operation where available, or `systemctl restart yumed`; a failed reload preserves the previous complete snapshot.
 - **Application codecs.** Codec permissions are intentionally narrower than `allow_local_ip`: they only enable named protocol-aware codecs listed in `allow_codecs`. The Monero built-in validates allowed wallet RPC paths/methods and reconstructs HTTP only to a loopback backend configured by `--monero-rpc-backend`.
 - **Native service streams.** `allow_services` is for embedded C ABI users and is intentionally separate from `allow_local_ip`, `control_full`, `allow_codecs`, and exec. For a normally authorized key, a service stream opens only when the server config lists the service, the key metadata lists the same service, and the embedding process registered it with `yume_server_register_service`. The separately configured preauth tier follows the narrower rules above.
 - **Revoke a key.** Remove the public-key block from `authorized_keys`. The meta entry can stay; it'll be ignored.
@@ -142,5 +216,6 @@ Control, relay, admin, generic TCP/UDP opens, codecs, benchmark streams, packet 
 - A server built with `YUME_FEATURE_EXEC=ON` but without `--allow-exec` cannot run user commands.
 - A server with `--allow-exec` but no `auth_keys.meta` entry granting `allow_exec` cannot run user commands.
 - The same applies to LAN bridging and unrestricted bridging.
-- Admin (inbound/outbound) defaults to deny and is checked directionally for both caller and target; chat/file/bytes default to allow.
+- Outbound admin requires the separate operator trust store; inbound admin remains an explicit individual target policy. Both directions also require runtime opt-in.
+- Bulk keys are separately counted per session and cannot receive privileged controller, exec, LAN, full-control, codec/service, or federation policy.
 - AUTH imports only Ed25519 public keys and verifies the challenge signature with OpenSSL before either normal or preauth admission.

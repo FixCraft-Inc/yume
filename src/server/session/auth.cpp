@@ -196,6 +196,8 @@ std::uint64_t Session::current_hop_id() const {
 bool Session::handle_auth(const protocol::Frame& frame) {
     auth_error_.clear();
     authorization_tier_ = authorization::SessionTier::Unauthenticated;
+    operator_authenticated_ = false;
+    auth_key_type_ = AuthKeyType::Individual;
     try {
         if (!auth_v2_ephemeral_ || !cfg_.inner_psk_material) {
             auth_error_ = "access denied: invalid authentication state";
@@ -230,9 +232,12 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             challenge_, unsigned_response);
         bool sig_ok = crypto::verify_key(pubkey.get(), signature_input,
                                          response.signature);
-        bool auth_ok = authorized_keys_ ? is_authorized(pubkey.get(), *authorized_keys_) : false;
+        const bool regular_auth_ok =
+            authorized_keys_ && is_authorized(pubkey.get(), *authorized_keys_);
+        const bool operator_auth_ok =
+            operator_keys_ && is_authorized(pubkey.get(), *operator_keys_);
+        const bool auth_ok = regular_auth_ok || operator_auth_ok;
         std::string fingerprint = fingerprint_pubkey(pubkey.get());
-        client_id_ = fingerprint;
         auth_fingerprint_ = fingerprint;
         client_auth_pubkey_b64_ = yume::util::base64_encode(std::string(pub_pem.begin(), pub_pem.end()));
 
@@ -259,22 +264,48 @@ bool Session::handle_auth(const protocol::Frame& frame) {
 
         const bool preauth_session = preauth_ok;
         AuthKeyPolicy auth_policy;
-        if (!preauth_session && !cfg_.auth_keys_meta.empty()) {
-            try {
-                AuthKeyPolicyMap auth_policies = load_auth_policies(cfg_.auth_keys_meta);
-                auto it = auth_policies.find(fingerprint);
-                if (it != auth_policies.end()) {
-                    auth_policy = std::move(it->second);
-                }
-            } catch (const std::exception& ex) {
-                auth_error_ = std::string("server auth policy load failed: ") + ex.what();
+        operator_authenticated_ = !preauth_session && operator_auth_ok;
+        const auto& policy_store = operator_authenticated_
+            ? operator_policies_
+            : auth_policies_;
+        if (!preauth_session && policy_store) {
+            const auto it = policy_store->find(fingerprint);
+            if (it != policy_store->end()) {
+                auth_policy = it->second;
+            }
+        }
+        auth_key_type_ = operator_authenticated_
+            ? AuthKeyType::Individual
+            : auth_policy.key_type;
+        std::uint32_t identity_session_limit = 1;
+        if (auth_key_type_ == AuthKeyType::Bulk) {
+            identity_session_limit = auth_policy.max_sessions.value_or(
+                std::max<std::uint32_t>(1, cfg_.bulk_key_max_sessions));
+        }
+        if (!preauth_session && manager_) {
+            std::string admission_error;
+            if (!manager_->admit_authenticated_identity(
+                    session_id_, fingerprint, identity_session_limit,
+                    &admission_error)) {
+                auth_error_ = "access denied: key session limit reached";
+                util::log_warn(
+                    "session " + std::to_string(session_id_) +
+                    ": authenticated identity refused fingerprint=" + fingerprint +
+                    " limit=" + std::to_string(identity_session_limit));
                 return false;
             }
         }
-        bandwidth_fair_key_ = fingerprint;
-        bandwidth_priority_ = std::clamp(auth_policy.priority.value_or(kDefaultBandwidthPriority),
-                                         kMinBandwidthPriority,
-                                         kMaxBandwidthPriority);
+        if (auth_key_type_ == AuthKeyType::Bulk) {
+            const std::string session_suffix = std::to_string(session_id_);
+            client_id_ = fingerprint + "-" + session_suffix;
+            bandwidth_fair_key_ = "bulk:" + fingerprint + ":" + session_suffix;
+        } else {
+            client_id_ = fingerprint;
+            bandwidth_fair_key_ = operator_authenticated_
+                ? "operator:" + fingerprint
+                : "individual:" + fingerprint;
+        }
+        bandwidth_weight_ = auth_policy.effective_weight();
         const bool key_exec = auth_policy.allow_exec.value_or(false);
         const bool key_local_ip = auth_policy.allow_local_ip.value_or(false);
         const bool key_control_full = auth_policy.control_full.value_or(false);
@@ -334,15 +365,22 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                           ": Monero RPC codec requested by key but server has not enabled --codec-allow monero-rpc");
         }
         session_allow_inbound_admin_policy_ = auth_policy.allow_inbound_admin.value_or(false);
-        session_allow_outbound_admin_policy_ = auth_policy.allow_outbound_admin.value_or(false);
-        session_allow_chat_policy_ = auth_policy.allow_chat.value_or(true);
-        session_allow_file_policy_ = auth_policy.allow_file.value_or(true);
-        session_allow_bytes_policy_ = auth_policy.allow_bytes.value_or(true);
+        session_allow_outbound_admin_policy_ =
+            operator_authenticated_ &&
+            auth_policy.allow_outbound_admin.value_or(false);
+        const bool shared_key = auth_key_type_ == AuthKeyType::Bulk;
+        session_allow_chat_policy_ = auth_policy.allow_chat.value_or(!shared_key);
+        session_allow_file_policy_ = auth_policy.allow_file.value_or(!shared_key);
+        session_allow_bytes_policy_ = auth_policy.allow_bytes.value_or(!shared_key);
         federation_peer_id_ = auth_policy.federation_peer_id;
         if (preauth_session) {
             util::log_info("session " + std::to_string(session_id_) +
                            ": preauth services enabled for fingerprint=" +
                            fingerprint);
+        } else if (operator_authenticated_) {
+            util::log_info("session " + std::to_string(session_id_) +
+                           ": operator key authenticated policy=" +
+                           summarize_auth_policy(auth_policy));
         } else if (!auth_policy.empty()) {
             util::log_info("session " + std::to_string(session_id_) + ": auth policy " +
                            summarize_auth_policy(auth_policy));
@@ -388,7 +426,10 @@ bool Session::handle_auth(const protocol::Frame& frame) {
 #endif
 
         if (!cfg_.anonym && !preauth_session) {
-            update_auth_meta(cfg_.auth_keys_meta, fingerprint);
+            update_auth_meta(operator_authenticated_
+                                 ? cfg_.operator_keys_meta
+                                 : cfg_.auth_keys_meta,
+                             fingerprint);
         }
         authorization_tier_ = preauth_session
             ? authorization::SessionTier::PreauthServiceOnly

@@ -9,15 +9,22 @@ upstream_version="$(
   sed -nE 's/.*kVersion\[\] = "([^"]+)".*/\1/p' "${repo_root}/src/core/version.hpp" | head -n1
 )"
 debian_version="$(cd "${repo_root}" && dpkg-parsechangelog -S Version)"
+archive_version="${upstream_version/-dev/~dev}"
+debian_upstream_version="${debian_version%-*}"
 
 if [[ -z "${upstream_version}" || -z "${debian_version}" ]]; then
   echo "failed to read YUME/Debian version" >&2
   exit 1
 fi
 
-prefix="yume-${upstream_version}"
+if [[ "${archive_version}" != "${debian_upstream_version}" ]]; then
+  echo "YUME version ${upstream_version} does not match Debian upstream version ${debian_upstream_version}" >&2
+  exit 1
+fi
+
+prefix="yume-${archive_version}"
 artifacts=(
-  "${repo_root}/../yume_${upstream_version}.orig.tar.xz"
+  "${repo_root}/../yume_${archive_version}.orig.tar.xz"
   "${repo_root}/../yume_${debian_version}.debian.tar.xz"
   "${repo_root}/../yume_${debian_version}.dsc"
 )

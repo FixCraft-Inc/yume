@@ -344,10 +344,12 @@ bool Session::handle_bench_open(uint8_t stream_id, const std::string& proto, con
     }
 
     send_open_reply(stream_id, true, "");
-    util::log_info("session " + std::to_string(session_id_) +
-                   ": benchmark stream " + std::to_string(stream_id) +
-                   " proto=" + proto +
-                   " bytes=" + std::to_string(requested));
+    if (util::timing_enabled()) {
+        util::log_info("session " + std::to_string(session_id_) +
+                       ": benchmark stream " + std::to_string(stream_id) +
+                       " proto=" + proto +
+                       " bytes=" + std::to_string(requested));
+    }
     if (bench.mode == BenchStream::Mode::Source) {
         pump_bench_sources();
     }

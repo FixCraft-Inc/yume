@@ -14,8 +14,11 @@ if [[ -z "${version}" ]]; then
   exit 1
 fi
 
-out="${repo_root}/../yume_${version}.orig.tar.xz"
-prefix="yume-${version}"
+# Debian sorts a development snapshot before its eventual stable release by
+# spelling upstream's "-devN" suffix as "~devN".
+archive_version="${version/-dev/~dev}"
+out="${repo_root}/../yume_${archive_version}.orig.tar.xz"
+prefix="yume-${archive_version}"
 
 if [[ -z "${SOURCE_DATE_EPOCH:-}" ]]; then
   if git -C "${repo_root}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then

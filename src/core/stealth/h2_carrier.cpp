@@ -31,6 +31,7 @@ constexpr std::size_t kMaxResponseHeaders = 64U * 1024U;
 constexpr std::size_t kMaxResponseBody = 8U * 1024U * 1024U;
 constexpr std::size_t kMaxQueuedOutput = 32U * 1024U * 1024U;
 constexpr std::size_t kChromeWebSocketMessageBytes = 16U * 1024U;
+constexpr std::int32_t kAuthenticatedReceiveWindow = 2 * 1024 * 1024;
 constexpr std::string_view kDefaultUserAgent =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
@@ -299,6 +300,28 @@ public:
         return !failed();
     }
 
+    bool EnableAuthenticatedReceiveWindow() {
+        if (role_ != H2CarrierRole::Server || !carrier_active_ ||
+            carrier_stream_id_ < 0 || carrier_closed_ || failed()) {
+            return Fail(
+                "authenticated receive window requires an active server carrier");
+        }
+        if (authenticated_receive_window_enabled_) return true;
+        if (!CheckBool(nghttp2_session_set_local_window_size(
+                           session_.get(), NGHTTP2_FLAG_NONE, 0,
+                           kAuthenticatedReceiveWindow),
+                       "expand authenticated HTTP/2 connection receive window") ||
+            !CheckBool(nghttp2_session_set_local_window_size(
+                           session_.get(), NGHTTP2_FLAG_NONE,
+                           carrier_stream_id_, kAuthenticatedReceiveWindow),
+                       "expand authenticated HTTP/2 stream receive window")) {
+            return false;
+        }
+        authenticated_receive_window_enabled_ = true;
+        Flush();
+        return !failed();
+    }
+
     bool RejectCarrier(std::int32_t stream_id, unsigned status,
                        const H2Headers& headers, H2Bytes body) {
         return RespondHttp(stream_id, status, headers, std::move(body), false);
@@ -306,7 +329,17 @@ public:
 
     void Feed(const std::uint8_t* data, std::size_t size) {
         if (failed() || size == 0) return;
+        const auto started = collect_timing_
+            ? std::chrono::steady_clock::now()
+            : std::chrono::steady_clock::time_point{};
         const auto rv = nghttp2_session_mem_recv2(session_.get(), data, size);
+        stats_.h2_feed_calls += 1;
+        stats_.h2_feed_bytes += size;
+        if (collect_timing_) {
+            stats_.h2_feed_ns += static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - started).count());
+        }
         if (rv < 0) {
             FailNghttp2("receive HTTP/2 bytes", static_cast<int>(rv));
             return;
@@ -330,6 +363,9 @@ public:
             return Fail("carrier is not active");
         }
         try {
+            const auto started = collect_timing_
+                ? std::chrono::steady_clock::now()
+                : std::chrono::steady_clock::time_point{};
             H2Bytes wire;
             std::size_t offset = 0;
             while (offset < size) {
@@ -357,6 +393,12 @@ public:
                 offset += chunk;
             }
             if (size == 0) wire = websocket_.EncodeBinary(data, 0);
+            stats_.websocket_encode_bytes += size;
+            if (collect_timing_) {
+                stats_.websocket_encode_ns += static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - started).count());
+            }
             return QueueStreamBytes(carrier_stream_id_, std::move(wire));
         } catch (const std::exception& ex) {
             return Fail(std::string("encode WebSocket binary: ") + ex.what());
@@ -406,6 +448,8 @@ public:
         for (const auto& [_, stream] : outbound_streams_) total += stream.queued_bytes;
         return total;
     }
+    H2CarrierStats stats() const noexcept { return stats_; }
+    void set_timing_enabled(bool enabled) noexcept { collect_timing_ = enabled; }
     bool failed() const noexcept { return !error_.empty(); }
     const std::string& error() const noexcept { return error_; }
 
@@ -650,12 +694,21 @@ private:
             }
             return;
         }
+        const auto websocket_started = collect_timing_
+            ? std::chrono::steady_clock::now()
+            : std::chrono::steady_clock::time_point{};
         websocket_.Feed(data, len);
         if (websocket_.failed()) {
             Fail("WebSocket carrier: " + websocket_.error());
             return;
         }
         auto decoded = websocket_.TakeDecoded();
+        stats_.websocket_decode_bytes += len;
+        if (collect_timing_) {
+            stats_.websocket_decode_ns += static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - websocket_started).count());
+        }
         if (decoded.size() > kMaxQueuedOutput - std::min(kMaxQueuedOutput, tunnel_bytes_.size())) {
             Fail("decoded tunnel input queue exceeded 32 MiB");
             return;
@@ -744,20 +797,32 @@ private:
 
     void Flush() {
         if (failed()) return;
+        const auto started = collect_timing_
+            ? std::chrono::steady_clock::now()
+            : std::chrono::steady_clock::time_point{};
+        std::size_t flushed_bytes = 0;
         while (true) {
             const std::uint8_t* data = nullptr;
             const auto length = nghttp2_session_mem_send2(session_.get(), &data);
             if (length < 0) {
                 FailNghttp2("serialize HTTP/2 output", static_cast<int>(length));
-                return;
+                break;
             }
-            if (length == 0) return;
+            if (length == 0) break;
             const auto count = static_cast<std::size_t>(length);
             if (count > kMaxQueuedOutput - std::min(kMaxQueuedOutput, serialized_output_.size())) {
                 Fail("serialized HTTP/2 output exceeded 32 MiB");
-                return;
+                break;
             }
             serialized_output_.insert(serialized_output_.end(), data, data + count);
+            flushed_bytes += count;
+        }
+        stats_.h2_flush_calls += 1;
+        stats_.h2_flush_bytes += flushed_bytes;
+        if (collect_timing_) {
+            stats_.h2_flush_ns += static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - started).count());
         }
     }
 
@@ -778,6 +843,8 @@ private:
 
     H2CarrierRole role_;
     WebSocketCodec websocket_;
+    H2CarrierStats stats_;
+    bool collect_timing_{false};
     std::unique_ptr<nghttp2_session_callbacks, CallbacksDeleter> callbacks_;
     std::unique_ptr<nghttp2_session, SessionDeleter> session_;
     std::unordered_map<std::int32_t, H2Headers> incoming_headers_;
@@ -805,6 +872,7 @@ private:
     bool peer_connect_enabled_{false};
     bool carrier_active_{false};
     bool carrier_closed_{false};
+    bool authenticated_receive_window_enabled_{false};
     bool graceful_close_started_{false};
     bool server_fragment_fixture_sent_{false};
     bool server_active_ping_sent_{false};
@@ -814,6 +882,9 @@ H2Carrier::H2Carrier(H2CarrierRole role) : impl_(std::make_unique<Impl>(role)) {
 H2Carrier::H2Carrier(H2Carrier&&) noexcept = default;
 H2Carrier& H2Carrier::operator=(H2Carrier&&) noexcept = default;
 H2Carrier::~H2Carrier() = default;
+void H2Carrier::set_timing_enabled(bool enabled) noexcept {
+    impl_->set_timing_enabled(enabled);
+}
 
 bool H2Carrier::StartClient(std::string authority, std::string user_agent) {
     return impl_->StartClient(std::move(authority), std::move(user_agent));
@@ -831,6 +902,9 @@ bool H2Carrier::RespondHttp(std::int32_t stream_id, unsigned status,
 bool H2Carrier::AcceptCarrier(std::int32_t stream_id,
                               const H2Headers& response_headers) {
     return impl_->AcceptCarrier(stream_id, response_headers);
+}
+bool H2Carrier::EnableAuthenticatedReceiveWindow() {
+    return impl_->EnableAuthenticatedReceiveWindow();
 }
 bool H2Carrier::RejectCarrier(std::int32_t stream_id, unsigned status,
                               const H2Headers& headers, H2Bytes body) {
@@ -856,6 +930,7 @@ std::int32_t H2Carrier::carrier_stream_id() const noexcept {
 std::size_t H2Carrier::queued_output_bytes() const noexcept {
     return impl_->queued_output_bytes();
 }
+H2CarrierStats H2Carrier::stats() const noexcept { return impl_->stats(); }
 void H2Carrier::GracefulClose(std::uint16_t websocket_code) {
     impl_->GracefulClose(websocket_code);
 }

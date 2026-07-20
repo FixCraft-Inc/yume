@@ -141,10 +141,27 @@ void Cli::set_external_stop_flag(std::shared_ptr<std::atomic<bool>> stop_flag) {
     external_stop_flag_ = std::move(stop_flag);
 }
 
+int Cli::run_config(ClientConfig cfg) {
+    config_override_ = std::move(cfg);
+    ParsedArgs args;
+    args.non_interactive = true;
+    args.boring = true;
+    args.boring_override = true;
+    args.keep_root = true;
+    args.service_streams_only = true;
+    return run_parsed(std::move(args), "yume");
+}
+
 int Cli::run(int argc, char** argv) {
+    ParsedArgs args = parse_args(argc, argv);
+    const std::string executable_arg =
+        argc > 0 && argv && argv[0] ? argv[0] : "yume";
+    return run_parsed(std::move(args), executable_arg);
+}
+
+int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
     util::init_logging();
 
-    ParsedArgs args = parse_args(argc, argv);
     if (!args.parse_error.empty()) {
         util::log_error(args.parse_error);
         return 1;
@@ -226,7 +243,7 @@ int Cli::run(int argc, char** argv) {
         return 0;
     }
     if (args.local_benchmark) {
-        return run_local_benchmark(argv[0], args);
+        return run_local_benchmark(executable_arg.c_str(), args);
     }
     std::string cli_cwd;
     {
@@ -238,7 +255,7 @@ int Cli::run(int argc, char** argv) {
     }
     std::string exe_dir;
     {
-        std::string self_path = get_self_path(argv[0]);
+        std::string self_path = get_self_path(executable_arg.c_str());
         if (!self_path.empty()) {
             exe_dir = std::filesystem::path(self_path).parent_path().string();
         }
@@ -284,9 +301,23 @@ int Cli::run(int argc, char** argv) {
         args.rport = spec.target_port;
     }
 
-    load_client_config_file(args, exe_dir, &cfg);
+    if (config_override_.has_value()) {
+        cfg = std::move(*config_override_);
+        config_override_.reset();
+        if (cfg.anonym_ca_cert.empty() && file_exists(kDefaultAnonymCaCertPath)) {
+            cfg.anonym_ca_cert = kDefaultAnonymCaCertPath;
+        }
+    } else {
+        load_client_config_file(args, exe_dir, &cfg);
+    }
     apply_cli_config_overrides(args, cli_cwd, &cfg);
     normalize_client_config_after_overrides(&args, &cfg);
+#if !defined(__linux__)
+    if (!cfg.packet_tun_name.empty()) {
+        util::log_error("--packet-tun is supported only on Linux");
+        return 1;
+    }
+#endif
     if (cfg.socks_port < 0 || cfg.socks_port > 65535) {
         util::log_error("SOCKS5 port must be 0..65535");
         return 1;
@@ -369,8 +400,19 @@ int Cli::run(int argc, char** argv) {
         util::log_error("--bench/--bench-full is a one-shot endpoint mode; do not combine it with SOCKS, forwards, relay, or control modes");
         return 1;
     }
+    if (!cfg.packet_tun_name.empty() &&
+        (args.bench || !args.run_cmd.empty() || args.lport > 0 ||
+         cfg.socks_port > 0 || use_reverse || args.control_mode ||
+         args.list_controlled || args.directory_mode || !cfg.app_codec.empty() ||
+         !args.chat_target.empty() || !args.file_target.empty() ||
+         !args.bytes_target.empty() || !args.admin_target.empty() ||
+         args.attach_local || args.service_streams_only || args.share_export)) {
+        util::log_error("--packet-tun is an exclusive data-plane mode; do not combine it with SOCKS, forwards, relay, benchmark, or control modes");
+        return 1;
+    }
     const bool has_active_mode =
         args.bench ||
+        !cfg.packet_tun_name.empty() ||
         (!args.run_cmd.empty()) ||
         (args.lport > 0) ||
         (cfg.socks_port > 0) ||
@@ -387,7 +429,7 @@ int Cli::run(int argc, char** argv) {
         args.service_streams_only ||
         args.share_export;  // export is a one-shot, not a connection
     if (!has_active_mode) {
-        util::log_error("no mode selected (use --full-bench, --quick-bench, --bench, --socks, --monero-rpc, -L, -R, --run, --directory, --chat, --send-file, --send-bytes, --admin-attach, --control, --attach-local, or --service-streams-only)");
+        util::log_error("no mode selected (use --packet-tun, --full-bench, --quick-bench, --bench, --socks, --monero-rpc, -L, -R, --run, --directory, --chat, --send-file, --send-bytes, --admin-attach, --control, --attach-local, or --service-streams-only)");
         return 1;
     }
 
@@ -961,6 +1003,7 @@ int Cli::run(int argc, char** argv) {
             bool ca_ok = false;
             std::vector<std::string> announced_proof_sources;
             std::vector<std::string> verified_proof_sources;
+            std::vector<std::string> server_capabilities;
             bool have_inner_caps = false;
             bool server_inner_supported = false;
             bool server_inner_required = false;
@@ -1011,6 +1054,7 @@ int Cli::run(int argc, char** argv) {
                 pq_sig = std::move(server_info.pq_sig);
                 pq_alg = std::move(server_info.pq_alg);
                 announced_proof_sources = std::move(server_info.announced_proof_sources);
+                server_capabilities = std::move(server_info.capabilities);
                 have_inner_caps = server_info.have_inner_caps;
                 server_inner_supported = server_info.server_inner_supported;
                 server_inner_required = server_info.server_inner_required;
@@ -1280,7 +1324,7 @@ int Cli::run(int argc, char** argv) {
             connected_options.args = &args;
             connected_options.cfg = &cfg;
             connected_options.local_runtime_path = local_runtime_path;
-            connected_options.argv0 = argv[0] ? argv[0] : "";
+            connected_options.argv0 = executable_arg;
             connected_options.use_reverse = use_reverse;
             connected_options.reverse_server_in_charge_auto = reverse_server_in_charge_auto;
             connected_options.reverse_server_in_charge_manual = reverse_server_in_charge_manual;
@@ -1310,6 +1354,7 @@ int Cli::run(int argc, char** argv) {
             connected_options.completed_tls_connections =
                 &completed_tls_connections;
             connected_options.explicit_http_profile = explicit_http_profile;
+            connected_options.server_capabilities = std::move(server_capabilities);
             connected_options.status_block_builder = status_block_builder;
             connected_options.announce_stopping = [&stop_controller]() {
                 stop_controller.announce_stopping();

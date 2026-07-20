@@ -152,7 +152,8 @@ public:
         Session* session,
         std::function<void(crypto::Bytes)> handler);
     void unregister_packet_client(Session* session, std::uint32_t ipv4_be);
-    void write_packet_to_egress(std::uint32_t client_ipv4_be, crypto::Bytes packet);
+    bool write_packets_to_egress(std::uint32_t client_ipv4_be,
+                                 std::vector<crypto::Bytes> packets);
     bool egress_allowed(const boost::asio::ip::address& address, std::string* reason = nullptr) const;
     bool admit_plain_client(boost::asio::ip::tcp::socket& socket);
     bool reload_auth(std::string* error);

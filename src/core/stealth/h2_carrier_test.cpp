@@ -1,5 +1,6 @@
 #include "core/stealth/h2_carrier.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <iostream>
 
@@ -19,6 +20,25 @@ void Pump(H2Carrier& from, H2Carrier& to) {
         assert(!to.failed());
     }
     assert(false && "HTTP/2 pump did not quiesce");
+}
+
+H2Bytes PumpFragmentedAndTake(H2Carrier& from, H2Carrier& to,
+                              std::size_t feed_bytes) {
+    H2Bytes decoded;
+    for (int round = 0; round < 64; ++round) {
+        auto wire = from.TakeOutbound();
+        if (wire.empty()) return decoded;
+        for (std::size_t offset = 0; offset < wire.size();) {
+            const auto size = std::min(feed_bytes, wire.size() - offset);
+            to.Feed(wire.data() + offset, size);
+            assert(!to.failed());
+            auto part = to.TakeTunnelBytes();
+            decoded.insert(decoded.end(), part.begin(), part.end());
+            offset += size;
+        }
+    }
+    assert(false && "fragmented HTTP/2 pump did not quiesce");
+    return {};
 }
 
 void CompleteChromeAssets(H2Carrier& client, H2Carrier& server) {
@@ -90,16 +110,36 @@ void FullSessionRoundTrip() {
         {"sec-websocket-extensions", "permessage-deflate; client_max_window_bits"}};
     assert(requests[0].headers == expected_connect);
     assert(server.AcceptCarrier(requests[0].stream_id));
+    // Production enables this only after YUME authentication. A full 256-KiB
+    // ratchet epoch must then cross in one direction without waiting for
+    // reverse WINDOW_UPDATE traffic between partial sends.
+    assert(server.EnableAuthenticatedReceiveWindow());
+    assert(server.EnableAuthenticatedReceiveWindow());
     Pump(server, client);
     Pump(client, server);
     assert(client.carrier_active() && server.carrier_active());
 
     // More than two capture-sized messages proves SendBinary shapes a byte
     // stream into 16-KiB WebSocket messages without losing frame boundaries.
-    const H2Bytes up(40000, 0x35);
+    H2Bytes up(256U * 1024U);
+    for (std::size_t i = 0; i < up.size(); ++i) {
+        // Every 16-KiB WebSocket message gets a distinct prefix. A uniform
+        // payload cannot detect a carrier that accidentally repeats its first
+        // message while advancing flow-control state.
+        up[i] = static_cast<std::uint8_t>(
+            ((i / (16U * 1024U)) * 17U + (i % 251U)) & 0xffU);
+    }
     assert(client.SendBinary(up));
     Pump(client, server);
     assert(server.TakeTunnelBytes() == up);
+
+    H2Bytes fragmented_up(200329U);
+    for (std::size_t i = 0; i < fragmented_up.size(); ++i) {
+        fragmented_up[i] = static_cast<std::uint8_t>(
+            ((i / (64U * 1024U)) * 73U + (i % 251U)) & 0xffU);
+    }
+    assert(client.SendBinary(fragmented_up));
+    assert(PumpFragmentedAndTake(client, server, 16381U) == fragmented_up);
 
     // The server's first full-size message uses the captured 8-KiB + 8-KiB
     // fragmentation, transparently reassembled by the client codec.

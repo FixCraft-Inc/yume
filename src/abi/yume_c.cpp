@@ -6,6 +6,7 @@
 
 #include "yume/yume.h"
 
+#include "client/packet/channel.hpp"
 #include "client/transport/tunnel.hpp"
 #include "core/runtime/service_stream.hpp"
 #include "core/security/inner_crypto.hpp"
@@ -27,6 +28,8 @@
 #include <new>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -36,6 +39,7 @@ enum class HandleKind : std::uint32_t {
     Client = 0x59434c49u,  // YCLI
     Server = 0x59535256u,  // YSRV
     Stream = 0x59535452u,  // YSTR
+    Packet = 0x59504b54u,  // YPKT
 };
 
 struct HandleBase {
@@ -156,6 +160,7 @@ int status_from_error(const std::string& error) {
     }
     if (contains_text(error, "not registered") ||
         contains_text(error, "not found") ||
+        contains_text(error, "does not advertise") ||
         contains_text(error, "unavailable")) {
         return YUME_STATUS_NOT_FOUND;
     }
@@ -164,6 +169,19 @@ int status_from_error(const std::string& error) {
         contains_text(error, "permission") ||
         contains_text(error, "denied")) {
         return YUME_STATUS_PERMISSION_DENIED;
+    }
+    return YUME_STATUS_INTERNAL_ERROR;
+}
+
+int status_from_packet_result(yume::client::packet::QueueResult result) {
+    using Result = yume::client::packet::QueueResult;
+    switch (result) {
+    case Result::ok: return YUME_STATUS_OK;
+    case Result::would_block: return YUME_STATUS_WOULD_BLOCK;
+    case Result::timeout: return YUME_STATUS_TIMEOUT;
+    case Result::stopped: return YUME_STATUS_NOT_RUNNING;
+    case Result::buffer_too_small: return YUME_STATUS_BUFFER_TOO_SMALL;
+    case Result::invalid: return YUME_STATUS_INVALID_ARGUMENT;
     }
     return YUME_STATUS_INTERNAL_ERROR;
 }
@@ -214,6 +232,21 @@ struct yume_stream {
     std::shared_ptr<yume::runtime::ServiceStream> stream;
 };
 
+struct yume_packet {
+    explicit yume_packet(
+        std::shared_ptr<yume::client::packet::PacketChannel> channel_in)
+        : base(HandleKind::Packet)
+        , channel(std::move(channel_in)) {}
+
+    ~yume_packet() {
+        if (channel) channel->close("ABI packet destroyed");
+    }
+
+    HandleBase base;
+    std::mutex mu;
+    std::shared_ptr<yume::client::packet::PacketChannel> channel;
+};
+
 extern "C" {
 
 uint32_t yume_abi_version(void) {
@@ -225,13 +258,14 @@ const char* yume_version(void) {
 }
 
 uint32_t yume_feature_flags(void) {
-    uint32_t flags = YUME_FEATURE_PBKDF2_HKDF;
+    uint32_t flags = YUME_FEATURE_PBKDF2_HKDF | YUME_FEATURE_PACKET_BULK;
 #if defined(YUME_USE_BASEFWX) && YUME_USE_BASEFWX
     flags |= YUME_FEATURE_BASEFWX;
 #endif
     try {
         if (yume::inner::pq_supported()) {
             flags |= YUME_FEATURE_PQ_MLKEM768;
+            flags |= YUME_FEATURE_PQ_MLKEM1024;
         }
         if (yume::inner::argon2_supported()) {
             flags |= YUME_FEATURE_ARGON2ID;
@@ -304,6 +338,7 @@ const char* yume_strerror(int status) {
     case YUME_STATUS_NOT_FOUND: return "not found";
     case YUME_STATUS_PERMISSION_DENIED: return "permission denied";
     case YUME_STATUS_PARSE_ERROR: return "parse error";
+    case YUME_STATUS_WOULD_BLOCK: return "would block";
     default: return "unknown status";
     }
 }
@@ -433,6 +468,11 @@ int yume_client_status_json(yume_client* client,
     }
     try {
         const auto status = client->runtime.status();
+        const auto server_capabilities = client->runtime.server_capabilities();
+        const bool packet_bulk_supported =
+            (yume_feature_flags() & YUME_FEATURE_PACKET_BULK) != 0 &&
+            yume::client::packet::has_packet_bulk_capability(
+                server_capabilities);
         nlohmann::json json = {
             {"running", status.running},
             {"ready", status.ipc_available},
@@ -440,7 +480,9 @@ int yume_client_status_json(yume_client* client,
             {"socket_path", status.socket_path},
             {"exit_code", status.exit_code},
             {"server_tls_fingerprint_sha256", status.server_tls_fingerprint_sha256},
-            {"started_unix_ms", unix_ms(status.started)}
+            {"started_unix_ms", unix_ms(status.started)},
+            {"server_capabilities", server_capabilities},
+            {"packet_bulk_supported", packet_bulk_supported}
         };
         return write_json_buffer(&client->base, json, out, out_size, needed);
     } catch (std::exception const& ex) {
@@ -619,6 +661,203 @@ int yume_client_open_stream(yume_client* client,
     } catch (...) {
         return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
     }
+}
+
+int yume_client_open_packet(yume_client* client,
+                            uint32_t timeout_ms,
+                            yume_packet** out_packet) {
+    if (!client || !out_packet) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    *out_packet = nullptr;
+    if (timeout_ms == 0) {
+        return set_error(&client->base, YUME_STATUS_WOULD_BLOCK,
+                         "packet OPEN requires a positive deadline");
+    }
+    try {
+        auto tunnel = client->runtime.primary_tunnel();
+        if (!tunnel || !tunnel->is_alive()) {
+            return set_error(&client->base, YUME_STATUS_NOT_RUNNING,
+                             "client tunnel is not running");
+        }
+        std::string error;
+        auto channel = yume::client::packet::PacketChannel::open(
+            std::move(tunnel), client->runtime.server_capabilities(),
+            std::chrono::milliseconds(timeout_ms), &error);
+        if (!channel) {
+            return set_error(&client->base, status_from_error(error), error);
+        }
+        *out_packet = new yume_packet(std::move(channel));
+        return clear_error(&client->base);
+    } catch (std::bad_alloc const&) {
+        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, "out of memory");
+    } catch (std::exception const& ex) {
+        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
+    } catch (...) {
+        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
+    }
+}
+
+int yume_packet_status_json(yume_packet* packet,
+                            char* out,
+                            size_t out_size,
+                            size_t* needed) {
+    if (!packet || !packet->channel) return YUME_STATUS_INVALID_ARGUMENT;
+    try {
+        const auto& assignment = packet->channel->assignment();
+        const auto stats = packet->channel->stats();
+        nlohmann::json json{
+            {"protocol", "packet-bulk-v1"},
+            {"capability", "packet_bulk_v1"},
+            {"ipv4", assignment.ipv4},
+            {"mtu", assignment.mtu},
+            {"dns", assignment.dns_servers},
+            {"stopped", stats.stopped},
+            {"stop_reason", stats.stop_reason},
+            {"outbound_batches", stats.outbound_batches},
+            {"outbound_packets", stats.outbound_packets},
+            {"outbound_bytes", stats.outbound_bytes},
+            {"outbound_queue_packets", stats.outbound_queue_packets},
+            {"outbound_queue_bytes", stats.outbound_queue_bytes},
+            {"inbound_batches", stats.inbound_batches},
+            {"inbound_packets", stats.inbound_packets},
+            {"inbound_bytes", stats.inbound_bytes},
+            {"inbound_queue_packets", stats.inbound_queue_packets},
+            {"inbound_queue_bytes", stats.inbound_queue_bytes},
+        };
+        return write_json_buffer(&packet->base, json, out, out_size, needed);
+    } catch (std::exception const& ex) {
+        return set_error(&packet->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
+    } catch (...) {
+        return set_error(&packet->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
+    }
+}
+
+int yume_packet_write_batch(yume_packet* packet,
+                            const void* const* packets,
+                            const size_t* lengths,
+                            size_t packet_count,
+                            uint32_t timeout_ms) {
+    if (!packet || !packet->channel || !packets || !lengths || packet_count == 0) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    if (packet_count >
+        yume::client::packet::PacketBatchEngine::kDefaultMaxQueuePackets) {
+        return set_error(&packet->base, YUME_STATUS_INVALID_ARGUMENT,
+                         "packet batch exceeds the queue packet limit");
+    }
+    try {
+        std::size_t total_bytes = 0;
+        for (std::size_t i = 0; i < packet_count; ++i) {
+            if (!packets[i] || lengths[i] == 0 ||
+                lengths[i] > yume::protocol::packet_bulk::kMaxPacketBytes) {
+                return set_error(&packet->base, YUME_STATUS_INVALID_ARGUMENT,
+                                 "packet input is null, empty, or oversized");
+            }
+            if (lengths[i] >
+                yume::client::packet::PacketBatchEngine::kDefaultMaxQueueBytes -
+                    std::min(total_bytes,
+                             yume::client::packet::PacketBatchEngine::kDefaultMaxQueueBytes)) {
+                return set_error(&packet->base, YUME_STATUS_INVALID_ARGUMENT,
+                                 "packet batch exceeds the queue byte limit");
+            }
+            total_bytes += lengths[i];
+        }
+        std::vector<yume::client::packet::Bytes> copied;
+        copied.reserve(packet_count);
+        for (std::size_t i = 0; i < packet_count; ++i) {
+            const auto* begin = static_cast<const std::uint8_t*>(packets[i]);
+            copied.emplace_back(begin, begin + lengths[i]);
+        }
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(timeout_ms);
+        while (true) {
+            std::string error;
+            const auto result = packet->channel->write_packets(copied, &error);
+            if (result == yume::client::packet::QueueResult::ok) {
+                return clear_error(&packet->base);
+            }
+            if (result != yume::client::packet::QueueResult::would_block) {
+                return set_error(&packet->base, status_from_packet_result(result), error);
+            }
+            if (timeout_ms == 0) {
+                return set_error(&packet->base, YUME_STATUS_WOULD_BLOCK, error);
+            }
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return set_error(&packet->base, YUME_STATUS_TIMEOUT,
+                                 "packet write deadline expired");
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    } catch (std::bad_alloc const&) {
+        return set_error(&packet->base, YUME_STATUS_INTERNAL_ERROR, "out of memory");
+    } catch (std::exception const& ex) {
+        return set_error(&packet->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
+    } catch (...) {
+        return set_error(&packet->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
+    }
+}
+
+int yume_packet_read_batch(yume_packet* packet,
+                           void* storage,
+                           size_t storage_size,
+                           size_t* offsets,
+                           size_t* lengths,
+                           size_t array_capacity,
+                           size_t* packet_count,
+                           size_t* required_storage,
+                           uint32_t timeout_ms) {
+    if (!packet || !packet->channel || !packet_count ||
+        array_capacity == 0 || !offsets || !lengths ||
+        (!storage && storage_size != 0)) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    *packet_count = 0;
+    if (required_storage) *required_storage = 0;
+    try {
+        std::vector<yume::client::packet::Bytes> packets;
+        std::size_t required = 0;
+        const auto result = packet->channel->read_packets(
+            array_capacity, storage_size, std::chrono::milliseconds(timeout_ms),
+            &packets, &required);
+        if (required_storage) *required_storage = required;
+        if (result != yume::client::packet::QueueResult::ok) {
+            return set_error(&packet->base, status_from_packet_result(result),
+                             result == yume::client::packet::QueueResult::buffer_too_small
+                                 ? "packet read storage is too small"
+                                 : "packet read unavailable");
+        }
+        auto* bytes = static_cast<std::uint8_t*>(storage);
+        std::size_t offset = 0;
+        for (std::size_t i = 0; i < packets.size(); ++i) {
+            offsets[i] = offset;
+            lengths[i] = packets[i].size();
+            std::memcpy(bytes + offset, packets[i].data(), packets[i].size());
+            offset += packets[i].size();
+        }
+        *packet_count = packets.size();
+        if (required_storage) *required_storage = offset;
+        return clear_error(&packet->base);
+    } catch (std::exception const& ex) {
+        return set_error(&packet->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
+    } catch (...) {
+        return set_error(&packet->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
+    }
+}
+
+int yume_packet_close(yume_packet* packet) {
+    if (!packet || !packet->channel) return YUME_STATUS_INVALID_ARGUMENT;
+    try {
+        packet->channel->close("ABI packet close");
+        return clear_error(&packet->base);
+    } catch (...) {
+        return set_error(&packet->base, YUME_STATUS_INTERNAL_ERROR,
+                         "packet close failed");
+    }
+}
+
+void yume_packet_destroy(yume_packet* packet) {
+    delete packet;
 }
 
 yume_server* yume_server_create(void) {

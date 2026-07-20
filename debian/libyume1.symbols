@@ -6,6 +6,7 @@ libyume.so.1 libyume1 #MINVER#
  yume_client_create@Base 1.1-1
  yume_client_destroy@Base 1.1-1
  yume_client_open_stream@Base 1.1-1
+ yume_client_open_packet@Base 1.1-1
  yume_client_request_json@Base 1.1-1
  yume_client_start_file@Base 1.1-1
  yume_client_start_json@Base 1.1-1
@@ -16,6 +17,11 @@ libyume.so.1 libyume1 #MINVER#
  yume_get_build_info@Base 1.0-1
  yume_handle_last_error@Base 1.1-1
  yume_pq_backend@Base 1.0-1
+ yume_packet_close@Base 1.1-1
+ yume_packet_destroy@Base 1.1-1
+ yume_packet_read_batch@Base 1.1-1
+ yume_packet_status_json@Base 1.1-1
+ yume_packet_write_batch@Base 1.1-1
  yume_server_accept_stream@Base 1.1-1
  yume_server_create@Base 1.1-1
  yume_server_destroy@Base 1.1-1

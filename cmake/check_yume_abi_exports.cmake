@@ -5,6 +5,7 @@ set(_expected
     yume_client_create
     yume_client_destroy
     yume_client_open_stream
+    yume_client_open_packet
     yume_client_request_json
     yume_client_start_file
     yume_client_start_json
@@ -15,6 +16,11 @@ set(_expected
     yume_get_build_info
     yume_handle_last_error
     yume_pq_backend
+    yume_packet_close
+    yume_packet_destroy
+    yume_packet_read_batch
+    yume_packet_status_json
+    yume_packet_write_batch
     yume_server_accept_stream
     yume_server_create
     yume_server_destroy

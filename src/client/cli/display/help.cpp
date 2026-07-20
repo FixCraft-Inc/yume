@@ -23,7 +23,7 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --credits --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --codec --codec-listen --monero-rpc --monero-rpc-listen --quick-bench --quickbench --full-bench --fullbench --localbench --bench --bench-full --endpoint-fullbench --bench-mib --bench-chunk-kib --bench-streams --bench-direction --duration-sec --latency-iters --bulk-mib --streams --cooldown-ms --repeat --configs --one-way --json --json-stdout --dev --color --no-color --keep-workdir --list-configs --threads --tunnels --obfs --obfs-secret-file --inner-psk-file export import --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --anonym-ca-cert --tls-ca --tls-name --tls-server-name --tls-pin --profile --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --self-dpi --no-self-dpi --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --service-streams-only --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
+  local opts="--help -h --version --credits --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --packet-tun --codec --codec-listen --monero-rpc --monero-rpc-listen --quick-bench --quickbench --full-bench --fullbench --localbench --bench --bench-full --endpoint-fullbench --bench-mib --bench-chunk-kib --bench-streams --bench-direction --duration-sec --latency-iters --bulk-mib --streams --cooldown-ms --repeat --configs --one-way --json --json-stdout --dev --color --no-color --keep-workdir --list-configs --threads --tunnels --obfs --obfs-secret-file --inner-psk-file export import --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --anonym-ca-cert --tls-ca --tls-name --tls-server-name --tls-pin --profile --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --self-dpi --no-self-dpi --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --service-streams-only --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
   local file_opts="--config --auth -i --obfs-secret-file --inner-psk-file --anonym-ca-cert --tls-ca --tls-fingerprint-log-path --relay-key-file"
   case "$prev" in
     --completion)
@@ -101,6 +101,7 @@ void print_help() {
         << "Modes:\n"
         << "  --socks [addr:]port      Start a SOCKS5 proxy\n"
         << "                             Example: --socks 127.0.0.1:1080\n"
+        << "  --packet-tun <ifname>    Attach an operator-created Linux TUN (no route changes)\n"
         << "  --monero-rpc             Start the built-in Monero RPC application\n"
         << "                             codec on 127.0.0.1:18089. Wallets can\n"
         << "                             use --daemon-address 127.0.0.1:18089.\n"
@@ -120,7 +121,7 @@ void print_help() {
         << "  --bench-full             Longer real-server profile; defaults to\n"
         << "                             1024 MiB per direction and 64 streams.\n"
         << "  --bench-mib <N>          Benchmark payload per direction (default 256).\n"
-        << "  --bench-chunk-kib <N>    DATA chunk size (default 256, max 256).\n"
+        << "  --bench-chunk-kib <N>    DATA chunk size (default: SOCKS/relay buffer, 64 KiB).\n"
         << "  --bench-streams <N>      Concurrent benchmark streams (default 1, max 240).\n"
         << "  --bench-direction <D>    both, up, or down (default both).\n"
         << "  -L [bind:]lport:host:port\n"

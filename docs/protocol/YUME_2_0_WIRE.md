@@ -149,12 +149,13 @@ frame would exceed 256 KiB, 512 encrypted frames, or 500 ms since the epoch's
 first active data frame. Idle time alone sends nothing; late-arriving data
 starts rekey first. Application writes queue behind a bounded rekey barrier.
 
-Development limitation (`2.0-dev1`): the receiver authenticates exact epoch
-and sequence values and rejects retired-epoch application data, but does not
-yet independently reject an inbound epoch that exceeds the byte, frame, or
-active-time thresholds. The current containment bound therefore assumes a
-conforming sender. Receiver-side threshold accounting and fail-closed
-enforcement are required before `2.0-rc1`.
+The receiver independently rejects an authenticated inbound epoch that would
+exceed the 256 KiB or 512-frame usage boundary. The 500 ms boundary is
+sender-local: a conforming sender rekeys before sealing later application data,
+but a receiver cannot distinguish late network delivery of an already sealed
+frame from late sealing without adding a timestamp to the wire. The time-based
+containment claim therefore still assumes a conforming sender; byte and frame
+containment do not.
 
 `REKEY_INIT = 13` contains the next epoch number, a fresh ML-KEM-1024 public
 key, and a fresh X25519 public key. `REKEY_ACK = 14`, sent through the independent

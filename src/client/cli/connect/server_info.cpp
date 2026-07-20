@@ -43,6 +43,17 @@ ServerInfoPayload parse_server_info_payload(const protocol::Frame& frame) {
     info.pq_pub_b64 = json.value("pq_pub", "");
     info.pq_sig = json.value("pq_sig", "");
     info.pq_alg = json.value("pq_alg", "");
+    if (json.contains("capabilities")) {
+        if (!json["capabilities"].is_array()) {
+            throw std::runtime_error("server capabilities must be an array");
+        }
+        for (const auto& entry : json["capabilities"]) {
+            if (!entry.is_string()) {
+                throw std::runtime_error("server capability must be a string");
+            }
+            info.capabilities.push_back(entry.get<std::string>());
+        }
+    }
     info.have_inner_caps = json.contains("inner_supported") || json.contains("inner_required") ||
                            json.contains("inner_dual") || json.contains("inner_mode");
     info.server_inner_supported = json.value("inner_supported", false);

@@ -125,6 +125,32 @@ void TestByteBoundaryAndEpochAdvance() {
     assert(receiver.Decrypt(3, 1, 0, sealed, now) == Bytes({9, 8, 7}));
 }
 
+void TestReceiverRejectsNonconformingEpochUsage() {
+    const auto now = std::chrono::steady_clock::time_point{};
+
+    DirectionalRatchet byte_sender(Direction::ClientToServer, Filled(32, 0x91));
+    DirectionalRatchet byte_receiver(Direction::ClientToServer, Filled(32, 0x91));
+    auto full_epoch = byte_sender.Encrypt(
+        3, 1, 0, Filled(yume::ratchet::kEpochByteLimit, 0x92), now, false);
+    assert(byte_receiver.Decrypt(3, 1, 0, full_epoch, now) ==
+           Filled(yume::ratchet::kEpochByteLimit, 0x92));
+    auto extra_byte = byte_sender.Encrypt(3, 1, 0, Bytes{0x93}, now, false);
+    assert(Throws([&] {
+        (void)byte_receiver.Decrypt(3, 1, 0, extra_byte, now);
+    }));
+
+    DirectionalRatchet frame_sender(Direction::ClientToServer, Filled(32, 0xa1));
+    DirectionalRatchet frame_receiver(Direction::ClientToServer, Filled(32, 0xa1));
+    for (std::uint64_t i = 0; i < yume::ratchet::kEpochMessageLimit; ++i) {
+        auto frame = frame_sender.Encrypt(3, 1, 0, {}, now, false);
+        assert(frame_receiver.Decrypt(3, 1, 0, frame, now).empty());
+    }
+    auto extra_frame = frame_sender.Encrypt(3, 1, 0, {}, now, false);
+    assert(Throws([&] {
+        (void)frame_receiver.Decrypt(3, 1, 0, extra_frame, now);
+    }));
+}
+
 }  // namespace
 
 int main() {
@@ -132,5 +158,6 @@ int main() {
     TestAadTamperAndTimeBoundary();
     TestByteBoundaryAndEpochAdvance();
     TestMessageBoundaryAndIdleSilence();
+    TestReceiverRejectsNonconformingEpochUsage();
     return 0;
 }

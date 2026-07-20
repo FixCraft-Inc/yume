@@ -29,7 +29,8 @@ or admin/control validation.
   stream/flags AAD binding.
 - Independent directional hybrid rekeys before 256 KiB, 512 encrypted data
   frames, or 500 ms of active epoch time; idle silence, bounded rekey barrier,
-  timeout close, simultaneous rekeys, and old receiving-chain retirement.
+  timeout close, simultaneous rekeys, old receiving-chain retirement, and
+  independent receiver enforcement of byte/frame usage boundaries.
 - Exact `2.0-dev1` admission/AUTH-version equality and no accepted 1.x
   downgrade path. Legacy
   inner/light/heavy/dual/hop/no-inner/raw-carrier and literal-secret CLI choices
@@ -68,6 +69,14 @@ or admin/control validation.
   median and directional rekey 0.219 ms median. This proves ample local
   throughput, not WAN performance, Chrome TLS parity, or the pending bulk-wire
   overhead gate.
+- A sustained direct-Ethernet authenticated stream-core matrix completed 1 GiB
+  upload plus 1 GiB download at 1, 4, 16, and 64 logical streams without a
+  queue overrun, replay failure, crash, timeout, or byte mismatch. With a
+  production 256 KiB relay buffer, upload measured 311.9-362.8 Mbit/s and
+  download 149.0-158.3 Mbit/s. This validates the DATA/ratchet/H2/WebSocket/TLS
+  boundary on that single-tunnel LAN path; it excludes local SOCKS and target
+  sockets, the packet ABI/TUN path, WAN behavior, and Android. The persistent
+  download asymmetry remains a profiling target.
 
 ## Required before `2.0-rc1`
 
@@ -77,9 +86,10 @@ or admin/control validation.
   and Chrome interoperability.
 - Exercise partial socket writes, sustained flow-control stalls, malformed
   carrier paths, backend timeout/failure, and bounded backpressure under load.
-- Enforce the 256 KiB / 512-frame / 500 ms thresholds independently on
-  inbound epochs. Dev1 currently authenticates epoch/sequence transitions but
-  relies on the sender to initiate each boundary on time.
+- Decide whether receiver-verifiable active-time enforcement justifies a wire
+  timestamp in a later protocol revision. Dev1 independently enforces inbound
+  byte/frame usage; its 500 ms boundary remains sender-local because network
+  delivery may be delayed after sealing.
 - Fuzz WebSocket reassembly across mid-record splits, multi-fragment binary
   messages, and interleaved PING/PONG control frames. Strict inner-record
   sequencing makes this carrier boundary security-critical.

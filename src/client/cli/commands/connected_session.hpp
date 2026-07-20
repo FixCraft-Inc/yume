@@ -73,6 +73,7 @@ struct ConnectedSessionOptions {
         tls_fingerprint::BrowserProfile::UNKNOWN};
     std::uint64_t* completed_tls_connections{nullptr};
     bool explicit_http_profile{false};
+    std::vector<std::string> server_capabilities;
     std::function<std::string()> status_block_builder;
 
     std::function<void()> announce_stopping;

@@ -228,10 +228,15 @@ bool parse_server_cli_args(int argc,
             result.config_overrides.packet_mtu = true;
         } else if (arg == "--bench" || arg == "--fullbench" || arg == "--full-bench") {
             cfg.benchmark_enable = true;
+        } else if (arg == "--hop" || arg == "--no-hop" ||
+                   arg == "--hop-interval") {
+            yume::util::log_error(
+                arg + " is a retired 1.x time-key option; YUME 2.0 has no legacy hop layer"
+                      " and always uses the hybrid directional ratchet");
+            return false;
         } else if (arg == "--inner" || arg == "--no-inner" ||
                    arg == "--inner-heavy" || arg == "--inner-light" ||
-                   arg == "--inner-dual" || arg == "--hop" ||
-                   arg == "--no-hop" || arg == "--hop-interval") {
+                   arg == "--inner-dual") {
             yume::util::log_error(
                 arg + " is not accepted by YUME 2.0; the hybrid directional ratchet is mandatory");
             return false;

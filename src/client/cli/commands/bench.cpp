@@ -55,6 +55,75 @@ struct EndpointBenchResult {
     double server_seconds{0.0};
 };
 
+using SharedBenchProgress = std::shared_ptr<std::atomic<std::uint64_t>>;
+
+class BenchWriteWindow {
+public:
+    bool reserve(std::size_t bytes,
+                 const std::atomic<bool>& cancelled,
+                 std::chrono::steady_clock::duration timeout) {
+        std::unique_lock<std::mutex> lock(mu_);
+        if (!cv_.wait_for(lock, timeout, [&] {
+                return cancelled.load(std::memory_order_acquire) ||
+                       bytes <= kBenchWindowBytes - reserved_bytes_;
+            })) {
+            return false;
+        }
+        if (cancelled.load(std::memory_order_acquire)) {
+            return false;
+        }
+        reserved_bytes_ += bytes;
+        return true;
+    }
+
+    void release(std::size_t bytes) {
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            reserved_bytes_ = bytes <= reserved_bytes_ ? reserved_bytes_ - bytes : 0;
+        }
+        cv_.notify_all();
+    }
+
+    void wake_waiters() {
+        cv_.notify_all();
+    }
+
+private:
+    std::mutex mu_;
+    std::condition_variable cv_;
+    std::uint64_t reserved_bytes_{0};
+};
+
+struct UploadBenchState {
+    std::mutex mu;
+    std::condition_variable cv;
+    bool open_done{false};
+    bool open_ok{false};
+    bool closed{false};
+    bool write_failed{false};
+    std::string error;
+    std::string close_reason;
+    std::vector<std::uint8_t> summary_bytes;
+    std::uint64_t queued_bytes{0};
+    std::uint64_t completed_bytes{0};
+    std::uint64_t in_flight_bytes{0};
+    std::atomic<std::uint64_t> progress_bytes{0};
+    std::atomic<bool> cancelled{false};
+};
+
+struct DownloadBenchState {
+    std::mutex mu;
+    std::condition_variable cv;
+    bool open_done{false};
+    bool open_ok{false};
+    bool closed{false};
+    std::string error;
+    std::string close_reason;
+    std::uint64_t received{0};
+    std::atomic<std::uint64_t> progress_bytes{0};
+    std::atomic<bool> cancelled{false};
+};
+
 std::vector<std::uint64_t> split_total_bytes(std::uint64_t total, int streams) {
     const auto count = static_cast<std::size_t>(std::max(1, streams));
     std::vector<std::uint64_t> out(count, total / count);
@@ -226,7 +295,8 @@ EndpointBenchResult run_endpoint_upload_bench(const std::shared_ptr<Tunnel>& tun
                                               std::uint64_t total_bytes,
                                               std::size_t chunk_size,
                                               const char* progress_label = "UP",
-                                              std::atomic<std::uint64_t>* aggregate_progress = nullptr) {
+                                              SharedBenchProgress aggregate_progress = {},
+                                              std::shared_ptr<BenchWriteWindow> write_window = {}) {
     EndpointBenchResult result;
     const uint8_t stream_id = tunnel->reserve_stream_id();
     if (stream_id == 0) {
@@ -234,31 +304,33 @@ EndpointBenchResult run_endpoint_upload_bench(const std::shared_ptr<Tunnel>& tun
         return result;
     }
 
-    std::mutex mu;
-    std::condition_variable cv;
-    bool open_done = false;
-    bool open_ok = false;
-    bool closed = false;
-    bool write_failed = false;
-    std::string error;
-    std::string close_reason;
-    std::vector<std::uint8_t> summary_bytes;
-    std::uint64_t queued_bytes = 0;
-    std::uint64_t completed_bytes = 0;
-    std::uint64_t in_flight_bytes = 0;
-    std::atomic<std::uint64_t> progress_bytes{0};
+    auto state = std::make_shared<UploadBenchState>();
+    if (!write_window) {
+        write_window = std::make_shared<BenchWriteWindow>();
+    }
+
+    const auto cancel = [&] {
+        state->cancelled.store(true, std::memory_order_release);
+        state->cv.notify_all();
+        write_window->wake_waiters();
+        tunnel->unregister_stream(stream_id);
+    };
 
     tunnel->register_stream(
         stream_id,
-        [&](const Tunnel::Bytes& data) {
-            std::lock_guard<std::mutex> lock(mu);
-            summary_bytes.insert(summary_bytes.end(), data.begin(), data.end());
+        [state](const Tunnel::Bytes& data) {
+            std::lock_guard<std::mutex> lock(state->mu);
+            state->summary_bytes.insert(state->summary_bytes.end(), data.begin(), data.end());
         },
-        [&](const std::string& reason) {
-            std::lock_guard<std::mutex> lock(mu);
-            close_reason = reason;
-            closed = true;
-            cv.notify_all();
+        [state, write_window](const std::string& reason) {
+            {
+                std::lock_guard<std::mutex> lock(state->mu);
+                state->close_reason = reason;
+                state->closed = true;
+            }
+            state->cancelled.store(true, std::memory_order_release);
+            state->cv.notify_all();
+            write_window->wake_waiters();
         });
 
     nlohmann::json open{
@@ -267,24 +339,30 @@ EndpointBenchResult run_endpoint_upload_bench(const std::shared_ptr<Tunnel>& tun
         {"port", 1},
         {"bytes", total_bytes},
     };
-    tunnel->open_relay_stream(stream_id, open, [&](bool ok, const std::string& reason) {
-        std::lock_guard<std::mutex> lock(mu);
-        open_done = true;
-        open_ok = ok;
-        error = reason;
-        cv.notify_all();
+    tunnel->open_relay_stream(stream_id, open, [state](bool ok, const std::string& reason) {
+        {
+            std::lock_guard<std::mutex> lock(state->mu);
+            state->open_done = true;
+            state->open_ok = ok;
+            state->error = reason;
+        }
+        state->cv.notify_all();
     });
 
     {
-        std::unique_lock<std::mutex> lock(mu);
-        if (!cv.wait_for(lock, kBenchOpenTimeout, [&] { return open_done || closed; })) {
+        std::unique_lock<std::mutex> lock(state->mu);
+        if (!state->cv.wait_for(lock, kBenchOpenTimeout, [&] {
+                return state->open_done || state->closed;
+            })) {
             result.error = "benchmark upload OPEN timed out";
-            tunnel->unregister_stream(stream_id);
+            lock.unlock();
+            cancel();
             return result;
         }
-        if (!open_ok) {
-            result.error = error.empty() ? "benchmark upload OPEN failed" : error;
-            tunnel->unregister_stream(stream_id);
+        if (!state->open_ok) {
+            result.error = state->error.empty() ? "benchmark upload OPEN failed" : state->error;
+            lock.unlock();
+            cancel();
             return result;
         }
     }
@@ -292,83 +370,111 @@ EndpointBenchResult run_endpoint_upload_bench(const std::shared_ptr<Tunnel>& tun
     const auto start = std::chrono::steady_clock::now();
     std::unique_ptr<BenchProgressTicker> progress;
     if (progress_label && *progress_label) {
-        progress = std::make_unique<BenchProgressTicker>(progress_label, total_bytes, progress_bytes);
+        progress = std::make_unique<BenchProgressTicker>(
+            progress_label, total_bytes, state->progress_bytes);
     }
     while (true) {
         std::size_t n = 0;
         std::uint64_t offset = 0;
         {
-            std::unique_lock<std::mutex> lock(mu);
-            if (!cv.wait_for(lock, kBenchStallTimeout, [&] {
-                return write_failed || closed || queued_bytes >= total_bytes ||
-                       in_flight_bytes + chunk_size <= kBenchWindowBytes;
-            })) {
-                result.error = "benchmark upload stalled waiting for the local write window";
-                tunnel->send_close(stream_id, "benchmark upload stalled");
-                tunnel->unregister_stream(stream_id);
-                return result;
-            }
-            if (write_failed || closed || queued_bytes >= total_bytes) {
+            std::lock_guard<std::mutex> lock(state->mu);
+            if (state->write_failed || state->closed || state->queued_bytes >= total_bytes) {
                 break;
             }
-            const std::uint64_t remaining = total_bytes - queued_bytes;
+            const std::uint64_t remaining = total_bytes - state->queued_bytes;
             n = static_cast<std::size_t>(std::min<std::uint64_t>(remaining, chunk_size));
-            offset = queued_bytes;
-            queued_bytes += n;
-            in_flight_bytes += n;
+        }
+        if (!write_window->reserve(n, state->cancelled, kBenchStallTimeout)) {
+            {
+                std::lock_guard<std::mutex> lock(state->mu);
+                if (state->write_failed || state->closed) {
+                    break;
+                }
+            }
+            result.error = "benchmark upload stalled waiting for the shared write window";
+            tunnel->send_close(stream_id, "benchmark upload stalled");
+            cancel();
+            return result;
+        }
+        {
+            std::lock_guard<std::mutex> lock(state->mu);
+            if (state->write_failed || state->closed) {
+                write_window->release(n);
+                break;
+            }
+            offset = state->queued_bytes;
+            state->queued_bytes += n;
+            state->in_flight_bytes += n;
         }
 
         Tunnel::Bytes payload(n);
         for (std::size_t i = 0; i < n; ++i) {
             payload[i] = static_cast<std::uint8_t>((offset + i) & 0xffu);
         }
-        tunnel->send_data(stream_id, std::move(payload), [&, n](bool ok, std::size_t, const std::string& reason) {
-            std::lock_guard<std::mutex> lock(mu);
-            if (in_flight_bytes >= n) {
-                in_flight_bytes -= n;
-            } else {
-                in_flight_bytes = 0;
-            }
-            if (!ok) {
-                write_failed = true;
-                error = reason.empty() ? "benchmark upload write failed" : reason;
-            } else {
-                completed_bytes += n;
-                progress_bytes.store(completed_bytes, std::memory_order_relaxed);
-                if (aggregate_progress) {
-                    aggregate_progress->fetch_add(n, std::memory_order_relaxed);
+        tunnel->send_data(
+            stream_id,
+            std::move(payload),
+            [state, write_window, aggregate_progress, n](
+                bool ok, std::size_t, const std::string& reason) {
+                write_window->release(n);
+                {
+                    std::lock_guard<std::mutex> lock(state->mu);
+                    state->in_flight_bytes = n <= state->in_flight_bytes
+                        ? state->in_flight_bytes - n : 0;
+                    if (!ok) {
+                        state->write_failed = true;
+                        state->error = reason.empty()
+                            ? "benchmark upload write failed" : reason;
+                    } else {
+                        state->completed_bytes += n;
+                        state->progress_bytes.store(
+                            state->completed_bytes, std::memory_order_relaxed);
+                        if (aggregate_progress) {
+                            aggregate_progress->fetch_add(n, std::memory_order_relaxed);
+                        }
+                    }
                 }
-            }
-            cv.notify_all();
-        });
+                if (!ok) {
+                    state->cancelled.store(true, std::memory_order_release);
+                    write_window->wake_waiters();
+                }
+                state->cv.notify_all();
+            });
     }
 
     {
-        std::unique_lock<std::mutex> lock(mu);
-        if (!cv.wait_for(lock, kBenchStallTimeout, [&] { return write_failed || in_flight_bytes == 0; })) {
+        std::unique_lock<std::mutex> lock(state->mu);
+        if (!state->cv.wait_for(lock, kBenchStallTimeout, [&] {
+                return state->write_failed || state->in_flight_bytes == 0;
+            })) {
             result.error = "benchmark upload stalled waiting for queued writes to finish";
+            lock.unlock();
             tunnel->send_close(stream_id, "benchmark upload stalled");
-            tunnel->unregister_stream(stream_id);
+            cancel();
             return result;
         }
-        if (write_failed) {
-            result.error = error;
-            tunnel->unregister_stream(stream_id);
+        if (state->write_failed) {
+            result.error = state->error;
+            lock.unlock();
+            cancel();
             return result;
         }
-        if (closed && queued_bytes < total_bytes) {
-            result.error = close_reason.empty() ? "benchmark upload closed early" : close_reason;
-            tunnel->unregister_stream(stream_id);
+        if (state->closed && state->queued_bytes < total_bytes) {
+            result.error = state->close_reason.empty()
+                ? "benchmark upload closed early" : state->close_reason;
+            lock.unlock();
+            cancel();
             return result;
         }
     }
 
     tunnel->send_close(stream_id, "benchmark upload complete");
     {
-        std::unique_lock<std::mutex> lock(mu);
-        if (!cv.wait_for(lock, kBenchCloseTimeout, [&] { return closed; })) {
+        std::unique_lock<std::mutex> lock(state->mu);
+        if (!state->cv.wait_for(lock, kBenchCloseTimeout, [&] { return state->closed; })) {
             result.error = "benchmark upload timed out waiting for server summary";
-            tunnel->unregister_stream(stream_id);
+            lock.unlock();
+            cancel();
             return result;
         }
     }
@@ -378,11 +484,12 @@ EndpointBenchResult run_endpoint_upload_bench(const std::shared_ptr<Tunnel>& tun
     }
 
     result.ok = true;
-    result.bytes = queued_bytes;
+    result.bytes = state->queued_bytes;
     result.seconds = std::chrono::duration<double>(end - start).count();
-    if (!summary_bytes.empty()) {
+    if (!state->summary_bytes.empty()) {
         try {
-            auto summary = nlohmann::json::parse(std::string(summary_bytes.begin(), summary_bytes.end()));
+            auto summary = nlohmann::json::parse(
+                std::string(state->summary_bytes.begin(), state->summary_bytes.end()));
             result.server_bytes = summary.value("bytes", static_cast<std::uint64_t>(0));
             const auto server_ms = summary.value("server_ms", 0LL);
             if (server_ms > 0) {
@@ -391,9 +498,10 @@ EndpointBenchResult run_endpoint_upload_bench(const std::shared_ptr<Tunnel>& tun
         } catch (...) {
         }
     }
-    if (!close_reason.empty() && close_reason.find("failed") != std::string::npos) {
+    if (!state->close_reason.empty() &&
+        state->close_reason.find("failed") != std::string::npos) {
         result.ok = false;
-        result.error = close_reason;
+        result.error = state->close_reason;
     }
     if (result.server_bytes > 0 && result.server_bytes != total_bytes) {
         result.ok = false;
@@ -401,13 +509,14 @@ EndpointBenchResult run_endpoint_upload_bench(const std::shared_ptr<Tunnel>& tun
                        std::to_string(result.server_bytes) +
                        ", expected " + std::to_string(total_bytes);
     }
+    cancel();
     return result;
 }
 
 EndpointBenchResult run_endpoint_download_bench(const std::shared_ptr<Tunnel>& tunnel,
                                                 std::uint64_t total_bytes,
                                                 const char* progress_label = "DOWN",
-                                                std::atomic<std::uint64_t>* aggregate_progress = nullptr) {
+                                                SharedBenchProgress aggregate_progress = {}) {
     EndpointBenchResult result;
     const uint8_t stream_id = tunnel->reserve_stream_id();
     if (stream_id == 0) {
@@ -415,32 +524,32 @@ EndpointBenchResult run_endpoint_download_bench(const std::shared_ptr<Tunnel>& t
         return result;
     }
 
-    std::mutex mu;
-    std::condition_variable cv;
-    bool open_done = false;
-    bool open_ok = false;
-    bool closed = false;
-    std::string error;
-    std::string close_reason;
-    std::uint64_t received = 0;
-    std::atomic<std::uint64_t> progress_bytes{0};
+    auto state = std::make_shared<DownloadBenchState>();
+    const auto cancel = [&] {
+        state->cancelled.store(true, std::memory_order_release);
+        state->cv.notify_all();
+        tunnel->unregister_stream(stream_id);
+    };
 
     tunnel->register_stream(
         stream_id,
-        [&](const Tunnel::Bytes& data) {
-            std::lock_guard<std::mutex> lock(mu);
-            received += static_cast<std::uint64_t>(data.size());
-            progress_bytes.store(received, std::memory_order_relaxed);
+        [state, aggregate_progress](const Tunnel::Bytes& data) {
+            std::lock_guard<std::mutex> lock(state->mu);
+            state->received += static_cast<std::uint64_t>(data.size());
+            state->progress_bytes.store(state->received, std::memory_order_relaxed);
             if (aggregate_progress) {
                 aggregate_progress->fetch_add(static_cast<std::uint64_t>(data.size()), std::memory_order_relaxed);
             }
-            cv.notify_all();
+            state->cv.notify_all();
         },
-        [&](const std::string& reason) {
-            std::lock_guard<std::mutex> lock(mu);
-            close_reason = reason;
-            closed = true;
-            cv.notify_all();
+        [state](const std::string& reason) {
+            {
+                std::lock_guard<std::mutex> lock(state->mu);
+                state->close_reason = reason;
+                state->closed = true;
+            }
+            state->cancelled.store(true, std::memory_order_release);
+            state->cv.notify_all();
         });
 
     nlohmann::json open{
@@ -449,24 +558,30 @@ EndpointBenchResult run_endpoint_download_bench(const std::shared_ptr<Tunnel>& t
         {"port", 1},
         {"bytes", total_bytes},
     };
-    tunnel->open_relay_stream(stream_id, open, [&](bool ok, const std::string& reason) {
-        std::lock_guard<std::mutex> lock(mu);
-        open_done = true;
-        open_ok = ok;
-        error = reason;
-        cv.notify_all();
+    tunnel->open_relay_stream(stream_id, open, [state](bool ok, const std::string& reason) {
+        {
+            std::lock_guard<std::mutex> lock(state->mu);
+            state->open_done = true;
+            state->open_ok = ok;
+            state->error = reason;
+        }
+        state->cv.notify_all();
     });
 
     {
-        std::unique_lock<std::mutex> lock(mu);
-        if (!cv.wait_for(lock, kBenchOpenTimeout, [&] { return open_done || closed; })) {
+        std::unique_lock<std::mutex> lock(state->mu);
+        if (!state->cv.wait_for(lock, kBenchOpenTimeout, [&] {
+                return state->open_done || state->closed;
+            })) {
             result.error = "benchmark download OPEN timed out";
-            tunnel->unregister_stream(stream_id);
+            lock.unlock();
+            cancel();
             return result;
         }
-        if (!open_ok) {
-            result.error = error.empty() ? "benchmark download OPEN failed" : error;
-            tunnel->unregister_stream(stream_id);
+        if (!state->open_ok) {
+            result.error = state->error.empty() ? "benchmark download OPEN failed" : state->error;
+            lock.unlock();
+            cancel();
             return result;
         }
     }
@@ -474,21 +589,24 @@ EndpointBenchResult run_endpoint_download_bench(const std::shared_ptr<Tunnel>& t
     const auto start = std::chrono::steady_clock::now();
     std::unique_ptr<BenchProgressTicker> progress;
     if (progress_label && *progress_label) {
-        progress = std::make_unique<BenchProgressTicker>(progress_label, total_bytes, progress_bytes);
+        progress = std::make_unique<BenchProgressTicker>(
+            progress_label, total_bytes, state->progress_bytes);
     }
     {
-        std::unique_lock<std::mutex> lock(mu);
-        std::uint64_t last_received = received;
-        while (!closed) {
-            if (!cv.wait_for(lock, kBenchStallTimeout, [&] {
-                    return closed || received != last_received;
+        std::unique_lock<std::mutex> lock(state->mu);
+        std::uint64_t last_received = state->received;
+        while (!state->closed) {
+            if (!state->cv.wait_for(lock, kBenchStallTimeout, [&] {
+                    return state->closed || state->received != last_received;
                 })) {
-                result.error = "benchmark download stalled after " + format_mib(received) + " MiB";
+                result.error = "benchmark download stalled after " +
+                               format_mib(state->received) + " MiB";
+                lock.unlock();
                 tunnel->send_close(stream_id, "benchmark download stalled");
-                tunnel->unregister_stream(stream_id);
+                cancel();
                 return result;
             }
-            last_received = received;
+            last_received = state->received;
         }
     }
     const auto end = std::chrono::steady_clock::now();
@@ -497,17 +615,20 @@ EndpointBenchResult run_endpoint_download_bench(const std::shared_ptr<Tunnel>& t
     }
 
     result.ok = true;
-    result.bytes = received;
+    result.bytes = state->received;
     result.seconds = std::chrono::duration<double>(end - start).count();
-    if (received != total_bytes) {
+    if (state->received != total_bytes) {
         result.ok = false;
-        result.error = "benchmark download byte mismatch: got " + std::to_string(received) +
+        result.error = "benchmark download byte mismatch: got " +
+                       std::to_string(state->received) +
                        ", expected " + std::to_string(total_bytes);
     }
-    if (!close_reason.empty() && close_reason.find("failed") != std::string::npos) {
+    if (!state->close_reason.empty() &&
+        state->close_reason.find("failed") != std::string::npos) {
         result.ok = false;
-        result.error = close_reason;
+        result.error = state->close_reason;
     }
+    cancel();
     return result;
 }
 
@@ -520,15 +641,17 @@ EndpointBenchResult run_endpoint_upload_bench_many(const std::shared_ptr<Tunnel>
     }
 
     auto parts = split_total_bytes(total_bytes, streams);
-    std::atomic<std::uint64_t> aggregate_progress{0};
-    BenchProgressTicker progress("UP", total_bytes, aggregate_progress);
+    auto aggregate_progress = std::make_shared<std::atomic<std::uint64_t>>(0);
+    auto write_window = std::make_shared<BenchWriteWindow>();
+    BenchProgressTicker progress("UP", total_bytes, *aggregate_progress);
     std::vector<EndpointBenchResult> results(parts.size());
     std::vector<std::thread> workers;
     workers.reserve(parts.size());
     const auto start = std::chrono::steady_clock::now();
     for (std::size_t i = 0; i < parts.size(); ++i) {
         workers.emplace_back([&, i] {
-            results[i] = run_endpoint_upload_bench(tunnel, parts[i], chunk_size, "", &aggregate_progress);
+            results[i] = run_endpoint_upload_bench(
+                tunnel, parts[i], chunk_size, "", aggregate_progress, write_window);
         });
     }
     for (auto& worker : workers) {
@@ -561,15 +684,16 @@ EndpointBenchResult run_endpoint_download_bench_many(const std::shared_ptr<Tunne
     }
 
     auto parts = split_total_bytes(total_bytes, streams);
-    std::atomic<std::uint64_t> aggregate_progress{0};
-    BenchProgressTicker progress("DOWN", total_bytes, aggregate_progress);
+    auto aggregate_progress = std::make_shared<std::atomic<std::uint64_t>>(0);
+    BenchProgressTicker progress("DOWN", total_bytes, *aggregate_progress);
     std::vector<EndpointBenchResult> results(parts.size());
     std::vector<std::thread> workers;
     workers.reserve(parts.size());
     const auto start = std::chrono::steady_clock::now();
     for (std::size_t i = 0; i < parts.size(); ++i) {
         workers.emplace_back([&, i] {
-            results[i] = run_endpoint_download_bench(tunnel, parts[i], "", &aggregate_progress);
+            results[i] = run_endpoint_download_bench(
+                tunnel, parts[i], "", aggregate_progress);
         });
     }
     for (auto& worker : workers) {
@@ -601,6 +725,9 @@ int run_endpoint_benchmark(const std::shared_ptr<Tunnel>& tunnel,
         static_cast<std::uint64_t>(options.bench_mib) * 1024ULL * 1024ULL;
     const std::size_t chunk_size =
         static_cast<std::size_t>(options.bench_chunk_kib) * 1024U;
+    const std::size_t relay_chunk_kib = util::relay_read_buf_size() / 1024U;
+    const bool production_stream_shape =
+        static_cast<std::size_t>(options.bench_chunk_kib) == relay_chunk_kib;
 
     std::cout << "\n" << color("YUME", "1;35") << " / "
               << color("ENDPOINT BENCHMARK", "1;36") << "\n"
@@ -613,9 +740,21 @@ int run_endpoint_benchmark(const std::shared_ptr<Tunnel>& tunnel,
               << "Profile  " << (options.full_profile ? "bench-full" : "standard")
               << "  direction=" << options.bench_direction
               << "  streams=" << options.bench_streams << "\n"
+              << "Workload "
+              << (production_stream_shape ? "production-stream" : "custom-stream")
+              << "  adapter=authenticated-stream-core\n"
               << "Payload  " << options.bench_mib << " MiB per direction"
               << "  chunk=" << options.bench_chunk_kib << " KiB\n"
-              << "Path     YUME 2.0 H2/WebSocket carrier + mandatory hybrid ratchet\n\n";
+              << "Boundary exact DATA/ratchet/H2/WebSocket/TLS path; excludes local SOCKS"
+                 " and target TCP sockets\n"
+              << "Security ML-KEM-1024+X25519+PSK ratchet=on  AES-256-GCM=on"
+                 "  legacy-hop=off\n"
+              << "Carrier  TLS1.3=on  H2/WebSocket=on  padding=off  jitter=off\n";
+    if (production_stream_shape) {
+        std::cout << "Compare  DATA geometry matches this process's SOCKS/forward relay buffer\n\n";
+    } else {
+        std::cout << "Compare  custom DATA geometry; do not label this result SOCKS-equivalent\n\n";
+    }
 
     const auto bench_started = std::chrono::steady_clock::now();
     EndpointBenchResult up_result;

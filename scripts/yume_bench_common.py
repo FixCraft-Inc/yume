@@ -77,6 +77,39 @@ class ManagedProcess:
         self.log_file.close()
 
 
+def relay_chunk_kib(environment: dict[str, str] | None = None) -> int:
+    source = os.environ if environment is None else environment
+    try:
+        value = int(source.get("YUME_RELAY_READ_BUF", "64"))
+    except ValueError:
+        return 64
+    return value if 4 <= value <= 256 else 64
+
+
+def endpoint_contract(
+    requested_chunk_kib: int | None,
+    production_chunk_kib: int,
+) -> dict[str, object]:
+    """Describe exactly what the synthetic endpoint rate does and does not measure."""
+    return {
+        "adapter": "authenticated-stream-core",
+        "frame_profile": (
+            "production-stream"
+            if requested_chunk_kib in (None, production_chunk_kib)
+            else "explicit-chunk"
+        ),
+        "includes": ["DATA", "ratchet", "H2", "WebSocket", "TLS"],
+        "excludes": ["local SOCKS socket", "target TCP socket", "packet ABI"],
+        "security": {
+            "ml_kem_1024_x25519_psk_ratchet": True,
+            "aes_256_gcm": True,
+            "legacy_hop": False,
+            "padding": False,
+            "jitter": False,
+        },
+    }
+
+
 def run_checked(
     argv: list[str],
     *,

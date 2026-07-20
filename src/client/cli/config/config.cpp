@@ -73,6 +73,9 @@ void load_client_config_file(const ParsedArgs& args,
         if (json.contains("socks_bind") && !args.socks_port_override) {
             cfg->socks_bind_host = json["socks_bind"].get<std::string>();
         }
+        if (json.contains("packet_tun_name") && !args.packet_tun_override) {
+            cfg->packet_tun_name = json["packet_tun_name"].get<std::string>();
+        }
         if (json.contains("threads") && cfg->io_threads == 0 && !args.io_threads_override) {
             cfg->io_threads = json["threads"].get<int>();
         }
@@ -264,6 +267,9 @@ void apply_cli_config_overrides(const ParsedArgs& args,
     if (args.socks_port_override) {
         cfg->socks_bind_host = args.socks_bind_host;
         cfg->socks_port = args.socks_port;
+    }
+    if (args.packet_tun_override) {
+        cfg->packet_tun_name = args.packet_tun_name;
     }
     if (args.io_threads != 0 || args.io_threads_override) {
         cfg->io_threads = args.io_threads;
@@ -460,12 +466,13 @@ void normalize_client_config_after_overrides(ParsedArgs* args, ClientConfig* cfg
         cfg->inner_hop = false;
     }
     if (args->bench) {
+        if (!args->bench_chunk_kib_override) {
+            args->bench_chunk_kib = static_cast<int>(
+                util::relay_read_buf_size() / 1024U);
+        }
         if (args->bench_full) {
             if (!args->bench_mib_override) {
                 args->bench_mib = 1024;
-            }
-            if (!args->bench_chunk_kib_override) {
-                args->bench_chunk_kib = 256;
             }
             if (!args->bench_streams_override) {
                 args->bench_streams = 64;
@@ -576,6 +583,7 @@ void save_client_config_file(const ParsedArgs& args, const ClientConfig& cfg) {
     if (!cfg.identity.empty()) json["identity"] = cfg.identity;
     if (cfg.socks_port > 0) json["socks_port"] = cfg.socks_port;
     if (!cfg.socks_bind_host.empty()) json["socks_bind"] = cfg.socks_bind_host;
+    if (!cfg.packet_tun_name.empty()) json["packet_tun_name"] = cfg.packet_tun_name;
     if (cfg.io_threads != 0) json["threads"] = cfg.io_threads;
     if (cfg.tunnel_count > 1) json["tunnels"] = cfg.tunnel_count;
     json["obfuscation"] = cfg.obfuscation;

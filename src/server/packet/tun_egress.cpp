@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <unordered_map>
@@ -199,7 +200,9 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         clients_.clear();
         owner_clients_.clear();
-        write_queue_.clear();
+        write_ready_clients_.clear();
+        pending_writes_ = 0;
+        pending_write_bytes_ = 0;
         write_active_ = false;
     }
 
@@ -238,45 +241,83 @@ public:
         const auto owner_it = owner_clients_.find(owner);
         const std::uint32_t current_ip = owner_it == owner_clients_.end() ? ipv4_be : owner_it->second;
         if (current_ip != 0) {
-            clients_.erase(current_ip);
+            auto client_it = clients_.find(current_ip);
+            if (client_it != clients_.end()) {
+                pending_writes_ -= std::min(pending_writes_, client_it->second.write_queue.size());
+                pending_write_bytes_ -= std::min(
+                    pending_write_bytes_, client_it->second.write_bytes);
+                clients_.erase(client_it);
+            }
         }
         if (owner_it != owner_clients_.end()) {
             owner_clients_.erase(owner_it);
         }
     }
 
-    void write_packet(std::uint32_t, crypto::Bytes packet) {
-        if (!active_ || packet.empty()) {
-            return;
+    bool write_packets(std::uint32_t client_ipv4_be,
+                       std::vector<crypto::Bytes> packets) {
+        if (!active_ || packets.empty()) {
+            return false;
         }
-        std::size_t packet_len = 0;
-        if (!parse_ipv4_packet(packet, nullptr, nullptr, &packet_len)) {
-            return;
-        }
-        if (packet_len != packet.size()) {
-            packet.resize(packet_len);
+        std::size_t batch_bytes = 0;
+        for (auto& packet : packets) {
+            std::size_t packet_len = 0;
+            if (!parse_ipv4_packet(packet, nullptr, nullptr, &packet_len) ||
+                packet_len != packet.size()) {
+                return false;
+            }
+            if (batch_bytes > std::numeric_limits<std::size_t>::max() - packet.size()) {
+                return false;
+            }
+            batch_bytes += packet.size();
         }
         bool should_start = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (write_queue_.size() >= kMaxPendingWrites) {
-                if ((dropped_writes_++ & 0x3ff) == 0) {
-                    util::log_warn("packet egress: TUN write queue full; dropping IPv4 packets");
-                }
-                return;
+            auto client_it = clients_.find(client_ipv4_be);
+            if (client_it == clients_.end()) {
+                return false;
             }
-            write_queue_.push_back(std::make_shared<crypto::Bytes>(std::move(packet)));
+            auto& client = client_it->second;
+            if (packets.size() > kMaxPendingWrites -
+                                     std::min(pending_writes_, kMaxPendingWrites) ||
+                batch_bytes > kMaxPendingWriteBytes -
+                                    std::min(pending_write_bytes_, kMaxPendingWriteBytes) ||
+                packets.size() > kMaxPendingWritesPerClient -
+                                     std::min(client.write_queue.size(), kMaxPendingWritesPerClient) ||
+                batch_bytes > kMaxPendingWriteBytesPerClient -
+                                    std::min(client.write_bytes, kMaxPendingWriteBytesPerClient)) {
+                if ((dropped_writes_++ & 0x3ff) == 0) {
+                    util::log_warn("packet egress: bounded per-client TUN queue full");
+                }
+                return false;
+            }
+            client.write_bytes += batch_bytes;
+            pending_writes_ += packets.size();
+            pending_write_bytes_ += batch_bytes;
+            for (auto& packet : packets) {
+                client.write_queue.push_back(
+                    std::make_shared<crypto::Bytes>(std::move(packet)));
+            }
+            if (!client.write_ready) {
+                client.write_ready = true;
+                write_ready_clients_.push_back(client_ipv4_be);
+            }
             should_start = !write_active_;
         }
         if (should_start) {
             start_write();
         }
+        return true;
     }
 
 private:
     struct Client {
         void* owner{nullptr};
         PacketHandler handler;
+        std::deque<std::shared_ptr<crypto::Bytes>> write_queue;
+        std::size_t write_bytes{0};
+        bool write_ready{false};
     };
 
     std::optional<std::uint32_t> allocate_client_locked() {
@@ -347,11 +388,33 @@ private:
         std::shared_ptr<crypto::Bytes> packet;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (write_active_ || write_queue_.empty() || !tun_) {
+            if (write_active_ || !tun_) {
+                return;
+            }
+            while (!write_ready_clients_.empty() && !packet) {
+                const std::uint32_t client_ip = write_ready_clients_.front();
+                write_ready_clients_.pop_front();
+                auto client_it = clients_.find(client_ip);
+                if (client_it == clients_.end() ||
+                    client_it->second.write_queue.empty()) {
+                    continue;
+                }
+                auto& client = client_it->second;
+                client.write_ready = false;
+                packet = std::move(client.write_queue.front());
+                client.write_queue.pop_front();
+                client.write_bytes -= packet->size();
+                --pending_writes_;
+                pending_write_bytes_ -= packet->size();
+                if (!client.write_queue.empty()) {
+                    client.write_ready = true;
+                    write_ready_clients_.push_back(client_ip);
+                }
+            }
+            if (!packet) {
                 return;
             }
             write_active_ = true;
-            packet = write_queue_.front();
         }
         boost::asio::async_write(
             *tun_,
@@ -360,14 +423,12 @@ private:
                 bool again = false;
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
-                    if (!write_queue_.empty() && write_queue_.front() == packet) {
-                        write_queue_.pop_front();
-                    }
                     write_active_ = false;
-                    again = !write_queue_.empty();
+                    again = !write_ready_clients_.empty();
                 }
                 if (ec && ec != boost::asio::error::operation_aborted) {
                     util::log_warn("packet egress: TUN write failed: " + ec.message());
+                    active_ = false;
                 }
                 if (again && active_) {
                     start_write();
@@ -377,6 +438,9 @@ private:
     }
 
     static constexpr std::size_t kMaxPendingWrites = 2048;
+    static constexpr std::size_t kMaxPendingWriteBytes = 16U * 1024U * 1024U;
+    static constexpr std::size_t kMaxPendingWritesPerClient = 256;
+    static constexpr std::size_t kMaxPendingWriteBytesPerClient = 2U * 1024U * 1024U;
 
     boost::asio::io_context& io_;
     ServerConfig cfg_;
@@ -386,7 +450,9 @@ private:
     mutable std::mutex mutex_;
     std::unordered_map<std::uint32_t, Client> clients_;
     std::unordered_map<void*, std::uint32_t> owner_clients_;
-    std::deque<std::shared_ptr<crypto::Bytes>> write_queue_;
+    std::deque<std::uint32_t> write_ready_clients_;
+    std::size_t pending_writes_{0};
+    std::size_t pending_write_bytes_{0};
     bool write_active_{false};
     std::uint64_t dropped_writes_{0};
     std::array<std::uint8_t, 65536> read_buf_{};
@@ -420,8 +486,10 @@ void PacketTunEgress::unregister_client(void* owner, std::uint32_t ipv4_be) {
     impl_->unregister_client(owner, ipv4_be);
 }
 
-void PacketTunEgress::write_packet(std::uint32_t client_ipv4_be, crypto::Bytes packet) {
-    impl_->write_packet(client_ipv4_be, std::move(packet));
+bool PacketTunEgress::write_packets(
+    std::uint32_t client_ipv4_be,
+    std::vector<crypto::Bytes> packets) {
+    return impl_->write_packets(client_ipv4_be, std::move(packets));
 }
 
 }  // namespace yume::server

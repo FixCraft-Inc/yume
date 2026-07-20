@@ -248,6 +248,14 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.socks_bind_host = std::move(endpoint.host);
             args.socks_port = endpoint.port;
             args.socks_port_override = true;
+        } else if (arg == "--packet-tun") {
+            const char* name = take_value("--packet-tun");
+            if (!name) {
+                return args;
+            }
+            args.packet_tun_name = name;
+            args.packet_tun_override = true;
+            args.non_interactive = true;
         } else if (arg == "--bench") {
             args.bench = true;
             args.non_interactive = true;
@@ -415,10 +423,14 @@ ParsedArgs parse_args(int argc, char** argv) {
                 return args;
             }
             args.ssh_R = value;
-        } else if (arg == "--inner" || arg == "--no-inner" ||
-                   arg == "--inner-heavy" || arg == "--inner-light" ||
-                   arg == "--hop" || arg == "--no-hop" ||
+        } else if (arg == "--hop" || arg == "--no-hop" ||
                    arg == "--hop-interval") {
+            args.parse_error = arg +
+                " is a retired 1.x time-key option; YUME 2.0 has no legacy hop layer"
+                " and always uses the hybrid directional ratchet";
+            return args;
+        } else if (arg == "--inner" || arg == "--no-inner" ||
+                   arg == "--inner-heavy" || arg == "--inner-light") {
             args.parse_error = arg +
                 " is not accepted by YUME 2.0; the hybrid directional ratchet is mandatory";
             return args;

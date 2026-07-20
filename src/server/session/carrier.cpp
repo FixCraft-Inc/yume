@@ -803,6 +803,7 @@ void Session::start_v2_h2_session() {
     preface_timer_.cancel();
     v2_h2_carrier_ = std::make_unique<obfs::H2Carrier>(
         obfs::H2CarrierRole::Server);
+    v2_h2_carrier_->set_timing_enabled(util::timing_enabled());
     if (!preface_accum_.empty()) {
         v2_h2_carrier_->Feed(preface_accum_.data(), preface_accum_.size());
         preface_accum_.clear();

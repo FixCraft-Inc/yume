@@ -17,6 +17,12 @@
         yume_client_status_json;
         yume_client_request_json;
         yume_client_open_stream;
+        yume_client_open_packet;
+        yume_packet_status_json;
+        yume_packet_write_batch;
+        yume_packet_read_batch;
+        yume_packet_close;
+        yume_packet_destroy;
         yume_server_create;
         yume_server_destroy;
         yume_server_start_json;

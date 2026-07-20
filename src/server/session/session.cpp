@@ -43,6 +43,7 @@ Session::Session(boost::asio::ip::tcp::socket socket,
     , ratchet_timer_(stream_.get_executor())
     , transport_shutdown_timer_(stream_.get_executor())
     , http_idle_timer_(stream_.get_executor()) {
+    write_ready_priority_.fill(-1);
     last_activity_ms_.store(steady_now_ms(), std::memory_order_relaxed);
     session_allow_exec_policy_ = false;
     session_allow_local_ip_ = false;
@@ -458,6 +459,15 @@ void Session::handle_frame(protocol::Frame frame) {
         }
 
         authenticated_ = true;
+        if (v2_h2_carrier_) {
+            if (!v2_h2_carrier_->EnableAuthenticatedReceiveWindow()) {
+                close_with_reason(
+                    "failed to expand authenticated HTTP/2 receive window: " +
+                    v2_h2_carrier_->error());
+                return;
+            }
+            flush_v2_h2_wire_on_strand();
+        }
         if (!cfg_.anonym) {
             util::log_info("session " + std::to_string(session_id_) + ": authenticated");
         }
@@ -514,17 +524,55 @@ void Session::handle_frame(protocol::Frame frame) {
 
     if (ratchet_) {
         try {
+            const bool collect_timing = util::timing_enabled();
+            const auto open_started = collect_timing
+                ? std::chrono::steady_clock::now()
+                : std::chrono::steady_clock::time_point{};
             auto opened = ratchet_->Open(frame,
                                          std::chrono::steady_clock::now());
+            if (collect_timing) {
+                timing_open_ns_ += static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - open_started).count());
+                ++timing_open_frames_;
+            }
             if (opened.control_response.has_value()) {
                 queue_frame_on_strand(*opened.control_response, {}, true);
             }
             if (opened.outbound_rekey_completed) {
+                if (outbound_rekey_wait_started_.has_value()) {
+                    const auto wait_us =
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() -
+                            *outbound_rekey_wait_started_).count();
+                    util::log_timing(
+                        "server.transport", "rekey_wait",
+                        "session=" + std::to_string(session_id_) +
+                        " us=" + std::to_string(wait_us));
+                    outbound_rekey_wait_started_.reset();
+                }
                 ratchet_timer_.cancel();
                 flush_ratchet_blocked_writes_on_strand();
             }
+            if (timing_open_frames_ >= 64 ||
+                opened.outbound_rekey_completed) {
+                util::log_timing(
+                    "server.transport", "ratchet_open",
+                    "session=" + std::to_string(session_id_) +
+                    " frames=" + std::to_string(timing_open_frames_) +
+                    " us=" + std::to_string(timing_open_ns_ / 1000U));
+                timing_open_ns_ = 0;
+                timing_open_frames_ = 0;
+            }
             if (!opened.application_frame.has_value()) {
-                if (close_state_ == CloseState::Open) read_header();
+                if (close_state_ == CloseState::Open) {
+                    auto self = shared_from_this();
+                    boost::asio::post(strand_, [self] {
+                        if (self->close_state_ == CloseState::Open) {
+                            self->read_header();
+                        }
+                    });
+                }
                 return;
             }
             frame = std::move(*opened.application_frame);
@@ -611,7 +659,17 @@ void Session::handle_frame(protocol::Frame frame) {
     }
 
     if (close_state_ == CloseState::Open) {
-        read_header();
+        // H2 may already have the next complete frame buffered, so read_header()
+        // can complete synchronously. Defer it until on_read_payload() has
+        // restored payload_buf_; otherwise the previous frame's cleanup can
+        // overwrite the next partial payload and invalidate the exact-reader
+        // target pointer.
+        auto self = shared_from_this();
+        boost::asio::post(strand_, [self] {
+            if (self->close_state_ == CloseState::Open) {
+                self->read_header();
+            }
+        });
     }
 }
 
@@ -945,6 +1003,26 @@ void Session::begin_close() {
             std::cerr << "[critical] server session issue: " << close_reason_ << std::endl;
         }
     }
+    if (v2_h2_carrier_ && util::timing_enabled()) {
+        const auto stats = v2_h2_carrier_->stats();
+        util::log_timing(
+            "server.carrier", "summary",
+            "session=" + std::to_string(session_id_) +
+            " h2_feed_calls=" + std::to_string(stats.h2_feed_calls) +
+            " h2_feed_bytes=" + std::to_string(stats.h2_feed_bytes) +
+            " h2_feed_us=" + std::to_string(stats.h2_feed_ns / 1000U) +
+            " h2_flush_calls=" + std::to_string(stats.h2_flush_calls) +
+            " h2_flush_bytes=" + std::to_string(stats.h2_flush_bytes) +
+            " h2_flush_us=" + std::to_string(stats.h2_flush_ns / 1000U) +
+            " websocket_encode_bytes=" +
+                std::to_string(stats.websocket_encode_bytes) +
+            " websocket_encode_us=" +
+                std::to_string(stats.websocket_encode_ns / 1000U) +
+            " websocket_decode_bytes=" +
+                std::to_string(stats.websocket_decode_bytes) +
+            " websocket_decode_us=" +
+                std::to_string(stats.websocket_decode_ns / 1000U));
+    }
     boost::system::error_code ec;
     idle_timer_.cancel();
     frame_read_timer_.cancel(ec);
@@ -1049,7 +1127,7 @@ void Session::maybe_finish_close() {
     if (close_state_ != CloseState::Closing || transport_shutdown_in_flight_) {
         return;
     }
-    if (write_in_flight_ || !write_queue_.empty()) {
+    if (write_in_flight_ || !write_queues_empty_on_strand()) {
         return;
     }
     shutdown_transport();

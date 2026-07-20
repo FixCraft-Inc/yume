@@ -502,6 +502,8 @@ void Session::queue_frame_on_strand(const protocol::Frame& frame,
                     frame, std::chrono::steady_clock::now())) {
                 protocol::Frame init = ratchet_->BeginOutboundRekey(
                     std::chrono::steady_clock::now());
+                outbound_rekey_wait_started_ =
+                    std::chrono::steady_clock::now();
                 if (ratchet_blocked_writes_.size() >= kMaxWriteQueueSize) {
                     if (handler) handler(boost::asio::error::no_buffer_space, 0);
                     close_with_reason("ratchet application queue overrun");
@@ -514,8 +516,29 @@ void Session::queue_frame_on_strand(const protocol::Frame& frame,
                 return;
             }
             if (!already_protected) {
+                const bool collect_timing = util::timing_enabled();
+                const auto seal_started = collect_timing
+                    ? std::chrono::steady_clock::now()
+                    : std::chrono::steady_clock::time_point{};
                 effective = ratchet_->Seal(
                     frame, std::chrono::steady_clock::now());
+                if (collect_timing) {
+                    timing_seal_ns_ += static_cast<std::uint64_t>(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - seal_started).count());
+                    ++timing_seal_frames_;
+                }
+                if (timing_seal_frames_ >= 64) {
+                    if (util::timing_enabled()) {
+                        util::log_timing(
+                            "server.transport", "ratchet_seal",
+                            "session=" + std::to_string(session_id_) +
+                            " frames=" + std::to_string(timing_seal_frames_) +
+                            " us=" + std::to_string(timing_seal_ns_ / 1000U));
+                    }
+                    timing_seal_ns_ = 0;
+                    timing_seal_frames_ = 0;
+                }
             } else if (frame.header.type != protocol::REKEY_INIT &&
                        frame.header.type != protocol::REKEY_ACK) {
                 throw std::runtime_error("unexpected pre-protected frame type");
@@ -628,8 +651,17 @@ void Session::enqueue_tls_write_on_strand(
         return;
     }
 
-    write_queue_.push_back({std::move(data), frame_type, stream_id, payload_size, std::move(handler)});
+    const bool was_empty = write_queues_[stream_id].empty();
+    const std::size_t queued_bytes = data ? data->size() : 0;
+    write_queues_[stream_id].push_back(
+        {std::move(data), frame_type, stream_id, payload_size,
+         std::move(handler)});
+    ++write_queued_frames_;
+    write_queued_bytes_ += queued_bytes;
     write_queue_depth_++;
+    if (was_empty) {
+        mark_write_stream_ready_on_strand(stream_id);
+    }
     if (!write_in_flight_) {
         do_write();
     }
@@ -686,58 +718,80 @@ void Session::maybe_resume_inbound_reads_on_strand() {
     }
 }
 
-std::deque<Session::PendingWrite>::iterator Session::select_next_write_on_strand(
+void Session::mark_write_stream_ready_on_strand(std::uint8_t stream_id) {
+    if (write_ready_priority_[stream_id] >= 0 ||
+        write_queues_[stream_id].empty()) {
+        return;
+    }
+    const auto& head = write_queues_[stream_id].front();
+    const int priority = std::clamp(
+        frame_write_priority(head.frame_type, head.payload_size), 0, 4);
+    write_ready_priority_[stream_id] = static_cast<std::int8_t>(priority);
+    write_ready_streams_[static_cast<std::size_t>(priority)].push_back(stream_id);
+}
+
+Session::PendingWrite Session::pop_write_stream_head_on_strand(
+    std::uint8_t stream_id) {
+    auto& queue = write_queues_[stream_id];
+    PendingWrite write = std::move(queue.front());
+    queue.pop_front();
+    if (write_queued_frames_ > 0) {
+        --write_queued_frames_;
+    }
+    const std::size_t bytes = write.data ? write.data->size() : 0;
+    write_queued_bytes_ = bytes <= write_queued_bytes_
+        ? write_queued_bytes_ - bytes : 0;
+    mark_write_stream_ready_on_strand(stream_id);
+    return write;
+}
+
+bool Session::write_queues_empty_on_strand() const noexcept {
+    return write_queued_frames_ == 0;
+}
+
+std::optional<std::uint8_t> Session::select_next_write_on_strand(
     std::size_t current_batch_bytes,
     const std::unordered_set<uint8_t>& batch_streams) {
-    auto select = [&](bool allow_already_selected_stream) {
-        auto best = write_queue_.end();
-        int best_priority = 999;
-        std::size_t best_size = 0;
-        std::size_t best_index = 0;
-        std::size_t index = 0;
-        for (auto it = write_queue_.begin(); it != write_queue_.end(); ++it, ++index) {
-            const std::size_t estimated_size = it->data ? it->data->size() : it->payload_size + 8U;
-            if (current_batch_bytes > 0 && current_batch_bytes + estimated_size > kMaxWriteBatchBytes) {
-                continue;
-            }
-            if (!allow_already_selected_stream && batch_streams.count(it->stream_id) != 0) {
-                continue;
-            }
-
-            bool blocked_by_same_stream = false;
-            for (auto prior = write_queue_.begin(); prior != it; ++prior) {
-                if (prior->stream_id == it->stream_id) {
-                    blocked_by_same_stream = true;
-                    break;
+    auto select = [&](bool allow_already_selected_stream)
+        -> std::optional<std::uint8_t> {
+        for (std::size_t priority = 0;
+             priority < write_ready_streams_.size(); ++priority) {
+            auto& ready = write_ready_streams_[priority];
+            const std::size_t candidates = ready.size();
+            for (std::size_t i = 0; i < candidates; ++i) {
+                const auto stream_id = ready.front();
+                ready.pop_front();
+                if (write_ready_priority_[stream_id] !=
+                        static_cast<std::int8_t>(priority) ||
+                    write_queues_[stream_id].empty()) {
+                    continue;
                 }
-            }
-            if (blocked_by_same_stream) {
-                continue;
-            }
-
-            const int priority = frame_write_priority(it->frame_type, it->payload_size);
-            if (best == write_queue_.end() ||
-                priority < best_priority ||
-                (priority == best_priority && estimated_size < best_size) ||
-                (priority == best_priority && estimated_size == best_size && index < best_index)) {
-                best = it;
-                best_priority = priority;
-                best_size = estimated_size;
-                best_index = index;
+                const auto& head = write_queues_[stream_id].front();
+                const std::size_t estimated_size =
+                    head.data ? head.data->size() : head.payload_size + 8U;
+                const bool fits = current_batch_bytes == 0 ||
+                    current_batch_bytes + estimated_size <= kMaxWriteBatchBytes;
+                const bool new_stream = allow_already_selected_stream ||
+                    batch_streams.count(stream_id) == 0;
+                if (fits && new_stream) {
+                    write_ready_priority_[stream_id] = -1;
+                    return stream_id;
+                }
+                ready.push_back(stream_id);
             }
         }
-        return best;
+        return std::nullopt;
     };
 
-    auto it = select(false);
-    if (it == write_queue_.end()) {
-        it = select(true);
+    auto stream_id = select(false);
+    if (!stream_id.has_value()) {
+        stream_id = select(true);
     }
-    return it;
+    return stream_id;
 }
 
 void Session::do_write() {
-    if (write_queue_.empty()) {
+    if (write_queues_empty_on_strand()) {
         write_in_flight_ = false;
         if (close_state_ != CloseState::Open) {
             maybe_finish_close();
@@ -749,21 +803,41 @@ void Session::do_write() {
     std::vector<PendingWrite> batch;
     std::size_t batch_count = 0;
     std::size_t total_bytes = 0;
+    const bool collect_timing = util::timing_enabled();
+    const auto selector_started = collect_timing
+        ? std::chrono::steady_clock::now()
+        : std::chrono::steady_clock::time_point{};
     std::unordered_set<uint8_t> batch_streams;
-    while (!write_queue_.empty() && batch_count < kMaxWriteBatchFrames) {
-        auto it = select_next_write_on_strand(total_bytes, batch_streams);
-        if (it == write_queue_.end()) {
+    while (!write_queues_empty_on_strand() &&
+           batch_count < kMaxWriteBatchFrames) {
+        const auto stream_id =
+            select_next_write_on_strand(total_bytes, batch_streams);
+        if (!stream_id.has_value()) {
             break;
         }
-        total_bytes += it->data ? it->data->size() : 0;
-        batch_streams.insert(it->stream_id);
-        batch.push_back(std::move(*it));
-        write_queue_.erase(it);
+        PendingWrite write = pop_write_stream_head_on_strand(*stream_id);
+        total_bytes += write.data ? write.data->size() : 0;
+        batch_streams.insert(*stream_id);
+        batch.push_back(std::move(write));
         ++batch_count;
     }
     if (batch_count == 0) {
         write_in_flight_ = false;
         return;
+    }
+    if (collect_timing) {
+        const auto selector_us =
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - selector_started).count();
+        util::log_timing(
+            "server.transport", "write_batch",
+            "session=" + std::to_string(session_id_) +
+            " frames=" + std::to_string(batch_count) +
+            " bytes=" + std::to_string(total_bytes) +
+            " queue_depth=" + std::to_string(write_queue_depth_) +
+            " queued_frames=" + std::to_string(write_queued_frames_) +
+            " queued_bytes=" + std::to_string(write_queued_bytes_) +
+            " selector_us=" + std::to_string(selector_us));
     }
 
     std::shared_ptr<std::vector<uint8_t>> batch_data;
@@ -780,11 +854,27 @@ void Session::do_write() {
     }
 
     auto self = shared_from_this();
+    const auto tls_write_started = collect_timing
+        ? std::chrono::steady_clock::now()
+        : std::chrono::steady_clock::time_point{};
     auto on_complete = [self,
                         batch_data,
                         batch = std::move(batch),
-                        batch_count](const boost::system::error_code& ec,
+                        batch_count,
+                        tls_write_started,
+                        collect_timing](const boost::system::error_code& ec,
                                      std::size_t bytes) mutable {
+        if (collect_timing) {
+            const auto tls_write_us =
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - tls_write_started).count();
+            util::log_timing(
+                "server.tls", "write",
+                "session=" + std::to_string(self->session_id_) +
+                " bytes=" + std::to_string(bytes) +
+                " requested=" + std::to_string(batch_data->size()) +
+                " us=" + std::to_string(tls_write_us));
+        }
         if (self->write_queue_depth_ >= batch_count) {
             self->write_queue_depth_ -= static_cast<uint32_t>(batch_count);
         } else {

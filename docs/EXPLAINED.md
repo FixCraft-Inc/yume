@@ -463,8 +463,8 @@ can observe egress traffic.
 
 ## Inner Crypto And BaseFWX
 
-YUME has an outer TLS carrier. It can also encrypt YUME frame payloads
-inside that carrier using BaseFWX-backed inner crypto.
+YUME 2.0 always encrypts YUME frame payloads inside the outer TLS carrier
+using its BaseFWX-backed directional ratchet.
 
 ```text
 +----------------------------------------------------------------------+
@@ -479,39 +479,33 @@ inside that carrier using BaseFWX-backed inner crypto.
 +----------------------------------------------------------------------+
 ```
 
-Simplified key setup:
+Simplified key setup and rekey:
 
 ```text
 +--------------------------------+
-|  CLIENT INPUTS                 |
-|  server PQ public key          |
+|  HYBRID INPUTS                 |
+|  ML-KEM-1024 + X25519 + PSK    |
 +--------------------------------+
         |
-        | ML-KEM encapsulates to the server public key
+        | versioned HKDF
         v
 +--------------------------------+
-|  KEM CIPHERTEXT                |
-|  sent during inner setup       |
+|  DIRECTION ROOTS               |
+|  independent client/server     |
 +--------------------------------+
         |
-        | server decapsulates with private key
+        | one-use message keys
         v
 +--------------------------------+
-|  SERVER INPUTS                 |
-|  server PQ private key         |
+|  AES-256-GCM FRAMES            |
+|  epoch + sequence in AAD       |
 +--------------------------------+
         |
+        | fresh hybrid rekey before usage limit
         v
 +--------------------------------+
-|  SHARED SECRET                 |
-|  both sides compute same value |
-+--------------------------------+
-        |
-        | optional Argon2id work factor or HKDF
-        v
-+--------------------------------+
-|  BASE KEY                      |
-|  used directly or hopped       |
+|  NEXT DIRECTION ROOT           |
+|  old material is retired       |
 +--------------------------------+
 ```
 
@@ -520,43 +514,18 @@ end-to-end encryption. The server still has to know enough to open the
 requested target connection. HTTPS inside the application remains the
 browser-to-target encryption layer.
 
-Use your own PQ key files for production. The embedded BaseFWX master key
-is for explicit test/dev use only and must not become the trust root for a
-real deployment.
+The 32-byte admission secret and separate 32-byte inner PSK are deployment
+inputs. ML-KEM-1024 and X25519 keypairs are ephemeral at establishment and at
+each directional epoch change.
 
-## Live Key Hopping
+## Directional Ratchet, Not Legacy Hopping
 
-When hopping is enabled, the base inner key is not used directly forever.
-Both sides derive a time-based hop key and use it for frame encryption.
-
-```text
-+--------------------------------+
-|  WINDOW 0                      |
-|  0 - 499 ms -> hop key K0      |
-|  encrypts DATA frames          |
-+--------------------------------+
-
-+--------------------------------+
-|  WINDOW 1                      |
-|  500 - 999 ms -> hop key K1    |
-|  encrypts DATA frames          |
-+--------------------------------+
-
-+--------------------------------+
-|  WINDOW 2                      |
-|  1000 - 1499 ms -> hop key K2  |
-|  encrypts DATA frames          |
-+--------------------------------+
-```
-
-The default interval is 500 ms. Hopping limits how long any one derived
-key is useful and adds churn inside the already encrypted carrier. It can
-cost a little latency, so performance tests should compare hopping on and
-off on the same route.
-
-This is derived-key separation, not forward secrecy. Both endpoints retain
-the base inner key for the session; compromise of that base key permits
-deriving every time-window key.
+The old 1.x time-derived hop layer is not part of YUME 2.0. `--hop`,
+`--no-hop`, and `--hop-interval` are rejected rather than selecting a weaker
+or incomparable transport. Each direction instead rekeys with fresh
+ML-KEM-1024 and X25519 material before another application frame would cross
+256 KiB, 512 frames, or 500 ms of sender-active epoch time. Benchmark output
+therefore reports `legacy-hop=off` and the mandatory hybrid ratchet separately.
 
 ## HTTP/2 Obfs
 
@@ -667,9 +636,9 @@ hardening.
 - Inner BaseFWX crypto:
   adds frame confidentiality and integrity inside TLS. It does not remove
   the relay's need to know enough target metadata to connect.
-- Key hopping:
-  limits long-lived derived key exposure. It does not protect against
-  endpoint compromise.
+- Directional hybrid ratchet:
+  limits epoch key exposure with fresh ML-KEM-1024/X25519/PSK roots. It does
+  not protect against endpoint compromise.
 - Anonym mode/proof:
   signals server-side log minimization policy. It does not erase hosting
   logs, payment identity, browser identity, or target-side tracking.
@@ -767,10 +736,10 @@ Operational checklist:
 - Keep `--obfs` enabled and set the same private `--obfs-secret` on both
   ends for keyed carrier admission. A nonempty value is mandatory under
   `--public-node`.
-- Use your own PQ keypair with `--pq-pub` and `--pq-key`; avoid
-  `--use-embedded-master` outside explicit tests.
-- Keep inner crypto, heavy KDF, and hopping enabled unless performance
-  testing proves a specific route needs different settings.
+- Protect the mandatory admission and inner PSK files with owner-only
+  permissions and rotate them through an authenticated operational process.
+- Do not create no-inner or no-ratchet production modes for performance tests;
+  use the component microbenchmarks to measure those costs.
 - Use remote DNS through the tunnel. For SOCKS, prefer `socks5h://` so
   hostnames are resolved through the proxy path.
 - Remember that server-side Tor hides egress from the server's network,
@@ -799,8 +768,8 @@ time:
 - desktop YUME SOCKS to the same target
 - Android tun2socks to the same target
 - Android native direct to the same target
-- hopping on versus hopping off
-- obfs on versus obfs off only as a diagnostic
+- production 64 KiB DATA geometry versus explicitly labelled custom geometry
+- stream-core, actual SOCKS, and actual packet-ABI boundaries as separate runs
 
 Tor, extra VPN egress, bad DNS, remote cellular jitter, and overloaded
 mobile routing backends can dominate the result. A slower anonymous route
@@ -813,6 +782,6 @@ YUME hides the transport shape from the client network.
 YUME moves app streams through an authenticated TLS/H2 carrier.
 The server opens the target unless another egress layer is configured.
 Tor/VPN placement decides who sees the target and who sees the client.
-Inner BaseFWX crypto and hopping protect YUME frames inside the carrier.
+The BaseFWX-backed hybrid ratchet protects YUME frames inside the carrier.
 Anonym mode reduces server-side logging, but does not replace good OPSEC.
 ```

@@ -18,68 +18,59 @@ namespace yume::client {
 
 using namespace detail;
 
-std::deque<TransportCore::PendingWrite>::iterator TransportCore::select_next_write_locked(
+std::optional<uint8_t> TransportCore::select_next_write_locked(
     std::size_t current_batch_bytes,
     const std::unordered_set<uint8_t>& batch_streams,
     bool rekey_blocked) {
-    auto select = [&](bool allow_already_selected_stream) {
-        auto best = write_queue_.end();
-        int best_priority = 999;
-        std::size_t best_size = 0;
-        std::size_t best_index = 0;
-        std::size_t index = 0;
-        for (auto it = write_queue_.begin(); it != write_queue_.end(); ++it, ++index) {
-            const auto& frame = it->frame;
-            if (rekey_blocked &&
-                !(it->already_protected &&
-                  (frame.header.type == protocol::REKEY_INIT ||
-                   frame.header.type == protocol::REKEY_ACK))) {
-                continue;
-            }
-            const std::size_t estimated_size = frame.payload.size() + 8U;
-            if (current_batch_bytes > 0 && current_batch_bytes + estimated_size > kMaxWriteBatchBytes) {
-                continue;
-            }
-            if (!allow_already_selected_stream && batch_streams.count(frame.header.stream_id) != 0) {
-                continue;
-            }
-
-            bool blocked_by_same_stream = false;
-            for (auto prior = write_queue_.begin(); prior != it; ++prior) {
-                if (prior->frame.header.stream_id == frame.header.stream_id) {
-                    blocked_by_same_stream = true;
-                    break;
+    auto select = [&](bool allow_already_selected_stream) -> std::optional<uint8_t> {
+        for (std::size_t priority = 0; priority < ready_streams_.size(); ++priority) {
+            auto& ready = ready_streams_[priority];
+            const std::size_t candidates = ready.size();
+            for (std::size_t i = 0; i < candidates; ++i) {
+                const uint8_t stream_id = ready.front();
+                ready.pop_front();
+                if (ready_priority_[stream_id] != static_cast<std::int8_t>(priority) ||
+                    write_queues_[stream_id].empty()) {
+                    continue;
                 }
-            }
-            if (blocked_by_same_stream) {
-                continue;
-            }
-
-            const int priority = frame_write_priority(frame);
-            if (best == write_queue_.end() ||
-                priority < best_priority ||
-                (priority == best_priority && estimated_size < best_size) ||
-                (priority == best_priority && estimated_size == best_size && index < best_index)) {
-                best = it;
-                best_priority = priority;
-                best_size = estimated_size;
-                best_index = index;
+                const auto& write = write_queues_[stream_id].front();
+                const auto& frame = write.frame;
+                const bool allowed_during_rekey =
+                    write.already_protected &&
+                    (frame.header.type == protocol::REKEY_INIT ||
+                     frame.header.type == protocol::REKEY_ACK);
+                const std::size_t estimated_size = frame.payload.size() + 8U;
+                const bool fits = current_batch_bytes == 0 ||
+                    current_batch_bytes + estimated_size <= kMaxWriteBatchBytes;
+                const bool new_stream = allow_already_selected_stream ||
+                    batch_streams.count(stream_id) == 0;
+                if ((!rekey_blocked || allowed_during_rekey) && fits && new_stream) {
+                    ready_priority_[stream_id] = -1;
+                    return stream_id;
+                }
+                ready.push_back(stream_id);
             }
         }
-        return best;
+        return std::nullopt;
     };
 
-    auto it = select(false);
-    if (it == write_queue_.end()) {
-        it = select(true);
+    auto stream_id = select(false);
+    if (!stream_id.has_value()) {
+        stream_id = select(true);
     }
-    return it;
+    return stream_id;
+}
+
+TransportCore::TransportCore() {
+    ready_priority_.fill(-1);
 }
 
 TransportCore::TransportCore(WriteHandler write_handler,
                              std::function<void(const std::string&)> close_transport_handler)
     : write_handler_(std::move(write_handler))
-    , close_transport_handler_(std::move(close_transport_handler)) {}
+    , close_transport_handler_(std::move(close_transport_handler)) {
+    ready_priority_.fill(-1);
+}
 
 void TransportCore::set_write_handler(WriteHandler handler) {
     std::lock_guard<std::mutex> lock(state_mu_);
@@ -126,6 +117,7 @@ bool TransportCore::rekey_timed_out(
 
 std::vector<TransportCore::CloseHandler> TransportCore::shutdown() {
     std::vector<CloseHandler> close_callbacks;
+    std::vector<WriteCompletion> write_callbacks;
     {
         std::lock_guard<std::mutex> state_lock(state_mu_);
         if (stopped_) {
@@ -149,12 +141,32 @@ std::vector<TransportCore::CloseHandler> TransportCore::shutdown() {
             inner_key_.reset();
         }
         ratchet_.reset();
+        outbound_rekey_wait_started_.reset();
         clear_hop_key_cache_locked();
     }
     {
         std::lock_guard<std::mutex> write_lock(write_mu_);
-        write_queue_.clear();
-        write_in_flight_ = false;
+        for (auto& queue : write_queues_) {
+            while (!queue.empty()) {
+                auto write = std::move(queue.front());
+                queue.pop_front();
+                release_write_reservation_locked(write);
+                if (write.handler) {
+                    write_callbacks.push_back(std::move(write.handler));
+                }
+            }
+        }
+        for (auto& ready : ready_streams_) {
+            ready.clear();
+        }
+        ready_priority_.fill(-1);
+        queued_frames_ = 0;
+        // An active carrier write retains its reservation until its final
+        // completion. Keeping write_in_flight_ set prevents a late callback
+        // from starting another dispatch after shutdown.
+    }
+    for (auto& callback : write_callbacks) {
+        callback(false, 0, "transport stopped");
     }
     return close_callbacks;
 }
@@ -239,6 +251,11 @@ void TransportCore::set_inbound_open_handler(InboundOpenHandler handler) {
 void TransportCore::set_activity_handler(ActivityHandler handler) {
     std::lock_guard<std::mutex> lock(state_mu_);
     activity_handler_ = std::move(handler);
+}
+
+void TransportCore::set_timing_handler(TimingHandler handler) {
+    std::lock_guard<std::mutex> lock(state_mu_);
+    timing_handler_ = std::move(handler);
 }
 
 void TransportCore::set_server_stream_open_handler(ServerStreamOpenHandler handler) {
@@ -426,32 +443,46 @@ void TransportCore::send_data(uint8_t stream_id, const Bytes& data) {
 }
 
 void TransportCore::send_data(uint8_t stream_id, Bytes&& data) {
-    send_data(stream_id, std::move(data), {});
+    if (!try_send_data(stream_id, std::move(data))) {
+        request_transport_close("application write queue full");
+    }
 }
 
 void TransportCore::send_data(uint8_t stream_id, Bytes&& data, WriteCompletion handler) {
+    (void)try_send_data(stream_id, std::move(data), std::move(handler));
+}
+
+bool TransportCore::try_send_data(uint8_t stream_id,
+                                  Bytes&& data,
+                                  WriteCompletion handler) {
     uint16_t flags = 0;
     ActivityHandler activity_handler;
+    bool stopped = false;
     {
         std::lock_guard<std::mutex> lock(state_mu_);
         if (stopped_) {
-            if (handler) {
-                handler(false, 0, "transport stopped");
+            stopped = true;
+        } else {
+            if (inner_key_.has_value()) {
+                flags |= protocol::kFlagInnerEncrypted;
             }
-            return;
+            if (!data.empty()) {
+                activity_handler = activity_handler_;
+            }
         }
-        if (inner_key_.has_value()) {
-            flags |= protocol::kFlagInnerEncrypted;
+    }
+    if (stopped) {
+        if (handler) {
+            handler(false, 0, "transport stopped");
         }
-        if (!data.empty()) {
-            activity_handler = activity_handler_;
-        }
+        return false;
     }
     protocol::Frame frame{{static_cast<uint32_t>(data.size()), protocol::DATA, stream_id, flags}, std::move(data)};
-    queue_frame(std::move(frame), std::move(handler));
-    if (activity_handler) {
+    const bool accepted = queue_frame(std::move(frame), std::move(handler));
+    if (accepted && activity_handler) {
         activity_handler();
     }
+    return accepted;
 }
 
 void TransportCore::send_close(uint8_t stream_id, const std::string& reason) {
@@ -609,19 +640,48 @@ void TransportCore::feed_tls_bytes(const uint8_t* data, std::size_t size) {
         std::optional<protocol::Frame> opened_frame;
         std::optional<protocol::Frame> ratchet_response;
         bool rekey_completed = false;
+        std::uint64_t open_timing_frames = 0;
+        std::uint64_t open_timing_ns = 0;
+        TimingHandler timing_handler;
+        {
+            std::lock_guard<std::mutex> lock(state_mu_);
+            timing_handler = timing_handler_;
+        }
         try {
             std::lock_guard<std::mutex> lock(state_mu_);
             if (ratchet_) {
+                const bool collect_timing = static_cast<bool>(timing_handler);
+                const auto open_started = collect_timing
+                    ? std::chrono::steady_clock::now()
+                    : std::chrono::steady_clock::time_point{};
                 auto result = ratchet_->Open(
                     frame, std::chrono::steady_clock::now());
+                if (collect_timing) {
+                    timing_open_ns_ += static_cast<std::uint64_t>(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - open_started).count());
+                    ++timing_open_frames_;
+                }
                 opened_frame = std::move(result.application_frame);
                 ratchet_response = std::move(result.control_response);
                 rekey_completed = result.outbound_rekey_completed;
+                if (timing_open_frames_ >= 64 || rekey_completed) {
+                    open_timing_frames = timing_open_frames_;
+                    open_timing_ns = timing_open_ns_;
+                    timing_open_frames_ = 0;
+                    timing_open_ns_ = 0;
+                }
             }
         } catch (const std::exception& ex) {
             request_transport_close("ratchet open failed: " +
                                     std::string(ex.what()));
             return;
+        }
+        if (open_timing_frames > 0 && timing_handler) {
+            timing_handler(
+                "client.transport", "ratchet_open",
+                "frames=" + std::to_string(open_timing_frames) +
+                " us=" + std::to_string(open_timing_ns / 1000U));
         }
         if (ratchet_response.has_value()) {
             queue_frame(std::move(*ratchet_response), {}, true);

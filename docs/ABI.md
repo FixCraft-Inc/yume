@@ -9,6 +9,7 @@ runtime handles for embedders:
 - `yume_client`
 - `yume_server`
 - `yume_stream`
+- `yume_packet`
 
 External projects must include only `<yume/yume.h>`. They must not include
 `src/client/cli/entry.hpp`, `client::Tunnel`, `facade::InProcClient`,
@@ -45,6 +46,9 @@ its internal transport code private.
   `yume_server_accept_stream`, `yume_stream_peer_json`,
   `yume_stream_read`, `yume_stream_write`, `yume_stream_shutdown_write`,
   and `yume_stream_close`.
+- One negotiated packet-native channel with `yume_client_open_packet`,
+  `yume_packet_status_json`, `yume_packet_write_batch`,
+  `yume_packet_read_batch`, `yume_packet_close`, and `yume_packet_destroy`.
 
 The ABI v1 stream API is synchronous by design. Async callbacks can be added in
 a later ABI version without forcing embedders into YUME's internal threading
@@ -58,6 +62,17 @@ only synchronously enqueue bytes into the YUME stream and ignore the value. Pass
 `yume_server_accept_stream` wait. The accept call returns
 `YUME_STATUS_NOT_RUNNING` after the runtime begins stopping.
 
+The packet API is additive within ABI v1 and SONAME `libyume.so.1`.
+`YUME_FEATURE_PACKET_BULK` detects it; `YUME_FEATURE_PQ_MLKEM1024` accurately
+reports the ML-KEM-1024 ratchet primitive while the older ML-KEM-768 bit is
+retained for source compatibility. Packet write inputs are copied before
+return and admitted all-or-none. Reads copy complete packets into caller-owned
+contiguous storage and caller-owned offset/length arrays. If the first packet
+does not fit, `YUME_STATUS_BUFFER_TOO_SMALL` reports its size without consuming
+it. Zero timeout means poll, saturation returns `YUME_STATUS_WOULD_BLOCK`, and
+an expired positive deadline returns `YUME_STATUS_TIMEOUT`. Client or packet
+stop interrupts blocking packet calls.
+
 `yume_client_status_json` returns:
 
 ```json
@@ -68,6 +83,8 @@ only synchronously enqueue bytes into the YUME stream and ignore the value. Pass
   "socket_path": "",
   "exit_code": 0,
   "server_tls_fingerprint_sha256": "lowercase-hex-sha256-of-tls-leaf",
+  "server_capabilities": ["packet_bulk_v1"],
+  "packet_bulk_supported": true,
   "started_unix_ms": 1780000000000
 }
 ```
@@ -94,11 +111,8 @@ Minimum server-side embed shape for a named service:
   "allow_services": ["example-service-v1"],
   "ipc_enable": false,
   "obfuscation": true,
-  "obfs_secret": "shared-h2-token",
-  "inner_crypto": true,
-  "inner_required": true,
-  "inner_hop": true,
-  "hop_interval_ms": 500
+  "obfs_secret_file": "obfs.secret",
+  "inner_psk_file": "inner.psk"
 }
 ```
 
@@ -112,19 +126,16 @@ Minimum client-side embed shape:
   "server": "127.0.0.1",
   "port": 4433,
   "identity": "client-auth.key",
-  "socks_bind": "127.0.0.1",
-  "socks_port": 1080,
+  "socks_port": 0,
+  "service_streams_only": true,
   "tls_ca_cert": "server.crt",
   "tls_server_name": "embedder.local",
   "tls_pin_sha256": "lowercase-hex-sha256-of-tls-leaf",
   "accept_monitoring": false,
   "auto_attach_local": false,
   "obfuscation": true,
-  "obfs_secret": "shared-h2-token",
-  "inner_crypto": true,
-  "inner_heavy": true,
-  "inner_hop": true,
-  "hop_interval_ms": 500
+  "obfs_secret_file": "obfs.secret",
+  "inner_psk_file": "inner.psk"
 }
 ```
 
@@ -135,6 +146,10 @@ compare `server_tls_fingerprint_sha256` in `yume_client_status_json`.
 `socks_bind` is optional. Empty or omitted keeps the historical wildcard bind;
 set an IP literal such as `127.0.0.1`, `0.0.0.0`, `::1`, or `::` to choose the
 SOCKS listener address explicitly.
+
+For a headless packet embed, keep `socks_port` at zero, start the authenticated
+client, then call `yume_client_open_packet`. The in-process runtime selects its
+headless engine mode without synthesizing a SOCKS listener.
 
 Per-key service authorization lives in `auth_keys.meta` under the authenticated
 client key fingerprint:
@@ -158,8 +173,10 @@ Clients open an authenticated `OPEN` payload with:
 {"proto":"service.v1","service":"example-service-v1"}
 ```
 
-The stream then rides through the same TLS 1.3, HTTP/2 obfs, inner crypto,
-hopping, padding/jitter, and server policy gates as normal YUME streams.
+The stream then rides through the same TLS 1.3, HTTP/2/WebSocket carrier,
+mandatory hybrid directional ratchet, and server policy gates as normal YUME
+streams. Legacy hopping, padding, and jitter are absent from the pinned 2.0
+profile.
 
 Server-side accept is explicit and fail-closed:
 

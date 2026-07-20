@@ -8,6 +8,8 @@
 #include "core/protocol/packet_bulk.hpp"
 
 #include <cassert>
+#include <deque>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -39,6 +41,22 @@ struct Recorder {
     }
 };
 
+struct DeferredLink {
+    struct Write {
+        std::vector<uint8_t> wire;
+        yume::client::TransportCore::WriteCompletion completion;
+    };
+
+    std::deque<Write> writes;
+
+    yume::client::TransportCore::WriteHandler writer() {
+        return [this](std::shared_ptr<std::vector<uint8_t>> data,
+                      yume::client::TransportCore::WriteCompletion completion) {
+            writes.push_back({*data, std::move(completion)});
+        };
+    }
+};
+
 std::vector<yume::protocol::Frame> decode_all_frames(const std::vector<uint8_t>& wire) {
     std::vector<yume::protocol::Frame> out;
     std::size_t offset = 0;
@@ -66,18 +84,23 @@ void test_open_round_trip() {
 
     bool open_called = false;
     bool open_ok = false;
-    core.open_stream(7, "example.com", 443, [&](bool ok, const std::string&) {
+    std::string open_payload;
+    core.open_stream(7, "example.com", 443, [&](bool ok, const std::string& payload) {
         open_called = true;
         open_ok = ok;
+        open_payload = payload;
     });
 
     assert(recorder.writes.size() == 1);
-    auto ack = yume::protocol::encode_frame(yume::protocol::OPEN, 7, yume::protocol::kFlagOpenOk, {});
+    const std::vector<uint8_t> ack_payload{'{', '"', 'o', 'k', '"', ':', '1', '}'};
+    auto ack = yume::protocol::encode_frame(
+        yume::protocol::OPEN, 7, yume::protocol::kFlagOpenOk, ack_payload);
     core.feed_tls_bytes(ack.data(), 3);
     assert(!open_called);
     core.feed_tls_bytes(ack.data() + 3, ack.size() - 3);
     assert(open_called);
     assert(open_ok);
+    assert(open_payload == "{\"ok\":1}");
 }
 
 void test_inner_crypto_round_trip() {
@@ -252,6 +275,132 @@ void test_write_scheduler_prioritizes_control_without_reordering_stream() {
     assert(data5_index < close5_index);
 }
 
+void test_transport_bulk_backpressure_is_bounded() {
+    Recorder recorder;
+    recorder.complete_immediately = false;
+    yume::client::TransportCore core(recorder.writer(), recorder.closer());
+    core.start();
+
+    std::size_t accepted = 0;
+    std::size_t rejected = 0;
+    for (std::size_t i = 0; i < 449; ++i) {
+        const bool ok = core.try_send_data(
+            static_cast<std::uint8_t>((i % 200) + 1),
+            std::vector<uint8_t>{0x41},
+            [&](bool completion_ok, std::size_t, const std::string&) {
+                if (!completion_ok) ++rejected;
+            });
+        if (ok) ++accepted;
+    }
+    assert(accepted == 448);
+    assert(rejected == 1);
+}
+
+void test_shutdown_completes_queued_and_inflight_writes_once() {
+    Recorder recorder;
+    recorder.complete_immediately = false;
+    yume::client::TransportCore core(recorder.writer(), recorder.closer());
+    core.start();
+
+    int first_calls = 0;
+    int second_calls = 0;
+    bool first_ok = true;
+    bool second_ok = true;
+    core.send_data(1, std::vector<uint8_t>{1},
+                   [&](bool ok, std::size_t, const std::string&) {
+                       ++first_calls;
+                       first_ok = ok;
+                   });
+    core.send_data(2, std::vector<uint8_t>{2},
+                   [&](bool ok, std::size_t, const std::string&) {
+                       ++second_calls;
+                       second_ok = ok;
+                   });
+    assert(recorder.completions.size() == 1);
+    (void)core.shutdown();
+    assert(second_calls == 1);
+    assert(!second_ok);
+    assert(first_calls == 0);
+
+    auto completion = std::move(recorder.completions.front());
+    completion(true, recorder.writes.front().size(), {});
+    assert(first_calls == 1);
+    assert(!first_ok);
+    assert(second_calls == 1);
+}
+
+void test_ratchet_batches_cross_rekeys_in_wire_order() {
+#if defined(YUME_USE_BASEFWX) && YUME_USE_BASEFWX
+    constexpr std::size_t kStreams = 16;
+    // 16 streams * 15 frames * 64 KiB exactly fills the 15 MiB bulk
+    // reservation while leaving the required 1 MiB control reserve intact.
+    constexpr std::size_t kFramesPerStream = 15;
+    constexpr std::size_t kPayloadBytes = 64U * 1024U;
+
+    DeferredLink client_to_server;
+    DeferredLink server_to_client;
+    std::string client_close;
+    std::string server_close;
+    yume::client::TransportCore client(
+        client_to_server.writer(),
+        [&](const std::string& reason) { client_close = reason; });
+    yume::client::TransportCore server(
+        server_to_client.writer(),
+        [&](const std::string& reason) { server_close = reason; });
+
+    const yume::ratchet::Bytes root(32, 0x51);
+    const yume::ratchet::Bytes psk(32, 0x62);
+    client.set_ratchet(std::make_unique<yume::ratchet::SessionRatchet>(
+        yume::ratchet::EndpointRole::Client, root, psk));
+    server.set_ratchet(std::make_unique<yume::ratchet::SessionRatchet>(
+        yume::ratchet::EndpointRole::Server, root, psk));
+    client.start();
+    server.start();
+
+    std::size_t completions = 0;
+    for (std::size_t frame = 0; frame < kFramesPerStream; ++frame) {
+        for (std::size_t stream = 1; stream <= kStreams; ++stream) {
+            const bool accepted = client.try_send_data(
+                static_cast<std::uint8_t>(stream),
+                std::vector<uint8_t>(kPayloadBytes,
+                                     static_cast<std::uint8_t>(stream)),
+                [&](bool ok, std::size_t, const std::string&) {
+                    assert(ok);
+                    ++completions;
+                });
+            assert(accepted);
+        }
+    }
+
+    std::size_t pump_steps = 0;
+    while ((!client_to_server.writes.empty() ||
+            !server_to_client.writes.empty()) &&
+           client_close.empty() && server_close.empty()) {
+        if (!client_to_server.writes.empty()) {
+            auto write = std::move(client_to_server.writes.front());
+            client_to_server.writes.pop_front();
+            server.feed_tls_bytes(write.wire);
+            if (write.completion) {
+                write.completion(true, write.wire.size(), {});
+            }
+        }
+        if (!server_to_client.writes.empty()) {
+            auto write = std::move(server_to_client.writes.front());
+            server_to_client.writes.pop_front();
+            client.feed_tls_bytes(write.wire);
+            if (write.completion) {
+                write.completion(true, write.wire.size(), {});
+            }
+        }
+        assert(++pump_steps < 10000);
+    }
+
+    assert(client_close.empty());
+    assert(server_close.empty());
+    assert(completions == kStreams * kFramesPerStream);
+#endif
+}
+
 }  // namespace
 
 int main() {
@@ -263,5 +412,8 @@ int main() {
     test_packet_bulk_rejects_malformed_payload();
     test_shutdown_closes_registered_streams();
     test_write_scheduler_prioritizes_control_without_reordering_stream();
+    test_transport_bulk_backpressure_is_bounded();
+    test_shutdown_completes_queued_and_inflight_writes_once();
+    test_ratchet_batches_cross_rekeys_in_wire_order();
     return 0;
 }

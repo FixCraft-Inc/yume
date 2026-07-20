@@ -506,6 +506,7 @@ void perform_h2_carrier_handshake(boost::asio::ssl::stream<boost::asio::ip::tcp:
     std::string token = obfs::derive_path_token(admission_key, server_host, hour, nonce);
     std::string path = obfs::build_path(token, nonce);
     auto carrier = std::make_unique<obfs::H2Carrier>(obfs::H2CarrierRole::Client);
+    carrier->set_timing_enabled(util::timing_enabled());
     std::string authority = server_host;
     if (server_port != 443) authority += ":" + std::to_string(server_port);
     if (!carrier->StartClient(authority, std::string(user_agent))) {

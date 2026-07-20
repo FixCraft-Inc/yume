@@ -32,6 +32,7 @@ struct ServerInfoPayload {
     std::string pq_sig;
     std::string pq_alg;
     std::vector<std::string> announced_proof_sources;
+    std::vector<std::string> capabilities;
 
     bool have_inner_caps = false;
     bool server_inner_supported = false;

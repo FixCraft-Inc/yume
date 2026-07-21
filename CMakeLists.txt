@@ -38,6 +38,7 @@ option(YUME_BUILD_SELFTEST "Build optional localhost benchmark self-test tool fo
 option(YUME_BUILD_TESTING "Build optional YUME unit test executables" OFF)
 option(YUME_BUILD_TOOLS "Build optional helper tools such as yume-net-map" OFF)
 option(YUME_BUILD_SHARED_ABI "Build and install the stable libyume C ABI shared library" OFF)
+option(YUME_ABI_CLIENT_ONLY "Build libyume with client/stream/packet runtime only" OFF)
 
 set(BUILD_TESTING ${YUME_BUILD_TESTING} CACHE BOOL "Build YUME unit tests" FORCE)
 include(CTest)
@@ -141,6 +142,9 @@ if(YUME_STATIC AND YUME_BUILD_SHARED_ABI)
 endif()
 if(YUME_TRANSPORT_CORE_ONLY AND YUME_BUILD_SHARED_ABI)
     message(FATAL_ERROR "YUME_BUILD_SHARED_ABI requires the full YUME core; disable YUME_TRANSPORT_CORE_ONLY")
+endif()
+if(YUME_ABI_CLIENT_ONLY AND NOT YUME_BUILD_SHARED_ABI)
+    message(FATAL_ERROR "YUME_ABI_CLIENT_ONLY requires YUME_BUILD_SHARED_ABI=ON")
 endif()
 
 if(YUME_STATIC)

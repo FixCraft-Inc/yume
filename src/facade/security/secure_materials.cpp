@@ -192,21 +192,29 @@ long long now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
 }
 
-std::vector<MaterialSummary> read_user_materials(std::string* err) {
-    std::vector<MaterialSummary> out;
+struct MaterialStoreState {
+    std::vector<MaterialSummary> materials;
+    bool embedded_anonym_ca_enabled{true};
+};
+
+MaterialStoreState read_store_state(std::string* err) {
+    MaterialStoreState state;
     std::ifstream in(metadata_path());
-    if (!in) return out;
+    if (!in) return state;
 
     json root;
     try {
         in >> root;
     } catch (std::exception const& e) {
         if (err) *err = std::string("invalid secure material metadata: ") + e.what();
-        return out;
+        return state;
     }
 
+    state.embedded_anonym_ca_enabled =
+        root.value("embedded_anonym_ca_enabled", true);
+
     auto items = root.find("materials");
-    if (items == root.end() || !items->is_array()) return out;
+    if (items == root.end() || !items->is_array()) return state;
     for (auto const& item : *items) {
         MaterialSummary s;
         s.id = item.value("id", "");
@@ -218,17 +226,17 @@ std::vector<MaterialSummary> read_user_materials(std::string* err) {
         s.path = item.value("path", "");
         s.imported_encrypted = item.value("imported_encrypted", false);
         s.created_at_epoch_ms = item.value("created_at_epoch_ms", 0LL);
-        out.push_back(std::move(s));
+        state.materials.push_back(std::move(s));
     }
-    return out;
+    return state;
 }
 
-bool write_user_materials(std::vector<MaterialSummary> const& items, std::string* err) {
+bool write_store_state(MaterialStoreState const& state, std::string* err) {
     std::error_code ec;
     std::filesystem::create_directories(store_dir(), ec);
 
     json arr = json::array();
-    for (auto const& s : items) {
+    for (auto const& s : state.materials) {
         if (s.is_default) continue;
         arr.push_back({
             {"id", s.id},
@@ -241,7 +249,10 @@ bool write_user_materials(std::vector<MaterialSummary> const& items, std::string
             {"created_at_epoch_ms", s.created_at_epoch_ms},
         });
     }
-    json root = {{"materials", arr}};
+    json root = {
+        {"embedded_anonym_ca_enabled", state.embedded_anonym_ca_enabled},
+        {"materials", arr},
+    };
     std::ofstream out(metadata_path());
     if (!out) {
         if (err) *err = "cannot write " + metadata_path().string();
@@ -249,6 +260,16 @@ bool write_user_materials(std::vector<MaterialSummary> const& items, std::string
     }
     out << root.dump(2);
     return out.good();
+}
+
+std::vector<MaterialSummary> read_user_materials(std::string* err) {
+    return read_store_state(err).materials;
+}
+
+bool write_user_materials(std::vector<MaterialSummary> const& items, std::string* err) {
+    auto state = read_store_state(err);
+    state.materials = items;
+    return write_store_state(state, err);
 }
 
 void chmod_private(std::filesystem::path const& path) {
@@ -284,7 +305,7 @@ std::filesystem::path ensure_default_anonym_ca(std::string* err) {
 
     std::ofstream out(path);
     if (!out) {
-        if (err) *err = "cannot write embedded anonym CA to " + path.string();
+        if (err) *err = "cannot write embedded operator CA to " + path.string();
         return {};
     }
     out << pem;
@@ -293,7 +314,8 @@ std::filesystem::path ensure_default_anonym_ca(std::string* err) {
 
 std::vector<MaterialSummary> list(MaterialType type, std::string* err) {
     std::vector<MaterialSummary> out;
-    if (type == MaterialType::AnonymCa) {
+    if (type == MaterialType::AnonymCa &&
+        read_store_state(err).embedded_anonym_ca_enabled) {
         std::string ca_err;
         auto ca_path = ensure_default_anonym_ca(&ca_err);
         if (ca_path.empty()) {
@@ -384,10 +406,10 @@ bool import_text(MaterialType type,
     auto default_name = [&]() -> char const* {
         switch (type) {
             case MaterialType::AuthKey:      return "Imported auth key";
-            case MaterialType::AnonymPubkey: return "Imported anonym public key";
+            case MaterialType::AnonymPubkey: return "Imported legacy proof key";
             case MaterialType::TlsCa:        return "Imported TLS CA";
             case MaterialType::AnonymCa:
-            default:                         return "Imported anonym CA";
+            default:                         return "Imported operator CA";
         }
     };
     MaterialSummary s;
@@ -432,8 +454,16 @@ bool import_file(MaterialType type,
 
 bool remove(std::string const& id, std::string* err) {
     if (id == kDefaultAnonymCaId) {
-        if (err) *err = "embedded anonym CA cannot be removed";
-        return false;
+        auto state = read_store_state(err);
+        if (!state.embedded_anonym_ca_enabled) {
+            if (err) *err = "embedded operator CA is already removed";
+            return false;
+        }
+        state.embedded_anonym_ca_enabled = false;
+        if (!write_store_state(state, err)) return false;
+        std::error_code ec;
+        std::filesystem::remove(store_dir() / "default_anonym_ca.pem", ec);
+        return true;
     }
     auto items = read_user_materials(err);
     auto it = std::find_if(items.begin(), items.end(), [&](auto const& s) {
@@ -452,10 +482,10 @@ bool remove(std::string const& id, std::string* err) {
 char const* type_label(MaterialType type) {
     switch (type) {
         case MaterialType::AuthKey:      return "Auth key";
-        case MaterialType::AnonymPubkey: return "Anonym public key";
+        case MaterialType::AnonymPubkey: return "Legacy proof key";
         case MaterialType::TlsCa:        return "TLS CA";
         case MaterialType::AnonymCa:
-        default:                         return "Anonym CA";
+        default:                         return "Operator CA";
     }
 }
 

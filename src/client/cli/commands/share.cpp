@@ -194,7 +194,7 @@ int run_import_share(const std::string& in_path, bool password_stdin) {
     if (!bundle.created_at_iso8601.empty()) std::cout << "Created at:   " << bundle.created_at_iso8601 << "\n";
     if (!bundle.created_by.empty())      std::cout << "Created by:   " << bundle.created_by << "\n";
     std::cout                             << "Auth key:     " << (bundle.auth_private_key_pem.empty() ? "(none)" : "PRESENT") << "\n";
-    std::cout                             << "Anonym CA:    " << (bundle.anonym_ca_cert_pem.empty() ? "(none)" : "PRESENT") << "\n";
+    std::cout                             << "Operator CA:  " << (bundle.anonym_ca_cert_pem.empty() ? "(none)" : "PRESENT") << "\n";
     std::cout                             << "PQ pubkey:    " << (bundle.pq_public_key_pem.empty() ? "(none)" : "PRESENT") << "\n";
     std::cout                             << "Obfs secret:  " << (bundle.obfs_secret.empty() ? "(none)" : "PRESENT") << "\n";
     std::cout                             << "Inner crypto: " << (bundle.inner_crypto ? (bundle.inner_heavy ? "heavy" : "light") : "off")

@@ -568,41 +568,41 @@ AnonymProof fetch_anonym_proof(const std::string& hash,
         proof.sig = resp.value("sig", "");
         if (proof.sig.empty()) {
             std::string err = resp.value("error", "unknown");
-            throw std::runtime_error("anonym signature missing (api error: " + err + ")");
+            throw std::runtime_error("external operator proof signature missing (API error: " + err + ")");
         }
         if (!verify_anonym_signature(proof.hash, proof.ts, proof.nonce, proof.certfp, proof.sig)) {
-            throw std::runtime_error("anonym signature verification failed (local check)");
+            throw std::runtime_error("external operator proof signature verification failed");
         }
         add_proof_source(&proof.proof_sources, yume::policy::kAnonymProofSourceFixcraft);
     } else if (require_remote) {
         if (api_url.empty()) {
-            throw std::runtime_error("anonym proof mode fixcraft requires --anonym-api");
+            throw std::runtime_error("legacy external proof mode requires --anonym-api");
         }
-        throw std::runtime_error("fixcraft proof transport is disabled by policy");
+        throw std::runtime_error("legacy external proof transport is disabled by policy");
     }
 
     if (enable_local_sign && !ca_key_path.empty()) {
         if (!sign_anonym_with_ca(proof.hash, proof.ts, proof.nonce, proof.certfp, ca_key_path,
                                  &proof.ca_sig, &proof.ca_alg)) {
-            throw std::runtime_error("anonym CA signing failed");
+            throw std::runtime_error("operator CA signing failed");
         }
         add_proof_source(&proof.proof_sources, yume::policy::kAnonymProofSourceCa);
     }
     if (enable_local_sign && !sub_key_path.empty()) {
         if (sub_cert_path.empty()) {
-            throw std::runtime_error("anonym_sub_cert must be set when anonym_sub_key is set");
+            throw std::runtime_error("a delegated server certificate is required with its private key");
         }
         if (!sign_anonym_with_ca(proof.hash, proof.ts, proof.nonce, proof.certfp, sub_key_path,
                                  &proof.sub_sig, &proof.sub_alg)) {
-            throw std::runtime_error("anonym subkey signing failed");
+            throw std::runtime_error("delegated server identity signing failed");
         }
         std::string sub_pem = read_file_bytes(sub_cert_path);
         if (sub_pem.empty()) {
-            throw std::runtime_error("failed to read anonym_sub_cert");
+            throw std::runtime_error("failed to read delegated server certificate");
         }
         proof.sub_cert_b64 = yume::util::base64_encode(sub_pem);
         if (proof.sub_cert_b64.empty()) {
-            throw std::runtime_error("failed to encode anonym_sub_cert");
+            throw std::runtime_error("failed to encode delegated server certificate");
         }
         add_proof_source(&proof.proof_sources, yume::policy::kAnonymProofSourceSubCa);
     }
@@ -615,10 +615,10 @@ AnonymProof fetch_anonym_proof(const std::string& hash,
         }
     }
     if (require_local && proof.ca_sig.empty() && proof.sub_sig.empty()) {
-        throw std::runtime_error("anonym proof mode local requires CA or Sub-CA signing");
+        throw std::runtime_error("local operator proof mode requires operator CA or delegated certificate signing");
     }
     if (!has_any_anonym_proof(proof)) {
-        throw std::runtime_error("no anonym proof source is available");
+        throw std::runtime_error("no operator identity proof source is available");
     }
     return proof;
 }

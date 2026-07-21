@@ -319,23 +319,23 @@ bool parse_server_cli_args(int argc,
             cfg.real_secret = argv[++i];
         } else if (arg == "--real-secret-file" && i + 1 < argc) {
             cfg.real_secret_file = resolve_cli_path(argv[++i]);
-        } else if (arg == "--anonym") {
+        } else if (arg == "--operator-identity" || arg == "--anonym") {
             cfg.anonym = true;
             result.config_overrides.anonym = true;
-        } else if (arg == "--anonym-proof-mode" && i + 1 < argc) {
+        } else if ((arg == "--operator-proof-mode" || arg == "--anonym-proof-mode") && i + 1 < argc) {
             cfg.anonym_proof_mode = argv[++i];
             result.config_overrides.anonym_proof_mode = true;
         } else if (arg == "--anonym-api" && i + 1 < argc) {
             cfg.anonym_api = argv[++i];
         } else if (arg == "--anonym-token" && i + 1 < argc) {
             cfg.anonym_token = argv[++i];
-        } else if (arg == "--anonym-ca-key" && i + 1 < argc) {
+        } else if ((arg == "--operator-ca-key" || arg == "--anonym-ca-key") && i + 1 < argc) {
             cfg.anonym_ca_key = resolve_cli_path(argv[++i]);
-        } else if (arg == "--anonym-ca-cert" && i + 1 < argc) {
+        } else if ((arg == "--operator-ca-cert" || arg == "--anonym-ca-cert") && i + 1 < argc) {
             cfg.anonym_ca_cert = resolve_cli_path(argv[++i]);
-        } else if (arg == "--anonym-sub-key" && i + 1 < argc) {
+        } else if ((arg == "--operator-delegated-key" || arg == "--anonym-sub-key") && i + 1 < argc) {
             cfg.anonym_sub_key = resolve_cli_path(argv[++i]);
-        } else if (arg == "--anonym-sub-cert" && i + 1 < argc) {
+        } else if ((arg == "--operator-delegated-cert" || arg == "--anonym-sub-cert") && i + 1 < argc) {
             cfg.anonym_sub_cert = resolve_cli_path(argv[++i]);
         } else if (arg == "--server-name" && i + 1 < argc) {
             cfg.server_name = argv[++i];

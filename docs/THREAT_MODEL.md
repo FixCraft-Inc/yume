@@ -143,7 +143,8 @@ privileged application codecs remain gated by compile-time switches, server
 runtime settings, and per-key metadata as documented in
 `docs/PERMISSIONS.md`. The 2.0 transport does not broaden those permissions.
 
-Preauth service lanes, admin attach, federation, anonym mode, and packet egress
+Preauth service lanes, admin attach, federation, the legacy-named `anonym`
+privacy/operator-identity mode, and packet egress
 retain their existing authorization boundaries and are outside this focused
 wire change. They must not be described as 2.0-validated without their own
 integration and runtime evidence.

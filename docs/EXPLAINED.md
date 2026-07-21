@@ -639,9 +639,11 @@ hardening.
 - Directional hybrid ratchet:
   limits epoch key exposure with fresh ML-KEM-1024/X25519/PSK roots. It does
   not protect against endpoint compromise.
-- Anonym mode/proof:
-  signals server-side log minimization policy. It does not erase hosting
-  logs, payment identity, browser identity, or target-side tracking.
+- Operator identity proof / privacy policy (legacy `anonym` config name):
+  authenticates that the endpoint is authorized by a client-selected operator
+  CA and signals a log-minimization policy. It cannot prove that the operator
+  follows that policy, and does not erase hosting logs, payment identity,
+  browser identity, or target-side tracking.
 - Tor in the route:
   hides different links depending on placement. It adds latency and does
   not fix target-side browser fingerprinting or bad operational security.
@@ -729,10 +731,11 @@ browser identity leaks.
 
 Operational checklist:
 
-- Run `yumed` with `--anonym` when the server is meant to be privacy
-  preserving.
-- Configure clients with `require_anonym: true` and the expected anonym
-  CA when relying on anonym proof.
+- Run `yumed` with `--operator-identity` (legacy `--anonym`) when the server is
+  meant to minimize identifying logs and publish operator authorization.
+- Configure clients with `--require-operator-identity` and the expected
+  operator CA. This detects an endpoint using the wrong CA/key; it is not a
+  remote proof of no logging.
 - Keep `--obfs` enabled and set the same private `--obfs-secret` on both
   ends for keyed carrier admission. A nonempty value is mandatory under
   `--public-node`.
@@ -783,5 +786,8 @@ YUME moves app streams through an authenticated TLS/H2 carrier.
 The server opens the target unless another egress layer is configured.
 Tor/VPN placement decides who sees the target and who sees the client.
 The BaseFWX-backed hybrid ratchet protects YUME frames inside the carrier.
-Anonym mode reduces server-side logging, but does not replace good OPSEC.
+The historical `anonym` mode reduces server-side logging and publishes an
+operator identity proof, but neither behavior proves that an independently
+administered host cannot inspect or retain traffic. It does not replace good
+OPSEC or an external anonymity network.
 ```

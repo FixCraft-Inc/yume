@@ -98,6 +98,19 @@ fingerprint. It is present as an empty string before the client is connected.
 as the facade config files. Relative path fields are resolved against the
 `base_dir` argument. Unknown keys are ignored for forward compatibility.
 
+Android and other in-process VPN embedders may configure
+`yume_client_set_socket_protector` before starting a client. YUME invokes the
+callback synchronously for every primary, secondary, direct, or SOCKS-proxy
+carrier socket after opening it and before connecting it. Returning zero aborts
+the connection with `YUME_STATUS_PERMISSION_DENIED`. The callback must be
+thread-safe, must not re-enter the same client, and its callback/user-data pair
+must remain valid until it is cleared or `yume_client_destroy` returns.
+
+Android packages use the client-only ABI build profile. It preserves the ABI
+v1 export surface for loaders, but server lifecycle calls report
+`YUME_STATUS_PERMISSION_DENIED` or `YUME_STATUS_NOT_RUNNING`; no server runtime
+is linked into the APK. Client, stream, and packet behavior is unchanged.
+
 Minimum server-side embed shape for a named service:
 
 ```json
@@ -142,6 +155,7 @@ Minimum client-side embed shape:
   "port": 4433,
   "identity": "client-auth.key",
   "socks_port": 0,
+  "tunnels": 1,
   "service_streams_only": true,
   "tls_ca_cert": "server.crt",
   "tls_server_name": "embedder.local",
@@ -157,6 +171,11 @@ Minimum client-side embed shape:
 `tls_pin_sha256` is optional when `tls_ca_cert`/`tls_server_name` are sufficient,
 but embedders that already have a manifest pin should pass it and may also
 compare `server_tls_fingerprint_sha256` in `yume_client_status_json`.
+In-process clients are non-interactive: a normal-mode server is rejected unless
+`accept_monitoring` is explicitly true. Keep it false when operator identity
+verification is required; no terminal consent prompt is attempted through the
+ABI. The legacy `anonym_*` fields authenticate CA-authorized operator identity;
+they do not prove a no-logging policy or anonymity.
 
 `socks_bind` is optional. Empty or omitted keeps the historical wildcard bind;
 set an IP literal such as `127.0.0.1`, `0.0.0.0`, `::1`, or `::` to choose the
@@ -164,7 +183,8 @@ SOCKS listener address explicitly.
 
 For a headless packet embed, keep `socks_port` at zero, start the authenticated
 client, then call `yume_client_open_packet`. The in-process runtime selects its
-headless engine mode without synthesizing a SOCKS listener.
+headless engine mode without synthesizing a SOCKS listener. `tunnels` must be
+in `1..16`; a single packet-bulk carrier is the minimal embedded profile.
 
 Per-key service authorization lives in `auth_keys.meta` under the authenticated
 client key fingerprint:

@@ -540,28 +540,28 @@ void log_security_warnings(const yume::server::ServerConfig& cfg) {
     }
 
     if (cfg.anonym && cfg.anonym_ca_key.empty() && !cfg.anonym_ca_cert.empty()) {
-        yume::util::log_warn("anonym_ca_cert set but anonym_ca_key is missing; no CA signature will be produced");
+        yume::util::log_warn("operator CA certificate is set but its private key is missing; no operator signature will be produced");
     }
     if (cfg.anonym && !cfg.anonym_ca_key.empty() && cfg.anonym_ca_cert.empty()) {
-        yume::util::log_warn("anonym_ca_key set but anonym_ca_cert is missing; clients cannot verify CA signature");
+        yume::util::log_warn("operator CA private key is set but its certificate is missing; clients cannot verify the signature");
     }
     if (cfg.anonym && !cfg.anonym_sub_key.empty() && cfg.anonym_sub_cert.empty()) {
-        yume::util::log_warn("anonym_sub_key set but anonym_sub_cert is missing; sub signature cannot be used");
+        yume::util::log_warn("delegated server key is set but its certificate is missing; delegated proof cannot be used");
     }
     if (cfg.anonym && cfg.anonym_sub_key.empty() && !cfg.anonym_sub_cert.empty()) {
-        yume::util::log_warn("anonym_sub_cert set but anonym_sub_key is missing; no sub signature will be produced");
+        yume::util::log_warn("delegated server certificate is set but its private key is missing; no delegated signature will be produced");
     }
     if (cfg.anonym && yume::policy::anonym_proof_mode_requires_remote(cfg.anonym_proof_mode) && cfg.anonym_api.empty()) {
-        yume::util::log_warn("anonym proof mode is fixcraft but anonym_api is not set");
+        yume::util::log_warn("legacy external proof mode is selected but no proof API is configured");
     }
     if (cfg.anonym && yume::policy::anonym_proof_mode_requires_local(cfg.anonym_proof_mode) &&
         cfg.anonym_ca_key.empty() && cfg.anonym_sub_key.empty()) {
-        yume::util::log_warn("anonym proof mode is local but no anonym_ca_key or anonym_sub_key is configured");
+        yume::util::log_warn("local operator proof mode requires an operator CA key or delegated server key");
     }
     if (!cfg.anonym && (!cfg.anonym_sub_key.empty() || !cfg.anonym_sub_cert.empty())) {
         yume::util::log_warn(
-            "anonym_sub_key/anonym_sub_cert are set but --anonym is disabled; server mode is normal "
-            "and anonym proof mode is OFF. Add --anonym if clients require anonym proof");
+            "delegated server identity files are set but operator identity mode is disabled. "
+            "Add --operator-identity if clients require operator identity proof");
     }
     if (cfg.listen_port != 443 && !cfg.anonym) {
         yume::util::log_warn("WARNING: running on a port other than 443 reduces stealth and defeats HTTPS disguise.");

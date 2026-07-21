@@ -6,6 +6,7 @@
 
 #include "facade/session/client_session.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <mutex>
@@ -49,29 +50,16 @@ std::string strip_ansi(std::string const& in) {
 bool resolve_secure_materials(client::ClientConfig& cfg, std::string* err) {
     namespace sm = secure_materials;
 
-    if (cfg.anonym_ca_material_id.empty()) {
-        cfg.anonym_ca_material_id = sm::kDefaultAnonymCaId;
-    }
     if (!cfg.anonym_ca_material_id.empty()) {
         std::string material_error;
         auto path = sm::material_path(cfg.anonym_ca_material_id, &material_error);
         if (!path) {
             if (err) *err = material_error.empty()
-                ? "selected anonym CA material is unavailable"
+                ? "selected operator CA material is unavailable"
                 : material_error;
             return false;
         }
         cfg.anonym_ca_cert = path->string();
-    } else if (cfg.anonym_ca_cert.empty()) {
-        std::string material_error;
-        auto path = sm::ensure_default_anonym_ca(&material_error);
-        if (path.empty()) {
-            if (err) *err = material_error.empty()
-                ? "embedded anonym CA could not be prepared"
-                : material_error;
-            return false;
-        }
-        cfg.anonym_ca_cert = path.string();
     }
 
     if (!cfg.auth_key_material_id.empty()) {
@@ -90,7 +78,7 @@ bool resolve_secure_materials(client::ClientConfig& cfg, std::string* err) {
         std::string e;
         auto path = sm::material_path(cfg.anonym_pubkey_material_id, &e);
         if (!path) {
-            if (err) *err = e.empty() ? "anonym public key material unavailable" : e;
+            if (err) *err = e.empty() ? "legacy proof key material unavailable" : e;
             return false;
         }
         cfg.anonym_pubkey = path->string();
@@ -392,6 +380,12 @@ ClientStatus ClientSession::status() const {
                                                 : ConnectionState::Failed;
         s.message = runtime_status.message;
     }
+    s.server_tls_fingerprint_sha256 =
+        runtime_status.server_tls_fingerprint_sha256;
+    s.server_capabilities = impl_->runtime.server_capabilities();
+    s.packet_bulk_supported = std::find(
+        s.server_capabilities.begin(), s.server_capabilities.end(),
+        "packet_bulk_v1") != s.server_capabilities.end();
     s.bytes_sent = impl_->traffic.total_tx();
     s.bytes_received = impl_->traffic.total_rx();
     auto latest = impl_->traffic.latest();

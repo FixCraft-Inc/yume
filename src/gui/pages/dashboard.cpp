@@ -81,6 +81,24 @@ public:
                 ui::status_pill(facade::display_label(client.state), state_color(client.state));
                 ui::muted_text("%s", client.server_endpoint.empty() ? "No server configured" : client.server_endpoint.c_str());
                 if (!client.message.empty()) ui::muted_text("%s", client.message.c_str());
+                if (!client.server_tls_fingerprint_sha256.empty()) {
+                    ui::muted_text("TLS leaf: %.16s...",
+                                   client.server_tls_fingerprint_sha256.c_str());
+                }
+                if (client.state == facade::ConnectionState::Connected) {
+                    ui::muted_text("Packet ABI: %s",
+                                   client.packet_bulk_supported
+                                       ? "packet_bulk_v1 ready"
+                                       : "not advertised");
+                    if (!client.server_capabilities.empty()) {
+                        std::string caps;
+                        for (auto const& capability : client.server_capabilities) {
+                            if (!caps.empty()) caps += ", ";
+                            caps += capability;
+                        }
+                        ui::muted_text("Capabilities: %s", caps.c_str());
+                    }
+                }
 
                 ImGui::TableNextColumn();
                 ui::section_label("Local yumed");

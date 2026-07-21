@@ -159,7 +159,8 @@ Public endpoints should publish:
 - TLS certificate identity
 - YUME public key or expected key fingerprint
 - allowed modes and fair-use limits
-- whether anonym proof is enabled
+- operator CA and delegated-server-certificate SHA-256 fingerprints/serial
+- whether the operator advertises privacy-minimizing mode (a policy claim, not remotely provable)
 - whether the endpoint accepts only SOCKS/forwarding or also admin/file/chat channels
 
 Do not advertise a public endpoint until users can pin enough metadata to detect replacement or downgrade.

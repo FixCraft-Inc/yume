@@ -61,7 +61,7 @@ int prepare_server_runtime_files(yume::server::ServerConfig& cfg, const char* ar
         try_set_file(cfg.anonym_sub_key, exe_path_dir, "anonym_sub.key");
         try_set_file(cfg.anonym_sub_cert, exe_path_dir, "anonym_sub.pem");
         if (!cfg.anonym_sub_key.empty() && !cfg.anonym_sub_cert.empty()) {
-            yume::util::log_info("using anonym sub key/cert from runtime directory");
+            yume::util::log_info("using delegated server identity key/certificate from runtime directory");
         }
     }
 

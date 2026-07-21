@@ -43,3 +43,21 @@ else()
 endif()
 
 yume_apply_perf_opts(yume_facade)
+
+if(YUME_ABI_CLIENT_ONLY)
+    add_library(yume_client_facade STATIC
+        logging/log_sink.cpp
+        config/config_io.cpp
+        config/client_config_io.cpp
+        session/inproc_client.cpp
+    )
+    target_include_directories(yume_client_facade PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
+    target_link_libraries(yume_client_facade PUBLIC yume_core yume_client_lib)
+    set_target_properties(yume_client_facade PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    if(YUME_USE_SPDLOG)
+        target_compile_definitions(yume_client_facade PUBLIC YUME_FACADE_HAVE_SPDLOG=1)
+    else()
+        target_compile_definitions(yume_client_facade PUBLIC YUME_FACADE_HAVE_SPDLOG=0)
+    endif()
+    yume_apply_perf_opts(yume_client_facade)
+endif()

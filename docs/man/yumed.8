@@ -211,7 +211,7 @@ ML-KEM-1024 + X25519 + PSK suite and the 256 KiB, 512-frame, and 500 ms active
 directional rekey limits cannot be disabled or peer-selected. The retired
 inner-heavy/light/dual, hop, PQ-key, embedded-master, and Argon2 options are
 rejected.
-.SH HTTP FACADE AND ANONYM OPTIONS
+.SH HTTP FACADE AND OPERATOR IDENTITY OPTIONS
 .TP
 .B --real
 Serve real HTTP for non-YUME requests on the same port.
@@ -246,33 +246,44 @@ Hidden metadata secret used by YUME tooling.
 .BI "--real-secret-file " path
 Load or create a real-facade secret file.
 .TP
-.B --anonym
-Enable anonym mode. This removes identifying log fields where supported.
+.B --operator-identity
+Publish an operator identity proof and minimize identifying log fields where
+supported. The legacy alias is
+.BR --anonym .
+The proof authenticates CA-authorized operator control; it cannot prove that
+the host does not inspect or retain traffic.
 .TP
-.BI "--anonym-proof-mode " mode
+.BI "--operator-proof-mode " mode
 Proof policy:
 .BR auto ,
 .BR local ,
 or
 .BR fixcraft .
+The legacy alias is
+.BR --anonym-proof-mode .
 .TP
 .BI "--anonym-api " url
-Verity API URL.
+Legacy external proof API URL.
 .TP
 .BI "--anonym-token " string
-Verity API token.
+Legacy external proof API token.
 .TP
-.BI "--anonym-ca-key " path
-Anonym CA private key.
+.BI "--operator-ca-key " path
+Operator CA private key. Legacy alias:
+.BR --anonym-ca-key .
 .TP
-.BI "--anonym-ca-cert " path
-Anonym CA certificate.
+.BI "--operator-ca-cert " path
+Operator CA certificate. Legacy alias:
+.BR --anonym-ca-cert .
 .TP
-.BI "--anonym-sub-key " path
-Anonym sub-CA private key.
+.BI "--operator-delegated-key " path
+Delegated server identity private key. Legacy alias:
+.BR --anonym-sub-key .
 .TP
-.BI "--anonym-sub-cert " path
-Anonym sub-CA certificate.
+.BI "--operator-delegated-cert " path
+CA-signed delegated server certificate. Its issuer should identify the
+operator and its subject should identify the server name/alias. Legacy alias:
+.BR --anonym-sub-cert .
 .SH RELAY AND DIRECTORY OPTIONS
 .TP
 .BI "--server-name " name
@@ -479,7 +490,8 @@ is not set.
 .B YUME_ANONYM_LOCAL_SIGN
 When set to
 .BR 0 ,
-disable local anonym proof signing even if CA/sub keys are configured.
+disable local operator identity proof signing even if operator CA/delegated
+keys are configured.
 Set to
 .B 1
 to force local signing on platforms where it is off by default.

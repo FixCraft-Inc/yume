@@ -47,6 +47,17 @@ int main() {
     if (!client) {
         return 10;
     }
+    if (yume_client_set_socket_protector(client, nullptr, nullptr) !=
+        YUME_STATUS_OK) {
+        yume_client_destroy(client);
+        return 23;
+    }
+    if (yume_client_start_json(
+            client, R"({"server":"localhost","port":443,"tunnels":0})",
+            nullptr, 1) != YUME_STATUS_INVALID_ARGUMENT) {
+        yume_client_destroy(client);
+        return 24;
+    }
     if (yume_client_start_json(client, "{", nullptr, 1) != YUME_STATUS_PARSE_ERROR) {
         yume_client_destroy(client);
         return 11;
@@ -87,7 +98,12 @@ int main() {
         yume_server_destroy(server);
         return 16;
     }
-    if (yume_server_start_json(server, "{", nullptr) != YUME_STATUS_PARSE_ERROR) {
+    const int server_start_status = yume_server_start_json(server, "{", nullptr);
+#if defined(YUME_ABI_CLIENT_ONLY) && YUME_ABI_CLIENT_ONLY
+    if (server_start_status != YUME_STATUS_PERMISSION_DENIED) {
+#else
+    if (server_start_status != YUME_STATUS_PARSE_ERROR) {
+#endif
         yume_server_destroy(server);
         return 17;
     }

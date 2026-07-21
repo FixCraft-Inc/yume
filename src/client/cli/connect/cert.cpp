@@ -16,6 +16,7 @@
 
 #include <openssl/err.h>
 #include <openssl/pem.h>
+#include <openssl/x509v3.h>
 
 #include "util.hpp"
 
@@ -190,6 +191,14 @@ bool require_file(const char* label, const std::string& path) {
 
 bool verify_cert_signed_by_ca(X509* cert, X509* ca) {
     if (!cert || !ca) {
+        return false;
+    }
+    // This proof uses a CA trust anchor and a non-CA delegated server leaf.
+    // Checking only the leaf signature would ignore validity periods, issuer
+    // binding, and basic constraints.
+    if (X509_check_ca(ca) <= 0 || X509_check_ca(cert) != 0 ||
+        !is_cert_time_valid(ca) || !is_cert_time_valid(cert) ||
+        X509_NAME_cmp(X509_get_issuer_name(cert), X509_get_subject_name(ca)) != 0) {
         return false;
     }
     EVP_PKEY* ca_pub = X509_get_pubkey(ca);

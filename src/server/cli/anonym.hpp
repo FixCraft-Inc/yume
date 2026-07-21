@@ -29,6 +29,10 @@ struct AnonymProof {
     std::string pq_alg;
 };
 
+// Historical identifier retained to avoid changing the established wire and
+// config ABI. This proves CA-authorized operator identity only; it cannot
+// prove that an independently administered server does not monitor clients.
+
 bool anonym_local_sign_default();
 std::string derive_pq_public_path(const std::string& pq_private_path);
 bool load_pq_public_b64(const std::string& pq_public_path, std::string* out_b64);

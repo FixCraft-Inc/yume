@@ -63,7 +63,7 @@ struct ShareBundle {
     std::string tls_pin_sha256;              // empty = no pin
     std::string tls_stealth_profile;         // empty = default (chrome)
 
-    // anonym / PQ
+    // Operator-identity trust material / PQ (legacy serialized field names).
     std::string anonym_ca_cert_pem;          // empty = none
     std::string anonym_pubkey;               // empty = none
     std::string pq_public_key_pem;           // empty = none

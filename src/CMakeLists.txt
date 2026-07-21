@@ -199,6 +199,15 @@ if(YUME_STATIC AND YUME_USE_SPDLOG AND NOT YUME_SPDLOG_TARGET STREQUAL "spdlog::
 endif()
 
 if(NOT YUME_TRANSPORT_CORE_ONLY)
+    set(YUME_GITHUB_CLIENT_SOURCE core/release/github_client.cpp)
+    if(YUME_ABI_CLIENT_ONLY)
+        # The public mobile ABI does not expose or invoke desktop update
+        # checks. Keep Boost.Beast and outbound GitHub traffic out of that
+        # runtime while preserving an honest unavailable result if shared
+        # version-report code is reached indirectly.
+        set(YUME_GITHUB_CLIENT_SOURCE core/release/github_client_disabled.cpp)
+    endif()
+
     # Per-OS platform abstraction (src/platform/). Exactly one executable_*.cpp
     # is compiled per target; the rest are platform-specific and would not even
     # parse elsewhere. Add new os-split helpers (paths, daemonization, …) the
@@ -214,7 +223,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_library(yume_core
         core/app_codec/codec.cpp
         core/app_codec/builtin/monero_rpc.cpp
-        core/release/github_client.cpp
+        ${YUME_GITHUB_CLIENT_SOURCE}
         core/release/terminal.cpp
         core/release/version_report.cpp
         core/release/version_status.cpp
@@ -659,14 +668,23 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         set_target_properties(yume_abi PROPERTIES
             OUTPUT_NAME yume
             EXPORT_NAME yume
-            VERSION "${YUME_PACKAGE_VERSION}"
-            SOVERSION 1
             CXX_VISIBILITY_PRESET hidden
             VISIBILITY_INLINES_HIDDEN ON
             POSITION_INDEPENDENT_CODE ON
             PUBLIC_HEADER "${CMAKE_SOURCE_DIR}/include/yume/yume.h"
         )
-        target_compile_definitions(yume_abi PRIVATE YUME_ABI_BUILD=1)
+        # Android's package manager only recognizes unversioned *.so entries.
+        # The ABI line remains YUME_ABI_VERSION=1; desktop platforms retain the
+        # public libyume.so.1 SONAME and normal versioned symlink chain.
+        if(NOT ANDROID)
+            set_target_properties(yume_abi PROPERTIES
+                VERSION "${YUME_PACKAGE_VERSION}"
+                SOVERSION 1
+            )
+        endif()
+        target_compile_definitions(yume_abi PRIVATE
+            YUME_ABI_BUILD=1
+            YUME_ABI_CLIENT_ONLY=$<BOOL:${YUME_ABI_CLIENT_ONLY}>)
         target_include_directories(yume_abi
             PUBLIC
                 $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
@@ -674,7 +692,11 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             PRIVATE
                 ${CMAKE_CURRENT_SOURCE_DIR}
         )
-        target_link_libraries(yume_abi PRIVATE yume_facade)
+        if(YUME_ABI_CLIENT_ONLY)
+            target_link_libraries(yume_abi PRIVATE yume_client_facade)
+        else()
+            target_link_libraries(yume_abi PRIVATE yume_facade)
+        endif()
         if(UNIX AND NOT APPLE)
             set(_yume_abi_version_script "${CMAKE_CURRENT_SOURCE_DIR}/abi/yume.map")
             target_link_options(yume_abi PRIVATE
@@ -759,6 +781,12 @@ if(MSVC)
 else()
     add_compile_options(-UNDEBUG)
 endif()
+
+add_executable(yume_secure_materials_test
+    facade/security/secure_materials_test.cpp
+)
+target_link_libraries(yume_secure_materials_test PRIVATE yume_facade)
+add_test(NAME yume_secure_materials_test COMMAND yume_secure_materials_test)
 
 add_executable(yume_transport_core_test
     client/transport/core_test.cpp
@@ -1001,6 +1029,17 @@ yume_apply_perf_opts(yume_cli_endpoint_parse_test)
 add_test(NAME yume_cli_endpoint_parse_test COMMAND yume_cli_endpoint_parse_test)
 
 if(NOT YUME_TRANSPORT_CORE_ONLY)
+    add_executable(yume_socket_protection_test
+        client/cli/connect/io_socket_protection_test.cpp)
+    target_include_directories(yume_socket_protection_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(yume_socket_protection_test PRIVATE
+        Boost::system OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+    yume_link_atomic_if_needed(yume_socket_protection_test PRIVATE)
+    yume_apply_perf_opts(yume_socket_protection_test)
+    add_test(NAME yume_socket_protection_test COMMAND yume_socket_protection_test)
+endif()
+
+if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_executable(yume_websocket_codec_test core/stealth/websocket_codec_test.cpp)
     target_link_libraries(yume_websocket_codec_test PRIVATE yume_core)
     yume_link_atomic_if_needed(yume_websocket_codec_test PRIVATE)
@@ -1029,6 +1068,8 @@ endif()
 if(YUME_BUILD_SHARED_ABI AND TARGET yume_abi)
     add_executable(yume_abi_test abi/yume_c_test.cpp)
     target_link_libraries(yume_abi_test PRIVATE yume_abi)
+    target_compile_definitions(yume_abi_test PRIVATE
+        YUME_ABI_CLIENT_ONLY=$<BOOL:${YUME_ABI_CLIENT_ONLY}>)
     add_test(NAME yume_abi_test COMMAND yume_abi_test)
     if(UNIX AND NOT APPLE AND CMAKE_NM)
         add_test(NAME yume_abi_exports

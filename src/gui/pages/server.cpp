@@ -390,7 +390,7 @@ private:
                 ImGui::TableNextColumn();
                 ui::checkbox("Directory listing", &cfg_.directory_enable);
                 ImGui::TableNextColumn();
-                ui::checkbox("Anonym proof", &cfg_.anonym);
+                ui::checkbox("Operator identity proof", &cfg_.anonym);
                 ImGui::EndTable();
             }
             ui::checkbox("Federation", &cfg_.federation_enable);
@@ -422,12 +422,12 @@ private:
 
             if (cfg_.anonym) {
                 ImGui::Dummy(ImVec2(0, 6 * sc));
-                ui::section_label("Anonym proof");
+                ui::section_label("Operator identity proof");
                 ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
                 ImGui::TextWrapped(
-                    "Cryptographically proves to clients that your server "
-                    "does not log them. Requires a sub-CA cert/key issued "
-                    "by FixCraft or a local trust anchor.");
+                    "Proves that this server is authorized by the operator CA "
+                    "selected by the client. It does not prove that the host "
+                    "cannot inspect or log traffic.");
                 ImGui::PopStyleColor();
                 ImGui::Dummy(ImVec2(0, 4 * sc));
 
@@ -443,19 +443,19 @@ private:
                               proof_modes, 3, 320.f)) {
                     cfg_.anonym_proof_mode = proof_modes[proof_idx];
                 }
-                file_picker("Anonym sub-CA certificate",
-                            "Pick Anonym sub-CA cert",
+                file_picker("Delegated server certificate",
+                            "Pick CA-signed delegated server certificate",
                             cfg_.anonym_sub_cert,
-                            "(none - using FixCraft API only)",
+                            "(none - legacy external proof service only)",
                             nullptr);
-                file_picker("Anonym sub-CA private key",
-                            "Pick Anonym sub-CA key",
+                file_picker("Delegated server private key",
+                            "Pick delegated server key",
                             cfg_.anonym_sub_key,
                             "(none)", nullptr);
-                file_picker("Anonym CA certificate (trust anchor)",
-                            "Pick Anonym CA cert",
+                file_picker("Operator CA certificate (trust anchor)",
+                            "Pick operator CA cert",
                             cfg_.anonym_ca_cert,
-                            "(default embedded CA)", nullptr);
+                            "(none)", nullptr);
             }
 
             ImGui::Dummy(ImVec2(0, 8 * sc));

@@ -9,11 +9,14 @@
 #include <algorithm>
 #include <cstdlib>
 #include <ctime>
+#include <memory>
 #include <string>
 #include <string_view>
 
 #include <openssl/pem.h>
+#include <openssl/bn.h>
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
 
 #include "client/cli/connect/cert.hpp"
 #include "client/cli/connect/diagnostics.hpp"
@@ -36,6 +39,41 @@ void fail(AnonymProofResult* result, std::string detail) {
 
 bool has_source(const std::vector<std::string>& sources, std::string_view source) {
     return std::find(sources.begin(), sources.end(), std::string(source)) != sources.end();
+}
+
+std::string certificate_name(X509_NAME* name) {
+    if (!name) return {};
+    std::unique_ptr<BIO, decltype(&BIO_free)> bio(BIO_new(BIO_s_mem()), BIO_free);
+    if (!bio || X509_NAME_print_ex(bio.get(), name, 0, XN_FLAG_RFC2253) < 0) return {};
+    char* data = nullptr;
+    const long size = BIO_get_mem_data(bio.get(), &data);
+    return size > 0 && data ? std::string(data, static_cast<std::size_t>(size)) : std::string{};
+}
+
+std::string certificate_fingerprint_sha256(X509* cert) {
+    unsigned char digest[EVP_MAX_MD_SIZE]{};
+    unsigned int size = 0;
+    if (!cert || X509_digest(cert, EVP_sha256(), digest, &size) != 1) return {};
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(size * 2);
+    for (unsigned int i = 0; i < size; ++i) {
+        out.push_back(kHex[digest[i] >> 4]);
+        out.push_back(kHex[digest[i] & 0x0f]);
+    }
+    return out;
+}
+
+std::string certificate_serial(X509* cert) {
+    if (!cert) return {};
+    std::unique_ptr<BIGNUM, decltype(&BN_free)> serial(
+        ASN1_INTEGER_to_BN(X509_get_serialNumber(cert), nullptr), BN_free);
+    if (!serial) return {};
+    char* hex = BN_bn2hex(serial.get());
+    if (!hex) return {};
+    std::string value(hex);
+    OPENSSL_free(hex);
+    return value;
 }
 
 crypto::EVP_PKEY_ptr load_fixcraft_pubkey(const std::string& override_path) {
@@ -90,11 +128,11 @@ AnonymProofResult verify_anonym_proof(const AnonymProofInput& input) {
         !input.sub_sig.empty() || !input.sub_cert_b64.empty();
 
     if (input.hash.empty() || input.ts.empty() || input.nonce.empty()) {
-        fail(&result, "ANONYM PROOF IS INCOMPLETE");
+        fail(&result, "OPERATOR IDENTITY PROOF IS INCOMPLETE");
         return result;
     }
     if (input.certfp.empty()) {
-        fail(&result, "ANONYM PROOF MISSING CERTIFICATE FINGERPRINT");
+        fail(&result, "OPERATOR IDENTITY PROOF MISSING CERTIFICATE FINGERPRINT");
         return result;
     }
 
@@ -102,16 +140,16 @@ AnonymProofResult verify_anonym_proof(const AnonymProofInput& input) {
     try {
         ts_val = std::stoll(input.ts);
     } catch (...) {
-        fail(&result, "INVALID TIMESTAMP IN ANONYM PROOF");
+        fail(&result, "INVALID TIMESTAMP IN OPERATOR IDENTITY PROOF");
         return result;
     }
     const long long now = static_cast<long long>(std::time(nullptr));
     if (std::llabs(now - ts_val) > yume::policy::kAnonymProofWindowSeconds) {
-        fail(&result, "ANONYM PROOF EXPIRED OR NOT YET VALID");
+        fail(&result, "OPERATOR IDENTITY PROOF EXPIRED OR NOT YET VALID");
         return result;
     }
     if (!input.peer_cert_fingerprint.empty() && input.certfp != input.peer_cert_fingerprint) {
-        fail(&result, "ANONYM CERTIFICATE FINGERPRINT MISMATCH");
+        fail(&result, "OPERATOR PROOF TLS CERTIFICATE FINGERPRINT MISMATCH");
         return result;
     }
 
@@ -126,14 +164,14 @@ AnonymProofResult verify_anonym_proof(const AnonymProofInput& input) {
         }
         crypto::EVP_PKEY_ptr pubkey = load_fixcraft_pubkey(input.anonym_pubkey);
         if (!pubkey) {
-            fail(&result, "FAILED TO LOAD EMBEDDED ANONYM PUBLIC KEY");
+            fail(&result, "FAILED TO LOAD LEGACY EXTERNAL PROOF KEY");
             return result;
         }
         if (!verify_signature(pubkey.get(),
                               message_bytes,
                               input.sig,
                               "INVALID SIGNATURE FORMAT FROM SERVER",
-                              "server anonym proof signature verification failed; treat this server as untrusted and report it",
+                              "server operator identity signature verification failed; treat this server as untrusted and report it",
                               &result)) {
             return result;
         }
@@ -143,36 +181,42 @@ AnonymProofResult verify_anonym_proof(const AnonymProofInput& input) {
 
     if (sub_present) {
         if (input.anonym_ca_cert.empty()) {
-            fail(&result, "ANONYM SUB CERT PROVIDED BUT NO --anonym-ca-cert SET");
+            fail(&result, "DELEGATED SERVER CERTIFICATE PROVIDED BUT NO --operator-ca-cert SET");
             return result;
         }
         if (input.sub_cert_b64.empty()) {
-            fail(&result, "ANONYM SUB CERT MISSING");
+            fail(&result, "DELEGATED SERVER CERTIFICATE MISSING");
             return result;
         }
         if (input.sub_sig.empty()) {
-            fail(&result, "ANONYM SUB SIGNATURE MISSING");
+            fail(&result, "DELEGATED SERVER SIGNATURE MISSING");
             return result;
         }
         const std::string sub_pem = util::base64_decode(input.sub_cert_b64);
         auto sub_cert = load_cert_from_pem(sub_pem);
         if (!sub_cert) {
-            fail(&result, "FAILED TO PARSE ANONYM SUB CERT");
+            fail(&result, "FAILED TO PARSE DELEGATED SERVER CERTIFICATE");
             return result;
         }
         auto ca_cert = load_cert_from_file(input.anonym_ca_cert);
         if (!ca_cert) {
-            fail(&result, "FAILED TO LOAD ANONYM CA CERT");
+            fail(&result, "FAILED TO LOAD OPERATOR CA CERTIFICATE");
             return result;
         }
         if (!is_cert_time_valid(sub_cert.get())) {
-            fail(&result, "ANONYM SUB CERT IS EXPIRED OR NOT YET VALID");
+            fail(&result, "DELEGATED SERVER CERTIFICATE IS EXPIRED OR NOT YET VALID");
             return result;
         }
         if (!verify_cert_signed_by_ca(sub_cert.get(), ca_cert.get())) {
-            fail(&result, "ANONYM SUB CERT IS NOT SIGNED BY THE TRUSTED CA");
+            fail(&result, "DELEGATED SERVER CERTIFICATE IS NOT SIGNED BY THE SELECTED OPERATOR CA");
             return result;
         }
+        result.operator_ca_subject = certificate_name(X509_get_subject_name(ca_cert.get()));
+        result.operator_ca_fingerprint_sha256 = certificate_fingerprint_sha256(ca_cert.get());
+        result.delegated_subject = certificate_name(X509_get_subject_name(sub_cert.get()));
+        result.delegated_issuer = certificate_name(X509_get_issuer_name(sub_cert.get()));
+        result.delegated_serial = certificate_serial(sub_cert.get());
+        result.delegated_fingerprint_sha256 = certificate_fingerprint_sha256(sub_cert.get());
         crypto::EVP_PKEY_ptr sub_key{X509_get_pubkey(sub_cert.get()), EVP_PKEY_free};
         if (!sub_key) {
             fail(&result, "FAILED TO LOAD SUB CERT PUBLIC KEY");
@@ -181,8 +225,8 @@ AnonymProofResult verify_anonym_proof(const AnonymProofInput& input) {
         if (!verify_signature(sub_key.get(),
                               message_bytes,
                               input.sub_sig,
-                              "INVALID ANONYM SUB SIGNATURE FORMAT",
-                              "ANONYM SUB SIGNATURE INVALID",
+                              "INVALID DELEGATED SERVER SIGNATURE FORMAT",
+                              "DELEGATED SERVER SIGNATURE INVALID",
                               &result)) {
             return result;
         }
@@ -193,33 +237,40 @@ AnonymProofResult verify_anonym_proof(const AnonymProofInput& input) {
 
     if (ca_present) {
         if (input.ca_sig.empty()) {
-            fail(&result, "ANONYM CA SIGNATURE MISSING");
+            fail(&result, "OPERATOR CA SIGNATURE MISSING");
             return result;
         }
         if (input.anonym_ca_cert.empty()) {
-            util::log_warn("anonym CA signature provided but no --anonym-ca-cert set; skipping CA verification");
+            util::log_warn("operator CA signature provided but no --operator-ca-cert set; skipping CA verification");
         } else {
-            auto ca_key = load_pubkey_from_cert(input.anonym_ca_cert);
+            auto ca_cert = load_cert_from_file(input.anonym_ca_cert);
+            if (!ca_cert || X509_check_ca(ca_cert.get()) <= 0 || !is_cert_time_valid(ca_cert.get())) {
+                fail(&result, "OPERATOR CA CERTIFICATE IS INVALID, EXPIRED, OR NOT A CA");
+                return result;
+            }
+            crypto::EVP_PKEY_ptr ca_key{X509_get_pubkey(ca_cert.get()), EVP_PKEY_free};
             if (!ca_key) {
-                fail(&result, "FAILED TO LOAD ANONYM CA CERT");
+                fail(&result, "FAILED TO LOAD OPERATOR CA PUBLIC KEY");
                 return result;
             }
             if (!verify_signature(ca_key.get(),
                                   message_bytes,
                                   input.ca_sig,
-                                  "INVALID ANONYM CA SIGNATURE FORMAT",
-                                  "ANONYM CA SIGNATURE INVALID",
+                                  "INVALID OPERATOR CA SIGNATURE FORMAT",
+                                  "OPERATOR CA SIGNATURE INVALID",
                                   &result)) {
                 return result;
             }
             result.ca_pub = std::move(ca_key);
             result.ca_ok = true;
+            result.operator_ca_subject = certificate_name(X509_get_subject_name(ca_cert.get()));
+            result.operator_ca_fingerprint_sha256 = certificate_fingerprint_sha256(ca_cert.get());
             add_verified_source(&result.verified_proof_sources, yume::policy::kAnonymProofSourceCa);
         }
     }
 
     if (!result.fixcraft_ok && !result.ca_ok && !result.sub_ok) {
-        fail(&result, "NO TRUSTED ANONYM PROOF SOURCE COULD BE VERIFIED");
+        fail(&result, "NO OPERATOR IDENTITY PROOF AUTHORIZED BY A TRUSTED SOURCE COULD BE VERIFIED");
     }
     return result;
 }

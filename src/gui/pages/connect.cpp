@@ -14,6 +14,7 @@
 #include <imgui.h>
 
 #include "client/transfer/share_file.hpp"
+#include "core/stealth/http_profile.hpp"
 #include "facade/session/client_session.hpp"
 #include "facade/config/config_io.hpp"
 #include "facade/config/profiles.hpp"
@@ -103,19 +104,21 @@ public:
 
             ImGui::Dummy(ImVec2(0, 8 * sc));
             ui::section_label("Trust material");
-            std::string ca_name = "Built-in CA";
+            std::string ca_name = "Not selected";
             std::string key_name = cfg_.identity.empty() ? "Not selected" : cfg_.identity;
-            if (auto ca = sm::get(cfg_.anonym_ca_material_id.empty()
-                                      ? sm::kDefaultAnonymCaId
-                                      : cfg_.anonym_ca_material_id)) {
-                ca_name = ca->display_name;
+            if (!cfg_.anonym_ca_material_id.empty()) {
+                if (auto ca = sm::get(cfg_.anonym_ca_material_id)) {
+                    ca_name = ca->display_name;
+                }
+            } else if (!cfg_.anonym_ca_cert.empty()) {
+                ca_name = cfg_.anonym_ca_cert;
             }
             if (!cfg_.auth_key_material_id.empty()) {
                 if (auto key = sm::get(cfg_.auth_key_material_id)) {
                     key_name = key->display_name;
                 }
             }
-            ui::muted_text("Anonym CA: %s", ca_name.c_str());
+            ui::muted_text("Operator CA: %s", ca_name.c_str());
             ui::muted_text("Auth key: %s", key_name.c_str());
             ui::muted_text("Use Security to import or switch saved CAs and auth keys.");
         }
@@ -124,26 +127,24 @@ public:
         ImGui::Dummy(ImVec2(0, 8 * sc));
         if (ui::begin_auto_card("##connect_security")) {
             ui::section_label("Connection");
-            if (ImGui::BeginTable("##security_toggles", 3, ImGuiTableFlags_SizingStretchSame)) {
-                ImGui::TableNextColumn();
-                ui::checkbox("Inner crypto", &cfg_.inner_crypto);
-                ImGui::TableNextColumn();
-                ui::checkbox("Heavy KDF", &cfg_.inner_heavy);
-                ImGui::TableNextColumn();
-                ui::checkbox("Key hopping", &cfg_.inner_hop);
-                ImGui::EndTable();
-            }
+            cfg_.inner_crypto = true;
+            cfg_.inner_heavy = false;
+            cfg_.inner_hop = false;
+            cfg_.hop_interval_ms = 0;
+            cfg_.pq_public_key.clear();
+            ui::muted_text(
+                "YUME 2.0 always uses ML-KEM-1024 + X25519 + PSK and directional ratchets.");
 
             ImGui::Dummy(ImVec2(0, 12 * sc));
-            ui::section_label("Anonymity proof");
-            ui::field_label("Server anonym mode");
-            const char* anonym_modes[] = {"Optional", "Required"};
-            int anonym_idx = cfg_.require_anonym ? 1 : 0;
-            if (ui::combo("##anonym_mode", &anonym_idx, anonym_modes, 2, 320.f)) {
-                cfg_.require_anonym = anonym_idx == 1;
-            }
+            ui::section_label("Operator identity proof");
+            ui::field_label("Operator verification policy");
+            const char* anonym_modes[] = {"Required", "Allow monitored server"};
+            int anonym_idx = (!cfg_.require_anonym && cfg_.accept_monitoring) ? 1 : 0;
+            (void)ui::combo("##anonym_mode", &anonym_idx, anonym_modes, 2, 320.f);
+            cfg_.require_anonym = anonym_idx == 0;
+            cfg_.accept_monitoring = anonym_idx == 1;
             ui::muted_text(
-                "Optional allows monitored servers after warning acceptance. Required refuses servers that do not prove anonym mode.");
+                "This proves the server is authorized by the selected operator CA. It does not prove that the operator cannot inspect or log traffic.");
             int_input("SOCKS5 port (0 = auto)", cfg_.socks_port);
 
             ImGui::Dummy(ImVec2(0, 8 * sc));
@@ -157,31 +158,36 @@ public:
                     if (auto m = sm::get(id)) return m->display_name;
                     return std::string("unknown (id=") + id + ")";
                 };
-                ui::muted_text("Anonym public key: %s",
+                ui::muted_text("Legacy external proof key: %s",
                                material_label(cfg_.anonym_pubkey_material_id,
-                                              "embedded default").c_str());
+                                              "embedded legacy key").c_str());
                 ui::muted_text("TLS CA: %s",
                                material_label(cfg_.tls_ca_material_id,
                                               "system trust store").c_str());
                 ui::muted_text("Use Security to import or change either.");
+                text_input("Admission secret file", cfg_.obfs_secret_file,
+                           "required 32-byte hex secret file");
+                text_input("Inner PSK file", cfg_.inner_psk_file,
+                           "required 32-byte hex PSK file");
                 text_input("TLS pin SHA-256", cfg_.tls_pin_sha256, "optional certificate pin");
-                int hop = (int)cfg_.hop_interval_ms;
-                int_input("Hop interval (ms)", hop);
-                {
-                    cfg_.hop_interval_ms = hop < 0 ? 0u : (std::uint32_t)hop;
+                cfg_.tls_stealth_enabled = true;
+                const auto transport_profiles =
+                    yume::http_profile::transport_client_names();
+                ui::field_label("Transport profile");
+                if (ImGui::BeginCombo("##transport_profile",
+                                      cfg_.tls_stealth_profile.c_str())) {
+                    for (const auto& profile : transport_profiles) {
+                        const bool selected = cfg_.tls_stealth_profile == profile;
+                        if (ImGui::Selectable(profile.c_str(), selected)) {
+                            cfg_.tls_stealth_profile = profile;
+                        }
+                        if (selected) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
                 }
-                text_input("PQ public key", cfg_.pq_public_key);
-                ui::checkbox("TLS stealth", &cfg_.tls_stealth_enabled);
-                const char* profiles[] = {"chrome", "firefox", "safari"};
-                int prof_idx = 0;
-                for (int i = 0; i < 3; ++i) {
-                    if (cfg_.tls_stealth_profile == profiles[i]) { prof_idx = i; break; }
-                }
-                ui::field_label("TLS profile");
-                if (ui::combo("##tls_profile", &prof_idx, profiles, 3, 320.f)) {
-                    cfg_.tls_stealth_profile = profiles[prof_idx];
-                }
-                ui::checkbox("Rotate profile", &cfg_.tls_stealth_rotate);
+                cfg_.tls_stealth_rotate = false;
+                ui::muted_text(
+                    "Only complete TLS + HTTP/2 fixtures are listed. Future Firefox or other profiles can be added through the shared registry.");
                 int_input("IO threads (0 = auto)", cfg_.io_threads);
 
                 const char* relay_modes[] = {"untrusted", "trusted", "operator"};
@@ -204,6 +210,7 @@ public:
                 }
                 text_input("TLS server name override (SNI)", cfg_.tls_server_name,
                            "optional — blank uses server host");
+                ui::checkbox("Headless service streams", &cfg_.service_streams_only);
             }
 
             auto report = facade::config_io::validate(cfg_);
@@ -412,7 +419,7 @@ private:
         ImGui::Dummy(ImVec2(0, 4 * sc));
         ImGui::TextWrapped(
             "Encrypts the server connection info, your auth private key, "
-            "the anonym CA cert, PQ public key, and the obfs secret into "
+            "the operator CA cert, PQ public key, and the obfs secret into "
             "one password-protected file. Anyone with the file AND the "
             "password becomes you on this server — pick a strong password.");
         ImGui::Dummy(ImVec2(0, 6 * sc));
@@ -516,7 +523,7 @@ private:
                 if (!b.label.empty())  ImGui::Text("Label:       %s", b.label.c_str());
                 ImGui::Text("Server:      %s:%d", b.server_host.c_str(), b.server_port);
                 ImGui::Text("Auth key:    %s", b.auth_private_key_pem.empty() ? "(none)" : "PRESENT");
-                ImGui::Text("Anonym CA:   %s", b.anonym_ca_cert_pem.empty() ? "(none)" : "PRESENT");
+                ImGui::Text("Operator CA: %s", b.anonym_ca_cert_pem.empty() ? "(none)" : "PRESENT");
                 ImGui::Text("PQ pubkey:   %s", b.pq_public_key_pem.empty() ? "(none)" : "PRESENT");
                 ImGui::Text("Obfs secret: %s", b.obfs_secret.empty() ? "(none)" : "PRESENT");
                 ImGui::Text("Inner:       %s; hop=%s",

@@ -179,18 +179,16 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
     // Order of preference:
     //   1. --hide-in-the-crowd <name> (explicit; must be a registered
     //      client profile)
-    //   2. --profile <chrome|firefox|safari> (existing flag for the
-    //      TLS-layer JA3; we mirror it at the HTTP-layer UA when no
-    //      explicit --hide-in-the-crowd was given, so the two stay
-    //      consistent)
-    //   3. default ("yume", current pre-1.0 behavior)
+    //   2. --profile <name> (the complete transport fixture registry also
+    //      supplies its TLS fingerprint and HTTP-layer UA)
+    //   3. the pinned default fixture (currently Chrome)
     {
         std::string ua_profile;
         if (!args.http_profile.empty()) {
-            auto p = yume::http_profile::client(args.http_profile);
+            auto p = yume::http_profile::transport_client(args.http_profile);
             if (!p.has_value()) {
                 std::string supported;
-                for (const auto& n : yume::http_profile::client_names()) {
+                for (const auto& n : yume::http_profile::transport_client_names()) {
                     if (!supported.empty()) supported += ", ";
                     supported += n;
                 }
@@ -201,7 +199,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             ua_profile = p->name;
             yume::http_profile::set_active_client_ua(p->user_agent);
         } else if (!args.tls_stealth_profile.empty()) {
-            auto p = yume::http_profile::client(args.tls_stealth_profile);
+            auto p = yume::http_profile::transport_client(args.tls_stealth_profile);
             if (p.has_value()) {
                 ua_profile = p->name;
                 yume::http_profile::set_active_client_ua(p->user_agent);
@@ -485,9 +483,10 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
     std::string profile_name = cfg.tls_stealth_profile;
     std::transform(profile_name.begin(), profile_name.end(), profile_name.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    if (!cfg.tls_stealth_enabled || profile_name != "chrome") {
+    if (!cfg.tls_stealth_enabled ||
+        !yume::http_profile::transport_client_supported(profile_name)) {
         util::log_error(
-            "YUME 2.0 dev1 requires --profile chrome with TLS stealth enabled");
+            "YUME 2.0 requires TLS stealth and a complete transport profile fixture");
         return 1;
     }
     if (cfg.tls_stealth_rotate) {
@@ -614,19 +613,12 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                     tls_metrics::MetricsManager::instance().initialize(cfg.tls_fingerprint_log_path);
                 }
 
-                tls_fingerprint::BrowserProfile profile = tls_fingerprint::BrowserProfile::CHROME_131;
-                std::string profile_lower = cfg.tls_stealth_profile;
-                std::transform(profile_lower.begin(), profile_lower.end(), profile_lower.begin(), ::tolower);
-
-                if (profile_lower == "chrome" || profile_lower == "chrome131" || profile_lower == "chrome_131" ||
-                    profile_lower == "chrome135" || profile_lower == "chrome_135") {
-                    profile = tls_fingerprint::BrowserProfile::CHROME_131;
-                } else if (profile_lower == "firefox" || profile_lower == "firefox126" || profile_lower == "firefox_126") {
-                    profile = tls_fingerprint::BrowserProfile::FIREFOX_126;
-                } else if (profile_lower == "safari" || profile_lower == "safari18" || profile_lower == "safari_18" ||
-                           profile_lower == "safari17" || profile_lower == "safari_17") {
-                    profile = tls_fingerprint::BrowserProfile::SAFARI_18;
+                const auto transport_profile =
+                    yume::http_profile::transport_client(cfg.tls_stealth_profile);
+                if (!transport_profile) {
+                    throw std::runtime_error("configured transport profile fixture is unavailable");
                 }
+                tls_fingerprint::BrowserProfile profile = transport_profile->tls_profile;
                 base_tls_profile = profile;
                 profile = tls_stealth::profile_for_connection(
                     profile,
@@ -635,15 +627,8 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                     completed_tls_connections);
                 active_tls_profile = profile;
                 if (!explicit_http_profile) {
-                    const char* http_profile_name = "chrome";
-                    if (profile == tls_fingerprint::BrowserProfile::FIREFOX_126) {
-                        http_profile_name = "firefox";
-                    } else if (profile == tls_fingerprint::BrowserProfile::SAFARI_18) {
-                        http_profile_name = "safari";
-                    }
-                    if (auto selected_http = yume::http_profile::client(http_profile_name);
-                        selected_http.has_value()) {
-                        yume::http_profile::set_active_client_ua(selected_http->user_agent);
+                    if (auto selected = yume::http_profile::transport_client_for_tls_profile(profile)) {
+                        yume::http_profile::set_active_client_ua(selected->user_agent);
                     }
                 }
 
@@ -700,7 +685,8 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 auto connect_start = std::chrono::steady_clock::now();
                 auto dr = outbound_proxy::socks5_dial(
                     stream.next_layer(), io, proxy_cfg,
-                    cfg.server, cfg.port, kConnectTimeout);
+                    cfg.server, cfg.port, kConnectTimeout,
+                    cfg.socket_protect);
                 if (dr.timed_out) {
                     throw std::runtime_error("server offline, proxy timed out");
                 }
@@ -741,7 +727,9 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                                      " port=" + std::to_string(cfg.port));
                 auto connect_start = std::chrono::steady_clock::now();
                 try {
-                    auto cr = connect_with_timeout(stream.next_layer(), endpoints, io, kConnectTimeout);
+                    auto cr = connect_with_timeout(
+                        stream.next_layer(), endpoints, io, kConnectTimeout,
+                        cfg.socket_protect);
                     if (cr.timed_out) {
                         throw std::runtime_error("server offline, could not reach endpoint (connect timeout)");
                     }
@@ -1222,22 +1210,41 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                     ca_pub = std::move(proof.ca_pub);
                 }
                 verified_proof_sources = std::move(proof.verified_proof_sources);
+                if (!proof.operator_ca_subject.empty()) {
+                    util::log_info("operator CA subject: " + proof.operator_ca_subject);
+                }
+                if (!proof.operator_ca_fingerprint_sha256.empty()) {
+                    util::log_info("operator CA SHA-256: " + proof.operator_ca_fingerprint_sha256);
+                }
+                if (!proof.delegated_subject.empty()) {
+                    util::log_info("delegated server subject: " + proof.delegated_subject);
+                    util::log_info("delegated server issuer: " + proof.delegated_issuer);
+                    util::log_info("delegated server serial: " + proof.delegated_serial);
+                    util::log_info("delegated server SHA-256: " +
+                                   proof.delegated_fingerprint_sha256);
+                }
                 verity_ok = fixcraft_ok || ca_ok || sub_ok;
                 if (!verified_once) {
-                    print_green("Verified");
+                    print_green("Operator identity verified by trusted authority");
                     verified_once = true;
                 } else {
-                    print_green("Server Verified");
+                    print_green("Operator identity re-verified");
                 }
             } else {
                 if (cfg.require_anonym) {
                     print_red("CRITICAL ERROR");
-                    print_red("SERVER IS NOT IN ANONYM MODE");
+                    print_red("SERVER DID NOT PROVIDE REQUIRED OPERATOR IDENTITY PROOF");
                     return 1;
                 }
-                if (!args.accept_monitoring && !args.bench) {
+                if (!cfg.accept_monitoring && !args.bench) {
                     print_red("CRITICAL WARNING");
                     print_red("This server operator can observe your traffic metadata.");
+                    if (args.non_interactive) {
+                        print_red(
+                            "Non-interactive clients must set accept_monitoring=true "
+                            "or require a server authorized by the selected operator CA.");
+                        return 1;
+                    }
                     print_red("Type \"I understand the privacy risk\" to continue.");
                     std::string line;
                     std::getline(std::cin, line);

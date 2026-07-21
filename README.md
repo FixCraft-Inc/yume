@@ -33,7 +33,7 @@ YUME tries to do the opposite: a transport with browser-oriented TLS presets, ke
 | Hybrid post-quantum inner channel | ML-KEM-1024 + X25519 + AES-GCM | no | no | no | no |
 | Directional epoch ratchet   | ≤256 KiB / 512 frames / 500 ms active | no | no | no | no |
 | HTTPS-shaped carrier | persistent TLS + H2/WebSocket; known TLS residual | UDP signature | TLS-on-OpenVPN-port signature | obfs4 bridge | random-prefix |
-| Anonym / no-log mode        | built in        | n/a            | per-provider             | yes                | n/a             |
+| Privacy-minimizing policy + operator identity proof | built in | n/a | per-provider | relay policy differs | n/a |
 | Free public endpoints       | planned (FixCraft) | none        | none                     | yes                | none            |
 | First 2.0 target            | Linux x86-64 CLI | broad          | broad                    | broad              | broad           |
 | Self-hostable, fully open   | yes (AGPL-v3+)  | yes            | yes                      | bridge only        | yes             |
@@ -100,6 +100,11 @@ Cluster entry-point short form (translates to `--server` + `--port`):
     --socks 1080
 ```
 
+Client disguise profiles are registry-backed across the core, CLI, and GUI.
+Chrome is the only complete 2.0 transport fixture today; Firefox or another
+profile belongs in the registry only after its TLS and HTTP/2 capture passes
+the same conformance gates, not after a User-Agent-only change.
+
 For a privileged port 443 on Linux, run `yumed` with `sudo` or grant `cap_net_bind_service`. Cloudflare HTTP-mode proxies will terminate TLS and break YUME. Use Spectrum or another TCP passthrough if you front the daemon with Cloudflare.
 
 ## Optional desktop GUI (`yume-gui`)
@@ -129,7 +134,7 @@ sudo apt install libgl-dev libglfw3-dev libxkbcommon-dev \
 ### What's in it
 
 - **Client** page for the main connect/disconnect workflow and saved server profile
-- **Security** page for trusted anonym CAs and imported client auth keys, with a built-in default CA
+- **Security** page for trusted operator CAs and imported client auth keys; the built-in FixCraft CA is optional and removable
 - **Overview** with larger crisp desktop typography, connection status, local server status, byte counters, and a 60-second traffic graph (ImPlot)
 - **Server** page that hosts a local server with the same controls as `yumed`
 - **Tools** area for key generation, authorized-key management, logs, appearance, relay directory, and chat
@@ -296,17 +301,21 @@ HiddenServicePort 443 127.0.0.1:443
 ```
 After Tor starts, `cat /var/lib/tor/yume/hostname` gives you the `.onion` to point clients at. `yumed` doesn't know it's reachable through Tor — it only sees `127.0.0.1` connections.
 
-The proxy applies to the outer transport (TCP → SOCKS5 → TLS → Yume). Inner PQ crypto, anonym proof, HTTP/2 carrier obfuscation, and TLS stealth still apply on top — Tor adds an extra circuit hop, not a replacement for any of those layers.
+The proxy applies to the outer transport (TCP → SOCKS5 → TLS → Yume). Inner PQ crypto, operator identity proof, HTTP/2 carrier obfuscation, and TLS stealth still apply on top — Tor adds an extra circuit hop, not a replacement for any of those layers.
 
-## Anonym mode
+## Operator identity and privacy policy
 
-`--anonym` strips identifying logs (no client hostname, no IP, no authentication line). `--anonym-proof-mode {auto|local|fixcraft}` selects how the server proves no-log compliance to the client:
+The historical `--anonym` flag asks `yumed` to minimize identifying logs (no client hostname, no IP, no authentication line) and publish an operator identity proof. The proof establishes that the endpoint is authorized by a CA selected by the client; it cannot prove that the host does not inspect, retain, or correlate traffic. New CLI aliases use `--operator-identity`, `--operator-ca-cert`, and `--operator-delegated-cert`; legacy config/wire names remain compatible.
+
+`--operator-proof-mode {auto|local|fixcraft}` selects the proof source:
 
 - `auto`: use every available proof source; only fail to start if none are usable
-- `local`: CA / Sub-CA-signed proof only, no remote API
+- `local`: operator-CA or delegated-server-certificate proof only, no remote API
 - `fixcraft`: require a remote FixCraft Verity API call; local proofs may also be attached
 
-Local proof setup is in [scripts/gen_anonym_sub.sh](scripts/gen_anonym_sub.sh). Clients trust a server's anonym claim by holding the matching CA cert (`anonym_ca_cert`) and setting `require_anonym: true`.
+Local proof setup is in [scripts/gen_anonym_sub.sh](scripts/gen_anonym_sub.sh). The CA certificate names the operator in its subject. The delegated leaf certificate (CA:FALSE) names the server/alias in its subject and carries the operator CA as issuer. Admins should publish both SHA-256 fingerprints and the delegated certificate serial; names are descriptive, while the signed chain and fingerprints are authoritative.
+
+Clients may remove or leave the built-in operator CA unselected. With no custom operator CA, normal system TLS trust and optional leaf pinning still protect the server connection, but operator authorization cannot be required; the profile must explicitly allow a monitored server. Selecting an operator CA never proves a no-logging policy.
 
 ## Inner crypto
 

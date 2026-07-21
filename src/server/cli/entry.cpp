@@ -303,9 +303,9 @@ int Server::run(int argc, char** argv) {
     if (cfg.anonym) {
         if (!anonym_local_sign && (!cfg.anonym_ca_key.empty() || !cfg.anonym_sub_key.empty())) {
             if (anonym_local_sign_env && *anonym_local_sign_env) {
-                yume::util::log_warn("anonym local signing is disabled by YUME_ANONYM_LOCAL_SIGN=0");
+                yume::util::log_warn("local operator proof signing is disabled by YUME_ANONYM_LOCAL_SIGN=0");
             } else {
-                yume::util::log_warn("anonym local signing is disabled by default on this build/platform (set YUME_ANONYM_LOCAL_SIGN=1 to force)");
+                yume::util::log_warn("local operator proof signing is disabled by default on this build/platform (set YUME_ANONYM_LOCAL_SIGN=1 to force)");
             }
         }
         try {
@@ -344,11 +344,11 @@ int Server::run(int argc, char** argv) {
             anonym_last_ts.store(parse_proof_ts(proof.ts, static_cast<long long>(std::time(nullptr))),
                                  std::memory_order_relaxed);
         } catch (const std::exception& ex) {
-            std::cerr << "\033[1;31mANONYM PROOF FAILED: " << ex.what() << "\033[0m\n";
+            std::cerr << "\033[1;31mOPERATOR IDENTITY PROOF FAILED: " << ex.what() << "\033[0m\n";
             return 1;
         }
         yume::util::set_logging_enabled(false);
-        std::cerr << "\033[1;33mANONYM MODE ACTIVE: client metadata logging disabled\033[0m\n";
+        std::cerr << "\033[1;33mOPERATOR IDENTITY MODE ACTIVE: this build disables client metadata logging, but clients must still trust the operator\033[0m\n";
     }
     if (!cfg.anonym) {
         if (cfg.anonym_certfp.empty() && !cfg.tls_cert.empty()) {
@@ -482,7 +482,7 @@ int Server::run(int argc, char** argv) {
                     anonym_last_ts.store(parse_proof_ts(proof.ts, static_cast<long long>(std::time(nullptr))),
                                          std::memory_order_relaxed);
                 } catch (const std::exception& ex) {
-                    std::cerr << "\033[1;33mANONYM REFRESH FAILED: " << ex.what() << "\033[0m\n";
+                    std::cerr << "\033[1;33mOPERATOR IDENTITY PROOF REFRESH FAILED: " << ex.what() << "\033[0m\n";
                     anonym_last_ts.store(0, std::memory_order_relaxed);
                 }
             }

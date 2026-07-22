@@ -39,7 +39,7 @@ disconnect controls.
 .TP
 .B Security
 Inner crypto, TLS profile, obfs secret, and trust material (CA pins,
-anonym CA import).
+operator CA import; the historical config identifier remains compatible).
 .TP
 .B Server
 Listen port, TLS cert paths, auth keys, real HTTP facade, and daemon
@@ -127,7 +127,7 @@ platform-specific config directory under the user home.
 Default GUI server configuration.
 .TP
 .I ~/.yume/secure-materials/
-Imported anonym CAs and client auth keys managed by the Security page.
+Imported operator CAs and client auth keys managed by the Security page.
 .TP
 .I ~/.yume/keys/
 Default key generation directory.

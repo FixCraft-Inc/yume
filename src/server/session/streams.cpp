@@ -21,34 +21,11 @@
 #include "server/session/session.hpp"
 #include "server/runtime/manager.hpp"
 #include "server/session/internal.hpp"
+#include "server/session/write_policy.hpp"
 
 namespace yume::server {
 
 using namespace detail;
-
-namespace {
-
-int frame_write_priority(uint8_t frame_type, std::size_t payload_size) {
-    switch (frame_type) {
-        case protocol::PING:
-        case protocol::PONG:
-        case protocol::CONTROL:
-            return 0;
-        case protocol::OPEN:
-        case protocol::CLOSE:
-        case protocol::RLISTEN:
-        case protocol::ROPEN:
-        case protocol::SOPEN:
-        case protocol::EXEC:
-            return 1;
-        case protocol::DATA:
-            return payload_size <= 4096 ? 2 : 3;
-        default:
-            return 4;
-    }
-}
-
-}  // namespace
 
 void Session::start_remote_read(uint8_t stream_id) {
     std::shared_ptr<RemoteStream> remote;

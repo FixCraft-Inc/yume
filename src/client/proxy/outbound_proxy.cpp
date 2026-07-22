@@ -5,6 +5,7 @@
  */
 
 #include "client/proxy/outbound_proxy.hpp"
+#include "client/cli/connect/io.hpp"
 
 #include <array>
 #include <cstring>
@@ -115,7 +116,8 @@ DialResult socks5_dial(boost::asio::ip::tcp::socket& sock,
                        Config const& cfg,
                        std::string const& target_host,
                        int target_port,
-                       std::chrono::milliseconds timeout) {
+                       std::chrono::milliseconds timeout,
+                       const SocketProtectCallback& protect_socket) {
     DialResult res;
 
     if (target_host.empty() || target_host.size() > 255) {
@@ -140,30 +142,16 @@ DialResult socks5_dial(boost::asio::ip::tcp::socket& sock,
         }
     }
 
-    {
-        boost::system::error_code ec;
-        bool done = false;
-        bool timed = false;
-        boost::asio::steady_timer t(io);
-        t.expires_after(timeout);
-        t.async_wait([&](boost::system::error_code te) {
-            if (!te && !done) {
-                timed = true;
-                boost::system::error_code ig; sock.cancel(ig); sock.close(ig);
-            }
-        });
-        boost::asio::async_connect(
-            sock, endpoints,
-            [&](boost::system::error_code ce,
-                boost::asio::ip::tcp::endpoint const&) {
-                ec = ce;
-                done = true;
-                t.cancel();
-            });
-        io.restart();
-        io.run();
-        if (timed) { res.timed_out = true; res.error = "connect to proxy timed out"; return res; }
-        if (ec)    { res.error = "connect to proxy failed: " + ec.message(); return res; }
+    auto connect_result = connect_with_timeout(
+        sock, endpoints, io, timeout, protect_socket);
+    if (connect_result.timed_out) {
+        res.timed_out = true;
+        res.error = "connect to proxy timed out";
+        return res;
+    }
+    if (connect_result.ec) {
+        res.error = "connect to proxy failed: " + connect_result.ec.message();
+        return res;
     }
 
     // ---- Method negotiation (RFC 1928 §3) ---------------------------------

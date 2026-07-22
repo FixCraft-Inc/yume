@@ -1,0 +1,30 @@
+{
+  "name": "yume",
+  "version-string": "2.0-dev1",
+  "builtin-baseline": "c2aeddd80357b17592e59ad965d2adf65a19b22f",
+  "dependencies": [
+    "argon2",
+    {
+      "name": "boost-asio",
+      "default-features": false,
+      "features": [
+        "ssl"
+      ]
+    },
+    {
+      "name": "boost-date-time",
+      "platform": "!android"
+    },
+    {
+      "name": "boost-beast",
+      "platform": "!android"
+    },
+    "boost-system",
+    "liblzma",
+    "liboqs",
+    "nghttp2",
+    "openssl",
+    "zlib",
+    "zstd"
+  ]
+}

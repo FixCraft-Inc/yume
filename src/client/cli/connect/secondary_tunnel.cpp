@@ -69,7 +69,8 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
     if (proxy_cfg.type == outbound_proxy::Type::Socks5) {
         auto dr = outbound_proxy::socks5_dial(
             stream.next_layer(), io, proxy_cfg,
-            cfg.server, cfg.port, kConnectTimeout);
+            cfg.server, cfg.port, kConnectTimeout,
+            cfg.socket_protect);
         if (dr.timed_out) {
             throw std::runtime_error("proxy timed out");
         }
@@ -80,7 +81,9 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
     } else {
         boost::asio::ip::tcp::resolver resolver(io);
         auto endpoints = resolver.resolve(boost::asio::ip::tcp::v4(), cfg.server, std::to_string(cfg.port));
-        auto cr = connect_with_timeout(stream.next_layer(), endpoints, io, kConnectTimeout);
+        auto cr = connect_with_timeout(
+            stream.next_layer(), endpoints, io, kConnectTimeout,
+            cfg.socket_protect);
         if (cr.timed_out) {
             throw std::runtime_error("connect timeout");
         }
@@ -163,7 +166,7 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
         throw std::runtime_error("transport core version mismatch");
     }
     if (cfg.require_anonym && server_info.mode != "anonym") {
-        throw std::runtime_error("server is not in anonym mode");
+        throw std::runtime_error("server did not provide the required operator identity proof");
     }
     auto tunnel = std::make_shared<Tunnel>(
         std::move(stream), std::move(h2_carrier),

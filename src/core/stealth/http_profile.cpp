@@ -243,6 +243,8 @@ const std::unordered_map<std::string, ClientProfile>& client_registry() {
             "chrome",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            tls_fingerprint::BrowserProfile::CHROME_131,
+            true,
         };
 
         m["firefox"] = ClientProfile{
@@ -397,6 +399,38 @@ std::vector<std::string> client_names() {
     for (const auto& [k, _] : client_registry()) out.push_back(k);
     std::sort(out.begin(), out.end());
     return out;
+}
+
+std::vector<std::string> transport_client_names() {
+    std::vector<std::string> out;
+    for (const auto& [name, profile] : client_registry()) {
+        if (profile.complete_transport_fixture) out.push_back(name);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+std::optional<ClientProfile> transport_client(std::string_view name) {
+    auto profile = client(name);
+    if (!profile || !profile->complete_transport_fixture ||
+        profile->tls_profile == tls_fingerprint::BrowserProfile::UNKNOWN) {
+        return std::nullopt;
+    }
+    return profile;
+}
+
+std::optional<ClientProfile> transport_client_for_tls_profile(
+    tls_fingerprint::BrowserProfile tls_profile) {
+    for (const auto& [_, profile] : client_registry()) {
+        if (profile.complete_transport_fixture && profile.tls_profile == tls_profile) {
+            return profile;
+        }
+    }
+    return std::nullopt;
+}
+
+bool transport_client_supported(std::string_view name) {
+    return transport_client(name).has_value();
 }
 
 namespace {

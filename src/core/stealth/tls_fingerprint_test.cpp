@@ -5,6 +5,7 @@
  */
 
 #include <cassert>
+#include <algorithm>
 #include <iostream>
 #include <tuple>
 
@@ -68,6 +69,14 @@ void test_browser_match_thresholds() {
     assert(!yume::tls_fingerprint::evaluate_fingerprint(observed).looks_like_browser);
 }
 
+void test_profiles_accept_ed25519_server_certificates() {
+    for (const auto& profile : yume::tls_fingerprint::get_known_browser_fingerprints()) {
+        assert(std::find(profile.signature_algorithms.begin(),
+                         profile.signature_algorithms.end(), 0x0807) !=
+               profile.signature_algorithms.end());
+    }
+}
+
 void test_connection_profile_rotation() {
     using yume::tls_fingerprint::BrowserProfile;
     using yume::tls_stealth::profile_for_connection;
@@ -94,6 +103,7 @@ int main() {
     test_official_ja4_vector();
     test_empty_components_and_count_clamp();
     test_browser_match_thresholds();
+    test_profiles_accept_ed25519_server_certificates();
     test_connection_profile_rotation();
     std::cout << "tls_fingerprint_test ok\n";
     return 0;

@@ -18,6 +18,7 @@
 #include <boost/asio/io_context.hpp>
 
 #include "core/security/secret_file.hpp"
+#include "client/transport/socket_protection.hpp"
 
 namespace yume::client {
 
@@ -106,7 +107,7 @@ struct ClientConfig {
     
     // TLS Stealth Mode settings
     bool tls_stealth_enabled{true};  // ON by default
-    std::string tls_stealth_profile{"chrome"};  // chrome, firefox, safari
+    std::string tls_stealth_profile{"chrome"};  // complete fixture registry key
     bool tls_stealth_rotate{false};
     std::uint32_t tls_stealth_rotation_interval{100};
     bool tls_fingerprint_log{false};
@@ -123,6 +124,11 @@ struct ClientConfig {
     // (Tor) without leaking DNS. Leave outbound_proxy_url empty to go
     // direct. Format: "socks5://[user[:pass]@]host:port".
     std::string outbound_proxy_url;
+
+    // In-process-only socket hook. It is deliberately absent from config
+    // serialization and command-line parsing because it carries process-local
+    // state owned by an embedder such as Android's VpnService.
+    SocketProtectCallback socket_protect;
 };
 
 inline const std::string& effective_tls_server_name(const ClientConfig& cfg) noexcept {

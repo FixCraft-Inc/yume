@@ -38,11 +38,11 @@ public:
         const float sc = ui::scale();
         cfg_ = ctx.client ? ctx.client->config() : client::ClientConfig{};
 
-        ui::page_header("Security", "Trusted anonym CAs and client auth keys.");
+        ui::page_header("Security", "Trusted operator CAs and client auth keys.");
 
         if (ui::begin_auto_card("##security_summary")) {
             ui::section_label("Selected client material");
-            ui::muted_text("Anonym CA");
+            ui::muted_text("Operator CA");
             if (ui::fonts().strong) ImGui::PushFont(ui::fonts().strong);
             ImGui::TextWrapped("%s", selected_ca_name().c_str());
             if (ui::fonts().strong) ImGui::PopFont();
@@ -50,14 +50,14 @@ public:
             if (ui::fonts().strong) ImGui::PushFont(ui::fonts().strong);
             ImGui::TextWrapped("%s", selected_key_name().c_str());
             if (ui::fonts().strong) ImGui::PopFont();
-            ui::muted_text("Built-in CA is ready by default. Imported auth keys are copied into your local Yume store.");
+            ui::muted_text("The built-in CA is optional and removable. Imported auth keys are copied into your local Yume store.");
         }
         ui::end_card();
 
         ImGui::Dummy(ImVec2(0, 8 * sc));
         if (ui::begin_auto_card("##security_materials")) {
             static char const* const kTabs[] = {
-                "Anonym CAs", "Auth keys", "TLS CAs", "Anonym pubkeys"
+                "Operator CAs", "Auth keys", "TLS CAs", "Legacy proof keys"
             };
             active_tab_ = ui::segmented_control(
                 "##security_tabs", kTabs, 4, active_tab_);
@@ -92,13 +92,11 @@ private:
     }
 
     std::string selected_ca_name() const {
-        std::string id = cfg_.anonym_ca_material_id.empty()
-            ? sm::kDefaultAnonymCaId
-            : cfg_.anonym_ca_material_id;
+        std::string const& id = cfg_.anonym_ca_material_id;
         for (auto const& item : cas_) {
             if (item.id == id) return item.display_name;
         }
-        return cfg_.anonym_ca_cert.empty() ? "Built-in CA" : cfg_.anonym_ca_cert;
+        return cfg_.anonym_ca_cert.empty() ? "Not selected" : cfg_.anonym_ca_cert;
     }
 
     std::string selected_key_name() const {
@@ -252,18 +250,61 @@ private:
                     select_material(ctx, item);
                 }
             }
-            if (!item.is_default) {
-                if (!selected) ImGui::Dummy(ImVec2(0, 4 * sc));
-                if (ui::danger_button("Delete", ImVec2(-1, 36 * sc))) {
-                    std::string err;
-                    if (sm::remove(item.id, &err)) {
+            if (!selected) ImGui::Dummy(ImVec2(0, 4 * sc));
+            if (ui::danger_button("Delete", ImVec2(-1, 36 * sc))) {
+                std::string err;
+                if (sm::remove(item.id, &err)) {
+                    auto cfg = ctx.client ? ctx.client->config() : cfg_;
+                    bool selection_changed = false;
+                    switch (item.type) {
+                        case sm::MaterialType::AnonymCa:
+                            if (cfg.anonym_ca_material_id == item.id) {
+                                cfg.anonym_ca_material_id.clear();
+                                cfg.anonym_ca_cert.clear();
+                                selection_changed = true;
+                            }
+                            break;
+                        case sm::MaterialType::AuthKey:
+                            if (cfg.auth_key_material_id == item.id) {
+                                cfg.auth_key_material_id.clear();
+                                cfg.identity.clear();
+                                selection_changed = true;
+                            }
+                            break;
+                        case sm::MaterialType::AnonymPubkey:
+                            if (cfg.anonym_pubkey_material_id == item.id) {
+                                cfg.anonym_pubkey_material_id.clear();
+                                cfg.anonym_pubkey.clear();
+                                selection_changed = true;
+                            }
+                            break;
+                        case sm::MaterialType::TlsCa:
+                            if (cfg.tls_ca_material_id == item.id) {
+                                cfg.tls_ca_material_id.clear();
+                                cfg.tls_ca_cert.clear();
+                                selection_changed = true;
+                            }
+                            break;
+                    }
+                    if (selection_changed) {
+                        if (ctx.client) ctx.client->set_config(cfg);
+                        if (!facade::config_io::save_client(
+                                cfg, facade::config_io::default_client_config_path(), &err)) {
+                            last_message_ = "Deleted, but clearing its saved selection failed: " + err;
+                            last_error_ = true;
+                        } else {
+                            last_message_ = "Deleted and cleared from the active client profile.";
+                            last_error_ = false;
+                        }
+                    } else {
                         last_message_ = "Deleted.";
                         last_error_ = false;
-                        refresh(ctx);
-                    } else {
-                        last_message_ = err.empty() ? "Delete failed." : err;
-                        last_error_ = true;
                     }
+                    cfg_ = cfg;
+                    refresh(ctx);
+                } else {
+                    last_message_ = err.empty() ? "Delete failed." : err;
+                    last_error_ = true;
                 }
             }
             ImGui::EndTable();
@@ -287,9 +328,7 @@ private:
     bool is_selected(sm::MaterialSummary const& item) const {
         switch (item.type) {
             case sm::MaterialType::AnonymCa: {
-                auto id = cfg_.anonym_ca_material_id.empty()
-                    ? sm::kDefaultAnonymCaId : cfg_.anonym_ca_material_id;
-                return id == item.id;
+                return cfg_.anonym_ca_material_id == item.id;
             }
             case sm::MaterialType::AuthKey:
                 return cfg_.auth_key_material_id == item.id;
@@ -311,8 +350,8 @@ private:
         char const* import_title = "";
         switch (type) {
             case sm::MaterialType::AnonymCa:
-                section = "Trusted anonym certificates";
-                hint = "Select the CA used to verify anonym proof. The embedded CA cannot be removed.";
+                section = "Trusted operator certificates";
+                hint = "Select the CA used to verify which operator authorized the server. This does not prove the operator cannot monitor traffic.";
                 empty = "No trusted CAs are available.";
                 import_title = "Import CA";
                 break;
@@ -329,10 +368,10 @@ private:
                 import_title = "Import TLS CA";
                 break;
             case sm::MaterialType::AnonymPubkey:
-                section = "Anonym signing public keys";
-                hint = "Override the embedded anonym signing public key. Only needed for self-hosted anonym authorities.";
-                empty = "No anonym public keys imported.";
-                import_title = "Import anonym public key";
+                section = "Legacy external proof keys";
+                hint = "Compatibility keys for older external proof authorities. Prefer an operator CA and delegated server certificate.";
+                empty = "No legacy proof keys imported.";
+                import_title = "Import legacy proof key";
                 break;
         }
         ui::section_label(section);

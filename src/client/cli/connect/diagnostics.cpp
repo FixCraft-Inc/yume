@@ -65,11 +65,11 @@ std::string format_verified_sources(const std::vector<std::string>& sources) {
     labels.reserve(sources.size());
     for (const auto& source : sources) {
         if (source == yume::policy::kAnonymProofSourceSubCa) {
-            labels.emplace_back("Sub-CA");
+            labels.emplace_back("delegated server certificate");
         } else if (source == yume::policy::kAnonymProofSourceCa) {
-            labels.emplace_back("CA");
+            labels.emplace_back("operator CA");
         } else if (source == yume::policy::kAnonymProofSourceFixcraft) {
-            labels.emplace_back("FixCraft");
+            labels.emplace_back("FixCraft authority");
         }
     }
     if (labels.empty()) {

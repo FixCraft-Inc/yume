@@ -124,7 +124,28 @@ counted separately and receives its own fair-share slot. See
 packet-native TUN uplink must additionally be capped on its TUN/physical
 interface with Linux `tc`; it does not traverse every socket-shaper hook.
 
+For an optional, reversible TUN/NAT/UFW setup, review and apply the separate
+host helper instead of granting firewall privileges to the daemon:
+
+```bash
+yume-packet-quick up --listen build-host.example:8443 \
+  --allow-from 192.168.1.0/24 --dry-run
+sudo yume-packet-quick up --listen build-host.example:8443 \
+  --allow-from 192.168.1.0/24
+sudo yume-packet-quick down
+```
+
+The helper refuses existing TUN/nft objects, does not flush firewall state or
+change default policies, and stores the exact resources it owns under `/run`.
+`yumed` itself never invokes it.
+
 ## Key and permission operations
+
+For new deployments, `yume-setup init` creates the protected admission/inner
+secret files, TLS and operator-identity chain, safe key stores, configs, and a
+first device profile in one owner-only directory. `yume-setup issue-key`
+handles individual, bounded bulk, and separate admin/operator credentials
+without manual PEM concatenation or JSON editing. See `docs/QUICKSTART.md`.
 
 List keys and aliases:
 
@@ -159,7 +180,8 @@ Public endpoints should publish:
 - TLS certificate identity
 - YUME public key or expected key fingerprint
 - allowed modes and fair-use limits
-- whether anonym proof is enabled
+- operator CA and delegated-server-certificate SHA-256 fingerprints/serial
+- whether the operator advertises privacy-minimizing mode (a policy claim, not remotely provable)
 - whether the endpoint accepts only SOCKS/forwarding or also admin/file/chat channels
 
 Do not advertise a public endpoint until users can pin enough metadata to detect replacement or downgrade.

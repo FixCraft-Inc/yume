@@ -23,6 +23,7 @@
 #include <boost/asio/ssl.hpp>
 
 #include "core/protocol/protocol.hpp"
+#include "client/transport/socket_protection.hpp"
 
 namespace yume::client {
 
@@ -133,30 +134,73 @@ IoOpResult read_exact_with_timeout_prefetched(AsyncStream& stream,
 inline IoOpResult connect_with_timeout(boost::asio::ip::tcp::socket& sock,
                                        const boost::asio::ip::tcp::resolver::results_type& endpoints,
                                        boost::asio::io_context& io,
-                                       std::chrono::milliseconds timeout) {
+                                       std::chrono::milliseconds timeout,
+                                       const SocketProtectCallback& protect_socket = {}) {
     IoOpResult res{};
-    bool done = false;
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    if (endpoints.empty()) {
+        res.ec = boost::asio::error::host_not_found;
+        return res;
+    }
 
-    boost::asio::steady_timer timer(io);
-    timer.expires_after(timeout);
-    timer.async_wait([&](const boost::system::error_code& ec) {
-        if (!ec && !done) {
-            res.timed_out = true;
-            boost::system::error_code ignored;
-            sock.cancel(ignored);
-            sock.close(ignored);
+    for (const auto& entry : endpoints) {
+        boost::system::error_code ignored;
+        sock.close(ignored);
+
+        boost::system::error_code open_ec;
+        sock.open(entry.endpoint().protocol(), open_ec);
+        if (open_ec) {
+            res.ec = open_ec;
+            continue;
         }
-    });
 
-    boost::asio::async_connect(sock, endpoints,
-                               [&](const boost::system::error_code& ec, const boost::asio::ip::tcp::endpoint&) {
-                                   res.ec = ec;
-                                   done = true;
-                                   (void)timer.cancel();
-                               });
+        if (protect_socket) {
+            bool protected_ok = false;
+            try {
+                protected_ok = protect_socket(
+                    static_cast<std::intptr_t>(sock.native_handle()));
+            } catch (...) {
+                protected_ok = false;
+            }
+            if (!protected_ok) {
+                sock.close(ignored);
+                res.ec = boost::system::errc::make_error_code(
+                    boost::system::errc::permission_denied);
+                return res;
+            }
+        }
 
-    io.restart();
-    io.run();
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            sock.close(ignored);
+            res.timed_out = true;
+            res.ec = boost::asio::error::timed_out;
+            return res;
+        }
+
+        bool done = false;
+        boost::asio::steady_timer timer(io);
+        timer.expires_at(deadline);
+        timer.async_wait([&](const boost::system::error_code& ec) {
+            if (!ec && !done) {
+                res.timed_out = true;
+                boost::system::error_code cancel_ec;
+                sock.cancel(cancel_ec);
+                sock.close(cancel_ec);
+            }
+        });
+        sock.async_connect(entry.endpoint(), [&](const boost::system::error_code& ec) {
+            res.ec = ec;
+            done = true;
+            (void)timer.cancel();
+        });
+
+        io.restart();
+        io.run();
+        if (!res.ec || res.timed_out) {
+            return res;
+        }
+    }
     return res;
 }
 

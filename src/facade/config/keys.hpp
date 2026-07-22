@@ -139,5 +139,6 @@ inline constexpr char tls_stealth_enabled[] = "tls_stealth_enabled";
 inline constexpr char tls_stealth_profile[] = "tls_stealth_profile";
 inline constexpr char tls_stealth_rotate[] = "tls_stealth_rotate";
 inline constexpr char tls_stealth_rotation_interval[] = "tls_stealth_rotation_interval";
+inline constexpr char tunnels[] = "tunnels";
 
 }  // namespace yume::facade::config_io::keys

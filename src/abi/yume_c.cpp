@@ -13,7 +13,9 @@
 #include "core/version.hpp"
 #include "facade/config/config_io.hpp"
 #include "facade/session/inproc_client.hpp"
+#if !defined(YUME_ABI_CLIENT_ONLY) || !YUME_ABI_CLIENT_ONLY
 #include "server/runtime/controller.hpp"
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -206,6 +208,8 @@ struct yume_client {
     HandleBase base;
     std::mutex mu;
     yume::facade::InProcClient runtime;
+    yume_socket_protect_fn socket_protect{nullptr};
+    void* socket_protect_user_data{nullptr};
 };
 
 struct yume_server {
@@ -214,7 +218,9 @@ struct yume_server {
 
     HandleBase base;
     std::mutex mu;
+#if !defined(YUME_ABI_CLIENT_ONLY) || !YUME_ABI_CLIENT_ONLY
     yume::server::RuntimeController runtime;
+#endif
 };
 
 struct yume_stream {
@@ -371,6 +377,28 @@ void yume_client_destroy(yume_client* client) {
     delete client;
 }
 
+int yume_client_set_socket_protector(yume_client* client,
+                                     yume_socket_protect_fn callback,
+                                     void* user_data) {
+    if (!client) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(client->mu);
+        if (client->runtime.status().running) {
+            return set_error(&client->base, YUME_STATUS_ALREADY_RUNNING,
+                             "socket protector must be configured before start");
+        }
+        client->socket_protect = callback;
+        client->socket_protect_user_data = user_data;
+        return clear_error(&client->base);
+    } catch (std::exception const& ex) {
+        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
+    } catch (...) {
+        return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
+    }
+}
+
 int yume_client_start_json(yume_client* client,
                            const char* config_json,
                            const char* base_dir,
@@ -395,6 +423,13 @@ int yume_client_start_json(yume_client* client,
         }
 
         std::lock_guard<std::mutex> lock(client->mu);
+        if (client->socket_protect) {
+            auto callback = client->socket_protect;
+            auto* user_data = client->socket_protect_user_data;
+            cfg->socket_protect = [callback, user_data](std::intptr_t handle) {
+                return callback(handle, user_data) != 0;
+            };
+        }
         std::string error;
         if (!client->runtime.start(std::move(*cfg), &error, start_timeout(timeout_ms))) {
             return set_error(&client->base, status_from_error(error), error);
@@ -429,6 +464,13 @@ int yume_client_start_file(yume_client* client,
                              validation_error(validation));
         }
         std::lock_guard<std::mutex> lock(client->mu);
+        if (client->socket_protect) {
+            auto callback = client->socket_protect;
+            auto* user_data = client->socket_protect_user_data;
+            cfg->socket_protect = [callback, user_data](std::intptr_t handle) {
+                return callback(handle, user_data) != 0;
+            };
+        }
         if (!client->runtime.start(std::move(*cfg), &error, start_timeout(timeout_ms))) {
             return set_error(&client->base, status_from_error(error), error);
         }
@@ -872,6 +914,8 @@ void yume_server_destroy(yume_server* server) {
     delete server;
 }
 
+#if !defined(YUME_ABI_CLIENT_ONLY) || !YUME_ABI_CLIENT_ONLY
+
 int yume_server_start_json(yume_server* server,
                            const char* config_json,
                            const char* base_dir) {
@@ -1076,6 +1120,63 @@ int yume_server_accept_stream(yume_server* server,
         return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
     }
 }
+
+#else
+
+int yume_server_start_json(yume_server* server,
+                           const char* config_json,
+                           const char*) {
+    if (!server || !config_json) return YUME_STATUS_INVALID_ARGUMENT;
+    return set_error(&server->base, YUME_STATUS_PERMISSION_DENIED,
+                     "server runtime is not included in this client-only build");
+}
+
+int yume_server_start_file(yume_server* server, const char* config_path) {
+    if (!server || !config_path || !*config_path) return YUME_STATUS_INVALID_ARGUMENT;
+    return set_error(&server->base, YUME_STATUS_PERMISSION_DENIED,
+                     "server runtime is not included in this client-only build");
+}
+
+int yume_server_stop(yume_server* server) {
+    if (!server) return YUME_STATUS_INVALID_ARGUMENT;
+    return clear_error(&server->base);
+}
+
+int yume_server_reload_auth(yume_server* server) {
+    if (!server) return YUME_STATUS_INVALID_ARGUMENT;
+    return set_error(&server->base, YUME_STATUS_NOT_RUNNING,
+                     "server runtime is not included in this client-only build");
+}
+
+int yume_server_status_json(yume_server* server, char*, size_t, size_t*) {
+    if (!server) return YUME_STATUS_INVALID_ARGUMENT;
+    return set_error(&server->base, YUME_STATUS_NOT_RUNNING,
+                     "server runtime is not included in this client-only build");
+}
+
+int yume_server_sessions_json(yume_server* server, char*, size_t, size_t*) {
+    if (!server) return YUME_STATUS_INVALID_ARGUMENT;
+    return set_error(&server->base, YUME_STATUS_NOT_RUNNING,
+                     "server runtime is not included in this client-only build");
+}
+
+int yume_server_register_service(yume_server* server, const char* service) {
+    if (!server || !service) return YUME_STATUS_INVALID_ARGUMENT;
+    return set_error(&server->base, YUME_STATUS_NOT_RUNNING,
+                     "server runtime is not included in this client-only build");
+}
+
+int yume_server_accept_stream(yume_server* server,
+                              const char* service,
+                              uint32_t,
+                              yume_stream** out_stream) {
+    if (!server || !service || !out_stream) return YUME_STATUS_INVALID_ARGUMENT;
+    *out_stream = nullptr;
+    return set_error(&server->base, YUME_STATUS_NOT_RUNNING,
+                     "server runtime is not included in this client-only build");
+}
+
+#endif
 
 int yume_stream_peer_json(yume_stream* stream,
                           char* out,

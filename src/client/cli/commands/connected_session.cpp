@@ -407,14 +407,7 @@ std::vector<std::shared_ptr<Tunnel>> open_secondary_socks_tunnels(
                     cfg.tls_stealth_rotation_interval,
                     *options.completed_tls_connections);
                 if (!options.explicit_http_profile) {
-                    const char* profile_name = "chrome";
-                    if (*profile == tls_fingerprint::BrowserProfile::FIREFOX_126) {
-                        profile_name = "firefox";
-                    } else if (*profile == tls_fingerprint::BrowserProfile::SAFARI_18) {
-                        profile_name = "safari";
-                    }
-                    if (auto http = http_profile::client(profile_name);
-                        http.has_value()) {
+                    if (auto http = http_profile::transport_client_for_tls_profile(*profile)) {
                         carrier_user_agent = http->user_agent;
                     }
                 }
@@ -848,6 +841,14 @@ int run_connected_session(boost::asio::io_context& io,
         std::move(stream), std::move(options.h2_carrier),
         std::move(options.prefetched_carrier_bytes),
         std::move(options.ratchet));
+    struct ActiveRuntimeReset {
+        ConnectedSessionOptions::SetActiveRuntimeCallback* callback;
+        ~ActiveRuntimeReset() {
+            if (callback && *callback) {
+                (*callback)(nullptr, nullptr, nullptr, {});
+            }
+        }
+    } active_runtime_reset{&options.set_active_runtime};
     if (options.set_active_runtime) {
         options.set_active_runtime(&io, tunnel, nullptr, {});
     }

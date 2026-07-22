@@ -6,6 +6,7 @@ set(_expected
     yume_client_destroy
     yume_client_open_stream
     yume_client_open_packet
+    yume_client_set_socket_protector
     yume_client_request_json
     yume_client_start_file
     yume_client_start_json

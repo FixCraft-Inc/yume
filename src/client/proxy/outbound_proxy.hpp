@@ -18,6 +18,8 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 
+#include "client/transport/socket_protection.hpp"
+
 namespace yume::client::outbound_proxy {
 
 enum class Type {
@@ -51,7 +53,8 @@ DialResult socks5_dial(boost::asio::ip::tcp::socket& sock,
                        Config const& cfg,
                        std::string const& target_host,
                        int target_port,
-                       std::chrono::milliseconds timeout);
+                       std::chrono::milliseconds timeout,
+                       const SocketProtectCallback& protect_socket = {});
 
 // "socks5://[user[:pass]@]host:port" — parse helper used by both the
 // CLI flag and the JSON config loader. Returns false (and fills err)

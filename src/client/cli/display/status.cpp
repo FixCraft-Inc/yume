@@ -59,7 +59,7 @@ std::string build_status_block(const ConnectionStatusSummary& summary) {
            color_wrap("Inner", "1;36") + ": " + inner_line + "\n" +
            color_wrap("Epochs", "1;36") + ": " +
                color_wrap("256 KiB / 512 frames / 500 ms active", "1;35") + "\n" +
-           color_wrap("Verity", "1;36") + ": " + verity_line + "\n" +
+           color_wrap("Operator identity", "1;36") + ": " + verity_line + "\n" +
            border + "\n";
 }
 

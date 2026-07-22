@@ -34,6 +34,8 @@
 #include <string_view>
 #include <vector>
 
+#include "core/stealth/tls_fingerprint.hpp"
+
 namespace yume::http_profile {
 
 // Server-side disguise.
@@ -63,6 +65,9 @@ struct ServerProfile {
 struct ClientProfile {
     std::string name;
     std::string user_agent;
+    tls_fingerprint::BrowserProfile tls_profile{
+        tls_fingerprint::BrowserProfile::UNKNOWN};
+    bool complete_transport_fixture{false};
 };
 
 // Lookups. Names are matched case-insensitively for ergonomics on
@@ -73,6 +78,17 @@ std::optional<ClientProfile> client(std::string_view name);
 // For --help text + validation messages.
 std::vector<std::string> server_names();
 std::vector<std::string> client_names();
+
+// Exact client transport fixtures available to the current wire version.
+// This is intentionally narrower than client_names(): an HTTP User-Agent
+// alone is not a complete TLS/H2 browser profile. Add future Firefox/Safari
+// fixtures to this registry only after their TLS and HTTP/2 captures pass the
+// same conformance gates as Chrome.
+std::vector<std::string> transport_client_names();
+std::optional<ClientProfile> transport_client(std::string_view name);
+std::optional<ClientProfile> transport_client_for_tls_profile(
+    tls_fingerprint::BrowserProfile profile);
+bool transport_client_supported(std::string_view name);
 
 // RFC 7231 IMF-fixdate, e.g. "Sun, 06 Nov 1994 08:49:37 GMT". Used for the
 // Date / Last-Modified headers of disguise and static-file responses.

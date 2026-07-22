@@ -63,6 +63,14 @@ typedef struct yume_stream yume_stream;
 typedef struct yume_packet yume_packet;
 
 /*
+ * Called synchronously after an outbound socket is opened and before it is
+ * connected. Return non-zero to allow the connection. Returning zero fails
+ * closed with YUME_STATUS_PERMISSION_DENIED. The callback and user_data must
+ * remain valid until cleared or until yume_client_destroy returns.
+ */
+typedef int (*yume_socket_protect_fn)(intptr_t socket_handle, void* user_data);
+
+/*
  * ABI conventions:
  * - Named services are application-defined byte streams. YUME does not assign
  *   project-specific names, message schemas, or application semantics to them.
@@ -93,6 +101,9 @@ YUME_API int yume_generate_pq_keypair(const char* private_path,
 
 YUME_API yume_client* yume_client_create(void);
 YUME_API void yume_client_destroy(yume_client* client);
+YUME_API int yume_client_set_socket_protector(yume_client* client,
+                                              yume_socket_protect_fn callback,
+                                              void* user_data);
 YUME_API int yume_client_start_json(yume_client* client,
                                     const char* config_json,
                                     const char* base_dir,

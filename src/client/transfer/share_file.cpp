@@ -6,10 +6,12 @@
 
 #include "client/transfer/share_file.hpp"
 
+#include <basefwx/constants.hpp>
 #include <basefwx/fwxaes.hpp>
 #include <nlohmann/json.hpp>
 
 #include <array>
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -30,6 +32,8 @@ namespace {
 constexpr char     kMagic[]      = "YUMESHRE";
 constexpr std::size_t kMagicLen  = 8;
 constexpr std::size_t kHeaderLen = 12;  // magic + version + type + 2 reserved
+static_assert(kPasswordMin == basefwx::constants::kShortPasswordMin,
+              "YUME share password policy must match BaseFWX FwxAES");
 
 nlohmann::json bundle_to_json(const ShareBundle& b) {
     nlohmann::json j;
@@ -56,6 +60,13 @@ nlohmann::json bundle_to_json(const ShareBundle& b) {
     if (!b.tls_stealth_profile.empty()) stealth["tls_stealth_profile"] = b.tls_stealth_profile;
     j["stealth"] = stealth;
 
+    if (!b.tls_ca_cert_pem.empty() || !b.tls_server_name.empty()) {
+        nlohmann::json tls;
+        if (!b.tls_ca_cert_pem.empty()) tls["ca_cert_pem"] = b.tls_ca_cert_pem;
+        if (!b.tls_server_name.empty()) tls["server_name"] = b.tls_server_name;
+        j["tls"] = std::move(tls);
+    }
+
     if (!b.anonym_ca_cert_pem.empty() || !b.anonym_pubkey.empty()) {
         nlohmann::json anon;
         if (!b.anonym_ca_cert_pem.empty()) anon["ca_cert_pem"] = b.anonym_ca_cert_pem;
@@ -70,7 +81,10 @@ nlohmann::json bundle_to_json(const ShareBundle& b) {
         {"inner_crypto", b.inner_crypto},
         {"inner_heavy",  b.inner_heavy},
         {"inner_hop",    b.inner_hop},
+        {"inner_psk",    b.inner_psk},
         {"hop_interval_ms", b.hop_interval_ms},
+        {"tunnels", b.tunnel_count},
+        {"require_operator_identity", b.require_operator_identity},
         {"allow_udp", b.allow_udp},
         {"allow_local_ip", b.allow_local_ip},
     };
@@ -120,6 +134,17 @@ bool json_to_bundle(const nlohmann::json& j, ShareBundle* out, std::string* erro
         out->anonym_ca_cert_pem = j["anonym"].value("ca_cert_pem", std::string{});
         out->anonym_pubkey      = j["anonym"].value("pubkey", std::string{});
     }
+    if (j.contains("tls") && j["tls"].is_object()) {
+        out->tls_ca_cert_pem = j["tls"].value("ca_cert_pem", std::string{});
+        out->tls_server_name = j["tls"].value("server_name", std::string{});
+    }
+    // v1 bundles written before TLS material became explicit carried only
+    // the operator CA. Those exporters used that CA for both operator proof
+    // and their private TLS issuer, so preserve their ready-to-connect
+    // behavior without changing the outer file version.
+    if (out->tls_ca_cert_pem.empty() && !out->anonym_ca_cert_pem.empty()) {
+        out->tls_ca_cert_pem = out->anonym_ca_cert_pem;
+    }
     if (j.contains("pq") && j["pq"].is_object()) {
         out->pq_public_key_pem = j["pq"].value("public_key_pem", std::string{});
     }
@@ -129,7 +154,12 @@ bool json_to_bundle(const nlohmann::json& j, ShareBundle* out, std::string* erro
         out->inner_crypto    = cs.value("inner_crypto", true);
         out->inner_heavy     = cs.value("inner_heavy", true);
         out->inner_hop       = cs.value("inner_hop", true);
+        out->inner_psk       = cs.value("inner_psk", std::string{});
         out->hop_interval_ms = static_cast<std::uint32_t>(cs.value("hop_interval_ms", 500));
+        out->tunnel_count = static_cast<std::uint8_t>(
+            std::clamp(cs.value("tunnels", 1), 1, 16));
+        out->require_operator_identity = cs.value(
+            "require_operator_identity", !out->anonym_ca_cert_pem.empty());
         out->allow_udp       = cs.value("allow_udp", false);
         out->allow_local_ip  = cs.value("allow_local_ip", false);
     }
@@ -141,8 +171,11 @@ bool json_to_bundle(const nlohmann::json& j, ShareBundle* out, std::string* erro
 std::vector<std::uint8_t> encode_share(const ShareBundle& bundle,
                                        const std::string& password,
                                        std::string* error) {
-    if (password.empty()) {
-        if (error) *error = "password must not be empty";
+    if (password.size() < kPasswordMin) {
+        if (error) {
+            *error = "password must be at least " +
+                     std::to_string(kPasswordMin) + " characters";
+        }
         return {};
     }
     if (bundle.server_host.empty() || bundle.server_port < 1 || bundle.server_port > 65535) {
@@ -203,6 +236,31 @@ std::string slurp_text_file(const std::string& path, std::string* error) {
     std::stringstream ss;
     ss << f.rdbuf();
     return ss.str();
+}
+
+bool valid_secret_hex(const std::string& value) {
+    return value.size() == 64 &&
+           std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+               return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+           });
+}
+
+bool load_secret_text(const std::string& path, const char* label,
+                      std::string* out, std::string* error) {
+    if (path.empty()) return true;
+    std::string read_error;
+    auto value = slurp_text_file(path, &read_error);
+    if (!valid_secret_hex(value)) {
+        if (error) {
+            *error = std::string(label) + ": " +
+                     (!read_error.empty()
+                          ? read_error
+                          : "must contain exactly 64 lowercase hex characters with no newline");
+        }
+        return false;
+    }
+    *out = std::move(value);
+    return true;
 }
 
 bool write_file_owner_only(const std::string& path,
@@ -280,22 +338,47 @@ bool build_backup_bundle(const BackupInputs& in, ShareBundle* out, std::string* 
         if (!ca.empty()) out->anonym_ca_cert_pem = std::move(ca);
         // missing CA is non-fatal — the caller may not have configured one
     }
+    if (!in.tls_ca_cert_path.empty()) {
+        std::string tls_ca = slurp_text_file(in.tls_ca_cert_path, &err);
+        if (tls_ca.empty()) {
+            if (error) *error = "TLS CA: " + err;
+            return false;
+        }
+        out->tls_ca_cert_pem = std::move(tls_ca);
+    }
     if (!in.pq_public_key_path.empty()) {
         std::string pq = slurp_text_file(in.pq_public_key_path, &err);
         if (!pq.empty()) out->pq_public_key_pem = std::move(pq);
     }
 
-    out->obfuscation         = in.obfuscation;
-    out->obfs_secret         = in.obfs_secret;
+    out->obfuscation = in.obfuscation;
+    if (!load_secret_text(in.obfs_secret_path, "admission secret",
+                          &out->obfs_secret, error)) {
+        return false;
+    }
+    if (in.obfs_secret_path.empty() && !in.obfs_secret.empty()) {
+        if (!valid_secret_hex(in.obfs_secret)) {
+            if (error) *error = "admission secret must contain exactly 64 lowercase hex characters";
+            return false;
+        }
+        out->obfs_secret = in.obfs_secret;
+    }
+    if (!load_secret_text(in.inner_psk_path, "inner PSK",
+                          &out->inner_psk, error)) {
+        return false;
+    }
     out->obfs_pad_multiple   = in.obfs_pad_multiple;
     out->obfs_jitter_ms      = in.obfs_jitter_ms;
     out->tls_pin_sha256      = in.tls_pin_sha256;
     out->tls_stealth_profile = in.tls_stealth_profile;
+    out->tls_server_name     = in.tls_server_name;
     out->anonym_pubkey       = in.anonym_pubkey;
     out->inner_crypto        = in.inner_crypto;
     out->inner_heavy         = in.inner_heavy;
     out->inner_hop           = in.inner_hop;
     out->hop_interval_ms     = in.hop_interval_ms;
+    out->tunnel_count        = std::clamp<std::uint8_t>(in.tunnel_count, 1, 16);
+    out->require_operator_identity = in.require_operator_identity;
     out->allow_udp           = in.allow_udp;
     out->allow_local_ip      = in.allow_local_ip;
     return true;
@@ -346,25 +429,33 @@ bool apply_imported_bundle(const ShareBundle& bundle,
     };
     if (!write_pem("identity.key", bundle.auth_private_key_pem, &out->identity_path)) return false;
     if (!write_pem("anonym_ca.pem", bundle.anonym_ca_cert_pem, &out->anonym_ca_path)) return false;
+    if (!write_pem("tls_ca.pem", bundle.tls_ca_cert_pem, &out->tls_ca_path)) return false;
     if (!write_pem("pq_public.key", bundle.pq_public_key_pem, &out->pq_public_path)) return false;
+    if (!write_pem("admission.hex", bundle.obfs_secret, &out->obfs_secret_path)) return false;
+    if (!write_pem("inner-psk.hex", bundle.inner_psk, &out->inner_psk_path)) return false;
 
     nlohmann::json cfg = nlohmann::json::object();
     cfg["server"] = bundle.server_host;
     cfg["port"]   = bundle.server_port;
     if (!out->identity_path.empty())   cfg["identity"] = out->identity_path;
     if (!out->anonym_ca_path.empty())  cfg["anonym_ca_cert"] = out->anonym_ca_path;
+    if (!out->tls_ca_path.empty())     cfg["tls_ca_cert"] = out->tls_ca_path;
     if (!out->pq_public_path.empty())  cfg["pq_public_key"] = out->pq_public_path;
     cfg["obfuscation"] = bundle.obfuscation;
-    if (!bundle.obfs_secret.empty())    cfg["obfs_secret"] = bundle.obfs_secret;
+    if (!out->obfs_secret_path.empty()) cfg["obfs_secret_file"] = out->obfs_secret_path;
+    if (!out->inner_psk_path.empty())   cfg["inner_psk_file"] = out->inner_psk_path;
     if (bundle.obfs_pad_multiple > 0)   cfg["obfs_pad_multiple"] = bundle.obfs_pad_multiple;
     if (bundle.obfs_jitter_ms > 0)      cfg["obfs_jitter_ms"] = bundle.obfs_jitter_ms;
     if (!bundle.tls_pin_sha256.empty()) cfg["tls_pin"] = bundle.tls_pin_sha256;
     if (!bundle.tls_stealth_profile.empty()) cfg["tls_stealth_profile"] = bundle.tls_stealth_profile;
+    if (!bundle.tls_server_name.empty()) cfg["tls_server_name"] = bundle.tls_server_name;
     if (!bundle.anonym_pubkey.empty())  cfg["anonym_pubkey"] = bundle.anonym_pubkey;
     cfg["inner_crypto"]    = bundle.inner_crypto;
     cfg["inner_heavy"]     = bundle.inner_heavy;
     cfg["inner_hop"]       = bundle.inner_hop;
     cfg["hop_interval_ms"] = bundle.hop_interval_ms;
+    cfg["tunnels"]         = std::clamp<int>(bundle.tunnel_count, 1, 16);
+    cfg["require_anonym"]  = bundle.require_operator_identity;
     cfg["udp"]             = bundle.allow_udp;
     cfg["allow_local_ip"]  = bundle.allow_local_ip;
 

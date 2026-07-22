@@ -53,6 +53,42 @@ client packets to the TUN, and demuxes TUN replies by destination client IP.
 If the TUN cannot be attached, packet mode fails closed and the server does
 not advertise `packet_bulk_v1`.
 
+### Optional host-network helper
+
+`yumed` deliberately does not run firewall or routing commands. Linux
+administrators who want a `wg-quick`-style setup can use the separate,
+explicit `yume-packet-quick` helper. Review its complete plan first:
+
+```bash
+tools/yume_packet_quick.py up \
+  --listen build-host.example:8443 \
+  --allow-from 192.168.1.0/24 \
+  --dry-run
+```
+
+Then apply it through `sudo`:
+
+```bash
+sudo tools/yume_packet_quick.py up \
+  --listen build-host.example:8443 \
+  --allow-from 192.168.1.0/24
+```
+
+The helper creates one user-owned TUN, enables IPv4 forwarding, creates one
+named nftables NAT table scoped to the packet CIDR, and, when UFW is active,
+adds only the matching TCP ingress and routed-egress rules. It prompts before
+mutation, refuses to adopt an existing interface/table, never flushes or
+changes default firewall policy, and records non-secret state under
+`/run/yume-packet-quick/`. Remove only those recorded resources with:
+
+```bash
+sudo tools/yume_packet_quick.py down
+```
+
+Use `--firewall none` only when another firewall manager already supplies the
+required input and forwarding policy. These changes remain opt-in and are not
+performed by normal `yumed` startup.
+
 ## Linux Client TUN
 
 The CLI can attach the authenticated packet channel directly to an existing

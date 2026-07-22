@@ -69,8 +69,11 @@ bool prompt_share_password(const std::string& purpose,
             if (error) *error = "password must not be empty";
             return false;
         }
-        if (purpose == "export" && line.size() < 8) {
-            if (error) *error = "password must be at least 8 characters";
+        if (purpose == "export" && line.size() < yume::share::kPasswordMin) {
+            if (error) {
+                *error = "password must be at least " +
+                         std::to_string(yume::share::kPasswordMin) + " characters";
+            }
             return false;
         }
         *out = std::move(line);
@@ -82,8 +85,11 @@ bool prompt_share_password(const std::string& purpose,
         if (!prompt_hidden_input("Set a password to protect the export: ", &first, error)) {
             return false;
         }
-        if (first.size() < 8) {
-            if (error) *error = "password must be at least 8 characters";
+        if (first.size() < yume::share::kPasswordMin) {
+            if (error) {
+                *error = "password must be at least " +
+                         std::to_string(yume::share::kPasswordMin) + " characters";
+            }
             return false;
         }
         if (!prompt_hidden_input("Confirm the password: ", &second, error)) {
@@ -116,18 +122,25 @@ int run_export_share(const std::string& out_path,
     in.server_port = cfg.port > 0 ? cfg.port : 443;
     in.identity_path = cfg.identity;
     in.anonym_ca_cert_path = cfg.anonym_ca_cert;
+    in.tls_ca_cert_path = cfg.tls_ca_cert;
     in.pq_public_key_path = cfg.pq_public_key;
     in.obfuscation = cfg.obfuscation;
+    in.obfs_secret_path = cfg.obfs_secret_file;
+    in.inner_psk_path = cfg.inner_psk_file;
     in.obfs_secret = cfg.obfs_secret;
     in.obfs_pad_multiple = cfg.obfs_pad_multiple;
     in.obfs_jitter_ms = cfg.obfs_jitter_ms;
     in.tls_pin_sha256 = cfg.tls_pin_sha256;
     in.tls_stealth_profile = cfg.tls_stealth_profile;
+    in.tls_server_name = cfg.tls_server_name;
     in.anonym_pubkey = cfg.anonym_pubkey;
     in.inner_crypto = cfg.inner_crypto;
     in.inner_heavy = cfg.inner_heavy;
     in.inner_hop = cfg.inner_hop;
     in.hop_interval_ms = cfg.hop_interval_ms;
+    in.tunnel_count = static_cast<std::uint8_t>(
+        std::clamp(cfg.tunnel_count, 1, 16));
+    in.require_operator_identity = cfg.require_anonym;
     in.allow_udp = cfg.allow_udp;
     in.allow_local_ip = cfg.allow_local_ip;
 
@@ -194,11 +207,15 @@ int run_import_share(const std::string& in_path, bool password_stdin) {
     if (!bundle.created_at_iso8601.empty()) std::cout << "Created at:   " << bundle.created_at_iso8601 << "\n";
     if (!bundle.created_by.empty())      std::cout << "Created by:   " << bundle.created_by << "\n";
     std::cout                             << "Auth key:     " << (bundle.auth_private_key_pem.empty() ? "(none)" : "PRESENT") << "\n";
-    std::cout                             << "Anonym CA:    " << (bundle.anonym_ca_cert_pem.empty() ? "(none)" : "PRESENT") << "\n";
+    std::cout                             << "Operator CA:  " << (bundle.anonym_ca_cert_pem.empty() ? "(none)" : "PRESENT") << "\n";
+    std::cout                             << "TLS CA:       " << (bundle.tls_ca_cert_pem.empty() ? "system trust" : "PRESENT") << "\n";
+    if (!bundle.tls_server_name.empty()) std::cout << "TLS name:     " << bundle.tls_server_name << "\n";
     std::cout                             << "PQ pubkey:    " << (bundle.pq_public_key_pem.empty() ? "(none)" : "PRESENT") << "\n";
     std::cout                             << "Obfs secret:  " << (bundle.obfs_secret.empty() ? "(none)" : "PRESENT") << "\n";
+    std::cout                             << "Inner PSK:    " << (bundle.inner_psk.empty() ? "(none)" : "PRESENT") << "\n";
     std::cout                             << "Inner crypto: " << (bundle.inner_crypto ? (bundle.inner_heavy ? "heavy" : "light") : "off")
                                           << "; hop=" << (bundle.inner_hop ? "on" : "off") << "\n";
+    std::cout                             << "Tunnels:      " << static_cast<unsigned>(bundle.tunnel_count) << "\n";
     std::cout << "─────────────────────────────────────────\n\n";
 
     if (!password_stdin) {

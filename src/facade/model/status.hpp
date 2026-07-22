@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace yume::facade {
 
@@ -34,6 +35,9 @@ struct ClientStatus {
     std::string server_endpoint;
     std::string profile;
     std::string inner_mode;
+    std::string server_tls_fingerprint_sha256;
+    std::vector<std::string> server_capabilities;
+    bool packet_bulk_supported{false};
     std::uint64_t bytes_sent{0};
     std::uint64_t bytes_received{0};
     double tx_rate_bps{0.0};

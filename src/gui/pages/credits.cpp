@@ -37,13 +37,13 @@ constexpr Person kPeople[] = {
     {"F1xGOD",
      "Founder & CEO, FixCraft, Inc.",
      "Author. Lead developer and designer of Yume and BaseFWX."},
-    {"Claude (Anthropic)",
-     "#1 Yume / BaseFWX engineering partner",
-     "Dedicated dev on Yume and BaseFWX. Helps with code review, design,"
-     " refactors, packaging, and tricky bugs."},
-    {"ChatGPT / Codex",
-     "Best Employee of the Year",
-     "Generalist debug and implementation support across many projects."},
+    {"Codex",
+     "Primary AI engineering partner",
+     "Architecture, implementation, security hardening, testing, and"
+     " documentation across Yume, BaseFWX, desktop, and Android."},
+    {"Claude",
+     "Supporting AI contributor",
+     "Selected code reviews, refactors, and bug-fix contributions."},
 };
 
 constexpr Component kComponentsAll[] = {

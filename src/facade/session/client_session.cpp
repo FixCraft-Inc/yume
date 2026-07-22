@@ -6,7 +6,9 @@
 
 #include "facade/session/client_session.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <exception>
 #include <filesystem>
 #include <mutex>
 #include <thread>
@@ -49,29 +51,16 @@ std::string strip_ansi(std::string const& in) {
 bool resolve_secure_materials(client::ClientConfig& cfg, std::string* err) {
     namespace sm = secure_materials;
 
-    if (cfg.anonym_ca_material_id.empty()) {
-        cfg.anonym_ca_material_id = sm::kDefaultAnonymCaId;
-    }
     if (!cfg.anonym_ca_material_id.empty()) {
         std::string material_error;
         auto path = sm::material_path(cfg.anonym_ca_material_id, &material_error);
         if (!path) {
             if (err) *err = material_error.empty()
-                ? "selected anonym CA material is unavailable"
+                ? "selected operator CA material is unavailable"
                 : material_error;
             return false;
         }
         cfg.anonym_ca_cert = path->string();
-    } else if (cfg.anonym_ca_cert.empty()) {
-        std::string material_error;
-        auto path = sm::ensure_default_anonym_ca(&material_error);
-        if (path.empty()) {
-            if (err) *err = material_error.empty()
-                ? "embedded anonym CA could not be prepared"
-                : material_error;
-            return false;
-        }
-        cfg.anonym_ca_cert = path.string();
     }
 
     if (!cfg.auth_key_material_id.empty()) {
@@ -90,7 +79,7 @@ bool resolve_secure_materials(client::ClientConfig& cfg, std::string* err) {
         std::string e;
         auto path = sm::material_path(cfg.anonym_pubkey_material_id, &e);
         if (!path) {
-            if (err) *err = e.empty() ? "anonym public key material unavailable" : e;
+            if (err) *err = e.empty() ? "legacy proof key material unavailable" : e;
             return false;
         }
         cfg.anonym_pubkey = path->string();
@@ -269,56 +258,62 @@ bool ClientSession::start(std::string* err) {
             if (fcb) fcb(fsnap);
         };
 
-        std::string mat_err;
-        if (!resolve_secure_materials(cfg, &mat_err)) {
-            fail(mat_err.empty() ? "secure materials not ready" : mat_err);
-            impl_->worker_busy.store(false);
-            return;
-        }
-
-        std::string save_err;
-        if (!config_io::save_client(cfg, config_io::default_client_config_path(), &save_err)) {
-            fail("client config save before start failed: " + save_err);
-            impl_->worker_busy.store(false);
-            return;
-        }
-
-        std::string start_err;
-        // 30 s wait is the same connect/auth budget the IPC-spawn route
-        // used; we inherit it for the in-process route so the GUI's
-        // "Connecting..." spinner doesn't time out before a slow TLS
-        // handshake completes.
-        if (!impl_->runtime.start(std::move(cfg), &start_err,
-                                  std::chrono::seconds(30))) {
-            fail(start_err.empty() ? "client start failed" : start_err);
-            impl_->worker_busy.store(false);
-            return;
-        }
-
-        auto runtime_status = impl_->runtime.status();
-        StatusCallback ok_cb;
-        ClientStatus ok_snap;
-        {
-            std::lock_guard<std::mutex> lock(impl_->mtx);
-            impl_->status.state = runtime_status.ipc_available
-                                      ? ConnectionState::Connected
-                                      : ConnectionState::Authenticating;
-            impl_->status.message = runtime_status.message;
-            if (runtime_status.ipc_available &&
-                impl_->status.connected_since.time_since_epoch().count() == 0) {
-                impl_->status.connected_since = std::chrono::system_clock::now();
+        try {
+            std::string mat_err;
+            if (!resolve_secure_materials(cfg, &mat_err)) {
+                fail(mat_err.empty() ? "secure materials not ready" : mat_err);
+                impl_->worker_busy.store(false);
+                return;
             }
-            ok_snap = impl_->status;
-            ok_cb = impl_->status_callback();
-        }
-        LogSink::instance().push(LogLevel::Info, "facade.client", "client runtime started");
-        if (ok_cb) ok_cb(ok_snap);
 
-        // Spin up the stats-poll thread now that IPC is up. It loops
-        // until stats_stop flips; each pass asks the runtime for
-        // bytes_in/bytes_out and feeds the delta into the meter.
-        if (!impl_->stop_busy.load(std::memory_order_acquire)) {
-            impl_->start_stats_thread();
+            std::string save_err;
+            if (!config_io::save_client(cfg, config_io::default_client_config_path(), &save_err)) {
+                fail("client config save before start failed: " + save_err);
+                impl_->worker_busy.store(false);
+                return;
+            }
+
+            std::string start_err;
+            // 30 s wait is the same connect/auth budget the IPC-spawn route
+            // used; we inherit it for the in-process route so the GUI's
+            // "Connecting..." spinner doesn't time out before a slow TLS
+            // handshake completes.
+            if (!impl_->runtime.start(std::move(cfg), &start_err,
+                                      std::chrono::seconds(30))) {
+                fail(start_err.empty() ? "client start failed" : start_err);
+                impl_->worker_busy.store(false);
+                return;
+            }
+
+            auto runtime_status = impl_->runtime.status();
+            StatusCallback ok_cb;
+            ClientStatus ok_snap;
+            {
+                std::lock_guard<std::mutex> lock(impl_->mtx);
+                impl_->status.state = runtime_status.ipc_available
+                                          ? ConnectionState::Connected
+                                          : ConnectionState::Authenticating;
+                impl_->status.message = runtime_status.message;
+                if (runtime_status.ipc_available &&
+                    impl_->status.connected_since.time_since_epoch().count() == 0) {
+                    impl_->status.connected_since = std::chrono::system_clock::now();
+                }
+                ok_snap = impl_->status;
+                ok_cb = impl_->status_callback();
+            }
+            LogSink::instance().push(LogLevel::Info, "facade.client", "client runtime started");
+            if (ok_cb) ok_cb(ok_snap);
+
+            // Spin up the stats-poll thread now that IPC is up. It loops
+            // until stats_stop flips; each pass asks the runtime for
+            // bytes_in/bytes_out and feeds the delta into the meter.
+            if (!impl_->stop_busy.load(std::memory_order_acquire)) {
+                impl_->start_stats_thread();
+            }
+        } catch (std::exception const& ex) {
+            fail(std::string("client startup exception: ") + ex.what());
+        } catch (...) {
+            fail("client startup exception: unknown error");
         }
 
         impl_->worker_busy.store(false);
@@ -392,6 +387,12 @@ ClientStatus ClientSession::status() const {
                                                 : ConnectionState::Failed;
         s.message = runtime_status.message;
     }
+    s.server_tls_fingerprint_sha256 =
+        runtime_status.server_tls_fingerprint_sha256;
+    s.server_capabilities = impl_->runtime.server_capabilities();
+    s.packet_bulk_supported = std::find(
+        s.server_capabilities.begin(), s.server_capabilities.end(),
+        "packet_bulk_v1") != s.server_capabilities.end();
     s.bytes_sent = impl_->traffic.total_tx();
     s.bytes_received = impl_->traffic.total_rx();
     auto latest = impl_->traffic.latest();

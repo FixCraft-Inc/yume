@@ -17,7 +17,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/ssl/context.hpp>
-#include <boost/asio/ssl/rfc2818_verification.hpp>
+#include <boost/asio/ssl/host_name_verification.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
@@ -69,7 +69,7 @@ public:
             return;
         }
         stream_.set_verify_mode(ssl::verify_peer);
-        stream_.set_verify_callback(ssl::rfc2818_verification(host_));
+        stream_.set_verify_callback(ssl::host_name_verification(host_));
 
         request_.version(11);
         request_.method(http::verb::get);

@@ -15,6 +15,7 @@
 #include <utility>
 
 #include "client/cli/parse/endpoints.hpp"
+#include "core/stealth/http_profile.hpp"
 #include "util.hpp"
 
 namespace yume::client {
@@ -204,12 +205,12 @@ ParsedArgs parse_args(int argc, char** argv) {
             if (!value) {
                 return args;
             }
-            if (std::string(value) != "chrome") {
+            if (!yume::http_profile::transport_client_supported(value)) {
                 args.parse_error =
-                    "YUME 2.0 dev1 supports only the pinned Chrome HTTP profile";
+                    "this YUME build has no complete transport fixture for that profile";
                 return args;
             }
-            args.http_profile = "chrome";
+            args.http_profile = value;
         } else if (arg == "--cluster") {
             const char* spec = take_value("--cluster");
             if (!spec) {
@@ -403,10 +404,11 @@ ParsedArgs parse_args(int argc, char** argv) {
             if (!parse_int_value("--dport", args.dest_port)) {
                 return args;
             }
-        } else if (arg == "--require-anonym" || arg == "--anonym") {
+        } else if (arg == "--require-operator-identity" ||
+                   arg == "--require-anonym" || arg == "--anonym") {
             args.require_anonym = true;
-        } else if (arg == "--anonym-ca-cert") {
-            const char* cert = take_value("--anonym-ca-cert");
+        } else if (arg == "--operator-ca-cert" || arg == "--anonym-ca-cert") {
+            const char* cert = take_value(arg.c_str());
             if (!cert) {
                 return args;
             }
@@ -686,12 +688,12 @@ ParsedArgs parse_args(int argc, char** argv) {
             if (!value) {
                 return args;
             }
-            if (std::string(value) != "chrome") {
+            if (!yume::http_profile::transport_client_supported(value)) {
                 args.parse_error =
-                    "YUME 2.0 dev1 supports only --profile chrome";
+                    "this YUME build has no complete transport fixture for that profile";
                 return args;
             }
-            args.tls_stealth_profile = "chrome";
+            args.tls_stealth_profile = value;
         } else if (arg == "--tls-stealth-rotate") {
             args.parse_error =
                 "--tls-stealth-rotate is not accepted by YUME 2.0 dev1; the Chrome fixture is pinned";

@@ -533,11 +533,18 @@ Load the separate mandatory inner PSK in the same strict file format. It is
 mixed by salted HKDF; Argon2 is not used. The 256 KiB, 512-frame, and 500 ms
 active directional rekey limits are fixed.
 .TP
-.B "--require-anonym, --anonym"
-Require the server to provide an accepted anonym proof.
+.B "--require-operator-identity"
+Require proof that the endpoint is authorized by the selected operator CA.
+Legacy aliases are
+.B --require-anonym
+and
+.BR --anonym .
+This authenticates the operator; it does not prove no logging or anonymity.
 .TP
-.BI "--anonym-ca-cert " path
-CA certificate used to verify anonym proof material.
+.BI "--operator-ca-cert " path
+Operator CA certificate used to verify endpoint authorization. The legacy
+alias is
+.BR --anonym-ca-cert .
 .TP
 .BI "--tls-ca " path
 TLS CA certificate.
@@ -661,10 +668,10 @@ Create a local forward:
 yume --server origin.example.net -i ~/.yume/id_ed25519 -L 2222:127.0.0.1:22
 .fi
 .TP
-Require anonym proof and keep obfs enabled:
+Require operator identity proof and keep obfs enabled:
 .nf
 yume --server origin.example.net -i ~/.yume/id_ed25519 --socks 1080 \
-     --require-anonym --anonym-ca-cert /etc/yume/anonym-ca.pem --obfs
+     --require-operator-identity --operator-ca-cert /etc/yume/operator-ca.pem --obfs
 .fi
 .SH SECURITY NOTES
 Inner encryption protects YUME frame payloads between the client and
@@ -679,9 +686,11 @@ Avoid
 .B --use-embedded-master
 for production. Use deployment-specific PQ key files.
 .PP
-Anonym mode and anonym proof reduce server-side logging exposure, but
-they do not remove hosting logs, payment records, DNS records, browser
-fingerprints, logged-in accounts, or time-correlation risks.
+Operator identity proof verifies a CA-authorized endpoint and the associated
+mode asks the server to minimize identifying logs. It cannot prove that the
+operator follows that policy, and does not remove hosting logs, payment
+records, DNS records, browser fingerprints, logged-in accounts, or
+time-correlation risks.
 .SH FILES
 .TP
 .I config/yume.json

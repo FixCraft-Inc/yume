@@ -16,6 +16,7 @@
 #include <boost/asio/ip/address.hpp>
 #include <nlohmann/json.hpp>
 
+#include "core/stealth/http_profile.hpp"
 #include "facade/config/detail.hpp"
 #include "facade/config/keys.hpp"
 
@@ -36,6 +37,7 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::socks_bind, c.socks_bind_host);
     read_opt(j, cfg_key::socks_port, c.socks_port);
     read_opt(j, cfg_key::io_threads, c.io_threads);
+    read_opt(j, cfg_key::tunnels, c.tunnel_count);
     read_opt(j, cfg_key::obfuscation, c.obfuscation);
     read_opt(j, cfg_key::obfs_secret, c.obfs_secret);
     read_opt(j, cfg_key::obfs_secret_file, c.obfs_secret_file);
@@ -143,6 +145,7 @@ bool save_client(client::ClientConfig const& c,
         {cfg_key::socks_bind, c.socks_bind_host},
         {cfg_key::socks_port, c.socks_port},
         {cfg_key::io_threads, c.io_threads},
+        {cfg_key::tunnels, c.tunnel_count},
         {cfg_key::obfuscation, c.obfuscation},
         {cfg_key::obfs_secret, c.obfs_secret},
         {cfg_key::obfs_secret_file, c.obfs_secret_file},
@@ -216,6 +219,9 @@ ValidationReport validate(client::ClientConfig const& c) {
     if (c.socks_port < 0 || c.socks_port > 65535) {
         r.errors.emplace_back("socks_port: must be 0..65535 (0 = auto in GUI)");
     }
+    if (c.tunnel_count < 1 || c.tunnel_count > 16) {
+        r.errors.emplace_back("tunnels: must be 1..16");
+    }
     if (!c.socks_bind_host.empty()) {
         boost::system::error_code ec;
         boost::asio::ip::make_address(c.socks_bind_host, ec);
@@ -223,15 +229,21 @@ ValidationReport validate(client::ClientConfig const& c) {
             r.errors.emplace_back("socks_bind: address must be an IP literal");
         }
     }
-    if (!c.tls_stealth_profile.empty()
-        && c.tls_stealth_profile != "chrome"
-        && c.tls_stealth_profile != "firefox"
-        && c.tls_stealth_profile != "safari") {
-        r.warnings.emplace_back(
-            "tls_stealth_profile: unknown value (expected chrome|firefox|safari)");
+    if (!c.tls_stealth_enabled ||
+        !yume::http_profile::transport_client_supported(c.tls_stealth_profile)) {
+        r.errors.emplace_back(
+            "tls_stealth_profile: no complete fixture exists in this build");
     }
-    if (c.hop_interval_ms == 0 && c.inner_hop) {
-        r.warnings.emplace_back("hop_interval_ms: 0 with hopping enabled");
+    if (c.tls_stealth_rotate) {
+        r.errors.emplace_back(
+            "tls_stealth_rotate: 2.0-dev1 uses one pinned Chrome fixture");
+    }
+    if (!c.inner_crypto) {
+        r.errors.emplace_back("inner_crypto: mandatory in 2.0-dev1");
+    }
+    if (c.require_anonym && c.accept_monitoring) {
+        r.errors.emplace_back(
+            "accept_monitoring: cannot be enabled when operator identity proof is required");
     }
     return r;
 }

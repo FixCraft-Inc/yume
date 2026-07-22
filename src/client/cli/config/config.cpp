@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <system_error>
 
 #include <nlohmann/json.hpp>
 
@@ -20,6 +21,15 @@
 
 namespace yume::client {
 
+namespace {
+
+bool path_exists_noexcept(const std::filesystem::path& path) noexcept {
+    std::error_code ec;
+    return std::filesystem::exists(path, ec);
+}
+
+}  // namespace
+
 void resolve_config_path(ParsedArgs* args, const std::string& exe_dir) {
     if (!args) {
         return;
@@ -29,11 +39,11 @@ void resolve_config_path(ParsedArgs* args, const std::string& exe_dir) {
         return;
     }
     std::filesystem::path cfg_path(args->config_path);
-    if (std::filesystem::exists(cfg_path)) {
+    if (path_exists_noexcept(cfg_path)) {
         return;
     }
     std::filesystem::path cand = std::filesystem::path(exe_dir) / cfg_path;
-    if (std::filesystem::exists(cand)) {
+    if (path_exists_noexcept(cand)) {
         args->config_path = cand.string();
     }
 }
@@ -41,7 +51,7 @@ void resolve_config_path(ParsedArgs* args, const std::string& exe_dir) {
 void load_client_config_file(const ParsedArgs& args,
                              const std::string& exe_dir,
                              ClientConfig* cfg) {
-    if (!cfg || (!args.config_specified && !std::filesystem::exists(args.config_path))) {
+    if (!cfg || (!args.config_specified && !path_exists_noexcept(args.config_path))) {
         return;
     }
 

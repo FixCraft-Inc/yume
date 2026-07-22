@@ -10,8 +10,9 @@ Usage:
   scripts/gen_anonym_sub.sh --ca-key anonym_ca.key --ca-cert anonym_ca.pem \
     --out-key anonym_sub.key --out-cert anonym_sub.pem [--days 365] [--name NAME]
 
-Generates an Ed25519 anonym delegated signing key and a CA-signed X.509
-certificate for yumed --anonym-sub-key/--anonym-sub-cert.
+Generates an Ed25519 delegated server-identity key and a CA-signed X.509
+certificate. The certificate issuer records the operator CA subject; --name
+sets this server's public alias in the certificate subject.
 EOF
 }
 
@@ -20,7 +21,7 @@ ca_cert=""
 out_key="anonym_sub.key"
 out_cert="anonym_sub.pem"
 days="365"
-name="YUME anonym delegated signer"
+name="YUME server"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -112,8 +113,12 @@ openssl verify -CAfile "${ca_cert}" "${out_cert}" >/dev/null
 echo "wrote ${out_key}"
 echo "wrote ${out_cert}"
 echo
+echo "identity record (publish these with the server documentation):"
+openssl x509 -in "${ca_cert}" -noout -subject -fingerprint -sha256
+openssl x509 -in "${out_cert}" -noout -issuer -subject -serial -fingerprint -sha256
+echo
 echo "server:"
-echo "  yumed --anonym --anonym-proof-mode local --anonym-sub-key ${out_key} --anonym-sub-cert ${out_cert} ..."
+echo "  yumed --operator-identity --operator-proof-mode local --operator-delegated-key ${out_key} --operator-delegated-cert ${out_cert} ..."
 echo
 echo "client:"
-echo "  yume --require-anonym --anonym-ca-cert ${ca_cert} ..."
+echo "  yume --require-operator-identity --operator-ca-cert ${ca_cert} ..."

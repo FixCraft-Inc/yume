@@ -81,6 +81,9 @@ struct ServerConfig {
     std::shared_ptr<yume::security::Secret32> inner_psk_material;
     // Legacy 1.x literal. YUME 2.0 startup rejects nonempty values.
     std::string obfs_secret;
+    // Historical config/wire name. This enables privacy-minimizing behavior
+    // and publishes an operator-authority proof; the proof authenticates the
+    // operator CA/key relationship but cannot prove a no-logging policy.
     bool anonym{false};
     std::string anonym_proof_mode{std::string(yume::policy::kAnonymProofModeAuto)};
     std::string anonym_api;

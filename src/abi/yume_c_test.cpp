@@ -7,6 +7,61 @@
 #include "yume/yume.h"
 
 #include <cstring>
+#include <string>
+
+#if !defined(_WIN32)
+#include <cstdlib>
+#include <filesystem>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
+namespace {
+
+#if !defined(_WIN32)
+int test_inproc_ignores_desktop_config_path() {
+    char work_dir_template[] = "/tmp/yume-abi-config-path-XXXXXX";
+    char* const work_dir = ::mkdtemp(work_dir_template);
+    if (!work_dir) return 25;
+
+    std::error_code ec;
+    const auto original_dir = std::filesystem::current_path(ec);
+    if (ec) return 26;
+    const auto blocked_dir = std::filesystem::path(work_dir) / "config";
+    if (!std::filesystem::create_directory(blocked_dir, ec) || ec) return 27;
+    if (::chmod(blocked_dir.c_str(), 0000) != 0) return 28;
+    std::filesystem::current_path(work_dir, ec);
+    if (ec) return 29;
+
+    yume_client* client = yume_client_create();
+    if (!client) return 30;
+    const int status = yume_client_start_json(
+        client,
+        R"({"server":"127.0.0.1","port":1,"tunnels":1,"inner_crypto":true})",
+        work_dir,
+        1);
+    const std::string error = yume_handle_last_error(client)
+        ? yume_handle_last_error(client)
+        : "";
+    yume_client_destroy(client);
+
+    std::filesystem::current_path(original_dir, ec);
+    const bool restored = !ec;
+    (void)::chmod(blocked_dir.c_str(), 0700);
+    std::filesystem::remove_all(work_dir, ec);
+
+    // No server is listening, so startup must fail. The important contract is
+    // that an in-process config never probes the CLI's relative desktop path.
+    if (status == YUME_STATUS_OK) return 31;
+    if (error.find("config/yume.json") != std::string::npos ||
+        error.find("filesystem error") != std::string::npos) {
+        return 32;
+    }
+    return restored ? 0 : 33;
+}
+#endif
+
+}  // namespace
 
 int main() {
     if (yume_abi_version() != YUME_ABI_VERSION) {
@@ -47,6 +102,17 @@ int main() {
     if (!client) {
         return 10;
     }
+    if (yume_client_set_socket_protector(client, nullptr, nullptr) !=
+        YUME_STATUS_OK) {
+        yume_client_destroy(client);
+        return 23;
+    }
+    if (yume_client_start_json(
+            client, R"({"server":"localhost","port":443,"tunnels":0})",
+            nullptr, 1) != YUME_STATUS_INVALID_ARGUMENT) {
+        yume_client_destroy(client);
+        return 24;
+    }
     if (yume_client_start_json(client, "{", nullptr, 1) != YUME_STATUS_PARSE_ERROR) {
         yume_client_destroy(client);
         return 11;
@@ -69,6 +135,12 @@ int main() {
     }
     yume_client_destroy(client);
 
+#if !defined(_WIN32)
+    if (const int rc = test_inproc_ignores_desktop_config_path(); rc != 0) {
+        return rc;
+    }
+#endif
+
     yume_server* server = yume_server_create();
     if (!server) {
         return 14;
@@ -87,7 +159,12 @@ int main() {
         yume_server_destroy(server);
         return 16;
     }
-    if (yume_server_start_json(server, "{", nullptr) != YUME_STATUS_PARSE_ERROR) {
+    const int server_start_status = yume_server_start_json(server, "{", nullptr);
+#if defined(YUME_ABI_CLIENT_ONLY) && YUME_ABI_CLIENT_ONLY
+    if (server_start_status != YUME_STATUS_PERMISSION_DENIED) {
+#else
+    if (server_start_status != YUME_STATUS_PARSE_ERROR) {
+#endif
         yume_server_destroy(server);
         return 17;
     }

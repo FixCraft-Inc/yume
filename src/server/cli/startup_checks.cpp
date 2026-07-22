@@ -212,7 +212,8 @@ bool validate_packet_egress(const yume::server::ServerConfig& cfg) {
     yume::util::log_info("packet-native egress requested: tun=" + cfg.packet_tun_name +
                          " cidr=" + cfg.packet_cidr +
                          " mtu=" + std::to_string(cfg.packet_mtu) +
-                         ". The TUN address/NAT must be prepared by the operator before startup.");
+                         ". The TUN address/NAT must be prepared by the operator before startup; "
+                         "the optional yume-packet-quick helper can manage a scoped setup.");
     return true;
 }
 

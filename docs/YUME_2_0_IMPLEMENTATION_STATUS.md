@@ -30,7 +30,13 @@ or admin/control validation.
 - Independent directional hybrid rekeys before 256 KiB, 512 encrypted data
   frames, or 500 ms of active epoch time; idle silence, bounded rekey barrier,
   timeout close, simultaneous rekeys, old receiving-chain retirement, and
-  independent receiver enforcement of byte/frame usage boundaries.
+  independent receiver enforcement of byte/frame usage boundaries. Server
+  rekey/control frames are scheduled ahead of saturated DATA queues so normal
+  throughput cannot turn congestion into a rekey timeout.
+- Encrypted `.yss` migration uses the BaseFWX 12-character minimum and carries
+  separate TLS/operator CA material, TLS/SNI name, admission secret, inner PSK,
+  tunnel count, and operator-proof policy. Legacy v1 files that carried only
+  the shared private CA remain importable.
 - Exact `2.0-dev1` admission/AUTH-version equality and no accepted 1.x
   downgrade path. Legacy
   inner/light/heavy/dual/hop/no-inner/raw-carrier and literal-secret CLI choices
@@ -50,6 +56,10 @@ or admin/control validation.
   evidence.
 - Wrong admission did not emit AUTH. Wrong PSK reached no usable plaintext
   session and failed inner AEAD authentication.
+- A local real-SOCKS regression transferred 33 MiB continuously for 16 seconds
+  across many rekey epochs, then completed a follow-up request on the same
+  connection. This covers the prior server-side rekey-starvation disconnect;
+  it is not an Android background-lifecycle or WAN throughput result.
 - Focused unit/KAT coverage exercises AUTH parsing/transcripts, initial roots,
   directional keys/AAD/ciphertext, threshold transitions, idle behavior,
   simultaneous rekeys, rekey timeout, secret files, WebSocket framing, HTTP/2

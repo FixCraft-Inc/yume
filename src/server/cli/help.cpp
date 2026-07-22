@@ -143,6 +143,7 @@ void print_help() {
         << "  --packet-cidr <cidr>     Client IPv4 pool (default 10.89.0.0/24).\n"
         << "                             The .1 address is reserved for the TUN side.\n"
         << "  --packet-mtu <N>         Packet-native MTU (default 1420).\n"
+        << "                           Optional host setup: review yume-packet-quick up --help.\n"
         << "  --bench                 Enable authenticated built-in up/down\n"
         << "                             benchmark streams for yume --bench.\n"
         << "  --full-bench            Alias for --bench on yumed. Client-side\n"

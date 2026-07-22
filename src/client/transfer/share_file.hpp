@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -32,6 +33,9 @@ namespace yume::share {
 // FwxAES blob carries its own salt + nonce + auth tag, so wrong-
 // password attempts fail at the GCM tag check.
 constexpr std::uint8_t kFormatVersion = 1;
+// BaseFWX FwxAES currently enforces the same minimum. Kept public so every
+// YUME exporter can reject weak/invalid input before starting the KDF.
+constexpr std::size_t kPasswordMin = 12;
 
 enum class BundleType : std::uint8_t {
     Backup = 0,  // personal backup / device migration; contains the
@@ -39,7 +43,7 @@ enum class BundleType : std::uint8_t {
                  // (or stays) the same user on the target server.
 };
 
-// All fields are optional EXCEPT server.host + server.port + auth.private_key_pem.
+// All fields are optional except server.host + server.port.
 // Anything not set at export time is omitted from the bundle JSON so
 // older or future fields don't pollute. Importer ignores unknown fields.
 struct ShareBundle {
@@ -58,10 +62,13 @@ struct ShareBundle {
     // stealth knobs
     bool        obfuscation{true};
     std::string obfs_secret;
+    std::string inner_psk;
     std::uint16_t obfs_pad_multiple{0};
     std::uint32_t obfs_jitter_ms{0};
     std::string tls_pin_sha256;              // empty = no pin
     std::string tls_stealth_profile;         // empty = default (chrome)
+    std::string tls_ca_cert_pem;              // empty = system trust store
+    std::string tls_server_name;              // empty = server_host
 
     // Operator-identity trust material / PQ (legacy serialized field names).
     std::string anonym_ca_cert_pem;          // empty = none
@@ -73,12 +80,14 @@ struct ShareBundle {
     bool inner_heavy{true};
     bool inner_hop{true};
     std::uint32_t hop_interval_ms{500};
+    std::uint8_t tunnel_count{1};
+    bool require_operator_identity{false};
     bool allow_udp{false};
     bool allow_local_ip{false};
 };
 
-// Encode + encrypt to bytes ready to write to disk. password must be
-// non-empty; trivial password validation is the caller's job.
+// Encode + encrypt to bytes ready to write to disk. New exports require
+// kPasswordMin characters so validation matches BaseFWX before its KDF runs.
 // Returns the full file contents including the 12-byte unencrypted
 // magic+version header.
 std::vector<std::uint8_t> encode_share(const ShareBundle& bundle,
@@ -116,15 +125,19 @@ struct BackupInputs {
     // Server endpoint (required)
     std::string server_host;
     int         server_port{443};
-    // Paths to PEM files to slurp into the bundle. identity_path is
-    // required (backup needs a private key); the other two are optional.
+    // Paths to files to slurp into the bundle. All are optional; an
+    // info-only bundle can intentionally omit the private identity key.
     std::string identity_path;
     std::string anonym_ca_cert_path;
+    std::string tls_ca_cert_path;
     std::string pq_public_key_path;
-    // Inline values (already strings, no file read needed)
+    std::string obfs_secret_path;
+    std::string inner_psk_path;
+    // Inline legacy value (accepted only when no protected file is set).
     std::string obfs_secret;
     std::string tls_pin_sha256;
     std::string tls_stealth_profile;
+    std::string tls_server_name;
     std::string anonym_pubkey;
     // Stealth + client-behavior flags
     bool          obfuscation{true};
@@ -134,6 +147,8 @@ struct BackupInputs {
     bool          inner_heavy{true};
     bool          inner_hop{true};
     std::uint32_t hop_interval_ms{500};
+    std::uint8_t tunnel_count{1};
+    bool          require_operator_identity{false};
     bool          allow_udp{false};
     bool          allow_local_ip{false};
 };
@@ -150,7 +165,10 @@ struct ApplyResult {
     std::string config_path;     // <target_dir>/config.json
     std::string identity_path;   // <target_dir>/identity.key (if any)
     std::string anonym_ca_path;  // <target_dir>/anonym_ca.pem (if any)
+    std::string tls_ca_path;     // <target_dir>/tls_ca.pem (if any)
     std::string pq_public_path;  // <target_dir>/pq_public.key (if any)
+    std::string obfs_secret_path;// <target_dir>/admission.hex (if any)
+    std::string inner_psk_path;  // <target_dir>/inner-psk.hex (if any)
 };
 
 // Write extracted bundle contents to a directory under the user's

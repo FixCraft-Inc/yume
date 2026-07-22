@@ -283,6 +283,20 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         DESTINATION "${CMAKE_INSTALL_MANDIR}/man1"
         COMPONENT yume_cli
     )
+    install(PROGRAMS tools/yume_packet_quick.py
+        DESTINATION "${CMAKE_INSTALL_BINDIR}"
+        RENAME yume-packet-quick
+        COMPONENT yume_cli
+    )
+    install(PROGRAMS tools/yume_setup.py
+        DESTINATION "${CMAKE_INSTALL_BINDIR}"
+        RENAME yume-setup
+        COMPONENT yume_cli
+    )
+    install(FILES tools/cover-node/backend.mjs
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/yume/cover-node"
+        COMPONENT yume_cli
+    )
     install(FILES docs/man/yumed.8
         DESTINATION "${CMAKE_INSTALL_MANDIR}/man8"
         COMPONENT yume_cli

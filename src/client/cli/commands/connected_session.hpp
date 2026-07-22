@@ -34,6 +34,9 @@ class Tunnel;
 struct ConnectedSessionOptions {
     using RuntimeReadyCallback = Cli::RuntimeReadyCallback;
     using RuntimeReadyProvider = std::function<RuntimeReadyCallback()>;
+    // A final call with a null io_context marks the executor as no longer
+    // usable. Embedders must receive it before run_connected_session returns
+    // and the caller destroys the io_context/strand services.
     using SetActiveRuntimeCallback = std::function<void(
         boost::asio::io_context*,
         const std::shared_ptr<Tunnel>&,

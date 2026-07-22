@@ -497,6 +497,7 @@ std::vector<BrowserFingerprint> get_known_browser_fingerprints() {
             0x0403,  // ecdsa_secp256r1_sha256
             0x0503,  // ecdsa_secp384r1_sha384
             0x0603,  // ecdsa_secp521r1_sha512
+            0x0807,  // ed25519
             0x0804,  // rsa_pss_rsae_sha256
             0x0805,  // rsa_pss_rsae_sha384
             0x0806,  // rsa_pss_rsae_sha512
@@ -568,6 +569,7 @@ std::vector<BrowserFingerprint> get_known_browser_fingerprints() {
             0x0403,  // ecdsa_secp256r1_sha256
             0x0503,  // ecdsa_secp384r1_sha384
             0x0603,  // ecdsa_secp521r1_sha512
+            0x0807,  // ed25519
             0x0804,  // rsa_pss_rsae_sha256
             0x0805,  // rsa_pss_rsae_sha384
             0x0806,  // rsa_pss_rsae_sha512
@@ -658,6 +660,7 @@ std::vector<BrowserFingerprint> get_known_browser_fingerprints() {
         fp.alpn_protocols = {"h2", "http/1.1"};
         fp.signature_algorithms = {
             0x0403, 0x0503, 0x0603,
+            0x0807,
             0x0804, 0x0805, 0x0806,
             0x0401, 0x0501, 0x0601,
         };

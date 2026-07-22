@@ -18,6 +18,50 @@ git -C basefwx checkout "$(cat config/refs/basefwx.ref)"
 old, it builds the pinned, checksum-verified nghttp2 1.69.0 library under the
 user cache. The build produces `build/bin/yume` and `build/bin/yumed`.
 
+## One-command server and device kit
+
+After building, install the binaries/helpers or run the helper directly from
+the clone:
+
+```bash
+sudo cmake --install build
+yume-setup init \
+  --output ~/yume-kit \
+  --host build-host.example \
+  --port 8443 \
+  --tls-name remote-builder-test \
+  --client-name phone
+```
+
+The helper uses the operating system CSPRNG for both 256-bit secret files,
+generates browser-compatible ECDSA TLS certificates plus Ed25519
+operator/client keys, writes owner-only configs, and
+prints the exact server and device paths. It never prints secret values. For a
+real deployment, supply an existing operator CA with `--ca-key` and
+`--ca-cert`; otherwise the generated CA is a test/bootstrap CA whose private
+key lives under `offline-ca/` and should be moved off-server.
+
+Start packet routing and the two server processes as printed by the helper.
+`start-yumed` waits for the cover backend, avoiding the startup race that can
+otherwise look like a TLS failure. A browser URL is only a cover-health check;
+YUME clients use the same listener for the authenticated H2 tunnel.
+
+Issue more credentials without editing PEM or metadata files by hand:
+
+```bash
+yume-setup issue-key --kit ~/yume-kit --name laptop --type individual
+yume-setup issue-key --kit ~/yume-kit --name shared-lab --type bulk --max-sessions 50
+yume-setup issue-key --kit ~/yume-kit --name controller --type admin
+```
+
+Bulk credentials are denied relay/admin privileges by default and remain
+independently session-counted and fair-shared. Admin credentials go to the
+separate operator trust store. Each client directory includes a desktop config,
+`DEVICE_SETUP.txt`, and launchers. Run `./start-socks` to use the default
+`~/yume/build/bin/yume`, or `./export-yss [output.yss]` to create an encrypted `.yss`
+containing both required YUME 2.0 secrets for Android import. Share passwords
+must be at least 12 characters, matching BaseFWX itself.
+
 ## Create local test material
 
 Generate a client identity:

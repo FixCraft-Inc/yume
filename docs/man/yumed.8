@@ -159,6 +159,10 @@ or
 .BI "--packet-egress " tun
 Enable packet-native egress over an operator-prepared Linux TUN/NAT
 interface. Disabled by default.
+The separately installed
+.B yume-packet-quick
+helper can prepare and later remove a scoped TUN/NAT/UFW setup after an
+explicit dry run and administrator confirmation; yumed never invokes it.
 .TP
 .BI "--packet-tun-name " ifname
 TUN device to attach for packet-native mode. Default:

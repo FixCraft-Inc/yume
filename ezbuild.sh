@@ -2079,8 +2079,10 @@ EOF
     # cleanup for debugging.
     cleanup_unpacked_vendor
     local build_dir="${YUME_BUILD_DIR:-build}"
-    echo -e "${COLOR_GREEN}Run:${COLOR_RESET} ./${build_dir}/bin/yumed${exe_suffix} --config config/yumed.json"
-    echo -e "${COLOR_GREEN}Then:${COLOR_RESET} ./${build_dir}/bin/yume${exe_suffix} --config config/yume.json --socks 1080"
+    echo -e "${COLOR_GREEN}Server:${COLOR_RESET} ./${build_dir}/bin/yumed${exe_suffix}"
+    echo -e "${COLOR_GREEN}Client:${COLOR_RESET} ./${build_dir}/bin/yume${exe_suffix}"
+    echo -e "${COLOR_GREEN}Ready test kit:${COLOR_RESET} python3 tools/yume_setup.py init --output \"\$HOME/yume-test-kit\" --host SERVER_IP --tls-name SERVER_NAME --client-name phone"
+    echo "The generated server/start-yumed and clients/phone/start-socks launchers use ./${build_dir}/bin automatically."
     if [[ $BUILD_SELFTEST -eq 1 ]]; then
         echo -e "${COLOR_GREEN}Benchmark smoke:${COLOR_RESET} ./${build_dir}/bin/yume${exe_suffix} --quick-bench"
         echo -e "${COLOR_GREEN}Full benchmark:${COLOR_RESET} ./${build_dir}/bin/yume${exe_suffix} --full-bench"

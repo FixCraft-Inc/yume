@@ -423,7 +423,7 @@ private:
             "one password-protected file. Anyone with the file AND the "
             "password becomes you on this server — pick a strong password.");
         ImGui::Dummy(ImVec2(0, 6 * sc));
-        ui::field_label("Password (8+ chars)");
+        ui::field_label("Password (12+ chars)");
         ImGui::SetNextItemWidth(320 * sc);
         ImGui::InputText("##share_pwd1", export_pwd_, sizeof(export_pwd_),
                          ImGuiInputTextFlags_Password);
@@ -437,7 +437,7 @@ private:
                                export_status_.c_str());
         }
         ImGui::Dummy(ImVec2(0, 6 * sc));
-        bool can = std::strlen(export_pwd_) >= 8 &&
+        bool can = std::strlen(export_pwd_) >= yume::share::kPasswordMin &&
                    std::strcmp(export_pwd_, export_pwd2_) == 0;
         ImGui::BeginDisabled(!can);
         if (ui::primary_button("Choose destination & export",
@@ -563,18 +563,25 @@ private:
         in.server_port = cfg_.port > 0 ? cfg_.port : 443;
         in.identity_path = cfg_.identity;
         in.anonym_ca_cert_path = cfg_.anonym_ca_cert;
+        in.tls_ca_cert_path = cfg_.tls_ca_cert;
         in.pq_public_key_path = cfg_.pq_public_key;
         in.obfuscation = cfg_.obfuscation;
+        in.obfs_secret_path = cfg_.obfs_secret_file;
+        in.inner_psk_path = cfg_.inner_psk_file;
         in.obfs_secret = cfg_.obfs_secret;
         in.obfs_pad_multiple = cfg_.obfs_pad_multiple;
         in.obfs_jitter_ms = cfg_.obfs_jitter_ms;
         in.tls_pin_sha256 = cfg_.tls_pin_sha256;
         in.tls_stealth_profile = cfg_.tls_stealth_profile;
+        in.tls_server_name = cfg_.tls_server_name;
         in.anonym_pubkey = cfg_.anonym_pubkey;
         in.inner_crypto = cfg_.inner_crypto;
         in.inner_heavy = cfg_.inner_heavy;
         in.inner_hop = cfg_.inner_hop;
         in.hop_interval_ms = cfg_.hop_interval_ms;
+        in.tunnel_count = static_cast<std::uint8_t>(
+            std::clamp(cfg_.tunnel_count, 1, 16));
+        in.require_operator_identity = cfg_.require_anonym;
         in.allow_udp = cfg_.allow_udp;
         in.allow_local_ip = cfg_.allow_local_ip;
 

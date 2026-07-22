@@ -258,7 +258,13 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             exe_dir = std::filesystem::path(self_path).parent_path().string();
         }
     }
-    resolve_config_path(&args, exe_dir);
+    // In-process/API callers already supplied a parsed config and must not
+    // probe the desktop default relative path. On Android that path can map
+    // into SELinux-protected configfs; even desktop probes use the nonthrowing
+    // error-code form in resolve_config_path().
+    if (!config_override_.has_value()) {
+        resolve_config_path(&args, exe_dir);
+    }
     ClientConfig cfg;
     if (file_exists(kDefaultAnonymCaCertPath)) {
         cfg.anonym_ca_cert = kDefaultAnonymCaCertPath;
@@ -404,7 +410,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
          args.list_controlled || args.directory_mode || !cfg.app_codec.empty() ||
          !args.chat_target.empty() || !args.file_target.empty() ||
          !args.bytes_target.empty() || !args.admin_target.empty() ||
-         args.attach_local || args.service_streams_only || args.share_export)) {
+         args.attach_local || args.service_streams_only)) {
         util::log_error("--packet-tun is an exclusive data-plane mode; do not combine it with SOCKS, forwards, relay, benchmark, or control modes");
         return 1;
     }

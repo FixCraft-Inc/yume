@@ -811,6 +811,13 @@ yume_apply_perf_opts(yume_packet_engine_test)
 add_test(NAME yume_packet_engine_test COMMAND yume_packet_engine_test)
 
 if(TARGET yume_client_lib)
+    add_executable(yume_share_file_test
+        client/transfer/share_file_test.cpp)
+    target_link_libraries(yume_share_file_test PRIVATE yume_client_lib)
+    yume_link_atomic_if_needed(yume_share_file_test PRIVATE)
+    yume_apply_perf_opts(yume_share_file_test)
+    add_test(NAME yume_share_file_test COMMAND yume_share_file_test)
+
     add_executable(yume_packet_channel_contract_test
         client/packet/channel_contract_test.cpp)
     target_link_libraries(yume_packet_channel_contract_test PRIVATE yume_client_lib)
@@ -827,6 +834,12 @@ target_link_libraries(yume_fair_frame_budget_test PRIVATE yume_core)
 yume_link_atomic_if_needed(yume_fair_frame_budget_test PRIVATE)
 yume_apply_perf_opts(yume_fair_frame_budget_test)
 add_test(NAME yume_fair_frame_budget_test COMMAND yume_fair_frame_budget_test)
+
+add_executable(yume_server_write_policy_test
+    server/session/write_policy_test.cpp)
+target_include_directories(yume_server_write_policy_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+yume_apply_perf_opts(yume_server_write_policy_test)
+add_test(NAME yume_server_write_policy_test COMMAND yume_server_write_policy_test)
 
 add_executable(yume_relay_read_buf_test util_test.cpp)
 target_include_directories(yume_relay_read_buf_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

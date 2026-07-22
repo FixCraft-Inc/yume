@@ -218,7 +218,7 @@ void print_help() {
         << "                             + CA cert + PQ pubkey into a\n"
         << "                             password-protected .yss file (\"yume\n"
         << "                             secure store\"). Prompts for a\n"
-        << "                             password (8+ chars, twice for\n"
+        << "                             password (12+ chars, twice for\n"
         << "                             confirmation). File written 0600.\n"
         << "  import <file>            Decrypt a .yss file and write the\n"
         << "                             extracted keys + a ready-to-use\n"

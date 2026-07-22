@@ -7,6 +7,7 @@
 #include "facade/session/inproc_client.hpp"
 
 #include <cstdio>
+#include <exception>
 #include <future>
 #include <utility>
 #include <vector>
@@ -55,6 +56,10 @@ struct InProcClient::Impl {
     // exit drops Cli's local shared_ptrs; ours persist until stop()).
     std::shared_ptr<client::Tunnel> tunnel;
     std::shared_ptr<client::RelayRuntime> relay;
+    // True only while Tunnel's executor and its strand service are alive.
+    // The connected-session scope clears this under ready_mtx before its
+    // io_context can be destroyed.
+    bool runtime_executor_active{false};
     std::string server_tls_fingerprint_sha256;
     std::vector<std::string> server_capabilities;
     std::shared_ptr<std::atomic<bool>> cancel_requested;
@@ -121,6 +126,7 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
         impl_->ready_error.clear();
         impl_->tunnel.reset();
         impl_->relay.reset();
+        impl_->runtime_executor_active = false;
         impl_->server_tls_fingerprint_sha256.clear();
         impl_->server_capabilities.clear();
         impl_->cancel_requested = std::make_shared<std::atomic<bool>>(false);
@@ -154,11 +160,16 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
                 impl_->ready_cv.notify_all();
             });
         cli.set_runtime_active_callback(
-            [this](boost::asio::io_context*,
+            [this](boost::asio::io_context* io,
                    std::shared_ptr<client::Tunnel> tunnel,
                    std::shared_ptr<client::RelayRuntime> relay,
                    std::function<void(const std::string&)>) {
                 std::lock_guard<std::mutex> lock(impl_->ready_mtx);
+                if (!io) {
+                    impl_->runtime_executor_active = false;
+                    return;
+                }
+                impl_->runtime_executor_active = true;
                 if (tunnel) {
                     impl_->tunnel = std::move(tunnel);
                 }
@@ -167,16 +178,35 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
                 }
             });
 
-        int rc = cli.run_config(std::move(cfg));
+        int rc = 1;
+        std::string unhandled_error;
+        try {
+            rc = cli.run_config(std::move(cfg));
+        } catch (std::exception const& ex) {
+            unhandled_error = std::string("in-process client exception: ") + ex.what();
+        } catch (...) {
+            unhandled_error = "in-process client exception: unknown error";
+        }
         impl_->exit_code.store(rc, std::memory_order_release);
+
+        if (!unhandled_error.empty()) {
+            LogSink::instance().push(
+                LogLevel::Error, "client.runtime", unhandled_error);
+        }
 
         // Cli::run has returned. If we got here without ever signalling
         // ready, surface the exit code to start()'s caller; otherwise
         // it's a normal disconnect after a healthy run.
         {
             std::lock_guard<std::mutex> lock(impl_->ready_mtx);
+            // Defensive fallback for exits before a connected-session scope
+            // was installed. Normal connected exits clear this earlier,
+            // before their io_context is destroyed.
+            impl_->runtime_executor_active = false;
             if (!impl_->ready) {
-                std::string detail = latest_startup_error(impl_->started);
+                std::string detail = unhandled_error.empty()
+                    ? latest_startup_error(impl_->started)
+                    : unhandled_error;
                 if (detail.empty()) {
                     char buf[64];
                     std::snprintf(buf, sizeof(buf),
@@ -213,23 +243,21 @@ bool InProcClient::start(client::ClientConfig cfg, std::string* error,
 }
 
 void InProcClient::stop(std::string* /*error*/, std::string const& reason) {
-    std::shared_ptr<client::Tunnel> t;
     std::shared_ptr<std::atomic<bool>> cancel_requested;
     {
         std::lock_guard<std::mutex> lock(impl_->ready_mtx);
-        t = impl_->tunnel;
         cancel_requested = impl_->cancel_requested;
-    }
-    if (cancel_requested) {
-        cancel_requested->store(true, std::memory_order_release);
-    }
-    // Use the same forced-close tunnel reason as the CLI signal path.
-    // A normal SSL shutdown can block here if the peer does not send
-    // close_notify, and this API must return synchronously to embedders.
-    constexpr const char* kForcedCloseReason = "interrupt";
-    (void)reason;
-    if (t) {
-        t->stop(kForcedCloseReason);
+        if (cancel_requested) {
+            cancel_requested->store(true, std::memory_order_release);
+        }
+        // Posting and the connected-session executor reset share ready_mtx.
+        // This prevents an EOF teardown from destroying Asio's strand mutex
+        // between the active check and Tunnel::stop().
+        constexpr const char* kForcedCloseReason = "interrupt";
+        (void)reason;
+        if (impl_->runtime_executor_active && impl_->tunnel) {
+            impl_->tunnel->stop(kForcedCloseReason);
+        }
     }
     if (impl_->cli_thread.joinable()) {
         impl_->cli_thread.join();
@@ -238,6 +266,7 @@ void InProcClient::stop(std::string* /*error*/, std::string const& reason) {
         std::lock_guard<std::mutex> lock(impl_->ready_mtx);
         impl_->tunnel.reset();
         impl_->relay.reset();
+        impl_->runtime_executor_active = false;
         impl_->server_tls_fingerprint_sha256.clear();
         impl_->server_capabilities.clear();
         impl_->cancel_requested.reset();

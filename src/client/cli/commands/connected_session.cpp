@@ -841,6 +841,14 @@ int run_connected_session(boost::asio::io_context& io,
         std::move(stream), std::move(options.h2_carrier),
         std::move(options.prefetched_carrier_bytes),
         std::move(options.ratchet));
+    struct ActiveRuntimeReset {
+        ConnectedSessionOptions::SetActiveRuntimeCallback* callback;
+        ~ActiveRuntimeReset() {
+            if (callback && *callback) {
+                (*callback)(nullptr, nullptr, nullptr, {});
+            }
+        }
+    } active_runtime_reset{&options.set_active_runtime};
     if (options.set_active_runtime) {
         options.set_active_runtime(&io, tunnel, nullptr, {});
     }

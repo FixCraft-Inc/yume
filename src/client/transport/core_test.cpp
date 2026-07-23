@@ -440,6 +440,74 @@ void test_ratchet_batches_cross_rekeys_in_wire_order() {
 #endif
 }
 
+void test_ratchet_sends_bounded_data_while_rekey_ack_is_in_flight() {
+#if defined(YUME_USE_BASEFWX) && YUME_USE_BASEFWX
+    DeferredLink client_to_server;
+    DeferredLink server_to_client;
+    std::string client_close;
+    std::string server_close;
+    yume::client::TransportCore client(
+        client_to_server.writer(),
+        [&](const std::string& reason) { client_close = reason; });
+    yume::client::TransportCore server(
+        server_to_client.writer(),
+        [&](const std::string& reason) { server_close = reason; });
+    const yume::ratchet::Bytes root(32, 0x71);
+    const yume::ratchet::Bytes psk(32, 0x82);
+    client.set_ratchet(std::make_unique<yume::ratchet::SessionRatchet>(
+        yume::ratchet::EndpointRole::Client, root, psk));
+    server.set_ratchet(std::make_unique<yume::ratchet::SessionRatchet>(
+        yume::ratchet::EndpointRole::Server, root, psk));
+    client.start();
+    server.start();
+
+    bool full_completed = false;
+    bool tail_completed = false;
+    assert(client.try_send_data(
+        1,
+        std::vector<std::uint8_t>(yume::ratchet::kEpochByteLimit, 0x93),
+        [&](bool ok, std::size_t, const std::string&) {
+            assert(ok);
+            full_completed = true;
+        }));
+    assert(client.try_send_data(
+        1, std::vector<std::uint8_t>{0xa4},
+        [&](bool ok, std::size_t, const std::string&) {
+            assert(ok);
+            tail_completed = true;
+        }));
+
+    assert(client_to_server.writes.size() == 1);
+    auto first_write = std::move(client_to_server.writes.front());
+    client_to_server.writes.pop_front();
+    const auto first_frames = decode_all_frames(first_write.wire);
+    assert(first_frames.size() == 2);
+    assert(first_frames[0].header.type == yume::protocol::REKEY_INIT);
+    assert(first_frames[1].header.type == yume::protocol::DATA);
+
+    // Deliver INIT+DATA and its ACK before reporting the original carrier
+    // write complete. The triggering DATA is already sealed under the bounded
+    // old epoch, so an unusually fast ACK cannot create an empty-epoch rekey
+    // loop or reorder it behind new-epoch traffic.
+    server.feed_tls_bytes(first_write.wire);
+    assert(server_close.empty());
+    assert(server_to_client.writes.size() == 1);
+    auto ack_write = std::move(server_to_client.writes.front());
+    server_to_client.writes.pop_front();
+    client.feed_tls_bytes(ack_write.wire);
+    assert(client_close.empty());
+    first_write.completion(true, first_write.wire.size(), {});
+
+    assert(client_to_server.writes.size() == 1);
+    const auto tail_frames =
+        decode_all_frames(client_to_server.writes.front().wire);
+    assert(tail_frames.size() == 1);
+    assert(tail_frames.front().header.type == yume::protocol::DATA);
+    assert(full_completed);
+    assert(!tail_completed);
+#endif
+}
+
 }  // namespace
 
 int main() {
@@ -455,5 +523,6 @@ int main() {
     test_transport_bulk_backpressure_is_bounded();
     test_shutdown_completes_queued_and_inflight_writes_once();
     test_ratchet_batches_cross_rekeys_in_wire_order();
+    test_ratchet_sends_bounded_data_while_rekey_ack_is_in_flight();
     return 0;
 }

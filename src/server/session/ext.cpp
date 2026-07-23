@@ -344,7 +344,7 @@ bool Session::handle_bench_open(uint8_t stream_id, const std::string& proto, con
     }
 
     send_open_reply(stream_id, true, "");
-    if (util::timing_enabled()) {
+    if (YUME_TIMING_ENABLED()) {
         util::log_info("session " + std::to_string(session_id_) +
                        ": benchmark stream " + std::to_string(stream_id) +
                        " proto=" + proto +
@@ -399,7 +399,7 @@ bool Session::handle_bench_close(uint8_t stream_id, const std::string& reason) {
         send_control_frame(protocol::DATA, stream_id, crypto::Bytes(out.begin(), out.end()));
     }
     send_control_close(stream_id, reason.empty() ? "benchmark complete" : reason);
-    util::log_timing("server.stream",
+    YUME_TIMING_LOG("server.stream",
                      "summary",
                      "session=" + std::to_string(session_id_) +
                          " stream=" + std::to_string(stream_id) +

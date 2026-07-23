@@ -49,7 +49,7 @@ void TestX25519RejectsAllZeroPeer() {
 #endif
 }
 
-void TestOldEpochApplicationRejectedAfterInit() {
+void TestOldEpochApplicationRejectedAfterCommit() {
     using namespace yume;
     const ratchet::Bytes root(32, 0x71);
     const ratchet::Bytes psk(32, 0x82);
@@ -65,15 +65,90 @@ void TestOldEpochApplicationRejectedAfterInit() {
     auto init_result = server.Open(init, now);
     assert(init_result.control_response.has_value());
 
-    // Advance the independent test sender over the INIT's old-chain sequence,
-    // then construct an otherwise authentic old-epoch DATA frame.
+    // Advance an independent sender over the INIT's old-chain sequence and
+    // prove bounded old-epoch DATA remains valid while the hybrid exchange is
+    // pending.
     (void)old_sender.Encrypt(protocol::REKEY_INIT, 0,
                              protocol::kFlagInnerEncrypted, {}, now, false);
-    auto stale = old_sender.Encrypt(protocol::DATA, 1,
-                                    protocol::kFlagInnerEncrypted, {0x55}, now);
+    auto overlapping = old_sender.Encrypt(
+        protocol::DATA, 1, protocol::kFlagInnerEncrypted, {0x55}, now);
+    auto opened_overlapping = server.Open(
+        Envelope(protocol::DATA, 1, std::move(overlapping)), now);
+    assert(opened_overlapping.application_frame.has_value());
+
+    auto ack_result = client.Open(*init_result.control_response, now);
+    assert(ack_result.outbound_rekey_completed);
+    protocol::Frame new_plain{{1, protocol::DATA, 1, 0}, {0x66}};
+    auto new_epoch = client.Seal(new_plain, now);
+    auto opened_new_epoch = server.Open(new_epoch, now);
+    assert(opened_new_epoch.application_frame.has_value());
+
+    // Once an authenticated new-epoch frame commits the receiver, even a
+    // correctly sequenced/authenticated old-chain frame is permanently stale.
+    auto stale = old_sender.Encrypt(
+        protocol::DATA, 1, protocol::kFlagInnerEncrypted, {0x77}, now);
     assert(Throws([&] {
         (void)server.Open(Envelope(protocol::DATA, 1, std::move(stale)), now);
     }));
+}
+
+void TestRekeyPreparationOverlapsWithoutCrossingLimits() {
+    using namespace yume;
+    const ratchet::Bytes root(32, 0x91);
+    const ratchet::Bytes psk(32, 0xa2);
+    ratchet::SessionRatchet client(ratchet::EndpointRole::Client, root, psk);
+    ratchet::SessionRatchet server(ratchet::EndpointRole::Server, root, psk);
+    const auto now = std::chrono::steady_clock::time_point{};
+
+    // A maximum-sized application frame must start the next hybrid exchange
+    // before it consumes the current epoch. The authenticated old epoch stays
+    // usable only up to its unchanged byte/frame boundary while the ACK is in
+    // flight.
+    protocol::Frame full{{static_cast<std::uint32_t>(
+                              ratchet::kEpochByteLimit),
+                          protocol::DATA, 1, 0},
+                         ratchet::Bytes(ratchet::kEpochByteLimit, 0xb3)};
+    assert(client.ShouldStartRekey(full, now));
+    auto init = client.BeginOutboundRekey(now);
+    auto opened_init = server.Open(init, now);
+    assert(opened_init.control_response.has_value());
+    assert(!client.ApplicationWriteBlocked(full, now));
+
+    auto old_epoch_data = client.Seal(full, now);
+    assert(old_epoch_data.header.type == protocol::DATA);
+    auto opened_old_epoch_data = server.Open(old_epoch_data, now);
+    assert(opened_old_epoch_data.application_frame.has_value());
+    assert(opened_old_epoch_data.application_frame->payload == full.payload);
+
+    protocol::Frame extra{{1, protocol::DATA, 1, 0}, {0xc4}};
+    assert(client.ApplicationWriteBlocked(extra, now));
+    assert(Throws([&] { (void)client.Seal(extra, now); }));
+
+    // A malicious implementation cannot bypass the limit by treating DATA as
+    // unaccounted control while the receiver retains both chains.
+    ratchet::DirectionalRatchet malicious_old_sender(
+        ratchet::Direction::ClientToServer,
+        ratchet::DeriveDirectionRoot(root,
+                                     ratchet::Direction::ClientToServer));
+    (void)malicious_old_sender.Encrypt(
+        protocol::REKEY_INIT, 0, protocol::kFlagInnerEncrypted, {}, now, false);
+    (void)malicious_old_sender.Encrypt(
+        protocol::DATA, 1, protocol::kFlagInnerEncrypted, full.payload, now);
+    auto over_limit = malicious_old_sender.Encrypt(
+        protocol::DATA, 1, protocol::kFlagInnerEncrypted, {0xd5}, now, false);
+    assert(Throws([&] {
+        (void)server.Open(
+            Envelope(protocol::DATA, 1, std::move(over_limit)), now);
+    }));
+
+    auto opened_ack = client.Open(*opened_init.control_response, now);
+    assert(opened_ack.outbound_rekey_completed);
+    auto new_epoch_data = client.Seal(extra, now);
+    auto opened_new_epoch_data = server.Open(new_epoch_data, now);
+    assert(opened_new_epoch_data.application_frame.has_value());
+    assert(opened_new_epoch_data.application_frame->payload == extra.payload);
+    assert(client.outbound_epoch() == 1);
+    assert(server.inbound_epoch() == 1);
 }
 
 void TestSimultaneousDirectionalRekey() {
@@ -146,6 +221,7 @@ int main() {
     assert(server.inbound_epoch() == 1);
     TestSimultaneousDirectionalRekey();
     TestX25519RejectsAllZeroPeer();
-    TestOldEpochApplicationRejectedAfterInit();
+    TestOldEpochApplicationRejectedAfterCommit();
+    TestRekeyPreparationOverlapsWithoutCrossingLimits();
     return 0;
 }

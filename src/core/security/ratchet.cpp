@@ -164,6 +164,28 @@ bool DirectionalRatchet::ShouldRekey(
     return WouldExceedUsage(next_plaintext_bytes) || time_exhausted;
 }
 
+bool DirectionalRatchet::ShouldPrepareRekey(
+    std::size_t next_plaintext_bytes,
+    std::chrono::steady_clock::time_point now) const {
+    if (ShouldRekey(next_plaintext_bytes, now)) {
+        return true;
+    }
+
+    const std::size_t byte_prepare_threshold =
+        kEpochByteLimit - kRekeyByteLead;
+    const bool bytes_near_boundary =
+        epoch_bytes_ >= byte_prepare_threshold ||
+        next_plaintext_bytes >= byte_prepare_threshold - epoch_bytes_;
+    const std::uint64_t message_prepare_threshold =
+        kEpochMessageLimit - kRekeyMessageLead;
+    const bool messages_near_boundary =
+        epoch_messages_ >= message_prepare_threshold - 1;
+    const bool time_near_boundary = active_ &&
+        now - first_active_ >= kEpochActiveLimit - kRekeyTimeLead;
+    return bytes_near_boundary || messages_near_boundary ||
+           time_near_boundary;
+}
+
 SealedFrame DirectionalRatchet::Encrypt(
     std::uint8_t frame_type,
     std::uint8_t stream_id,

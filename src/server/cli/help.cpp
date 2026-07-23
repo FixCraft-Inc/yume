@@ -163,7 +163,7 @@ void print_help() {
         << "                             (default 127.0.0.1:18089).\n"
         << "  --root                   Keep root privileges after bind/listen\n"
         << "  --boring                 Minimal logs\n"
-        << "  --timing                 Emit lightweight timing diagnostics\n\n"
+        << "  --timing                 Emit precise timing diagnostics (developer build only)\n\n"
         << "Security:\n"
         << "  YUME 2.0 always uses ephemeral ML-KEM-1024 + X25519, a mandatory\n"
         << "  file-distributed PSK, per-message AES-256-GCM keys, and independent\n"

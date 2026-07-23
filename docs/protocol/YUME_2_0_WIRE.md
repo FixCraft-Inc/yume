@@ -1,6 +1,6 @@
 # YUME 2.0 desktop wire contract
 
-Status: frozen development contract for the first Linux x86-64 desktop slice.
+Status: current `2.0-dev2` development contract for the first Linux x86-64 desktop slice.
 The release version remains gated on capture, conformance, soak, and throughput
 evidence. This document intentionally does not describe a 1.x compatibility
 mode because none exists.
@@ -63,7 +63,7 @@ limited to 64 KiB before allocation.
 
 | ID | Critical | Value |
 | -- | -- | -- |
-| 1 | yes | UTF-8 exact transport version `2.0-dev1` |
+| 1 | yes | UTF-8 exact transport version `2.0-dev2` |
 | 2 | yes | 32-byte server challenge |
 | 3 | yes | ephemeral ML-KEM-1024 public key |
 | 4 | yes | 32-byte ephemeral X25519 public key |
@@ -103,7 +103,7 @@ token is:
 
 ```
 HMAC-SHA256(obfs_secret,
-  len("2.0-dev1") || "2.0-dev1" ||
+  len("2.0-dev2") || "2.0-dev2" ||
   len(lowercase_sni) || lowercase_sni ||
   hour_u64 || nonce_32)
 ```
@@ -144,10 +144,19 @@ receiver's expected values.
 
 ## Directional epoch change
 
-Before sending the next application frame, a direction starts rekey if that
-frame would exceed 256 KiB, 512 encrypted frames, or 500 ms since the epoch's
-first active data frame. Idle time alone sends nothing; late-arriving data
-starts rekey first. Application writes queue behind a bounded rekey barrier.
+Before the hard boundary, a direction pipelines preparation of the next epoch.
+The current implementation starts once an application frame reaches 64 KiB of
+the 256 KiB epoch, leaves 64 of 512 frame slots, or reaches 400 ms of the 500 ms
+active interval. A maximum-sized first frame therefore sends `REKEY_INIT`
+immediately before that frame. Idle time alone sends nothing.
+
+While the authenticated exchange is pending, the sender may continue sealing
+old-epoch application frames only while they fit within the unchanged 256 KiB,
+512-frame, and 500 ms limits. If the ACK is not ready at the hard boundary,
+later writes wait in the bounded rekey queue. Ordered H2/TCP guarantees that
+old-epoch frames already queued after `REKEY_INIT` arrive before any new-epoch
+frame. The first authenticated new-epoch frame permanently retires the old
+receiving chain.
 
 The receiver independently rejects an authenticated inbound epoch that would
 exceed the 256 KiB or 512-frame usage boundary. The 500 ms boundary is
@@ -175,8 +184,8 @@ root_e+1 = HKDF-SHA256(
   root_e, "yume/2.0/epoch-root/v1", 32)
 ```
 
-The responder advances the receiving direction after queueing the ACK; the
-initiator advances its sending direction after authenticating the ACK. The old
-receiving chain may exist only until the first authenticated new-epoch frame,
-then it and all ephemeral/shared material are erased. Rekey timeout is fatal;
-expired-epoch application data is never sent.
+The responder derives a pending receiving direction before queueing the ACK;
+the initiator advances its sending direction after authenticating the ACK. The
+responder commits the pending direction on the first authenticated new-epoch
+frame. The old receiving chain, ephemeral keys, and shared material are then
+erased. Rekey timeout is fatal; expired-epoch application data is never sent.

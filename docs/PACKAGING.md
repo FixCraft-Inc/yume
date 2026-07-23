@@ -199,8 +199,8 @@ The helper writes `../yume_<version>.orig.tar.xz` and excludes bundled
 dependency trees, vendored binaries, build directories, logs, bytecode, and
 the `debian/` directory. The source package then contains the upstream
 tarball plus Debian packaging metadata as a separate Debian tarball.
-Development versions use Debian's sorting-safe spelling (`2.0-dev1` becomes
-`2.0~dev1`) and `scripts/check_debian_source.sh` rejects a mismatch between
+Development versions use Debian's sorting-safe spelling (`2.0-dev2` becomes
+`2.0~dev2`) and `scripts/check_debian_source.sh` rejects a mismatch between
 `src/core/version.hpp` and the top Debian changelog entry.
 
 The Debian package builds with:

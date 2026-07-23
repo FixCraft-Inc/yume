@@ -279,8 +279,10 @@ Resource sampling is implemented only in the Python benchmark harness through
 Linux `/proc`; it adds no counters, logging, timer calls, branches, or threads
 to normal `yume` and `yumed` execution. The default 250 ms sampler is external
 to the measured process group. `--timing` is separate, opt-in in-process
-diagnostics and should be passed to both server and client only for profiling,
-not for an uninstrumented throughput comparison.
+diagnostics compiled only in Debug/RelWithDebInfo developer builds. Pass it to
+both server and client only for profiling, not for an uninstrumented throughput
+comparison. Release/MinSizeRel builds contain no timing hooks. See
+[DIAGNOSTICS.md](DIAGNOSTICS.md).
 Multi-client peak RSS is intentionally reported as an upper bound: it sums
 each process group's independently observed peak, so the peaks may not coincide
 and shared pages can be counted once per process. Use proportional-set-size

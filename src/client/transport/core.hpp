@@ -22,6 +22,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/protocol/protocol.hpp"
+#include "core/diagnostics/timing.hpp"
 #include "core/security/session_ratchet.hpp"
 
 namespace yume::client {
@@ -39,9 +40,11 @@ public:
     using ControlHandler = std::function<void(const nlohmann::json&)>;
     using InboundOpenHandler = std::function<void(uint8_t stream_id, const nlohmann::json&)>;
     using ActivityHandler = std::function<void()>;
+#if YUME_ENABLE_DEV_DIAGNOSTICS
     using TimingHandler = std::function<void(const std::string&,
                                              const std::string&,
                                              const std::string&)>;
+#endif
     using ServerStreamOpenHandler = std::function<bool(uint8_t stream_id,
                                                        const std::string& host,
                                                        int port,
@@ -80,7 +83,9 @@ public:
     void set_control_handler(ControlHandler handler);
     void set_inbound_open_handler(InboundOpenHandler handler);
     void set_activity_handler(ActivityHandler handler);
+#if YUME_ENABLE_DEV_DIAGNOSTICS
     void set_timing_handler(TimingHandler handler);
+#endif
     void set_server_stream_open_handler(ServerStreamOpenHandler handler);
     void set_exec_handler(ExecHandler handler);
 
@@ -143,15 +148,17 @@ private:
     void dispatch_next_write();
     std::optional<uint8_t> select_next_write_locked(
         std::size_t current_batch_bytes,
-        const std::unordered_set<uint8_t>& batch_streams,
-        bool rekey_blocked);
+        const std::unordered_set<uint8_t>& batch_streams);
     void mark_stream_ready_locked(uint8_t stream_id);
     bool write_queues_empty_locked() const noexcept;
     PendingWrite pop_stream_head_locked(uint8_t stream_id);
     void release_write_reservation_locked(const PendingWrite& write) noexcept;
     std::shared_ptr<Bytes> encode_outgoing_frame(
-        const protocol::Frame& frame, bool already_protected,
-        std::uint64_t* seal_ns);
+        const protocol::Frame& frame, bool already_protected
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        , diagnostics::SampleAccumulator* seal_timing
+#endif
+    );
     void resume_writes_after_rekey();
     void handle_frame(const protocol::Frame& frame);
     Bytes encrypt_inner_payload(uint8_t frame_type, uint8_t stream_id, const Bytes& input);
@@ -183,17 +190,19 @@ private:
     ControlHandler control_handler_;
     InboundOpenHandler inbound_open_handler_;
     ActivityHandler activity_handler_;
+#if YUME_ENABLE_DEV_DIAGNOSTICS
     TimingHandler timing_handler_;
+#endif
     ServerStreamOpenHandler server_stream_open_handler_;
     ExecHandler exec_handler_;
     uint8_t next_stream_id_{1};
     bool stopped_{false};
     std::optional<Bytes> inner_key_;
     std::unique_ptr<ratchet::SessionRatchet> ratchet_;
-    std::optional<std::chrono::steady_clock::time_point>
-        outbound_rekey_wait_started_;
-    std::uint64_t timing_open_ns_{0};
-    std::uint64_t timing_open_frames_{0};
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    diagnostics::IntervalTimer outbound_rekey_wait_;
+    diagnostics::SampleAccumulator timing_open_;
+#endif
     bool hop_enabled_{false};
     std::uint32_t hop_interval_ms_{0};
     std::int64_t hop_offset_ms_{0};

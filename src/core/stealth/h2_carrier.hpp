@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "core/diagnostics/timing.hpp"
+
 namespace yume::obfs {
 
 using H2Bytes = std::vector<std::uint8_t>;
@@ -32,6 +34,7 @@ struct H2Request {
     H2Headers headers;
 };
 
+#if YUME_ENABLE_DEV_DIAGNOSTICS
 struct H2CarrierStats {
     std::uint64_t h2_feed_calls{0};
     std::uint64_t h2_feed_bytes{0};
@@ -44,6 +47,7 @@ struct H2CarrierStats {
     std::uint64_t websocket_decode_bytes{0};
     std::uint64_t websocket_decode_ns{0};
 };
+#endif
 
 // A complete in-memory HTTP/2 endpoint around libnghttp2. Socket ownership and
 // async scheduling remain with the client/server session. Feed() consumes TLS
@@ -59,7 +63,9 @@ public:
     H2Carrier& operator=(H2Carrier&&) noexcept;
     ~H2Carrier();
 
+#if YUME_ENABLE_DEV_DIAGNOSTICS
     void set_timing_enabled(bool enabled) noexcept;
+#endif
 
     // Client only. Submits the Chrome-profiled SETTINGS and priming GET. The
     // extended CONNECT cannot be submitted until priming_complete() is true.
@@ -102,7 +108,9 @@ public:
     bool carrier_closed() const noexcept;
     std::int32_t carrier_stream_id() const noexcept;
     std::size_t queued_output_bytes() const noexcept;
+#if YUME_ENABLE_DEV_DIAGNOSTICS
     H2CarrierStats stats() const noexcept;
+#endif
 
     void GracefulClose(std::uint16_t websocket_code = 1000);
 

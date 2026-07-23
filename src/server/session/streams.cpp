@@ -98,7 +98,7 @@ void Session::on_remote_read(uint8_t stream_id, const boost::system::error_code&
     remote->downstream_bytes += static_cast<std::uint64_t>(bytes);
     if (remote->first_downstream_ms == 0) {
         remote->first_downstream_ms = util::now_ms();
-        util::log_timing("server.stream",
+        YUME_TIMING_LOG("server.stream",
                          "first_downstream",
                          "session=" + std::to_string(session_id_) +
                              " stream=" + std::to_string(stream_id) +
@@ -171,7 +171,7 @@ void Session::on_udp_read(uint8_t stream_id, const boost::system::error_code& ec
     udp->downstream_bytes += static_cast<std::uint64_t>(bytes);
     if (udp->first_downstream_ms == 0) {
         udp->first_downstream_ms = util::now_ms();
-        util::log_timing("server.stream",
+        YUME_TIMING_LOG("server.stream",
                          "first_downstream",
                          "session=" + std::to_string(session_id_) +
                              " stream=" + std::to_string(stream_id) +
@@ -211,7 +211,7 @@ void Session::enqueue_udp_write(uint8_t stream_id, const crypto::Bytes& data) {
             udp->upstream_bytes += static_cast<std::uint64_t>(data.size());
             if (udp->first_upstream_ms == 0) {
                 udp->first_upstream_ms = util::now_ms();
-                util::log_timing("server.stream",
+                YUME_TIMING_LOG("server.stream",
                                  "first_upstream",
                                  "session=" + std::to_string(session_id_) +
                                      " stream=" + std::to_string(stream_id) +
@@ -309,7 +309,7 @@ void Session::enqueue_remote_write(uint8_t stream_id, const std::vector<uint8_t>
             remote->upstream_bytes += static_cast<std::uint64_t>(data.size());
             if (remote->first_upstream_ms == 0) {
                 remote->first_upstream_ms = util::now_ms();
-                util::log_timing("server.stream",
+                YUME_TIMING_LOG("server.stream",
                                  "first_upstream",
                                  "session=" + std::to_string(session_id_) +
                                      " stream=" + std::to_string(stream_id) +
@@ -464,7 +464,8 @@ void Session::queue_frame_on_strand(const protocol::Frame& frame,
         try {
             const bool application =
                 ratchet::SessionRatchet::IsApplicationFrame(frame.header.type);
-            if (application && ratchet_->outbound_rekey_pending()) {
+            const auto now = std::chrono::steady_clock::now();
+            if (application && ratchet_->ApplicationWriteBlocked(frame, now)) {
                 if (ratchet_blocked_writes_.size() >= kMaxWriteQueueSize) {
                     if (handler) handler(boost::asio::error::no_buffer_space, 0);
                     close_with_reason("ratchet application queue overrun");
@@ -475,47 +476,38 @@ void Session::queue_frame_on_strand(const protocol::Frame& frame,
                 return;
             }
             if (!already_protected && application &&
-                ratchet_->ShouldStartRekey(
-                    frame, std::chrono::steady_clock::now())) {
-                protocol::Frame init = ratchet_->BeginOutboundRekey(
-                    std::chrono::steady_clock::now());
-                outbound_rekey_wait_started_ =
-                    std::chrono::steady_clock::now();
-                if (ratchet_blocked_writes_.size() >= kMaxWriteQueueSize) {
-                    if (handler) handler(boost::asio::error::no_buffer_space, 0);
-                    close_with_reason("ratchet application queue overrun");
-                    return;
-                }
-                ratchet_blocked_writes_.push_back(
-                    {frame, std::move(handler)});
+                ratchet_->ShouldStartRekey(frame, now)) {
+                protocol::Frame init = ratchet_->BeginOutboundRekey(now);
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+                outbound_rekey_wait_.start_if(YUME_TIMING_ENABLED(), now);
+#endif
                 arm_ratchet_timeout_on_strand();
+                // INIT must enter the ordered H2/TLS stream first. Re-process
+                // the application frame immediately: it can use only the
+                // remaining old-epoch allowance, otherwise it joins the same
+                // bounded blocked queue used at the hard boundary.
                 queue_frame_on_strand(init, {}, true);
+                queue_frame_on_strand(frame, std::move(handler));
                 return;
             }
             if (!already_protected) {
-                const bool collect_timing = util::timing_enabled();
-                const auto seal_started = collect_timing
-                    ? std::chrono::steady_clock::now()
-                    : std::chrono::steady_clock::time_point{};
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+                const bool collect_timing = YUME_TIMING_ENABLED();
+                timing_seal_.set_active(collect_timing);
+                diagnostics::Stopwatch seal_timer(collect_timing);
+#endif
                 effective = ratchet_->Seal(
                     frame, std::chrono::steady_clock::now());
-                if (collect_timing) {
-                    timing_seal_ns_ += static_cast<std::uint64_t>(
-                        std::chrono::duration_cast<std::chrono::nanoseconds>(
-                            std::chrono::steady_clock::now() - seal_started).count());
-                    ++timing_seal_frames_;
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+                timing_seal_.record(seal_timer);
+                if (const auto sample = timing_seal_.take_if(64)) {
+                    YUME_TIMING_LOG(
+                        "server.transport", "ratchet_seal",
+                        "session=" + std::to_string(session_id_) +
+                        " frames=" + std::to_string(sample->count) +
+                        " us=" + std::to_string(sample->total_ns / 1000U));
                 }
-                if (timing_seal_frames_ >= 64) {
-                    if (util::timing_enabled()) {
-                        util::log_timing(
-                            "server.transport", "ratchet_seal",
-                            "session=" + std::to_string(session_id_) +
-                            " frames=" + std::to_string(timing_seal_frames_) +
-                            " us=" + std::to_string(timing_seal_ns_ / 1000U));
-                    }
-                    timing_seal_ns_ = 0;
-                    timing_seal_frames_ = 0;
-                }
+#endif
             } else if (frame.header.type != protocol::REKEY_INIT &&
                        frame.header.type != protocol::REKEY_ACK) {
                 throw std::runtime_error("unexpected pre-protected frame type");
@@ -780,10 +772,9 @@ void Session::do_write() {
     std::vector<PendingWrite> batch;
     std::size_t batch_count = 0;
     std::size_t total_bytes = 0;
-    const bool collect_timing = util::timing_enabled();
-    const auto selector_started = collect_timing
-        ? std::chrono::steady_clock::now()
-        : std::chrono::steady_clock::time_point{};
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    diagnostics::Stopwatch selector_timer(YUME_TIMING_ENABLED());
+#endif
     std::unordered_set<uint8_t> batch_streams;
     while (!write_queues_empty_on_strand() &&
            batch_count < kMaxWriteBatchFrames) {
@@ -802,20 +793,17 @@ void Session::do_write() {
         write_in_flight_ = false;
         return;
     }
-    if (collect_timing) {
-        const auto selector_us =
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                std::chrono::steady_clock::now() - selector_started).count();
-        util::log_timing(
-            "server.transport", "write_batch",
-            "session=" + std::to_string(session_id_) +
-            " frames=" + std::to_string(batch_count) +
-            " bytes=" + std::to_string(total_bytes) +
-            " queue_depth=" + std::to_string(write_queue_depth_) +
-            " queued_frames=" + std::to_string(write_queued_frames_) +
-            " queued_bytes=" + std::to_string(write_queued_bytes_) +
-            " selector_us=" + std::to_string(selector_us));
-    }
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    YUME_TIMING_LOG(
+        "server.transport", "write_batch",
+        "session=" + std::to_string(session_id_) +
+        " frames=" + std::to_string(batch_count) +
+        " bytes=" + std::to_string(total_bytes) +
+        " queue_depth=" + std::to_string(write_queue_depth_) +
+        " queued_frames=" + std::to_string(write_queued_frames_) +
+        " queued_bytes=" + std::to_string(write_queued_bytes_) +
+        " selector_us=" + std::to_string(selector_timer.elapsed_ns() / 1000U));
+#endif
 
     std::shared_ptr<std::vector<uint8_t>> batch_data;
     if (batch_count == 1) {
@@ -831,27 +819,26 @@ void Session::do_write() {
     }
 
     auto self = shared_from_this();
-    const auto tls_write_started = collect_timing
-        ? std::chrono::steady_clock::now()
-        : std::chrono::steady_clock::time_point{};
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    diagnostics::Stopwatch tls_write_timer(YUME_TIMING_ENABLED());
+#endif
     auto on_complete = [self,
                         batch_data,
                         batch = std::move(batch),
-                        batch_count,
-                        tls_write_started,
-                        collect_timing](const boost::system::error_code& ec,
+                        batch_count
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+                        , tls_write_timer
+#endif
+                       ](const boost::system::error_code& ec,
                                      std::size_t bytes) mutable {
-        if (collect_timing) {
-            const auto tls_write_us =
-                std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::steady_clock::now() - tls_write_started).count();
-            util::log_timing(
-                "server.tls", "write",
-                "session=" + std::to_string(self->session_id_) +
-                " bytes=" + std::to_string(bytes) +
-                " requested=" + std::to_string(batch_data->size()) +
-                " us=" + std::to_string(tls_write_us));
-        }
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        YUME_TIMING_LOG(
+            "server.tls", "write",
+            "session=" + std::to_string(self->session_id_) +
+            " bytes=" + std::to_string(bytes) +
+            " requested=" + std::to_string(batch_data->size()) +
+            " us=" + std::to_string(tls_write_timer.elapsed_ns() / 1000U));
+#endif
         if (self->write_queue_depth_ >= batch_count) {
             self->write_queue_depth_ -= static_cast<uint32_t>(batch_count);
         } else {

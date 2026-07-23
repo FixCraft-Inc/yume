@@ -139,8 +139,11 @@ bool TransportCore::queue_frame(protocol::Frame frame, WriteCompletion handler,
 }
 
 std::shared_ptr<TransportCore::Bytes> TransportCore::encode_outgoing_frame(
-    const protocol::Frame& frame, bool already_protected,
-    std::uint64_t* seal_ns) {
+    const protocol::Frame& frame, bool already_protected
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    , diagnostics::SampleAccumulator* seal_timing
+#endif
+) {
     // Avoid copying the payload on the no-inner path: encode_frame and
     // encrypt_inner_payload both take const&, so the source frame's payload
     // can be passed through directly. Only the inner-encrypted path needs a
@@ -154,17 +157,14 @@ std::shared_ptr<TransportCore::Bytes> TransportCore::encode_outgoing_frame(
             throw std::runtime_error("transport stopped");
         }
         if (ratchet_ && !already_protected) {
-            const bool collect_timing = seal_ns != nullptr;
-            const auto seal_started = collect_timing
-                ? std::chrono::steady_clock::now()
-                : std::chrono::steady_clock::time_point{};
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+            diagnostics::Stopwatch seal_timer(seal_timing != nullptr);
+#endif
             protected_frame = ratchet_->Seal(
                 frame, std::chrono::steady_clock::now());
-            if (collect_timing) {
-                *seal_ns += static_cast<std::uint64_t>(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(
-                        std::chrono::steady_clock::now() - seal_started).count());
-            }
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+            if (seal_timing) seal_timing->record(seal_timer);
+#endif
             effective_frame = &protected_frame;
         } else if (!ratchet_) {
             use_legacy_inner =
@@ -195,14 +195,18 @@ void TransportCore::dispatch_next_write() {
     auto encoded = std::make_shared<Bytes>();
     std::vector<std::size_t> encoded_sizes;
     WriteHandler writer;
+#if YUME_ENABLE_DEV_DIAGNOSTICS
     TimingHandler timing_handler;
+#endif
     {
         std::lock_guard<std::mutex> state_lock(state_mu_);
         if (stopped_) {
             return;
         }
         writer = write_handler_;
+#if YUME_ENABLE_DEV_DIAGNOSTICS
         timing_handler = timing_handler_;
+#endif
     }
     if (!writer) {
         request_transport_close("transport writer unavailable");
@@ -211,16 +215,18 @@ void TransportCore::dispatch_next_write() {
 
     std::string selection_error;
     std::size_t total_bytes = 0;
+#if YUME_ENABLE_DEV_DIAGNOSTICS
     const bool collect_timing = static_cast<bool>(timing_handler);
-    std::uint64_t selector_ns = 0;
-    std::uint64_t seal_ns = 0;
+    diagnostics::SampleAccumulator selector_timing(collect_timing);
+    diagnostics::SampleAccumulator seal_timing(collect_timing);
+#endif
     std::unordered_set<uint8_t> batch_streams;
     while (batch.size() < kMaxWriteBatchFrames) {
         std::optional<PendingWrite> selected;
         std::optional<protocol::Frame> rekey;
-        const auto selector_started = collect_timing
-            ? std::chrono::steady_clock::now()
-            : std::chrono::steady_clock::time_point{};
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        diagnostics::Stopwatch selector_timer(collect_timing);
+#endif
         try {
             std::scoped_lock lock(state_mu_, write_mu_);
             if (stopped_) {
@@ -234,10 +240,8 @@ void TransportCore::dispatch_next_write() {
                 break;
             }
             const bool ratchet_active = ratchet_ != nullptr;
-            const bool rekey_blocked =
-                ratchet_active && ratchet_->outbound_rekey_pending();
             const auto stream_id = select_next_write_locked(
-                total_bytes, batch_streams, rekey_blocked);
+                total_bytes, batch_streams);
             if (!stream_id.has_value()) {
                 if (batch.empty()) {
                     write_in_flight_ = false;
@@ -245,15 +249,24 @@ void TransportCore::dispatch_next_write() {
                 break;
             }
             auto& head = write_queues_[*stream_id].front();
+            const auto now = std::chrono::steady_clock::now();
             if (ratchet_active && !head.already_protected &&
-                ratchet_->ShouldStartRekey(
-                    head.frame, std::chrono::steady_clock::now())) {
-                rekey = ratchet_->BeginOutboundRekey(
-                    std::chrono::steady_clock::now());
-                if (!outbound_rekey_wait_started_.has_value()) {
-                    outbound_rekey_wait_started_ =
-                        std::chrono::steady_clock::now();
+                ratchet_->ApplicationWriteBlocked(head.frame, now)) {
+                // The pipelined exchange may use the remaining authenticated
+                // old-epoch allowance, but never cross its hard boundary. Keep
+                // the head queued until the ACK commits the new send chain.
+                mark_stream_ready_locked(*stream_id);
+                if (batch.empty()) {
+                    write_in_flight_ = false;
                 }
+                break;
+            }
+            if (ratchet_active && !head.already_protected &&
+                ratchet_->ShouldStartRekey(head.frame, now)) {
+                rekey = ratchet_->BeginOutboundRekey(now);
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+                outbound_rekey_wait_.start_if(collect_timing, now);
+#endif
                 mark_stream_ready_locked(*stream_id);
             } else {
                 selected = pop_stream_head_locked(*stream_id);
@@ -262,11 +275,9 @@ void TransportCore::dispatch_next_write() {
             selection_error = ex.what();
             break;
         }
-        if (collect_timing) {
-            selector_ns += static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now() - selector_started).count());
-        }
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        selector_timing.record(selector_timer);
+#endif
 
         PendingWrite write;
         if (rekey.has_value()) {
@@ -280,8 +291,11 @@ void TransportCore::dispatch_next_write() {
 
         try {
             auto part = encode_outgoing_frame(
-                write.frame, write.already_protected,
-                collect_timing ? &seal_ns : nullptr);
+                write.frame, write.already_protected
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+                , collect_timing ? &seal_timing : nullptr
+#endif
+            );
             if (encoded->empty()) {
                 encoded->reserve(std::min<std::size_t>(
                     kMaxWriteBatchBytes, part->size() + 64U * 1024U));
@@ -291,7 +305,7 @@ void TransportCore::dispatch_next_write() {
             total_bytes += part->size();
             batch_streams.insert(write.frame.header.stream_id);
             batch.push_back(std::move(write));
-            if (rekey.has_value() || total_bytes >= kMaxWriteBatchBytes) {
+            if (total_bytes >= kMaxWriteBatchBytes) {
                 break;
             }
         } catch (const std::exception& ex) {
@@ -337,6 +351,7 @@ void TransportCore::dispatch_next_write() {
         return;
     }
 
+#if YUME_ENABLE_DEV_DIAGNOSTICS
     if (collect_timing) {
         std::size_t queued_frames = 0;
         std::size_t bulk_frames = 0;
@@ -351,8 +366,10 @@ void TransportCore::dispatch_next_write() {
             control_frames = outstanding_control_frames_;
             control_bytes = outstanding_control_bytes_;
         }
-        timing_handler(
-            "client.transport", "write_batch",
+        const auto selector_sample = selector_timing.take_if(0, true);
+        const auto seal_sample = seal_timing.take_if(0, true);
+        YUME_TIMING_SINK(
+            timing_handler, "client.transport", "write_batch",
             "frames=" + std::to_string(batch.size()) +
             " bytes=" + std::to_string(total_bytes) +
             " queued_frames=" + std::to_string(queued_frames) +
@@ -362,9 +379,14 @@ void TransportCore::dispatch_next_write() {
                 std::to_string(control_frames) +
             " outstanding_control_bytes=" +
                 std::to_string(control_bytes) +
-            " selector_us=" + std::to_string(selector_ns / 1000U) +
-            " seal_us=" + std::to_string(seal_ns / 1000U));
+            " selector_us=" + std::to_string(
+                selector_sample.has_value()
+                    ? selector_sample->total_ns / 1000U : 0U) +
+            " seal_us=" + std::to_string(
+                seal_sample.has_value()
+                    ? seal_sample->total_ns / 1000U : 0U));
     }
+#endif
 
     writer(encoded, [this, batch = std::move(batch), encoded_sizes = std::move(encoded_sizes)](
                         bool ok,
@@ -406,27 +428,28 @@ void TransportCore::dispatch_next_write() {
 
 void TransportCore::resume_writes_after_rekey() {
     bool dispatch = false;
+#if YUME_ENABLE_DEV_DIAGNOSTICS
     std::optional<std::uint64_t> rekey_wait_us;
     TimingHandler timing_handler;
+#endif
     {
         std::scoped_lock lock(state_mu_, write_mu_);
+#if YUME_ENABLE_DEV_DIAGNOSTICS
         timing_handler = timing_handler_;
-        if (outbound_rekey_wait_started_.has_value()) {
-            rekey_wait_us = static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::steady_clock::now() -
-                    *outbound_rekey_wait_started_).count());
-            outbound_rekey_wait_started_.reset();
-        }
+        rekey_wait_us = outbound_rekey_wait_.finish_us(
+            std::chrono::steady_clock::now());
+#endif
         if (!write_in_flight_ && !write_queues_empty_locked()) {
             write_in_flight_ = true;
             dispatch = true;
         }
     }
-    if (rekey_wait_us.has_value() && timing_handler) {
-        timing_handler("client.transport", "rekey_wait",
-                       "us=" + std::to_string(*rekey_wait_us));
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    if (rekey_wait_us.has_value()) {
+        YUME_TIMING_SINK(timing_handler, "client.transport", "rekey_wait",
+                         "us=" + std::to_string(*rekey_wait_us));
     }
+#endif
     if (dispatch) dispatch_next_write();
 }
 

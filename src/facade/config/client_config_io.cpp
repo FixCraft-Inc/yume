@@ -16,6 +16,7 @@
 #include <boost/asio/ip/address.hpp>
 #include <nlohmann/json.hpp>
 
+#include "core/version.hpp"
 #include "core/stealth/http_profile.hpp"
 #include "facade/config/detail.hpp"
 #include "facade/config/keys.hpp"
@@ -236,10 +237,12 @@ ValidationReport validate(client::ClientConfig const& c) {
     }
     if (c.tls_stealth_rotate) {
         r.errors.emplace_back(
-            "tls_stealth_rotate: 2.0-dev1 uses one pinned Chrome fixture");
+            "tls_stealth_rotate: " + std::string(yume::kVersion) +
+            " uses one pinned Chrome fixture");
     }
     if (!c.inner_crypto) {
-        r.errors.emplace_back("inner_crypto: mandatory in 2.0-dev1");
+        r.errors.emplace_back(
+            "inner_crypto: mandatory in " + std::string(yume::kVersion));
     }
     if (c.require_anonym && c.accept_monitoring) {
         r.errors.emplace_back(

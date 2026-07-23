@@ -1,4 +1,4 @@
-yume (2.0~dev1-1) UNRELEASED; urgency=medium
+yume (2.0~dev2-1) UNRELEASED; urgency=medium
 
   * Package the hard-break YUME 2.0 development transport with mandatory
     admission and ML-KEM-1024/X25519/PSK inner protection.

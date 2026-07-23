@@ -14,7 +14,7 @@
 
 namespace yume {
 
-constexpr const char kVersion[] = "2.0-dev1";
+constexpr const char kVersion[] = "2.0-dev2";
 inline constexpr std::string_view kTransportVersion = kVersion;
 
 #if defined(YUME_USE_BASEFWX) && YUME_USE_BASEFWX

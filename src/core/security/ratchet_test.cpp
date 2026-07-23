@@ -151,6 +151,36 @@ void TestReceiverRejectsNonconformingEpochUsage() {
     }));
 }
 
+void TestPipelinedPreparationThresholds() {
+    using namespace std::chrono_literals;
+    const auto start = std::chrono::steady_clock::time_point{};
+    const std::size_t byte_threshold =
+        yume::ratchet::kEpochByteLimit - yume::ratchet::kRekeyByteLead;
+
+    DirectionalRatchet bytes(Direction::ClientToServer, Filled(32, 0xb1));
+    assert(!bytes.ShouldPrepareRekey(byte_threshold - 1, start));
+    assert(bytes.ShouldPrepareRekey(byte_threshold, start));
+    assert(!bytes.ShouldRekey(byte_threshold, start));
+
+    DirectionalRatchet time(Direction::ClientToServer, Filled(32, 0xb2));
+    (void)time.Encrypt(3, 1, 0, Bytes{0x01}, start);
+    assert(!time.ShouldPrepareRekey(1, start + 399ms));
+    assert(time.ShouldPrepareRekey(1, start + 400ms));
+    assert(!time.ShouldRekey(1, start + 499ms));
+
+    DirectionalRatchet messages(Direction::ClientToServer, Filled(32, 0xb3));
+    const std::uint64_t frames_before_prepare =
+        yume::ratchet::kEpochMessageLimit -
+        yume::ratchet::kRekeyMessageLead - 2;
+    for (std::uint64_t i = 0; i < frames_before_prepare; ++i) {
+        (void)messages.Encrypt(3, 1, 0, {}, start);
+    }
+    assert(!messages.ShouldPrepareRekey(0, start));
+    (void)messages.Encrypt(3, 1, 0, {}, start);
+    assert(messages.ShouldPrepareRekey(0, start));
+    assert(!messages.ShouldRekey(0, start));
+}
+
 }  // namespace
 
 int main() {
@@ -159,5 +189,6 @@ int main() {
     TestByteBoundaryAndEpochAdvance();
     TestMessageBoundaryAndIdleSilence();
     TestReceiverRejectsNonconformingEpochUsage();
+    TestPipelinedPreparationThresholds();
     return 0;
 }

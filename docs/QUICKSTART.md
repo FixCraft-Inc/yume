@@ -16,7 +16,12 @@ git -C basefwx checkout "$(cat config/refs/basefwx.ref)"
 
 `ezbuild.sh` requires nghttp2 1.64 or newer. When the system package is too
 old, it builds the pinned, checksum-verified nghttp2 1.69.0 library under the
-user cache. The build produces `build/bin/yume` and `build/bin/yumed`.
+user cache. The default is a portable Release build with `-O3`, LTO, fast-math
+disabled, and developer timing code compiled out. `./ezbuild.sh --native`
+produces the fastest executables for the current CPU but they are not portable;
+`./ezbuild.sh --dev` produces optimized RelWithDebInfo binaries with opt-in
+`--timing` hooks. The build produces `build/bin/yume` and
+`build/bin/yumed`. See [DIAGNOSTICS.md](DIAGNOSTICS.md).
 
 ## One-command server and device kit
 
@@ -166,6 +171,10 @@ The full benchmark is intentionally heavy. Use an approved benchmark host, not
 a daily-driver laptop. See [SELFTEST.md](SELFTEST.md) for the local transport,
 real endpoint, and crypto-only benchmark boundaries.
 
+The dev2 one-stream LAN result does not establish high-RTT performance. Read
+[YUME_2_0_WAN_BEHAVIOR.md](YUME_2_0_WAN_BEHAVIOR.md) before interpreting LAN
+line rate as a WAN support claim.
+
 ## Production notes
 
 - Keep Node on a loopback IP literal and supervise it separately from `yumed`.
@@ -182,6 +191,6 @@ real endpoint, and crypto-only benchmark boundaries.
 - Do not place an HTTP-mode reverse proxy in front of `yumed`; it must receive
   the original TLS connection. Use TCP passthrough when a fronting layer is
   required.
-- `2.0-dev1` is not release-complete. Check
+- `2.0-dev2` is not release-complete. Check
   [YUME_2_0_IMPLEMENTATION_STATUS.md](YUME_2_0_IMPLEMENTATION_STATUS.md) before
   treating a test result as a production support claim.

@@ -52,7 +52,7 @@ int main() {
                                          psk_salt, transcript_salt);
     assert(encoded.size() == 1744);
     assert(Sha256Hex(encoded) ==
-           "c3b8010ba56d0d26b9215b38c60e183de87bd4558b0e45b880543af2e4efbc43");
+           "8663506c9e9bcad94b4366ce1521bfa68ecac9cb230862bb8b1c61344dfe566e");
     const auto parsed = ParseChallenge(encoded);
     assert(parsed.challenge == challenge);
     assert(parsed.mlkem_public_key == kem_public);
@@ -71,7 +71,7 @@ int main() {
     const Bytes signature_input = BuildSignatureInput(encoded, unsigned_response);
     assert(signature_input.size() == 3402);
     assert(Sha256Hex(signature_input) ==
-           "a24a8e4fdebc92adf629d23118a3e00857fb3a5aaa14d1b7620ce6f6bb0c658f");
+           "b30097d0dae222afa73ba254b08c23b63ed8821aa2d7360783b2b1345f9dfd82");
 
     const Bytes info{'{', '}'};
     assert(ParseAuthOk(BuildAuthOk(info)) == info);

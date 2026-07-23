@@ -172,7 +172,13 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
         return 1;
     }
     if (args.timing) {
-        util::set_timing_enabled(true);
+        if constexpr (diagnostics::kTimingCompiledIn) {
+            diagnostics::set_timing_enabled(true);
+        } else {
+            util::log_warn(
+                "--timing is unavailable in production builds; use an "
+                "ezbuild --dev, RelWithDebInfo, or Debug binary");
+        }
     }
 
     // Resolve the effective client HTTP profile, then install it.
@@ -497,7 +503,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
     }
     if (cfg.tls_stealth_rotate) {
         util::log_error(
-            "YUME 2.0 dev1 rejects TLS profile rotation; the Chrome fixture is pinned");
+            "YUME 2.0 dev2 rejects TLS profile rotation; the Chrome fixture is pinned");
         return 1;
     }
     try {
@@ -688,7 +694,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 util::log_info("client.connect: proxying through " +
                                proxy_cfg.host + ":" + std::to_string(proxy_cfg.port) +
                                " to " + cfg.server + ":" + std::to_string(cfg.port));
-                auto connect_start = std::chrono::steady_clock::now();
+                diagnostics::Stopwatch connect_timer(YUME_TIMING_ENABLED());
                 auto dr = outbound_proxy::socks5_dial(
                     stream.next_layer(), io, proxy_cfg,
                     cfg.server, cfg.port, kConnectTimeout,
@@ -700,11 +706,10 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                     throw std::runtime_error(dr.error.empty() ? "outbound proxy failed"
                                                               : "outbound proxy: " + dr.error);
                 }
-                auto connect_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - connect_start).count();
-                util::log_timing("client.connect",
+                YUME_TIMING_LOG("client.connect",
                                  "proxy",
-                                 "ms=" + std::to_string(connect_ms) +
+                                 "ms=" + std::to_string(
+                                     connect_timer.elapsed_ns() / 1'000'000U) +
                                      " proxy=" + proxy_cfg.host + ":" +
                                      std::to_string(proxy_cfg.port) +
                                      " host=" + cfg.server +
@@ -712,26 +717,25 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             } else {
                 boost::asio::ip::tcp::resolver resolver(io);
                 boost::asio::ip::tcp::resolver::results_type endpoints;
-                auto resolve_start = std::chrono::steady_clock::now();
+                diagnostics::Stopwatch resolve_timer(YUME_TIMING_ENABLED());
                 try {
                     endpoints = resolver.resolve(boost::asio::ip::tcp::v4(), cfg.server, std::to_string(cfg.port));
                 } catch (const boost::system::system_error& ex) {
                     throw std::runtime_error("server offline, could not reach endpoint (DNS resolution failed: " + std::string(ex.what()) + ")");
                 }
-                auto resolve_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - resolve_start).count();
                 std::size_t endpoint_count = 0;
                 for (const auto& endpoint : endpoints) {
                     (void)endpoint;
                     ++endpoint_count;
                 }
-                util::log_timing("client.connect",
+                YUME_TIMING_LOG("client.connect",
                                  "resolve",
-                                 "ms=" + std::to_string(resolve_ms) +
+                                 "ms=" + std::to_string(
+                                     resolve_timer.elapsed_ns() / 1'000'000U) +
                                      " endpoints=" + std::to_string(endpoint_count) +
                                      " host=" + cfg.server +
                                      " port=" + std::to_string(cfg.port));
-                auto connect_start = std::chrono::steady_clock::now();
+                diagnostics::Stopwatch connect_timer(YUME_TIMING_ENABLED());
                 try {
                     auto cr = connect_with_timeout(
                         stream.next_layer(), endpoints, io, kConnectTimeout,
@@ -753,11 +757,10 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                     }
                     throw std::runtime_error("server offline, could not reach endpoint (" + std::string(ex.what()) + ")");
                 }
-                auto connect_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - connect_start).count();
-                util::log_timing("client.connect",
+                YUME_TIMING_LOG("client.connect",
                                  "tcp",
-                                 "ms=" + std::to_string(connect_ms) +
+                                 "ms=" + std::to_string(
+                                     connect_timer.elapsed_ns() / 1'000'000U) +
                                      " host=" + cfg.server +
                                      " port=" + std::to_string(cfg.port));
             }
@@ -787,7 +790,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             auto handshake_end = std::chrono::steady_clock::now();
             auto handshake_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
                 handshake_end - handshake_start);
-            util::log_timing("client.connect",
+            YUME_TIMING_LOG("client.connect",
                                  "tls",
                                  "ms=" + std::to_string(handshake_duration.count()) +
                                      " host=" + cfg.server +
@@ -898,7 +901,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             if (cfg.obfuscation) {
                 util::log_info("starting HTTPS h2 carrier handshake");
                 require_h2_carrier_alpn(stream, tls_name, cfg.port);
-                auto h2_start = std::chrono::steady_clock::now();
+                diagnostics::Stopwatch h2_timer(YUME_TIMING_ENABLED());
                 if (!cfg.obfs_secret_material) {
                     throw FatalError("YUME 2.0 admission secret was not loaded");
                 }
@@ -907,11 +910,10 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                                              http_profile::active_client_ua(),
                                              &prefetched_tls_bytes,
                                              &h2_carrier);
-                auto h2_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - h2_start).count();
-                util::log_timing("client.connect",
+                YUME_TIMING_LOG("client.connect",
                                  "h2_carrier",
-                                 "ms=" + std::to_string(h2_ms) +
+                                 "ms=" + std::to_string(
+                                     h2_timer.elapsed_ns() / 1'000'000U) +
                                      " prefetched=" + std::to_string(prefetched_tls_bytes.size()));
                 util::log_info("HTTPS h2 carrier handshake established");
             }
@@ -922,7 +924,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 cfg.obfuscation,
                 handshake_duration);
             util::log_info("waiting for AUTH challenge");
-            auto auth_challenge_start = std::chrono::steady_clock::now();
+            diagnostics::Stopwatch auth_challenge_timer(YUME_TIMING_ENABLED());
             protocol::Frame auth_challenge = read_auth_challenge(
                 stream,
                 io,
@@ -930,11 +932,10 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 cfg.port,
                 &prefetched_tls_bytes,
                 h2_carrier.get());
-            auto auth_challenge_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - auth_challenge_start).count();
-            util::log_timing("client.auth",
+            YUME_TIMING_LOG("client.auth",
                              "challenge",
-                             "ms=" + std::to_string(auth_challenge_ms) +
+                             "ms=" + std::to_string(
+                                 auth_challenge_timer.elapsed_ns() / 1'000'000U) +
                                  " bytes=" + std::to_string(auth_challenge.payload.size()));
             util::log_info("AUTH challenge received");
             std::optional<crypto::Bytes> inner_key;
@@ -947,24 +948,23 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             bool pq_not_supported = false;
             std::string inner_disable_reason;
             util::log_info("sending auth response");
-            auto auth_send_start = std::chrono::steady_clock::now();
+            diagnostics::Stopwatch auth_send_timer(YUME_TIMING_ENABLED());
             if (!h2_carrier || !cfg.inner_psk_material) {
                 throw FatalError("YUME 2.0 requires H2 carrier and inner PSK");
             }
             auto v2_ratchet = send_auth_v2_response(
                 stream, io, cfg.identity, auth_challenge,
                 *cfg.inner_psk_material, *h2_carrier);
-            auto auth_send_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - auth_send_start).count();
-            util::log_timing("client.auth",
+            YUME_TIMING_LOG("client.auth",
                              "send_response",
-                             "ms=" + std::to_string(auth_send_ms));
+                             "ms=" + std::to_string(
+                                 auth_send_timer.elapsed_ns() / 1'000'000U));
             util::log_info("auth response sent; waiting for server confirmation");
 
             protocol::Frame anon_frame;
             auto server_info_timeout = kServerInfoTimeout;
             try {
-                auto server_info_start = std::chrono::steady_clock::now();
+                diagnostics::Stopwatch server_info_timer(YUME_TIMING_ENABLED());
                 anon_frame = h2_carrier
                     ? read_frame_over_h2_with_timeout(
                           stream, io, *h2_carrier, &prefetched_tls_bytes,
@@ -972,11 +972,10 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                     : read_frame_with_timeout(stream, io, server_info_timeout,
                                               "server info", cfg.server, cfg.port,
                                               true, &prefetched_tls_bytes);
-                auto server_info_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - server_info_start).count();
-                util::log_timing("client.auth",
+                YUME_TIMING_LOG("client.auth",
                                  "server_info",
-                                 "ms=" + std::to_string(server_info_ms) +
+                                 "ms=" + std::to_string(
+                                     server_info_timer.elapsed_ns() / 1'000'000U) +
                                      " bytes=" + std::to_string(anon_frame.payload.size()));
             } catch (const FatalError&) {
                 throw;

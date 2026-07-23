@@ -20,8 +20,7 @@ using namespace detail;
 
 std::optional<uint8_t> TransportCore::select_next_write_locked(
     std::size_t current_batch_bytes,
-    const std::unordered_set<uint8_t>& batch_streams,
-    bool rekey_blocked) {
+    const std::unordered_set<uint8_t>& batch_streams) {
     auto select = [&](bool allow_already_selected_stream) -> std::optional<uint8_t> {
         for (std::size_t priority = 0; priority < ready_streams_.size(); ++priority) {
             auto& ready = ready_streams_[priority];
@@ -35,16 +34,12 @@ std::optional<uint8_t> TransportCore::select_next_write_locked(
                 }
                 const auto& write = write_queues_[stream_id].front();
                 const auto& frame = write.frame;
-                const bool allowed_during_rekey =
-                    write.already_protected &&
-                    (frame.header.type == protocol::REKEY_INIT ||
-                     frame.header.type == protocol::REKEY_ACK);
                 const std::size_t estimated_size = frame.payload.size() + 8U;
                 const bool fits = current_batch_bytes == 0 ||
                     current_batch_bytes + estimated_size <= kMaxWriteBatchBytes;
                 const bool new_stream = allow_already_selected_stream ||
                     batch_streams.count(stream_id) == 0;
-                if ((!rekey_blocked || allowed_during_rekey) && fits && new_stream) {
+                if (fits && new_stream) {
                     ready_priority_[stream_id] = -1;
                     return stream_id;
                 }
@@ -146,7 +141,10 @@ std::vector<TransportCore::CloseHandler> TransportCore::shutdown() {
             inner_key_.reset();
         }
         ratchet_.reset();
-        outbound_rekey_wait_started_.reset();
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        outbound_rekey_wait_.reset();
+        timing_open_.reset();
+#endif
         clear_hop_key_cache_locked();
     }
     {
@@ -258,10 +256,13 @@ void TransportCore::set_activity_handler(ActivityHandler handler) {
     activity_handler_ = std::move(handler);
 }
 
+#if YUME_ENABLE_DEV_DIAGNOSTICS
 void TransportCore::set_timing_handler(TimingHandler handler) {
     std::lock_guard<std::mutex> lock(state_mu_);
     timing_handler_ = std::move(handler);
+    timing_open_.set_active(static_cast<bool>(timing_handler_));
 }
+#endif
 
 void TransportCore::set_server_stream_open_handler(ServerStreamOpenHandler handler) {
     std::lock_guard<std::mutex> lock(state_mu_);
@@ -656,49 +657,44 @@ void TransportCore::feed_tls_bytes(const uint8_t* data, std::size_t size) {
         std::optional<protocol::Frame> opened_frame;
         std::optional<protocol::Frame> ratchet_response;
         bool rekey_completed = false;
-        std::uint64_t open_timing_frames = 0;
-        std::uint64_t open_timing_ns = 0;
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        std::optional<diagnostics::TimingSample> open_timing;
         TimingHandler timing_handler;
         {
             std::lock_guard<std::mutex> lock(state_mu_);
             timing_handler = timing_handler_;
         }
+#endif
         try {
             std::lock_guard<std::mutex> lock(state_mu_);
             if (ratchet_) {
+#if YUME_ENABLE_DEV_DIAGNOSTICS
                 const bool collect_timing = static_cast<bool>(timing_handler);
-                const auto open_started = collect_timing
-                    ? std::chrono::steady_clock::now()
-                    : std::chrono::steady_clock::time_point{};
+                diagnostics::Stopwatch open_timer(collect_timing);
+#endif
                 auto result = ratchet_->Open(
                     frame, std::chrono::steady_clock::now());
-                if (collect_timing) {
-                    timing_open_ns_ += static_cast<std::uint64_t>(
-                        std::chrono::duration_cast<std::chrono::nanoseconds>(
-                            std::chrono::steady_clock::now() - open_started).count());
-                    ++timing_open_frames_;
-                }
                 opened_frame = std::move(result.application_frame);
                 ratchet_response = std::move(result.control_response);
                 rekey_completed = result.outbound_rekey_completed;
-                if (timing_open_frames_ >= 64 || rekey_completed) {
-                    open_timing_frames = timing_open_frames_;
-                    open_timing_ns = timing_open_ns_;
-                    timing_open_frames_ = 0;
-                    timing_open_ns_ = 0;
-                }
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+                timing_open_.record(open_timer);
+                open_timing = timing_open_.take_if(64, rekey_completed);
+#endif
             }
         } catch (const std::exception& ex) {
             request_transport_close("ratchet open failed: " +
                                     std::string(ex.what()));
             return;
         }
-        if (open_timing_frames > 0 && timing_handler) {
-            timing_handler(
-                "client.transport", "ratchet_open",
-                "frames=" + std::to_string(open_timing_frames) +
-                " us=" + std::to_string(open_timing_ns / 1000U));
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        if (open_timing.has_value()) {
+            YUME_TIMING_SINK(
+                timing_handler, "client.transport", "ratchet_open",
+                "frames=" + std::to_string(open_timing->count) +
+                " us=" + std::to_string(open_timing->total_ns / 1000U));
         }
+#endif
         if (ratchet_response.has_value()) {
             queue_frame(std::move(*ratchet_response), {}, true);
         }

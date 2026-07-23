@@ -1,4 +1,4 @@
-.TH YUMED 8 "2026-07-20" "YUME 2.0-dev1" "YUME Manual"
+.TH YUMED 8 "2026-07-22" "YUME 2.0-dev2" "YUME Manual"
 .SH NAME
 yumed \- YUME server daemon
 .SH SYNOPSIS
@@ -206,7 +206,9 @@ Keep root privileges.
 Use minimal logs.
 .TP
 .B --timing
-Emit lightweight timing diagnostics.
+Emit precise timing diagnostics in a Debug or RelWithDebInfo developer build.
+Release and MinSizeRel binaries compile these hooks out and warn that the
+option is unavailable.
 .SH SECURITY OPTIONS
 .TP
 .B --inner-required

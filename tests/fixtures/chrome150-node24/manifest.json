@@ -35,7 +35,7 @@
   "notes": [
     "The raw NetLog contains local certificate and machine details and is intentionally not committed.",
     "Chrome originates the captured H2 PING immediately before its active WebSocket CLOSE; Node acknowledges it. This is not an idle periodic keepalive.",
-    "Chrome used BoringSSL. YUME dev1 still uses OpenSSL and therefore does not claim byte-identical Chrome TLS or matching JA4.",
-    "No random padding or timing jitter was observed in this local bulk fixture; dev1 must not invent either."
+    "Chrome used BoringSSL. YUME dev2 still uses OpenSSL and therefore does not claim byte-identical Chrome TLS or matching JA4.",
+    "No random padding or timing jitter was observed in this local bulk fixture; dev2 must not invent either."
   ]
 }

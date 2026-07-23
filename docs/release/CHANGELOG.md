@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased 2.0-dev1]
+## [Unreleased 2.0-dev2]
 
 Current development is the hard-break 2.0 desktop transport line. It remains a
 development version until the release gates in
@@ -24,6 +24,13 @@ development version until the release gates in
 
 ### Changed
 
+- **Directional rekeys are pipelined without widening their blast radius.**
+  Each sender prepares the next authenticated ML-KEM-1024 + X25519 + PSK epoch
+  while bounded current-epoch traffic remains. The existing 256 KiB, 512-frame,
+  and 500 ms limits remain independently enforced; writes block only if the
+  ACK has not arrived at the hard boundary. Exact version equality rejects
+  dev1 peers rather than silently mixing the two scheduling contracts.
+
 - **AUTH policy lookup uses immutable snapshots.** Regular and operator
   key/policy files are parsed and validated before atomic startup/reload
   publication. Failed reloads preserve the complete previous snapshot, and the
@@ -31,17 +38,20 @@ development version until the release gates in
 - **Capacity logic is modular.** Thread-safe identity admission and weighted
   egress controllers are independent server runtime units with focused tests.
   The optional limiter is not constructed when egress shaping is disabled.
-- **Benchmark diagnostics stay out of production binaries.** `/proc` sampling,
-  timing aggregation, and extra reporting run only in the external Python
-  harness; the normal client/server build receives no sampling thread or
-  logging branch from this work.
+- **Developer timing is centralized and absent from production binaries.**
+  Debug/RelWithDebInfo builds share stopwatches, batched samples, asynchronous
+  intervals, and event macros across connection, AUTH, ratchet, scheduler,
+  TLS, H2, and WebSocket boundaries. Runtime collection remains opt-in.
+  Release/MinSizeRel preprocess the hooks and detail construction away, while
+  `/proc` resource sampling remains external to the measured processes.
 
 ### Security
 
-- Authentication remains Ed25519 over the existing canonical transcript, and
-  admission still occurs before ML-KEM decapsulation. This capacity/auth-policy
-  work does not change the 2.0 wire format, AEAD AAD, HKDF schedule, hybrid
-  handshake, or directional ratchet.
+- Authentication remains Ed25519 over the canonical transcript, and admission
+  still occurs before ML-KEM decapsulation. Rekey pipelining does not change
+  AEAD AAD, HKDF labels, hybrid secret composition, or directional usage
+  limits. The dev2 version bump deliberately changes when the existing rekey
+  records are scheduled and accepted.
 
 ## [Unreleased 1.1 historical work]
 

@@ -261,7 +261,7 @@ void Session::handle_open(const protocol::Frame& frame) {
         udp->resolve_started_ms = udp->open_started_ms;
         const bool resolve_any_family = server_resolve_any_family_enabled();
         const std::string resolve_family = resolve_any_family ? "any" : "ipv4";
-        util::log_timing("server.open",
+        YUME_TIMING_LOG("server.open",
                          "start",
                          "session=" + std::to_string(session_id_) +
                              " stream=" + std::to_string(frame.header.stream_id) +
@@ -299,7 +299,7 @@ void Session::handle_open(const protocol::Frame& frame) {
                 const std::string reason = *resolve_timed_out
                     ? "resolve timeout"
                     : ("resolve failed: " + ec.message());
-                util::log_timing("server.open",
+                YUME_TIMING_LOG("server.open",
                                  "resolve_failed",
                                  "session=" + std::to_string(self->session_id_) +
                                      " stream=" + std::to_string(stream_id) +
@@ -315,7 +315,7 @@ void Session::handle_open(const protocol::Frame& frame) {
                 (void)result;
                 ++result_count;
             }
-            util::log_timing("server.open",
+            YUME_TIMING_LOG("server.open",
                              "resolve_ok",
                              "session=" + std::to_string(self->session_id_) +
                                  " stream=" + std::to_string(stream_id) +
@@ -387,7 +387,7 @@ void Session::handle_open(const protocol::Frame& frame) {
             }
 
             self->send_open_reply(stream_id, true, "");
-            util::log_timing("server.open",
+            YUME_TIMING_LOG("server.open",
                              "done",
                              "session=" + std::to_string(self->session_id_) +
                                  " stream=" + std::to_string(stream_id) +
@@ -414,7 +414,7 @@ void Session::handle_open(const protocol::Frame& frame) {
                         }
                     }
                     if (!ok) {
-                        util::log_timing("server.open",
+                        YUME_TIMING_LOG("server.open",
                                          "resolve_failed",
                                          "session=" + std::to_string(self->session_id_) +
                                              " stream=" + std::to_string(stream_id) +
@@ -425,7 +425,7 @@ void Session::handle_open(const protocol::Frame& frame) {
                         self->udp_streams_.erase(stream_id);
                         return;
                     }
-                    util::log_timing("server.open",
+                    YUME_TIMING_LOG("server.open",
                                      "resolve_ok",
                                      "session=" + std::to_string(self->session_id_) +
                                          " stream=" + std::to_string(stream_id) +
@@ -497,7 +497,7 @@ void Session::handle_open(const protocol::Frame& frame) {
                     }
 
                     self->send_open_reply(stream_id, true, "");
-                    util::log_timing("server.open",
+                    YUME_TIMING_LOG("server.open",
                                      "done",
                                      "session=" + std::to_string(self->session_id_) +
                                          " stream=" + std::to_string(stream_id) +
@@ -542,7 +542,7 @@ void Session::handle_open(const protocol::Frame& frame) {
     remote->resolve_started_ms = remote->open_started_ms;
     const bool resolve_any_family = server_resolve_any_family_enabled();
     const std::string resolve_family = resolve_any_family ? "any" : "ipv4";
-    util::log_timing("server.open",
+    YUME_TIMING_LOG("server.open",
                      "start",
                      "session=" + std::to_string(session_id_) +
                          " stream=" + std::to_string(frame.header.stream_id) +
@@ -570,7 +570,7 @@ void Session::handle_open(const protocol::Frame& frame) {
                                                std::size_t result_count,
                                                int64_t resolve_ms,
                                                bool direct_dns) {
-        util::log_timing("server.open",
+        YUME_TIMING_LOG("server.open",
                          "resolve_ok",
                          "session=" + std::to_string(self->session_id_) +
                              " stream=" + std::to_string(stream_id) +
@@ -659,7 +659,7 @@ void Session::handle_open(const protocol::Frame& frame) {
                                                                       const std::string reason = *connect_timed_out
                                                                           ? "connect timeout"
                                                                           : ("connect failed: " + ec2.message());
-                                                                      util::log_timing("server.open",
+                                                                      YUME_TIMING_LOG("server.open",
                                                                                        "connect_failed",
                                                                                        "session=" + std::to_string(self->session_id_) +
                                                                                            " stream=" + std::to_string(stream_id) +
@@ -678,7 +678,7 @@ void Session::handle_open(const protocol::Frame& frame) {
                                                                   remote->socket.set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), remote_sendbuf_ec);
                                                                   remote->connected = true;
                                                                   self->send_open_reply(stream_id, true, "");
-                                                                  util::log_timing("server.open",
+                                                                  YUME_TIMING_LOG("server.open",
                                                                                    "done",
                                                                                    "session=" + std::to_string(self->session_id_) +
                                                                                        " stream=" + std::to_string(stream_id) +
@@ -720,7 +720,7 @@ void Session::handle_open(const protocol::Frame& frame) {
             const std::string reason = *resolve_timed_out
                 ? "resolve timeout"
                 : ("resolve failed: " + ec.message());
-            util::log_timing("server.open",
+            YUME_TIMING_LOG("server.open",
                              "resolve_failed",
                              "session=" + std::to_string(self->session_id_) +
                                  " stream=" + std::to_string(stream_id) +
@@ -758,7 +758,7 @@ void Session::handle_open(const protocol::Frame& frame) {
                     }
                 }
                 if (!ok) {
-                    util::log_timing("server.open",
+                    YUME_TIMING_LOG("server.open",
                                      "resolve_failed",
                                      "session=" + std::to_string(self->session_id_) +
                                          " stream=" + std::to_string(stream_id) +

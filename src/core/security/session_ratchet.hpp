@@ -43,6 +43,9 @@ public:
     bool ShouldStartRekey(
         const protocol::Frame& plaintext,
         std::chrono::steady_clock::time_point now) const;
+    bool ApplicationWriteBlocked(
+        const protocol::Frame& plaintext,
+        std::chrono::steady_clock::time_point now) const;
     protocol::Frame BeginOutboundRekey(
         std::chrono::steady_clock::time_point now);
     protocol::Frame Seal(const protocol::Frame& plaintext,

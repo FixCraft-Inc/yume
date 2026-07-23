@@ -76,10 +76,14 @@ time limit is sender-local because delayed delivery is indistinguishable from
 late sealing without a wire timestamp, so the 500 ms part assumes a conforming
 sender.
 
-Application data waits behind a bounded rekey barrier. Timeout closes the
-session rather than using an expired epoch. The previous receiving chain is
-retained only until the first authenticated new-epoch frame and then erased
-with retired roots and ephemeral/shared material.
+The next epoch is prepared while authenticated application data still fits in
+the current epoch. This overlaps the hybrid round trip but does not extend the
+byte, frame, or sender-time boundary. Data waits in a bounded queue if the ACK
+is not ready at the hard boundary, and timeout closes the session rather than
+using an expired epoch. The previous receiving chain is retained only until
+the first authenticated new-epoch frame and then erased with retired roots and
+ephemeral/shared material. Ordered H2/TCP prevents an honest sender's old-epoch
+frames from arriving after that commit; any such frame is fatal.
 
 The approximately 500 ms claim is an epoch-local containment goal. It does not
 protect data present in live endpoint memory or survive simultaneous compromise
@@ -151,7 +155,7 @@ integration and runtime evidence.
 
 ## Release claims
 
-The transport stays `2.0-dev1` or `2.0-rc1` until the release gates in
+The transport stays `2.0-dev2` or a later development/RC version until the release gates in
 `docs/YUME_2_0_IMPLEMENTATION_STATUS.md` pass. Unit tests and a short loopback
 smoke are not evidence for WAN behavior, a 30-minute lifetime, sanitizer safety,
 external conformance, or sustained overhead. Release documentation must separate

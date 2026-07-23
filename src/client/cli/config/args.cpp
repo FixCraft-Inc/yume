@@ -681,7 +681,7 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.outbound_proxy_override = true;
         } else if (arg == "--no-stealth") {
             args.parse_error =
-                "--no-stealth is not accepted by YUME 2.0 dev1; the Chrome profile is mandatory";
+                "--no-stealth is not accepted by YUME 2.0 dev2; the Chrome profile is mandatory";
             return args;
         } else if (arg == "--profile") {
             const char* value = take_value("--profile");
@@ -696,11 +696,11 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.tls_stealth_profile = value;
         } else if (arg == "--tls-stealth-rotate") {
             args.parse_error =
-                "--tls-stealth-rotate is not accepted by YUME 2.0 dev1; the Chrome fixture is pinned";
+                "--tls-stealth-rotate is not accepted by YUME 2.0 dev2; the Chrome fixture is pinned";
             return args;
         } else if (arg == "--tls-stealth-rotation-interval") {
             args.parse_error =
-                "--tls-stealth-rotation-interval is not accepted by YUME 2.0 dev1; "
+                "--tls-stealth-rotation-interval is not accepted by YUME 2.0 dev2; "
                 "the Chrome fixture is pinned";
             return args;
         } else if (arg == "--tls-fingerprint-log") {

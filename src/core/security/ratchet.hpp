@@ -25,6 +25,17 @@ inline constexpr std::uint64_t kEpochMessageLimit = 512;
 inline constexpr auto kEpochActiveLimit = std::chrono::milliseconds(500);
 inline constexpr std::size_t kMaxProtectedPayload = kEpochByteLimit;
 
+// Begin preparing the next hybrid epoch with enough current-epoch traffic left
+// to hide a normal LAN round trip. These are scheduling thresholds only: the
+// hard byte, message, and time limits above remain unchanged and are enforced
+// independently by both sender and receiver.
+inline constexpr std::size_t kRekeyByteLead = 192U * 1024U;
+inline constexpr std::uint64_t kRekeyMessageLead = 64;
+inline constexpr auto kRekeyTimeLead = std::chrono::milliseconds(100);
+static_assert(kRekeyByteLead < kEpochByteLimit);
+static_assert(kRekeyMessageLead < kEpochMessageLimit);
+static_assert(kRekeyTimeLead < kEpochActiveLimit);
+
 enum class Direction : std::uint8_t {
     ClientToServer = 0,
     ServerToClient = 1,
@@ -78,6 +89,8 @@ public:
 
     bool ShouldRekey(std::size_t next_plaintext_bytes,
                      std::chrono::steady_clock::time_point now) const;
+    bool ShouldPrepareRekey(std::size_t next_plaintext_bytes,
+                            std::chrono::steady_clock::time_point now) const;
 
     SealedFrame Encrypt(std::uint8_t frame_type,
                         std::uint8_t stream_id,

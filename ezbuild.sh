@@ -26,6 +26,8 @@ BUILD_TESTS=0
 BUILD_TOOLS=0
 BUILD_SELFTEST=0
 SELFTEST_ONLY=0
+DEV_BUILD=0
+NATIVE_OPT=0
 PORTABLE=0
 SKIP_PULL=0
 OPENWRT=0
@@ -115,6 +117,10 @@ Options:
                           alongside yume and yumed
   --selftest-only         Build only yume, yumed, and desktop self-test
                           benchmark tools; skips GUI/tests/helper tools
+  --dev                   Optimized developer build (RelWithDebInfo) with
+                          opt-in low-level timing diagnostics compiled in
+  --native                Tune for this host CPU (-march/-mtune=native);
+                          fastest locally, not portable to older CPUs
   --portable, --static    Produce single self-contained binaries (no
                           MinGW/vcpkg DLLs alongside). For the cross
                           route this pins WINDOWS_TRIPLET to
@@ -1347,6 +1353,14 @@ main() {
                 SELFTEST_ONLY=1
                 shift
                 ;;
+            --dev)
+                DEV_BUILD=1
+                shift
+                ;;
+            --native)
+                NATIVE_OPT=1
+                shift
+                ;;
             --portable|--static)
                 # Produce one self-contained executable: no MinGW
                 # runtime DLLs, no vcpkg .dlls alongside. Implies
@@ -1419,6 +1433,10 @@ main() {
     fi
 
     if [[ $MINIMAL -eq 1 ]]; then
+        if [[ $DEV_BUILD -eq 1 ]]; then
+            error "--dev cannot be combined with minimal/OpenWRT/BusyBox production builds."
+            exit 1
+        fi
         warn "Minimal mode: enabling static build and BaseFWX."
         CMAKE_ARGS+=(
             -DYUME_MINIMAL=ON
@@ -1462,6 +1480,26 @@ main() {
         info "Self-test benchmark tools enabled (-DYUME_BUILD_SELFTEST=ON)."
         info "Self-test builds enable LAN bridge compile support for routed loopback benchmarks."
         CMAKE_ARGS+=( -DYUME_BUILD_SELFTEST=ON -DYUME_FEATURE_LAN_BRIDGE=ON )
+    fi
+
+    # Keep the normal path unambiguously production-grade. Debug timing code is
+    # selected by configuration and therefore cannot leak into Release even if
+    # YUME_TIMING is present in the environment. Self-test is a developer mode;
+    # it stays optimized (-O3/LTO in CMake) while retaining symbols and hooks.
+    if [[ $DEV_BUILD -eq 1 || $BUILD_SELFTEST -eq 1 ]]; then
+        info "Build mode: RelWithDebInfo (developer diagnostics available; runtime opt-in)."
+        CMAKE_ARGS+=( -DCMAKE_BUILD_TYPE=RelWithDebInfo )
+    else
+        info "Build mode: Release (developer diagnostics compiled out)."
+        CMAKE_ARGS+=( -DCMAKE_BUILD_TYPE=Release )
+    fi
+    CMAKE_ARGS+=( -DYUME_LTO=ON -DYUME_FAST_MATH=OFF )
+
+    if [[ $NATIVE_OPT -eq 1 ]]; then
+        info "Host CPU tuning enabled; resulting binaries are not portable."
+        CMAKE_ARGS+=( -DYUME_NATIVE_OPT=ON )
+    else
+        CMAKE_ARGS+=( -DYUME_NATIVE_OPT=OFF )
     fi
 
     if [[ $PORTABLE -eq 1 ]]; then

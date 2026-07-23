@@ -387,7 +387,7 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         }
 
 #if YUME_USE_BASEFWX
-        auto crypto_start = std::chrono::steady_clock::now();
+        diagnostics::Stopwatch crypto_timer(YUME_TIMING_ENABLED());
         basefwx::crypto::SecureBytes kem_shared{
             basefwx::pq::KemDecrypt(
                 basefwx::pq::KemAlgorithm::MlKem1024,
@@ -415,11 +415,10 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         hop_interval_ms_ = 0;
         hop_offset_ms_ = 0;
         clear_hop_key_cache();
-        const auto crypto_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - crypto_start).count();
-        util::log_timing("server.auth", "v2_hybrid",
+        YUME_TIMING_LOG("server.auth", "v2_hybrid",
                          "session=" + std::to_string(session_id_) +
-                         " ms=" + std::to_string(crypto_ms));
+                         " ms=" + std::to_string(
+                             crypto_timer.elapsed_ns() / 1'000'000U));
 #else
         auth_error_ = "access denied: BaseFWX unavailable";
         return false;

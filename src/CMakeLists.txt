@@ -193,6 +193,11 @@ function(yume_apply_perf_opts target)
     endif()
 endfunction()
 
+function(yume_apply_dev_diagnostics target visibility)
+    target_compile_definitions(${target} ${visibility}
+        YUME_ENABLE_DEV_DIAGNOSTICS=${YUME_DEV_DIAGNOSTICS_EXPRESSION})
+endfunction()
+
 if(YUME_STATIC AND YUME_USE_SPDLOG AND NOT YUME_SPDLOG_TARGET STREQUAL "spdlog::spdlog_header_only")
     message(WARNING "Static link requested but only compiled spdlog was found; disabling spdlog.")
     set(YUME_USE_SPDLOG OFF CACHE BOOL "Disable spdlog for static builds" FORCE)
@@ -223,6 +228,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_library(yume_core
         core/app_codec/codec.cpp
         core/app_codec/builtin/monero_rpc.cpp
+        core/diagnostics/timing.cpp
         ${YUME_GITHUB_CLIENT_SOURCE}
         core/release/terminal.cpp
         core/release/version_report.cpp
@@ -254,6 +260,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     )
 
     target_include_directories(yume_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    yume_apply_dev_diagnostics(yume_core PUBLIC)
 
     target_link_libraries(yume_core
         PUBLIC
@@ -384,6 +391,7 @@ add_library(yume_transport_core
 )
 
 target_include_directories(yume_transport_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+yume_apply_dev_diagnostics(yume_transport_core PUBLIC)
 target_link_libraries(yume_transport_core
     PUBLIC
         nlohmann_json::nlohmann_json
@@ -797,6 +805,13 @@ yume_link_atomic_if_needed(yume_transport_core_test PRIVATE)
 yume_apply_perf_opts(yume_transport_core_test)
 
 add_test(NAME yume_transport_core_test COMMAND yume_transport_core_test)
+
+add_executable(yume_timing_diagnostics_test
+    core/diagnostics/timing_test.cpp
+)
+target_link_libraries(yume_timing_diagnostics_test PRIVATE yume_core)
+yume_apply_perf_opts(yume_timing_diagnostics_test)
+add_test(NAME yume_timing_diagnostics_test COMMAND yume_timing_diagnostics_test)
 
 add_executable(yume_packet_bulk_test core/protocol/packet_bulk_test.cpp)
 target_link_libraries(yume_packet_bulk_test PRIVATE yume_transport_core)

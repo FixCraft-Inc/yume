@@ -34,14 +34,16 @@ Tunnel::Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream,
     boost::system::error_code sendbuf_ec;
     stream_.lowest_layer().set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
     if (ratchet) core_.set_ratchet(std::move(ratchet));
-    if (util::timing_enabled()) {
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    if (YUME_TIMING_ENABLED()) {
         core_.set_timing_handler(
             [](const std::string& component,
                const std::string& event,
                const std::string& details) {
-                util::log_timing(component, event, details);
+                YUME_TIMING_LOG(component, event, details);
             });
     }
+#endif
     core_.set_write_handler([this](std::shared_ptr<Bytes> data, TransportCore::WriteCompletion completion) {
         auto self = shared_from_this();
         boost::asio::post(
@@ -303,30 +305,30 @@ void Tunnel::start_wire_write() {
     wire_write_active_ = true;
     auto self = shared_from_this();
     auto data = wire_writes_.front().data;
-    const bool collect_timing = util::timing_enabled();
-    const auto write_started = collect_timing
-        ? std::chrono::steady_clock::now()
-        : std::chrono::steady_clock::time_point{};
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    diagnostics::Stopwatch write_timer(YUME_TIMING_ENABLED());
+#endif
     boost::asio::async_write(
         stream_, boost::asio::buffer(*data),
         boost::asio::bind_executor(
-            strand_, [self, data, write_started, collect_timing](const boost::system::error_code& ec,
+            strand_, [self, data
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+                      , write_timer
+#endif
+                     ](const boost::system::error_code& ec,
                                   std::size_t bytes) {
                 self->wire_write_active_ = false;
                 if (!ec && bytes > 0) {
                     self->bytes_out_.fetch_add(bytes,
                                                std::memory_order_relaxed);
                 }
-                if (collect_timing) {
-                    const auto elapsed_us =
-                        std::chrono::duration_cast<std::chrono::microseconds>(
-                            std::chrono::steady_clock::now() - write_started).count();
-                    util::log_timing(
-                        "client.tls", "write",
-                        "bytes=" + std::to_string(bytes) +
-                        " requested=" + std::to_string(data->size()) +
-                        " us=" + std::to_string(elapsed_us));
-                }
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+                YUME_TIMING_LOG(
+                    "client.tls", "write",
+                    "bytes=" + std::to_string(bytes) +
+                    " requested=" + std::to_string(data->size()) +
+                    " us=" + std::to_string(write_timer.elapsed_ns() / 1000U));
+#endif
                 WireCompletion completion;
                 if (!self->wire_writes_.empty()) {
                     completion = std::move(self->wire_writes_.front().completion);
@@ -454,9 +456,10 @@ void Tunnel::close_all(const std::string& reason) {
         }
     }
 
-    if (carrier_ && util::timing_enabled()) {
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    if (carrier_ && YUME_TIMING_ENABLED()) {
         const auto stats = carrier_->stats();
-        util::log_timing(
+        YUME_TIMING_LOG(
             "client.carrier", "summary",
             "h2_feed_calls=" + std::to_string(stats.h2_feed_calls) +
             " h2_feed_bytes=" + std::to_string(stats.h2_feed_bytes) +
@@ -473,6 +476,7 @@ void Tunnel::close_all(const std::string& reason) {
             " websocket_decode_us=" +
                 std::to_string(stats.websocket_decode_ns / 1000U));
     }
+#endif
 
     auto close_callbacks = core_.shutdown();
     TunnelCloseHandler close_handler;

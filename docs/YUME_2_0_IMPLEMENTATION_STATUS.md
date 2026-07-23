@@ -1,6 +1,6 @@
 # YUME 2.0 desktop implementation status
 
-Status: `2.0-dev1` vertical slice implemented; release gates incomplete.
+Status: `2.0-dev2` vertical slice implemented; release gates incomplete.
 
 This is a truthful inventory of the focused Linux x86-64 client/server work. It
 does not claim Android, GUI, nginx, alternate browser profiles, H3, federation,
@@ -28,16 +28,18 @@ or admin/control validation.
 - AES-256-GCM one-use message keys with version/direction/epoch/sequence/type/
   stream/flags AAD binding.
 - Independent directional hybrid rekeys before 256 KiB, 512 encrypted data
-  frames, or 500 ms of active epoch time; idle silence, bounded rekey barrier,
+  frames, or 500 ms of active epoch time. The next epoch is prepared while
+  bounded current-epoch traffic remains, hiding the exchange latency without
+  increasing any hard usage limit. Idle silence, bounded boundary waits,
   timeout close, simultaneous rekeys, old receiving-chain retirement, and
-  independent receiver enforcement of byte/frame usage boundaries. Server
+  independent receiver enforcement remain fail closed. Server
   rekey/control frames are scheduled ahead of saturated DATA queues so normal
   throughput cannot turn congestion into a rekey timeout.
 - Encrypted `.yss` migration uses the BaseFWX 12-character minimum and carries
   separate TLS/operator CA material, TLS/SNI name, admission secret, inner PSK,
   tunnel count, and operator-proof policy. Legacy v1 files that carried only
   the shared private CA remain importable.
-- Exact `2.0-dev1` admission/AUTH-version equality and no accepted 1.x
+- Exact `2.0-dev2` admission/AUTH-version equality and no accepted 1.x/dev1
   downgrade path. Legacy
   inner/light/heavy/dual/hop/no-inner/raw-carrier and literal-secret CLI choices
   are rejected.
@@ -97,8 +99,30 @@ or admin/control validation.
   Mbit/s median and capped download measured 1,077.7 Mbit/s median, a 278%
   increase. The capped upload median was 1,267.9 Mbit/s. This local functional
   run used Node 20.19.2 rather than the pinned Node 24 fixture; the direct
-  Ethernet matrix must still be rerun before claiming the hardware asymmetry is
-  closed.
+  Ethernet result was still limited by the dev1 stop-and-wait epoch exchange.
+- Matched `2.0-dev2` client/server binaries pipelined that exchange without
+  changing the 256 KiB, 512-frame, or 500 ms limits. On the direct
+  10.77.77.2-to-10.77.77.1 one-gigabit link (940-941 Mbit/s raw iperf3), three
+  256 MiB-per-direction one-stream trials measured 930.6 Mbit/s upload and
+  930.6 Mbit/s download median. A final exact 1 GiB-per-direction one-stream
+  run sustained 931.2/930.0 Mbit/s, while the requested 16-stream run sustained
+  931.1/926.9 Mbit/s. Same-host one-stream endpoint traffic measured
+  1,894.5/1,910.2 Mbit/s. These runs cover the authenticated
+  DATA/ratchet/H2/WebSocket/TLS benchmark path, not SOCKS target sockets,
+  packet ABI/TUN, WAN, Android, or a release soak. Logs and binary hashes are in
+  `yume-bench-results/dev2-rekey-overlap-20260722/`.
+- Dev2 still has only one pending future epoch. On a saturated high-BDP path,
+  exhausting 256 KiB before its ACK returns reintroduces a hard-boundary wait;
+  the resulting model is about 35/21/10 Mbit/s at 60/100/210 ms RTT. This is
+  the byte-bound case; the 100 ms time lead and 64-frame lead can separately
+  run out on continuous or small-frame traffic. This is not a measured WAN
+  result. A bounded multi-epoch hybrid preparation window, followed by H2/TCP
+  bandwidth-delay-product work, is required before a WAN line-rate claim. See
+  `docs/YUME_2_0_WAN_BEHAVIOR.md`.
+- Timing instrumentation now uses one shared diagnostics layer. It is compiled
+  only into Debug/RelWithDebInfo builds and remains runtime opt-in; Release and
+  MinSizeRel contain no timing clocks, counters, handlers, event strings, or
+  environment activation path.
 - The external `/proc` benchmark sampler and bounded multi-client LAN harness
   passed a 1/2/4/8/16-process loopback ramp on a 24-core/32-thread x86-64 desktop
   host with 64 MiB per direction and 16 streams per client. At 16 clients the
@@ -162,8 +186,10 @@ or admin/control validation.
 
 - A valid tunnel lasting at least 30 minutes.
 - Sanitizer coverage and a longer concurrency/rekey soak on an approved machine.
-- WAN capture and throughput validation with at least 10 Mbit/s sustained
-  application throughput.
+- Complete the security-preserving bounded future-epoch window and then run
+  matched one-tunnel WAN upload/download/both matrices at 60, 100, and 210 ms,
+  100 Mbit/s and approximately 1 Gbit/s, plus controlled loss and a 30-minute
+  soak. The LAN result is not this gate.
 - Bulk overhead measurement at or below 5% using the committed capture-derived
   shaping policy.
 - Security-negative coverage for counter wrap and all malformed/tampered cases
@@ -174,7 +200,7 @@ or admin/control validation.
 
 ## Known residual
 
-YUME dev1 uses OpenSSL while the captured Chrome uses BoringSSL. OpenSSL cannot
+YUME dev2 uses OpenSSL while the captured Chrome uses BoringSSL. OpenSSL cannot
 reproduce Chrome’s ClientHello/GREASE ordering byte-for-byte, so TLS remains a
 classifier-visible difference upstream of the full-session H2 carrier. Matching
 ALPN or a coarse JA4 classification is not enough to claim Chrome

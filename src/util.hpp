@@ -12,6 +12,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "core/diagnostics/timing.hpp"
+
 namespace yume::util {
 
 nlohmann::json read_json_config(const std::string& path);
@@ -28,11 +30,7 @@ void log_info_rate_limited(const std::string& key, const std::string& msg, int64
 void log_warn_rate_limited(const std::string& key, const std::string& msg, int64_t interval_ms);
 void set_logging_enabled(bool enabled);
 bool is_logging_enabled();
-void set_timing_enabled(bool enabled);
-bool timing_enabled();
-void log_timing(const std::string& component,
-                const std::string& event,
-                const std::string& details = {});
+bool env_flag(const char* name, bool fallback = false);
 void set_status_enabled(bool enabled);
 void set_status_line(const std::string& line);
 void clear_status_line();

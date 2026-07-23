@@ -76,6 +76,14 @@ public:
                           std::chrono::steady_clock::time_point now) const {
         std::lock_guard<std::mutex> lock(mu_);
         return IsApplicationFrame(plaintext.header.type) && !pending_outbound_ &&
+               outbound_.ShouldPrepareRekey(plaintext.payload.size(), now);
+    }
+
+    bool ApplicationWriteBlocked(
+        const protocol::Frame& plaintext,
+        std::chrono::steady_clock::time_point now) const {
+        std::lock_guard<std::mutex> lock(mu_);
+        return IsApplicationFrame(plaintext.header.type) && pending_outbound_ &&
                outbound_.ShouldRekey(plaintext.payload.size(), now);
     }
 
@@ -101,7 +109,7 @@ public:
                                     pending->x25519.public_key)};
         pending_outbound_ = std::move(pending);
         try {
-            return SealLocked(init, now, false, true);
+            return SealLocked(init, now, false);
         } catch (...) {
             pending_outbound_.reset();
             throw;
@@ -116,10 +124,7 @@ public:
                          std::chrono::steady_clock::time_point now) {
         std::lock_guard<std::mutex> lock(mu_);
         const bool application = IsApplicationFrame(plaintext.header.type);
-        if (application && pending_outbound_) {
-            throw std::runtime_error("YUME 2.0 application data is blocked by rekey");
-        }
-        return SealLocked(plaintext, now, application, false);
+        return SealLocked(plaintext, now, application);
     }
 
     OpenResult Open(const protocol::Frame& frame,
@@ -139,15 +144,10 @@ public:
         Bytes plaintext;
         bool authenticated_pending_epoch = false;
         if (sealed.epoch == inbound_.epoch()) {
-            // H2/TCP is ordered. After an authenticated REKEY_INIT, old-epoch
-            // application data cannot be an in-flight reorder and would cross
-            // the negotiated blast-radius boundary. Keep the old chain only
-            // for reverse-direction REKEY_ACK control during simultaneous
-            // rekeys, until the first authenticated new-epoch frame retires it.
-            if (pending_inbound_ && application) {
-                throw std::runtime_error(
-                    "YUME 2.0 old-epoch application data crossed rekey boundary");
-            }
+            // dev2 pipelines the authenticated next-epoch exchange ahead of
+            // the hard boundary. Ordered H2/TCP permits bounded old-epoch data
+            // after INIT; DirectionalRatchet still enforces 256 KiB/512 frames.
+            // The first authenticated new-epoch frame retires this chain.
             plaintext = inbound_.Decrypt(frame.header.type, frame.header.stream_id,
                                          frame.header.flags, sealed, now,
                                          application);
@@ -231,11 +231,7 @@ private:
 
     protocol::Frame SealLocked(const protocol::Frame& plaintext,
                                std::chrono::steady_clock::time_point now,
-                               bool application,
-                               bool allow_pending) {
-        if (application && pending_outbound_ && !allow_pending) {
-            throw std::runtime_error("YUME 2.0 application data is blocked by rekey");
-        }
+                               bool application) {
         const std::uint16_t flags = static_cast<std::uint16_t>(
             plaintext.header.flags | protocol::kFlagInnerEncrypted);
         SealedFrame sealed = outbound_.Encrypt(
@@ -275,7 +271,7 @@ private:
         protocol::Frame ack{{0, protocol::REKEY_ACK, 0, 0},
             auth_v2::BuildRekeyAck(init.next_epoch, kem.ciphertext,
                                    x25519.public_key)};
-        return SealLocked(ack, now, false, true);
+        return SealLocked(ack, now, false);
 #else
         (void)now;
         throw std::runtime_error("YUME 2.0 rekey requires BaseFWX");
@@ -333,6 +329,11 @@ bool SessionRatchet::ShouldStartRekey(
     const protocol::Frame& frame,
     std::chrono::steady_clock::time_point now) const {
     return impl_->ShouldStartRekey(frame, now);
+}
+bool SessionRatchet::ApplicationWriteBlocked(
+    const protocol::Frame& frame,
+    std::chrono::steady_clock::time_point now) const {
+    return impl_->ApplicationWriteBlocked(frame, now);
 }
 protocol::Frame SessionRatchet::BeginOutboundRekey(
     std::chrono::steady_clock::time_point now) {

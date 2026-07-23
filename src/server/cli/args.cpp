@@ -441,7 +441,13 @@ bool parse_server_cli_args(int argc,
         } else if (arg == "--boring") {
             cfg.boring = true;
         } else if (arg == "--timing") {
-            yume::util::set_timing_enabled(true);
+            if constexpr (yume::diagnostics::kTimingCompiledIn) {
+                yume::diagnostics::set_timing_enabled(true);
+            } else {
+                yume::util::log_warn(
+                    "--timing is unavailable in production builds; use an "
+                    "ezbuild --dev, RelWithDebInfo, or Debug binary");
+            }
         } else {
             yume::util::log_error("unknown or incomplete option: " + arg);
             return false;

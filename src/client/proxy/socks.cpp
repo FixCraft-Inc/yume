@@ -330,7 +330,7 @@ void SocksSession::start_tunnel() {
         return;
     }
     opened_started_ms_ = util::now_ms();
-    util::log_timing("client.socks",
+    YUME_TIMING_LOG("client.socks",
                      "open_start",
                      "stream=" + std::to_string(stream_id_) +
                          " target=" + target_host_ + ":" + std::to_string(target_port_));
@@ -357,7 +357,7 @@ void SocksSession::start_tunnel() {
                              const int64_t elapsed = self->opened_started_ms_ > 0
                                  ? (util::now_ms() - self->opened_started_ms_)
                                  : 0;
-                             util::log_timing("client.socks",
+                             YUME_TIMING_LOG("client.socks",
                                               "open_done",
                                               "stream=" + std::to_string(self->stream_id_) +
                                                   " ok=" + std::string(ok ? "1" : "0") +
@@ -637,7 +637,7 @@ void SocksSession::on_client_read(const boost::system::error_code& ec, std::size
     if (first_upload_ms_ == 0) {
         first_upload_ms_ = util::now_ms();
         const int64_t open_to_first = opened_started_ms_ > 0 ? (first_upload_ms_ - opened_started_ms_) : 0;
-        util::log_timing("client.socks",
+        YUME_TIMING_LOG("client.socks",
                          "first_upload",
                          "stream=" + std::to_string(stream_id_) +
                              " ms=" + std::to_string(open_to_first) +
@@ -671,7 +671,7 @@ void SocksSession::deliver_from_tunnel(const Tunnel::Bytes& data) {
             const int64_t open_to_first = self->opened_started_ms_ > 0
                 ? (self->first_download_ms_ - self->opened_started_ms_)
                 : 0;
-            util::log_timing("client.socks",
+            YUME_TIMING_LOG("client.socks",
                              "first_download",
                              "stream=" + std::to_string(self->stream_id_) +
                                  " ms=" + std::to_string(open_to_first) +
@@ -781,7 +781,7 @@ void SocksSession::log_summary_once() {
     if (!close_summary_logged_ && (opened_started_ms_ > 0 || upload_bytes_ > 0 || download_bytes_ > 0)) {
         close_summary_logged_ = true;
         const int64_t elapsed = opened_started_ms_ > 0 ? (util::now_ms() - opened_started_ms_) : 0;
-        util::log_timing("client.socks",
+        YUME_TIMING_LOG("client.socks",
                          "stream_summary",
                          "stream=" + std::to_string(stream_id_) +
                              " ms=" + std::to_string(elapsed) +

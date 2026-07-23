@@ -530,46 +530,42 @@ void Session::handle_frame(protocol::Frame frame) {
 
     if (ratchet_) {
         try {
-            const bool collect_timing = util::timing_enabled();
-            const auto open_started = collect_timing
-                ? std::chrono::steady_clock::now()
-                : std::chrono::steady_clock::time_point{};
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+            const bool collect_timing = YUME_TIMING_ENABLED();
+            timing_open_.set_active(collect_timing);
+            diagnostics::Stopwatch open_timer(collect_timing);
+#endif
             auto opened = ratchet_->Open(frame,
                                          std::chrono::steady_clock::now());
-            if (collect_timing) {
-                timing_open_ns_ += static_cast<std::uint64_t>(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(
-                        std::chrono::steady_clock::now() - open_started).count());
-                ++timing_open_frames_;
-            }
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+            timing_open_.record(open_timer);
+#endif
             if (opened.control_response.has_value()) {
                 queue_frame_on_strand(*opened.control_response, {}, true);
             }
             if (opened.outbound_rekey_completed) {
-                if (outbound_rekey_wait_started_.has_value()) {
-                    const auto wait_us =
-                        std::chrono::duration_cast<std::chrono::microseconds>(
-                            std::chrono::steady_clock::now() -
-                            *outbound_rekey_wait_started_).count();
-                    util::log_timing(
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+                if (const auto wait_us = outbound_rekey_wait_.finish_us(
+                        std::chrono::steady_clock::now())) {
+                    YUME_TIMING_LOG(
                         "server.transport", "rekey_wait",
                         "session=" + std::to_string(session_id_) +
-                        " us=" + std::to_string(wait_us));
-                    outbound_rekey_wait_started_.reset();
+                        " us=" + std::to_string(*wait_us));
                 }
+#endif
                 ratchet_timer_.cancel();
                 flush_ratchet_blocked_writes_on_strand();
             }
-            if (timing_open_frames_ >= 64 ||
-                opened.outbound_rekey_completed) {
-                util::log_timing(
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+            if (const auto sample = timing_open_.take_if(
+                    64, opened.outbound_rekey_completed)) {
+                YUME_TIMING_LOG(
                     "server.transport", "ratchet_open",
                     "session=" + std::to_string(session_id_) +
-                    " frames=" + std::to_string(timing_open_frames_) +
-                    " us=" + std::to_string(timing_open_ns_ / 1000U));
-                timing_open_ns_ = 0;
-                timing_open_frames_ = 0;
+                    " frames=" + std::to_string(sample->count) +
+                    " us=" + std::to_string(sample->total_ns / 1000U));
             }
+#endif
             if (!opened.application_frame.has_value()) {
                 if (close_state_ == CloseState::Open) {
                     auto self = shared_from_this();
@@ -798,7 +794,7 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
         if (!packet.close_summary_logged) {
             packet.close_summary_logged = true;
             const int64_t elapsed = packet.open_started_ms > 0 ? (util::now_ms() - packet.open_started_ms) : 0;
-            util::log_timing("server.stream",
+            YUME_TIMING_LOG("server.stream",
                              "summary",
                              "session=" + std::to_string(session_id_) +
                                  " stream=" + std::to_string(stream_id) +
@@ -858,7 +854,7 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
             if (!udp->close_summary_logged) {
                 udp->close_summary_logged = true;
                 const int64_t elapsed = udp->open_started_ms > 0 ? (util::now_ms() - udp->open_started_ms) : 0;
-                util::log_timing("server.stream",
+                YUME_TIMING_LOG("server.stream",
                                  "summary",
                                  "session=" + std::to_string(session_id_) +
                                      " stream=" + std::to_string(stream_id) +
@@ -895,7 +891,7 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
         if (!remote->close_summary_logged) {
             remote->close_summary_logged = true;
             const int64_t elapsed = remote->open_started_ms > 0 ? (util::now_ms() - remote->open_started_ms) : 0;
-            util::log_timing("server.stream",
+            YUME_TIMING_LOG("server.stream",
                              "summary",
                              "session=" + std::to_string(session_id_) +
                                  " stream=" + std::to_string(stream_id) +
@@ -1017,9 +1013,10 @@ void Session::begin_close() {
             std::cerr << "[critical] server session issue: " << close_reason_ << std::endl;
         }
     }
-    if (v2_h2_carrier_ && util::timing_enabled()) {
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    if (v2_h2_carrier_ && YUME_TIMING_ENABLED()) {
         const auto stats = v2_h2_carrier_->stats();
-        util::log_timing(
+        YUME_TIMING_LOG(
             "server.carrier", "summary",
             "session=" + std::to_string(session_id_) +
             " h2_feed_calls=" + std::to_string(stats.h2_feed_calls) +
@@ -1037,6 +1034,7 @@ void Session::begin_close() {
             " websocket_decode_us=" +
                 std::to_string(stats.websocket_decode_ns / 1000U));
     }
+#endif
     boost::system::error_code ec;
     idle_timer_.cancel();
     frame_read_timer_.cancel(ec);

@@ -329,17 +329,17 @@ public:
 
     void Feed(const std::uint8_t* data, std::size_t size) {
         if (failed() || size == 0) return;
-        const auto started = collect_timing_
-            ? std::chrono::steady_clock::now()
-            : std::chrono::steady_clock::time_point{};
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        diagnostics::Stopwatch feed_timer(collect_timing_);
+#endif
         const auto rv = nghttp2_session_mem_recv2(session_.get(), data, size);
+#if YUME_ENABLE_DEV_DIAGNOSTICS
         stats_.h2_feed_calls += 1;
         stats_.h2_feed_bytes += size;
         if (collect_timing_) {
-            stats_.h2_feed_ns += static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now() - started).count());
+            stats_.h2_feed_ns += feed_timer.elapsed_ns();
         }
+#endif
         if (rv < 0) {
             FailNghttp2("receive HTTP/2 bytes", static_cast<int>(rv));
             return;
@@ -363,9 +363,9 @@ public:
             return Fail("carrier is not active");
         }
         try {
-            const auto started = collect_timing_
-                ? std::chrono::steady_clock::now()
-                : std::chrono::steady_clock::time_point{};
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+            diagnostics::Stopwatch encode_timer(collect_timing_);
+#endif
             H2Bytes wire;
             std::size_t offset = 0;
             while (offset < size) {
@@ -393,12 +393,12 @@ public:
                 offset += chunk;
             }
             if (size == 0) wire = websocket_.EncodeBinary(data, 0);
+#if YUME_ENABLE_DEV_DIAGNOSTICS
             stats_.websocket_encode_bytes += size;
             if (collect_timing_) {
-                stats_.websocket_encode_ns += static_cast<std::uint64_t>(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(
-                        std::chrono::steady_clock::now() - started).count());
+                stats_.websocket_encode_ns += encode_timer.elapsed_ns();
             }
+#endif
             return QueueStreamBytes(carrier_stream_id_, std::move(wire));
         } catch (const std::exception& ex) {
             return Fail(std::string("encode WebSocket binary: ") + ex.what());
@@ -448,8 +448,10 @@ public:
         for (const auto& [_, stream] : outbound_streams_) total += stream.queued_bytes;
         return total;
     }
+#if YUME_ENABLE_DEV_DIAGNOSTICS
     H2CarrierStats stats() const noexcept { return stats_; }
     void set_timing_enabled(bool enabled) noexcept { collect_timing_ = enabled; }
+#endif
     bool failed() const noexcept { return !error_.empty(); }
     const std::string& error() const noexcept { return error_; }
 
@@ -694,21 +696,21 @@ private:
             }
             return;
         }
-        const auto websocket_started = collect_timing_
-            ? std::chrono::steady_clock::now()
-            : std::chrono::steady_clock::time_point{};
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        diagnostics::Stopwatch decode_timer(collect_timing_);
+#endif
         websocket_.Feed(data, len);
         if (websocket_.failed()) {
             Fail("WebSocket carrier: " + websocket_.error());
             return;
         }
         auto decoded = websocket_.TakeDecoded();
+#if YUME_ENABLE_DEV_DIAGNOSTICS
         stats_.websocket_decode_bytes += len;
         if (collect_timing_) {
-            stats_.websocket_decode_ns += static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now() - websocket_started).count());
+            stats_.websocket_decode_ns += decode_timer.elapsed_ns();
         }
+#endif
         if (decoded.size() > kMaxQueuedOutput - std::min(kMaxQueuedOutput, tunnel_bytes_.size())) {
             Fail("decoded tunnel input queue exceeded 32 MiB");
             return;
@@ -801,10 +803,10 @@ private:
 
     void Flush() {
         if (failed()) return;
-        const auto started = collect_timing_
-            ? std::chrono::steady_clock::now()
-            : std::chrono::steady_clock::time_point{};
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        diagnostics::Stopwatch flush_timer(collect_timing_);
         std::size_t flushed_bytes = 0;
+#endif
         while (true) {
             const std::uint8_t* data = nullptr;
             const auto length = nghttp2_session_mem_send2(session_.get(), &data);
@@ -819,15 +821,17 @@ private:
                 break;
             }
             serialized_output_.insert(serialized_output_.end(), data, data + count);
+#if YUME_ENABLE_DEV_DIAGNOSTICS
             flushed_bytes += count;
+#endif
         }
+#if YUME_ENABLE_DEV_DIAGNOSTICS
         stats_.h2_flush_calls += 1;
         stats_.h2_flush_bytes += flushed_bytes;
         if (collect_timing_) {
-            stats_.h2_flush_ns += static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now() - started).count());
+            stats_.h2_flush_ns += flush_timer.elapsed_ns();
         }
+#endif
     }
 
     void Check(int rv, const char* operation) {
@@ -847,8 +851,10 @@ private:
 
     H2CarrierRole role_;
     WebSocketCodec websocket_;
+#if YUME_ENABLE_DEV_DIAGNOSTICS
     H2CarrierStats stats_;
     bool collect_timing_{false};
+#endif
     std::unique_ptr<nghttp2_session_callbacks, CallbacksDeleter> callbacks_;
     std::unique_ptr<nghttp2_session, SessionDeleter> session_;
     std::unordered_map<std::int32_t, H2Headers> incoming_headers_;
@@ -886,9 +892,11 @@ H2Carrier::H2Carrier(H2CarrierRole role) : impl_(std::make_unique<Impl>(role)) {
 H2Carrier::H2Carrier(H2Carrier&&) noexcept = default;
 H2Carrier& H2Carrier::operator=(H2Carrier&&) noexcept = default;
 H2Carrier::~H2Carrier() = default;
+#if YUME_ENABLE_DEV_DIAGNOSTICS
 void H2Carrier::set_timing_enabled(bool enabled) noexcept {
     impl_->set_timing_enabled(enabled);
 }
+#endif
 
 bool H2Carrier::StartClient(std::string authority, std::string user_agent) {
     return impl_->StartClient(std::move(authority), std::move(user_agent));
@@ -934,7 +942,9 @@ std::int32_t H2Carrier::carrier_stream_id() const noexcept {
 std::size_t H2Carrier::queued_output_bytes() const noexcept {
     return impl_->queued_output_bytes();
 }
+#if YUME_ENABLE_DEV_DIAGNOSTICS
 H2CarrierStats H2Carrier::stats() const noexcept { return impl_->stats(); }
+#endif
 void H2Carrier::GracefulClose(std::uint16_t websocket_code) {
     impl_->GracefulClose(websocket_code);
 }

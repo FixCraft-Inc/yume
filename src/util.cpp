@@ -7,7 +7,6 @@
 #include "util.hpp"
 
 #include <chrono>
-#include <atomic>
 #include <cerrno>
 #include <cstdio>
 #include <csignal>
@@ -43,8 +42,6 @@ namespace {
 std::function<void(int)> g_signal_handler;
 std::mutex g_signal_mutex;
 bool g_logging_enabled = true;
-std::atomic<bool> g_timing_forced{false};
-std::atomic<bool> g_timing_enabled{false};
 std::mutex g_status_mutex;
 std::string g_status_text;
 std::size_t g_status_lines = 0;
@@ -72,7 +69,7 @@ bool is_tty_stderr() {
 }
 #endif
 
-bool env_var_enabled(const char* name, bool fallback) {
+bool read_env_flag(const char* name, bool fallback) {
     const char* raw = std::getenv(name);
     if (!raw || !*raw) {
         return fallback;
@@ -90,12 +87,6 @@ bool env_var_enabled(const char* name, bool fallback) {
     return fallback;
 }
 
-bool timing_env_enabled() {
-    return env_var_enabled("YUME_TIMING", false) ||
-           env_var_enabled("YUME_TRACE_TIMING", false) ||
-           env_var_enabled("YUME_PROFILE", false);
-}
-
 #if !YUME_USE_SPDLOG
 bool log_colors_enabled() {
     if (!is_tty_stderr()) {
@@ -104,7 +95,7 @@ bool log_colors_enabled() {
     if (std::getenv("NO_COLOR") != nullptr) {
         return false;
     }
-    return env_var_enabled("YUME_COLOR", true) && !env_var_enabled("YUME_NO_COLOR", false);
+    return read_env_flag("YUME_COLOR", true) && !read_env_flag("YUME_NO_COLOR", false);
 }
 
 void print_plain_log(const char* level, const std::string& msg) {
@@ -330,8 +321,8 @@ bool stdout_colors_enabled() {
     if (!is_tty_stdout() || std::getenv("NO_COLOR") != nullptr) {
         return false;
     }
-    return env_var_enabled("YUME_COLOR", true) &&
-           !env_var_enabled("YUME_NO_COLOR", false);
+    return read_env_flag("YUME_COLOR", true) &&
+           !read_env_flag("YUME_NO_COLOR", false);
 }
 
 nlohmann::json read_json_config(const std::string& path) {
@@ -458,30 +449,8 @@ bool is_logging_enabled() {
     return g_logging_enabled;
 }
 
-void set_timing_enabled(bool enabled) {
-    g_timing_enabled.store(enabled, std::memory_order_relaxed);
-    g_timing_forced.store(true, std::memory_order_relaxed);
-}
-
-bool timing_enabled() {
-    if (g_timing_forced.load(std::memory_order_relaxed)) {
-        return g_timing_enabled.load(std::memory_order_relaxed);
-    }
-    return timing_env_enabled();
-}
-
-void log_timing(const std::string& component,
-                const std::string& event,
-                const std::string& details) {
-    if (!timing_enabled()) {
-        return;
-    }
-    std::string msg = "timing component=" + component + " event=" + event;
-    if (!details.empty()) {
-        msg += " ";
-        msg += details;
-    }
-    log_info(msg);
+bool env_flag(const char* name, bool fallback) {
+    return read_env_flag(name, fallback);
 }
 
 void set_status_enabled(bool enabled) {

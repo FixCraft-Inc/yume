@@ -40,13 +40,27 @@ option(YUME_BUILD_TOOLS "Build optional helper tools such as yume-net-map" OFF)
 option(YUME_BUILD_SHARED_ABI "Build and install the stable libyume C ABI shared library" OFF)
 option(YUME_ABI_CLIENT_ONLY "Build libyume with client/stream/packet runtime only" OFF)
 
+# Fine-grained timing diagnostics are compiled only for explicit developer
+# configurations. Release and MinSizeRel binaries contain no timing clocks,
+# counters, handlers, event strings, or environment-variable activation path.
+set(YUME_DEV_DIAGNOSTICS_EXPRESSION
+    "$<IF:$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>,1,0>")
+
 set(BUILD_TESTING ${YUME_BUILD_TESTING} CACHE BOOL "Build YUME unit tests" FORCE)
 include(CTest)
 
-if(YUME_BUILD_SELFTEST AND NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING
-        "Build type for optimized self-test benchmark builds" FORCE)
-    message(STATUS "YUME_BUILD_SELFTEST=ON: defaulting CMAKE_BUILD_TYPE to RelWithDebInfo for meaningful benchmark results")
+if(YUME_BUILD_TESTING AND CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+    add_test(
+        NAME yume_default_build_type_test
+        COMMAND ${CMAKE_COMMAND}
+            -DYUME_BUILD_TYPE_MODULE=${PROJECT_SOURCE_DIR}/cmake/YumeBuildType.cmake
+            -P ${PROJECT_SOURCE_DIR}/tests/cmake/default_build_type_test.cmake
+    )
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/YumeBuildType.cmake")
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+    yume_configure_default_build_type()
 endif()
 if(YUME_BUILD_SELFTEST AND NOT CMAKE_CONFIGURATION_TYPES AND CMAKE_BUILD_TYPE MATCHES "^[Dd]ebug$")
     message(WARNING "YUME_BUILD_SELFTEST=ON with CMAKE_BUILD_TYPE=Debug will produce misleading throughput numbers")
@@ -236,6 +250,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     install(FILES
         README.md
         docs/ABI.md
+        docs/DIAGNOSTICS.md
         docs/EXPLAINED.md
         docs/ARCHITECTURE.md
         docs/OPERATIONS.md
@@ -252,6 +267,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         docs/LEAK_TIGHT.md
         docs/PACKET_NATIVE_BULK.md
         docs/FILTERING_SELF_DPI.md
+        docs/YUME_2_0_WAN_BEHAVIOR.md
         docs/release/CHANGELOG.md
         docs/release/RELEASE-NOTES-1.1.md
         DESTINATION "${YUME_DOC_INSTALL_DIR}"

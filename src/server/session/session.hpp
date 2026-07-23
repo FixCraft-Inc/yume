@@ -352,12 +352,11 @@ private:
     };
     std::unique_ptr<AuthV2Ephemeral> auth_v2_ephemeral_;
     std::unique_ptr<ratchet::SessionRatchet> ratchet_;
-    std::optional<std::chrono::steady_clock::time_point>
-        outbound_rekey_wait_started_;
-    std::uint64_t timing_seal_ns_{0};
-    std::uint64_t timing_seal_frames_{0};
-    std::uint64_t timing_open_ns_{0};
-    std::uint64_t timing_open_frames_{0};
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    diagnostics::IntervalTimer outbound_rekey_wait_;
+    diagnostics::SampleAccumulator timing_seal_;
+    diagnostics::SampleAccumulator timing_open_;
+#endif
     bool authenticated_{false};
     authorization::SessionTier authorization_tier_{
         authorization::SessionTier::Unauthenticated};

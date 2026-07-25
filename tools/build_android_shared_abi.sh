@@ -5,7 +5,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EXPECTED_BASELINE="550c8deda11898011dfefe2316992d46ba0905f4"
+EXPECTED_BASELINE="491a5738d9db998e2155de05619b0f893b8b128f"
 DEFAULT_OUT_DIR="${ROOT_DIR}/build/android-shared-abi"
 DEFAULT_API=28
 DEFAULT_ABIS=("armeabi-v7a" "arm64-v8a" "x86" "x86_64")
@@ -20,7 +20,7 @@ Options:
   --api LEVEL             Android API level (default: 28)
   --abi NAME              Build one ABI; repeat for more ABIs
   --out PATH              Output root (default: build/android-shared-abi)
-  --expected-baseline SHA Required signed ancestor (default: 550c8de...)
+  --expected-baseline SHA Required signed ancestor (default: 491a573...)
   --expected-commit SHA   Compatibility alias for --expected-baseline
   --jobs COUNT            Parallel build jobs
 

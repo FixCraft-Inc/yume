@@ -37,37 +37,66 @@
 
 namespace {
 
-enum class HandleKind : std::uint32_t {
-    Client = 0x59434c49u,  // YCLI
-    Server = 0x59535256u,  // YSRV
-    Stream = 0x59535452u,  // YSTR
-    Packet = 0x59504b54u,  // YPKT
-};
-
 struct HandleBase {
-    explicit HandleBase(HandleKind handle_kind)
-        : kind(static_cast<std::uint32_t>(handle_kind)) {}
-
-    std::uint32_t kind;
     mutable std::mutex error_mu;
     std::string last_error;
 };
 
-int set_error(HandleBase* handle, int status, std::string message) {
-    if (handle) {
-        std::lock_guard<std::mutex> lock(handle->error_mu);
-        handle->last_error = std::move(message);
+thread_local std::string abi_last_error;
+
+int set_abi_error(int status, std::string_view message) noexcept {
+    try {
+        abi_last_error.assign(message);
+    } catch (...) {
+        // Never let allocation failure cross the C boundary. The status still
+        // carries the failure even if the optional detail cannot be retained.
+        abi_last_error.clear();
     }
     return status;
 }
 
-int clear_error(HandleBase* handle) {
-    if (handle) {
+void clear_abi_error() noexcept {
+    abi_last_error.clear();
+}
+
+int set_error(HandleBase* handle,
+              int status,
+              std::string_view message) noexcept {
+    if (!handle) {
+        return status;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(handle->error_mu);
+        handle->last_error.assign(message);
+    } catch (...) {
+        // Error reporting is frequently called from an exception handler.
+        // Allocation or locking failure here must never replace the original
+        // status with an exception crossing the C boundary.
+        try {
+            std::lock_guard<std::mutex> lock(handle->error_mu);
+            handle->last_error.clear();
+        } catch (...) {
+        }
+    }
+    return status;
+}
+
+int clear_error(HandleBase* handle) noexcept {
+    try {
+        if (!handle) {
+            return YUME_STATUS_OK;
+        }
         std::lock_guard<std::mutex> lock(handle->error_mu);
         handle->last_error.clear();
+    } catch (...) {
+        // Clearing an optional diagnostic must not make an otherwise
+        // successful C call throw.
     }
     return YUME_STATUS_OK;
 }
+
+static_assert(noexcept(set_error(nullptr, 0, std::string_view{})));
+static_assert(noexcept(clear_error(nullptr)));
 
 std::string basefwx_version_string() {
     return std::string(yume::kBasefwxVersion);
@@ -202,10 +231,7 @@ std::string validation_error(yume::facade::config_io::ValidationReport const& re
 }  // namespace
 
 struct yume_client {
-    yume_client()
-        : base(HandleKind::Client) {}
-
-    HandleBase base;
+    HandleBase base{};
     std::mutex mu;
     yume::facade::InProcClient runtime;
     yume_socket_protect_fn socket_protect{nullptr};
@@ -213,10 +239,7 @@ struct yume_client {
 };
 
 struct yume_server {
-    yume_server()
-        : base(HandleKind::Server) {}
-
-    HandleBase base;
+    HandleBase base{};
     std::mutex mu;
 #if !defined(YUME_ABI_CLIENT_ONLY) || !YUME_ABI_CLIENT_ONLY
     yume::server::RuntimeController runtime;
@@ -225,30 +248,38 @@ struct yume_server {
 
 struct yume_stream {
     explicit yume_stream(std::shared_ptr<yume::runtime::ServiceStream> stream_in)
-        : base(HandleKind::Stream)
-        , stream(std::move(stream_in)) {}
+        : stream(std::move(stream_in)) {}
 
-    ~yume_stream() {
-        if (stream) {
-            stream->close("stream destroyed");
+    ~yume_stream() noexcept {
+        try {
+            if (stream) {
+                stream->close("stream destroyed");
+            }
+        } catch (...) {
+            // Destruction is a C ABI operation. Cleanup is best-effort and
+            // must not terminate the caller if the transport close path fails.
         }
     }
 
-    HandleBase base;
+    HandleBase base{};
     std::shared_ptr<yume::runtime::ServiceStream> stream;
 };
 
 struct yume_packet {
     explicit yume_packet(
         std::shared_ptr<yume::client::packet::PacketChannel> channel_in)
-        : base(HandleKind::Packet)
-        , channel(std::move(channel_in)) {}
+        : channel(std::move(channel_in)) {}
 
-    ~yume_packet() {
-        if (channel) channel->close("ABI packet destroyed");
+    ~yume_packet() noexcept {
+        try {
+            if (channel) channel->close("ABI packet destroyed");
+        } catch (...) {
+            // See yume_stream: destroy functions cannot report a status and
+            // are required to stay inside the C exception boundary.
+        }
     }
 
-    HandleBase base;
+    HandleBase base{};
     std::mutex mu;
     std::shared_ptr<yume::client::packet::PacketChannel> channel;
 };
@@ -352,17 +383,30 @@ const char* yume_strerror(int status) {
 int yume_generate_pq_keypair(const char* private_path,
                              const char* public_path) {
     if (!private_path || !*private_path || !public_path || !*public_path) {
-        return YUME_STATUS_INVALID_ARGUMENT;
+        return set_abi_error(
+            YUME_STATUS_INVALID_ARGUMENT,
+            "private_path and public_path must both be non-empty");
     }
     try {
         std::string error;
         if (!yume::inner::generate_pq_keypair(private_path, public_path, &error)) {
-            return YUME_STATUS_INTERNAL_ERROR;
+            return set_abi_error(
+                YUME_STATUS_INTERNAL_ERROR,
+                error.empty() ? std::string_view("PQ keypair generation failed")
+                              : std::string_view(error));
         }
+        clear_abi_error();
         return YUME_STATUS_OK;
+    } catch (std::exception const& ex) {
+        return set_abi_error(YUME_STATUS_INTERNAL_ERROR, ex.what());
     } catch (...) {
-        return YUME_STATUS_INTERNAL_ERROR;
+        return set_abi_error(
+            YUME_STATUS_INTERNAL_ERROR, "unknown PQ keypair generation error");
     }
+}
+
+const char* yume_last_error(void) {
+    return abi_last_error.c_str();
 }
 
 yume_client* yume_client_create(void) {
@@ -552,7 +596,7 @@ int yume_client_request_json(yume_client* client,
             } catch (std::exception const& ex) {
                 return set_error(&client->base,
                                  YUME_STATUS_PARSE_ERROR,
-                                 std::string("invalid args JSON: ") + ex.what());
+                                 ex.what());
             }
         }
 
@@ -577,14 +621,14 @@ int yume_client_open_stream(yume_client* client,
         return YUME_STATUS_INVALID_ARGUMENT;
     }
     *out_stream = nullptr;
-    const std::string service_name(service);
-    if (!valid_service_name(service_name)) {
+    if (!valid_service_name(service)) {
         return set_error(&client->base,
                          YUME_STATUS_INVALID_ARGUMENT,
                          "invalid service name");
     }
 
     try {
+        const std::string service_name(service);
         auto tunnel = client->runtime.primary_tunnel();
         if (!tunnel || !tunnel->is_alive()) {
             return set_error(&client->base,
@@ -1071,13 +1115,13 @@ int yume_server_register_service(yume_server* server,
     if (!server || !service) {
         return YUME_STATUS_INVALID_ARGUMENT;
     }
-    const std::string service_name(service);
-    if (!valid_service_name(service_name)) {
+    if (!valid_service_name(service)) {
         return set_error(&server->base,
                          YUME_STATUS_INVALID_ARGUMENT,
                          "invalid service name");
     }
     try {
+        const std::string service_name(service);
         std::string error;
         if (!server->runtime.register_service(service_name, &error)) {
             return set_error(&server->base, status_from_error(error), error);
@@ -1098,13 +1142,13 @@ int yume_server_accept_stream(yume_server* server,
         return YUME_STATUS_INVALID_ARGUMENT;
     }
     *out_stream = nullptr;
-    const std::string service_name(service);
-    if (!valid_service_name(service_name)) {
+    if (!valid_service_name(service)) {
         return set_error(&server->base,
                          YUME_STATUS_INVALID_ARGUMENT,
                          "invalid service name");
     }
     try {
+        const std::string service_name(service);
         std::string error;
         auto stream = server->runtime.accept_service_stream(service_name, timeout_ms, &error);
         if (!stream) {

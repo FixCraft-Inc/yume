@@ -85,8 +85,9 @@ Not done / not fully tested:
 
 - Version-pinned Chrome/Firefox captures or an external HTTP/2 conformance
   client against both accepted and decoy paths.
-- Sanitizer, thread-race, long-running close/reconnect, or resource-pressure
-  soak testing.
+- Thread-race (TSan), long-running close/reconnect, and resource-pressure soak
+  testing. ASan + UBSan are configured to run the focused unit suite in CI
+  (`YUME_SANITIZE`), but that gate is not soak or concurrency evidence.
 - Detached EXEC workers are bounded but are not cancellable/joined at shutdown.
 - Best-effort erasure is not a locked allocator and cannot erase prior copies.
 - External HTTP/2 conformance, exact native browser/web-server identity, and

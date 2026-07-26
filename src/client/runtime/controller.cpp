@@ -521,9 +521,11 @@ bool RuntimeController::start(ClientConfig cfg, StartOptions opts, std::string* 
 #endif
 }
 
-bool RuntimeController::stop(std::string* error) {
+// `error` is part of the cross-platform signature but neither branch reports
+// through it: Windows has no daemon to stop, and the POSIX path surfaces
+// failures through its own ipc_error.
+bool RuntimeController::stop([[maybe_unused]] std::string* error) {
 #if defined(_WIN32)
-    (void)error;
     return true;
 #else
     pid_t pid = -1;

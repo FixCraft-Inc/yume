@@ -45,6 +45,65 @@ timer and its lambda capture with `#if YUME_ENABLE_DEV_DIAGNOSTICS` so a Release
 closure has no diagnostic member. Never log keys, nonces, plaintext, auth
 responses, secret paths, or full peer-controlled payloads.
 
+## Compiler warnings
+
+| Option | Default | Effect |
+|---|---|---|
+| `YUME_WARNINGS` | `ON` | Project warning set on first-party targets |
+| `YUME_WARNINGS_AS_ERRORS` | `OFF` (`ON` in CI) | Promote those warnings to errors |
+
+The set is `-Wall -Wextra -Wformat-security -Wvla -Wnon-virtual-dtor` on
+GCC/Clang and `/W4 /permissive-` on MSVC, applied through
+`yume_apply_warnings()` in `src/CMakeLists.txt`. Most first-party targets pick
+it up via the existing `yume_apply_perf_opts()` hook; the installed shared
+library (`yume_abi`) calls `yume_apply_warnings()` directly, so its
+optimisation settings stay a separate decision from its warning settings.
+
+Coverage is enforced, not assumed: a configure-time audit at the end of
+`src/CMakeLists.txt` fails the build if any target that compiles first-party
+code never received the set. Add a genuinely exempt target to
+`YUME_WARNING_EXEMPT_TARGETS` with a reason.
+
+Both the Release and the sanitizer CI jobs build with `-Werror`. That is
+deliberate duplication: warnings whose analysis depends on optimization level
+(`-Wformat-truncation` among them) fire in only one of the two configurations,
+so gating a single job leaves part of the set unenforced.
+
+Bundled dependencies (BaseFWX, Dear ImGui, ImPlot, nanosvg, stb) are separate
+targets or `SYSTEM` includes and never receive it, so any warning printed here
+is about code this tree owns and can fix. Do not silence one with a blanket
+`-Wno-`; either fix it or add a narrowly scoped, commented suppression.
+
+Flags deliberately still off — `-Wconversion`, `-Wsign-conversion`, `-Wshadow`,
+`-Wcast-qual`, `-Wold-style-cast` — each need a dedicated cleanup pass rather
+than a suppression, and are enabled one at a time as that work is done.
+
+## Sanitizers
+
+```bash
+cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
+  -DYUME_BUILD_TESTING=ON -DYUME_SANITIZE=address+undefined
+cmake --build build-asan -j"$(nproc)"
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
+  ctest --test-dir build-asan --output-on-failure
+```
+
+`YUME_SANITIZE` accepts `none` (default), `address`, `undefined`,
+`address+undefined`, or `thread`. It instruments every source-built target
+added by this tree, including bundled BaseFWX sources. Prebuilt vendor
+archives and system libraries are not instrumented.
+
+The option forces `YUME_LTO=OFF`, because link-time optimization inlines and
+reorders across exactly the boundaries a sanitizer reports against. It refuses
+to combine with `YUME_STATIC` (the sanitizer runtime must stay dynamic) and
+with compilers other than GCC/Clang. UBSan builds add
+`-fno-sanitize-recover=all` so a violation aborts instead of printing and
+continuing, which is what makes it usable as a CI gate.
+
+`address` and `thread` are mutually exclusive by construction — run them as
+separate configurations. **Never distribute a sanitized binary.**
+
 ## Verification
 
 ```bash
@@ -66,3 +125,4 @@ ctest --test-dir build-dev --output-on-failure
 
 Benchmark comparisons must state whether timing was enabled. Do not compare an
 instrumented run with an uninstrumented one as if they were identical builds.
+Sanitized builds are never valid benchmark subjects.

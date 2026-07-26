@@ -12,6 +12,8 @@
 #if !defined(_WIN32)
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -58,6 +60,39 @@ int test_inproc_ignores_desktop_config_path() {
         return 32;
     }
     return restored ? 0 : 33;
+}
+
+int test_pq_public_path_failure_removes_private_key() {
+    char work_dir_template[] = "/tmp/yume-abi-pq-keypair-XXXXXX";
+    char* const work_dir = ::mkdtemp(work_dir_template);
+    if (!work_dir) return 37;
+
+    const auto base = std::filesystem::path(work_dir);
+    const auto private_path = base / "private.bin";
+    const auto public_path = base / "public.bin";
+    {
+        std::ofstream existing(public_path, std::ios::binary);
+        existing << "do-not-replace";
+    }
+
+    const int status = yume_generate_pq_keypair(
+        private_path.c_str(), public_path.c_str());
+    const std::string detail = yume_last_error() ? yume_last_error() : "";
+    const bool private_removed = !std::filesystem::exists(private_path);
+    std::ifstream persisted(public_path, std::ios::binary);
+    const std::string public_contents(
+        (std::istreambuf_iterator<char>(persisted)),
+        std::istreambuf_iterator<char>());
+    persisted.close();
+
+    std::error_code cleanup_error;
+    std::filesystem::remove_all(base, cleanup_error);
+
+    if (status != YUME_STATUS_INTERNAL_ERROR) return 38;
+    if (detail.empty()) return 39;
+    if (!private_removed) return 40;
+    if (public_contents != "do-not-replace") return 41;
+    return 0;
 }
 #endif
 
@@ -139,6 +174,10 @@ int main() {
     if (const int rc = test_inproc_ignores_desktop_config_path(); rc != 0) {
         return rc;
     }
+    if (const int rc = test_pq_public_path_failure_removes_private_key();
+        rc != 0) {
+        return rc;
+    }
 #endif
 
     yume_server* server = yume_server_create();
@@ -176,5 +215,21 @@ int main() {
     if (yume_stream_peer_json(nullptr, small, sizeof(small), &needed) != YUME_STATUS_INVALID_ARGUMENT) {
         return 19;
     }
+
+    // NULL is the only invalid handle value the ABI promises to recognize.
+    const char* null_error = yume_handle_last_error(nullptr);
+    if (!null_error || std::strcmp(null_error, "invalid handle") != 0) {
+        return 34;
+    }
+
+    if (yume_generate_pq_keypair(nullptr, nullptr) !=
+        YUME_STATUS_INVALID_ARGUMENT) {
+        return 35;
+    }
+    const char* abi_error = yume_last_error();
+    if (!abi_error || std::strstr(abi_error, "private_path") == nullptr) {
+        return 36;
+    }
+
     return 0;
 }

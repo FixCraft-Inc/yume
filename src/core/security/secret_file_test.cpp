@@ -1,12 +1,22 @@
 #include "core/security/secret_file.hpp"
 
+#include <array>
 #include <cassert>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <process.h>
+#include <windows.h>
+#include <aclapi.h>
+#else
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -19,20 +29,134 @@ bool Throws(Fn&& fn) {
     return false;
 }
 
+int ProcessId() {
+#if defined(_WIN32)
+    return ::_getpid();
+#else
+    return static_cast<int>(::getpid());
+#endif
+}
+
+std::string ReadAll(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return {
+        (std::istreambuf_iterator<char>(input)),
+        std::istreambuf_iterator<char>()};
+}
+
+void WriterContract() {
+    const auto base = std::filesystem::temp_directory_path() /
+        ("yume-secret-writer-test-" + std::to_string(ProcessId()));
+    std::filesystem::remove_all(base);
+    std::filesystem::create_directories(base);
+    const auto exclusive_path = base / "private-material.bin";
+    const std::vector<std::uint8_t> first{'s', 'e', 'c', 'r', 'e', 't'};
+    std::string write_error;
+    assert(yume::security::WriteFileExclusive0600(
+        exclusive_path, first, &write_error));
+    assert(write_error.empty());
+
+#if defined(_WIN32)
+    std::wstring path_text = exclusive_path.native();
+    PACL dacl = nullptr;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    const DWORD security_status = ::GetNamedSecurityInfoW(
+        path_text.data(),
+        SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION,
+        nullptr,
+        nullptr,
+        &dacl,
+        nullptr,
+        &descriptor);
+    assert(security_status == ERROR_SUCCESS);
+    assert(dacl != nullptr);
+    SECURITY_DESCRIPTOR_CONTROL control = 0;
+    DWORD revision = 0;
+    assert(::GetSecurityDescriptorControl(
+        descriptor, &control, &revision) != 0);
+    assert((control & SE_DACL_PROTECTED) != 0);
+    assert(dacl->AceCount == 2);
+
+    std::array<std::uint8_t, SECURITY_MAX_SID_SIZE> system_sid{};
+    std::array<std::uint8_t, SECURITY_MAX_SID_SIZE> owner_rights_sid{};
+    DWORD system_sid_size = static_cast<DWORD>(system_sid.size());
+    DWORD owner_rights_sid_size =
+        static_cast<DWORD>(owner_rights_sid.size());
+    assert(::CreateWellKnownSid(
+        WinLocalSystemSid,
+        nullptr,
+        system_sid.data(),
+        &system_sid_size) != 0);
+    assert(::CreateWellKnownSid(
+        WinCreatorOwnerRightsSid,
+        nullptr,
+        owner_rights_sid.data(),
+        &owner_rights_sid_size) != 0);
+
+    bool saw_system = false;
+    bool saw_owner_rights = false;
+    for (DWORD index = 0; index < dacl->AceCount; ++index) {
+        void* raw_ace = nullptr;
+        assert(::GetAce(dacl, index, &raw_ace) != 0);
+        const auto* ace = static_cast<const ACCESS_ALLOWED_ACE*>(raw_ace);
+        assert(ace->Header.AceType == ACCESS_ALLOWED_ACE_TYPE);
+        assert((ace->Mask & FILE_ALL_ACCESS) == FILE_ALL_ACCESS);
+        const PSID sid = const_cast<DWORD*>(&ace->SidStart);
+        saw_system = saw_system ||
+            (::EqualSid(sid, system_sid.data()) != 0);
+        saw_owner_rights = saw_owner_rights ||
+            (::EqualSid(sid, owner_rights_sid.data()) != 0);
+    }
+    assert(saw_system);
+    assert(saw_owner_rights);
+    ::LocalFree(descriptor);
+#else
+    struct stat exclusive_info {};
+    assert(::stat(exclusive_path.c_str(), &exclusive_info) == 0);
+    assert((exclusive_info.st_mode & 0777) == 0600);
+#endif
+
+    const std::vector<std::uint8_t> replacement{'x'};
+    assert(!yume::security::WriteFileExclusive0600(
+        exclusive_path, replacement, &write_error));
+    assert(!write_error.empty());
+    assert(ReadAll(exclusive_path) == "secret");
+
 #if !defined(_WIN32)
-void Write(const std::filesystem::path& path, const std::string& value, mode_t mode) {
+    const auto symlink_path = base / "private-material-link.bin";
+    const auto symlink_target = base / "symlink-target.bin";
+    {
+        std::ofstream target(symlink_target, std::ios::binary);
+        target << "unchanged";
+    }
+    assert(::symlink(symlink_target.c_str(), symlink_path.c_str()) == 0);
+    assert(!yume::security::WriteFileExclusive0600(
+        symlink_path, replacement, &write_error));
+    assert(ReadAll(symlink_target) == "unchanged");
+#endif
+
+    std::filesystem::remove_all(base);
+}
+
+#if !defined(_WIN32)
+void Write(const std::filesystem::path& path,
+           const std::string& value,
+           mode_t mode) {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     out << value;
     out.close();
     ::chmod(path.c_str(), mode);
 }
 
-void Contract() {
+void LoadContract() {
     const auto base = std::filesystem::temp_directory_path() /
-        ("yume-secret-test-" + std::to_string(::getpid()));
+        ("yume-secret-load-test-" + std::to_string(ProcessId()));
+    std::filesystem::remove_all(base);
     std::filesystem::create_directories(base);
     const auto secret_path = base / "secret.hex";
     const std::string good(64, 'a');
+
     Write(secret_path, good, 0600);
     auto secret = yume::security::LoadSecretFile32(secret_path);
     auto bytes = secret.CopyBytes();
@@ -52,8 +176,9 @@ void Contract() {
 }  // namespace
 
 int main() {
+    WriterContract();
 #if !defined(_WIN32)
-    Contract();
+    LoadContract();
 #endif
     return 0;
 }

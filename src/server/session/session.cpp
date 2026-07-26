@@ -793,7 +793,8 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
         auto& packet = *packet_stream_;
         if (!packet.close_summary_logged) {
             packet.close_summary_logged = true;
-            const int64_t elapsed = packet.open_started_ms > 0 ? (util::now_ms() - packet.open_started_ms) : 0;
+            [[maybe_unused]] const int64_t elapsed =
+                packet.open_started_ms > 0 ? (util::now_ms() - packet.open_started_ms) : 0;
             YUME_TIMING_LOG("server.stream",
                              "summary",
                              "session=" + std::to_string(session_id_) +
@@ -853,7 +854,8 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
             auto udp = it_udp->second;
             if (!udp->close_summary_logged) {
                 udp->close_summary_logged = true;
-                const int64_t elapsed = udp->open_started_ms > 0 ? (util::now_ms() - udp->open_started_ms) : 0;
+                [[maybe_unused]] const int64_t elapsed =
+                    udp->open_started_ms > 0 ? (util::now_ms() - udp->open_started_ms) : 0;
                 YUME_TIMING_LOG("server.stream",
                                  "summary",
                                  "session=" + std::to_string(session_id_) +
@@ -890,7 +892,8 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
         remote->inbound_budget.clear();
         if (!remote->close_summary_logged) {
             remote->close_summary_logged = true;
-            const int64_t elapsed = remote->open_started_ms > 0 ? (util::now_ms() - remote->open_started_ms) : 0;
+            [[maybe_unused]] const int64_t elapsed =
+                remote->open_started_ms > 0 ? (util::now_ms() - remote->open_started_ms) : 0;
             YUME_TIMING_LOG("server.stream",
                              "summary",
                              "session=" + std::to_string(session_id_) +

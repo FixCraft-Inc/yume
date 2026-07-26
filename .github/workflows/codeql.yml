@@ -17,7 +17,6 @@ permissions:
 env:
   BASEFWX_REPO: "https://github.com/F1xGOD/basefwx.git"
   BASEFWX_REF_FILE: "config/refs/basefwx.ref"
-  YUME_VENDOR_ARCHIVE: "third_party/prebuilt/yume-vendor-prebuilt.tar.xz"
   CODEQL_BUILD_JOBS: "2"
 
 jobs:
@@ -71,13 +70,13 @@ jobs:
             libboost-all-dev libspdlog-dev nlohmann-json3-dev
           bash scripts/ensure-nghttp2.sh
 
-      - name: Extract prebuilt vendor libs
+      # See ci.yml: the archive is not committed any more, so this fetches it
+      # from the published mirror and verifies it against the pinned SHA-256
+      # and release-key fingerprint before unpacking.
+      - name: Fetch and verify prebuilt vendor libs
         if: matrix.language == 'c-cpp'
         run: |
-          if [[ -f "${YUME_VENDOR_ARCHIVE}" ]]; then
-            tar -xJf "${YUME_VENDOR_ARCHIVE}"
-          fi
-          test -d vendor/linux-x86_64
+          bash scripts/vendor_prebuilt.sh ensure linux-x86_64
 
       - name: Configure C++ CodeQL build
         if: matrix.language == 'c-cpp'

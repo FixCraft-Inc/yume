@@ -283,7 +283,8 @@ void Session::handle_open(const protocol::Frame& frame) {
         auto resolver_handler = [self, stream_id = frame.header.stream_id, udp, self_local_addr, resolver_timer, resolve_timed_out](const boost::system::error_code& ec,
                                                                                                                                    const boost::asio::ip::udp::resolver::results_type& results) {
             resolver_timer->cancel();
-            const int64_t resolve_ms = udp->resolve_started_ms > 0 ? (util::now_ms() - udp->resolve_started_ms) : 0;
+            [[maybe_unused]] const int64_t resolve_ms =
+                udp->resolve_started_ms > 0 ? (util::now_ms() - udp->resolve_started_ms) : 0;
             {
                 std::lock_guard<std::mutex> lock(self->streams_mutex_);
                 if (self->udp_streams_.find(stream_id) == self->udp_streams_.end()) {
@@ -406,7 +407,7 @@ void Session::handle_open(const protocol::Frame& frame) {
                     bool ok,
                     const std::vector<boost::asio::ip::address_v4>& addresses,
                     const std::string& reason,
-                    int64_t resolve_ms) {
+                    [[maybe_unused]] int64_t resolve_ms) {
                     {
                         std::lock_guard<std::mutex> lock(self->streams_mutex_);
                         if (self->udp_streams_.find(stream_id) == self->udp_streams_.end()) {
@@ -567,9 +568,9 @@ void Session::handle_open(const protocol::Frame& frame) {
                               stream_id = frame.header.stream_id,
                               remote,
                               self_local_addr](std::vector<boost::asio::ip::tcp::endpoint> resolved,
-                                               std::size_t result_count,
-                                               int64_t resolve_ms,
-                                               bool direct_dns) {
+                                               [[maybe_unused]] std::size_t result_count,
+                                               [[maybe_unused]] int64_t resolve_ms,
+                                               [[maybe_unused]] bool direct_dns) {
         YUME_TIMING_LOG("server.open",
                          "resolve_ok",
                          "session=" + std::to_string(self->session_id_) +
@@ -642,9 +643,10 @@ void Session::handle_open(const protocol::Frame& frame) {
                                                               [=](const boost::system::error_code& ec2,
                                                                                                                           const boost::asio::ip::tcp::endpoint&) {
                                                                   connect_timer->cancel();
-                                                                  const int64_t connect_ms = remote->connect_started_ms > 0
-                                                                      ? (util::now_ms() - remote->connect_started_ms)
-                                                                      : 0;
+                                                                  [[maybe_unused]] const int64_t connect_ms =
+                                                                      remote->connect_started_ms > 0
+                                                                          ? (util::now_ms() - remote->connect_started_ms)
+                                                                          : 0;
                                                                   {
                                                                       std::lock_guard<std::mutex> lock(self->streams_mutex_);
                                                                       if (self->streams_.find(stream_id) == self->streams_.end()) {

@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <charconv>
 #include <cctype>
-#include <limits>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -31,22 +30,6 @@ bool parse_int_strict(std::string_view text, int& out) {
         return false;
     }
     out = value;
-    return true;
-}
-
-bool parse_u32_strict(std::string_view text, std::uint32_t& out) {
-    if (text.empty()) {
-        return false;
-    }
-    unsigned long long value = 0;
-    auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
-    if (ec != std::errc() || ptr != text.data() + text.size()) {
-        return false;
-    }
-    if (value > std::numeric_limits<std::uint32_t>::max()) {
-        return false;
-    }
-    out = static_cast<std::uint32_t>(value);
     return true;
 }
 
@@ -122,19 +105,6 @@ ParsedArgs parse_args(int argc, char** argv) {
         }
         int parsed = 0;
         if (!parse_int_strict(raw, parsed)) {
-            args.parse_error = "invalid integer for " + flag + ": " + raw;
-            return false;
-        }
-        out = parsed;
-        return true;
-    };
-    auto parse_u32_value = [&](const std::string& flag, std::uint32_t& out) -> bool {
-        const char* raw = take_value(flag);
-        if (!raw) {
-            return false;
-        }
-        std::uint32_t parsed = 0;
-        if (!parse_u32_strict(raw, parsed)) {
             args.parse_error = "invalid integer for " + flag + ": " + raw;
             return false;
         }

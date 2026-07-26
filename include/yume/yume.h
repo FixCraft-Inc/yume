@@ -74,7 +74,10 @@ typedef int (*yume_socket_protect_fn)(intptr_t socket_handle, void* user_data);
  * ABI conventions:
  * - Named services are application-defined byte streams. YUME does not assign
  *   project-specific names, message schemas, or application semantics to them.
- * - All handles are opaque and owned by the caller.
+ * - All handles are opaque and owned by the caller. Except for NULL passed to
+ *   destroy functions, every handle argument must be a live handle of the
+ *   correct type returned by this ABI. Callers must synchronize destruction
+ *   with all other use of that handle.
  * - Destroy functions accept NULL.
  * - JSON output helpers write a NUL-terminated string to caller-owned memory.
  *   Pass a too-small buffer to receive YUME_STATUS_BUFFER_TOO_SMALL and the
@@ -84,8 +87,12 @@ typedef int (*yume_socket_protect_fn)(intptr_t socket_handle, void* user_data);
  * - yume_stream_write accepts timeout_ms for ABI stability, but ABI v1 writes
  *   enqueue synchronously and ignore the value. Pass 0 for forward-compatible
  *   callers that do not require a future write deadline.
- * - Last-error strings are per handle and remain valid until the next
- *   yume_handle_last_error call on the same thread.
+ * - Errors are stored per handle. yume_handle_last_error copies the selected
+ *   error into thread-local storage; the returned pointer remains valid until
+ *   the next yume_handle_last_error call on the same thread.
+ * - yume_last_error reports the calling thread's last error from a free
+ *   function such as yume_generate_pq_keypair. Its pointer remains valid until
+ *   the next free-function error update on the same thread.
  */
 
 YUME_API uint32_t yume_abi_version(void);
@@ -98,6 +105,7 @@ YUME_API int yume_get_build_info(yume_build_info* out, size_t out_size);
 YUME_API const char* yume_strerror(int status);
 YUME_API int yume_generate_pq_keypair(const char* private_path,
                                       const char* public_path);
+YUME_API const char* yume_last_error(void);
 
 YUME_API yume_client* yume_client_create(void);
 YUME_API void yume_client_destroy(yume_client* client);

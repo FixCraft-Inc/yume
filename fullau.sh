@@ -26,9 +26,29 @@ TOOLCHAIN_ROOT=""
 OQS_SRC="${OQS_SRC:-${HOME}/liboqs}"
 ARGON2_SRC="${ARGON2_SRC:-${HOME}/argon2}"
 VENDOR_BUILDER="${YUME_REPO_ROOT}/scripts/build_vendor_libs.sh"
-VENDOR_ARCHIVE="${YUME_REPO_ROOT}/third_party/prebuilt/yume-vendor-prebuilt.tar.xz"
-VENDOR_DIR="${YUME_REPO_ROOT}/vendor"
-export YUME_VENDOR_ONLY=1
+VENDOR_DIR=""
+# VENDOR_ARCHIVE used to live here. Its only consumer was the hand-rolled
+# extract in vendor_restore_if_missing(); the archive path now comes from
+# scripts/vendor_prebuilt.sh, which also owns the URL fallback.
+
+# Download / SHA-256 / pinned-release-key verification for the prebuilt vendor
+# archive. Shared with ezbuild.sh and CI so the trust decision has exactly one
+# implementation. Provides yume_vendor_ensure_extracted / _verify / _obtain.
+# shellcheck source=scripts/vendor_prebuilt.sh
+source "${YUME_REPO_ROOT}/scripts/vendor_prebuilt.sh"
+
+# Prebuilt vendor libraries are opt-in, exactly as in ezbuild.sh.
+#
+# This used to be an unconditional `export YUME_VENDOR_ONLY=1`, which silently
+# linked prebuilt liboqs/argon2 into every fullau build and suppressed the
+# from-source path with no way to say no. Users who do not trust binaries they
+# did not compile had no signal that it was happening.
+#
+# Without it, fullau stages liboqs and Argon2 from source; the remaining
+# dependencies still come from the target's package manager or SDK.
+# Pass --use-vendor (optionally with a path, directory or https URL) to opt in.
+YUME_USE_VENDOR=0
+YUME_VENDOR_SOURCE=""
 OPENWRT_SDK_TEMP=0
 OPENWRT_SDK_TEMP_DIR=""
 
@@ -169,7 +189,7 @@ init_tmp_root() {
 
 show_fullau_usage() {
   cat <<'EOF'
-Usage: ./fullau.sh [--help] [--gui] [--target NAME[,NAME...]] [--targets LIST]
+Usage: ./fullau.sh [--help] [--gui] [--use-vendor [SRC]] [--target NAME[,NAME...]] [--targets LIST]
 
 Targets:
   all
@@ -182,6 +202,14 @@ Targets:
   macos, macos-x86_64, macos-arm64
 
 Options:
+  --use-vendor [SRC]
+          Link PREBUILT liboqs/argon2 instead of compiling them from
+          source. OFF by default — a plain fullau run source-builds
+          these two into isolated staging; other dependencies still come
+          from the target package manager or SDK. SRC may be omitted, or
+          be a .tar.xz path, an unpacked directory, or an https URL.
+          Downloaded archives must pass both a pinned SHA-256 and a GPG
+          signature check.
   --gui   Also build the desktop GUI (yume-gui) for the three desktop
           targets — linux-x86_64, windows-x86_64, macos-x86_64/arm64.
           Ignored for non-desktop targets (openwrt/busybox/arm*). Pulls
@@ -225,6 +253,24 @@ parse_fullau_args() {
       -h|--help)
         show_fullau_usage
         exit 0
+        ;;
+      --use-vendor)
+        # Opt in to prebuilt liboqs/argon2. Off by default so a plain fullau
+        # run compiles liboqs and Argon2 from source.
+        YUME_USE_VENDOR=1
+        export YUME_VENDOR_ONLY=1
+        if [[ -n "${2:-}" && "${2}" != -* ]]; then
+          YUME_VENDOR_SOURCE="$2"
+          export YUME_VENDOR_ARCHIVE="$2"
+          shift 2
+        else
+          shift
+        fi
+        # Arg parsing runs before init_fullau_logging(), so write directly
+        # to stderr rather than through a logging helper that does not exist
+        # yet at this point.
+        printf '[warn] Using PREBUILT vendor libraries — not compiled on this machine.\n' >&2
+        printf '[warn]   Omit --use-vendor to build every dependency from source.\n' >&2
         ;;
       --gui)
         YUME_FULLAU_GUI=1
@@ -300,6 +346,21 @@ REAL_UID="$(resolve_real_uid)"
 REAL_GID="$(resolve_real_gid)"
 YUME_CACHE_ROOT="$(select_cache_root "${YUME_CACHE_ROOT:-${REAL_HOME}/.cache/yume}")"
 IFS='|' read -r YUME_TMP_ROOT YUME_TMP_ROOT_AUTO <<< "$(init_tmp_root)"
+VENDOR_STAGING_ROOT=""
+VENDOR_TEMP_CREATED=0
+if [[ "${YUME_USE_VENDOR:-0}" == "1" &&
+      -n "${YUME_VENDOR_SOURCE:-}" && -d "${YUME_VENDOR_SOURCE}" ]]; then
+  yume_vendor_directory_root "${YUME_VENDOR_SOURCE}" VENDOR_DIR
+else
+  VENDOR_STAGING_ROOT="$(mktemp -d "${YUME_TMP_ROOT}/vendor-stage-XXXXXX")"
+  VENDOR_DIR="${VENDOR_STAGING_ROOT}/vendor"
+  VENDOR_TEMP_CREATED=1
+fi
+export YUME_VENDOR_DIR="${VENDOR_DIR}"
+export YUME_VENDOR_ROOT="${VENDOR_DIR}"
+# ezbuild still must not read arbitrary repo-local vendor content. This flag
+# permits only the isolated tree that fullau either builds or verifies.
+export YUME_STAGED_VENDOR_ALLOWED=1
 
 init_fullau_logging() {
   local requested="${YUME_LOG_FILE:-}"
@@ -772,6 +833,19 @@ static_libs_ok() {
     return 1
   fi
   return 0
+}
+
+static_transport_libs_ok() {
+  local label="$1"
+  local lib_dir="$2"
+  static_libs_ok "${label}" \
+    "${lib_dir}/libz.a" \
+    "${lib_dir}/liblzma.a" \
+    "${lib_dir}/libzstd.a" \
+    "${lib_dir}/libssl.a" \
+    "${lib_dir}/libcrypto.a" \
+    "${lib_dir}/libboost_system.a" \
+    "${lib_dir}/libnghttp2.a"
 }
 
 binary_is_static() {
@@ -1472,18 +1546,43 @@ ensure_dockcross() {
 }
 
 vendor_cleanup() {
-  if [[ "${VENDOR_TEMP_CREATED:-0}" -eq 1 ]]; then
-    rm -rf "${VENDOR_DIR}"
+  if [[ "${VENDOR_TEMP_CREATED:-0}" -eq 1 &&
+        -n "${VENDOR_STAGING_ROOT:-}" ]]; then
+    rm -rf "${VENDOR_STAGING_ROOT}"
   fi
 }
 
 vendor_restore_if_missing() {
-  if [[ ! -d "${VENDOR_DIR}" ]]; then
-    if [[ -f "${VENDOR_ARCHIVE}" ]]; then
-      tar -xJf "${VENDOR_ARCHIVE}"
-      VENDOR_TEMP_CREATED=1
-    fi
+  # Without --use-vendor, require_vendor_dir builds each requested target into
+  # the isolated source staging tree on demand.
+  if [[ "${YUME_USE_VENDOR:-0}" != "1" ]]; then
+    return 0
   fi
+
+  if [[ -n "${YUME_VENDOR_SOURCE:-}" && -d "${YUME_VENDOR_SOURCE}" ]]; then
+    if ! yume_vendor_directory_root "${YUME_VENDOR_SOURCE}" VENDOR_DIR; then
+      return 1
+    fi
+    VENDOR_TEMP_CREATED=0
+    export YUME_VENDOR_DIR="${VENDOR_DIR}"
+    export YUME_VENDOR_ROOT="${VENDOR_DIR}"
+    return 0
+  fi
+
+  # Download-if-needed, verify against the pinned SHA-256 *and* the pinned
+  # release-key fingerprint, extract, and clean up the temp file. All of that
+  # is scripts/vendor_prebuilt.sh, shared with ezbuild.sh and CI — this used
+  # to be a second, slightly weaker copy of the same logic.
+  local extract_root="${VENDOR_STAGING_ROOT}"
+  if ! yume_vendor_ensure_extracted "${extract_root}" "${YUME_VENDOR_SOURCE:-}"; then
+    return 1
+  fi
+  VENDOR_STAGING_ROOT="${extract_root}"
+  VENDOR_DIR="${extract_root}/vendor"
+  VENDOR_TEMP_CREATED=1
+  export YUME_VENDOR_DIR="${VENDOR_DIR}"
+  export YUME_VENDOR_ROOT="${VENDOR_DIR}"
+  return 0
 }
 
 vendor_cross_dir() {
@@ -1743,13 +1842,8 @@ EOF
   require_vendor_dir "${VENDOR_DIR}/busybox-${label}"
   if [[ "${label}" == "x86" ]]; then
     if [[ "${variant}" == "static" ]]; then
-      if ! static_libs_ok "${label} busybox" \
-        "/usr/lib/i386-linux-gnu/libz.a" \
-        "/usr/lib/i386-linux-gnu/liblzma.a" \
-        "/usr/lib/i386-linux-gnu/libzstd.a" \
-        "/usr/lib/i386-linux-gnu/libssl.a" \
-        "/usr/lib/i386-linux-gnu/libcrypto.a" \
-        "/usr/lib/i386-linux-gnu/libboost_system.a"; then
+      if ! static_transport_libs_ok \
+        "${label} busybox" "/usr/lib/i386-linux-gnu"; then
         return 0
       fi
     else
@@ -1779,13 +1873,8 @@ EOF
     fi
   elif [[ "${label}" == "armv7" ]]; then
     if [[ "${variant}" == "static" ]]; then
-      if ! static_libs_ok "${label} busybox" \
-        "/usr/lib/arm-linux-gnueabihf/libz.a" \
-        "/usr/lib/arm-linux-gnueabihf/liblzma.a" \
-        "/usr/lib/arm-linux-gnueabihf/libzstd.a" \
-        "/usr/lib/arm-linux-gnueabihf/libssl.a" \
-        "/usr/lib/arm-linux-gnueabihf/libcrypto.a" \
-        "/usr/lib/arm-linux-gnueabihf/libboost_system.a"; then
+      if ! static_transport_libs_ok \
+        "${label} busybox" "/usr/lib/arm-linux-gnueabihf"; then
         return 0
       fi
     fi
@@ -1820,13 +1909,7 @@ EOF
           inc_dir="${sysroot}/include"
         fi
       fi
-      if ! static_libs_ok "${label} busybox" \
-        "${lib_dir}/libz.a" \
-        "${lib_dir}/liblzma.a" \
-        "${lib_dir}/libzstd.a" \
-        "${lib_dir}/libssl.a" \
-        "${lib_dir}/libcrypto.a" \
-        "${lib_dir}/libboost_system.a"; then
+      if ! static_transport_libs_ok "${label} busybox" "${lib_dir}"; then
         return 0
       fi
     fi
@@ -1873,10 +1956,74 @@ EOF
   fi
 }
 
+vendor_crypto_dir_complete() {
+  local dir="$1"
+  [[ -f "${dir}/include/oqs/oqs.h" ]] || return 1
+  [[ -f "${dir}/include/argon2.h" ]] || return 1
+  compgen -G "${dir}/lib/liboqs*" >/dev/null 2>&1 || return 1
+  compgen -G "${dir}/lib/libargon2*" >/dev/null 2>&1 || return 1
+}
+
 require_vendor_dir() {
   local dir="$1"
-  if [[ ! -d "${dir}" ]]; then
-    echo "Missing vendor directory: ${dir}. Build vendor libs first." >&2
+  if vendor_crypto_dir_complete "${dir}"; then
+    return 0
+  fi
+
+  local key
+  key="$(basename "${dir}")"
+  local build_key="${key}"
+  case "${key}" in
+    busybox-armv7) build_key="armv7" ;;
+    busybox-armv8) build_key="armv8" ;;
+    busybox-x86) build_key="x86" ;;
+  esac
+
+  # BusyBox consumes the same static liboqs/argon2 archives as the matching
+  # plain architecture; published archives intentionally omit duplicates.
+  if vendor_crypto_dir_complete "${VENDOR_DIR}/${build_key}"; then
+    return 0
+  fi
+
+  if [[ "${YUME_USE_VENDOR:-0}" == "1" ]]; then
+    echo "Missing vendor target '${build_key}' in ${VENDOR_DIR}." >&2
+    exit 1
+  fi
+
+  local builder_args=(--target "${build_key}")
+  case "${build_key}" in
+    linux-x86_64)
+      builder_args=(--target host)
+      ;;
+    armv7)
+      builder_args+=(--toolchain-prefix arm-linux-gnueabihf)
+      ;;
+    armv8)
+      builder_args+=(--toolchain-prefix aarch64-linux-gnu)
+      ;;
+    x86)
+      builder_args+=(--toolchain-prefix i686-linux-gnu)
+      ;;
+    openwrt-mips)
+      if [[ -z "${OPENWRT_SDK:-}" ]]; then
+        echo "OpenWRT SDK must be resolved before building vendor/openwrt-mips." >&2
+        exit 1
+      fi
+      builder_args+=(--openwrt-sdk "${OPENWRT_SDK}")
+      ;;
+    *)
+      echo "No source-vendor build mapping for '${build_key}'." >&2
+      exit 1
+      ;;
+  esac
+
+  echo "[fullau] Building liboqs/argon2 from source for ${build_key}..."
+  (
+    cd "${YUME_REPO_ROOT}"
+    YUME_VENDOR_DIR="${VENDOR_DIR}" "${VENDOR_BUILDER}" "${builder_args[@]}"
+  )
+  if ! vendor_crypto_dir_complete "${VENDOR_DIR}/${build_key}"; then
+    echo "Vendor builder did not produce ${VENDOR_DIR}/${build_key}." >&2
     exit 1
   fi
 }
@@ -1927,13 +2074,8 @@ EOF
   require_vendor_dir "${VENDOR_DIR}/${label}"
   if [[ "${label}" == "armv7" ]]; then
     if [[ "${variant}" == "static" ]]; then
-      if ! static_libs_ok "${label} linux" \
-        "/usr/lib/arm-linux-gnueabihf/libz.a" \
-        "/usr/lib/arm-linux-gnueabihf/liblzma.a" \
-        "/usr/lib/arm-linux-gnueabihf/libzstd.a" \
-        "/usr/lib/arm-linux-gnueabihf/libssl.a" \
-        "/usr/lib/arm-linux-gnueabihf/libcrypto.a" \
-        "/usr/lib/arm-linux-gnueabihf/libboost_system.a"; then
+      if ! static_transport_libs_ok \
+        "${label} linux" "/usr/lib/arm-linux-gnueabihf"; then
         return 0
       fi
     fi
@@ -1954,13 +2096,8 @@ EOF
     fi
   elif [[ "${label}" == "armv8" ]]; then
     if [[ "${variant}" == "static" ]]; then
-      if ! static_libs_ok "${label} linux" \
-        "/usr/lib/aarch64-linux-gnu/libz.a" \
-        "/usr/lib/aarch64-linux-gnu/liblzma.a" \
-        "/usr/lib/aarch64-linux-gnu/libzstd.a" \
-        "/usr/lib/aarch64-linux-gnu/libssl.a" \
-        "/usr/lib/aarch64-linux-gnu/libcrypto.a" \
-        "/usr/lib/aarch64-linux-gnu/libboost_system.a"; then
+      if ! static_transport_libs_ok \
+        "${label} linux" "/usr/lib/aarch64-linux-gnu"; then
         return 0
       fi
     fi
@@ -2007,13 +2144,8 @@ build_host_linux_target() {
     lib_ext="a"
   fi
   if [[ "${variant}" == "static" ]]; then
-    if ! static_libs_ok "x86_64 linux" \
-      "/usr/lib/x86_64-linux-gnu/libz.a" \
-      "/usr/lib/x86_64-linux-gnu/liblzma.a" \
-      "/usr/lib/x86_64-linux-gnu/libzstd.a" \
-      "/usr/lib/x86_64-linux-gnu/libssl.a" \
-      "/usr/lib/x86_64-linux-gnu/libcrypto.a" \
-      "/usr/lib/x86_64-linux-gnu/libboost_system.a"; then
+    if ! static_transport_libs_ok \
+      "x86_64 linux" "/usr/lib/x86_64-linux-gnu"; then
       return 0
     fi
   fi

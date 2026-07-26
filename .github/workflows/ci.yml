@@ -12,11 +12,11 @@ permissions:
 env:
   BASEFWX_REPO: "https://github.com/F1xGOD/basefwx.git"
   BASEFWX_REF_FILE: "config/refs/basefwx.ref"
-  YUME_VENDOR_ARCHIVE: "third_party/prebuilt/yume-vendor-prebuilt.tar.xz"
 
 jobs:
   website-build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,6 +50,7 @@ jobs:
 
   preflight:
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -58,9 +59,19 @@ jobs:
         run: |
           python3 ./scripts/release_preflight.py
 
+      # Pure text checks over the public ABI contract. No compiler needed, so
+      # they run before anything expensive and fail fast on a header/version
+      # script mismatch.
+      - name: Validate libyume ABI declarations
+        run: |
+          cmake -DYUME_ABI_MAP=src/abi/yume.map \
+                -DYUME_ABI_HEADER=include/yume/yume.h \
+                -P cmake/check_yume_abi_header.cmake
+
   build-and-smoke:
     needs: [preflight]
     runs-on: ubuntu-22.04
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -95,14 +106,22 @@ jobs:
             libboost-all-dev libspdlog-dev nlohmann-json3-dev
           bash scripts/ensure-nghttp2.sh
 
-      - name: Extract prebuilt vendor libs
+      # The archive is no longer committed (it was purged from history on
+      # 2026-07-24 because compiled objects embed builder paths). Fetch it from
+      # the published mirror and verify it against the SHA-256 and the release
+      # key fingerprint that DO live in third_party/prebuilt/. A `tar -xJf` of
+      # whatever the mirror served would have been an unverified download.
+      - name: Fetch and verify prebuilt vendor libs
         run: |
-          if [[ -f "${YUME_VENDOR_ARCHIVE}" ]]; then
-            tar -xJf "${YUME_VENDOR_ARCHIVE}"
-          fi
-          test -d vendor/linux-x86_64
+          bash scripts/vendor_prebuilt.sh ensure linux-x86_64
+
+      - name: Configure
+        run: |
           cmake -S . -B build-ci \
             -DCMAKE_BUILD_TYPE=Release \
+            -DYUME_BUILD_TESTING=ON \
+            -DYUME_BUILD_SHARED_ABI=ON \
+            -DYUME_WARNINGS_AS_ERRORS=ON \
             -DBASEFWX_USE_VENDOR_DEPS=ON \
             -DBASEFWX_VENDOR_DIR="${GITHUB_WORKSPACE}/vendor/linux-x86_64" \
             -DBASEFWX_REQUIRE_ARGON2=ON \
@@ -112,6 +131,13 @@ jobs:
       - name: Build
         run: |
           cmake --build build-ci --parallel
+
+      # The unit suite is fast (well under a minute) and was previously built
+      # but never executed by CI. yume_abi_exports also runs here, which is the
+      # only automated guard on the symbol surface the Android client links to.
+      - name: Run unit tests
+        run: |
+          ctest --test-dir build-ci --output-on-failure --parallel 4
 
       - name: Smoke test binaries
         run: |
@@ -124,3 +150,90 @@ jobs:
           file ./build-ci/bin/yume ./build-ci/bin/yumed
           ldd ./build-ci/bin/yume
           ldd ./build-ci/bin/yumed
+          find build-ci -name 'libyume.so*' -print -exec file {} \;
+
+  # Address + undefined behaviour sanitizers over the same unit suite.
+  # Separate job because it needs a Debug build with LTO disabled, and because
+  # a sanitizer failure should be distinguishable at a glance from a plain
+  # build break.
+  sanitize:
+    needs: [preflight]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure BaseFWX sources
+        run: |
+          BASEFWX_REF="${BASEFWX_REF:-}"
+          if [[ -z "${BASEFWX_REF}" && -f "${BASEFWX_REF_FILE}" ]]; then
+            BASEFWX_REF="$(tr -d '[:space:]' < "${BASEFWX_REF_FILE}")"
+          fi
+          if [[ -z "${BASEFWX_REF}" ]]; then
+            BASEFWX_REF="main"
+          fi
+          if [[ -d basefwx ]] && ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            rm -rf basefwx
+          fi
+          if ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            rm -rf basefwx
+            git clone --filter=blob:none --no-checkout "${BASEFWX_REPO}" basefwx
+          fi
+          git -C basefwx fetch --depth 1 origin "${BASEFWX_REF}"
+          git -C basefwx checkout --detach FETCH_HEAD
+          test -f basefwx/cpp/CMakeLists.txt
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config \
+            libssl-dev zlib1g-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
+            libboost-all-dev libspdlog-dev nlohmann-json3-dev
+          bash scripts/ensure-nghttp2.sh
+
+      - name: Fetch and verify prebuilt vendor libs
+        run: |
+          bash scripts/vendor_prebuilt.sh ensure linux-x86_64
+
+      - name: Configure (ASan + UBSan)
+        run: |
+          # Vendor deps stay ON so the sanitizers cover the real crypto
+          # configuration (liboqs ML-KEM, argon2) rather than a reduced one.
+          # These prebuilt archives are not themselves instrumented, so a
+          # report pointing inside them is a suppression candidate, not
+          # necessarily a YUME defect.
+          #
+          # -Werror is on here too, and deliberately: Debug is a different
+          # warning configuration from Release. -Wformat-truncation and other
+          # analyses that depend on optimization level fire in exactly one of
+          # the two, so gating only the Release job leaves half the warning
+          # set unenforced. (That is not hypothetical — a real snprintf
+          # truncation in profiles.cpp was only visible in this build.)
+          cmake -S . -B build-asan \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DYUME_BUILD_TESTING=ON \
+            -DYUME_BUILD_SHARED_ABI=ON \
+            -DYUME_WARNINGS_AS_ERRORS=ON \
+            -DYUME_SANITIZE=address+undefined \
+            -DBASEFWX_USE_VENDOR_DEPS=ON \
+            -DBASEFWX_VENDOR_DIR="${GITHUB_WORKSPACE}/vendor/linux-x86_64" \
+            -DBASEFWX_REQUIRE_ARGON2=ON \
+            -DBASEFWX_REQUIRE_OQS=ON \
+            -DBASEFWX_REQUIRE_LZMA=ON
+
+      - name: Build
+        run: |
+          cmake --build build-asan --parallel
+
+      - name: Run unit tests under sanitizers
+        env:
+          # halt_on_error keeps the first report as the failure, instead of a
+          # wall of cascading ones. detect_leaks is on by default under Linux
+          # ASan; state it explicitly so a runner default cannot silently
+          # disable it.
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          ctest --test-dir build-asan --output-on-failure --parallel 2

@@ -107,6 +107,16 @@ Usage: ./ezbuild.sh [options]
 
 Options:
   --clean                 Remove the build directory and exit
+  --use-vendor [SRC]      Link PREBUILT liboqs/argon2 instead of compiling
+                          them. OFF by default: without this flag every
+                          dependency is built from source or taken from the
+                          system package manager.
+                          SRC may be omitted, or be a .tar.xz path, an
+                          already-unpacked directory, or an https URL. With no
+                          SRC it downloads from
+                          https://deb.fixcraft.jp/yume/. Archives must pass
+                          BOTH a pinned SHA-256 and a GPG signature check; the
+                          build aborts if either fails.
   --minimal               Build a minimal/static YUME
   --gui                   Also build the optional yume-gui desktop app
                           (installs libgl/libglfw/appindicator dev pkgs)
@@ -229,97 +239,108 @@ cleanup_temp_assets() {
     if [[ "${YUME_TMP_ROOT_AUTO:-0}" == "1" && -n "${YUME_TMP_ROOT:-}" ]]; then
         rm -rf "${YUME_TMP_ROOT}"
     fi
-    # If we unpacked the vendor archive on demand, drop the marker
-    # file but leave the extracted tree in place when the build
-    # failed — that way the user can inspect what got staged before
-    # rerunning. cleanup_unpacked_vendor() does the actual removal
-    # and is called explicitly on the success path so a hard failure
-    # never wipes the only artifact the user has.
-    :
 }
 
-YUME_VENDOR_UNPACK_MARKER=".ezbuild-vendor-unpacked"
+# Prebuilt vendor libraries are OPT-IN and off by default.
+#
+# Linking a binary someone else compiled is a trust decision, and it is not
+# ezbuild's to make silently. Without --use-vendor every dependency is built
+# from source or taken from the system package manager, which is what a user
+# who does not trust prebuilt blobs expects to happen by default.
+#
+# --use-vendor            use the archive/directory shipped or configured
+# --use-vendor <path>     use a specific .tar.xz or an already-unpacked dir
+# --use-vendor <url>      download, then verify SHA-256 *and* GPG signature
+YUME_USE_VENDOR=0
+YUME_VENDOR_SOURCE=""
+YUME_VENDOR_ROOT="${YUME_VENDOR_ROOT:-${PWD}/vendor}"
+YUME_VENDOR_ACQUIRED=0
 
-# Where the prebuilt tarball lives. The same archive ships every
-# vendored target (linux-x86_64, macos-arm64, …), so a single tarball
-# covers Linux/macOS native and the WINDOWS_CROSS path.
-YUME_VENDOR_ARCHIVE_DEFAULT="${PWD}/third_party/prebuilt/yume-vendor-prebuilt.tar.xz"
+vendor_access_enabled() {
+    [[ "${YUME_USE_VENDOR:-0}" == "1" || "${YUME_STAGED_VENDOR_ALLOWED:-0}" == "1" ]]
+}
 
-# Extracts yume-vendor-prebuilt.tar.xz into ./vendor/ on demand and
-# remembers (in the marker file) exactly which top-level entries we
-# created, so cleanup_unpacked_vendor() removes only those — never a
-# user-staged vendor/<arch>/ that pre-existed.
+# Verification lives in scripts/vendor_prebuilt.sh, which is the single
+# implementation shared by ezbuild.sh, fullau.sh and CI. It pins both the
+# SHA-256 and the release key *fingerprint* — a bare `gpg --verify` would
+# accept a valid signature from any key in the caller's keyring, which is
+# not a check at all.
+#
+# It also owns YUME_VENDOR_ARCHIVE_DEFAULT / YUME_VENDOR_URL_DEFAULT and the
+# temporary download path, so those are no longer duplicated here.
+# shellcheck source=scripts/vendor_prebuilt.sh
+source "${PWD}/scripts/vendor_prebuilt.sh"
+
+# A verified archive is extracted below YUME_TMP_ROOT. Existing repository
+# vendor/ content is read only after an explicit opt-in.
+
 ensure_vendor_for_host() {
     local needed_key="${1:-}"
-    local archive="${YUME_VENDOR_ARCHIVE:-${YUME_VENDOR_ARCHIVE_DEFAULT}}"
 
-    # If the target vendor dir is already there, do nothing — the
-    # repo maintainer either checked it in or unpacked it manually,
-    # and either way we leave it alone.
-    if [[ -n "${needed_key}" && -d "${PWD}/vendor/${needed_key}" ]]; then
-        return 0
-    fi
-    if [[ ! -f "${archive}" ]]; then
+    # Only a direct --use-vendor request may acquire prebuilts. fullau uses
+    # YUME_STAGED_VENDOR_ALLOWED for its isolated, source-built/verified tree.
+    if ! vendor_access_enabled; then
         return 1
     fi
+
+    local requested="${YUME_VENDOR_SOURCE:-${YUME_VENDOR_ARCHIVE:-}}"
+
+    # An already-unpacked directory may be either the archive root
+    # (<dir>/vendor/<target>) or vendor/ itself.
+    if [[ -n "${requested}" && -d "${requested}" ]]; then
+        if ! yume_vendor_directory_root "${requested}" YUME_VENDOR_ROOT; then
+            return 1
+        fi
+        if [[ -n "${needed_key}" && ! -d "${YUME_VENDOR_ROOT}/${needed_key}" ]]; then
+            warn "Vendor target '${needed_key}' is missing from ${YUME_VENDOR_ROOT}."
+            return 1
+        fi
+        warn "Using prebuilt vendor libraries from ${requested} (not built from source)."
+        YUME_VENDOR_ACQUIRED=1
+        return 0
+    fi
+
+    # A tree staged by fullau has already been source-built or verified. A tree
+    # acquired earlier in this ezbuild invocation has already passed the same
+    # decision. Do not silently trust unrelated ignored repo residue merely
+    # because --use-vendor was given without an explicit directory.
+    if [[ ("${YUME_STAGED_VENDOR_ALLOWED:-0}" == "1" ||
+           "${YUME_VENDOR_ACQUIRED}" == "1") &&
+          -n "${needed_key}" && -d "${YUME_VENDOR_ROOT}/${needed_key}" ]]; then
+        return 0
+    fi
+
+    # Resolve to a verified local archive: the committed path if present,
+    # otherwise the published URL. Both the SHA-256 and the release-key
+    # fingerprint must match or this returns non-zero and we build from source.
+    local archive=""
+    if ! yume_vendor_obtain "${requested}" archive; then
+        return 1
+    fi
+
+    warn "Using PREBUILT vendor libraries — these binaries were not compiled on this machine."
+    warn "  Omit --use-vendor to build every dependency from source instead."
+
     if ! need_cmd tar; then
         warn "Cannot unpack ${archive}: tar not found."
+        yume_vendor_cleanup "${archive}"
         return 1
     fi
 
-    step "Unpacking ${archive} for the host build..."
-    # List the tar's top-level entries before we extract so the marker
-    # records exactly what we owned. Format: one path per line,
-    # relative to repo root.
-    local marker="${PWD}/vendor/${YUME_VENDOR_UNPACK_MARKER}"
-    local before=""
-    if [[ -d "${PWD}/vendor" ]]; then
-        before="$(ls -A "${PWD}/vendor" 2>/dev/null || true)"
-    fi
-    mkdir -p "${PWD}/vendor"
-    if ! tar -xJf "${archive}" -C "${PWD}"; then
-        warn "Vendor archive extraction failed."
+    local extract_root="${YUME_TMP_ROOT}/vendor-prebuilt"
+    mkdir -p "${extract_root}"
+    step "Unpacking the verified vendor archive into ${extract_root}..."
+    if ! yume_vendor_ensure_extracted "${extract_root}" "${archive}"; then
         return 1
     fi
-    local after=""
-    after="$(ls -A "${PWD}/vendor" 2>/dev/null || true)"
-    : > "${marker}"
-    local entry
-    while IFS= read -r entry; do
-        [[ -z "${entry}" ]] && continue
-        if ! grep -Fxq -- "${entry}" <<<"${before}"; then
-            printf 'vendor/%s\n' "${entry}" >> "${marker}"
-        fi
-    done <<<"${after}"
+    YUME_VENDOR_ROOT="${extract_root}/vendor"
+    if [[ -n "${needed_key}" && ! -d "${YUME_VENDOR_ROOT}/${needed_key}" ]]; then
+        warn "Vendor target '${needed_key}' is missing from the verified archive."
+        return 1
+    fi
+    YUME_VENDOR_ACQUIRED=1
     ok "Vendor archive unpacked."
     return 0
-}
-
-# Remove only the paths we wrote during ensure_vendor_for_host. Safe
-# to call when no unpack happened — it just returns. Called explicitly
-# at the end of a successful build.
-cleanup_unpacked_vendor() {
-    local marker="${PWD}/vendor/${YUME_VENDOR_UNPACK_MARKER}"
-    if [[ ! -f "${marker}" ]]; then
-        return 0
-    fi
-    if [[ "${YUME_KEEP_VENDOR:-0}" == "1" ]]; then
-        info "YUME_KEEP_VENDOR=1: leaving unpacked vendor tree in place."
-        return 0
-    fi
-    step "Cleaning up vendor artifacts unpacked by ezbuild..."
-    local path
-    while IFS= read -r path; do
-        [[ -z "${path}" ]] && continue
-        # Defensive: only remove paths inside vendor/.
-        case "${path}" in
-            vendor/*) rm -rf -- "${PWD}/${path}" ;;
-            *) warn "Refusing to remove unexpected path '${path}'." ;;
-        esac
-    done <"${marker}"
-    rm -f "${marker}"
-    rmdir "${PWD}/vendor" 2>/dev/null || true
-    ok "Vendor cleanup complete."
 }
 
 YUME_LOCK_ROOT="$(init_lock_root)"
@@ -452,24 +473,98 @@ host_default_vendor_key() {
     esac
 }
 
+requested_vendor_key() {
+    if [[ $OPENWRT -eq 1 ]]; then
+        echo "openwrt-mips"
+        return
+    fi
+    if [[ $BUSYBOX -eq 1 ]]; then
+        case "${TARGET_ARCH:-}" in
+            aarch64|arm64) echo "armv8" ;;
+            armhf|armv7l) echo "armv7" ;;
+            i386|i486|i586|i686) echo "x86" ;;
+            *) echo "${TARGET_ARCH:-}" ;;
+        esac
+        return
+    fi
+    if [[ "${WINDOWS_CROSS}" == "1" ]]; then
+        echo "windows-x86_64"
+        return
+    fi
+    if [[ "${YUME_MACOS_CROSS:-0}" == "1" ]]; then
+        case "${YUME_MACOS_VENDOR_ARCH:-x86_64}" in
+            arm64|aarch64) echo "macos-arm64" ;;
+            *) echo "macos-x86_64" ;;
+        esac
+        return
+    fi
+    case "${TARGET_ARCH:-}" in
+        aarch64|arm64) echo "armv8" ;;
+        armhf|armv7l) echo "armv7" ;;
+        i386|i486|i586|i686) echo "x86" ;;
+        "") host_default_vendor_key ;;
+        *) echo "${TARGET_ARCH}" ;;
+    esac
+}
+
+# Vendor directory for a BusyBox cross target.
+#
+# BusyBox targets link the same static archives as their non-BusyBox siblings.
+# The prebuilt archive used to ship busybox-armv7 / busybox-armv8 / busybox-x86
+# as byte-identical copies of armv7 / armv8 / x86; the 2026-07-24 vendor rework
+# dropped the duplicates but the lookup paths below still named only the
+# busybox-* form, so --use-vendor stopped finding liboqs/argon2 for those
+# targets even though an identical library was one directory over.
+#
+# Prefer a locally staged busybox-<arch> — build-liboqs-target.sh and
+# release.yml still install there — then fall back to the plain <arch> that the
+# archive actually ships. Returns non-zero (and prints nothing) if neither
+# exists; callers keep their previous "not found" behaviour in that case.
+busybox_vendor_dir() {
+    if ! vendor_access_enabled; then
+        return 1
+    fi
+    local arch="${1:-${TARGET_ARCH:-}}"
+    if [[ -z "${arch}" ]]; then
+        return 1
+    fi
+    case "${arch}" in
+        aarch64|arm64) arch="armv8" ;;
+        armhf|armv7l) arch="armv7" ;;
+        i386|i486|i586|i686) arch="x86" ;;
+    esac
+    local candidate
+    for candidate in "${YUME_VENDOR_ROOT}/busybox-${arch}" "${YUME_VENDOR_ROOT}/${arch}"; do
+        if [[ -d "${candidate}" ]]; then
+            printf '%s' "${candidate}"
+            return 0
+        fi
+    done
+    return 1
+}
+
 vendor_dir_for_build() {
-    if [[ $OPENWRT -eq 1 && -d "${PWD}/vendor/openwrt-mips" ]]; then
-        echo "${PWD}/vendor/openwrt-mips"
+    if ! vendor_access_enabled; then
+        echo ""
         return
     fi
-    if [[ $BUSYBOX -eq 1 && -n "${TARGET_ARCH}" && -d "${PWD}/vendor/busybox-${TARGET_ARCH}" ]]; then
-        echo "${PWD}/vendor/busybox-${TARGET_ARCH}"
+    if [[ $OPENWRT -eq 1 && -d "${YUME_VENDOR_ROOT}/openwrt-mips" ]]; then
+        echo "${YUME_VENDOR_ROOT}/openwrt-mips"
         return
     fi
-    if [[ -n "${TARGET_ARCH}" && -d "${PWD}/vendor/${TARGET_ARCH}" ]]; then
-        echo "${PWD}/vendor/${TARGET_ARCH}"
+    if [[ $BUSYBOX -eq 1 && -n "${TARGET_ARCH}" ]]; then
+        busybox_vendor_dir "${TARGET_ARCH}" || true
+        return
+    fi
+    if [[ -n "${TARGET_ARCH}" && -d "${YUME_VENDOR_ROOT}/${TARGET_ARCH}" ]]; then
+        echo "${YUME_VENDOR_ROOT}/${TARGET_ARCH}"
         return
     fi
 
     local host_vendor_key=""
     host_vendor_key="$(host_default_vendor_key)"
-    if [[ -n "${host_vendor_key}" && -d "${PWD}/vendor/${host_vendor_key}" ]]; then
-        echo "${PWD}/vendor/${host_vendor_key}"
+    if [[ -n "${host_vendor_key}" && -d "${YUME_VENDOR_ROOT}/${host_vendor_key}" ]]; then
+        echo "${YUME_VENDOR_ROOT}/${host_vendor_key}"
         return
     fi
     echo ""
@@ -507,7 +602,10 @@ vendor_has_cross_prefix() {
 }
 
 windows_vendor_dir() {
-    local dir="${PWD}/vendor/windows-x86_64"
+    if ! vendor_access_enabled; then
+        return 1
+    fi
+    local dir="${YUME_VENDOR_ROOT}/windows-x86_64"
     if vendor_has_cross_prefix "${dir}"; then
         echo "${dir}"
         return 0
@@ -516,17 +614,20 @@ windows_vendor_dir() {
 }
 
 macos_vendor_dir() {
+    if ! vendor_access_enabled; then
+        return 1
+    fi
     local arch="${YUME_MACOS_VENDOR_ARCH:-}"
     local dir=""
     if [[ "${arch}" == "arm64" ]]; then
-        dir="${PWD}/vendor/macos-arm64"
+        dir="${YUME_VENDOR_ROOT}/macos-arm64"
         if vendor_has_cross_prefix "${dir}"; then
             echo "${dir}"
             return 0
         fi
     fi
     if [[ -z "${arch}" || "${arch}" == "x86_64" ]]; then
-        dir="${PWD}/vendor/macos-x86_64"
+        dir="${YUME_VENDOR_ROOT}/macos-x86_64"
         if vendor_has_cross_prefix "${dir}"; then
             echo "${dir}"
             return 0
@@ -580,8 +681,9 @@ detect_argon2() {
     # return empty paths and the build aborts with
     #   "libargon2 headers found but library missing".
     if [[ "${BUSYBOX:-0}" -eq 1 && -n "${TARGET_ARCH:-}" ]]; then
-        local _vendor="${PWD}/vendor/busybox-${TARGET_ARCH}"
-        if [[ -f "${_vendor}/include/argon2.h" \
+        local _vendor
+        _vendor="$(busybox_vendor_dir || true)"
+        if [[ -n "${_vendor}" && -f "${_vendor}/include/argon2.h" \
               && ( -f "${_vendor}/lib/libargon2.a" || -f "${_vendor}/lib/libargon2.so" ) ]]; then
             return 0
         fi
@@ -650,16 +752,17 @@ detect_liboqs_target() {
         fi
     fi
     # Non-OpenWRT cross builds (BusyBox / cross-Linux) stage their
-    # liboqs into ${PWD}/vendor/<target>/ via scripts/build-liboqs-target.sh.
-    # ezbuild already passes -DBASEFWX_VENDOR_DIR=${PWD}/vendor/busybox-<arch>
+    # liboqs into the selected vendor root via scripts/build-liboqs-target.sh.
+    # ezbuild passes the resolved BusyBox/plain architecture prefix
     # below (line ~1652) when that dir exists; we also want PQ flagged on
     # so basefwx's CMake actually emits -DBASEFWX_REQUIRE_OQS=ON for the
     # build. Without this hook, the BUSYBOX branch fell straight through
     # to "PQ will be disabled" even when a properly cross-built
     # liboqs.a was sitting at the expected vendor path.
     if [[ "${BUSYBOX:-0}" -eq 1 && -n "${TARGET_ARCH:-}" ]]; then
-        local _vendor="${PWD}/vendor/busybox-${TARGET_ARCH}"
-        if [[ -f "${_vendor}/include/oqs/oqs.h" \
+        local _vendor
+        _vendor="$(busybox_vendor_dir || true)"
+        if [[ -n "${_vendor}" && -f "${_vendor}/include/oqs/oqs.h" \
               && ( -f "${_vendor}/lib/liboqs.a" || -f "${_vendor}/lib/liboqs.so" ) ]]; then
             return 0
         fi
@@ -680,8 +783,9 @@ resolve_oqs_sysroot_paths() {
             lib="$(ls -1 "${OPENWRT_USR}/lib/liboqs.so."* 2>/dev/null | head -n 1 || true)"
         fi
     elif [[ "${BUSYBOX:-0}" -eq 1 && -n "${TARGET_ARCH:-}" ]]; then
-        local _vendor="${PWD}/vendor/busybox-${TARGET_ARCH}"
-        if [[ -f "${_vendor}/include/oqs/oqs.h" ]]; then
+        local _vendor
+        _vendor="$(busybox_vendor_dir || true)"
+        if [[ -n "${_vendor}" && -f "${_vendor}/include/oqs/oqs.h" ]]; then
             inc="${_vendor}/include"
             if [[ -f "${_vendor}/lib/liboqs.a" ]]; then
                 lib="${_vendor}/lib/liboqs.a"
@@ -707,10 +811,11 @@ resolve_argon2_sysroot_paths() {
         fi
     elif [[ "${BUSYBOX:-0}" -eq 1 && -n "${TARGET_ARCH:-}" ]]; then
         # BUSYBOX cross builds stage libargon2 under
-        # ${PWD}/vendor/busybox-<arch>/ via build-libargon2-target.sh.
+        # the selected vendor prefix via build-libargon2-target.sh.
         # Same shape as the OQS sibling fix earlier in this file.
-        local _vendor="${PWD}/vendor/busybox-${TARGET_ARCH}"
-        if [[ -f "${_vendor}/include/argon2.h" ]]; then
+        local _vendor
+        _vendor="$(busybox_vendor_dir || true)"
+        if [[ -n "${_vendor}" && -f "${_vendor}/include/argon2.h" ]]; then
             inc="${_vendor}/include"
             if [[ -f "${_vendor}/lib/libargon2.a" ]]; then
                 lib="${_vendor}/lib/libargon2.a"
@@ -760,6 +865,49 @@ resolve_vendor_argon2_paths() {
         lib="$(ls -1 ${dir}/lib/libargon2.* 2>/dev/null | head -n 1 || true)"
     fi
     echo "${inc}|${lib}"
+}
+
+append_selected_vendor_crypto_args() {
+    local oqs_inc=""
+    local oqs_lib=""
+    local argon2_inc=""
+    local argon2_lib=""
+    IFS='|' read -r oqs_inc oqs_lib < <(resolve_vendor_oqs_paths)
+    IFS='|' read -r argon2_inc argon2_lib < <(resolve_vendor_argon2_paths)
+
+    if [[ -z "${oqs_inc}" || -z "${oqs_lib}" ]]; then
+        error "Selected vendor root does not contain a complete liboqs target."
+        return 1
+    fi
+    if [[ -z "${argon2_inc}" || -z "${argon2_lib}" ]]; then
+        error "Selected vendor root does not contain a complete libargon2 target."
+        return 1
+    fi
+
+    info "Using selected vendor liboqs at ${oqs_lib}."
+    info "Using selected vendor libargon2 at ${argon2_lib}."
+    CMAKE_ARGS+=(
+        "-DBASEFWX_REQUIRE_OQS=ON"
+        "-DBASEFWX_USE_VENDOR_OQS=ON"
+        "-DOQS_INCLUDE_DIR=${oqs_inc}"
+        "-DOQS_LIBRARY=${oqs_lib}"
+        "-DOQS_INCLUDE_DIRS=${oqs_inc}"
+        "-DOQS_LIBRARIES=${oqs_lib}"
+        "-DOQS_FOUND=TRUE"
+        "-DBASEFWX_REQUIRE_ARGON2=ON"
+        "-DBASEFWX_USE_VENDOR_ARGON2=ON"
+        "-DARGON2_INCLUDE_DIR=${argon2_inc}"
+        "-DARGON2_LIBRARY=${argon2_lib}"
+        "-DARGON2_INCLUDE_DIRS=${argon2_inc}"
+        "-DARGON2_LIBRARIES=${argon2_lib}"
+        "-DARGON2_FOUND=TRUE"
+    )
+    if [[ "${oqs_lib}" == *.a ]]; then
+        CMAKE_ARGS+=(
+            "-DOQS_LIBRARY_STATIC=${oqs_lib}"
+            "-DBASEFWX_OQS_STATIC=ON"
+        )
+    fi
 }
 
 resolve_oqs_host_paths() {
@@ -1324,6 +1472,17 @@ main() {
                 CLEAN_ONLY=1
                 shift
                 ;;
+            --use-vendor)
+                YUME_USE_VENDOR=1
+                # Optional argument: a path, a directory, or an https URL.
+                # Anything starting with '-' is the next flag, not our value.
+                if [[ -n "${2:-}" && "${2}" != -* ]]; then
+                    YUME_VENDOR_SOURCE="$2"
+                    shift 2
+                else
+                    shift
+                fi
+                ;;
             --minimal)
                 MINIMAL=1
                 shift
@@ -1412,11 +1571,6 @@ main() {
         info "YUME ezbuild starting..."
         step "Cleaning build directory..."
         rm -rf "${YUME_BUILD_DIR:-build}"
-        # If a previous build left a vendor unpack from a failed run,
-        # the marker file at vendor/.ezbuild-vendor-unpacked tells us
-        # exactly what to remove. A vendor/ tree without the marker
-        # belongs to the user and is not touched.
-        cleanup_unpacked_vendor
         ok "Cleaned."
         exit 0
     fi
@@ -1424,6 +1578,19 @@ main() {
     info "YUME ezbuild starting..."
 
     maybe_sync_repo
+
+    if [[ "${YUME_USE_VENDOR}" == "1" ]]; then
+        local vendor_key=""
+        vendor_key="$(requested_vendor_key)"
+        if [[ -z "${vendor_key}" ]]; then
+            error "Cannot determine the vendor target for this build."
+            exit 1
+        fi
+        if ! ensure_vendor_for_host "${vendor_key}"; then
+            error "Requested vendor target '${vendor_key}' is unavailable or failed verification."
+            exit 1
+        fi
+    fi
 
     if [[ $BUILD_SELFTEST -eq 1 ]]; then
         if [[ "${WINDOWS_CROSS}" == "1" || $OPENWRT -eq 1 || $BUSYBOX -eq 1 ]]; then
@@ -1881,11 +2048,13 @@ EOF
     ensure_basefwx
     cleanup_vendor
     if [[ $OPENWRT -eq 1 || $BUSYBOX -eq 1 ]]; then
-        if [[ $OPENWRT -eq 1 && -d "${PWD}/vendor/openwrt-mips" ]]; then
-            CMAKE_ARGS+=("-DBASEFWX_VENDOR_DIR=${PWD}/vendor/openwrt-mips")
+        if [[ $OPENWRT -eq 1 && -d "${YUME_VENDOR_ROOT}/openwrt-mips" ]] && vendor_access_enabled; then
+            CMAKE_ARGS+=("-DBASEFWX_VENDOR_DIR=${YUME_VENDOR_ROOT}/openwrt-mips")
         elif [[ $BUSYBOX -eq 1 && -n "${TARGET_ARCH}" ]]; then
-            if [[ -d "${PWD}/vendor/busybox-${TARGET_ARCH}" ]]; then
-                CMAKE_ARGS+=("-DBASEFWX_VENDOR_DIR=${PWD}/vendor/busybox-${TARGET_ARCH}")
+            local busybox_prefix=""
+            busybox_prefix="$(busybox_vendor_dir || true)"
+            if [[ -n "${busybox_prefix}" ]]; then
+                CMAKE_ARGS+=("-DBASEFWX_VENDOR_DIR=${busybox_prefix}")
             fi
         fi
         if detect_liboqs_target; then
@@ -1912,9 +2081,12 @@ EOF
             _oqs_static_path=""
             if [[ -n "${OPENWRT_USR:-}" && -f "${OPENWRT_USR}/lib/liboqs.a" ]]; then
                 _oqs_static_path="${OPENWRT_USR}/lib/liboqs.a"
-            elif [[ "${BUSYBOX:-0}" -eq 1 && -n "${TARGET_ARCH:-}" \
-                    && -f "${PWD}/vendor/busybox-${TARGET_ARCH}/lib/liboqs.a" ]]; then
-                _oqs_static_path="${PWD}/vendor/busybox-${TARGET_ARCH}/lib/liboqs.a"
+            elif [[ "${BUSYBOX:-0}" -eq 1 && -n "${TARGET_ARCH:-}" ]]; then
+                local busybox_static_prefix=""
+                busybox_static_prefix="$(busybox_vendor_dir || true)"
+                if [[ -n "${busybox_static_prefix}" && -f "${busybox_static_prefix}/lib/liboqs.a" ]]; then
+                    _oqs_static_path="${busybox_static_prefix}/lib/liboqs.a"
+                fi
             fi
             if [[ -n "${YUME_OQS_STATIC:-}" ]] || [[ -n "${_oqs_static_path}" ]]; then
                 if [[ -n "${_oqs_static_path}" ]]; then
@@ -1997,8 +2169,18 @@ EOF
         host_vendor_dir="$(vendor_dir_for_build)"
         if [[ -n "${host_vendor_dir}" ]]; then
             CMAKE_ARGS+=("-DBASEFWX_VENDOR_DIR=${host_vendor_dir}")
+            # An explicit --use-vendor selection, or fullau's isolated
+            # source-built staging tree, is the dependency source the caller
+            # asked us to use. Do not silently replace either with unrelated
+            # system libraries just because pkg-config can see them.
+            if ! append_selected_vendor_crypto_args; then
+                error "Selected vendor crypto dependencies are incomplete."
+                exit 1
+            fi
         fi
-        if [[ -n "${YUME_OQS_STATIC:-}" ]] && [[ ! -f /usr/lib/x86_64-linux-gnu/liboqs.a && ! -f /usr/local/lib/liboqs.a ]]; then
+        if [[ -z "${host_vendor_dir}" && -n "${YUME_OQS_STATIC:-}" ]] &&
+           [[ ! -f /usr/lib/x86_64-linux-gnu/liboqs.a &&
+              ! -f /usr/local/lib/liboqs.a ]]; then
             local oqs_vendor_dir=""
             oqs_vendor_dir="$(vendor_dir_for_build)"
             if vendor_has_liboqs "${oqs_vendor_dir}"; then
@@ -2010,7 +2192,9 @@ EOF
                 build_liboqs_host || warn "Host liboqs build failed; PQ may fall back to shared."
             fi
         fi
-        if detect_liboqs; then
+        if [[ -n "${host_vendor_dir}" ]]; then
+            :
+        elif detect_liboqs; then
             info "liboqs detected; enabling PQ in BaseFWX."
             CMAKE_ARGS+=(
                 "-DBASEFWX_REQUIRE_OQS=ON"
@@ -2038,14 +2222,9 @@ EOF
                 fi
             fi
         else
-            # System liboqs is missing — try vendor/<host>/ before
-            # giving up. vendor/ ships liboqs.a on Linux and a
-            # versioned liboqs.dylib on macOS, both of which CMake can
-            # consume the same way as a system install. If the
-            # vendor/ tree isn't on disk, unpack
-            # yume-vendor-prebuilt.tar.xz on demand; the marker file
-            # remembers what we created so the post-build cleanup
-            # only removes our artifacts.
+            # System liboqs is missing. Try the explicitly selected vendor
+            # root before giving up; the access gate prevents a default build
+            # from seeing arbitrary ignored repository residue.
             ensure_vendor_for_host "$(host_default_vendor_key)" || true
             IFS='|' read -r _vendor_oqs_inc _vendor_oqs_lib < <(resolve_vendor_oqs_paths)
             if [[ -n "${_vendor_oqs_inc}" && -n "${_vendor_oqs_lib}" ]]; then
@@ -2070,16 +2249,16 @@ EOF
                 CMAKE_ARGS+=("-DBASEFWX_REQUIRE_OQS=OFF")
             fi
         fi
-        if detect_argon2; then
+        if [[ -n "${host_vendor_dir}" ]]; then
+            :
+        elif detect_argon2; then
             info "libargon2 detected; enabling Argon2 in BaseFWX."
             CMAKE_ARGS+=(
                 "-DBASEFWX_REQUIRE_ARGON2=ON"
                 "-DBASEFWX_USE_VENDOR_ARGON2=OFF"
             )
         else
-            # Same vendor fallback as liboqs above. ensure_vendor_for_host
-            # may have run already above; calling it again is a no-op
-            # when the tree is in place.
+            # Same selected-root fallback as liboqs above.
             ensure_vendor_for_host "$(host_default_vendor_key)" || true
             IFS='|' read -r _vendor_argon2_inc _vendor_argon2_lib < <(resolve_vendor_argon2_paths)
             if [[ -n "${_vendor_argon2_inc}" && -n "${_vendor_argon2_lib}" ]]; then
@@ -2110,12 +2289,6 @@ EOF
             ;;
     esac
     info "Done."
-    # The build succeeded — drop any vendor tree we extracted on
-    # demand. If the user had a vendor/ checked out, this is a no-op
-    # because the marker file we leave behind never claims paths that
-    # existed before ezbuild ran. YUME_KEEP_VENDOR=1 disables the
-    # cleanup for debugging.
-    cleanup_unpacked_vendor
     local build_dir="${YUME_BUILD_DIR:-build}"
     echo -e "${COLOR_GREEN}Server:${COLOR_RESET} ./${build_dir}/bin/yumed${exe_suffix}"
     echo -e "${COLOR_GREEN}Client:${COLOR_RESET} ./${build_dir}/bin/yume${exe_suffix}"

@@ -402,7 +402,9 @@ bool Manager::route_federated_invite(const std::shared_ptr<Session>& from_sessio
     return true;
 }
 
-bool Manager::respond_invite(const std::shared_ptr<Session>& from_session,
+// The responder's own session is not needed here: the invite record already
+// carries the initiator side, which is the only session this resolves against.
+bool Manager::respond_invite([[maybe_unused]] const std::shared_ptr<Session>& from_session,
                              const control::PendingInvite& response,
                              std::shared_ptr<Session>* initiator_session,
                              control::PendingInvite* invite_out,

@@ -279,7 +279,12 @@ private:
         ui::end_card();
     }
 
-    void render_users_card(bool running, ui::Colors const& c, float sc) {
+    // `running` is unused here on purpose, and kept for symmetry with the five
+    // sibling render_*_card functions. Authorized keys are the one setting that
+    // stays editable while the server is up — the daemon reloads them live
+    // (yume_server_reload_auth) — so unlike the listening/certificate/advanced
+    // cards there is nothing here to disable.
+    void render_users_card([[maybe_unused]] bool running, ui::Colors const& c, float sc) {
         if (ui::begin_auto_card("##users")) {
             ui::section_label("Allowed users");
             ImGui::PushStyleColor(ImGuiCol_Text, c.muted);

@@ -82,7 +82,13 @@ vendor/
 *.changes
 *.dsc
 *.tar.xz
-!third_party/prebuilt/yume-vendor-prebuilt.tar.xz
+# The prebuilt vendor archive is deliberately NOT committed. It is published at
+# https://deb.fixcraft.jp/yume/ and fetched only when --use-vendor is passed,
+# verified against the SHA-256 and detached signature that DO live in
+# third_party/prebuilt/. It was purged from history on 2026-07-24 (79 MB across
+# 7 versions) because compiled objects embed builder paths that text
+# sanitization cannot reach. There used to be a negation here re-including it;
+# do not restore it.
 *.tar.gz
 *.tar.zst
 *-dbgsym_*
@@ -96,3 +102,9 @@ bins/
 # Local benchmark captures and reports
 /yume-bench-results/
 /yume-lan-kit/
+# Agent notes must never be tracked. Root-anchored on purpose: an unanchored
+# `AGENTS.md` would also swallow a legitimate one anywhere in the tree, and
+# that filename is becoming a public convention. yume's own copy lives in
+# .private/ai/ (already covered above); this is belt-and-braces for the root.
+/AGENTS.md
+/AI_NOTES.md

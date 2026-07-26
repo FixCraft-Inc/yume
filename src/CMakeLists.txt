@@ -110,7 +110,50 @@ if(YUME_USE_SPDLOG)
     endif()
 endif()
 
+# The project warning set, applied to first-party targets only.
+#
+# Bundled dependencies (basefwx, imgui, implot, nlohmann, spdlog) are built as
+# their own targets and never call this, so a warning here is always about code
+# this tree owns and can fix.
+#
+# Deliberately not enabled yet, because each needs a dedicated cleanup pass
+# rather than a blanket suppression: -Wconversion, -Wsign-conversion, -Wshadow,
+# -Wcast-qual, -Wold-style-cast.
+function(yume_apply_warnings target)
+    # Record every target that went through here, so the audit at the bottom
+    # of this file can prove none were missed. This is not bookkeeping for its
+    # own sake: yume_abi, yume_abi_test and yume_secure_materials_test each
+    # silently escaped the warning set once, and yume_abi is the single file
+    # in the tree where warnings matter most.
+    set_property(GLOBAL APPEND PROPERTY YUME_WARNED_TARGETS "${target}")
+    if(NOT YUME_WARNINGS)
+        return()
+    endif()
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(${target} PRIVATE
+            -Wall
+            -Wextra
+            # Attacker-influenced format strings and stack sizes are the two
+            # cheapest memory-safety mistakes to make in this codebase.
+            -Wformat-security
+            -Wvla
+            -Wnon-virtual-dtor
+            $<$<BOOL:${YUME_WARNINGS_AS_ERRORS}>:-Werror>
+        )
+    elseif(MSVC)
+        target_compile_options(${target} PRIVATE
+            /W4
+            /permissive-
+            $<$<BOOL:${YUME_WARNINGS_AS_ERRORS}>:/WX>
+        )
+    endif()
+endfunction()
+
+# Single per-target hook. Every first-party target already calls this, so
+# warnings ride along with the optimisation settings instead of needing a
+# second call site added to ~50 targets.
 function(yume_apply_perf_opts target)
+    yume_apply_warnings(${target})
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(${target} PRIVATE
             $<$<CXX_COMPILER_ID:GNU>:-Wno-psabi>
@@ -145,15 +188,26 @@ function(yume_apply_perf_opts target)
             )
         endif()
         if(YUME_LTO)
+            # GCC's plain -flto defaults to serial LTRANS partitions unless
+            # invoked through a make jobserver. Ninja therefore emits
+            # lto-wrapper warnings and leaves cores idle at the most expensive
+            # link step. `auto` lets GCC select parallel partitions itself.
+            # Clang has no `auto` spelling; its existing -flto behavior stays
+            # unchanged.
+            if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+                set(_yume_lto_flag -flto=auto)
+            else()
+                set(_yume_lto_flag -flto)
+            endif()
             target_compile_options(${target} PRIVATE
-                $<$<CONFIG:Release>:-flto>
-                $<$<CONFIG:RelWithDebInfo>:-flto>
-                $<$<CONFIG:MinSizeRel>:-flto>
+                $<$<CONFIG:Release>:${_yume_lto_flag}>
+                $<$<CONFIG:RelWithDebInfo>:${_yume_lto_flag}>
+                $<$<CONFIG:MinSizeRel>:${_yume_lto_flag}>
             )
             target_link_options(${target} PRIVATE
-                $<$<CONFIG:Release>:-flto>
-                $<$<CONFIG:RelWithDebInfo>:-flto>
-                $<$<CONFIG:MinSizeRel>:-flto>
+                $<$<CONFIG:Release>:${_yume_lto_flag}>
+                $<$<CONFIG:RelWithDebInfo>:${_yume_lto_flag}>
+                $<$<CONFIG:MinSizeRel>:${_yume_lto_flag}>
             )
         endif()
     elseif(MSVC)
@@ -268,7 +322,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             OpenSSL::Crypto
             Threads::Threads
             nlohmann_json::nlohmann_json
-            PkgConfig::NGHTTP2
+            ${YUME_NGHTTP2_TARGET}
     )
     if(TARGET Boost::system)
         target_link_libraries(yume_core PUBLIC Boost::system)
@@ -289,7 +343,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         target_include_directories(yume_core PUBLIC ${Boost_INCLUDE_DIRS})
     endif()
     if(WIN32)
-        target_link_libraries(yume_core PUBLIC ws2_32 mswsock)
+        target_link_libraries(yume_core PUBLIC ws2_32 mswsock advapi32)
         target_compile_definitions(yume_core PUBLIC
             WIN32_LEAN_AND_MEAN
             NOMINMAX
@@ -386,6 +440,7 @@ add_library(yume_transport_core
     core/security/auth_v2.cpp
     core/security/ratchet.cpp
     core/security/session_ratchet.cpp
+    core/security/secret_file.cpp
     core/protocol/packet_bulk.cpp
     core/protocol/protocol.cpp
 )
@@ -407,6 +462,11 @@ if(TARGET basefwxcpp)
     target_compile_definitions(yume_transport_core PUBLIC YUME_USE_BASEFWX=1)
 else()
     target_compile_definitions(yume_transport_core PUBLIC YUME_USE_BASEFWX=0)
+endif()
+if(WIN32)
+    # ConvertStringSecurityDescriptorToSecurityDescriptorW is used by the
+    # shared private-file writer to install its protected DACL at creation.
+    target_link_libraries(yume_transport_core PUBLIC advapi32)
 endif()
 yume_link_atomic_if_needed(yume_transport_core PUBLIC)
 yume_apply_perf_opts(yume_transport_core)
@@ -625,8 +685,15 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         target_include_directories(yume_selftest_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
         target_link_libraries(yume_selftest_lib PUBLIC yume_core OpenSSL::Crypto Threads::Threads)
         yume_apply_perf_opts(yume_selftest_lib)
-        target_compile_definitions(yume_client_lib PRIVATE YUME_HAS_SELFTEST=1)
-        target_link_libraries(yume PRIVATE yume_selftest_lib)
+        # The definition and the link must live on the same target. When the
+        # link was only on the `yume` executable, every other consumer of
+        # yume_client_lib - yume_facade, and through it the yume_abi shared
+        # library - compiled the call in client/cli/entry.cpp but had nothing
+        # to resolve it against, so -DYUME_BUILD_SELFTEST=ON with
+        # -DYUME_BUILD_SHARED_ABI=ON failed to link with
+        # "undefined reference to yume::tools::selftest::run_cli".
+        target_compile_definitions(yume_client_lib PUBLIC YUME_HAS_SELFTEST=1)
+        target_link_libraries(yume_client_lib PUBLIC yume_selftest_lib)
 
         add_executable(yume-selftest
             tools/selftest_main.cpp
@@ -690,6 +757,16 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
                 SOVERSION 1
             )
         endif()
+        # Warnings, but deliberately NOT yume_apply_perf_opts: this target is
+        # the installed shared library, and changing its optimisation/LTO
+        # settings is a shipped-artifact decision, separate from wanting the
+        # C boundary compiled with -Wall -Wextra like everything else.
+        #
+        # yume_c.cpp is the highest-value file in the tree for warnings - it is
+        # the only place untyped void* from arbitrary embedders is
+        # dereferenced - and until this line existed it was compiled with no
+        # warning flags at all.
+        yume_apply_warnings(yume_abi)
         target_compile_definitions(yume_abi PRIVATE
             YUME_ABI_BUILD=1
             YUME_ABI_CLIENT_ONLY=$<BOOL:${YUME_ABI_CLIENT_ONLY}>)
@@ -705,10 +782,32 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         else()
             target_link_libraries(yume_abi PRIVATE yume_facade)
         endif()
+        # Symbol control. Without it, implementation symbols from YUME's
+        # internal static libraries and any absorbed third-party archives leak
+        # into the public namespace. That both breaks the "exactly these
+        # functions" contract and lets an embedder bind to an internal detail.
+        #
+        #   ELF     version script.
+        #   Mach-O  -exported_symbols_list, generated from the same map so the
+        #           two platforms cannot drift.
+        #   PE      nothing to do: symbols are private unless declared
+        #           __declspec(dllexport), which only YUME_API carries. The
+        #           presence of explicit exports also disables MinGW's
+        #           export-everything fallback.
+        set(_yume_abi_version_script "${CMAKE_CURRENT_SOURCE_DIR}/abi/yume.map")
         if(UNIX AND NOT APPLE)
-            set(_yume_abi_version_script "${CMAKE_CURRENT_SOURCE_DIR}/abi/yume.map")
             target_link_options(yume_abi PRIVATE
                 "LINKER:--version-script=${_yume_abi_version_script}"
+            )
+            set_property(TARGET yume_abi APPEND PROPERTY
+                LINK_DEPENDS "${_yume_abi_version_script}"
+            )
+        elseif(APPLE)
+            set(_yume_abi_symbol_list "${CMAKE_CURRENT_BINARY_DIR}/yume.exported_symbols")
+            yume_write_macho_symbol_list(
+                "${_yume_abi_version_script}" "${_yume_abi_symbol_list}")
+            target_link_options(yume_abi PRIVATE
+                "LINKER:-exported_symbols_list,${_yume_abi_symbol_list}"
             )
             set_property(TARGET yume_abi APPEND PROPERTY
                 LINK_DEPENDS "${_yume_abi_version_script}"
@@ -794,6 +893,7 @@ add_executable(yume_secure_materials_test
     facade/security/secure_materials_test.cpp
 )
 target_link_libraries(yume_secure_materials_test PRIVATE yume_facade)
+yume_apply_perf_opts(yume_secure_materials_test)
 add_test(NAME yume_secure_materials_test COMMAND yume_secure_materials_test)
 
 add_executable(yume_transport_core_test
@@ -1096,16 +1196,111 @@ endif()
 if(YUME_BUILD_SHARED_ABI AND TARGET yume_abi)
     add_executable(yume_abi_test abi/yume_c_test.cpp)
     target_link_libraries(yume_abi_test PRIVATE yume_abi)
+    yume_apply_warnings(yume_abi_test)
     target_compile_definitions(yume_abi_test PRIVATE
         YUME_ABI_CLIENT_ONLY=$<BOOL:${YUME_ABI_CLIENT_ONLY}>)
     add_test(NAME yume_abi_test COMMAND yume_abi_test)
-    if(UNIX AND NOT APPLE AND CMAKE_NM)
+    if(UNIX AND CMAKE_NM)
+        if(APPLE)
+            set(_yume_abi_format macho)
+        else()
+            set(_yume_abi_format elf)
+        endif()
         add_test(NAME yume_abi_exports
             COMMAND "${CMAKE_COMMAND}"
                 "-DYUME_ABI_LIBRARY=$<TARGET_FILE:yume_abi>"
                 "-DYUME_NM=${CMAKE_NM}"
+                "-DYUME_ABI_MAP=${CMAKE_CURRENT_SOURCE_DIR}/abi/yume.map"
+                "-DYUME_ABI_FORMAT=${_yume_abi_format}"
                 -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_abi_exports.cmake"
         )
     endif()
+
+    # The version script is the contract; the header is what embedders read.
+    # This catches a function declared in one and forgotten in the other.
+    add_test(NAME yume_abi_header_matches_map
+        COMMAND "${CMAKE_COMMAND}"
+            "-DYUME_ABI_MAP=${CMAKE_CURRENT_SOURCE_DIR}/abi/yume.map"
+            "-DYUME_ABI_HEADER=${CMAKE_SOURCE_DIR}/include/yume/yume.h"
+            -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_abi_header.cmake"
+    )
 endif()
 endif()
+
+# ---------------------------------------------------------------------------
+# Warning-coverage audit.
+#
+# Every first-party target compiled from this directory or a first-party
+# subdirectory must have gone through yume_apply_warnings(), whether directly
+# or via yume_apply_perf_opts(). A target that forgets it compiles with no
+# warning flags at all and nothing says so - which is exactly how the public
+# ABI library ended up as the one unwarned target in the tree.
+#
+# Add a genuinely exempt target to YUME_WARNING_EXEMPT_TARGETS with a comment
+# saying why. Recursion stays below this source directory, so FetchContent and
+# BaseFWX targets are outside the audit even when CMake builds them.
+# ---------------------------------------------------------------------------
+set(YUME_WARNING_EXEMPT_TARGETS
+    # These targets compile upstream sources under our GUI build file. The
+    # first-party yume-gui target uses SYSTEM includes and is still audited.
+    yume_imgui
+    yume_implot
+)
+
+function(yume_collect_first_party_targets directory project_root out_var)
+    get_property(_local_targets DIRECTORY "${directory}"
+                 PROPERTY BUILDSYSTEM_TARGETS)
+    set(_all_targets ${_local_targets})
+
+    get_property(_subdirectories DIRECTORY "${directory}"
+                 PROPERTY SUBDIRECTORIES)
+    foreach(_subdirectory IN LISTS _subdirectories)
+        # FetchContent source trees live below the build directory, not src/.
+        # Do not audit their compiler policy as if they were first-party code.
+        string(FIND "${_subdirectory}" "${project_root}/" _project_prefix)
+        if(NOT _project_prefix EQUAL 0)
+            continue()
+        endif()
+        yume_collect_first_party_targets(
+            "${_subdirectory}" "${project_root}" _subdirectory_targets)
+        list(APPEND _all_targets ${_subdirectory_targets})
+    endforeach()
+
+    set(${out_var} "${_all_targets}" PARENT_SCOPE)
+endfunction()
+
+yume_collect_first_party_targets(
+    "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}"
+    _yume_dir_targets)
+list(REMOVE_DUPLICATES _yume_dir_targets)
+get_property(_yume_warned GLOBAL PROPERTY YUME_WARNED_TARGETS)
+list(REMOVE_DUPLICATES _yume_warned)
+
+set(_yume_unwarned "")
+foreach(_t IN LISTS _yume_dir_targets)
+    get_target_property(_type "${_t}" TYPE)
+    # INTERFACE and UTILITY targets compile nothing, so there is nothing to warn about.
+    if(NOT _type MATCHES "^(EXECUTABLE|STATIC_LIBRARY|SHARED_LIBRARY|MODULE_LIBRARY|OBJECT_LIBRARY)$")
+        continue()
+    endif()
+    if(_t IN_LIST YUME_WARNING_EXEMPT_TARGETS)
+        continue()
+    endif()
+    if(NOT _t IN_LIST _yume_warned)
+        list(APPEND _yume_unwarned "${_t}")
+    endif()
+endforeach()
+
+if(_yume_unwarned)
+    string(REPLACE ";" "\n  " _yume_unwarned_text "${_yume_unwarned}")
+    message(FATAL_ERROR
+        "These targets compile first-party code but never received the project "
+        "warning set:\n  ${_yume_unwarned_text}\n"
+        "Call yume_apply_perf_opts(<target>) (preferred - it applies warnings too) "
+        "or yume_apply_warnings(<target>) for targets whose optimisation settings "
+        "must not change, such as the installed shared library. If a target is "
+        "genuinely exempt, add it to YUME_WARNING_EXEMPT_TARGETS with a reason.")
+endif()
+
+list(LENGTH _yume_warned _yume_warned_count)
+message(STATUS "YUME warning set applied to ${_yume_warned_count} first-party targets")

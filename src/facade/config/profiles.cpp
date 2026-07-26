@@ -61,7 +61,11 @@ std::string slug_from(std::string const& display_name) {
     while (out.size() > 1 && out.back() == '-') out.pop_back();
     if (out.empty()) {
         std::random_device rd;
-        char buf[16];
+        // "profile-" (8) + 8 hex digits + NUL = 17 bytes. This was char[16],
+        // which silently truncated the last hex digit and cost 4 bits of the
+        // fallback name's entropy. Caught by -Wformat-truncation once the
+        // project warning set reached this target.
+        char buf[24];
         std::snprintf(buf, sizeof(buf), "profile-%08x", rd());
         out = buf;
     }

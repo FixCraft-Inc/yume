@@ -370,9 +370,11 @@ bool Session::handle_bench_data(uint8_t stream_id, const crypto::Bytes& payload)
 
 bool Session::handle_bench_close(uint8_t stream_id, const std::string& reason) {
     BenchStream bench;
-    std::size_t reservation_current = 0;
-    std::size_t reservation_peak = 0;
-    std::size_t reservation_ready_sources = 0;
+    // Reported only through the timing log below, which is absent in
+    // production builds.
+    [[maybe_unused]] std::size_t reservation_current = 0;
+    [[maybe_unused]] std::size_t reservation_peak = 0;
+    [[maybe_unused]] std::size_t reservation_ready_sources = 0;
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
         auto it = bench_streams_.find(stream_id);

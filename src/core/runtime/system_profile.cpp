@@ -35,7 +35,9 @@ std::uint64_t pages_to_mib(long pages, long page_size) {
     return static_cast<std::uint64_t>(bytes / (1024ull * 1024ull));
 }
 
-std::uint64_t bytes_to_mib(std::uint64_t bytes) {
+// Only the Windows and macOS branches of detect_system_profile() report memory
+// in bytes; the Linux branch works in pages.
+[[maybe_unused]] std::uint64_t bytes_to_mib(std::uint64_t bytes) {
     return bytes / (1024ull * 1024ull);
 }
 

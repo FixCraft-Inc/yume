@@ -6,6 +6,7 @@
 
 #include "core/security/inner_crypto.hpp"
 #include "core/runtime/system_profile.hpp"
+#include "core/security/secret_file.hpp"
 
 #include <algorithm>
 #include <array>
@@ -16,15 +17,12 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <mutex>
-#include <system_error>
 #include <stdexcept>
 #include <string>
 #include <string_view>
-
-#if !defined(_WIN32)
-#include <sys/stat.h>
-#endif
+#include <system_error>
 
 #if YUME_USE_BASEFWX
 #include <basefwx/crypto.hpp>
@@ -153,45 +151,6 @@ Bytes load_pq_private_key(const std::string& path, bool allow_embedded_master) {
     }
     return loaded;
 #endif
-}
-
-bool write_file_bytes(const std::string& path, const Bytes& data, std::string* err) {
-    try {
-        std::filesystem::path p(path);
-        if (p.has_parent_path()) {
-            std::error_code ec;
-            std::filesystem::create_directories(p.parent_path(), ec);
-        }
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        if (!out) {
-            if (err) *err = "failed to open file: " + path;
-            return false;
-        }
-        if (!data.empty()) {
-            out.write(reinterpret_cast<const char*>(data.data()),
-                      static_cast<std::streamsize>(data.size()));
-            if (!out) {
-                if (err) *err = "failed to write file: " + path;
-                return false;
-            }
-        }
-        out.close();
-        if (!out) {
-            if (err) *err = "failed to flush file: " + path;
-            return false;
-        }
-#if !defined(_WIN32)
-        if (path.find(".key") != std::string::npos) {
-            ::chmod(path.c_str(), 0600);
-        } else {
-            ::chmod(path.c_str(), 0644);
-        }
-#endif
-        return true;
-    } catch (const std::exception& ex) {
-        if (err) *err = ex.what();
-        return false;
-    }
 }
 
 std::uint32_t read_env_u32(const char* name, std::uint32_t fallback) {
@@ -626,23 +585,32 @@ bool generate_pq_keypair(const std::string& private_path,
 #else
     std::string algo_str(basefwx::constants::kMasterPqAlg);
     const char* algo = algo_str.c_str();
-    OQS_KEM* kem = OQS_KEM_new(algo);
+    std::unique_ptr<OQS_KEM, decltype(&OQS_KEM_free)> kem(
+        OQS_KEM_new(algo), OQS_KEM_free);
     if (!kem) {
         if (err) *err = "OQS_KEM_new failed";
         return false;
     }
     Bytes pub(kem->length_public_key);
     Bytes priv(kem->length_secret_key);
-    if (OQS_KEM_keypair(kem, pub.data(), priv.data()) != OQS_SUCCESS) {
-        OQS_KEM_free(kem);
+    struct PrivateKeyWiper {
+        Bytes& bytes;
+        ~PrivateKeyWiper() { basefwx::crypto::SecureClear(bytes); }
+    } private_key_wiper{priv};
+    if (OQS_KEM_keypair(kem.get(), pub.data(), priv.data()) != OQS_SUCCESS) {
         if (err) *err = "OQS_KEM_keypair failed";
         return false;
     }
-    OQS_KEM_free(kem);
-    if (!write_file_bytes(private_path, priv, err)) {
+    if (!security::WriteFileExclusive0600(private_path, priv, err)) {
         return false;
     }
-    if (!write_file_bytes(public_path, pub, err)) {
+    if (!security::WriteFileExclusive0600(public_path, pub, err)) {
+        std::error_code remove_error;
+        std::filesystem::remove(private_path, remove_error);
+        if (remove_error && err) {
+            *err += "; could not remove partial private key: " +
+                remove_error.message();
+        }
         return false;
     }
     return true;

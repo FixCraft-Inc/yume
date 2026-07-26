@@ -522,14 +522,18 @@ private:
     std::unordered_set<uint8_t> pending_reverse_;
 
     struct ControlLink {
-        std::weak_ptr<Session> peer;
+        // Every member carries an explicit initializer: the struct is
+        // aggregate-initialized at call sites that supply only the leading
+        // fields, and a member without one is a -Wmissing-field-initializers
+        // warning there.
+        std::weak_ptr<Session> peer{};
         uint8_t peer_stream_id{0};
         bool pending{false};
         bool is_exec{false};
         control::ChannelKind channel_kind{control::ChannelKind::chat};
-        std::string channel_id;
-        std::string left_endpoint_id;
-        std::string right_endpoint_id;
+        std::string channel_id{};
+        std::string left_endpoint_id{};
+        std::string right_endpoint_id{};
     };
 
     std::mutex control_mutex_;

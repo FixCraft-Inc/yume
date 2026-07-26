@@ -1,46 +1,20 @@
-set(_expected
-    yume_abi_version
-    yume_argon2_backend
-    yume_basefwx_version
-    yume_client_create
-    yume_client_destroy
-    yume_client_open_stream
-    yume_client_open_packet
-    yume_client_set_socket_protector
-    yume_client_request_json
-    yume_client_start_file
-    yume_client_start_json
-    yume_client_status_json
-    yume_client_stop
-    yume_feature_flags
-    yume_generate_pq_keypair
-    yume_get_build_info
-    yume_handle_last_error
-    yume_pq_backend
-    yume_packet_close
-    yume_packet_destroy
-    yume_packet_read_batch
-    yume_packet_status_json
-    yume_packet_write_batch
-    yume_server_accept_stream
-    yume_server_create
-    yume_server_destroy
-    yume_server_register_service
-    yume_server_reload_auth
-    yume_server_sessions_json
-    yume_server_start_file
-    yume_server_start_json
-    yume_server_status_json
-    yume_server_stop
-    yume_stream_close
-    yume_stream_destroy
-    yume_stream_peer_json
-    yume_stream_read
-    yume_stream_shutdown_write
-    yume_stream_write
-    yume_strerror
-    yume_version
-)
+# YUME - Yume Universal Multiprotocol Engine
+# Copyright (C) 2026  FixCraft Inc.
+# Licensed under the GNU Affero General Public License v3.0 or later.
+# ------------------------------------------------------------------------
+# Audits the built libyume against the canonical export list.
+#
+# This is the gate that catches two distinct failures: a public function that
+# was added or removed without updating the version script, and an internal
+# static library or absorbed third-party archive leaking symbols into the
+# public namespace because symbol control was not applied on this platform.
+#
+# Required: YUME_ABI_LIBRARY, YUME_NM, YUME_ABI_MAP
+# Optional: YUME_ABI_FORMAT (elf | macho, default elf)
+# ------------------------------------------------------------------------
+cmake_minimum_required(VERSION 3.20)
+
+include("${CMAKE_CURRENT_LIST_DIR}/YumeAbiSymbols.cmake")
 
 if(NOT DEFINED YUME_ABI_LIBRARY OR YUME_ABI_LIBRARY STREQUAL "")
     message(FATAL_ERROR "YUME_ABI_LIBRARY is required")
@@ -48,9 +22,24 @@ endif()
 if(NOT DEFINED YUME_NM OR YUME_NM STREQUAL "")
     message(FATAL_ERROR "YUME_NM is required")
 endif()
+if(NOT DEFINED YUME_ABI_MAP OR YUME_ABI_MAP STREQUAL "")
+    message(FATAL_ERROR "YUME_ABI_MAP is required")
+endif()
+if(NOT DEFINED YUME_ABI_FORMAT OR YUME_ABI_FORMAT STREQUAL "")
+    set(YUME_ABI_FORMAT "elf")
+endif()
+
+yume_read_abi_symbols("${YUME_ABI_MAP}" _expected)
+
+if(YUME_ABI_FORMAT STREQUAL "macho")
+    # Mach-O has no separate dynamic symbol table; -g -U is "global, defined".
+    set(_nm_args -g -U)
+else()
+    set(_nm_args -D --defined-only)
+endif()
 
 execute_process(
-    COMMAND "${YUME_NM}" -D --defined-only "${YUME_ABI_LIBRARY}"
+    COMMAND "${YUME_NM}" ${_nm_args} "${YUME_ABI_LIBRARY}"
     RESULT_VARIABLE _nm_result
     OUTPUT_VARIABLE _nm_output
     ERROR_VARIABLE _nm_error
@@ -69,20 +58,44 @@ foreach(_line IN LISTS _nm_lines)
         continue()
     endif()
     string(REGEX MATCH "[^ \t]+$" _symbol "${_line}")
-    if(NOT _symbol STREQUAL "")
-        list(APPEND _actual "${_symbol}")
+    if(_symbol STREQUAL "")
+        continue()
     endif()
+    if(YUME_ABI_FORMAT STREQUAL "macho")
+        # Strip the Mach-O underscore so both platforms compare against the
+        # same canonical names.
+        string(REGEX REPLACE "^_" "" _symbol "${_symbol}")
+        # Apple's toolchain may report these dylib/runtime symbols; they are
+        # not part of the public surface and cannot be controlled by the C
+        # export list.
+        if(_symbol MATCHES "^(_mh_dylib_header|dyld_stub_binder)$")
+            continue()
+        endif()
+    endif()
+    list(APPEND _actual "${_symbol}")
 endforeach()
 
 list(SORT _actual)
-list(SORT _expected)
+list(REMOVE_DUPLICATES _actual)
 
 if(NOT "${_actual}" STREQUAL "${_expected}")
-    string(REPLACE ";" "\n  " _actual_text "${_actual}")
-    string(REPLACE ";" "\n  " _expected_text "${_expected}")
-    message(FATAL_ERROR
-        "libyume exported symbol mismatch\n"
-        "expected:\n  ${_expected_text}\n"
-        "actual:\n  ${_actual_text}"
-    )
+    set(_unexpected ${_actual})
+    list(REMOVE_ITEM _unexpected ${_expected})
+    set(_missing ${_expected})
+    list(REMOVE_ITEM _missing ${_actual})
+
+    set(_report "")
+    if(_missing)
+        string(REPLACE ";" "\n  " _missing_text "${_missing}")
+        string(APPEND _report "\ndeclared in ${YUME_ABI_MAP} but not exported:\n  ${_missing_text}")
+    endif()
+    if(_unexpected)
+        string(REPLACE ";" "\n  " _unexpected_text "${_unexpected}")
+        string(APPEND _report "\nexported but not declared (leaked or undeclared symbol):\n  ${_unexpected_text}")
+    endif()
+
+    message(FATAL_ERROR "libyume exported symbol mismatch${_report}")
 endif()
+
+list(LENGTH _expected _count)
+message(STATUS "libyume exports exactly ${_count} declared symbols (${YUME_ABI_FORMAT})")

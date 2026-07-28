@@ -12,6 +12,11 @@ permissions:
 env:
   BASEFWX_REPO: "https://github.com/F1xGOD/basefwx.git"
   BASEFWX_REF_FILE: "config/refs/basefwx.ref"
+  # GitHub-hosted runners have two cores and limited memory. Release LTO can
+  # start several ltrans linkers per target, so concurrent target builds can
+  # be killed by the runner without a compiler diagnostic (exit 143).
+  CI_RELEASE_BUILD_JOBS: "1"
+  CI_SANITIZER_BUILD_JOBS: "2"
 
 jobs:
   website-build:
@@ -130,7 +135,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake --build build-ci --parallel
+          cmake --build build-ci --parallel "${CI_RELEASE_BUILD_JOBS}"
 
       # The unit suite is fast (well under a minute) and was previously built
       # but never executed by CI. yume_abi_exports also runs here, which is the
@@ -225,7 +230,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake --build build-asan --parallel
+          cmake --build build-asan --parallel "${CI_SANITIZER_BUILD_JOBS}"
 
       - name: Run unit tests under sanitizers
         env:

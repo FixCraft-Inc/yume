@@ -44,6 +44,8 @@ VCPKG_PREFIX=""
 BASEFWX_REPO="${BASEFWX_REPO:-https://github.com/F1xGOD/basefwx.git}"
 BASEFWX_REF="${BASEFWX_REF:-${YUME_BASEFWX_REF:-}}"
 BASEFWX_REF_FILE="${BASEFWX_REF_FILE:-${PWD}/config/refs/basefwx.ref}"
+BASEFWX_SYNC_MODE="${BASEFWX_SYNC_MODE:-auto}"
+BASEFWX_EFFECTIVE_SYNC_MODE=""
 YUME_REQUIRE_ARGON2="${YUME_REQUIRE_ARGON2:-0}"
 YUME_REQUIRE_OQS="${YUME_REQUIRE_OQS:-0}"
 
@@ -149,6 +151,10 @@ Useful environment variables:
   YUME_CMAKE_ARGS         Extra CMake arguments
   YUME_TOOLCHAIN_FILE     CMake toolchain file for cross builds
   YUME_TMP_ROOT           Temporary work directory
+  BASEFWX_SYNC_MODE       BaseFWX checkout policy:
+                          auto (preserve an attached developer branch),
+                          worktree (never fetch/checkout), or
+                          pinned (require a clean tree and use the pin)
 EOF
 }
 
@@ -1051,31 +1057,161 @@ build_liboqs_host() {
 }
 
 ensure_basefwx() {
-    local ref="${BASEFWX_REF:-main}"
+    local ref="${BASEFWX_REF:-}"
+    local mode="${BASEFWX_SYNC_MODE}"
+    local created=0
+    local repo_present=0
     if ! need_cmd git; then
         error "git not found; cannot fetch BaseFWX."
         return 1
     fi
-    if [[ -d basefwx ]] && ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        warn "basefwx exists but is not a git repository; replacing it."
-        rm -rf basefwx
+    case "${mode}" in
+        auto|worktree|pinned)
+            ;;
+        *)
+            error "Invalid BASEFWX_SYNC_MODE='${mode}'; expected auto, worktree, or pinned."
+            return 1
+            ;;
+    esac
+
+    if [[ -e basefwx || -L basefwx ]]; then
+        if [[ ! -d basefwx ]]; then
+            error "basefwx exists but is not a directory; refusing to replace it."
+            return 1
+        fi
+
+        # `git -C basefwx rev-parse --is-inside-work-tree` is insufficient:
+        # Git walks upward, so a plain basefwx/ directory inside this YUME
+        # checkout would be misidentified as the enclosing YUME repository.
+        # Require basefwx/ itself to be the canonical worktree root before any
+        # fetch, checkout, or status command can target it.
+        local expected_root discovered_root canonical_discovered_root=""
+        expected_root="$(cd basefwx && pwd -P)"
+        discovered_root="$(git -C basefwx rev-parse --show-toplevel 2>/dev/null || true)"
+        if [[ -n "${discovered_root}" && -d "${discovered_root}" ]]; then
+            canonical_discovered_root="$(cd "${discovered_root}" && pwd -P)"
+        fi
+        if [[ -z "${canonical_discovered_root}" ||
+              "${canonical_discovered_root}" != "${expected_root}" ]]; then
+            error "basefwx exists but is not the root of a Git worktree; refusing to replace or mutate it."
+            error "Move it aside explicitly, or set up the BaseFWX checkout manually."
+            return 1
+        fi
+        repo_present=1
     fi
-    if ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+
+    if [[ ${repo_present} -eq 0 && "${mode}" == "worktree" ]]; then
+        error "BASEFWX_SYNC_MODE=worktree requires an existing BaseFWX Git worktree."
+        return 1
+    fi
+    if [[ ${repo_present} -eq 0 ]]; then
+        if [[ -z "${ref}" ]]; then
+            error "Pinned BaseFWX setup requires BASEFWX_REF or a non-empty ${BASEFWX_REF_FILE}."
+            return 1
+        fi
         step "Cloning BaseFWX..."
-        git clone --filter=blob:none --no-checkout "${BASEFWX_REPO}" basefwx
+        git clone --filter=blob:none --no-checkout "${BASEFWX_REPO}" basefwx ||
+            return 1
+        created=1
     else
         info "BaseFWX already present."
     fi
+
+    local current_branch=""
+    current_branch="$(git -C basefwx symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+    if [[ "${mode}" == "auto" ]]; then
+        if [[ ${created} -eq 0 && -n "${current_branch}" ]]; then
+            mode="worktree"
+        else
+            mode="pinned"
+        fi
+    fi
+    BASEFWX_EFFECTIVE_SYNC_MODE="${mode}"
+
+    if [[ "${mode}" == "worktree" ]]; then
+        if [[ ! -f basefwx/cpp/CMakeLists.txt ]]; then
+            error "BaseFWX worktree is incomplete: basefwx/cpp/CMakeLists.txt is missing."
+            return 1
+        fi
+        local current_sha requested_sha=""
+        if ! current_sha="$(git -C basefwx rev-parse HEAD)"; then
+            error "Could not resolve the current BaseFWX worktree commit."
+            return 1
+        fi
+        requested_sha="$(git -C basefwx rev-parse --verify "${ref}^{commit}" 2>/dev/null || true)"
+        if [[ -n "${requested_sha}" && "${current_sha}" != "${requested_sha}" ]]; then
+            warn "Using BaseFWX developer worktree at ${current_sha:0:12}; configured pin is ${requested_sha:0:12}."
+            warn "Use BASEFWX_SYNC_MODE=pinned for a clean, reproducible pinned build."
+        else
+            info "Using existing BaseFWX developer worktree without fetching or changing branches."
+        fi
+        if [[ "$(git -C basefwx rev-parse --is-shallow-repository 2>/dev/null || true)" == "true" ]]; then
+            warn "BaseFWX developer worktree is shallow; repair its history with 'git -C basefwx fetch --unshallow origin'."
+        fi
+        ok "BaseFWX worktree ready at $(git -C basefwx rev-parse --short HEAD)."
+        return 0
+    fi
+
+    if [[ -z "${ref}" ]]; then
+        error "BASEFWX_SYNC_MODE=pinned requires BASEFWX_REF or a non-empty ${BASEFWX_REF_FILE}."
+        return 1
+    fi
+
+    # A fresh --no-checkout clone reports the entire tree as staged-deleted
+    # until its first checkout. That is initialization state, not user work.
+    if [[ ${created} -eq 0 ]]; then
+        local worktree_status
+        if ! worktree_status="$(git -C basefwx status --porcelain --untracked-files=normal)"; then
+            error "Could not inspect the BaseFWX worktree; refusing to switch it in pinned mode."
+            return 1
+        fi
+        if [[ -n "${worktree_status}" ]]; then
+            error "BaseFWX has local changes; refusing to switch it in pinned mode."
+            error "Use BASEFWX_SYNC_MODE=worktree to build the current developer checkout."
+            return 1
+        fi
+    fi
     step "Syncing BaseFWX to ${ref}..."
-    git -C basefwx fetch --depth 1 origin "${ref}"
-    git -C basefwx checkout --detach FETCH_HEAD
+    git -C basefwx fetch origin "${ref}" || return 1
+    local requested_sha current_sha
+    if ! requested_sha="$(git -C basefwx rev-parse "FETCH_HEAD^{commit}")"; then
+        error "Could not resolve the fetched BaseFWX commit for ${ref}."
+        return 1
+    fi
+    current_sha="$(git -C basefwx rev-parse HEAD 2>/dev/null || true)"
+    if [[ ${created} -eq 1 ]]; then
+        # A --no-checkout clone can already have HEAD at requested_sha while
+        # its worktree is still empty. The first checkout is mandatory even
+        # when the commit IDs compare equal.
+        git -C basefwx checkout --no-overwrite-ignore --detach "${requested_sha}" ||
+            return 1
+    elif [[ "${current_sha}" != "${requested_sha}" ]]; then
+        # Ignored developer artifacts are not visible to the dirty-worktree
+        # preflight. Refuse rather than overwrite one when the requested
+        # commit starts tracking the same path.
+        git -C basefwx checkout --no-overwrite-ignore --detach "${requested_sha}" ||
+            return 1
+    else
+        info "BaseFWX is already at the configured ref; preserving its current branch attachment."
+    fi
+    if [[ ! -f basefwx/cpp/CMakeLists.txt ]]; then
+        error "Pinned BaseFWX checkout is incomplete: basefwx/cpp/CMakeLists.txt is missing."
+        return 1
+    fi
     ok "BaseFWX ready at $(git -C basefwx rev-parse --short HEAD)."
 }
 
-cleanup_vendor() {
+prepare_basefwx_build_cache() {
+    if [[ "${BASEFWX_EFFECTIVE_SYNC_MODE:-}" == "worktree" ]]; then
+        info "Preserving BaseFWX developer build cache in worktree mode."
+        return 0
+    fi
     if [[ -d basefwx/cpp/build ]]; then
         step "Removing BaseFWX build cache..."
-        rm -rf basefwx/cpp/build || true
+        if ! rm -rf basefwx/cpp/build; then
+            error "Could not remove the BaseFWX build cache for pinned mode."
+            return 1
+        fi
     fi
 }
 
@@ -2046,7 +2182,7 @@ EOF
     fi
 
     ensure_basefwx
-    cleanup_vendor
+    prepare_basefwx_build_cache
     if [[ $OPENWRT -eq 1 || $BUSYBOX -eq 1 ]]; then
         if [[ $OPENWRT -eq 1 && -d "${YUME_VENDOR_ROOT}/openwrt-mips" ]] && vendor_access_enabled; then
             CMAKE_ARGS+=("-DBASEFWX_VENDOR_DIR=${YUME_VENDOR_ROOT}/openwrt-mips")

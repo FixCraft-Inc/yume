@@ -48,11 +48,14 @@ not a 2.0 release measurement.
 ```bash
 git clone https://github.com/FixCraft-Inc/yume.git
 cd yume
-# BaseFWX is a pinned sibling checkout, not a submodule.
-git clone https://github.com/F1xGOD/basefwx.git basefwx
-git -C basefwx checkout "$(cat config/refs/basefwx.ref)"
 ./ezbuild.sh
 ```
+
+`ezbuild.sh` creates a pinned BaseFWX dependency checkout when `basefwx/` is
+absent. If `basefwx/` is already an attached developer checkout, the build uses
+that worktree without fetching, detaching its branch, or discarding changes.
+Use `BASEFWX_SYNC_MODE=pinned ./ezbuild.sh` when you explicitly need the clean
+commit recorded in `config/refs/basefwx.ref`.
 
 The build produces `build/bin/yume` and `build/bin/yumed`.
 

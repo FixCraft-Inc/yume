@@ -27,6 +27,13 @@ The manifest records file size, OS, architecture, component, linkage, hashes, an
 
 YUME depends on BaseFWX for post-quantum and AEAD primitives. The release and CI workflows read `config/refs/basefwx.ref`, fetch that exact ref, and fail preflight if it is not reachable. Keep this file pinned to a commit or immutable release ref for production releases.
 
+For normal local development, `ezbuild.sh` preserves an existing attached
+BaseFWX branch and builds its current files in place. It does not shallow the
+repository or detach the branch. Use `BASEFWX_SYNC_MODE=pinned ./ezbuild.sh`
+for release evidence; pinned mode refuses a dirty BaseFWX worktree instead of
+overwriting it. `BASEFWX_SYNC_MODE=worktree` makes the no-fetch behavior
+explicit.
+
 Fetchability alone does not prove that a SHA belongs to the intended release
 lineage after a history rewrite. Before a stable release, also verify that the
 pin is the chosen canonical tag/commit and build YUME against a clean checkout

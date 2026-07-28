@@ -9,10 +9,14 @@ cover bound to loopback.
 ```bash
 git clone https://github.com/FixCraft-Inc/yume.git
 cd yume
-git clone https://github.com/F1xGOD/basefwx.git basefwx
-git -C basefwx checkout "$(cat config/refs/basefwx.ref)"
 ./ezbuild.sh
 ```
+
+On a fresh clone, `ezbuild.sh` creates `basefwx/` at the pinned dependency
+commit. An existing attached BaseFWX branch is treated as a developer worktree
+and is never fetched or detached automatically. Set
+`BASEFWX_SYNC_MODE=pinned` for an explicitly pinned build, or
+`BASEFWX_SYNC_MODE=worktree` to require the current checkout.
 
 `ezbuild.sh` requires nghttp2 1.64 or newer. When the system package is too
 old, it builds the pinned, checksum-verified nghttp2 1.69.0 library under the

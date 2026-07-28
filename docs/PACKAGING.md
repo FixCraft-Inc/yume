@@ -117,8 +117,10 @@ The easy path is:
 ./ezbuild.sh --deb
 ```
 
-`ezbuild.sh` installs dependencies, syncs BaseFWX, configures the build,
-compiles YUME, and runs CPack. The `.deb` is printed at the end.
+`ezbuild.sh` installs dependencies, prepares BaseFWX, configures the build,
+compiles YUME, and runs CPack. The `.deb` is printed at the end. For release
+evidence, use `BASEFWX_SYNC_MODE=pinned ./ezbuild.sh --deb`; pinned mode
+refuses local BaseFWX changes and checks out the configured dependency commit.
 
 Useful variants:
 

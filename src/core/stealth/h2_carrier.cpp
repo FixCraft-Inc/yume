@@ -466,7 +466,7 @@ private:
     };
     struct OutboundStream {
         bool finish_when_empty{false};
-        std::deque<H2Bytes> chunks;
+        std::deque<H2Bytes> chunks{};
         std::size_t front_offset{0};
         std::size_t queued_bytes{0};
     };

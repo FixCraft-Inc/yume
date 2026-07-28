@@ -33,14 +33,6 @@ bool parse_non_negative_u32(const char* raw, const char* option, std::uint32_t* 
     return false;
 }
 
-bool parse_positive_u32(const char* raw, const char* option, std::uint32_t* out) {
-    if (raw && parse_u32_strict(raw, out) && *out > 0) {
-        return true;
-    }
-    yume::util::log_error(std::string(option) + ": expected a positive unsigned 32-bit integer");
-    return false;
-}
-
 bool parse_port(const char* raw, const char* option, int* out) {
     int value = 0;
     if (!raw || !parse_int_strict(raw, &value) || value < 1 || value > 65535) {
@@ -75,15 +67,6 @@ bool parse_listen_spec(const std::string& raw, yume::server::ServerConfig& cfg) 
         return false;
     }
     cfg.listen_address = addr_part;
-    return true;
-}
-
-bool parse_obfs_pad_multiple(const char* raw, std::uint16_t* out) {
-    std::uint32_t parsed = 0;
-    if (!parse_non_negative_u32(raw, "--obfs-pad-multiple", &parsed)) {
-        return false;
-    }
-    *out = static_cast<std::uint16_t>(std::min<std::uint32_t>(parsed, 256));
     return true;
 }
 

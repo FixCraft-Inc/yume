@@ -108,7 +108,8 @@ bool Session::handle_codec_data(uint8_t stream_id, const crypto::Bytes& payload)
     return true;
 }
 
-bool Session::handle_codec_close(uint8_t stream_id, const std::string& reason) {
+bool Session::handle_codec_close(uint8_t stream_id,
+                                 [[maybe_unused]] const std::string& reason) {
     std::shared_ptr<CodecStream> codec;
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
@@ -125,7 +126,8 @@ bool Session::handle_codec_close(uint8_t stream_id, const std::string& reason) {
 
     if (codec && !codec->close_summary_logged) {
         codec->close_summary_logged = true;
-        const int64_t elapsed = codec->open_started_ms > 0 ? (util::now_ms() - codec->open_started_ms) : 0;
+        [[maybe_unused]] const int64_t elapsed =
+            codec->open_started_ms > 0 ? (util::now_ms() - codec->open_started_ms) : 0;
         YUME_TIMING_LOG("server.stream",
                          "summary",
                          "session=" + std::to_string(session_id_) +

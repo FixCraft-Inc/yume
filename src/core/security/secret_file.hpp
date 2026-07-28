@@ -10,6 +10,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <span>
+#include <string>
 #include <vector>
 
 namespace yume::security {
@@ -31,6 +33,15 @@ private:
     void Wipe() noexcept;
     std::array<std::uint8_t, 32> bytes_{};
 };
+
+// Creates a new regular file without following or replacing an existing path.
+// POSIX files are mode 0600 from creation onward; Windows files receive a
+// protected owner-and-LocalSystem-only DACL at creation. On failure, returns
+// false, records a diagnostic when error is non-null, and attempts to remove
+// a partial file (including any cleanup failure in the diagnostic).
+bool WriteFileExclusive0600(const std::filesystem::path& path,
+                            std::span<const std::uint8_t> contents,
+                            std::string* error);
 
 // Linux/POSIX v2 secret-file contract: a regular non-symlink file, no group or
 // world permission bits, and exactly 64 lowercase hex bytes with no newline.

@@ -6,7 +6,7 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
  * ----------------------------------------------------------------
- * Internal helpers shared across the transport/*.cpp translation units
+ * Internal helpers shared across the transport translation units
  * that together implement yume::client::TransportCore. Formerly the
  * anonymous namespace at the top of transport/core.cpp; promoted to
  * yume::client::detail (header-only, all inline) so the split TUs

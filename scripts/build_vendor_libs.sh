@@ -5,7 +5,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VENDOR_DIR="${ROOT_DIR}/vendor"
+VENDOR_DIR="${YUME_VENDOR_DIR:-${ROOT_DIR}/vendor}"
+export YUME_VENDOR_DIR="${VENDOR_DIR}"
 
 TARGET="host"
 OPENWRT_SDK=""
@@ -28,21 +29,28 @@ ARCHIVE_PATH=""
 
 usage() {
     cat <<EOF
-Usage: $0 [--target host|openwrt-mips|aarch64|armv7|armv8|x86|x86_64|busybox-armv7|busybox-armv8|busybox-x86|busybox-x86_64|windows-x86_64|macos-x86_64|macos-arm64|all] [--openwrt-sdk PATH] [--sysroot PATH] [--toolchain-prefix PREFIX] [--vcpkg-root PATH] [--vcpkg-triplet TRIPLET] [--osxcross-root PATH] [--macos-sdk PATH] [--archive PATH] [--keep-sources] [--no-clone] [--force]
+Usage: $0 [--target host|openwrt-mips|armv7|armv8|x86|all] [--openwrt-sdk PATH] [--sysroot PATH] [--toolchain-prefix PREFIX] [--archive PATH] [--keep-sources] [--no-clone] [--force]
 
 Build and stage liboqs + argon2 into ${VENDOR_DIR}/<target>/{include,lib}
 
 Examples:
   $0 --target host
   $0 --target openwrt-mips --openwrt-sdk /path/to/openwrt-sdk
-  $0 --target aarch64 --toolchain-prefix aarch64-linux-gnu --sysroot /path/to/sysroot
-  $0 --target windows-x86_64 --vcpkg-root ~/vcpkg --vcpkg-triplet x64-mingw-dynamic
-  $0 --target macos-x86_64 --vcpkg-root ~/vcpkg --vcpkg-triplet x64-osx --osxcross-root ~/osxcross --macos-sdk ~/osxcross/target/SDK/MacOSX11.3.sdk
+  $0 --target armv8 --toolchain-prefix aarch64-linux-gnu
+  $0 --target all --archive third_party/prebuilt/yume-vendor-prebuilt.tar.xz
 
 Notes:
   - Uses LIBOQS_SRC and ARGON2_SRC (defaults: \$HOME/liboqs, \$HOME/argon2).
   - Use --force to rebuild even if vendor outputs exist.
-  - Windows/macOS targets stage a relocatable dependency prefix from vcpkg.
+  - Only liboqs + argon2 are vendored: they are the dependencies a user
+    cannot get from apt/brew/vcpkg. OpenSSL, zlib, zstd and lzma come from
+    the OpenWRT SDK on that target; Boost is header-only and
+    architecture-independent, so no per-target prebuilt is needed.
+  - Windows and macOS are intentionally NOT vendored (vcpkg and brew both
+    package liboqs), and the busybox-* targets were dropped because they
+    were byte-identical copies of armv7/armv8/x86.
+  - Builds are compiled with -ffile-prefix-map so no builder path is
+    recorded in the shipped objects.
 EOF
 }
 
@@ -359,6 +367,42 @@ target_dir() {
     fi
 }
 
+vendor_target_archiveable() {
+    local dir="$1"
+    [[ -f "${dir}/include/oqs/oqs.h" ]] || return 1
+    [[ -f "${dir}/include/argon2.h" ]] || return 1
+    compgen -G "${dir}/lib/liboqs*" >/dev/null 2>&1 || return 1
+    compgen -G "${dir}/lib/libargon2*" >/dev/null 2>&1 || return 1
+}
+
+create_vendor_archive() {
+    local archive="$1"
+    shift
+    local vendor_name
+    vendor_name="$(basename "${VENDOR_DIR}")"
+    if [[ "${vendor_name}" != "vendor" ]]; then
+        echo "Refusing to create an incompatible archive: YUME_VENDOR_DIR must end in /vendor." >&2
+        return 1
+    fi
+
+    local members=()
+    local target=""
+    for target in "$@"; do
+        if ! vendor_target_archiveable "${VENDOR_DIR}/${target}"; then
+            echo "Cannot archive incomplete vendor target: ${VENDOR_DIR}/${target}" >&2
+            return 1
+        fi
+        members+=("vendor/${target}")
+    done
+    if [[ ${#members[@]} -eq 0 ]]; then
+        echo "Refusing to create an empty vendor archive." >&2
+        return 1
+    fi
+
+    mkdir -p "$(dirname "${archive}")"
+    tar -cJf "${archive}" -C "$(dirname "${VENDOR_DIR}")" "${members[@]}"
+}
+
 vendor_complete() {
     local target="$1"
     if [[ ${FORCE} -eq 1 ]]; then
@@ -608,6 +652,10 @@ docker_build_vendor() {
     local label="$1"
     local image="$2"
     local script_path="/tmp/dockcross-vendor-${label}"
+    local force_arg=""
+    if [[ ${FORCE} -eq 1 ]]; then
+        force_arg="--force"
+    fi
     if vendor_complete "${label}"; then
         echo "Vendored libs already present for ${label}; skipping."
         return 0
@@ -675,7 +723,7 @@ docker_build_vendor() {
             fi
         fi
         LIBOQS_SRC=/tmp/yume-liboqs-src ARGON2_SRC=/tmp/yume-argon2-src \
-          ./scripts/build_vendor_libs.sh --target \"${label}\" --toolchain-prefix \"\${PREFIX}\" --sysroot \"\${SYSROOT}\" ${FORCE:+--force}
+          ./scripts/build_vendor_libs.sh --target \"${label}\" --toolchain-prefix \"\${PREFIX}\" --sysroot \"\${SYSROOT}\" ${force_arg}
     "
 }
 
@@ -740,6 +788,74 @@ fi
 
 LIBOQS_SRC="${LIBOQS_SRC:-${REAL_HOME}/liboqs}"
 ARGON2_SRC="${ARGON2_SRC:-${REAL_HOME}/argon2}"
+
+# ---------------------------------------------------------------------------
+# Build-path sanitization.
+#
+# GCC records the absolute path of every translation unit in the object file's
+# debug info, so without this the builder's home directory ends up inside the
+# shipped .a files -- invisible to any text scan of the tarball, because the
+# archive is compressed. A previously published vendor archive leaked the build
+# account this way.
+#
+# -ffile-prefix-map rewrites those recorded paths (and __FILE__) at compile
+# time. It does not change generated code, so it cannot affect runtime
+# behaviour or performance. Requires GCC 8+ / Clang 10+; every toolchain used
+# here is newer than that.
+# ---------------------------------------------------------------------------
+# Resolve a cross-toolchain tool to an ABSOLUTE path.
+#
+# CMake stores CMAKE_AR / CMAKE_RANLIB / CMAKE_STRIP as FILEPATH cache entries
+# and resolves a bare name against the *working directory*, not PATH. Passing
+# -DCMAKE_AR=arm-linux-gnueabihf-ar therefore produced
+# /home/<user>/yume/arm-linux-gnueabihf-ar and the static-library link died
+# with "Error running link command: no such file or directory".
+#
+# The OpenWRT target never hit this because its TOOLCHAIN_PREFIX is already an
+# absolute path into the SDK, and the host target does not override these at
+# all -- so the bug only surfaced once native cross-toolchains became usable.
+resolve_tool() {
+    local suffix="$1"
+    local candidate="${TOOLCHAIN_PREFIX}-${suffix}"
+    # An absolute prefix (OpenWRT SDK) does not need PATH resolution, but it
+    # still must exist. Fail at this boundary rather than storing a bad tool
+    # path in CMake's cache and producing a later, misleading link failure.
+    if [[ "${candidate}" == /* ]]; then
+        if [[ ! -x "${candidate}" ]]; then
+            echo "Cross tool is missing or not executable: ${candidate}" >&2
+            return 1
+        fi
+        printf '%s' "${candidate}"
+        return 0
+    fi
+    local resolved
+    resolved="$(command -v "${candidate}" 2>/dev/null || true)"
+    if [[ -z "${resolved}" ]]; then
+        echo "Cross tool not found in PATH: ${candidate}" >&2
+        # `return 1`, not `exit 1`: every caller invokes this inside $( ), where
+        # exit would only kill the subshell and leave the caller none the wiser.
+        return 1
+    fi
+    printf '%s' "${resolved}"
+}
+
+sanitize_path_flags() {
+    local build_dir="${1:-}"
+    local flags=(
+        "-ffile-prefix-map=${LIBOQS_SRC}=/usr/src/liboqs"
+        "-ffile-prefix-map=${ARGON2_SRC}=/usr/src/argon2"
+    )
+    if [[ -n "${build_dir}" ]]; then
+        flags+=("-ffile-prefix-map=${build_dir}=/build")
+    fi
+    if [[ -n "${OPENWRT_SDK}" ]]; then
+        flags+=("-ffile-prefix-map=${OPENWRT_SDK}=/usr/src/openwrt-sdk")
+    fi
+    # Catch-all for anything the specific maps above miss (vcpkg trees,
+    # toolchain sysroots living under the builder's home, ...).
+    flags+=("-ffile-prefix-map=${REAL_HOME}=/home/user")
+    printf '%s ' "${flags[@]}"
+}
 
 cleanup_sources() {
     if [[ $KEEP_SOURCES -eq 0 ]]; then
@@ -819,9 +935,21 @@ prepare_toolchain() {
     fi
 
     if [[ "${TARGET}" == "aarch64" || "${TARGET}" == "armv8" || "${TARGET}" == "armv7" || "${TARGET}" == "x86" || "${TARGET}" == "x86_64" || "${TARGET}" == "busybox-armv8" || "${TARGET}" == "busybox-armv7" || "${TARGET}" == "busybox-x86" || "${TARGET}" == "busybox-x86_64" ]]; then
-        if [[ -z "${TOOLCHAIN_PREFIX}" || -z "${SYSROOT}" ]]; then
-            echo "--toolchain-prefix and --sysroot are required for ${TARGET}" >&2
+        if [[ -z "${TOOLCHAIN_PREFIX}" ]]; then
+            echo "--toolchain-prefix is required for ${TARGET}" >&2
             exit 1
+        fi
+        # --sysroot is optional. A distro cross-toolchain (gcc-arm-linux-gnueabihf,
+        # gcc-aarch64-linux-gnu, gcc-i686-linux-gnu) already knows its own sysroot,
+        # and passing an explicit one is only needed for a hand-assembled or
+        # BusyBox/musl root. Requiring it unconditionally forced the old build to
+        # go through dockcross containers for no reason.
+        if [[ -z "${SYSROOT}" ]]; then
+            if ! need_cmd "${TOOLCHAIN_PREFIX}-gcc"; then
+                echo "Toolchain ${TOOLCHAIN_PREFIX}-gcc not found and no --sysroot given for ${TARGET}" >&2
+                exit 1
+            fi
+            echo "Using built-in sysroot of ${TOOLCHAIN_PREFIX}-gcc for ${TARGET}."
         fi
         return 0
     fi
@@ -831,31 +959,45 @@ prepare_toolchain() {
 }
 
 if [[ "${TARGET}" == "all" ]]; then
-    if ! need_cmd docker; then
-        echo "docker is required for --target all" >&2
-        exit 1
-    fi
-    # Host + OpenWRT MIPS locally, others via dockcross.
-    ./scripts/build_vendor_libs.sh --target host ${FORCE:+--force}
-    ./scripts/build_vendor_libs.sh --target openwrt-mips ${FORCE:+--force}
-    docker_build_vendor "armv7" "dockcross/linux-armv7"
-    docker_build_vendor "armv8" "dockcross/linux-arm64"
-    docker_build_vendor "x86" "dockcross/linux-x86"
-    docker_build_vendor "busybox-armv7" "dockcross/linux-armv7"
-    docker_build_vendor "busybox-armv8" "dockcross/linux-arm64"
-    docker_build_vendor "busybox-x86" "dockcross/linux-x86"
-    if [[ -n "${VCPKG_ROOT}" || -x "${REAL_HOME}/vcpkg/vcpkg" ]]; then
-        ./scripts/build_vendor_libs.sh --target windows-x86_64 --vcpkg-root "${VCPKG_ROOT:-${REAL_HOME}/vcpkg}" ${FORCE:+--force} || true
-        if [[ -n "${OSXCROSS_ROOT}" || -d "${REAL_HOME}/osxcross" ]]; then
-            ./scripts/build_vendor_libs.sh --target macos-x86_64 --vcpkg-root "${VCPKG_ROOT:-${REAL_HOME}/vcpkg}" --osxcross-root "${OSXCROSS_ROOT:-${REAL_HOME}/osxcross}" ${MACOS_SDK:+--macos-sdk "${MACOS_SDK}"} ${FORCE:+--force} || true
-        else
-            echo "Skipping macOS vendor build; osxcross not found." >&2
+    # The shipped vendor archive covers exactly the targets whose liboqs a
+    # user cannot obtain from a package manager. Everything else was removed
+    # deliberately:
+    #
+    #   busybox-armv7/armv8/x86  byte-identical duplicates of armv7/armv8/x86;
+    #                            BusyBox systems consume the same static .a.
+    #   windows-x86_64           vcpkg supplies liboqs (see vcpkg.json).
+    #   macos-arm64/x86_64       brew supplies liboqs.
+    #
+    # Only liboqs and argon2 are vendored. Every other dependency is either an
+    # apt/brew/vcpkg package, provided by the OpenWRT SDK (openssl, zlib,
+    # zstd, lzma), or header-only and architecture-independent (Boost.Asio,
+    # Boost.System), so none of them need a per-target prebuilt.
+    #
+    # Cross builds use the distro cross-toolchains rather than dockcross, so
+    # this needs no Docker and nothing embeds a container path.
+    for tc in arm-linux-gnueabihf-gcc aarch64-linux-gnu-gcc i686-linux-gnu-gcc; do
+        if ! need_cmd "${tc}"; then
+            echo "Missing cross toolchain: ${tc}" >&2
+            echo "  apt-get install gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \\" >&2
+            echo "                  gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \\" >&2
+            echo "                  gcc-i686-linux-gnu g++-i686-linux-gnu" >&2
+            exit 1
         fi
-    else
-        echo "Skipping Windows/macOS vendor build; vcpkg not found." >&2
+    done
+
+    force_args=()
+    if [[ ${FORCE} -eq 1 ]]; then
+        force_args+=(--force)
     fi
+    ./scripts/build_vendor_libs.sh --target host "${force_args[@]}"
+    ./scripts/build_vendor_libs.sh --target openwrt-mips "${force_args[@]}"
+    ./scripts/build_vendor_libs.sh --target armv7 --toolchain-prefix arm-linux-gnueabihf "${force_args[@]}"
+    ./scripts/build_vendor_libs.sh --target armv8 --toolchain-prefix aarch64-linux-gnu "${force_args[@]}"
+    ./scripts/build_vendor_libs.sh --target x86   --toolchain-prefix i686-linux-gnu "${force_args[@]}"
+
     if [[ -n "${ARCHIVE_PATH}" ]]; then
-        tar -cJf "${ARCHIVE_PATH}" -C "${VENDOR_DIR}" .
+        create_vendor_archive "${ARCHIVE_PATH}" \
+            linux-x86_64 openwrt-mips armv7 armv8 x86
         echo "Vendor archive created at: ${ARCHIVE_PATH}"
     fi
     exit 0
@@ -879,6 +1021,10 @@ prune_stage_dir() {
 
 if vendor_complete "${TARGET}"; then
     echo "Vendored libs already present for ${TARGET}; skipping."
+    if [[ -n "${ARCHIVE_PATH}" ]]; then
+        create_vendor_archive "${ARCHIVE_PATH}" "$(target_dir "${TARGET}")"
+        echo "Vendor archive created at: ${ARCHIVE_PATH}"
+    fi
     exit 0
 fi
 
@@ -896,6 +1042,21 @@ build_liboqs() {
         export STAGING_DIR="${OPENWRT_SDK}/staging_dir"
     fi
 
+    local path_flags
+    path_flags="$(sanitize_path_flags "${build_dir}")"
+
+    # OQS_DIST_BUILD=ON is load-bearing and must stay ON.
+    #
+    # It compiles every ISA variant (AVX2/AVX512 on x86-64, NEON/SHA on ARM)
+    # into the archive and selects between them at runtime via
+    # OQS_CPU_has_extension. That is what makes a single prebuilt library both
+    # portable and as fast as a locally compiled one -- consuming the vendor
+    # archive costs no runtime performance.
+    #
+    # The OQS_USE_*=OFF flags below are the opposite of what they look like:
+    # they prevent liboqs from *hard-pinning* one ISA at compile time, which
+    # would produce a faster-on-this-box binary that dies with SIGILL on older
+    # CPUs. Never replace them with OQS_OPT_TARGET=native.
     local cmake_args=(
         -DCMAKE_BUILD_TYPE=Release
         -DOQS_DIST_BUILD=ON
@@ -903,6 +1064,8 @@ build_liboqs() {
         -DOQS_USE_AVX512=OFF
         -DOQS_USE_SSE2=OFF
         -DOQS_USE_SVE=OFF
+        -DCMAKE_C_FLAGS="${path_flags}"
+        -DCMAKE_CXX_FLAGS="${path_flags}"
         -DOQS_BUILD_ONLY_LIB=ON
         -DOQS_BUILD_TESTS=OFF
         -DOQS_BUILD_BENCHMARKS=OFF
@@ -937,12 +1100,23 @@ build_liboqs() {
         cmake_args+=(
             -DOQS_PERMIT_UNSUPPORTED_ARCHITECTURE=ON
         )
+        # Resolve one at a time and check each. resolve_tool's `exit 1` only
+        # leaves the command substitution's subshell, and an array append takes
+        # the status of just the LAST substitution in it - so a missing `ar`
+        # next to a present `strip` used to sail through as an empty
+        # -DCMAKE_AR= and die later inside CMake's link step.
+        local _cc _cxx _ar _ranlib _strip
+        _cc="$(resolve_tool gcc)"       || exit 1
+        _cxx="$(resolve_tool g++)"      || exit 1
+        _ar="$(resolve_tool ar)"        || exit 1
+        _ranlib="$(resolve_tool ranlib)" || exit 1
+        _strip="$(resolve_tool strip)"  || exit 1
         cmake_args+=(
-            -DCMAKE_C_COMPILER="${TOOLCHAIN_PREFIX}-gcc"
-            -DCMAKE_CXX_COMPILER="${TOOLCHAIN_PREFIX}-g++"
-            -DCMAKE_AR="${TOOLCHAIN_PREFIX}-ar"
-            -DCMAKE_RANLIB="${TOOLCHAIN_PREFIX}-ranlib"
-            -DCMAKE_STRIP="${TOOLCHAIN_PREFIX}-strip"
+            -DCMAKE_C_COMPILER="${_cc}"
+            -DCMAKE_CXX_COMPILER="${_cxx}"
+            -DCMAKE_AR="${_ar}"
+            -DCMAKE_RANLIB="${_ranlib}"
+            -DCMAKE_STRIP="${_strip}"
         )
     else
         cmake_args+=(
@@ -958,8 +1132,16 @@ build_liboqs() {
 build_argon2() {
     make -C "${ARGON2_SRC}" clean || true
     local argon2_inc="${ARGON2_SRC}/include"
+    local path_flags
+    path_flags="$(sanitize_path_flags)"
+    # OPTTARGET=generic keeps argon2 portable. Unlike liboqs, the reference
+    # argon2 selects its SIMD path at compile time, so a vendored build is
+    # deliberately the portable one rather than the fastest possible on the
+    # build machine. YUME 2.0 does not use argon2 on the transport path (no
+    # Argon2 at connection setup or per epoch), so this costs nothing there;
+    # it only affects BaseFWX file operations.
     local make_args=(
-        CFLAGS="-I${argon2_inc} -fPIC"
+        CFLAGS="-I${argon2_inc} -fPIC ${path_flags}"
         OPTTARGET=generic
         LIBRARY_REL=lib
         PKGCONFIG_REL=lib
@@ -977,17 +1159,17 @@ build_argon2() {
         )
         if [[ ${USE_SYSROOT} -eq 1 ]]; then
             make_args+=(
-                CFLAGS="--sysroot=${SYSROOT} -I${SYSROOT}/usr/include -I${argon2_inc} -fPIC"
+                CFLAGS="--sysroot=${SYSROOT} -I${SYSROOT}/usr/include -I${argon2_inc} -fPIC ${path_flags}"
             )
         else
             make_args+=(
-                CFLAGS="-I${argon2_inc} -fPIC"
+                CFLAGS="-I${argon2_inc} -fPIC ${path_flags}"
             )
         fi
         make -C "${ARGON2_SRC}" "${make_args[@]}"
-        local install_cflags="--sysroot=${SYSROOT} -I${SYSROOT}/usr/include -I${argon2_inc} -fPIC"
+        local install_cflags="--sysroot=${SYSROOT} -I${SYSROOT}/usr/include -I${argon2_inc} -fPIC ${path_flags}"
         if [[ ${USE_SYSROOT} -ne 1 ]]; then
-            install_cflags="-I${argon2_inc} -fPIC"
+            install_cflags="-I${argon2_inc} -fPIC ${path_flags}"
         fi
         make -C "${ARGON2_SRC}" install \
             DESTDIR="${stage_dir}" \
@@ -1003,13 +1185,20 @@ build_argon2() {
             CFLAGS="${install_cflags}"
     else
         make -C "${ARGON2_SRC}" "${make_args[@]}"
+        # CFLAGS must be repeated on the install invocation. argon2's Makefile
+        # relinks during `install`, and without them that relink runs with
+        # default flags -- which reintroduced the builder's absolute source
+        # path into libargon2.a on the host target only, because the cross
+        # branch above already passes install_cflags.
         make -C "${ARGON2_SRC}" install \
             DESTDIR="${stage_dir}" \
             PREFIX=/ \
             LIBRARY_REL=lib \
             PKGCONFIG_REL=lib \
             BINARY_REL=bin \
-            INCLUDE_REL=include
+            INCLUDE_REL=include \
+            OPTTARGET=generic \
+            CFLAGS="-I${argon2_inc} -fPIC ${path_flags}"
     fi
 }
 
@@ -1021,6 +1210,10 @@ prepare_toolchain
 if is_windows_target || is_macos_target; then
     if vendor_complete "${TARGET}"; then
         echo "Vendored libs already present for ${TARGET}; skipping."
+        if [[ -n "${ARCHIVE_PATH}" ]]; then
+            create_vendor_archive "${ARCHIVE_PATH}" "$(target_dir "${TARGET}")"
+            echo "Vendor archive created at: ${ARCHIVE_PATH}"
+        fi
         exit 0
     fi
     install_vcpkg_packages "${VCPKG_TRIPLET}"
@@ -1028,7 +1221,7 @@ if is_windows_target || is_macos_target; then
     prune_stage_dir
     echo "Vendored libs staged at: ${stage_dir}"
     if [[ -n "${ARCHIVE_PATH}" ]]; then
-        tar -cJf "${ARCHIVE_PATH}" -C "${VENDOR_DIR}" "$(target_dir "${TARGET}")"
+        create_vendor_archive "${ARCHIVE_PATH}" "$(target_dir "${TARGET}")"
         echo "Vendor archive created at: ${ARCHIVE_PATH}"
     fi
     exit 0
@@ -1040,6 +1233,6 @@ prune_stage_dir
 
 echo "Vendored libs staged at: ${stage_dir}"
 if [[ -n "${ARCHIVE_PATH}" ]]; then
-    tar -cJf "${ARCHIVE_PATH}" -C "${VENDOR_DIR}" "$(target_dir "${TARGET}")"
+    create_vendor_archive "${ARCHIVE_PATH}" "$(target_dir "${TARGET}")"
     echo "Vendor archive created at: ${ARCHIVE_PATH}"
 fi

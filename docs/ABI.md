@@ -41,6 +41,7 @@ its internal transport code private.
 - Caller-owned JSON output buffers. If the buffer is too small, functions
   return `YUME_STATUS_BUFFER_TOO_SMALL` and report the required byte count.
 - Per-handle last-error strings with `yume_handle_last_error`.
+- Per-thread free-function errors with `yume_last_error`.
 - Direct named service streams with blocking timeout-based C calls:
   `yume_client_open_stream`, `yume_server_register_service`,
   `yume_server_accept_stream`, `yume_stream_peer_json`,
@@ -256,6 +257,53 @@ correlation only.
 - Returned strings are owned by the library and remain valid for the process
   lifetime.
 - Do not expose internal C++ headers from `src/`.
+
+## Symbol Control
+
+`src/abi/yume.map` is the canonical list of exported symbols. Everything else
+that needs to know the public surface derives from it, so the platforms cannot
+drift apart:
+
+| Platform | Mechanism |
+|---|---|
+| ELF | version script (`--version-script=yume.map`) |
+| Mach-O | `-exported_symbols_list`, generated from `yume.map` at configure time |
+| PE | nothing required: symbols are private unless declared `__declspec(dllexport)`, which only `YUME_API` carries |
+
+This matters beyond tidiness. `libyume` absorbs YUME's internal static
+libraries and may also absorb static third-party archives such as liboqs and
+argon2. Without symbol control, implementation symbols can leak into the
+public namespace, which breaks the "exactly these functions" contract and lets
+an embedder bind to an internal implementation.
+
+Two CTest cases enforce it:
+
+- `yume_abi_header_matches_map` — pure text, no compiler needed. Catches a
+  function declared `YUME_API` in the header but missing from the version
+  script (hidden at link time, fails only for the embedder) and the reverse.
+- `yume_abi_exports` — inspects the built library with `nm` and requires the
+  exported set to equal the declared set exactly. Runs on ELF and Mach-O.
+
+Both run in CI, which also builds `libyume` with `-DYUME_BUILD_SHARED_ABI=ON`.
+Adding a public function therefore means editing `include/yume/yume.h` and
+`src/abi/yume.map` together; the build fails otherwise.
+
+## Handle Lifetime
+
+Handle arguments must be live objects of the correct type returned by this ABI.
+Destroy functions accept `NULL`; no other call probes arbitrary or stale
+pointers. Callers must synchronize destruction with every other operation on
+the same handle, including `yume_handle_last_error`.
+
+Errors are stored per handle. `yume_handle_last_error` copies the selected
+error into thread-local storage, so its return pointer remains valid until the
+next `yume_handle_last_error` call on that thread, regardless of which handle
+is queried next.
+
+Free functions that can produce a detailed diagnostic, such as
+`yume_generate_pq_keypair`, store it separately for `yume_last_error`. That
+pointer remains valid until the next free-function error update on the same
+thread.
 
 ## Build Behavior
 

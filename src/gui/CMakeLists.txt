@@ -254,9 +254,14 @@ add_executable(yume-gui ${YUME_GUI_SOURCES})
 
 target_include_directories(yume-gui PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nanosvg
     ${CMAKE_CURRENT_BINARY_DIR}/generated)
+
+# nanosvg and stb are vendored single-header libraries we do not modify.
+# SYSTEM keeps the project warning set (yume_apply_warnings) pointed at our
+# own code instead of drowning it in upstream diagnostics we cannot fix.
+target_include_directories(yume-gui SYSTEM PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nanosvg)
 
 target_link_libraries(yume-gui PRIVATE
     yume_facade

@@ -22,6 +22,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/security/crypto.hpp"
+#include "core/security/secret_file.hpp"
 #include "core/protocol/runtime_policy.hpp"
 #include "server/auth/auth.hpp"
 #include "server/runtime/manager.hpp"
@@ -30,18 +31,13 @@
 namespace yume::server::cli {
 namespace {
 
-bool write_file_secure(const std::string& path, const std::string& contents) {
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) {
-        return false;
-    }
-    out.write(contents.data(), static_cast<std::streamsize>(contents.size()));
-    out.close();
-    std::error_code ec;
-    std::filesystem::permissions(path,
-                                 std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
-                                 std::filesystem::perm_options::replace, ec);
-    return !ec;
+bool write_file_secure(const std::string& path,
+                       const std::string& contents,
+                       std::string* error) {
+    const auto* bytes =
+        reinterpret_cast<const std::uint8_t*>(contents.data());
+    return security::WriteFileExclusive0600(
+        path, std::span<const std::uint8_t>(bytes, contents.size()), error);
 }
 
 }  // namespace
@@ -80,12 +76,11 @@ std::string load_or_create_secret(const std::string& path) {
     if (secret.empty()) {
         throw std::runtime_error("failed to generate secret");
     }
-    auto dir = std::filesystem::path(path).parent_path().string();
-    if (!dir.empty()) {
-        ensure_dir(dir);
-    }
-    if (!write_file_secure(path, secret)) {
-        throw std::runtime_error("failed to write secret file");
+    std::string write_error;
+    if (!write_file_secure(path, secret, &write_error)) {
+        throw std::runtime_error(
+            write_error.empty() ? "failed to write secret file"
+                                : "failed to write secret file: " + write_error);
     }
     return secret;
 }

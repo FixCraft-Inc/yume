@@ -42,11 +42,11 @@ struct ReleaseReference {
 };
 
 struct ComponentStatus {
-    std::string name;
-    std::string installed_version;
+    std::string name{};
+    std::string installed_version{};
     Freshness freshness{Freshness::unknown};
-    std::optional<ReleaseReference> reference;
-    std::string note;
+    std::optional<ReleaseReference> reference{};
+    std::string note{};
 };
 
 std::optional<ParsedVersion> parse_version(std::string_view text);

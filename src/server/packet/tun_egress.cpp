@@ -314,8 +314,8 @@ public:
 private:
     struct Client {
         void* owner{nullptr};
-        PacketHandler handler;
-        std::deque<std::shared_ptr<crypto::Bytes>> write_queue;
+        PacketHandler handler{};
+        std::deque<std::shared_ptr<crypto::Bytes>> write_queue{};
         std::size_t write_bytes{0};
         bool write_ready{false};
     };

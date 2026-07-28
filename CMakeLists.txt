@@ -40,9 +40,33 @@ option(YUME_BUILD_TOOLS "Build optional helper tools such as yume-net-map" OFF)
 option(YUME_BUILD_SHARED_ABI "Build and install the stable libyume C ABI shared library" OFF)
 option(YUME_ABI_CLIENT_ONLY "Build libyume with client/stream/packet runtime only" OFF)
 
+# Warnings are part of the security posture, not a style preference: this tree
+# parses untrusted wire input and hand-manages buffers, and the default GCC/MSVC
+# warning set is silent about the mistakes that matter there. Applied only to
+# first-party targets (see yume_apply_warnings in src/CMakeLists.txt) so bundled
+# dependencies cannot fail or pollute the build.
+option(YUME_WARNINGS "Compile first-party targets with the project warning set" ON)
+option(YUME_WARNINGS_AS_ERRORS "Promote first-party compiler warnings to errors" OFF)
+
+# Sanitizer selection. Directory-level flags instrument every source-built
+# target added below, including bundled BaseFWX sources. Prebuilt archives and
+# system libraries remain outside our control. Never ship a sanitized binary.
+set(YUME_SANITIZE "none" CACHE STRING
+    "Sanitizers to instrument this build with: none, address, undefined, address+undefined, thread")
+set_property(CACHE YUME_SANITIZE PROPERTY STRINGS
+    none address undefined address+undefined thread)
+
 # Fine-grained timing diagnostics are compiled only for explicit developer
-# configurations. Release and MinSizeRel binaries contain no timing clocks,
+# configurations. Release and MinSizeRel binaries contain no diagnostic
 # counters, handlers, event strings, or environment-variable activation path.
+#
+# NOT yet true of clocks: about nine stream-lifecycle sites still call
+# util::now_ms() unconditionally and feed a YUME_TIMING_LOG that compiles away,
+# so the reads happen and the results are discarded. Per-stream, not per-frame,
+# so the throughput cost is negligible - but do not read this comment as a
+# guarantee that Release takes no timestamps. Closing that gap needs a
+# diagnostics::elapsed_ms_since() helper that reads no clock when
+# YUME_ENABLE_DEV_DIAGNOSTICS is 0; see the engineering backlog.
 set(YUME_DEV_DIAGNOSTICS_EXPRESSION
     "$<IF:$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>,1,0>")
 
@@ -59,6 +83,7 @@ if(YUME_BUILD_TESTING AND CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/YumeBuildType.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/YumeAbiSymbols.cmake")
 if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
     yume_configure_default_build_type()
 endif()
@@ -176,6 +201,54 @@ if(CMAKE_CROSSCOMPILING)
     set(YUME_LTO OFF CACHE BOOL "Enable link-time optimization for yume builds" FORCE)
 endif()
 
+# ---------------------------------------------------------------------------
+# Sanitizers
+#
+# Set before any add_subdirectory() so source-built bundled dependencies are
+# instrumented too. LTO is forced off: it reorders and inlines across the
+# sanitizers report against, which turns a precise finding into an unusable
+# stack. -fno-sanitize-recover=all makes UBSan abort instead of printing and
+# continuing, so a CI run actually fails on the first violation.
+# ---------------------------------------------------------------------------
+string(TOLOWER "${YUME_SANITIZE}" _yume_sanitize)
+if(_yume_sanitize STREQUAL "" OR _yume_sanitize STREQUAL "off")
+    set(_yume_sanitize "none")
+endif()
+
+if(NOT _yume_sanitize STREQUAL "none")
+    if(_yume_sanitize STREQUAL "address")
+        set(_yume_sanitize_flags "-fsanitize=address")
+    elseif(_yume_sanitize STREQUAL "undefined")
+        set(_yume_sanitize_flags "-fsanitize=undefined")
+    elseif(_yume_sanitize STREQUAL "address+undefined")
+        set(_yume_sanitize_flags "-fsanitize=address,undefined")
+    elseif(_yume_sanitize STREQUAL "thread")
+        set(_yume_sanitize_flags "-fsanitize=thread")
+    else()
+        message(FATAL_ERROR
+            "Unknown YUME_SANITIZE='${YUME_SANITIZE}'. Valid: none, address, undefined, address+undefined, thread")
+    endif()
+
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        message(FATAL_ERROR "YUME_SANITIZE requires GCC or Clang; got ${CMAKE_CXX_COMPILER_ID}")
+    endif()
+    if(YUME_STATIC)
+        message(FATAL_ERROR "YUME_SANITIZE cannot be combined with YUME_STATIC; the sanitizer runtime must stay dynamic")
+    endif()
+
+    set(YUME_LTO OFF CACHE BOOL "Enable link-time optimization for yume builds" FORCE)
+
+    add_compile_options(${_yume_sanitize_flags} -fno-omit-frame-pointer -g)
+    add_link_options(${_yume_sanitize_flags})
+    if(_yume_sanitize MATCHES "undefined")
+        add_compile_options(-fno-sanitize-recover=all)
+    endif()
+
+    message(STATUS "YUME sanitizers: ${_yume_sanitize} (LTO forced OFF; do not distribute this build)")
+else()
+    message(STATUS "YUME sanitizers: none")
+endif()
+
 if(YUME_NATIVE_OPT)
     message(STATUS "YUME native CPU tuning: ON (host-specific binary; do not copy across different CPUs)")
 else()
@@ -185,7 +258,37 @@ endif()
 if(NOT YUME_TRANSPORT_CORE_ONLY)
     find_package(OpenSSL REQUIRED)
     find_package(PkgConfig REQUIRED)
-    pkg_check_modules(NGHTTP2 REQUIRED IMPORTED_TARGET libnghttp2>=1.64)
+    if(YUME_STATIC)
+        # FindPkgConfig's generated imported target resolves -lnghttp2 to the
+        # shared object even when libnghttp2.a is installed. Passing that
+        # absolute .so path to a -static link fails late with "attempted static
+        # link of dynamic object". Resolve and expose the archive explicitly
+        # so a static request either configures truthfully or fails here.
+        pkg_check_modules(NGHTTP2 REQUIRED libnghttp2>=1.64)
+        set(_yume_saved_suffixes "${CMAKE_FIND_LIBRARY_SUFFIXES}")
+        set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+        find_library(YUME_NGHTTP2_STATIC_LIBRARY
+            NAMES nghttp2
+            HINTS ${NGHTTP2_LIBRARY_DIRS}
+        )
+        set(CMAKE_FIND_LIBRARY_SUFFIXES "${_yume_saved_suffixes}")
+        if(NOT YUME_NGHTTP2_STATIC_LIBRARY OR
+           NOT YUME_NGHTTP2_STATIC_LIBRARY MATCHES "\\.a$")
+            message(FATAL_ERROR
+                "YUME_STATIC requires libnghttp2.a; install the static "
+                "nghttp2 development archive or disable YUME_STATIC")
+        endif()
+        add_library(yume_nghttp2_static STATIC IMPORTED GLOBAL)
+        set_target_properties(yume_nghttp2_static PROPERTIES
+            IMPORTED_LOCATION "${YUME_NGHTTP2_STATIC_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${NGHTTP2_INCLUDE_DIRS}"
+            INTERFACE_COMPILE_OPTIONS "${NGHTTP2_CFLAGS_OTHER}"
+        )
+        set(YUME_NGHTTP2_TARGET yume_nghttp2_static)
+    else()
+        pkg_check_modules(NGHTTP2 REQUIRED IMPORTED_TARGET libnghttp2>=1.64)
+        set(YUME_NGHTTP2_TARGET PkgConfig::NGHTTP2)
+    endif()
     find_package(Boost CONFIG QUIET COMPONENTS system)
     if(NOT Boost_FOUND)
         find_package(Boost REQUIRED COMPONENTS system)

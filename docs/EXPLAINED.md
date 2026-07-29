@@ -102,12 +102,16 @@ What observers normally see:
   HTTPS-looking traffic.
 - Target site: the YUME server's IP address.
 - Server network / hosting provider: the server connects to the target.
-- YUME server process: authenticated client, requested targets, and
-  relayed byte counts unless anonym/log policy removes them.
+- YUME server process: authenticated client, requested targets, and decrypted
+  YUME stream bytes. Anonym/log policy can minimize recorded metadata; it
+  cannot make the terminating process cryptographically blind. HTTPS or another
+  application-layer secure protocol can independently keep its contents
+  end-to-end protected.
 
 This route is fastest because it has one YUME carrier and one server
 egress connection. It gives stealth against many network classifiers, but
-it still trusts the YUME server with target metadata.
+it still trusts the YUME server with target metadata and any application bytes
+that are not independently end-to-end encrypted.
 
 ## Connection Lifecycle
 
@@ -632,14 +636,19 @@ hardening.
   behind the shared admission token. It does not defeat traffic analysis,
   full-session HTTP/2 validation, or endpoint compromise.
 - AUTH:
-  keeps unauthorized clients off the server. It does not help if the auth
-  key is stolen.
+  keeps unauthorized clients off the server. The client sends its Ed25519
+  public key and a transcript signature, not the private key. It does not help
+  if the private key is stolen, and the current signature is not independently
+  bound to a TLS exporter.
 - Inner BaseFWX crypto:
   adds frame confidentiality and integrity inside TLS. It does not remove
-  the relay's need to know enough target metadata to connect.
+  the terminating relay's access to decrypted stream bytes or its need to know
+  enough target metadata to connect.
 - Directional hybrid ratchet:
-  limits epoch key exposure with fresh ML-KEM-1024/X25519/PSK roots. It does
-  not protect against endpoint compromise.
+  limits epoch key exposure with fresh ML-KEM-1024/X25519/PSK roots and is
+  designed so later long-term-file compromise cannot reconstruct recorded
+  sessions. It does not protect against a malicious endpoint, live compromise,
+  retained plaintext/state, or imperfect erasure.
 - Operator identity proof / privacy policy (legacy `anonym` config name):
   authenticates that the endpoint is authorized by a client-selected operator
   CA and signals a log-minimization policy. It cannot prove that the operator

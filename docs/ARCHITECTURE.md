@@ -127,6 +127,16 @@ core  →  client | server  →  facade  →  gui
 `gui/`. Crypto primitives come from BaseFWX (`basefwx/`) when
 `YUME_USE_BASEFWX=ON`; YUME owns wire format and transport behavior.
 
+## Trust boundary
+
+The standard topology is single hop: `application -> yume -> yumed -> target`.
+The daemon is the terminating cryptographic peer and proxy exit, not a blind
+onion relay. It authenticates the client's Ed25519 public identity from a
+signed transcript, derives the hybrid session roots, decrypts YUME records, and
+opens target sockets. Application-layer TLS can remain end-to-end through that
+proxy. See `docs/THREAT_MODEL.md` for identity, forward-secrecy, channel-binding,
+and malicious-server limits.
+
 ## Documentation and diagrams
 
 Architecture prose lives under `docs/`. Routing diagrams use

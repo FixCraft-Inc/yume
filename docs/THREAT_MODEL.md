@@ -11,7 +11,7 @@ or other out-of-scope subsystems to 2.0 status.
 | --- | --- |
 | Path observer | Sees the TLS ClientHello, server certificate metadata, encrypted record sizes, timing, and volume. |
 | Active prober | Can open TLS/H1/H2 requests to the public endpoint and sees the genuine Node cover path unless it proves admission. |
-| YUME server operator | Holds TLS material, admission and inner PSK files, regular/operator public-key stores, and sees requested targets and traffic metadata. |
+| YUME server operator | Terminates TLS and the inner YUME channel; holds TLS material, admission and inner PSK files, and public-key stores; sees requested targets and decrypted YUME stream bytes unless the application independently encrypts them. |
 | Loopback Node process | Receives bounded ordinary GET/HEAD cover requests only; it must never receive tunnel records, client identities, or YUME secrets. |
 | Client host | Holds both shared secret files and the client Ed25519 private key; compromise exposes local plaintext and live session state. |
 | Target service | Sees the server egress identity, or another configured routing exit. |
@@ -34,6 +34,40 @@ exactly 64 lowercase hex characters, no newline, and no group/world permissions.
 The secrets serve different purposes and must not be reused. Compromise of one
 does not by itself satisfy admission, Ed25519 identity, and the hybrid inner
 handshake, but compromise of the endpoint can expose all live material.
+
+## Client identity and channel binding
+
+The client loads an Ed25519 private key from its local identity path. AUTH sends
+the corresponding public PEM and a signature, never the private key. The
+signature input is domain-separated and contains the complete canonical server
+challenge plus unsigned response: transport version, fresh server challenge,
+server ML-KEM/X25519 public keys, salts, both rekey-window advertisements,
+client X25519 public key, ML-KEM ciphertext, and client public identity. The
+server accepts it only when the signature verifies and the public identity is
+authorized.
+
+Under Ed25519's security assumption, a recorded public key and signature do not
+let the server derive the client private key or forge a new signature. The
+key generators intend owner-only output, but the legacy
+`generate_ed25519_keypair()` path writes the PEM before applying `0600` and
+ignores a permission-change failure. `crypto::load_keypair()` also does not
+reject an existing identity with unsafe ownership or mode. Client host,
+directory, and file permissions therefore remain an operational
+responsibility. Provisioning workflows that generate a client kit on an
+operator machine necessarily expose the private key there before delivery;
+clients requiring strict origin isolation must generate and retain the identity
+on the client.
+
+The transcript is transported inside certificate- and hostname-verified TLS,
+with optional leaf pinning/operator proof, but
+`auth_v2::BuildSignatureInput()` does not include a value independently derived
+from the live TLS exporter, certificate, or SNI. Therefore AUTH is not
+cryptographically channel-bound beyond its enclosing TLS connection. A
+malicious terminating node that also has compatible admission/PSK access could
+forward a live challenge and response to another endpoint. That does not reveal
+the private key or yield a reusable offline credential, but it means “the
+server can never relay my identity” is not a current guarantee. Adding exporter
+binding would be a deliberate wire/AAD/version change.
 
 ## Carrier admission boundary
 
@@ -103,6 +137,41 @@ plaintext plus current and prepared state. The negotiated window retains up to
 rekey contributions; no blanket “the key is useless after 500 ms” statement
 applies to all of these cases.
 
+### Forward-secrecy scope
+
+The initial root and each directional epoch transition mix fresh ephemeral
+ML-KEM-1024 and X25519 contributions. The implementation destroys the
+per-exchange private keys after derivation and stores roots/chains/PSK
+derivatives in self-wiping RAII containers. Consequently, capture of past wire
+traffic followed only by later theft of long-term server files is not enough to
+reconstruct historical session keys, assuming ML-KEM, X25519, HKDF, the random
+generator, and erasure behavior hold.
+
+This is a forward-secrecy design, not an unconditional guarantee. A malicious
+server is already an endpoint and may retain plaintext or key material.
+Compromise during a session exposes the current roots and up to the negotiated
+window of prepared future roots. Best-effort wiping cannot erase allocator,
+library, swap, core-dump, or prior process-memory copies. A stolen server TLS
+private key and still-valid certificate/pin, plus deployment secrets, can also
+enable future server impersonation until those credentials are revoked and
+rotated; client Ed25519 authentication does not authenticate the server.
+
+## Single-hop server boundary
+
+The normal route is `application -> yume -> yumed -> target`. YUME does not
+apply onion routing between several mutually independent relays. The server
+sees the client network address unless another transport such as Tor precedes
+YUME, receives the requested destination, decrypts the YUME transport records,
+and controls the outbound socket.
+
+For plaintext application protocols, the server can read, modify, inject,
+drop, delay, or redirect bytes. For HTTPS or another independently
+authenticated end-to-end protocol carried through YUME, the server still sees
+metadata and can disrupt or redirect the connection, but it cannot silently
+read or modify protected application contents without defeating that protocol.
+The ratchet protects the path to the server; it does not sandbox the server from
+the traffic it is asked to proxy.
+
 ## Cover-backend containment
 
 The configured backend must be a loopback IP literal; DNS names, redirects,
@@ -145,6 +214,8 @@ capacity before authenticated admission.
 
 - Endpoint compromise, key theft, malicious server operators, or plaintext
   already exposed on the client or server.
+- Reading or modification by the terminating YUME server when the application
+  itself provides no end-to-end encryption/authentication.
 - Traffic volume and timing analysis; shaping is capture-derived and bounded by
   the 5% bulk-overhead gate, not constant-rate padding.
 - Application traffic that bypasses the local tunnel.
@@ -155,6 +226,9 @@ capacity before authenticated admission.
   classifier-visible residual, and the current implementation also mixes
   Chrome 131/Windows TLS/User-Agent identity with Chrome 150/Linux carrier
   hints. BoringSSL is a candidate experiment, not proof of Chrome parity.
+- TLS-exporter channel binding of client AUTH. The enclosing TLS session is
+  certificate/hostname verified, but the signed AUTH bytes do not independently
+  bind that exact outer connection.
 
 ## Existing permission gates outside this slice
 

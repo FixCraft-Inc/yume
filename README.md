@@ -348,6 +348,47 @@ Inner encryption is mandatory in the 2.0 tunnel path:
 Argon2id is not used at establishment or per epoch: the required PSK is already
 uniform high-entropy key material, not a human password.
 
+### Client identity, forward secrecy, and server trust
+
+Client authorization uses an Ed25519 key pair. The 2.0 client loads the private
+key locally and sends only its public key plus a signature over the complete
+server challenge and unsigned client response. That transcript includes both
+ephemeral key exchanges and the negotiated rekey window. A server that records
+it cannot derive the private key or turn the signature into a reusable
+impersonation under the Ed25519 security assumption. Generated private-key
+files are intended to be mode `0600`; protecting and checking the client host
+and key file remains the client's responsibility. The legacy
+`yumed --keys-gen` writer applies permissions after creating the PEM and does
+not fail if that permission change fails, so strict deployments should create
+keys in a private `0700` directory and verify the resulting mode.
+
+Establishment and every directional epoch transition use fresh ML-KEM-1024 and
+X25519 key pairs. Their private components and derived secrets are held in
+move-only/self-wiping containers and retired after use. This provides a
+forward-secrecy design: a later theft of the server's long-term TLS material,
+admission secret, or inner PSK is not sufficient by itself to reconstruct
+recorded past YUME session keys. This is conditional, not an absolute PFS
+guarantee—an operator can record plaintext or session state while the endpoint
+is live, erasure is best-effort rather than locked-memory proof, and a live
+compromise exposes current plus prepared ratchet state.
+
+YUME is a **single-hop terminating proxy**, not onion routing. `yumed` derives
+the inner session keys, decrypts YUME frames, sees the requested destination,
+and handles the outbound stream. It can read or modify plaintext application
+protocols. Application HTTPS/TLS remains independently end-to-end between the
+application and target and can protect those bytes from the YUME server. Do not
+call a volunteer node “untrusted” if the intended guarantee is that it cannot
+observe or alter non-end-to-end-encrypted application data; YUME does not
+provide that property.
+
+The Ed25519 AUTH transcript is carried inside hostname-verified TLS but is not
+currently bound to a TLS exporter, certificate fingerprint, or SNI inside the
+signature itself. This does not reveal the private key or create a reusable
+signature, but a malicious endpoint could relay a live authentication exchange
+to another compatible endpoint if the deployments share the required admission
+and inner PSK material. Whether to add explicit channel binding is a deliberate
+future wire-version decision, documented in the threat model and roadmap.
+
 ```jsonc
 // client config
 {
@@ -543,6 +584,10 @@ Removing any one layer is enough to keep the feature off. The bridge / admin mat
 ./build/bin/yumed --auth-keys /etc/yume/authorized_keys --keys-gen ./keys/user1 --keys-gen-add
 ```
 
+Prefer `yume-setup issue-key`, or create `./keys` as mode `0700` and verify the
+generated `.key` is `0600`. The legacy `--keys-gen` path does not yet fail if
+its post-write permission change fails.
+
 The four key/policy files are parsed into immutable snapshots at startup.
 Authenticated runtime reload atomically replaces all four together; a parse,
 validation, or duplicate-store failure leaves the previous complete snapshot
@@ -593,6 +638,9 @@ sudo ./build/bin/yumed \
 - BaseFWX is pinned by commit (see `config/refs/basefwx.ref`); release CI fails if mandatory crypto support is missing
 - Authorized keys are verified by `yume::crypto::verify_key` with OpenSSL
   `EVP_DigestVerify` ([src/core/security/crypto.cpp](src/core/security/crypto.cpp))
+- Client AUTH transmits the Ed25519 public key and transcript signature, never
+  the private key; this prevents key extraction but not live credential
+  forwarding by a malicious terminating endpoint
 - Inner-frame AEAD is verified before plaintext is delivered ([basefwx/cpp/src/crypto/crypto.cpp](basefwx/cpp/src/crypto/crypto.cpp))
 - Mandatory ML-KEM-1024 + X25519 + random-PSK establishment; no 1.x downgrade or public-key-only mode
 - Server-side exec / LAN bridging / unrestricted bridging are off at compile time by default ([CMakeLists.txt](CMakeLists.txt) `YUME_FEATURE_EXEC` / `_LAN_BRIDGE` / `_FULL_CONTROL`); enabling them requires opting in at build, runtime flag, AND per-key meta (see [docs/PERMISSIONS.md](docs/PERMISSIONS.md))

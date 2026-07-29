@@ -347,6 +347,19 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
                     return false;
                 }
             }
+            if (json.contains("rekey_window") && !overrides.rekey_window) {
+                const std::uint32_t window =
+                    json_non_negative_u32(json, "rekey_window");
+                if (window < yume::ratchet::kMinRekeyWindow ||
+                    window > yume::ratchet::kMaxRekeyWindow) {
+                    yume::util::log_error(
+                        "rekey_window must be in " +
+                        std::to_string(yume::ratchet::kMinRekeyWindow) + ".." +
+                        std::to_string(yume::ratchet::kMaxRekeyWindow));
+                    return false;
+                }
+                cfg.rekey_window = static_cast<std::uint16_t>(window);
+            }
             if (json.contains("accept_rate_limit") && !overrides.accept_rate_limit) {
                 cfg.accept_rate_limit = json_non_negative_u32(json, "accept_rate_limit");
             }

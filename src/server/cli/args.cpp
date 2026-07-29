@@ -186,6 +186,19 @@ bool parse_server_cli_args(int argc,
                 return false;
             }
             result.config_overrides.bulk_key_max_sessions = true;
+        } else if (arg == "--rekey-window" && i + 1 < argc) {
+            std::uint32_t window = 0;
+            if (!parse_non_negative_u32(argv[++i], "--rekey-window", &window) ||
+                window < yume::ratchet::kMinRekeyWindow ||
+                window > yume::ratchet::kMaxRekeyWindow) {
+                yume::util::log_error(
+                    "--rekey-window: expected an integer in " +
+                    std::to_string(yume::ratchet::kMinRekeyWindow) + ".." +
+                    std::to_string(yume::ratchet::kMaxRekeyWindow));
+                return false;
+            }
+            cfg.rekey_window = static_cast<std::uint16_t>(window);
+            result.config_overrides.rekey_window = true;
         } else if (arg == "--accept-rate-limit" && i + 1 < argc) {
             if (!parse_non_negative_u32(argv[++i], "--accept-rate-limit", &cfg.accept_rate_limit)) return false;
             result.config_overrides.accept_rate_limit = true;

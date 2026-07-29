@@ -69,6 +69,7 @@ inline constexpr char listeners[] = "listeners";
 inline constexpr char history_dir[] = "history_dir";
 inline constexpr char history_enabled[] = "history_enabled";
 inline constexpr char hop_interval_ms[] = "hop_interval_ms";
+inline constexpr char rekey_window[] = "rekey_window";
 inline constexpr char identity[] = "identity";
 inline constexpr char inner_crypto[] = "inner_crypto";
 inline constexpr char inner_dual[] = "inner_dual";

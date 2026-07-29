@@ -1,6 +1,6 @@
 # YUME 2.0 desktop wire contract
 
-Status: current `2.0-dev2` development contract for the first Linux x86-64 desktop slice.
+Status: current `2.0-dev3` development contract for the first Linux x86-64 desktop slice.
 The release version remains gated on capture, conformance, soak, and throughput
 evidence. This document intentionally does not describe a 1.x compatibility
 mode because none exists.
@@ -63,12 +63,13 @@ limited to 64 KiB before allocation.
 
 | ID | Critical | Value |
 | -- | -- | -- |
-| 1 | yes | UTF-8 exact transport version `2.0-dev2` |
+| 1 | yes | UTF-8 exact transport version `2.0-dev3` |
 | 2 | yes | 32-byte server challenge |
 | 3 | yes | ephemeral ML-KEM-1024 public key |
 | 4 | yes | 32-byte ephemeral X25519 public key |
 | 5 | yes | 32-byte PSK salt |
 | 6 | yes | 32-byte root/transcript salt |
+| 7 | yes | `u16` concurrent directional epoch offers the server accepts (1..64) |
 
 ### AUTH response (`record_kind = 2`)
 
@@ -77,7 +78,14 @@ limited to 64 KiB before allocation.
 | 1 | yes | 32-byte client ephemeral X25519 public key |
 | 2 | yes | ML-KEM-1024 ciphertext |
 | 3 | yes | existing Ed25519 public identity encoding |
-| 4 | yes | Ed25519 signature |
+| 4 | yes | `u16` concurrent directional epoch offers the client accepts (1..64) |
+| 5 | yes | Ed25519 signature |
+
+Field 4 is part of the record the client signs, so the negotiated window is
+covered by the same transcript signature as the key exchange and cannot be
+altered on the carrier. Each endpoint sends no deeper than the peer's
+advertised value and accepts no deeper than its own. A value outside 1..64 is
+fatal on both build and parse.
 
 The signature input is:
 
@@ -103,7 +111,7 @@ token is:
 
 ```
 HMAC-SHA256(obfs_secret,
-  len("2.0-dev2") || "2.0-dev2" ||
+  len("2.0-dev3") || "2.0-dev3" ||
   len(lowercase_sni) || lowercase_sni ||
   hour_u64 || nonce_32)
 ```
@@ -152,11 +160,39 @@ immediately before that frame. Idle time alone sends nothing.
 
 While the authenticated exchange is pending, the sender may continue sealing
 old-epoch application frames only while they fit within the unchanged 256 KiB,
-512-frame, and 500 ms limits. If the ACK is not ready at the hard boundary,
-later writes wait in the bounded rekey queue. Ordered H2/TCP guarantees that
-old-epoch frames already queued after `REKEY_INIT` arrive before any new-epoch
-frame. The first authenticated new-epoch frame permanently retires the old
-receiving chain.
+512-frame, and 500 ms limits. If no prepared epoch is available at the hard
+boundary, later writes wait in the bounded rekey queue. Ordered H2/TCP
+guarantees that old-epoch frames already queued after `REKEY_INIT` arrive
+before any new-epoch frame. The first authenticated new-epoch frame permanently
+retires the old receiving chain.
+
+### Bounded multi-epoch window
+
+A direction may keep up to the negotiated number of offers in flight or
+prepared, all for strictly contiguous epochs. Offers carry only fresh public
+keys, so `REKEY_INIT` for `e+2` may be sent before the ACK for `e+1` arrives.
+Nothing else about the exchange changes:
+
+- An ACK **prepares** the next sending epoch; it does not enter it. The epoch
+  is entered by the first application frame the current epoch can no longer
+  carry, so each prepared epoch delivers its whole 256 KiB budget and the
+  receiver never has to accept a gap.
+- ACKs are matched to offers in strict order. A wrong or reordered epoch is
+  fatal, as is an ACK with no matching offer.
+- The receiver prepares each offered epoch by chaining from the newest prepared
+  one and answers with its ACK. An offer that is not exactly the next
+  contiguous epoch, or that exceeds the receiver's advertised depth, is fatal.
+- Only the immediately next prepared receiving epoch may be committed.
+- Offers are paced by application progress: at most one offer per epoch usage
+  step, so the window fills over several frames instead of emitting a burst of
+  rekey records.
+
+Depth `w` therefore raises a byte-saturated direction from `256 KiB` to
+`w * 256 KiB` per rekey round trip while every per-epoch limit above is
+unchanged. It also bounds what a peer can force — at most `w` ML-KEM
+encapsulations and `w` retained epoch roots per session — and it bounds the
+break-in recovery gap: an endpoint compromise exposes at most `w` prepared
+future epochs.
 
 The receiver independently rejects an authenticated inbound epoch that would
 exceed the 256 KiB or 512-frame usage boundary. The 500 ms boundary is
@@ -185,7 +221,9 @@ root_e+1 = HKDF-SHA256(
 ```
 
 The responder derives a pending receiving direction before queueing the ACK;
-the initiator advances its sending direction after authenticating the ACK. The
-responder commits the pending direction on the first authenticated new-epoch
-frame. The old receiving chain, ephemeral keys, and shared material are then
-erased. Rekey timeout is fatal; expired-epoch application data is never sent.
+the initiator prepares its next sending direction after authenticating the ACK
+and enters it when the current epoch is spent. The responder commits the
+pending direction on the first authenticated new-epoch frame. The old receiving
+chain, ephemeral keys, and shared material are then erased. The rekey timeout
+is measured from the oldest outstanding offer and is fatal; expired-epoch
+application data is never sent.

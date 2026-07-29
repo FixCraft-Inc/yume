@@ -144,7 +144,7 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
     }
     auto v2_ratchet = send_auth_v2_response(
         stream, io, cfg.identity, auth_challenge,
-        *cfg.inner_psk_material, *h2_carrier);
+        *cfg.inner_psk_material, *h2_carrier, cfg.rekey_window);
 
     auto server_info_timeout = kServerInfoTimeout;
     protocol::Frame info = h2_carrier

@@ -1,4 +1,4 @@
-.TH YUMED 8 "2026-07-22" "YUME 2.0-dev2" "YUME Manual"
+.TH YUMED 8 "2026-07-29" "YUME 2.0-dev3" "YUME Manual"
 .SH NAME
 yumed \- YUME server daemon
 .SH SYNOPSIS
@@ -90,6 +90,18 @@ explicitly disable the cap.
 Default authenticated-session cap for each regular key marked
 .BR key_type=bulk .
 Default 64; per-key metadata may override it.
+.TP
+.BI "--rekey-window " n
+Concurrent directional epoch offers accepted from one session, and the ceiling
+on this server's own sending window. Range
+.BR 1 - 64 ,
+default
+.BR 8 .
+Each prepared epoch adds 256 KiB of transfer per rekey round trip on
+high-latency links; the value is advertised in the TLS-protected AUTH challenge
+and bound into the signed transcript. It bounds how much ML-KEM work a peer can
+request. The 256 KiB, 512-frame, and 500 ms per-epoch limits are unchanged at
+every depth.
 .TP
 .BI "--accept-rate-limit " n
 Maximum newly accepted TCP connections per second. Use 0 for unlimited.

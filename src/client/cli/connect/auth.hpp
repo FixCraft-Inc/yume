@@ -60,7 +60,8 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
     const std::string& identity_path,
     const protocol::Frame& challenge,
     const security::Secret32& inner_psk,
-    obfs::H2Carrier& carrier);
+    obfs::H2Carrier& carrier,
+    std::uint16_t rekey_window);
 
 protocol::Frame open_auth_ok_v2(ratchet::SessionRatchet& ratchet,
                                 const protocol::Frame& protected_frame);

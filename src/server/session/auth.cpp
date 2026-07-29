@@ -52,7 +52,8 @@ void Session::send_auth_challenge() {
         challenge_ = auth_v2::BuildChallenge(
             random_challenge, ephemeral->mlkem.public_key,
             ephemeral->x25519.public_key, ephemeral->psk_salt,
-            ephemeral->transcript_salt);
+            ephemeral->transcript_salt,
+            ratchet::ClampRekeyWindow(cfg_.rekey_window));
         auth_v2_ephemeral_ = std::move(ephemeral);
     } catch (const std::exception& ex) {
         close_with_reason("AUTH v2 challenge creation failed: " +
@@ -227,7 +228,7 @@ bool Session::handle_auth(const protocol::Frame& frame) {
 
         crypto::Bytes unsigned_response = auth_v2::BuildUnsignedResponse(
             response.x25519_public_key, response.mlkem_ciphertext,
-            response.identity);
+            response.identity, response.rekey_window);
         crypto::Bytes signature_input = auth_v2::BuildSignatureInput(
             challenge_, unsigned_response);
         bool sig_ok = crypto::verify_key(pubkey.get(), signature_input,
@@ -405,9 +406,20 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         crypto::Bytes initial_root = ratchet::DeriveInitialRoot(
             kem_shared.bytes(), x_shared.bytes(), psk_key.bytes(),
             auth_v2_ephemeral_->transcript_salt);
+        // Send no deeper than the client will accept, and accept no deeper
+        // than this server advertised in its TLS-protected challenge. The
+        // response signature binds both advertisements to the transcript.
+        const std::uint16_t local_window =
+            ratchet::ClampRekeyWindow(cfg_.rekey_window);
+        const std::uint16_t send_window =
+            std::min(local_window, response.rekey_window);
         ratchet_ = std::make_unique<ratchet::SessionRatchet>(
             ratchet::EndpointRole::Server, std::move(initial_root),
-            psk_key.Release());
+            psk_key.Release(), send_window, local_window);
+        util::log_info("session " + std::to_string(session_id_) +
+                       ": ratchet epoch window send=" +
+                       std::to_string(send_window) + " accept=" +
+                       std::to_string(local_window));
         auth_v2_ephemeral_.reset();
         inner_mode_ = "ratchet";
         inner_kdf_ = "hkdf";

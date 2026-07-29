@@ -11,6 +11,9 @@
 #include <stdexcept>
 #include <string>
 
+// The negotiated window range is owned by the ratchet, not by this codec.
+#include "core/security/ratchet.hpp"
+
 namespace yume::auth_v2 {
 namespace {
 
@@ -91,6 +94,28 @@ Bytes EpochBytes(std::uint64_t epoch) {
     return value;
 }
 
+Bytes WindowBytes(std::uint16_t window) {
+    Bytes value;
+    value.reserve(2);
+    AppendU16(value, window);
+    return value;
+}
+
+std::uint16_t ParseWindow(const Bytes& value) {
+    RequireSize(value, 2, "rekey window");
+    return static_cast<std::uint16_t>(
+        (static_cast<std::uint16_t>(value[0]) << 8) |
+        static_cast<std::uint16_t>(value[1]));
+}
+
+// The advertised depth is a bound the advertiser will honor inbound, so a peer
+// that echoes an absurd value must be rejected before it reserves resources.
+void RequireWindow(std::uint16_t window) {
+    if (window < ratchet::kMinRekeyWindow || window > ratchet::kMaxRekeyWindow) {
+        throw std::runtime_error("AUTH v2 rekey window is out of range");
+    }
+}
+
 }  // namespace
 
 Bytes EncodeRecord(RecordKind kind, const std::vector<Field>& fields) {
@@ -164,74 +189,88 @@ Record DecodeRecord(const Bytes& encoded,
 
 Bytes BuildChallenge(const Bytes& challenge, const Bytes& mlkem_public_key,
                      const Bytes& x25519_public_key, const Bytes& psk_salt,
-                     const Bytes& transcript_salt) {
+                     const Bytes& transcript_salt,
+                     std::uint16_t rekey_window) {
     RequireSize(challenge, 32, "challenge");
     RequireKemBlob(mlkem_public_key, "ML-KEM public key");
     RequireSize(x25519_public_key, 32, "X25519 public key");
     RequireSize(psk_salt, 32, "PSK salt");
     RequireSize(transcript_salt, 32, "transcript salt");
+    RequireWindow(rekey_window);
     return EncodeRecord(RecordKind::Challenge, {
         {1, true, Bytes(kTransportVersion.begin(), kTransportVersion.end())},
         {2, true, challenge}, {3, true, mlkem_public_key},
         {4, true, x25519_public_key}, {5, true, psk_salt},
-        {6, true, transcript_salt},
+        {6, true, transcript_salt}, {7, true, WindowBytes(rekey_window)},
     });
 }
 
 Challenge ParseChallenge(const Bytes& encoded) {
     const Record record = DecodeRecord(encoded, RecordKind::Challenge,
-                                       {1, 2, 3, 4, 5, 6});
+                                       {1, 2, 3, 4, 5, 6, 7});
     const Bytes& version = Required(record, 1);
     if (std::string_view(reinterpret_cast<const char*>(version.data()), version.size()) !=
         kTransportVersion) {
         throw std::runtime_error("AUTH v2 exact transport version mismatch");
     }
     Challenge out{encoded, Required(record, 2), Required(record, 3),
-                  Required(record, 4), Required(record, 5), Required(record, 6)};
+                  Required(record, 4), Required(record, 5), Required(record, 6),
+                  ParseWindow(Required(record, 7))};
     RequireSize(out.challenge, 32, "challenge");
     RequireKemBlob(out.mlkem_public_key, "ML-KEM public key");
     RequireSize(out.x25519_public_key, 32, "X25519 public key");
     RequireSize(out.psk_salt, 32, "PSK salt");
     RequireSize(out.transcript_salt, 32, "transcript salt");
+    RequireWindow(out.rekey_window);
     return out;
 }
 
 Bytes BuildUnsignedResponse(const Bytes& x25519_public_key,
                             const Bytes& mlkem_ciphertext,
-                            const Bytes& identity) {
+                            const Bytes& identity,
+                            std::uint16_t rekey_window) {
     RequireSize(x25519_public_key, 32, "X25519 public key");
     RequireKemBlob(mlkem_ciphertext, "ML-KEM ciphertext");
     if (identity.empty() || identity.size() > 16U * 1024U) {
         throw std::runtime_error("AUTH v2 identity size is invalid");
     }
+    RequireWindow(rekey_window);
+    // The client's advertised depth sits inside the signed record, so the
+    // negotiated window is covered by the same Ed25519 signature as the rest
+    // of the transcript and cannot be tampered with on the carrier.
     return EncodeRecord(RecordKind::Response, {
         {1, true, x25519_public_key}, {2, true, mlkem_ciphertext},
-        {3, true, identity},
+        {3, true, identity}, {4, true, WindowBytes(rekey_window)},
     });
 }
 
 Bytes BuildResponse(const Bytes& x25519_public_key,
                     const Bytes& mlkem_ciphertext, const Bytes& identity,
-                    const Bytes& signature) {
+                    std::uint16_t rekey_window, const Bytes& signature) {
     if (signature.size() != 64) {
         throw std::runtime_error("AUTH v2 Ed25519 signature must be 64 bytes");
     }
-    (void)BuildUnsignedResponse(x25519_public_key, mlkem_ciphertext, identity);
+    (void)BuildUnsignedResponse(x25519_public_key, mlkem_ciphertext, identity,
+                                rekey_window);
     return EncodeRecord(RecordKind::Response, {
         {1, true, x25519_public_key}, {2, true, mlkem_ciphertext},
-        {3, true, identity}, {4, true, signature},
+        {3, true, identity}, {4, true, WindowBytes(rekey_window)},
+        {5, true, signature},
     });
 }
 
 Response ParseResponse(const Bytes& encoded) {
-    const Record record = DecodeRecord(encoded, RecordKind::Response, {1, 2, 3, 4});
+    const Record record = DecodeRecord(encoded, RecordKind::Response,
+                                       {1, 2, 3, 4, 5});
     Response out{encoded, Required(record, 1), Required(record, 2),
-                 Required(record, 3), Required(record, 4)};
+                 Required(record, 3), ParseWindow(Required(record, 4)),
+                 Required(record, 5)};
     RequireSize(out.x25519_public_key, 32, "X25519 public key");
     RequireKemBlob(out.mlkem_ciphertext, "ML-KEM ciphertext");
     if (out.identity.empty() || out.identity.size() > 16U * 1024U) {
         throw std::runtime_error("AUTH v2 identity size is invalid");
     }
+    RequireWindow(out.rekey_window);
     RequireSize(out.signature, 64, "Ed25519 signature");
     return out;
 }

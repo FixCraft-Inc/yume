@@ -56,6 +56,8 @@ struct ParsedArgs {
     bool inner_hop_override{false};
     std::uint32_t hop_interval_ms{0};
     bool hop_interval_override{false};
+    int rekey_window{0};
+    bool rekey_window_override{false};
     bool use_udp{false};
     bool udp_override{false};
     bool allow_local_ip{false};

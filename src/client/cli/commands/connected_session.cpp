@@ -175,8 +175,11 @@ public:
                 if (!carrier_) {
                     throw std::runtime_error("ratchet control response requires H2 carrier");
                 }
+                protocol::Frame ack = ratchet_->Seal(
+                    *opened.control_response,
+                    std::chrono::steady_clock::now());
                 send_frame_over_h2_with_timeout(
-                    stream_, io_, *carrier_, *opened.control_response,
+                    stream_, io_, *carrier_, ack,
                     kServerInfoTimeout, "rekey acknowledgement");
                 resp_frame = carrier_
                     ? read_frame_over_h2_with_timeout(

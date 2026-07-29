@@ -8,6 +8,7 @@
 
 #include "core/protocol/packet_bulk.hpp"
 #include "core/runtime/system_profile.hpp"
+#include "core/security/ratchet.hpp"
 #include "selftest/runtime.hpp"
 #include "selftest/render.hpp"
 #include "selftest/sizing.hpp"
@@ -109,6 +110,8 @@ void print_help() {
         << "  --latency-iters <N>       Echo round trips per config (default 120; full uses 360)\n"
         << "  --bulk-mib <N>            Bulk echo size per config (default 32)\n"
         << "  --tunnels <N>             Client TLS tunnel count (default 1)\n"
+        << "  --rekey-window <N>        Directional epoch window depth for both\n"
+        << "                            processes (1..64; default: binary default)\n"
         << "  --streams <N>             Concurrent bulk streams per config (default 1)\n"
         << "  --client-threads <N>      Client io threads (0=auto/hw concurrency)\n"
         << "  --server-threads <N>      Server io threads (default 2)\n"
@@ -182,6 +185,15 @@ Args parse_args(int argc, char** argv) {
         } else if (arg == "--tunnels") {
             args.tunnels = std::max(1, std::stoi(require_value(i, arg)));
             args.tunnel_count_override = true;
+        } else if (arg == "--rekey-window") {
+            args.rekey_window = std::stoi(require_value(i, arg));
+            if (args.rekey_window < yume::ratchet::kMinRekeyWindow ||
+                args.rekey_window > yume::ratchet::kMaxRekeyWindow) {
+                throw std::runtime_error(
+                    "--rekey-window must be in " +
+                    std::to_string(yume::ratchet::kMinRekeyWindow) + ".." +
+                    std::to_string(yume::ratchet::kMaxRekeyWindow));
+            }
         } else if (arg == "--streams") {
             args.streams = std::max(1, std::stoi(require_value(i, arg)));
             args.stream_count_override = true;
@@ -354,6 +366,10 @@ public:
             "--real-backend", "loopback://127.0.0.1:" + std::to_string(cover_port_),
             "--boring",
         };
+        if (args_.rekey_window > 0) {
+            server_argv.push_back("--rekey-window");
+            server_argv.push_back(std::to_string(args_.rekey_window));
+        }
         server_argv.insert(server_argv.end(), cfg_.server_flags.begin(), cfg_.server_flags.end());
         server_ = std::make_unique<ChildProcess>(
             server_argv,
@@ -385,6 +401,10 @@ public:
         if (args_.client_threads > 0) {
             client_argv.push_back("--threads");
             client_argv.push_back(std::to_string(args_.client_threads));
+        }
+        if (args_.rekey_window > 0) {
+            client_argv.push_back("--rekey-window");
+            client_argv.push_back(std::to_string(args_.rekey_window));
         }
         client_argv.insert(client_argv.end(), cfg_.client_flags.begin(), cfg_.client_flags.end());
         client_ = std::make_unique<ChildProcess>(

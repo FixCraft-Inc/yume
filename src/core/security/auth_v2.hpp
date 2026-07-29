@@ -50,6 +50,10 @@ struct Challenge {
     Bytes x25519_public_key;
     Bytes psk_salt;
     Bytes transcript_salt;
+    // Concurrent directional epoch offers this endpoint accepts inbound. It
+    // bounds the peer's sending window, so it is the only thing that lets a
+    // peer make this endpoint do repeated ML-KEM work or retain future roots.
+    std::uint16_t rekey_window{0};
 };
 
 struct Response {
@@ -57,6 +61,7 @@ struct Response {
     Bytes x25519_public_key;
     Bytes mlkem_ciphertext;
     Bytes identity;
+    std::uint16_t rekey_window{0};
     Bytes signature;
 };
 
@@ -76,15 +81,18 @@ Bytes BuildChallenge(const Bytes& challenge,
                      const Bytes& mlkem_public_key,
                      const Bytes& x25519_public_key,
                      const Bytes& psk_salt,
-                     const Bytes& transcript_salt);
+                     const Bytes& transcript_salt,
+                     std::uint16_t rekey_window);
 Challenge ParseChallenge(const Bytes& encoded);
 
 Bytes BuildUnsignedResponse(const Bytes& x25519_public_key,
                             const Bytes& mlkem_ciphertext,
-                            const Bytes& identity);
+                            const Bytes& identity,
+                            std::uint16_t rekey_window);
 Bytes BuildResponse(const Bytes& x25519_public_key,
                     const Bytes& mlkem_ciphertext,
                     const Bytes& identity,
+                    std::uint16_t rekey_window,
                     const Bytes& signature);
 Response ParseResponse(const Bytes& encoded);
 Bytes BuildSignatureInput(const Bytes& challenge_record,

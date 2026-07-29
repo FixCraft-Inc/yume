@@ -41,6 +41,9 @@ struct Args {
     int latency_iters{120};
     int bulk_mib{32};
     int tunnels{1};
+    // 0 keeps each binary's own default; any other value is passed to both
+    // spawned processes so a run can compare epoch-window depths.
+    int rekey_window{0};
     int client_threads{0};
     int server_threads{2};
     int cooldown_ms{500};

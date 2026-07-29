@@ -22,7 +22,7 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --credits --config --listen --cert --tls_cert --key --tls_key --auth-keys --auth-keys-meta --operator-keys --operator-keys-meta --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --obfs-secret-file --inner-psk-file --real-backend --tls-handshake-timeout-ms --max-sessions --bulk-key-max-sessions --accept-rate-limit --egress-mbps --robots-deny --filter-list --filter-geolite --filter-memory-mib --client-filter-mode --egress-filter-mode --packet-egress --packet-tun-name --packet-cidr --packet-mtu --bench --fullbench --full-bench --allow-exec --allow-local-ip --control-full --codec-allow --allow-codec --allow-monero-rpc --service-allow --monero-rpc-backend --operator-identity --operator-proof-mode --operator-ca-key --operator-ca-cert --operator-delegated-key --operator-delegated-cert --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
+  local opts="--help -h --version --credits --config --listen --cert --tls_cert --key --tls_key --auth-keys --auth-keys-meta --operator-keys --operator-keys-meta --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --obfs-secret-file --inner-psk-file --real-backend --tls-handshake-timeout-ms --max-sessions --bulk-key-max-sessions --rekey-window --accept-rate-limit --egress-mbps --robots-deny --filter-list --filter-geolite --filter-memory-mib --client-filter-mode --egress-filter-mode --packet-egress --packet-tun-name --packet-cidr --packet-mtu --bench --fullbench --full-bench --allow-exec --allow-local-ip --control-full --codec-allow --allow-codec --allow-monero-rpc --service-allow --monero-rpc-backend --operator-identity --operator-proof-mode --operator-ca-key --operator-ca-cert --operator-delegated-key --operator-delegated-cert --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
   local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --auth-keys-meta --operator-keys --operator-keys-meta --obfs-secret-file --inner-psk-file --filter-geolite --operator-ca-key --operator-ca-cert --operator-delegated-key --operator-delegated-cert --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --federation-auth-key --federation-anonym-ca --keys-add --keys-gen"
   case "$prev" in
     --completion)
@@ -121,6 +121,14 @@ void print_help() {
         << "                           Default concurrent sessions for each\n"
         << "                             regular key marked key_type=bulk.\n"
         << "                             Default 64; per-key max_sessions wins.\n"
+        << "  --rekey-window <N>       Concurrent directional epoch offers accepted\n"
+        << "                             per session, and the ceiling on this\n"
+        << "                             server's own sending window (1..64;\n"
+        << "                             default 8). Each prepared epoch adds\n"
+        << "                             256 KiB of transfer per rekey round trip\n"
+        << "                             on high-latency links; the 256 KiB,\n"
+        << "                             512-frame and 500 ms per-epoch limits\n"
+        << "                             are unchanged.\n"
         << "  --accept-rate-limit <N>  Cap on accepts per second over a 1 s\n"
         << "                             shared accounting window. Refused accepts close\n"
         << "                             immediately. 0 = unlimited.\n"

@@ -170,7 +170,10 @@ private:
         if (!received.control_response.has_value()) {
             throw std::runtime_error("ratchet peer did not return REKEY_ACK");
         }
-        auto completed = sender.Open(*received.control_response, now);
+        // The ACK comes back as plaintext and is sealed by the responder's
+        // ordinary write path, so the benchmark seals it here too.
+        auto completed = sender.Open(
+            receiver.Seal(*received.control_response, now), now);
         if (!completed.outbound_rekey_completed) {
             throw std::runtime_error("ratchet sender did not complete rekey");
         }

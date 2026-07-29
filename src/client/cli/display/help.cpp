@@ -23,7 +23,7 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --credits --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --packet-tun --codec --codec-listen --monero-rpc --monero-rpc-listen --quick-bench --quickbench --full-bench --fullbench --localbench --bench --bench-full --endpoint-fullbench --bench-mib --bench-chunk-kib --bench-streams --bench-direction --duration-sec --latency-iters --bulk-mib --streams --cooldown-ms --repeat --configs --one-way --json --json-stdout --dev --color --no-color --keep-workdir --list-configs --threads --tunnels --obfs --obfs-secret-file --inner-psk-file export import --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --operator-ca-cert --anonym-ca-cert --tls-ca --tls-name --tls-server-name --tls-pin --profile --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --self-dpi --no-self-dpi --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-operator-identity --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --service-streams-only --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
+  local opts="--help -h --version --credits --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --packet-tun --codec --codec-listen --monero-rpc --monero-rpc-listen --quick-bench --quickbench --full-bench --fullbench --localbench --bench --bench-full --endpoint-fullbench --bench-mib --bench-chunk-kib --bench-streams --bench-direction --duration-sec --latency-iters --bulk-mib --streams --cooldown-ms --repeat --configs --one-way --json --json-stdout --dev --color --no-color --keep-workdir --list-configs --threads --tunnels --rekey-window --obfs --obfs-secret-file --inner-psk-file export import --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --operator-ca-cert --anonym-ca-cert --tls-ca --tls-name --tls-server-name --tls-pin --profile --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --self-dpi --no-self-dpi --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-operator-identity --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --service-streams-only --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
   local file_opts="--config --auth -i --obfs-secret-file --inner-psk-file --operator-ca-cert --anonym-ca-cert --tls-ca --tls-fingerprint-log-path --relay-key-file"
   case "$prev" in
     --completion)
@@ -157,6 +157,11 @@ void print_help() {
         << "Runtime:\n"
         << "  --threads <n>            IO threads (0 = auto)\n"
         << "  --tunnels <n>            Parallel TLS tunnels to the server (1..16; default 4)\n"
+        << "  --rekey-window <n>       Concurrent directional epoch offers (1..64;\n"
+        << "                             default 8). Each prepared epoch adds\n"
+        << "                             256 KiB of transfer per rekey round trip\n"
+        << "                             on high-latency links; per-epoch limits\n"
+        << "                             are unchanged. Capped by the server.\n"
         << "  --instance <name>        Runtime instance name\n"
         << "  --history-dir <path>     Chat history directory\n"
         << "  --relay-key-file <path>  Relay key file\n"
@@ -199,7 +204,7 @@ void print_help() {
         << "TLS:\n"
         << "  --tls-name <host>       SNI/certificate/HTTP Host name when\n"
         << "                           --server is an IP or alternate route\n"
-        << "  --profile <name>         chrome (the only 2.0 dev2 fixture)\n"
+        << "  --profile <name>         chrome (the only 2.0 fixture)\n"
         << "  --tls-fingerprint-log    Log TLS fingerprint metrics\n"
         << "  --tls-fingerprint-log-path <path>\n"
         << "                           Fingerprint log path\n"

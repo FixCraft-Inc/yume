@@ -31,6 +31,7 @@ struct ServerConfigOverrides {
     bool tls_handshake_timeout = false;
     bool max_sessions = false;
     bool bulk_key_max_sessions = false;
+    bool rekey_window = false;
     bool accept_rate_limit = false;
     bool egress_mbps = false;
     bool client_filter_mode = false;

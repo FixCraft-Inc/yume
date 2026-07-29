@@ -9,10 +9,12 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <system_error>
 
 #include <nlohmann/json.hpp>
 
+#include "core/security/ratchet.hpp"
 #include "client/cli/connect/cert.hpp"
 #include "client/cli/config/platform.hpp"
 #include "core/app_codec/builtin/monero_rpc.hpp"
@@ -128,6 +130,14 @@ void load_client_config_file(const ParsedArgs& args,
         }
         if (json.contains("hop_interval_ms")) {
             cfg->hop_interval_ms = static_cast<std::uint32_t>(json["hop_interval_ms"].get<int>());
+        }
+        if (json.contains("rekey_window") && !args.rekey_window_override) {
+            const int window = json["rekey_window"].get<int>();
+            if (window < ratchet::kMinRekeyWindow ||
+                window > ratchet::kMaxRekeyWindow) {
+                throw std::runtime_error("rekey_window must be in 1..64");
+            }
+            cfg->rekey_window = static_cast<std::uint16_t>(window);
         }
         if (json.contains("udp") && !args.udp_override) {
             cfg->allow_udp = json["udp"].get<bool>();
@@ -326,6 +336,10 @@ void apply_cli_config_overrides(const ParsedArgs& args,
     }
     if (args.hop_interval_override) {
         cfg->hop_interval_ms = args.hop_interval_ms;
+    }
+    if (args.rekey_window_override) {
+        cfg->rekey_window = ratchet::ClampRekeyWindow(
+            static_cast<std::uint32_t>(args.rekey_window));
     }
     if (!args.pq_public_key.empty()) {
         cfg->pq_public_key = resolve_cli_path(args.pq_public_key);
@@ -605,6 +619,7 @@ void save_client_config_file(const ParsedArgs& args, const ClientConfig& cfg) {
     json["inner_heavy"] = cfg.inner_heavy;
     json["inner_hop"] = cfg.inner_hop;
     json["hop_interval_ms"] = cfg.hop_interval_ms;
+    json["rekey_window"] = cfg.rekey_window;
     json["udp"] = cfg.allow_udp;
     json["allow_local_ip"] = cfg.allow_local_ip;
     json["server_in_charge"] = cfg.server_in_charge;

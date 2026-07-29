@@ -48,7 +48,8 @@ void exercise_stream_count(std::size_t streams) {
             const auto opened_init = client.Open(init, now + 1ms);
             assert(opened_init.control_response.has_value());
             const auto opened_ack = server.Open(
-                *opened_init.control_response, now + 2ms);
+                client.Seal(*opened_init.control_response, now + 1ms),
+                now + 2ms);
             assert(opened_ack.outbound_rekey_completed);
             ++rekeys;
             now += 3ms;
@@ -73,8 +74,12 @@ void exercise_stream_count(std::size_t streams) {
         assert(budget.reserved() == 64);
     }
     assert(rekeys > 2);
-    assert(server.outbound_epoch() == rekeys);
-    assert(client.inbound_epoch() == rekeys);
+    // An acknowledged epoch is prepared, not entered: it is committed by the
+    // first frame the current epoch can no longer carry. At the end of a run
+    // at most one prepared epoch is therefore still unused.
+    assert(server.outbound_epoch() == rekeys ||
+           server.outbound_epoch() + 1 == rekeys);
+    assert(client.inbound_epoch() == server.outbound_epoch());
     for (std::size_t i = 1; i <= streams; ++i) {
         assert(turns[i] == (64U * 9U) / streams);
     }

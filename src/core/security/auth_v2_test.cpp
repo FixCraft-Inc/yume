@@ -8,6 +8,8 @@
 
 #include <openssl/evp.h>
 
+#include "core/security/ratchet.hpp"
+
 namespace {
 
 template <typename Fn>
@@ -48,30 +50,56 @@ int main() {
     const Bytes x_public(32, 0x33);
     const Bytes psk_salt(32, 0x44);
     const Bytes transcript_salt(32, 0x55);
+    const std::uint16_t rekey_window = 8;
     const Bytes encoded = BuildChallenge(challenge, kem_public, x_public,
-                                         psk_salt, transcript_salt);
-    assert(encoded.size() == 1744);
+                                         psk_salt, transcript_salt,
+                                         rekey_window);
+    assert(encoded.size() == 1752);
     assert(Sha256Hex(encoded) ==
-           "8663506c9e9bcad94b4366ce1521bfa68ecac9cb230862bb8b1c61344dfe566e");
+           "5b7b1f13d6bf22df9c96eae12a05652bc91b6ec8668e970637de8324c5c7204d");
     const auto parsed = ParseChallenge(encoded);
     assert(parsed.challenge == challenge);
     assert(parsed.mlkem_public_key == kem_public);
+    assert(parsed.rekey_window == rekey_window);
 
     const Bytes ciphertext(1568, 0x66);
     const Bytes identity{'i', 'd'};
     const Bytes unsigned_response = BuildUnsignedResponse(x_public, ciphertext,
-                                                          identity);
-    assert(unsigned_response.size() == 1624);
+                                                          identity,
+                                                          rekey_window);
+    assert(unsigned_response.size() == 1632);
     assert(Sha256Hex(unsigned_response) ==
-           "58908d07af8efb03affcec05c6ac232c336639d0e4a9c4e3bbcfa26a3b63b013");
+           "ec5f77918dcc391e53811b319dd5be44b55c06f54c513f47b03b3aa2bf2dab46");
     const Bytes signature(64, 0x77);
     const auto response = ParseResponse(BuildResponse(
-        x_public, ciphertext, identity, signature));
+        x_public, ciphertext, identity, rekey_window, signature));
     assert(response.signature == signature);
+    assert(response.rekey_window == rekey_window);
+    // The advertised depth sits in the unsigned record, so the transcript the
+    // client signs commits to the negotiated window.
     const Bytes signature_input = BuildSignatureInput(encoded, unsigned_response);
-    assert(signature_input.size() == 3402);
+    assert(signature_input.size() == 3418);
     assert(Sha256Hex(signature_input) ==
-           "b30097d0dae222afa73ba254b08c23b63ed8821aa2d7360783b2b1345f9dfd82");
+           "6a04df0848cde0424eee988f9efac9d2a550f5e22fd52c0e31be8e1f89faffe4");
+
+    // Out-of-range depths are rejected on both build and parse so no peer can
+    // reserve unbounded ML-KEM work or retained roots.
+    assert(Throws([&] {
+        (void)BuildChallenge(challenge, kem_public, x_public, psk_salt,
+                             transcript_salt, 0);
+    }));
+    assert(Throws([&] {
+        (void)BuildChallenge(challenge, kem_public, x_public, psk_salt,
+                             transcript_salt,
+                             yume::ratchet::kMaxRekeyWindow + 1);
+    }));
+    assert(Throws([&] {
+        (void)BuildUnsignedResponse(x_public, ciphertext, identity, 0);
+    }));
+    Bytes zero_window = encoded;
+    zero_window[zero_window.size() - 2] = 0;
+    zero_window[zero_window.size() - 1] = 0;
+    assert(Throws([&] { (void)ParseChallenge(zero_window); }));
 
     const Bytes info{'{', '}'};
     assert(ParseAuthOk(BuildAuthOk(info)) == info);
@@ -97,7 +125,7 @@ int main() {
         {1, true, Bytes(kTransportVersion.begin(), kTransportVersion.end())},
         {2, true, challenge}, {3, true, kem_public}, {4, true, x_public},
         {5, true, psk_salt}, {6, true, transcript_salt},
-        {7, true, Bytes{0}},
+        {7, true, Bytes{0, 8}}, {8, true, Bytes{0}},
     });
     assert(Throws([&] { (void)ParseChallenge(unknown_critical); }));
     return 0;

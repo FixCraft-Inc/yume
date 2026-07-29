@@ -798,6 +798,13 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         if(UNIX AND NOT APPLE)
             target_link_options(yume_abi PRIVATE
                 "LINKER:--version-script=${_yume_abi_version_script}"
+                # The facade/core arrive through static archives. GCC LTO can
+                # materialize weak libstdc++ implementations from those
+                # archives after version-script symbol resolution, leaving
+                # C++ implementation names in .dynsym on some GNU toolchains.
+                # The C ABI is entirely defined by yume_c.cpp, so archive
+                # symbols must always be hidden independently of LTO ordering.
+                "LINKER:--exclude-libs,ALL"
             )
             set_property(TARGET yume_abi APPEND PROPERTY
                 LINK_DEPENDS "${_yume_abi_version_script}"

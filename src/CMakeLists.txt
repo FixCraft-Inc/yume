@@ -603,7 +603,6 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/cli/config/files.cpp
         client/cli/config/input.cpp
         client/cli/config/platform.cpp
-        client/cli/connect/pq_bootstrap.cpp
         client/cli/commands/proxy.cpp
         client/cli/commands/relay_secret.cpp
         client/cli/parse/endpoints.cpp

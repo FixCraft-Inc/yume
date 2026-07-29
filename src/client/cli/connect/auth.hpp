@@ -9,7 +9,6 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -18,7 +17,6 @@
 #include <boost/asio/ssl.hpp>
 
 #include "core/security/crypto.hpp"
-#include "core/security/inner_crypto.hpp"
 #include "core/security/secret_file.hpp"
 #include "core/protocol/protocol.hpp"
 #include "core/stealth/h2_carrier.hpp"
@@ -39,20 +37,6 @@ protocol::Frame read_auth_challenge(boost::asio::ssl::stream<boost::asio::ip::tc
                                     int server_port,
                                     std::vector<uint8_t>* prefetched = nullptr,
                                     obfs::H2Carrier* carrier = nullptr);
-
-inner::Argon2Limits parse_auth_challenge_argon2_limits(const protocol::Frame& challenge);
-std::string describe_argon2_limits(const inner::Argon2Limits& limits);
-
-void send_auth_response(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
-                        const std::string& identity_path,
-                        const protocol::Frame& challenge,
-                        const std::optional<crypto::Bytes>& pq_ciphertext,
-                        const std::optional<crypto::Bytes>& pq_salt,
-                        const std::optional<std::string>& inner_mode,
-                        const std::optional<bool>& inner_hop,
-                        const std::optional<inner::KdfParams>& inner_kdf,
-                        boost::asio::io_context* io = nullptr,
-                        obfs::H2Carrier* carrier = nullptr);
 
 std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
     boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,

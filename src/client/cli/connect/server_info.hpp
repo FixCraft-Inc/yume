@@ -28,9 +28,6 @@ struct ServerInfoPayload {
     std::string sub_sig;
     std::string sub_alg;
     std::string sub_cert_b64;
-    std::string pq_pub_b64;
-    std::string pq_sig;
-    std::string pq_alg;
     std::vector<std::string> announced_proof_sources;
     std::vector<std::string> capabilities;
 

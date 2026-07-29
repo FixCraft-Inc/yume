@@ -5,7 +5,7 @@ The release version remains gated on capture, conformance, soak, and throughput
 evidence. This document intentionally does not describe a 1.x compatibility
 mode because none exists.
 
-## Fixed cover stack
+## Reference cover stack
 
 - Client fixture: Chrome `150.0.7871.114`, Debian 13, TLS 1.3, ALPN `h2`.
 - Cover fixture: Node.js `24.18.x` LTS HTTP/2.
@@ -32,10 +32,12 @@ The captured SETTINGS, request headers/order, priorities, window update,
 WebSocket behavior, and component versions are recorded under
 `tests/fixtures/chrome150-node24/`.
 
-OpenSSL cannot reproduce Chrome's ClientHello extension/GREASE ordering
-byte-for-byte. The first release records that as a residual classifier-visible
-gap. BoringSSL is the likely follow-up if capture evidence shows that matching
-Chrome JA4 without byte parity is insufficient.
+This is the normative target, not a statement that the current emitter has
+complete identity parity. The current profile registry supplies a Chrome
+131/Windows User-Agent and TLS preset while the H2 carrier supplies Chrome
+150/Linux client hints. Stock OpenSSL also cannot reproduce Chrome/BoringSSL
+extension/GREASE ordering. These are classifier-visible implementation gaps
+and release gates; `docs/STEALTH.md` records the required acceptance evidence.
 
 ## Integers and envelopes
 

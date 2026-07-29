@@ -23,6 +23,11 @@ exists or is planned.
 
 ### Changed
 
+- **Stealth and cryptographic claims now match the implementation.** The
+  documentation records the current Chrome 131/150 and Windows/Linux profile
+  mismatch, rejects the stale 2.0 profile-rotation claim, treats BoringSSL and
+  traffic padding as evidence-driven experiments, and describes 500 ms as a
+  sender-active epoch limit rather than a twice-per-second wall-clock promise.
 - **AUTH v2 records carry the negotiated window.** The challenge gains critical
   field 7 and the response gains critical field 4, moving the Ed25519 signature
   to field 5. The client's advertised depth is inside the signed record, so the

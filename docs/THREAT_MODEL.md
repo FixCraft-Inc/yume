@@ -89,9 +89,19 @@ authenticated next-epoch frame and then erased with retired roots and
 ephemeral/shared material. Ordered H2/TCP prevents an honest sender's old-epoch
 frames from arriving after that commit; any such frame is fatal.
 
-The approximately 500 ms claim is an epoch-local containment goal. It does not
-protect data present in live endpoint memory or survive simultaneous compromise
-of ML-KEM, X25519, the PSK, and an endpoint.
+The approximately 500 ms claim is an honest-sender, active-epoch containment
+goal, not a twice-per-second wall-clock schedule. Byte/frame use may rotate
+sooner and idle connections do not rotate. It does not protect data present in
+live endpoint memory or survive simultaneous compromise of ML-KEM, X25519, the
+PSK, and an endpoint.
+
+Compromise scope depends on which material is exposed. One erased per-message
+key does not reveal another message key. Exposure of the current directional
+chain/root can expose more traffic, and process-memory compromise can include
+plaintext plus current and prepared state. The negotiated window retains up to
+`w` future roots. Break-in recovery begins only after fresh, uncompromised
+rekey contributions; no blanket “the key is useless after 500 ms” statement
+applies to all of these cases.
 
 ## Cover-backend containment
 
@@ -142,7 +152,9 @@ capacity before authenticated admission.
 - Availability against an attacker who can exhaust the network, TLS handshakes,
   or all configured connection limits.
 - Byte-identical Chrome TLS. OpenSSL’s ClientHello/GREASE ordering remains a
-  classifier-visible residual; BoringSSL is the likely future mitigation.
+  classifier-visible residual, and the current implementation also mixes
+  Chrome 131/Windows TLS/User-Agent identity with Chrome 150/Linux carrier
+  hints. BoringSSL is a candidate experiment, not proof of Chrome parity.
 
 ## Existing permission gates outside this slice
 
@@ -164,3 +176,9 @@ The transport stays `2.0-dev3` or a later development/RC version until the relea
 smoke are not evidence for WAN behavior, a 30-minute lifetime, sanitizer safety,
 external conformance, or sustained overhead. Release documentation must separate
 implemented behavior from those pending validations.
+
+“Hybrid post-quantum key establishment” is the supported terminology.
+“Quantum-proof,” “uncrackable,” and guaranteed future-proof are not supported
+claims: TLS certificates and Ed25519 authentication remain classical, endpoint
+compromise is in scope, and the complete design has not received an independent
+formal proof or security audit.

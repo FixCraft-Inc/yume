@@ -9,7 +9,9 @@ or admin/control validation.
 ## Implemented
 
 - Version-pinned Chrome `150.0.7871.114` / Node `24.18.0` reference fixture,
-  manifest, and sanitized HTTP/2 profile.
+  manifest, and sanitized HTTP/2 profile. The current complete emitted identity
+  does not yet match that fixture: the registry TLS/User-Agent is Chrome
+  131/Windows while carrier client hints are Chrome 150/Linux.
 - Persistent nghttp2 carrier with priming page and asset requests, RFC 8441
   extended CONNECT, WebSocket masking/fragmentation/control frames, flow
   control, serialized writes, backpressure, and graceful H2 shutdown.
@@ -182,15 +184,21 @@ or admin/control validation.
   and Chrome interoperability.
 - Exercise partial socket writes, sustained flow-control stalls, malformed
   carrier paths, backend timeout/failure, and bounded backpressure under load.
-- Decide whether receiver-verifiable active-time enforcement justifies a wire
-  timestamp in a later protocol revision. The receiver independently enforces
-  inbound byte/frame usage; the 500 ms boundary remains sender-local because
-  network delivery may be delayed after sealing.
+- Decide the time-limit threat model explicitly. Today the receiver
+  independently enforces inbound byte/frame usage while the 500 ms boundary is
+  sender-local. A signed timestamp does not make a malicious sender's clock
+  truthful. Alternatives are to retain and document the honest-sender rule, or
+  enforce a receiver-local lifetime from first authenticated arrival and accept
+  its delay/availability tradeoff. Any wire timestamp needs explicit semantics,
+  a version/AAD change, and a leakage analysis.
 - Fuzz WebSocket reassembly across mid-record splits, multi-fragment binary
   messages, and interleaved PING/PONG control frames. Strict inner-record
   sequencing makes this carrier boundary security-critical.
 - Capture and compare the live YUME connection against the committed fixture;
   record every remaining classifier-visible TLS/H2 difference.
+- Unify TLS preset, User-Agent, client hints, H2 settings/priorities, asset
+  sequence, and cover-server identity behind one pinned profile. The current
+  Chrome 131/150 and Windows/Linux mixture must not ship as capture parity.
 
 ## Required before exact version `2.0`
 
@@ -211,9 +219,12 @@ or admin/control validation.
 
 ## Known residual
 
-YUME dev3 uses OpenSSL while the captured Chrome uses BoringSSL. OpenSSL cannot
-reproduce Chrome’s ClientHello/GREASE ordering byte-for-byte, so TLS remains a
-classifier-visible difference upstream of the full-session H2 carrier. Matching
-ALPN or a coarse JA4 classification is not enough to claim Chrome
-indistinguishability. BoringSSL is the likely follow-up if the release threat
-model requires closer TLS parity.
+YUME dev3 currently mixes Chrome 131/Windows TLS/User-Agent values with
+Chrome 150/Linux carrier hints. Even after that is unified, OpenSSL cannot
+reproduce Chrome/BoringSSL ClientHello/GREASE ordering, so TLS remains a
+classifier-visible difference upstream of the full-session H2 carrier.
+Matching ALPN or a coarse JA4 classification is not enough to claim Chrome
+indistinguishability. BoringSSL is a likely experiment, not a sufficient fix by
+itself; Chrome-specific behavior and entropy-normalized on-wire comparison
+against one pinned build are required. Traffic padding is likewise an
+evidence-driven option, not an automatic improvement.

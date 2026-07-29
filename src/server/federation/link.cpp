@@ -307,6 +307,18 @@ void FederationLink::run_loop() {
                 ctx.load_verify_file(cfg_.federation_anonym_ca);
             }
             boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, ctx);
+            struct ActiveStreamReset final {
+                std::mutex& mutex;
+                boost::asio::ssl::stream<boost::asio::ip::tcp::socket>*& active;
+                boost::asio::ssl::stream<boost::asio::ip::tcp::socket>* expected;
+
+                ~ActiveStreamReset() {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    if (active == expected) {
+                        active = nullptr;
+                    }
+                }
+            } active_stream_reset{write_mutex_, active_stream_, &stream};
             if (!connect_and_auth(io, stream)) {
                 continue;
             }
@@ -477,6 +489,8 @@ bool FederationLink::connect_and_auth(boost::asio::io_context& io,
     transport->start();
     {
         std::lock_guard<std::mutex> write_lock(write_mutex_);
+        // The run-loop scope guard clears this slot before stream destruction.
+        // lgtm[cpp/stack-address-escape]
         active_stream_ = &stream;
     }
     {

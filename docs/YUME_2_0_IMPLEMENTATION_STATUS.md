@@ -109,8 +109,10 @@ or admin/control validation.
   931.1/926.9 Mbit/s. Same-host one-stream endpoint traffic measured
   1,894.5/1,910.2 Mbit/s. These runs cover the authenticated
   DATA/ratchet/H2/WebSocket/TLS benchmark path, not SOCKS target sockets,
-  packet ABI/TUN, WAN, Android, or a release soak. Logs and binary hashes are in
-  `yume-bench-results/dev2-rekey-overlap-20260722/`.
+  packet ABI/TUN, WAN, Android, or a release soak. The generated benchmark
+  bundle was retired during the 2026-07-28 machine cleanup; this document
+  preserves the reviewed result, not a claim that raw artifacts remain in the
+  checkout.
 - Dev2 had only one pending future epoch, so exhausting 256 KiB before its ACK
   returned reintroduced a hard-boundary wait on a saturated high-BDP path: a
   model of about 35/21/10 Mbit/s at 60/100/210 ms RTT.
@@ -181,9 +183,9 @@ or admin/control validation.
 - Exercise partial socket writes, sustained flow-control stalls, malformed
   carrier paths, backend timeout/failure, and bounded backpressure under load.
 - Decide whether receiver-verifiable active-time enforcement justifies a wire
-  timestamp in a later protocol revision. Dev1 independently enforces inbound
-  byte/frame usage; its 500 ms boundary remains sender-local because network
-  delivery may be delayed after sealing.
+  timestamp in a later protocol revision. The receiver independently enforces
+  inbound byte/frame usage; the 500 ms boundary remains sender-local because
+  network delivery may be delayed after sealing.
 - Fuzz WebSocket reassembly across mid-record splits, multi-fragment binary
   messages, and interleaved PING/PONG control frames. Strict inner-record
   sequencing makes this carrier boundary security-critical.
@@ -194,10 +196,11 @@ or admin/control validation.
 
 - A valid tunnel lasting at least 30 minutes.
 - Sanitizer coverage and a longer concurrency/rekey soak on an approved machine.
-- Complete the security-preserving bounded future-epoch window and then run
-  matched one-tunnel WAN upload/download/both matrices at 60, 100, and 210 ms,
-  100 Mbit/s and approximately 1 Gbit/s, plus controlled loss and a 30-minute
-  soak. The LAN result is not this gate.
+- Validate the implemented bounded future-epoch window with matched one-tunnel
+  WAN upload/download/both matrices at 60, 100, and 210 ms, 100 Mbit/s and
+  approximately 1 Gbit/s, plus controlled loss and a 30-minute soak. Diagnose
+  the separate measured ceiling near 25 Mbit/s before tuning the ratchet
+  further. The LAN result is not this gate.
 - Bulk overhead measurement at or below 5% using the committed capture-derived
   shaping policy.
 - Security-negative coverage for counter wrap and all malformed/tampered cases
@@ -208,7 +211,7 @@ or admin/control validation.
 
 ## Known residual
 
-YUME dev2 uses OpenSSL while the captured Chrome uses BoringSSL. OpenSSL cannot
+YUME dev3 uses OpenSSL while the captured Chrome uses BoringSSL. OpenSSL cannot
 reproduce Chrome’s ClientHello/GREASE ordering byte-for-byte, so TLS remains a
 classifier-visible difference upstream of the full-session H2 carrier. Matching
 ALPN or a coarse JA4 classification is not enough to claim Chrome

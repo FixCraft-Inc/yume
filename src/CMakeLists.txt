@@ -292,6 +292,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         core/protocol/control_protocol.cpp
         core/security/crypto.cpp
         core/security/auth_v2.cpp
+        core/security/channel_binding.cpp
         core/stealth/http_profile.cpp
         core/stealth/h2_carrier.cpp
         core/security/identity.cpp
@@ -1115,6 +1116,17 @@ target_link_libraries(yume_auth_v2_test PRIVATE yume_transport_core)
 yume_link_atomic_if_needed(yume_auth_v2_test PRIVATE)
 yume_apply_perf_opts(yume_auth_v2_test)
 add_test(NAME yume_auth_v2_test COMMAND yume_auth_v2_test)
+
+# Compiled directly rather than through an aggregate library: the test needs
+# only the exporter helper plus OpenSSL, and drives real TLS 1.3 handshakes.
+add_executable(yume_channel_binding_test
+    core/security/channel_binding_test.cpp
+    core/security/channel_binding.cpp)
+target_include_directories(yume_channel_binding_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(yume_channel_binding_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+yume_link_atomic_if_needed(yume_channel_binding_test PRIVATE)
+yume_apply_perf_opts(yume_channel_binding_test)
+add_test(NAME yume_channel_binding_test COMMAND yume_channel_binding_test)
 
 add_executable(yume_session_ratchet_test core/security/session_ratchet_test.cpp)
 target_link_libraries(yume_session_ratchet_test PRIVATE yume_transport_core)

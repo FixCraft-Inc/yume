@@ -81,6 +81,9 @@ void verify_hybrid_establishment() {
         basefwx::crypto::RandomBytes(32)};
     const Bytes psk_salt = basefwx::crypto::RandomBytes(32);
     const Bytes transcript_salt = basefwx::crypto::RandomBytes(32);
+    // Stands in for the TLS exporter both endpoints read locally in a real
+    // session; the benchmark has no TLS connection of its own.
+    const Bytes channel_binding = basefwx::crypto::RandomBytes(32);
     basefwx::crypto::SecureBytes client_psk{
         ratchet::DerivePskKey(file_psk.bytes(), psk_salt)};
     basefwx::crypto::SecureBytes server_psk{
@@ -88,10 +91,10 @@ void verify_hybrid_establishment() {
 
     basefwx::crypto::SecureBytes client_root{ratchet::DeriveInitialRoot(
         encapsulated.shared, client_x_shared.bytes(), client_psk.bytes(),
-        transcript_salt)};
+        transcript_salt, channel_binding)};
     basefwx::crypto::SecureBytes server_root{ratchet::DeriveInitialRoot(
         decapsulated.bytes(), server_x_shared.bytes(), server_psk.bytes(),
-        transcript_salt)};
+        transcript_salt, channel_binding)};
     require_same(client_root.bytes(), server_root.bytes(),
                  "hybrid peers derived different initial roots");
 }

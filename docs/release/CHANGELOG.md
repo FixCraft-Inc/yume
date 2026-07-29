@@ -1,12 +1,25 @@
 # Changelog
 
-## [Unreleased 2.0-dev3]
+## [Unreleased 2.0-dev4]
 
-Hard break from `2.0-dev2`: the exact transport version changed, so dev2 and
-dev3 binaries do not interoperate at admission or AUTH. No compatibility mode
-exists or is planned.
+Hard break from `2.0-dev2` and `2.0-dev3`: the exact transport version changed,
+so dev2, dev3, and dev4 binaries do not interoperate at admission or AUTH. No
+compatibility mode exists or is planned.
 
 ### Added
+
+- **TLS-exporter channel binding for AUTH.** The Ed25519 signature input and
+  the establishment root now cover a 32-byte RFC 8446 section 7.5 exporter
+  (`EXPORTER-yume/2.0/auth-channel-binding/v1`) that each endpoint derives from
+  its own live TLS object and never transmits. A malicious endpoint that
+  terminates TLS with a client and holds compatible admission and inner PSK
+  material can no longer forward that live AUTH exchange to a second server:
+  the two connections have independent exporters, so the relayed signature does
+  not verify at the far end. Both peers require TLS 1.3 and a finished
+  handshake; a peer that cannot produce a 32-byte binding fails AUTH. There is
+  no unbound mode to negotiate. The signature domain moves to
+  `yume/2.0/auth-signature/v2` and the root label to `yume/2.0/root/v2`, so a
+  dev3 peer fails loudly instead of downgrading.
 
 - **Bounded multi-epoch ratchet window.** A direction may keep several
   authenticated, strictly contiguous future epochs in flight or prepared
@@ -32,9 +45,18 @@ exists or is planned.
   Ed25519 identity plus transcript signature, not the private key; ephemeral
   hybrid exchanges provide conditional forward secrecy against later
   persistent-file compromise. `yumed` remains the terminating single-hop proxy
-  with access to decrypted YUME stream bytes, and AUTH is not independently
-  TLS-exporter-bound against live forwarding by a malicious compatible
-  endpoint.
+  with access to decrypted YUME stream bytes. AUTH is now TLS-exporter-bound,
+  so live forwarding by a malicious compatible endpoint is closed, but that
+  does not make the terminating node blind to traffic it exits.
+- **Client identity files are owner-only by contract.** `--keys-gen`
+  serializes to memory and creates both halves through the exclusive
+  owner-only writer at mode `0600`, wipes the private PEM, and refuses to
+  replace an existing path instead of silently overwriting an identity.
+  Loading reads the private key through an already-validated descriptor and
+  rejects symlinks, foreign ownership, group/world permission bits, and
+  out-of-range sizes, so a poorly protected key can no longer sign an AUTH
+  transcript. Enforcement is Linux/POSIX; Windows identity loading fails
+  closed.
 - **AUTH v2 records carry the negotiated window.** The challenge gains critical
   field 7 and the response gains critical field 4, moving the Ed25519 signature
   to field 5. The client's advertised depth is inside the signed record, so the

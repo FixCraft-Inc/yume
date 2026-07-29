@@ -19,6 +19,7 @@
 #include "server/session/session.hpp"
 #include "core/security/secure_erase.hpp"
 #include "core/security/auth_v2.hpp"
+#include "core/security/channel_binding.hpp"
 #include "core/app_codec/builtin/monero_rpc.hpp"
 #include "server/runtime/manager.hpp"
 #include "server/session/internal.hpp"
@@ -34,6 +35,23 @@
 namespace yume::server {
 
 using namespace detail;
+
+namespace {
+
+// The TLS exporter derives from the master secret and feeds the initial root,
+// so it is wiped on every path out of AUTH, including the early refusals.
+class WipeBytesOnExit {
+public:
+    explicit WipeBytesOnExit(crypto::Bytes& bytes) noexcept : bytes_(bytes) {}
+    WipeBytesOnExit(const WipeBytesOnExit&) = delete;
+    WipeBytesOnExit& operator=(const WipeBytesOnExit&) = delete;
+    ~WipeBytesOnExit() { security::secure_erase(bytes_); }
+
+private:
+    crypto::Bytes& bytes_;
+};
+
+}  // namespace
 
 void Session::send_auth_challenge() {
 #if YUME_USE_BASEFWX
@@ -226,11 +244,29 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             return false;
         }
 
+        // Independently computed from this server's own TLS object. A client
+        // signature produced on a different connection — the live-relay case —
+        // cannot verify against it, and no peer field can influence it.
+        crypto::Bytes channel_binding;
+        WipeBytesOnExit wipe_channel_binding(channel_binding);
+        try {
+            channel_binding =
+                security::ExportChannelBinding(stream_.native_handle());
+        } catch (const std::exception& ex) {
+            // A local TLS problem, not a client credential problem. Say so in
+            // the log and still refuse the session.
+            util::log_warn("session " + std::to_string(session_id_) +
+                           ": AUTH channel binding unavailable: " +
+                           std::string(ex.what()));
+            auth_error_ = "access denied: channel binding unavailable";
+            return false;
+        }
+
         crypto::Bytes unsigned_response = auth_v2::BuildUnsignedResponse(
             response.x25519_public_key, response.mlkem_ciphertext,
             response.identity, response.rekey_window);
         crypto::Bytes signature_input = auth_v2::BuildSignatureInput(
-            challenge_, unsigned_response);
+            challenge_, unsigned_response, channel_binding);
         bool sig_ok = crypto::verify_key(pubkey.get(), signature_input,
                                          response.signature);
         const bool regular_auth_ok =
@@ -405,7 +441,7 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                                  auth_v2_ephemeral_->psk_salt)};
         crypto::Bytes initial_root = ratchet::DeriveInitialRoot(
             kem_shared.bytes(), x_shared.bytes(), psk_key.bytes(),
-            auth_v2_ephemeral_->transcript_salt);
+            auth_v2_ephemeral_->transcript_salt, channel_binding);
         // Send no deeper than the client will accept, and accept no deeper
         // than this server advertised in its TLS-protected challenge. The
         // response signature binds both advertisements to the transcript.

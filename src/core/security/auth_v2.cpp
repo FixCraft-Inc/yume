@@ -19,7 +19,9 @@ namespace {
 
 constexpr std::uint8_t kSchema = 2;
 constexpr std::uint8_t kCritical = 0x01;
-constexpr std::string_view kSignatureDomain = "yume/2.0/auth-signature/v1";
+// v2 appends the locally computed TLS exporter; a v1 verifier and a v2 signer
+// derive different inputs and fail loudly instead of downgrading silently.
+constexpr std::string_view kSignatureDomain = "yume/2.0/auth-signature/v2";
 
 void AppendU16(Bytes& out, std::uint16_t value) {
     out.push_back(static_cast<std::uint8_t>(value >> 8));
@@ -276,10 +278,16 @@ Response ParseResponse(const Bytes& encoded) {
 }
 
 Bytes BuildSignatureInput(const Bytes& challenge_record,
-                          const Bytes& unsigned_response_record) {
+                          const Bytes& unsigned_response_record,
+                          const Bytes& channel_binding) {
     if (challenge_record.size() > std::numeric_limits<std::uint32_t>::max() ||
         unsigned_response_record.size() > std::numeric_limits<std::uint32_t>::max()) {
         throw std::runtime_error("AUTH v2 transcript is too large");
+    }
+    // Fail closed rather than signing an unbound transcript: an empty or
+    // short binding means the caller could not read its own TLS exporter.
+    if (channel_binding.size() != kChannelBindingLen) {
+        throw std::runtime_error("AUTH v2 channel binding size is invalid");
     }
     Bytes out(kSignatureDomain.begin(), kSignatureDomain.end());
     AppendU32(out, static_cast<std::uint32_t>(challenge_record.size()));
@@ -287,6 +295,8 @@ Bytes BuildSignatureInput(const Bytes& challenge_record,
     AppendU32(out, static_cast<std::uint32_t>(unsigned_response_record.size()));
     out.insert(out.end(), unsigned_response_record.begin(),
                unsigned_response_record.end());
+    AppendU32(out, static_cast<std::uint32_t>(channel_binding.size()));
+    out.insert(out.end(), channel_binding.begin(), channel_binding.end());
     return out;
 }
 

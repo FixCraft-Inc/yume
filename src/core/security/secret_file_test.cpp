@@ -171,6 +171,56 @@ void LoadContract() {
 
     std::filesystem::remove_all(base);
 }
+
+void PrivateKeyLoadContract() {
+    const auto base = std::filesystem::temp_directory_path() /
+        ("yume-private-key-test-" + std::to_string(ProcessId()));
+    std::filesystem::remove_all(base);
+    std::filesystem::create_directories(base);
+    const auto key_path = base / "identity.key";
+    const std::string pem = "-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n";
+
+    Write(key_path, pem, 0600);
+    const auto contents = yume::security::ReadPrivateKeyFileStrict(key_path);
+    assert(std::string(contents.begin(), contents.end()) == pem);
+
+    // Anything another account can read is not a usable signing identity.
+    for (mode_t unsafe : {mode_t{0640}, mode_t{0604}, mode_t{0660},
+                          mode_t{0666}}) {
+        Write(key_path, pem, unsafe);
+        assert(Throws([&] {
+            (void)yume::security::ReadPrivateKeyFileStrict(key_path);
+        }));
+    }
+    Write(key_path, pem, 0600);
+
+    // A symlink is refused outright rather than followed to whatever it names.
+    const auto link_path = base / "identity-link.key";
+    assert(::symlink(key_path.c_str(), link_path.c_str()) == 0);
+    assert(Throws([&] {
+        (void)yume::security::ReadPrivateKeyFileStrict(link_path);
+    }));
+
+    // A directory, and an oversized file, are both out of contract.
+    assert(Throws([&] {
+        (void)yume::security::ReadPrivateKeyFileStrict(base);
+    }));
+    const auto huge_path = base / "huge.key";
+    Write(huge_path,
+          std::string(yume::security::kMaxPrivateKeyFileBytes + 1, 'x'), 0600);
+    assert(Throws([&] {
+        (void)yume::security::ReadPrivateKeyFileStrict(huge_path);
+    }));
+
+    assert(Throws([&] {
+        (void)yume::security::ReadPrivateKeyFileStrict(base / "absent.key");
+    }));
+    assert(Throws([&] {
+        (void)yume::security::ReadPrivateKeyFileStrict({});
+    }));
+
+    std::filesystem::remove_all(base);
+}
 #endif
 
 }  // namespace
@@ -179,6 +229,7 @@ int main() {
     WriterContract();
 #if !defined(_WIN32)
     LoadContract();
+    PrivateKeyLoadContract();
 #endif
     return 0;
 }

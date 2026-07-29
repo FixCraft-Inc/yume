@@ -74,6 +74,11 @@ struct InitialSecrets {
     Bytes x25519_shared;
     Bytes psk_key;
     Bytes transcript_salt;
+    // 32-byte TLS 1.3 exporter each endpoint computes from its own live
+    // connection. AUTH already refuses a signature over a different binding,
+    // so this is defence in depth: even a transcript check that was somehow
+    // bypassed still yields unrelated roots on the two sides of a relay.
+    Bytes channel_binding;
 };
 
 // The v2 PSK is exactly 32 uniformly random bytes loaded from a protected
@@ -89,7 +94,8 @@ Bytes DeriveInitialRoot(const InitialSecrets& secrets);
 Bytes DeriveInitialRoot(const Bytes& mlkem_shared,
                         const Bytes& x25519_shared,
                         const Bytes& psk_key,
-                        const Bytes& transcript_salt);
+                        const Bytes& transcript_salt,
+                        const Bytes& channel_binding);
 Bytes DeriveDirectionRoot(const Bytes& initial_root, Direction direction);
 
 struct SealedFrame {

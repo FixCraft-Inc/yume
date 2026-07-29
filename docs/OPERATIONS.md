@@ -173,10 +173,10 @@ Add a generated key:
 yumed --auth-keys /etc/yume/authorized_keys --keys-gen ./keys/user1 --keys-gen-add
 ```
 
-Prefer `yume-setup issue-key`. If the legacy command is necessary, create the
-output directory with mode `0700` first and verify the private `.key` is mode
-`0600`; the legacy writer currently applies permissions after writing and does
-not fail if that permission change fails.
+Prefer `yume-setup issue-key`. The `--keys-gen` command creates both files
+exclusively at mode `0600`, refuses to overwrite either path, and removes the
+private half if it cannot complete the pair. A private `0700` output directory
+still protects file names and other provisioning artifacts.
 
 Remove a key or alias:
 

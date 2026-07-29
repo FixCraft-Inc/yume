@@ -1,4 +1,4 @@
-.TH YUME 1 "2026-07-22" "YUME 2.0-dev2" "YUME Manual"
+.TH YUME 1 "2026-07-29" "YUME 2.0-dev3" "YUME Manual"
 .SH NAME
 yume \- stealth post-quantum transport client
 .SH SYNOPSIS
@@ -502,6 +502,16 @@ I/O thread count. Use
 .B 0
 for automatic selection.
 .TP
+.BI "--rekey-window " n
+Concurrent directional epoch offers this client accepts, and, capped by the
+server's advertised depth, the number it keeps prepared for sending. Range
+.BR 1 - 64 ,
+default
+.BR 8 .
+Each prepared epoch adds 256 KiB of transfer per rekey round trip on
+high-latency links. The 256 KiB, 512-frame, and 500 ms per-epoch limits are
+unchanged at every depth.
+.TP
 .B --udp
 Enable UDP forwarding.
 .TP
@@ -554,13 +564,13 @@ Pin the server TLS certificate fingerprint.
 .SH TLS STEALTH OPTIONS
 .TP
 .BI "--profile " name
-Select the pinned Chrome 150 Linux profile. In 2.0-dev2,
+Select the pinned Chrome 150 Linux profile. In 2.0-dev3,
 .B chrome
 is the only accepted value.
 .TP
 .B "--hide-in-the-crowd chrome"
 Explicit spelling for the same pinned Chrome 150 HTTP User-Agent profile.
-Other HTTP profiles are rejected for 2.0-dev2.
+Other HTTP profiles are rejected for 2.0-dev3.
 .TP
 .B --no-stealth
 Retired for 2.0 tunnels and rejected.

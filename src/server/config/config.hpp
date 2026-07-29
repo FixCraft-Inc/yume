@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "core/protocol/runtime_policy.hpp"
+#include "core/security/ratchet.hpp"
 #include "core/security/secret_file.hpp"
 #include "server/host/host_types.hpp"
 
@@ -38,6 +39,11 @@ struct ServerConfig {
     bool inner_required{false};
     bool inner_hop{true};
     std::uint32_t hop_interval_ms{500};
+    // Concurrent directional epoch offers accepted from one session, and the
+    // ceiling on this server's own sending window. Higher values lift the
+    // per-round-trip transfer ceiling on high-RTT links; every per-epoch limit
+    // is unchanged. Clamped to the ratchet's supported range.
+    std::uint16_t rekey_window{yume::ratchet::kDefaultRekeyWindow};
     // Aggregate admission bounds for authorized/preauth Argon2 handshake
     // work. These are reservations made before Argon2 allocates memory.
     std::uint32_t argon2_memory_budget_kib{1u << 19};  // 512 MiB

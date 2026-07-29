@@ -195,6 +195,6 @@ line rate as a WAN support claim.
 - Do not place an HTTP-mode reverse proxy in front of `yumed`; it must receive
   the original TLS connection. Use TCP passthrough when a fronting layer is
   required.
-- `2.0-dev2` is not release-complete. Check
+- `2.0-dev3` is not release-complete. Check
   [YUME_2_0_IMPLEMENTATION_STATUS.md](YUME_2_0_IMPLEMENTATION_STATUS.md) before
   treating a test result as a production support claim.

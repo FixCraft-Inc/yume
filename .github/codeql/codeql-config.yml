@@ -1,8 +1,10 @@
 name: yume-codeql
 
+# The extended suite includes GitHub's default security queries plus additional
+# lower-severity/precision security checks. Maintainability findings belong in
+# the normal lint/test tools rather than the security alert queue.
 queries:
   - uses: security-extended
-  - uses: security-and-quality
 
 paths-ignore:
   - basefwx/**

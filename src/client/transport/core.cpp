@@ -696,7 +696,10 @@ void TransportCore::feed_tls_bytes(const uint8_t* data, std::size_t size) {
         }
 #endif
         if (ratchet_response.has_value()) {
-            queue_frame(std::move(*ratchet_response), {}, true);
+            // Sealed by the write path, not here: sequence numbers must be
+            // assigned in wire order and dispatch_next_write is the only
+            // place that seals.
+            queue_frame(std::move(*ratchet_response), {}, false);
         }
         if (rekey_completed) {
             resume_writes_after_rekey();

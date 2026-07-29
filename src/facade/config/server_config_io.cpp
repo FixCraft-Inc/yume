@@ -57,6 +57,7 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::inner_required, s.inner_required);
     read_opt(j, cfg_key::inner_hop, s.inner_hop);
     read_opt(j, cfg_key::hop_interval_ms, s.hop_interval_ms);
+    read_opt(j, cfg_key::rekey_window, s.rekey_window);
     if (j.contains(cfg_key::argon2_memory_budget_kib)) {
         s.argon2_memory_budget_kib = server::json_positive_u32(
             j, cfg_key::argon2_memory_budget_kib);
@@ -315,6 +316,7 @@ bool save_server(server::ServerConfig const& s,
         {cfg_key::inner_required, s.inner_required},
         {cfg_key::inner_hop, s.inner_hop},
         {cfg_key::hop_interval_ms, s.hop_interval_ms},
+        {cfg_key::rekey_window, s.rekey_window},
         {cfg_key::argon2_memory_budget_kib, s.argon2_memory_budget_kib},
         {cfg_key::argon2_max_jobs, s.argon2_max_jobs},
         {cfg_key::reverse_port_min, s.reverse_port_min},
@@ -443,6 +445,10 @@ ValidationReport validate(server::ServerConfig const& s) {
     }
     if (s.bulk_key_max_sessions == 0 || s.bulk_key_max_sessions > 65535) {
         r.errors.emplace_back("bulk_key_max_sessions: must be in 1..65535");
+    }
+    if (s.rekey_window < yume::ratchet::kMinRekeyWindow ||
+        s.rekey_window > yume::ratchet::kMaxRekeyWindow) {
+        r.errors.emplace_back("rekey_window: must be in 1..64");
     }
     auto valid_filter_mode = [](const std::string& value) {
         return value == "blacklist" || value == "denylist" ||

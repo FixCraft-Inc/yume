@@ -541,7 +541,9 @@ void Session::handle_frame(protocol::Frame frame) {
             timing_open_.record(open_timer);
 #endif
             if (opened.control_response.has_value()) {
-                queue_frame_on_strand(*opened.control_response, {}, true);
+                // Sealed by the strand's write path, not here: sequence
+                // numbers must be assigned in wire order.
+                queue_frame_on_strand(*opened.control_response, {}, false);
             }
             if (opened.outbound_rekey_completed) {
 #if YUME_ENABLE_DEV_DIAGNOSTICS
@@ -554,6 +556,9 @@ void Session::handle_frame(protocol::Frame frame) {
                 }
 #endif
                 ratchet_timer_.cancel();
+                // With a multi-epoch window other offers may still be
+                // outstanding; re-arm on the oldest remaining deadline.
+                arm_ratchet_timeout_on_strand();
                 flush_ratchet_blocked_writes_on_strand();
             }
 #if YUME_ENABLE_DEV_DIAGNOSTICS

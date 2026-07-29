@@ -503,7 +503,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
     }
     if (cfg.tls_stealth_rotate) {
         util::log_error(
-            "YUME 2.0 dev2 rejects TLS profile rotation; the Chrome fixture is pinned");
+            "YUME 2.0 rejects TLS profile rotation; the Chrome fixture is pinned");
         return 1;
     }
     try {
@@ -954,7 +954,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             }
             auto v2_ratchet = send_auth_v2_response(
                 stream, io, cfg.identity, auth_challenge,
-                *cfg.inner_psk_material, *h2_carrier);
+                *cfg.inner_psk_material, *h2_carrier, cfg.rekey_window);
             YUME_TIMING_LOG("client.auth",
                              "send_response",
                              "ms=" + std::to_string(

@@ -306,19 +306,23 @@ void FederationLink::run_loop() {
             if (!cfg_.federation_anonym_ca.empty()) {
                 ctx.load_verify_file(cfg_.federation_anonym_ca);
             }
-            boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, ctx);
+            // Heap-owned so no other thread ever holds a pointer into this
+            // frame. Asio still requires the stream to die before `io`, so the
+            // guard below releases the shared slot first and this local
+            // reference is the last one at scope exit.
+            auto stream = std::make_shared<TlsStream>(io, ctx);
             struct ActiveStreamReset final {
                 std::mutex& mutex;
-                boost::asio::ssl::stream<boost::asio::ip::tcp::socket>*& active;
-                boost::asio::ssl::stream<boost::asio::ip::tcp::socket>* expected;
+                std::shared_ptr<TlsStream>& active;
+                const TlsStream* expected;
 
                 ~ActiveStreamReset() {
                     std::lock_guard<std::mutex> lock(mutex);
-                    if (active == expected) {
-                        active = nullptr;
+                    if (active.get() == expected) {
+                        active.reset();
                     }
                 }
-            } active_stream_reset{write_mutex_, active_stream_, &stream};
+            } active_stream_reset{write_mutex_, active_stream_, stream.get()};
             if (!connect_and_auth(io, stream)) {
                 continue;
             }
@@ -326,7 +330,7 @@ void FederationLink::run_loop() {
             std::array<std::uint8_t, kMaxFederationRead> buf{};
             while (!closing_.load()) {
                 boost::system::error_code ec;
-                std::size_t n = stream.read_some(boost::asio::buffer(buf), ec);
+                std::size_t n = stream->read_some(boost::asio::buffer(buf), ec);
                 if (ec) {
                     throw boost::system::system_error(ec);
                 }
@@ -353,7 +357,8 @@ void FederationLink::run_loop() {
 }
 
 bool FederationLink::connect_and_auth(boost::asio::io_context& io,
-                                      boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream) {
+                                      const std::shared_ptr<TlsStream>& owned_stream) {
+    TlsStream& stream = *owned_stream;
     if (!cfg_.outbound_proxy_url.empty()) {
         client::outbound_proxy::Config proxy_cfg;
         std::string parse_error;
@@ -489,9 +494,10 @@ bool FederationLink::connect_and_auth(boost::asio::io_context& io,
     transport->start();
     {
         std::lock_guard<std::mutex> write_lock(write_mutex_);
-        // The run-loop scope guard clears this slot before stream destruction.
-        // lgtm[cpp/stack-address-escape]
-        active_stream_ = &stream;
+        // The dial loop's scope guard clears this slot before the stream and
+        // its io_context are destroyed; the counted reference means a racing
+        // writer can only ever see a live stream or an empty slot.
+        active_stream_ = owned_stream;
     }
     {
         std::lock_guard<std::mutex> lock(mutex_);

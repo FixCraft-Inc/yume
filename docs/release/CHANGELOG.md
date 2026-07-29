@@ -1,5 +1,51 @@
 # Changelog
 
+## [Unreleased 2.0-dev3]
+
+Hard break from `2.0-dev2`: the exact transport version changed, so dev2 and
+dev3 binaries do not interoperate at admission or AUTH. No compatibility mode
+exists or is planned.
+
+### Added
+
+- **Bounded multi-epoch ratchet window.** A direction may keep several
+  authenticated, strictly contiguous future epochs in flight or prepared
+  instead of one, negotiated per connection through the AUTH transcript and
+  configured with `--rekey-window` / `rekey_window` (1..64, default 8). A
+  byte-saturated direction rises from 256 KiB to `window * 256 KiB` per rekey
+  round trip: roughly 35 Mbit/s to 280 Mbit/s at 60 ms RTT by the protocol
+  model. Every per-epoch limit is unchanged — 256 KiB, 512 application frames,
+  500 ms of activity — and the receiver still enforces the byte and frame
+  limits on authenticated plaintext. Gaps, duplicates, reordered ACKs, and
+  offers past the advertised depth stay fatal. Offers are paced by application
+  progress so a filling window does not emit a burst of rekey records.
+  `docs/YUME_2_0_WAN_BEHAVIOR.md` records what remains unmeasured.
+
+### Changed
+
+- **AUTH v2 records carry the negotiated window.** The challenge gains critical
+  field 7 and the response gains critical field 4, moving the Ed25519 signature
+  to field 5. The client's advertised depth is inside the signed record, so the
+  negotiation is covered by the existing transcript signature.
+- **An acknowledged epoch is prepared, not entered.** A direction advances when
+  the current epoch can no longer carry the next application frame, so each
+  prepared epoch delivers its whole byte budget.
+
+### Fixed
+
+- **Rekey ACKs are sealed in wire order.** `SessionRatchet::Open` used to seal
+  the REKEY_ACK on the read path. A directional chain assigns sequence numbers
+  at seal time, so a data frame sealed afterwards on the write path could reach
+  the wire first and the peer would close the session with "replay or
+  unexpected epoch/sequence". `OpenResult::control_response` is now plaintext
+  and is sealed by the caller's ordered write path like any other frame. The
+  defect predates the window but was only reachable in practice with several
+  exchanges outstanding.
+- **Federation link stream ownership.** The dialing loop's TLS stream is now
+  heap-owned and shared with the write path by a counted reference instead of a
+  pointer into the loop's stack frame. The lifetime was already guarded, but a
+  counted reference removes the class of defect entirely.
+
 ## [Unreleased 2.0-dev2]
 
 Current development is the hard-break 2.0 desktop transport line. It remains a

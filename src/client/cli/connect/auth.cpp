@@ -295,10 +295,16 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
     const std::string& identity_path,
     const protocol::Frame& challenge_frame,
     const security::Secret32& inner_psk,
-    obfs::H2Carrier& carrier) {
+    obfs::H2Carrier& carrier,
+    std::uint16_t rekey_window) {
 #if YUME_USE_BASEFWX
     const auth_v2::Challenge challenge =
         auth_v2::ParseChallenge(challenge_frame.payload);
+    // Accept what this client was configured for, send no deeper than the
+    // server's TLS-protected, transcript-bound advertisement.
+    const std::uint16_t local_window = ratchet::ClampRekeyWindow(rekey_window);
+    const std::uint16_t send_window =
+        std::min(local_window, challenge.rekey_window);
     auto identity_key = crypto::load_keypair(identity_path, "");
     EVP_PKEY* public_key = identity_key.public_key
         ? identity_key.public_key.get() : identity_key.private_key.get();
@@ -314,14 +320,14 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
         basefwx::x25519::DeriveSharedSecret(x25519.private_key,
                                             challenge.x25519_public_key)};
     crypto::Bytes unsigned_response = auth_v2::BuildUnsignedResponse(
-        x25519.public_key, kem.ciphertext, identity);
+        x25519.public_key, kem.ciphertext, identity, local_window);
     crypto::Bytes signature_input = auth_v2::BuildSignatureInput(
         challenge.encoded, unsigned_response);
     crypto::Bytes signature = crypto::sign_message(
         identity_key.private_key.get(), signature_input);
     basefwx::crypto::SecureClear(signature_input);
     crypto::Bytes response_payload = auth_v2::BuildResponse(
-        x25519.public_key, kem.ciphertext, identity, signature);
+        x25519.public_key, kem.ciphertext, identity, local_window, signature);
 
     basefwx::crypto::SecureBytes file_psk{inner_psk.CopyBytes()};
     basefwx::crypto::SecureBytes psk_key{
@@ -330,7 +336,13 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
         kem.shared, x_shared.bytes(), psk_key.bytes(), challenge.transcript_salt);
     auto session_ratchet = std::make_unique<ratchet::SessionRatchet>(
         ratchet::EndpointRole::Client, std::move(initial_root),
-        psk_key.Release());
+        psk_key.Release(), send_window, local_window);
+    // The negotiated depth sets the per-round-trip transfer ceiling, so it is
+    // the first thing to check when a high-latency link underperforms.
+    util::log_info("ratchet epoch window: send=" + std::to_string(send_window) +
+                   " accept=" + std::to_string(local_window) +
+                   " (server advertised " +
+                   std::to_string(challenge.rekey_window) + ")");
 
     protocol::Frame response{{static_cast<std::uint32_t>(response_payload.size()),
                               protocol::AUTH, 0, 0},
@@ -345,6 +357,7 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
     (void)challenge_frame;
     (void)inner_psk;
     (void)carrier;
+    (void)rekey_window;
     throw FatalError("YUME 2.0 requires a BaseFWX crypto build");
 #endif
 }

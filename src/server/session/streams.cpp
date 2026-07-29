@@ -532,7 +532,10 @@ void Session::queue_frame_on_strand(const protocol::Frame& frame,
 }
 
 void Session::flush_ratchet_blocked_writes_on_strand() {
-    if (!ratchet_ || ratchet_->outbound_rekey_pending()) return;
+    // A newly prepared epoch can unblock queued writes while later offers are
+    // still in flight, so this cannot wait for the whole window to drain.
+    // Frames that are still blocked re-queue in order via queue_frame_on_strand.
+    if (!ratchet_) return;
     auto pending = std::move(ratchet_blocked_writes_);
     ratchet_blocked_writes_.clear();
     for (auto& write : pending) {

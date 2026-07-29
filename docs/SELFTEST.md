@@ -44,12 +44,15 @@ The standalone entry point accepts the same benchmark options:
 ```bash
 build-selftest/bin/yume-selftest --list-configs
 build-selftest/bin/yume-selftest --full --no-color
+build-selftest/bin/yume-selftest --full --rekey-window 1
 ```
 
 The normal result table always shows median/p95 latency, MiB/s, and Mbit/s.
 `--dev` adds hot-path rows, startup timing, backpressure timing, repeat detail,
 and score components. JSON schema 2 records the 2.0 workload without retired
-Argon2/PQ-file fields.
+Argon2/PQ-file fields. `--rekey-window` passes the same validated depth
+(1..64) to both spawned binaries so high-RTT runs can compare the negotiated
+epoch window without changing per-epoch security limits.
 
 The harness creates temporary Ed25519 identity material plus separate 32-byte
 admission and inner PSK files. Both secret files contain exactly 64 lowercase

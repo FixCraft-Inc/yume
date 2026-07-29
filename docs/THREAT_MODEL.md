@@ -155,7 +155,7 @@ integration and runtime evidence.
 
 ## Release claims
 
-The transport stays `2.0-dev2` or a later development/RC version until the release gates in
+The transport stays `2.0-dev3` or a later development/RC version until the release gates in
 `docs/YUME_2_0_IMPLEMENTATION_STATUS.md` pass. Unit tests and a short loopback
 smoke are not evidence for WAN behavior, a 30-minute lifetime, sanitizer safety,
 external conformance, or sustained overhead. Release documentation must separate

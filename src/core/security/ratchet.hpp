@@ -36,6 +36,34 @@ static_assert(kRekeyByteLead < kEpochByteLimit);
 static_assert(kRekeyMessageLead < kEpochMessageLimit);
 static_assert(kRekeyTimeLead < kEpochActiveLimit);
 
+// Bounded multi-epoch window (dev3). One pending exchange caps a byte-saturated
+// direction at `kEpochByteLimit` per rekey round trip, which is about 35 Mbit/s
+// at 60 ms and 52 Mbit/s at 40 ms. A window of `w` authenticated, strictly
+// contiguous future epochs raises that to `w * kEpochByteLimit` per round trip
+// without touching any per-epoch limit: every epoch still carries at most
+// 256 KiB, 512 application frames, and 500 ms of activity.
+//
+// The window is negotiated per connection and each endpoint advertises what it
+// will accept inbound, so a peer can never force more than the advertised
+// number of ML-KEM encapsulations or retained epoch roots. Depth also bounds
+// the break-in recovery gap: an endpoint compromise exposes at most `w`
+// prepared future epochs instead of one.
+inline constexpr std::uint16_t kMinRekeyWindow = 1;
+inline constexpr std::uint16_t kMaxRekeyWindow = 64;
+inline constexpr std::uint16_t kDefaultRekeyWindow = 8;
+static_assert(kMinRekeyWindow >= 1);
+static_assert(kDefaultRekeyWindow >= kMinRekeyWindow);
+static_assert(kDefaultRekeyWindow <= kMaxRekeyWindow);
+
+// Clamp any configured or peer-advertised depth into the supported range. A
+// zero or absent value means "no window", which is the single-exchange dev2
+// behavior rather than an error.
+constexpr std::uint16_t ClampRekeyWindow(std::uint32_t requested) noexcept {
+    if (requested < kMinRekeyWindow) return kMinRekeyWindow;
+    if (requested > kMaxRekeyWindow) return kMaxRekeyWindow;
+    return static_cast<std::uint16_t>(requested);
+}
+
 enum class Direction : std::uint8_t {
     ClientToServer = 0,
     ServerToClient = 1,
@@ -86,6 +114,10 @@ public:
     Direction direction() const noexcept { return direction_; }
     std::uint64_t epoch() const noexcept { return epoch_; }
     std::uint64_t next_sequence() const noexcept { return sequence_; }
+    // Application usage accounted against this epoch's hard limits. Callers use
+    // it to pace preparation against real progress, never to relax a limit.
+    std::size_t epoch_bytes() const noexcept { return epoch_bytes_; }
+    std::uint64_t epoch_messages() const noexcept { return epoch_messages_; }
 
     bool ShouldRekey(std::size_t next_plaintext_bytes,
                      std::chrono::steady_clock::time_point now) const;

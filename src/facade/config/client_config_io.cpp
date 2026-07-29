@@ -47,6 +47,7 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::inner_heavy, c.inner_heavy);
     read_opt(j, cfg_key::inner_hop, c.inner_hop);
     read_opt(j, cfg_key::hop_interval_ms, c.hop_interval_ms);
+    read_opt(j, cfg_key::rekey_window, c.rekey_window);
     read_opt(j, cfg_key::allow_udp, c.allow_udp);
     read_opt(j, cfg_key::allow_local_ip, c.allow_local_ip);
     read_opt(j, cfg_key::allow_exec, c.allow_exec);
@@ -155,6 +156,7 @@ bool save_client(client::ClientConfig const& c,
         {cfg_key::inner_heavy, c.inner_heavy},
         {cfg_key::inner_hop, c.inner_hop},
         {cfg_key::hop_interval_ms, c.hop_interval_ms},
+        {cfg_key::rekey_window, c.rekey_window},
         {cfg_key::allow_udp, c.allow_udp},
         {cfg_key::allow_local_ip, c.allow_local_ip},
         {cfg_key::allow_exec, c.allow_exec},
@@ -222,6 +224,10 @@ ValidationReport validate(client::ClientConfig const& c) {
     }
     if (c.tunnel_count < 1 || c.tunnel_count > 16) {
         r.errors.emplace_back("tunnels: must be 1..16");
+    }
+    if (c.rekey_window < yume::ratchet::kMinRekeyWindow ||
+        c.rekey_window > yume::ratchet::kMaxRekeyWindow) {
+        r.errors.emplace_back("rekey_window: must be in 1..64");
     }
     if (!c.socks_bind_host.empty()) {
         boost::system::error_code ec;

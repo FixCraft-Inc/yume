@@ -1,6 +1,6 @@
 # YUME 2.0 desktop implementation status
 
-Status: `2.0-dev2` vertical slice implemented; release gates incomplete.
+Status: `2.0-dev3` vertical slice implemented; release gates incomplete.
 
 This is a truthful inventory of the focused Linux x86-64 client/server work. It
 does not claim Android, GUI, nginx, alternate browser profiles, H3, federation,
@@ -39,7 +39,7 @@ or admin/control validation.
   separate TLS/operator CA material, TLS/SNI name, admission secret, inner PSK,
   tunnel count, and operator-proof policy. Legacy v1 files that carried only
   the shared private CA remain importable.
-- Exact `2.0-dev2` admission/AUTH-version equality and no accepted 1.x/dev1
+- Exact `2.0-dev3` admission/AUTH-version equality and no accepted 1.x/dev1
   downgrade path. Legacy
   inner/light/heavy/dual/hop/no-inner/raw-carrier and literal-secret CLI choices
   are rejected.
@@ -111,14 +111,22 @@ or admin/control validation.
   DATA/ratchet/H2/WebSocket/TLS benchmark path, not SOCKS target sockets,
   packet ABI/TUN, WAN, Android, or a release soak. Logs and binary hashes are in
   `yume-bench-results/dev2-rekey-overlap-20260722/`.
-- Dev2 still has only one pending future epoch. On a saturated high-BDP path,
-  exhausting 256 KiB before its ACK returns reintroduces a hard-boundary wait;
-  the resulting model is about 35/21/10 Mbit/s at 60/100/210 ms RTT. This is
-  the byte-bound case; the 100 ms time lead and 64-frame lead can separately
-  run out on continuous or small-frame traffic. This is not a measured WAN
-  result. A bounded multi-epoch hybrid preparation window, followed by H2/TCP
-  bandwidth-delay-product work, is required before a WAN line-rate claim. See
-  `docs/YUME_2_0_WAN_BEHAVIOR.md`.
+- Dev2 had only one pending future epoch, so exhausting 256 KiB before its ACK
+  returned reintroduced a hard-boundary wait on a saturated high-BDP path: a
+  model of about 35/21/10 Mbit/s at 60/100/210 ms RTT.
+- Dev3 replaces that with a negotiated bounded window of authenticated,
+  strictly contiguous future epochs (`--rekey-window`, default 8, range 1..64),
+  raising the same model to `window * 256 KiB` per rekey round trip — about
+  419/280 Mbit/s at 40/60 ms at the default depth. Every per-epoch limit is
+  unchanged and the depth bounds both the ML-KEM work a peer can request and
+  the number of prepared future epochs an endpoint compromise exposes. Unit
+  coverage is in `src/core/security/session_ratchet_test.cpp` (window budget,
+  progress pacing, inbound overflow, non-contiguous offer) and
+  `src/core/security/auth_v2_test.cpp` (record vectors, range rejection).
+  These are unit and model results, not measured WAN results: the 100 ms time
+  lead and 64-frame lead can still run out on continuous or small-frame
+  traffic, and H2/TCP bandwidth-delay-product work is still required before any
+  WAN line-rate claim. See `docs/YUME_2_0_WAN_BEHAVIOR.md`.
 - Timing instrumentation now uses one shared diagnostics layer. It is compiled
   only into Debug/RelWithDebInfo builds and remains runtime opt-in; Release and
   MinSizeRel contain no timing clocks, counters, handlers, event strings, or

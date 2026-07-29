@@ -15,7 +15,7 @@ builds and should use Debian-packaged libraries.
 Use scripts/make_debian_orig.sh from the upstream checkout to create the
 matching ../yume_<version>.orig.tar.xz before running dpkg-buildpackage -S.
 Development suffixes are normalized for Debian ordering, so upstream
-2.0-dev2 is packaged as 2.0~dev2.
+2.0-dev3 is packaged as 2.0~dev3.
 
 The current Debian packaging configures YUME with:
 

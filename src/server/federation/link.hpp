@@ -31,6 +31,8 @@ class Session;
 
 class FederationLink : public std::enable_shared_from_this<FederationLink> {
 public:
+    using TlsStream = boost::asio::ssl::stream<boost::asio::ip::tcp::socket>;
+
     FederationLink(boost::asio::io_context& server_io,
                    const ServerConfig& cfg,
                    const FederationPeer& peer,
@@ -67,7 +69,7 @@ private:
     void set_state(std::string state, std::string error = {});
     void reset_transport();
     bool connect_and_auth(boost::asio::io_context& io,
-                          boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream);
+                          const std::shared_ptr<TlsStream>& stream);
     bool configure_inner_from_server_info(const nlohmann::json& info,
                                           std::string* pq_public_path,
                                           std::string* error);
@@ -93,7 +95,11 @@ private:
     std::unordered_map<std::uint8_t, LinkChannel> channels_;
     std::unique_ptr<client::TransportCore> transport_;
     std::mutex write_mutex_;
-    boost::asio::ssl::stream<boost::asio::ip::tcp::socket>* active_stream_{nullptr};
+    // Counted rather than raw: the transport's write handler and close() both
+    // reach this slot from other threads, and the dial loop owns the stream
+    // only for the lifetime of one connection attempt. It is always cleared
+    // under write_mutex_ before that attempt's io_context is destroyed.
+    std::shared_ptr<TlsStream> active_stream_;
     std::string cached_peer_pq_public_path_;
 };
 

@@ -17,6 +17,7 @@
 
 #include <boost/asio/io_context.hpp>
 
+#include "core/security/ratchet.hpp"
 #include "core/security/secret_file.hpp"
 #include "client/transport/socket_protection.hpp"
 
@@ -67,6 +68,12 @@ struct ClientConfig {
     bool inner_heavy{true};
     bool inner_hop{true};
     std::uint32_t hop_interval_ms{500};
+    // --rekey-window <N>. Concurrent directional epoch offers this client
+    // accepts inbound and, capped by the server's advertised depth, uses
+    // outbound. One exchange caps a saturated direction at 256 KiB per rekey
+    // round trip; N raises that to N * 256 KiB without changing any per-epoch
+    // limit. Clamped to the ratchet's supported range.
+    std::uint16_t rekey_window{yume::ratchet::kDefaultRekeyWindow};
     bool allow_udp{false};
     bool allow_local_ip{false};
     bool server_in_charge{false};

@@ -13,6 +13,7 @@
 #include <string_view>
 #include <utility>
 
+#include "core/security/ratchet.hpp"
 #include "client/cli/parse/endpoints.hpp"
 #include "core/stealth/http_profile.hpp"
 #include "util.hpp"
@@ -401,6 +402,25 @@ ParsedArgs parse_args(int argc, char** argv) {
                 " is a retired 1.x time-key option; YUME 2.0 has no legacy hop layer"
                 " and always uses the hybrid directional ratchet";
             return args;
+        } else if (arg == "--rekey-window") {
+            if (!parse_int_value("--rekey-window", args.rekey_window)) {
+                return args;
+            }
+            if (args.rekey_window < ratchet::kMinRekeyWindow ||
+                args.rekey_window > ratchet::kMaxRekeyWindow) {
+                args.parse_error =
+                    "--rekey-window: expected an integer in " +
+                    std::to_string(ratchet::kMinRekeyWindow) + ".." +
+                    std::to_string(ratchet::kMaxRekeyWindow);
+                return args;
+            }
+            args.rekey_window_override = true;
+            // Also forwarded so `--quick-bench --rekey-window N` sets the
+            // depth on the processes the local benchmark spawns, not just on
+            // this one.
+            args.local_benchmark_args.push_back(arg);
+            args.local_benchmark_args.push_back(
+                std::to_string(args.rekey_window));
         } else if (arg == "--inner" || arg == "--no-inner" ||
                    arg == "--inner-heavy" || arg == "--inner-light") {
             args.parse_error = arg +
@@ -651,7 +671,7 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.outbound_proxy_override = true;
         } else if (arg == "--no-stealth") {
             args.parse_error =
-                "--no-stealth is not accepted by YUME 2.0 dev2; the Chrome profile is mandatory";
+                "--no-stealth is not accepted by YUME 2.0; the Chrome profile is mandatory";
             return args;
         } else if (arg == "--profile") {
             const char* value = take_value("--profile");
@@ -666,11 +686,11 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.tls_stealth_profile = value;
         } else if (arg == "--tls-stealth-rotate") {
             args.parse_error =
-                "--tls-stealth-rotate is not accepted by YUME 2.0 dev2; the Chrome fixture is pinned";
+                "--tls-stealth-rotate is not accepted by YUME 2.0; the Chrome fixture is pinned";
             return args;
         } else if (arg == "--tls-stealth-rotation-interval") {
             args.parse_error =
-                "--tls-stealth-rotation-interval is not accepted by YUME 2.0 dev2; "
+                "--tls-stealth-rotation-interval is not accepted by YUME 2.0; "
                 "the Chrome fixture is pinned";
             return args;
         } else if (arg == "--tls-fingerprint-log") {

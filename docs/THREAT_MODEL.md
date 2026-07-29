@@ -76,12 +76,16 @@ time limit is sender-local because delayed delivery is indistinguishable from
 late sealing without a wire timestamp, so the 500 ms part assumes a conforming
 sender.
 
-The next epoch is prepared while authenticated application data still fits in
-the current epoch. This overlaps the hybrid round trip but does not extend the
-byte, frame, or sender-time boundary. Data waits in a bounded queue if the ACK
-is not ready at the hard boundary, and timeout closes the session rather than
-using an expired epoch. The previous receiving chain is retained only until
-the first authenticated new-epoch frame and then erased with retired roots and
+Up to the AUTH-negotiated window (1..64, default 8) of strictly contiguous
+future epochs may be authenticated and prepared while application data still
+fits in the current epoch. This overlaps hybrid round trips without extending
+any epoch's byte, frame, or sender-time boundary. An ACK prepares an epoch; the
+sender enters it only when the current epoch cannot carry the next application
+frame. The negotiated depth bounds outstanding ML-KEM work and retained future
+roots. Data waits in a bounded queue if no prepared epoch is available at a
+hard boundary, and timeout closes the session rather than using an expired
+epoch. The previous receiving chain is retained only until the first
+authenticated next-epoch frame and then erased with retired roots and
 ephemeral/shared material. Ordered H2/TCP prevents an honest sender's old-epoch
 frames from arriving after that commit; any such frame is fatal.
 

@@ -61,7 +61,7 @@ Used by client, server, facade, and ABI. No UI, no `main()`.
 
 | Directory | Responsibility |
 | --- | --- |
-| `security/` | Auth crypto, identity, inner ML-KEM + AES-GCM channel |
+| `security/` | AUTH, identity, and the ML-KEM-1024 + X25519 + PSK ratchet with AES-GCM records |
 | `protocol/` | Wire format, frames, control protocol, runtime policy |
 | `stealth/` | TLS fingerprint shaping, HTTP/2 obfs carrier, disguise |
 | `app_codec/` | Codec-neutral envelope and registry; `builtin/` holds one unit per codec |

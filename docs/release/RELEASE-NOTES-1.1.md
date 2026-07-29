@@ -1,5 +1,11 @@
 # YUME 1.1 — First Stable Release
 
+> **Historical plan:** this document records the superseded 1.x release plan.
+> The current source is the incompatible `2.0-dev3` development line. Use
+> [`../YUME_2_0_IMPLEMENTATION_STATUS.md`](../YUME_2_0_IMPLEMENTATION_STATUS.md)
+> and [`../protocol/YUME_2_0_WIRE.md`](../protocol/YUME_2_0_WIRE.md) for current
+> implementation and protocol truth.
+
 YUME is a **post-quantum stealth transport** that tunnels TCP and UDP
 through real TLS 1.3 sessions with browser-profiled ClientHellos and an
 HTTP/2-shaped opening exchange. Both ends — the client `yume` and the daemon
@@ -185,7 +191,7 @@ standalone — and provides:
 
 The full BaseFWX 3.7.0 security model for BaseFWX's own file/password modes
 lives in
-[`basefwx/SECURITY.md`](basefwx/SECURITY.md) and
+[`../../basefwx/SECURITY.md`](../../basefwx/SECURITY.md) and
 [`../../basefwx/RELEASE-NOTES-3.7.0.md`](../../basefwx/RELEASE-NOTES-3.7.0.md).
 
 ### Live key hopping
@@ -277,7 +283,7 @@ attach the MIPS artifacts manually.
 One April 2026 WAN run measured about 234 Mbps download and 36 Mbps upload
 through YUME. It did not record CPU utilization or provide a same-path bypass,
 so it does not establish a CPU-overhead percentage or an "always" bound. The
-methodology and per-link numbers are in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md).
+methodology and per-link numbers are in [`../PERFORMANCE.md`](../PERFORMANCE.md).
 
 The hot inner-crypto path benefits directly from BaseFWX 3.7.0: Java now
 supports Argon2id through BouncyCastle, C++ KEM paths use RAII secret wiping,
@@ -396,7 +402,7 @@ gpg --verify yume-amd64-linux.sig yume-amd64-linux
   matrix-ized but only the arm64 entry runs. Rosetta 2 covers Intel
   Macs that need to run the arm64 binary. To add a native Intel
   build, uncomment the prepared `macos-13` matrix entry in
-  [`.github/workflows/release.yml`](.github/workflows/release.yml).
+  [`../../.github/workflows/release.yml`](../../.github/workflows/release.yml).
 * **Windows GUI is best-effort.** The Windows GUI cross-build via
   MinGW + `x64-mingw-static` vcpkg triplet is marked
   `continue-on-error: true` for 1.1 because the GUI-specific vcpkg
@@ -454,15 +460,15 @@ Optional flags:
 ```
 
 Cross-builds and reproducible release tarballs are driven by
-[`fullau.sh`](fullau.sh) and [`ezbuild.sh`](ezbuild.sh); see also
-[`docs/PACKAGING.md`](docs/PACKAGING.md).
+[`../../fullau.sh`](../../fullau.sh) and [`../../ezbuild.sh`](../../ezbuild.sh);
+see also [`../PACKAGING.md`](../PACKAGING.md).
 
 ---
 
 ## 13. License
 
 AGPL-3.0-or-later for YUME source, apps, daemon, proxy, GUI, and
-libyume. See [`LICENSE`](LICENSE). BaseFWX has its own split license:
+libyume. See [`../../LICENSE`](../../LICENSE). BaseFWX has its own split license:
 core library/API/runtime code and plugin ABI/SPI surfaces are
 LGPL-3.0-or-later, standalone CLI/tools/benchmarks/scripts are
 GPL-3.0-or-later, and example plugin templates are MIT OR Apache-2.0.
@@ -479,7 +485,7 @@ Preferred path: GitHub Security Advisory →
 acknowledgement ≤ 48 h, triage ≤ 5 business days, fix delivered in a
 new release (Critical/High ≤ 14 d, Medium ≤ 30 d).
 
-See [`basefwx/SECURITY.md`](basefwx/SECURITY.md) for the full
+See [`../../basefwx/SECURITY.md`](../../basefwx/SECURITY.md) for the full
 reporting policy.
 
 ---
@@ -500,8 +506,8 @@ PQ KEM is [ML-KEM-768](https://csrc.nist.gov/pubs/fips/203/final) via
 
 ---
 
-*See [`docs/EXPLAINED.md`](docs/EXPLAINED.md) for protocol
-internals, [`docs/QUICKSTART.md`](docs/QUICKSTART.md) for getting
-running, [`docs/STEALTH.md`](docs/STEALTH.md) for the camouflage
-layers, and [`docs/OPERATIONS.md`](docs/OPERATIONS.md) for
+*See [`../EXPLAINED.md`](../EXPLAINED.md) for protocol
+internals, [`../QUICKSTART.md`](../QUICKSTART.md) for getting
+running, [`../STEALTH.md`](../STEALTH.md) for the camouflage
+layers, and [`../OPERATIONS.md`](../OPERATIONS.md) for
 production deployment.*

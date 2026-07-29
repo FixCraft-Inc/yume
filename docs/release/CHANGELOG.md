@@ -48,9 +48,8 @@ exists or is planned.
 
 ## [Unreleased 2.0-dev2]
 
-Current development is the hard-break 2.0 desktop transport line. It remains a
-development version until the release gates in
-`docs/YUME_2_0_IMPLEMENTATION_STATUS.md` pass.
+Dev2 was the first hard-break 2.0 desktop transport line. It was superseded by
+dev3 before release; neither development version is a stable release.
 
 ### Added
 

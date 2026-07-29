@@ -228,3 +228,23 @@ indistinguishability. BoringSSL is a likely experiment, not a sufficient fix by
 itself; Chrome-specific behavior and entropy-normalized on-wire comparison
 against one pinned build are required. Traffic padding is likewise an
 evidence-driven option, not an automatic improvement.
+
+Client AUTH sends an Ed25519 public key and a signature over the complete
+canonical challenge/response transcript; it never sends the private key.
+However, the signature input is not independently bound to a TLS exporter,
+certificate fingerprint, or SNI. The enclosing TLS connection is
+certificate/hostname verified and can be pinned, but a malicious terminating
+endpoint with compatible admission/PSK access could relay a live AUTH exchange.
+That does not reveal a reusable client credential. Explicit channel binding
+would require a deliberate protocol-version and transcript-vector change.
+The legacy Linux `generate_ed25519_keypair()` path writes the PEM before
+applying mode `0600` and does not fail if that permission change fails.
+`crypto::load_keypair()` also does not reject an existing identity file with
+unsafe ownership or group/world permissions. Safe creation and load-time
+identity-file policy therefore remain hardening work.
+
+The hybrid ephemeral establishment/rekeys provide a forward-secrecy design
+against later long-term-file compromise, not secrecy from `yumed` itself.
+`yumed` terminates the ratchet and handles decrypted stream bytes. Historical
+secrecy still depends on honest non-retention, ephemeral erasure, primitive/RNG
+security, and the absence of live endpoint compromise.

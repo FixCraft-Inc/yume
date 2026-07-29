@@ -28,6 +28,13 @@ exists or is planned.
   mismatch, rejects the stale 2.0 profile-rotation claim, treats BoringSSL and
   traffic padding as evidence-driven experiments, and describes 500 ms as a
   sender-active epoch limit rather than a twice-per-second wall-clock promise.
+- **The untrusted-server boundary is explicit.** Client AUTH sends a public
+  Ed25519 identity plus transcript signature, not the private key; ephemeral
+  hybrid exchanges provide conditional forward secrecy against later
+  persistent-file compromise. `yumed` remains the terminating single-hop proxy
+  with access to decrypted YUME stream bytes, and AUTH is not independently
+  TLS-exporter-bound against live forwarding by a malicious compatible
+  endpoint.
 - **AUTH v2 records carry the negotiated window.** The challenge gains critical
   field 7 and the response gains critical field 4, moving the Ed25519 signature
   to field 5. The client's advertised depth is inside the signed record, so the

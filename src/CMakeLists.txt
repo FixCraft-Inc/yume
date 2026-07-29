@@ -154,6 +154,8 @@ endfunction()
 # second call site added to ~50 targets.
 function(yume_apply_perf_opts target)
     yume_apply_warnings(${target})
+    get_target_property(_yume_shared_abi_input
+        ${target} YUME_SHARED_ABI_INPUT)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(${target} PRIVATE
             $<$<CXX_COMPILER_ID:GNU>:-Wno-psabi>
@@ -187,7 +189,7 @@ function(yume_apply_perf_opts target)
                 $<$<CONFIG:MinSizeRel>:-ffast-math>
             )
         endif()
-        if(YUME_LTO)
+        if(YUME_LTO AND NOT _yume_shared_abi_input)
             # GCC's plain -flto defaults to serial LTRANS partitions unless
             # invoked through a make jobserver. Ninja therefore emits
             # lto-wrapper warnings and leaves cores idle at the most expensive
@@ -798,12 +800,9 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         if(UNIX AND NOT APPLE)
             target_link_options(yume_abi PRIVATE
                 "LINKER:--version-script=${_yume_abi_version_script}"
-                # The facade/core arrive through static archives. GCC LTO can
-                # materialize weak libstdc++ implementations from those
-                # archives after version-script symbol resolution, leaving
-                # C++ implementation names in .dynsym on some GNU toolchains.
-                # Input objects carry hidden visibility as the primary fix;
-                # exclude-libs keeps non-LTO archive symbols contained too.
+                # The facade/core arrive through non-LTO static archives.
+                # Hidden input visibility is the primary control; exclude-libs
+                # contains any remaining archive-level implementation symbols.
                 "LINKER:--exclude-libs,ALL"
             )
             set_property(TARGET yume_abi APPEND PROPERTY

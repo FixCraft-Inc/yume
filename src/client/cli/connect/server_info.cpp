@@ -40,9 +40,6 @@ ServerInfoPayload parse_server_info_payload(const protocol::Frame& frame) {
             }
         }
     }
-    info.pq_pub_b64 = json.value("pq_pub", "");
-    info.pq_sig = json.value("pq_sig", "");
-    info.pq_alg = json.value("pq_alg", "");
     if (json.contains("capabilities")) {
         if (!json["capabilities"].is_array()) {
             throw std::runtime_error("server capabilities must be an array");

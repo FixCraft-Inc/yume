@@ -44,7 +44,10 @@ or admin/control validation.
 - Exact `2.0-dev4` admission/AUTH-version equality and no accepted 1.x/dev1
   downgrade path. Legacy
   inner/light/heavy/dual/hop/no-inner/raw-carrier and literal-secret CLI choices
-  are rejected.
+  are rejected. The unreachable client-side 1.x AUTH response, Argon2 challenge
+  metadata, and long-lived PQ auto-trust/reconnect implementation have been
+  removed; the unvalidated federation path still retains its separate legacy
+  AUTH and inner-key flow.
 
 ## Local evidence completed
 

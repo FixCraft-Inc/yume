@@ -19,7 +19,6 @@
 #include "client/cli/config/input.hpp"
 #include "client/cli/connect/io.hpp"
 #include "client/cli/config/platform.hpp"
-#include "client/cli/connect/pq_bootstrap.hpp"
 #include "client/cli/commands/proxy.hpp"
 #include "client/cli/commands/io_runtime.hpp"
 #include "client/cli/parse/endpoints.hpp"
@@ -592,7 +591,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
     };
     int attempt = 0;
     bool pq_warned = false;
-    bool pq_reconnect_used = false;
     bool verified_once = false;
     std::uint64_t completed_tls_connections = 0;
     std::set<tls_fingerprint::BrowserProfile> tls_verification_attempted;
@@ -986,7 +984,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             if (anon_frame.header.type != protocol::ANON) {
                 throw FatalError("this endpoint is not a yume server (unexpected response type); please check the origin and try again");
             }
-            bool pq_reconnect = false;
             bool have_anon = false;
             bool verity_ok = false;
             bool fixcraft_ok = false;
@@ -1025,9 +1022,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             std::string sub_sig;
             std::string sub_alg;
             std::string sub_cert_b64;
-            std::string pq_pub_b64;
-            std::string pq_sig;
-            std::string pq_alg;
             try {
                 ServerInfoPayload server_info = parse_server_info_payload(anon_frame);
                 server_version = std::move(server_info.version);
@@ -1043,9 +1037,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 sub_sig = std::move(server_info.sub_sig);
                 sub_alg = std::move(server_info.sub_alg);
                 sub_cert_b64 = std::move(server_info.sub_cert_b64);
-                pq_pub_b64 = std::move(server_info.pq_pub_b64);
-                pq_sig = std::move(server_info.pq_sig);
-                pq_alg = std::move(server_info.pq_alg);
                 announced_proof_sources = std::move(server_info.announced_proof_sources);
                 server_capabilities = std::move(server_info.capabilities);
                 have_inner_caps = server_info.have_inner_caps;
@@ -1100,46 +1091,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 }
                 std::cout << "\033[1;32m" << out << "\033[0m" << std::endl;
             };
-            // YUME 2.0 uses an ephemeral ML-KEM-1024 key in AUTH. The 1.x
-            // long-lived PQ bootstrap/reconnect path is intentionally absent.
-            bool allow_pq_bootstrap = false;
-            PqBootstrapInput pq_bootstrap_input;
-            pq_bootstrap_input.allow_bootstrap = allow_pq_bootstrap;
-            pq_bootstrap_input.inner_crypto_requested = false;
-            pq_bootstrap_input.pq_not_supported = pq_not_supported;
-            pq_bootstrap_input.pq_need_key = pq_need_key;
-            pq_bootstrap_input.pq_pub_b64 = pq_pub_b64;
-            pq_bootstrap_input.pq_sig_b64 = pq_sig;
-            pq_bootstrap_input.cert_fingerprint = certfp;
-            if (allow_pq_bootstrap && !pq_pub_b64.empty() && !certfp.empty() && !pq_sig.empty()) {
-                pq_bootstrap_input.peer_cert_fingerprint = get_peer_cert_fingerprint(nullptr, stream.native_handle());
-            }
-            pq_bootstrap_input.sub_cert_b64 = sub_cert_b64;
-            pq_bootstrap_input.anonym_ca_cert = cfg.anonym_ca_cert;
-
-            PqBootstrapState pq_bootstrap_state;
-            pq_bootstrap_state.pq_public_key = cfg.pq_public_key;
-            pq_bootstrap_state.pq_reconnect = pq_reconnect;
-            pq_bootstrap_state.pq_reconnect_used = pq_reconnect_used;
-            pq_bootstrap_state.sub_ok = sub_ok;
-            pq_bootstrap_state.ca_ok = ca_ok;
-            pq_bootstrap_state.sub_pub = std::move(sub_pub);
-            pq_bootstrap_state.ca_pub = std::move(ca_pub);
-            pq_bootstrap_state = maybe_auto_trust_pq(pq_bootstrap_input, std::move(pq_bootstrap_state));
-            cfg.pq_public_key = std::move(pq_bootstrap_state.pq_public_key);
-            pq_reconnect = pq_bootstrap_state.pq_reconnect;
-            pq_reconnect_used = pq_bootstrap_state.pq_reconnect_used;
-            sub_ok = pq_bootstrap_state.sub_ok;
-            ca_ok = pq_bootstrap_state.ca_ok;
-            sub_pub = std::move(pq_bootstrap_state.sub_pub);
-            ca_pub = std::move(pq_bootstrap_state.ca_pub);
-
             if (!server_error.empty()) {
-                if (pq_reconnect) {
-                    util::log_info("PQ public key received; reconnecting to enable inner crypto");
-                    attempt++;
-                    continue;
-                }
                 print_red(server_error);
                 if (inner_disabled_for_session &&
                     server_error.find("requires inner") != std::string::npos &&
@@ -1272,11 +1224,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             }
             have_anon = true;
             verity_ok = (mode == "anonym") && (fixcraft_ok || ca_ok || sub_ok);
-            if (pq_reconnect) {
-                util::log_info("PQ public key received; reconnecting to enable inner crypto");
-                attempt++;
-                continue;
-            }
             if (inner_disabled_for_session) {
                 if (!pq_warned) {
                     warn_security_disabled("PQ", cfg.boring);

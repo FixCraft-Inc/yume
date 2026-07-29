@@ -422,7 +422,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     endif()
 
     if(YUME_BUILD_SHARED_ABI)
-        set_target_properties(yume_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+        yume_prepare_static_for_shared_abi(yume_core)
     endif()
 
     yume_apply_perf_opts(yume_core)
@@ -471,7 +471,7 @@ endif()
 yume_link_atomic_if_needed(yume_transport_core PUBLIC)
 yume_apply_perf_opts(yume_transport_core)
 if(YUME_BUILD_SHARED_ABI)
-    set_target_properties(yume_transport_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    yume_prepare_static_for_shared_abi(yume_transport_core)
 endif()
 
 if(NOT YUME_TRANSPORT_CORE_ONLY)
@@ -520,7 +520,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     target_include_directories(yume_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(yume_server PUBLIC yume_core yume_transport_core)
     if(YUME_BUILD_SHARED_ABI)
-        set_target_properties(yume_server PROPERTIES POSITION_INDEPENDENT_CODE ON)
+        yume_prepare_static_for_shared_abi(yume_server)
     endif()
     yume_apply_perf_opts(yume_server)
     if(WIN32)
@@ -613,7 +613,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     target_include_directories(yume_client_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(yume_client_lib PUBLIC yume_core yume_transport_core)
     if(YUME_BUILD_SHARED_ABI)
-        set_target_properties(yume_client_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
+        yume_prepare_static_for_shared_abi(yume_client_lib)
     endif()
     yume_apply_perf_opts(yume_client_lib)
     if(WIN32)
@@ -802,8 +802,8 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
                 # materialize weak libstdc++ implementations from those
                 # archives after version-script symbol resolution, leaving
                 # C++ implementation names in .dynsym on some GNU toolchains.
-                # The C ABI is entirely defined by yume_c.cpp, so archive
-                # symbols must always be hidden independently of LTO ordering.
+                # Input objects carry hidden visibility as the primary fix;
+                # exclude-libs keeps non-LTO archive symbols contained too.
                 "LINKER:--exclude-libs,ALL"
             )
             set_property(TARGET yume_abi APPEND PROPERTY

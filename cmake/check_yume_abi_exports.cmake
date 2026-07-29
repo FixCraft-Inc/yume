@@ -92,6 +92,22 @@ if(NOT "${_actual}" STREQUAL "${_expected}")
     if(_unexpected)
         string(REPLACE ";" "\n  " _unexpected_text "${_unexpected}")
         string(APPEND _report "\nexported but not declared (leaked or undeclared symbol):\n  ${_unexpected_text}")
+
+        set(_unexpected_nm_lines)
+        foreach(_line IN LISTS _nm_lines)
+            foreach(_symbol IN LISTS _unexpected)
+                if(_line MATCHES "(^|[ \t])${_symbol}$")
+                    list(APPEND _unexpected_nm_lines "${_line}")
+                endif()
+            endforeach()
+        endforeach()
+        if(_unexpected_nm_lines)
+            string(REPLACE ";" "\n  " _unexpected_nm_text
+                "${_unexpected_nm_lines}")
+            string(APPEND _report
+                "\nraw nm records (address, binding, symbol):\n  "
+                "${_unexpected_nm_text}")
+        endif()
     endif()
 
     message(FATAL_ERROR "libyume exported symbol mismatch${_report}")

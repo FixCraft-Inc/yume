@@ -284,9 +284,8 @@ bool headers_from_json(const nlohmann::json& json,
 Bytes encode_envelope(EnvelopeKind kind, nlohmann::json meta, const Bytes& body) {
     meta["codec_frame"] = 1;
     const std::string meta_text = meta.dump();
-    Bytes out;
+    Bytes out(kEnvelopeMagic.begin(), kEnvelopeMagic.end());
     out.reserve(16 + meta_text.size() + body.size());
-    out.insert(out.end(), kEnvelopeMagic.begin(), kEnvelopeMagic.end());
     out.push_back(kEnvelopeVersion);
     out.push_back(static_cast<std::uint8_t>(kind));
     out.push_back(0);

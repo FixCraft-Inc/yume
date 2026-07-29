@@ -186,10 +186,10 @@ if(YUME_ABI_CLIENT_ONLY AND NOT YUME_BUILD_SHARED_ABI)
     message(FATAL_ERROR "YUME_ABI_CLIENT_ONLY requires YUME_BUILD_SHARED_ABI=ON")
 endif()
 
-# Static libraries absorbed into libyume must carry hidden visibility in their
-# object/LTO IR.  A version script is still the final export allowlist, but
-# older GCC LTO plugins can materialize default-visible weak definitions after
-# the linker has applied that script.
+# Static libraries absorbed into libyume must be PIC, hidden, and ordinary
+# native objects. A version script is still the final export allowlist, but
+# GCC 11 LTO can materialize default-visible weak libstdc++ definitions after
+# GNU ld has applied that script. Keep LTO for builds without the shared ABI.
 function(yume_prepare_static_for_shared_abi target)
     get_target_property(_yume_target_type ${target} TYPE)
     if(YUME_BUILD_SHARED_ABI AND _yume_target_type STREQUAL "STATIC_LIBRARY")
@@ -197,7 +197,17 @@ function(yume_prepare_static_for_shared_abi target)
             POSITION_INDEPENDENT_CODE ON
             CXX_VISIBILITY_PRESET hidden
             VISIBILITY_INLINES_HIDDEN ON
+            INTERPROCEDURAL_OPTIMIZATION OFF
+            INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF
+            INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO OFF
+            INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL OFF
+            YUME_SHARED_ABI_INPUT ON
         )
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            # Also overrides directory-level -flto inherited by bundled
+            # BaseFWX, which does not use yume_apply_perf_opts().
+            target_compile_options(${target} PRIVATE -fno-lto)
+        endif()
     endif()
 endfunction()
 

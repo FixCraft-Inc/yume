@@ -186,6 +186,21 @@ if(YUME_ABI_CLIENT_ONLY AND NOT YUME_BUILD_SHARED_ABI)
     message(FATAL_ERROR "YUME_ABI_CLIENT_ONLY requires YUME_BUILD_SHARED_ABI=ON")
 endif()
 
+# Static libraries absorbed into libyume must carry hidden visibility in their
+# object/LTO IR.  A version script is still the final export allowlist, but
+# older GCC LTO plugins can materialize default-visible weak definitions after
+# the linker has applied that script.
+function(yume_prepare_static_for_shared_abi target)
+    get_target_property(_yume_target_type ${target} TYPE)
+    if(YUME_BUILD_SHARED_ABI AND _yume_target_type STREQUAL "STATIC_LIBRARY")
+        set_target_properties(${target} PROPERTIES
+            POSITION_INDEPENDENT_CODE ON
+            CXX_VISIBILITY_PRESET hidden
+            VISIBILITY_INLINES_HIDDEN ON
+        )
+    endif()
+endfunction()
+
 if(YUME_STATIC)
     set(BUILD_SHARED_LIBS OFF)
     set(OPENSSL_USE_STATIC_LIBS TRUE)
@@ -330,6 +345,7 @@ if(YUME_USE_BASEFWX)
             set(BASEFWX_BUILD_CLI OFF CACHE BOOL "Disable BaseFWX CLI build" FORCE)
             add_subdirectory(basefwx/cpp EXCLUDE_FROM_ALL)
             if(TARGET basefwxcpp)
+                yume_prepare_static_for_shared_abi(basefwxcpp)
                 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
                     target_compile_options(basefwxcpp PRIVATE
                         -Wno-deprecated-declarations

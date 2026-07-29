@@ -33,7 +33,7 @@ target_link_libraries(yume_facade
 )
 
 if(YUME_BUILD_SHARED_ABI)
-    set_target_properties(yume_facade PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    yume_prepare_static_for_shared_abi(yume_facade)
 endif()
 
 if(YUME_USE_SPDLOG)
@@ -53,7 +53,7 @@ if(YUME_ABI_CLIENT_ONLY)
     )
     target_include_directories(yume_client_facade PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
     target_link_libraries(yume_client_facade PUBLIC yume_core yume_client_lib)
-    set_target_properties(yume_client_facade PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    yume_prepare_static_for_shared_abi(yume_client_facade)
     if(YUME_USE_SPDLOG)
         target_compile_definitions(yume_client_facade PUBLIC YUME_FACADE_HAVE_SPDLOG=1)
     else()

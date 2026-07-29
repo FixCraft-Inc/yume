@@ -94,7 +94,7 @@ Not done / not fully tested:
 - Best-effort erasure is not a locked allocator and cannot erase prior copies.
 - External HTTP/2 conformance, exact native browser/web-server identity, and
   ML/DPI immunity are not implemented claims. Full-session HTTP/2 is present in
-  `2.0-dev3`, but external conformance and sustained-session release gates are
+  `2.0-dev4`, but external conformance and sustained-session release gates are
   still open. Direct one-stream LAN traffic reached line rate, and dev3 removes
   the modeled one-pending-epoch ceiling. A separate measured high-RTT ceiling
   remains unidentified; see `docs/YUME_2_0_WAN_BEHAVIOR.md`.

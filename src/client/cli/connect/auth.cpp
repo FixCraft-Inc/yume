@@ -29,6 +29,7 @@
 #include "core/stealth/http_profile.hpp"
 #include "core/protocol/protocol_stream.hpp"
 #include "core/security/auth_v2.hpp"
+#include "core/security/channel_binding.hpp"
 #include "util.hpp"
 
 namespace yume::client {
@@ -36,8 +37,12 @@ namespace {
 
 class WipeBytesOnExit {
 public:
-    explicit WipeBytesOnExit(crypto::Bytes& bytes) : bytes_(bytes) {}
+    explicit WipeBytesOnExit(crypto::Bytes& bytes) noexcept : bytes_(bytes) {}
     ~WipeBytesOnExit() { security::secure_erase(bytes_); }
+
+    WipeBytesOnExit(const WipeBytesOnExit&) = delete;
+    WipeBytesOnExit& operator=(const WipeBytesOnExit&) = delete;
+
 private:
     crypto::Bytes& bytes_;
 };
@@ -313,6 +318,15 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
     }
     crypto::Bytes identity = PublicKeyPem(public_key);
 
+    // Read from this client's own TLS object, never from anything the peer
+    // sent. A node that terminates TLS here and replays the exchange to a
+    // second server signs over the wrong connection and is rejected there.
+    // The exporter derives from the TLS master secret and feeds the root, so
+    // it is wiped like any other key input.
+    crypto::Bytes channel_binding =
+        security::ExportChannelBinding(stream.native_handle());
+    WipeBytesOnExit wipe_channel_binding(channel_binding);
+
     basefwx::pq::KemResult kem = basefwx::pq::KemEncrypt(
         basefwx::pq::KemAlgorithm::MlKem1024, challenge.mlkem_public_key);
     basefwx::x25519::KeyPair x25519 = basefwx::x25519::GenerateKeyPair();
@@ -322,7 +336,7 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
     crypto::Bytes unsigned_response = auth_v2::BuildUnsignedResponse(
         x25519.public_key, kem.ciphertext, identity, local_window);
     crypto::Bytes signature_input = auth_v2::BuildSignatureInput(
-        challenge.encoded, unsigned_response);
+        challenge.encoded, unsigned_response, channel_binding);
     crypto::Bytes signature = crypto::sign_message(
         identity_key.private_key.get(), signature_input);
     basefwx::crypto::SecureClear(signature_input);
@@ -333,7 +347,8 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
     basefwx::crypto::SecureBytes psk_key{
         ratchet::DerivePskKey(file_psk.bytes(), challenge.psk_salt)};
     crypto::Bytes initial_root = ratchet::DeriveInitialRoot(
-        kem.shared, x_shared.bytes(), psk_key.bytes(), challenge.transcript_salt);
+        kem.shared, x_shared.bytes(), psk_key.bytes(),
+        challenge.transcript_salt, channel_binding);
     auto session_ratchet = std::make_unique<ratchet::SessionRatchet>(
         ratchet::EndpointRole::Client, std::move(initial_root),
         psk_key.Release(), send_window, local_window);

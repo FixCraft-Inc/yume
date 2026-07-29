@@ -19,6 +19,12 @@ using Bytes = std::vector<std::uint8_t>;
 inline constexpr std::string_view kTransportVersion = yume::kTransportVersion;
 inline constexpr std::size_t kMaxRecordBytes = 64U * 1024U;
 
+// Length of the TLS 1.3 exporter value bound into the AUTH transcript. The
+// codec owns the constant because it is the layer that enforces it; the
+// exporter itself is produced by `core/security/channel_binding.hpp`, which
+// keeps OpenSSL out of this translation unit.
+inline constexpr std::size_t kChannelBindingLen = 32;
+
 enum class RecordKind : std::uint8_t {
     Challenge = 1,
     Response = 2,
@@ -95,8 +101,16 @@ Bytes BuildResponse(const Bytes& x25519_public_key,
                     std::uint16_t rekey_window,
                     const Bytes& signature);
 Response ParseResponse(const Bytes& encoded);
+// `channel_binding` is the 32-byte TLS 1.3 exporter each endpoint computes
+// from its own live `SSL*` (see `core/security/channel_binding.hpp`). It is
+// never transmitted: the client signs over its value and the server rebuilds
+// the input from its own, so an endpoint relaying a live exchange to a second
+// compatible server presents a signature over the wrong connection. A binding
+// that is not exactly `kChannelBindingLen` bytes is rejected here so no build
+// can fall back to an unbound transcript.
 Bytes BuildSignatureInput(const Bytes& challenge_record,
-                          const Bytes& unsigned_response_record);
+                          const Bytes& unsigned_response_record,
+                          const Bytes& channel_binding);
 
 Bytes BuildAuthOk(const Bytes& server_info);
 Bytes ParseAuthOk(const Bytes& encoded);

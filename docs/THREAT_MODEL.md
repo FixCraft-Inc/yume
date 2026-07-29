@@ -47,27 +47,37 @@ server accepts it only when the signature verifies and the public identity is
 authorized.
 
 Under Ed25519's security assumption, a recorded public key and signature do not
-let the server derive the client private key or forge a new signature. The
-key generators intend owner-only output, but the legacy
-`generate_ed25519_keypair()` path writes the PEM before applying `0600` and
-ignores a permission-change failure. `crypto::load_keypair()` also does not
-reject an existing identity with unsafe ownership or mode. Client host,
-directory, and file permissions therefore remain an operational
-responsibility. Provisioning workflows that generate a client kit on an
-operator machine necessarily expose the private key there before delivery;
-clients requiring strict origin isolation must generate and retain the identity
-on the client.
+let the server derive the client private key or forge a new signature.
 
-The transcript is transported inside certificate- and hostname-verified TLS,
-with optional leaf pinning/operator proof, but
-`auth_v2::BuildSignatureInput()` does not include a value independently derived
-from the live TLS exporter, certificate, or SNI. Therefore AUTH is not
-cryptographically channel-bound beyond its enclosing TLS connection. A
-malicious terminating node that also has compatible admission/PSK access could
-forward a live challenge and response to another endpoint. That does not reveal
-the private key or yield a reusable offline credential, but it means “the
-server can never relay my identity” is not a current guarantee. Adding exporter
-binding would be a deliberate wire/AAD/version change.
+Key files are owner-only as a creation and loading invariant. Both halves of a
+generated pair are created exclusively at mode `0600`, so there is no window in
+which the private PEM sits at the process umask, and an existing path is never
+silently replaced. `crypto::load_keypair()` reads the private key through a
+descriptor it has already validated: a regular non-symlink file, owned by the
+effective user, with no group or world permission bits, and within a bounded
+size. A key that fails any of those checks cannot sign an AUTH transcript.
+This is enforced on Linux/POSIX; Windows has no equivalent enforcement yet and
+loading fails closed there rather than accepting whatever the ACL allows.
+
+Provisioning workflows that generate a client kit on an operator machine still
+expose the private key there before delivery; clients requiring strict origin
+isolation must generate and retain the identity on the client. Client host
+compromise remains outside what file modes can protect.
+
+The signature input also includes a 32-byte TLS 1.3 exporter that each endpoint
+computes from its own live connection and never transmits. AUTH is therefore
+cryptographically bound to the exact TLS session it ran on, on top of
+certificate and hostname verification and optional leaf pinning/operator proof.
+A malicious terminating node with compatible admission and PSK material can
+still terminate TLS with a client, but forwarding that live exchange to another
+endpoint no longer works: the two connections have independent exporters, so
+the relayed signature does not verify at the far server. The same value is
+folded into the establishment root, so the two sides of a relay would not share
+keys even if the transcript check were bypassed.
+
+This closes live cross-connection forwarding of a client's identity. It does
+not make the terminating node trustworthy — see the endpoint sections below —
+and it is not an independent-audit claim.
 
 ## Carrier admission boundary
 
@@ -226,9 +236,9 @@ capacity before authenticated admission.
   classifier-visible residual, and the current implementation also mixes
   Chrome 131/Windows TLS/User-Agent identity with Chrome 150/Linux carrier
   hints. BoringSSL is a candidate experiment, not proof of Chrome parity.
-- TLS-exporter channel binding of client AUTH. The enclosing TLS session is
-  certificate/hostname verified, but the signed AUTH bytes do not independently
-  bind that exact outer connection.
+- Protected identity-file loading on Windows. The POSIX ownership/mode
+  invariant has no Windows equivalent yet, so identity loading fails closed
+  there instead of accepting an arbitrary ACL.
 
 ## Existing permission gates outside this slice
 
@@ -245,7 +255,7 @@ integration and runtime evidence.
 
 ## Release claims
 
-The transport stays `2.0-dev3` or a later development/RC version until the release gates in
+The transport stays `2.0-dev4` or a later development/RC version until the release gates in
 `docs/YUME_2_0_IMPLEMENTATION_STATUS.md` pass. Unit tests and a short loopback
 smoke are not evidence for WAN behavior, a 30-minute lifetime, sanitizer safety,
 external conformance, or sustained overhead. Release documentation must separate

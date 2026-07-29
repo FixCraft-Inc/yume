@@ -6,6 +6,9 @@
 
 #include "core/security/crypto.hpp"
 
+#include "core/security/secret_file.hpp"
+#include "core/security/secure_erase.hpp"
+
 #include <openssl/err.h>
 #include <openssl/hmac.h>
 #include <openssl/kdf.h>
@@ -41,12 +44,18 @@ KeyPair load_keypair(const std::string& path_priv, const std::string& path_pub) 
     KeyPair kp;
 
     if (!path_priv.empty()) {
-        BIO* priv_bio = BIO_new_file(path_priv.c_str(), "r");
+        // Ownership and mode are an invariant of loading, not a hint: an
+        // identity file another account can read or replace must never be able
+        // to sign an AUTH transcript.
+        Bytes pem = security::ReadPrivateKeyFileStrict(path_priv);
+        BIO* priv_bio = BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()));
         if (!priv_bio) {
+            security::secure_erase(pem);
             throw ssl_error("failed to open private key");
         }
         EVP_PKEY* priv = PEM_read_bio_PrivateKey(priv_bio, nullptr, nullptr, nullptr);
         BIO_free(priv_bio);
+        security::secure_erase(pem);
         if (!priv) {
             throw ssl_error("failed to read private key");
         }

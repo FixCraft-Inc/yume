@@ -11,6 +11,10 @@
 #include <stdexcept>
 #include <string_view>
 
+// The AUTH codec owns the channel-binding length, the way this header owns the
+// negotiated window range that `auth_v2.cpp` reads back.
+#include "core/security/auth_v2.hpp"
+
 #if YUME_USE_BASEFWX
 #include <basefwx/crypto.hpp>
 #endif
@@ -18,7 +22,10 @@
 namespace yume::ratchet {
 namespace {
 
-constexpr std::string_view kInitialRootLabel = "yume/2.0/root/v1";
+using auth_v2::kChannelBindingLen;
+
+// v2 folds the per-connection TLS exporter into the establishment transcript.
+constexpr std::string_view kInitialRootLabel = "yume/2.0/root/v2";
 constexpr std::string_view kPskLabel = "yume/2.0/psk/v1";
 constexpr std::string_view kEpochPskLabel = "yume/2.0/epoch-psk/v1";
 constexpr std::string_view kClientRootLabel = "yume/2.0/c2s-root/v1";
@@ -104,23 +111,30 @@ Bytes DeriveEpochPskContribution(const Bytes& established_psk_key,
 
 Bytes DeriveInitialRoot(const InitialSecrets& secrets) {
     return DeriveInitialRoot(secrets.mlkem_shared, secrets.x25519_shared,
-                             secrets.psk_key, secrets.transcript_salt);
+                             secrets.psk_key, secrets.transcript_salt,
+                             secrets.channel_binding);
 }
 
 Bytes DeriveInitialRoot(const Bytes& mlkem_shared,
                         const Bytes& x25519_shared,
                         const Bytes& psk_key,
-                        const Bytes& transcript_salt) {
+                        const Bytes& transcript_salt,
+                        const Bytes& channel_binding) {
     if (mlkem_shared.empty() || x25519_shared.empty() ||
         psk_key.empty() || transcript_salt.size() < 16) {
         throw std::runtime_error("incomplete YUME 2.0 initial secrets");
     }
+    // Same fail-closed rule as the AUTH transcript: no unbound root exists.
+    if (channel_binding.size() != kChannelBindingLen) {
+        throw std::runtime_error("invalid YUME 2.0 channel binding");
+    }
     Bytes input;
     input.reserve(mlkem_shared.size() + x25519_shared.size() +
-                  psk_key.size() + 12);
+                  psk_key.size() + channel_binding.size() + 16);
     AppendLengthPrefixed(input, mlkem_shared);
     AppendLengthPrefixed(input, x25519_shared);
     AppendLengthPrefixed(input, psk_key);
+    AppendLengthPrefixed(input, channel_binding);
     Bytes root = Hkdf(input, transcript_salt, kInitialRootLabel, 32);
 #if YUME_USE_BASEFWX
     basefwx::crypto::SecureClear(input);

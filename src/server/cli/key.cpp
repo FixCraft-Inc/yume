@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <vector>
 
 #if defined(_WIN32)
@@ -23,6 +24,7 @@
 
 #include "core/security/crypto.hpp"
 #include "core/security/secret_file.hpp"
+#include "core/security/secure_erase.hpp"
 #include "core/protocol/runtime_policy.hpp"
 #include "server/auth/auth.hpp"
 #include "server/runtime/manager.hpp"
@@ -31,6 +33,42 @@
 namespace yume::server::cli {
 namespace {
 
+class BioPrivateBufferWiper {
+public:
+    BioPrivateBufferWiper(BIO* bio, bool enabled) noexcept
+        : bio_(bio), enabled_(enabled) {}
+
+    ~BioPrivateBufferWiper() {
+        if (!enabled_ || !bio_) {
+            return;
+        }
+        char* buffer = nullptr;
+        const long buffered = BIO_get_mem_data(bio_, &buffer);
+        if (buffered > 0 && buffer) {
+            OPENSSL_cleanse(buffer, static_cast<std::size_t>(buffered));
+        }
+    }
+
+    BioPrivateBufferWiper(const BioPrivateBufferWiper&) = delete;
+    BioPrivateBufferWiper& operator=(const BioPrivateBufferWiper&) = delete;
+
+private:
+    BIO* bio_;
+    bool enabled_;
+};
+
+class BytesWiper {
+public:
+    explicit BytesWiper(crypto::Bytes& bytes) noexcept : bytes_(bytes) {}
+    ~BytesWiper() { security::secure_erase(bytes_); }
+
+    BytesWiper(const BytesWiper&) = delete;
+    BytesWiper& operator=(const BytesWiper&) = delete;
+
+private:
+    crypto::Bytes& bytes_;
+};
+
 bool write_file_secure(const std::string& path,
                        const std::string& contents,
                        std::string* error) {
@@ -38,6 +76,44 @@ bool write_file_secure(const std::string& path,
         reinterpret_cast<const std::uint8_t*>(contents.data());
     return security::WriteFileExclusive0600(
         path, std::span<const std::uint8_t>(bytes, contents.size()), error);
+}
+
+// Encodes a key to PEM in memory so the caller can choose how the bytes reach
+// disk. Returns false and leaves *out empty on any OpenSSL failure.
+bool pem_to_bytes(EVP_PKEY* key, bool is_private, crypto::Bytes* out) {
+    if (!key || !out) {
+        return false;
+    }
+    if (is_private) {
+        security::secure_erase(*out);
+    } else {
+        out->clear();
+    }
+    std::unique_ptr<BIO, decltype(&BIO_free)> bio(BIO_new(BIO_s_mem()),
+                                                  BIO_free);
+    if (!bio) {
+        return false;
+    }
+    // BIO_s_mem keeps whatever was written in its own buffer until BIO_free,
+    // and a failed private-key write can still have left key bytes there.
+    // Wipe on every path out, not only the successful one.
+    BioPrivateBufferWiper bio_wiper(bio.get(), is_private);
+
+    const int written = is_private
+        ? PEM_write_bio_PrivateKey(bio.get(), key, nullptr, nullptr, 0,
+                                   nullptr, nullptr)
+        : PEM_write_bio_PUBKEY(bio.get(), key);
+    if (written != 1) {
+        return false;
+    }
+    char* data = nullptr;
+    const long length = BIO_get_mem_data(bio.get(), &data);
+    if (length <= 0 || !data) {
+        return false;
+    }
+    out->assign(reinterpret_cast<std::uint8_t*>(data),
+                reinterpret_cast<std::uint8_t*>(data) + length);
+    return true;
 }
 
 }  // namespace
@@ -86,40 +162,55 @@ std::string load_or_create_secret(const std::string& path) {
 }
 
 bool generate_ed25519_keypair(const std::string& priv_path, const std::string& pub_path) {
-    EVP_PKEY_CTX* pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, nullptr);
-    if (!pctx) {
+    std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> pctx(
+        EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, nullptr), EVP_PKEY_CTX_free);
+    if (!pctx || EVP_PKEY_keygen_init(pctx.get()) != 1) {
         return false;
     }
-    if (EVP_PKEY_keygen_init(pctx) != 1) {
-        EVP_PKEY_CTX_free(pctx);
+    EVP_PKEY* raw_pkey = nullptr;
+    if (EVP_PKEY_keygen(pctx.get(), &raw_pkey) != 1) {
         return false;
     }
-    EVP_PKEY* pkey = nullptr;
-    if (EVP_PKEY_keygen(pctx, &pkey) != 1) {
-        EVP_PKEY_CTX_free(pctx);
-        return false;
-    }
-    EVP_PKEY_CTX_free(pctx);
+    std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> pkey(raw_pkey,
+                                                             EVP_PKEY_free);
 
-    BIO* priv = BIO_new_file(priv_path.c_str(), "w");
-    BIO* pub = BIO_new_file(pub_path.c_str(), "w");
-    if (!priv || !pub) {
-        if (priv) BIO_free(priv);
-        if (pub) BIO_free(pub);
-        EVP_PKEY_free(pkey);
+    // Serialize to memory first, then create both files exclusively. Writing
+    // the private PEM through BIO_new_file would publish it at the process
+    // umask and only tighten it afterwards, leaving a readable window and no
+    // protection at all against a pre-placed file or symlink.
+    crypto::Bytes private_pem;
+    BytesWiper private_pem_wiper(private_pem);
+    crypto::Bytes public_pem;
+    if (!pem_to_bytes(pkey.get(), /*is_private=*/true, &private_pem) ||
+        !pem_to_bytes(pkey.get(), /*is_private=*/false, &public_pem)) {
         return false;
     }
-    bool ok = PEM_write_bio_PrivateKey(priv, pkey, nullptr, nullptr, 0, nullptr, nullptr) == 1 &&
-              PEM_write_bio_PUBKEY(pub, pkey) == 1;
-    BIO_free(priv);
-    BIO_free(pub);
-    EVP_PKEY_free(pkey);
 
-    std::error_code ec;
-    std::filesystem::permissions(priv_path,
-                                 std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
-                                 std::filesystem::perm_options::replace, ec);
-    return ok;
+    std::string write_error;
+    const bool private_written =
+        security::WriteFileExclusive0600(priv_path, private_pem, &write_error);
+    if (!private_written) {
+        std::cerr << "failed to write Ed25519 private key: "
+                  << (write_error.empty() ? "unknown error" : write_error)
+                  << "\n";
+        return false;
+    }
+    if (!security::WriteFileExclusive0600(pub_path, public_pem, &write_error)) {
+        // Do not leave a private key behind for a pair that was never
+        // completed; the next attempt needs the path free to create again.
+        std::error_code remove_error;
+        const bool private_removed =
+            std::filesystem::remove(priv_path, remove_error);
+        std::cerr << "failed to write Ed25519 public key: "
+                  << (write_error.empty() ? "unknown error" : write_error)
+                  << "\n";
+        if (!private_removed && remove_error) {
+            std::cerr << "failed to remove incomplete Ed25519 private key: "
+                      << remove_error.message() << "\n";
+        }
+        return false;
+    }
+    return true;
 }
 
 std::string auth_keys_write_hint(const std::string& path) {
@@ -477,6 +568,19 @@ CliCommandResult run_server_key_command(yume::server::ServerConfig& cfg, const S
         auto key_dir = base.parent_path();
         if (!key_dir.empty()) {
             ensure_dir(key_dir.string());
+        }
+        // Both files are created exclusively, so an existing identity is never
+        // silently replaced. Say that plainly instead of leaving the caller
+        // with a bare EEXIST from the writer.
+        for (const std::string& existing : {priv_path, pub_path}) {
+            std::error_code exists_error;
+            if (std::filesystem::exists(existing, exists_error)) {
+                free_keys();
+                yume::util::log_error(
+                    "refusing to overwrite existing key file " + existing +
+                    "; choose another prefix or remove it deliberately");
+                return {true, 1};
+            }
         }
         if (!generate_ed25519_keypair(priv_path, pub_path)) {
             free_keys();

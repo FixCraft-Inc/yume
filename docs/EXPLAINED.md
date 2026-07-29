@@ -637,9 +637,11 @@ hardening.
   full-session HTTP/2 validation, or endpoint compromise.
 - AUTH:
   keeps unauthorized clients off the server. The client sends its Ed25519
-  public key and a transcript signature, not the private key. It does not help
-  if the private key is stolen, and the current signature is not independently
-  bound to a TLS exporter.
+  public key and a transcript signature, not the private key. The signature
+  also covers a TLS exporter each side computes locally, so a malicious
+  endpoint cannot forward a live exchange to a second server. It does not help
+  if the private key is stolen, and it says nothing about whether the server
+  the client reached is trustworthy.
 - Inner BaseFWX crypto:
   adds frame confidentiality and integrity inside TLS. It does not remove
   the terminating relay's access to decrypted stream bytes or its need to know

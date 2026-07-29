@@ -403,4 +403,67 @@ Secret32 LoadSecretFile32(const std::filesystem::path& path) {
 #endif
 }
 
+std::vector<std::uint8_t> ReadPrivateKeyFileStrict(
+    const std::filesystem::path& path) {
+#if defined(_WIN32)
+    (void)path;
+    throw std::runtime_error(
+        "YUME protected private key files are currently Linux/POSIX only");
+#else
+    if (path.empty()) {
+        throw std::runtime_error("private key path is empty");
+    }
+    const int raw_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (raw_fd < 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "open YUME private key file");
+    }
+    FileDescriptor fd(raw_fd);
+    struct stat info {};
+    if (::fstat(fd.get(), &info) != 0) {
+        throw std::system_error(errno, std::generic_category(),
+                                "stat YUME private key file");
+    }
+    if (!S_ISREG(info.st_mode)) {
+        throw std::runtime_error("YUME private key path must be a regular file");
+    }
+    // A key owned by another account is not this process's identity, even when
+    // a privileged process happens to be able to read it.
+    if (info.st_uid != ::geteuid()) {
+        throw std::runtime_error(
+            "YUME private key file " + path.string() +
+            " must be owned by the current user");
+    }
+    if ((info.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+        throw std::runtime_error(
+            "YUME private key file " + path.string() +
+            " must not be group/world accessible (chmod 600)");
+    }
+    if (info.st_size < 0 ||
+        static_cast<std::uintmax_t>(info.st_size) > kMaxPrivateKeyFileBytes) {
+        throw std::runtime_error("YUME private key file size is out of range");
+    }
+
+    std::vector<std::uint8_t> contents(static_cast<std::size_t>(info.st_size));
+    std::size_t offset = 0;
+    while (offset < contents.size()) {
+        const ssize_t count = ::read(fd.get(), contents.data() + offset,
+                                     contents.size() - offset);
+        if (count < 0 && errno == EINTR) continue;
+        if (count < 0) {
+            secure_erase(contents);
+            throw std::system_error(errno, std::generic_category(),
+                                    "read YUME private key file");
+        }
+        if (count == 0) {
+            secure_erase(contents);
+            throw std::runtime_error(
+                "YUME private key file shrank while being read");
+        }
+        offset += static_cast<std::size_t>(count);
+    }
+    return contents;
+#endif
+}
+
 }  // namespace yume::security

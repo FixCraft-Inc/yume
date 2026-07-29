@@ -1,6 +1,6 @@
 # YUME 2.0 desktop implementation status
 
-Status: `2.0-dev3` vertical slice implemented; release gates incomplete.
+Status: `2.0-dev4` vertical slice implemented; release gates incomplete.
 
 This is a truthful inventory of the focused Linux x86-64 client/server work. It
 does not claim Android, GUI, nginx, alternate browser profiles, H3, federation,
@@ -41,7 +41,7 @@ or admin/control validation.
   separate TLS/operator CA material, TLS/SNI name, admission secret, inner PSK,
   tunnel count, and operator-proof policy. Legacy v1 files that carried only
   the shared private CA remain importable.
-- Exact `2.0-dev3` admission/AUTH-version equality and no accepted 1.x/dev1
+- Exact `2.0-dev4` admission/AUTH-version equality and no accepted 1.x/dev1
   downgrade path. Legacy
   inner/light/heavy/dual/hop/no-inner/raw-carrier and literal-secret CLI choices
   are rejected.
@@ -230,18 +230,23 @@ against one pinned build are required. Traffic padding is likewise an
 evidence-driven option, not an automatic improvement.
 
 Client AUTH sends an Ed25519 public key and a signature over the complete
-canonical challenge/response transcript; it never sends the private key.
-However, the signature input is not independently bound to a TLS exporter,
-certificate fingerprint, or SNI. The enclosing TLS connection is
-certificate/hostname verified and can be pinned, but a malicious terminating
-endpoint with compatible admission/PSK access could relay a live AUTH exchange.
-That does not reveal a reusable client credential. Explicit channel binding
-would require a deliberate protocol-version and transcript-vector change.
-The legacy Linux `generate_ed25519_keypair()` path writes the PEM before
-applying mode `0600` and does not fail if that permission change fails.
-`crypto::load_keypair()` also does not reject an existing identity file with
-unsafe ownership or group/world permissions. Safe creation and load-time
-identity-file policy therefore remain hardening work.
+canonical challenge/response transcript; it never sends the private key. As of
+`2.0-dev4` the signature input also covers a 32-byte RFC 8446 exporter that
+each endpoint derives from its own live TLS object and never transmits, and the
+same value is folded into the establishment root. A malicious terminating
+endpoint with compatible admission/PSK access can no longer relay a live AUTH
+exchange to a second server: the forwarded signature is over a different
+connection's exporter. Both endpoints require TLS 1.3 and a finished handshake;
+there is no unbound mode and no way to negotiate the binding away.
+
+Identity-file safety is now a creation and loading invariant rather than
+operator hygiene. `generate_ed25519_keypair()` serializes to memory and creates
+both files through the exclusive owner-only writer, wipes the private PEM, and
+refuses to replace an existing path. `crypto::load_keypair()` reads the private
+key through an already-validated descriptor: regular non-symlink file, owned by
+the effective user, no group/world bits, bounded size. Windows has no equivalent
+enforcement and fails closed, which remains open work alongside protected
+secret loading there.
 
 The hybrid ephemeral establishment/rekeys provide a forward-secrecy design
 against later long-term-file compromise, not secrecy from `yumed` itself.

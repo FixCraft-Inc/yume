@@ -56,7 +56,7 @@ int main() {
                                          rekey_window);
     assert(encoded.size() == 1752);
     assert(Sha256Hex(encoded) ==
-           "5b7b1f13d6bf22df9c96eae12a05652bc91b6ec8668e970637de8324c5c7204d");
+           "2957052efadf9f4e9268c6367876055367387d55a7a3bc57b2de9781bad84c94");
     const auto parsed = ParseChallenge(encoded);
     assert(parsed.challenge == challenge);
     assert(parsed.mlkem_public_key == kem_public);
@@ -77,10 +77,28 @@ int main() {
     assert(response.rekey_window == rekey_window);
     // The advertised depth sits in the unsigned record, so the transcript the
     // client signs commits to the negotiated window.
-    const Bytes signature_input = BuildSignatureInput(encoded, unsigned_response);
-    assert(signature_input.size() == 3418);
+    const Bytes channel_binding(kChannelBindingLen, 0x88);
+    const Bytes signature_input = BuildSignatureInput(encoded, unsigned_response,
+                                                      channel_binding);
+    assert(signature_input.size() == 3454);
     assert(Sha256Hex(signature_input) ==
-           "6a04df0848cde0424eee988f9efac9d2a550f5e22fd52c0e31be8e1f89faffe4");
+           "c92b01c27cc71d4d9a815c69de28e5a86c208a508da2b4290395cb5e1c408f53");
+
+    // The binding is what a relaying endpoint cannot reproduce: the same
+    // records under a different live TLS connection sign a different input.
+    const Bytes relayed_binding(kChannelBindingLen, 0x89);
+    assert(BuildSignatureInput(encoded, unsigned_response, relayed_binding) !=
+           signature_input);
+
+    // No unbound transcript exists. A caller that could not read its own
+    // exporter must fail, not sign a v1-shaped input.
+    for (std::size_t bad_size : {std::size_t{0}, std::size_t{16},
+                                 std::size_t{33}}) {
+        assert(Throws([&] {
+            (void)BuildSignatureInput(encoded, unsigned_response,
+                                      Bytes(bad_size, 0x88));
+        }));
+    }
 
     // Out-of-range depths are rejected on both build and parse so no peer can
     // reserve unbounded ML-KEM work or retained roots.

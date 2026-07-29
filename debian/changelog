@@ -1,7 +1,9 @@
-yume (2.0~dev3-1) UNRELEASED; urgency=medium
+yume (2.0~dev4-1) UNRELEASED; urgency=medium
 
   * Package the hard-break YUME 2.0 development transport with mandatory
     admission and ML-KEM-1024/X25519/PSK inner protection.
+  * Bind AUTH to a TLS 1.3 exporter each endpoint computes locally, so a live
+    exchange cannot be relayed to a second compatible server.
   * Add a negotiated bounded multi-epoch ratchet window for high-RTT paths.
   * Add bounded server session, bulk-key, accept-rate, and weighted-egress
     controls plus separate regular and operator key stores.

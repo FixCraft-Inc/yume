@@ -4,7 +4,7 @@
 
 Yume Universal Multiprotocol Engine. An open-source post-quantum stealth transport. The name is a single character — 夢 — and we use it the way Japanese uses it: a dream of a network you can trust, where the wire shape blends into ordinary HTTPS and neither endpoint has to advertise YUME by name.
 
-YUME 2.0-dev3 tunnels TCP and UDP through a persistent TLS 1.3 + HTTP/2 +
+YUME 2.0-dev4 tunnels TCP and UDP through a persistent TLS 1.3 + HTTP/2 +
 WebSocket connection. The focused Linux desktop slice uses mandatory
 ML-KEM-1024 + X25519 + random-PSK key establishment, per-message AES-256-GCM
 keys, and independent directional epochs bounded by 256 KiB, 512 DATA frames,
@@ -356,11 +356,9 @@ server challenge and unsigned client response. That transcript includes both
 ephemeral key exchanges and the negotiated rekey window. A server that records
 it cannot derive the private key or turn the signature into a reusable
 impersonation under the Ed25519 security assumption. Generated private-key
-files are intended to be mode `0600`; protecting and checking the client host
-and key file remains the client's responsibility. The legacy
-`yumed --keys-gen` writer applies permissions after creating the PEM and does
-not fail if that permission change fails, so strict deployments should create
-keys in a private `0700` directory and verify the resulting mode.
+files are created exclusively at mode `0600` and strict loading rejects
+symlinks, foreign ownership, group/world access, and oversized files.
+Protecting the client host and key file remains the client's responsibility.
 
 Establishment and every directional epoch transition use fresh ML-KEM-1024 and
 X25519 key pairs. Their private components and derived secrets are held in
@@ -381,13 +379,20 @@ call a volunteer node “untrusted” if the intended guarantee is that it canno
 observe or alter non-end-to-end-encrypted application data; YUME does not
 provide that property.
 
-The Ed25519 AUTH transcript is carried inside hostname-verified TLS but is not
-currently bound to a TLS exporter, certificate fingerprint, or SNI inside the
-signature itself. This does not reveal the private key or create a reusable
-signature, but a malicious endpoint could relay a live authentication exchange
-to another compatible endpoint if the deployments share the required admission
-and inner PSK material. Whether to add explicit channel binding is a deliberate
-future wire-version decision, documented in the threat model and roadmap.
+The Ed25519 AUTH transcript is carried inside hostname-verified TLS and is
+bound to it: the signature covers a 32-byte TLS 1.3 exporter that each endpoint
+computes from its own live connection and never puts on the wire. A malicious
+endpoint that terminates TLS with a client can therefore no longer forward that
+live exchange to another compatible endpoint, even with matching admission and
+inner PSK material — the two connections have independent exporters, so the
+relayed signature does not verify. This closes cross-connection identity
+forwarding; it does not make the terminating node trustworthy.
+
+Client identity files are owner-only by contract. Generated pairs are created
+exclusively at mode `0600` and never overwrite an existing path, and loading
+refuses a key that is a symlink, is owned by another account, or carries group
+or world permission bits. That enforcement is Linux/POSIX; on Windows identity
+loading fails closed rather than trusting an arbitrary ACL.
 
 ```jsonc
 // client config
@@ -584,9 +589,9 @@ Removing any one layer is enough to keep the feature off. The bridge / admin mat
 ./build/bin/yumed --auth-keys /etc/yume/authorized_keys --keys-gen ./keys/user1 --keys-gen-add
 ```
 
-Prefer `yume-setup issue-key`, or create `./keys` as mode `0700` and verify the
-generated `.key` is `0600`. The legacy `--keys-gen` path does not yet fail if
-its post-write permission change fails.
+Prefer `yume-setup issue-key`. The `--keys-gen` path creates both files
+exclusively at mode `0600`, refuses to overwrite either path, and removes the
+private half if it cannot complete the pair.
 
 The four key/policy files are parsed into immutable snapshots at startup.
 Authenticated runtime reload atomically replaces all four together; a parse,

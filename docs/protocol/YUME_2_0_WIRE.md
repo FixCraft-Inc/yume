@@ -1,6 +1,6 @@
 # YUME 2.0 desktop wire contract
 
-Status: current `2.0-dev3` development contract for the first Linux x86-64 desktop slice.
+Status: current `2.0-dev4` development contract for the first Linux x86-64 desktop slice.
 The release version remains gated on capture, conformance, soak, and throughput
 evidence. This document intentionally does not describe a 1.x compatibility
 mode because none exists.
@@ -65,7 +65,7 @@ limited to 64 KiB before allocation.
 
 | ID | Critical | Value |
 | -- | -- | -- |
-| 1 | yes | UTF-8 exact transport version `2.0-dev3` |
+| 1 | yes | UTF-8 exact transport version `2.0-dev4` |
 | 2 | yes | 32-byte server challenge |
 | 3 | yes | ephemeral ML-KEM-1024 public key |
 | 4 | yes | 32-byte ephemeral X25519 public key |
@@ -92,15 +92,49 @@ fatal on both build and parse.
 The signature input is:
 
 ```
-"yume/2.0/auth-signature/v1" ||
+"yume/2.0/auth-signature/v2" ||
 u32(len(challenge_record)) || challenge_record ||
-u32(len(response_without_signature)) || response_without_signature
+u32(len(response_without_signature)) || response_without_signature ||
+u32(32) || channel_binding
 ```
 
 Admission and this signature are verified before KEM decapsulation or any
 other avoidable expensive operation. `AUTH_OK` is sent only after the inner
 channel is active. Its encrypted payload contains the exact version and
 negotiated limits.
+
+### AUTH channel binding
+
+`channel_binding` is a 32-byte RFC 8446 section 7.5 exporter that each
+endpoint computes from its own live TLS object:
+
+```
+channel_binding = TLS-Exporter(
+  label   = "EXPORTER-yume/2.0/auth-channel-binding/v1",
+  context = none,
+  length  = 32)
+```
+
+It has no field id because it is never transmitted. The client signs over its
+locally derived value and the server rebuilds the signature input from its
+own, so the two only agree when both are on the same TLS connection.
+
+This is what bounds the relay case. A malicious endpoint holding compatible
+admission and PSK material can terminate TLS with a client and open a second
+connection to a real server, but the exporter on those two connections is
+derived from two independent TLS 1.3 handshakes. The forwarded response
+therefore carries a signature over the wrong binding and the far server
+rejects it.
+
+Both endpoints require TLS 1.3 and a finished handshake before computing the
+value. There is no unbound mode and no negotiation to disable it: a peer that
+cannot produce a 32-byte binding fails AUTH. The same value is also folded
+into the establishment transcript (see the key schedule below), so a bypassed
+transcript check still yields unrelated roots on the two sides of a relay.
+
+Channel binding does not authenticate the endpoint by itself. Certificate and
+hostname verification, optional pinning, admission, and the Ed25519 trust
+store remain the mechanisms that decide which server a client will talk to.
 
 ## Admission
 
@@ -113,7 +147,7 @@ token is:
 
 ```
 HMAC-SHA256(obfs_secret,
-  len("2.0-dev3") || "2.0-dev3" ||
+  len("2.0-dev4") || "2.0-dev4" ||
   len(lowercase_sni) || lowercase_sni ||
   hour_u64 || nonce_32)
 ```
@@ -136,8 +170,9 @@ psk_key = HKDF-SHA256(file_psk, psk_salt,
 root_0 = HKDF-SHA256(
   len(mlkem_ss) || mlkem_ss ||
   len(x25519_ss) || x25519_ss ||
-  len(psk_key) || psk_key,
-  transcript_salt, "yume/2.0/root/v1", 32)
+  len(psk_key) || psk_key ||
+  len(channel_binding) || channel_binding,
+  transcript_salt, "yume/2.0/root/v2", 32)
 ```
 
 Independent directional roots and chains use distinct versioned labels. Every

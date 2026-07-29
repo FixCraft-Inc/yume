@@ -35,8 +35,10 @@ long-running concurrency validation remain.
   idle timeout), conditional GET (`If-None-Match`/`If-Modified-Since` -> 304),
   and byte `Range` requests (-> 206 / 416). Static 200s use nginx-style framing;
   per-profile static templates are not yet implemented.
-- Client profile rotation advances after successful TLS connections; the HTTP
-  User-Agent follows the active preset unless explicitly overridden.
+- The 2.0 CLI pins the only configured Chrome transport path and rejects
+  `--tls-stealth-rotate` and `--tls-stealth-rotation-interval`. Legacy reusable
+  profile-selection helpers remain in the tree but are not a supported 2.0
+  runtime contract.
 - Whole-session close has a five-second deadline, pending service opens are
   capped at 64 per service and 256 total, and client EXEC dispatch is capped at
   four concurrent workers. Principal shutdown paths use best-effort buffer
@@ -44,7 +46,7 @@ long-running concurrency validation remain.
 
 Focused validation in the current development tree covers the obfs codec and
 decoy classifier, authorization predicate/tier, public-node policy, TLS profile
-rotation, transport core, and service-queue policy. `yume`, `yumed`, and
+selection helpers, transport core, and service-queue policy. `yume`, `yumed`, and
 `yume_facade` also link in the focused build tree.
 
 ## Capacity, admission, and key tiers

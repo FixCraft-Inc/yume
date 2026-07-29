@@ -6,9 +6,9 @@ endpoint, and a separately supervised Node.js process on loopback. Android,
 nginx, alternate browser profiles, HTTP/3, and the retired 1.x carriers are
 outside this slice.
 
-## Fixed identity
+## Target identity and current implementation
 
-- Client fixture: Chrome `150.0.7871.114` on Debian 13.
+- Target client fixture: Chrome `150.0.7871.114` on Debian 13.
 - Cover server fixture: Node.js `24.18.x` LTS HTTP/2.
 - TLS: TLS 1.3 with ALPN `h2`; `--profile chrome` is mandatory.
 - Public endpoint: `yumed`; Node is never exposed directly.
@@ -16,7 +16,26 @@ outside this slice.
 
 The sanitized capture and version manifest are committed under
 `tests/fixtures/chrome150-node24/`. They, rather than invented timing or frame
-constants, define the first profile.
+constants, define the target profile.
+
+The current client does **not** yet emit one coherent Chrome 150/Debian
+identity:
+
+- `client_registry()` in `src/core/stealth/http_profile.cpp` supplies a
+  Windows Chrome 131 User-Agent and selects `BrowserProfile::CHROME_131`;
+- `H2Carrier::Impl::StartClient()` in
+  `src/core/stealth/h2_carrier.cpp` supplies Chrome 150 client hints with
+  `sec-ch-ua-platform: "Linux"` and the capture-derived H2 shape;
+- `get_known_browser_fingerprints()` and
+  `StealthContext::apply_stealth_profile()` in
+  `src/core/stealth/tls_fingerprint.cpp` and `tls_stealth.cpp` configure the
+  stock-OpenSSL Chrome 131 baseline.
+
+That Chrome-version and operating-system mismatch is a classifier-visible
+defect. “Chrome is the only complete transport fixture” means only that other
+profiles are rejected by the 2.0 CLI; it does not mean the emitted Chrome
+identity has achieved capture parity. Profile rotation is also rejected in
+2.0. Any status page that says it advances at runtime is stale.
 
 ## Full-session HTTP/2 carrier
 
@@ -89,28 +108,109 @@ The old static responder may remain an emergency fallback in the wider codebase,
 but it is not the evidence-backed YUME 2.0 cover and must not be described as
 native Node behavior.
 
-## What this helps against
+## What this helps against today
 
 - Custom-protocol signatures after TLS: the whole session remains H2/WebSocket.
-- Casual active probing: non-admitted traffic sees the real Node site or its
-  captured rejection path.
+- Casual active probing: ordinary non-admitted GET/HEAD traffic sees the real
+  Node site. Invalid carrier attempts remain outside AUTH and receive a bounded
+  cover response; this is not a claim that every malformed H2 request renders
+  a complete website.
 - Replay of captured carrier URLs: admission nonces are cached until expiry.
-- Long-lived inner-key compromise: independent directions rekey before crossing
+- Some retained-chain compromise: independent directions rekey before crossing
   256 KiB, 512 encrypted data frames, or 500 ms of active epoch time.
 
 These are reductions in distinguishability and compromise radius, not claims of
-anonymity or immunity to statistical traffic analysis.
+anonymity, browser identity, or immunity to statistical traffic analysis.
+Passive observers see the ClientHello, certificate and endpoint metadata, TLS
+record sizes, timing, and volume. They do not see plaintext H2 frames unless
+they also terminate or decrypt TLS. Valid H2 primarily removes a proprietary
+post-handshake syntax and improves behavior under probing; it does not make a
+tunnel look specifically like “reading a news article.”
 
-## Known TLS residual
+## Known classifier-visible residuals
 
-TLS is the weakest classifier-visible layer. Stock OpenSSL cannot reproduce
-Chrome 150 ClientHello extension and GREASE ordering byte-for-byte. A censor can
-therefore distinguish YUME before inspecting HTTP/2 even when ALPN, suites,
-groups, signatures, and a coarse JA4 classification align.
+The mixed Chrome 131/150 and Windows/Linux identity above must be fixed first.
+After that, TLS remains the weakest classifier-visible layer. Stock OpenSSL
+does not expose enough control to reproduce Chrome/BoringSSL extension and
+GREASE ordering. A censor can therefore distinguish YUME before the encrypted
+HTTP/2 carrier matters even when ALPN, suites, groups, signatures, and a coarse
+JA4 classification align.
 
-The release must document this residual and must not call the connection
-“TLS-indistinguishable from Chrome.” BoringSSL is the likely follow-up if exact
-capture comparison shows that the residual is unacceptable.
+Replacing OpenSSL with BoringSSL is a plausible implementation route, not a
+proof of parity by itself: Chrome adds build- and browser-specific behavior on
+top of BoringSSL. uTLS is a Go library and is not a direct C++ replacement.
+The choice must follow an on-wire experiment against one pinned Chrome build,
+not a library-name assumption.
+
+YUME also does not currently disguise traffic volume and timing beyond the
+capture-derived H2/WebSocket framing. Blanket random padding, fixed-rate cover
+traffic, or periodic keepalives can create a new fingerprint and waste
+bandwidth. Add padding or timing shaping only when captured workloads and an
+external classifier comparison show that a bounded policy improves the target
+distribution. Idle silence remains the current contract.
+
+## Goal state and measurable gates
+
+The “ordinary sedan outside, hardened vault inside” description is a design
+goal, not a current security claim. Move toward it in this order:
+
+1. **One profile source.** A single immutable profile must supply the target
+   browser build/platform, TLS policy, User-Agent/client hints, H2 settings and
+   priorities, request headers, asset sequence, and cover-server version.
+   Remove version/platform literals from independent call sites.
+2. **Capture-normalized TLS parity.** Evaluate a pinned Chromium/BoringSSL
+   emitter (or an isolated equivalent) against the exact Chrome 150/Debian
+   capture. Compare extension order, GREASE positions, cipher/group/signature
+   order, ALPN, padding, lengths, and repeat-run distributions while
+   normalizing expected entropy such as randoms, key shares, session IDs, and
+   GREASE values. A matching JA3/JA4 label is insufficient.
+3. **End-to-end profile coherence.** Capture a real YUME connection and reject
+   any TLS, HTTP header, client-hint, H2 setting/priority, WebSocket, certificate,
+   cover-site, or server-header contradiction. Validate both admitted and
+   ordinary/probe paths with external H2 tooling.
+4. **Evidence-driven traffic shape.** Record representative page-load,
+   interactive, upload, download, bidirectional, idle, close, loss, and WAN
+   traces. Compare TLS-record size/timing distributions against the chosen
+   cover workload. Introduce bounded padding/jitter only if it measurably lowers
+   distinguishability and remains within the release overhead budget.
+5. **Adversarial validation.** Test passive classification, active TLS/H1/H2
+   probes, malformed extended CONNECT, replay, backend outage, certificate/site
+   consistency, and common hosting/IP metadata. Record what still
+   distinguishes YUME; do not turn a passed fixture test into a DPI-immunity
+   claim.
+
+Changing the TLS stack, adding padding, or changing wire fields is not complete
+until these gates have repeatable artifacts. Any TLS-stack migration must also
+preserve certificate validation, pinning, ALPN, error handling, packaging, and
+sanitizer/build coverage.
+
+## Cryptographic claim vocabulary
+
+YUME 2.0 uses hybrid ML-KEM-1024 + X25519 + a uniformly random 32-byte PSK for
+establishment and fresh hybrid material for directional epochs. It is accurate
+to call this **hybrid post-quantum key establishment**. It is not accurate to
+call YUME “quantum-proof,” “uncrackable,” or guaranteed future-proof: Ed25519
+client authentication and the public TLS certificate remain classical, the PSK
+is a deployment secret, endpoint compromise exposes live plaintext/state, and
+the complete construction has not received an independent formal proof or
+security audit.
+
+The 500 ms constant is a maximum **sender-active epoch age**, starting with the
+first application frame. Byte or frame use may rotate an epoch sooner; an idle
+connection does not rotate at all. Receivers independently enforce byte/frame
+limits, but the time rule currently assumes a conforming sender. An
+authenticated wire timestamp would not make a malicious sender's clock
+truthful, would expose/change timing semantics, and would require a versioned
+wire/AAD decision. A future design may instead keep the honest sender-local
+contract or enforce a receiver-local lifetime from first authenticated
+arrival, with its availability tradeoff.
+
+Compromise claims must name the material. Exposure of one erased, one-use
+message key is much narrower than exposure of the current chain/root or process
+memory. The negotiated window also retains up to `w` authenticated future
+roots. Recovery occurs only after uncompromised fresh rekey contributions; a
+key does not become “instantly useless after 500 ms” under every compromise
+model.
 
 ## Release evidence
 

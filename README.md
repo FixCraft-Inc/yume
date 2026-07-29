@@ -8,9 +8,10 @@ YUME 2.0-dev3 tunnels TCP and UDP through a persistent TLS 1.3 + HTTP/2 +
 WebSocket connection. The focused Linux desktop slice uses mandatory
 ML-KEM-1024 + X25519 + random-PSK key establishment, per-message AES-256-GCM
 keys, and independent directional epochs bounded by 256 KiB, 512 DATA frames,
-or 500 ms of active traffic. The client (`yume`) and daemon (`yumed`) are
-AGPL-3.0-or-later and build from this tree. Other platforms and the optional GUI
-have not yet passed the 2.0 release gates.
+or 500 ms of sender-active traffic. This is a usage limit, not a claim that an
+idle connection rotates keys twice per second. The client (`yume`) and daemon
+(`yumed`) are AGPL-3.0-or-later and build from this tree. Other platforms and
+the optional GUI have not yet passed the 2.0 release gates.
 
 - Website: https://yume.fixcraft.jp
 - Source: https://github.com/FixCraft-Inc/yume
@@ -22,9 +23,15 @@ codec, federation, plugin, and browser status, see
 
 ## Why YUME
 
-VPN protocols built for performance (WireGuard, OpenVPN) are also built to be recognisable. Their handshakes have static byte signatures that ISPs and national firewalls can match in milliseconds. Commercial VPN services then resell that same recognisable transport for $20/month, bandwidth that costs them pennies, and run it from cheap KVMs that any user could rent directly.
-
-YUME tries to do the opposite: a transport with browser-oriented TLS presets, keyed active-probe admission, and an ordinary HTTPS decoy path, with crypto that survives the move to post-quantum and both ends open for audit and self-hosting. These layers reduce obvious signatures; they do not make YUME byte-identical to Chrome or immune to stateful DPI. FixCraft will run a fleet of free public endpoints (no signup, no payment), but the endpoints run the same `yumed` you can build right here.
+Many conventional VPN deployments can be classified from handshake and
+transport behavior, although the exact visibility depends on protocol,
+configuration, and camouflage features. YUME explores a different tradeoff:
+browser-oriented TLS presets, keyed active-probe admission, an ordinary HTTPS
+decoy path, hybrid post-quantum key establishment, and an implementation that
+is open for audit and self-hosting. These layers reduce obvious signatures;
+they do not make YUME identical to Chrome or immune to stateful DPI. FixCraft
+plans to run free public endpoints, but they use the same `yumed` that builds
+from this tree.
 
 ## Compared to other tools
 
@@ -32,7 +39,7 @@ YUME tries to do the opposite: a transport with browser-oriented TLS presets, ke
 | --------------------------- | --------------- | -------------- | ------------------------ | ------------------ | --------------- |
 | Hybrid post-quantum inner channel | ML-KEM-1024 + X25519 + AES-GCM | no | no | no | no |
 | Directional epoch ratchet   | ≤256 KiB / 512 frames / 500 ms active | no | no | no | no |
-| HTTPS-shaped carrier | persistent TLS + H2/WebSocket; known TLS residual | UDP signature | TLS-on-OpenVPN-port signature | obfs4 bridge | random-prefix |
+| HTTPS-shaped carrier | persistent TLS + H2/WebSocket; known TLS residual | distinctive UDP handshake | deployment-dependent TLS/UDP shape | obfs4 bridge | random-prefix |
 | Privacy-minimizing policy + operator identity proof | built in | n/a | per-provider | relay policy differs | n/a |
 | Free public endpoints       | planned (FixCraft) | none        | none                     | yes                | none            |
 | First 2.0 target            | Linux x86-64 CLI | broad          | broad                    | broad              | broad           |
@@ -206,8 +213,11 @@ Specific hostnames will land here once the fleet is up.
 
 ## Stealth and obfuscation
 
-The first 2.0 profile is fixed to a captured Chrome 150 client and Node.js 24
-LTS cover. After a normal priming page load, the client opens an RFC 8441
+The first 2.0 target is a captured Chrome 150 client and Node.js 24 LTS cover.
+The current carrier reproduces that capture's HTTP/2 shape, but the complete
+emitted identity is not yet coherent: the TLS preset and registry User-Agent
+still identify Chrome 131/Windows while the carrier client hints identify
+Chrome 150/Linux. After a normal priming page load, the client opens an RFC 8441
 extended CONNECT stream. Encrypted YUME records remain WebSocket binary
 messages inside valid HTTP/2 DATA frames for the entire connection.
 
@@ -217,8 +227,10 @@ cover path and never receive AUTH. Node never sees tunnel data, identities, or
 secret material.
 
 This raises the cost of custom-protocol matching and casual active probing; it
-does not make YUME byte-identical to Chrome. OpenSSL still differs from Chrome's
-BoringSSL ClientHello upstream of the H2 carrier. See [docs/STEALTH.md](docs/STEALTH.md)
+does not make YUME identical to Chrome or immune to traffic analysis. The
+profile mismatch above is an immediate correctness gap, and stock OpenSSL
+cannot reproduce Chrome's BoringSSL ClientHello ordering upstream of the H2
+carrier. See [docs/STEALTH.md](docs/STEALTH.md)
 for the measured scope and [docs/YUME_2_0_IMPLEMENTATION_STATUS.md](docs/YUME_2_0_IMPLEMENTATION_STATUS.md)
 for unfinished release gates.
 

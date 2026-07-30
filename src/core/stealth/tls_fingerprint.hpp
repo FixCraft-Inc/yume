@@ -36,8 +36,7 @@ enum class ExtensionType : uint16_t {
 
 // Browser profile identifiers
 enum class BrowserProfile {
-    CHROME_131,
-    CHROME_123,
+    CHROME_150,
     FIREFOX_126,
     FIREFOX_115_ESR,
     SAFARI_18,
@@ -108,7 +107,7 @@ FingerprintData parse_client_hello(const uint8_t* data, size_t length);
 struct FingerprintEvaluation {
     bool looks_like_browser{false};
     bool needs_stealth_mode{true};
-    BrowserProfile recommended_profile{BrowserProfile::CHROME_131};
+    BrowserProfile recommended_profile{BrowserProfile::CHROME_150};
     std::vector<std::string> warnings;
     std::vector<std::string> recommendations;
 };

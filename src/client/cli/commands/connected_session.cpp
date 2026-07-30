@@ -28,7 +28,6 @@
 #include "core/protocol/protocol.hpp"
 #include "core/protocol/protocol_stream.hpp"
 #include "core/security/identity.hpp"
-#include "core/stealth/http_profile.hpp"
 #include "core/stealth/tls_stealth.hpp"
 #include "core/version.hpp"
 #include "util.hpp"
@@ -400,7 +399,6 @@ std::vector<std::shared_ptr<Tunnel>> open_secondary_socks_tunnels(
                            std::to_string(i) + "/" +
                            std::to_string(cfg.tunnel_count));
             std::optional<tls_fingerprint::BrowserProfile> profile;
-            std::string carrier_user_agent = http_profile::active_client_ua();
             if (cfg.tls_stealth_enabled && cfg.tls_stealth_rotate &&
                 options.completed_tls_connections &&
                 options.base_tls_profile != tls_fingerprint::BrowserProfile::UNKNOWN) {
@@ -409,15 +407,9 @@ std::vector<std::shared_ptr<Tunnel>> open_secondary_socks_tunnels(
                     true,
                     cfg.tls_stealth_rotation_interval,
                     *options.completed_tls_connections);
-                if (!options.explicit_http_profile) {
-                    if (auto http = http_profile::transport_client_for_tls_profile(*profile)) {
-                        carrier_user_agent = http->user_agent;
-                    }
-                }
             }
             auto extra = connect_secondary_tunnel(
                 io, ctx, cfg, proxy_cfg, i, profile,
-                std::move(carrier_user_agent),
                 cfg.tls_stealth_enabled ? options.completed_tls_connections
                                         : nullptr);
             tunnel_pool->add(extra);

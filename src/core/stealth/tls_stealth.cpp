@@ -29,6 +29,7 @@
 #include <mutex>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 
 #include <nlohmann/json.hpp>
 
@@ -398,8 +399,8 @@ tls_fingerprint::BrowserProfile profile_for_connection(
     bool rotate,
     std::uint32_t interval,
     std::uint64_t completed_connections) {
-    constexpr std::array profiles{
-        tls_fingerprint::BrowserProfile::CHROME_131,
+    const std::array profiles{
+        cover_profile::chrome150_debian13_node24().tls_profile,
         tls_fingerprint::BrowserProfile::FIREFOX_126,
         tls_fingerprint::BrowserProfile::SAFARI_18,
     };
@@ -474,14 +475,10 @@ std::string groups_to_openssl_string(const std::vector<uint16_t>& groups) {
 
 StealthContext::StealthContext(const StealthConfig& config)
     : config_(config)
-      // tlsv12_client: enable TLS 1.2 + 1.3. The stealth path applies
-      // browser-oriented presets; some CDN destinations still negotiate 1.2,
-      // so we keep both
-      // versions enabled while rejecting everything older than 1.2.
-    , ssl_context_(boost::asio::ssl::context::tlsv12_client)
+    , ssl_context_(boost::asio::ssl::context::tlsv13_client)
     , current_profile_(config.target_profile) {
     available_profiles_ = {
-        tls_fingerprint::BrowserProfile::CHROME_131,
+        cover_profile::chrome150_debian13_node24().tls_profile,
         tls_fingerprint::BrowserProfile::FIREFOX_126,
         tls_fingerprint::BrowserProfile::SAFARI_18,
     };
@@ -505,7 +502,7 @@ void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profi
     auto profile_info = tls_fingerprint::get_browser_profile_info(profile);
     if (!profile_info) {
         profile_info = tls_fingerprint::get_browser_profile_info(
-            tls_fingerprint::BrowserProfile::CHROME_131);
+            cover_profile::chrome150_debian13_node24().tls_profile);
         if (!profile_info) return;
     }
 
@@ -515,8 +512,12 @@ void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profi
     configure_alpn(profile_info->alpn_protocols);
 
     SSL_CTX* ctx = ssl_context_.native_handle();
-    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
-    SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION);
+    const auto& cover = cover_profile::chrome150_debian13_node24();
+    if (SSL_CTX_set_min_proto_version(ctx, cover.tls_min_version) != 1 ||
+        SSL_CTX_set_max_proto_version(ctx, cover.tls_max_version) != 1) {
+        throw std::runtime_error(
+            "failed to enforce cover-profile TLS version bounds");
+    }
 
     // RFC 8701 GREASE: register one extension at a GREASE-range type
     // (0x0A0A, 0x1A1A, …, 0xFAFA, rotated per-connection via

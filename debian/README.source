@@ -25,7 +25,9 @@ The current Debian packaging configures YUME with:
     -DYUME_BUILD_SHARED_ABI=ON
 
 YUME now expects BaseFWX to be packaged separately and provided through
-libbasefwx-dev. The BaseFWX source package can also build a basefwx CLI
+libbasefwx-dev >= 3.8.0~dev1-1. This is the first package line containing
+the explicit-salt HKDF, X25519, and selectable ML-KEM-1024 APIs used by
+YUME 2.0-dev4. The BaseFWX source package can also build a basefwx CLI
 package, but YUME only needs libbasefwx-dev at build time and libbasefwx3 at
 runtime. Do not build Debian packages against the bundled basefwx/ tree or
 against vendor/; both are excluded from the Debian source tarball.

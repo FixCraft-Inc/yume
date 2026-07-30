@@ -4,6 +4,8 @@
 #include <cassert>
 #include <iostream>
 
+#include "core/stealth/cover_profile.hpp"
+
 namespace {
 
 using yume::obfs::H2Bytes;
@@ -42,13 +44,15 @@ H2Bytes PumpFragmentedAndTake(H2Carrier& from, H2Carrier& to,
 }
 
 void CompleteChromeAssets(H2Carrier& client, H2Carrier& server) {
+    const auto& profile =
+        yume::cover_profile::chrome150_debian13_node24();
     Pump(client, server);
     auto requests = server.TakeRequests();
-    assert(requests.size() == 2);
+    assert(requests.size() == profile.assets.size());
     assert(requests[0].method == "GET" &&
-           requests[0].path == "/assets/site.css");
+           requests[0].path == profile.assets[0].path);
     assert(requests[1].method == "GET" &&
-           requests[1].path == "/assets/site.js");
+           requests[1].path == profile.assets[1].path);
     assert(server.RespondHttp(requests[0].stream_id, 200,
                               {{"content-type", "text/css"}},
                               H2Bytes{'c', 's', 's'}));
@@ -61,27 +65,19 @@ void CompleteChromeAssets(H2Carrier& client, H2Carrier& server) {
 }
 
 void FullSessionRoundTrip() {
+    const auto& profile =
+        yume::cover_profile::chrome150_debian13_node24();
     H2Carrier client(H2CarrierRole::Client);
     H2Carrier server(H2CarrierRole::Server);
-    assert(client.StartClient("cover.example", {}));
+    assert(client.StartClient("cover.example"));
     Pump(client, server);
     Pump(server, client);
 
     auto requests = server.TakeRequests();
     assert(requests.size() == 1);
     assert(requests[0].method == "GET" && requests[0].path == "/");
-    const H2Headers expected_priming{
-        {":method", "GET"}, {":authority", "cover.example"},
-        {":scheme", "https"}, {":path", "/"},
-        {"sec-ch-ua", "\"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"150\", \"Google Chrome\";v=\"150\""},
-        {"sec-ch-ua-mobile", "?0"}, {"sec-ch-ua-platform", "\"Linux\""},
-        {"upgrade-insecure-requests", "1"},
-        {"user-agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"},
-        {"accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"},
-        {"sec-fetch-site", "none"}, {"sec-fetch-mode", "navigate"},
-        {"sec-fetch-user", "?1"}, {"sec-fetch-dest", "document"},
-        {"accept-encoding", "gzip, deflate, br, zstd"},
-        {"accept-language", "en-US,en;q=0.9"}, {"priority", "u=0, i"}};
+    const H2Headers expected_priming =
+        profile.render_headers(profile.priming_request, "cover.example");
     assert(requests[0].headers == expected_priming);
     assert(server.RespondHttp(requests[0].stream_id, 200,
                               {{"content-type", "text/html"}},
@@ -97,17 +93,8 @@ void FullSessionRoundTrip() {
     assert(requests[0].method == "CONNECT");
     assert(requests[0].stream_id == 7);
     assert(requests[0].protocol == "websocket");
-    const H2Headers expected_connect{
-        {":method", "CONNECT"}, {":authority", "cover.example"},
-        {":scheme", "https"}, {":path", "/.well-known/example"},
-        {":protocol", "websocket"}, {"pragma", "no-cache"},
-        {"cache-control", "no-cache"},
-        {"user-agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"},
-        {"origin", "https://cover.example"},
-        {"sec-websocket-version", "13"},
-        {"accept-encoding", "gzip, deflate, br, zstd"},
-        {"accept-language", "en-US,en;q=0.9"},
-        {"sec-websocket-extensions", "permessage-deflate; client_max_window_bits"}};
+    const H2Headers expected_connect = profile.render_headers(
+        profile.extended_connect, "cover.example", "/.well-known/example");
     assert(requests[0].headers == expected_connect);
     assert(server.AcceptCarrier(requests[0].stream_id));
     // Production enables this only after YUME authentication. A full 256-KiB
@@ -127,7 +114,8 @@ void FullSessionRoundTrip() {
         // payload cannot detect a carrier that accidentally repeats its first
         // message while advancing flow-control state.
         up[i] = static_cast<std::uint8_t>(
-            ((i / (16U * 1024U)) * 17U + (i % 251U)) & 0xffU);
+            ((i / profile.websocket_message_bytes) * 17U + (i % 251U)) &
+            0xffU);
     }
     assert(client.SendBinary(up));
     Pump(client, server);
@@ -168,7 +156,7 @@ void FullSessionRoundTrip() {
 void RejectCarrierLooksHttp() {
     H2Carrier client(H2CarrierRole::Client);
     H2Carrier server(H2CarrierRole::Server);
-    assert(client.StartClient("cover.example", {}));
+    assert(client.StartClient("cover.example"));
     Pump(client, server);
     Pump(server, client);
     auto requests = server.TakeRequests();

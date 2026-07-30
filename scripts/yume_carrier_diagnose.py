@@ -41,19 +41,17 @@ MEDIA_URLS = [
     "https://storage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
 ]
 
+with (
+    pathlib.Path(__file__).resolve().parents[1]
+    / "tests/fixtures/chrome150-node24/chrome_h2_profile.json"
+).open(encoding="utf-8") as _profile_file:
+    _captured_profile = json.load(_profile_file)
+
 CLIENT_UA = {
-    "chrome": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-    ),
-    "firefox": "Mozilla/5.0 (Windows NT 10.0; rv:133.0) Gecko/20100101 Firefox/133.0",
-    "safari": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
-        "(KHTML, like Gecko) Version/18.1 Safari/605.1.15"
-    ),
-    "edge": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0"
+    "chrome": next(
+        value
+        for name, value in _captured_profile["priming_get"]["headers_in_order"]
+        if name == "user-agent"
     ),
 }
 
@@ -544,7 +542,7 @@ def probe_server_http_disguise(host: str,
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
         context.set_alpn_protocols(["http/1.1"])
-        ua = CLIENT_UA.get(client_profile, CLIENT_UA["firefox"])
+        ua = CLIENT_UA.get(client_profile, CLIENT_UA["chrome"])
         req = (
             f"GET /yume-dpi-probe-{secrets.token_hex(4)} HTTP/1.1\r\n"
             f"Host: {sni or host}\r\n"
@@ -736,11 +734,11 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--server-profile", default="nginx",
                     choices=["nginx", "nginx-stable", "apache", "caddy", "cloudflare", "express", "gunicorn", "none", "yumed"],
                     help="local yumed HTTP disguise profile for active-probe responses")
-    ap.add_argument("--client-profile", default="firefox", choices=["chrome", "firefox", "safari"],
-                    help="Yume outer TLS profile; also drives default carrier User-Agent")
+    ap.add_argument("--client-profile", default="chrome", choices=["chrome"],
+                    help="pinned YUME outer TLS/H2 cover profile")
     ap.add_argument("--client-http-profile", default=None,
-                    choices=["chrome", "firefox", "safari", "edge", "curl", "wget", "yume"],
-                    help="override Yume carrier User-Agent profile")
+                    choices=["chrome"],
+                    help="compatibility spelling for the pinned cover profile")
     ap.add_argument("--yume-arg", action="append", default=[], help="Extra single argument passed to yume; repeat as needed")
     ap.add_argument("--yumed-arg", action="append", default=[], help="Extra single argument passed to local yumed; repeat as needed")
     ap.add_argument("--yume-bin", default=None)

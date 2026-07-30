@@ -186,11 +186,14 @@ validation, timeout, permission, and test coverage.
 
 ## Federation and multi-hop privacy
 
-Status: cluster federation exists; onion-style routing does not.
+Status: retained legacy implementation; unsupported and non-interoperable with
+the v2-only runtime.
 
-- Current federation connects `yumed` peers and can route endpoint invites /
-  channels through cluster links.
-- It is not a Tor-like onion-routing anonymity layer.
+- Federation still constructs the legacy AUTH/inner-key exchange. Normal 2.0
+  sessions require AUTH v2, TLS-exporter binding, and `SessionRatchet`, so
+  current `yumed` federation peers do not establish a supported 2.0 link.
+- It must either be ported with integration tests or retired before public
+  cluster support can be claimed. It is not a Tor-like onion-routing layer.
 
 Planned but not implemented:
 

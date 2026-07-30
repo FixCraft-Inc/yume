@@ -13,7 +13,7 @@ Build-Depends:
  libspdlog-dev,
  libzstd-dev,
  zlib1g-dev,
- libbasefwx-dev,
+ libbasefwx-dev (>= 3.8.0~dev1-1),
 # GUI build (skipped when DEB_BUILD_PROFILES contains "nogui"):
  libgl-dev <!nogui>,
  libglfw3-dev <!nogui>,
@@ -40,10 +40,9 @@ Description: YUME stable C ABI runtime library
  YUME tunnels application streams through an authenticated TLS 1.3 carrier
  that can use an HTTP/2 camouflage preface.
  .
- This package contains libyume, a small stable C ABI exposing YUME build,
- version, feature, and backend information for external tools and future
- integrations. The high-level client/server C++ implementation remains
- private to the YUME binaries.
+ This package contains libyume, the stable C ABI runtime for external
+ integrations. It exposes build metadata plus opaque client, server, stream,
+ and packet handles; the C++ implementation remains private.
 
 Package: libyume-dev
 Section: libdevel
@@ -75,8 +74,9 @@ Description: stealth transport command-line client
  SOCKS mode, local and reverse forwarding, relay features, and optional
  routing through external anonymity networks such as Tor.
  .
- This Debian build links against the system-installed libbasefwx, which
- provides AES, Argon2id, and ML-KEM-768 post-quantum inner crypto.
+ This Debian build links against the system-installed libbasefwx for the
+ cryptographic primitives used by the mandatory ML-KEM-1024 + X25519 + PSK
+ establishment and directional AES-256-GCM ratchet.
 
 Package: yume-daemon
 Architecture: any
@@ -106,8 +106,8 @@ Recommends:
 Description: graphical desktop client for the Yume transport
  yume-gui is an optional Dear ImGui-based desktop application that
  embeds the yume_core library directly. It provides client connection
- management, local server hosting, key management (Ed25519 and
- ML-KEM-768), a relay directory and chat, log inspection, and a
+ management, local server hosting, Ed25519 identity and authorization key
+ management, a relay directory and chat, log inspection, and a
  system tray icon with minimise-to-tray behaviour.
  .
  This package is independent of the CLI binaries and can be installed

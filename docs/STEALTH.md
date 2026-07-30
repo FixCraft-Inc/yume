@@ -18,24 +18,16 @@ The sanitized capture and version manifest are committed under
 `tests/fixtures/chrome150-node24/`. They, rather than invented timing or frame
 constants, define the target profile.
 
-The current client does **not** yet emit one coherent Chrome 150/Debian
-identity:
+The current client selects one immutable profile in
+`src/core/stealth/cover_profile.*`. It supplies the Chrome 150/Debian 13 TLS
+profile selection, User-Agent/client hints, H2 settings/priorities/header
+order, asset sequence, WebSocket message size, and Node 24 server settings.
+The HTTP registry, TLS preset, and production `H2Carrier` consume that profile,
+and tests compare it to the committed capture fixture.
 
-- `client_registry()` in `src/core/stealth/http_profile.cpp` supplies a
-  Windows Chrome 131 User-Agent and selects `BrowserProfile::CHROME_131`;
-- `H2Carrier::Impl::StartClient()` in
-  `src/core/stealth/h2_carrier.cpp` supplies Chrome 150 client hints with
-  `sec-ch-ua-platform: "Linux"` and the capture-derived H2 shape;
-- `get_known_browser_fingerprints()` and
-  `StealthContext::apply_stealth_profile()` in
-  `src/core/stealth/tls_fingerprint.cpp` and `tls_stealth.cpp` configure the
-  stock-OpenSSL Chrome 131 baseline.
-
-That Chrome-version and operating-system mismatch is a classifier-visible
-defect. “Chrome is the only complete transport fixture” means only that other
-profiles are rejected by the 2.0 CLI; it does not mean the emitted Chrome
-identity has achieved capture parity. Profile rotation is also rejected in
-2.0. Any status page that says it advances at runtime is stale.
+This fixes the former Chrome 131/150 and Windows/Linux contradiction. It does
+not mean the emitted TLS ClientHello has achieved Chrome/BoringSSL parity.
+Profile rotation remains rejected in 2.0.
 
 ## Full-session HTTP/2 carrier
 
@@ -129,8 +121,7 @@ tunnel look specifically like “reading a news article.”
 
 ## Known classifier-visible residuals
 
-The mixed Chrome 131/150 and Windows/Linux identity above must be fixed first.
-After that, TLS remains the weakest classifier-visible layer. Stock OpenSSL
+TLS remains the weakest classifier-visible layer. Stock OpenSSL
 does not expose enough control to reproduce Chrome/BoringSSL extension and
 GREASE ordering. A censor can therefore distinguish YUME before the encrypted
 HTTP/2 carrier matters even when ALPN, suites, groups, signatures, and a coarse
@@ -154,10 +145,9 @@ distribution. Idle silence remains the current contract.
 The “ordinary sedan outside, hardened vault inside” description is a design
 goal, not a current security claim. Move toward it in this order:
 
-1. **One profile source.** A single immutable profile must supply the target
-   browser build/platform, TLS policy, User-Agent/client hints, H2 settings and
-   priorities, request headers, asset sequence, and cover-server version.
-   Remove version/platform literals from independent call sites.
+1. **One profile source (implemented).** The immutable Chrome 150/Debian 13 +
+   Node 24 profile supplies the target identity and capture-shaped H2 values;
+   fixture-backed tests keep its consumers coherent.
 2. **Capture-normalized TLS parity.** Evaluate a pinned Chromium/BoringSSL
    emitter (or an isolated equivalent) against the exact Chrome 150/Debian
    capture. Compare extension order, GREASE positions, cipher/group/signature

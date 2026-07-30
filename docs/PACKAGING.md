@@ -15,7 +15,8 @@ The Debian source packaging currently produces five YUME binary packages:
   `DEB_BUILD_PROFILES=nogui` is set.
 
 BaseFWX is packaged separately as `basefwx`, `libbasefwx3`, and
-`libbasefwx-dev`; YUME links to that packaged library for Debian builds.
+`libbasefwx-dev`; YUME links to version `3.8.0~dev1-1` or newer for Debian
+builds because dev4 consumes the 3.8 X25519 and ML-KEM-1024 APIs.
 BaseFWX Debian archive builds must use packaged dependencies, including
 `liboqs-dev`; vendored liboqs is only a local development override.
 `libyume` is the stable native C embed ABI. In 1.1 it exposes build metadata,
@@ -261,7 +262,7 @@ rm -rf /tmp/yume-basefwx-prefix
 mkdir -p /tmp/yume-basefwx-prefix
 dpkg-deb -x libbasefwx3_*.deb /tmp/yume-basefwx-prefix
 dpkg-deb -x libbasefwx-dev_*.deb /tmp/yume-basefwx-prefix
-printf 'libbasefwx 3 libbasefwx3 (>= 3.7.0-1)\n' > debian/shlibs.local
+printf 'libbasefwx 3 libbasefwx3 (>= 3.8.0~dev1-1)\n' > debian/shlibs.local
 BASEFWX_PREFIX=/tmp/yume-basefwx-prefix/usr \
 BASEFWX_LIBDIR=/tmp/yume-basefwx-prefix/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH) \
 dpkg-buildpackage -d -us -uc -b

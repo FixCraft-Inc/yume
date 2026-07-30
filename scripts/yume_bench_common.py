@@ -23,7 +23,13 @@ from typing import BinaryIO
 from yume_bench_resources import ProcessResourceSampler
 
 
-PINNED_NODE_VERSION = "24.18.0"
+_COVER_MANIFEST = (
+    Path(__file__).resolve().parents[1]
+    / "tests/fixtures/chrome150-node24/manifest.json"
+)
+PINNED_NODE_VERSION = json.loads(
+    _COVER_MANIFEST.read_text(encoding="utf-8")
+)["server"]["version"]
 RATE_RE = re.compile(
     r"^(TOTAL|UP|DOWN)\s+([0-9.]+) MiB\s+([0-9.]+) s\s+"
     r"([0-9.]+) MiB/s /\s+([0-9.]+) Mbit/s$",

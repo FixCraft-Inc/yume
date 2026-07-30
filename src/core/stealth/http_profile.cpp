@@ -12,14 +12,16 @@
 #include <chrono>
 #include <cstdio>
 #include <ctime>
-#include <mutex>
 #include <optional>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 
 // strptime / timegm are POSIX/GNU extensions not guaranteed by <ctime>.
 #include <time.h>
+
+#include "core/stealth/cover_profile.hpp"
 
 namespace yume::http_profile {
 
@@ -234,49 +236,13 @@ const std::unordered_map<std::string, ServerProfile>& server_registry() {
 const std::unordered_map<std::string, ClientProfile>& client_registry() {
     static const std::unordered_map<std::string, ClientProfile> kRegistry = []{
         std::unordered_map<std::string, ClientProfile> m;
+        const auto& cover = cover_profile::chrome150_debian13_node24();
 
-        // Current stable UAs captured from each browser's about-page
-        // 2026-05. Held stable here so traffic from one yume install
-        // doesn't drift relative to others under a UA-version pinning
-        // fingerprint.
-        m["chrome"] = ClientProfile{
-            "chrome",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            tls_fingerprint::BrowserProfile::CHROME_131,
+        m[std::string(cover.registry_name)] = ClientProfile{
+            std::string(cover.registry_name),
+            std::string(cover.user_agent),
+            cover.tls_profile,
             true,
-        };
-
-        m["firefox"] = ClientProfile{
-            "firefox",
-            "Mozilla/5.0 (Windows NT 10.0; rv:133.0) Gecko/20100101 Firefox/133.0",
-        };
-
-        m["safari"] = ClientProfile{
-            "safari",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
-            "(KHTML, like Gecko) Version/18.1 Safari/605.1.15",
-        };
-
-        m["edge"] = ClientProfile{
-            "edge",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
-        };
-
-        m["curl"] = ClientProfile{
-            "curl",
-            "curl/8.10.1",
-        };
-
-        m["wget"] = ClientProfile{
-            "wget",
-            "Wget/1.24.5",
-        };
-
-        m["yume"] = ClientProfile{
-            "yume",
-            "yume-tls-verify/1.0",
         };
 
         return m;
@@ -433,24 +399,18 @@ bool transport_client_supported(std::string_view name) {
     return transport_client(name).has_value();
 }
 
-namespace {
-
-// Set once at client startup; read on every probe. The default
-// matches the historical hard-coded UA so callers that bypass the
-// CLI (unit tests, embedded uses) see no behavior change.
-std::mutex g_ua_mu;
-std::string g_active_ua = "yume-tls-verify/1.0";
-
-}  // namespace
-
 void set_active_client_ua(std::string ua) {
-    std::lock_guard<std::mutex> lock(g_ua_mu);
-    g_active_ua = std::move(ua);
+    const auto expected =
+        cover_profile::chrome150_debian13_node24().user_agent;
+    if (ua != expected) {
+        throw std::invalid_argument(
+            "YUME 2.0 only accepts the pinned cover-profile User-Agent");
+    }
 }
 
 std::string active_client_ua() {
-    std::lock_guard<std::mutex> lock(g_ua_mu);
-    return g_active_ua;
+    return std::string(
+        cover_profile::chrome150_debian13_node24().user_agent);
 }
 
 std::string render_404(const ServerProfile& p, bool /*connection_close*/) {

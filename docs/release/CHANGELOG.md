@@ -36,11 +36,13 @@ compatibility mode exists or is planned.
 
 ### Changed
 
-- **Stealth and cryptographic claims now match the implementation.** The
-  documentation records the current Chrome 131/150 and Windows/Linux profile
-  mismatch, rejects the stale 2.0 profile-rotation claim, treats BoringSSL and
-  traffic padding as evidence-driven experiments, and describes 500 ms as a
-  sender-active epoch limit rather than a twice-per-second wall-clock promise.
+- **Stealth and cryptographic claims now match the implementation.** One
+  immutable Chrome 150/Debian 13 + Node 24 profile supplies the production TLS
+  selection, User-Agent/client hints, capture-backed H2 opening, assets, and
+  cover identity. Profile rotation remains rejected. Chrome/BoringSSL TLS
+  parity and traffic padding remain evidence-driven work, and the 500 ms
+  ratchet limit is sender-active rather than a twice-per-second wall-clock
+  promise.
 - **The untrusted-server boundary is explicit.** Client AUTH sends a public
   Ed25519 identity plus transcript signature, not the private key; ephemeral
   hybrid exchanges provide conditional forward secrecy against later

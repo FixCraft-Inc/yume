@@ -19,6 +19,8 @@
 #include <cstring>
 #include <vector>
 
+#include "core/stealth/cover_profile.hpp"
+
 namespace yume::tls_fingerprint {
 
 namespace {
@@ -441,17 +443,16 @@ std::string calculate_akamai_hash(const JA3Components& components) {
 std::vector<BrowserFingerprint> get_known_browser_fingerprints() {
     std::vector<BrowserFingerprint> fingerprints;
     
-    // Chrome 131 (captured from a real Chrome 131 ClientHello 2026-05).
-    // Real Chrome additionally prefixes a GREASE value (RFC 8701); we
-    // can't add GREASE through stock OpenSSL so we drop it here. The
-    // Remaining ciphers follow the stored project baseline ordering. This is
-    // not a byte-identical current-browser claim.
-    // and differ from Safari's list in both content and order, which
-    // is what we need for per-profile JA3 divergence.
+    // Stock-OpenSSL compatibility selection for the pinned Chrome 150 target.
+    // Chrome/BoringSSL additionally controls GREASE and extension ordering in
+    // ways OpenSSL cannot reproduce. This is therefore the TLS policy selected
+    // by the coherent cover profile, not a byte-identical ClientHello claim.
     {
+        const auto& cover = cover_profile::chrome150_debian13_node24();
         BrowserFingerprint fp;
-        fp.profile = BrowserProfile::CHROME_131;
-        fp.name = "Chrome 131";
+        fp.profile = cover.tls_profile;
+        fp.name = std::string(cover.browser_name) + " " +
+                  std::string(cover.browser_version);
         fp.tls_version = 0x0303;  // TLS 1.2 in ClientHello, upgrades to 1.3
         fp.cipher_suites = {
             0x1301,  // TLS_AES_128_GCM_SHA256
@@ -734,8 +735,11 @@ std::optional<BrowserFingerprint> get_browser_profile_info(BrowserProfile profil
 
 std::string browser_profile_name(BrowserProfile profile) {
     switch (profile) {
-        case BrowserProfile::CHROME_131: return "Chrome 131";
-        case BrowserProfile::CHROME_123: return "Chrome 123";
+        case BrowserProfile::CHROME_150: {
+            const auto& cover = cover_profile::chrome150_debian13_node24();
+            return std::string(cover.browser_name) + " " +
+                   std::string(cover.browser_version);
+        }
         case BrowserProfile::FIREFOX_126: return "Firefox 126";
         case BrowserProfile::FIREFOX_115_ESR: return "Firefox 115 ESR";
         case BrowserProfile::SAFARI_18: return "Safari 18";
@@ -893,7 +897,7 @@ FingerprintEvaluation evaluate_fingerprint(const FingerprintData& fingerprint) {
     eval.needs_stealth_mode = !eval.looks_like_browser;
     eval.recommended_profile = (profile != BrowserProfile::UNKNOWN) 
         ? profile 
-        : BrowserProfile::CHROME_131;
+        : BrowserProfile::CHROME_150;
     
     if (!eval.looks_like_browser) {
         eval.warnings.push_back("TLS fingerprint does not match known browser profiles");

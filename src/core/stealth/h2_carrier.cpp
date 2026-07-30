@@ -30,11 +30,7 @@ constexpr std::size_t kMaxRequestHeaders = 32U * 1024U;
 constexpr std::size_t kMaxResponseHeaders = 64U * 1024U;
 constexpr std::size_t kMaxResponseBody = 8U * 1024U * 1024U;
 constexpr std::size_t kMaxQueuedOutput = 32U * 1024U * 1024U;
-constexpr std::size_t kChromeWebSocketMessageBytes = 16U * 1024U;
 constexpr std::int32_t kAuthenticatedReceiveWindow = 2 * 1024 * 1024;
-constexpr std::string_view kDefaultUserAgent =
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
 
 nghttp2_nv Nv(std::string& name, std::string& value) {
     return nghttp2_nv{
@@ -108,61 +104,52 @@ public:
         session_.reset(session);
 
         if (role_ == H2CarrierRole::Server) {
-            const nghttp2_settings_entry settings[] = {
-                {NGHTTP2_SETTINGS_ENABLE_CONNECT_PROTOCOL, 1},
-            };
+            const auto& profile =
+                cover_profile::chrome150_debian13_node24();
+            std::vector<nghttp2_settings_entry> settings;
+            settings.reserve(profile.server_settings.size());
+            for (const auto& setting : profile.server_settings) {
+                settings.push_back({
+                    static_cast<std::int32_t>(setting.id), setting.value});
+            }
             Check(nghttp2_submit_settings(session_.get(), NGHTTP2_FLAG_NONE,
-                                          settings, std::size(settings)),
+                                          settings.data(), settings.size()),
                   "submit server SETTINGS");
         }
     }
 
-    bool StartClient(std::string authority, std::string user_agent) {
+    bool StartClient(std::string authority) {
         if (role_ != H2CarrierRole::Client || client_started_ || authority.empty()) {
             return Fail("invalid client HTTP/2 start");
         }
         authority_ = std::move(authority);
-        user_agent_ = user_agent.empty() ? std::string(kDefaultUserAgent)
-                                        : std::move(user_agent);
-        // Chrome 150.0.7871.114, Debian 13 golden capture order and values.
-        const nghttp2_settings_entry settings[] = {
-            {NGHTTP2_SETTINGS_HEADER_TABLE_SIZE, 65536},
-            {NGHTTP2_SETTINGS_ENABLE_PUSH, 0},
-            {NGHTTP2_SETTINGS_INITIAL_WINDOW_SIZE, 6U * 1024U * 1024U},
-            {NGHTTP2_SETTINGS_MAX_HEADER_LIST_SIZE, 256U * 1024U},
-        };
+        const auto& profile = cover_profile::chrome150_debian13_node24();
+        std::vector<nghttp2_settings_entry> settings;
+        settings.reserve(profile.client_settings.size());
+        for (const auto& setting : profile.client_settings) {
+            settings.push_back({
+                static_cast<std::int32_t>(setting.id), setting.value});
+        }
         if (!CheckBool(nghttp2_submit_settings(session_.get(), NGHTTP2_FLAG_NONE,
-                                               settings, std::size(settings)),
+                                               settings.data(), settings.size()),
                        "submit client SETTINGS")) {
             return false;
         }
         if (!CheckBool(nghttp2_submit_window_update(
-                           session_.get(), NGHTTP2_FLAG_NONE, 0, 15663105),
+                           session_.get(), NGHTTP2_FLAG_NONE, 0,
+                           profile.connection_window_update),
                        "submit Chrome connection WINDOW_UPDATE")) {
             return false;
         }
-        H2Headers headers{
-            {":method", "GET"},
-            {":authority", authority_},
-            {":scheme", "https"},
-            {":path", "/"},
-            {"sec-ch-ua", "\"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"150\", \"Google Chrome\";v=\"150\""},
-            {"sec-ch-ua-mobile", "?0"},
-            {"sec-ch-ua-platform", "\"Linux\""},
-            {"upgrade-insecure-requests", "1"},
-            {"user-agent", user_agent_},
-            {"accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"},
-            {"sec-fetch-site", "none"},
-            {"sec-fetch-mode", "navigate"},
-            {"sec-fetch-user", "?1"},
-            {"sec-fetch-dest", "document"},
-            {"accept-encoding", "gzip, deflate, br, zstd"},
-            {"accept-language", "en-US,en;q=0.9"},
-            {"priority", "u=0, i"},
-        };
+        H2Headers headers =
+            profile.render_headers(profile.priming_request, authority_);
         auto nva = MakeNva(headers);
         nghttp2_priority_spec priority{};
-        nghttp2_priority_spec_init(&priority, 0, 256, 1);
+        nghttp2_priority_spec_init(
+            &priority,
+            profile.priming_request.priority.parent_stream_id,
+            profile.priming_request.priority.weight,
+            profile.priming_request.priority.exclusive ? 1 : 0);
         priming_stream_id_ = nghttp2_submit_request2(
             session_.get(), &priority, nva.data(), nva.size(), nullptr, nullptr);
         if (priming_stream_id_ < 0) {
@@ -179,21 +166,9 @@ public:
             !peer_connect_enabled_ || carrier_stream_id_ >= 0 || path.empty()) {
             return Fail("extended CONNECT submitted before priming/support");
         }
-        H2Headers headers{
-            {":method", "CONNECT"},
-            {":authority", authority_},
-            {":scheme", "https"},
-            {":path", std::move(path)},
-            {":protocol", "websocket"},
-            {"pragma", "no-cache"},
-            {"cache-control", "no-cache"},
-            {"user-agent", user_agent_},
-            {"origin", "https://" + authority_},
-            {"sec-websocket-version", "13"},
-            {"accept-encoding", "gzip, deflate, br, zstd"},
-            {"accept-language", "en-US,en;q=0.9"},
-            {"sec-websocket-extensions", "permessage-deflate; client_max_window_bits"},
-        };
+        const auto& profile = cover_profile::chrome150_debian13_node24();
+        H2Headers headers =
+            profile.render_headers(profile.extended_connect, authority_, path);
         for (const auto& header : additional_headers) {
             if (header.first.empty() || header.first.front() == ':' ||
                 IsHopByHop(header.first)) {
@@ -206,7 +181,11 @@ public:
         provider.read_callback = &Impl::ReadData;
         auto nva = MakeNva(headers);
         nghttp2_priority_spec priority{};
-        nghttp2_priority_spec_init(&priority, 0, 147, 1);
+        nghttp2_priority_spec_init(
+            &priority,
+            profile.extended_connect.priority.parent_stream_id,
+            profile.extended_connect.priority.weight,
+            profile.extended_connect.priority.exclusive ? 1 : 0);
         const auto stream_id = nghttp2_submit_request2(
             session_.get(), &priority, nva.data(), nva.size(), &provider, nullptr);
         if (stream_id < 0) return FailNghttp2("submit extended CONNECT", stream_id);
@@ -370,7 +349,9 @@ public:
             std::size_t offset = 0;
             while (offset < size) {
                 const std::size_t chunk = std::min(
-                    kChromeWebSocketMessageBytes, size - offset);
+                    cover_profile::chrome150_debian13_node24()
+                        .websocket_message_bytes,
+                    size - offset);
                 H2Bytes frame;
                 // The captured Node fixture fragments its first complete
                 // 16-KiB server binary message into 8-KiB binary/continuation
@@ -378,7 +359,8 @@ public:
                 // intact and do not consume this one-time profile behavior.
                 if (role_ == H2CarrierRole::Server &&
                     !server_fragment_fixture_sent_ &&
-                    chunk == kChromeWebSocketMessageBytes) {
+                    chunk == cover_profile::chrome150_debian13_node24()
+                                 .websocket_message_bytes) {
                     frame = websocket_.EncodeBinaryFragmented(
                         data + offset, chunk, chunk / 2);
                     server_fragment_fixture_sent_ = true;
@@ -755,20 +737,20 @@ private:
             js_stream_id_ >= 0) {
             throw std::runtime_error("duplicate Chrome priming asset submission");
         }
-        H2Headers css_headers{
-            {":method", "GET"}, {":authority", authority_},
-            {":scheme", "https"}, {":path", "/assets/site.css"},
-            {"sec-ch-ua-platform", "\"Linux\""},
-            {"user-agent", user_agent_},
-            {"sec-ch-ua", "\"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"150\", \"Google Chrome\";v=\"150\""},
-            {"sec-ch-ua-mobile", "?0"}, {"accept", "text/css,*/*;q=0.1"},
-            {"sec-fetch-site", "same-origin"}, {"sec-fetch-mode", "no-cors"},
-            {"sec-fetch-dest", "style"}, {"referer", "https://" + authority_ + "/"},
-            {"accept-encoding", "gzip, deflate, br, zstd"},
-            {"accept-language", "en-US,en;q=0.9"}, {"priority", "u=0"}};
+        const auto& profile = cover_profile::chrome150_debian13_node24();
+        if (profile.assets.size() != 2) {
+            throw std::runtime_error(
+                "Chrome cover profile requires exactly two priming assets");
+        }
+        H2Headers css_headers =
+            profile.render_headers(profile.assets[0].request, authority_);
         auto css_nva = MakeNva(css_headers);
         nghttp2_priority_spec css_priority{};
-        nghttp2_priority_spec_init(&css_priority, 0, 256, 1);
+        nghttp2_priority_spec_init(
+            &css_priority,
+            profile.assets[0].request.priority.parent_stream_id,
+            profile.assets[0].request.priority.weight,
+            profile.assets[0].request.priority.exclusive ? 1 : 0);
         css_stream_id_ = nghttp2_submit_request2(
             session_.get(), &css_priority, css_nva.data(), css_nva.size(),
             nullptr, nullptr);
@@ -777,20 +759,19 @@ private:
                                      std::string(nghttp2_strerror(css_stream_id_)));
         }
 
-        H2Headers js_headers{
-            {":method", "GET"}, {":authority", authority_},
-            {":scheme", "https"}, {":path", "/assets/site.js"},
-            {"sec-ch-ua-platform", "\"Linux\""},
-            {"user-agent", user_agent_},
-            {"sec-ch-ua", "\"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"150\", \"Google Chrome\";v=\"150\""},
-            {"sec-ch-ua-mobile", "?0"}, {"accept", "*/*"},
-            {"sec-fetch-site", "same-origin"}, {"sec-fetch-mode", "no-cors"},
-            {"sec-fetch-dest", "script"}, {"referer", "https://" + authority_ + "/"},
-            {"accept-encoding", "gzip, deflate, br, zstd"},
-            {"accept-language", "en-US,en;q=0.9"}};
+        H2Headers js_headers =
+            profile.render_headers(profile.assets[1].request, authority_);
         auto js_nva = MakeNva(js_headers);
         nghttp2_priority_spec js_priority{};
-        nghttp2_priority_spec_init(&js_priority, css_stream_id_, 147, 1);
+        const std::int32_t js_parent =
+            profile.assets[1].request.priority.parent_stream_id < 0
+                ? css_stream_id_
+                : profile.assets[1].request.priority.parent_stream_id;
+        nghttp2_priority_spec_init(
+            &js_priority,
+            js_parent,
+            profile.assets[1].request.priority.weight,
+            profile.assets[1].request.priority.exclusive ? 1 : 0);
         js_stream_id_ = nghttp2_submit_request2(
             session_.get(), &js_priority, js_nva.data(), js_nva.size(),
             nullptr, nullptr);
@@ -865,7 +846,6 @@ private:
     H2Bytes serialized_output_;
     H2Bytes tunnel_bytes_;
     std::string authority_;
-    std::string user_agent_;
     std::string error_;
     std::int32_t priming_stream_id_{-1};
     std::int32_t css_stream_id_{-1};
@@ -898,8 +878,8 @@ void H2Carrier::set_timing_enabled(bool enabled) noexcept {
 }
 #endif
 
-bool H2Carrier::StartClient(std::string authority, std::string user_agent) {
-    return impl_->StartClient(std::move(authority), std::move(user_agent));
+bool H2Carrier::StartClient(std::string authority) {
+    return impl_->StartClient(std::move(authority));
 }
 bool H2Carrier::SubmitExtendedConnect(std::string path,
                                       const H2Headers& additional_headers) {

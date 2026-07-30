@@ -9,9 +9,9 @@ or admin/control validation.
 ## Implemented
 
 - Version-pinned Chrome `150.0.7871.114` / Node `24.18.0` reference fixture,
-  manifest, and sanitized HTTP/2 profile. The current complete emitted identity
-  does not yet match that fixture: the registry TLS/User-Agent is Chrome
-  131/Windows while carrier client hints are Chrome 150/Linux.
+  manifest, and sanitized HTTP/2 profile. One immutable Chrome 150/Debian 13 +
+  Node 24 profile supplies the TLS selection, User-Agent/client hints, H2
+  settings/priorities/header order, assets, and cover-server identity.
 - Persistent nghttp2 carrier with priming page and asset requests, RFC 8441
   extended CONNECT, WebSocket masking/fragmentation/control frames, flow
   control, serialized writes, backpressure, and graceful H2 shutdown.
@@ -199,9 +199,9 @@ or admin/control validation.
   sequencing makes this carrier boundary security-critical.
 - Capture and compare the live YUME connection against the committed fixture;
   record every remaining classifier-visible TLS/H2 difference.
-- Unify TLS preset, User-Agent, client hints, H2 settings/priorities, asset
-  sequence, and cover-server identity behind one pinned profile. The current
-  Chrome 131/150 and Windows/Linux mixture must not ship as capture parity.
+- Preserve fixture-backed coherence between the TLS selection, HTTP headers,
+  H2 shape, assets, and cover server while closing the remaining OpenSSL
+  ClientHello differences.
 
 ## Required before exact version `2.0`
 
@@ -222,8 +222,8 @@ or admin/control validation.
 
 ## Known residual
 
-YUME dev3 currently mixes Chrome 131/Windows TLS/User-Agent values with
-Chrome 150/Linux carrier hints. Even after that is unified, OpenSSL cannot
+The former Chrome 131/150 and Windows/Linux identity mismatch is fixed behind
+one immutable Chrome 150/Debian 13 + Node 24 profile. OpenSSL still cannot
 reproduce Chrome/BoringSSL ClientHello/GREASE ordering, so TLS remains a
 classifier-visible difference upstream of the full-session H2 carrier.
 Matching ALPN or a coarse JA4 classification is not enough to claim Chrome

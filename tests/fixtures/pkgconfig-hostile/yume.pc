@@ -1,0 +1,9 @@
+prefix=/nonexistent/host-yume
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: yume
+Description: Deliberately invalid host metadata for staged-install tests
+Version: 999
+Libs: -L${libdir} -lyume-host-metadata-must-not-be-used
+Cflags: -I${includedir}

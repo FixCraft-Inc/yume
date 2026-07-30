@@ -905,7 +905,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 }
                 perform_h2_carrier_handshake(stream, io, tls_name, cfg.port,
                                              *cfg.obfs_secret_material,
-                                             http_profile::active_client_ua(),
                                              &prefetched_tls_bytes,
                                              &h2_carrier);
                 YUME_TIMING_LOG("client.connect",

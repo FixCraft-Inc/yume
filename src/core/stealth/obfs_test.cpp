@@ -674,7 +674,8 @@ void test_handshake_round_trip_with_stateful_encoder() {
     std::string nonce = yume::obfs::random_nonce_hex();
     std::string token = yume::obfs::derive_path_token(signal, sni, hour, nonce);
     std::string path = yume::obfs::build_path(token, nonce);
-    auto bytes = yume::obfs::encode_client_handshake(sni, path, "Mozilla/5.0 Chrome/131.0");
+    auto bytes = yume::obfs::encode_client_handshake(
+        sni, path, "profile-test-user-agent");
 
     yume::obfs::H2InboundDecoder decoder(true);
     decoder.feed(bytes.data(), bytes.size());

@@ -233,9 +233,9 @@ capacity before authenticated admission.
 - Availability against an attacker who can exhaust the network, TLS handshakes,
   or all configured connection limits.
 - Byte-identical Chrome TLS. OpenSSL’s ClientHello/GREASE ordering remains a
-  classifier-visible residual, and the current implementation also mixes
-  Chrome 131/Windows TLS/User-Agent identity with Chrome 150/Linux carrier
-  hints. BoringSSL is a candidate experiment, not proof of Chrome parity.
+  classifier-visible residual. The TLS/H2/HTTP consumers now use one coherent
+  Chrome 150/Debian 13 profile, but BoringSSL remains only a candidate
+  experiment, not proof of Chrome parity.
 - Protected identity-file loading on Windows. The POSIX ownership/mode
   invariant has no Windows equivalent yet, so identity loading fails closed
   there instead of accepting an arbitrary ACL.

@@ -326,7 +326,9 @@ surface plus package metadata:
 
 - `libyume1`: runtime shared library.
 - `libyume-dev`: `yume.h`, CMake config, and pkg-config metadata.
-- `yume`: CLI client and `yumed` server daemon.
+- `yume`: CLI client, docs, and examples.
+- `yume-daemon`: `yumed`, its disabled-by-default service, and daemon
+  configuration/runtime directories.
 - `yume-gui`: optional GUI, omitted by `DEB_BUILD_PROFILES=nogui`.
 
 ## Future Expansion

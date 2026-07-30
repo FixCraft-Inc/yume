@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "core/stealth/cover_profile.hpp"
 #include "core/stealth/tls_fingerprint.hpp"
 
 #include <boost/asio/ssl.hpp>
@@ -24,7 +25,8 @@ namespace yume::tls_stealth {
 
 struct StealthConfig {
     bool enabled{false};
-    tls_fingerprint::BrowserProfile target_profile{tls_fingerprint::BrowserProfile::CHROME_131};
+    tls_fingerprint::BrowserProfile target_profile{
+        cover_profile::chrome150_debian13_node24().tls_profile};
     bool rotate_profiles{false};
     uint32_t rotation_interval_connections{100};
     bool log_fingerprints{true};

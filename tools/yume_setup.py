@@ -24,6 +24,28 @@ class SetupError(RuntimeError):
     pass
 
 
+def pinned_node_version() -> str:
+    script_dir = Path(__file__).resolve().parent
+    candidates = (
+        script_dir.parent / "tests/fixtures/chrome150-node24/manifest.json",
+        script_dir.parent / "share/yume/cover-profile/manifest.json",
+    )
+    manifest_path = next((path for path in candidates if path.is_file()), None)
+    if manifest_path is None:
+        raise SetupError(
+            "cover profile manifest not found in the source tree or installed "
+            "share/yume/cover-profile directory"
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    version = manifest.get("server", {}).get("version")
+    if (
+        not isinstance(version, str)
+        or not re.fullmatch(r"\d+(?:\.\d+){2}", version)
+    ):
+        raise SetupError(f"invalid Node version in cover profile: {manifest_path}")
+    return version
+
+
 def run(args: list[str], *, input_bytes: bytes | None = None) -> bytes:
     try:
         result = subprocess.run(
@@ -308,10 +330,11 @@ def issue_key(*, kit: Path, alias: str, key_type: str, weight: float,
 
 def server_scripts(server_dir: Path, listen_address: str, port: int,
                    allow_from: str, packet_cidr: str, mtu: int) -> None:
-    start_cover = """#!/usr/bin/env bash
+    node_version = pinned_node_version()
+    start_cover = f"""#!/usr/bin/env bash
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
-exec npx --yes node@24.18.0 backend.mjs
+exec npx --yes node@{node_version} backend.mjs
 """
     start_server = f"""#!/usr/bin/env bash
 set -euo pipefail

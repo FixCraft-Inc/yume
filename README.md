@@ -214,23 +214,23 @@ Specific hostnames will land here once the fleet is up.
 ## Stealth and obfuscation
 
 The first 2.0 target is a captured Chrome 150 client and Node.js 24 LTS cover.
-The current carrier reproduces that capture's HTTP/2 shape, but the complete
-emitted identity is not yet coherent: the TLS preset and registry User-Agent
-still identify Chrome 131/Windows while the carrier client hints identify
-Chrome 150/Linux. After a normal priming page load, the client opens an RFC 8441
-extended CONNECT stream. Encrypted YUME records remain WebSocket binary
-messages inside valid HTTP/2 DATA frames for the entire connection.
+One immutable Chrome 150/Debian 13 + Node 24 profile now supplies the TLS
+selection, User-Agent/client hints, H2 settings/priorities/header order, asset
+sequence, and cover-server identity. After a normal priming page load, the
+client opens an RFC 8441 extended CONNECT stream. Encrypted YUME records remain
+WebSocket binary messages inside valid HTTP/2 DATA frames for the entire
+connection.
 
 `yumed` terminates public TLS/H2 and proxies ordinary GET/HEAD cover requests
 to the configured loopback Node process. Admission failures follow the normal
 cover path and never receive AUTH. Node never sees tunnel data, identities, or
 secret material.
 
-This raises the cost of custom-protocol matching and casual active probing; it
-does not make YUME identical to Chrome or immune to traffic analysis. The
-profile mismatch above is an immediate correctness gap, and stock OpenSSL
-cannot reproduce Chrome's BoringSSL ClientHello ordering upstream of the H2
-carrier. See [docs/STEALTH.md](docs/STEALTH.md)
+This removes the earlier Chrome-version/platform contradiction and raises the
+cost of custom-protocol matching and casual active probing; it does not make
+YUME identical to Chrome or immune to traffic analysis. Stock OpenSSL cannot
+reproduce Chrome's BoringSSL ClientHello ordering upstream of the H2 carrier.
+See [docs/STEALTH.md](docs/STEALTH.md)
 for the measured scope and [docs/YUME_2_0_IMPLEMENTATION_STATUS.md](docs/YUME_2_0_IMPLEMENTATION_STATUS.md)
 for unfinished release gates.
 
@@ -430,10 +430,11 @@ describe 1.x and are not evidence for the 2.0 release gates.
 
 ## Cluster federation
 
-Federation is unchanged at the control-protocol level, but it has not passed the
-focused 2.0 desktop validation gates. The examples below show configuration
-shape, not a 2.0 support claim. Each public entry point still needs its own
-mandatory transport secret files and loopback cover.
+Federation is not supported by the v2-only runtime. Its retained implementation
+still sends the legacy AUTH/inner-key flow, while normal 2.0 sessions require
+AUTH v2, TLS-exporter binding, and `SessionRatchet`; current peers therefore do
+not interoperate. The examples below preserve the legacy configuration shape
+for port-or-retire work only and must not be used as a deployment guide.
 
 Bootstrap node (cluster entry point, accepts incoming peer dials):
 
@@ -644,8 +645,9 @@ sudo ./build/bin/yumed \
 - Authorized keys are verified by `yume::crypto::verify_key` with OpenSSL
   `EVP_DigestVerify` ([src/core/security/crypto.cpp](src/core/security/crypto.cpp))
 - Client AUTH transmits the Ed25519 public key and transcript signature, never
-  the private key; this prevents key extraction but not live credential
-  forwarding by a malicious terminating endpoint
+  the private key. The signature is bound to the live TLS 1.3 exporter, so it
+  cannot be forwarded to authenticate a second TLS connection; this does not
+  make the terminating server trustworthy or blind to plaintext
 - Inner-frame AEAD is verified before plaintext is delivered ([basefwx/cpp/src/crypto/crypto.cpp](basefwx/cpp/src/crypto/crypto.cpp))
 - Mandatory ML-KEM-1024 + X25519 + random-PSK establishment; no 1.x downgrade or public-key-only mode
 - Server-side exec / LAN bridging / unrestricted bridging are off at compile time by default ([CMakeLists.txt](CMakeLists.txt) `YUME_FEATURE_EXEC` / `_LAN_BRIDGE` / `_FULL_CONTROL`); enabling them requires opting in at build, runtime flag, AND per-key meta (see [docs/PERMISSIONS.md](docs/PERMISSIONS.md))

@@ -12,8 +12,8 @@ For traffic flow and routing models, see `docs/EXPLAINED.md`.
 | `yume-gui` | `yume-gui` | Optional desktop UI (`YUME_BUILD_GUI=ON`) |
 | `libyume.so` | `yume_abi` | Optional stable C ABI (`YUME_BUILD_SHARED_ABI=ON`) |
 
-Debian packages split these into `yume`, `yume-gui`, `libyume1`, and
-`libyume-dev`. See `docs/PACKAGING.md`.
+Debian packages split these into `yume`, `yume-daemon`, `yume-gui`,
+`libyume1`, and `libyume-dev`. See `docs/PACKAGING.md`.
 
 ## CMake target graph
 

@@ -14,11 +14,12 @@
 #include <vector>
 
 #include "core/diagnostics/timing.hpp"
+#include "core/stealth/cover_profile.hpp"
 
 namespace yume::obfs {
 
 using H2Bytes = std::vector<std::uint8_t>;
-using H2Headers = std::vector<std::pair<std::string, std::string>>;
+using H2Headers = cover_profile::Headers;
 
 enum class H2CarrierRole {
     Client,
@@ -69,7 +70,7 @@ public:
 
     // Client only. Submits the Chrome-profiled SETTINGS and priming GET. The
     // extended CONNECT cannot be submitted until priming_complete() is true.
-    bool StartClient(std::string authority, std::string user_agent);
+    bool StartClient(std::string authority);
     bool SubmitExtendedConnect(std::string path,
                                const H2Headers& additional_headers = {});
 

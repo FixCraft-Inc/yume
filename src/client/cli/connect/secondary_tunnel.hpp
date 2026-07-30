@@ -28,7 +28,6 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
                                                  const outbound_proxy::Config& proxy_cfg,
                                                  int index,
                                                  std::optional<tls_fingerprint::BrowserProfile> profile,
-                                                 std::string carrier_user_agent,
                                                  std::uint64_t* completed_tls_connections);
 
 }  // namespace yume::client

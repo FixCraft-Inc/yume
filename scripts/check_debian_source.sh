@@ -22,6 +22,15 @@ if [[ "${archive_version}" != "${debian_upstream_version}" ]]; then
   exit 1
 fi
 
+cmake \
+  -DYUME_ABI_MAP="${repo_root}/src/abi/yume.map" \
+  -DYUME_ABI_HEADER="${repo_root}/include/yume/yume.h" \
+  -P "${repo_root}/cmake/check_yume_abi_header.cmake"
+cmake \
+  -DYUME_ABI_MAP="${repo_root}/src/abi/yume.map" \
+  -DYUME_DEBIAN_SYMBOLS="${repo_root}/debian/libyume1.symbols" \
+  -P "${repo_root}/cmake/check_yume_abi_debian_symbols.cmake"
+
 prefix="yume-${archive_version}"
 artifacts=(
   "${repo_root}/../yume_${archive_version}.orig.tar.xz"

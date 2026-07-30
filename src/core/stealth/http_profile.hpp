@@ -80,10 +80,8 @@ std::vector<std::string> server_names();
 std::vector<std::string> client_names();
 
 // Exact client transport fixtures available to the current wire version.
-// This is intentionally narrower than client_names(): an HTTP User-Agent
-// alone is not a complete TLS/H2 browser profile. Add future Firefox/Safari
-// fixtures to this registry only after their TLS and HTTP/2 captures pass the
-// same conformance gates as Chrome.
+// Add a future profile only after its TLS and HTTP/2 captures pass the same
+// conformance gates as the pinned Chrome profile.
 std::vector<std::string> transport_client_names();
 std::optional<ClientProfile> transport_client(std::string_view name);
 std::optional<ClientProfile> transport_client_for_tls_profile(
@@ -107,15 +105,9 @@ std::optional<std::time_t> parse_http_date(std::string_view value);
 // behavior (some profiles use keep-alive, some close).
 std::string render_404(const ServerProfile& profile, bool connection_close = true);
 
-// Process-wide setter/getter for the active client User-Agent. The
-// client CLI calls set_active_client_ua() once at startup based on
-// --hide-in-the-crowd; tls_stealth and any other probe code reads
-// the current value via active_client_ua() instead of threading a
-// parameter through every call site.
-//
-// active_client_ua() returns the default "yume-tls-verify/1.0" if no
-// profile was set, so existing tests / unit tests that don't go
-// through the CLI keep working.
+// Compatibility accessors for the pinned profile User-Agent.
+// set_active_client_ua() rejects any value that differs from the immutable
+// profile; active_client_ua() always returns that profile value.
 void set_active_client_ua(std::string ua);
 std::string active_client_ua();
 

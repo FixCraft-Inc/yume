@@ -293,6 +293,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         core/security/crypto.cpp
         core/security/auth_v2.cpp
         core/security/channel_binding.cpp
+        core/stealth/cover_profile.cpp
         core/stealth/http_profile.cpp
         core/stealth/h2_carrier.cpp
         core/security/identity.cpp
@@ -856,6 +857,9 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             COMPONENT libyume_development
         )
 
+        set(_yume_pc_install_dir "/${CMAKE_INSTALL_LIBDIR}/pkgconfig")
+        file(RELATIVE_PATH YUME_PC_PREFIX_FROM_PKGCONFIG
+            "${_yume_pc_install_dir}" "/")
         configure_file(
             "${CMAKE_SOURCE_DIR}/cmake/yume.pc.in"
             "${CMAKE_BINARY_DIR}/yume.pc"
@@ -1203,6 +1207,39 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     yume_apply_perf_opts(yume_h2_carrier_test)
     add_test(NAME yume_h2_carrier_test COMMAND yume_h2_carrier_test)
 
+    add_executable(yume_cover_profile_test core/stealth/cover_profile_test.cpp)
+    target_link_libraries(yume_cover_profile_test PRIVATE yume_core)
+    target_compile_definitions(yume_cover_profile_test PRIVATE
+        YUME_COVER_FIXTURE="${CMAKE_SOURCE_DIR}/tests/fixtures/chrome150-node24")
+    yume_link_atomic_if_needed(yume_cover_profile_test PRIVATE)
+    yume_apply_perf_opts(yume_cover_profile_test)
+    add_test(NAME yume_cover_profile_test COMMAND yume_cover_profile_test)
+
+    add_executable(yume_h2_opening_probe core/stealth/h2_opening_probe.cpp)
+    target_link_libraries(yume_h2_opening_probe PRIVATE yume_core)
+    yume_link_atomic_if_needed(yume_h2_opening_probe PRIVATE)
+    yume_apply_perf_opts(yume_h2_opening_probe)
+
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME yume_h2_fingerprint_check
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/scripts/yume_h2_fingerprint.py"
+            --emitter "$<TARGET_FILE:yume_h2_opening_probe>"
+            --check chrome
+    )
+    add_test(NAME yume_setup_installed_layout
+        COMMAND "${CMAKE_COMMAND}"
+            "-DYUME_BUILD_DIR=${CMAKE_BINARY_DIR}"
+            "-DYUME_BUILD_CONFIG=$<CONFIG>"
+            "-DYUME_TEST_PREFIX=${CMAKE_BINARY_DIR}/test-install/yume-setup-$<CONFIG>"
+            "-DYUME_PYTHON=${Python3_EXECUTABLE}"
+            "-DYUME_INSTALL_BINDIR=${CMAKE_INSTALL_BINDIR}"
+            "-DYUME_INSTALL_DATADIR=${CMAKE_INSTALL_DATADIR}"
+            "-DYUME_DEBIAN_INSTALL_MANIFEST=${CMAKE_SOURCE_DIR}/debian/yume.install"
+            "-DYUME_COVER_MANIFEST=${CMAKE_SOURCE_DIR}/tests/fixtures/chrome150-node24/manifest.json"
+            -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_setup_install.cmake"
+    )
+
     add_executable(yume_obfs_test core/stealth/obfs_test.cpp)
     target_link_libraries(yume_obfs_test PRIVATE yume_core)
     yume_link_atomic_if_needed(yume_obfs_test PRIVATE)
@@ -1241,6 +1278,26 @@ if(YUME_BUILD_SHARED_ABI AND TARGET yume_abi)
             "-DYUME_ABI_HEADER=${CMAKE_SOURCE_DIR}/include/yume/yume.h"
             -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_abi_header.cmake"
     )
+    add_test(NAME yume_abi_debian_symbols_match_map
+        COMMAND "${CMAKE_COMMAND}"
+            "-DYUME_ABI_MAP=${CMAKE_CURRENT_SOURCE_DIR}/abi/yume.map"
+            "-DYUME_DEBIAN_SYMBOLS=${CMAKE_SOURCE_DIR}/debian/libyume1.symbols"
+            -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_abi_debian_symbols.cmake"
+    )
+    if(UNIX AND NOT APPLE AND EXISTS "/usr/bin/dpkg-architecture")
+        add_test(NAME yume_abi_installed_consumer
+            COMMAND "${CMAKE_COMMAND}"
+                "-DYUME_BUILD_DIR=${CMAKE_BINARY_DIR}"
+                "-DYUME_BUILD_CONFIG=$<CONFIG>"
+                "-DYUME_TEST_PREFIX=${CMAKE_BINARY_DIR}/test-install/libyume-$<CONFIG>"
+                "-DYUME_CONSUMER_TEST=${CMAKE_SOURCE_DIR}/debian/tests/libyume-dev"
+                -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_abi_install.cmake"
+        )
+        set_tests_properties(yume_abi_installed_consumer PROPERTIES
+            ENVIRONMENT
+                "PKG_CONFIG_PATH=${CMAKE_SOURCE_DIR}/tests/fixtures/pkgconfig-hostile"
+        )
+    endif()
 endif()
 endif()
 

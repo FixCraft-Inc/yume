@@ -8,6 +8,7 @@ libyume.so.1 libyume1 #MINVER#
  yume_client_open_stream@Base 1.1-1
  yume_client_open_packet@Base 1.1-1
  yume_client_request_json@Base 1.1-1
+ yume_client_set_socket_protector@Base 2.0~dev4-1
  yume_client_start_file@Base 1.1-1
  yume_client_start_json@Base 1.1-1
  yume_client_status_json@Base 1.1-1
@@ -16,6 +17,7 @@ libyume.so.1 libyume1 #MINVER#
  yume_generate_pq_keypair@Base 1.1-1
  yume_get_build_info@Base 1.0-1
  yume_handle_last_error@Base 1.1-1
+ yume_last_error@Base 2.0~dev4-1
  yume_pq_backend@Base 1.0-1
  yume_packet_close@Base 1.1-1
  yume_packet_destroy@Base 1.1-1
@@ -26,6 +28,7 @@ libyume.so.1 libyume1 #MINVER#
  yume_server_create@Base 1.1-1
  yume_server_destroy@Base 1.1-1
  yume_server_register_service@Base 1.1-1
+ yume_server_reload_auth@Base 2.0~dev4-1
  yume_server_sessions_json@Base 1.1-1
  yume_server_start_file@Base 1.1-1
  yume_server_start_json@Base 1.1-1

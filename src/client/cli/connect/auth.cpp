@@ -309,7 +309,6 @@ void perform_h2_carrier_handshake(boost::asio::ssl::stream<boost::asio::ip::tcp:
                                   const std::string& server_host,
                                   int server_port,
                                   const security::Secret32& obfs_secret,
-                                  std::string_view user_agent,
                                   std::vector<uint8_t>* prefetched,
                                   std::unique_ptr<obfs::H2Carrier>* carrier_out) {
     crypto::Bytes admission_key = obfs_secret.CopyBytes();
@@ -324,7 +323,7 @@ void perform_h2_carrier_handshake(boost::asio::ssl::stream<boost::asio::ip::tcp:
 #endif
     std::string authority = server_host;
     if (server_port != 443) authority += ":" + std::to_string(server_port);
-    if (!carrier->StartClient(authority, std::string(user_agent))) {
+    if (!carrier->StartClient(authority)) {
         throw FatalError("failed to start H2 carrier: " + carrier->error());
     }
 

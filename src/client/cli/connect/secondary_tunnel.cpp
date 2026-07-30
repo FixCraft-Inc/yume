@@ -40,7 +40,6 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
                                                  const outbound_proxy::Config& proxy_cfg,
                                                  int index,
                                                  std::optional<tls_fingerprint::BrowserProfile> profile,
-                                                 std::string carrier_user_agent,
                                                  std::uint64_t* completed_tls_connections) {
     std::unique_ptr<tls_stealth::StealthContext> owned_stealth_context;
     boost::asio::ssl::context* connection_ctx = &ctx;
@@ -128,7 +127,7 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
             throw std::runtime_error("YUME 2.0 admission secret was not loaded");
         }
         perform_h2_carrier_handshake(stream, io, tls_name, cfg.port,
-                                     *cfg.obfs_secret_material, carrier_user_agent,
+                                     *cfg.obfs_secret_material,
                                      &prefetched_tls_bytes, &h2_carrier);
     }
 

@@ -25,6 +25,7 @@ endif()
 
 option(YUME_USE_BASEFWX "Enable BaseFWX inner crypto support" ON)
 option(YUME_USE_SYSTEM_BASEFWX "Prefer a system-installed BaseFWX (find_package basefwx CONFIG) over the bundled tree" OFF)
+set(YUME_REQUIRED_BASEFWX_VERSION "3.8.0")
 option(YUME_USE_SPDLOG "Enable spdlog logging backend" ON)
 option(YUME_USE_BUNDLED_NLOHMANN "Allow bundled nlohmann_json fallback" ON)
 option(YUME_MINIMAL "Build for minimal systems (disable heavy deps/features)" OFF)
@@ -336,7 +337,7 @@ if(YUME_USE_BASEFWX)
 
     set(_yume_basefwx_via_system OFF)
     if(YUME_USE_SYSTEM_BASEFWX)
-        find_package(basefwx CONFIG QUIET)
+        find_package(basefwx ${YUME_REQUIRED_BASEFWX_VERSION} CONFIG QUIET)
         if(basefwx_FOUND)
             if(NOT TARGET basefwxcpp)
                 add_library(basefwxcpp ALIAS basefwx::basefwxcpp)
@@ -345,7 +346,8 @@ if(YUME_USE_BASEFWX)
             message(STATUS "Using system BaseFWX ${basefwx_VERSION}")
         elseif(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/basefwx/cpp/CMakeLists.txt")
             message(FATAL_ERROR
-                "YUME_USE_SYSTEM_BASEFWX=ON but find_package(basefwx CONFIG) failed "
+                "YUME_USE_SYSTEM_BASEFWX=ON but BaseFWX "
+                "${YUME_REQUIRED_BASEFWX_VERSION} or newer was not found "
                 "and no bundled basefwx/cpp tree is available")
         endif()
     endif()
@@ -440,6 +442,10 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     )
     install(FILES tools/cover-node/backend.mjs
         DESTINATION "${CMAKE_INSTALL_DATADIR}/yume/cover-node"
+        COMPONENT yume_cli
+    )
+    install(FILES tests/fixtures/chrome150-node24/manifest.json
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/yume/cover-profile"
         COMPONENT yume_cli
     )
     install(FILES docs/man/yumed.8

@@ -33,11 +33,13 @@ WebSocket behavior, and component versions are recorded under
 `tests/fixtures/chrome150-node24/`.
 
 This is the normative target, not a statement that the current emitter has
-complete identity parity. The current profile registry supplies a Chrome
-131/Windows User-Agent and TLS preset while the H2 carrier supplies Chrome
-150/Linux client hints. Stock OpenSSL also cannot reproduce Chrome/BoringSSL
-extension/GREASE ordering. These are classifier-visible implementation gaps
-and release gates; `docs/STEALTH.md` records the required acceptance evidence.
+complete identity parity. One immutable Chrome 150/Debian 13 + Node 24 profile
+now supplies the production TLS selection, User-Agent/client hints, H2
+settings/priorities/header order, assets, and cover-server identity. Stock
+OpenSSL still cannot reproduce Chrome/BoringSSL extension/GREASE ordering.
+That classifier-visible TLS difference and the remaining external conformance
+and traffic-shape work are release gates; `docs/STEALTH.md` records the
+required acceptance evidence.
 
 ## Integers and envelopes
 

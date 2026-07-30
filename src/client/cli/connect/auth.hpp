@@ -77,7 +77,6 @@ void perform_h2_carrier_handshake(boost::asio::ssl::stream<boost::asio::ip::tcp:
                                   const std::string& server_host,
                                   int server_port,
                                   const security::Secret32& obfs_secret,
-                                  std::string_view user_agent,
                                   std::vector<uint8_t>* prefetched = nullptr,
                                   std::unique_ptr<obfs::H2Carrier>* carrier_out = nullptr);
 

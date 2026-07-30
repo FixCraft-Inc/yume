@@ -52,7 +52,7 @@ void test_empty_components_and_count_clamp() {
 
 void test_browser_match_thresholds() {
     const auto known = yume::tls_fingerprint::get_browser_profile_info(
-        yume::tls_fingerprint::BrowserProfile::CHROME_131);
+        yume::tls_fingerprint::BrowserProfile::CHROME_150);
     assert(known.has_value());
 
     yume::tls_fingerprint::FingerprintData observed;
@@ -81,18 +81,18 @@ void test_connection_profile_rotation() {
     using yume::tls_fingerprint::BrowserProfile;
     using yume::tls_stealth::profile_for_connection;
 
-    assert(profile_for_connection(BrowserProfile::CHROME_131, false, 2, 100) ==
-           BrowserProfile::CHROME_131);
-    assert(profile_for_connection(BrowserProfile::CHROME_131, true, 2, 0) ==
-           BrowserProfile::CHROME_131);
-    assert(profile_for_connection(BrowserProfile::CHROME_131, true, 2, 1) ==
-           BrowserProfile::CHROME_131);
-    assert(profile_for_connection(BrowserProfile::CHROME_131, true, 2, 2) ==
+    assert(profile_for_connection(BrowserProfile::CHROME_150, false, 2, 100) ==
+           BrowserProfile::CHROME_150);
+    assert(profile_for_connection(BrowserProfile::CHROME_150, true, 2, 0) ==
+           BrowserProfile::CHROME_150);
+    assert(profile_for_connection(BrowserProfile::CHROME_150, true, 2, 1) ==
+           BrowserProfile::CHROME_150);
+    assert(profile_for_connection(BrowserProfile::CHROME_150, true, 2, 2) ==
            BrowserProfile::FIREFOX_126);
-    assert(profile_for_connection(BrowserProfile::CHROME_131, true, 2, 4) ==
+    assert(profile_for_connection(BrowserProfile::CHROME_150, true, 2, 4) ==
            BrowserProfile::SAFARI_18);
-    assert(profile_for_connection(BrowserProfile::CHROME_131, true, 2, 6) ==
-           BrowserProfile::CHROME_131);
+    assert(profile_for_connection(BrowserProfile::CHROME_150, true, 2, 6) ==
+           BrowserProfile::CHROME_150);
     assert(profile_for_connection(BrowserProfile::FIREFOX_126, true, 1, 1) ==
            BrowserProfile::SAFARI_18);
 }

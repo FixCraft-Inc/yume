@@ -21,6 +21,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "core/stealth/h2_wire_profile.hpp"
 #include "core/stealth/websocket_codec.hpp"
 
 namespace yume::obfs {
@@ -155,6 +156,11 @@ public:
         if (priming_stream_id_ < 0) {
             return FailNghttp2("submit priming GET", priming_stream_id_);
         }
+        if (!wire_profile_.QueuePriority(
+                priming_stream_id_, profile.priming_request.priority,
+                error_)) {
+            return false;
+        }
         client_started_ = true;
         Flush();
         return !failed();
@@ -191,6 +197,10 @@ public:
         if (stream_id < 0) return FailNghttp2("submit extended CONNECT", stream_id);
         carrier_stream_id_ = stream_id;
         outbound_streams_.emplace(stream_id, OutboundStream{false});
+        if (!wire_profile_.QueuePriority(
+                stream_id, profile.extended_connect.priority, error_)) {
+            return false;
+        }
         Flush();
         return !failed();
     }
@@ -758,6 +768,11 @@ private:
             throw std::runtime_error("submit Chrome CSS request: " +
                                      std::string(nghttp2_strerror(css_stream_id_)));
         }
+        if (!wire_profile_.QueuePriority(
+                css_stream_id_, profile.assets[0].request.priority,
+                error_)) {
+            throw std::runtime_error(error_);
+        }
 
         H2Headers js_headers =
             profile.render_headers(profile.assets[1].request, authority_);
@@ -779,6 +794,12 @@ private:
             throw std::runtime_error("submit Chrome JS request: " +
                                      std::string(nghttp2_strerror(js_stream_id_)));
         }
+        auto js_wire_priority = profile.assets[1].request.priority;
+        js_wire_priority.parent_stream_id = js_parent;
+        if (!wire_profile_.QueuePriority(
+                js_stream_id_, js_wire_priority, error_)) {
+            throw std::runtime_error(error_);
+        }
         Flush();
     }
 
@@ -786,8 +807,9 @@ private:
         if (failed()) return;
 #if YUME_ENABLE_DEV_DIAGNOSTICS
         diagnostics::Stopwatch flush_timer(collect_timing_);
-        std::size_t flushed_bytes = 0;
+        const std::size_t output_before = serialized_output_.size();
 #endif
+        H2Bytes batch;
         while (true) {
             const std::uint8_t* data = nullptr;
             const auto length = nghttp2_session_mem_send2(session_.get(), &data);
@@ -797,18 +819,24 @@ private:
             }
             if (length == 0) break;
             const auto count = static_cast<std::size_t>(length);
-            if (count > kMaxQueuedOutput - std::min(kMaxQueuedOutput, serialized_output_.size())) {
+            if (count >
+                kMaxQueuedOutput -
+                    std::min(kMaxQueuedOutput, batch.size()) ||
+                serialized_output_.size() >
+                    kMaxQueuedOutput - batch.size() - count) {
                 Fail("serialized HTTP/2 output exceeded 32 MiB");
                 break;
             }
-            serialized_output_.insert(serialized_output_.end(), data, data + count);
-#if YUME_ENABLE_DEV_DIAGNOSTICS
-            flushed_bytes += count;
-#endif
+            batch.insert(batch.end(), data, data + count);
+        }
+        if (!failed() && !batch.empty()) {
+            wire_profile_.AppendSerializedBatch(
+                batch, kMaxQueuedOutput, serialized_output_, error_);
         }
 #if YUME_ENABLE_DEV_DIAGNOSTICS
         stats_.h2_flush_calls += 1;
-        stats_.h2_flush_bytes += flushed_bytes;
+        stats_.h2_flush_bytes +=
+            serialized_output_.size() - output_before;
         if (collect_timing_) {
             stats_.h2_flush_ns += flush_timer.elapsed_ns();
         }
@@ -841,6 +869,7 @@ private:
     std::unordered_map<std::int32_t, H2Headers> incoming_headers_;
     std::unordered_map<std::int32_t, std::size_t> incoming_header_bytes_;
     std::unordered_map<std::int32_t, OutboundStream> outbound_streams_;
+    detail::H2WireProfile wire_profile_;
     std::unordered_set<std::int32_t> responded_streams_;
     std::vector<H2Request> requests_;
     H2Bytes serialized_output_;

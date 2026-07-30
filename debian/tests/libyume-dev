@@ -5,6 +5,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 prefix="${YUME_TEST_PREFIX:-/usr}"
 multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
+sanitizer_flags="${YUME_TEST_SANITIZER_FLAGS:-}"
 
 if [ "$prefix" != "/usr" ]; then
     unset PKG_CONFIG_PATH
@@ -81,7 +82,12 @@ int main(void) {
 }
 EOF
 
-cc $(pkg-config --cflags yume) "$tmp/check.c" $(pkg-config --libs yume) -o "$tmp/check-pkg-config"
+# Word splitting is intentional: the CMake test passes compiler-driver flags,
+# never user input. Sanitized libyume builds require the same runtime on the
+# external consumer's link line so ASan is loaded before libyume.
+# shellcheck disable=SC2086
+cc $sanitizer_flags $(pkg-config --cflags yume) "$tmp/check.c" \
+    $(pkg-config --libs yume) -o "$tmp/check-pkg-config"
 "$tmp/check-pkg-config"
 
 mkdir "$tmp/cmake"
@@ -95,6 +101,7 @@ EOF
 
 cmake -S "$tmp/cmake" -B "$tmp/cmake-build" \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_FLAGS="$sanitizer_flags" \
     -DCMAKE_PREFIX_PATH="$prefix"
 cmake --build "$tmp/cmake-build"
 "$tmp/cmake-build/check-cmake"

@@ -296,6 +296,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         core/stealth/cover_profile.cpp
         core/stealth/http_profile.cpp
         core/stealth/h2_carrier.cpp
+        core/stealth/h2_wire_profile.cpp
         core/security/identity.cpp
         core/security/inner_crypto.cpp
         core/security/ratchet.cpp
@@ -1291,6 +1292,7 @@ if(YUME_BUILD_SHARED_ABI AND TARGET yume_abi)
                 "-DYUME_BUILD_CONFIG=$<CONFIG>"
                 "-DYUME_TEST_PREFIX=${CMAKE_BINARY_DIR}/test-install/libyume-$<CONFIG>"
                 "-DYUME_CONSUMER_TEST=${CMAKE_SOURCE_DIR}/debian/tests/libyume-dev"
+                "-DYUME_CONSUMER_SANITIZER_FLAGS=${_yume_sanitize_flags}"
                 -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_abi_install.cmake"
         )
         set_tests_properties(yume_abi_installed_consumer PROPERTIES

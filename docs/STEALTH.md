@@ -25,6 +25,15 @@ order, asset sequence, WebSocket message size, and Node 24 server settings.
 The HTTP registry, TLS preset, and production `H2Carrier` consume that profile,
 and tests compare it to the committed capture fixture.
 
+nghttp2 1.69 removed its RFC 7540 priority scheduler and ignores the legacy
+priority argument on request submission. Chrome's captured HEADERS still
+contains those five priority bytes. The private `h2_wire_profile` adapter
+therefore inserts the captured fields when a new nghttp2 omits them, or
+validates them when an older supported nghttp2 emits them itself. nghttp2
+continues to own HPACK, stream state, flow control, and all other framing. The
+opening diagnostic parses the resulting production bytes and decodes them
+through the production server endpoint.
+
 This fixes the former Chrome 131/150 and Windows/Linux contradiction. It does
 not mean the emitted TLS ClientHello has achieved Chrome/BoringSSL parity.
 Profile rotation remains rejected in 2.0.

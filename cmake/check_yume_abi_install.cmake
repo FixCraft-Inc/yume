@@ -13,6 +13,11 @@ foreach(_required
     endif()
 endforeach()
 
+set(_consumer_sanitizer_flags "")
+if(DEFINED YUME_CONSUMER_SANITIZER_FLAGS)
+    set(_consumer_sanitizer_flags "${YUME_CONSUMER_SANITIZER_FLAGS}")
+endif()
+
 cmake_path(ABSOLUTE_PATH YUME_BUILD_DIR NORMALIZE OUTPUT_VARIABLE _build_dir)
 cmake_path(ABSOLUTE_PATH YUME_TEST_PREFIX NORMALIZE
            OUTPUT_VARIABLE _test_prefix)
@@ -47,6 +52,7 @@ execute_process(
     COMMAND "${CMAKE_COMMAND}" -E env
             --unset=PKG_CONFIG_PATH
             "YUME_TEST_PREFIX=${_test_prefix}"
+            "YUME_TEST_SANITIZER_FLAGS=${_consumer_sanitizer_flags}"
             sh "${YUME_CONSUMER_TEST}"
     RESULT_VARIABLE _consumer_result
     OUTPUT_VARIABLE _consumer_output

@@ -38,6 +38,12 @@ All three commits were signed by EdDSA key
 dev5 checkpoint `119b728a95b5a88b5508b45e17ef2e4fe49b51e1` on both `main` and
 `origin/main`. Never force-push this work.
 
+Two later signed local closure commits document this handoff and harden the
+agent/benchmark workflow. Their subjects are `Document the YUME 2.0 dev6
+handoff` and `Harden the dev6 benchmark workflow`. Use the signed `git log`
+command below for their exact hashes; the document deliberately does not embed
+the hash of the commit containing itself.
+
 Useful inspection commands:
 
 ```sh
@@ -211,6 +217,62 @@ Official comparison references:
 - <https://xtls.github.io/en/config/routing.html>
 - <https://xtls.github.io/en/config/api.html>
 - <https://xtls.github.io/en/config/stats.html>
+
+## Recommended agent execution model
+
+Use two roles under one strong root/integrator when two agent slots are
+available. The root is the only source-editing owner; the lighter agent is a
+benchmark operator and evidence recorder. Two autonomous coding agents sharing
+one checkout are worse than one because they can invalidate baselines, race on
+build outputs, and leave ambiguous ownership of wire/security decisions.
+
+The safe order is:
+
+1. Root verifies the live branch, selects one acceptance gate, and freezes the
+   benchmark contract.
+2. Benchmark agent runs the baseline from a clean pinned worktree/build tree,
+   records source and binary hashes, preserves raw artifacts, and makes no
+   source edits.
+3. Root reviews evidence and implements the smallest justified change in a
+   separate worktree/build tree.
+4. Benchmark agent repeats the exact matched matrix against the candidate.
+5. Root reviews the complete diff and artifacts, runs bounded native/sanitizer
+   gates, updates documentation, and creates a signed local commit. Dev6 stays
+   unpushed until explicit review approval.
+
+Parallelize only independent work in isolated worktrees. If only one checkout
+or benchmark host is available, run baseline, edit, and candidate benchmark
+sequentially. Never benchmark a tree while another agent is rebuilding or
+editing it.
+
+A long benchmark must not consume an agent session merely waiting. The
+benchmark agent should start a bounded supervised job, return the unit/PID,
+exact command, source hash, artifact directory, and inspection commands, then
+end its turn. Prefer a uniquely named `systemd-run --user` unit for
+unprivileged jobs. Root-required netem runs belong in an explicit benchmark
+terminal. On resumption, inspect `report.json` and logs before polling or
+rerunning anything.
+
+The local `.codex/skills/run-yume/` skill is the authoritative agent runbook.
+It uses a two-job build default to avoid OOM, supports dev6 helper builds,
+native/sanitizer tests, evidence checks, Chrome-through-SOCKS smoke, sampled
+local benchmarks, and read-only host/driver inventory. The `.claude` driver is
+a thin delegate to the same implementation so the runbooks cannot silently
+diverge.
+
+The matching benchmark refresh added an explicit recorded `--tls-backend` to
+the virtual-WAN harness and replaced stale Chrome 150 checks in both LAN and
+WAN with one manifest-derived exact Chrome `151.0.7922.71` matcher. Focused
+validation passed eight Python tests, 55/55 native CTests, skill validation,
+shell/Python syntax, both fixture evidence gates, a bounded local process
+smoke, and an unprivileged Chrome-helper carrier smoke. The last smoke was a
+`FUNCTIONAL PASS` with H2 selected; raw capture was disabled, so it adds no new
+stealth claim.
+
+Do not update a kernel, NIC driver/firmware, offload setting, congestion
+control, or CPU governor in the middle of a comparison. Record it first.
+Change it only for a reproducible fault or an explicitly isolated experiment,
+then reboot when required and restart the complete baseline/candidate series.
 
 ## Ordered work for the next agent
 

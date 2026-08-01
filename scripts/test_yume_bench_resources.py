@@ -14,7 +14,10 @@ from pathlib import Path
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from yume_bench_common import run_streamed_command  # noqa: E402
+from yume_bench_common import (  # noqa: E402
+    is_pinned_chrome_version,
+    run_streamed_command,
+)
 from yume_bench_lan import wall_throughput  # noqa: E402
 from yume_bench_resources import (  # noqa: E402
     ProcessResourceSampler,
@@ -24,6 +27,18 @@ from yume_bench_resources import (  # noqa: E402
 
 
 class ResourceSamplerTest(unittest.TestCase):
+    def test_chrome_version_matches_only_the_pinned_fixture(self) -> None:
+        self.assertTrue(
+            is_pinned_chrome_version("Google Chrome 151.0.7922.71")
+        )
+        self.assertTrue(is_pinned_chrome_version("Chromium 151.0.7922.71"))
+        self.assertFalse(
+            is_pinned_chrome_version("Google Chrome 150.0.7339.80")
+        )
+        self.assertFalse(
+            is_pinned_chrome_version("Google Chrome 151.0.7922.72")
+        )
+
     def test_proc_stat_parser_handles_live_process(self) -> None:
         raw = Path("/proc/self/stat").read_text(encoding="ascii")
         parsed = _parse_proc_stat(raw)

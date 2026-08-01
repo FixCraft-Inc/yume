@@ -32,6 +32,7 @@ from yume_bench_common import (  # noqa: E402
     endpoint_contract,
     generate_keyset,
     invoking_identity,
+    is_pinned_chrome_version,
     parse_rates,
     relay_chunk_kib,
     resolve_pinned_node,
@@ -758,7 +759,7 @@ def run_client(args: argparse.Namespace) -> int:
     cover_capture_error: str | None = None
     if browser and endpoint_code == 0:
         browser_version = command_version([str(browser), "--version"])
-        if not re.search(r"\b(?:Chrome|Chromium)\s+150\.", browser_version):
+        if not is_pinned_chrome_version(browser_version):
             print(
                 f"[lan] {browser_version} does not match Chrome 151; "
                 "the cover capture is functional evidence only",
@@ -803,6 +804,7 @@ def run_client(args: argparse.Namespace) -> int:
             "interrupted": endpoint_interrupted,
             "timed_out": endpoint_timed_out,
             "command": endpoint_runs[0][1] if endpoint_runs else [],
+            "tls_backend": args.tls_backend,
             "mib_per_direction": mib,
             "streams": streams,
             "clients": args.clients,

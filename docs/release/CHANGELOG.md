@@ -1,5 +1,26 @@
 # Changelog
 
+## [Unreleased 2.0-dev5]
+
+Hard break from `2.0-dev4`: AUTH now carries each endpoint's accepted ratchet
+policy. Exact version equality rejects mixed dev4/dev5 peers; no compatibility
+mode exists.
+
+### Added
+
+- **Authenticated security modes.** Extreme preserves the dev4 default
+  (256 KiB, 512 application frames, 500 ms sender-active). Normal uses 8 GiB,
+  262,144 frames, and 60 seconds. Soft uses 256 GiB, 8,388,608 frames, and
+  30 minutes. Ultimate accepts exact bounded JSON values, including arbitrary
+  millisecond values such as 4281. Each direction uses the component-wise
+  stricter local/peer policy. ML-KEM-1024, X25519, the random PSK, HKDF labels,
+  AES-GCM/AAD, and one-use per-frame keys are unchanged.
+  Challenge critical field 8 carries the server policy; response critical
+  field 5 carries the client policy and moves the Ed25519 signature to field 6.
+- **Current BaseFWX 3.8 development pin.** YUME now pins remotely reachable
+  BaseFWX commit `4692d4ce4edec2aa9835d04ad9ff6c3ad3ab9374`; the consumed crypto APIs and
+  wire contracts are unchanged from the prior pin.
+
 ## [Unreleased 2.0-dev4]
 
 Hard break from `2.0-dev2` and `2.0-dev3`: the exact transport version changed,

@@ -5,6 +5,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/safe_paths.sh
+source "${ROOT_DIR}/scripts/lib/safe_paths.sh"
+# shellcheck source=scripts/lib/user_context.sh
+source "${ROOT_DIR}/scripts/lib/user_context.sh"
+# shellcheck source=scripts/lib/macos_sdk.sh
+source "${ROOT_DIR}/scripts/lib/macos_sdk.sh"
 VENDOR_DIR="${YUME_VENDOR_DIR:-${ROOT_DIR}/vendor}"
 export YUME_VENDOR_DIR="${VENDOR_DIR}"
 
@@ -120,19 +126,7 @@ need_cmd() {
     command -v "$1" >/dev/null 2>&1
 }
 
-resolve_real_home() {
-    local home="${HOME}"
-    if [[ -n "${SUDO_USER:-}" ]]; then
-        local sudo_home
-        sudo_home="$(getent passwd "${SUDO_USER}" 2>/dev/null | cut -d: -f6 || true)"
-        if [[ -n "${sudo_home}" ]]; then
-            home="${sudo_home}"
-        fi
-    fi
-    echo "${home}"
-}
-
-REAL_HOME="$(resolve_real_home)"
+REAL_HOME="$(yume_real_home)"
 OPENWRT_SDK_PREFERRED="${REAL_HOME}/openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}_gcc-13.3.0_musl.Linux-x86_64"
 OPENWRT_SDK_CACHE_DIR="${REAL_HOME}/.cache/yume"
 
@@ -217,33 +211,6 @@ if [[ -z "${OSXCROSS_ROOT}" ]]; then
     OSXCROSS_ROOT="$(resolve_osxcross_root || true)"
 fi
 
-ensure_macos_sdk_tarball() {
-    local sdk_src="${REAL_HOME}/macos-sdk"
-    local tarballs="${OSXCROSS_ROOT}/tarballs"
-    mkdir -p "${tarballs}"
-    if ls "${tarballs}/MacOSX"*.sdk.tar.* >/dev/null 2>&1; then
-        return 0
-    fi
-    if [[ -d "${sdk_src}" ]]; then
-        local sdk_dir
-        sdk_dir="$(ls -d "${sdk_src}/MacOSX"*.sdk 2>/dev/null | sort -V | tail -n 1 || true)"
-        if [[ -n "${sdk_dir}" ]]; then
-            local sdk_name
-            sdk_name="$(basename "${sdk_dir}")"
-            tar -cJf "${tarballs}/${sdk_name}.tar.xz" -C "${sdk_src}" "${sdk_name}"
-            return 0
-        fi
-        local sdk_tar
-        sdk_tar="$(ls "${sdk_src}/MacOSX"*.sdk.tar.* 2>/dev/null | sort -V | tail -n 1 || true)"
-        if [[ -n "${sdk_tar}" ]]; then
-            cp -f "${sdk_tar}" "${tarballs}/"
-            return 0
-        fi
-    fi
-    echo "macOS SDK not found in ${sdk_src}; place MacOSX*.sdk or MacOSX*.sdk.tar.xz there." >&2
-    return 1
-}
-
 ensure_osxcross() {
     if ! is_macos_target; then
         return 0
@@ -261,7 +228,7 @@ ensure_osxcross() {
             git clone --depth 1 https://github.com/tpoechtrager/osxcross.git "${OSXCROSS_ROOT}"
         fi
     fi
-    if ! ensure_macos_sdk_tarball; then
+    if ! yume_ensure_macos_sdk_tarball "${REAL_HOME}" "${OSXCROSS_ROOT}"; then
         echo "osxcross requires a macOS SDK tarball; see README for details." >&2
         exit 1
     fi
@@ -1003,19 +970,23 @@ if [[ "${TARGET}" == "all" ]]; then
     exit 0
 fi
 
-stage_dir="${VENDOR_DIR}/$(target_dir "${TARGET}")"
+mkdir -p "${VENDOR_DIR}"
+stage_key="$(target_dir "${TARGET}")"
+stage_dir="$(yume_direct_child_path "${VENDOR_DIR}" "${stage_key}")" || exit 1
 inc_dir="${stage_dir}/include"
 lib_dir="${stage_dir}/lib"
 mkdir -p "${inc_dir}" "${lib_dir}"
 
 prune_stage_dir() {
     if is_windows_target || is_macos_target; then
-        rm -rf "${stage_dir}/debug" "${stage_dir}/tools"
+        yume_remove_direct_children "${stage_dir}" debug tools
         find "${stage_dir}" -type f \( -name "*.la" -o -name "*.pdb" \) -delete 2>/dev/null || true
         return 0
     fi
-    rm -rf "${stage_dir}/bin" "${stage_dir}/share"
-    rm -rf "${stage_dir}/lib/pkgconfig" "${stage_dir}/lib/cmake"
+    yume_remove_direct_children "${stage_dir}" bin share
+    if [[ -d "${stage_dir}/lib" ]]; then
+        yume_remove_direct_children "${stage_dir}/lib" pkgconfig cmake
+    fi
     find "${stage_dir}" -type f -name "*.la" -delete 2>/dev/null || true
 }
 

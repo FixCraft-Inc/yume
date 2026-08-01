@@ -36,6 +36,12 @@ VENDOR_DIR=""
 # implementation. Provides yume_vendor_ensure_extracted / _verify / _obtain.
 # shellcheck source=scripts/vendor_prebuilt.sh
 source "${YUME_REPO_ROOT}/scripts/vendor_prebuilt.sh"
+# shellcheck source=scripts/lib/safe_paths.sh
+source "${YUME_REPO_ROOT}/scripts/lib/safe_paths.sh"
+# shellcheck source=scripts/lib/user_context.sh
+source "${YUME_REPO_ROOT}/scripts/lib/user_context.sh"
+# shellcheck source=scripts/lib/macos_sdk.sh
+source "${YUME_REPO_ROOT}/scripts/lib/macos_sdk.sh"
 
 # Prebuilt vendor libraries are opt-in, exactly as in ezbuild.sh.
 #
@@ -92,44 +98,6 @@ MACOS_TRIPLET="${YUME_MACOS_TRIPLET:-x64-osx}"
 MACOS_VCPKG_PACKAGES="${YUME_MACOS_VCPKG_PACKAGES:-openssl boost-cmake boost-headers boost-system boost-asio zlib zstd liblzma fmt spdlog argon2 liboqs}"
 MACOS_SDK="${YUME_MACOS_SDK:-${OSXCROSS_SDK:-}}"
 MACOS_DEPLOYMENT_TARGET="${YUME_MACOS_DEPLOYMENT_TARGET:-10.15}"
-
-resolve_real_home() {
-  local home="${HOME}"
-  if [[ -n "${SUDO_USER:-}" ]]; then
-    local sudo_home
-    sudo_home="$(getent passwd "${SUDO_USER}" 2>/dev/null | cut -d: -f6 || true)"
-    if [[ -n "${sudo_home}" ]]; then
-      home="${sudo_home}"
-    fi
-  fi
-  echo "${home}"
-}
-
-resolve_real_uid() {
-  local uid
-  uid="$(id -u)"
-  if [[ -n "${SUDO_USER:-}" ]]; then
-    local sudo_uid
-    sudo_uid="$(id -u "${SUDO_USER}" 2>/dev/null || true)"
-    if [[ -n "${sudo_uid}" ]]; then
-      uid="${sudo_uid}"
-    fi
-  fi
-  echo "${uid}"
-}
-
-resolve_real_gid() {
-  local gid
-  gid="$(id -g)"
-  if [[ -n "${SUDO_USER:-}" ]]; then
-    local sudo_gid
-    sudo_gid="$(id -g "${SUDO_USER}" 2>/dev/null || true)"
-    if [[ -n "${sudo_gid}" ]]; then
-      gid="${sudo_gid}"
-    fi
-  fi
-  echo "${gid}"
-}
 
 ensure_user_owned_dir() {
   local dir="$1"
@@ -341,9 +309,9 @@ EZBUILD_GUI_ARG=""
 [[ "${FULLAU_BUILD_GUI}" -eq 1 ]] && EZBUILD_GUI_ARG="--gui"
 export FULLAU_BUILD_GUI EZBUILD_GUI_ARG
 
-REAL_HOME="$(resolve_real_home)"
-REAL_UID="$(resolve_real_uid)"
-REAL_GID="$(resolve_real_gid)"
+REAL_HOME="$(yume_real_home)"
+REAL_UID="$(yume_real_uid)"
+REAL_GID="$(yume_real_gid)"
 YUME_CACHE_ROOT="$(select_cache_root "${YUME_CACHE_ROOT:-${REAL_HOME}/.cache/yume}")"
 IFS='|' read -r YUME_TMP_ROOT YUME_TMP_ROOT_AUTO <<< "$(init_tmp_root)"
 VENDOR_STAGING_ROOT=""
@@ -640,33 +608,6 @@ if [[ -z "${OSXCROSS_ROOT:-}" ]]; then
   OSXCROSS_ROOT="$(detect_osxcross_root || true)"
 fi
 
-ensure_macos_sdk_tarball() {
-  local sdk_src="${REAL_HOME}/macos-sdk"
-  local tarballs="${OSXCROSS_ROOT}/tarballs"
-  mkdir -p "${tarballs}"
-  if ls "${tarballs}/MacOSX"*.sdk.tar.* >/dev/null 2>&1; then
-    return 0
-  fi
-  if [[ -d "${sdk_src}" ]]; then
-    local sdk_dir
-    sdk_dir="$(ls -d "${sdk_src}/MacOSX"*.sdk 2>/dev/null | sort -V | tail -n 1 || true)"
-    if [[ -n "${sdk_dir}" ]]; then
-      local sdk_name
-      sdk_name="$(basename "${sdk_dir}")"
-      tar -cJf "${tarballs}/${sdk_name}.tar.xz" -C "${sdk_src}" "${sdk_name}"
-      return 0
-    fi
-    local sdk_tar
-    sdk_tar="$(ls "${sdk_src}/MacOSX"*.sdk.tar.* 2>/dev/null | sort -V | tail -n 1 || true)"
-    if [[ -n "${sdk_tar}" ]]; then
-      cp -f "${sdk_tar}" "${tarballs}/"
-      return 0
-    fi
-  fi
-  echo "macOS SDK not found in ${sdk_src}; place MacOSX*.sdk or MacOSX*.sdk.tar.xz there." >&2
-  return 1
-}
-
 ensure_osxcross() {
   if ! target_enabled macos-x86_64 && ! target_enabled macos-arm64; then
     return 0
@@ -680,7 +621,7 @@ ensure_osxcross() {
       git clone --depth 1 https://github.com/tpoechtrager/osxcross.git "${OSXCROSS_ROOT}"
     fi
   fi
-  if ! ensure_macos_sdk_tarball; then
+  if ! yume_ensure_macos_sdk_tarball "${REAL_HOME}" "${OSXCROSS_ROOT}"; then
     echo "osxcross requires a macOS SDK tarball; see README for details." >&2
     exit 1
   fi
@@ -1760,7 +1701,7 @@ resolve_boost_dir() {
   local cfg
   cfg="$(find "/usr/lib/${arch_lib}/cmake" -maxdepth 3 -name 'BoostConfig.cmake' -o -name 'boost-config.cmake' 2>/dev/null | head -n 1)"
   if [[ -n "${cfg}" ]]; then
-    echo "$(dirname "${cfg}")"
+    dirname "${cfg}"
   fi
 }
 
@@ -2225,10 +2166,12 @@ copy_build_outputs() {
   for gui_app in build/bin/*.app; do
     if [[ -d "${gui_app}" ]]; then
       local app_name
+      local app_target
       app_name="$(basename "${gui_app}")"
-      rm -rf "${outdir}/${app_name}"
+      app_target="$(yume_direct_child_path "${outdir}" "${app_name}")" || return 1
+      yume_remove_direct_children "${outdir}" "${app_name}" || return 1
       cp -R "${gui_app}" "${outdir}/"
-      ensure_macos_app_bundle "${outdir}/${app_name}" || return 1
+      ensure_macos_app_bundle "${app_target}" || return 1
     fi
   done
   local gui_bin="build/bin/yume-gui${exe_suffix}"
@@ -2599,14 +2542,13 @@ copy_mingw_runtime_dlls() {
   local dlls=(libgcc_s_seh-1.dll libstdc++-6.dll)
   for dll in "${dlls[@]}"; do
     local found=""
+    local path=""
     for dir in "${search_dirs[@]}"; do
-      for path in "${dir}"/"${dll}"; do
-        if [[ -f "${path}" ]]; then
-          found="${path}"
-          break
-        fi
-      done
-      [[ -n "${found}" ]] && break
+      path="${dir}/${dll}"
+      if [[ -f "${path}" ]]; then
+        found="${path}"
+        break
+      fi
     done
     if [[ -n "${found}" ]]; then
       cp -f "${found}" "${outdir}/" || true

@@ -6,6 +6,7 @@
 
 #include "util.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cerrno>
 #include <cstdio>
@@ -167,6 +168,68 @@ struct DropPrivilegeTarget {
     std::string name;
 };
 
+template <typename Lookup>
+std::optional<DropPrivilegeTarget> lookup_passwd_entry(Lookup&& lookup) {
+    constexpr std::size_t kFallbackBufferSize = 16 * 1024;
+    constexpr std::size_t kMaxBufferSize = 1024 * 1024;
+
+    const long configured_size = sysconf(_SC_GETPW_R_SIZE_MAX);
+    std::size_t buffer_size =
+        configured_size > 0
+            ? std::min<std::size_t>(
+                  static_cast<std::size_t>(configured_size),
+                  kMaxBufferSize)
+            : kFallbackBufferSize;
+
+    for (;;) {
+        std::vector<char> buffer(buffer_size);
+        struct passwd entry {};
+        struct passwd* result = nullptr;
+        const int rc =
+            lookup(&entry, buffer.data(), buffer.size(), &result);
+        if (rc == 0) {
+            if (!result) {
+                return std::nullopt;
+            }
+            DropPrivilegeTarget target;
+            target.uid = result->pw_uid;
+            target.gid = result->pw_gid;
+            if (result->pw_name) {
+                target.name = result->pw_name;
+            }
+            return target;
+        }
+        if (rc != ERANGE || buffer_size == kMaxBufferSize) {
+            return std::nullopt;
+        }
+        buffer_size =
+            std::min(buffer_size * 2, kMaxBufferSize);
+    }
+}
+
+std::optional<DropPrivilegeTarget> lookup_passwd_by_uid(uid_t uid) {
+    return lookup_passwd_entry(
+        [uid](struct passwd* entry,
+              char* buffer,
+              std::size_t buffer_size,
+              struct passwd** result) {
+            return getpwuid_r(
+                uid, entry, buffer, buffer_size, result);
+        });
+}
+
+std::optional<DropPrivilegeTarget> lookup_passwd_by_name(
+    const char* name) {
+    return lookup_passwd_entry(
+        [name](struct passwd* entry,
+               char* buffer,
+               std::size_t buffer_size,
+               struct passwd** result) {
+            return getpwnam_r(
+                name, entry, buffer, buffer_size, result);
+        });
+}
+
 bool parse_env_id(const char* name, unsigned long* out) {
     if (!out) {
         return false;
@@ -197,38 +260,25 @@ std::optional<DropPrivilegeTarget> resolve_drop_target(std::string* error) {
         const char* sudo_user = std::getenv("SUDO_USER");
         if (sudo_user && *sudo_user) {
             target.name = sudo_user;
-        } else {
-            struct passwd* pwd = getpwuid(target.uid);
-            if (pwd && pwd->pw_name) {
-                target.name = pwd->pw_name;
-            }
+        } else if (const auto pwd = lookup_passwd_by_uid(target.uid);
+                   pwd.has_value()) {
+            target.name = pwd->name;
         }
         return target;
     }
 
     unsigned long pkexec_uid = 0;
     if (parse_env_id("PKEXEC_UID", &pkexec_uid) && pkexec_uid != 0) {
-        struct passwd* pwd = getpwuid(static_cast<uid_t>(pkexec_uid));
-        if (pwd) {
-            DropPrivilegeTarget target;
-            target.uid = pwd->pw_uid;
-            target.gid = pwd->pw_gid;
-            if (pwd->pw_name) {
-                target.name = pwd->pw_name;
-            }
+        if (auto target =
+                lookup_passwd_by_uid(static_cast<uid_t>(pkexec_uid));
+            target.has_value()) {
             return target;
         }
     }
 
-    struct passwd* nobody = getpwnam("nobody");
-    if (nobody && nobody->pw_uid != 0) {
-        DropPrivilegeTarget target;
-        target.uid = nobody->pw_uid;
-        target.gid = nobody->pw_gid;
-        if (nobody->pw_name) {
-            target.name = nobody->pw_name;
-        }
-        return target;
+    if (auto nobody = lookup_passwd_by_name("nobody");
+        nobody.has_value() && nobody->uid != 0) {
+        return nobody;
     }
 
     if (error) {

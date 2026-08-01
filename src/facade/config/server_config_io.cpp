@@ -19,6 +19,7 @@
 
 #include "facade/config/detail.hpp"
 #include "facade/config/keys.hpp"
+#include "config/ratchet_profile_json.hpp"
 #include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
 #include "server/config/json_values.hpp"
@@ -58,6 +59,8 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::inner_hop, s.inner_hop);
     read_opt(j, cfg_key::hop_interval_ms, s.hop_interval_ms);
     read_opt(j, cfg_key::rekey_window, s.rekey_window);
+    s.security_profile = yume::config::ParseSecurityProfile(
+        j, s.security_profile);
     if (j.contains(cfg_key::argon2_memory_budget_kib)) {
         s.argon2_memory_budget_kib = server::json_positive_u32(
             j, cfg_key::argon2_memory_budget_kib);
@@ -378,6 +381,7 @@ bool save_server(server::ServerConfig const& s,
         {cfg_key::client_deny_action, yume::server::host::to_string(s.client_deny_action)},
         {cfg_key::exposure_check_hostname, s.exposure_check_hostname},
     };
+    yume::config::WriteSecurityProfile(j, s.security_profile);
     json routes = json::array();
     for (const auto& route : s.host_routes) {
         routes.push_back({
@@ -449,6 +453,11 @@ ValidationReport validate(server::ServerConfig const& s) {
     if (s.rekey_window < yume::ratchet::kMinRekeyWindow ||
         s.rekey_window > yume::ratchet::kMaxRekeyWindow) {
         r.errors.emplace_back("rekey_window: must be in 1..64");
+    }
+    if (!yume::ratchet::ResolveSecurityProfile(
+             s.security_profile).has_value()) {
+        r.errors.emplace_back(
+            "security_profile: ultimate requires valid custom limits");
     }
     auto valid_filter_mode = [](const std::string& value) {
         return value == "blacklist" || value == "denylist" ||

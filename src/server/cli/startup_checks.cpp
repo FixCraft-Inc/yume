@@ -573,9 +573,19 @@ void log_effective_startup_summary(const yume::server::ServerConfig& cfg) {
     yume::util::log_info(
         "effective inner suite: ML-KEM-1024 + X25519 + mandatory PSK; "
         "HKDF-only; AES-256-GCM per message");
-    yume::util::log_info(
-        "directional epoch limits: 256 KiB / 512 application frames / "
-        "500 ms active; idle silent");
+    if (const auto policy =
+            yume::ratchet::ResolveSecurityProfile(cfg.security_profile)) {
+        yume::util::log_info(
+            "directional epoch limits: " +
+            std::to_string(policy->epoch_byte_limit) + " bytes / " +
+            std::to_string(policy->epoch_frame_limit) +
+            " application frames / " +
+            std::to_string(policy->epoch_active_limit.count()) +
+            " ms active; idle silent");
+    } else {
+        yume::util::log_error(
+            "directional epoch policy is invalid; startup must fail");
+    }
     yume::util::log_info("effective carrier: h2 RFC8441 WebSocket; cover backend: " +
                          cfg.real_backend);
     if (cfg.benchmark_enable) {

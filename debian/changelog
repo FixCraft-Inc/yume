@@ -1,3 +1,9 @@
+yume (2.0~dev5-1) UNRELEASED; urgency=medium
+
+  * Add authenticated, bounded Extreme/Normal/Soft/Ultimate ratchet policies.
+
+ -- FixCraft Maintainers <debian@fixcraft.jp>  Sat, 01 Aug 2026 12:00:00 -0700
+
 yume (2.0~dev4-1) UNRELEASED; urgency=medium
 
   * Package the hard-break YUME 2.0 development transport with mandatory

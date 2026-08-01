@@ -67,11 +67,17 @@ void Session::send_auth_challenge() {
         ephemeral->psk_salt = basefwx::crypto::RandomBytes(32);
         ephemeral->transcript_salt = basefwx::crypto::RandomBytes(32);
         crypto::Bytes random_challenge = basefwx::crypto::RandomBytes(32);
+        const auto ratchet_policy =
+            ratchet::ResolveSecurityProfile(cfg_.security_profile);
+        if (!ratchet_policy.has_value()) {
+            throw std::runtime_error("invalid server security profile");
+        }
         challenge_ = auth_v2::BuildChallenge(
             random_challenge, ephemeral->mlkem.public_key,
             ephemeral->x25519.public_key, ephemeral->psk_salt,
             ephemeral->transcript_salt,
-            ratchet::ClampRekeyWindow(cfg_.rekey_window));
+            ratchet::ClampRekeyWindow(cfg_.rekey_window),
+            *ratchet_policy);
         auth_v2_ephemeral_ = std::move(ephemeral);
     } catch (const std::exception& ex) {
         close_with_reason("AUTH v2 challenge creation failed: " +
@@ -264,7 +270,8 @@ bool Session::handle_auth(const protocol::Frame& frame) {
 
         crypto::Bytes unsigned_response = auth_v2::BuildUnsignedResponse(
             response.x25519_public_key, response.mlkem_ciphertext,
-            response.identity, response.rekey_window);
+            response.identity, response.rekey_window,
+            response.ratchet_policy);
         crypto::Bytes signature_input = auth_v2::BuildSignatureInput(
             challenge_, unsigned_response, channel_binding);
         bool sig_ok = crypto::verify_key(pubkey.get(), signature_input,
@@ -449,13 +456,32 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             ratchet::ClampRekeyWindow(cfg_.rekey_window);
         const std::uint16_t send_window =
             std::min(local_window, response.rekey_window);
+        const auto local_policy =
+            ratchet::ResolveSecurityProfile(cfg_.security_profile);
+        if (!local_policy.has_value()) {
+            throw std::runtime_error("invalid server security profile");
+        }
+        const ratchet::RatchetPolicy send_policy =
+            ratchet::NegotiateRatchetPolicy(
+                *local_policy, response.ratchet_policy);
         ratchet_ = std::make_unique<ratchet::SessionRatchet>(
             ratchet::EndpointRole::Server, std::move(initial_root),
-            psk_key.Release(), send_window, local_window);
+            psk_key.Release(), send_window, local_window, send_policy,
+            send_policy);
         util::log_info("session " + std::to_string(session_id_) +
                        ": ratchet epoch window send=" +
                        std::to_string(send_window) + " accept=" +
                        std::to_string(local_window));
+        util::log_info(
+            "session " + std::to_string(session_id_) +
+            ": ratchet policy negotiated bytes=" +
+            std::to_string(send_policy.epoch_byte_limit) + " frames=" +
+            std::to_string(send_policy.epoch_frame_limit) + " active_ms=" +
+            std::to_string(send_policy.epoch_active_limit.count()) +
+            " local_advertised_bytes=" +
+            std::to_string(local_policy->epoch_byte_limit) + " frames=" +
+            std::to_string(local_policy->epoch_frame_limit) + " active_ms=" +
+            std::to_string(local_policy->epoch_active_limit.count()));
         auth_v2_ephemeral_.reset();
         inner_mode_ = "ratchet";
         inner_kdf_ = "hkdf";

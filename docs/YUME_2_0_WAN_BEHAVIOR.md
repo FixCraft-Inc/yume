@@ -4,6 +4,11 @@ Status: line-rate on the tested one-gigabit LAN. dev3 removes the
 single-exchange rekey ceiling in the protocol, but high-bandwidth, high-RTT
 single-tunnel performance is still not WAN-validated.
 
+All measurements and formulas below use the now-named Extreme policy
+(256 KiB, 512 frames, 500 ms). Normal, Soft, and Ultimate were introduced in
+dev5 and have not been WAN-validated; substitute their negotiated byte budget
+in the model, but do not treat that model as measured performance.
+
 ## What dev2 fixed
 
 Dev1 stopped all application writes as soon as it sent `REKEY_INIT`. Dev2 sends

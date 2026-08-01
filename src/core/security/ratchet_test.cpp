@@ -198,6 +198,39 @@ void TestPipelinedPreparationThresholds() {
     assert(!messages.ShouldRekey(0, start));
 }
 
+void TestSecurityProfilesAndExactCustomTiming() {
+    using namespace std::chrono_literals;
+    using namespace yume::ratchet;
+
+    assert(ResolveSecurityProfile({SecurityMode::Extreme, std::nullopt}) ==
+           kExtremePolicy);
+    assert(ResolveSecurityProfile({SecurityMode::Normal, std::nullopt}) ==
+           kNormalPolicy);
+    assert(ResolveSecurityProfile({SecurityMode::Soft, std::nullopt}) ==
+           kSoftPolicy);
+    assert(!ResolveSecurityProfile(
+        {SecurityMode::Ultimate, std::nullopt}).has_value());
+
+    const RatchetPolicy exact{
+        4ULL * 1024ULL * 1024ULL,
+        4096,
+        4281ms,
+    };
+    assert(ResolveSecurityProfile(
+               {SecurityMode::Ultimate, exact}) == exact);
+
+    DirectionalRatchet sender(
+        Direction::ClientToServer, Filled(32, 0xc1), exact);
+    const auto start = std::chrono::steady_clock::time_point{};
+    (void)sender.Encrypt(3, 1, 0, Bytes{0x01}, start);
+    assert(!sender.ShouldRekey(1, start + 4280ms));
+    assert(sender.ShouldRekey(1, start + 4281ms));
+
+    const RatchetPolicy negotiated =
+        NegotiateRatchetPolicy(kSoftPolicy, kNormalPolicy);
+    assert(negotiated == kNormalPolicy);
+}
+
 }  // namespace
 
 int main() {
@@ -207,5 +240,6 @@ int main() {
     TestMessageBoundaryAndIdleSilence();
     TestReceiverRejectsNonconformingEpochUsage();
     TestPipelinedPreparationThresholds();
+    TestSecurityProfilesAndExactCustomTiming();
     return 0;
 }

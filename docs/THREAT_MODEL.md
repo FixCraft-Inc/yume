@@ -109,21 +109,22 @@ binds the protocol version, direction, epoch, sequence, frame type, stream ID,
 and flags. Replays, gaps, old epochs, altered metadata, and counter wrap are
 fatal.
 
-Before another application frame would cross 256 KiB, 512 encrypted data
-frames, or 500 ms since the epoch’s first active data frame, that direction
-performs a fresh ML-KEM-1024 + X25519 hybrid rekey. The PSK contribution is a
-cheap epoch-labeled HKDF from the connection PSK key; no memory-hard operation
-runs at establishment or per epoch.
+Before another application frame would cross the authenticated ratchet policy's
+byte/frame budget, or its sender-active time budget expires, that direction
+performs a fresh ML-KEM-1024 + X25519 hybrid rekey. Extreme remains the default
+at 256 KiB, 512 frames, and 500 ms. Normal, Soft, and bounded Ultimate policies
+deliberately widen the active-epoch compromise budget; algorithms and one-use
+message keys do not change. See `docs/SECURITY_MODES.md`.
 
 Receivers independently reject authenticated byte/frame overruns. The active
 time limit is sender-local because delayed delivery is indistinguishable from
-late sealing without a wire timestamp, so the 500 ms part assumes a conforming
+late sealing without a wire timestamp, so that part assumes a conforming
 sender.
 
 Up to the AUTH-negotiated window (1..64, default 8) of strictly contiguous
 future epochs may be authenticated and prepared while application data still
 fits in the current epoch. This overlaps hybrid round trips without extending
-any epoch's byte, frame, or sender-time boundary. An ACK prepares an epoch; the
+the negotiated epoch's byte, frame, or sender-time boundary. An ACK prepares an epoch; the
 sender enters it only when the current epoch cannot carry the next application
 frame. The negotiated depth bounds outstanding ML-KEM work and retained future
 roots. Data waits in a bounded queue if no prepared epoch is available at a
@@ -133,9 +134,9 @@ authenticated next-epoch frame and then erased with retired roots and
 ephemeral/shared material. Ordered H2/TCP prevents an honest sender's old-epoch
 frames from arriving after that commit; any such frame is fatal.
 
-The approximately 500 ms claim is an honest-sender, active-epoch containment
-goal, not a twice-per-second wall-clock schedule. Byte/frame use may rotate
-sooner and idle connections do not rotate. It does not protect data present in
+The configured time is an honest-sender, active-epoch containment goal, not a
+wall-clock schedule. Byte/frame use may rotate sooner and idle connections do
+not rotate. It does not protect data present in
 live endpoint memory or survive simultaneous compromise of ML-KEM, X25519, the
 PSK, and an endpoint.
 
@@ -144,7 +145,7 @@ key does not reveal another message key. Exposure of the current directional
 chain/root can expose more traffic, and process-memory compromise can include
 plaintext plus current and prepared state. The negotiated window retains up to
 `w` future roots. Break-in recovery begins only after fresh, uncompromised
-rekey contributions; no blanket “the key is useless after 500 ms” statement
+rekey contributions; no blanket “the key is useless after N ms” statement
 applies to all of these cases.
 
 ### Forward-secrecy scope
@@ -255,7 +256,7 @@ integration and runtime evidence.
 
 ## Release claims
 
-The transport stays `2.0-dev4` or a later development/RC version until the release gates in
+The transport stays `2.0-dev5` or a later development/RC version until the release gates in
 `docs/YUME_2_0_IMPLEMENTATION_STATUS.md` pass. Unit tests and a short loopback
 smoke are not evidence for WAN behavior, a 30-minute lifetime, sanitizer safety,
 external conformance, or sustained overhead. Release documentation must separate

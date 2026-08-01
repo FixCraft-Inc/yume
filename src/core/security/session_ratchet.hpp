@@ -45,7 +45,9 @@ class SessionRatchet {
 public:
     SessionRatchet(EndpointRole role, Bytes initial_root, Bytes psk_key,
                    std::uint16_t outbound_window = kMinRekeyWindow,
-                   std::uint16_t inbound_window = kMinRekeyWindow);
+                   std::uint16_t inbound_window = kMinRekeyWindow,
+                   RatchetPolicy outbound_policy = kExtremePolicy,
+                   RatchetPolicy inbound_policy = kExtremePolicy);
     SessionRatchet(const SessionRatchet&) = delete;
     SessionRatchet& operator=(const SessionRatchet&) = delete;
     SessionRatchet(SessionRatchet&&) noexcept;
@@ -80,6 +82,8 @@ public:
     std::size_t prepared_inbound_epochs() const;
     std::uint16_t outbound_window() const;
     std::uint16_t inbound_window() const;
+    RatchetPolicy outbound_policy() const;
+    RatchetPolicy inbound_policy() const;
 
     static bool IsApplicationFrame(std::uint8_t frame_type) noexcept;
 

@@ -1,4 +1,4 @@
-.TH YUMED 8 "2026-07-29" "YUME 2.0-dev4" "YUME Manual"
+.TH YUMED 8 "2026-08-01" "YUME 2.0-dev5" "YUME Manual"
 .SH NAME
 yumed \- YUME server daemon
 .SH SYNOPSIS
@@ -97,11 +97,14 @@ on this server's own sending window. Range
 .BR 1 - 64 ,
 default
 .BR 8 .
-Each prepared epoch adds 256 KiB of transfer per rekey round trip on
-high-latency links; the value is advertised in the TLS-protected AUTH challenge
-and bound into the signed transcript. It bounds how much ML-KEM work a peer can
-request. The 256 KiB, 512-frame, and 500 ms per-epoch limits are unchanged at
-every depth.
+Each prepared epoch adds one negotiated epoch byte budget per rekey round trip
+on high-latency links; the value is advertised in the TLS-protected AUTH
+challenge and bound into the signed transcript. It bounds how much ML-KEM work
+a peer can request. Under the default Extreme mode the budget is 256 KiB, with
+independent limits of 512 frames and 500 ms sender-active time. The JSON key
+.B security_mode
+selects Extreme, Normal, Soft, or a complete bounded Ultimate policy; see
+.BR docs/SECURITY_MODES.md .
 .TP
 .BI "--accept-rate-limit " n
 Maximum newly accepted TCP connections per second. Use 0 for unlimited.
@@ -225,8 +228,9 @@ option is unavailable.
 .TP
 .B --inner-required
 Redundant compatibility spelling for the mandatory 2.0 inner channel. The
-ML-KEM-1024 + X25519 + PSK suite and the 256 KiB, 512-frame, and 500 ms active
-directional rekey limits cannot be disabled or peer-selected. The retired
+ML-KEM-1024 + X25519 + PSK suite and per-message AES-256-GCM keys cannot be
+disabled or peer-selected. Authenticated bounded ratchet policies may widen
+the hybrid epoch budget without changing those algorithms. The retired
 inner-heavy/light/dual, hop, PQ-key, embedded-master, and Argon2 options are
 rejected.
 .SH HTTP FACADE AND OPERATOR IDENTITY OPTIONS

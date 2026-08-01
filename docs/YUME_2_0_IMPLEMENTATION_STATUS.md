@@ -1,6 +1,6 @@
 # YUME 2.0 desktop implementation status
 
-Status: `2.0-dev4` vertical slice implemented; release gates incomplete.
+Status: `2.0-dev5` vertical slice implemented; release gates incomplete.
 
 This is a truthful inventory of the focused Linux x86-64 client/server work. It
 does not claim Android, GUI, nginx, alternate browser profiles, H3, federation,
@@ -29,8 +29,11 @@ or admin/control validation.
   absent at connection establishment and per epoch.
 - AES-256-GCM one-use message keys with version/direction/epoch/sequence/type/
   stream/flags AAD binding.
-- Independent directional hybrid rekeys before 256 KiB, 512 encrypted data
-  frames, or 500 ms of active epoch time. The next epoch is prepared while
+- Independent directional hybrid rekeys under an authenticated bounded policy.
+  Extreme remains the default at 256 KiB, 512 encrypted data frames, or 500 ms
+  of active epoch time; Normal, Soft, and exact bounded Ultimate profiles widen
+  all three budgets without changing the mandatory algorithms or one-use
+  message keys. The next epoch is prepared while
   bounded current-epoch traffic remains, hiding the exchange latency without
   increasing any hard usage limit. Idle silence, bounded boundary waits,
   timeout close, simultaneous rekeys, old receiving-chain retirement, and
@@ -41,7 +44,7 @@ or admin/control validation.
   separate TLS/operator CA material, TLS/SNI name, admission secret, inner PSK,
   tunnel count, and operator-proof policy. Legacy v1 files that carried only
   the shared private CA remain importable.
-- Exact `2.0-dev4` admission/AUTH-version equality and no accepted 1.x/dev1
+- Exact `2.0-dev5` admission/AUTH-version equality and no accepted older-dev
   downgrade path. Legacy
   inner/light/heavy/dual/hop/no-inner/raw-carrier and literal-secret CLI choices
   are rejected. The unreachable client-side 1.x AUTH response, Argon2 challenge
@@ -178,6 +181,12 @@ or admin/control validation.
   authenticated through `operator_keys` and logged the explicit outbound-admin
   policy. These prove standard authenticated benchmark traffic and the physical
   operator store; they do not constitute a full GUI admin-attach workflow test.
+- The current 2.0 carrier diagnostic provisions protected admission/inner
+  secret files and the real loopback Node cover. An unprivileged local audit
+  passed Chromium-through-SOCKS, H2 ALPN, and ordinary cover probing. Raw packet
+  capture was unavailable on that host, so this adds functional evidence but no
+  new ClientHello or Chrome-parity claim. The diagnostic emits JA3, JA4, and
+  JA4_r evidence when `dumpcap` or `tcpdump` access is available.
 
 ## Required before `2.0-rc1`
 
@@ -188,7 +197,7 @@ or admin/control validation.
 - Exercise partial socket writes, sustained flow-control stalls, malformed
   carrier paths, backend timeout/failure, and bounded backpressure under load.
 - Decide the time-limit threat model explicitly. Today the receiver
-  independently enforces inbound byte/frame usage while the 500 ms boundary is
+  independently enforces inbound byte/frame usage while the configured active-time boundary is
   sender-local. A signed timestamp does not make a malicious sender's clock
   truthful. Alternatives are to retain and document the honest-sender rule, or
   enforce a receiver-local lifetime from first authenticated arrival and accept

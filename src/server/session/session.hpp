@@ -184,6 +184,13 @@ private:
     bool frame_allowed_by_authorization_tier(const protocol::Frame& frame);
     bool handle_auth(const protocol::Frame& frame);
     void handle_open(const protocol::Frame& frame);
+    bool handle_reverse_open_reply(const protocol::Frame& frame);
+    bool open_stream_id_available(uint8_t stream_id);
+    bool handle_relay_open(uint8_t stream_id,
+                           const nlohmann::json& json,
+                           const crypto::Bytes& payload);
+    void start_udp_open(uint8_t stream_id, const std::string& host, int port);
+    void start_tcp_open(uint8_t stream_id, const std::string& host, int port);
     void handle_data(const protocol::Frame& frame);
     bool handle_packet_open(uint8_t stream_id);
     bool handle_packet_data(uint8_t stream_id, const crypto::Bytes& payload);

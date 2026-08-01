@@ -83,6 +83,7 @@ recommended for a shared public server.
   "threads": 8,
   "max_sessions": 256,
   "bulk_key_max_sessions": 64,
+  "security_mode": "extreme",
   "rekey_window": 8,
   "accept_rate_limit": 100,
   "egress_mbps": 900,
@@ -95,13 +96,18 @@ The matching CLI flags are `--threads`, `--max-sessions`,
 `--egress-mbps`, and `--filter-memory-mib`. `rekey_window` is the number of
 concurrent directional epoch offers accepted from one session and the ceiling
 on the server's own sending window (1..64, default 8). It is what lifts
-per-round-trip throughput on high-latency links — each prepared epoch adds
-256 KiB per rekey round trip — and it bounds how much ML-KEM work one peer can
-request. The 256 KiB, 512-frame, and 500 ms per-epoch limits are the same at
-every depth. See `docs/YUME_2_0_WAN_BEHAVIOR.md`. The daemon defaults to 256
+per-round-trip throughput on high-latency links — under Extreme each prepared
+epoch adds 256 KiB per rekey round trip — and it bounds how much ML-KEM work
+one peer can request. Under the default Extreme security mode, the 256 KiB,
+512-frame, and 500 ms per-epoch limits are the same at every depth. See
+`docs/YUME_2_0_WAN_BEHAVIOR.md`. The daemon defaults to 256
 live sessions and 64 authenticated sessions per bulk key. An administrator can
 explicitly use `--max-sessions 0` to remove the global cap, but should normally
 raise a finite limit instead.
+
+Security mode selection is currently a JSON configuration contract. Use
+`extreme`, `normal`, `soft`, or the complete `ultimate` object documented in
+`docs/SECURITY_MODES.md`; there is no partial Ultimate fallback.
 
 `threads` bounds YUME worker concurrency; it is not a hard machine-wide CPU
 percentage. Per-session queue bounds, the filter memory limit, and session

@@ -515,6 +515,8 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/session/streams.cpp
         server/session/ext.cpp
         server/session/open.cpp
+        server/session/open_transport.cpp
+        server/session/reverse_listener.cpp
         server/session/auth.cpp
         server/session/authorization.cpp
         server/session/static_site.cpp
@@ -688,6 +690,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         )
         target_include_directories(yume_selftest_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
         target_link_libraries(yume_selftest_lib PUBLIC yume_core OpenSSL::Crypto Threads::Threads)
+        yume_prepare_static_for_shared_abi(yume_selftest_lib)
         yume_apply_perf_opts(yume_selftest_lib)
         # The definition and the link must live on the same target. When the
         # link was only on the `yume` executable, every other consumer of
@@ -1114,6 +1117,14 @@ target_link_libraries(yume_ratchet_test PRIVATE yume_transport_core)
 yume_link_atomic_if_needed(yume_ratchet_test PRIVATE)
 yume_apply_perf_opts(yume_ratchet_test)
 add_test(NAME yume_ratchet_test COMMAND yume_ratchet_test)
+
+add_executable(yume_ratchet_profile_json_test
+    config/ratchet_profile_json_test.cpp)
+target_link_libraries(yume_ratchet_profile_json_test PRIVATE yume_transport_core)
+yume_link_atomic_if_needed(yume_ratchet_profile_json_test PRIVATE)
+yume_apply_perf_opts(yume_ratchet_profile_json_test)
+add_test(NAME yume_ratchet_profile_json_test
+    COMMAND yume_ratchet_profile_json_test)
 
 add_executable(yume_auth_v2_test core/security/auth_v2_test.cpp)
 target_link_libraries(yume_auth_v2_test PRIVATE yume_transport_core)

@@ -48,7 +48,9 @@ struct ClientConfig {
     // handlers. The remaining are data-only and share the data plane
     // via TunnelPool round-robin. Clamped to [1, 16]; 1 disables
     // multi-tunnel and matches the pre-3.7.1 single-tunnel layout.
-    int tunnel_count{4};
+    // Individual identities admit one authenticated server session by
+    // default. Bulk identities may opt into additional parallel tunnels.
+    int tunnel_count{1};
     bool obfuscation{true};
     std::string obfs_secret_file;
     std::string inner_psk_file;
@@ -70,10 +72,12 @@ struct ClientConfig {
     std::uint32_t hop_interval_ms{500};
     // --rekey-window <N>. Concurrent directional epoch offers this client
     // accepts inbound and, capped by the server's advertised depth, uses
-    // outbound. One exchange caps a saturated direction at 256 KiB per rekey
-    // round trip; N raises that to N * 256 KiB without changing any per-epoch
-    // limit. Clamped to the ratchet's supported range.
+    // outbound. One outstanding exchange caps a saturated direction at one
+    // negotiated epoch byte budget per rekey round trip; N raises that to N
+    // budgets without changing the selected per-epoch policy. Clamped to the
+    // ratchet's supported range.
     std::uint16_t rekey_window{yume::ratchet::kDefaultRekeyWindow};
+    ratchet::SecurityProfileConfig security_profile{};
     bool allow_udp{false};
     bool allow_local_ip{false};
     bool server_in_charge{false};

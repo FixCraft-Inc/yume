@@ -1,7 +1,7 @@
 # YUME 1.1 — First Stable Release
 
 > **Historical plan:** this document records the superseded 1.x release plan.
-> The current source is the incompatible `2.0-dev4` development line. Use
+> The current source is the incompatible `2.0-dev5` development line. Use
 > [`../YUME_2_0_IMPLEMENTATION_STATUS.md`](../YUME_2_0_IMPLEMENTATION_STATUS.md)
 > and [`../protocol/YUME_2_0_WIRE.md`](../protocol/YUME_2_0_WIRE.md) for current
 > implementation and protocol truth.

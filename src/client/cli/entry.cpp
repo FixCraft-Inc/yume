@@ -949,9 +949,15 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             if (!h2_carrier || !cfg.inner_psk_material) {
                 throw FatalError("YUME 2.0 requires H2 carrier and inner PSK");
             }
+            const auto ratchet_policy =
+                ratchet::ResolveSecurityProfile(cfg.security_profile);
+            if (!ratchet_policy.has_value()) {
+                throw FatalError("invalid YUME security profile");
+            }
             auto v2_ratchet = send_auth_v2_response(
                 stream, io, cfg.identity, auth_challenge,
-                *cfg.inner_psk_material, *h2_carrier, cfg.rekey_window);
+                *cfg.inner_psk_material, *h2_carrier, cfg.rekey_window,
+                *ratchet_policy);
             YUME_TIMING_LOG("client.auth",
                              "send_response",
                              "ms=" + std::to_string(
@@ -1259,6 +1265,14 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 summary.server_inner_active = server_inner_active;
                 summary.verity_applicable = (mode == "anonym");
                 summary.verity_ok = verity_ok;
+                if (v2_ratchet) {
+                    const auto policy = v2_ratchet->outbound_policy();
+                    summary.epoch_byte_limit = policy.epoch_byte_limit;
+                    summary.epoch_frame_limit = policy.epoch_frame_limit;
+                    summary.epoch_active_limit_ms =
+                        static_cast<std::uint64_t>(
+                            policy.epoch_active_limit.count());
+                }
                 status_block_builder = make_connection_status_block(std::move(summary));
                 if (!live_status_enabled) {
                     // When embedded via facade::InProcClient the GUI

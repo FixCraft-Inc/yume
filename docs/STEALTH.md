@@ -118,7 +118,8 @@ native Node behavior.
   a complete website.
 - Replay of captured carrier URLs: admission nonces are cached until expiry.
 - Some retained-chain compromise: independent directions rekey before crossing
-  256 KiB, 512 encrypted data frames, or 500 ms of active epoch time.
+  the authenticated ratchet policy; Extreme defaults to 256 KiB, 512 encrypted
+  data frames, or 500 ms of active epoch time.
 
 These are reductions in distinguishability and compromise radius, not claims of
 anonymity, browser identity, or immunity to statistical traffic analysis.
@@ -127,6 +128,44 @@ record sizes, timing, and volume. They do not see plaintext H2 frames unless
 they also terminate or decrypt TLS. Valid H2 primarily removes a proprietary
 post-handshake syntax and improves behavior under probing; it does not make a
 tunnel look specifically like “reading a news article.”
+
+## Reproducible checks
+
+Compare the production H2 opening against the committed Chrome fixture:
+
+```bash
+python3 scripts/yume_h2_fingerprint.py chrome \
+  --check chrome \
+  --emitter build/bin/yume_h2_opening_probe
+```
+
+Run the current client, daemon, real Node cover, and Chromium without privileged
+packet capture:
+
+```bash
+python3 scripts/yume_carrier_diagnose.py \
+  --local-server \
+  --capture-tool none \
+  --out yume-dpi-functional
+```
+
+That checks transport functionality, H2 negotiation, browser traffic through
+SOCKS, and the ordinary cover path. It deliberately reports stealth as
+unproven because it cannot see the ClientHello.
+
+Where the operator has deliberately granted `dumpcap` or `tcpdump` capture
+access, collect both the YUME flow and a direct Chromium baseline:
+
+```bash
+python3 scripts/yume_carrier_diagnose.py \
+  --local-server \
+  --capture-tool auto \
+  --out yume-dpi-capture
+```
+
+The resulting `SUMMARY.md`, pcaps, logs, JA3, JA4, and JA4_r values are review
+artifacts, not an automatic parity verdict. Never grant the YUME binaries root
+or packet-capture privileges merely to make this diagnostic pass.
 
 ## Known classifier-visible residuals
 
@@ -194,7 +233,7 @@ is a deployment secret, endpoint compromise exposes live plaintext/state, and
 the complete construction has not received an independent formal proof or
 security audit.
 
-The 500 ms constant is a maximum **sender-active epoch age**, starting with the
+The Extreme profile's 500 ms constant is a maximum **sender-active epoch age**, starting with the
 first application frame. Byte or frame use may rotate an epoch sooner; an idle
 connection does not rotate at all. Receivers independently enforce byte/frame
 limits, but the time rule currently assumes a conforming sender. An

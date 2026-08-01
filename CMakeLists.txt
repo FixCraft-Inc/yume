@@ -81,6 +81,15 @@ if(YUME_BUILD_TESTING AND CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
             -DYUME_BUILD_TYPE_MODULE=${PROJECT_SOURCE_DIR}/cmake/YumeBuildType.cmake
             -P ${PROJECT_SOURCE_DIR}/tests/cmake/default_build_type_test.cmake
     )
+
+    find_program(YUME_BASH_EXECUTABLE bash)
+    if(YUME_BASH_EXECUTABLE)
+        add_test(
+            NAME yume_build_helpers_test
+            COMMAND "${YUME_BASH_EXECUTABLE}"
+                "${PROJECT_SOURCE_DIR}/tests/shell/build_helpers_test.sh"
+        )
+    endif()
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/YumeBuildType.cmake")

@@ -13,6 +13,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "config/ratchet_profile_json.hpp"
 #include "server/cli/misc.hpp"
 #include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
@@ -360,6 +361,8 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
                 }
                 cfg.rekey_window = static_cast<std::uint16_t>(window);
             }
+            cfg.security_profile = yume::config::ParseSecurityProfile(
+                json, cfg.security_profile);
             if (json.contains("accept_rate_limit") && !overrides.accept_rate_limit) {
                 cfg.accept_rate_limit = json_non_negative_u32(json, "accept_rate_limit");
             }

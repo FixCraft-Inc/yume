@@ -18,6 +18,7 @@
 
 #include "core/version.hpp"
 #include "core/stealth/http_profile.hpp"
+#include "config/ratchet_profile_json.hpp"
 #include "facade/config/detail.hpp"
 #include "facade/config/keys.hpp"
 
@@ -48,6 +49,8 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::inner_hop, c.inner_hop);
     read_opt(j, cfg_key::hop_interval_ms, c.hop_interval_ms);
     read_opt(j, cfg_key::rekey_window, c.rekey_window);
+    c.security_profile = yume::config::ParseSecurityProfile(
+        j, c.security_profile);
     read_opt(j, cfg_key::allow_udp, c.allow_udp);
     read_opt(j, cfg_key::allow_local_ip, c.allow_local_ip);
     read_opt(j, cfg_key::allow_exec, c.allow_exec);
@@ -120,7 +123,12 @@ std::optional<client::ClientConfig> load_client(
         return std::nullopt;
     }
 
-    return client_from_json(j, path.parent_path());
+    try {
+        return client_from_json(j, path.parent_path());
+    } catch (std::exception const& e) {
+        if (err) *err = e.what();
+        return std::nullopt;
+    }
 }
 
 std::optional<client::ClientConfig> parse_client_json(
@@ -134,7 +142,12 @@ std::optional<client::ClientConfig> parse_client_json(
         if (err) *err = std::string{"invalid JSON: "} + e.what();
         return std::nullopt;
     }
-    return client_from_json(j, base_dir);
+    try {
+        return client_from_json(j, base_dir);
+    } catch (std::exception const& e) {
+        if (err) *err = e.what();
+        return std::nullopt;
+    }
 }
 
 bool save_client(client::ClientConfig const& c,
@@ -199,6 +212,7 @@ bool save_client(client::ClientConfig const& c,
         {cfg_key::self_dpi, c.self_dpi},
         {cfg_key::outbound_proxy, c.outbound_proxy_url},
     };
+    yume::config::WriteSecurityProfile(j, c.security_profile);
 
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
@@ -228,6 +242,11 @@ ValidationReport validate(client::ClientConfig const& c) {
     if (c.rekey_window < yume::ratchet::kMinRekeyWindow ||
         c.rekey_window > yume::ratchet::kMaxRekeyWindow) {
         r.errors.emplace_back("rekey_window: must be in 1..64");
+    }
+    if (!yume::ratchet::ResolveSecurityProfile(
+             c.security_profile).has_value()) {
+        r.errors.emplace_back(
+            "security_profile: ultimate requires valid custom limits");
     }
     if (!c.socks_bind_host.empty()) {
         boost::system::error_code ec;

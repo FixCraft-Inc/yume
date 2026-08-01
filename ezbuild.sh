@@ -6,6 +6,12 @@ set -euo pipefail
 
 # YUME ezbuild: install dependencies and build
 
+EZBUILD_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/library_detection.sh
+source "${EZBUILD_REPO_ROOT}/scripts/lib/library_detection.sh"
+# shellcheck source=scripts/lib/user_context.sh
+source "${EZBUILD_REPO_ROOT}/scripts/lib/user_context.sh"
+
 LOG_FILE="crashed.log"
 : > "${LOG_FILE}"
 exec > >(tee -a "${LOG_FILE}") 2>&1
@@ -49,31 +55,6 @@ BASEFWX_EFFECTIVE_SYNC_MODE=""
 YUME_REQUIRE_ARGON2="${YUME_REQUIRE_ARGON2:-0}"
 YUME_REQUIRE_OQS="${YUME_REQUIRE_OQS:-0}"
 
-resolve_real_home() {
-    local home="${HOME}"
-    if [[ -n "${SUDO_USER:-}" ]]; then
-        local sudo_home
-        sudo_home="$(getent passwd "${SUDO_USER}" 2>/dev/null | cut -d: -f6 || true)"
-        if [[ -n "${sudo_home}" ]]; then
-            home="${sudo_home}"
-        fi
-    fi
-    echo "${home}"
-}
-
-resolve_real_uid() {
-    local uid
-    uid="$(id -u)"
-    if [[ -n "${SUDO_USER:-}" ]]; then
-        local sudo_uid
-        sudo_uid="$(id -u "${SUDO_USER}" 2>/dev/null || true)"
-        if [[ -n "${sudo_uid}" ]]; then
-            uid="${sudo_uid}"
-        fi
-    fi
-    echo "${uid}"
-}
-
 init_tmp_root() {
     local requested="${YUME_TMP_ROOT:-}"
     if [[ -n "${requested}" ]]; then
@@ -86,8 +67,8 @@ init_tmp_root() {
     echo "${created}|1"
 }
 
-REAL_HOME="$(resolve_real_home)"
-REAL_UID="$(resolve_real_uid)"
+REAL_HOME="$(yume_real_home)"
+REAL_UID="$(yume_real_uid)"
 YUME_CACHE_ROOT="${YUME_CACHE_ROOT:-${REAL_HOME}/.cache/yume}"
 mkdir -p "${YUME_CACHE_ROOT}"
 IFS='|' read -r YUME_TMP_ROOT YUME_TMP_ROOT_AUTO <<< "$(init_tmp_root)"
@@ -650,17 +631,15 @@ detect_liboqs() {
         if [[ -f "${OPENWRT_USR}/include/oqs/oqs.h" ]]; then
             return 0
         fi
-        if [[ -f "${OPENWRT_USR}/lib/liboqs.so" ]] || [[ -f "${OPENWRT_USR}/lib/liboqs.a" ]]; then
+        if yume_library_artifact_exists liboqs "${OPENWRT_USR}/lib"; then
             return 0
         fi
     fi
     if [[ -f /usr/include/oqs/oqs.h ]] || [[ -f /usr/local/include/oqs/oqs.h ]]; then
         return 0
     fi
-    if [[ -f /usr/lib/x86_64-linux-gnu/liboqs.a ]] || [[ -f /usr/lib/liboqs.a ]] || [[ -f /usr/local/lib/liboqs.a ]]; then
-        return 0
-    fi
-    if [[ -f /usr/lib/x86_64-linux-gnu/liboqs.so ]] || [[ -f /usr/lib/liboqs.so ]] || [[ -f /usr/local/lib/liboqs.so ]] || [[ -f /usr/lib/x86_64-linux-gnu/liboqs.so.* ]] || [[ -f /usr/lib/liboqs.so.* ]] || [[ -f /usr/local/lib/liboqs.so.* ]]; then
+    if yume_library_artifact_exists liboqs \
+        /usr/lib/x86_64-linux-gnu /usr/lib /usr/local/lib; then
         return 0
     fi
     return 1
@@ -674,10 +653,7 @@ detect_argon2() {
         if [[ -f "${OPENWRT_USR}/include/argon2.h" ]]; then
             return 0
         fi
-        if [[ -f "${OPENWRT_USR}/lib/libargon2.so" ]] || [[ -f "${OPENWRT_USR}/lib/libargon2.a" ]]; then
-            return 0
-        fi
-        if [[ -n "$(ls -1 "${OPENWRT_USR}/lib/libargon2.so."* 2>/dev/null | head -n 1)" ]]; then
+        if yume_library_artifact_exists libargon2 "${OPENWRT_USR}/lib"; then
             return 0
         fi
     fi
@@ -701,10 +677,8 @@ detect_argon2() {
     if [[ -f /usr/include/argon2.h ]] || [[ -f /usr/local/include/argon2.h ]]; then
         return 0
     fi
-    if [[ -f /usr/lib/x86_64-linux-gnu/libargon2.a ]] || [[ -f /usr/lib/libargon2.a ]] || [[ -f /usr/local/lib/libargon2.a ]]; then
-        return 0
-    fi
-    if [[ -f /usr/lib/x86_64-linux-gnu/libargon2.so ]] || [[ -f /usr/lib/libargon2.so ]] || [[ -f /usr/local/lib/libargon2.so ]] || [[ -f /usr/lib/x86_64-linux-gnu/libargon2.so.* ]] || [[ -f /usr/lib/libargon2.so.* ]] || [[ -f /usr/local/lib/libargon2.so.* ]]; then
+    if yume_library_artifact_exists libargon2 \
+        /usr/lib/x86_64-linux-gnu /usr/lib /usr/local/lib; then
         return 0
     fi
     return 1

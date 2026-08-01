@@ -168,7 +168,7 @@ def terminate_process(proc: subprocess.Popen[Any], grace_s: float = 4.0) -> None
 def redact_args(args: list[str]) -> list[str]:
     redacted = []
     redact_next = False
-    secret_flags = {"--obfs-secret", "--auth", "-i", "--anonym-ca-cert", "--tls-ca", "--tls-pin"}
+    secret_flags = {"--auth", "-i", "--anonym-ca-cert", "--tls-ca", "--tls-pin"}
     for item in args:
         if redact_next:
             redacted.append("<redacted>")
@@ -187,7 +187,11 @@ def find_yume_binary(explicit: str | None) -> pathlib.Path:
             raise RuntimeError(f"yume binary not found: {path}")
         return path
     root = repo_root()
-    candidates = [root / "build/bin/yume", root / "build-rf/bin/yume"]
+    candidates = [
+        root / "build/bin/yume",
+        root / "build-final-review/bin/yume",
+        root / "build-rf/bin/yume",
+    ]
     existing = [p for p in candidates if p.exists()]
     if existing:
         return max(existing, key=lambda p: p.stat().st_mtime)
@@ -204,7 +208,11 @@ def find_yumed_binary(explicit: str | None) -> pathlib.Path:
             raise RuntimeError(f"yumed binary not found: {path}")
         return path
     root = repo_root()
-    candidates = [root / "build/bin/yumed", root / "build-rf/bin/yumed"]
+    candidates = [
+        root / "build/bin/yumed",
+        root / "build-final-review/bin/yumed",
+        root / "build-rf/bin/yumed",
+    ]
     existing = [p for p in candidates if p.exists()]
     if existing:
         return max(existing, key=lambda p: p.stat().st_mtime)
@@ -224,6 +232,8 @@ def generate_local_keyset(material_dir: pathlib.Path, yumed_bin: pathlib.Path) -
     client_prefix = material_dir / "client"
     client_key = material_dir / "client.key"
     client_pub = material_dir / "client.pub"
+    obfs_secret = material_dir / "obfs.hex"
+    inner_psk = material_dir / "inner-psk.hex"
 
     subprocess.run(
         [
@@ -233,6 +243,7 @@ def generate_local_keyset(material_dir: pathlib.Path, yumed_bin: pathlib.Path) -
             "-out", str(cert),
             "-days", "1", "-nodes",
             "-subj", "/CN=localhost",
+            "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
         ],
         check=True,
         stdout=subprocess.DEVNULL,
@@ -247,7 +258,9 @@ def generate_local_keyset(material_dir: pathlib.Path, yumed_bin: pathlib.Path) -
     if not client_pub.exists() or not client_key.exists():
         raise RuntimeError("yumed --keys-gen did not produce expected client.key/client.pub")
     auth_keys.write_bytes(client_pub.read_bytes())
-    for path in (key, client_key, auth_keys):
+    obfs_secret.write_text(secrets.token_hex(32))
+    inner_psk.write_text(secrets.token_hex(32))
+    for path in (key, client_key, auth_keys, obfs_secret, inner_psk):
         try:
             path.chmod(0o600)
         except OSError:
@@ -258,14 +271,42 @@ def generate_local_keyset(material_dir: pathlib.Path, yumed_bin: pathlib.Path) -
         "auth_keys": auth_keys,
         "client_key": client_key,
         "client_pub": client_pub,
+        "obfs_secret": obfs_secret,
+        "inner_psk": inner_psk,
     }
+
+
+def start_local_cover_backend(outdir: pathlib.Path,
+                              port: int) -> subprocess.Popen[Any]:
+    node = shutil.which("node")
+    if not node:
+        raise RuntimeError("node not found; local 2.0 diagnosis requires the cover backend")
+    backend = repo_root() / "tools/cover-node/backend.mjs"
+    log_path = outdir / "cover-backend.log"
+    log = log_path.open("wb")
+    env = os.environ.copy()
+    env["YUME_COVER_HOST"] = "127.0.0.1"
+    env["YUME_COVER_PORT"] = str(port)
+    proc = subprocess.Popen(
+        [node, str(backend)],
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        env=env,
+    )
+    proc._yume_log_file = log  # type: ignore[attr-defined]
+    if not wait_port("127.0.0.1", port, 10):
+        terminate_process(proc)
+        log.close()
+        raise RuntimeError(f"cover backend did not listen; see {log_path}")
+    return proc
 
 
 def start_local_yumed(args: argparse.Namespace,
                       outdir: pathlib.Path,
                       material_dir: pathlib.Path,
                       yume_port: int,
-                      obfs_secret: str) -> tuple[subprocess.Popen[Any], dict[str, pathlib.Path]]:
+                      cover_port: int) -> tuple[subprocess.Popen[Any], dict[str, pathlib.Path]]:
     yumed_bin = find_yumed_binary(args.yumed_bin)
     keyset = generate_local_keyset(material_dir, yumed_bin)
     log_path = outdir / "yumed.log"
@@ -277,18 +318,13 @@ def start_local_yumed(args: argparse.Namespace,
         "--auth-keys", str(keyset["auth_keys"]),
         "--threads", "2",
         "--obfs",
-        "--obfs-secret", obfs_secret,
+        "--obfs-secret-file", str(keyset["obfs_secret"]),
+        "--inner-psk-file", str(keyset["inner_psk"]),
+        "--real-backend", f"loopback://127.0.0.1:{cover_port}",
         "--hide-in-the-crowd", args.server_profile,
-        "--pq-auto-generate",
         "--allow-local-ip",
         "--boring",
     ]
-    if args.inner_heavy:
-        argv.append("--inner-heavy")
-    elif args.inner_light:
-        argv.append("--inner-light")
-    if args.hop and not args.no_hop:
-        argv.append("--hop")
     for extra in args.yumed_arg:
         argv.append(extra)
 
@@ -306,13 +342,6 @@ def start_local_yumed(args: argparse.Namespace,
         terminate_process(proc)
         log.close()
         raise RuntimeError(f"local yumed did not listen on 127.0.0.1:{yume_port}; see {log_path}")
-    pq_public = material_dir / ".secrets" / "pq_public.key"
-    if not args.no_inner and (args.inner_heavy or args.inner_light):
-        if not wait_file(pq_public, args.startup_timeout):
-            terminate_process(proc)
-            log.close()
-            raise RuntimeError(f"local yumed did not generate PQ public key at {pq_public}; see {log_path}")
-        keyset["pq_public"] = pq_public
     return proc, keyset
 
 
@@ -334,22 +363,11 @@ def build_yume_args(args: argparse.Namespace, socks_port: int) -> list[str]:
         argv += ["--tls-ca", str(pathlib.Path(args.tls_ca).expanduser())]
     if args.tls_name:
         argv += ["--tls-name", args.tls_name]
-    if args.inner_heavy:
-        argv.append("--inner-heavy")
-    elif args.inner_light:
-        argv.append("--inner-light")
-    elif args.no_inner:
-        argv.append("--no-inner")
-    if args.hop:
-        argv.append("--hop")
-    if args.no_hop:
-        argv.append("--no-hop")
-    if args.no_obfs:
-        argv.append("--no-obfs")
-    else:
-        argv.append("--obfs")
-        if args.obfs_secret:
-            argv += ["--obfs-secret", args.obfs_secret]
+    argv.append("--obfs")
+    if args.obfs_secret_file:
+        argv += ["--obfs-secret-file", str(pathlib.Path(args.obfs_secret_file).expanduser())]
+    if args.inner_psk_file:
+        argv += ["--inner-psk-file", str(pathlib.Path(args.inner_psk_file).expanduser())]
     for extra in args.yume_arg:
         argv.append(extra)
     return argv
@@ -358,8 +376,7 @@ def build_yume_args(args: argparse.Namespace, socks_port: int) -> list[str]:
 def build_local_yume_args(args: argparse.Namespace,
                           socks_port: int,
                           yume_port: int,
-                          keyset: dict[str, pathlib.Path],
-                          obfs_secret: str) -> list[str]:
+                          keyset: dict[str, pathlib.Path]) -> list[str]:
     argv = [
         str(find_yume_binary(args.yume_bin)),
         "--server", "localhost",
@@ -371,23 +388,12 @@ def build_local_yume_args(args: argparse.Namespace,
         "--hide-in-the-crowd", args.client_http_profile or args.client_profile,
         "--self-dpi",
         "--obfs",
-        "--obfs-secret", obfs_secret,
+        "--obfs-secret-file", str(keyset["obfs_secret"]),
+        "--inner-psk-file", str(keyset["inner_psk"]),
         "--non-interactive",
         "--accept-monitoring",
         "--allow-local-ip",
     ]
-    if args.inner_heavy:
-        argv.append("--inner-heavy")
-    elif args.inner_light:
-        argv.append("--inner-light")
-    elif args.no_inner:
-        argv.append("--no-inner")
-    if not args.no_inner and (args.inner_heavy or args.inner_light) and "pq_public" in keyset:
-        argv += ["--pq-pub", str(keyset["pq_public"])]
-    if args.hop:
-        argv.append("--hop")
-    if args.no_hop:
-        argv.append("--no-hop")
     for extra in args.yume_arg:
         argv.append(extra)
     return argv
@@ -490,6 +496,8 @@ def capture_command(tool: str, iface: str, output: pathlib.Path, bpf: str) -> li
 
 
 def choose_capture_tool(explicit: str) -> str:
+    if explicit == "none":
+        return explicit
     if explicit != "auto":
         if not shutil.which(explicit):
             raise RuntimeError(f"{explicit} not found on PATH")
@@ -510,8 +518,11 @@ def start_capture(tool: str, iface: str, output: pathlib.Path, bpf: str, log_pat
     if proc.poll() is not None:
         try:
             log.close()
-        except Exception:
-            pass
+        except OSError as exc:
+            print(
+                f"warning: failed to close capture log {log_path}: {exc}",
+                file=sys.stderr,
+            )
         raise RuntimeError(f"{tool} exited early; see {log_path}")
     return proc
 
@@ -599,6 +610,9 @@ def extract_clienthellos(pcap: pathlib.Path) -> list[dict[str, str]]:
         "tcp.dstport",
         "tls.handshake.extensions_server_name",
         "tls.handshake.extensions_alpn_str",
+        "tls.handshake.ja3",
+        "tls.handshake.ja4",
+        "tls.handshake.ja4_r",
     ]
     cmd = ["tshark", "-r", str(pcap), "-Y", "tls.handshake.type == 1", "-T", "fields", "-E", "separator=\t"]
     for field in fields:
@@ -638,8 +652,19 @@ def run_dpi_report(
 
 def summarize(outdir: pathlib.Path, data: dict[str, Any]) -> None:
     target_ch = data.get("target_clienthellos", [])
+    capture_available = pathlib.Path(data["target_pcap"]).exists()
     alpns = [row.get("tls.handshake.extensions_alpn_str", "") for row in target_ch]
     has_h2 = any("h2" in a.split(",") or a.startswith("h2") for a in alpns)
+    target_ja4 = {
+        row.get("tls.handshake.ja4", "") for row in target_ch
+        if row.get("tls.handshake.ja4", "")
+    }
+    baseline_ch = data.get("baseline_clienthellos", [])
+    baseline_ja4 = {
+        row.get("tls.handshake.ja4", "") for row in baseline_ch
+        if row.get("tls.handshake.ja4", "")
+    }
+    ja4_overlap = sorted(target_ja4 & baseline_ja4)
     alpn_summary = ", ".join(f"`{a or '-'}`" for a in alpns) or "`-`"
     log_text = pathlib.Path(data["yume_log"]).read_text(errors="replace") if data.get("yume_log") else ""
     yumed_log_text = pathlib.Path(data["yumed_log"]).read_text(errors="replace") if data.get("yumed_log") else ""
@@ -668,6 +693,8 @@ def summarize(outdir: pathlib.Path, data: dict[str, Any]) -> None:
         f"- Target ALPN values: {alpn_summary}",
         f"- ALPN offer includes h2: {'yes' if has_h2 else 'no'}",
         f"- Yume log selected h2: {'yes' if selected_h2 else 'no'}",
+        f"- Target JA4: `{', '.join(sorted(target_ja4)) or '-'}`",
+        f"- Direct Chromium JA4 overlap: `{', '.join(ja4_overlap) or 'none'}`",
         f"- Client self-DPI log: `{self_dpi_lines[-1] if self_dpi_lines else '-'}`",
     ]
     if server_probe:
@@ -700,12 +727,32 @@ def summarize(outdir: pathlib.Path, data: dict[str, Any]) -> None:
         "## Diagnosis",
         "",
     ]
-    if has_h2 and selected_h2:
-        report.append("PASS: the captured target handshake and Yume logs agree on HTTP/2 carrier ALPN.")
+    if not capture_available and selected_h2:
+        report.append(
+            "FUNCTIONAL PASS: Yume selected HTTP/2 and the tunneled browser run "
+            "completed, but no raw packet capture was available."
+        )
+    elif has_h2 and selected_h2:
+        report.append("TRANSPORT PASS: the captured target handshake and Yume logs agree on HTTP/2 carrier ALPN.")
     elif has_h2:
         report.append("PARTIAL: ClientHello offers h2, but the Yume log did not show selected h2.")
     else:
         report.append("FAIL: captured ClientHello did not show h2 in ALPN.")
+    if not capture_available:
+        report.append(
+            "STEALTH UNPROVEN: rerun with dumpcap/tcpdump permission to compare "
+            "the outer ClientHello against direct Chromium."
+        )
+    elif ja4_overlap:
+        report.append(
+            "JA4 overlaps the direct Chromium sample, but this is not proof of "
+            "ClientHello byte/order or whole-connection browser parity."
+        )
+    else:
+        report.append(
+            "STEALTH GAP: the outer YUME JA4 did not overlap the direct Chromium "
+            "sample; inspect JA3/JA4_r and the packet capture before making a browser claim."
+        )
     report.append("")
     (outdir / "SUMMARY.md").write_text("\n".join(report))
 
@@ -724,13 +771,10 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--anonym-ca-cert", default=None)
     ap.add_argument("--tls-ca", default=None)
     ap.add_argument("--tls-name", default=None)
-    ap.add_argument("--inner-heavy", action="store_true")
-    ap.add_argument("--inner-light", action="store_true")
-    ap.add_argument("--no-inner", action="store_true")
-    ap.add_argument("--hop", action="store_true")
-    ap.add_argument("--no-hop", action="store_true")
-    ap.add_argument("--obfs-secret", default=None)
-    ap.add_argument("--no-obfs", action="store_true")
+    ap.add_argument("--obfs-secret-file", default=None,
+                    help="required protected 2.0 admission secret file in remote mode")
+    ap.add_argument("--inner-psk-file", default=None,
+                    help="required protected 2.0 inner PSK file in remote mode")
     ap.add_argument("--server-profile", default="nginx",
                     choices=["nginx", "nginx-stable", "apache", "caddy", "cloudflare", "express", "gunicorn", "none", "yumed"],
                     help="local yumed HTTP disguise profile for active-probe responses")
@@ -744,7 +788,12 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--yume-bin", default=None)
     ap.add_argument("--yumed-bin", default=None)
     ap.add_argument("--chromium", default=None)
-    ap.add_argument("--capture-tool", choices=["auto", "dumpcap", "tcpdump"], default="auto")
+    ap.add_argument(
+        "--capture-tool",
+        choices=["auto", "dumpcap", "tcpdump", "none"],
+        default="auto",
+        help="use none for an unprivileged functional audit without raw JA3/JA4 evidence",
+    )
     ap.add_argument("--socks-port", type=int, default=0, help="0 means choose a free local port")
     ap.add_argument("--out", default=None)
     ap.add_argument("--keep-workdir", action="store_true")
@@ -765,12 +814,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if args.inner_heavy and args.inner_light:
-        raise SystemExit("--inner-heavy and --inner-light are mutually exclusive")
-    if args.inner_heavy and args.no_inner:
-        raise SystemExit("--inner-heavy and --no-inner are mutually exclusive")
-    if args.hop and args.no_hop:
-        raise SystemExit("--hop and --no-hop are mutually exclusive")
     if args.local_server and args.no_local_server:
         raise SystemExit("--local-server and --no-local-server are mutually exclusive")
 
@@ -779,13 +822,16 @@ def main() -> int:
         local_mode = False
     if not local_mode and not args.server:
         raise SystemExit("--server is required with --no-local-server")
-    if local_mode and args.no_obfs:
-        raise SystemExit("ephemeral local-server mode is a carrier h2/obfs diagnostic; do not pass --no-obfs")
+    if not local_mode and (not args.obfs_secret_file or not args.inner_psk_file):
+        raise SystemExit(
+            "remote 2.0 diagnosis requires --obfs-secret-file and --inner-psk-file"
+        )
 
     capture_tool = choose_capture_tool(args.capture_tool)
     chromium = find_chromium(args.chromium)
     socks_port = args.socks_port or free_local_port()
     local_yumed_port = args.local_yumed_port or free_local_port()
+    local_cover_port = free_local_port()
     urls = list(args.url) if args.url else list(QUICK_URLS)
     if args.media:
         urls.extend(MEDIA_URLS)
@@ -816,7 +862,7 @@ def main() -> int:
     yumed_proc: subprocess.Popen[Any] | None = None
     key_material_dir = outdir / "ephemeral-material"
     local_keyset: dict[str, pathlib.Path] | None = None
-    local_obfs_secret = args.obfs_secret or secrets.token_hex(32)
+    cover_proc: subprocess.Popen[Any] | None = None
 
     if local_mode:
         server = "localhost"
@@ -833,7 +879,7 @@ def main() -> int:
         data["server_ip"] = server_ip
         data["interface"] = iface
         data["baseline_interface"] = baseline_iface
-        data["local_obfs_secret_generated"] = args.obfs_secret is None
+        data["local_secret_files_generated"] = True
     else:
         server = args.server
         port = args.port
@@ -858,19 +904,27 @@ def main() -> int:
     baseline_cap: subprocess.Popen[Any] | None = None
     try:
         if local_mode:
+            cover_proc = start_local_cover_backend(outdir, local_cover_port)
             yumed_proc, local_keyset = start_local_yumed(
                 args,
                 outdir,
                 key_material_dir,
                 local_yumed_port,
-                local_obfs_secret,
+                local_cover_port,
             )
             data["yumed_argv_redacted"] = getattr(yumed_proc, "_yume_argv_redacted", [])
 
         target_bpf = f"host {server_ip} and tcp port {args.port}"
         if local_mode:
             target_bpf = f"host 127.0.0.1 and tcp port {port}"
-        target_cap = start_capture(capture_tool, iface, target_pcap, target_bpf, outdir / "target-capture.log")
+        if capture_tool != "none":
+            target_cap = start_capture(
+                capture_tool,
+                iface,
+                target_pcap,
+                target_bpf,
+                outdir / "target-capture.log",
+            )
 
         if local_mode:
             yume_argv = build_local_yume_args(
@@ -878,7 +932,6 @@ def main() -> int:
                 socks_port,
                 local_yumed_port,
                 local_keyset,
-                local_obfs_secret,
             )
         else:
             yume_argv = build_yume_args(args, socks_port)
@@ -918,14 +971,23 @@ def main() -> int:
             log = getattr(yumed_proc, "_yume_log_file", None)
             if log:
                 log.close()
+        if cover_proc is not None:
+            terminate_process(cover_proc)
+            log = getattr(cover_proc, "_yume_log_file", None)
+            if log:
+                log.close()
         if target_cap is not None:
             stop_capture(target_cap)
         if local_mode and not args.keep_workdir and key_material_dir.exists():
             shutil.rmtree(key_material_dir, ignore_errors=True)
 
-    data["target_clienthellos"] = extract_clienthellos(target_pcap)
+    data["target_clienthellos"] = (
+        extract_clienthellos(target_pcap) if target_pcap.exists() else []
+    )
 
-    if not args.skip_baseline and baseline_pcap is None and baseline_iface:
+    if capture_tool == "none":
+        data["baseline_skip_reason"] = "capture disabled by --capture-tool none"
+    elif not args.skip_baseline and baseline_pcap is None and baseline_iface:
         baseline_pcap = outdir / "baseline-chromium.pcapng"
         data["baseline_pcap"] = str(baseline_pcap)
         baseline_bpf = "tcp port 443"
@@ -945,13 +1007,22 @@ def main() -> int:
     elif not args.skip_baseline and baseline_pcap is None:
         data.setdefault("baseline_skip_reason", "baseline interface unavailable")
 
-    data["dpi_report"] = run_dpi_report(
-        pathlib.Path(args.report_script).expanduser().resolve(),
-        target_pcap,
-        outdir / "dpi-report",
-        server_ip,
-        baseline_pcap,
-    )
+    if baseline_pcap is not None and baseline_pcap.exists():
+        data["baseline_clienthellos"] = extract_clienthellos(baseline_pcap)
+
+    if target_pcap.exists():
+        data["dpi_report"] = run_dpi_report(
+            pathlib.Path(args.report_script).expanduser().resolve(),
+            target_pcap,
+            outdir / "dpi-report",
+            server_ip,
+            baseline_pcap,
+        )
+    else:
+        data["dpi_report"] = {
+            "ran": False,
+            "error": "raw capture not available",
+        }
 
     (outdir / "diagnose.json").write_text(json.dumps(data, indent=2))
     summarize(outdir, data)

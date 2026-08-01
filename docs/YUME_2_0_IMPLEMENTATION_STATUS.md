@@ -2,6 +2,9 @@
 
 Status: `2.0-dev6` vertical slice implemented; release gates incomplete.
 
+The signed-commit inventory, competitive assessment, exact session handoff,
+and ordered next-agent gates are in `docs/YUME_2_0_DEV6_HANDOFF.md`.
+
 This is a truthful inventory of the focused Linux x86-64 client/server work. It
 does not claim Android, GUI, nginx, alternate browser profiles, H3, federation,
 or admin/control validation.

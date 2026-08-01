@@ -84,8 +84,11 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::auto_attach_local, c.auto_attach_local);
     read_opt(j, cfg_key::tls_stealth_enabled, c.tls_stealth_enabled);
     read_opt(j, cfg_key::tls_stealth_profile, c.tls_stealth_profile);
-    read_opt(j, cfg_key::tls_stealth_rotate, c.tls_stealth_rotate);
-    read_opt(j, cfg_key::tls_stealth_rotation_interval, c.tls_stealth_rotation_interval);
+    if (j.contains(cfg_key::tls_stealth_rotate) ||
+        j.contains(cfg_key::tls_stealth_rotation_interval)) {
+        throw std::runtime_error(
+            "TLS profile rotation keys were removed in YUME 2.0-dev6");
+    }
     read_opt(j, cfg_key::tls_fingerprint_log, c.tls_fingerprint_log);
     read_opt(j, cfg_key::tls_fingerprint_log_path, c.tls_fingerprint_log_path);
     read_opt(j, cfg_key::tls_fingerprint_verify, c.tls_fingerprint_verify);
@@ -203,8 +206,6 @@ bool save_client(client::ClientConfig const& c,
         {cfg_key::auto_attach_local, c.auto_attach_local},
         {cfg_key::tls_stealth_enabled, c.tls_stealth_enabled},
         {cfg_key::tls_stealth_profile, c.tls_stealth_profile},
-        {cfg_key::tls_stealth_rotate, c.tls_stealth_rotate},
-        {cfg_key::tls_stealth_rotation_interval, c.tls_stealth_rotation_interval},
         {cfg_key::tls_fingerprint_log, c.tls_fingerprint_log},
         {cfg_key::tls_fingerprint_log_path, c.tls_fingerprint_log_path},
         {cfg_key::tls_fingerprint_verify, c.tls_fingerprint_verify},
@@ -259,11 +260,6 @@ ValidationReport validate(client::ClientConfig const& c) {
         !yume::http_profile::transport_client_supported(c.tls_stealth_profile)) {
         r.errors.emplace_back(
             "tls_stealth_profile: no complete fixture exists in this build");
-    }
-    if (c.tls_stealth_rotate) {
-        r.errors.emplace_back(
-            "tls_stealth_rotate: " + std::string(yume::kVersion) +
-            " uses one pinned Chrome fixture");
     }
     if (!c.inner_crypto) {
         r.errors.emplace_back(

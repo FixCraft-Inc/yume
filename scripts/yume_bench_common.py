@@ -25,7 +25,7 @@ from yume_bench_resources import ProcessResourceSampler
 
 _COVER_MANIFEST = (
     Path(__file__).resolve().parents[1]
-    / "tests/fixtures/chrome150-node24/manifest.json"
+    / "tests/fixtures/chrome151-node24/manifest.json"
 )
 PINNED_NODE_VERSION = json.loads(
     _COVER_MANIFEST.read_text(encoding="utf-8")

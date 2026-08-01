@@ -1,4 +1,4 @@
-yume (2.0~dev5-1) UNRELEASED; urgency=medium
+yume (2.0~dev6-1) UNRELEASED; urgency=medium
 
   * Add authenticated, bounded Extreme/Normal/Soft/Ultimate ratchet policies.
 

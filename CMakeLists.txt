@@ -453,7 +453,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         DESTINATION "${CMAKE_INSTALL_DATADIR}/yume/cover-node"
         COMPONENT yume_cli
     )
-    install(FILES tests/fixtures/chrome150-node24/manifest.json
+    install(FILES tests/fixtures/chrome151-node24/manifest.json
         DESTINATION "${CMAKE_INSTALL_DATADIR}/yume/cover-profile"
         COMPONENT yume_cli
     )

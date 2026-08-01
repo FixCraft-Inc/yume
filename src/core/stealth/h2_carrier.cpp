@@ -106,7 +106,7 @@ public:
 
         if (role_ == H2CarrierRole::Server) {
             const auto& profile =
-                cover_profile::chrome150_debian13_node24();
+                cover_profile::chrome151_linux_node24();
             std::vector<nghttp2_settings_entry> settings;
             settings.reserve(profile.server_settings.size());
             for (const auto& setting : profile.server_settings) {
@@ -124,7 +124,7 @@ public:
             return Fail("invalid client HTTP/2 start");
         }
         authority_ = std::move(authority);
-        const auto& profile = cover_profile::chrome150_debian13_node24();
+        const auto& profile = cover_profile::chrome151_linux_node24();
         std::vector<nghttp2_settings_entry> settings;
         settings.reserve(profile.client_settings.size());
         for (const auto& setting : profile.client_settings) {
@@ -172,7 +172,7 @@ public:
             !peer_connect_enabled_ || carrier_stream_id_ >= 0 || path.empty()) {
             return Fail("extended CONNECT submitted before priming/support");
         }
-        const auto& profile = cover_profile::chrome150_debian13_node24();
+        const auto& profile = cover_profile::chrome151_linux_node24();
         H2Headers headers =
             profile.render_headers(profile.extended_connect, authority_, path);
         for (const auto& header : additional_headers) {
@@ -359,7 +359,7 @@ public:
             std::size_t offset = 0;
             while (offset < size) {
                 const std::size_t chunk = std::min(
-                    cover_profile::chrome150_debian13_node24()
+                    cover_profile::chrome151_linux_node24()
                         .websocket_message_bytes,
                     size - offset);
                 H2Bytes frame;
@@ -369,7 +369,7 @@ public:
                 // intact and do not consume this one-time profile behavior.
                 if (role_ == H2CarrierRole::Server &&
                     !server_fragment_fixture_sent_ &&
-                    chunk == cover_profile::chrome150_debian13_node24()
+                    chunk == cover_profile::chrome151_linux_node24()
                                  .websocket_message_bytes) {
                     frame = websocket_.EncodeBinaryFragmented(
                         data + offset, chunk, chunk / 2);
@@ -408,7 +408,7 @@ public:
         graceful_close_started_ = true;
         if (carrier_active_ && !carrier_closed_) {
             try {
-                // The Chrome 150 active-WebSocket close fixture sends one H2
+                // The Chrome 151 active-WebSocket close fixture sends one H2
                 // PING immediately before the masked WebSocket CLOSE. It does
                 // not show a periodic idle keepalive cadence. The server only
                 // acknowledges this PING; it does not originate a matching one.
@@ -747,7 +747,7 @@ private:
             js_stream_id_ >= 0) {
             throw std::runtime_error("duplicate Chrome priming asset submission");
         }
-        const auto& profile = cover_profile::chrome150_debian13_node24();
+        const auto& profile = cover_profile::chrome151_linux_node24();
         if (profile.assets.size() != 2) {
             throw std::runtime_error(
                 "Chrome cover profile requires exactly two priming assets");

@@ -236,7 +236,7 @@ const std::unordered_map<std::string, ServerProfile>& server_registry() {
 const std::unordered_map<std::string, ClientProfile>& client_registry() {
     static const std::unordered_map<std::string, ClientProfile> kRegistry = []{
         std::unordered_map<std::string, ClientProfile> m;
-        const auto& cover = cover_profile::chrome150_debian13_node24();
+        const auto& cover = cover_profile::chrome151_linux_node24();
 
         m[std::string(cover.registry_name)] = ClientProfile{
             std::string(cover.registry_name),
@@ -401,7 +401,7 @@ bool transport_client_supported(std::string_view name) {
 
 void set_active_client_ua(std::string ua) {
     const auto expected =
-        cover_profile::chrome150_debian13_node24().user_agent;
+        cover_profile::chrome151_linux_node24().user_agent;
     if (ua != expected) {
         throw std::invalid_argument(
             "YUME 2.0 only accepts the pinned cover-profile User-Agent");
@@ -410,7 +410,7 @@ void set_active_client_ua(std::string ua) {
 
 std::string active_client_ua() {
     return std::string(
-        cover_profile::chrome150_debian13_node24().user_agent);
+        cover_profile::chrome151_linux_node24().user_agent);
 }
 
 std::string render_404(const ServerProfile& p, bool /*connection_close*/) {

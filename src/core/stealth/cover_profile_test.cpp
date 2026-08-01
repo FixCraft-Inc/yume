@@ -46,7 +46,7 @@ int main() {
     const std::string fixture = YUME_COVER_FIXTURE;
     const Json manifest = ReadJson(fixture + "/manifest.json");
     const Json captured = ReadJson(fixture + "/chrome_h2_profile.json");
-    const auto& profile = yume::cover_profile::chrome150_debian13_node24();
+    const auto& profile = yume::cover_profile::chrome151_linux_node24();
 
     assert(profile.browser_name == manifest["client"]["browser"].get<std::string>());
     assert(profile.browser_version ==

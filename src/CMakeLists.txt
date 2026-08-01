@@ -1222,7 +1222,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_executable(yume_cover_profile_test core/stealth/cover_profile_test.cpp)
     target_link_libraries(yume_cover_profile_test PRIVATE yume_core)
     target_compile_definitions(yume_cover_profile_test PRIVATE
-        YUME_COVER_FIXTURE="${CMAKE_SOURCE_DIR}/tests/fixtures/chrome150-node24")
+        YUME_COVER_FIXTURE="${CMAKE_SOURCE_DIR}/tests/fixtures/chrome151-node24")
     yume_link_atomic_if_needed(yume_cover_profile_test PRIVATE)
     yume_apply_perf_opts(yume_cover_profile_test)
     add_test(NAME yume_cover_profile_test COMMAND yume_cover_profile_test)
@@ -1239,6 +1239,11 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             --emitter "$<TARGET_FILE:yume_h2_opening_probe>"
             --check chrome
     )
+    add_test(NAME yume_chrome151_evidence_check
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/scripts/yume_chrome_evidence.py"
+            --fixture "${CMAKE_SOURCE_DIR}/tests/fixtures/chrome151-node24"
+    )
     add_test(NAME yume_setup_installed_layout
         COMMAND "${CMAKE_COMMAND}"
             "-DYUME_BUILD_DIR=${CMAKE_BINARY_DIR}"
@@ -1248,7 +1253,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             "-DYUME_INSTALL_BINDIR=${CMAKE_INSTALL_BINDIR}"
             "-DYUME_INSTALL_DATADIR=${CMAKE_INSTALL_DATADIR}"
             "-DYUME_DEBIAN_INSTALL_MANIFEST=${CMAKE_SOURCE_DIR}/debian/yume.install"
-            "-DYUME_COVER_MANIFEST=${CMAKE_SOURCE_DIR}/tests/fixtures/chrome150-node24/manifest.json"
+            "-DYUME_COVER_MANIFEST=${CMAKE_SOURCE_DIR}/tests/fixtures/chrome151-node24/manifest.json"
             -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_setup_install.cmake"
     )
 

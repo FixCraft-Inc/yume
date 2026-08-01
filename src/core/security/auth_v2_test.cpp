@@ -58,7 +58,7 @@ int main() {
                                          rekey_window, policy);
     assert(encoded.size() == 1778);
     assert(Sha256Hex(encoded) ==
-           "158918528bdbb6a87284be4f11d0098cef0dad2a14f3fede993168f489f58b19");
+           "937fadb305362bd58e277042c88a692420246cab5ea3586b5edb9a1955442ed8");
     const auto parsed = ParseChallenge(encoded);
     assert(parsed.challenge == challenge);
     assert(parsed.mlkem_public_key == kem_public);
@@ -87,7 +87,7 @@ int main() {
                                                       channel_binding);
     assert(signature_input.size() == 3506);
     assert(Sha256Hex(signature_input) ==
-           "820d6c792cc17329e430395d67ef111b3ac65fe2fdb8ae0051600f7595cd7757");
+           "3ed4edffb2b16c9e46ffbfceba1d09de3fb7e10db47757131d2cd2f440e63b5b");
 
     // The binding is what a relaying endpoint cannot reproduce: the same
     // records under a different live TLS connection sign a different input.

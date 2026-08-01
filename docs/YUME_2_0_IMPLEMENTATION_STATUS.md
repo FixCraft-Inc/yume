@@ -1,6 +1,6 @@
 # YUME 2.0 desktop implementation status
 
-Status: `2.0-dev5` vertical slice implemented; release gates incomplete.
+Status: `2.0-dev6` vertical slice implemented; release gates incomplete.
 
 This is a truthful inventory of the focused Linux x86-64 client/server work. It
 does not claim Android, GUI, nginx, alternate browser profiles, H3, federation,
@@ -8,8 +8,8 @@ or admin/control validation.
 
 ## Implemented
 
-- Version-pinned Chrome `150.0.7871.114` / Node `24.18.0` reference fixture,
-  manifest, and sanitized HTTP/2 profile. One immutable Chrome 150/Debian 13 +
+- Version-pinned Chrome `151.0.7922.71` / Node `24.18.0` reference fixture,
+  manifest, and sanitized HTTP/2 profile. One immutable Chrome 151/Debian 13 +
   Node 24 profile supplies the TLS selection, User-Agent/client hints, H2
   settings/priorities/header order, assets, and cover-server identity.
 - Persistent nghttp2 carrier with priming page and asset requests, RFC 8441
@@ -44,7 +44,7 @@ or admin/control validation.
   separate TLS/operator CA material, TLS/SNI name, admission secret, inner PSK,
   tunnel count, and operator-proof policy. Legacy v1 files that carried only
   the shared private CA remain importable.
-- Exact `2.0-dev5` admission/AUTH-version equality and no accepted older-dev
+- Exact `2.0-dev6` admission/AUTH-version equality and no accepted older-dev
   downgrade path. Legacy
   inner/light/heavy/dual/hop/no-inner/raw-carrier and literal-secret CLI choices
   are rejected. The unreachable client-side 1.x AUTH response, Argon2 challenge
@@ -232,7 +232,7 @@ or admin/control validation.
 ## Known residual
 
 The former Chrome 131/150 and Windows/Linux identity mismatch is fixed behind
-one immutable Chrome 150/Debian 13 + Node 24 profile. OpenSSL still cannot
+one immutable Chrome 151/Debian 13 + Node 24 profile. OpenSSL still cannot
 reproduce Chrome/BoringSSL ClientHello/GREASE ordering, so TLS remains a
 classifier-visible difference upstream of the full-session H2 carrier.
 Matching ALPN or a coarse JA4 classification is not enough to claim Chrome

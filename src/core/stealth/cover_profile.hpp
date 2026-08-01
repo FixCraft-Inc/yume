@@ -88,6 +88,6 @@ struct Profile {
 
 // The only complete YUME 2.0 cover identity. This object is immutable and all
 // TLS/HTTP/H2 production consumers select their values through it.
-const Profile& chrome150_debian13_node24();
+const Profile& chrome151_linux_node24();
 
 }  // namespace yume::cover_profile

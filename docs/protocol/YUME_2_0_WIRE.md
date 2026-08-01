@@ -1,13 +1,13 @@
 # YUME 2.0 desktop wire contract
 
-Status: current `2.0-dev5` development contract for the first Linux x86-64 desktop slice.
+Status: current `2.0-dev6` development contract for the first Linux x86-64 desktop slice.
 The release version remains gated on capture, conformance, soak, and throughput
 evidence. This document intentionally does not describe a 1.x compatibility
 mode because none exists.
 
 ## Reference cover stack
 
-- Client fixture: Chrome `150.0.7871.114`, Debian 13, TLS 1.3, ALPN `h2`.
+- Client fixture: Chrome `151.0.7922.71`, Debian 13, TLS 1.3, ALPN `h2`.
 - Cover fixture: Node.js `24.18.x` LTS HTTP/2.
 - Public endpoint: `yumed` terminates TLS and HTTP/2.
 - Genuine site: a separately supervised Node process bound to a configured
@@ -30,10 +30,10 @@ masked PONG.
 
 The captured SETTINGS, request headers/order, priorities, window update,
 WebSocket behavior, and component versions are recorded under
-`tests/fixtures/chrome150-node24/`.
+`tests/fixtures/chrome151-node24/`.
 
 This is the normative target, not a statement that the current emitter has
-complete identity parity. One immutable Chrome 150/Debian 13 + Node 24 profile
+complete identity parity. One immutable Chrome 151/Debian 13 + Node 24 profile
 now supplies the production TLS selection, User-Agent/client hints, H2
 settings/priorities/header order, assets, and cover-server identity. Stock
 OpenSSL still cannot reproduce Chrome/BoringSSL extension/GREASE ordering.
@@ -67,7 +67,7 @@ limited to 64 KiB before allocation.
 
 | ID | Critical | Value |
 | -- | -- | -- |
-| 1 | yes | UTF-8 exact transport version `2.0-dev5` |
+| 1 | yes | UTF-8 exact transport version `2.0-dev6` |
 | 2 | yes | 32-byte server challenge |
 | 3 | yes | ephemeral ML-KEM-1024 public key |
 | 4 | yes | 32-byte ephemeral X25519 public key |
@@ -153,7 +153,7 @@ token is:
 
 ```
 HMAC-SHA256(obfs_secret,
-  len("2.0-dev5") || "2.0-dev5" ||
+  len("2.0-dev6") || "2.0-dev6" ||
   len(lowercase_sni) || lowercase_sni ||
   hour_u64 || nonce_32)
 ```

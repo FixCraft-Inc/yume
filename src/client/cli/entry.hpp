@@ -119,8 +119,6 @@ struct ClientConfig {
     // TLS Stealth Mode settings
     bool tls_stealth_enabled{true};  // ON by default
     std::string tls_stealth_profile{"chrome"};  // complete fixture registry key
-    bool tls_stealth_rotate{false};
-    std::uint32_t tls_stealth_rotation_interval{100};
     bool tls_fingerprint_log{false};
     std::string tls_fingerprint_log_path{"./logs/fingerprints"};
     bool tls_fingerprint_verify{false};

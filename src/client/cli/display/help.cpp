@@ -94,7 +94,7 @@ void print_help() {
         << "                             [ipv6]:port\n"
         << "                           Sets --server + --port together.\n"
         << "  --hide-in-the-crowd chrome\n"
-        << "                           Explicit spelling for the pinned Chrome 150\n"
+        << "                           Explicit spelling for the pinned Chrome 151\n"
         << "                             HTTP profile; other profiles are rejected.\n"
         << "  --config <path>          Config file\n"
         << "  -i, --auth <path>        Identity key\n\n"

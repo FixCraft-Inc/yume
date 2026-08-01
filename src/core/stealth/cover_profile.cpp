@@ -111,18 +111,18 @@ constexpr std::array kAssets{
         RequestTemplate{kJsHeaders, H2Priority{-1, 147, true}}},
 };
 
-const Profile kChrome150Debian13Node24{
+const Profile kChrome151LinuxNode24{
     "chrome",
     "Google Chrome",
-    "150.0.7871.114",
+    "151.0.7922.71",
     "Debian GNU/Linux 13 (trixie)",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
-    "\"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"150\", "
-    "\"Google Chrome\";v=\"150\"",
+    "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+    "\"Not=A?Brand\";v=\"99\", \"Google Chrome\";v=\"151\", "
+    "\"Chromium\";v=\"151\"",
     "?0",
     "\"Linux\"",
-    tls_fingerprint::BrowserProfile::CHROME_150,
+    tls_fingerprint::BrowserProfile::CHROME_151,
     0x0304,
     0x0304,
     "Node.js",
@@ -183,8 +183,8 @@ Headers Profile::render_headers(const RequestTemplate& request,
     return rendered;
 }
 
-const Profile& chrome150_debian13_node24() {
-    return kChrome150Debian13Node24;
+const Profile& chrome151_linux_node24() {
+    return kChrome151LinuxNode24;
 }
 
 }  // namespace yume::cover_profile

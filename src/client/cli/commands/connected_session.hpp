@@ -72,9 +72,6 @@ struct ConnectedSessionOptions {
     crypto::Bytes prefetched_carrier_bytes;
     std::unique_ptr<ratchet::SessionRatchet> ratchet;
     std::string server_tls_fingerprint_sha256;
-    tls_fingerprint::BrowserProfile base_tls_profile{
-        tls_fingerprint::BrowserProfile::UNKNOWN};
-    std::uint64_t* completed_tls_connections{nullptr};
     bool explicit_http_profile{false};
     std::vector<std::string> server_capabilities;
     std::function<std::string()> status_block_builder;

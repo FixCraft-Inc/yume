@@ -26,25 +26,12 @@ namespace yume::tls_stealth {
 struct StealthConfig {
     bool enabled{false};
     tls_fingerprint::BrowserProfile target_profile{
-        cover_profile::chrome150_debian13_node24().tls_profile};
-    bool rotate_profiles{false};
-    uint32_t rotation_interval_connections{100};
+        cover_profile::chrome151_linux_node24().tls_profile};
     bool log_fingerprints{true};
     std::string log_file_path;
     bool verify_with_external_api{false};
     std::string test_endpoint{"tls.peet.ws"};
 };
-
-// Select the profile for a completed-connection sequence. Rotation begins at
-// the configured base profile and advances through the supported profile set
-// every `interval` successful TLS connections. This selects YUME's
-// browser-oriented configuration presets; it does not promise byte-identical
-// output from any browser version.
-tls_fingerprint::BrowserProfile profile_for_connection(
-    tls_fingerprint::BrowserProfile base_profile,
-    bool rotate,
-    std::uint32_t interval,
-    std::uint64_t completed_connections);
 
 struct ConnectionMetrics {
     uint64_t connection_id{0};
@@ -66,7 +53,6 @@ public:
     boost::asio::ssl::context& get_context();
     void apply_stealth_profile(tls_fingerprint::BrowserProfile profile);
     tls_fingerprint::BrowserProfile current_profile() const { return current_profile_; }
-    void rotate_profile();
     void log_connection_metrics(const ConnectionMetrics& metrics);
 
 private:
@@ -78,9 +64,6 @@ private:
     StealthConfig config_;
     boost::asio::ssl::context ssl_context_;
     tls_fingerprint::BrowserProfile current_profile_;
-    std::vector<tls_fingerprint::BrowserProfile> available_profiles_;
-    size_t profile_rotation_index_{0};
-    uint64_t connection_counter_{0};
 };
 
 boost::asio::ssl::context generate_stealth_tls_config(

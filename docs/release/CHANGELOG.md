@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased 2.0-dev6]
+
+Hard break from `2.0-dev5`: the exact transport version changed and dev6 has
+one evidence-backed `chrome151-node24-v1` identity. No dev5 compatibility or
+downgrade mode exists.
+
+### Added
+
+- **Five-run Chrome 151 / Node 24 evidence.** Five fresh normal-Chrome profiles
+  cover TLS outcome, ordered H2 settings and headers, page/assets, RFC 8441,
+  bidirectional bulk flow control, 42-second idle behavior, and graceful close.
+  A committed validator separates stable identity fields from measured timing
+  and flow-control distributions.
+
+### Changed
+
+- **One coherent identity.** Chrome is rebased to exact Google Chrome
+  `151.0.7922.71` and official Node `24.18.0`. The incomplete Firefox/Safari
+  presets and dead rotation state were removed instead of being carried as
+  unsupported claims. The OpenSSL ClientHello remains an explicit `KNOWN_GAP`
+  until the wire comparator and helper backend qualify.
+
 ## [Unreleased 2.0-dev5]
 
 Hard break from `2.0-dev4`: AUTH now carries each endpoint's accepted ratchet
@@ -58,7 +80,7 @@ compatibility mode exists or is planned.
 ### Changed
 
 - **Stealth and cryptographic claims now match the implementation.** One
-  immutable Chrome 150/Debian 13 + Node 24 profile supplies the production TLS
+  immutable Chrome 151/Debian 13 + Node 24 profile supplies the production TLS
   selection, User-Agent/client hints, capture-backed H2 opening, assets, and
   cover identity. Profile rotation remains rejected. Chrome/BoringSSL TLS
   parity and traffic padding remain evidence-driven work, and the 500 ms

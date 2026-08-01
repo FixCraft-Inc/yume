@@ -4,7 +4,7 @@
 
 Yume Universal Multiprotocol Engine. An open-source post-quantum stealth transport. The name is a single character — 夢 — and we use it the way Japanese uses it: a dream of a network you can trust, where the wire shape blends into ordinary HTTPS and neither endpoint has to advertise YUME by name.
 
-YUME 2.0-dev5 tunnels TCP and UDP through a persistent TLS 1.3 + HTTP/2 +
+YUME 2.0-dev6 tunnels TCP and UDP through a persistent TLS 1.3 + HTTP/2 +
 WebSocket connection. The focused Linux desktop slice uses mandatory
 ML-KEM-1024 + X25519 + random-PSK key establishment, per-message AES-256-GCM
 keys, and independent directional epochs. The default Extreme policy retains
@@ -214,8 +214,8 @@ Specific hostnames will land here once the fleet is up.
 
 ## Stealth and obfuscation
 
-The first 2.0 target is a captured Chrome 150 client and Node.js 24 LTS cover.
-One immutable Chrome 150/Debian 13 + Node 24 profile now supplies the TLS
+The first 2.0 target is a captured Chrome 151 client and Node.js 24 LTS cover.
+One immutable Chrome 151/Debian 13 + Node 24 profile now supplies the TLS
 selection, User-Agent/client hints, H2 settings/priorities/header order, asset
 sequence, and cover-server identity. After a normal priming page load, the
 client opens an RFC 8441 extended CONNECT stream. Encrypted YUME records remain

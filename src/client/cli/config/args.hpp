@@ -77,8 +77,6 @@ struct ParsedArgs {
     std::string tls_stealth_profile{"chrome"};
     // Empty means derive the HTTP-layer profile from tls_stealth_profile.
     std::string http_profile;
-    bool tls_stealth_rotate{false};
-    std::uint32_t tls_stealth_rotation_interval{100};
     bool tls_fingerprint_log{false};
     std::string tls_fingerprint_log_path{"./logs/fingerprints"};
     bool tls_fingerprint_verify{false};

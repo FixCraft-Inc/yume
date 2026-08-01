@@ -454,12 +454,6 @@ void apply_cli_config_overrides(const ParsedArgs& args,
     if (!args.tls_stealth_profile.empty()) {
         cfg->tls_stealth_profile = args.tls_stealth_profile;
     }
-    if (args.tls_stealth_rotate) {
-        cfg->tls_stealth_rotate = true;
-    }
-    if (args.tls_stealth_rotation_interval > 0) {
-        cfg->tls_stealth_rotation_interval = args.tls_stealth_rotation_interval;
-    }
     if (args.tls_fingerprint_log) {
         cfg->tls_fingerprint_log = true;
     }

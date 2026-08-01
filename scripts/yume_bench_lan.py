@@ -759,7 +759,7 @@ def run_client(args: argparse.Namespace) -> int:
         browser_version = command_version([str(browser), "--version"])
         if not re.search(r"\b(?:Chrome|Chromium)\s+150\.", browser_version):
             print(
-                f"[lan] {browser_version} does not match Chrome 150; "
+                f"[lan] {browser_version} does not match Chrome 151; "
                 "the cover capture is functional evidence only",
                 file=sys.stderr,
             )

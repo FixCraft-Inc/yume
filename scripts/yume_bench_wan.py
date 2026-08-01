@@ -409,7 +409,7 @@ def main() -> int:
     browser_version = command_version([str(browser), "--version"]) if browser else None
     if browser_version and not re.search(r"\b(?:Chrome|Chromium)\s+150\.", browser_version):
         print(
-            f"[bench] {browser_version} does not match Chrome 150; "
+            f"[bench] {browser_version} does not match Chrome 151; "
             "the cover arm is functional evidence only",
             file=sys.stderr,
         )

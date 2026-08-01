@@ -43,7 +43,7 @@ MEDIA_URLS = [
 
 with (
     pathlib.Path(__file__).resolve().parents[1]
-    / "tests/fixtures/chrome150-node24/chrome_h2_profile.json"
+    / "tests/fixtures/chrome151-node24/chrome_h2_profile.json"
 ).open(encoding="utf-8") as _profile_file:
     _captured_profile = json.load(_profile_file)
 

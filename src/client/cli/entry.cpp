@@ -500,11 +500,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             "YUME 2.0 requires TLS stealth and a complete transport profile fixture");
         return 1;
     }
-    if (cfg.tls_stealth_rotate) {
-        util::log_error(
-            "YUME 2.0 rejects TLS profile rotation; the Chrome fixture is pinned");
-        return 1;
-    }
     try {
         cfg.obfs_secret_material = std::make_shared<security::Secret32>(
             security::LoadSecretFile32(cfg.obfs_secret_file));
@@ -592,7 +587,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
     int attempt = 0;
     bool pq_warned = false;
     bool verified_once = false;
-    std::uint64_t completed_tls_connections = 0;
     std::set<tls_fingerprint::BrowserProfile> tls_verification_attempted;
     std::map<tls_fingerprint::BrowserProfile, tls_fingerprint::FingerprintData>
         verified_tls_fingerprints;
@@ -617,7 +611,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             std::unique_ptr<boost::asio::ssl::context> owned_ctx;
             boost::asio::ssl::context* ctx = nullptr;
             tls_fingerprint::BrowserProfile active_tls_profile = tls_fingerprint::BrowserProfile::UNKNOWN;
-            tls_fingerprint::BrowserProfile base_tls_profile = tls_fingerprint::BrowserProfile::UNKNOWN;
             if (cfg.tls_stealth_enabled) {
                 if (cfg.tls_fingerprint_log) {
                     tls_metrics::MetricsManager::instance().initialize(cfg.tls_fingerprint_log_path);
@@ -629,12 +622,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                     throw std::runtime_error("configured transport profile fixture is unavailable");
                 }
                 tls_fingerprint::BrowserProfile profile = transport_profile->tls_profile;
-                base_tls_profile = profile;
-                profile = tls_stealth::profile_for_connection(
-                    profile,
-                    cfg.tls_stealth_rotate,
-                    cfg.tls_stealth_rotation_interval,
-                    completed_tls_connections);
                 active_tls_profile = profile;
                 if (!explicit_http_profile) {
                     if (auto selected = yume::http_profile::transport_client_for_tls_profile(profile)) {
@@ -645,11 +632,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 tls_stealth::StealthConfig stealth_config;
                 stealth_config.enabled = true;
                 stealth_config.target_profile = profile;
-                // The reconnect loop owns profile selection because each TLS
-                // context is rebuilt per attempt. Avoid resetting a second,
-                // unreachable rotation counter inside StealthContext.
-                stealth_config.rotate_profiles = false;
-                stealth_config.rotation_interval_connections = cfg.tls_stealth_rotation_interval;
                 stealth_config.log_fingerprints = cfg.tls_fingerprint_log;
                 stealth_config.log_file_path = cfg.tls_fingerprint_log_path;
                 stealth_config.verify_with_external_api = cfg.tls_fingerprint_verify;
@@ -807,9 +789,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                     msg += " [" + ssl_detail + "]";
                 }
                 throw std::runtime_error(msg);
-            }
-            if (cfg.tls_stealth_enabled) {
-                ++completed_tls_connections;
             }
             const std::string server_tls_fingerprint_sha256 =
                 get_peer_cert_fingerprint(nullptr, stream.native_handle());
@@ -1322,9 +1301,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 std::move(prefetched_tls_bytes);
             connected_options.server_tls_fingerprint_sha256 =
                 server_tls_fingerprint_sha256;
-            connected_options.base_tls_profile = base_tls_profile;
-            connected_options.completed_tls_connections =
-                &completed_tls_connections;
             connected_options.explicit_http_profile = explicit_http_profile;
             connected_options.server_capabilities = std::move(server_capabilities);
             connected_options.status_block_builder = status_block_builder;

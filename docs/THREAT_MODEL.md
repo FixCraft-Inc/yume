@@ -235,7 +235,7 @@ capacity before authenticated admission.
   or all configured connection limits.
 - Byte-identical Chrome TLS. OpenSSL’s ClientHello/GREASE ordering remains a
   classifier-visible residual. The TLS/H2/HTTP consumers now use one coherent
-  Chrome 150/Debian 13 profile, but BoringSSL remains only a candidate
+  Chrome 151/Debian 13 profile, but BoringSSL remains only a candidate
   experiment, not proof of Chrome parity.
 - Protected identity-file loading on Windows. The POSIX ownership/mode
   invariant has no Windows equivalent yet, so identity loading fails closed
@@ -256,7 +256,7 @@ integration and runtime evidence.
 
 ## Release claims
 
-The transport stays `2.0-dev5` or a later development/RC version until the release gates in
+The transport stays `2.0-dev6` or a later development/RC version until the release gates in
 `docs/YUME_2_0_IMPLEMENTATION_STATUS.md` pass. Unit tests and a short loopback
 smoke are not evidence for WAN behavior, a 30-minute lifetime, sanitizer safety,
 external conformance, or sustained overhead. Release documentation must separate

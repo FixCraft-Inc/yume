@@ -8,18 +8,18 @@ outside this slice.
 
 ## Target identity and current implementation
 
-- Target client fixture: Chrome `150.0.7871.114` on Debian 13.
+- Target client fixture: Chrome `151.0.7922.71` on Debian 13.
 - Cover server fixture: Node.js `24.18.x` LTS HTTP/2.
 - TLS: TLS 1.3 with ALPN `h2`; `--profile chrome` is mandatory.
 - Public endpoint: `yumed`; Node is never exposed directly.
 - Cover backend: `loopback://<IP-literal>:<port>` only.
 
 The sanitized capture and version manifest are committed under
-`tests/fixtures/chrome150-node24/`. They, rather than invented timing or frame
+`tests/fixtures/chrome151-node24/`. They, rather than invented timing or frame
 constants, define the target profile.
 
 The current client selects one immutable profile in
-`src/core/stealth/cover_profile.*`. It supplies the Chrome 150/Debian 13 TLS
+`src/core/stealth/cover_profile.*`. It supplies the Chrome 151/Debian 13 TLS
 profile selection, User-Agent/client hints, H2 settings/priorities/header
 order, asset sequence, WebSocket message size, and Node 24 server settings.
 The HTTP registry, TLS preset, and production `H2Carrier` consume that profile,
@@ -193,11 +193,11 @@ distribution. Idle silence remains the current contract.
 The “ordinary sedan outside, hardened vault inside” description is a design
 goal, not a current security claim. Move toward it in this order:
 
-1. **One profile source (implemented).** The immutable Chrome 150/Debian 13 +
+1. **One profile source (implemented).** The immutable Chrome 151/Debian 13 +
    Node 24 profile supplies the target identity and capture-shaped H2 values;
    fixture-backed tests keep its consumers coherent.
 2. **Capture-normalized TLS parity.** Evaluate a pinned Chromium/BoringSSL
-   emitter (or an isolated equivalent) against the exact Chrome 150/Debian
+   emitter (or an isolated equivalent) against the exact Chrome 151/Debian
    capture. Compare extension order, GREASE positions, cipher/group/signature
    order, ALPN, padding, lengths, and repeat-run distributions while
    normalizing expected entropy such as randoms, key shares, session IDs, and

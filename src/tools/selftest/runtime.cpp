@@ -124,13 +124,28 @@ int open_log_file(const fs::path& path) {
     return fd;
 }
 
+ssize_t send_no_sigpipe(int fd, const void* data, std::size_t len) {
+    int flags = 0;
+#if defined(MSG_NOSIGNAL)
+    flags = MSG_NOSIGNAL;
+#endif
+    return ::send(fd, data, len, flags);
+}
+
 void send_all(int fd, const void* data, std::size_t len) {
     const char* p = static_cast<const char*>(data);
     std::size_t sent = 0;
     while (sent < len) {
-        const ssize_t n = ::send(fd, p + sent, len - sent, 0);
-        if (n <= 0) {
-            throw std::runtime_error("send failed");
+        const ssize_t n = send_no_sigpipe(fd, p + sent, len - sent);
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n == 0) {
+            throw std::runtime_error("selftest send made no progress");
+        }
+        if (n < 0) {
+            throw std::system_error(errno, std::generic_category(),
+                                    "selftest send failed");
         }
         sent += static_cast<std::size_t>(n);
     }
@@ -468,12 +483,8 @@ void CoverServer::handle_client(int fd) {
     const std::string wire = response.str();
     std::size_t sent = 0;
     while (sent < wire.size()) {
-        int flags = 0;
-#if defined(MSG_NOSIGNAL)
-        flags = MSG_NOSIGNAL;
-#endif
-        const ssize_t count = ::send(fd, wire.data() + sent,
-                                     wire.size() - sent, flags);
+        const ssize_t count = send_no_sigpipe(
+            fd, wire.data() + sent, wire.size() - sent);
         if (count < 0 && errno == EINTR) continue;
         if (count <= 0) return;
         sent += static_cast<std::size_t>(count);
@@ -564,7 +575,8 @@ void EchoServer::handle_client(int fd, bool sink) {
                 }
                 std::size_t sent = 0;
                 while (sent < sizeof(ack)) {
-                    const ssize_t w = ::send(client.get(), ack + sent, sizeof(ack) - sent, 0);
+                    const ssize_t w = send_no_sigpipe(
+                        client.get(), ack + sent, sizeof(ack) - sent);
                     if (w <= 0) {
                         break;
                     }
@@ -579,7 +591,9 @@ void EchoServer::handle_client(int fd, bool sink) {
         }
         std::size_t sent = 0;
         while (sent < static_cast<std::size_t>(n)) {
-            const ssize_t w = ::send(client.get(), buf.data() + sent, static_cast<std::size_t>(n) - sent, 0);
+            const ssize_t w = send_no_sigpipe(
+                client.get(), buf.data() + sent,
+                static_cast<std::size_t>(n) - sent);
             if (w <= 0) {
                 return;
             }
@@ -907,14 +921,30 @@ BulkMeasurement measure_bulk(int connect_port, int echo_port, int mib, bool via_
                             received.fetch_add(static_cast<std::size_t>(n));
                         }
                     });
+                    std::exception_ptr send_exception;
                     std::size_t sent = 0;
-                    while (sent < target) {
-                        const std::size_t chunk = std::min<std::size_t>(payload.size(), target - sent);
-                        send_all(fd.get(), payload.data(), chunk);
-                        sent += chunk;
+                    try {
+                        while (sent < target) {
+                            const std::size_t chunk =
+                                std::min<std::size_t>(payload.size(), target - sent);
+                            send_all(fd.get(), payload.data(), chunk);
+                            sent += chunk;
+                        }
+                    } catch (...) {
+                        send_exception = std::current_exception();
+                        // Wake the reader before joining it. Leaving a joinable
+                        // std::thread during exception unwinding calls
+                        // std::terminate and used to hide the real transport
+                        // failure from the benchmark report.
+                        ::shutdown(fd.get(), SHUT_RDWR);
                     }
                     const auto send_done = Clock::now();
-                    reader.join();
+                    if (reader.joinable()) {
+                        reader.join();
+                    }
+                    if (send_exception) {
+                        std::rethrow_exception(send_exception);
+                    }
                     const auto end = Clock::now();
                     if (reader_failed.load() || received.load() != target) {
                         throw std::runtime_error("bulk echo stream did not complete");
@@ -966,14 +996,26 @@ BulkMeasurement measure_bulk(int connect_port, int echo_port, int mib, bool via_
     });
 
     const auto start = Clock::now();
+    std::exception_ptr send_exception;
     std::size_t sent = 0;
-    while (sent < total) {
-        const std::size_t chunk = std::min<std::size_t>(payload.size(), total - sent);
-        send_all(fd.get(), payload.data(), chunk);
-        sent += chunk;
+    try {
+        while (sent < total) {
+            const std::size_t chunk =
+                std::min<std::size_t>(payload.size(), total - sent);
+            send_all(fd.get(), payload.data(), chunk);
+            sent += chunk;
+        }
+    } catch (...) {
+        send_exception = std::current_exception();
+        ::shutdown(fd.get(), SHUT_RDWR);
     }
     const auto send_done = Clock::now();
-    reader.join();
+    if (reader.joinable()) {
+        reader.join();
+    }
+    if (send_exception) {
+        std::rethrow_exception(send_exception);
+    }
     const auto end = Clock::now();
     if (reader_failed.load() || received.load() != total) {
         throw std::runtime_error("bulk echo did not complete");

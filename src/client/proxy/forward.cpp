@@ -369,8 +369,21 @@ void ForwardSession::on_client_read(const boost::system::error_code& ec, std::si
     }
 
     Tunnel::Bytes payload(read_buf_.data(), read_buf_.data() + bytes);
-    tunnel_->send_data(stream_id_, payload);
-    start_client_read();
+    auto self = shared_from_this();
+    tunnel_->send_data(
+        stream_id_, std::move(payload),
+        [self](bool ok, std::size_t, const std::string&) {
+            boost::asio::post(self->strand_, [self, ok]() {
+                if (self->closed_) {
+                    return;
+                }
+                if (!ok) {
+                    self->close();
+                    return;
+                }
+                self->start_client_read();
+            });
+        });
 }
 
 void ForwardSession::send_client_fin() {
@@ -875,8 +888,21 @@ void ReverseForwardSession::on_local_read(const boost::system::error_code& ec, s
         return;
     }
     Tunnel::Bytes payload(read_buf_.data(), read_buf_.data() + bytes);
-    tunnel_->send_data(stream_id_, payload);
-    start_local_read();
+    auto self = shared_from_this();
+    tunnel_->send_data(
+        stream_id_, std::move(payload),
+        [self](bool ok, std::size_t, const std::string&) {
+            boost::asio::post(self->strand_, [self, ok]() {
+                if (!self->open_confirmed_ || self->stream_id_ == 0) {
+                    return;
+                }
+                if (!ok) {
+                    self->close();
+                    return;
+                }
+                self->start_local_read();
+            });
+        });
 }
 
 void ReverseForwardSession::deliver_from_tunnel(const Tunnel::Bytes& data) {

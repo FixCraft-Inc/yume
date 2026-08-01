@@ -48,7 +48,7 @@ fatal. `record` below is the payload of a YUME AUTH, AUTH_OK, REKEY_INIT, or
 REKEY_ACK frame:
 
 ```
-u8  schema = 2
+u8  schema = 3
 u8  record_kind
 u16 field_count
 repeat field_count:
@@ -75,6 +75,7 @@ limited to 64 KiB before allocation.
 | 6 | yes | 32-byte root/transcript salt |
 | 7 | yes | `u16` concurrent directional epoch offers the server accepts (1..64) |
 | 8 | yes | 20-byte accepted ratchet policy: `epoch_bytes_u64 || epoch_frames_u64 || epoch_active_ms_u32` |
+| 9 | yes | UTF-8 exact transport profile `chrome151-node24-v1` |
 
 ### AUTH response (`record_kind = 2`)
 
@@ -85,20 +86,21 @@ limited to 64 KiB before allocation.
 | 3 | yes | existing Ed25519 public identity encoding |
 | 4 | yes | `u16` concurrent directional epoch offers the client accepts (1..64) |
 | 5 | yes | 20-byte accepted ratchet policy: `epoch_bytes_u64 || epoch_frames_u64 || epoch_active_ms_u32` |
-| 6 | yes | Ed25519 signature |
+| 6 | yes | UTF-8 exact transport profile `chrome151-node24-v1` |
+| 7 | yes | Ed25519 signature |
 
-Fields 4 and 5 are part of the record the client signs, while the complete
-challenge is also in the signature input. The two window advertisements and
-both ratchet policies are therefore covered by the same transcript signature
-as the key exchange. Each endpoint sends no deeper than the peer's advertised
-window and applies the component-wise stricter local/peer epoch policy. Values
-outside the documented bounds in `docs/SECURITY_MODES.md` are fatal on build
-and parse.
+Fields 4 through 6 are part of the record the client signs, while the complete
+challenge (including its profile field) is also in the signature input. The
+profile identifier, two window advertisements, and both ratchet policies are
+therefore covered by the same transcript signature as the key exchange. Each
+endpoint sends no deeper than the peer's advertised window and applies the
+component-wise stricter local/peer epoch policy. Values outside the documented
+bounds in `docs/SECURITY_MODES.md` are fatal on build and parse.
 
 The signature input is:
 
 ```
-"yume/2.0/auth-signature/v2" ||
+"yume/2.0/auth-signature/v3" ||
 u32(len(challenge_record)) || challenge_record ||
 u32(len(response_without_signature)) || response_without_signature ||
 u32(32) || channel_binding
@@ -106,8 +108,8 @@ u32(32) || channel_binding
 
 Admission and this signature are verified before KEM decapsulation or any
 other avoidable expensive operation. `AUTH_OK` is sent only after the inner
-channel is active. Its encrypted payload contains the exact version and
-negotiated limits.
+channel is active. Its encrypted record repeats both the exact version and
+exact profile before carrying the server information.
 
 ### AUTH channel binding
 
@@ -154,6 +156,7 @@ token is:
 ```
 HMAC-SHA256(obfs_secret,
   len("2.0-dev6") || "2.0-dev6" ||
+  len("chrome151-node24-v1") || "chrome151-node24-v1" ||
   len(lowercase_sni) || lowercase_sni ||
   hour_u64 || nonce_32)
 ```
@@ -177,15 +180,18 @@ root_0 = HKDF-SHA256(
   len(mlkem_ss) || mlkem_ss ||
   len(x25519_ss) || x25519_ss ||
   len(psk_key) || psk_key ||
-  len(channel_binding) || channel_binding,
-  transcript_salt, "yume/2.0/root/v2", 32)
+  len(channel_binding) || channel_binding ||
+  len("chrome151-node24-v1") || "chrome151-node24-v1",
+  transcript_salt, "yume/2.0/root/v3", 32)
 ```
 
 Independent directional roots and chains use distinct versioned labels. Every
 message derives and erases a one-use AES-256-GCM key. AAD is:
 
 ```
-"yume/2.0/aad/v1" || direction_u8 || epoch_u64 || sequence_u64 ||
+"yume/2.0/aad/v2" ||
+len("chrome151-node24-v1") || "chrome151-node24-v1" ||
+direction_u8 || epoch_u64 || sequence_u64 ||
 frame_type_u8 || stream_id_u8 || flags_u16
 ```
 

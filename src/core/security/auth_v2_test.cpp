@@ -56,14 +56,15 @@ int main() {
     const Bytes encoded = BuildChallenge(challenge, kem_public, x_public,
                                          psk_salt, transcript_salt,
                                          rekey_window, policy);
-    assert(encoded.size() == 1778);
+    assert(encoded.size() == 1803);
     assert(Sha256Hex(encoded) ==
-           "937fadb305362bd58e277042c88a692420246cab5ea3586b5edb9a1955442ed8");
+           "ac09d9ede47e374cbdbccb84b2ec89031f49cb5dec99c858573134b2ae30fa04");
     const auto parsed = ParseChallenge(encoded);
     assert(parsed.challenge == challenge);
     assert(parsed.mlkem_public_key == kem_public);
     assert(parsed.rekey_window == rekey_window);
     assert(parsed.ratchet_policy == policy);
+    assert(parsed.transport_profile == kTransportProfile);
 
     const Bytes ciphertext(1568, 0x66);
     const Bytes identity{'i', 'd'};
@@ -71,23 +72,24 @@ int main() {
                                                           identity,
                                                           rekey_window,
                                                           policy);
-    assert(unsigned_response.size() == 1658);
+    assert(unsigned_response.size() == 1683);
     assert(Sha256Hex(unsigned_response) ==
-           "f6cb361be8ebc4ee07ae2d35d0ad5cadd65bd93d399ccea6ecadd6a761c3a915");
+           "08ab8fdf2387322c4904079db21d0760a634f40c52be4530e60fe8e4c55f5b98");
     const Bytes signature(64, 0x77);
     const auto response = ParseResponse(BuildResponse(
         x_public, ciphertext, identity, rekey_window, policy, signature));
     assert(response.signature == signature);
     assert(response.rekey_window == rekey_window);
     assert(response.ratchet_policy == policy);
+    assert(response.transport_profile == kTransportProfile);
     // The advertised depth sits in the unsigned record, so the transcript the
     // client signs commits to the negotiated window.
     const Bytes channel_binding(kChannelBindingLen, 0x88);
     const Bytes signature_input = BuildSignatureInput(encoded, unsigned_response,
                                                       channel_binding);
-    assert(signature_input.size() == 3506);
+    assert(signature_input.size() == 3556);
     assert(Sha256Hex(signature_input) ==
-           "3ed4edffb2b16c9e46ffbfceba1d09de3fb7e10db47757131d2cd2f440e63b5b");
+           "a254a33565109da12f50585e704a8edf5cf5ba64156a4ee7002ac09330ea274f");
 
     // The binding is what a relaying endpoint cannot reproduce: the same
     // records under a different live TLS connection sign a different input.
@@ -120,9 +122,11 @@ int main() {
         (void)BuildUnsignedResponse(
             x_public, ciphertext, identity, 0, policy);
     }));
-    Bytes zero_window = encoded;
-    zero_window[zero_window.size() - 28] = 0;
-    zero_window[zero_window.size() - 27] = 0;
+    Record zero_window_record = DecodeRecord(
+        encoded, RecordKind::Challenge, {1, 2, 3, 4, 5, 6, 7, 8, 9});
+    zero_window_record.fields[6].value = Bytes{0, 0};
+    const Bytes zero_window = EncodeRecord(RecordKind::Challenge,
+                                           zero_window_record.fields);
     assert(Throws([&] { (void)ParseChallenge(zero_window); }));
 
     auto invalid_policy = policy;
@@ -147,6 +151,38 @@ int main() {
     wrong_version[10] = '1';
     assert(Throws([&] { (void)ParseChallenge(wrong_version); }));
 
+    // dev5 schema 2 and every stale/mismatched profile are hard failures.
+    Bytes dev5_schema = encoded;
+    dev5_schema[0] = 2;
+    assert(Throws([&] { (void)ParseChallenge(dev5_schema); }));
+
+    Record stale_challenge = DecodeRecord(
+        encoded, RecordKind::Challenge, {1, 2, 3, 4, 5, 6, 7, 8, 9});
+    stale_challenge.fields[8].value =
+        Bytes{'c', 'h', 'r', 'o', 'm', 'e', '1', '5', '0'};
+    assert(Throws([&] {
+        (void)ParseChallenge(EncodeRecord(RecordKind::Challenge,
+                                          stale_challenge.fields));
+    }));
+
+    Record stale_response = DecodeRecord(
+        BuildResponse(x_public, ciphertext, identity, rekey_window, policy,
+                      signature),
+        RecordKind::Response, {1, 2, 3, 4, 5, 6, 7});
+    stale_response.fields[5].value = Bytes{'s', 't', 'a', 'l', 'e'};
+    assert(Throws([&] {
+        (void)ParseResponse(EncodeRecord(RecordKind::Response,
+                                         stale_response.fields));
+    }));
+
+    Record stale_auth_ok = DecodeRecord(BuildAuthOk(info), RecordKind::AuthOk,
+                                        {1, 2, 3});
+    stale_auth_ok.fields[2].value = Bytes{'s', 't', 'a', 'l', 'e'};
+    assert(Throws([&] {
+        (void)ParseAuthOk(EncodeRecord(RecordKind::AuthOk,
+                                       stale_auth_ok.fields));
+    }));
+
     assert(Throws([&] {
         (void)EncodeRecord(RecordKind::Challenge,
                            {{1, true, Bytes{'a'}}, {1, true, Bytes{'b'}}});
@@ -157,7 +193,9 @@ int main() {
         {2, true, challenge}, {3, true, kem_public}, {4, true, x_public},
         {5, true, psk_salt}, {6, true, transcript_salt},
         {7, true, Bytes{0, 8}},
-        {8, true, Bytes(20, 1)}, {9, true, Bytes{0}},
+        {8, true, Bytes(20, 1)},
+        {9, true, Bytes(kTransportProfile.begin(), kTransportProfile.end())},
+        {10, true, Bytes{0}},
     });
     assert(Throws([&] { (void)ParseChallenge(unknown_critical); }));
     return 0;

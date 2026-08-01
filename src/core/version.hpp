@@ -16,6 +16,12 @@ namespace yume {
 
 constexpr const char kVersion[] = "2.0-dev6";
 inline constexpr std::string_view kTransportVersion = kVersion;
+// dev6 intentionally supports one evidence-backed outer transport identity.
+// This value is authenticated during admission and AUTH and is also bound into
+// establishment and per-frame AEAD. Supporting another identity requires a
+// deliberate protocol revision rather than a cosmetic configuration alias.
+inline constexpr std::string_view kTransportProfile =
+    "chrome151-node24-v1";
 
 #if defined(YUME_USE_BASEFWX) && YUME_USE_BASEFWX
 inline constexpr std::string_view kBasefwxVersion = basefwx::constants::kEngineVersion;

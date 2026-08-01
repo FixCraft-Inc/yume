@@ -268,9 +268,10 @@ ValidationReport validate(client::ClientConfig const& c) {
         r.errors.emplace_back(
             "tls_stealth_profile: no complete fixture exists in this build");
     }
-    if (c.transport_profile != "chrome151-node24-v1") {
+    if (c.transport_profile != yume::kTransportProfile) {
         r.errors.emplace_back(
-            "transport_profile: must be chrome151-node24-v1");
+            "transport_profile: must be " +
+            std::string(yume::kTransportProfile));
     }
     if (c.tls_backend != "chrome151" &&
         c.tls_backend != "openssl-diagnostic") {

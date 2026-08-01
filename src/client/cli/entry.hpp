@@ -19,6 +19,7 @@
 
 #include "core/security/ratchet.hpp"
 #include "core/security/secret_file.hpp"
+#include "core/version.hpp"
 #include "client/transport/socket_protection.hpp"
 
 namespace yume::client {
@@ -97,7 +98,7 @@ struct ClientConfig {
     // dev6 supports one authenticated transport identity. The Chrome helper
     // is opt-in until its qualification gate is complete; OpenSSL is retained
     // only as an explicitly labelled diagnostic backend.
-    std::string transport_profile{"chrome151-node24-v1"};
+    std::string transport_profile{yume::kTransportProfile};
     std::string tls_backend{"openssl-diagnostic"};
     std::string tls_helper_path;
     bool require_anonym{false};

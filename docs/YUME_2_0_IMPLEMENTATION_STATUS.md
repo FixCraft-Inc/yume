@@ -20,7 +20,7 @@ or admin/control validation.
   exporter before proxying plaintext through bounded buffers. It runs with
   `no_new_privs`, strict IPC lengths/deadlines, and parent-owned child reaping.
   The build pins uTLS `v1.8.2`, module checksums, and Go `1.26.5`; it is opt-in
-  until the remaining failure-lifecycle and performance gates pass.
+  until the remaining failure-lifecycle and sustained-soak gates pass.
 - A capture-derived TLS wire parser and normalized profile gate now preserve
   cipher/extension/group/signature/version/ALPN order, key-share geometry,
   padding, and record lengths while normalizing only documented entropy and
@@ -36,14 +36,16 @@ or admin/control validation.
 - Strict file-only admission and inner PSK configuration. Both files are
   mandatory 32-byte random secrets encoded as exactly 64 lowercase hex
   characters and protected from group/world access.
-- Version/SNI/hour/nonce HMAC admission, authority matching, bounded replay
-  cache, and ordinary cover behavior before AUTH on rejection.
-- Canonical AUTH v2 transcript with strict parsing and Ed25519 authorization
-  before ML-KEM work.
+- Version/profile/SNI/hour/nonce HMAC admission, authority matching, bounded
+  replay cache, and ordinary cover behavior before AUTH on rejection.
+- Canonical schema-3 AUTH transcript with strict parsing, exact
+  `chrome151-node24-v1` challenge/response/confirmation fields, and Ed25519
+  authorization before ML-KEM work.
 - ML-KEM-1024 + X25519 + high-entropy PSK salted-HKDF root derivation. Argon2 is
   absent at connection establishment and per epoch.
-- AES-256-GCM one-use message keys with version/direction/epoch/sequence/type/
-  stream/flags AAD binding.
+- AES-256-GCM one-use message keys with profile/direction/epoch/sequence/type/
+  stream/flags AAD binding. The same exact profile is included in the
+  establishment root under a new dev6 label.
 - Independent directional hybrid rekeys under an authenticated bounded policy.
   Extreme remains the default at 256 KiB, 512 encrypted data frames, or 500 ms
   of active epoch time; Normal, Soft, and exact bounded Ultimate profiles widen
@@ -59,8 +61,10 @@ or admin/control validation.
   separate TLS/operator CA material, TLS/SNI name, admission secret, inner PSK,
   tunnel count, and operator-proof policy. Legacy v1 files that carried only
   the shared private CA remain importable.
-- Exact `2.0-dev6` admission/AUTH-version equality and no accepted older-dev
-  downgrade path. Legacy
+- Exact `2.0-dev6` version and `chrome151-node24-v1` profile equality at
+  admission, AUTH, establishment, and protected-frame boundaries. Schema-2
+  AUTH/dev5, stale-profile, and missing-profile records have no downgrade path.
+  Legacy
   inner/light/heavy/dual/hop/no-inner/raw-carrier and literal-secret CLI choices
   are rejected. The unreachable client-side 1.x AUTH response, Argon2 challenge
   metadata, and long-lived PQ auto-trust/reconnect implementation have been
@@ -214,6 +218,15 @@ or admin/control validation.
   upload plus 256 MiB download trials at 16 streams measured 1,793.8 Mbit/s
   helper median versus 1,780.6 Mbit/s OpenSSL median. This passes the local 5%
   bulk-overhead gate; it is not WAN, loss, or sustained-soak evidence.
+- TCP SOCKS, local-forward, and reverse-forward upload reads now wait for the
+  prior transport write completion before reading another 64 KiB block. This
+  preserves the bounded transport queue under a fast local producer instead of
+  turning legitimate bulk traffic into an `application write queue full`
+  disconnect. The self-test send path now suppresses SIGPIPE, unblocks and
+  joins its reader on failure, and reports the underlying transport error
+  instead of terminating during thread destruction. A fresh 32 MiB
+  bidirectional quick smoke completed at 121.60 MiB/s (1,020.05 Mbit/s) on the
+  development laptop; this is a regression signal, not a release benchmark.
 
 ## Required before `2.0-rc1`
 

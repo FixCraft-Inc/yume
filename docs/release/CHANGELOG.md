@@ -14,13 +14,27 @@ downgrade mode exists.
   A committed validator separates stable identity fields from measured timing
   and flow-control distributions.
 
+- **Authenticated transport profile.** Admission HMAC input, schema-3 AUTH
+  challenge/response/confirmation records, the signed TLS-exporter transcript,
+  initial root, and per-frame AES-GCM AAD now all bind the exact
+  `chrome151-node24-v1` identifier. Stale identifiers, schema-2/dev5 records,
+  missing fields, and configured profile mismatches fail closed without a
+  fallback.
+
 ### Changed
 
 - **One coherent identity.** Chrome is rebased to exact Google Chrome
   `151.0.7922.71` and official Node `24.18.0`. The incomplete Firefox/Safari
   presets and dead rotation state were removed instead of being carried as
-  unsupported claims. The OpenSSL ClientHello remains an explicit `KNOWN_GAP`
-  until the wire comparator and helper backend qualify.
+  unsupported claims. The OpenSSL ClientHello remains an explicit `KNOWN_GAP`;
+  the helper has passed local wire/performance gates but remains opt-in pending
+  process-failure negatives and the sustained soak.
+
+- **Bounded TCP producer backpressure.** SOCKS and TCP forwarders now advance
+  local reads on transport-write completion, preventing fast producers from
+  overflowing the bounded application queue. The benchmark failure path is
+  SIGPIPE-safe and always joins its receive workers, so failures are reported
+  instead of ending in `std::terminate`.
 
 ## [Unreleased 2.0-dev5]
 

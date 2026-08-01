@@ -81,6 +81,7 @@ recommended for a shared public server.
 ```jsonc
 {
   "threads": 8,
+  "transport_profile": "chrome151-node24-v1",
   "max_sessions": 256,
   "bulk_key_max_sessions": 64,
   "security_mode": "extreme",
@@ -90,6 +91,10 @@ recommended for a shared public server.
   "filter_memory_mib": 64
 }
 ```
+
+`transport_profile` is mandatory protocol identity, not presentation metadata.
+Dev6 accepts only `chrome151-node24-v1`; a stale or missing supported identity
+cannot be negotiated or silently downgraded.
 
 The matching CLI flags are `--threads`, `--max-sessions`,
 `--bulk-key-max-sessions`, `--rekey-window`, `--accept-rate-limit`,

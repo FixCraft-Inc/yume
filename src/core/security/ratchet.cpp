@@ -14,6 +14,7 @@
 // The AUTH codec owns the channel-binding length, the way this header owns the
 // negotiated window range that `auth_v2.cpp` reads back.
 #include "core/security/auth_v2.hpp"
+#include "core/version.hpp"
 
 #if YUME_USE_BASEFWX
 #include <basefwx/crypto.hpp>
@@ -24,8 +25,9 @@ namespace {
 
 using auth_v2::kChannelBindingLen;
 
-// v2 folds the per-connection TLS exporter into the establishment transcript.
-constexpr std::string_view kInitialRootLabel = "yume/2.0/root/v2";
+// v3 folds both the live TLS exporter and exact dev6 transport profile into
+// the establishment transcript.
+constexpr std::string_view kInitialRootLabel = "yume/2.0/root/v3";
 constexpr std::string_view kPskLabel = "yume/2.0/psk/v1";
 constexpr std::string_view kEpochPskLabel = "yume/2.0/epoch-psk/v1";
 constexpr std::string_view kClientRootLabel = "yume/2.0/c2s-root/v1";
@@ -34,7 +36,7 @@ constexpr std::string_view kChainLabel = "yume/2.0/chain/v1";
 constexpr std::string_view kMessageLabel = "yume/2.0/message/v1";
 constexpr std::string_view kChainNextLabel = "yume/2.0/chain-next/v1";
 constexpr std::string_view kEpochRootLabel = "yume/2.0/epoch-root/v1";
-constexpr std::string_view kAadDomain = "yume/2.0/aad/v1";
+constexpr std::string_view kAadDomain = "yume/2.0/aad/v2";
 
 void AppendU16(Bytes& out, std::uint16_t value) {
     out.push_back(static_cast<std::uint8_t>((value >> 8) & 0xffU));
@@ -130,11 +132,14 @@ Bytes DeriveInitialRoot(const Bytes& mlkem_shared,
     }
     Bytes input;
     input.reserve(mlkem_shared.size() + x25519_shared.size() +
-                  psk_key.size() + channel_binding.size() + 16);
+                  psk_key.size() + channel_binding.size() +
+                  yume::kTransportProfile.size() + 20);
     AppendLengthPrefixed(input, mlkem_shared);
     AppendLengthPrefixed(input, x25519_shared);
     AppendLengthPrefixed(input, psk_key);
     AppendLengthPrefixed(input, channel_binding);
+    AppendLengthPrefixed(input, Bytes(yume::kTransportProfile.begin(),
+                                      yume::kTransportProfile.end()));
     Bytes root = Hkdf(input, transcript_salt, kInitialRootLabel, 32);
 #if YUME_USE_BASEFWX
     basefwx::crypto::SecureClear(input);
@@ -336,6 +341,8 @@ Bytes DirectionalRatchet::BuildAad(std::uint8_t frame_type,
                                    std::uint64_t epoch,
                                    std::uint64_t sequence) const {
     Bytes aad(kAadDomain.begin(), kAadDomain.end());
+    AppendLengthPrefixed(aad, Bytes(yume::kTransportProfile.begin(),
+                                    yume::kTransportProfile.end()));
     aad.push_back(static_cast<std::uint8_t>(direction_));
     AppendU64(aad, epoch);
     AppendU64(aad, sequence);

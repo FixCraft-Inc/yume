@@ -349,9 +349,10 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
     }
     apply_cli_config_overrides(args, cli_cwd, &cfg);
     normalize_client_config_after_overrides(&args, &cfg);
-    if (cfg.transport_profile != "chrome151-node24-v1") {
+    if (cfg.transport_profile != yume::kTransportProfile) {
         util::log_error(
-            "YUME 2.0-dev6 requires transport_profile chrome151-node24-v1");
+            "YUME 2.0-dev6 requires transport_profile " +
+            std::string(yume::kTransportProfile));
         return 1;
     }
     if (cfg.tls_backend != "chrome151" &&

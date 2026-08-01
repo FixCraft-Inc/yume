@@ -54,6 +54,11 @@ is used.
 .BI "--config " path
 Read server configuration from a JSON file.
 .TP
+.B transport_profile
+JSON-only exact authenticated transport identity. YUME 2.0-dev6 accepts only
+.BR chrome151-node24-v1 ;
+stale identifiers fail startup and cannot be negotiated or downgraded.
+.TP
 .BI "--listen " port
 Listen port.
 .TP

@@ -11,6 +11,7 @@
 #include "core/app_codec/codec.hpp"
 #include "core/protocol/runtime_policy.hpp"
 #include "core/security/secret_file.hpp"
+#include "core/version.hpp"
 #include "server/cli/key.hpp"
 #include "server/cli/security_policy.hpp"
 #include "server/config/config.hpp"
@@ -611,6 +612,12 @@ bool load_real_http_secret(yume::server::ServerConfig& cfg, const std::string& d
 
 bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
                                    const StartupCheckOptions& options) {
+    if (cfg.transport_profile != yume::kTransportProfile) {
+        yume::util::log_error(
+            "YUME 2.0-dev6 requires transport_profile " +
+            std::string(yume::kTransportProfile));
+        return false;
+    }
 #if !YUME_FEATURE_EXEC
     if (cfg.allow_exec) {
         yume::util::log_warn(
@@ -677,8 +684,9 @@ bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
     log_effective_startup_summary(cfg);
     yume::util::log_warn(
         "TLS residual: clients using openssl-diagnostic are not Chrome 151 "
-        "ClientHello parity; the experimental chrome151 helper still requires "
-        "five-run wire and performance qualification");
+        "ClientHello parity; chrome151 passed local five-run wire and "
+        "performance gates but still requires process-failure negatives and "
+        "the sustained soak");
     return load_real_http_secret(cfg, options.default_secret_path);
 }
 

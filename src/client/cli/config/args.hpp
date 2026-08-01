@@ -69,6 +69,9 @@ struct ParsedArgs {
     std::string tls_ca_cert;
     std::string tls_server_name;
     std::string tls_pin_sha256;
+    std::string transport_profile;
+    std::string tls_backend;
+    std::string tls_helper_path;
     // socks5://[user[:pass]@]host:port; see ClientConfig::outbound_proxy_url.
     std::string outbound_proxy_url;
     bool outbound_proxy_override{false};

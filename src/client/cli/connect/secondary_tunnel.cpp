@@ -21,6 +21,7 @@
 #include "client/cli/connect/server_info.hpp"
 #include "client/transport/tunnel.hpp"
 #include "core/security/inner_crypto.hpp"
+#include "core/security/channel_binding.hpp"
 #include "core/protocol/protocol.hpp"
 #include "core/stealth/obfs.hpp"
 #include "core/stealth/tls_stealth.hpp"
@@ -63,11 +64,11 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
     // SSL_new holds a reference to SSL_CTX, so the stream remains valid after
     // this function returns even when the per-connection StealthContext owner
     // below goes out of scope.
-    boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, *connection_ctx);
+    ClientTransportStream::OpenSslStream ssl_stream(io, *connection_ctx);
     const std::string& tls_name = effective_tls_server_name(cfg);
     if (proxy_cfg.type == outbound_proxy::Type::Socks5) {
         auto dr = outbound_proxy::socks5_dial(
-            stream.next_layer(), io, proxy_cfg,
+            ssl_stream.next_layer(), io, proxy_cfg,
             cfg.server, cfg.port, kConnectTimeout,
             cfg.socket_protect);
         if (dr.timed_out) {
@@ -81,7 +82,7 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
         boost::asio::ip::tcp::resolver resolver(io);
         auto endpoints = resolver.resolve(boost::asio::ip::tcp::v4(), cfg.server, std::to_string(cfg.port));
         auto cr = connect_with_timeout(
-            stream.next_layer(), endpoints, io, kConnectTimeout,
+            ssl_stream.next_layer(), endpoints, io, kConnectTimeout,
             cfg.socket_protect);
         if (cr.timed_out) {
             throw std::runtime_error("connect timeout");
@@ -92,17 +93,17 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
     }
 
     boost::system::error_code keep_ec;
-    stream.next_layer().set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
+    ssl_stream.next_layer().set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
     boost::system::error_code recvbuf_ec;
-    stream.next_layer().set_option(boost::asio::socket_base::receive_buffer_size(kSocketBufferBytes), recvbuf_ec);
+    ssl_stream.next_layer().set_option(boost::asio::socket_base::receive_buffer_size(kSocketBufferBytes), recvbuf_ec);
     boost::system::error_code sendbuf_ec;
-    stream.next_layer().set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
+    ssl_stream.next_layer().set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
     boost::system::error_code nodelay_ec;
-    stream.next_layer().set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
-    SSL_set_tlsext_host_name(stream.native_handle(), tls_name.c_str());
-    SSL_set1_host(stream.native_handle(), tls_name.c_str());
+    ssl_stream.next_layer().set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
+    SSL_set_tlsext_host_name(ssl_stream.native_handle(), tls_name.c_str());
+    SSL_set1_host(ssl_stream.native_handle(), tls_name.c_str());
 
-    auto hr = handshake_with_timeout(stream, io, kHandshakeTimeout);
+    auto hr = handshake_with_timeout(ssl_stream, io, kHandshakeTimeout);
     if (hr.timed_out) {
         throw std::runtime_error("TLS handshake timeout");
     }
@@ -112,12 +113,20 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
     if (completed_tls_connections) {
         ++*completed_tls_connections;
     }
+    const std::string fingerprint =
+        get_peer_cert_fingerprint(nullptr, ssl_stream.native_handle());
     if (!cfg.tls_pin_sha256.empty()) {
-        std::string fp = get_peer_cert_fingerprint(nullptr, stream.native_handle());
+        const std::string& fp = fingerprint;
         if (fp.empty() || fp != cfg.tls_pin_sha256) {
             throw std::runtime_error("TLS pin mismatch");
         }
     }
+    TlsConnectionMetadata metadata;
+    metadata.alpn = obfs::selected_alpn(ssl_stream.native_handle());
+    metadata.leaf_fingerprint_sha256 = fingerprint;
+    metadata.exporter = security::ExportChannelBinding(ssl_stream.native_handle());
+    ClientTransportStream stream(std::move(ssl_stream));
+    stream.set_metadata(std::move(metadata));
 
     std::vector<uint8_t> prefetched_tls_bytes;
     std::unique_ptr<obfs::H2Carrier> h2_carrier;
@@ -148,7 +157,8 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
     }
     auto v2_ratchet = send_auth_v2_response(
         stream, io, cfg.identity, auth_challenge,
-        *cfg.inner_psk_material, *h2_carrier, cfg.rekey_window,
+        *cfg.inner_psk_material, stream.take_exporter(),
+        *h2_carrier, cfg.rekey_window,
         *ratchet_policy);
 
     auto server_info_timeout = kServerInfoTimeout;

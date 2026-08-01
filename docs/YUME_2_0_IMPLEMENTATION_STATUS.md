@@ -12,6 +12,21 @@ or admin/control validation.
   manifest, and sanitized HTTP/2 profile. One immutable Chrome 151/Debian 13 +
   Node 24 profile supplies the TLS selection, User-Agent/client hints, H2
   settings/priorities/header order, assets, and cover-server identity.
+- A Linux-only experimental Chrome TLS backend is implemented as one pinned
+  uTLS helper process per outer connection. The C++ parent performs direct or
+  SOCKS/Tor routing and passes only the connected descriptor plus an anonymous
+  IPC socketpair. The helper enforces TLS 1.3, hostname/CA/leaf-pin validation,
+  `h2`, exact build/protocol identity, and returns the live 32-byte TLS
+  exporter before proxying plaintext through bounded buffers. It runs with
+  `no_new_privs`, strict IPC lengths/deadlines, and parent-owned child reaping.
+  The build pins uTLS `v1.8.2`, module checksums, and Go `1.26.5`; it is opt-in
+  until the remaining failure-lifecycle and performance gates pass.
+- A capture-derived TLS wire parser and normalized profile gate now preserve
+  cipher/extension/group/signature/version/ALPN order, key-share geometry,
+  padding, and record lengths while normalizing only documented entropy and
+  GREASE. Five complete authenticated helper flows now pass that structural
+  gate; a fresh same-session normal-Chrome NetLog plus wire recapture remains
+  required for release evidence quality.
 - Persistent nghttp2 carrier with priming page and asset requests, RFC 8441
   extended CONNECT, WebSocket masking/fragmentation/control frames, flow
   control, serialized writes, backpressure, and graceful H2 shutdown.
@@ -187,6 +202,18 @@ or admin/control validation.
   capture was unavailable on that host, so this adds functional evidence but no
   new ClientHello or Chrome-parity claim. The diagnostic emits JA3, JA4, and
   JA4_r evidence when `dumpcap` or `tcpdump` access is available.
+- Five complete authenticated flows through the pinned uTLS helper passed the
+  normalized Chrome 151 ClientHello and direct-Node ServerHello gate. They
+  produced five distinct allowed extension orders and GREASE-ECH lengths of
+  186, 218, and 282 bytes. The live test also caught and fixed helper build
+  permissions, uTLS renegotiation disabling the mandatory exporter, relay
+  authority binding, late half-close capture handling, and `yumed` choosing
+  TLS cipher `0x1301` instead of Node 24's `0x1302`.
+- Five matched loopback handshakes measured 10 ms median through the helper and
+  1 ms through OpenSSL (+9 ms, within the 10 ms gate). Three matched 256 MiB
+  upload plus 256 MiB download trials at 16 streams measured 1,793.8 Mbit/s
+  helper median versus 1,780.6 Mbit/s OpenSSL median. This passes the local 5%
+  bulk-overhead gate; it is not WAN, loss, or sustained-soak evidence.
 
 ## Required before `2.0-rc1`
 
@@ -208,6 +235,9 @@ or admin/control validation.
   sequencing makes this carrier boundary security-critical.
 - Capture and compare the live YUME connection against the committed fixture;
   record every remaining classifier-visible TLS/H2 difference.
+- Run the remaining certificate/exporter negative tests and helper crash,
+  timeout, cancellation, descriptor-leak, and teardown soak. The backend must
+  remain opt-in until those tests pass.
 - Preserve fixture-backed coherence between the TLS selection, HTTP headers,
   H2 shape, assets, and cover server while closing the remaining OpenSSL
   ClientHello differences.
@@ -232,13 +262,15 @@ or admin/control validation.
 ## Known residual
 
 The former Chrome 131/150 and Windows/Linux identity mismatch is fixed behind
-one immutable Chrome 151/Debian 13 + Node 24 profile. OpenSSL still cannot
-reproduce Chrome/BoringSSL ClientHello/GREASE ordering, so TLS remains a
-classifier-visible difference upstream of the full-session H2 carrier.
-Matching ALPN or a coarse JA4 classification is not enough to claim Chrome
-indistinguishability. BoringSSL is a likely experiment, not a sufficient fix by
-itself; Chrome-specific behavior and entropy-normalized on-wire comparison
-against one pinned build are required. Traffic padding is likewise an
+one immutable Chrome 151/Debian 13 + Node 24 profile. The normal build still
+defaults to the explicitly named `openssl-diagnostic` backend. The new pinned
+uTLS helper builds reproducibly with official Go 1.26.5 and its five live
+first flights pass the normalized ClientHello/ServerHello structural gate.
+Selecting `chrome151` never silently falls back: a build without the helper
+fails closed. Negative certificate/exporter and process lifecycle tests plus
+the sustained soak remain required before that backend becomes the default or
+YUME claims release-qualified Chrome parity. Matching ALPN or a
+coarse JA3/JA4 summary is insufficient. Traffic padding is likewise an
 evidence-driven option, not an automatic improvement.
 
 Client AUTH sends an Ed25519 public key and a signature over the complete

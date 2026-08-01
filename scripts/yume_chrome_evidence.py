@@ -128,11 +128,22 @@ def validate_fixture(fixture: pathlib.Path) -> None:
     require(projection_digest == expected_projection_digest,
             "stable identity canonical SHA-256 mismatch")
 
+    helper_runs = manifest.get("helper_wire_qualification", {}).get("runs", [])
+    require(len(helper_runs) == EXPECTED_RUNS,
+            f"expected {EXPECTED_RUNS} helper wire runs, found {len(helper_runs)}")
+    for index, entry in enumerate(helper_runs, start=1):
+        artifact = fixture / entry["artifact"]
+        require(artifact.is_file(), f"helper-wire-{index}: artifact is missing")
+        require(sha256_file(artifact) == entry["sha256"],
+                f"helper-wire-{index}: SHA-256 mismatch")
+    require(manifest["helper_wire_qualification"].get("verdict") == "PARITY",
+            "helper wire verdict is not PARITY")
+
     print(f"PARITY profile={PROFILE_ID} runs={EXPECTED_RUNS}")
     print(f"stable_identity_sha256={projection_digest}")
     print(f"flow_control_stalls={','.join(map(str, stalls))}")
     print(f"close_ms={','.join(map(str, close_ms))}")
-    print("KNOWN_GAP tls_clienthello=requires-wire-comparator")
+    print("PARITY tls_first_flights=see-yume_tls_wire_profile_check")
 
 
 def main() -> int:

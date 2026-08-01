@@ -68,15 +68,34 @@
       "42-second idle interval and graceful close"
     ]
   },
+  "helper_wire_qualification": {
+    "captured_utc": "2026-08-01",
+    "helper_build_id": "yume-chrome151-utls-v1.8.2-ipc-v1",
+    "go_version": "1.26.5",
+    "helper_reproducible_sha256": "1a2ae7a9fcd9bb0ee5c8094a58c4c2865787231469b9afabb10746fca10489d5",
+    "runs": [
+      {"artifact": "helper_tls_wire_run_1.json", "sha256": "f1c56cf4574138c8d36059ef44250addc1aacf5c0dfc9a34f55e36a9e441686a"},
+      {"artifact": "helper_tls_wire_run_2.json", "sha256": "1023a7253443c8787755c27ddac842029ba9e94e56c2b187ed7137d975f7aac6"},
+      {"artifact": "helper_tls_wire_run_3.json", "sha256": "347f2c2d54bc825a4279c4a42427526c9981c86fd78c0b48fcbf1a734ab77e3b"},
+      {"artifact": "helper_tls_wire_run_4.json", "sha256": "6cd47245c2d953221191b2b15572c0092e50e374390c4b5c0f1cf0c6a043fbe7"},
+      {"artifact": "helper_tls_wire_run_5.json", "sha256": "afd4bc3a4f273feb239aa0415a9ec0a3bca39686c9aae67c19b43c797c39af5d"}
+    ],
+    "verdict": "PARITY",
+    "middle_extension_orders": 5,
+    "grease_ech_lengths": [186, 218, 282]
+  },
   "verdict": {
     "http2_and_http_identity": "PARITY",
-    "tls_clienthello": "KNOWN_GAP",
-    "tls_serverhello": "not-yet-measured"
+    "chrome_tls_reference": "PARITY-STRUCTURAL-PROFILE",
+    "yume_clienthello": "PARITY",
+    "node_serverhello_reference": "PARITY-STRUCTURAL-PROFILE",
+    "yumed_serverhello": "PARITY"
   },
   "notes": [
     "Raw NetLogs are intentionally excluded because they contain local certificate and machine details.",
     "The five stable identity projections are byte-identical after removing only flow-control counts, ping timing, and detailed data-frame observations.",
-    "TLS ordered first-flight parity requires the separate unprivileged wire comparator; JA3 and JA4 are summaries only.",
+    "TLS ordered first-flight parity uses chrome_tls_wire_profile.json and the separate unprivileged wire comparator; JA3 and JA4 are summaries only.",
+    "Five complete authenticated helper flows pass the normalized ClientHello and ServerHello structural gate; a fresh same-session normal-Chrome NetLog and wire recapture remains required for release evidence quality.",
     "No random padding or timing jitter was observed."
   ]
 }

@@ -113,6 +113,13 @@ option(YUME_FEATURE_FULL_CONTROL "Compile in unrestricted address bridging" OFF)
 # stock builds and minimal/embedded builds remain unaffected.
 option(YUME_BUILD_GUI "Build the optional Dear ImGui-based yume-gui desktop app" OFF)
 
+# Experimental Linux desktop TLS helper. It is opt-in until its five-run wire,
+# exporter, failure, and performance qualification is complete; enabling it
+# requires the exact reviewed Go toolchain rather than silently using another
+# compiler or downloading one through Go's toolchain selection.
+option(YUME_BUILD_CHROME_TLS_HELPER
+    "Build the pinned Chrome 151 uTLS helper with Go 1.26.5" OFF)
+
 # Portable static GUI: link libgcc/libstdc++ statically on g++/clang, and
 # the static MSVC runtime on Windows so the binary runs without a
 # matching redistributable. Does NOT, on its own, make every transitive
@@ -453,7 +460,10 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         DESTINATION "${CMAKE_INSTALL_DATADIR}/yume/cover-node"
         COMPONENT yume_cli
     )
-    install(FILES tests/fixtures/chrome151-node24/manifest.json
+    install(FILES
+        tests/fixtures/chrome151-node24/manifest.json
+        tests/fixtures/chrome151-node24/chrome_h2_profile.json
+        tests/fixtures/chrome151-node24/chrome_tls_wire_profile.json
         DESTINATION "${CMAKE_INSTALL_DATADIR}/yume/cover-profile"
         COMPONENT yume_cli
     )

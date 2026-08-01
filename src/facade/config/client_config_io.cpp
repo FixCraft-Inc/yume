@@ -65,6 +65,9 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::tls_ca_cert, c.tls_ca_cert);
     read_opt(j, cfg_key::tls_server_name, c.tls_server_name);
     read_opt(j, cfg_key::tls_pin_sha256, c.tls_pin_sha256);
+    read_opt(j, cfg_key::transport_profile, c.transport_profile);
+    read_opt(j, cfg_key::tls_backend, c.tls_backend);
+    read_opt(j, cfg_key::tls_helper_path, c.tls_helper_path);
     read_opt(j, cfg_key::require_anonym, c.require_anonym);
     read_opt(j, cfg_key::accept_monitoring, c.accept_monitoring);
     read_opt(j, cfg_key::service_streams_only, c.service_streams_only);
@@ -103,6 +106,7 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     resolve_config_path(c.anonym_pubkey, base);
     resolve_config_path(c.anonym_ca_cert, base);
     resolve_config_path(c.tls_ca_cert, base);
+    resolve_config_path(c.tls_helper_path, base);
     resolve_config_path(c.history_dir, base);
     resolve_config_path(c.relay_key_file, base);
     resolve_config_path(c.tls_fingerprint_log_path, base);
@@ -187,6 +191,9 @@ bool save_client(client::ClientConfig const& c,
         {cfg_key::tls_ca_cert, c.tls_ca_cert},
         {cfg_key::tls_server_name, c.tls_server_name},
         {cfg_key::tls_pin_sha256, c.tls_pin_sha256},
+        {cfg_key::transport_profile, c.transport_profile},
+        {cfg_key::tls_backend, c.tls_backend},
+        {cfg_key::tls_helper_path, c.tls_helper_path},
         {cfg_key::require_anonym, c.require_anonym},
         {cfg_key::accept_monitoring, c.accept_monitoring},
         {cfg_key::service_streams_only, c.service_streams_only},
@@ -260,6 +267,19 @@ ValidationReport validate(client::ClientConfig const& c) {
         !yume::http_profile::transport_client_supported(c.tls_stealth_profile)) {
         r.errors.emplace_back(
             "tls_stealth_profile: no complete fixture exists in this build");
+    }
+    if (c.transport_profile != "chrome151-node24-v1") {
+        r.errors.emplace_back(
+            "transport_profile: must be chrome151-node24-v1");
+    }
+    if (c.tls_backend != "chrome151" &&
+        c.tls_backend != "openssl-diagnostic") {
+        r.errors.emplace_back(
+            "tls_backend: must be chrome151 or openssl-diagnostic");
+    }
+    if (c.tls_backend == "chrome151" && c.tunnel_count != 1) {
+        r.errors.emplace_back(
+            "tunnels: chrome151 currently supports exactly one outer tunnel");
     }
     if (!c.inner_crypto) {
         r.errors.emplace_back(

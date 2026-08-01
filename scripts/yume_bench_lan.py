@@ -473,6 +473,7 @@ def run_endpoint(
         "--bench-mib", str(mib),
         "--bench-streams", str(streams),
         "--bench-direction", args.bench_direction,
+        "--tls-backend", args.tls_backend,
         "--boring", "--no-color",
     ]
     if args.bench_chunk_kib is not None:
@@ -970,6 +971,12 @@ def parse_args() -> argparse.Namespace:
         help="explicit upload DATA chunk size; omit to match the client relay buffer",
     )
     client.add_argument("--bench-direction", choices=("both", "up", "down"), default="both")
+    client.add_argument(
+        "--tls-backend",
+        choices=("chrome151", "openssl-diagnostic"),
+        default="openssl-diagnostic",
+        help="outer client TLS backend used for this benchmark",
+    )
     client.add_argument("--timing", action="store_true", help="enable yume timing counters")
     client.add_argument("--resource-sample-ms", type=int, default=250)
     client.add_argument("--no-resource-sampling", action="store_true")

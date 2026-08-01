@@ -436,6 +436,7 @@ endif()
 
 add_library(yume_transport_core
     client/packet/engine.cpp
+    client/transport/chrome_tls_protocol.cpp
     client/transport/core.cpp
     client/transport/write.cpp
     client/transport/dispatch.cpp
@@ -582,6 +583,8 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/relay/runtime.cpp
         client/relay/runtime_control.cpp
         client/runtime/controller.cpp
+        client/transport/client_stream.cpp
+        client/transport/chrome_tls_helper.cpp
         client/transport/tunnel.cpp
         client/transport/tunnel_pool.cpp
         client/codec/monero_rpc.cpp
@@ -637,6 +640,61 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     )
     target_link_libraries(yume PRIVATE yume_client_lib)
     yume_apply_perf_opts(yume)
+
+    if(YUME_BUILD_CHROME_TLS_HELPER)
+        if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_CROSSCOMPILING)
+            message(FATAL_ERROR
+                "YUME_BUILD_CHROME_TLS_HELPER currently supports native Linux builds only")
+        endif()
+        find_program(YUME_GO_EXECUTABLE NAMES go REQUIRED)
+        execute_process(
+            COMMAND "${YUME_GO_EXECUTABLE}" version
+            OUTPUT_VARIABLE _yume_go_version
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE _yume_go_version_result
+        )
+        if(NOT _yume_go_version_result EQUAL 0 OR
+           NOT _yume_go_version MATCHES "^go version go1\\.26\\.5 ")
+            message(FATAL_ERROR
+                "Chrome TLS helper requires exact Go 1.26.5; got '${_yume_go_version}'")
+        endif()
+        set(_yume_chrome_tls_helper
+            "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/yume-chrome-tls-helper")
+        add_custom_command(
+            OUTPUT "${_yume_chrome_tls_helper}"
+            COMMAND "${CMAKE_COMMAND}" -E env
+                CGO_ENABLED=0
+                GOTOOLCHAIN=local
+                "${YUME_GO_EXECUTABLE}" build
+                -mod=readonly
+                -trimpath
+                -buildvcs=false
+                "-ldflags=-buildid="
+                -o "${_yume_chrome_tls_helper}"
+                .
+            COMMAND chmod 0755 "${_yume_chrome_tls_helper}"
+            DEPENDS
+                "${CMAKE_SOURCE_DIR}/helper/chrome_tls/go.mod"
+                "${CMAKE_SOURCE_DIR}/helper/chrome_tls/go.sum"
+                "${CMAKE_SOURCE_DIR}/helper/chrome_tls/ipc.go"
+                "${CMAKE_SOURCE_DIR}/helper/chrome_tls/main.go"
+                "${CMAKE_SOURCE_DIR}/helper/chrome_tls/profile.go"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/helper/chrome_tls"
+            COMMENT "Building pinned Chrome 151 TLS helper"
+            VERBATIM
+        )
+        add_custom_target(yume_chrome_tls_helper ALL
+            DEPENDS "${_yume_chrome_tls_helper}")
+        add_dependencies(yume yume_chrome_tls_helper)
+        target_compile_definitions(yume_client_lib PUBLIC
+            YUME_HAS_CHROME_TLS_HELPER=1)
+        install(PROGRAMS "${_yume_chrome_tls_helper}"
+            DESTINATION "${CMAKE_INSTALL_BINDIR}"
+            COMPONENT yume_cli)
+    else()
+        target_compile_definitions(yume_client_lib PUBLIC
+            YUME_HAS_CHROME_TLS_HELPER=0)
+    endif()
     if(YUME_STATIC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         target_link_options(yume PRIVATE -static)
     endif()
@@ -919,6 +977,14 @@ yume_link_atomic_if_needed(yume_transport_core_test PRIVATE)
 yume_apply_perf_opts(yume_transport_core_test)
 
 add_test(NAME yume_transport_core_test COMMAND yume_transport_core_test)
+
+add_executable(yume_chrome_tls_protocol_test
+    client/transport/chrome_tls_protocol_test.cpp
+)
+target_link_libraries(yume_chrome_tls_protocol_test PRIVATE yume_transport_core)
+yume_link_atomic_if_needed(yume_chrome_tls_protocol_test PRIVATE)
+yume_apply_perf_opts(yume_chrome_tls_protocol_test)
+add_test(NAME yume_chrome_tls_protocol_test COMMAND yume_chrome_tls_protocol_test)
 
 add_executable(yume_timing_diagnostics_test
     core/diagnostics/timing_test.cpp
@@ -1243,6 +1309,21 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/scripts/yume_chrome_evidence.py"
             --fixture "${CMAKE_SOURCE_DIR}/tests/fixtures/chrome151-node24"
+    )
+    add_test(NAME yume_tls_wire_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_yume_tls_wire.py"
+    )
+    add_test(NAME yume_tls_wire_profile_check
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/scripts/yume_tls_wire.py"
+            check-profile
+            --profile "${CMAKE_SOURCE_DIR}/tests/fixtures/chrome151-node24/chrome_tls_wire_profile.json"
+            --candidate "${CMAKE_SOURCE_DIR}/tests/fixtures/chrome151-node24/helper_tls_wire_run_1.json"
+            --candidate "${CMAKE_SOURCE_DIR}/tests/fixtures/chrome151-node24/helper_tls_wire_run_2.json"
+            --candidate "${CMAKE_SOURCE_DIR}/tests/fixtures/chrome151-node24/helper_tls_wire_run_3.json"
+            --candidate "${CMAKE_SOURCE_DIR}/tests/fixtures/chrome151-node24/helper_tls_wire_run_4.json"
+            --candidate "${CMAKE_SOURCE_DIR}/tests/fixtures/chrome151-node24/helper_tls_wire_run_5.json"
     )
     add_test(NAME yume_setup_installed_layout
         COMMAND "${CMAKE_COMMAND}"

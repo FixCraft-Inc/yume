@@ -147,6 +147,37 @@ def wait_file(path: pathlib.Path, timeout_s: float) -> bool:
     return False
 
 
+def start_tls_wire_relay(outdir: pathlib.Path,
+                         listen_port: int,
+                         target_host: str,
+                         target_port: int,
+                         report_path: pathlib.Path,
+                         timeout_s: float) -> subprocess.Popen[Any]:
+    ready_path = outdir / "tls-wire-relay.ready.json"
+    log_path = outdir / "tls-wire-relay.log"
+    log = log_path.open("wb")
+    relay = repo_root() / "scripts/yume_tls_wire.py"
+    process = subprocess.Popen(
+        [
+            sys.executable, str(relay), "relay",
+            "--listen", f"127.0.0.1:{listen_port}",
+            "--target", f"{target_host}:{target_port}",
+            "--output", str(report_path),
+            "--ready-file", str(ready_path),
+            "--timeout", str(max(timeout_s, 120)),
+        ],
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    process._yume_log_file = log  # type: ignore[attr-defined]
+    if not wait_file(ready_path, timeout_s):
+        terminate_process(process)
+        log.close()
+        raise RuntimeError(f"TLS wire relay did not start; see {log_path}")
+    return process
+
+
 def terminate_process(proc: subprocess.Popen[Any], grace_s: float = 4.0) -> None:
     if proc.poll() is not None:
         return
@@ -306,13 +337,14 @@ def start_local_yumed(args: argparse.Namespace,
                       outdir: pathlib.Path,
                       material_dir: pathlib.Path,
                       yume_port: int,
-                      cover_port: int) -> tuple[subprocess.Popen[Any], dict[str, pathlib.Path]]:
+                      cover_port: int,
+                      listen_host: str = "127.0.0.1") -> tuple[subprocess.Popen[Any], dict[str, pathlib.Path]]:
     yumed_bin = find_yumed_binary(args.yumed_bin)
     keyset = generate_local_keyset(material_dir, yumed_bin)
     log_path = outdir / "yumed.log"
     argv = [
         str(yumed_bin),
-        "--listen", f"127.0.0.1:{yume_port}",
+        "--listen", f"{listen_host}:{yume_port}",
         "--cert", str(keyset["server_cert"]),
         "--key", str(keyset["server_key"]),
         "--auth-keys", str(keyset["auth_keys"]),
@@ -338,10 +370,10 @@ def start_local_yumed(args: argparse.Namespace,
     )
     proc._yume_log_file = log  # type: ignore[attr-defined]
     proc._yume_argv_redacted = redact_args(argv)  # type: ignore[attr-defined]
-    if not wait_port("127.0.0.1", yume_port, args.startup_timeout):
+    if not wait_port(listen_host, yume_port, args.startup_timeout):
         terminate_process(proc)
         log.close()
-        raise RuntimeError(f"local yumed did not listen on 127.0.0.1:{yume_port}; see {log_path}")
+        raise RuntimeError(f"local yumed did not listen on {listen_host}:{yume_port}; see {log_path}")
     return proc, keyset
 
 
@@ -354,6 +386,7 @@ def build_yume_args(args: argparse.Namespace, socks_port: int) -> list[str]:
         "--profile", args.client_profile,
         "--hide-in-the-crowd", args.client_http_profile or args.client_profile,
         "--self-dpi",
+        "--tls-backend", args.tls_backend,
     ]
     if args.auth:
         argv += ["--auth", str(pathlib.Path(args.auth).expanduser())]
@@ -393,6 +426,7 @@ def build_local_yume_args(args: argparse.Namespace,
         "--non-interactive",
         "--accept-monitoring",
         "--allow-local-ip",
+        "--tls-backend", args.tls_backend,
     ]
     for extra in args.yume_arg:
         argv.append(extra)
@@ -783,6 +817,11 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--client-http-profile", default=None,
                     choices=["chrome"],
                     help="compatibility spelling for the pinned cover profile")
+    ap.add_argument("--tls-backend", default="openssl-diagnostic",
+                    choices=["chrome151", "openssl-diagnostic"],
+                    help="client TLS backend; chrome151 requires a helper-enabled build")
+    ap.add_argument("--tls-wire-report", default=None,
+                    help="local mode only: route YUME through the unprivileged TLS wire relay")
     ap.add_argument("--yume-arg", action="append", default=[], help="Extra single argument passed to yume; repeat as needed")
     ap.add_argument("--yumed-arg", action="append", default=[], help="Extra single argument passed to local yumed; repeat as needed")
     ap.add_argument("--yume-bin", default=None)
@@ -826,6 +865,8 @@ def main() -> int:
         raise SystemExit(
             "remote 2.0 diagnosis requires --obfs-secret-file and --inner-psk-file"
         )
+    if args.tls_wire_report and not local_mode:
+        raise SystemExit("--tls-wire-report currently requires local server mode")
 
     capture_tool = choose_capture_tool(args.capture_tool)
     chromium = find_chromium(args.chromium)
@@ -900,6 +941,7 @@ def main() -> int:
     data["baseline_pcap"] = str(baseline_pcap) if baseline_pcap else None
 
     yume_proc: subprocess.Popen[Any] | None = None
+    wire_relay_proc: subprocess.Popen[Any] | None = None
     target_cap: subprocess.Popen[Any] | None = None
     baseline_cap: subprocess.Popen[Any] | None = None
     try:
@@ -911,12 +953,24 @@ def main() -> int:
                 key_material_dir,
                 local_yumed_port,
                 local_cover_port,
+                "127.0.0.2" if args.tls_wire_report else "127.0.0.1",
             )
             data["yumed_argv_redacted"] = getattr(yumed_proc, "_yume_argv_redacted", [])
+            if args.tls_wire_report:
+                wire_report = pathlib.Path(args.tls_wire_report).expanduser().resolve()
+                wire_relay_proc = start_tls_wire_relay(
+                    outdir,
+                    local_yumed_port,
+                    "127.0.0.2",
+                    local_yumed_port,
+                    wire_report,
+                    args.startup_timeout,
+                )
+                data["tls_wire_report"] = str(wire_report)
 
         target_bpf = f"host {server_ip} and tcp port {args.port}"
         if local_mode:
-            target_bpf = f"host 127.0.0.1 and tcp port {port}"
+            target_bpf = f"host 127.0.0.1 and tcp port {local_yumed_port}"
         if capture_tool != "none":
             target_cap = start_capture(
                 capture_tool,
@@ -954,7 +1008,7 @@ def main() -> int:
             stop_capture(target_cap)
             target_cap = None
         data["server_probe"] = probe_server_http_disguise(
-            server,
+            "127.0.0.2" if args.tls_wire_report else server,
             port,
             args.tls_name or server,
             outdir / "server-probe",
@@ -964,6 +1018,14 @@ def main() -> int:
         if yume_proc is not None:
             terminate_process(yume_proc)
             log = getattr(yume_proc, "_yume_log_file", None)
+            if log:
+                log.close()
+        if wire_relay_proc is not None:
+            try:
+                wire_relay_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                terminate_process(wire_relay_proc)
+            log = getattr(wire_relay_proc, "_yume_log_file", None)
             if log:
                 log.close()
         if yumed_proc is not None:

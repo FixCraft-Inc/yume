@@ -94,6 +94,12 @@ struct ClientConfig {
     std::string tls_ca_material_id;
     std::string tls_server_name;
     std::string tls_pin_sha256;
+    // dev6 supports one authenticated transport identity. The Chrome helper
+    // is opt-in until its qualification gate is complete; OpenSSL is retained
+    // only as an explicitly labelled diagnostic backend.
+    std::string transport_profile{"chrome151-node24-v1"};
+    std::string tls_backend{"openssl-diagnostic"};
+    std::string tls_helper_path;
     bool require_anonym{false};
     bool accept_monitoring{false};
     bool service_streams_only{false};

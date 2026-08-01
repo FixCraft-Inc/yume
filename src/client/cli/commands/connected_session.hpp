@@ -20,6 +20,7 @@
 #include "client/cli/config/args.hpp"
 #include "client/cli/entry.hpp"
 #include "client/proxy/outbound_proxy.hpp"
+#include "client/transport/client_stream.hpp"
 #include "core/security/crypto.hpp"
 #include "core/security/inner_crypto.hpp"
 #include "core/stealth/tls_fingerprint.hpp"
@@ -81,7 +82,7 @@ struct ConnectedSessionOptions {
     RuntimeReadyProvider take_runtime_ready_callback;
 };
 
-using ClientTlsStream = boost::asio::ssl::stream<boost::asio::ip::tcp::socket>;
+using ClientTlsStream = ClientTransportStream;
 
 int run_connected_session(boost::asio::io_context& io,
                           boost::asio::ssl::context& ctx,

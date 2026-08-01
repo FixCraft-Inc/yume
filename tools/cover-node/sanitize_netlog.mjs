@@ -6,7 +6,49 @@ if (!sourcePath || !authority) {
   throw new Error('usage: node sanitize_netlog.mjs <netlog.json> <authority>');
 }
 
-const raw = JSON.parse(readFileSync(sourcePath, 'utf8'));
+function loadNetLog(path) {
+  const text = readFileSync(path, 'utf8');
+  try {
+    return { value: JSON.parse(text), recovery: { used: false, skipped_event_lines: 0 } };
+  } catch (originalError) {
+    // Chrome 151 can occasionally interleave two event writes while closing a
+    // long IncludeSensitive NetLog. Constants and events are line-delimited,
+    // so recover complete event objects and reject a broadly damaged file.
+    // The selected target session still has to pass every semantic check below.
+    const marker = '\n"events": [\n';
+    const markerOffset = text.indexOf(marker);
+    if (markerOffset < 0) throw originalError;
+    const constantsText = `${text.slice(0, markerOffset).trimEnd().replace(/,$/, '')}}`;
+    const constantsContainer = JSON.parse(constantsText);
+    const eventText = text.slice(markerOffset + marker.length);
+    const events = [];
+    let skippedEventLines = 0;
+    for (const sourceLine of eventText.split('\n')) {
+      let line = sourceLine.trim();
+      if (!line || line === ']' || line === '}') continue;
+      if (line.endsWith(',')) line = line.slice(0, -1);
+      if (!line.startsWith('{') || !line.endsWith('}')) {
+        skippedEventLines += 1;
+        continue;
+      }
+      try {
+        events.push(JSON.parse(line));
+      } catch {
+        skippedEventLines += 1;
+      }
+    }
+    if (skippedEventLines === 0 || skippedEventLines > 64) {
+      throw originalError;
+    }
+    return {
+      value: { ...constantsContainer, events },
+      recovery: { used: true, skipped_event_lines: skippedEventLines }
+    };
+  }
+}
+
+const loaded = loadNetLog(sourcePath);
+const raw = loaded.value;
 const eventNames = new Map(
   Object.entries(raw.constants.logEventTypes).map(([name, id]) => [id, name])
 );
@@ -256,6 +298,7 @@ const fixture = {
     bulk_websocket_message_bytes: 16384
   },
   observations: {
+    netlog_recovery: loaded.recovery,
     headers: headerEvents,
     websocket_frames: websocketSummary,
     window_updates_received: countDistinct(session.filter(event =>

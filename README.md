@@ -229,8 +229,13 @@ secret material.
 
 This removes the earlier Chrome-version/platform contradiction and raises the
 cost of custom-protocol matching and casual active probing; it does not make
-YUME identical to Chrome or immune to traffic analysis. Stock OpenSSL cannot
-reproduce Chrome's BoringSSL ClientHello ordering upstream of the H2 carrier.
+YUME identical to Chrome or immune to traffic analysis. The default
+`openssl-diagnostic` backend cannot reproduce Chrome's BoringSSL ClientHello.
+An opt-in Linux helper now implements a pinned uTLS Chrome 151 first flight and
+preserves YUME's certificate checks and TLS exporter. Five complete flows pass
+the normalized Chrome/Node first-flight structural gate and the local
+handshake/throughput budgets; failure/lifecycle and sustained-soak gates remain
+before it becomes the default. It never silently falls back to OpenSSL.
 See [docs/STEALTH.md](docs/STEALTH.md)
 for the measured scope and [docs/YUME_2_0_IMPLEMENTATION_STATUS.md](docs/YUME_2_0_IMPLEMENTATION_STATUS.md)
 for unfinished release gates.

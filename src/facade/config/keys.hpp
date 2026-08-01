@@ -134,12 +134,15 @@ inline constexpr char tls_fingerprint_test_endpoint[] = "tls_fingerprint_test_en
 inline constexpr char tls_fingerprint_verify[] = "tls_fingerprint_verify";
 inline constexpr char tls_key[] = "tls_key";
 inline constexpr char tls_handshake_timeout_ms[] = "tls_handshake_timeout_ms";
+inline constexpr char tls_backend[] = "tls_backend";
+inline constexpr char tls_helper_path[] = "tls_helper_path";
 inline constexpr char tls_pin_sha256[] = "tls_pin_sha256";
 inline constexpr char tls_server_name[] = "tls_server_name";
 inline constexpr char tls_stealth_enabled[] = "tls_stealth_enabled";
 inline constexpr char tls_stealth_profile[] = "tls_stealth_profile";
 inline constexpr char tls_stealth_rotate[] = "tls_stealth_rotate";
 inline constexpr char tls_stealth_rotation_interval[] = "tls_stealth_rotation_interval";
+inline constexpr char transport_profile[] = "transport_profile";
 inline constexpr char tunnels[] = "tunnels";
 
 }  // namespace yume::facade::config_io::keys

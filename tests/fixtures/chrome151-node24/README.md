@@ -42,3 +42,20 @@ not invent those features without classifier evidence.
 
 TLS first-flight ClientHello and ServerHello parity is evaluated separately;
 NetLog's TLS summary is not a substitute for ordered wire evidence.
+
+`chrome_tls_wire_profile.json` records the independently observed Chrome 151
+and direct-Node first-flight structure. The gate preserves cipher, extension,
+group, signature, version and ALPN order; key-share and GREASE-ECH geometry;
+and TLS record lengths. It accepts Chrome's measured middle-extension shuffle
+and GREASE-ECH length distribution, while rejecting a helper that emits one
+stable order or size marker.
+
+`helper_tls_wire_run_1.json` through `helper_tls_wire_run_5.json` are sanitized
+first flights from five complete authenticated YUME flows using the pinned
+uTLS helper and the same local certificate/ALPN conditions. The gate reports
+`PARITY` for the Chrome ClientHello structural distribution and direct-Node
+ServerHello structure: five distinct middle orders, three measured GREASE-ECH
+lengths, and no stable helper marker. The five full normal-Chrome NetLog runs
+predate relay integration, so a fresh same-session Chrome NetLog plus wire
+recapture remains a release evidence-quality gate; it is not a known helper
+wire drift.

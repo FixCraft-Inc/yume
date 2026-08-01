@@ -61,6 +61,16 @@ boost::asio::ssl::context create_server_context(const std::string& cert_path,
     ctx.set_options(boost::asio::ssl::context::default_workarounds);
     SSL_CTX_set_min_proto_version(ctx.native_handle(), TLS1_3_VERSION);
     SSL_CTX_set_max_proto_version(ctx.native_handle(), TLS1_3_VERSION);
+    // Node 24.18.0 selects AES-256-GCM for the pinned Chrome 151 offer.
+    // Preserve that ServerHello shape instead of OpenSSL's AES-128-GCM
+    // default preference. All listed suites remain TLS 1.3 AEAD suites.
+    if (SSL_CTX_set_ciphersuites(
+            ctx.native_handle(),
+            "TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256:"
+            "TLS_CHACHA20_POLY1305_SHA256") != 1) {
+        throw std::runtime_error("failed to configure Node 24 TLS 1.3 cipher preference");
+    }
+    SSL_CTX_set_options(ctx.native_handle(), SSL_OP_CIPHER_SERVER_PREFERENCE);
 
     ctx.use_certificate_chain_file(cert_path);
     ctx.use_private_key_file(key_path, boost::asio::ssl::context::file_format::pem);

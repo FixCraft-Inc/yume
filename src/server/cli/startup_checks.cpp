@@ -676,8 +676,9 @@ bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
     log_security_warnings(cfg);
     log_effective_startup_summary(cfg);
     yume::util::log_warn(
-        "TLS residual: OpenSSL ClientHello is not byte-identical to Chrome 151; "
-        "BoringSSL is the likely future requirement");
+        "TLS residual: clients using openssl-diagnostic are not Chrome 151 "
+        "ClientHello parity; the experimental chrome151 helper still requires "
+        "five-run wire and performance qualification");
     return load_real_http_secret(cfg, options.default_secret_path);
 }
 

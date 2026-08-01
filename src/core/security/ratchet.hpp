@@ -12,6 +12,8 @@
 #include <memory>
 #include <vector>
 
+#include "core/security/ratchet_policy.hpp"
+
 #if YUME_USE_BASEFWX
 #include <basefwx/crypto.hpp>
 #endif
@@ -20,10 +22,13 @@ namespace yume::ratchet {
 
 using Bytes = std::vector<std::uint8_t>;
 
-inline constexpr std::size_t kEpochByteLimit = 256U * 1024U;
-inline constexpr std::uint64_t kEpochMessageLimit = 512;
-inline constexpr auto kEpochActiveLimit = std::chrono::milliseconds(500);
-inline constexpr std::size_t kMaxProtectedPayload = kEpochByteLimit;
+// Compatibility names for the default Extreme profile. Runtime enforcement
+// uses the negotiated RatchetPolicy stored by each directional chain.
+inline constexpr std::size_t kEpochByteLimit =
+    static_cast<std::size_t>(kExtremePolicy.epoch_byte_limit);
+inline constexpr std::uint64_t kEpochMessageLimit =
+    kExtremePolicy.epoch_frame_limit;
+inline constexpr auto kEpochActiveLimit = kExtremePolicy.epoch_active_limit;
 
 // Begin preparing the next hybrid epoch with enough current-epoch traffic left
 // to hide a normal LAN round trip. These are scheduling thresholds only: the
@@ -110,7 +115,9 @@ struct SealedFrame {
 // and chain key when replaced or destroyed.
 class DirectionalRatchet {
 public:
-    DirectionalRatchet(Direction direction, Bytes direction_root);
+    DirectionalRatchet(Direction direction,
+                       Bytes direction_root,
+                       RatchetPolicy policy = kExtremePolicy);
     DirectionalRatchet(const DirectionalRatchet&) = delete;
     DirectionalRatchet& operator=(const DirectionalRatchet&) = delete;
     DirectionalRatchet(DirectionalRatchet&&) noexcept = default;
@@ -122,8 +129,9 @@ public:
     std::uint64_t next_sequence() const noexcept { return sequence_; }
     // Application usage accounted against this epoch's hard limits. Callers use
     // it to pace preparation against real progress, never to relax a limit.
-    std::size_t epoch_bytes() const noexcept { return epoch_bytes_; }
+    std::uint64_t epoch_bytes() const noexcept { return epoch_bytes_; }
     std::uint64_t epoch_messages() const noexcept { return epoch_messages_; }
+    const RatchetPolicy& policy() const noexcept { return policy_; }
 
     bool ShouldRekey(std::size_t next_plaintext_bytes,
                      std::chrono::steady_clock::time_point now) const;
@@ -167,6 +175,7 @@ private:
                  std::chrono::steady_clock::time_point now);
 
     Direction direction_;
+    RatchetPolicy policy_;
 #if YUME_USE_BASEFWX
     basefwx::crypto::SecureBytes root_;
     basefwx::crypto::SecureBytes chain_;
@@ -176,7 +185,7 @@ private:
 #endif
     std::uint64_t epoch_{0};
     std::uint64_t sequence_{0};
-    std::size_t epoch_bytes_{0};
+    std::uint64_t epoch_bytes_{0};
     std::uint64_t epoch_messages_{0};
     bool active_{false};
     std::chrono::steady_clock::time_point first_active_{};

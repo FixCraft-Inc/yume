@@ -152,8 +152,13 @@ Bytes DeriveDirectionRoot(const Bytes& initial_root, Direction direction) {
                 32);
 }
 
-DirectionalRatchet::DirectionalRatchet(Direction direction, Bytes direction_root)
-    : direction_(direction), root_(std::move(direction_root)) {
+DirectionalRatchet::DirectionalRatchet(Direction direction,
+                                       Bytes direction_root,
+                                       RatchetPolicy policy)
+    : direction_(direction), policy_(policy), root_(std::move(direction_root)) {
+    if (!IsRatchetPolicyValid(policy_)) {
+        throw std::runtime_error("invalid YUME 2.0 ratchet policy");
+    }
     if (SecretBytes(root_).size() != 32) {
         throw std::runtime_error("YUME 2.0 direction root must be 32 bytes");
     }
@@ -174,7 +179,8 @@ bool DirectionalRatchet::ShouldRekey(
     if (!active_) {
         return false;
     }
-    const bool time_exhausted = now - first_active_ >= kEpochActiveLimit;
+    const bool time_exhausted =
+        now - first_active_ >= policy_.epoch_active_limit;
     return WouldExceedUsage(next_plaintext_bytes) || time_exhausted;
 }
 
@@ -185,17 +191,18 @@ bool DirectionalRatchet::ShouldPrepareRekey(
         return true;
     }
 
-    const std::size_t byte_prepare_threshold =
-        kEpochByteLimit - kRekeyByteLead;
+    const std::uint64_t byte_prepare_threshold =
+        policy_.epoch_byte_limit / 4U;
     const bool bytes_near_boundary =
         epoch_bytes_ >= byte_prepare_threshold ||
         next_plaintext_bytes >= byte_prepare_threshold - epoch_bytes_;
     const std::uint64_t message_prepare_threshold =
-        kEpochMessageLimit - kRekeyMessageLead;
+        policy_.epoch_frame_limit - policy_.epoch_frame_limit / 8U;
     const bool messages_near_boundary =
-        epoch_messages_ >= message_prepare_threshold - 1;
+        epoch_messages_ >= message_prepare_threshold - 1U;
     const bool time_near_boundary = active_ &&
-        now - first_active_ >= kEpochActiveLimit - kRekeyTimeLead;
+        now - first_active_ >=
+            policy_.epoch_active_limit - policy_.epoch_active_limit / 5;
     return bytes_near_boundary || messages_near_boundary ||
            time_near_boundary;
 }
@@ -279,9 +286,10 @@ Bytes DirectionalRatchet::Decrypt(
 bool DirectionalRatchet::WouldExceedUsage(
     std::size_t next_plaintext_bytes) const {
     const bool bytes_exhausted =
-        epoch_bytes_ > kEpochByteLimit ||
-        next_plaintext_bytes > (kEpochByteLimit - epoch_bytes_);
-    const bool messages_exhausted = epoch_messages_ >= kEpochMessageLimit;
+        epoch_bytes_ > policy_.epoch_byte_limit ||
+        next_plaintext_bytes > (policy_.epoch_byte_limit - epoch_bytes_);
+    const bool messages_exhausted =
+        epoch_messages_ >= policy_.epoch_frame_limit;
     return bytes_exhausted || messages_exhausted;
 }
 
@@ -308,8 +316,8 @@ std::unique_ptr<DirectionalRatchet> DirectionalRatchet::MakeAdvanced(
     basefwx::crypto::SecureClear(epoch_psk_contribution);
     basefwx::crypto::SecureClear(input);
 #endif
-    auto next = std::make_unique<DirectionalRatchet>(direction_,
-                                                      std::move(next_root));
+    auto next = std::make_unique<DirectionalRatchet>(
+        direction_, std::move(next_root), policy_);
     next->epoch_ = epoch_ + 1;
     return next;
 }

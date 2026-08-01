@@ -33,6 +33,9 @@ struct ConnectionStatusSummary {
     bool server_inner_active = false;
     bool verity_applicable = false;
     bool verity_ok = false;
+    std::uint64_t epoch_byte_limit = 0;
+    std::uint64_t epoch_frame_limit = 0;
+    std::uint64_t epoch_active_limit_ms = 0;
 };
 
 std::function<std::string()> make_connection_status_block(ConnectionStatusSummary summary);

@@ -1,6 +1,7 @@
 #include "core/security/auth_v2.hpp"
 
 #include <cassert>
+#include <chrono>
 #include <iomanip>
 #include <memory>
 #include <sstream>
@@ -51,38 +52,42 @@ int main() {
     const Bytes psk_salt(32, 0x44);
     const Bytes transcript_salt(32, 0x55);
     const std::uint16_t rekey_window = 8;
+    const auto policy = yume::ratchet::kExtremePolicy;
     const Bytes encoded = BuildChallenge(challenge, kem_public, x_public,
                                          psk_salt, transcript_salt,
-                                         rekey_window);
-    assert(encoded.size() == 1752);
+                                         rekey_window, policy);
+    assert(encoded.size() == 1778);
     assert(Sha256Hex(encoded) ==
-           "2957052efadf9f4e9268c6367876055367387d55a7a3bc57b2de9781bad84c94");
+           "158918528bdbb6a87284be4f11d0098cef0dad2a14f3fede993168f489f58b19");
     const auto parsed = ParseChallenge(encoded);
     assert(parsed.challenge == challenge);
     assert(parsed.mlkem_public_key == kem_public);
     assert(parsed.rekey_window == rekey_window);
+    assert(parsed.ratchet_policy == policy);
 
     const Bytes ciphertext(1568, 0x66);
     const Bytes identity{'i', 'd'};
     const Bytes unsigned_response = BuildUnsignedResponse(x_public, ciphertext,
                                                           identity,
-                                                          rekey_window);
-    assert(unsigned_response.size() == 1632);
+                                                          rekey_window,
+                                                          policy);
+    assert(unsigned_response.size() == 1658);
     assert(Sha256Hex(unsigned_response) ==
-           "ec5f77918dcc391e53811b319dd5be44b55c06f54c513f47b03b3aa2bf2dab46");
+           "f6cb361be8ebc4ee07ae2d35d0ad5cadd65bd93d399ccea6ecadd6a761c3a915");
     const Bytes signature(64, 0x77);
     const auto response = ParseResponse(BuildResponse(
-        x_public, ciphertext, identity, rekey_window, signature));
+        x_public, ciphertext, identity, rekey_window, policy, signature));
     assert(response.signature == signature);
     assert(response.rekey_window == rekey_window);
+    assert(response.ratchet_policy == policy);
     // The advertised depth sits in the unsigned record, so the transcript the
     // client signs commits to the negotiated window.
     const Bytes channel_binding(kChannelBindingLen, 0x88);
     const Bytes signature_input = BuildSignatureInput(encoded, unsigned_response,
                                                       channel_binding);
-    assert(signature_input.size() == 3454);
+    assert(signature_input.size() == 3506);
     assert(Sha256Hex(signature_input) ==
-           "c92b01c27cc71d4d9a815c69de28e5a86c208a508da2b4290395cb5e1c408f53");
+           "820d6c792cc17329e430395d67ef111b3ac65fe2fdb8ae0051600f7595cd7757");
 
     // The binding is what a relaying endpoint cannot reproduce: the same
     // records under a different live TLS connection sign a different input.
@@ -104,20 +109,28 @@ int main() {
     // reserve unbounded ML-KEM work or retained roots.
     assert(Throws([&] {
         (void)BuildChallenge(challenge, kem_public, x_public, psk_salt,
-                             transcript_salt, 0);
+                             transcript_salt, 0, policy);
     }));
     assert(Throws([&] {
         (void)BuildChallenge(challenge, kem_public, x_public, psk_salt,
                              transcript_salt,
-                             yume::ratchet::kMaxRekeyWindow + 1);
+                             yume::ratchet::kMaxRekeyWindow + 1, policy);
     }));
     assert(Throws([&] {
-        (void)BuildUnsignedResponse(x_public, ciphertext, identity, 0);
+        (void)BuildUnsignedResponse(
+            x_public, ciphertext, identity, 0, policy);
     }));
     Bytes zero_window = encoded;
-    zero_window[zero_window.size() - 2] = 0;
-    zero_window[zero_window.size() - 1] = 0;
+    zero_window[zero_window.size() - 28] = 0;
+    zero_window[zero_window.size() - 27] = 0;
     assert(Throws([&] { (void)ParseChallenge(zero_window); }));
+
+    auto invalid_policy = policy;
+    invalid_policy.epoch_active_limit = std::chrono::milliseconds(0);
+    assert(Throws([&] {
+        (void)BuildChallenge(challenge, kem_public, x_public, psk_salt,
+                             transcript_salt, rekey_window, invalid_policy);
+    }));
 
     const Bytes info{'{', '}'};
     assert(ParseAuthOk(BuildAuthOk(info)) == info);
@@ -143,7 +156,8 @@ int main() {
         {1, true, Bytes(kTransportVersion.begin(), kTransportVersion.end())},
         {2, true, challenge}, {3, true, kem_public}, {4, true, x_public},
         {5, true, psk_salt}, {6, true, transcript_salt},
-        {7, true, Bytes{0, 8}}, {8, true, Bytes{0}},
+        {7, true, Bytes{0, 8}},
+        {8, true, Bytes(20, 1)}, {9, true, Bytes{0}},
     });
     assert(Throws([&] { (void)ParseChallenge(unknown_critical); }));
     return 0;

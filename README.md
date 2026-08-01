@@ -4,12 +4,13 @@
 
 Yume Universal Multiprotocol Engine. An open-source post-quantum stealth transport. The name is a single character — 夢 — and we use it the way Japanese uses it: a dream of a network you can trust, where the wire shape blends into ordinary HTTPS and neither endpoint has to advertise YUME by name.
 
-YUME 2.0-dev4 tunnels TCP and UDP through a persistent TLS 1.3 + HTTP/2 +
+YUME 2.0-dev5 tunnels TCP and UDP through a persistent TLS 1.3 + HTTP/2 +
 WebSocket connection. The focused Linux desktop slice uses mandatory
 ML-KEM-1024 + X25519 + random-PSK key establishment, per-message AES-256-GCM
-keys, and independent directional epochs bounded by 256 KiB, 512 DATA frames,
-or 500 ms of sender-active traffic. This is a usage limit, not a claim that an
-idle connection rotates keys twice per second. The client (`yume`) and daemon
+keys, and independent directional epochs. The default Extreme policy retains
+the 256 KiB, 512-DATA-frame, or 500 ms sender-active limits; authenticated
+Normal, Soft, and bounded Ultimate policies trade a wider active epoch for less
+hybrid-rekey overhead. The client (`yume`) and daemon
 (`yumed`) are AGPL-3.0-or-later and build from this tree. Other platforms and
 the optional GUI have not yet passed the 2.0 release gates.
 
@@ -38,7 +39,7 @@ from this tree.
 |                             | YUME            | WireGuard      | OpenVPN                  | Tor (with bridges) | Shadowsocks     |
 | --------------------------- | --------------- | -------------- | ------------------------ | ------------------ | --------------- |
 | Hybrid post-quantum inner channel | ML-KEM-1024 + X25519 + AES-GCM | no | no | no | no |
-| Directional epoch ratchet   | ≤256 KiB / 512 frames / 500 ms active | no | no | no | no |
+| Directional epoch ratchet   | Authenticated modes; Extreme is 256 KiB / 512 frames / 500 ms active | no | no | no | no |
 | HTTPS-shaped carrier | persistent TLS + H2/WebSocket; known TLS residual | distinctive UDP handshake | deployment-dependent TLS/UDP shape | obfs4 bridge | random-prefix |
 | Privacy-minimizing policy + operator identity proof | built in | n/a | per-provider | relay policy differs | n/a |
 | Free public endpoints       | planned (FixCraft) | none        | none                     | yes                | none            |
@@ -234,12 +235,20 @@ See [docs/STEALTH.md](docs/STEALTH.md)
 for the measured scope and [docs/YUME_2_0_IMPLEMENTATION_STATUS.md](docs/YUME_2_0_IMPLEMENTATION_STATUS.md)
 for unfinished release gates.
 
+The hybrid-ratchet compromise/performance budget is selectable through
+`extreme` (default), `normal`, `soft`, or bounded expert-managed `ultimate`
+configuration. Algorithms and per-frame one-use AES-GCM keys remain mandatory;
+see [docs/SECURITY_MODES.md](docs/SECURITY_MODES.md).
+
 ### Headless carrier diagnosis
 
-The older diagnosis script still targets the retired 1.x carrier and is not a
-2.0 validation tool. Use the committed Chrome/Node fixture and the release
-evidence procedure in [docs/STEALTH.md](docs/STEALTH.md); do not interpret a
-1.x diagnosis run as 2.0 fingerprint evidence.
+`scripts/yume_carrier_diagnose.py` now provisions an ephemeral 2.0 server,
+protected admission/inner secrets, and the real loopback Node cover, then drives
+Chromium through the resulting SOCKS tunnel. It can run an unprivileged
+functional audit or capture raw YUME and direct-Chromium flows for JA3/JA4
+comparison when `dumpcap` or `tcpdump` access is available. A successful
+functional audit, ALPN match, or coarse JA4 overlap is not proof of Chrome TLS
+parity; use the reproducible gates in [docs/STEALTH.md](docs/STEALTH.md).
 
 ## Routing through Tor (or any SOCKS5 proxy)
 
@@ -340,7 +349,8 @@ Inner encryption is mandatory in the 2.0 tunnel path:
   using versioned salted HKDF-SHA256 labels.
 - AES-256-GCM uses a derived, one-use key for every protected frame.
 - Client-to-server and server-to-client chains advance independently before
-  256 KiB, 512 DATA frames, or 500 ms of active epoch time.
+  their authenticated byte/frame/active-time policy; Extreme retains the
+  256 KiB, 512 DATA frame, and 500 ms limits.
 - Rekeys perform fresh ML-KEM-1024 and X25519 exchanges. Application data waits
   behind the boundary and the retired root is erased after the first valid
   new-epoch record.
@@ -353,7 +363,7 @@ uniform high-entropy key material, not a human password.
 Client authorization uses an Ed25519 key pair. The 2.0 client loads the private
 key locally and sends only its public key plus a signature over the complete
 server challenge and unsigned client response. That transcript includes both
-ephemeral key exchanges and the negotiated rekey window. A server that records
+ephemeral key exchanges, negotiated rekey window, and accepted ratchet policies. A server that records
 it cannot derive the private key or turn the signature into a reusable
 impersonation under the Ed25519 security assumption. Generated private-key
 files are created exclusively at mode `0600` and strict loading rejects

@@ -528,8 +528,9 @@ The old 1.x time-derived hop layer is not part of YUME 2.0. `--hop`,
 `--no-hop`, and `--hop-interval` are rejected rather than selecting a weaker
 or incomparable transport. Each direction instead pipelines fresh ML-KEM-1024
 and X25519 material while bounded current-epoch allowance remains, and never
-lets another application frame cross 256 KiB, 512 frames, or 500 ms of
-sender-active epoch time. Benchmark output
+lets another application frame cross the negotiated ratchet policy (Extreme
+defaults to 256 KiB, 512 frames, or 500 ms of sender-active epoch time).
+Benchmark output
 therefore reports `legacy-hop=off` and the mandatory hybrid ratchet separately.
 
 ## HTTP/2 Obfs

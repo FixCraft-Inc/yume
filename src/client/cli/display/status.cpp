@@ -6,6 +6,7 @@
 
 #include "client/cli/display/status.hpp"
 
+#include <string>
 #include <utility>
 
 #include "client/cli/connect/diagnostics.hpp"
@@ -19,6 +20,44 @@ std::string color_wrap(const std::string& text, const char* code) {
         return text;
     }
     return std::string("\033[") + code + "m" + text + "\033[0m";
+}
+
+std::string format_byte_limit(std::uint64_t bytes) {
+    constexpr std::uint64_t kKiB = 1024;
+    constexpr std::uint64_t kMiB = 1024 * kKiB;
+    constexpr std::uint64_t kGiB = 1024 * kMiB;
+    if (bytes != 0 && bytes % kGiB == 0) {
+        return std::to_string(bytes / kGiB) + " GiB";
+    }
+    if (bytes != 0 && bytes % kMiB == 0) {
+        return std::to_string(bytes / kMiB) + " MiB";
+    }
+    if (bytes != 0 && bytes % kKiB == 0) {
+        return std::to_string(bytes / kKiB) + " KiB";
+    }
+    return std::to_string(bytes) + " bytes";
+}
+
+std::string format_active_limit(std::uint64_t milliseconds) {
+    constexpr std::uint64_t kSecondMs = 1000;
+    constexpr std::uint64_t kMinuteMs = 60 * kSecondMs;
+    if (milliseconds != 0 && milliseconds % kMinuteMs == 0) {
+        return std::to_string(milliseconds / kMinuteMs) + " min";
+    }
+    if (milliseconds != 0 && milliseconds % kSecondMs == 0) {
+        return std::to_string(milliseconds / kSecondMs) + " s";
+    }
+    return std::to_string(milliseconds) + " ms";
+}
+
+std::string format_epoch_policy(const ConnectionStatusSummary& summary) {
+    if (summary.epoch_byte_limit == 0 || summary.epoch_frame_limit == 0 ||
+        summary.epoch_active_limit_ms == 0) {
+        return "UNKNOWN";
+    }
+    return format_byte_limit(summary.epoch_byte_limit) + " / " +
+           std::to_string(summary.epoch_frame_limit) + " frames / " +
+           format_active_limit(summary.epoch_active_limit_ms) + " active";
 }
 
 std::string build_status_block(const ConnectionStatusSummary& summary) {
@@ -58,7 +97,7 @@ std::string build_status_block(const ConnectionStatusSummary& summary) {
            color_wrap("Obfuscation", "1;36") + ": " + obfs_value + "\n" +
            color_wrap("Inner", "1;36") + ": " + inner_line + "\n" +
            color_wrap("Epochs", "1;36") + ": " +
-               color_wrap("256 KiB / 512 frames / 500 ms active", "1;35") + "\n" +
+               color_wrap(format_epoch_policy(summary), "1;35") + "\n" +
            color_wrap("Operator identity", "1;36") + ": " + verity_line + "\n" +
            border + "\n";
 }

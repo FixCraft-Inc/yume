@@ -6,6 +6,7 @@
   "threads": 8,
   "max_sessions": 256,
   "bulk_key_max_sessions": 64,
+  "security_mode": "extreme",
   "rekey_window": 8,
   "accept_rate_limit": 100,
   "egress_mbps": 0,

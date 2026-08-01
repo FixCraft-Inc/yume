@@ -1,0 +1,8 @@
+{
+  "security_mode": "ultimate",
+  "security_custom": {
+    "epoch_bytes": 4194304,
+    "epoch_frames": 4096,
+    "epoch_active_ms": 4281
+  }
+}

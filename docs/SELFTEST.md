@@ -391,7 +391,8 @@ public flows in the same PCAP. Use a disposable browser profile so extensions,
 sync, and an existing service worker do not add unrelated traffic.
 
 No `--pq`, `--hop`, or masquerade switch is accepted. ML-KEM-1024 + X25519,
-per-message encryption, the 256 KiB / 512-frame / 500 ms directional epochs,
+per-message encryption, the default Extreme 256 KiB / 512-frame / 500 ms
+directional epochs,
 the Chrome-shaped H2 carrier, and the Node cover routing are mandatory in every
 accepted 2.0 endpoint benchmark. The capture verifies on-wire behavior; the
 benchmark output reports application throughput, not protocol overhead.

@@ -16,7 +16,8 @@ The Debian source packaging currently produces five YUME binary packages:
 
 BaseFWX is packaged separately as `basefwx`, `libbasefwx3`, and
 `libbasefwx-dev`; YUME links to version `3.8.0~dev1-1` or newer for Debian
-builds because dev4 consumes the 3.8 X25519 and ML-KEM-1024 APIs.
+builds because the current 2.0 development line consumes the 3.8 X25519 and
+ML-KEM-1024 APIs.
 BaseFWX Debian archive builds must use packaged dependencies, including
 `liboqs-dev`; vendored liboqs is only a local development override.
 `libyume` is the stable native C embed ABI. In 1.1 it exposes build metadata,
@@ -202,8 +203,8 @@ The helper writes `../yume_<version>.orig.tar.xz` and excludes bundled
 dependency trees, vendored binaries, build directories, logs, bytecode, and
 the `debian/` directory. The source package then contains the upstream
 tarball plus Debian packaging metadata as a separate Debian tarball.
-Development versions use Debian's sorting-safe spelling (`2.0-dev4` becomes
-`2.0~dev4`) and `scripts/check_debian_source.sh` rejects a mismatch between
+Development versions use Debian's sorting-safe spelling (`2.0-dev5` becomes
+`2.0~dev5`) and `scripts/check_debian_source.sh` rejects a mismatch between
 `src/core/version.hpp` and the top Debian changelog entry.
 
 The Debian package builds with:

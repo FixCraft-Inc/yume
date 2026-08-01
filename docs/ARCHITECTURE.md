@@ -152,6 +152,7 @@ man pages. `scripts/check_ascii_diagrams.py` enforces fixed box widths.
 | Stealth layers | `docs/STEALTH.md` |
 | Permissions | `docs/PERMISSIONS.md` |
 | Threat stance | `docs/THREAT_MODEL.md` |
+| Security modes | `docs/SECURITY_MODES.md` |
 | App codecs | `docs/APP_CODECS.md` |
 | Packet bulk | `docs/PACKET_NATIVE_BULK.md` |
 | C ABI scope | `docs/ABI.md` |

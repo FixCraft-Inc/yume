@@ -10,6 +10,7 @@
 #include <string_view>
 #include <vector>
 
+#include "core/security/ratchet_policy.hpp"
 #include "core/version.hpp"
 
 namespace yume::auth_v2 {
@@ -60,6 +61,7 @@ struct Challenge {
     // bounds the peer's sending window, so it is the only thing that lets a
     // peer make this endpoint do repeated ML-KEM work or retain future roots.
     std::uint16_t rekey_window{0};
+    ratchet::RatchetPolicy ratchet_policy{};
 };
 
 struct Response {
@@ -68,6 +70,7 @@ struct Response {
     Bytes mlkem_ciphertext;
     Bytes identity;
     std::uint16_t rekey_window{0};
+    ratchet::RatchetPolicy ratchet_policy{};
     Bytes signature;
 };
 
@@ -88,17 +91,20 @@ Bytes BuildChallenge(const Bytes& challenge,
                      const Bytes& x25519_public_key,
                      const Bytes& psk_salt,
                      const Bytes& transcript_salt,
-                     std::uint16_t rekey_window);
+                     std::uint16_t rekey_window,
+                     const ratchet::RatchetPolicy& ratchet_policy);
 Challenge ParseChallenge(const Bytes& encoded);
 
 Bytes BuildUnsignedResponse(const Bytes& x25519_public_key,
                             const Bytes& mlkem_ciphertext,
                             const Bytes& identity,
-                            std::uint16_t rekey_window);
+                            std::uint16_t rekey_window,
+                            const ratchet::RatchetPolicy& ratchet_policy);
 Bytes BuildResponse(const Bytes& x25519_public_key,
                     const Bytes& mlkem_ciphertext,
                     const Bytes& identity,
                     std::uint16_t rekey_window,
+                    const ratchet::RatchetPolicy& ratchet_policy,
                     const Bytes& signature);
 Response ParseResponse(const Bytes& encoded);
 // `channel_binding` is the 32-byte TLS 1.3 exporter each endpoint computes

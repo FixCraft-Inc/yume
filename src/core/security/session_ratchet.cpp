@@ -51,7 +51,8 @@ std::uint64_t ReadU64(const Bytes& input, std::size_t offset) {
 class SessionRatchet::Impl {
 public:
     Impl(EndpointRole role, Bytes initial_root, Bytes psk_key,
-         std::uint16_t outbound_window, std::uint16_t inbound_window)
+         std::uint16_t outbound_window, std::uint16_t inbound_window,
+         RatchetPolicy outbound_policy, RatchetPolicy inbound_policy)
         : role_(role),
           outbound_window_(ClampRekeyWindow(outbound_window)),
           inbound_window_(ClampRekeyWindow(inbound_window)),
@@ -59,12 +60,14 @@ public:
                                                  : Direction::ServerToClient,
                     DeriveDirectionRoot(initial_root,
                         role == EndpointRole::Client ? Direction::ClientToServer
-                                                     : Direction::ServerToClient)),
+                                                     : Direction::ServerToClient),
+                    outbound_policy),
           inbound_(role == EndpointRole::Client ? Direction::ServerToClient
                                                 : Direction::ClientToServer,
                    DeriveDirectionRoot(initial_root,
                        role == EndpointRole::Client ? Direction::ServerToClient
-                                                    : Direction::ClientToServer)),
+                                                    : Direction::ClientToServer),
+                   inbound_policy),
 #if YUME_USE_BASEFWX
           psk_key_(std::move(psk_key)) {
         basefwx::crypto::SecureClear(initial_root);
@@ -244,6 +247,8 @@ public:
 
     std::uint16_t outbound_window() const noexcept { return outbound_window_; }
     std::uint16_t inbound_window() const noexcept { return inbound_window_; }
+    RatchetPolicy outbound_policy() const noexcept { return outbound_.policy(); }
+    RatchetPolicy inbound_policy() const noexcept { return inbound_.policy(); }
 
     bool rekey_timed_out(std::chrono::steady_clock::time_point now) const {
         const auto deadline = rekey_deadline();
@@ -422,10 +427,13 @@ private:
 
 SessionRatchet::SessionRatchet(EndpointRole role, Bytes initial_root,
                                Bytes psk_key, std::uint16_t outbound_window,
-                               std::uint16_t inbound_window)
+                               std::uint16_t inbound_window,
+                               RatchetPolicy outbound_policy,
+                               RatchetPolicy inbound_policy)
     : impl_(std::make_unique<Impl>(role, std::move(initial_root),
                                    std::move(psk_key), outbound_window,
-                                   inbound_window)) {}
+                                   inbound_window, outbound_policy,
+                                   inbound_policy)) {}
 SessionRatchet::SessionRatchet(SessionRatchet&&) noexcept = default;
 SessionRatchet& SessionRatchet::operator=(SessionRatchet&&) noexcept = default;
 SessionRatchet::~SessionRatchet() = default;
@@ -485,6 +493,12 @@ std::uint16_t SessionRatchet::outbound_window() const {
 }
 std::uint16_t SessionRatchet::inbound_window() const {
     return impl_->inbound_window();
+}
+RatchetPolicy SessionRatchet::outbound_policy() const {
+    return impl_->outbound_policy();
+}
+RatchetPolicy SessionRatchet::inbound_policy() const {
+    return impl_->inbound_policy();
 }
 
 bool SessionRatchet::IsApplicationFrame(std::uint8_t type) noexcept {

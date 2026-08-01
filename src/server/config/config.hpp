@@ -41,9 +41,10 @@ struct ServerConfig {
     std::uint32_t hop_interval_ms{500};
     // Concurrent directional epoch offers accepted from one session, and the
     // ceiling on this server's own sending window. Higher values lift the
-    // per-round-trip transfer ceiling on high-RTT links; every per-epoch limit
-    // is unchanged. Clamped to the ratchet's supported range.
+    // per-round-trip transfer ceiling on high-RTT links without changing the
+    // selected per-epoch policy. Clamped to the ratchet's supported range.
     std::uint16_t rekey_window{yume::ratchet::kDefaultRekeyWindow};
+    ratchet::SecurityProfileConfig security_profile{};
     // Aggregate admission bounds for authorized/preauth Argon2 handshake
     // work. These are reservations made before Argon2 allocates memory.
     std::uint32_t argon2_memory_budget_kib{1u << 19};  // 512 MiB

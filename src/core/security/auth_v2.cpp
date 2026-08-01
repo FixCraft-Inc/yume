@@ -103,6 +103,35 @@ Bytes WindowBytes(std::uint16_t window) {
     return value;
 }
 
+Bytes PolicyBytes(const ratchet::RatchetPolicy& policy) {
+    if (!ratchet::IsRatchetPolicyValid(policy)) {
+        throw std::runtime_error("AUTH v2 ratchet policy is out of range");
+    }
+    Bytes value;
+    value.reserve(20);
+    AppendU64(value, policy.epoch_byte_limit);
+    AppendU64(value, policy.epoch_frame_limit);
+    AppendU32(value, static_cast<std::uint32_t>(
+        policy.epoch_active_limit.count()));
+    return value;
+}
+
+ratchet::RatchetPolicy ParsePolicy(const Bytes& value) {
+    RequireSize(value, 20, "ratchet policy");
+    std::size_t offset = 0;
+    ratchet::RatchetPolicy policy;
+    policy.epoch_byte_limit = ParseU64(Bytes(value.begin(), value.begin() + 8));
+    policy.epoch_frame_limit =
+        ParseU64(Bytes(value.begin() + 8, value.begin() + 16));
+    offset = 16;
+    policy.epoch_active_limit =
+        std::chrono::milliseconds(ReadU32(value, &offset));
+    if (!ratchet::IsRatchetPolicyValid(policy)) {
+        throw std::runtime_error("AUTH v2 ratchet policy is out of range");
+    }
+    return policy;
+}
+
 std::uint16_t ParseWindow(const Bytes& value) {
     RequireSize(value, 2, "rekey window");
     return static_cast<std::uint16_t>(
@@ -192,24 +221,27 @@ Record DecodeRecord(const Bytes& encoded,
 Bytes BuildChallenge(const Bytes& challenge, const Bytes& mlkem_public_key,
                      const Bytes& x25519_public_key, const Bytes& psk_salt,
                      const Bytes& transcript_salt,
-                     std::uint16_t rekey_window) {
+                     std::uint16_t rekey_window,
+                     const ratchet::RatchetPolicy& ratchet_policy) {
     RequireSize(challenge, 32, "challenge");
     RequireKemBlob(mlkem_public_key, "ML-KEM public key");
     RequireSize(x25519_public_key, 32, "X25519 public key");
     RequireSize(psk_salt, 32, "PSK salt");
     RequireSize(transcript_salt, 32, "transcript salt");
     RequireWindow(rekey_window);
+    (void)PolicyBytes(ratchet_policy);
     return EncodeRecord(RecordKind::Challenge, {
         {1, true, Bytes(kTransportVersion.begin(), kTransportVersion.end())},
         {2, true, challenge}, {3, true, mlkem_public_key},
         {4, true, x25519_public_key}, {5, true, psk_salt},
         {6, true, transcript_salt}, {7, true, WindowBytes(rekey_window)},
+        {8, true, PolicyBytes(ratchet_policy)},
     });
 }
 
 Challenge ParseChallenge(const Bytes& encoded) {
     const Record record = DecodeRecord(encoded, RecordKind::Challenge,
-                                       {1, 2, 3, 4, 5, 6, 7});
+                                       {1, 2, 3, 4, 5, 6, 7, 8});
     const Bytes& version = Required(record, 1);
     if (std::string_view(reinterpret_cast<const char*>(version.data()), version.size()) !=
         kTransportVersion) {
@@ -217,7 +249,8 @@ Challenge ParseChallenge(const Bytes& encoded) {
     }
     Challenge out{encoded, Required(record, 2), Required(record, 3),
                   Required(record, 4), Required(record, 5), Required(record, 6),
-                  ParseWindow(Required(record, 7))};
+                  ParseWindow(Required(record, 7)),
+                  ParsePolicy(Required(record, 8))};
     RequireSize(out.challenge, 32, "challenge");
     RequireKemBlob(out.mlkem_public_key, "ML-KEM public key");
     RequireSize(out.x25519_public_key, 32, "X25519 public key");
@@ -230,43 +263,48 @@ Challenge ParseChallenge(const Bytes& encoded) {
 Bytes BuildUnsignedResponse(const Bytes& x25519_public_key,
                             const Bytes& mlkem_ciphertext,
                             const Bytes& identity,
-                            std::uint16_t rekey_window) {
+                            std::uint16_t rekey_window,
+                            const ratchet::RatchetPolicy& ratchet_policy) {
     RequireSize(x25519_public_key, 32, "X25519 public key");
     RequireKemBlob(mlkem_ciphertext, "ML-KEM ciphertext");
     if (identity.empty() || identity.size() > 16U * 1024U) {
         throw std::runtime_error("AUTH v2 identity size is invalid");
     }
     RequireWindow(rekey_window);
+    (void)PolicyBytes(ratchet_policy);
     // The client's advertised depth sits inside the signed record, so the
     // negotiated window is covered by the same Ed25519 signature as the rest
     // of the transcript and cannot be tampered with on the carrier.
     return EncodeRecord(RecordKind::Response, {
         {1, true, x25519_public_key}, {2, true, mlkem_ciphertext},
         {3, true, identity}, {4, true, WindowBytes(rekey_window)},
+        {5, true, PolicyBytes(ratchet_policy)},
     });
 }
 
 Bytes BuildResponse(const Bytes& x25519_public_key,
                     const Bytes& mlkem_ciphertext, const Bytes& identity,
-                    std::uint16_t rekey_window, const Bytes& signature) {
+                    std::uint16_t rekey_window,
+                    const ratchet::RatchetPolicy& ratchet_policy,
+                    const Bytes& signature) {
     if (signature.size() != 64) {
         throw std::runtime_error("AUTH v2 Ed25519 signature must be 64 bytes");
     }
     (void)BuildUnsignedResponse(x25519_public_key, mlkem_ciphertext, identity,
-                                rekey_window);
+                                rekey_window, ratchet_policy);
     return EncodeRecord(RecordKind::Response, {
         {1, true, x25519_public_key}, {2, true, mlkem_ciphertext},
         {3, true, identity}, {4, true, WindowBytes(rekey_window)},
-        {5, true, signature},
+        {5, true, PolicyBytes(ratchet_policy)}, {6, true, signature},
     });
 }
 
 Response ParseResponse(const Bytes& encoded) {
     const Record record = DecodeRecord(encoded, RecordKind::Response,
-                                       {1, 2, 3, 4, 5});
+                                       {1, 2, 3, 4, 5, 6});
     Response out{encoded, Required(record, 1), Required(record, 2),
                  Required(record, 3), ParseWindow(Required(record, 4)),
-                 Required(record, 5)};
+                 ParsePolicy(Required(record, 5)), Required(record, 6)};
     RequireSize(out.x25519_public_key, 32, "X25519 public key");
     RequireKemBlob(out.mlkem_ciphertext, "ML-KEM ciphertext");
     if (out.identity.empty() || out.identity.size() > 16U * 1024U) {

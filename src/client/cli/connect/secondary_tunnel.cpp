@@ -141,9 +141,15 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
     if (!h2_carrier || !cfg.inner_psk_material) {
         throw std::runtime_error("YUME 2.0 requires H2 carrier and inner PSK");
     }
+    const auto ratchet_policy =
+        ratchet::ResolveSecurityProfile(cfg.security_profile);
+    if (!ratchet_policy.has_value()) {
+        throw std::runtime_error("invalid YUME security profile");
+    }
     auto v2_ratchet = send_auth_v2_response(
         stream, io, cfg.identity, auth_challenge,
-        *cfg.inner_psk_material, *h2_carrier, cfg.rekey_window);
+        *cfg.inner_psk_material, *h2_carrier, cfg.rekey_window,
+        *ratchet_policy);
 
     auto server_info_timeout = kServerInfoTimeout;
     protocol::Frame info = h2_carrier

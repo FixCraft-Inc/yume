@@ -3,6 +3,7 @@
   "port": 443,
   "identity": "~/.yume/id_ed25519",
   "socks_port": 1080,
+  "security_mode": "extreme",
   "rekey_window": 8,
   "obfuscation": true,
   "obfs_secret_file": "~/.yume/obfs.hex",

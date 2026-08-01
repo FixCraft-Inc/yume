@@ -14,6 +14,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "config/ratchet_profile_json.hpp"
 #include "core/security/ratchet.hpp"
 #include "client/cli/connect/cert.hpp"
 #include "client/cli/config/platform.hpp"
@@ -139,6 +140,8 @@ void load_client_config_file(const ParsedArgs& args,
             }
             cfg->rekey_window = static_cast<std::uint16_t>(window);
         }
+        cfg->security_profile = yume::config::ParseSecurityProfile(
+            json, cfg->security_profile);
         if (json.contains("udp") && !args.udp_override) {
             cfg->allow_udp = json["udp"].get<bool>();
         }
@@ -620,6 +623,7 @@ void save_client_config_file(const ParsedArgs& args, const ClientConfig& cfg) {
     json["inner_hop"] = cfg.inner_hop;
     json["hop_interval_ms"] = cfg.hop_interval_ms;
     json["rekey_window"] = cfg.rekey_window;
+    yume::config::WriteSecurityProfile(json, cfg.security_profile);
     json["udp"] = cfg.allow_udp;
     json["allow_local_ip"] = cfg.allow_local_ip;
     json["server_in_charge"] = cfg.server_in_charge;

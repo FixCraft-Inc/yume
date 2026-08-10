@@ -21,6 +21,15 @@ downgrade mode exists.
   missing fields, and configured profile mismatches fail closed without a
   fallback.
 
+- **Fail-closed Linux 2.0 release lane.** The `linux-desktop-2.0` profile
+  builds only glibc Linux x86-64 with exact Go 1.26.5 and the Chrome helper
+  enabled. It emits `yume-amd64-linux.tar.xz` with the adjacent client/helper,
+  licensing, quick-start, and machine manifest, plus a separate
+  `yumed-amd64-linux`. The preflight rejects other platforms and variants,
+  incomplete bundles, version/tag drift, unequal clean helper rebuilds, or
+  relaxed PQ, Argon2, and LZMA requirements. Publishing is disabled by default
+  and requires explicit independent-review and RC-gate acknowledgements.
+
 ### Changed
 
 - **One coherent identity.** Chrome is rebased to exact Google Chrome
@@ -35,6 +44,35 @@ downgrade mode exists.
   overflowing the bounded application queue. The benchmark failure path is
   SIGPIPE-safe and always joins its receive workers, so failures are reported
   instead of ending in `std::terminate`.
+
+- **Qualified helper boundary.** The production Go entry point still applies
+  Linux-only `no_new_privs` and adopts connected TCP/IPC descriptors 3 and 4,
+  while its connection core is injectable for real TLS qualification. Wrong
+  CA, hostname, leaf pin, ALPN, and exporter behavior now fail through fixed,
+  bounded IPC errors; detailed verification causes stay local. Native launcher
+  tests cover unsafe file modes and symlinks, partial control and plaintext I/O,
+  post-ready half-close/cancellation, child teardown, and repeated fd/zombie
+  balance. Connection IDs use the BaseFWX RNG abstraction; the explicit
+  no-BaseFWX build retains the YUME CSPRNG fallback.
+
+### Fixed
+
+- **Helper crash and truncation lifecycle.** After `posix_spawn`, the parent
+  retained duplicate copies of the child-side IPC and connected TCP
+  descriptors. Those copies masked EOF/HUP when a helper crashed or returned a
+  truncated response, delaying failure until the handshake timeout and keeping
+  the TCP peer open. The parent now closes both duplicates immediately after a
+  successful spawn while preserving RAII cleanup on every failure path.
+
+### Remaining dev6 limitations
+
+- `chrome151` remains opt-in and `openssl-diagnostic` remains the default.
+  Process ramps, 1,000 reconnects, the 30-minute bidirectional soak, matched
+  WAN evidence, exact Chrome `151.0.7922.71` same-session recapture, and
+  independent security review remain release gates. Installed Chrome
+  `151.0.7922.108` is functional-only evidence and does not replace or rewrite
+  the dev6 fixture. Android, GUI, Windows, macOS, ARM, OpenWRT, static builds,
+  and Debian archive publication are outside the first official 2.0 scope.
 
 ## [Unreleased 2.0-dev5]
 

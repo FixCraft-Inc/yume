@@ -986,6 +986,48 @@ yume_link_atomic_if_needed(yume_chrome_tls_protocol_test PRIVATE)
 yume_apply_perf_opts(yume_chrome_tls_protocol_test)
 add_test(NAME yume_chrome_tls_protocol_test COMMAND yume_chrome_tls_protocol_test)
 
+if(YUME_BUILD_CHROME_TLS_HELPER)
+    add_test(
+        NAME yume_chrome_tls_helper_go_test
+        COMMAND "${CMAKE_COMMAND}" -E env
+            GOTOOLCHAIN=local
+            GOPROXY=off
+            "${YUME_GO_EXECUTABLE}" test
+            -mod=readonly
+            -count=1
+            .
+    )
+    set_tests_properties(yume_chrome_tls_helper_go_test PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/helper/chrome_tls"
+        TIMEOUT 120
+    )
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET yume_client_lib)
+        add_executable(yume_chrome_tls_fake_helper
+            client/transport/chrome_tls_fake_helper.cpp
+        )
+        target_link_libraries(yume_chrome_tls_fake_helper PRIVATE yume_transport_core)
+        yume_apply_perf_opts(yume_chrome_tls_fake_helper)
+        add_custom_command(TARGET yume_chrome_tls_fake_helper POST_BUILD
+            COMMAND chmod 0755 "$<TARGET_FILE:yume_chrome_tls_fake_helper>"
+            VERBATIM
+        )
+
+        add_executable(yume_chrome_tls_helper_test
+            client/transport/chrome_tls_helper_test.cpp
+        )
+        target_link_libraries(yume_chrome_tls_helper_test PRIVATE yume_client_lib)
+        yume_apply_perf_opts(yume_chrome_tls_helper_test)
+        add_dependencies(yume_chrome_tls_helper_test yume_chrome_tls_fake_helper)
+        add_test(
+            NAME yume_chrome_tls_helper_test
+            COMMAND yume_chrome_tls_helper_test
+                "$<TARGET_FILE:yume_chrome_tls_fake_helper>"
+        )
+        set_tests_properties(yume_chrome_tls_helper_test PROPERTIES TIMEOUT 15)
+    endif()
+endif()
+
 add_executable(yume_timing_diagnostics_test
     core/diagnostics/timing_test.cpp
 )

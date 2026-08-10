@@ -7,7 +7,12 @@
 #include "client/transport/chrome_tls_helper.hpp"
 
 #include "client/transport/chrome_tls_protocol.hpp"
+#include "core/security/crypto.hpp"
 #include "core/security/secure_erase.hpp"
+
+#if defined(YUME_USE_BASEFWX) && YUME_USE_BASEFWX
+#include <basefwx/crypto.hpp>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -26,8 +31,6 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
-
-#include <openssl/rand.h>
 
 extern char** environ;
 #endif
@@ -295,6 +298,18 @@ std::vector<std::uint8_t> ReadResponse(
     return wire;
 }
 
+chrome_tls::ConnectionId RandomConnectionId() {
+#if defined(YUME_USE_BASEFWX) && YUME_USE_BASEFWX
+    auto random = basefwx::crypto::RandomBytes(chrome_tls::kConnectionIdBytes);
+#else
+    auto random = crypto::random_bytes(chrome_tls::kConnectionIdBytes);
+#endif
+    ScopedVectorWiper random_wiper(random);
+    chrome_tls::ConnectionId connection_id{};
+    std::copy(random.begin(), random.end(), connection_id.begin());
+    return connection_id;
+}
+
 #endif
 
 }  // namespace
@@ -364,15 +379,18 @@ ClientTransportStream LaunchChromeTlsHelper(
                                 "start Chrome TLS helper");
     }
     auto lifetime = std::make_shared<ChildLifetime>(pid);
+    // posix_spawn has duplicated these descriptors to child fds 3 and 4.
+    // Keeping the parent's copies alive would mask child exit: the IPC peer
+    // would never reach EOF/HUP and the connected TCP socket would remain
+    // artificially open until the full handshake timeout expired.
+    connected_dup.Reset();
+    ipc_dup.Reset();
     child_ipc.Reset();
     boost::system::error_code close_error;
     connected_socket.close(close_error);
 
     chrome_tls::Request request;
-    if (RAND_bytes(request.connection_id.data(),
-                   static_cast<int>(request.connection_id.size())) != 1) {
-        throw std::runtime_error("generate Chrome TLS helper connection ID failed");
-    }
+    request.connection_id = RandomConnectionId();
     request.server_name = options.server_name;
     request.ca_path = options.ca_path.string();
     request.leaf_pin = options.leaf_pin;

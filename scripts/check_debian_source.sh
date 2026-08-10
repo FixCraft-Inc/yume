@@ -80,7 +80,7 @@ for path in "${required[@]}"; do
   fi
 done
 
-excluded_regex="^${prefix}/(AGENTS\\.md|AI_NOTES\\.md|DEV_services|basefwx|vendor|third_party|debian|\\.claude|\\.codex|\\.wrangler)(/|$)|^${prefix}/(build|build-[^/]+|obj-[^/]+)(/|$)|\\.(log|trace|out|pyc)$|\\.tar\\.xz$"
+excluded_regex="^${prefix}/(AGENTS\\.md|AI_NOTES\\.md|DEV_services|basefwx|vendor|third_party|debian|\\.cache|\\.claude|\\.codex|\\.wrangler)(/|$)|^${prefix}/(build|build-[^/]+|obj-[^/]+)(/|$)|\\.(log|trace|out|pyc)$|\\.tar\\.xz$"
 if grep -Eq "${excluded_regex}" "${listing}"; then
   echo "source package contains excluded files:" >&2
   grep -E "${excluded_regex}" "${listing}" >&2

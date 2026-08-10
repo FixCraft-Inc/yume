@@ -32,6 +32,7 @@ cd "${repo_root}"
 
 find . -mindepth 1 \
   \( -path './.git' \
+     -o -path './.cache' \
      -o -path './.claude' \
      -o -path './.codex' \
      -o -path './.wrangler' \

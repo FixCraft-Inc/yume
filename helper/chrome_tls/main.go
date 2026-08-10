@@ -31,6 +31,12 @@ const (
 	ipcFD         = 4
 )
 
+type exporterFunc func(utls.ConnectionState) ([]byte, error)
+
+func exportChannelBinding(state utls.ConnectionState) ([]byte, error) {
+	return state.ExportKeyingMaterial(exporterLabel, nil, exporterBytes)
+}
+
 func connectionFromFD(fd uintptr, name string) (net.Conn, error) {
 	file := os.NewFile(fd, name)
 	if file == nil {
@@ -141,24 +147,8 @@ func proxyPlaintext(ipc net.Conn, tlsConnection *utls.UConn) error {
 	return nil
 }
 
-func run() error {
-	if runtime.GOOS != "linux" {
-		return errors.New("Chrome TLS helper supports Linux only")
-	}
-	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
-		return fmt.Errorf("set no_new_privs: %w", err)
-	}
-	connected, err := connectionFromFD(connectedFD, "connected TCP")
-	if err != nil {
-		return err
-	}
-	defer connected.Close()
-	ipc, err := connectionFromFD(ipcFD, "private IPC")
-	if err != nil {
-		return err
-	}
-	defer ipc.Close()
-
+func runWithConnectionsAndExporter(connected net.Conn, ipc net.Conn,
+	exportExporter exporterFunc) error {
 	_ = ipc.SetDeadline(time.Now().Add(15 * time.Second))
 	header, request, err := readRequest(ipc)
 	if err != nil {
@@ -174,7 +164,7 @@ func run() error {
 	}
 	roots, err := loadRootCAs(request.CAPath)
 	if err != nil {
-		_ = writeError(ipc, header.ConnectionID, 3, err.Error())
+		_ = writeError(ipc, header.ConnectionID, 3, "custom CA load failed")
 		return err
 	}
 	config := &utls.Config{
@@ -187,7 +177,7 @@ func run() error {
 	tlsConnection := utls.UClient(connected, config, utls.HelloCustom)
 	spec, err := chrome151Spec()
 	if err != nil {
-		_ = writeError(ipc, header.ConnectionID, 4, err.Error())
+		_ = writeError(ipc, header.ConnectionID, 4, "Chrome 151 profile failed")
 		return err
 	}
 	if err := tlsConnection.ApplyPreset(spec); err != nil {
@@ -219,7 +209,7 @@ func run() error {
 		_ = writeError(ipc, header.ConnectionID, 9, "TLS leaf pin mismatch")
 		return errors.New("TLS leaf pin mismatch")
 	}
-	exporter, err := state.ExportKeyingMaterial(exporterLabel, nil, exporterBytes)
+	exporter, err := exportExporter(state)
 	if err != nil {
 		_ = writeError(ipc, header.ConnectionID, 10, "TLS exporter failed")
 		return fmt.Errorf("TLS exporter: %w", err)
@@ -229,6 +219,10 @@ func run() error {
 			exporter[index] = 0
 		}
 	}()
+	if len(exporter) != exporterBytes {
+		_ = writeError(ipc, header.ConnectionID, 10, "TLS exporter failed")
+		return fmt.Errorf("TLS exporter returned %d bytes", len(exporter))
+	}
 	payload, err := readyPayload(state.NegotiatedProtocol, leafHash, exporter)
 	if err != nil {
 		return err
@@ -243,6 +237,30 @@ func run() error {
 	_ = ipc.SetDeadline(time.Time{})
 	_ = connected.SetDeadline(time.Time{})
 	return proxyPlaintext(ipc, tlsConnection)
+}
+
+func runWithConnections(connected net.Conn, ipc net.Conn) error {
+	return runWithConnectionsAndExporter(connected, ipc, exportChannelBinding)
+}
+
+func run() error {
+	if runtime.GOOS != "linux" {
+		return errors.New("Chrome TLS helper supports Linux only")
+	}
+	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
+		return fmt.Errorf("set no_new_privs: %w", err)
+	}
+	connected, err := connectionFromFD(connectedFD, "connected TCP")
+	if err != nil {
+		return err
+	}
+	defer connected.Close()
+	ipc, err := connectionFromFD(ipcFD, "private IPC")
+	if err != nil {
+		return err
+	}
+	defer ipc.Close()
+	return runWithConnections(connected, ipc)
 }
 
 func main() {

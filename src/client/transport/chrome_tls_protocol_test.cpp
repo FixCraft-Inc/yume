@@ -24,6 +24,16 @@ void ExpectFailure(Callback&& callback, const std::string& expected) {
     assert(false && "expected runtime_error");
 }
 
+template <typename Callback>
+void ExpectFailure(Callback&& callback) {
+    try {
+        callback();
+    } catch (const std::runtime_error&) {
+        return;
+    }
+    assert(false && "expected runtime_error");
+}
+
 }  // namespace
 
 int main() {
@@ -69,6 +79,23 @@ int main() {
     trailing.push_back(0);
     ExpectFailure([&]() { (void)DecodeRequest(trailing); }, "trailing");
 
+    for (std::size_t size = 0; size < request_wire.size(); ++size) {
+        auto truncated = request_wire;
+        truncated.resize(size);
+        ExpectFailure([&]() { (void)DecodeRequest(truncated); });
+    }
+
+    auto bad_magic = request_wire;
+    bad_magic[0] ^= 1;
+    ExpectFailure([&]() { (void)DecodeRequest(bad_magic); }, "magic");
+
+    auto wrong_request_type = request_wire;
+    wrong_request_type[10] = 0;
+    wrong_request_type[11] = 2;
+    ExpectFailure(
+        [&]() { (void)DecodeRequest(wrong_request_type); },
+        "request type");
+
     auto wrong_id = request.connection_id;
     wrong_id[0] ^= 1;
     ExpectFailure(
@@ -86,9 +113,92 @@ int main() {
     oversized[15] = 0x01;
     ExpectFailure([&]() { (void)DecodeRequest(oversized); }, "exceeds cap");
 
+    Request empty_name = request;
+    empty_name.server_name.clear();
+    ExpectFailure([&]() { (void)EncodeRequest(empty_name); }, "server name");
+
+    Request long_name = request;
+    long_name.server_name.assign(254, 'a');
+    ExpectFailure([&]() { (void)EncodeRequest(long_name); }, "server name");
+
+    Request long_ca = request;
+    long_ca.ca_path.assign(4097, 'a');
+    ExpectFailure([&]() { (void)EncodeRequest(long_ca); }, "custom CA path");
+
+    Request long_build_id = request;
+    long_build_id.expected_build_id.assign(257, 'a');
+    ExpectFailure([&]() { (void)EncodeRequest(long_build_id); }, "build ID");
+
+    for (const std::uint32_t timeout : {999U, 120001U}) {
+        Request invalid_timeout = request;
+        invalid_timeout.timeout_ms = timeout;
+        ExpectFailure(
+            [&]() { (void)EncodeRequest(invalid_timeout); }, "timeout");
+    }
+
     Request invalid_pin = request;
     invalid_pin.leaf_pin.resize(31);
     ExpectFailure([&]() { (void)EncodeRequest(invalid_pin); }, "leaf pin");
+
+    const auto ready_wire = EncodeReady(ready);
+    for (std::size_t size = 0; size < ready_wire.size(); ++size) {
+        auto truncated = ready_wire;
+        truncated.resize(size);
+        ExpectFailure(
+            [&]() { (void)DecodeResponse(truncated, request.connection_id); });
+    }
+
+    auto trailing_ready = ready_wire;
+    trailing_ready.push_back(0);
+    ExpectFailure(
+        [&]() { (void)DecodeResponse(trailing_ready, request.connection_id); },
+        "trailing");
+
+    auto wrong_response_type = ready_wire;
+    wrong_response_type[10] = 0;
+    wrong_response_type[11] = 1;
+    ExpectFailure(
+        [&]() { (void)DecodeResponse(wrong_response_type, request.connection_id); },
+        "response type");
+
+    auto oversized_response = ready_wire;
+    oversized_response[12] = 0x00;
+    oversized_response[13] = 0x01;
+    oversized_response[14] = 0x00;
+    oversized_response[15] = 0x01;
+    ExpectFailure(
+        [&]() { (void)DecodeResponse(oversized_response, request.connection_id); },
+        "exceeds cap");
+
+    Ready wrong_build = ready;
+    wrong_build.build_id = "wrong-helper";
+    ExpectFailure(
+        [&]() {
+            (void)DecodeResponse(
+                EncodeReady(wrong_build), request.connection_id);
+        },
+        "build identity");
+
+    Ready wrong_alpn = ready;
+    wrong_alpn.alpn = "http/1.1";
+    ExpectFailure(
+        [&]() {
+            (void)DecodeResponse(
+                EncodeReady(wrong_alpn), request.connection_id);
+        },
+        "negotiate h2");
+
+    Ready long_ready_build = ready;
+    long_ready_build.build_id.assign(257, 'a');
+    ExpectFailure([&]() { (void)EncodeReady(long_ready_build); }, "build ID");
+
+    Ready long_alpn = ready;
+    long_alpn.alpn.assign(256, 'a');
+    ExpectFailure([&]() { (void)EncodeReady(long_alpn); }, "ALPN");
+
+    HelperError long_error = helper_error;
+    long_error.message.assign(1025, 'a');
+    ExpectFailure([&]() { (void)EncodeError(long_error); }, "helper error");
 
     return 0;
 }

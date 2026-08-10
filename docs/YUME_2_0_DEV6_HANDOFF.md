@@ -80,7 +80,7 @@ The authoritative evidence is under `tests/fixtures/chrome151-node24/`.
 - A pinned uTLS `v1.8.2` helper is built with exact Go `1.26.5`, module
   checksums, `-trimpath`, no runtime downloads, and no Go build ID.
 - The reproducible helper SHA-256 is
-  `1a2ae7a9fcd9bb0ee5c8094a58c4c2865787231469b9afabb10746fca10489d5`.
+  `6dbcda7e626f4c3bedce687a232fa7c2c02fe8649ecb7f0322497670093f9d36`.
 - The helper identity is `yume-chrome151-utls-v1.8.2-ipc-v1`.
 - The C++ parent establishes direct or SOCKS/Tor-routed TCP and passes the
   connected descriptor to one helper process per connection over an anonymous
@@ -319,6 +319,75 @@ then reboot when required and restart the complete baseline/candidate series.
     adversarial deployment testing before `2.0-rc1`; treat findings as release
     blockers, not documentation exceptions.
 
+## 2026-08-10 helper lifecycle and Linux release closure
+
+Ordered handoff item 2 is complete at the bounded unit/integration level. The
+parent/helper tests cover every truncated IPC prefix, oversized payload
+declaration before allocation, invalid magic/version/type, bounded fields and
+error strings, partial control and plaintext I/O, wrong helper identity, ALPN,
+connection ID and IPC version, explicit rejection, child crash/hang/timeout,
+post-ready parent and child half-close, asynchronous cancellation, unsafe file
+modes, symlinks, synchronous termination/reaping, 64 repeated child launches,
+and parent fd balance. The Go tests are a first-class CTest gate.
+
+The production Go wrapper still enforces Linux and `no_new_privs`, adopts only
+connected TCP fd 3 and private IPC fd 4, and then calls an injectable
+connection core. In-process real TLS tests cover success plus wrong CA,
+hostname, leaf pin, ALPN, and an injected exporter failure. Only fixed bounded
+errors cross IPC; verification details remain local. The exporter must be
+exactly 32 bytes before a ready response is encoded.
+
+This testing exposed a production lifecycle defect: after `posix_spawn`, the
+parent retained duplicates of the child-side IPC and connected TCP descriptors.
+A helper that crashed or returned a truncated response therefore could not
+produce EOF/HUP at the parent and was reported only after the handshake timeout.
+The parent now closes both duplicates immediately after a successful spawn;
+spawn-failure cleanup remains RAII-managed. The launcher also obtains its IPC
+connection ID through the approved BaseFWX RNG helper (with the existing YUME
+crypto helper retained only for builds that explicitly disable BaseFWX), rather
+than calling OpenSSL RNG directly.
+
+Validation on 2026-08-10:
+
+- RelWithDebInfo `yume` and the pinned Go helper built with two jobs;
+- complete normal CTest: 57/57 passed;
+- complete ASan+UBSan CTest, serial with leak detection and halt-on-error:
+  57/57 passed;
+- offline pinned Go tests and `go test -race`: passed;
+- helper SHA-256 from two clean strict Release CMake directories:
+  `6dbcda7e626f4c3bedce687a232fa7c2c02fe8649ecb7f0322497670093f9d36`
+  for both outputs;
+- helper identity remained `yume-chrome151-utls-v1.8.2-ipc-v1`, protocol 1,
+  built by Go 1.26.5;
+- the explicit `YUME_USE_BASEFWX=0` launcher fallback compiled with warnings as
+  errors;
+- Chrome fixture and five helper first flights: `PARITY`;
+- mandatory CLI process smoke: passed at 83.37 MiB/s (local regression only);
+- functional Chrome-helper-through-SOCKS smoke: passed with H2 selected and no
+  packet capture; installed Chrome was not used as parity evidence;
+- `linux-desktop-2.0` release preflight, exact bundle-content/hash/mode checks,
+  ABI/export checks, and Debian source consistency: passed.
+
+The first 2.0 release lane is now glibc Linux x86-64 CLI/server only. It builds
+with exact Go 1.26.5, helper ON, GUI/static/cross-platform surfaces OFF, and
+strict PQ/Argon2/LZMA requirements. `yume-amd64-linux.tar.xz` contains adjacent
+`yume` and `yume-chrome-tls-helper`, licensing, quick-start, and a machine
+manifest; `yumed-amd64-linux` is separate. The workflow defaults to preparation
+only and cannot publish without explicit independent-review and RC-gate
+acknowledgements. No Debian archive publication is claimed.
+
+No IPC version, helper identity, exporter label, transport profile,
+cryptographic derivation, public API, or wire format changed.
+
+The host is not a valid continuation of the August 1 matched Chrome/performance
+baseline: it now runs kernel `6.12.101+deb13-amd64`, installed Chrome is
+`151.0.7922.108` rather than pinned `151.0.7922.71`, and less than the required
+20 GiB remained free. Therefore the isolated 1/10/50/100/256 process ramps,
+1,000 reconnects, 30-minute bidirectional soak, matched WAN matrix, and
+same-session capture were not run. Do not use these tests as fresh Chrome
+parity, throughput, WAN, soak, or scale evidence. `chrome151` remains opt-in
+and a second qualification checkpoint must not be created from this host state.
+
 BoringSSL is not the next automatic step. The uTLS implementation already
 passes the current first-flight, exporter, handshake-overhead, and local bulk
 gates. Revisit BoringSSL only if uTLS fails a remaining security, lifecycle,
@@ -328,7 +397,13 @@ packaging, or field-classification gate.
 
 ```sh
 ctest --test-dir build-final-review --output-on-failure -j2
-ctest --test-dir build-asan-audit --output-on-failure -j1
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1 \
+UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+  ctest --test-dir build-asan-audit --output-on-failure -j1
+
+(cd helper/chrome_tls && \
+  GOTOOLCHAIN=local GOPROXY=off ../../.cache/toolchains/go1.26.5/bin/go test \
+    -mod=readonly -count=1 -race ./...)
 
 python3 scripts/yume_chrome_evidence.py \
   --fixture tests/fixtures/chrome151-node24
@@ -340,6 +415,9 @@ python3 scripts/yume_tls_wire.py check-profile \
   --candidate tests/fixtures/chrome151-node24/helper_tls_wire_run_3.json \
   --candidate tests/fixtures/chrome151-node24/helper_tls_wire_run_4.json \
   --candidate tests/fixtures/chrome151-node24/helper_tls_wire_run_5.json
+
+python3 scripts/release_preflight.py
+scripts/check_debian_source.sh
 
 git diff --check
 ```

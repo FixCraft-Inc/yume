@@ -36,8 +36,9 @@ downgrade mode exists.
   `151.0.7922.71` and official Node `24.18.0`. The incomplete Firefox/Safari
   presets and dead rotation state were removed instead of being carried as
   unsupported claims. The OpenSSL ClientHello remains an explicit `KNOWN_GAP`;
-  the helper has passed local wire/performance gates but remains opt-in pending
-  process-failure negatives and the sustained soak.
+  the helper has passed local wire/performance, lifecycle, process-scale,
+  reconnect, and segmented-soak gates but remains opt-in pending matched WAN,
+  same-session stealth, independent review, and the remaining RC gates.
 
 - **Bounded TCP producer backpressure.** SOCKS and TCP forwarders now advance
   local reads on transport-write completion, preventing fast producers from
@@ -55,6 +56,18 @@ downgrade mode exists.
   balance. Connection IDs use the BaseFWX RNG abstraction; the explicit
   no-BaseFWX build retains the YUME CSPRNG fallback.
 
+- **Bounded Linux process and soak qualification.** At the exact clean signed
+  lifecycle checkpoint, the 1/10/50/100/256-client Chrome-helper ramps
+  completed with exact bytes and zero unexpected failures. The 256-client run
+  held 256 clients plus 256 helpers concurrently and transferred 65,536 MiB.
+  A 1,000/1,000 sequential reconnect storm transferred 2,000 MiB with no
+  helper, zombie, fd, or thread growth. A 2,333-second full-speed batch moved
+  112,640 MiB per direction at 816.607 Mbit/s aggregate with zero byte mismatch,
+  timeout, interruption, or unexpected server error. The soak used seven
+  consecutive segments to preserve the signed endpoint's 16,384 MiB
+  per-invocation bound; it does not claim one uninterrupted >16 GiB connection
+  or WAN behavior.
+
 ### Fixed
 
 - **Helper crash and truncation lifecycle.** After `posix_spawn`, the parent
@@ -67,12 +80,13 @@ downgrade mode exists.
 ### Remaining dev6 limitations
 
 - `chrome151` remains opt-in and `openssl-diagnostic` remains the default.
-  Process ramps, 1,000 reconnects, the 30-minute bidirectional soak, matched
-  WAN evidence, exact Chrome `151.0.7922.71` same-session recapture, and
-  independent security review remain release gates. Installed Chrome
-  `151.0.7922.108` is functional-only evidence and does not replace or rewrite
-  the dev6 fixture. Android, GUI, Windows, macOS, ARM, OpenWRT, static builds,
-  and Debian archive publication are outside the first official 2.0 scope.
+  Matched WAN evidence, one uninterrupted >16 GiB connection, exact Chrome
+  `151.0.7922.71` same-session recapture, external classifier/active-probe
+  evidence, and independent security review remain release gates. Installed
+  Chrome `151.0.7922.108` is functional-only evidence and does not replace or
+  rewrite the dev6 fixture. Android, GUI, Windows, macOS, ARM, OpenWRT, static
+  builds, and Debian archive publication are outside the first official 2.0
+  scope.
 
 ## [Unreleased 2.0-dev5]
 

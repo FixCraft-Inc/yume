@@ -12,10 +12,11 @@ yet a production replacement for them.
 
 The current vertical slice has a strong cryptographic design, competitive
 same-host throughput, a coherent Chrome 151 + Node 24 cover identity, and a
-five-flow structural TLS first-flight parity result. It still lacks independent
-security review, field classifier evidence, the complete helper failure matrix,
-a sustained dev6 soak, high-RTT/loss measurements, broad client-platform
-support, and Xray's mature routing, metrics, control, and deployment ecosystem.
+five-flow structural TLS first-flight parity result. Its bounded helper failure
+matrix, process ramps, reconnect storm, and segmented full-speed soak now pass.
+It still lacks independent security review, field classifier evidence, matched
+high-RTT/loss measurements, broad client-platform support, and Xray's mature
+routing, metrics, control, and deployment ecosystem.
 
 Do not describe dev6 as indistinguishable from Chrome, immune to DPI,
 quantum-proof, audited, production-scale, or ready to replace Xray. The accurate
@@ -38,11 +39,13 @@ All three commits were signed by EdDSA key
 dev5 checkpoint `119b728a95b5a88b5508b45e17ef2e4fe49b51e1` on both `main` and
 `origin/main`. Never force-push this work.
 
-Two later signed local closure commits document this handoff and harden the
-agent/benchmark workflow. Their subjects are `Document the YUME 2.0 dev6
-handoff` and `Harden the dev6 benchmark workflow`. Use the signed `git log`
-command below for their exact hashes; the document deliberately does not embed
-the hash of the commit containing itself.
+Later signed local closure commits document this handoff, harden the benchmark
+workflow, and close the helper lifecycle. The lifecycle checkpoint is exact
+commit `30cad6e23b651a6c68ba8036299e863c59b9ab54`, subject `Harden Chrome helper
+failure lifecycle`. The second documentation checkpoint has subject `Record
+dev6 qualification evidence`. Use the signed `git log` command below for all
+exact hashes; this document deliberately does not embed the hash of the commit
+containing itself.
 
 Useful inspection commands:
 
@@ -96,8 +99,9 @@ The authoritative evidence is under `tests/fixtures/chrome151-node24/`.
 - `chrome151` is Linux-desktop-only and supports exactly one outer tunnel.
   Unsupported requests fail explicitly.
 - There is no silent fallback. `openssl-diagnostic` remains the default while
-  failure-lifecycle and sustained-soak gates are incomplete, and it prints a
-  visible warning that it is not Chrome ClientHello parity.
+  matched WAN, same-session stealth, independent-review, and remaining RC gates
+  are incomplete, and it prints a visible warning that it is not Chrome
+  ClientHello parity.
 
 Five complete authenticated helper flows passed the normalized Chrome
 ClientHello and direct-Node ServerHello structural gate. The comparator keeps
@@ -143,6 +147,9 @@ the underlying transport error instead of aborting through a joinable thread.
 | Full quick SOCKS flow | 121.60 MiB/s, 1,020.05 Mbit/s | Fresh 32 MiB bidirectional local regression smoke, not a release benchmark |
 | Server concurrency | 100/100 same-host authenticated clients; 10.98 Gbit/s window | Full ML-KEM/X25519/ratchet locally; not idle scale or physical WAN |
 | Tuned server workers | 16 workers: 10.95 Gbit/s, 13.21 average cores, 161.35 MiB peak RSS | One 50-client workload on one hybrid-CPU host |
+| Helper process ramp | 256/256 clients and 256 helpers; 65,536 MiB exact; zero unexpected failures | Same-host process/fd/RSS gate; not physical-network concurrency |
+| Sequential reconnect | 1,000/1,000; 2,000 MiB exact; p95 120.931 ms; no post-cleanup growth | Same-host reconnect lifecycle evidence, not WAN recovery |
+| Full-speed soak | 225,280 MiB exact over 2,314.193 endpoint seconds; 816.607 Mbit/s aggregate | Seven back-to-back bounded segments; not one >16 GiB connection or WAN evidence |
 
 The detailed historical evidence and exclusions remain in
 `docs/YUME_2_0_IMPLEMENTATION_STATUS.md` and
@@ -160,8 +167,10 @@ The final documentation-only checkpoint was closed on 2026-08-01 with:
   GREASE-ECH lengths 186, 218, and 282 bytes;
 - `git diff --check`: passed.
 
-These reruns validate the current local artifacts and documentation integration.
-They do not replace the missing live failure, WAN, classifier, or soak gates.
+These reruns validate the August 1 local artifacts and documentation
+integration. The August 10/11 sections below supersede their helper-lifecycle,
+process-scale, reconnect, and soak status; WAN, classifier, and independent
+review gates remain open.
 
 ## Competitive position
 
@@ -173,7 +182,7 @@ authorization, one-use AES-GCM message keys, authenticated profile/policy
 negotiation, and fail-closed bounds. This is a credible design advantage.
 
 It is not evidence that YUME is safer than Xray. YUME has no independent audit,
-far less deployment exposure, and incomplete adversarial lifecycle coverage.
+far less deployment exposure, and incomplete adversarial deployment coverage.
 Xray's current VLESS documentation also includes a post-quantum
 ML-KEM-768 + X25519 encryption mode. Primitive checklists do not replace review
 or operational experience.
@@ -183,8 +192,9 @@ or operational experience.
 YUME passes its local helper-overhead gate and can saturate a gigabit local
 path. The remaining bottleneck is not basic crypto speed. XTLS Vision is built
 around direct handling of encrypted TLS data, while Xray offers several mature
-transport choices. YUME needs matched high-RTT, loss, long-flow, reconnect, and
-many-client results before claiming performance parity.
+transport choices. YUME now has same-host long-flow, reconnect, and many-client
+results, but still needs matched high-RTT and loss measurements before claiming
+performance parity.
 
 ### Stealth
 
@@ -274,48 +284,40 @@ control, or CPU governor in the middle of a comparison. Record it first.
 Change it only for a reproducible fault or an explicitly isolated experiment,
 then reboot when required and restart the complete baseline/candidate series.
 
-## Ordered work for the next agent
+## Remaining ordered work for the next agent
+
+The bounded helper negative matrix, 1/10/50/100/256 ramps, 1,000 sequential
+reconnects, and segmented 30-minute full-speed soak are complete as documented
+below. Do not silently rerun or broaden them without freezing a new workload
+and artifact location.
 
 1. **Re-derive current state.** Verify the branch, signed commits, clean
    BaseFWX boundary, helper hash, exact Chrome/Node manifest, and absence of an
    upstream. Do not trust an old private handoff over the live checkout.
-2. **Finish the helper negative matrix.** Cover wrong CA, hostname, leaf pin,
-   ALPN, exporter, profile, helper identity and IPC version; child crash/hang;
-   malformed/truncated/oversized IPC; partial I/O; cancellation and deadlines;
-   parent/child half-close; descriptor leaks; and termination/reaping. Exercise
-   these under ASan/UBSan where applicable.
-3. **Measure process scalability.** Run bounded 1/10/50/100/256 connection
-   ramps and repeated reconnect storms. Record helper PIDs, unreaped children,
-   open fds, threads, CPU, RSS, handshake percentiles, errors, and recovery.
-   Decide from evidence whether one helper per connection remains acceptable or
-   requires a safe bounded helper service/pool protocol.
-4. **Run the sustained gate.** Perform the 30-minute bidirectional dev6 soak
-   across many epochs plus at least 1,000 sequential reconnects. Require no
-   queue growth, descriptor/child leak, stale key/window retention, timeout, or
-   byte mismatch.
-5. **Produce same-session stealth evidence.** Capture five fresh normal-Chrome
+2. **Produce same-session stealth evidence.** Restore exact Chrome
+   `151.0.7922.71`, then capture five fresh normal-Chrome
    and five YUME flows under identical certificate/SNI/ALPN/server conditions,
    including privileged raw packets where available. Compare TLS records, H2,
    request/asset sequence, WebSocket controls, bulk, idle, close, and timing
    distributions. Add external classifier and active-probe tests. Keep verdicts
    `PARITY`, `KNOWN_GAP`, or `DRIFT`.
-6. **Run the WAN matrix.** Use matched Release binaries at 60/100/210 ms RTT,
+3. **Run the WAN matrix.** Use matched Release binaries at 60/100/210 ms RTT,
    100 Mbit/s and approximately 1 Gbit/s, then 0.1% and 1% loss. Measure upload,
    download, bidirectional flows, reconnect, rekey wait/depth, H2/TCP stalls,
    retransmits, CPU, RSS, and binary hashes. Diagnose the recorded ~25 Mbit/s
    WAN ceiling before changing crypto limits.
-7. **Harden operations.** Add useful health/metrics without exporting secrets or
+4. **Harden operations.** Add useful health/metrics without exporting secrets or
    a stable wire marker; test graceful shutdown/reload, systemd/cgroup limits,
    disk/log pressure, per-key fairness, backend failure, and Debian installed
    helper discovery/ownership/permissions.
-8. **Expand clients honestly.** Design Android and other-platform TLS backends
+5. **Expand clients honestly.** Design Android and other-platform TLS backends
    separately; the Linux helper is not portable evidence. Keep unsupported
    platforms and multi-tunnel configurations explicit failures until each has
    its own profile and gates.
-9. **Switch the default only after evidence.** Make `chrome151` the default and
+6. **Switch the default only after evidence.** Make `chrome151` the default and
    retain `openssl-diagnostic` only after all certificate/exporter/lifecycle,
    install-layout, performance, and soak gates pass. Never silently fall back.
-10. **Seek independent review.** Commission cryptographic/protocol review and
+7. **Seek independent review.** Commission cryptographic/protocol review and
     adversarial deployment testing before `2.0-rc1`; treat findings as release
     blockers, not documentation exceptions.
 
@@ -379,14 +381,79 @@ acknowledgements. No Debian archive publication is claimed.
 No IPC version, helper identity, exporter label, transport profile,
 cryptographic derivation, public API, or wire format changed.
 
-The host is not a valid continuation of the August 1 matched Chrome/performance
-baseline: it now runs kernel `6.12.101+deb13-amd64`, installed Chrome is
-`151.0.7922.108` rather than pinned `151.0.7922.71`, and less than the required
-20 GiB remained free. Therefore the isolated 1/10/50/100/256 process ramps,
-1,000 reconnects, 30-minute bidirectional soak, matched WAN matrix, and
-same-session capture were not run. Do not use these tests as fresh Chrome
-parity, throughput, WAN, soak, or scale evidence. `chrome151` remains opt-in
-and a second qualification checkpoint must not be created from this host state.
+The local host was not a valid continuation of the August 1 matched
+Chrome/performance baseline: its installed Chrome was `151.0.7922.108` rather
+than pinned `151.0.7922.71`. The process-scale, reconnect, and soak gates were
+therefore moved to an isolated clean checkout on the separate Linux host
+documented below. Installed Chrome `.108` remains functional-only evidence;
+it was not used to rewrite fixtures or make fresh Chrome-parity claims.
+
+## 2026-08-11 remote process and soak qualification
+
+The second dev6 qualification ran from clean commit
+`30cad6e23b651a6c68ba8036299e863c59b9ab54` with clean BaseFWX
+`4692d4ce4edec2aa9835d04ad9ff6c3ad3ab9374` on `raptorlake`: Debian Linux
+`6.12.94+deb13-amd64`, x86-64, Intel Core i9-14900K, 32 logical CPUs, 62.49 GiB
+RAM, and approximately 1.4 TiB free. The server used pinned Node `24.18.0`.
+Installed Chrome was not part of these endpoint benchmarks.
+
+The exact binaries were:
+
+- `yume` SHA-256
+  `c0e8b69fc002aceac07dfcd689dbd80ae1b657d9e3f5fdb375edfbc6d25a7e38`;
+- `yumed` SHA-256
+  `7a005998d3c5194a431d197f21beddeed9f49acb0eae37d4242584fc4cc09bcb`;
+- `yume-chrome-tls-helper` SHA-256
+  `6dbcda7e626f4c3bedce687a232fa7c2c02fe8649ecb7f0322497670093f9d36`.
+
+Qualification results:
+
+- the 1/10/50/100-client ramps completed every requested authenticated client
+  with exact bytes and no unexpected failure;
+- the 256-client ramp held 256 `yume` plus 256 helper processes concurrently,
+  transferred exactly 65,536 MiB in 47.781 seconds, reported zero unexpected
+  failures, and returned the server to its eight-fd/34-thread baseline with no
+  helper or zombie left behind; the conservative sum of client-group peak RSS
+  was 12,814.049 MiB;
+- 1,000/1,000 sequential reconnects transferred exactly 2,000 MiB in 122.402
+  seconds with zero unexpected failure; median latency was 95.234 ms and p95
+  was 120.931 ms. Server fds remained 8 -> 8, threads 34 -> 34, helpers and
+  zombies remained zero, and final RSS was below its baseline;
+- the full-speed bidirectional soak transferred 112,640 MiB per direction,
+  225,280 MiB total, over 2,333 seconds of script wall time and 2,314.193
+  seconds of endpoint activity. Aggregate throughput was 97.347 MiB/s
+  (816.607 Mbit/s), comprising 73.809 MiB/s upload and 142.972 MiB/s download;
+- all seven soak segments exited zero with exact bytes, no timeout or
+  interruption, client peak RSS at 90.168 MiB, and a two-process client/helper
+  peak. Server fds remained 8 -> 8, threads 34 -> 34, RSS fell from 571,092 to
+  472,740 KiB, and the final helper, zombie, and unexpected server-error counts
+  were zero.
+
+The signed checkpoint's endpoint benchmark intentionally caps one invocation
+at 16,384 MiB per direction. To test the exact signed binary without weakening
+that bound, the soak used six 16,384 MiB segments plus one 14,336 MiB segment,
+back-to-back. This passes the bounded 30-minute full-load batch and many-epoch
+gate, but is not evidence for one uninterrupted connection beyond 16 GiB per
+direction. It is loopback scale/performance evidence, not matched WAN or
+same-session stealth evidence.
+
+The long-lived server sampler retained its final 10,000 of 66,393 samples and
+dropped earlier samples after its bounded retention window; its post-idle
+summary is therefore not used as the ramp/soak peak oracle. Acceptance instead
+uses each run's sampler plus explicit before/after procfs and systemd cgroup
+observations. The private SHA-256-verified evidence is outside Git under
+`.private/ai/qualification/30cad6e-raptorlake-20260811/`; its 484-file checksum
+inventory hashes to
+`91784a4546126eb6448e6b300c611ebe41ec998bcab8607436e1f2e76e5c1b41`.
+The isolated remote server, checkout, artifacts, and tmux dump were stopped and
+removed only after that local copy verified.
+
+These results close the documented bounded lifecycle, process-ramp, reconnect,
+and segmented-soak gates. They do not close matched WAN, exact Chrome
+`151.0.7922.71` same-session capture, external classification/active probing,
+or independent security review. `chrome151` remains opt-in;
+`openssl-diagnostic` remains the explicit default; and no `2.0-rc1` bump, tag,
+push, publication, or default switch is authorized.
 
 BoringSSL is not the next automatic step. The uTLS implementation already
 passes the current first-flight, exporter, handshake-overhead, and local bulk

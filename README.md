@@ -234,8 +234,11 @@ YUME identical to Chrome or immune to traffic analysis. The default
 An opt-in Linux helper now implements a pinned uTLS Chrome 151 first flight and
 preserves YUME's certificate checks and TLS exporter. Five complete flows pass
 the normalized Chrome/Node first-flight structural gate and the local
-handshake/throughput budgets; failure/lifecycle and sustained-soak gates remain
-before it becomes the default. It never silently falls back to OpenSSL.
+handshake/throughput budgets. The bounded failure/lifecycle matrix,
+1/10/50/100/256 process ramps, 1,000 reconnects, and segmented 30-minute
+full-speed soak also pass. It remains opt-in until matched WAN, exact-Chrome
+same-session, classifier/active-probe, and independent-review gates pass. It
+never silently falls back to OpenSSL.
 See [docs/STEALTH.md](docs/STEALTH.md)
 for the measured scope and [docs/YUME_2_0_IMPLEMENTATION_STATUS.md](docs/YUME_2_0_IMPLEMENTATION_STATUS.md)
 for unfinished release gates.
@@ -671,7 +674,10 @@ sudo ./build/bin/yumed \
 - Admission and inner secrets are separate owner-only files; wrong, malformed,
   expired, replayed, or authority-mismatched admission follows the cover path
   instead of receiving AUTH
-- Session close has a five-second deadline, pending service queues are capped, and detached client EXEC work is capped at four concurrent workers; sanitizer/soak validation is still outstanding
+- Session close has a five-second deadline, pending service queues are capped,
+  and detached client EXEC work is capped at four concurrent workers. Current
+  native sanitizer and segmented loopback soak gates pass; deployed WAN,
+  disk/log-pressure, and adversarial operational soak remain outstanding
 - Protected application payloads are capped at 256 KiB so one frame cannot
   cross a directional epoch byte limit
 - The admission path-token verifier uses `CRYPTO_memcmp` ([src/core/stealth/obfs_signal.cpp](src/core/stealth/obfs_signal.cpp))

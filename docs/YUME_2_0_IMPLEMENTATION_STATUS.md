@@ -22,8 +22,11 @@ or admin/control validation.
   `h2`, exact build/protocol identity, and returns the live 32-byte TLS
   exporter before proxying plaintext through bounded buffers. It runs with
   `no_new_privs`, strict IPC lengths/deadlines, and parent-owned child reaping.
-  The build pins uTLS `v1.8.2`, module checksums, and Go `1.26.5`; it is opt-in
-  until the remaining failure-lifecycle and sustained-soak gates pass.
+  The build pins uTLS `v1.8.2`, module checksums, and Go `1.26.5`. Its bounded
+  certificate/exporter, IPC, partial-I/O, cancellation, half-close, teardown,
+  fd/zombie, process-scale, reconnect, and segmented-soak gates pass. It remains
+  opt-in pending matched WAN, same-session stealth, classifier/active-probe,
+  independent-review, and remaining RC gates.
 - A capture-derived TLS wire parser and normalized profile gate now preserve
   cipher/extension/group/signature/version/ALPN order, key-share geometry,
   padding, and record lengths while normalizing only documented entropy and
@@ -220,7 +223,7 @@ or admin/control validation.
   1 ms through OpenSSL (+9 ms, within the 10 ms gate). Three matched 256 MiB
   upload plus 256 MiB download trials at 16 streams measured 1,793.8 Mbit/s
   helper median versus 1,780.6 Mbit/s OpenSSL median. This passes the local 5%
-  bulk-overhead gate; it is not WAN, loss, or sustained-soak evidence.
+  bulk-overhead gate; this comparison itself is not WAN or loss evidence.
 - TCP SOCKS, local-forward, and reverse-forward upload reads now wait for the
   prior transport write completion before reading another 64 KiB block. This
   preserves the bounded transport queue under a fast local producer instead of
@@ -230,15 +233,28 @@ or admin/control validation.
   instead of terminating during thread destruction. A fresh 32 MiB
   bidirectional quick smoke completed at 121.60 MiB/s (1,020.05 Mbit/s) on the
   development laptop; this is a regression signal, not a release benchmark.
+- At exact clean signed lifecycle commit `30cad6e`, isolated Linux
+  qualification completed 1/10/50/100/256 Chrome-helper process ramps, 1,000
+  sequential reconnects, and a 2,333-second bidirectional full-speed batch.
+  The 256-client run held 256 clients plus 256 helpers and moved 65,536 MiB
+  exactly with zero unexpected failure. Reconnects completed 1,000/1,000 with
+  server fds/threads 8 -> 8 and 34 -> 34, and no post-cleanup helper or zombie.
+  The soak moved 225,280 MiB exactly at 816.607 Mbit/s aggregate with zero
+  timeout, interruption, mismatch, or unexpected server error. It used seven
+  back-to-back segments to preserve the signed endpoint's 16,384 MiB
+  per-invocation bound, so it is not one uninterrupted >16 GiB connection or
+  matched WAN evidence.
 
 ## Required before `2.0-rc1`
 
 - Run an actual desktop tunnel bidirectionally across multiple epochs and
-  reconnect cleanly in the intended deployment environment.
+  reconnect cleanly in the intended deployed network; current long-flow and
+  reconnect qualification is same-host loopback evidence.
 - Complete external HTTP/2/WebSocket conformance checks, not only project tests
   and Chrome interoperability.
-- Exercise partial socket writes, sustained flow-control stalls, malformed
-  carrier paths, backend timeout/failure, and bounded backpressure under load.
+- Exercise sustained carrier flow-control stalls, malformed carrier paths,
+  backend timeout/failure, and bounded backpressure under deployed-network
+  load. Helper partial control/plaintext I/O and teardown are already covered.
 - Decide the time-limit threat model explicitly. Today the receiver
   independently enforces inbound byte/frame usage while the configured active-time boundary is
   sender-local. A signed timestamp does not make a malicious sender's clock
@@ -251,24 +267,24 @@ or admin/control validation.
   sequencing makes this carrier boundary security-critical.
 - Capture and compare the live YUME connection against the committed fixture;
   record every remaining classifier-visible TLS/H2 difference.
-- Run the remaining certificate/exporter negative tests and helper crash,
-  timeout, cancellation, descriptor-leak, and teardown soak. The backend must
-  remain opt-in until those tests pass.
 - Preserve fixture-backed coherence between the TLS selection, HTTP headers,
   H2 shape, assets, and cover server while closing the remaining OpenSSL
   ClientHello differences.
+- Obtain independent cryptographic/protocol review and adversarial deployment
+  testing before authorizing `2.0-rc1`.
 
 ## Required before exact version `2.0`
 
-- A valid tunnel lasting at least 30 minutes.
-- Sanitizer coverage and a longer concurrency/rekey soak on an approved machine.
+- A valid uninterrupted tunnel lasting at least 30 minutes in the intended
+  deployment environment. The current >30-minute loopback qualification is a
+  seven-segment bounded batch, not one continuous >16 GiB connection.
+- Broader fuzz, disk/log-pressure, graceful reload/shutdown, and adversarial
+  operational soak beyond the completed native sanitizer and loopback gates.
 - Validate the implemented bounded future-epoch window with matched one-tunnel
   WAN upload/download/both matrices at 60, 100, and 210 ms, 100 Mbit/s and
   approximately 1 Gbit/s, plus controlled loss and a 30-minute soak. Diagnose
   the separate measured ceiling near 25 Mbit/s before tuning the ratchet
   further. The LAN result is not this gate.
-- Bulk overhead measurement at or below 5% using the committed capture-derived
-  shaping policy.
 - Security-negative coverage for counter wrap and all malformed/tampered cases
   in the acceptance list, plus independent review of key erasure and failure
   paths.
@@ -283,11 +299,14 @@ defaults to the explicitly named `openssl-diagnostic` backend. The new pinned
 uTLS helper builds reproducibly with official Go 1.26.5 and its five live
 first flights pass the normalized ClientHello/ServerHello structural gate.
 Selecting `chrome151` never silently falls back: a build without the helper
-fails closed. Negative certificate/exporter and process lifecycle tests plus
-the sustained soak remain required before that backend becomes the default or
-YUME claims release-qualified Chrome parity. Matching ALPN or a
-coarse JA3/JA4 summary is insufficient. Traffic padding is likewise an
-evidence-driven option, not an automatic improvement.
+fails closed. The bounded certificate/exporter and process lifecycle matrix,
+process ramps, reconnect storm, and segmented full-speed soak pass. Matched WAN,
+one uninterrupted deployed-network soak, exact Chrome `151.0.7922.71`
+same-session capture, classifier/active-probe evidence, and independent review
+remain required before that backend becomes the default or YUME claims
+release-qualified Chrome parity. Matching ALPN or a coarse JA3/JA4 summary is
+insufficient. Traffic padding is likewise an evidence-driven option, not an
+automatic improvement.
 
 Client AUTH sends an Ed25519 public key and a signature over the complete
 canonical challenge/response transcript; it never sends the private key. As of

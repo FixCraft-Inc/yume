@@ -1,9 +1,11 @@
 # YUME 2.0 desktop wire contract
 
 Status: current `2.0-dev6` development contract for the first Linux x86-64 desktop slice.
-The release version remains gated on capture, conformance, soak, and throughput
-evidence. This document intentionally does not describe a 1.x compatibility
-mode because none exists.
+The release version remains gated on exact-Chrome same-session capture,
+external conformance/classification, matched WAN, an uninterrupted deployed
+soak, and independent review. Bounded lifecycle, scale, reconnect, and
+segmented loopback-soak qualification passes. This document intentionally does
+not describe a 1.x compatibility mode because none exists.
 
 ## Reference cover stack
 

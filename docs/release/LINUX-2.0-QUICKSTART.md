@@ -52,6 +52,8 @@ source release. The opt-in Chrome 151 backend is selected explicitly:
 ```
 
 There is no silent fallback. `openssl-diagnostic` remains the default until
-the lifecycle, scale, soak, WAN, and same-session cover gates are complete.
-Do not describe the opt-in backend as invisible to DPI or independently
+matched WAN, an uninterrupted deployed-network soak, exact-Chrome same-session
+cover, classifier/active-probe, and independent-review gates are complete. The
+bounded lifecycle, process-scale, reconnect, and segmented loopback-soak gates
+pass. Do not describe the opt-in backend as invisible to DPI or independently
 audited.

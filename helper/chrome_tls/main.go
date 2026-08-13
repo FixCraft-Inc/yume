@@ -134,7 +134,8 @@ func proxyPlaintext(ipc net.Conn, tlsConnection *utls.UConn) error {
 	second := <-results
 	isExpectedClose := func(err error) bool {
 		return err == nil || errors.Is(err, net.ErrClosed) ||
-			errors.Is(err, io.EOF) || errors.Is(err, unix.EPIPE) ||
+			errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) ||
+			errors.Is(err, unix.EPIPE) ||
 			errors.Is(err, unix.ECONNRESET)
 	}
 	if !isExpectedClose(first.err) {

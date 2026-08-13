@@ -6,6 +6,7 @@
 set -euo pipefail
 
 readonly EXPECTED_CHROME_VERSION='Google Chrome 151.0.7922.71'
+readonly EXPECTED_CHROME_LAUNCHER_SHA256='aea09d69ce7f24d5901f6bfb15dd44d0c856e793e0a498f8d8393ec7d2c308ec'
 readonly EXPECTED_CHROME_BINARY_SHA256='4cf210c4a0aeee3e69a73639260918a7448626d6b99892ec61e20750bc7c7079'
 readonly EXPECTED_NODE_VERSION='v24.18.0'
 readonly EXPECTED_NODE_BINARY_SHA256='41a74efb34cbde5c7632cdac0cf8bd1a14d0b8d73dc1e82755014d9a9ce70f5c'
@@ -31,11 +32,11 @@ if [[ $# -lt 2 || $# -gt 4 ]]; then
 fi
 
 readonly output_dir=$1
-readonly node_bin=$2
+readonly node_bin_input=$2
 readonly run_count=${3:-$DEFAULT_RUNS}
 readonly idle_ms=${4:-$DEFAULT_IDLE_MS}
-readonly chrome_launcher=${YUME_CHROME_LAUNCHER:-$DEFAULT_CHROME_LAUNCHER}
-readonly chrome_binary=${YUME_CHROME_BINARY:-$DEFAULT_CHROME_BINARY}
+readonly chrome_launcher_input=${YUME_CHROME_LAUNCHER:-$DEFAULT_CHROME_LAUNCHER}
+readonly chrome_binary_input=${YUME_CHROME_BINARY:-$DEFAULT_CHROME_BINARY}
 readonly capture_tls_wire=${YUME_CAPTURE_TLS_WIRE:-0}
 readonly repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 
@@ -51,37 +52,64 @@ if [[ -z ${DISPLAY:-} ]]; then
     echo 'DISPLAY must be set; headless Chrome is intentionally not accepted' >&2
     exit 1
 fi
+if (( EUID == 0 )); then
+    echo 'normal Chrome capture must run as an unprivileged user' >&2
+    exit 1
+fi
 if [[ $capture_tls_wire != 0 && $capture_tls_wire != 1 ]]; then
     echo 'YUME_CAPTURE_TLS_WIRE must be 0 or 1' >&2
     exit 2
 fi
-for executable in "$node_bin" "$chrome_launcher" "$chrome_binary"; do
+unshare_bin=$(command -v unshare || true)
+readonly unshare_bin
+for executable in \
+    "$node_bin_input" "$chrome_launcher_input" "$chrome_binary_input" "$unshare_bin"; do
     if [[ ! -x $executable ]]; then
         echo "required executable is missing: $executable" >&2
         exit 1
     fi
 done
 
-readonly chrome_version=$(
-    $chrome_launcher --version | sed -e 's/[[:space:]]*$//'
-)
-readonly node_version=$($node_bin --version | sed -e 's/[[:space:]]*$//')
-readonly chrome_sha256=$(sha256sum -- "$chrome_binary" | awk '{print $1}')
-readonly node_sha256=$(sha256sum -- "$node_bin" | awk '{print $1}')
-if [[ $chrome_version != "$EXPECTED_CHROME_VERSION" ]]; then
-    echo "Chrome version mismatch: got '$chrome_version'" >&2
+node_bin=$(realpath -e -- "$node_bin_input")
+chrome_launcher=$(realpath -e -- "$chrome_launcher_input")
+chrome_binary=$(realpath -e -- "$chrome_binary_input")
+readonly node_bin chrome_launcher chrome_binary
+chrome_launcher_sha256=$(sha256sum -- "$chrome_launcher" | awk '{print $1}')
+chrome_sha256=$(sha256sum -- "$chrome_binary" | awk '{print $1}')
+node_sha256=$(sha256sum -- "$node_bin" | awk '{print $1}')
+readonly chrome_launcher_sha256 chrome_sha256 node_sha256
+if [[ $chrome_launcher_sha256 != "$EXPECTED_CHROME_LAUNCHER_SHA256" ]]; then
+    echo "Chrome launcher SHA-256 mismatch: got '$chrome_launcher_sha256'" >&2
     exit 1
 fi
 if [[ $chrome_sha256 != "$EXPECTED_CHROME_BINARY_SHA256" ]]; then
     echo "Chrome binary SHA-256 mismatch: got '$chrome_sha256'" >&2
     exit 1
 fi
-if [[ $node_version != "$EXPECTED_NODE_VERSION" ]]; then
-    echo "Node version mismatch: got '$node_version'" >&2
+if [[ $(realpath -e -- "$(dirname -- "$chrome_launcher")/chrome") != \
+      $(realpath -e -- "$chrome_binary") ]]; then
+    echo 'Chrome launcher and binary must be adjacent in the same installation' >&2
     exit 1
 fi
 if [[ $node_sha256 != "$EXPECTED_NODE_BINARY_SHA256" ]]; then
     echo "Node binary SHA-256 mismatch: got '$node_sha256'" >&2
+    exit 1
+fi
+chrome_version=$(
+    "$chrome_launcher" --version | sed -e 's/[[:space:]]*$//'
+)
+node_version=$("$node_bin" --version | sed -e 's/[[:space:]]*$//')
+readonly chrome_version node_version
+if [[ $chrome_version != "$EXPECTED_CHROME_VERSION" ]]; then
+    echo "Chrome version mismatch: got '$chrome_version'" >&2
+    exit 1
+fi
+if [[ $node_version != "$EXPECTED_NODE_VERSION" ]]; then
+    echo "Node version mismatch: got '$node_version'" >&2
+    exit 1
+fi
+if ! "$unshare_bin" --user --map-root-user true; then
+    echo 'Chrome user-namespace sandbox is unavailable' >&2
     exit 1
 fi
 if [[ -e $output_dir ]]; then
@@ -99,8 +127,11 @@ chmod 0600 -- "$output_dir/server.key"
 cat >"$output_dir/environment.json" <<EOF
 {
   "chrome_version": "$chrome_version",
+  "chrome_launcher": "$chrome_launcher",
+  "chrome_launcher_sha256": "$chrome_launcher_sha256",
   "chrome_binary": "$chrome_binary",
   "chrome_binary_sha256": "$chrome_sha256",
+  "chrome_sandbox": "user-namespace",
   "node_version": "$node_version",
   "node_binary_sha256": "$node_sha256",
   "display": "$DISPLAY",
@@ -185,6 +216,7 @@ for run_index in $(seq 1 "$run_count"); do
 
     "$chrome_launcher" \
         --disable-gpu \
+        --disable-setuid-sandbox \
         --no-first-run \
         --disable-background-networking \
         --disable-component-update \
@@ -219,7 +251,10 @@ for run_index in $(seq 1 "$run_count"); do
 
     "$node_bin" "$repo_root/tools/cover-node/capture_chrome.mjs" \
         "$devtools_port" "https://localhost:$cover_port/" "$idle_ms"
-    wait "$chrome_pid" || true
+    if ! wait "$chrome_pid"; then
+        echo "$run_name: Chrome exited unsuccessfully" >&2
+        exit 1
+    fi
     chrome_pid=''
     if [[ -n $relay_pid ]]; then
         wait "$relay_pid"
@@ -245,5 +280,16 @@ for run_index in $(seq 1 "$run_count"); do
     rm -rf -- "$run_dir/profile"
     echo "$run_name: complete"
 done
+
+final_chrome_launcher_sha256=$(sha256sum -- "$chrome_launcher" | awk '{print $1}')
+final_chrome_sha256=$(sha256sum -- "$chrome_binary" | awk '{print $1}')
+final_node_sha256=$(sha256sum -- "$node_bin" | awk '{print $1}')
+readonly final_chrome_launcher_sha256 final_chrome_sha256 final_node_sha256
+if [[ $final_chrome_launcher_sha256 != "$chrome_launcher_sha256" ||
+      $final_chrome_sha256 != "$chrome_sha256" ||
+      $final_node_sha256 != "$node_sha256" ]]; then
+    echo 'Chrome or Node executable changed during capture' >&2
+    exit 1
+fi
 
 echo "Chrome 151 evidence captured in $output_dir"

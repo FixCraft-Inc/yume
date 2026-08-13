@@ -29,12 +29,13 @@ from yume_bench_common import (  # noqa: E402
     endpoint_contract,
     generate_keyset,
     invoking_identity,
-    is_pinned_chrome_version,
     parse_rates,
     relay_chunk_kib,
+    require_user_namespace_sandbox,
     resolve_pinned_node,
     run_streamed_command,
     start_logged_process,
+    validate_pinned_chrome,
     wait_for_tcp,
 )
 from yume_bench_resources import (  # noqa: E402
@@ -354,9 +355,12 @@ def run_browser_cover(
     identity: RuntimeIdentity,
 ) -> tuple[int, list[str]]:
     profile = workdir / "chromium-profile"
+    require_user_namespace_sandbox(
+        lab.command(lab.client_ns, drop_prefix(identity))
+    )
     argv = lab.command(lab.client_ns, [*drop_prefix(identity),
         "env", f"HOME={workdir / 'home'}", f"XDG_RUNTIME_DIR={workdir / 'runtime'}",
-        str(browser), "--headless", "--disable-gpu", "--no-sandbox",
+        str(browser), "--headless", "--disable-gpu", "--disable-setuid-sandbox",
         "--disable-breakpad", "--disable-crash-reporter",
         "--disable-background-networking", "--disable-component-update",
         "--no-first-run", "--no-default-browser-check",
@@ -408,18 +412,24 @@ def main() -> int:
     if node_bootstrapped:
         print(f"[bench] using pinned {node_version} from the invoking user's npm cache")
 
-    browser = None if args.no_browser or args.quick else executable(
-        args.browser, ("chromium", "chromium-browser", "google-chrome")
-    )
-    if not args.no_browser and not args.quick and not browser:
-        print("[bench] Chrome/Chromium not found; skipping the public-cover capture", file=sys.stderr)
-    browser_version = command_version([str(browser), "--version"]) if browser else None
-    if browser_version and not is_pinned_chrome_version(browser_version):
-        print(
-            f"[bench] {browser_version} does not match Chrome 151; "
-            "the cover arm is functional evidence only",
-            file=sys.stderr,
+    run_identity = invoking_identity()
+    browser = None
+    browser_identity: dict[str, str] | None = None
+    if not args.no_browser and not args.quick:
+        browser = executable(
+            args.browser, ("chromium", "chromium-browser", "google-chrome")
         )
+        if not browser:
+            raise SystemExit("exact pinned Chrome is required unless --no-browser is set")
+        try:
+            browser_identity = validate_pinned_chrome(
+                browser,
+                drop_prefix(run_identity),
+            )
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from exc
+        browser = Path(browser_identity["launcher"])
+    browser_version = browser_identity["version"] if browser_identity else None
 
     production_chunk_kib = relay_chunk_kib()
     effective_chunk_kib = args.bench_chunk_kib or production_chunk_kib
@@ -430,7 +440,6 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=False, mode=0o750)
     workdir = Path(tempfile.mkdtemp(prefix="yume-bench-2-"))
     os.chmod(workdir, 0o700)
-    run_identity = invoking_identity()
     host = host_resource_info()
 
     lab = NetworkLab(profile)
@@ -558,6 +567,7 @@ def main() -> int:
                 "node": node_version,
                 "browser": browser_version,
             },
+            "browser_identity": browser_identity,
             "endpoint": {
                 "started_utc": endpoint_started_utc,
                 "finished_utc": endpoint_finished_utc,

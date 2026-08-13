@@ -31,6 +31,23 @@ tools/cover-node/capture_chrome151_runs.sh \
   /path/to/node-v24.18.0-linux-x64/bin/node
 ```
 
+The runner consumes the frozen page/transfer definition in
+`tools/cover-node/workload-v1.json`, writes a source-bound mode-0600
+`environment.json`, and executes a checksummed private snapshot of every
+reopened capture source. It requires a clean exact-commit checkout and an
+output outside that checkout; the runner rejects an inside-checkout canonical
+path before it creates the directory. For a matched normal/YUME session, set
+`YUME_CAPTURE_TLS_CERT`, `YUME_CAPTURE_TLS_KEY`, and `YUME_CAPTURE_SNI`; both
+certificate variables must be present together, the key must not be
+group/world accessible, and the certificate must cover the SNI. Without those
+variables, the runner creates a standalone one-day certificate.
+
+After every declared run and all final identity checks succeed, the runner
+writes portable relative checksum manifests and creates mode-0600
+`complete.json` last. The classifier-input validator rejects a bundle without
+that marker or with changed runtime, certificate, run, sanitized, TLS-wire, or
+opaque raw-NetLog hashes.
+
 The script intentionally launches normal Chrome. `--headless` changes the
 HTTP User-Agent to `HeadlessChrome` and therefore is not authoritative for the
 transport profile.

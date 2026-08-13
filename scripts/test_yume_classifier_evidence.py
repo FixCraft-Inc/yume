@@ -21,10 +21,15 @@ from yume_bench_common import (  # noqa: E402
     PINNED_NODE_VERSION,
 )
 from yume_classifier_evidence import (  # noqa: E402
+    EXPECTED_WORKLOAD_MANIFEST,
     EvidenceError,
     analyze,
     load_arm,
     write_private_json,
+)
+from yume_capture_finalize import (  # noqa: E402
+    EXPECTED_RUNTIME_FILES,
+    finalize_capture,
 )
 
 
@@ -35,6 +40,46 @@ FIXTURE = (
 
 
 class ClassifierEvidenceTest(unittest.TestCase):
+    @staticmethod
+    def _write_checksums(directory: Path, names: list[str]) -> None:
+        lines = []
+        for name in names:
+            digest = hashlib.sha256((directory / name).read_bytes()).hexdigest()
+            lines.append(f"{digest}  {name}\n")
+        (directory / "SHA256SUMS").write_text("".join(lines), encoding="utf-8")
+
+    def _seal_arm(self, arm: Path) -> None:
+        for path in (arm / "complete.json", arm / "SHA256SUMS"):
+            path.unlink(missing_ok=True)
+        runtime = arm / "runtime-source"
+        runtime.mkdir(exist_ok=True)
+        for name in EXPECTED_RUNTIME_FILES:
+            path = runtime / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                path.write_text(f"fixture: {name}\n", encoding="utf-8")
+        self._write_checksums(runtime, list(EXPECTED_RUNTIME_FILES))
+
+        environment = json.loads((arm / "environment.json").read_text())
+        for index in range(1, environment["runs"] + 1):
+            run = arm / f"run-{index:02d}"
+            names = [
+                name
+                for name in ("netlog.json", "sanitized.json", "behavior.json",
+                             "tls-wire.json")
+                if (run / name).is_file()
+            ]
+            self._write_checksums(run, names)
+        top_names = [
+            "environment.json",
+            "server.crt",
+            "runtime-source/SHA256SUMS",
+            *(f"run-{index:02d}/SHA256SUMS"
+              for index in range(1, environment["runs"] + 1)),
+        ]
+        self._write_checksums(arm, top_names)
+        finalize_capture(arm)
+
     def _make_arm(
         self,
         root: Path,
@@ -49,10 +94,12 @@ class ClassifierEvidenceTest(unittest.TestCase):
         arm.mkdir()
         certificate_sha256 = hashlib.sha256(certificate).hexdigest()
         environment = {
+            "arm": "normal" if normal else "yume",
             "runs": 5,
             "chrome_version": f"Google Chrome {PINNED_CHROME_VERSION}",
             "chrome_launcher_sha256": PINNED_CHROME_LAUNCHER_SHA256,
             "chrome_binary_sha256": PINNED_CHROME_BINARY_SHA256,
+            "chrome_sandbox": "user-namespace",
             "node_version": f"v{PINNED_NODE_VERSION}",
             "source_commit": "a" * 40,
             "source_tree": "b" * 40,
@@ -61,6 +108,8 @@ class ClassifierEvidenceTest(unittest.TestCase):
             "alpn": "h2",
             "transport_profile": "chrome151-node24-v1",
             "certificate_sha256": certificate_sha256,
+            "tls_wire_evidence": True,
+            "workload_manifest": EXPECTED_WORKLOAD_MANIFEST,
             "workload": {
                 "mode": workload_mode,
                 "asset_paths": ["/", "/assets/site.css", "/assets/site.js"],
@@ -112,6 +161,9 @@ class ClassifierEvidenceTest(unittest.TestCase):
             if include_behavior:
                 filename = "sanitized.json" if normal else "behavior.json"
                 (run / filename).write_text(json.dumps(behavior))
+            if normal:
+                (run / "netlog.json").write_text("opaque fixture\n")
+        self._seal_arm(arm)
         return arm
 
     def test_matched_contract_is_parity_without_external_claim(self) -> None:
@@ -135,6 +187,40 @@ class ClassifierEvidenceTest(unittest.TestCase):
             report = analyze(load_arm(normal, normal=True), load_arm(yume, normal=False))
         self.assertEqual(report["verdict"], "KNOWN_GAP")
         self.assertIn("behavior.yume", {item["field"] for item in report["findings"]})
+
+    def test_arm_relabeling_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            normal = self._make_arm(
+                root, "normal", normal=True, certificate=b"cert"
+            )
+            environment = json.loads((normal / "environment.json").read_text())
+            environment["arm"] = "yume"
+            (normal / "environment.json").write_text(json.dumps(environment))
+            with self.assertRaisesRegex(EvidenceError, "evidence arm"):
+                load_arm(normal, normal=True)
+
+    def test_sandbox_relabeling_is_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            normal = self._make_arm(
+                root, "normal", normal=True, certificate=b"cert"
+            )
+            yume = self._make_arm(
+                root, "yume", normal=False, certificate=b"cert"
+            )
+            for arm in (normal, yume):
+                environment = json.loads((arm / "environment.json").read_text())
+                environment["chrome_sandbox"] = "disabled"
+                (arm / "environment.json").write_text(json.dumps(environment))
+                self._seal_arm(arm)
+            report = analyze(
+                load_arm(normal, normal=True), load_arm(yume, normal=False)
+            )
+        self.assertEqual(report["verdict"], "DRIFT")
+        self.assertIn(
+            "chrome.sandbox", {item["field"] for item in report["findings"]}
+        )
 
     def test_certificate_and_workload_mismatch_are_drift(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -161,6 +247,17 @@ class ClassifierEvidenceTest(unittest.TestCase):
             with self.assertRaisesRegex(EvidenceError, "cannot open evidence file"):
                 load_arm(normal, normal=True)
 
+    def test_environment_fifo_is_rejected_without_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            normal = self._make_arm(
+                root, "normal", normal=True, certificate=b"cert"
+            )
+            (normal / "environment.json").unlink()
+            os.mkfifo(normal / "environment.json")
+            with self.assertRaisesRegex(EvidenceError, "not a regular file"):
+                load_arm(normal, normal=True)
+
     def test_optional_yume_behavior_symlink_is_not_treated_as_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -181,6 +278,7 @@ class ClassifierEvidenceTest(unittest.TestCase):
             yume = self._make_arm(root, "yume", normal=False, certificate=b"cert")
             for index in range(1, 6):
                 (yume / f"run-{index:02d}/behavior.json").write_text("{}")
+            self._seal_arm(yume)
             report = analyze(load_arm(normal, normal=True), load_arm(yume, normal=False))
         self.assertEqual(report["verdict"], "DRIFT")
         self.assertTrue(any(
@@ -201,6 +299,7 @@ class ClassifierEvidenceTest(unittest.TestCase):
                         "masked"
                     ] = False
                     path.write_text(json.dumps(behavior))
+                self._seal_arm(arm)
             report = analyze(load_arm(normal, normal=True), load_arm(yume, normal=False))
         self.assertEqual(report["verdict"], "DRIFT")
         self.assertTrue(any(
@@ -224,6 +323,7 @@ class ClassifierEvidenceTest(unittest.TestCase):
                     behavior["idle_and_close"].pop("requested_idle_ms")
                     behavior["idle_and_close"].pop("h2_pings")
                     path.write_text(json.dumps(behavior))
+                self._seal_arm(arm)
             report = analyze(load_arm(normal, normal=True), load_arm(yume, normal=False))
         self.assertEqual(report["verdict"], "DRIFT")
 
@@ -238,6 +338,7 @@ class ClassifierEvidenceTest(unittest.TestCase):
                 environment["alpn"] = "http/1.1"
                 environment["transport_profile"] = "unknown"
                 (arm / "environment.json").write_text(json.dumps(environment))
+                self._seal_arm(arm)
             report = analyze(load_arm(normal, normal=True), load_arm(yume, normal=False))
         self.assertEqual(report["verdict"], "DRIFT")
         fields = {item["field"] for item in report["findings"]}
@@ -254,6 +355,7 @@ class ClassifierEvidenceTest(unittest.TestCase):
                 environment = json.loads((arm / "environment.json").read_text())
                 environment["workload"] = {}
                 (arm / "environment.json").write_text(json.dumps(environment))
+                self._seal_arm(arm)
             report = analyze(load_arm(normal, normal=True), load_arm(yume, normal=False))
         self.assertNotEqual(report["verdict"], "PARITY")
         self.assertIn(
@@ -271,6 +373,7 @@ class ClassifierEvidenceTest(unittest.TestCase):
                     "requests": 1000, "idle_ms": 1,
                 }
                 (arm / "environment.json").write_text(json.dumps(environment))
+                self._seal_arm(arm)
             report = analyze(load_arm(normal, normal=True), load_arm(yume, normal=False))
         self.assertEqual(report["verdict"], "DRIFT")
         self.assertTrue(any(
@@ -288,6 +391,7 @@ class ClassifierEvidenceTest(unittest.TestCase):
                     f"not-chrome {PINNED_CHROME_VERSION} contradictory"
                 )
                 (arm / "environment.json").write_text(json.dumps(environment))
+                self._seal_arm(arm)
             report = analyze(load_arm(normal, normal=True), load_arm(yume, normal=False))
         self.assertEqual(report["verdict"], "DRIFT")
         self.assertIn(
@@ -304,18 +408,42 @@ class ClassifierEvidenceTest(unittest.TestCase):
             with self.assertRaisesRegex(EvidenceError, "traverse evidence directory"):
                 load_arm(yume, normal=False)
 
-    def test_manifest_certificate_without_file_is_known_gap(self) -> None:
+    def test_manifest_certificate_without_file_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             normal = self._make_arm(root, "normal", normal=True, certificate=b"cert")
             yume = self._make_arm(root, "yume", normal=False, certificate=b"cert")
             (yume / "server.crt").unlink()
-            report = analyze(load_arm(normal, normal=True), load_arm(yume, normal=False))
-        self.assertEqual(report["verdict"], "KNOWN_GAP")
-        self.assertIn(
-            "session.certificate_sha256",
-            {item["field"] for item in report["findings"]},
-        )
+            with self.assertRaisesRegex(EvidenceError, "missing checksummed evidence"):
+                load_arm(yume, normal=False)
+
+    def test_missing_completion_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            normal = self._make_arm(
+                Path(tmp), "normal", normal=True, certificate=b"cert"
+            )
+            (normal / "complete.json").unlink()
+            with self.assertRaisesRegex(EvidenceError, "completion marker is missing"):
+                load_arm(normal, normal=True)
+
+    def test_payload_tamper_after_completion_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            normal = self._make_arm(
+                Path(tmp), "normal", normal=True, certificate=b"cert"
+            )
+            (normal / "run-01/sanitized.json").write_text("{}")
+            with self.assertRaisesRegex(EvidenceError, "checksum mismatch"):
+                load_arm(normal, normal=True)
+
+    def test_completed_bundle_remains_verifiable_after_move(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            normal = self._make_arm(
+                root, "normal", normal=True, certificate=b"cert"
+            )
+            moved = root / "moved-normal"
+            normal.rename(moved)
+            self.assertEqual(load_arm(moved, normal=True).environment["arm"], "normal")
 
     def test_private_report_is_exclusive_and_owner_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

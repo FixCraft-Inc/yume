@@ -176,16 +176,65 @@ python3 scripts/yume_classifier_evidence.py \
   --yume /private/evidence/yume
 ```
 
-The validator reads only sanitized JSON, normalized TLS-wire reports, the
-public certificate, and their environment manifests. It rejects symlinks and
-unbounded JSON, requires exact Chrome/Node identities and five runs per arm,
-and compares source cleanliness, certificate, SNI, ALPN, profile, workload,
-and stable H2/WebSocket behavior. `PARITY` means only that the inputs are
+The validator parses only sanitized JSON, normalized TLS-wire reports, the
+public certificate, and their environment/completion manifests. It hashes raw
+NetLogs opaquely without parsing or displaying them. It requires a final
+`complete.json`, verifies portable per-run, runtime-source, and top-level
+checksums, rejects symlinks and unbounded inputs, requires exact Chrome/Node
+identities and five runs per arm, rejects a normal/YUME arm relabel, requires a
+user-namespace Chrome sandbox, and compares source cleanliness, certificate,
+SNI, ALPN, profile, the exact `tools/cover-node/workload-v1.json` hash,
+workload, and stable H2/WebSocket behavior. `PARITY` means only that the inputs are
 matched enough for later external classifier and active-probe work.
 `KNOWN_GAP` means required evidence is absent; `DRIFT` means an observed value
 differs. The existing carrier diagnostic's public-URL baseline is useful
 functional evidence but is not a same-certificate, same-server classifier
 baseline and therefore cannot satisfy this contract.
+
+The direct HTTP/2 capture target and classifier-input validator consume that
+one workload file through `tools/cover-node/workload.mjs`. The reference page,
+CSS, generated browser script, asset order, 64 by 16-KiB bidirectional
+WebSocket transfer, first server fragmentation, 12-byte ping/pong, and close
+payload therefore no longer have independent definitions. The installed
+production HTTP/1 cover backend intentionally remains a bounded GET/HEAD site:
+ordinary public RFC 8441 CONNECT is not an admitted YUME carrier and must not
+be forwarded to a new unauthenticated echo service merely to force parity.
+Driving the same workload through production YUME SOCKS still requires the
+live carrier observer and one-shot lifecycle described below.
+
+For a normal-Chrome arm, run from a clean exact-commit checkout and place the
+fresh output outside the checkout. A matched campaign may supply one private
+certificate/key pair and DNS SNI to the existing runner:
+
+```bash
+YUME_CAPTURE_TLS_CERT=/private/session/server.crt \
+YUME_CAPTURE_TLS_KEY=/private/session/server.key \
+YUME_CAPTURE_SNI=cover.test \
+YUME_CAPTURE_TLS_WIRE=1 \
+YUME_CHROME_LAUNCHER=/isolated/chrome/google-chrome \
+YUME_CHROME_BINARY=/isolated/chrome/chrome \
+tools/cover-node/capture_chrome151_runs.sh \
+  /private/session/normal-chrome /isolated/node-v24.18.0/bin/node 5 42000
+```
+
+The key must be mode `0600` or stricter and the certificate must cover the
+declared SNI. The runner still supports generating a standalone ephemeral
+certificate when both variables are absent, but that arm cannot be called
+same-certificate evidence until the YUME arm actually uses it. Before any
+browser starts, the runner binds a clean commit/tree and copies every reopened
+Node/Python/fixture input into a private checksummed runtime-source snapshot.
+All five runs use only that snapshot; the source, snapshot, runtimes,
+certificate, and key are rechecked before portable relative checksum manifests
+and mode-0600 `complete.json` are written. Failed or partial captures have no
+completion marker and are rejected by the validator. Raw NetLogs and all
+private material remain outside Git.
+
+There is not yet a production-carrier event observer or one-shot graceful YUME
+capture lifecycle. Do not synthesize `behavior.json` from the committed
+fixture, `cover_profile::active()`, aggregate timing counters, or the H2 opening
+probe. Until real per-run SETTINGS/header/WebSocket/control/idle/close events
+are sanitized from the live outer connection, the honest YUME behavior verdict
+remains `KNOWN_GAP` or `DRIFT`.
 
 ## Known classifier-visible residuals
 

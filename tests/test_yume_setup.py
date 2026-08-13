@@ -80,12 +80,17 @@ class YumeSetupTests(unittest.TestCase):
             prefix = Path(tmp) / "prefix"
             (prefix / "bin").mkdir(parents=True)
             (prefix / "share" / "yume" / "cover-node").mkdir(parents=True)
+            (prefix / "share" / "yume" / "cover-profile").mkdir(parents=True)
             installed_tool = prefix / "bin" / "yume-setup"
             shutil.copyfile(TOOL, installed_tool)
             installed_tool.chmod(0o755)
             shutil.copyfile(
                 ROOT / "tools" / "cover-node" / "backend.mjs",
                 prefix / "share" / "yume" / "cover-node" / "backend.mjs",
+            )
+            shutil.copyfile(
+                ROOT / "tests" / "fixtures" / "chrome151-node24" / "manifest.json",
+                prefix / "share" / "yume" / "cover-profile" / "manifest.json",
             )
             kit = Path(tmp) / "kit"
             result = subprocess.run(

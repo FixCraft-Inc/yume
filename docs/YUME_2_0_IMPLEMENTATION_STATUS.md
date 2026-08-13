@@ -51,6 +51,18 @@ or admin/control validation.
   GREASE. Five complete authenticated helper flows now pass that structural
   gate; a fresh same-session normal-Chrome NetLog plus wire recapture remains
   required for release evidence quality.
+- The Gate B capture inputs now have one immutable
+  `cover-page-websocket-v1` workload shared by the direct HTTP/2 capture target
+  and classifier-input validator. The production HTTP/1 cover backend remains
+  a separate bounded GET/HEAD site because ordinary public RFC 8441 CONNECT is
+  not an admitted carrier. The normal-Chrome runner can reuse a campaign
+  certificate/SNI, binds clean source and user-namespace sandbox state, rejects
+  output inside the checkout, and executes a private checksummed source
+  snapshot. Portable relative checksums plus a final mode-0600 completion
+  marker make failed, partial, moved, or tampered arms fail closed. This closes
+  normal-arm provenance and workload-definition gaps; it does not supply the
+  still-missing live YUME outer-carrier `behavior.json`, classifier,
+  active-probe, WAN, or soak evidence.
 - Persistent nghttp2 carrier with priming page and asset requests, RFC 8441
   extended CONNECT, WebSocket masking/fragmentation/control frames, flow
   control, serialized writes, backpressure, and graceful H2 shutdown.

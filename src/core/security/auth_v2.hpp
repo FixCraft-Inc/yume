@@ -18,6 +18,7 @@ namespace yume::auth_v2 {
 using Bytes = std::vector<std::uint8_t>;
 
 inline constexpr std::string_view kTransportVersion = yume::kTransportVersion;
+inline constexpr std::string_view kTransportProfile = yume::kTransportProfile;
 inline constexpr std::size_t kMaxRecordBytes = 64U * 1024U;
 
 // Length of the TLS 1.3 exporter value bound into the AUTH transcript. The
@@ -62,6 +63,7 @@ struct Challenge {
     // peer make this endpoint do repeated ML-KEM work or retain future roots.
     std::uint16_t rekey_window{0};
     ratchet::RatchetPolicy ratchet_policy{};
+    std::string transport_profile;
 };
 
 struct Response {
@@ -71,6 +73,7 @@ struct Response {
     Bytes identity;
     std::uint16_t rekey_window{0};
     ratchet::RatchetPolicy ratchet_policy{};
+    std::string transport_profile;
     Bytes signature;
 };
 

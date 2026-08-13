@@ -60,7 +60,7 @@ crypto::Bytes PublicKeyPem(EVP_PKEY* key) {
 
 }  // namespace
 
-protocol::Frame read_auth_challenge(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+protocol::Frame read_auth_challenge(ClientTransportStream& stream,
                                     boost::asio::io_context& io,
                                     const std::string& server_host,
                                     int server_port,
@@ -80,14 +80,19 @@ protocol::Frame read_auth_challenge(boost::asio::ssl::stream<boost::asio::ip::tc
 }
 
 std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
-    boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+    ClientTransportStream& stream,
     boost::asio::io_context& io,
     const std::string& identity_path,
     const protocol::Frame& challenge_frame,
     const security::Secret32& inner_psk,
+    crypto::Bytes channel_binding,
     obfs::H2Carrier& carrier,
     std::uint16_t rekey_window,
     const ratchet::RatchetPolicy& ratchet_policy) {
+    WipeBytesOnExit wipe_channel_binding(channel_binding);
+    if (channel_binding.size() != auth_v2::kChannelBindingLen) {
+        throw FatalError("YUME 2.0 requires an exact TLS exporter binding");
+    }
 #if YUME_USE_BASEFWX
     const auth_v2::Challenge challenge =
         auth_v2::ParseChallenge(challenge_frame.payload);
@@ -109,15 +114,6 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
         throw FatalError("YUME 2.0 requires an Ed25519 client identity");
     }
     crypto::Bytes identity = PublicKeyPem(public_key);
-
-    // Read from this client's own TLS object, never from anything the peer
-    // sent. A node that terminates TLS here and replays the exchange to a
-    // second server signs over the wrong connection and is rejected there.
-    // The exporter derives from the TLS master secret and feeds the root, so
-    // it is wiped like any other key input.
-    crypto::Bytes channel_binding =
-        security::ExportChannelBinding(stream.native_handle());
-    WipeBytesOnExit wipe_channel_binding(channel_binding);
 
     basefwx::pq::KemResult kem = basefwx::pq::KemEncrypt(
         basefwx::pq::KemAlgorithm::MlKem1024, challenge.mlkem_public_key);
@@ -175,6 +171,7 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
     (void)identity_path;
     (void)challenge_frame;
     (void)inner_psk;
+    (void)channel_binding;
     (void)carrier;
     (void)rekey_window;
     (void)ratchet_policy;
@@ -198,7 +195,7 @@ protocol::Frame open_auth_ok_v2(ratchet::SessionRatchet& ratchet,
 }
 
 void send_frame_over_h2_with_timeout(
-    boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+    ClientTransportStream& stream,
     boost::asio::io_context& io,
     obfs::H2Carrier& carrier,
     const protocol::Frame& frame,
@@ -216,9 +213,7 @@ void send_frame_over_h2_with_timeout(
         throw FatalError(std::string("H2 flow control stalled while sending ") + what);
     }
     auto cancel = [&]() {
-        boost::system::error_code ignored;
-        stream.lowest_layer().cancel(ignored);
-        stream.lowest_layer().close(ignored);
+        stream.cancel_and_close();
     };
     const IoOpResult result = write_all_with_timeout(
         stream, io, boost::asio::buffer(wire), timeout, cancel);
@@ -232,7 +227,7 @@ void send_frame_over_h2_with_timeout(
 }
 
 protocol::Frame read_frame_over_h2_with_timeout(
-    boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+    ClientTransportStream& stream,
     boost::asio::io_context& io,
     obfs::H2Carrier& carrier,
     std::vector<uint8_t>* prefetched,
@@ -244,9 +239,7 @@ protocol::Frame read_frame_over_h2_with_timeout(
     std::vector<uint8_t>& decoded = prefetched ? *prefetched : local_prefetched;
     std::array<uint8_t, 16U * 1024U> scratch{};
     auto cancel = [&]() {
-        boost::system::error_code ignored;
-        stream.lowest_layer().cancel(ignored);
-        stream.lowest_layer().close(ignored);
+        stream.cancel_and_close();
     };
     auto write_protocol_replies = [&]() {
         crypto::Bytes replies = carrier.TakeOutbound();
@@ -312,10 +305,10 @@ protocol::Frame read_frame_over_h2_with_timeout(
     return protocol::decode_frame(encoded);
 }
 
-void require_h2_carrier_alpn(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+void require_h2_carrier_alpn(ClientTransportStream& stream,
                              const std::string& server_host,
                              int server_port) {
-    const std::string negotiated = obfs::selected_alpn(stream.native_handle());
+    const std::string& negotiated = stream.metadata().alpn;
     const std::string label = negotiated.empty() ? std::string("(none)") : negotiated;
     util::log_info("TLS ALPN selected: " + label);
     if (negotiated != "h2") {
@@ -324,7 +317,7 @@ void require_h2_carrier_alpn(boost::asio::ssl::stream<boost::asio::ip::tcp::sock
     }
 }
 
-void perform_h2_carrier_handshake(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+void perform_h2_carrier_handshake(ClientTransportStream& stream,
                                   boost::asio::io_context& io,
                                   const std::string& server_host,
                                   int server_port,
@@ -348,9 +341,7 @@ void perform_h2_carrier_handshake(boost::asio::ssl::stream<boost::asio::ip::tcp:
     }
 
     auto cancel = [&]() {
-        boost::system::error_code ignored;
-        stream.lowest_layer().cancel(ignored);
-        stream.lowest_layer().close(ignored);
+        stream.cancel_and_close();
     };
 
     auto flush = [&]() {

@@ -15,7 +15,7 @@ builds and should use Debian-packaged libraries.
 Use scripts/make_debian_orig.sh from the upstream checkout to create the
 matching ../yume_<version>.orig.tar.xz before running dpkg-buildpackage -S.
 Development suffixes are normalized for Debian ordering, so upstream
-2.0-dev5 is packaged as 2.0~dev5.
+2.0-dev6 is packaged as 2.0~dev6.
 
 The current Debian packaging configures YUME with:
 
@@ -27,7 +27,7 @@ The current Debian packaging configures YUME with:
 YUME now expects BaseFWX to be packaged separately and provided through
 libbasefwx-dev >= 3.8.0~dev1-1. This is the first package line containing
 the explicit-salt HKDF, X25519, and selectable ML-KEM-1024 APIs used by
-YUME 2.0-dev5. The BaseFWX source package can also build a basefwx CLI
+YUME 2.0-dev6. The BaseFWX source package can also build a basefwx CLI
 package, but YUME only needs libbasefwx-dev at build time and libbasefwx3 at
 runtime. Do not build Debian packages against the bundled basefwx/ tree or
 against vendor/; both are excluded from the Debian source tarball.

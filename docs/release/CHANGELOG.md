@@ -1,5 +1,105 @@
 # Changelog
 
+## [Unreleased 2.0-dev6]
+
+Hard break from `2.0-dev5`: the exact transport version changed and dev6 has
+one evidence-backed `chrome151-node24-v1` identity. No dev5 compatibility or
+downgrade mode exists.
+
+### Added
+
+- **Generated transport-profile registry.** Capture manifests and H2 evidence
+  now generate immutable C++ and Go registries consumed through browser-neutral
+  API. Bounded schema/path/uniqueness checks and negative metadata tests reject
+  stale output or unsafe fixture references. The authenticated dev6 ID and all
+  wire/crypto domains remain unchanged.
+
+- **Single-source dependency manifest.** BaseFWX repository, exact revision,
+  and minimum compatible version now live in `config/dependencies.json` and are
+  consumed by CMake, local build scripts, CI, CodeQL, and release preflight.
+  The dependency remains reproducibly pinned; duplicated workflow literals and
+  the unsafe CI fallback to a floating branch are removed.
+
+- **Five-run Chrome 151 / Node 24 evidence.** Five fresh normal-Chrome profiles
+  cover TLS outcome, ordered H2 settings and headers, page/assets, RFC 8441,
+  bidirectional bulk flow control, 42-second idle behavior, and graceful close.
+  A committed validator separates stable identity fields from measured timing
+  and flow-control distributions.
+
+- **Authenticated transport profile.** Admission HMAC input, schema-3 AUTH
+  challenge/response/confirmation records, the signed TLS-exporter transcript,
+  initial root, and per-frame AES-GCM AAD now all bind the exact
+  `chrome151-node24-v1` identifier. Stale identifiers, schema-2/dev5 records,
+  missing fields, and configured profile mismatches fail closed without a
+  fallback.
+
+- **Fail-closed Linux 2.0 release lane.** The `linux-desktop-2.0` profile
+  builds only glibc Linux x86-64 with exact Go 1.26.5 and the Chrome helper
+  enabled. It emits `yume-amd64-linux.tar.xz` with the adjacent client/helper,
+  licensing, quick-start, and machine manifest, plus a separate
+  `yumed-amd64-linux`. The preflight rejects other platforms and variants,
+  incomplete bundles, version/tag drift, unequal clean helper rebuilds, or
+  relaxed PQ, Argon2, and LZMA requirements. Publishing is disabled by default
+  and requires explicit independent-review and RC-gate acknowledgements.
+
+### Changed
+
+- **One coherent identity.** Chrome is rebased to exact Google Chrome
+  `151.0.7922.71` and official Node `24.18.0`. The incomplete Firefox/Safari
+  presets and dead rotation state were removed instead of being carried as
+  unsupported claims. The OpenSSL ClientHello remains an explicit `KNOWN_GAP`;
+  the helper has passed local wire/performance, lifecycle, process-scale,
+  reconnect, and segmented-soak gates but remains opt-in pending matched WAN,
+  same-session stealth, independent review, and the remaining RC gates.
+
+- **Bounded TCP producer backpressure.** SOCKS and TCP forwarders now advance
+  local reads on transport-write completion, preventing fast producers from
+  overflowing the bounded application queue. The benchmark failure path is
+  SIGPIPE-safe and always joins its receive workers, so failures are reported
+  instead of ending in `std::terminate`.
+
+- **Qualified helper boundary.** The production Go entry point still applies
+  Linux-only `no_new_privs` and adopts connected TCP/IPC descriptors 3 and 4,
+  while its connection core is injectable for real TLS qualification. Wrong
+  CA, hostname, leaf pin, ALPN, and exporter behavior now fail through fixed,
+  bounded IPC errors; detailed verification causes stay local. Native launcher
+  tests cover unsafe file modes and symlinks, partial control and plaintext I/O,
+  post-ready half-close/cancellation, child teardown, and repeated fd/zombie
+  balance. Connection IDs use the BaseFWX RNG abstraction; the explicit
+  no-BaseFWX build retains the YUME CSPRNG fallback.
+
+- **Bounded Linux process and soak qualification.** At the exact clean signed
+  lifecycle checkpoint, the 1/10/50/100/256-client Chrome-helper ramps
+  completed with exact bytes and zero unexpected failures. The 256-client run
+  held 256 clients plus 256 helpers concurrently and transferred 65,536 MiB.
+  A 1,000/1,000 sequential reconnect storm transferred 2,000 MiB with no
+  helper, zombie, fd, or thread growth. A 2,333-second full-speed batch moved
+  112,640 MiB per direction at 816.607 Mbit/s aggregate with zero byte mismatch,
+  timeout, interruption, or unexpected server error. The soak used seven
+  consecutive segments to preserve the signed endpoint's 16,384 MiB
+  per-invocation bound; it does not claim one uninterrupted >16 GiB connection
+  or WAN behavior.
+
+### Fixed
+
+- **Helper crash and truncation lifecycle.** After `posix_spawn`, the parent
+  retained duplicate copies of the child-side IPC and connected TCP
+  descriptors. Those copies masked EOF/HUP when a helper crashed or returned a
+  truncated response, delaying failure until the handshake timeout and keeping
+  the TCP peer open. The parent now closes both duplicates immediately after a
+  successful spawn while preserving RAII cleanup on every failure path.
+
+### Remaining dev6 limitations
+
+- `chrome151` remains opt-in and `openssl-diagnostic` remains the default.
+  Matched WAN evidence, one uninterrupted >16 GiB connection, exact Chrome
+  `151.0.7922.71` same-session recapture, external classifier/active-probe
+  evidence, and independent security review remain release gates. Installed
+  Chrome `151.0.7922.108` is functional-only evidence and does not replace or
+  rewrite the dev6 fixture. Android, GUI, Windows, macOS, ARM, OpenWRT, static
+  builds, and Debian archive publication are outside the first official 2.0
+  scope.
+
 ## [Unreleased 2.0-dev5]
 
 Hard break from `2.0-dev4`: AUTH now carries each endpoint's accepted ratchet
@@ -58,7 +158,7 @@ compatibility mode exists or is planned.
 ### Changed
 
 - **Stealth and cryptographic claims now match the implementation.** One
-  immutable Chrome 150/Debian 13 + Node 24 profile supplies the production TLS
+  immutable Chrome 151/Debian 13 + Node 24 profile supplies the production TLS
   selection, User-Agent/client hints, capture-backed H2 opening, assets, and
   cover identity. Profile rotation remains rejected. Chrome/BoringSSL TLS
   parity and traffic padding remain evidence-driven work, and the 500 ms
@@ -244,7 +344,8 @@ Compare: <https://github.com/FixCraft-Inc/yume/commits/v1.0> (first public test 
   - Browser-oriented JA3 shaping plus the original project-local, pre-canonical JA4-like diagnostic via genuine OpenSSL 3.5 `ClientHello` configuration. `--profile chrome` (Chrome 131) is the default; `--profile firefox` (Firefox 126) and `--profile safari` (Safari 18) are selectable, plus per-N-connection rotation via `--tls-stealth-rotate` / `--tls-stealth-rotation-interval`.
   - HTTP/2 carrier handshake (`--obfs`) with the then-current project SETTINGS, `WINDOW_UPDATE`, and a `HEADERS` frame opening a `POST` to `/<token>/<nonce>`. The token is `HMAC-SHA256(K, sni || hour_epoch || "yume-obfs-v2")` truncated to 16 bytes hex; 1.0 allowed optional peer-pinning via `--obfs-secret` and accepted ±1 hour of clock skew.
   - Real HTML facade (`--real`) so a browser hitting the same `:443` with `GET / HTTP/1.1` is served a real HTML page (or a Wikipedia redirect by default). YUME and a normal website coexist on a single port.
-- **Post-quantum KEM/DEM inner crypto** via BaseFWX 3.6.4 (separate library, pinned via `config/refs/basefwx.ref`):
+- **Post-quantum KEM/DEM inner crypto** via BaseFWX 3.6.4 (separate library;
+  current dependency metadata is centralized in `config/dependencies.json`):
   - **ML-KEM-768** (NIST FIPS 203 / Kyber-768) encapsulation for session keys when a master public key is configured.
   - **AES-256-GCM** AEAD with a 12-byte nonce and 16-byte tag.
   - **Argon2id** or **PBKDF2-HMAC-SHA256** as an optional work factor over the high-entropy ML-KEM shared secret. The YUME transport handshake does not mix in a user password / PSK.

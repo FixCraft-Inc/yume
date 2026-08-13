@@ -59,7 +59,12 @@ struct AssetTemplate {
 };
 
 struct Profile {
+    // Authenticated wire identity and implementation routing metadata. The
+    // profile ID is security-sensitive; aliases are presentation-only.
+    std::string_view id;
     std::string_view registry_name;
+    std::string_view tls_backend;
+    std::string_view helper_build_id;
     std::string_view browser_name;
     std::string_view browser_version;
     std::string_view operating_system;
@@ -86,8 +91,12 @@ struct Profile {
                            std::string_view carrier_path = {}) const;
 };
 
-// The only complete YUME 2.0 cover identity. This object is immutable and all
-// TLS/HTTP/H2 production consumers select their values through it.
-const Profile& chrome150_debian13_node24();
+// Immutable build-time registry generated from committed capture artifacts.
+// Production code uses active(); adding a profile must not add browser-specific
+// branches to TLS/HTTP/H2 consumers.
+std::span<const Profile> all();
+const Profile* find_by_id(std::string_view id);
+const Profile* find_by_registry_name(std::string_view name);
+const Profile& active();
 
 }  // namespace yume::cover_profile

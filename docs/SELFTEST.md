@@ -155,7 +155,8 @@ Useful variants are:
 
 ```bash
 # Short carrier smoke; 32 MiB, four streams, no browser arm
-sudo python3 scripts/yume_bench_wan.py --quick --profile broadband
+sudo python3 scripts/yume_bench_wan.py --quick --profile broadband \
+  --tls-backend chrome151
 
 # Sustained endpoint run
 sudo python3 scripts/yume_bench_wan.py --full --profile mobile-4g
@@ -163,7 +164,8 @@ sudo python3 scripts/yume_bench_wan.py --full --profile mobile-4g
 # Reproduce a custom path
 sudo python3 scripts/yume_bench_wan.py \
   --rtt 120 --jitter 30 --loss 2 --bandwidth 20 \
-  --bench-mib 256 --bench-streams 16
+  --bench-mib 256 --bench-streams 16 \
+  --tls-backend chrome151
 ```
 
 Results are written under `yume-bench-results/<UTC timestamp>/` by default:
@@ -176,6 +178,11 @@ Results are written under `yume-bench-results/<UTC timestamp>/` by default:
   parsed MiB/s and Mbit/s rows, host capacity, and client/server CPU and RAM.
 - `yumed-resources.jsonl` and `node-resources.jsonl` retain the external server
   process-group samples used by the summary.
+
+The WAN harness defaults to `openssl-diagnostic` until the helper lifecycle and
+soak gates are complete. Pass `--tls-backend chrome151` for a helper-qualified
+dev6 measurement; the selected backend is recorded in `report.json` and a
+helper-enabled build is required. Never combine backend results in one median.
 
 The helper requires Node 24.18.x for the pinned cover profile. When the system
 Node is older and `npx` is available, it resolves the exact pinned runtime in
@@ -239,8 +246,13 @@ Then run the client and capture its physical LAN flow:
 cd ~/yume
 sudo scripts/yume_bench_lan.py client \
   --bundle ~/yume-lan-kit/client \
-  --full --capture --cover
+  --full --capture --cover --tls-backend chrome151
 ```
+
+The LAN harness also defaults to `openssl-diagnostic`. Use the explicit
+`--tls-backend chrome151` spelling above only with a helper-enabled client
+build. The backend is recorded in the endpoint report; keep each comparative
+series on one backend.
 
 LAN client `report.json` records the client process resources. When the server
 is stopped, its result directory receives `resources.json` plus bounded
@@ -344,6 +356,8 @@ Run a moderate measurement from the client:
   --obfs-secret-file ~/.config/yume/admission.hex \
   --inner-psk-file ~/.config/yume/inner.hex \
   --profile chrome \
+  --transport-profile chrome151-node24-v1 \
+  --tls-backend chrome151 \
   --bench --bench-mib 128 --bench-streams 8 \
   --bench-direction both \
   --boring --no-color
@@ -375,7 +389,10 @@ streams, start the normal client SOCKS listener:
   --auth ~/.config/yume/client.key \
   --obfs-secret-file ~/.config/yume/admission.hex \
   --inner-psk-file ~/.config/yume/inner.hex \
-  --profile chrome --socks 127.0.0.1:1080 \
+  --profile chrome \
+  --transport-profile chrome151-node24-v1 \
+  --tls-backend chrome151 \
+  --socks 127.0.0.1:1080 \
   --non-interactive --accept-monitoring
 
 chromium \

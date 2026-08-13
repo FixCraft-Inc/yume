@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/version.hpp"
+#include "core/stealth/cover_profile.hpp"
 #include "core/stealth/http_profile.hpp"
 #include "config/ratchet_profile_json.hpp"
 #include "facade/config/detail.hpp"
@@ -65,6 +66,9 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::tls_ca_cert, c.tls_ca_cert);
     read_opt(j, cfg_key::tls_server_name, c.tls_server_name);
     read_opt(j, cfg_key::tls_pin_sha256, c.tls_pin_sha256);
+    read_opt(j, cfg_key::transport_profile, c.transport_profile);
+    read_opt(j, cfg_key::tls_backend, c.tls_backend);
+    read_opt(j, cfg_key::tls_helper_path, c.tls_helper_path);
     read_opt(j, cfg_key::require_anonym, c.require_anonym);
     read_opt(j, cfg_key::accept_monitoring, c.accept_monitoring);
     read_opt(j, cfg_key::service_streams_only, c.service_streams_only);
@@ -84,8 +88,11 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::auto_attach_local, c.auto_attach_local);
     read_opt(j, cfg_key::tls_stealth_enabled, c.tls_stealth_enabled);
     read_opt(j, cfg_key::tls_stealth_profile, c.tls_stealth_profile);
-    read_opt(j, cfg_key::tls_stealth_rotate, c.tls_stealth_rotate);
-    read_opt(j, cfg_key::tls_stealth_rotation_interval, c.tls_stealth_rotation_interval);
+    if (j.contains(cfg_key::tls_stealth_rotate) ||
+        j.contains(cfg_key::tls_stealth_rotation_interval)) {
+        throw std::runtime_error(
+            "TLS profile rotation keys were removed in YUME 2.0-dev6");
+    }
     read_opt(j, cfg_key::tls_fingerprint_log, c.tls_fingerprint_log);
     read_opt(j, cfg_key::tls_fingerprint_log_path, c.tls_fingerprint_log_path);
     read_opt(j, cfg_key::tls_fingerprint_verify, c.tls_fingerprint_verify);
@@ -100,6 +107,7 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     resolve_config_path(c.anonym_pubkey, base);
     resolve_config_path(c.anonym_ca_cert, base);
     resolve_config_path(c.tls_ca_cert, base);
+    resolve_config_path(c.tls_helper_path, base);
     resolve_config_path(c.history_dir, base);
     resolve_config_path(c.relay_key_file, base);
     resolve_config_path(c.tls_fingerprint_log_path, base);
@@ -184,6 +192,9 @@ bool save_client(client::ClientConfig const& c,
         {cfg_key::tls_ca_cert, c.tls_ca_cert},
         {cfg_key::tls_server_name, c.tls_server_name},
         {cfg_key::tls_pin_sha256, c.tls_pin_sha256},
+        {cfg_key::transport_profile, c.transport_profile},
+        {cfg_key::tls_backend, c.tls_backend},
+        {cfg_key::tls_helper_path, c.tls_helper_path},
         {cfg_key::require_anonym, c.require_anonym},
         {cfg_key::accept_monitoring, c.accept_monitoring},
         {cfg_key::service_streams_only, c.service_streams_only},
@@ -203,8 +214,6 @@ bool save_client(client::ClientConfig const& c,
         {cfg_key::auto_attach_local, c.auto_attach_local},
         {cfg_key::tls_stealth_enabled, c.tls_stealth_enabled},
         {cfg_key::tls_stealth_profile, c.tls_stealth_profile},
-        {cfg_key::tls_stealth_rotate, c.tls_stealth_rotate},
-        {cfg_key::tls_stealth_rotation_interval, c.tls_stealth_rotation_interval},
         {cfg_key::tls_fingerprint_log, c.tls_fingerprint_log},
         {cfg_key::tls_fingerprint_log_path, c.tls_fingerprint_log_path},
         {cfg_key::tls_fingerprint_verify, c.tls_fingerprint_verify},
@@ -227,6 +236,8 @@ bool save_client(client::ClientConfig const& c,
 
 ValidationReport validate(client::ClientConfig const& c) {
     ValidationReport r;
+    const std::string helper_tls_backend(
+        yume::cover_profile::active().tls_backend);
     if (c.server.empty()) {
         r.errors.emplace_back("server: host is required");
     }
@@ -260,10 +271,21 @@ ValidationReport validate(client::ClientConfig const& c) {
         r.errors.emplace_back(
             "tls_stealth_profile: no complete fixture exists in this build");
     }
-    if (c.tls_stealth_rotate) {
+    if (c.transport_profile != yume::kTransportProfile) {
         r.errors.emplace_back(
-            "tls_stealth_rotate: " + std::string(yume::kVersion) +
-            " uses one pinned Chrome fixture");
+            "transport_profile: must be " +
+            std::string(yume::kTransportProfile));
+    }
+    if (c.tls_backend != helper_tls_backend &&
+        c.tls_backend != "openssl-diagnostic") {
+        r.errors.emplace_back(
+            "tls_backend: must be " + helper_tls_backend +
+            " or openssl-diagnostic");
+    }
+    if (c.tls_backend == helper_tls_backend && c.tunnel_count != 1) {
+        r.errors.emplace_back(
+            "tunnels: " + helper_tls_backend +
+            " currently supports exactly one outer tunnel");
     }
     if (!c.inner_crypto) {
         r.errors.emplace_back(

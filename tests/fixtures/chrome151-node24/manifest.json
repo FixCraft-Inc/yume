@@ -1,0 +1,101 @@
+{
+  "schema": 2,
+  "status": "five-run-reference-captured",
+  "profile_id": "chrome151-node24-v1",
+  "captured_from_utc": "2026-08-01T11:20:52Z",
+  "captured_through_utc": "2026-08-01T11:23:44Z",
+  "client": {
+    "browser": "Google Chrome",
+    "version": "151.0.7922.71",
+    "os": "Debian GNU/Linux 13 (trixie)",
+    "kernel": "6.12.96+deb13-amd64",
+    "profile": "five independent temporary normal-Chrome profiles",
+    "launcher": "/opt/google/chrome/google-chrome",
+    "launcher_sha256": "aea09d69ce7f24d5901f6bfb15dd44d0c856e793e0a498f8d8393ec7d2c308ec",
+    "binary": "/opt/google/chrome/chrome",
+    "binary_sha256": "4cf210c4a0aeee3e69a73639260918a7448626d6b99892ec61e20750bc7c7079"
+  },
+  "server": {
+    "runtime": "Node.js",
+    "version": "24.18.0",
+    "official_linux_x64_archive_sha256": "55aa7153f9d88f28d765fcdad5ae6945b5c0f98a36881703817e4c450fa76742",
+    "binary_sha256": "41a74efb34cbde5c7632cdac0cf8bd1a14d0b8d73dc1e82755014d9a9ce70f5c",
+    "openssl": "3.5.7",
+    "nghttp2": "1.69.0",
+    "http2_extended_connect": true
+  },
+  "capture": {
+    "format": "Chrome NetLog IncludeSensitive reduced by sanitize_netlog.mjs schema 2",
+    "raw_netlog_committed": false,
+    "idle_ms": 42000,
+    "stable_identity_jq_sha256": "55a575ee01186b77f101959a1a738a5a2e1905c9e37bf9fbf9994102a14d9d1f",
+    "stable_identity_canonical_sha256": "6db68ff7048300867ee28736c27ac3cc5f009dffe0edd0979fabc355bbc5f56f",
+    "runs": [
+      {
+        "artifact": "runs/run-01.json",
+        "raw_netlog_sha256": "c0ef8dd74e21a4e24cd90305856ba1b586a9b222eaf9565e268963aba86c1d75",
+        "sanitized_sha256": "80bc76817e7fb983616278fe42809baf150f65e26b1ad912c599bcea8788a79a"
+      },
+      {
+        "artifact": "runs/run-02.json",
+        "raw_netlog_sha256": "46c1d522eaf4d22e812192ea8e1a8a39b553d7f8b221c159623ce1c7cfb8da5a",
+        "sanitized_sha256": "00aa97263c72a99945db00205d228101e73cd423ab61510326a0757852fe10d1"
+      },
+      {
+        "artifact": "runs/run-03.json",
+        "raw_netlog_sha256": "6647d06dd69df5f88b9e0bffe784afeb404ffa09234d21cc508f81921e9fc031",
+        "sanitized_sha256": "b79f035ab39ef05d6c4e352a4e63ae5936e89147a9a4d006b8d64d5e98775a09"
+      },
+      {
+        "artifact": "runs/run-04.json",
+        "raw_netlog_sha256": "2c82e086d849566fe38a779f94768db7334ad24cd8c904177082633ac9e59314",
+        "sanitized_sha256": "172bd0c1c8e0f3c621299b5b15368bee43c2942336d97aba95647c62766dc1fb"
+      },
+      {
+        "artifact": "runs/run-05.json",
+        "raw_netlog_sha256": "cb1ca6b5980eff3645f9f08ea2f9bfc663f1a90004589f5f7526a68f392cfb82",
+        "sanitized_sha256": "1c0ca7a558da9c4d08bee20cc167c60d68470caa6c64b947a98e2c476ac2a5fc"
+      }
+    ],
+    "covered_sessions": [
+      "TLS 1.3 and h2 outcome",
+      "priming document and ordered asset sequence",
+      "RFC 8441 extended CONNECT",
+      "one MiB in each WebSocket direction",
+      "fragmented server binary message",
+      "client-masked and server-unmasked WebSocket controls",
+      "HTTP/2 flow-control stall and WINDOW_UPDATE recovery",
+      "42-second idle interval and graceful close"
+    ]
+  },
+  "helper_wire_qualification": {
+    "captured_utc": "2026-08-01",
+    "helper_build_id": "yume-chrome151-utls-v1.8.2-ipc-v1",
+    "go_version": "1.26.5",
+    "helper_reproducible_sha256": "1a2ae7a9fcd9bb0ee5c8094a58c4c2865787231469b9afabb10746fca10489d5",
+    "runs": [
+      {"artifact": "helper_tls_wire_run_1.json", "sha256": "f1c56cf4574138c8d36059ef44250addc1aacf5c0dfc9a34f55e36a9e441686a"},
+      {"artifact": "helper_tls_wire_run_2.json", "sha256": "1023a7253443c8787755c27ddac842029ba9e94e56c2b187ed7137d975f7aac6"},
+      {"artifact": "helper_tls_wire_run_3.json", "sha256": "347f2c2d54bc825a4279c4a42427526c9981c86fd78c0b48fcbf1a734ab77e3b"},
+      {"artifact": "helper_tls_wire_run_4.json", "sha256": "6cd47245c2d953221191b2b15572c0092e50e374390c4b5c0f1cf0c6a043fbe7"},
+      {"artifact": "helper_tls_wire_run_5.json", "sha256": "afd4bc3a4f273feb239aa0415a9ec0a3bca39686c9aae67c19b43c797c39af5d"}
+    ],
+    "verdict": "PARITY",
+    "middle_extension_orders": 5,
+    "grease_ech_lengths": [186, 218, 282]
+  },
+  "verdict": {
+    "http2_and_http_identity": "PARITY",
+    "chrome_tls_reference": "PARITY-STRUCTURAL-PROFILE",
+    "yume_clienthello": "PARITY",
+    "node_serverhello_reference": "PARITY-STRUCTURAL-PROFILE",
+    "yumed_serverhello": "PARITY"
+  },
+  "notes": [
+    "Raw NetLogs are intentionally excluded because they contain local certificate and machine details.",
+    "The five stable identity projections are byte-identical after removing only flow-control counts, ping timing, and detailed data-frame observations.",
+    "TLS ordered first-flight parity uses chrome_tls_wire_profile.json and the separate unprivileged wire comparator; JA3 and JA4 are summaries only.",
+    "Five complete authenticated helper flows pass the normalized ClientHello and ServerHello structural gate; a fresh same-session normal-Chrome NetLog and wire recapture remains required for release evidence quality.",
+    "No random padding or timing jitter was observed."
+  ]
+}

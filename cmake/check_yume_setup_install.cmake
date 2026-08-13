@@ -58,6 +58,14 @@ foreach(_artifact IN LISTS _required_artifacts)
     endif()
 endforeach()
 
+foreach(_source_registry IN ITEMS dependencies.json transport_profiles.json)
+    if(EXISTS
+       "${_test_prefix}/${YUME_INSTALL_DATADIR}/doc/yume/examples/${_source_registry}")
+        message(FATAL_ERROR
+            "source-only registry was installed as runtime example: ${_source_registry}")
+    endif()
+endforeach()
+
 file(STRINGS "${YUME_DEBIAN_INSTALL_MANIFEST}" _debian_install_lines)
 set(_required_assignments
     "usr/bin/yume-setup"

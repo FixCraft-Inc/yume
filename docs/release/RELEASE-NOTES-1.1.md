@@ -1,7 +1,7 @@
 # YUME 1.1 — First Stable Release
 
 > **Historical plan:** this document records the superseded 1.x release plan.
-> The current source is the incompatible `2.0-dev5` development line. Use
+> The current source is the incompatible `2.0-dev6` development line. Use
 > [`../YUME_2_0_IMPLEMENTATION_STATUS.md`](../YUME_2_0_IMPLEMENTATION_STATUS.md)
 > and [`../protocol/YUME_2_0_WIRE.md`](../protocol/YUME_2_0_WIRE.md) for current
 > implementation and protocol truth.
@@ -444,8 +444,8 @@ continue to carry forward across the 1.x line:
 ```bash
 git clone https://github.com/FixCraft-Inc/yume.git
 cd yume
-git clone https://github.com/F1xGOD/basefwx.git basefwx
-git -C basefwx checkout "$(cat config/refs/basefwx.ref)"
+git clone "$(python3 scripts/yume_dependencies.py get basefwx repository)" basefwx
+git -C basefwx checkout "$(python3 scripts/yume_dependencies.py get basefwx revision)"
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```

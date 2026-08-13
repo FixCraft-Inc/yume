@@ -25,16 +25,24 @@ from yume_bench_resources import ProcessResourceSampler
 
 _COVER_MANIFEST = (
     Path(__file__).resolve().parents[1]
-    / "tests/fixtures/chrome150-node24/manifest.json"
+    / "tests/fixtures/chrome151-node24/manifest.json"
 )
-PINNED_NODE_VERSION = json.loads(
-    _COVER_MANIFEST.read_text(encoding="utf-8")
-)["server"]["version"]
+_COVER_PROFILE = json.loads(_COVER_MANIFEST.read_text(encoding="utf-8"))
+PINNED_CHROME_VERSION = _COVER_PROFILE["client"]["version"]
+PINNED_NODE_VERSION = _COVER_PROFILE["server"]["version"]
+_PINNED_CHROME_RE = re.compile(
+    rf"\b(?:Chrome|Chromium)\s+{re.escape(PINNED_CHROME_VERSION)}\b"
+)
 RATE_RE = re.compile(
     r"^(TOTAL|UP|DOWN)\s+([0-9.]+) MiB\s+([0-9.]+) s\s+"
     r"([0-9.]+) MiB/s /\s+([0-9.]+) Mbit/s$",
     re.MULTILINE,
 )
+
+
+def is_pinned_chrome_version(version_output: str) -> bool:
+    """Return whether browser --version output matches the evidence fixture."""
+    return _PINNED_CHROME_RE.search(version_output) is not None
 
 
 @dataclass(frozen=True)

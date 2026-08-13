@@ -8,18 +8,18 @@ outside this slice.
 
 ## Target identity and current implementation
 
-- Target client fixture: Chrome `150.0.7871.114` on Debian 13.
+- Target client fixture: Chrome `151.0.7922.71` on Debian 13.
 - Cover server fixture: Node.js `24.18.x` LTS HTTP/2.
 - TLS: TLS 1.3 with ALPN `h2`; `--profile chrome` is mandatory.
 - Public endpoint: `yumed`; Node is never exposed directly.
 - Cover backend: `loopback://<IP-literal>:<port>` only.
 
 The sanitized capture and version manifest are committed under
-`tests/fixtures/chrome150-node24/`. They, rather than invented timing or frame
+`tests/fixtures/chrome151-node24/`. They, rather than invented timing or frame
 constants, define the target profile.
 
 The current client selects one immutable profile in
-`src/core/stealth/cover_profile.*`. It supplies the Chrome 150/Debian 13 TLS
+`src/core/stealth/cover_profile.*`. It supplies the Chrome 151/Debian 13 TLS
 profile selection, User-Agent/client hints, H2 settings/priorities/header
 order, asset sequence, WebSocket message size, and Node 24 server settings.
 The HTTP registry, TLS preset, and production `H2Carrier` consume that profile,
@@ -169,17 +169,23 @@ or packet-capture privileges merely to make this diagnostic pass.
 
 ## Known classifier-visible residuals
 
-TLS remains the weakest classifier-visible layer. Stock OpenSSL
-does not expose enough control to reproduce Chrome/BoringSSL extension and
-GREASE ordering. A censor can therefore distinguish YUME before the encrypted
-HTTP/2 carrier matters even when ALPN, suites, groups, signatures, and a coarse
-JA4 classification align.
+TLS remains the weakest classifier-visible layer. Stock OpenSSL does not expose
+enough control to reproduce Chrome/BoringSSL extension and GREASE ordering. It
+therefore remains available only as the explicitly named
+`openssl-diagnostic` backend and is not a Chrome-parity fallback.
 
-Replacing OpenSSL with BoringSSL is a plausible implementation route, not a
-proof of parity by itself: Chrome adds build- and browser-specific behavior on
-top of BoringSSL. uTLS is a Go library and is not a direct C++ replacement.
-The choice must follow an on-wire experiment against one pinned Chrome build,
-not a library-name assumption.
+The experimental Linux `chrome151` backend isolates pinned uTLS `v1.8.2` in a
+per-connection helper built with exact Go `1.26.5`. The C++ parent establishes
+the routed TCP socket, the helper emits the custom Chrome 151 first flight and
+returns authenticated certificate metadata plus the mandatory TLS exporter
+over a private socketpair. It is implemented but deliberately not the default:
+five-run normalized on-wire parity and the local handshake/throughput gates now
+pass. The bounded negative certificate/exporter and process-lifecycle matrix,
+process ramps, reconnect storm, and segmented full-speed loopback soak also
+pass. Matched WAN, one uninterrupted deployed-network soak, exact-Chrome
+same-session capture, classifier/active-probe evidence, and independent review
+remain incomplete.
+The helper name or a matching JA3/JA4 value is not evidence of parity.
 
 YUME also does not currently disguise traffic volume and timing beyond the
 capture-derived H2/WebSocket framing. Blanket random padding, fixed-rate cover
@@ -193,15 +199,18 @@ distribution. Idle silence remains the current contract.
 The “ordinary sedan outside, hardened vault inside” description is a design
 goal, not a current security claim. Move toward it in this order:
 
-1. **One profile source (implemented).** The immutable Chrome 150/Debian 13 +
+1. **One profile source (implemented).** The immutable Chrome 151/Debian 13 +
    Node 24 profile supplies the target identity and capture-shaped H2 values;
    fixture-backed tests keep its consumers coherent.
-2. **Capture-normalized TLS parity.** Evaluate a pinned Chromium/BoringSSL
-   emitter (or an isolated equivalent) against the exact Chrome 150/Debian
-   capture. Compare extension order, GREASE positions, cipher/group/signature
-   order, ALPN, padding, lengths, and repeat-run distributions while
-   normalizing expected entropy such as randoms, key shares, session IDs, and
-   GREASE values. A matching JA3/JA4 label is insufficient.
+2. **Capture-normalized TLS parity (structural gate passed).** Five complete
+   authenticated helper flows match the Chrome 151/Node 24 structural profile,
+   with five distinct extension orders and three allowed ECH lengths. The gate
+   in `scripts/yume_tls_wire.py` preserves
+   extension order, GREASE positions, cipher/group/signature order, ALPN,
+   key-share geometry, padding, and lengths while normalizing only documented
+   entropy. A fresh same-session normal-Chrome NetLog plus wire recapture is
+   still required for release evidence quality. A matching JA3/JA4 label is
+   insufficient.
 3. **End-to-end profile coherence.** Capture a real YUME connection and reject
    any TLS, HTTP header, client-hint, H2 setting/priority, WebSocket, certificate,
    cover-site, or server-header contradiction. Validate both admitted and

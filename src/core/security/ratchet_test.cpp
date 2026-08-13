@@ -52,7 +52,7 @@ void TestDirectionalRoundTripAndReplayRejection() {
         Filled(32, 0x55)};
     Bytes root = yume::ratchet::DeriveInitialRoot(secrets);
     assert(Hex(root) ==
-           "d947df7ab4bda8bf86c833b57ffd91320ef22b9c159013f473cfbe13114d33a0");
+           "2aaed7289f27db3197d4cb0b47197c132a53402d688cb544190dd724258e8b48");
 
     // Two endpoints that read different TLS exporters — the live-relay shape —
     // never reach the same root, independently of the AUTH signature check.
@@ -71,7 +71,7 @@ void TestDirectionalRoundTripAndReplayRejection() {
 
     Bytes direction = yume::ratchet::DeriveDirectionRoot(root, Direction::ClientToServer);
     assert(Hex(direction) ==
-           "dde2b21896272ad2d8abc5d69a2d0ddb5e7ae63f5c2bf4ec819b52bb9ca34ccb");
+           "91ac5244bb48d9ffffd23b927c42a9a1f8ecacfff28b2726ae999e19f9396308");
     DirectionalRatchet sender(Direction::ClientToServer, direction);
     DirectionalRatchet receiver(
         Direction::ClientToServer,
@@ -81,7 +81,7 @@ void TestDirectionalRoundTripAndReplayRejection() {
     const Bytes plaintext{'h', 'e', 'l', 'l', 'o'};
     auto sealed = sender.Encrypt(3, 7, 0x0042, plaintext, now);
     assert(Hex(sealed.ciphertext) ==
-           "e7166514ea6be0fb27fe7ea2b617b5341fed414769");
+           "185d299a151e660b0b56088b937ccc358ea22ee6c5");
     assert(receiver.Decrypt(3, 7, 0x0042, sealed, now) == plaintext);
     assert(Throws([&] { (void)receiver.Decrypt(3, 7, 0x0042, sealed, now); }));
 

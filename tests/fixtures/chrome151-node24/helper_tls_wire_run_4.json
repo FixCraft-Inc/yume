@@ -1,0 +1,253 @@
+{
+  "schema": 1,
+  "normalization": [
+    "ClientHello and ServerHello random bytes",
+    "session identifier bytes but not length",
+    "GREASE values but not position or geometry",
+    "key-exchange bytes but not group or length",
+    "GREASE ECH bytes but not type, position, or length",
+    "server name value but not type or length"
+  ],
+  "client_hello": {
+    "kind": "client_hello",
+    "legacy_version": "0x0303",
+    "random": "<entropy>",
+    "session_id_length": 32,
+    "session_id": "<entropy>",
+    "cipher_suites": [
+      "GREASE",
+      "0x1301",
+      "0x1302",
+      "0x1303",
+      "0xc02b",
+      "0xc02f",
+      "0xc02c",
+      "0xc030",
+      "0xcca9",
+      "0xcca8",
+      "0xc013",
+      "0xc014",
+      "0x009c",
+      "0x009d",
+      "0x002f",
+      "0x0035"
+    ],
+    "compression_methods": [
+      0
+    ],
+    "extensions": [
+      {
+        "type": "GREASE",
+        "name": "grease",
+        "length": 0,
+        "data": "<grease>"
+      },
+      {
+        "type": "0x0023",
+        "name": "session_ticket",
+        "length": 0,
+        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "type": "0x0005",
+        "name": "status_request",
+        "length": 5,
+        "data_sha256": "957b88b12730e646e0f33d3618b77dfa579e8231e3c59c7104be7165611c8027"
+      },
+      {
+        "type": "0x000d",
+        "name": "signature_algorithms",
+        "length": 24,
+        "values": [
+          "0x0904",
+          "0x0905",
+          "0x0906",
+          "0x0403",
+          "0x0804",
+          "0x0401",
+          "0x0503",
+          "0x0805",
+          "0x0501",
+          "0x0806",
+          "0x0601"
+        ]
+      },
+      {
+        "type": "0x0033",
+        "name": "key_share",
+        "length": 1263,
+        "shares": [
+          {
+            "group": "GREASE",
+            "key_exchange_length": 1,
+            "key_exchange": "<entropy>"
+          },
+          {
+            "group": "0x11ec",
+            "key_exchange_length": 1216,
+            "key_exchange": "<entropy>"
+          },
+          {
+            "group": "0x001d",
+            "key_exchange_length": 32,
+            "key_exchange": "<entropy>"
+          }
+        ]
+      },
+      {
+        "type": "0x001b",
+        "name": "compress_certificate",
+        "length": 3,
+        "algorithms": [
+          "0x0002"
+        ]
+      },
+      {
+        "type": "0x000a",
+        "name": "supported_groups",
+        "length": 12,
+        "values": [
+          "GREASE",
+          "0x11ec",
+          "0x001d",
+          "0x0017",
+          "0x0018"
+        ]
+      },
+      {
+        "type": "0x0012",
+        "name": "signed_certificate_timestamp",
+        "length": 0,
+        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "type": "0x44cd",
+        "name": "application_settings",
+        "length": 5,
+        "protocols": [
+          "h2"
+        ]
+      },
+      {
+        "type": "0xff01",
+        "name": "renegotiation_info",
+        "length": 1,
+        "data_sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
+      },
+      {
+        "type": "0x002d",
+        "name": "psk_key_exchange_modes",
+        "length": 2,
+        "modes": [
+          1
+        ]
+      },
+      {
+        "type": "0x0000",
+        "name": "server_name",
+        "length": 14,
+        "server_names": [
+          {
+            "type": 0,
+            "value": "<server-name>",
+            "length": 9
+          }
+        ]
+      },
+      {
+        "type": "0x0010",
+        "name": "alpn",
+        "length": 14,
+        "protocols": [
+          "h2",
+          "http/1.1"
+        ]
+      },
+      {
+        "type": "0x000b",
+        "name": "ec_point_formats",
+        "length": 2,
+        "values": [
+          0
+        ]
+      },
+      {
+        "type": "0x002b",
+        "name": "supported_versions",
+        "length": 7,
+        "versions": [
+          "GREASE",
+          "0x0304",
+          "0x0303"
+        ]
+      },
+      {
+        "type": "0x0017",
+        "name": "extended_master_secret",
+        "length": 0,
+        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "type": "0xfe0d",
+        "name": "encrypted_client_hello",
+        "length": 218,
+        "data": "<grease-ech>"
+      },
+      {
+        "type": "GREASE",
+        "name": "grease",
+        "length": 1,
+        "data": "<grease>"
+      }
+    ],
+    "tls_records": [
+      {
+        "content_type": 22,
+        "legacy_version": "0x0301",
+        "length": 1752
+      }
+    ]
+  },
+  "server_hello": {
+    "kind": "server_hello",
+    "legacy_version": "0x0303",
+    "random": "<entropy>",
+    "session_id_length": 32,
+    "session_id": "<entropy>",
+    "cipher_suite": "0x1302",
+    "compression_method": 0,
+    "extensions": [
+      {
+        "type": "0x002b",
+        "name": "supported_versions",
+        "length": 2,
+        "versions": [
+          "0x0304"
+        ]
+      },
+      {
+        "type": "0x0033",
+        "name": "key_share",
+        "length": 1124,
+        "shares": [
+          {
+            "group": "0x11ec",
+            "key_exchange_length": 1120,
+            "key_exchange": "<entropy>"
+          }
+        ]
+      }
+    ],
+    "tls_records": [
+      {
+        "content_type": 22,
+        "legacy_version": "0x0303",
+        "length": 1210
+      }
+    ]
+  },
+  "captured_byte_counts": {
+    "client_to_server": 52935,
+    "server_to_client": 76491
+  }
+}

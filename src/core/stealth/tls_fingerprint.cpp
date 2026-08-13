@@ -443,12 +443,12 @@ std::string calculate_akamai_hash(const JA3Components& components) {
 std::vector<BrowserFingerprint> get_known_browser_fingerprints() {
     std::vector<BrowserFingerprint> fingerprints;
     
-    // Stock-OpenSSL compatibility selection for the pinned Chrome 150 target.
+    // Stock-OpenSSL compatibility selection for the pinned Chrome 151 target.
     // Chrome/BoringSSL additionally controls GREASE and extension ordering in
     // ways OpenSSL cannot reproduce. This is therefore the TLS policy selected
     // by the coherent cover profile, not a byte-identical ClientHello claim.
     {
-        const auto& cover = cover_profile::chrome150_debian13_node24();
+        const auto& cover = cover_profile::active();
         BrowserFingerprint fp;
         fp.profile = cover.tls_profile;
         fp.name = std::string(cover.browser_name) + " " +
@@ -529,165 +529,6 @@ std::vector<BrowserFingerprint> get_known_browser_fingerprints() {
         fingerprints.push_back(fp);
     }
     
-    // Firefox 126
-    {
-        BrowserFingerprint fp;
-        fp.profile = BrowserProfile::FIREFOX_126;
-        fp.name = "Firefox 126";
-        fp.tls_version = 0x0303;  // TLS 1.2 in ClientHello
-        fp.cipher_suites = {
-            0x1301,  // TLS_AES_128_GCM_SHA256
-            0x1303,  // TLS_CHACHA20_POLY1305_SHA256
-            0x1302,  // TLS_AES_256_GCM_SHA384
-            0xc02c,  // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
-            0xc02b,  // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-            0xc030,  // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-            0xc02f,  // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-        };
-        fp.extensions = {
-            0,      // server_name
-            23,     // extended_master_secret
-            65281,  // renegotiation_info
-            10,     // supported_groups
-            11,     // ec_point_formats
-            13,     // signature_algorithms
-            16,     // application_layer_protocol_negotiation
-            5,      // status_request
-            43,     // supported_versions
-            45,     // psk_key_exchange_modes
-            51,     // key_share
-            35,     // session_ticket
-            21,     // padding
-        };
-        fp.supported_groups = {
-            0x001d,  // x25519
-            0x0017,  // secp256r1
-            0x0018,  // secp384r1
-        };
-        fp.ec_point_formats = {0};  // uncompressed
-        fp.alpn_protocols = {"h2", "http/1.1"};
-        fp.signature_algorithms = {
-            0x0403,  // ecdsa_secp256r1_sha256
-            0x0503,  // ecdsa_secp384r1_sha384
-            0x0603,  // ecdsa_secp521r1_sha512
-            0x0807,  // ed25519
-            0x0804,  // rsa_pss_rsae_sha256
-            0x0805,  // rsa_pss_rsae_sha384
-            0x0806,  // rsa_pss_rsae_sha512
-            0x0401,  // rsa_pkcs1_sha256
-            0x0501,  // rsa_pkcs1_sha384
-            0x0601,  // rsa_pkcs1_sha512
-        };
-        
-        JA3Components ja3;
-        ja3.tls_version = fp.tls_version;
-        ja3.cipher_suites = fp.cipher_suites;
-        ja3.extensions = fp.extensions;
-        ja3.supported_groups = fp.supported_groups;
-        ja3.ec_point_formats = fp.ec_point_formats;
-        fp.ja3_hash = calculate_ja3_hash(ja3);
-        
-        JA4Components ja4;
-        ja4.protocol_version = "t13";
-        ja4.sni_present = "d";
-        ja4.cipher_count = fp.cipher_suites.size();
-        ja4.extension_count = fp.extensions.size();
-        ja4.first_alpn = "h2";
-        ja4.cipher_suites = fp.cipher_suites;
-        ja4.extensions = fp.extensions;
-        ja4.signature_algorithms = fp.signature_algorithms;
-        fp.ja4_hash = calculate_ja4_hash(ja4);
-        
-        fingerprints.push_back(fp);
-    }
-    
-    // Safari 18
-    {
-        BrowserFingerprint fp;
-        fp.profile = BrowserProfile::SAFARI_18;
-        fp.name = "Safari 18";
-        fp.tls_version = 0x0303;
-        // Safari 18 cipher list captured from real Safari on macOS 15
-        // (2026-05). Note: starts with 0x1302 (AES_256) not 0x1301
-        // (AES_128) — Safari prefers stronger TLS 1.3 cipher first.
-        // Includes the full CBC-SHA384 lineup that Chrome dropped,
-        // which is the primary structural divergence we need for
-        // distinct JA3 hashes.
-        fp.cipher_suites = {
-            0x1302,  // TLS_AES_256_GCM_SHA384
-            0x1303,  // TLS_CHACHA20_POLY1305_SHA256
-            0x1301,  // TLS_AES_128_GCM_SHA256
-            0xc02c,  // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
-            0xc02b,  // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-            0xcca9,  // TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
-            0xcca8,  // TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
-            0xc030,  // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-            0xc02f,  // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-            0xc024,  // TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384
-            0xc028,  // TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384
-            0xc00a,  // TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA
-            0xc014,  // TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA
-            0xc023,  // TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256
-            0xc027,  // TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256
-            0xc009,  // TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA
-            0xc013,  // TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
-            0x009d,  // TLS_RSA_WITH_AES_256_GCM_SHA384
-            0x009c,  // TLS_RSA_WITH_AES_128_GCM_SHA256
-            0x0035,  // TLS_RSA_WITH_AES_256_CBC_SHA
-            0x002f,  // TLS_RSA_WITH_AES_128_CBC_SHA
-        };
-        fp.extensions = {
-            0,      // server_name
-            10,     // supported_groups
-            11,     // ec_point_formats
-            13,     // signature_algorithms
-            16,     // application_layer_protocol_negotiation
-            43,     // supported_versions
-            51,     // key_share
-            45,     // psk_key_exchange_modes
-            23,     // extended_master_secret
-            35,     // session_ticket
-            5,      // status_request
-            18,     // signed_certificate_timestamp
-            65281,  // renegotiation_info
-            21,     // padding
-        };
-        fp.supported_groups = {
-            0x001d,  // x25519
-            0x0017,  // secp256r1
-            0x0018,  // secp384r1
-        };
-        fp.ec_point_formats = {0};
-        fp.alpn_protocols = {"h2", "http/1.1"};
-        fp.signature_algorithms = {
-            0x0403, 0x0503, 0x0603,
-            0x0807,
-            0x0804, 0x0805, 0x0806,
-            0x0401, 0x0501, 0x0601,
-        };
-        
-        JA3Components ja3;
-        ja3.tls_version = fp.tls_version;
-        ja3.cipher_suites = fp.cipher_suites;
-        ja3.extensions = fp.extensions;
-        ja3.supported_groups = fp.supported_groups;
-        ja3.ec_point_formats = fp.ec_point_formats;
-        fp.ja3_hash = calculate_ja3_hash(ja3);
-        
-        JA4Components ja4;
-        ja4.protocol_version = "t13";
-        ja4.sni_present = "d";
-        ja4.cipher_count = fp.cipher_suites.size();
-        ja4.extension_count = fp.extensions.size();
-        ja4.first_alpn = "h2";
-        ja4.cipher_suites = fp.cipher_suites;
-        ja4.extensions = fp.extensions;
-        ja4.signature_algorithms = fp.signature_algorithms;
-        fp.ja4_hash = calculate_ja4_hash(ja4);
-        
-        fingerprints.push_back(fp);
-    }
-    
     return fingerprints;
 }
 
@@ -735,15 +576,11 @@ std::optional<BrowserFingerprint> get_browser_profile_info(BrowserProfile profil
 
 std::string browser_profile_name(BrowserProfile profile) {
     switch (profile) {
-        case BrowserProfile::CHROME_150: {
-            const auto& cover = cover_profile::chrome150_debian13_node24();
+        case BrowserProfile::CHROME_151: {
+            const auto& cover = cover_profile::active();
             return std::string(cover.browser_name) + " " +
                    std::string(cover.browser_version);
         }
-        case BrowserProfile::FIREFOX_126: return "Firefox 126";
-        case BrowserProfile::FIREFOX_115_ESR: return "Firefox 115 ESR";
-        case BrowserProfile::SAFARI_18: return "Safari 18";
-        case BrowserProfile::EDGE_123: return "Edge 123";
         case BrowserProfile::UNKNOWN: return "Unknown";
     }
     return "Unknown";
@@ -897,7 +734,7 @@ FingerprintEvaluation evaluate_fingerprint(const FingerprintData& fingerprint) {
     eval.needs_stealth_mode = !eval.looks_like_browser;
     eval.recommended_profile = (profile != BrowserProfile::UNKNOWN) 
         ? profile 
-        : BrowserProfile::CHROME_150;
+        : BrowserProfile::CHROME_151;
     
     if (!eval.looks_like_browser) {
         eval.warnings.push_back("TLS fingerprint does not match known browser profiles");

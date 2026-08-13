@@ -20,7 +20,7 @@ namespace {
 constexpr int kSocketBufferBytes = 2 * 1024 * 1024;
 }
 
-Tunnel::Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream,
+Tunnel::Tunnel(ClientTransportStream&& stream,
                std::unique_ptr<obfs::H2Carrier> carrier,
                Bytes prefetched_carrier_bytes,
                std::unique_ptr<ratchet::SessionRatchet> ratchet)
@@ -29,10 +29,7 @@ Tunnel::Tunnel(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream,
     , carrier_(std::move(carrier))
     , prefetched_carrier_bytes_(std::move(prefetched_carrier_bytes)) {
     read_buf_.resize(util::relay_read_buf_size());
-    boost::system::error_code recvbuf_ec;
-    stream_.lowest_layer().set_option(boost::asio::socket_base::receive_buffer_size(kSocketBufferBytes), recvbuf_ec);
-    boost::system::error_code sendbuf_ec;
-    stream_.lowest_layer().set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
+    stream_.set_socket_buffers(kSocketBufferBytes);
     if (ratchet) core_.set_ratchet(std::move(ratchet));
 #if YUME_ENABLE_DEV_DIAGNOSTICS
     if (YUME_TIMING_ENABLED()) {
@@ -505,15 +502,11 @@ void Tunnel::close_all(const std::string& reason) {
         callback(reason);
     }
 
-    boost::system::error_code ec;
     if (reason == "interrupt") {
-        stream_.lowest_layer().cancel(ec);
-        stream_.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
-        stream_.lowest_layer().close(ec);
+        stream_.cancel_and_close();
         return;
     }
-    stream_.shutdown(ec);
-    stream_.lowest_layer().close(ec);
+    stream_.shutdown_and_close();
 }
 
 void Tunnel::schedule_keepalive() {

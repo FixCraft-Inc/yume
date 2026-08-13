@@ -1,5 +1,6 @@
 {
   "listen_port": 443,
+  "transport_profile": "chrome151-node24-v1",
   "tls_cert": "/etc/ssl/fixcraft.crt",
   "tls_key": "/etc/ssl/fixcraft.key",
   "auth_keys": "/etc/yume/authorized_keys",

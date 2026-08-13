@@ -10,7 +10,6 @@
 #include <tuple>
 
 #include "core/stealth/tls_fingerprint.hpp"
-#include "core/stealth/tls_stealth.hpp"
 
 namespace {
 
@@ -52,7 +51,7 @@ void test_empty_components_and_count_clamp() {
 
 void test_browser_match_thresholds() {
     const auto known = yume::tls_fingerprint::get_browser_profile_info(
-        yume::tls_fingerprint::BrowserProfile::CHROME_150);
+        yume::tls_fingerprint::BrowserProfile::CHROME_151);
     assert(known.has_value());
 
     yume::tls_fingerprint::FingerprintData observed;
@@ -77,26 +76,6 @@ void test_profiles_accept_ed25519_server_certificates() {
     }
 }
 
-void test_connection_profile_rotation() {
-    using yume::tls_fingerprint::BrowserProfile;
-    using yume::tls_stealth::profile_for_connection;
-
-    assert(profile_for_connection(BrowserProfile::CHROME_150, false, 2, 100) ==
-           BrowserProfile::CHROME_150);
-    assert(profile_for_connection(BrowserProfile::CHROME_150, true, 2, 0) ==
-           BrowserProfile::CHROME_150);
-    assert(profile_for_connection(BrowserProfile::CHROME_150, true, 2, 1) ==
-           BrowserProfile::CHROME_150);
-    assert(profile_for_connection(BrowserProfile::CHROME_150, true, 2, 2) ==
-           BrowserProfile::FIREFOX_126);
-    assert(profile_for_connection(BrowserProfile::CHROME_150, true, 2, 4) ==
-           BrowserProfile::SAFARI_18);
-    assert(profile_for_connection(BrowserProfile::CHROME_150, true, 2, 6) ==
-           BrowserProfile::CHROME_150);
-    assert(profile_for_connection(BrowserProfile::FIREFOX_126, true, 1, 1) ==
-           BrowserProfile::SAFARI_18);
-}
-
 }  // namespace
 
 int main() {
@@ -104,7 +83,6 @@ int main() {
     test_empty_components_and_count_clamp();
     test_browser_match_thresholds();
     test_profiles_accept_ed25519_server_certificates();
-    test_connection_profile_rotation();
     std::cout << "tls_fingerprint_test ok\n";
     return 0;
 }

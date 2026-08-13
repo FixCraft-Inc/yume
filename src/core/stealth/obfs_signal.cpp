@@ -178,11 +178,14 @@ std::string derive_path_token(const crypto::Bytes& signal_key,
         return {};
     }
     crypto::Bytes msg;
-    msg.reserve(yume::kTransportVersion.size() + normalized_sni->size() +
-                nonce->size() + 20);
+    msg.reserve(yume::kTransportVersion.size() + yume::kTransportProfile.size() +
+                normalized_sni->size() + nonce->size() + 22);
     append_u16(msg, static_cast<std::uint16_t>(yume::kTransportVersion.size()));
     msg.insert(msg.end(), yume::kTransportVersion.begin(),
                yume::kTransportVersion.end());
+    append_u16(msg, static_cast<std::uint16_t>(yume::kTransportProfile.size()));
+    msg.insert(msg.end(), yume::kTransportProfile.begin(),
+               yume::kTransportProfile.end());
     append_u16(msg, static_cast<std::uint16_t>(normalized_sni->size()));
     msg.insert(msg.end(), normalized_sni->begin(), normalized_sni->end());
     append_u64(msg, static_cast<std::uint64_t>(hour_epoch));

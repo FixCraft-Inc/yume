@@ -15,8 +15,6 @@ permissions:
   actions: read
 
 env:
-  BASEFWX_REPO: "https://github.com/F1xGOD/basefwx.git"
-  BASEFWX_REF_FILE: "config/refs/basefwx.ref"
   CODEQL_BUILD_JOBS: "2"
 
 jobs:
@@ -46,13 +44,8 @@ jobs:
         if: matrix.language == 'c-cpp'
         run: |
           set -euo pipefail
-          BASEFWX_REF="${BASEFWX_REF:-}"
-          if [[ -z "${BASEFWX_REF}" && -f "${BASEFWX_REF_FILE}" ]]; then
-            BASEFWX_REF="$(tr -d '[:space:]' < "${BASEFWX_REF_FILE}")"
-          fi
-          if [[ -z "${BASEFWX_REF}" ]]; then
-            BASEFWX_REF="main"
-          fi
+          BASEFWX_REPO="$(python3 scripts/yume_dependencies.py get basefwx repository)"
+          BASEFWX_REF="$(python3 scripts/yume_dependencies.py get basefwx revision)"
           rm -rf basefwx
           git clone --filter=blob:none --no-checkout "${BASEFWX_REPO}" basefwx
           git -C basefwx fetch --depth 1 origin "${BASEFWX_REF}"

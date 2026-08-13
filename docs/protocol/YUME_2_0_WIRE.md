@@ -1,13 +1,15 @@
 # YUME 2.0 desktop wire contract
 
-Status: current `2.0-dev5` development contract for the first Linux x86-64 desktop slice.
-The release version remains gated on capture, conformance, soak, and throughput
-evidence. This document intentionally does not describe a 1.x compatibility
-mode because none exists.
+Status: current `2.0-dev6` development contract for the first Linux x86-64 desktop slice.
+The release version remains gated on exact-Chrome same-session capture,
+external conformance/classification, matched WAN, an uninterrupted deployed
+soak, and independent review. Bounded lifecycle, scale, reconnect, and
+segmented loopback-soak qualification passes. This document intentionally does
+not describe a 1.x compatibility mode because none exists.
 
 ## Reference cover stack
 
-- Client fixture: Chrome `150.0.7871.114`, Debian 13, TLS 1.3, ALPN `h2`.
+- Client fixture: Chrome `151.0.7922.71`, Debian 13, TLS 1.3, ALPN `h2`.
 - Cover fixture: Node.js `24.18.x` LTS HTTP/2.
 - Public endpoint: `yumed` terminates TLS and HTTP/2.
 - Genuine site: a separately supervised Node process bound to a configured
@@ -30,10 +32,10 @@ masked PONG.
 
 The captured SETTINGS, request headers/order, priorities, window update,
 WebSocket behavior, and component versions are recorded under
-`tests/fixtures/chrome150-node24/`.
+`tests/fixtures/chrome151-node24/`.
 
 This is the normative target, not a statement that the current emitter has
-complete identity parity. One immutable Chrome 150/Debian 13 + Node 24 profile
+complete identity parity. One immutable Chrome 151/Debian 13 + Node 24 profile
 now supplies the production TLS selection, User-Agent/client hints, H2
 settings/priorities/header order, assets, and cover-server identity. Stock
 OpenSSL still cannot reproduce Chrome/BoringSSL extension/GREASE ordering.
@@ -48,7 +50,7 @@ fatal. `record` below is the payload of a YUME AUTH, AUTH_OK, REKEY_INIT, or
 REKEY_ACK frame:
 
 ```
-u8  schema = 2
+u8  schema = 3
 u8  record_kind
 u16 field_count
 repeat field_count:
@@ -67,7 +69,7 @@ limited to 64 KiB before allocation.
 
 | ID | Critical | Value |
 | -- | -- | -- |
-| 1 | yes | UTF-8 exact transport version `2.0-dev5` |
+| 1 | yes | UTF-8 exact transport version `2.0-dev6` |
 | 2 | yes | 32-byte server challenge |
 | 3 | yes | ephemeral ML-KEM-1024 public key |
 | 4 | yes | 32-byte ephemeral X25519 public key |
@@ -75,6 +77,7 @@ limited to 64 KiB before allocation.
 | 6 | yes | 32-byte root/transcript salt |
 | 7 | yes | `u16` concurrent directional epoch offers the server accepts (1..64) |
 | 8 | yes | 20-byte accepted ratchet policy: `epoch_bytes_u64 || epoch_frames_u64 || epoch_active_ms_u32` |
+| 9 | yes | UTF-8 exact transport profile `chrome151-node24-v1` |
 
 ### AUTH response (`record_kind = 2`)
 
@@ -85,20 +88,21 @@ limited to 64 KiB before allocation.
 | 3 | yes | existing Ed25519 public identity encoding |
 | 4 | yes | `u16` concurrent directional epoch offers the client accepts (1..64) |
 | 5 | yes | 20-byte accepted ratchet policy: `epoch_bytes_u64 || epoch_frames_u64 || epoch_active_ms_u32` |
-| 6 | yes | Ed25519 signature |
+| 6 | yes | UTF-8 exact transport profile `chrome151-node24-v1` |
+| 7 | yes | Ed25519 signature |
 
-Fields 4 and 5 are part of the record the client signs, while the complete
-challenge is also in the signature input. The two window advertisements and
-both ratchet policies are therefore covered by the same transcript signature
-as the key exchange. Each endpoint sends no deeper than the peer's advertised
-window and applies the component-wise stricter local/peer epoch policy. Values
-outside the documented bounds in `docs/SECURITY_MODES.md` are fatal on build
-and parse.
+Fields 4 through 6 are part of the record the client signs, while the complete
+challenge (including its profile field) is also in the signature input. The
+profile identifier, two window advertisements, and both ratchet policies are
+therefore covered by the same transcript signature as the key exchange. Each
+endpoint sends no deeper than the peer's advertised window and applies the
+component-wise stricter local/peer epoch policy. Values outside the documented
+bounds in `docs/SECURITY_MODES.md` are fatal on build and parse.
 
 The signature input is:
 
 ```
-"yume/2.0/auth-signature/v2" ||
+"yume/2.0/auth-signature/v3" ||
 u32(len(challenge_record)) || challenge_record ||
 u32(len(response_without_signature)) || response_without_signature ||
 u32(32) || channel_binding
@@ -106,8 +110,8 @@ u32(32) || channel_binding
 
 Admission and this signature are verified before KEM decapsulation or any
 other avoidable expensive operation. `AUTH_OK` is sent only after the inner
-channel is active. Its encrypted payload contains the exact version and
-negotiated limits.
+channel is active. Its encrypted record repeats both the exact version and
+exact profile before carrying the server information.
 
 ### AUTH channel binding
 
@@ -153,7 +157,8 @@ token is:
 
 ```
 HMAC-SHA256(obfs_secret,
-  len("2.0-dev5") || "2.0-dev5" ||
+  len("2.0-dev6") || "2.0-dev6" ||
+  len("chrome151-node24-v1") || "chrome151-node24-v1" ||
   len(lowercase_sni) || lowercase_sni ||
   hour_u64 || nonce_32)
 ```
@@ -177,15 +182,18 @@ root_0 = HKDF-SHA256(
   len(mlkem_ss) || mlkem_ss ||
   len(x25519_ss) || x25519_ss ||
   len(psk_key) || psk_key ||
-  len(channel_binding) || channel_binding,
-  transcript_salt, "yume/2.0/root/v2", 32)
+  len(channel_binding) || channel_binding ||
+  len("chrome151-node24-v1") || "chrome151-node24-v1",
+  transcript_salt, "yume/2.0/root/v3", 32)
 ```
 
 Independent directional roots and chains use distinct versioned labels. Every
 message derives and erases a one-use AES-256-GCM key. AAD is:
 
 ```
-"yume/2.0/aad/v1" || direction_u8 || epoch_u64 || sequence_u64 ||
+"yume/2.0/aad/v2" ||
+len("chrome151-node24-v1") || "chrome151-node24-v1" ||
+direction_u8 || epoch_u64 || sequence_u64 ||
 frame_type_u8 || stream_id_u8 || flags_u16
 ```
 

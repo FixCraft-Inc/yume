@@ -7,7 +7,6 @@ import argparse
 import atexit
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -30,6 +29,7 @@ from yume_bench_common import (  # noqa: E402
     endpoint_contract,
     generate_keyset,
     invoking_identity,
+    is_pinned_chrome_version,
     parse_rates,
     relay_chunk_kib,
     resolve_pinned_node,
@@ -155,6 +155,12 @@ def parse_args() -> argparse.Namespace:
         help="explicit upload DATA chunk size; omit to match the client relay buffer",
     )
     parser.add_argument("--bench-direction", choices=("both", "up", "down"), default="both")
+    parser.add_argument(
+        "--tls-backend",
+        choices=("chrome151", "openssl-diagnostic"),
+        default="openssl-diagnostic",
+        help="outer client TLS backend used for the endpoint benchmark",
+    )
     size = parser.add_mutually_exclusive_group()
     size.add_argument("--quick", action="store_true", help="32 MiB, 4 streams; skip browser")
     size.add_argument("--full", action="store_true", help="1024 MiB, 64 streams")
@@ -317,6 +323,7 @@ def run_endpoint(
         "--obfs-secret-file", str(keys.admission_secret),
         "--inner-psk-file", str(keys.inner_psk),
         "--profile", "chrome",
+        "--tls-backend", args.tls_backend,
         "--bench",
         "--bench-mib", str(mib),
         "--bench-streams", str(streams),
@@ -407,9 +414,9 @@ def main() -> int:
     if not args.no_browser and not args.quick and not browser:
         print("[bench] Chrome/Chromium not found; skipping the public-cover capture", file=sys.stderr)
     browser_version = command_version([str(browser), "--version"]) if browser else None
-    if browser_version and not re.search(r"\b(?:Chrome|Chromium)\s+150\.", browser_version):
+    if browser_version and not is_pinned_chrome_version(browser_version):
         print(
-            f"[bench] {browser_version} does not match Chrome 150; "
+            f"[bench] {browser_version} does not match Chrome 151; "
             "the cover arm is functional evidence only",
             file=sys.stderr,
         )
@@ -556,6 +563,7 @@ def main() -> int:
                 "finished_utc": endpoint_finished_utc,
                 "exit_code": endpoint_code,
                 "command": endpoint_command,
+                "tls_backend": args.tls_backend,
                 "chunk_kib": effective_chunk_kib,
                 "requested_chunk_kib": args.bench_chunk_kib,
                 "chunk_source": (

@@ -145,6 +145,10 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
     if (context.config_specified || std::filesystem::exists(context.config_path)) {
         try {
             auto json = yume::util::read_json_config(context.config_path);
+            if (json.contains("transport_profile")) {
+                cfg.transport_profile =
+                    json["transport_profile"].get<std::string>();
+            }
             if (json.contains("listen_port") && cfg.listen_port == 443) {
                 cfg.listen_port = json["listen_port"].get<int>();
             }

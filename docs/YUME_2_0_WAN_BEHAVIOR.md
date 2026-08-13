@@ -6,7 +6,7 @@ single-tunnel performance is still not WAN-validated.
 
 All measurements and formulas below use the now-named Extreme policy
 (256 KiB, 512 frames, 500 ms). Normal, Soft, and Ultimate were introduced in
-dev5 and have not been WAN-validated; substitute their negotiated byte budget
+dev6 and have not been WAN-validated; substitute their negotiated byte budget
 in the model, but do not treat that model as measured performance.
 
 ## What dev2 fixed

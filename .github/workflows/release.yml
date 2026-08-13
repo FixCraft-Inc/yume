@@ -1,783 +1,245 @@
 name: Release
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
+      release_profile:
+        description: "Release profile"
+        required: true
+        default: "linux-desktop-2.0"
+        type: choice
+        options:
+          - linux-desktop-2.0
       tag_name:
-        description: "Tag name for the release (for example: v1.1.0)"
+        description: "Existing release tag (v2.0-rcN or v2.0)"
         required: true
         type: string
-      targets:
-        description: "Targets to build (comma-separated)"
-        required: false
-        default: "linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,openwrt-mips,windows-x86_64"
-        type: string
-      openwrt_fast:
-        description: "Skip OpenWRT SDK package compilation (faster, may skip openwrt-mips artifact if SDK not pre-staged)"
-        required: false
-        default: true
+      publish:
+        description: "Attach validated artifacts to the existing GitHub release"
+        required: true
+        default: false
+        type: boolean
+      independent_security_review:
+        description: "Independent security review is complete"
+        required: true
+        default: false
+        type: boolean
+      rc_gates_approved:
+        description: "Documented lifecycle, scale, soak, WAN, and same-session gates passed"
+        required: true
+        default: false
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: yume-release-${{ github.event.inputs.tag_name || github.ref_name || github.run_id }}
+  group: yume-release-${{ inputs.tag_name }}
   cancel-in-progress: false
 
 env:
-  OPENWRT_SDK_VERSION: "24.10.0"
-  OPENWRT_SDK_TARGET: "ath79-nand"
-  BASEFWX_REPO: "https://github.com/F1xGOD/basefwx.git"
-  BASEFWX_REF_FILE: "config/refs/basefwx.ref"
-  YUME_VENDOR_ARCHIVE: "third_party/prebuilt/yume-vendor-prebuilt.tar.xz"
+  GO_VERSION: "1.26.5"
 
 jobs:
   preflight:
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Validate release source
+      - name: Validate release source and approvals
+        shell: bash
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${GITHUB_REF_NAME}" != "main" ]]; then
+          if [[ "${GITHUB_REF_NAME}" != "main" ]]; then
             echo "workflow_dispatch releases must be started from main." >&2
             exit 1
           fi
-
-      - name: Validate release inputs
-        run: |
-          python3 ./scripts/release_preflight.py
-
-  # Fast smoke build + binary --version check on the host runner. If this
-  # fails the heavier cross-arch / Windows / macOS builds never start, so a
-  # code regression aborts the release in ~5 minutes instead of ~60. Mirrors
-  # basefwx's `light-tests` gate.
-  light-tests:
-    needs: [preflight]
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Ensure BaseFWX sources
-        run: |
-          BASEFWX_REF="${BASEFWX_REF:-}"
-          if [[ -z "${BASEFWX_REF}" && -f "${BASEFWX_REF_FILE}" ]]; then
-            BASEFWX_REF="$(tr -d '[:space:]' < "${BASEFWX_REF_FILE}")"
+          if [[ "${{ inputs.release_profile }}" != "linux-desktop-2.0" ]]; then
+            echo "Unsupported release profile." >&2
+            exit 1
           fi
-          if [[ -z "${BASEFWX_REF}" ]]; then
-            BASEFWX_REF="main"
+          if [[ "${{ inputs.publish }}" == "true" ]]; then
+            if [[ "${{ inputs.independent_security_review }}" != "true" || \
+                  "${{ inputs.rc_gates_approved }}" != "true" ]]; then
+              echo "Publishing requires independent review and every documented RC gate." >&2
+              exit 1
+            fi
           fi
-          if ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-            rm -rf basefwx
-            git clone --filter=blob:none --no-checkout "${BASEFWX_REPO}" basefwx
-          fi
-          git -C basefwx fetch --depth 1 origin "${BASEFWX_REF}"
-          git -C basefwx checkout --detach FETCH_HEAD
-          echo "Using BaseFWX ref: $(git -C basefwx rev-parse HEAD)"
-
-      - name: Install host build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential cmake ninja-build pkg-config \
-            libssl-dev zlib1g-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
-            libboost-all-dev libspdlog-dev nlohmann-json3-dev
-          bash scripts/ensure-nghttp2.sh
-
-      - name: Configure + build host (CLI only, fast)
-        run: |
-          set -euo pipefail
-          cmake -S . -B build-light -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DYUME_USE_BASEFWX=ON \
-            -DBASEFWX_REQUIRE_OQS=OFF \
-            -DYUME_BUILD_GUI=OFF
-          cmake --build build-light --target yume yumed -j
-
-      - name: Smoke-test host binaries
-        run: |
-          set -euo pipefail
-          ./build-light/bin/yume --version
-          ./build-light/bin/yumed --version
-
-      - name: Run release preflight check again (post-build)
-        run: |
-          python3 ./scripts/release_preflight.py
+          python3 scripts/release_preflight.py \
+            --profile "${{ inputs.release_profile }}" \
+            --tag "${{ inputs.tag_name }}"
 
   build-linux:
-    needs: [preflight, light-tests]
+    needs: [preflight]
     runs-on: ubuntu-22.04
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Ensure BaseFWX sources
+      - name: Set up exact Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+          check-latest: false
+          cache-dependency-path: helper/chrome_tls/go.sum
+
+      - name: Verify host lane
+        shell: bash
         run: |
-          BASEFWX_REF="${BASEFWX_REF:-}"
-          if [[ -z "${BASEFWX_REF}" && -f "${BASEFWX_REF_FILE}" ]]; then
-            BASEFWX_REF="$(tr -d '[:space:]' < "${BASEFWX_REF_FILE}")"
-          fi
-          if [[ -z "${BASEFWX_REF}" ]]; then
-            BASEFWX_REF="main"
-          fi
-          if [[ -d basefwx ]] && ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-            rm -rf basefwx
-          fi
+          set -euo pipefail
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = x86_64
+          ldd --version 2>&1 | head -1 | grep -Eq 'GNU libc|GLIBC'
+          test "$(go env GOVERSION)" = "go${GO_VERSION}"
+
+      - name: Ensure exact BaseFWX source
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASEFWX_REPO="$(python3 scripts/yume_dependencies.py get basefwx repository)"
+          BASEFWX_REF="$(python3 scripts/yume_dependencies.py get basefwx revision)"
           if ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
             rm -rf basefwx
             git clone --filter=blob:none --no-checkout "${BASEFWX_REPO}" basefwx
           fi
           git -C basefwx fetch --depth 1 origin "${BASEFWX_REF}"
           git -C basefwx checkout --detach FETCH_HEAD
-          test -f basefwx/cpp/CMakeLists.txt
-          echo "Using BaseFWX ref: $(git -C basefwx rev-parse HEAD)"
+          test "$(git -C basefwx rev-parse HEAD)" = "${BASEFWX_REF}"
 
-      - name: Install system dependencies
+      - name: Install Linux x86-64 build dependencies
+        shell: bash
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential cmake ninja-build pkg-config \
-            libssl-dev zlib1g-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
-            libboost-all-dev libspdlog-dev nlohmann-json3-dev \
-            mingw-w64 gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix \
-            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
-            gcc-i686-linux-gnu g++-i686-linux-gnu \
-            zstd curl wget git tar xz-utils \
-            qemu-user-static binfmt-support \
-            clang lld
+            build-essential cmake ninja-build pkg-config binutils xz-utils \
+            libssl-dev zlib1g-dev liblzma-dev libzstd-dev libargon2-dev \
+            libnghttp2-dev libboost-all-dev libspdlog-dev nlohmann-json3-dev
           bash scripts/ensure-nghttp2.sh
+          LIBOQS_TARGET=host LIBOQS_BUILD_DIR="${RUNNER_TEMP}/liboqs-host" \
+            bash scripts/build-liboqs-target.sh
+          sudo ldconfig
 
-      - name: Restore vcpkg binary cache
-        if: contains(github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,openwrt-mips,windows-x86_64', 'windows-x86_64')
-        uses: actions/cache@v4
-        with:
-          # vcpkg's default binary-cache location. Restoring this dir
-          # turns the ~60-90 min "compile 63 packages from source" cold
-          # path into a ~5 min "rehydrate prebuilt .zip" warm path on
-          # every release after the first one. The key is partitioned
-          # by the Windows vcpkg package list so changes to that list
-          # invalidate cleanly; the restore-keys fall through to any
-          # cache from the same OS so we benefit even when the package
-          # list changes by one entry.
-          path: ${{ github.workspace }}/vcpkg-binary-cache
-          key: ${{ runner.os }}-vcpkg-windows-${{ hashFiles('.github/workflows/release.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-vcpkg-windows-
-            ${{ runner.os }}-vcpkg-
-
-      - name: Setup vcpkg
-        if: contains(github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,openwrt-mips,windows-x86_64', 'windows-x86_64')
-        run: |
-          git clone --depth 1 https://github.com/microsoft/vcpkg.git ~/vcpkg
-          ~/vcpkg/bootstrap-vcpkg.sh -disableMetrics
-          mkdir -p "${GITHUB_WORKSPACE}/vcpkg-binary-cache"
-          {
-            echo "VCPKG_ROOT=${HOME}/vcpkg"
-            # Point vcpkg's binary cache at the dir actions/cache
-            # restored (or created empty) above. `files,rw` = read from
-            # and write to that directory.
-            echo "VCPKG_BINARY_SOURCES=clear;files,${GITHUB_WORKSPACE}/vcpkg-binary-cache,readwrite"
-          } >> "${GITHUB_ENV}"
-
-      - name: Download OpenWRT SDK
-        if: contains(github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,openwrt-mips,windows-x86_64', 'openwrt')
-        run: |
-          OPENWRT_SDK_NAME="openwrt-sdk-${OPENWRT_SDK_VERSION}-${OPENWRT_SDK_TARGET}_gcc-13.3.0_musl.Linux-x86_64"
-          OPENWRT_SDK_URL="https://downloads.openwrt.org/releases/${OPENWRT_SDK_VERSION}/targets/ath79/nand/${OPENWRT_SDK_NAME}.tar.zst"
-          mkdir -p ~/.cache/yume
-          cd ~/.cache/yume
-          if [[ ! -d "${HOME}/${OPENWRT_SDK_NAME}" ]]; then
-            curl -L --fail -o "${OPENWRT_SDK_NAME}.tar.zst" "${OPENWRT_SDK_URL}"
-            zstd -d "${OPENWRT_SDK_NAME}.tar.zst" -o "${OPENWRT_SDK_NAME}.tar"
-            tar -xf "${OPENWRT_SDK_NAME}.tar" -C "${HOME}"
-            rm -f "${OPENWRT_SDK_NAME}.tar" "${OPENWRT_SDK_NAME}.tar.zst"
-          fi
-          echo "OPENWRT_SDK=${HOME}/${OPENWRT_SDK_NAME}" >> "${GITHUB_ENV}"
-
-      - name: Extract prebuilt vendor libs
-        run: |
-          if [[ -f "${YUME_VENDOR_ARCHIVE}" ]]; then
-            tar -xJf "${YUME_VENDOR_ARCHIVE}"
-          fi
-
-      - name: Provision libargon2 for every reachable target
-        # Cross-build static libargon2.a for every target where the
-        # build matrix actually needs it. Same target list as the
-        # liboqs step below and the same install layout, so ezbuild
-        # finds both without further wiring.
-        #
-        # libargon2 is much simpler than liboqs — a single Makefile,
-        # no CMake. Total wall time across all five targets is about
-        # 1-2 minutes.
-        env:
-          YUME_TARGETS_RAW: ${{ github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,openwrt-mips,windows-x86_64' }}
+      - name: Prime pinned modules, then test offline
+        working-directory: helper/chrome_tls
+        shell: bash
         run: |
           set -euo pipefail
-          chmod +x scripts/build-libargon2-target.sh
-          # Host is already covered by libargon2-dev (apt). Re-running
-          # the host build is harmless (idempotent skip) but skipped
-          # here to save 30s.
-          LIBARGON2_TARGET=armv7 ./scripts/build-libargon2-target.sh
-          LIBARGON2_TARGET=armv8 ./scripts/build-libargon2-target.sh
-          LIBARGON2_TARGET=i386  ./scripts/build-libargon2-target.sh
-          if [[ ",${YUME_TARGETS_RAW}," == *",openwrt-mips,"* ]] || [[ ",${YUME_TARGETS_RAW}," == *",openwrt,"* ]]; then
-            if [[ -n "${OPENWRT_SDK:-}" && -d "${OPENWRT_SDK}" ]]; then
-              LIBARGON2_TARGET=openwrt-mips ./scripts/build-libargon2-target.sh || {
-                echo "::warning::OpenWRT MIPS libargon2 build failed; openwrt-mips yume build will fail downstream at YUME_REQUIRE_ARGON2."
-              }
-            else
-              echo "::warning::OpenWRT MIPS libargon2 build skipped: OPENWRT_SDK is unset or path missing."
-            fi
-          fi
+          GOTOOLCHAIN=local go mod download
+          GOTOOLCHAIN=local GOPROXY=off go test -mod=readonly -count=1 ./...
+          GOTOOLCHAIN=local GOPROXY=off go test -mod=readonly -count=1 -race ./...
 
-      - name: Provision liboqs for every reachable target
-        # Build static liboqs.a for host + every cross target where it
-        # is feasible. The resulting binaries static-link OQS so they
-        # have no runtime liboqs.so dependency.
-        #
-        # Targets covered:
-        #   host  / amd64                  -> /usr/local                       (linux-amd64 dynamic + static)
-        #   armv7 / arm-linux-gnueabihf    -> /usr/arm-linux-gnueabihf         (linux-armv7)
-        #   armv8 / aarch64-linux-gnu      -> /usr/aarch64-linux-gnu           (linux-armv8)
-        #   i386  / i686-linux-gnu         -> vendor/busybox-x86               (busybox-x86)
-        #   openwrt-mips (SDK toolchain)   -> $OPENWRT_SDK/.../target-mips_*/usr (openwrt-mips, only when openwrt is in targets)
-        #
-        # Targets we deliberately skip:
-        #   - busybox-armv7-static / busybox-armv8-static: need a musl
-        #     toolchain we don't install on the runner, and those
-        #     targets are skipped by fullau in that case anyway.
-        #   - windows-x86_64: vcpkg installs liboqs (see YUME_WINDOWS_VCPKG_PACKAGES).
-        #   - macos-arm64: brew installs liboqs (separate macos job).
-        env:
-          YUME_TARGETS_RAW: ${{ github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,openwrt-mips,windows-x86_64' }}
+      - name: Configure first clean Linux build
+        shell: bash
         run: |
           set -euo pipefail
-          chmod +x scripts/build-liboqs-target.sh
-          LIBOQS_TARGET=host  ./scripts/build-liboqs-target.sh
-          LIBOQS_TARGET=armv7 ./scripts/build-liboqs-target.sh
-          LIBOQS_TARGET=armv8 ./scripts/build-liboqs-target.sh
-          LIBOQS_TARGET=i386  ./scripts/build-liboqs-target.sh
-          # Only attempt OpenWRT MIPS when the targets list explicitly
-          # requests it AND the prior Download OpenWRT SDK step has set
-          # OPENWRT_SDK in the env. If either is missing, skip with a
-          # warning so the rest of the matrix isn't blocked by an
-          # OpenWRT-specific failure.
-          if [[ ",${YUME_TARGETS_RAW}," == *",openwrt-mips,"* ]] || [[ ",${YUME_TARGETS_RAW}," == *",openwrt,"* ]]; then
-            if [[ -n "${OPENWRT_SDK:-}" && -d "${OPENWRT_SDK}" ]]; then
-              LIBOQS_TARGET=openwrt-mips ./scripts/build-liboqs-target.sh || {
-                echo "::warning::OpenWRT MIPS liboqs build failed; the openwrt-mips yume build will be skipped or fail downstream."
-              }
-            else
-              echo "::warning::OpenWRT MIPS liboqs build skipped: OPENWRT_SDK is unset or path missing. Did the SDK download step run?"
-            fi
-          fi
-          sudo ldconfig || true
+          cmake -S . -B build-helper-a -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DYUME_USE_BASEFWX=ON \
+            -DYUME_BUILD_CHROME_TLS_HELPER=ON \
+            -DYUME_GO_EXECUTABLE="$(command -v go)" \
+            -DYUME_BUILD_GUI=OFF \
+            -DYUME_BUILD_TOOLS=OFF \
+            -DYUME_BUILD_SHARED_ABI=OFF \
+            -DYUME_BUILD_SELFTEST=OFF \
+            -DYUME_BUILD_TESTING=ON \
+            -DYUME_STATIC=OFF \
+            -DYUME_NATIVE_OPT=OFF \
+            -DYUME_FAST_MATH=OFF \
+            -DYUME_WARNINGS_AS_ERRORS=ON \
+            -DBASEFWX_REQUIRE_ARGON2=ON \
+            -DBASEFWX_REQUIRE_OQS=ON \
+            -DBASEFWX_REQUIRE_LZMA=ON
 
-      - name: Build (Linux + cross)
-        run: |
-          export YUME_TARGETS="${{ github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,openwrt-mips,windows-x86_64' }}"
-          export YUME_REQUIRE_ARGON2=1
-          # Strict PQ enforcement is back on now that the previous step
-          # provisions liboqs for every target the CI runner can build
-          # against: host amd64, the three apt-installable GCC cross
-          # triplets (armhf, aarch64, i686), the vcpkg static triplet
-          # for Windows, and brew on macOS (in build-macos). The
-          # remaining musl-only targets (armv7-busybox-static,
-          # armv8-busybox-static) get skipped by fullau on a glibc
-          # runner, and openwrt-mips is skipped via OPENWRT_FAST=1,
-          # so the strict guard no longer trips on missing OQS.
-          export YUME_REQUIRE_OQS=1
-          if [[ ",${YUME_TARGETS}," == *",windows-x86_64,"* ]]; then
-            export YUME_WINDOWS_CROSS=1
-            export YUME_WINDOWS_VCPKG_BUILD_TYPE=release
-            export YUME_WINDOWS_VCPKG_PACKAGES="openssl boost-cmake boost-headers boost-system boost-asio zlib zstd liblzma nlohmann-json argon2 liboqs"
-          else
-            export YUME_WINDOWS_CROSS=0
-          fi
-          export YUME_MACOS_CROSS=0
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            export YUME_OPENWRT_FAST="${{ github.event.inputs.openwrt_fast || 'true' }}"
-          else
-            export YUME_OPENWRT_FAST=1
-          fi
-          echo "Building targets: ${YUME_TARGETS}"
-          echo "OpenWRT fast mode: ${YUME_OPENWRT_FAST}"
-          sudo -E env \
-            PATH="${PATH}" \
-            VCPKG_ROOT="${VCPKG_ROOT}" \
-            OPENWRT_SDK="${OPENWRT_SDK}" \
-            YUME_TARGETS="${YUME_TARGETS}" \
-            YUME_REQUIRE_ARGON2="${YUME_REQUIRE_ARGON2}" \
-            YUME_REQUIRE_OQS="${YUME_REQUIRE_OQS}" \
-            YUME_WINDOWS_CROSS="${YUME_WINDOWS_CROSS}" \
-            YUME_WINDOWS_VCPKG_BUILD_TYPE="${YUME_WINDOWS_VCPKG_BUILD_TYPE:-}" \
-            YUME_WINDOWS_VCPKG_PACKAGES="${YUME_WINDOWS_VCPKG_PACKAGES:-}" \
-            YUME_MACOS_CROSS="${YUME_MACOS_CROSS}" \
-            YUME_OPENWRT_FAST="${YUME_OPENWRT_FAST}" \
-            ./fullau.sh
-
-      - name: Install GUI runtime deps (Linux GUI build)
-        run: |
-          sudo apt-get install -y \
-            libgl1-mesa-dev libglfw3-dev libwayland-dev libxkbcommon-dev \
-            libx11-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev \
-            libfreetype-dev libfontconfig1-dev
-
-      - name: Build yume-gui (linux-amd64)
-        # Best-effort: a GUI dep regression should not block the CLI
-        # release. If the build fails, no yume-gui-amd64-linux artifact
-        # is produced and the dist/-walking self-test won't try to test
-        # it. The dist/ check at the end of Package still enforces that
-        # SOMETHING got built.
-        continue-on-error: true
+      - name: Build and test first clean Linux build
+        shell: bash
         run: |
           set -euo pipefail
-          # ezbuild.sh builds into ./build by default; force a dedicated
-          # out-of-tree dir so we don't clobber the CLI cross builds and
-          # so the package step can pick up build-gui-linux/bin/yume-gui.
-          rm -rf build-gui-linux
-          YUME_BUILD_DIR=build-gui-linux \
-            ./ezbuild.sh --gui
-          test -x build-gui-linux/bin/yume-gui
+          GOTOOLCHAIN=local GOPROXY=off \
+            cmake --build build-helper-a --parallel 2
+          ctest --test-dir build-helper-a --output-on-failure --parallel 2
+          build-helper-a/bin/yume --version
+          build-helper-a/bin/yumed --version
+          build-helper-a/bin/yume-chrome-tls-helper --version
 
-      - name: Pre-stage vcpkg GUI deps for Windows cross (freetype + glfw3 static)
-        if: contains(github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,openwrt-mips,windows-x86_64', 'windows-x86_64')
-        continue-on-error: true
+      - name: Configure and build helper a second time
+        shell: bash
         run: |
           set -euo pipefail
-          # ezbuild's hardcoded vcpkg list for Windows cross does not
-          # include freetype/glfw3. Pre-install them so the GUI build
-          # below can link against the x64-mingw-static triplet.
-          shim_bin="${RUNNER_TEMP}/yume-vcpkg-shim"
-          mkdir -p "${shim_bin}"
-          printf '#!/usr/bin/env bash\nexit 0\n' > "${shim_bin}/powershell.exe"
-          chmod +x "${shim_bin}/powershell.exe"
-          CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ \
-          PATH="${shim_bin}:${PATH}" \
-          VCPKG_POWERSHELL_PATH="${shim_bin}/powershell.exe" \
-            "${VCPKG_ROOT}/vcpkg" install --triplet=x64-mingw-static \
-              freetype glfw3 || true
+          cmake -S . -B build-helper-b -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DYUME_USE_BASEFWX=ON \
+            -DYUME_BUILD_CHROME_TLS_HELPER=ON \
+            -DYUME_GO_EXECUTABLE="$(command -v go)" \
+            -DYUME_BUILD_GUI=OFF \
+            -DYUME_BUILD_TOOLS=OFF \
+            -DYUME_BUILD_SHARED_ABI=OFF \
+            -DYUME_BUILD_SELFTEST=OFF \
+            -DYUME_BUILD_TESTING=OFF \
+            -DYUME_STATIC=OFF \
+            -DYUME_NATIVE_OPT=OFF \
+            -DYUME_FAST_MATH=OFF \
+            -DYUME_WARNINGS_AS_ERRORS=ON \
+            -DBASEFWX_REQUIRE_ARGON2=ON \
+            -DBASEFWX_REQUIRE_OQS=ON \
+            -DBASEFWX_REQUIRE_LZMA=ON
+          GOTOOLCHAIN=local GOPROXY=off \
+            cmake --build build-helper-b \
+              --target yume_chrome_tls_helper --parallel 2
+          test "$(sha256sum build-helper-a/bin/yume-chrome-tls-helper | cut -d' ' -f1)" = \
+               "$(sha256sum build-helper-b/bin/yume-chrome-tls-helper | cut -d' ' -f1)"
 
-      - name: Build yume-gui.exe (windows-amd64, portable, MinGW + vcpkg static)
-        if: contains(github.event.inputs.targets || 'linux-x86_64,armv7-linux,armv7-busybox,armv8-linux,armv8-busybox,busybox-x86,openwrt-mips,windows-x86_64', 'windows-x86_64')
-        # Best-effort, see linux-amd64 GUI rationale above.
-        continue-on-error: true
+      - name: Package exact Linux release surface
+        shell: bash
         run: |
           set -euo pipefail
-          rm -rf build-gui-windows
-          # The portable cross build pulls Freetype/zlib/OpenSSL/etc.
-          # in via vcpkg's x64-mingw-static triplet, producing one .exe
-          # with no DLL dependencies. --portable enables YUME_GUI_PORTABLE
-          # (static libgcc/libstdc++).
-          YUME_BUILD_DIR=build-gui-windows \
-          YUME_WINDOWS_CROSS=1 \
-          YUME_WINDOWS_TRIPLET=x64-mingw-static \
-            ./ezbuild.sh --gui --portable --windows-cross
-          test -f build-gui-windows/bin/yume-gui.exe
+          VERSION="$(sed -nE 's/.*kVersion\[\] = "([^"]+)".*/\1/p' src/core/version.hpp | head -1)"
+          python3 scripts/package_linux_release.py \
+            --yume build-helper-a/bin/yume \
+            --yumed build-helper-a/bin/yumed \
+            --helper build-helper-a/bin/yume-chrome-tls-helper \
+            --helper-rebuild build-helper-b/bin/yume-chrome-tls-helper \
+            --license LICENSE \
+            --notices docs/release/THIRD-PARTY-NOTICES.md \
+            --quick-start docs/release/LINUX-2.0-QUICKSTART.md \
+            --output-dir dist \
+            --version "${VERSION}" \
+            --source-commit "$(git rev-parse HEAD)"
+          python3 scripts/release_preflight.py \
+            --profile "${{ inputs.release_profile }}" \
+            --tag "${{ inputs.tag_name }}" \
+            --skip-ref-fetch \
+            --cmake-cache build-helper-a/CMakeCache.txt \
+            --helper-build-a build-helper-a/bin/yume-chrome-tls-helper \
+            --helper-build-b build-helper-b/bin/yume-chrome-tls-helper \
+            --artifacts dist
+          mkdir -p transfer
+          tar --format=posix --sort=name --owner=0 --group=0 --numeric-owner \
+            --mtime=@0 -cf transfer/linux-desktop-2.0-prepared.tar \
+            -C dist yume-amd64-linux.tar.xz yumed-amd64-linux
 
-      - name: Inspect built artifacts
-        run: |
-          set -euo pipefail
-
-          inspect_elf() {
-            local path="$1"
-            [[ -f "$path" ]] || return 0
-            echo "Inspecting $path"
-            file "$path"
-            readelf -h "$path" >/dev/null || true
-            # ldd on the build host can only inspect host-arch ELFs; for
-            # cross-built ARM/MIPS binaries it prints "not a dynamic
-            # executable" and exits 1. This step is logging-only, so we
-            # make it non-fatal and cap output so cross binaries don't
-            # blow up the workflow.
-            if file "$path" | grep -qi 'dynamically linked'; then
-              ldd "$path" 2>&1 | head -20 || true
-            fi
-          }
-
-          inspect_pe() {
-            local path="$1"
-            [[ -f "$path" ]] || return 0
-            echo "Inspecting $path"
-            file "$path"
-            x86_64-w64-mingw32-objdump -p "$path" | grep 'DLL Name' || true
-          }
-
-          inspect_elf "${HOME}/bins/dynamic/x86/linux/yume"
-          inspect_elf "${HOME}/bins/dynamic/x86/linux/yumed"
-          inspect_elf "${HOME}/bins/stable/x86/linux/yume"
-          inspect_elf "${HOME}/bins/stable/x86/linux/yumed"
-          inspect_elf "${HOME}/bins/dynamic/armv7/linux/yume"
-          inspect_elf "${HOME}/bins/dynamic/armv7/linux/yumed"
-          inspect_elf "${HOME}/bins/dynamic/armv8/linux/yume"
-          inspect_elf "${HOME}/bins/dynamic/armv8/linux/yumed"
-          inspect_elf "${HOME}/bins/stable/x86/busybox/yume"
-          inspect_elf "${HOME}/bins/stable/x86/busybox/yumed"
-          inspect_elf "${HOME}/bins/stable/armv7/busybox/yume"
-          inspect_elf "${HOME}/bins/stable/armv7/busybox/yumed"
-          inspect_elf "${HOME}/bins/stable/armv8/busybox/yume"
-          inspect_elf "${HOME}/bins/stable/armv8/busybox/yumed"
-          inspect_elf "build-gui-linux/bin/yume-gui"
-          inspect_pe "${HOME}/bins/dynamic/windows/x86_64/yume.exe"
-          inspect_pe "${HOME}/bins/dynamic/windows/x86_64/yumed.exe"
-          inspect_pe "build-gui-windows/bin/yume-gui.exe"
-
-      - name: Package artifacts
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-
-          pack_one() {
-            local src="$1"
-            local name="$2"
-            if [[ -f "$src" ]]; then
-              cp "$src" "dist/${name}"
-              echo "Packaged: ${name}"
-            fi
-          }
-
-          pack_with_libs() {
-            local exe="$1"
-            local name="$2"
-            if [[ -f "$exe" ]]; then
-              local dir
-              dir="$(dirname "$exe")"
-              local files=("$(basename "$exe")")
-              while IFS= read -r -d '' f; do
-                files+=("$(basename "$f")")
-              done < <(find "$dir" -maxdepth 1 \( -name "*.dll" -o -name "*.so*" \) -print0 2>/dev/null || true)
-              tar -cJf "dist/${name}.tar.xz" -C "$dir" "${files[@]}"
-              echo "Packaged: ${name}.tar.xz"
-            fi
-          }
-
-          pack_one "${HOME}/bins/dynamic/x86/linux/yume" "yume-amd64-linux"
-          pack_one "${HOME}/bins/dynamic/x86/linux/yumed" "yumed-amd64-linux"
-          pack_one "${HOME}/bins/stable/x86/linux/yume" "yume-amd64-linux-static"
-          pack_one "${HOME}/bins/stable/x86/linux/yumed" "yumed-amd64-linux-static"
-
-          pack_one "${HOME}/bins/dynamic/mips/openwrt/yume" "yume-mips-openwrt"
-          pack_one "${HOME}/bins/dynamic/mips/openwrt/yumed" "yumed-mips-openwrt"
-
-          pack_one "${HOME}/bins/dynamic/armv7/linux/yume" "yume-armv7-linux"
-          pack_one "${HOME}/bins/dynamic/armv7/linux/yumed" "yumed-armv7-linux"
-          # The dynamic-linked "busybox" variants are dropped intentionally:
-          # a glibc-dynamic binary can't run on an actual busybox/musl/
-          # embedded target. Only the truly-static `*-busybox-static`
-          # artifacts are published, and a separate assertion step below
-          # verifies they are actually statically linked.
-          pack_one "${HOME}/bins/stable/armv7/busybox/yume" "yume-armv7-busybox-static"
-          pack_one "${HOME}/bins/stable/armv7/busybox/yumed" "yumed-armv7-busybox-static"
-
-          pack_one "${HOME}/bins/dynamic/armv8/linux/yume" "yume-armv8-linux"
-          pack_one "${HOME}/bins/dynamic/armv8/linux/yumed" "yumed-armv8-linux"
-          pack_one "${HOME}/bins/stable/armv8/busybox/yume" "yume-armv8-busybox-static"
-          pack_one "${HOME}/bins/stable/armv8/busybox/yumed" "yumed-armv8-busybox-static"
-
-          pack_one "${HOME}/bins/stable/x86/busybox/yume" "yume-x86-busybox-static"
-          pack_one "${HOME}/bins/stable/x86/busybox/yumed" "yumed-x86-busybox-static"
-
-          pack_with_libs "${HOME}/bins/dynamic/windows/x86_64/yume.exe" "yume-amd64-windows"
-          pack_with_libs "${HOME}/bins/dynamic/windows/x86_64/yumed.exe" "yumed-amd64-windows"
-
-          # GUI artifacts (built in the GUI step below). Linux is a plain
-          # ELF; Windows is a single portable .exe (static MinGW runtime
-          # + static vcpkg deps via x64-mingw-static).
-          pack_one "build-gui-linux/bin/yume-gui" "yume-gui-amd64-linux"
-          pack_one "build-gui-windows/bin/yume-gui.exe" "yume-gui-amd64-windows.exe"
-
-          file_count="$(find dist -maxdepth 1 -type f | wc -l | tr -d ' ')"
-          if [[ "${file_count}" -eq 0 ]]; then
-            echo "No release artifacts were produced." >&2
-            exit 1
-          fi
-          ls -la dist/
-
-      - name: Assert *-static artifacts are actually statically linked
-        run: |
-          set -euo pipefail
-          # Walk every file in dist/. Anything whose name contains
-          # `-static` (the publish naming convention for static builds)
-          # MUST have no dynamic loader entry (no `dynamically linked`
-          # in `file`, no NEEDED entries from readelf -d). Anything that
-          # was skipped during build (e.g. armv7/armv8 busybox without
-          # a musl toolchain) simply won't appear in dist/ and won't be
-          # checked. The publish step that comes later only attaches
-          # what's in dist/.
-          fail=0
-          shopt -s nullglob
-          for path in dist/*static*; do
-            [[ -f "$path" ]] || continue
-            case "$path" in
-              *.tar.xz|*.zip) continue ;;  # archives are handled below
-            esac
-            if file "$path" | grep -qi 'dynamically linked'; then
-              echo "::error::$(basename "$path"): expected static, but \`file\` reports dynamically linked" >&2
-              file "$path"
-              fail=1
-              continue
-            fi
-            needed="$(readelf -d "$path" 2>/dev/null | awk '/\(NEEDED\)/' || true)"
-            if [[ -n "${needed}" ]]; then
-              echo "::error::$(basename "$path"): expected static, but readelf shows NEEDED entries" >&2
-              echo "${needed}" >&2
-              fail=1
-              continue
-            fi
-            echo "ok-static: $(basename "$path")"
-          done
-          if (( fail != 0 )); then
-            echo "::error::One or more *-static artifacts are not actually static; refusing to publish." >&2
-            exit 1
-          fi
-
-      - name: Self-test every dist/ artifact (--version)
-        run: |
-          set -euo pipefail
-          # Every artifact attached to a release must respond to
-          # --version. We walk dist/ rather than the source build dirs
-          # so the test coverage matches exactly what users download.
-          # ELF: run natively on amd64; ARM/MIPS via qemu-user.
-          # PE: wine if installed, otherwise PE32 header check.
-          # tar.xz: extract and test the binary inside.
-          fail=0
-          shopt -s nullglob
-          test_elf_native() {
-            local p="$1"
-            if ! "$p" --version 2>&1 | head -5; then
-              echo "::error::$p --version failed natively" >&2
-              fail=1
-            fi
-          }
-          test_elf_qemu() {
-            local qemu="$1"; local p="$2"
-            if ! command -v "$qemu" >/dev/null; then
-              echo "::warning::$qemu missing; skipping $p" >&2
-              return
-            fi
-            if ! "$qemu" "$p" --version 2>&1 | head -5; then
-              echo "::error::$qemu $p --version failed" >&2
-              fail=1
-            fi
-          }
-          test_pe() {
-            local p="$1"
-            if command -v wine >/dev/null; then
-              if ! wine "$p" --version 2>&1 | head -5; then
-                echo "::error::wine $p --version failed" >&2
-                fail=1
-              fi
-            elif ! file "$p" | grep -qi 'PE32'; then
-              echo "::error::$p is not a valid PE32+ executable" >&2
-              fail=1
-            else
-              echo "ok-pe-headers-only: $(basename "$p") (no wine installed; full run skipped)"
-            fi
-          }
-          for path in dist/*; do
-            [[ -f "$path" ]] || continue
-            name="$(basename "$path")"
-            case "$name" in
-              SHA256SUMS.txt|MD5SUMS.txt|*.sha256|*.md5|*.sig|release-manifest.json)
-                continue ;;
-              *.tar.xz)
-                # Windows CLI tar.xz: extract and try the inside exe.
-                tmp="$(mktemp -d)"
-                tar -xJf "$path" -C "$tmp"
-                exe="$(find "$tmp" -maxdepth 2 -name '*.exe' | head -1)"
-                if [[ -n "$exe" ]]; then test_pe "$exe"; else
-                  echo "::error::$name: no .exe inside" >&2; fail=1
-                fi
-                rm -rf "$tmp"
-                continue ;;
-              *.exe)
-                test_pe "$path"
-                continue ;;
-            esac
-            # ELF binaries: dispatch by `file` arch.
-            arch_line="$(file "$path")"
-            case "$arch_line" in
-              *x86-64*|*ELF\ 64-bit*LSB*x86-64*)
-                test_elf_native "$path" ;;
-              *aarch64*)
-                test_elf_qemu qemu-aarch64-static "$path" ;;
-              *ARM*|*armhf*|*ELF\ 32-bit*LSB*ARM*)
-                test_elf_qemu qemu-arm-static "$path" ;;
-              *MIPS*)
-                test_elf_qemu qemu-mips-static "$path" ;;
-              *)
-                echo "::warning::$name: unknown ELF arch; skipping --version (file: $arch_line)" >&2 ;;
-            esac
-          done
-          if (( fail != 0 )); then
-            echo "::error::One or more dist/ artifacts failed --version self-test; refusing to publish." >&2
-            exit 1
-          fi
-
-      - name: Upload build artifacts
+      - name: Upload prepared Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-builds
-          path: dist/*
+          name: linux-desktop-2.0
+          path: transfer/linux-desktop-2.0-prepared.tar
           if-no-files-found: error
-          retention-days: 7
-
-  # macOS is a matrix so we can add an Intel (macos-13) entry later
-  # without restructuring the job. Today: arm64 only.
-  build-macos:
-    needs: [preflight, light-tests]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-14
-            arch: arm64
-            yume_target: macos-arm64
-            cli_suffix: armv8-mac
-            gui_suffix: armv8-mac
-          # To add Intel coverage in a later release, uncomment:
-          # - runner: macos-13
-          #   arch: x86_64
-          #   yume_target: macos-x86_64
-          #   cli_suffix: amd64-mac
-          #   gui_suffix: amd64-mac
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Ensure BaseFWX sources
-        run: |
-          BASEFWX_REF="${BASEFWX_REF:-}"
-          if [[ -z "${BASEFWX_REF}" && -f "${BASEFWX_REF_FILE}" ]]; then
-            BASEFWX_REF="$(tr -d '[:space:]' < "${BASEFWX_REF_FILE}")"
-          fi
-          if [[ -z "${BASEFWX_REF}" ]]; then
-            BASEFWX_REF="main"
-          fi
-          if [[ -d basefwx ]] && ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-            rm -rf basefwx
-          fi
-          if ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-            rm -rf basefwx
-            git clone --filter=blob:none --no-checkout "${BASEFWX_REPO}" basefwx
-          fi
-          git -C basefwx fetch --depth 1 origin "${BASEFWX_REF}"
-          git -C basefwx checkout --detach FETCH_HEAD
-          test -f basefwx/cpp/CMakeLists.txt
-          echo "Using BaseFWX ref: $(git -C basefwx rev-parse HEAD)"
-
-      - name: Install dependencies
-        run: |
-          brew install cmake ninja boost openssl@3 spdlog nlohmann-json zstd xz argon2 liboqs glfw freetype
-
-      - name: Extract prebuilt vendor libs
-        run: |
-          if [[ -f "${YUME_VENDOR_ARCHIVE}" ]]; then
-            tar -xJf "${YUME_VENDOR_ARCHIVE}"
-          fi
-
-      - name: Build CLI (${{ matrix.yume_target }})
-        env:
-          YUME_TARGETS: ${{ matrix.yume_target }}
-          YUME_REQUIRE_ARGON2: "1"
-          YUME_REQUIRE_OQS: "1"
-          YUME_CMAKE_ARGS: -DBASEFWX_USE_VENDOR_DEPS=OFF
-        run: |
-          ./ezbuild.sh
-
-      - name: Build GUI (${{ matrix.yume_target }})
-        # Best-effort: a GUI dep regression should not block the CLI
-        # release on this matrix entry. If it fails, no GUI artifact
-        # is produced and the dist/-walking self-test won't try to
-        # test it.
-        continue-on-error: true
-        env:
-          YUME_BUILD_DIR: build-gui
-          YUME_REQUIRE_ARGON2: "1"
-          YUME_REQUIRE_OQS: "1"
-          YUME_CMAKE_ARGS: -DBASEFWX_USE_VENDOR_DEPS=OFF
-        run: |
-          set -euo pipefail
-          rm -rf build-gui
-          ./ezbuild.sh --gui
-
-      - name: Inspect built artifacts
-        run: |
-          set -euo pipefail
-          for path in build/bin/yume build/bin/yumed build-gui/bin/yume-gui; do
-            [[ -f "$path" ]] || continue
-            echo "Inspecting $path"
-            file "$path"
-            otool -L "$path"
-          done
-
-      - name: Self-test built binaries (--version)
-        run: |
-          set -euo pipefail
-          fail=0
-          for path in build/bin/yume build/bin/yumed; do
-            if [[ ! -f "$path" ]]; then
-              echo "::error::missing binary: $path" >&2; fail=1; continue
-            fi
-            if ! "$path" --version 2>&1 | head -5; then
-              echo "::error::$path --version failed" >&2; fail=1
-            fi
-          done
-          # The GUI binary's --version path also doesn't open a window,
-          # so it's safe to run on the headless macOS runner.
-          if [[ -f build-gui/bin/yume-gui ]] && ! build-gui/bin/yume-gui --version 2>&1 | head -5; then
-            echo "::warning::yume-gui --version did not print as expected (GUI may not expose --version yet)"
-          fi
-          (( fail == 0 ))
-
-      - name: Package artifacts
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          if [[ -f build/bin/yume ]]; then cp build/bin/yume "dist/yume-${{ matrix.cli_suffix }}"; fi
-          if [[ -f build/bin/yumed ]]; then cp build/bin/yumed "dist/yumed-${{ matrix.cli_suffix }}"; fi
-          if [[ -f build-gui/bin/yume-gui ]]; then cp build-gui/bin/yume-gui "dist/yume-gui-${{ matrix.gui_suffix }}"; fi
-          file_count="$(find dist -maxdepth 1 -type f | wc -l | tr -d ' ')"
-          if [[ "${file_count}" -eq 0 ]]; then
-            echo "No macOS release artifacts were produced." >&2
-            exit 1
-          fi
-          ls -la dist/
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-builds-${{ matrix.arch }}
-          path: dist/*
-          if-no-files-found: error
-          retention-days: 7
+          retention-days: 14
 
   publish-release:
-    needs: [preflight, build-linux, build-macos]
-    runs-on: ubuntu-latest
-    # Publish whenever Linux built. macOS is optional: a transient brew or
-    # liboqs failure on macos-14 should not block a Linux-only release.
-    if: |
-      always()
-      && (github.event_name == 'release' || github.event_name == 'workflow_dispatch')
-      && needs.preflight.result == 'success'
-      && needs.build-linux.result == 'success'
+    needs: [preflight, build-linux]
+    if: ${{ inputs.publish && inputs.independent_security_review && inputs.rc_gates_approved }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -786,128 +248,84 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download all build artifacts
+      - name: Download prepared Linux artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
-          merge-multiple: true
+          name: linux-desktop-2.0
+          path: transfer
 
-      - name: Generate checksums
+      - name: Restore prepared Linux artifact modes
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=transfer/linux-desktop-2.0-prepared.tar
+          mapfile -t members < <(tar -tf "${archive}")
+          test "${#members[@]}" -eq 2
+          test "${members[0]}" = "yume-amd64-linux.tar.xz"
+          test "${members[1]}" = "yumed-amd64-linux"
+          mkdir -p artifacts
+          tar --extract --file "${archive}" --directory artifacts \
+            --no-same-owner --same-permissions
+
+      - name: Revalidate exact publish surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/release_preflight.py \
+            --profile "${{ inputs.release_profile }}" \
+            --tag "${{ inputs.tag_name }}" \
+            --skip-ref-fetch \
+            --artifacts artifacts
+
+      - name: Generate checksums and manifest
+        shell: bash
         run: |
           set -euo pipefail
           cd artifacts
-          rm -f SHA256SUMS.txt MD5SUMS.txt release-manifest.json
-          for file in *; do
-            [[ -f "$file" ]] || continue
-            case "$file" in
-              *.sha256|*.md5|*.sig|SHA256SUMS.txt|MD5SUMS.txt|release-manifest.json)
-                continue
-                ;;
-            esac
-            sha256sum "$file" > "$file.sha256"
-            md5sum "$file" > "$file.md5"
-          done
-          find . -maxdepth 1 -type f \
-            ! -name '*.sha256' \
-            ! -name '*.md5' \
-            ! -name '*.sig' \
-            ! -name 'SHA256SUMS.txt' \
-            ! -name 'MD5SUMS.txt' \
-            ! -name 'release-manifest.json' \
-            -printf '%f\n' | sort | xargs -r sha256sum > SHA256SUMS.txt
-          find . -maxdepth 1 -type f \
-            ! -name '*.sha256' \
-            ! -name '*.md5' \
-            ! -name '*.sig' \
-            ! -name 'SHA256SUMS.txt' \
-            ! -name 'MD5SUMS.txt' \
-            ! -name 'release-manifest.json' \
-            -printf '%f\n' | sort | xargs -r md5sum > MD5SUMS.txt
-          cat SHA256SUMS.txt
-          cat MD5SUMS.txt
+          sha256sum yume-amd64-linux.tar.xz > yume-amd64-linux.tar.xz.sha256
+          sha256sum yumed-amd64-linux > yumed-amd64-linux.sha256
+          sha256sum yume-amd64-linux.tar.xz yumed-amd64-linux > SHA256SUMS.txt
+          cd ..
+          python3 scripts/release_manifest.py artifacts "${{ inputs.tag_name }}"
 
-      - name: Import GPG key
+      - name: Import optional release signing key
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        shell: bash
         run: |
           set -euo pipefail
           if [[ -z "${GPG_PRIVATE_KEY:-}" ]]; then
-            echo "No GPG_PRIVATE_KEY secret configured; signatures will be skipped."
             echo "YUME_GPG_AVAILABLE=0" >> "${GITHUB_ENV}"
             exit 0
           fi
           keyfile="$(mktemp)"
-          export GNUPGHOME="${HOME}/.gnupg"
-          mkdir -p "${GNUPGHOME}"
-          chmod 700 "${GNUPGHOME}"
+          trap 'rm -f "${keyfile}"' EXIT
           printf '%s' "${GPG_PRIVATE_KEY}" > "${keyfile}"
           gpg --batch --import "${keyfile}"
-          rm -f "${keyfile}"
           echo "YUME_GPG_AVAILABLE=1" >> "${GITHUB_ENV}"
 
-      - name: Sign release artifacts
+      - name: Sign and verify release artifacts
         env:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: |
-          set -euo pipefail
-          if [[ "${YUME_GPG_AVAILABLE:-0}" != "1" ]]; then
-            echo "Skipping detached signatures."
-            exit 0
-          fi
-          cd artifacts
-          for file in *; do
-            [[ -f "$file" ]] || continue
-            case "$file" in
-              *.sha256|*.md5|*.sig|SHA256SUMS.txt|MD5SUMS.txt|release-manifest.json)
-                continue
-                ;;
-            esac
-            gpg --batch --yes --pinentry-mode loopback --passphrase "${GPG_PASSPHRASE:-}" \
-              --detach-sign --armor --output "${file}.sig" "$file"
-          done
-
-      - name: Generate release manifest
-        run: |
-          set -euo pipefail
-          python3 ./scripts/release_manifest.py artifacts "${{ github.event.inputs.tag_name || github.ref_name }}"
-          cat artifacts/release-manifest.json
-
-      - name: Verify release metadata
+        shell: bash
         run: |
           set -euo pipefail
           cd artifacts
           sha256sum -c SHA256SUMS.txt
-          md5sum -c MD5SUMS.txt
-          for file in *; do
-            [[ -f "$file" ]] || continue
-            case "$file" in
-              *.sha256|*.md5|*.sig|SHA256SUMS.txt|MD5SUMS.txt|release-manifest.json)
-                continue
-                ;;
-            esac
-            sha256sum -c "${file}.sha256"
-            md5sum -c "${file}.md5"
-            if [[ -f "${file}.sig" ]]; then
-              gpg --batch --verify "${file}.sig" "$file"
-            fi
-          done
-
-      - name: Resolve release tag
-        run: |
-          set -euo pipefail
-          TAG="${{ github.event.inputs.tag_name || github.ref_name }}"
-          if [[ -z "${TAG}" ]]; then
-            echo "Release tag is empty." >&2
-            exit 1
+          if [[ "${YUME_GPG_AVAILABLE:-0}" == "1" ]]; then
+            for file in yume-amd64-linux.tar.xz yumed-amd64-linux SHA256SUMS.txt release-manifest.json; do
+              gpg --batch --yes --pinentry-mode loopback \
+                --passphrase "${GPG_PASSPHRASE:-}" \
+                --detach-sign --armor --output "${file}.sig" "${file}"
+              gpg --batch --verify "${file}.sig" "${file}"
+            done
           fi
-          echo "RELEASE_TAG=${TAG}" >> "${GITHUB_ENV}"
 
-      - name: Ensure release already exists
+      - name: Attach to existing release
+        shell: bash
         run: |
           set -euo pipefail
-          gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null
-
-      - name: Attach artifacts to existing release
-        run: |
-          set -euo pipefail
-          gh release upload "${RELEASE_TAG}" artifacts/* --clobber --repo "${GITHUB_REPOSITORY}"
+          gh release view "${{ inputs.tag_name }}" \
+            --repo "${GITHUB_REPOSITORY}" >/dev/null
+          gh release upload "${{ inputs.tag_name }}" artifacts/* \
+            --clobber --repo "${GITHUB_REPOSITORY}"

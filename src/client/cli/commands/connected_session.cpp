@@ -387,8 +387,7 @@ std::vector<std::shared_ptr<Tunnel>> open_secondary_socks_tunnels(
     const outbound_proxy::Config& proxy_cfg,
     const ParsedArgs& args,
     bool use_reverse,
-    const std::shared_ptr<TunnelPool>& tunnel_pool,
-    const ConnectedSessionOptions& options) {
+    const std::shared_ptr<TunnelPool>& tunnel_pool) {
     std::vector<std::shared_ptr<Tunnel>> secondary_tunnels;
     if (!should_open_secondary_socks_tunnels(cfg, args, use_reverse) || cfg.tunnel_count <= 1) {
         return secondary_tunnels;
@@ -398,20 +397,8 @@ std::vector<std::shared_ptr<Tunnel>> open_secondary_socks_tunnels(
             util::log_info("opening SOCKS secondary tunnel " +
                            std::to_string(i) + "/" +
                            std::to_string(cfg.tunnel_count));
-            std::optional<tls_fingerprint::BrowserProfile> profile;
-            if (cfg.tls_stealth_enabled && cfg.tls_stealth_rotate &&
-                options.completed_tls_connections &&
-                options.base_tls_profile != tls_fingerprint::BrowserProfile::UNKNOWN) {
-                profile = tls_stealth::profile_for_connection(
-                    options.base_tls_profile,
-                    true,
-                    cfg.tls_stealth_rotation_interval,
-                    *options.completed_tls_connections);
-            }
             auto extra = connect_secondary_tunnel(
-                io, ctx, cfg, proxy_cfg, i, profile,
-                cfg.tls_stealth_enabled ? options.completed_tls_connections
-                                        : nullptr);
+                io, ctx, cfg, proxy_cfg, i, std::nullopt, nullptr);
             tunnel_pool->add(extra);
             secondary_tunnels.push_back(extra);
         } catch (const std::exception& ex) {
@@ -902,8 +889,7 @@ int run_connected_session(boost::asio::io_context& io,
     auto tunnel_pool = std::make_shared<TunnelPool>(TunnelPool::Policy::LeastLoaded);
     tunnel_pool->add(tunnel);
     auto secondary_tunnels = open_secondary_socks_tunnels(
-        io, ctx, cfg, proxy_cfg, args, options.use_reverse, tunnel_pool,
-        options);
+        io, ctx, cfg, proxy_cfg, args, options.use_reverse, tunnel_pool);
 
     auto disconnect_once = std::make_shared<std::atomic<bool>>(false);
     auto request_disconnect = [disconnect_once,

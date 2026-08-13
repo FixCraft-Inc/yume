@@ -1,0 +1,140 @@
+{
+  "schema": 1,
+  "profile_id": "chrome151-node24-v1",
+  "evidence": {
+    "browser": "Google Chrome 151.0.7922.71",
+    "server": "Node.js 24.18.0",
+    "conditions": "Fresh normal Chrome profiles, loopback TCP relay, same local certificate and h2 ALPN",
+    "normalization": [
+      "ClientHello and ServerHello random bytes",
+      "session identifier bytes but not length",
+      "GREASE values but not position or geometry",
+      "key-exchange bytes but not group or length",
+      "GREASE ECH bytes but not type, position, or length",
+      "server name value but not type or length"
+    ],
+    "limitation": "The five full NetLog runs predate wire relay integration. Five separate first-flight relay observations established this structural profile; a same-run recapture remains required before release qualification."
+  },
+  "qualification": {
+    "required_runs": 5,
+    "minimum_distinct_middle_orders": 2,
+    "minimum_distinct_ech_lengths": 2
+  },
+  "client_hello": {
+    "kind": "client_hello",
+    "legacy_version": "0x0303",
+    "session_id_length": 32,
+    "cipher_suites": [
+      "GREASE",
+      "0x1301",
+      "0x1302",
+      "0x1303",
+      "0xc02b",
+      "0xc02f",
+      "0xc02c",
+      "0xc030",
+      "0xcca9",
+      "0xcca8",
+      "0xc013",
+      "0xc014",
+      "0x009c",
+      "0x009d",
+      "0x002f",
+      "0x0035"
+    ],
+    "compression_methods": [0],
+    "record_legacy_version": "0x0301",
+    "record_length_base": 1534,
+    "first_grease_length": 0,
+    "last_grease_length": 1,
+    "ech_extension_type": "0xfe0d",
+    "allowed_ech_lengths": [186, 218, 250, 282],
+    "middle_extension_types": [
+      "0x0033",
+      "0x0017",
+      "0x0010",
+      "0x001b",
+      "0x0005",
+      "0x000b",
+      "0x0000",
+      "0x0012",
+      "0x000a",
+      "0xfe0d",
+      "0x002b",
+      "0x0023",
+      "0xff01",
+      "0x000d",
+      "0x44cd",
+      "0x002d"
+    ],
+    "exact_extension_lengths": {
+      "0x0033": 1263,
+      "0x0017": 0,
+      "0x0010": 14,
+      "0x001b": 3,
+      "0x0005": 5,
+      "0x000b": 2,
+      "0x0000": 14,
+      "0x0012": 0,
+      "0x000a": 12,
+      "0x002b": 7,
+      "0x0023": 0,
+      "0xff01": 1,
+      "0x000d": 24,
+      "0x44cd": 5,
+      "0x002d": 2
+    },
+    "structured_extensions": {
+      "0x0033": {
+        "shares": [
+          {"group": "GREASE", "key_exchange_length": 1, "key_exchange": "<entropy>"},
+          {"group": "0x11ec", "key_exchange_length": 1216, "key_exchange": "<entropy>"},
+          {"group": "0x001d", "key_exchange_length": 32, "key_exchange": "<entropy>"}
+        ]
+      },
+      "0x0010": {"protocols": ["h2", "http/1.1"]},
+      "0x000b": {"values": [0]},
+      "0x0000": {
+        "server_names": [{"type": 0, "value": "<server-name>", "length": 9}]
+      },
+      "0x000a": {
+        "values": ["GREASE", "0x11ec", "0x001d", "0x0017", "0x0018"]
+      },
+      "0x002b": {"versions": ["GREASE", "0x0304", "0x0303"]},
+      "0x000d": {
+        "values": [
+          "0x0904", "0x0905", "0x0906", "0x0403", "0x0804", "0x0401",
+          "0x0503", "0x0805", "0x0501", "0x0806", "0x0601"
+        ]
+      },
+      "0x44cd": {"protocols": ["h2"]},
+      "0x002d": {"modes": [1]}
+    }
+  },
+  "server_hello": {
+    "kind": "server_hello",
+    "legacy_version": "0x0303",
+    "session_id_length": 32,
+    "cipher_suite": "0x1302",
+    "compression_method": 0,
+    "extensions": [
+      {
+        "type": "0x002b",
+        "name": "supported_versions",
+        "length": 2,
+        "versions": ["0x0304"]
+      },
+      {
+        "type": "0x0033",
+        "name": "key_share",
+        "length": 1124,
+        "shares": [
+          {"group": "0x11ec", "key_exchange_length": 1120, "key_exchange": "<entropy>"}
+        ]
+      }
+    ],
+    "tls_records": [
+      {"content_type": 22, "legacy_version": "0x0303", "length": 1210}
+    ]
+  }
+}

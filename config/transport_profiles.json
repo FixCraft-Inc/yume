@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "active_profile": "chrome151-node24-v1",
+  "profiles": [
+    {
+      "id": "chrome151-node24-v1",
+      "client_alias": "chrome",
+      "fixture": "tests/fixtures/chrome151-node24",
+      "artifacts": {
+        "manifest": "manifest.json",
+        "http2_profile": "chrome_h2_profile.json",
+        "tls_wire_profile": "chrome_tls_wire_profile.json",
+        "tls_wire_candidates": [
+          "helper_tls_wire_run_1.json",
+          "helper_tls_wire_run_2.json",
+          "helper_tls_wire_run_3.json",
+          "helper_tls_wire_run_4.json",
+          "helper_tls_wire_run_5.json"
+        ]
+      },
+      "helper_provider": "chrome151",
+      "helper_build_id": "yume-chrome151-utls-v1.8.2-ipc-v1",
+      "tls_backend": "chrome151",
+      "openssl_profile": "chrome151",
+      "evidence_status": "qualified-local"
+    }
+  ]
+}

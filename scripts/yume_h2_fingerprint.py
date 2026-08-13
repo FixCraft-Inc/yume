@@ -57,13 +57,13 @@ class H2Opening:
         return f"{s}|{wu}|{pr}|{ps}"
 
 
-# --- Reference browser openings (CURATED; re-verify before use) ---------------
-# Chrome is sourced from the committed capture fixture. The other entries are
-# comparison leads only: exact SETTINGS and window sizes drift across versions
-# and platforms.
+# --- Authoritative browser opening -------------------------------------------
+# Dev6 supports one coherent identity sourced from the committed five-run
+# Chrome capture. Unverified cross-browser comparison leads are intentionally
+# absent from the YUME 2.0 path.
 _fixture_path = (
     pathlib.Path(__file__).resolve().parents[1]
-    / "tests/fixtures/chrome150-node24/chrome_h2_profile.json"
+    / "tests/fixtures/chrome151-node24/chrome_h2_profile.json"
 )
 with _fixture_path.open(encoding="utf-8") as _fixture_file:
     _chrome_fixture = json.load(_fixture_file)
@@ -92,24 +92,6 @@ REFERENCES: dict[str, H2Opening] = {
         pseudo_order=_chrome_pseudo_order,
         source=str(_fixture_path.relative_to(_fixture_path.parents[3])),
         verified=True,
-    ),
-    "firefox": H2Opening(
-        label="Firefox 133 (desktop)",
-        settings=[(1, 65536), (4, 131072), (5, 16384)],
-        window_update=12517377,
-        priority=["3:0:0:201", "5:0:0:101", "7:0:0:1", "9:0:7:1", "11:0:3:1"],
-        pseudo_order="mpas",
-        source="public Akamai H2 fingerprint corpus (peet.ws / curl-impersonate)",
-        verified=False,
-    ),
-    "safari": H2Opening(
-        label="Safari 18 (macOS)",
-        settings=[(2, 0), (4, 4194304), (3, 100)],
-        window_update=10485760,
-        priority=[],
-        pseudo_order="masp",
-        source="public Akamai H2 fingerprint corpus (peet.ws)",
-        verified=False,
     ),
 }
 

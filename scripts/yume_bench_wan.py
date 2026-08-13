@@ -7,6 +7,7 @@ import argparse
 import atexit
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -34,6 +35,7 @@ from yume_bench_common import (  # noqa: E402
     require_user_namespace_sandbox,
     resolve_pinned_node,
     run_streamed_command,
+    sha256_file,
     start_logged_process,
     validate_pinned_chrome,
     wait_for_tcp,
@@ -44,6 +46,28 @@ from yume_bench_resources import (  # noqa: E402
     print_process_resources,
     write_resource_samples,
 )
+from yume_bench_provenance import git_source_snapshot  # noqa: E402
+from yume_bench_isolation import (  # noqa: E402
+    EXEC_GUARD,
+    FrozenExecutable,
+    capability_drop_prefix,
+    enforce_private_artifact_modes,
+    enter_isolated_controller,
+    freeze_executable,
+    frozen_executable_version,
+    guarded_command,
+    isolated_reexec_argv,
+    namespace_inodes,
+    node_sandbox_command,
+    output_owner,
+    remove_private_tree,
+    restore_output_owner,
+    root_mount_is_private,
+    runtime_security_log,
+    runtime_security_state,
+    single_id_mapping,
+    write_private_text,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -51,7 +75,22 @@ SERVER_IP = "10.77.0.1"
 CLIENT_IP = "10.77.0.2"
 TLS_NAME = "cover.yume.test"
 YUME_PORT = 443
+# A rootless workload has no initial-namespace CAP_NET_BIND_SERVICE after its
+# capability drop. The isolated synthetic mode therefore uses a high internal
+# port while binding that port into both the admission authority and capture.
+ISOLATED_YUME_PORT = 8443
 COVER_PORT = 3000
+RUNTIME_SOURCE_INPUTS = (
+    Path("scripts/yume_bench_wan.py"),
+    Path("scripts/yume_bench_common.py"),
+    Path("scripts/yume_bench_resources.py"),
+    Path("scripts/yume_bench_isolation.py"),
+    Path("scripts/yume_bench_provenance.py"),
+    Path("scripts/yume_bench_exec_guard.py"),
+    Path("tools/cover-node/backend.mjs"),
+    Path("config/transport_profiles.json"),
+    Path("tests/fixtures/chrome151-node24/manifest.json"),
+)
 
 
 @dataclass(frozen=True)
@@ -71,13 +110,15 @@ PROFILES = {
 
 
 class NetworkLab:
-    def __init__(self, profile: WanProfile) -> None:
+    def __init__(self, profile: WanProfile, *, isolated_userns: bool = False) -> None:
         suffix = str(os.getpid())[-6:]
         self.server_ns = f"yume-bench-server-{suffix}"
         self.client_ns = f"yume-bench-client-{suffix}"
         self.server_if = f"ybs{suffix}"
         self.client_if = f"ybc{suffix}"
         self.profile = profile
+        self.isolated_userns = isolated_userns
+        self.yume_port = ISOLATED_YUME_PORT if isolated_userns else YUME_PORT
         self.created = False
 
     @staticmethod
@@ -181,6 +222,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--keep-workdir", action="store_true")
     parser.add_argument("--resource-sample-ms", type=int, default=250)
     parser.add_argument("--no-resource-sampling", action="store_true")
+    parser.add_argument(
+        "--isolated-userns",
+        action="store_true",
+        help=(
+            "run the root network lab inside disposable user/mount/PID/network "
+            "namespaces; requires an unprivileged caller and --no-browser"
+        ),
+    )
+    parser.add_argument(
+        "--isolated-controller",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument("--outer-userns", help=argparse.SUPPRESS)
+    parser.add_argument("--outer-mountns", help=argparse.SUPPRESS)
+    parser.add_argument("--outer-pidns", help=argparse.SUPPRESS)
+    parser.add_argument("--outer-netns", help=argparse.SUPPRESS)
+    parser.add_argument("--isolated-node-sha256", help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
@@ -230,28 +289,39 @@ def validate_args(args: argparse.Namespace, profile: WanProfile) -> None:
 
 def start_node(
     lab: NetworkLab,
-    node: Path,
+    node: FrozenExecutable,
     log: Path,
     identity: RuntimeIdentity,
     *,
     resource_sampling: bool,
     resource_sample_ms: int,
-) -> ManagedProcess:
-    argv = lab.command(lab.server_ns, [*drop_prefix(identity),
-        "env", "YUME_COVER_HOST=127.0.0.1", f"YUME_COVER_PORT={COVER_PORT}",
-        str(node), str(REPO_ROOT / "tools" / "cover-node" / "backend.mjs"),
+    isolated_userns: bool,
+) -> tuple[ManagedProcess, dict[str, object]]:
+    privilege_prefix = (
+        [] if isolated_userns else drop_prefix(identity)
+    )
+    argv = lab.command(lab.server_ns, [
+        *privilege_prefix,
+        *node_sandbox_command(node),
     ])
+    os.lseek(node.descriptor, 0, os.SEEK_SET)
     process = start_logged_process(
         argv,
         log,
         cwd=REPO_ROOT,
+        pass_fds=(node.descriptor,),
         resource_sampling=resource_sampling,
         resource_sample_ms=resource_sample_ms,
     )
     if not wait_for_tcp("127.0.0.1", COVER_PORT, 10, namespace=lab.server_ns):
         process.stop()
         raise RuntimeError(f"Node cover failed to listen; see {log}")
-    return process
+    try:
+        security = runtime_security_log(log)
+    except RuntimeError:
+        process.stop()
+        raise
+    return process, security
 
 
 def start_yumed(
@@ -262,10 +332,12 @@ def start_yumed(
     *,
     resource_sampling: bool,
     resource_sample_ms: int,
-) -> ManagedProcess:
-    argv = lab.command(lab.server_ns, [
+    isolated_userns: bool,
+) -> tuple[ManagedProcess, dict[str, object] | None]:
+    command = [
         str(yumed),
-        "--listen", f"{SERVER_IP}:{YUME_PORT}",
+        *(["--root"] if isolated_userns else []),
+        "--listen", f"{SERVER_IP}:{lab.yume_port}",
         "--cert", str(keys.server_cert),
         "--key", str(keys.server_key),
         "--auth-keys", str(keys.authorized_keys),
@@ -273,6 +345,10 @@ def start_yumed(
         "--inner-psk-file", str(keys.inner_psk),
         "--real-backend", f"loopback://127.0.0.1:{COVER_PORT}",
         "--bench", "--boring",
+    ]
+    argv = lab.command(lab.server_ns, [
+        *capability_drop_prefix(isolated_userns),
+        *(guarded_command(command) if isolated_userns else command),
     ])
     process = start_logged_process(
         argv,
@@ -280,16 +356,25 @@ def start_yumed(
         resource_sampling=resource_sampling,
         resource_sample_ms=resource_sample_ms,
     )
-    if not wait_for_tcp(SERVER_IP, YUME_PORT, 15, namespace=lab.client_ns):
+    if not wait_for_tcp(SERVER_IP, lab.yume_port, 15, namespace=lab.client_ns):
         process.stop()
         raise RuntimeError(f"yumed failed to listen; see {log}")
-    return process
+    security = None
+    if isolated_userns:
+        try:
+            security = runtime_security_log(log)
+        except RuntimeError:
+            process.stop()
+            raise
+    return process, security
 
 
 def start_capture(lab: NetworkLab, output: Path, log: Path) -> ManagedProcess:
     argv = lab.command(lab.client_ns, [
+        "env", "LC_ALL=C",
         "tcpdump", "-i", lab.client_if, "-n", "-s", "0", "-U",
-        "-w", str(output), "tcp", "port", str(YUME_PORT), "and", "host", SERVER_IP,
+        *(["-Z", "root"] if lab.isolated_userns else []),
+        "-w", str(output), "tcp", "port", str(lab.yume_port), "and", "host", SERVER_IP,
     ])
     capture = start_logged_process(argv, log)
     time.sleep(0.5)
@@ -297,6 +382,31 @@ def start_capture(lab: NetworkLab, output: Path, log: Path) -> ManagedProcess:
         capture.stop()
         raise RuntimeError(f"tcpdump failed; see {log}")
     return capture
+
+
+def validate_stopped_capture(capture: ManagedProcess, output: Path) -> dict[str, int]:
+    if capture.process.returncode != 0:
+        raise RuntimeError(
+            f"tcpdump exited {capture.process.returncode}; see {capture.log_path}"
+        )
+    if not output.is_file() or output.stat().st_size <= 24:
+        raise RuntimeError(f"tcpdump produced no packet evidence: {output}")
+    log = capture.log_path.read_text(encoding="utf-8", errors="replace")
+    captured = re.search(r"(\d+) packets? captured", log)
+    received = re.search(r"(\d+) packets? received by filter", log)
+    dropped = re.search(r"(\d+) packets? dropped by kernel", log)
+    if not captured or int(captured.group(1)) == 0:
+        raise RuntimeError(f"tcpdump captured no packets; see {capture.log_path}")
+    if not received or int(received.group(1)) == 0:
+        raise RuntimeError(f"tcpdump filter received no packets; see {capture.log_path}")
+    if not dropped or int(dropped.group(1)) != 0:
+        raise RuntimeError(f"tcpdump did not report zero drops; see {capture.log_path}")
+    return {
+        "packets_captured": int(captured.group(1)),
+        "packets_received_by_filter": int(received.group(1)),
+        "packets_dropped_by_kernel": int(dropped.group(1)),
+        "pcap_bytes": output.stat().st_size,
+    }
 
 
 def run_endpoint(
@@ -313,11 +423,11 @@ def run_endpoint(
         mib, streams = 1024, 64
     else:
         mib, streams = args.bench_mib, args.bench_streams
-    argv = lab.command(lab.client_ns, [
-        "env", f"HOME={workdir / 'home'}", f"XDG_RUNTIME_DIR={workdir / 'runtime'}",
+    command = [
         str(yume),
+        *(["--root"] if args.isolated_controller else []),
         "--server", SERVER_IP,
-        "--port", str(YUME_PORT),
+        "--port", str(lab.yume_port),
         "--tls-name", TLS_NAME,
         "--tls-ca", str(keys.server_cert),
         "--auth", str(keys.client_identity),
@@ -330,6 +440,11 @@ def run_endpoint(
         "--bench-streams", str(streams),
         "--bench-direction", args.bench_direction,
         "--non-interactive", "--accept-monitoring", "--boring", "--no-color",
+    ]
+    argv = lab.command(lab.client_ns, [
+        *capability_drop_prefix(args.isolated_controller),
+        "env", f"HOME={workdir / 'home'}", f"XDG_RUNTIME_DIR={workdir / 'runtime'}",
+        *(guarded_command(command) if args.isolated_controller else command),
     ])
     if args.bench_chunk_kib is not None:
         argv.extend(["--bench-chunk-kib", str(args.bench_chunk_kib)])
@@ -379,21 +494,57 @@ def run_browser_cover(
     return result.returncode, argv
 
 
-def restore_output_owner(path: Path) -> None:
-    uid = os.environ.get("SUDO_UID")
-    gid = os.environ.get("SUDO_GID")
-    if uid is None or gid is None:
-        return
-    for item in [path, *path.rglob("*")]:
-        os.chown(item, int(uid), int(gid), follow_symlinks=False)
-
-
 def main() -> int:
     args = parse_args()
+    if args.isolated_controller and not args.isolated_userns:
+        raise SystemExit("--isolated-controller requires --isolated-userns")
+    if args.isolated_userns and not args.isolated_controller:
+        if os.geteuid() == 0:
+            raise SystemExit("--isolated-userns must be started by an unprivileged user")
+        if not args.no_browser:
+            raise SystemExit("--isolated-userns requires --no-browser")
+        require_tools(["unshare", "mount", "ip", "tc", "setpriv", "bwrap"])
+        try:
+            frozen_node, _, node_bootstrapped = resolve_pinned_node(
+                args.node,
+                allow_mismatch=args.allow_node_version_mismatch,
+                bootstrap=not args.no_node_bootstrap,
+            )
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from exc
+        if node_bootstrapped:
+            print("[bench] resolved the pinned Node executable before namespace entry")
+        inner_argv = [
+            *sys.argv[1:],
+            "--node", str(frozen_node),
+            "--isolated-node-sha256", sha256_file(frozen_node),
+            "--no-node-bootstrap",
+        ]
+        argv = isolated_reexec_argv(Path(__file__), inner_argv)
+        os.execv(argv[0], argv)
+        raise AssertionError("os.execv returned unexpectedly")
     if os.geteuid() != 0:
-        raise SystemExit("run with sudo: network namespaces, netem, and tcpdump need root")
+        raise SystemExit(
+            "run with sudo, or use --isolated-userns --no-browser as an unprivileged user"
+        )
+    controller_checks: dict[str, object] | None = None
+    if args.isolated_controller:
+        if not args.no_browser:
+            raise SystemExit("the isolated controller requires --no-browser")
+        if not args.isolated_node_sha256:
+            raise SystemExit("the isolated controller requires a frozen Node identity")
+        try:
+            controller_checks = enter_isolated_controller({
+                "user": args.outer_userns or "",
+                "mount": args.outer_mountns or "",
+                "pid": args.outer_pidns or "",
+                "network": args.outer_netns or "",
+            })
+        except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+            raise SystemExit(f"could not create isolated network controller: {exc}") from exc
     require_tools(
-        ["ip", "tc", "openssl", "python3", "setpriv"]
+        ["ip", "tc", "openssl", "python3", "setpriv", "bwrap"]
+        + (["mount"] if args.isolated_controller else [])
         + ([] if args.no_pcap else ["tcpdump"])
     )
 
@@ -402,17 +553,44 @@ def main() -> int:
     if not yume or not yumed:
         raise SystemExit("build/bin/yume and build/bin/yumed are required")
     try:
-        node, node_version, node_bootstrapped = resolve_pinned_node(
-            args.node,
-            allow_mismatch=args.allow_node_version_mismatch,
-            bootstrap=not args.no_node_bootstrap,
+        if args.isolated_controller:
+            if args.node is None:
+                raise RuntimeError(
+                    "the isolated controller requires an explicit pinned Node path"
+                )
+            node_source = args.node.expanduser()
+            node_bootstrapped = False
+        else:
+            node_source, _, node_bootstrapped = resolve_pinned_node(
+                args.node,
+                allow_mismatch=args.allow_node_version_mismatch,
+                bootstrap=not args.no_node_bootstrap,
+            )
+        frozen_node = freeze_executable(
+            node_source,
+            args.isolated_node_sha256 if args.isolated_controller else None,
         )
-    except RuntimeError as exc:
+        node_version = frozen_executable_version(
+            frozen_node,
+            allow_mismatch=args.allow_node_version_mismatch,
+        )
+    except (OSError, RuntimeError) as exc:
         raise SystemExit(str(exc)) from exc
+    node_sha256 = frozen_node.sha256
     if node_bootstrapped:
         print(f"[bench] using pinned {node_version} from the invoking user's npm cache")
+    binary_hashes = {
+        "yume": sha256_file(yume),
+        "yumed": sha256_file(yumed),
+        "node": node_sha256,
+        "exec_guard": sha256_file(EXEC_GUARD),
+    }
 
-    run_identity = invoking_identity()
+    run_identity = (
+        RuntimeIdentity(0, 0, Path("/root"))
+        if args.isolated_controller
+        else invoking_identity()
+    )
     browser = None
     browser_identity: dict[str, str] | None = None
     if not args.no_browser and not args.quick:
@@ -435,14 +613,21 @@ def main() -> int:
     effective_chunk_kib = args.bench_chunk_kib or production_chunk_kib
     profile = choose_profile(args)
     validate_args(args, profile)
+    try:
+        source_snapshot_before = git_source_snapshot(
+            REPO_ROOT, RUNTIME_SOURCE_INPUTS
+        )
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        frozen_node.close()
+        raise SystemExit(f"could not record benchmark source provenance: {exc}") from exc
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output_dir = (args.output_dir or REPO_ROOT / "yume-bench-results" / timestamp).resolve()
-    output_dir.mkdir(parents=True, exist_ok=False, mode=0o750)
+    output_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
     workdir = Path(tempfile.mkdtemp(prefix="yume-bench-2-"))
     os.chmod(workdir, 0o700)
     host = host_resource_info()
 
-    lab = NetworkLab(profile)
+    lab = NetworkLab(profile, isolated_userns=args.isolated_controller)
     processes: list[ManagedProcess] = []
     atexit.register(lab.close)
     started = datetime.now(timezone.utc).isoformat()
@@ -463,8 +648,14 @@ def main() -> int:
     endpoint_command: list[str] = []
     browser_command: list[str] = []
     endpoint_output = ""
+    failure: str | None = None
+    endpoint_capture: dict[str, int] | None = None
+    cover_capture: dict[str, int] | None = None
     node_process: ManagedProcess | None = None
     yumed_process: ManagedProcess | None = None
+    node_security: dict[str, object] | None = None
+    yumed_security: dict[str, object] | None = None
+    endpoint_security: dict[str, object] | None = None
     try:
         keys = generate_keyset(
             workdir / "keys", yumed, tls_name=TLS_NAME, server_ip=SERVER_IP
@@ -473,22 +664,24 @@ def main() -> int:
         (workdir / "runtime").mkdir(mode=0o700)
         chown_tree(workdir, run_identity)
         lab.create()
-        node_process = start_node(
+        node_process, node_security = start_node(
             lab,
-            node,
+            frozen_node,
             output_dir / "node.log",
             run_identity,
             resource_sampling=not args.no_resource_sampling,
             resource_sample_ms=args.resource_sample_ms,
+            isolated_userns=args.isolated_controller,
         )
         processes.append(node_process)
-        yumed_process = start_yumed(
+        yumed_process, yumed_security = start_yumed(
             lab,
             yumed,
             keys,
             output_dir / "yumed.log",
             resource_sampling=not args.no_resource_sampling,
             resource_sample_ms=args.resource_sample_ms,
+            isolated_userns=args.isolated_controller,
         )
         processes.append(yumed_process)
 
@@ -506,9 +699,14 @@ def main() -> int:
         endpoint_finished_utc = datetime.now(timezone.utc).isoformat()
         endpoint_code = endpoint_result.returncode
         endpoint_output = endpoint_result.output
+        if args.isolated_controller:
+            endpoint_security = runtime_security_state(endpoint_output)
         if capture:
             capture.stop(interrupt=True)
             processes.remove(capture)
+            endpoint_capture = validate_stopped_capture(
+                capture, output_dir / "endpoint.pcap"
+            )
         if browser and endpoint_code == 0:
             capture = None
             if not args.no_pcap:
@@ -529,10 +727,15 @@ def main() -> int:
             if capture:
                 capture.stop(interrupt=True)
                 processes.remove(capture)
+                cover_capture = validate_stopped_capture(
+                    capture, output_dir / "cover-chromium.pcap"
+                )
     except KeyboardInterrupt:
         endpoint_code = 130
+        failure = "interrupted"
         print("\n[bench] interrupted; stopping the benchmark lab", file=sys.stderr)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+        failure = str(exc)
         print(f"[bench] failed: {exc}", file=sys.stderr)
     finally:
         while processes:
@@ -555,19 +758,126 @@ def main() -> int:
                     node_process.resource_sampler,
                 )
 
+        final_binary_hashes: dict[str, str] = {}
+        try:
+            final_binary_hashes = {
+                "yume": sha256_file(yume),
+                "yumed": sha256_file(yumed),
+                "node": sha256_file(node_source),
+                "exec_guard": sha256_file(EXEC_GUARD),
+            }
+            if final_binary_hashes != binary_hashes:
+                failure = failure or "a benchmark executable changed during the run"
+        except OSError as exc:
+            failure = failure or f"could not revalidate benchmark executables: {exc}"
+
+        source_snapshot_after: dict[str, object] = {}
+        try:
+            source_snapshot_after = git_source_snapshot(
+                REPO_ROOT, RUNTIME_SOURCE_INPUTS
+            )
+            if source_snapshot_after != source_snapshot_before:
+                failure = failure or "benchmark source provenance changed during the run"
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            failure = failure or f"could not revalidate benchmark source: {exc}"
+
+        try:
+            frozen_node.close()
+        except OSError as exc:
+            failure = failure or f"could not close the frozen Node executable: {exc}"
+
+        workdir_cleanup = {
+            "retained_by_request": args.keep_workdir,
+            "removed": False,
+            "error": None,
+        }
+        if not args.keep_workdir:
+            try:
+                remove_private_tree(workdir)
+                workdir_cleanup["removed"] = True
+            except (OSError, RuntimeError) as exc:
+                workdir_cleanup["error"] = str(exc)
+                failure = failure or f"could not remove private work directory: {exc}"
+                print(f"[bench] private workdir cleanup failed: {exc}", file=sys.stderr)
+
+        artifact_owner: tuple[int, int] | None = None
+        try:
+            # An isolated controller's uid 0 maps directly to the unprivileged
+            # outer user. Sudo ownership restoration applies only to the
+            # initial-namespace root workflow.
+            if not args.isolated_controller:
+                artifact_owner = output_owner()
+            if args.keep_workdir:
+                write_private_text(output_dir / "workdir.txt", str(workdir) + "\n")
+                print(f"[bench] retained secrets and scratch files in {workdir}")
+            enforce_private_artifact_modes(output_dir)
+            restore_output_owner(output_dir, artifact_owner)
+        except (OSError, RuntimeError) as exc:
+            failure = failure or f"could not finalize private artifacts: {exc}"
+            print(f"[bench] artifact finalization failed: {exc}", file=sys.stderr)
+
         report = {
             "schema": 2,
             "started_utc": started,
             "finished_utc": datetime.now(timezone.utc).isoformat(),
             "profile_name": args.profile,
             "network": asdict(profile),
+            "internal_endpoint": {
+                "server_ip": SERVER_IP,
+                "client_ip": CLIENT_IP,
+                "port": lab.yume_port,
+                "tls_name": TLS_NAME,
+            },
             "host": host,
+            "execution": {
+                "isolated_user_namespace": args.isolated_controller,
+                "outer_namespace": {
+                    "user": args.outer_userns,
+                    "mount": args.outer_mountns,
+                    "pid": args.outer_pidns,
+                    "network": args.outer_netns,
+                } if args.isolated_controller else None,
+                "controller_namespace": namespace_inodes(),
+                "controller_checks": controller_checks,
+                "network_mutation_scope": (
+                    "disposable-user-mount-pid-network-wrapper"
+                    if args.isolated_controller
+                    else "host-named-network-namespaces"
+                ),
+                "host_routes_or_qdiscs_targeted": False,
+                "node_filesystem_sandbox": {
+                    "engine": "bubblewrap",
+                    "minimal_read_only_usr": True,
+                    "exact_node_and_backend_only": True,
+                    "host_home_absent": True,
+                    "secret_workdir_absent": True,
+                    "artifact_directory_absent": True,
+                    "network_namespace_shared_with_server": True,
+                },
+                "runtime_security": {
+                    "node": node_security,
+                    "yumed": yumed_security,
+                    "yume": endpoint_security,
+                },
+                "private_workdir_cleanup": workdir_cleanup,
+            },
             "versions": {
                 "yume": command_version([str(yume), "--version"]),
                 "node": node_version,
                 "browser": browser_version,
             },
             "browser_identity": browser_identity,
+            "source_provenance": {
+                "before": source_snapshot_before,
+                "after": source_snapshot_after,
+                "unchanged": source_snapshot_after == source_snapshot_before,
+            },
+            "binary_sha256": {
+                "before": binary_hashes,
+                "after": final_binary_hashes,
+                "unchanged": final_binary_hashes == binary_hashes,
+            },
+            "failure": failure,
             "endpoint": {
                 "started_utc": endpoint_started_utc,
                 "finished_utc": endpoint_finished_utc,
@@ -596,6 +906,7 @@ def main() -> int:
                 "rates": parse_rates(endpoint_output),
                 "resources": endpoint_result.resources if endpoint_result else None,
                 "pcap": "endpoint.pcap" if not args.no_pcap else None,
+                "capture": endpoint_capture,
             },
             "server": {
                 "yumed_resources": yumed_resources,
@@ -605,17 +916,18 @@ def main() -> int:
                 "exit_code": browser_code,
                 "command": browser_command,
                 "pcap": "cover-chromium.pcap" if browser and not args.no_pcap else None,
+                "capture": cover_capture,
             },
         }
-        (output_dir / "report.json").write_text(
-            json.dumps(report, indent=2) + "\n", encoding="utf-8"
-        )
-        if args.keep_workdir:
-            (output_dir / "workdir.txt").write_text(str(workdir) + "\n", encoding="utf-8")
-            print(f"[bench] retained secrets and scratch files in {workdir}")
-        else:
-            shutil.rmtree(workdir, ignore_errors=True)
-        restore_output_owner(output_dir)
+        try:
+            write_private_text(
+                output_dir / "report.json",
+                json.dumps(report, indent=2) + "\n",
+                owner=artifact_owner,
+            )
+        except (OSError, RuntimeError) as exc:
+            failure = failure or f"could not write final report: {exc}"
+            print(f"[bench] final report write failed: {exc}", file=sys.stderr)
 
     if not args.no_resource_sampling:
         print_process_resources(
@@ -624,6 +936,9 @@ def main() -> int:
         )
         print_process_resources("[bench] yumed server", yumed_resources)
 
+    if failure is not None:
+        print(f"[bench] failed; inspect {output_dir}: {failure}", file=sys.stderr)
+        return endpoint_code if endpoint_code not in (0, 1) else 1
     if endpoint_code != 0:
         print(f"[bench] endpoint benchmark failed; inspect {output_dir}", file=sys.stderr)
         return endpoint_code or 1

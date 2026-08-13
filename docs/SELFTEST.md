@@ -141,12 +141,43 @@ applies a `tc netem` profile in both directions, provisions temporary 2.0
 identity and secret files, starts the real loopback Node cover, enables the
 authenticated endpoint benchmark, and retains the outer captures and logs.
 
-Build first, then run it as root on a benchmark host:
+The helper requires util-linux and Bubblewrap so the loopback Node cover runs
+with a minimal read-only filesystem in both modes. Build first, then run it as
+root on a benchmark host:
 
 ```bash
 ./ezbuild.sh --selftest --tests
 sudo python3 scripts/yume_bench_wan.py --profile mobile-4g
 ```
+
+On Linux hosts that allow unprivileged user namespaces, the endpoint-only arm
+can instead confine the named namespaces, veths, and netem qdiscs to a
+throwaway user/mount/PID/network wrapper. Run this mode as an unprivileged
+user with util-linux and Bubblewrap installed; it intentionally rejects the
+browser arm:
+
+```bash
+python3 scripts/yume_bench_wan.py \
+  --isolated-userns --no-browser --profile mobile-4g \
+  --tls-backend chrome151
+```
+
+The wrapper validates an exact single-ID user/group mapping, a private mount
+tree, PID-1 ownership, and a fresh outer network namespace before mounting a
+private `/run/netns`; it kills all namespace children if the wrapper exits.
+Node runs in a nested Bubblewrap sandbox with only `/usr` and the exact pinned
+Node, cover backend, and capability guard visible, so it cannot read the
+generated YUME keys or evidence directory. Node, `yumed`, and `yume` all fail
+closed unless the kernel reports zero capabilities and `NoNewPrivs: 1`. The
+isolated endpoint uses internal port 8443 because these workloads cannot bind a
+privileged port after the capability drop; the existing root/browser mode
+continues to use port 443. The JSON report records those runtime security
+assertions, exact executable hashes, namespace inodes, and mutation scope. It
+also records the Git commit, tree, full dirty-state status, and exact hashes of
+every runtime harness/config input before and after the run; any change during
+the measurement makes the run fail. This is still a synthetic virtual-WAN
+measurement, not a deployed-network soak or external hosting/IP-metadata
+result.
 
 The default workload transfers 128 MiB per direction over eight streams with
 the production relay DATA shape (64 KiB unless `YUME_RELAY_READ_BUF` is set).

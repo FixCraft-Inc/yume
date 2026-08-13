@@ -159,6 +159,7 @@ def start_logged_process(
     log_path: Path,
     *,
     cwd: Path | None = None,
+    pass_fds: tuple[int, ...] = (),
     resource_sampling: bool = False,
     resource_sample_ms: int = 250,
 ) -> ManagedProcess:
@@ -172,6 +173,7 @@ def start_logged_process(
             stdout=log_file,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            pass_fds=pass_fds,
         )
     except Exception:
         log_file.close()

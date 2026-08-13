@@ -206,6 +206,8 @@ class BrowserSandboxTest(unittest.TestCase):
         self.assertIn("--disable-setuid-sandbox", script)
         self.assertIn("normal Chrome capture must run as an unprivileged user", script)
         self.assertIn("EXPECTED_CHROME_LAUNCHER_SHA256", script)
+        self.assertIn('realpath -e -- "$(dirname -- "$output_dir_input")"', script)
+        self.assertIn('readonly output_dir="$output_parent/$output_leaf"', script)
 
     def test_normal_capture_rejects_hash_before_executing_browser(self) -> None:
         if os.geteuid() == 0:

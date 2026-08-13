@@ -616,6 +616,9 @@ class BrowserSandboxTest(unittest.TestCase):
         self.assertIn("EXPECTED_CHROME_LAUNCHER_SHA256", script)
         self.assertIn('realpath -e -- "$(dirname -- "$output_dir_input")"', script)
         self.assertIn('readonly output_dir="$output_parent/$output_leaf"', script)
+        self.assertIn("YUME_CAPTURE_TLS_CERT", script)
+        self.assertIn("scripts/yume_capture_manifest.py", script)
+        self.assertIn("capture source checkout changed during capture", script)
 
     def test_normal_capture_rejects_hash_before_executing_browser(self) -> None:
         if os.geteuid() == 0:
@@ -718,6 +721,31 @@ printf '%s  %s\n' "$hash" "$target"
             self._write_executable(fake_bin / "unshare", "#!/bin/sh\nexit 0\n")
             self._write_executable(fake_bin / "curl", "#!/bin/sh\nexit 0\n")
             self._write_executable(fake_bin / "ss", "#!/bin/sh\nexit 0\n")
+            self._write_executable(
+                fake_bin / "git",
+                """#!/bin/sh
+case " $* " in
+    *" diff "*) exit 0 ;;
+    *" ls-files "*) exit 0 ;;
+    *"HEAD^{commit}"*) printf '%040d\n' 0 ;;
+    *"HEAD^{tree}"*) printf '%040d\n' 1 ;;
+    *) exit 1 ;;
+esac
+""",
+            )
+            self._write_executable(
+                fake_bin / "python3",
+                """#!/bin/sh
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--output" ]; then
+        printf '{}\n' >"$2"
+        exit 0
+    fi
+    shift
+done
+exit 1
+""",
+            )
             environment = dict(os.environ)
             environment.update({
                 "DISPLAY": ":99",

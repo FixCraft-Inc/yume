@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "id": "cover-page-websocket-v1",
+  "transport_profile": "chrome151-node24-v1",
+  "websocket_path": "/__yume_cover_ws",
+  "assets": [
+    {
+      "path": "/",
+      "content_type": "text/html; charset=utf-8",
+      "body_utf8": "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>Northstar</title><link rel=\"stylesheet\" href=\"/assets/site.css\"></head>\n<body><main><h1>Northstar</h1><p>A small Node.js HTTP/2 reference site.</p></main>\n<script src=\"/assets/site.js\" defer></script></body></html>\n"
+    },
+    {
+      "path": "/assets/site.css",
+      "content_type": "text/css; charset=utf-8",
+      "body_utf8": "body{font:16px system-ui;margin:4rem;line-height:1.5}main{max-width:52rem}h1{letter-spacing:.02em}\n"
+    },
+    {
+      "path": "/assets/site.js",
+      "content_type": "text/javascript; charset=utf-8",
+      "generator": "websocket-client-v1"
+    }
+  ],
+  "contract": {
+    "mode": "cover-page-websocket-v1",
+    "asset_paths": [
+      "/",
+      "/assets/site.css",
+      "/assets/site.js"
+    ],
+    "websocket_bytes_each_direction": 1048576,
+    "client_binary_messages": {
+      "count": 64,
+      "payload_bytes": 16384,
+      "masked": true
+    },
+    "server_binary_messages": {
+      "unfragmented_count": 63,
+      "payload_bytes": 16384,
+      "masked": false
+    },
+    "server_fragmented_binary_message": [
+      {
+        "opcode": 2,
+        "payload_bytes": 8192,
+        "final": false,
+        "masked": false
+      },
+      {
+        "opcode": 0,
+        "payload_bytes": 8192,
+        "final": true,
+        "masked": false
+      }
+    ],
+    "ping_pong": {
+      "server_ping_payload_bytes": 12,
+      "client_pong_payload_bytes": 12,
+      "client_pong_masked": true
+    },
+    "idle_ms": 42000,
+    "close": {
+      "kind": "graceful-websocket",
+      "payload_bytes": 18,
+      "client_masked": true,
+      "server_masked": false,
+      "h2_ping_immediately_before_close": true,
+      "h2_ping_originator": "client"
+    }
+  }
+}

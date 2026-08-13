@@ -1372,6 +1372,14 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/scripts/test_yume_classifier_evidence.py"
     )
+    add_test(NAME yume_capture_manifest_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/scripts/test_yume_capture_manifest.py"
+    )
+    add_test(NAME yume_capture_finalize_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/scripts/test_yume_capture_finalize.py"
+    )
     add_test(NAME yume_tls_wire_test
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_yume_tls_wire.py"

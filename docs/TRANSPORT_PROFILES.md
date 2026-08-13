@@ -37,6 +37,14 @@ The generated files are committed so production builds do not acquire a Python
 code-generation dependency. CI and release preflight run the generator in
 `--check` mode and reject stale output.
 
+The matched Gate B browser workload is separately frozen in
+`tools/cover-node/workload-v1.json`. The direct HTTP/2 capture target and
+classifier-input validator consume that file. It defines reference page assets
+and the transfer/control/idle contract, not a second transport identity and not
+the installed production HTTP/1 cover backend. Changing it requires new
+matched captures and must not silently rewrite the existing
+`chrome151-node24-v1` evidence claim.
+
 The transport and dependency registries are source/build metadata and are not
 installed as runtime examples. The transport registry contains
 repository-relative evidence paths; install rules copy only the active,

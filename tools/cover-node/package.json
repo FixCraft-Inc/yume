@@ -7,6 +7,7 @@
   },
   "scripts": {
     "start": "node backend.mjs",
-    "capture-reference": "node server.mjs"
+    "capture-reference": "node server.mjs",
+    "test": "node workload_test.mjs"
   }
 }

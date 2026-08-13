@@ -31,7 +31,7 @@ if [[ $# -lt 2 || $# -gt 4 ]]; then
     exit 2
 fi
 
-readonly output_dir=$1
+readonly output_dir_input=$1
 readonly node_bin_input=$2
 readonly run_count=${3:-$DEFAULT_RUNS}
 readonly idle_ms=${4:-$DEFAULT_IDLE_MS}
@@ -112,8 +112,21 @@ if ! "$unshare_bin" --user --map-root-user true; then
     echo 'Chrome user-namespace sandbox is unavailable' >&2
     exit 1
 fi
+if [[ -e $output_dir_input ]]; then
+    echo "output path already exists: $output_dir_input" >&2
+    exit 1
+fi
+
+output_leaf=$(basename -- "$output_dir_input")
+if [[ $output_leaf == '.' || $output_leaf == '..' ]]; then
+    echo "output path must name a fresh child directory: $output_dir_input" >&2
+    exit 1
+fi
+output_parent=$(realpath -e -- "$(dirname -- "$output_dir_input")")
+readonly output_leaf output_parent
+readonly output_dir="$output_parent/$output_leaf"
 if [[ -e $output_dir ]]; then
-    echo "output path already exists: $output_dir" >&2
+    echo "resolved output path already exists: $output_dir" >&2
     exit 1
 fi
 

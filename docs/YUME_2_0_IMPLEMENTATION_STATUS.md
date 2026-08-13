@@ -4,12 +4,30 @@ Status: `2.0-dev6` vertical slice implemented; release gates incomplete.
 
 The signed-commit inventory, competitive assessment, exact session handoff,
 and ordered next-agent gates are in `docs/YUME_2_0_DEV6_HANDOFF.md`.
+The explicit development-merge, `2.0-rc1`, exact-`2.0`, and branch-sync gates
+are in `docs/YUME_2_0_STABILIZATION.md`.
 
 This is a truthful inventory of the focused Linux x86-64 client/server work. It
 does not claim Android, GUI, nginx, alternate browser profiles, H3, federation,
 or admin/control validation.
 
 ## Implemented
+
+- A browser-neutral build-time transport-profile registry now owns profile
+  aliases, fixture paths, artifact names, backend routing, and captured
+  HTTP/2/HTTP/WebSocket identity. It generates checked-in immutable C++ data
+  consumed through `cover_profile::active()` and the Go helper registry;
+  active/authenticated-profile drift, stale generation, duplicate profile,
+  alias, or helper identities, escaping artifact paths, unsupported dev6
+  stream geometry, and incomplete metadata fail closed. The Go TLS helper
+  resolves audited ClientHello providers by explicit build identity instead of
+  branching in the connection lifecycle. Dev6 still
+  admits exactly one authenticated profile; this is an extensibility boundary,
+  not runtime profile negotiation or evidence for another browser.
+- BaseFWX repository, exact commit, and minimum version are defined once in
+  `config/dependencies.json` and consumed by CMake, build scripts, CI, CodeQL,
+  and release tooling. The dependency remains immutable and reproducible; a
+  floating branch is rejected.
 
 - Version-pinned Chrome `151.0.7922.71` / Node `24.18.0` reference fixture,
   manifest, and sanitized HTTP/2 profile. One immutable Chrome 151/Debian 13 +

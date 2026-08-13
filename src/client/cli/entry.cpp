@@ -72,6 +72,7 @@
 #include "core/security/crypto.hpp"
 #include "core/security/channel_binding.hpp"
 #include "core/stealth/http_profile.hpp"
+#include "core/stealth/cover_profile.hpp"
 #include "core/security/inner_crypto.hpp"
 #include "core/stealth/obfs.hpp"
 #include "core/protocol/protocol.hpp"
@@ -355,10 +356,13 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             std::string(yume::kTransportProfile));
         return 1;
     }
-    if (cfg.tls_backend != "chrome151" &&
+    const std::string helper_tls_backend(
+        yume::cover_profile::active().tls_backend);
+    if (cfg.tls_backend != helper_tls_backend &&
         cfg.tls_backend != "openssl-diagnostic") {
         util::log_error(
-            "tls_backend must be chrome151 or openssl-diagnostic");
+            "tls_backend must be " + helper_tls_backend +
+            " or openssl-diagnostic");
         return 1;
     }
     try {
@@ -367,7 +371,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
         util::log_error(error.what());
         return 1;
     }
-    if (cfg.tls_backend == "chrome151") {
+    if (cfg.tls_backend == helper_tls_backend) {
 #if !defined(__linux__)
         util::log_error("tls_backend chrome151 currently supports Linux desktop only");
         return 1;
@@ -839,7 +843,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             
             auto handshake_start = std::chrono::steady_clock::now();
             std::unique_ptr<ClientTransportStream> stream_owner;
-            if (cfg.tls_backend == "chrome151") {
+            if (cfg.tls_backend == helper_tls_backend) {
                 ChromeTlsHelperOptions helper_options;
                 helper_options.helper_path = cfg.tls_helper_path.empty()
                     ? DiscoverChromeTlsHelper(

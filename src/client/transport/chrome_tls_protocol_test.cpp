@@ -13,6 +13,8 @@
 
 namespace {
 
+constexpr std::string_view kExpectedBuildId = "test-browser-helper-v1";
+
 template <typename Callback>
 void ExpectFailure(Callback&& callback, const std::string& expected) {
     try {
@@ -41,13 +43,14 @@ int main() {
 
     Request request;
     request.connection_id[0] = 0x42;
+    request.expected_build_id = std::string(kExpectedBuildId);
     request.server_name = "localhost";
     request.ca_path = "/tmp/yume-ca.pem";
     request.leaf_pin.assign(kSha256Bytes, 0xA5);
     const auto request_wire = EncodeRequest(request);
     const Request decoded_request = DecodeRequest(request_wire);
     assert(decoded_request.connection_id == request.connection_id);
-    assert(decoded_request.expected_build_id == kBuildId);
+    assert(decoded_request.expected_build_id == kExpectedBuildId);
     assert(decoded_request.server_name == request.server_name);
     assert(decoded_request.ca_path == request.ca_path);
     assert(decoded_request.leaf_pin == request.leaf_pin);
@@ -55,12 +58,12 @@ int main() {
 
     Ready ready;
     ready.connection_id = request.connection_id;
-    ready.build_id = std::string(kBuildId);
+    ready.build_id = std::string(kExpectedBuildId);
     ready.alpn = "h2";
     ready.leaf_fingerprint.fill(0x11);
     ready.exporter.fill(0x22);
     const Response ready_response = DecodeResponse(
-        EncodeReady(ready), request.connection_id);
+        EncodeReady(ready), request.connection_id, kExpectedBuildId);
     assert(ready_response.kind == ResponseKind::Ready);
     assert(ready_response.ready.leaf_fingerprint == ready.leaf_fingerprint);
     assert(ready_response.ready.exporter == ready.exporter);
@@ -70,7 +73,7 @@ int main() {
     helper_error.code = 8;
     helper_error.message = "TLS leaf pin mismatch";
     const Response error_response = DecodeResponse(
-        EncodeError(helper_error), request.connection_id);
+        EncodeError(helper_error), request.connection_id, kExpectedBuildId);
     assert(error_response.kind == ResponseKind::Error);
     assert(error_response.error.code == 8);
     assert(error_response.error.message == helper_error.message);
@@ -99,7 +102,10 @@ int main() {
     auto wrong_id = request.connection_id;
     wrong_id[0] ^= 1;
     ExpectFailure(
-        [&]() { (void)DecodeResponse(EncodeReady(ready), wrong_id); },
+        [&]() {
+            (void)DecodeResponse(EncodeReady(ready), wrong_id,
+                                 kExpectedBuildId);
+        },
         "connection ID");
 
     auto bad_version = request_wire;
@@ -145,20 +151,29 @@ int main() {
         auto truncated = ready_wire;
         truncated.resize(size);
         ExpectFailure(
-            [&]() { (void)DecodeResponse(truncated, request.connection_id); });
+            [&]() {
+                (void)DecodeResponse(truncated, request.connection_id,
+                                     kExpectedBuildId);
+            });
     }
 
     auto trailing_ready = ready_wire;
     trailing_ready.push_back(0);
     ExpectFailure(
-        [&]() { (void)DecodeResponse(trailing_ready, request.connection_id); },
+        [&]() {
+            (void)DecodeResponse(trailing_ready, request.connection_id,
+                                 kExpectedBuildId);
+        },
         "trailing");
 
     auto wrong_response_type = ready_wire;
     wrong_response_type[10] = 0;
     wrong_response_type[11] = 1;
     ExpectFailure(
-        [&]() { (void)DecodeResponse(wrong_response_type, request.connection_id); },
+        [&]() {
+            (void)DecodeResponse(wrong_response_type, request.connection_id,
+                                 kExpectedBuildId);
+        },
         "response type");
 
     auto oversized_response = ready_wire;
@@ -167,7 +182,10 @@ int main() {
     oversized_response[14] = 0x00;
     oversized_response[15] = 0x01;
     ExpectFailure(
-        [&]() { (void)DecodeResponse(oversized_response, request.connection_id); },
+        [&]() {
+            (void)DecodeResponse(oversized_response, request.connection_id,
+                                 kExpectedBuildId);
+        },
         "exceeds cap");
 
     Ready wrong_build = ready;
@@ -175,7 +193,8 @@ int main() {
     ExpectFailure(
         [&]() {
             (void)DecodeResponse(
-                EncodeReady(wrong_build), request.connection_id);
+                EncodeReady(wrong_build), request.connection_id,
+                kExpectedBuildId);
         },
         "build identity");
 
@@ -184,7 +203,8 @@ int main() {
     ExpectFailure(
         [&]() {
             (void)DecodeResponse(
-                EncodeReady(wrong_alpn), request.connection_id);
+                EncodeReady(wrong_alpn), request.connection_id,
+                kExpectedBuildId);
         },
         "negotiate h2");
 

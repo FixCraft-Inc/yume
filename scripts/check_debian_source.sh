@@ -69,6 +69,7 @@ required=(
   "${prefix}/src/main_server.cpp"
   "${prefix}/docs/PACKAGING.md"
   "${prefix}/scripts/make_debian_orig.sh"
+  "${prefix}/scripts/check_source_archive_listing.py"
   "${prefix}/src/gui/third_party/nanosvg/nanosvg.h"
   "${prefix}/src/gui/third_party/stb/stb_image_write.h"
 )
@@ -80,10 +81,8 @@ for path in "${required[@]}"; do
   fi
 done
 
-excluded_regex="^${prefix}/(AGENTS\\.md|AI_NOTES\\.md|DEV_services|basefwx|vendor|third_party|debian|\\.cache|\\.claude|\\.codex|\\.wrangler)(/|$)|^${prefix}/(build|build-[^/]+|obj-[^/]+)(/|$)|\\.(log|trace|out|pyc)$|\\.tar\\.xz$"
-if grep -Eq "${excluded_regex}" "${listing}"; then
-  echo "source package contains excluded files:" >&2
-  grep -E "${excluded_regex}" "${listing}" >&2
+if ! python3 "${repo_root}/scripts/check_source_archive_listing.py" \
+    --listing "${listing}" --prefix "${prefix}"; then
   exit 5
 fi
 

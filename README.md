@@ -21,6 +21,8 @@ the optional GUI have not yet passed the 2.0 release gates.
 For the current implementation / testing boundary, including host-controller,
 codec, federation, plugin, and browser status, see
 [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md).
+For the exact dev6 integration lane and the separate stable-ish RC/stable gates,
+see [docs/YUME_2_0_STABILIZATION.md](docs/YUME_2_0_STABILIZATION.md).
 
 ## Why YUME
 
@@ -63,7 +65,12 @@ cd yume
 absent. If `basefwx/` is already an attached developer checkout, the build uses
 that worktree without fetching, detaching its branch, or discarding changes.
 Use `BASEFWX_SYNC_MODE=pinned ./ezbuild.sh` when you explicitly need the clean
-commit recorded in `config/refs/basefwx.ref`.
+commit recorded once in `config/dependencies.json`.
+
+Browser identities are also centralized. See
+[docs/TRANSPORT_PROFILES.md](docs/TRANSPORT_PROFILES.md): installed Chrome may
+update normally, while qualified wire profiles remain immutable and new
+browser versions are added through captured evidence plus one registry entry.
 
 The build produces `build/bin/yume` and `build/bin/yumed`.
 
@@ -659,7 +666,8 @@ sudo ./build/bin/yumed \
 ## Security posture
 
 - AGPL-3.0-or-later, with client, daemon, proxy, GUI, and libyume fully buildable from this tree
-- BaseFWX is pinned by commit (see `config/refs/basefwx.ref`); release CI fails if mandatory crypto support is missing
+- BaseFWX repository, commit, and minimum compatible version come from
+  `config/dependencies.json`; release CI fails if mandatory crypto support is missing
 - Authorized keys are verified by `yume::crypto::verify_key` with OpenSSL
   `EVP_DigestVerify` ([src/core/security/crypto.cpp](src/core/security/crypto.cpp))
 - Client AUTH transmits the Ed25519 public key and transcript signature, never

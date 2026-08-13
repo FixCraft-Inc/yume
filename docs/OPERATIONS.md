@@ -25,7 +25,12 @@ The manifest records file size, OS, architecture, component, linkage, hashes, an
 
 ## BaseFWX pinning
 
-YUME depends on BaseFWX for post-quantum and AEAD primitives. The release and CI workflows read `config/refs/basefwx.ref`, fetch that exact ref, and fail preflight if it is not reachable. Keep this file pinned to a commit or immutable release ref for production releases.
+YUME depends on BaseFWX for post-quantum and AEAD primitives. The release and
+CI workflows read its repository, exact commit, and minimum compatible version
+from `config/dependencies.json`, then fail preflight if the commit is not
+reachable. Keep production revisions immutable; use
+`scripts/yume_dependencies.py get basefwx revision` instead of copying the
+commit into another script or workflow.
 
 For normal local development, `ezbuild.sh` preserves an existing attached
 BaseFWX branch and builds its current files in place. It does not shallow the

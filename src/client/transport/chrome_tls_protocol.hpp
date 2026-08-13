@@ -20,16 +20,13 @@ inline constexpr std::size_t kConnectionIdBytes = 16;
 inline constexpr std::size_t kSha256Bytes = 32;
 inline constexpr std::size_t kExporterBytes = 32;
 inline constexpr std::size_t kMaxPayloadBytes = 64U * 1024U;
-inline constexpr std::string_view kBuildId =
-    "yume-chrome151-utls-v1.8.2-ipc-v1";
-
 using ConnectionId = std::array<std::uint8_t, kConnectionIdBytes>;
 using Sha256 = std::array<std::uint8_t, kSha256Bytes>;
 using Exporter = std::array<std::uint8_t, kExporterBytes>;
 
 struct Request {
     ConnectionId connection_id{};
-    std::string expected_build_id{std::string(kBuildId)};
+    std::string expected_build_id;
     std::string server_name;
     std::string ca_path;
     std::vector<std::uint8_t> leaf_pin;
@@ -64,7 +61,8 @@ struct Response {
 std::vector<std::uint8_t> EncodeRequest(const Request& request);
 Request DecodeRequest(std::span<const std::uint8_t> wire);
 Response DecodeResponse(std::span<const std::uint8_t> wire,
-                        const ConnectionId& expected_connection_id);
+                        const ConnectionId& expected_connection_id,
+                        std::string_view expected_build_id);
 
 // Test/support encoders also document the wire format independently of the Go
 // helper. Production parent code only sends Request and decodes Response.

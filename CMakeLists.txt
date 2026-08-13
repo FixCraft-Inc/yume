@@ -25,7 +25,124 @@ endif()
 
 option(YUME_USE_BASEFWX "Enable BaseFWX inner crypto support" ON)
 option(YUME_USE_SYSTEM_BASEFWX "Prefer a system-installed BaseFWX (find_package basefwx CONFIG) over the bundled tree" OFF)
-set(YUME_REQUIRED_BASEFWX_VERSION "3.8.0")
+set(YUME_DEPENDENCY_MANIFEST
+    "${CMAKE_CURRENT_SOURCE_DIR}/config/dependencies.json")
+if(NOT EXISTS "${YUME_DEPENDENCY_MANIFEST}")
+    message(FATAL_ERROR "Missing dependency manifest: ${YUME_DEPENDENCY_MANIFEST}")
+endif()
+file(READ "${YUME_DEPENDENCY_MANIFEST}" _yume_dependency_json)
+string(JSON _yume_dependency_schema GET "${_yume_dependency_json}" schema)
+if(NOT _yume_dependency_schema EQUAL 1)
+    message(FATAL_ERROR "Unsupported dependency manifest schema")
+endif()
+string(JSON YUME_BASEFWX_REPOSITORY GET "${_yume_dependency_json}"
+    dependencies basefwx repository)
+string(JSON YUME_BASEFWX_REVISION GET "${_yume_dependency_json}"
+    dependencies basefwx revision)
+string(JSON YUME_REQUIRED_BASEFWX_VERSION GET "${_yume_dependency_json}"
+    dependencies basefwx minimum_version)
+
+# Browser/cover identities are registered once and generated into immutable
+# C++ data. CMake resolves the active fixture from the same registry used by
+# the generator and packaging checks; profile-specific paths must not spread
+# through build logic.
+set(YUME_TRANSPORT_PROFILE_REGISTRY
+    "${CMAKE_CURRENT_SOURCE_DIR}/config/transport_profiles.json")
+if(NOT EXISTS "${YUME_TRANSPORT_PROFILE_REGISTRY}")
+    message(FATAL_ERROR "Missing transport profile registry: ${YUME_TRANSPORT_PROFILE_REGISTRY}")
+endif()
+file(READ "${YUME_TRANSPORT_PROFILE_REGISTRY}" _yume_profile_registry_json)
+string(JSON _yume_profile_registry_schema GET "${_yume_profile_registry_json}" schema)
+if(NOT _yume_profile_registry_schema EQUAL 1)
+    message(FATAL_ERROR "Unsupported transport profile registry schema")
+endif()
+string(JSON YUME_ACTIVE_TRANSPORT_PROFILE GET
+    "${_yume_profile_registry_json}" active_profile)
+string(JSON _yume_profile_count LENGTH
+    "${_yume_profile_registry_json}" profiles)
+if(_yume_profile_count LESS 1)
+    message(FATAL_ERROR "Transport profile registry is empty")
+endif()
+math(EXPR _yume_profile_last "${_yume_profile_count} - 1")
+set(_yume_active_profile_fixture "")
+set(_yume_active_profile_manifest "")
+set(_yume_active_profile_http2 "")
+set(_yume_active_profile_tls_wire "")
+set(_yume_active_profile_tls_candidates "")
+foreach(_yume_profile_index RANGE 0 ${_yume_profile_last})
+    string(JSON _yume_profile_id GET "${_yume_profile_registry_json}"
+        profiles ${_yume_profile_index} id)
+    if(_yume_profile_id STREQUAL YUME_ACTIVE_TRANSPORT_PROFILE)
+        string(JSON _yume_active_profile_fixture GET
+            "${_yume_profile_registry_json}"
+            profiles ${_yume_profile_index} fixture)
+        string(JSON _yume_active_profile_manifest GET
+            "${_yume_profile_registry_json}"
+            profiles ${_yume_profile_index} artifacts manifest)
+        string(JSON _yume_active_profile_http2 GET
+            "${_yume_profile_registry_json}"
+            profiles ${_yume_profile_index} artifacts http2_profile)
+        string(JSON _yume_active_profile_tls_wire GET
+            "${_yume_profile_registry_json}"
+            profiles ${_yume_profile_index} artifacts tls_wire_profile)
+        string(JSON _yume_tls_candidate_count LENGTH
+            "${_yume_profile_registry_json}"
+            profiles ${_yume_profile_index} artifacts tls_wire_candidates)
+        if(_yume_tls_candidate_count LESS 1)
+            message(FATAL_ERROR "Active transport profile has no TLS wire candidates")
+        endif()
+        math(EXPR _yume_tls_candidate_last "${_yume_tls_candidate_count} - 1")
+        foreach(_yume_tls_candidate_index RANGE 0 ${_yume_tls_candidate_last})
+            string(JSON _yume_tls_candidate GET
+                "${_yume_profile_registry_json}"
+                profiles ${_yume_profile_index} artifacts tls_wire_candidates
+                ${_yume_tls_candidate_index})
+            list(APPEND _yume_active_profile_tls_candidates
+                "${_yume_tls_candidate}")
+        endforeach()
+    endif()
+endforeach()
+if(_yume_active_profile_fixture STREQUAL "")
+    message(FATAL_ERROR
+        "Active transport profile ${YUME_ACTIVE_TRANSPORT_PROFILE} is not registered")
+endif()
+if(IS_ABSOLUTE "${_yume_active_profile_fixture}" OR
+   _yume_active_profile_fixture MATCHES "(^|/)\\.\\.(/|$)")
+    message(FATAL_ERROR "Transport profile fixture must stay inside the source tree")
+endif()
+set(YUME_ACTIVE_PROFILE_FIXTURE
+    "${CMAKE_CURRENT_SOURCE_DIR}/${_yume_active_profile_fixture}")
+foreach(_yume_artifact IN ITEMS
+        "${_yume_active_profile_manifest}"
+        "${_yume_active_profile_http2}"
+        "${_yume_active_profile_tls_wire}"
+        ${_yume_active_profile_tls_candidates})
+    if(IS_ABSOLUTE "${_yume_artifact}" OR
+       _yume_artifact MATCHES "(^|/)\\.\\.(/|$)")
+        message(FATAL_ERROR
+            "Transport profile artifact must stay inside its fixture: ${_yume_artifact}")
+    endif()
+    if(NOT EXISTS "${YUME_ACTIVE_PROFILE_FIXTURE}/${_yume_artifact}")
+        message(FATAL_ERROR
+            "Active transport profile is missing ${_yume_artifact}")
+    endif()
+endforeach()
+set(YUME_ACTIVE_PROFILE_MANIFEST
+    "${YUME_ACTIVE_PROFILE_FIXTURE}/${_yume_active_profile_manifest}")
+set(YUME_ACTIVE_PROFILE_HTTP2
+    "${YUME_ACTIVE_PROFILE_FIXTURE}/${_yume_active_profile_http2}")
+set(YUME_ACTIVE_PROFILE_TLS_WIRE
+    "${YUME_ACTIVE_PROFILE_FIXTURE}/${_yume_active_profile_tls_wire}")
+set(YUME_ACTIVE_PROFILE_TLS_CANDIDATES "")
+set(YUME_ACTIVE_PROFILE_TLS_CANDIDATE_ARGS "")
+foreach(_yume_tls_candidate IN LISTS _yume_active_profile_tls_candidates)
+    set(_yume_tls_candidate_path
+        "${YUME_ACTIVE_PROFILE_FIXTURE}/${_yume_tls_candidate}")
+    list(APPEND YUME_ACTIVE_PROFILE_TLS_CANDIDATES
+        "${_yume_tls_candidate_path}")
+    list(APPEND YUME_ACTIVE_PROFILE_TLS_CANDIDATE_ARGS
+        --candidate "${_yume_tls_candidate_path}")
+endforeach()
 option(YUME_USE_SPDLOG "Enable spdlog logging backend" ON)
 option(YUME_USE_BUNDLED_NLOHMANN "Allow bundled nlohmann_json fallback" ON)
 option(YUME_MINIMAL "Build for minimal systems (disable heavy deps/features)" OFF)
@@ -421,10 +538,12 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         COMPONENT yume_cli
     )
 
-    install(DIRECTORY config/
+    install(FILES
+        config/security-ultimate.example.json
+        config/yume.json
+        config/yumed.json
         DESTINATION "${YUME_DOC_INSTALL_DIR}/examples"
         COMPONENT yume_cli
-        FILES_MATCHING PATTERN "*.json"
     )
 
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/debian/copyright")
@@ -461,9 +580,9 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         COMPONENT yume_cli
     )
     install(FILES
-        tests/fixtures/chrome151-node24/manifest.json
-        tests/fixtures/chrome151-node24/chrome_h2_profile.json
-        tests/fixtures/chrome151-node24/chrome_tls_wire_profile.json
+        "${YUME_ACTIVE_PROFILE_MANIFEST}"
+        "${YUME_ACTIVE_PROFILE_HTTP2}"
+        "${YUME_ACTIVE_PROFILE_TLS_WIRE}"
         DESTINATION "${CMAKE_INSTALL_DATADIR}/yume/cover-profile"
         COMPONENT yume_cli
     )

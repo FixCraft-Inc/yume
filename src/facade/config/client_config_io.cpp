@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/version.hpp"
+#include "core/stealth/cover_profile.hpp"
 #include "core/stealth/http_profile.hpp"
 #include "config/ratchet_profile_json.hpp"
 #include "facade/config/detail.hpp"
@@ -235,6 +236,8 @@ bool save_client(client::ClientConfig const& c,
 
 ValidationReport validate(client::ClientConfig const& c) {
     ValidationReport r;
+    const std::string helper_tls_backend(
+        yume::cover_profile::active().tls_backend);
     if (c.server.empty()) {
         r.errors.emplace_back("server: host is required");
     }
@@ -273,14 +276,16 @@ ValidationReport validate(client::ClientConfig const& c) {
             "transport_profile: must be " +
             std::string(yume::kTransportProfile));
     }
-    if (c.tls_backend != "chrome151" &&
+    if (c.tls_backend != helper_tls_backend &&
         c.tls_backend != "openssl-diagnostic") {
         r.errors.emplace_back(
-            "tls_backend: must be chrome151 or openssl-diagnostic");
+            "tls_backend: must be " + helper_tls_backend +
+            " or openssl-diagnostic");
     }
-    if (c.tls_backend == "chrome151" && c.tunnel_count != 1) {
+    if (c.tls_backend == helper_tls_backend && c.tunnel_count != 1) {
         r.errors.emplace_back(
-            "tunnels: chrome151 currently supports exactly one outer tunnel");
+            "tunnels: " + helper_tls_backend +
+            " currently supports exactly one outer tunnel");
     }
     if (!c.inner_crypto) {
         r.errors.emplace_back(

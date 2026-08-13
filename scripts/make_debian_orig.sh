@@ -43,6 +43,7 @@ find . -mindepth 1 \
      -o -path './DEV_services' \
      -o -path './obj-*' \
      -o -path './.private' \
+     -o -path './.secrets' \
      -o -path './third_party' \
      -o -path './vendor' \
      -o -path './website/.jekyll-cache' \

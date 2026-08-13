@@ -38,8 +38,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  BASEFWX_REPO: "https://github.com/F1xGOD/basefwx.git"
-  BASEFWX_REF_FILE: "config/refs/basefwx.ref"
   GO_VERSION: "1.26.5"
 
 jobs:
@@ -105,8 +103,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BASEFWX_REF="$(tr -d '[:space:]' < "${BASEFWX_REF_FILE}")"
-          test "${#BASEFWX_REF}" -eq 40
+          BASEFWX_REPO="$(python3 scripts/yume_dependencies.py get basefwx repository)"
+          BASEFWX_REF="$(python3 scripts/yume_dependencies.py get basefwx revision)"
           if ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
             rm -rf basefwx
             git clone --filter=blob:none --no-checkout "${BASEFWX_REPO}" basefwx
@@ -155,6 +153,7 @@ jobs:
             -DYUME_STATIC=OFF \
             -DYUME_NATIVE_OPT=OFF \
             -DYUME_FAST_MATH=OFF \
+            -DYUME_WARNINGS_AS_ERRORS=ON \
             -DBASEFWX_REQUIRE_ARGON2=ON \
             -DBASEFWX_REQUIRE_OQS=ON \
             -DBASEFWX_REQUIRE_LZMA=ON
@@ -187,6 +186,7 @@ jobs:
             -DYUME_STATIC=OFF \
             -DYUME_NATIVE_OPT=OFF \
             -DYUME_FAST_MATH=OFF \
+            -DYUME_WARNINGS_AS_ERRORS=ON \
             -DBASEFWX_REQUIRE_ARGON2=ON \
             -DBASEFWX_REQUIRE_OQS=ON \
             -DBASEFWX_REQUIRE_LZMA=ON
@@ -220,14 +220,16 @@ jobs:
             --helper-build-a build-helper-a/bin/yume-chrome-tls-helper \
             --helper-build-b build-helper-b/bin/yume-chrome-tls-helper \
             --artifacts dist
+          mkdir -p transfer
+          tar --format=posix --sort=name --owner=0 --group=0 --numeric-owner \
+            --mtime=@0 -cf transfer/linux-desktop-2.0-prepared.tar \
+            -C dist yume-amd64-linux.tar.xz yumed-amd64-linux
 
       - name: Upload prepared Linux artifacts
         uses: actions/upload-artifact@v4
         with:
           name: linux-desktop-2.0
-          path: |
-            dist/yume-amd64-linux.tar.xz
-            dist/yumed-amd64-linux
+          path: transfer/linux-desktop-2.0-prepared.tar
           if-no-files-found: error
           retention-days: 14
 
@@ -250,7 +252,20 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: linux-desktop-2.0
-          path: artifacts
+          path: transfer
+
+      - name: Restore prepared Linux artifact modes
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=transfer/linux-desktop-2.0-prepared.tar
+          mapfile -t members < <(tar -tf "${archive}")
+          test "${#members[@]}" -eq 2
+          test "${members[0]}" = "yume-amd64-linux.tar.xz"
+          test "${members[1]}" = "yumed-amd64-linux"
+          mkdir -p artifacts
+          tar --extract --file "${archive}" --directory artifacts \
+            --no-same-owner --same-permissions
 
       - name: Revalidate exact publish surface
         shell: bash

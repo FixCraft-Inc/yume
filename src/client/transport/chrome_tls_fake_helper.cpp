@@ -128,7 +128,7 @@ int main() {
 
     Ready ready;
     ready.connection_id = request.connection_id;
-    ready.build_id = std::string(kBuildId);
+    ready.build_id = request.expected_build_id;
     ready.alpn = "h2";
     ready.leaf_fingerprint.fill(0x11);
     ready.exporter.fill(0x22);

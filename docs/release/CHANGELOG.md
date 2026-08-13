@@ -8,6 +8,18 @@ downgrade mode exists.
 
 ### Added
 
+- **Generated transport-profile registry.** Capture manifests and H2 evidence
+  now generate immutable C++ and Go registries consumed through browser-neutral
+  API. Bounded schema/path/uniqueness checks and negative metadata tests reject
+  stale output or unsafe fixture references. The authenticated dev6 ID and all
+  wire/crypto domains remain unchanged.
+
+- **Single-source dependency manifest.** BaseFWX repository, exact revision,
+  and minimum compatible version now live in `config/dependencies.json` and are
+  consumed by CMake, local build scripts, CI, CodeQL, and release preflight.
+  The dependency remains reproducibly pinned; duplicated workflow literals and
+  the unsafe CI fallback to a floating branch are removed.
+
 - **Five-run Chrome 151 / Node 24 evidence.** Five fresh normal-Chrome profiles
   cover TLS outcome, ordered H2 settings and headers, page/assets, RFC 8441,
   bidirectional bulk flow control, 42-second idle behavior, and graceful close.
@@ -332,7 +344,8 @@ Compare: <https://github.com/FixCraft-Inc/yume/commits/v1.0> (first public test 
   - Browser-oriented JA3 shaping plus the original project-local, pre-canonical JA4-like diagnostic via genuine OpenSSL 3.5 `ClientHello` configuration. `--profile chrome` (Chrome 131) is the default; `--profile firefox` (Firefox 126) and `--profile safari` (Safari 18) are selectable, plus per-N-connection rotation via `--tls-stealth-rotate` / `--tls-stealth-rotation-interval`.
   - HTTP/2 carrier handshake (`--obfs`) with the then-current project SETTINGS, `WINDOW_UPDATE`, and a `HEADERS` frame opening a `POST` to `/<token>/<nonce>`. The token is `HMAC-SHA256(K, sni || hour_epoch || "yume-obfs-v2")` truncated to 16 bytes hex; 1.0 allowed optional peer-pinning via `--obfs-secret` and accepted ±1 hour of clock skew.
   - Real HTML facade (`--real`) so a browser hitting the same `:443` with `GET / HTTP/1.1` is served a real HTML page (or a Wikipedia redirect by default). YUME and a normal website coexist on a single port.
-- **Post-quantum KEM/DEM inner crypto** via BaseFWX 3.6.4 (separate library, pinned via `config/refs/basefwx.ref`):
+- **Post-quantum KEM/DEM inner crypto** via BaseFWX 3.6.4 (separate library;
+  current dependency metadata is centralized in `config/dependencies.json`):
   - **ML-KEM-768** (NIST FIPS 203 / Kyber-768) encapsulation for session keys when a master public key is configured.
   - **AES-256-GCM** AEAD with a 12-byte nonce and 16-byte tag.
   - **Argon2id** or **PBKDF2-HMAC-SHA256** as an optional work factor over the high-entropy ML-KEM shared secret. The YUME transport handshake does not mix in a user password / PSK.

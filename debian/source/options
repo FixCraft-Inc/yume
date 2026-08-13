@@ -1,1 +1,1 @@
-extend-diff-ignore = ^(basefwx|vendor|third_party)(/|$)|(^|/)(\.cache|\.claude|\.codex|\.private|\.wrangler)(/|$)|^build($|/)|^build-[^/]+(/|$)|^obj-[^/]+(/|$)|(^|/)website/\.jekyll-cache(/|$)|(^|/)scripts/__pycache__(/|$)|(^|/)DEV_services(/|$)|\.(log|trace|out|pyc)$|\.tar\.xz$
+extend-diff-ignore = ^(basefwx|vendor|third_party)(/|$)|(^|/)(\.cache|\.claude|\.codex|\.private|\.secrets|\.wrangler)(/|$)|^build($|/)|^build-[^/]+(/|$)|^obj-[^/]+(/|$)|(^|/)website/\.jekyll-cache(/|$)|(^|/)scripts/__pycache__(/|$)|(^|/)DEV_services(/|$)|\.(log|trace|out|pyc)$|\.tar\.xz$

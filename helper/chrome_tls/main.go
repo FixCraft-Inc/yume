@@ -23,7 +23,6 @@ import (
 )
 
 const (
-	buildID       = "yume-chrome151-utls-v1.8.2-ipc-v1"
 	exporterLabel = "EXPORTER-yume/2.0/auth-channel-binding/v1"
 	exporterBytes = 32
 	maxCABytes    = 4 * 1024 * 1024
@@ -99,7 +98,7 @@ func validServerName(name string) bool {
 	return true
 }
 
-func readyPayload(alpn string, leafHash [32]byte, exporter []byte) ([]byte, error) {
+func readyPayload(buildID string, alpn string, leafHash [32]byte, exporter []byte) ([]byte, error) {
 	payload, err := appendString16(nil, buildID)
 	if err != nil {
 		return nil, err
@@ -154,7 +153,8 @@ func runWithConnectionsAndExporter(connected net.Conn, ipc net.Conn,
 	if err != nil {
 		return err
 	}
-	if request.ExpectedBuildID != buildID {
+	profile, found := profileForBuildID(request.ExpectedBuildID)
+	if !found {
 		_ = writeError(ipc, header.ConnectionID, 1, "helper build identity mismatch")
 		return errors.New("helper build identity mismatch")
 	}
@@ -175,14 +175,14 @@ func runWithConnectionsAndExporter(connected net.Conn, ipc net.Conn,
 		NextProtos: []string{"h2", "http/1.1"},
 	}
 	tlsConnection := utls.UClient(connected, config, utls.HelloCustom)
-	spec, err := chrome151Spec()
+	spec, err := profile.buildSpec()
 	if err != nil {
-		_ = writeError(ipc, header.ConnectionID, 4, "Chrome 151 profile failed")
+		_ = writeError(ipc, header.ConnectionID, 4, "TLS profile failed")
 		return err
 	}
 	if err := tlsConnection.ApplyPreset(spec); err != nil {
-		_ = writeError(ipc, header.ConnectionID, 4, "apply Chrome 151 profile failed")
-		return fmt.Errorf("apply Chrome 151 profile: %w", err)
+		_ = writeError(ipc, header.ConnectionID, 4, "apply TLS profile failed")
+		return fmt.Errorf("apply %s profile: %w", profile.displayName, err)
 	}
 	timeout := time.Duration(request.TimeoutMillis) * time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -223,7 +223,7 @@ func runWithConnectionsAndExporter(connected net.Conn, ipc net.Conn,
 		_ = writeError(ipc, header.ConnectionID, 10, "TLS exporter failed")
 		return fmt.Errorf("TLS exporter returned %d bytes", len(exporter))
 	}
-	payload, err := readyPayload(state.NegotiatedProtocol, leafHash, exporter)
+	payload, err := readyPayload(profile.buildID, state.NegotiatedProtocol, leafHash, exporter)
 	if err != nil {
 		return err
 	}

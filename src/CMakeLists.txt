@@ -679,6 +679,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
                 "${CMAKE_SOURCE_DIR}/helper/chrome_tls/ipc.go"
                 "${CMAKE_SOURCE_DIR}/helper/chrome_tls/main.go"
                 "${CMAKE_SOURCE_DIR}/helper/chrome_tls/profile.go"
+                "${CMAKE_SOURCE_DIR}/helper/chrome_tls/transport_profiles_generated.go"
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/helper/chrome_tls"
             COMMENT "Building pinned Chrome 151 TLS helper"
             VERBATIM
@@ -1330,7 +1331,8 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_executable(yume_cover_profile_test core/stealth/cover_profile_test.cpp)
     target_link_libraries(yume_cover_profile_test PRIVATE yume_core)
     target_compile_definitions(yume_cover_profile_test PRIVATE
-        YUME_COVER_FIXTURE="${CMAKE_SOURCE_DIR}/tests/fixtures/chrome151-node24")
+        YUME_COVER_MANIFEST="${YUME_ACTIVE_PROFILE_MANIFEST}"
+        YUME_COVER_HTTP2_PROFILE="${YUME_ACTIVE_PROFILE_HTTP2}")
     yume_link_atomic_if_needed(yume_cover_profile_test PRIVATE)
     yume_apply_perf_opts(yume_cover_profile_test)
     add_test(NAME yume_cover_profile_test COMMAND yume_cover_profile_test)
@@ -1341,6 +1343,16 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     yume_apply_perf_opts(yume_h2_opening_probe)
 
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME yume_transport_profile_generation_check
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/scripts/generate_transport_profiles.py"
+            --registry "${YUME_TRANSPORT_PROFILE_REGISTRY}"
+            --check
+    )
+    add_test(NAME yume_project_metadata_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_project_metadata.py"
+    )
     add_test(NAME yume_h2_fingerprint_check
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/scripts/yume_h2_fingerprint.py"
@@ -1350,7 +1362,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_test(NAME yume_chrome151_evidence_check
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/scripts/yume_chrome_evidence.py"
-            --fixture "${CMAKE_SOURCE_DIR}/tests/fixtures/chrome151-node24"
+            --fixture "${YUME_ACTIVE_PROFILE_FIXTURE}"
     )
     add_test(NAME yume_tls_wire_test
         COMMAND "${Python3_EXECUTABLE}"
@@ -1360,12 +1372,8 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/scripts/yume_tls_wire.py"
             check-profile
-            --profile "${CMAKE_SOURCE_DIR}/tests/fixtures/chrome151-node24/chrome_tls_wire_profile.json"
-            --candidate "${CMAKE_SOURCE_DIR}/tests/fixtures/chrome151-node24/helper_tls_wire_run_1.json"
-            --candidate "${CMAKE_SOURCE_DIR}/tests/fixtures/chrome151-node24/helper_tls_wire_run_2.json"
-            --candidate "${CMAKE_SOURCE_DIR}/tests/fixtures/chrome151-node24/helper_tls_wire_run_3.json"
-            --candidate "${CMAKE_SOURCE_DIR}/tests/fixtures/chrome151-node24/helper_tls_wire_run_4.json"
-            --candidate "${CMAKE_SOURCE_DIR}/tests/fixtures/chrome151-node24/helper_tls_wire_run_5.json"
+            --profile "${YUME_ACTIVE_PROFILE_TLS_WIRE}"
+            ${YUME_ACTIVE_PROFILE_TLS_CANDIDATE_ARGS}
     )
     add_test(NAME yume_setup_installed_layout
         COMMAND "${CMAKE_COMMAND}"
@@ -1376,7 +1384,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             "-DYUME_INSTALL_BINDIR=${CMAKE_INSTALL_BINDIR}"
             "-DYUME_INSTALL_DATADIR=${CMAKE_INSTALL_DATADIR}"
             "-DYUME_DEBIAN_INSTALL_MANIFEST=${CMAKE_SOURCE_DIR}/debian/yume.install"
-            "-DYUME_COVER_MANIFEST=${CMAKE_SOURCE_DIR}/tests/fixtures/chrome151-node24/manifest.json"
+            "-DYUME_COVER_MANIFEST=${YUME_ACTIVE_PROFILE_MANIFEST}"
             -P "${CMAKE_SOURCE_DIR}/cmake/check_yume_setup_install.cmake"
     )
 

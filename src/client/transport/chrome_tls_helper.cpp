@@ -9,6 +9,7 @@
 #include "client/transport/chrome_tls_protocol.hpp"
 #include "core/security/crypto.hpp"
 #include "core/security/secure_erase.hpp"
+#include "core/stealth/cover_profile.hpp"
 
 #if defined(YUME_USE_BASEFWX) && YUME_USE_BASEFWX
 #include <basefwx/crypto.hpp>
@@ -391,6 +392,8 @@ ClientTransportStream LaunchChromeTlsHelper(
 
     chrome_tls::Request request;
     request.connection_id = RandomConnectionId();
+    request.expected_build_id = std::string(
+        cover_profile::active().helper_build_id);
     request.server_name = options.server_name;
     request.ca_path = options.ca_path.string();
     request.leaf_pin = options.leaf_pin;
@@ -404,7 +407,7 @@ ClientTransportStream LaunchChromeTlsHelper(
     auto response_wire = ReadResponse(parent_ipc.Get(), deadline);
     ScopedVectorWiper response_wire_wiper(response_wire);
     chrome_tls::Response response = chrome_tls::DecodeResponse(
-        response_wire, request.connection_id);
+        response_wire, request.connection_id, request.expected_build_id);
     ScopedArrayWiper response_exporter_wiper(response.ready.exporter);
     if (response.kind == chrome_tls::ResponseKind::Error) {
         throw std::runtime_error(

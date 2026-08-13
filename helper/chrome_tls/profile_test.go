@@ -10,6 +10,16 @@ import (
 	utls "github.com/refraction-networking/utls"
 )
 
+func TestProfileForBuildIDRejectsAmbiguity(t *testing.T) {
+	original := clientHelloProfiles
+	clientHelloProfiles = append(
+		append([]clientHelloProfile(nil), original...), original[0])
+	t.Cleanup(func() { clientHelloProfiles = original })
+	if profile, ok := profileForBuildID(original[0].buildID); ok || profile != nil {
+		t.Fatal("ambiguous helper build ID was accepted")
+	}
+}
+
 func TestChrome151SpecKeepsExporterAvailable(t *testing.T) {
 	spec, err := chrome151Spec()
 	if err != nil {

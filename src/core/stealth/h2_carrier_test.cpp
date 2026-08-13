@@ -45,7 +45,7 @@ H2Bytes PumpFragmentedAndTake(H2Carrier& from, H2Carrier& to,
 
 void CompleteChromeAssets(H2Carrier& client, H2Carrier& server) {
     const auto& profile =
-        yume::cover_profile::chrome151_linux_node24();
+        yume::cover_profile::active();
     Pump(client, server);
     auto requests = server.TakeRequests();
     assert(requests.size() == profile.assets.size());
@@ -66,7 +66,7 @@ void CompleteChromeAssets(H2Carrier& client, H2Carrier& server) {
 
 void FullSessionRoundTrip() {
     const auto& profile =
-        yume::cover_profile::chrome151_linux_node24();
+        yume::cover_profile::active();
     H2Carrier client(H2CarrierRole::Client);
     H2Carrier server(H2CarrierRole::Server);
     assert(client.StartClient("cover.example"));

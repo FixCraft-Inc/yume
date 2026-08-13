@@ -5,7 +5,8 @@ later; see `LICENSE` in the bundle. The Linux binaries also use or incorporate
 the following projects under their respective licenses:
 
 - BaseFWX — GPL-3.0-or-later; pinned source revision is recorded in
-  `config/refs/basefwx.ref` in the matching YUME source release.
+  the `basefwx` entry in `config/dependencies.json` in the matching YUME source
+  release.
 - Boost — Boost Software License 1.0.
 - OpenSSL — Apache License 2.0.
 - nghttp2 — MIT License.

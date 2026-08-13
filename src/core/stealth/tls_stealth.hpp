@@ -26,7 +26,7 @@ namespace yume::tls_stealth {
 struct StealthConfig {
     bool enabled{false};
     tls_fingerprint::BrowserProfile target_profile{
-        cover_profile::chrome151_linux_node24().tls_profile};
+        cover_profile::active().tls_profile};
     bool log_fingerprints{true};
     std::string log_file_path;
     bool verify_with_external_api{false};

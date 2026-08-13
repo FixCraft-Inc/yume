@@ -14,8 +14,8 @@
 #include "core/stealth/http_profile.hpp"
 #include "core/stealth/tls_fingerprint.hpp"
 
-#ifndef YUME_COVER_FIXTURE
-#error "YUME_COVER_FIXTURE must name the committed cover fixture directory"
+#if !defined(YUME_COVER_MANIFEST) || !defined(YUME_COVER_HTTP2_PROFILE)
+#error "cover-profile tests require registry-selected evidence paths"
 #endif
 
 namespace {
@@ -43,10 +43,15 @@ void AssertHeaders(const yume::cover_profile::Headers& actual,
 }  // namespace
 
 int main() {
-    const std::string fixture = YUME_COVER_FIXTURE;
-    const Json manifest = ReadJson(fixture + "/manifest.json");
-    const Json captured = ReadJson(fixture + "/chrome_h2_profile.json");
-    const auto& profile = yume::cover_profile::chrome151_linux_node24();
+    const Json manifest = ReadJson(YUME_COVER_MANIFEST);
+    const Json captured = ReadJson(YUME_COVER_HTTP2_PROFILE);
+    const auto& profile = yume::cover_profile::active();
+
+    assert(profile.id == manifest["profile_id"].get<std::string>());
+    assert(yume::cover_profile::find_by_id(profile.id) == &profile);
+    assert(yume::cover_profile::find_by_registry_name(profile.registry_name) ==
+           &profile);
+    assert(yume::cover_profile::find_by_id("unknown-profile") == nullptr);
 
     assert(profile.browser_name == manifest["client"]["browser"].get<std::string>());
     assert(profile.browser_version ==
@@ -121,9 +126,15 @@ int main() {
     assert(profile.extended_connect.priority.exclusive ==
            captured["extended_connect"]["exclusive"].get<bool>());
 
-    assert(profile.assets.size() == 2);
-    assert(profile.assets[0].path == "/assets/site.css");
-    assert(profile.assets[1].path == "/assets/site.js");
+    const Json& captured_assets = captured["asset_sequence"];
+    assert(profile.assets.size() == captured_assets.size());
+    for (std::size_t i = 0; i < profile.assets.size(); ++i) {
+        assert(profile.assets[i].path ==
+               captured_assets[i]["path"].get<std::string>());
+        AssertHeaders(profile.render_headers(profile.assets[i].request,
+                                             "<cover-authority>"),
+                      captured_assets[i]["headers_in_order"]);
+    }
     assert(profile.websocket_message_bytes ==
            captured["shaping_policy"]["bulk_websocket_message_bytes"]
                .get<std::size_t>());

@@ -81,7 +81,7 @@ and it is not an independent-audit claim.
 
 ## Carrier admission boundary
 
-The HMAC admission token covers exact version `2.0`, normalized SNI, UTC hour,
+The HMAC admission token covers exact version `2.0-dev6`, normalized SNI, UTC hour,
 and a 32-byte nonce. SNI and HTTP/2 authority must match. The server accepts only
 the bounded clock window and stores authenticated nonces in a bounded replay
 cache.

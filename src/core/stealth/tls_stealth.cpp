@@ -477,7 +477,7 @@ void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profi
     auto profile_info = tls_fingerprint::get_browser_profile_info(profile);
     if (!profile_info) {
         profile_info = tls_fingerprint::get_browser_profile_info(
-            cover_profile::chrome151_linux_node24().tls_profile);
+            cover_profile::active().tls_profile);
         if (!profile_info) return;
     }
 
@@ -487,7 +487,7 @@ void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profi
     configure_alpn(profile_info->alpn_protocols);
 
     SSL_CTX* ctx = ssl_context_.native_handle();
-    const auto& cover = cover_profile::chrome151_linux_node24();
+    const auto& cover = cover_profile::active();
     if (SSL_CTX_set_min_proto_version(ctx, cover.tls_min_version) != 1 ||
         SSL_CTX_set_max_proto_version(ctx, cover.tls_max_version) != 1) {
         throw std::runtime_error(

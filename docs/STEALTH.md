@@ -180,8 +180,11 @@ the routed TCP socket, the helper emits the custom Chrome 151 first flight and
 returns authenticated certificate metadata plus the mandatory TLS exporter
 over a private socketpair. It is implemented but deliberately not the default:
 five-run normalized on-wire parity and the local handshake/throughput gates now
-pass, but negative certificate/exporter and process lifecycle tests plus a
-sustained soak have not yet completed.
+pass. The bounded negative certificate/exporter and process-lifecycle matrix,
+process ramps, reconnect storm, and segmented full-speed loopback soak also
+pass. Matched WAN, one uninterrupted deployed-network soak, exact-Chrome
+same-session capture, classifier/active-probe evidence, and independent review
+remain incomplete.
 The helper name or a matching JA3/JA4 value is not evidence of parity.
 
 YUME also does not currently disguise traffic volume and timing beyond the

@@ -2,7 +2,11 @@
 
 Status: local development checkpoint, not release-qualified and not pushed.
 
-Verified checkout date: 2026-08-01. Always refresh the Git state and rerun the
+The authoritative merge/RC/stable checklist and branch policy are now in
+`docs/YUME_2_0_STABILIZATION.md`. In particular, merging reviewed dev6 into
+`main` and calling a Linux build stable 2.0 are separate milestones.
+
+Verified checkout date: 2026-08-12. Always refresh the Git state and rerun the
 relevant gates before relying on the hashes or measurements in this document.
 
 ## Plain verdict
@@ -55,6 +59,111 @@ git log --show-signature --format='%H %G? %s' 119b728..HEAD
 git diff --stat 119b728..HEAD
 git diff --binary 119b728..HEAD
 ```
+
+### Uncommitted post-checkpoint architecture candidate (2026-08-11)
+
+The working tree after signed checkpoint `a673d3e058656ee86ebd68be742f1192cd0cbe95`
+is intentionally dirty with a reviewed but uncommitted modularization slice.
+Do not describe `a673d3e` as containing it. The candidate adds
+`config/transport_profiles.json` plus validated generated immutable C++ and Go
+registries, routes production TLS/HTTP/H2 consumers through
+`cover_profile::active()`, and makes the helper choose an audited ClientHello
+provider by the explicitly requested helper build identity. Each profile entry
+names its own manifest, HTTP/2 profile, TLS acceptance profile, and candidate
+artifacts; shared generator, CMake, test, install, and release logic no longer
+assume Chrome-specific fixture filenames.
+
+BaseFWX repository, exact revision, and minimum version are likewise
+centralized in `config/dependencies.json`. CMake, build scripts, CI, CodeQL, and
+release preflight consume that one fail-closed manifest; BaseFWX remains pinned
+and is not allowed to float to a branch. See `docs/TRANSPORT_PROFILES.md` for
+the extension and evidence contract.
+
+The candidate changes no authenticated profile ID, wire byte, IPC protocol,
+AEAD/AAD label, KDF, algorithm, or default backend. Adding a registry entry is
+not permission to accept it on the wire: a new authenticated ID still requires
+a deliberate protocol revision, new evidence, KATs, documentation, and all
+release gates.
+
+Validation passed on the 32-core `raptorlake` host in the isolated non-secret
+checkout `/home/f1xgod/yume-profile-build-t4CutW/repo`: 54/54 native tests and
+54/54 serial ASan+UBSan tests, both with the Chrome helper enabled. Cache
+inspection later established that `YUME_WARNINGS_AS_ERRORS`,
+`BASEFWX_REQUIRE_OQS`, and `BASEFWX_REQUIRE_LZMA` were all `OFF`; the overlay is
+therefore not strict release acceptance. Local seven-case negative metadata tests, release preflight, Debian
+source/ABI consistency, Python compilation, pinned Go helper and race tests,
+shell syntax, and `git diff --check` also pass. This is regression evidence for the candidate,
+not new installed-Chrome, matched-WAN, stealth, or release qualification. The
+temporary remote checkout remains available for review and contains no copied
+`.private` evidence. It does contain an ignored `.secrets/` directory whose
+contents were deliberately not inspected; the reviewed candidate must prove
+that Debian source creation and validation exclude such roots.
+
+The next agent must convert that dirty overlay into a signed clean commit before
+using new validation as merge evidence. It must repeat the pinned Go race test
+and additionally exercise actual release artifact preparation/reproducible-helper
+validation, because the candidate changed helper selection and release metadata.
+After a successful temporary review branch and signed integration into `main`,
+push only `main`; the branch-sync workflow owns `DEV`.
+
+### Gate A review fixes in the live dirty candidate (2026-08-12)
+
+The read-only code/security review initially returned `NO-MERGE`. The primary
+integrator resolved its concrete findings without changing the authenticated
+profile, helper IPC version, wire format, crypto/AAD domains, or default
+backend:
+
+- the generated active profile must equal authenticated `kTransportProfile`;
+- helper build IDs are unique, cross-checked against evidence, generated into
+  Go, and ambiguous lookup fails closed;
+- the generator rejects carrier metadata outside dev6's exact 1/3/5/7 stream
+  and two-asset geometry;
+- CLI/facade helper routing reads the active profile's backend metadata;
+- pinned BaseFWX overrides require an exact lowercase 40-hex commit;
+- the source-only registry is no longer installed with unusable fixture paths;
+- the standalone server is hash/size/mode/version-bound into the release
+  manifest, and CI transports prepared artifacts inside a tar so executable
+  mode survives artifact upload/download;
+- orig-tar creation, archive validation, and `dpkg-source` all exclude ignored
+  `.private` and `.secrets` roots, with regression coverage.
+
+Post-fix local regression evidence is 59/59 native CTests, 59/59 serial
+ASan+UBSan CTests with leak detection and halt-on-error, 14 metadata/archive
+tests, pinned Go 1.26.5 unit and race tests offline, all workflow YAML parsing,
+release preflight, Debian source/42-symbol ABI consistency, and a clean
+private-artifact diff audit. Both local CMake caches had warnings-as-errors ON
+but strict OQS/LZMA requirements OFF, so this remains pre-commit regression
+evidence—not Gate A release acceptance. Explicit commit authority, one signed
+commit, and the strict fresh exact-commit remote build/artifact lane remain
+mandatory.
+
+### Exact Chrome artifact staged without installation (2026-08-12)
+
+The exact normal Google Chrome package is still available from Google's
+versioned HTTPS apt pool. It was downloaded without root and extracted without
+installation on `raptorlake` under
+`/home/f1xgod/yume-profile-build-t4CutW/chrome-151.0.7922.71/`.
+
+- Package: `google-chrome-stable_151.0.7922.71-1_amd64.deb`
+- Official package URL:
+  `https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_151.0.7922.71-1_amd64.deb`
+- Package size: `139922812` bytes
+- Package SHA-256:
+  `c86cafc697ecdb88259312cef47e464d1278643610500a7c9104e6bb1af3ba5c`
+- Extracted launcher SHA-256:
+  `aea09d69ce7f24d5901f6bfb15dd44d0c856e793e0a498f8d8393ec7d2c308ec`
+- Extracted Chrome binary SHA-256:
+  `4cf210c4a0aeee3e69a73639260918a7448626d6b99892ec61e20750bc7c7079`
+- Extracted binary output: `Google Chrome 151.0.7922.71`
+
+Both extracted hashes exactly match the committed fixture manifest. The daily
+installed browser was not changed. Reverify every hash before use, launch with
+a fresh isolated user-data directory, and keep NetLogs/PCAPs private. Because
+unprivileged extraction leaves `chrome-sandbox` owned by the extracting user,
+use a container/VM with correct sandbox ownership or a separately validated
+user-namespace sandbox. Never use `--no-sandbox` merely to make capture start. The
+artifact makes same-session capture possible; it does not itself constitute a
+new capture or parity result.
 
 ## What changed
 

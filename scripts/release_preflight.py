@@ -11,13 +11,16 @@ import json
 import pathlib
 import re
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
 
+from yume_dependencies import DependencyError, load_dependencies
+from generate_transport_profiles import ProfileError, active_profile_metadata
+
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-BASEFWX_REPO = "https://github.com/F1xGOD/basefwx.git"
 PROFILE = "linux-desktop-2.0"
 BUNDLE_NAME = "yume-amd64-linux.tar.xz"
 SERVER_NAME = "yumed-amd64-linux"
@@ -39,6 +42,7 @@ MAX_BUNDLE_FILE_BYTES = {
     "yume": 512 * 1024 * 1024,
     HELPER_NAME: 64 * 1024 * 1024,
 }
+MAX_SERVER_BYTES = 512 * 1024 * 1024
 
 
 def require(condition: bool, message: str) -> None:
@@ -58,20 +62,25 @@ def sha256_file(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
-def read_ref() -> str:
-    ref_file = ROOT / "config/refs/basefwx.ref"
-    require(ref_file.is_file(), "Missing config/refs/basefwx.ref")
-    ref = ref_file.read_text(encoding="utf-8").strip()
-    require(bool(re.fullmatch(r"[0-9a-f]{40}", ref)),
-            "config/refs/basefwx.ref must contain an exact 40-hex commit")
-    return ref
+def basefwx_dependency() -> dict[str, str]:
+    try:
+        return load_dependencies()["basefwx"]
+    except (DependencyError, KeyError) as error:
+        raise SystemExit(f"Invalid BaseFWX dependency metadata: {error}") from error
 
 
-def validate_ref(ref: str) -> None:
+def transport_dependency() -> dict[str, object]:
+    try:
+        return active_profile_metadata()
+    except (OSError, ProfileError) as error:
+        raise SystemExit(f"Invalid transport profile metadata: {error}") from error
+
+
+def validate_ref(ref: str, repository: str) -> None:
     tmpdir = tempfile.mkdtemp(prefix="yume-basefwx-ref-")
     try:
         subprocess.run(["git", "init", "-q", tmpdir], check=True)
-        subprocess.run(["git", "-C", tmpdir, "remote", "add", "origin", BASEFWX_REPO], check=True)
+        subprocess.run(["git", "-C", tmpdir, "remote", "add", "origin", repository], check=True)
         subprocess.run(["git", "-C", tmpdir, "fetch", "--depth", "1", "origin", ref], check=True)
         fetched = subprocess.check_output(
             ["git", "-C", tmpdir, "rev-parse", "FETCH_HEAD"], text=True).strip()
@@ -135,6 +144,7 @@ def validate_workflow_guards() -> None:
         "-DYUME_BUILD_CHROME_TLS_HELPER=ON",
         "-DYUME_BUILD_GUI=OFF",
         "-DYUME_STATIC=OFF",
+        "-DYUME_WARNINGS_AS_ERRORS=ON",
         "-DBASEFWX_REQUIRE_ARGON2=ON",
         "-DBASEFWX_REQUIRE_OQS=ON",
         "-DBASEFWX_REQUIRE_LZMA=ON",
@@ -142,6 +152,8 @@ def validate_workflow_guards() -> None:
         "package_linux_release.py",
         BUNDLE_NAME,
         SERVER_NAME,
+        "linux-desktop-2.0-prepared.tar",
+        "--same-permissions",
         "publish:",
         "default: false",
         "workflow_dispatch releases must be started from main.",
@@ -180,6 +192,7 @@ def validate_cmake_cache(path: pathlib.Path) -> None:
         "YUME_BUILD_CHROME_TLS_HELPER": "ON",
         "YUME_BUILD_GUI": "OFF",
         "YUME_STATIC": "OFF",
+        "YUME_WARNINGS_AS_ERRORS": "ON",
         "BASEFWX_REQUIRE_ARGON2": "ON",
         "BASEFWX_REQUIRE_OQS": "ON",
         "BASEFWX_REQUIRE_LZMA": "ON",
@@ -234,7 +247,8 @@ def require_glibc_amd64(data: bytes, description: str) -> None:
 
 
 def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
-                    expected_helper_hash: str | None) -> None:
+                    expected_helper_hash: str | None,
+                    transport: dict[str, object]) -> dict[str, object]:
     require(bundle.is_file() and not bundle.is_symlink(), f"Missing release bundle: {bundle}")
     with tarfile.open(bundle, "r:xz") as archive:
         members = archive.getmembers()
@@ -260,6 +274,7 @@ def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
     require_glibc_amd64(payloads["yume"], "bundled yume")
     require_elf_amd64(payloads[HELPER_NAME], "bundled Chrome TLS helper")
     manifest = json.loads(payloads["manifest.json"].decode("utf-8"))
+    require(isinstance(manifest, dict), "Bundle manifest must be an object")
     require(manifest.get("schema") == 1, "Bundle manifest schema mismatch")
     require(manifest.get("release_profile") == PROFILE, "Bundle release profile mismatch")
     require(manifest.get("version") == version, "Bundle version mismatch")
@@ -268,10 +283,10 @@ def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
     require(manifest.get("platform") == "linux", "Bundle platform mismatch")
     require(manifest.get("architecture") == "x86_64", "Bundle architecture mismatch")
     require(manifest.get("libc") == "glibc", "Bundle libc mismatch")
-    require(manifest.get("transport_profile") == "chrome151-node24-v1",
+    require(manifest.get("transport_profile") == transport["id"],
             "Bundle transport profile mismatch")
     helper = manifest.get("chrome_tls_helper", {})
-    require(helper.get("build_id") == "yume-chrome151-utls-v1.8.2-ipc-v1",
+    require(helper.get("build_id") == transport["helper_build_id"],
             "Bundle helper identity mismatch")
     require(helper.get("ipc_protocol") == 1, "Bundle helper IPC mismatch")
     require(helper.get("go_version") == "go1.26.5", "Bundle helper Go version mismatch")
@@ -300,19 +315,47 @@ def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
                 f"Bundle manifest size mismatch for {name}")
         require(entry.get("mode") == f"{EXPECTED_BUNDLE_FILES[name]:04o}",
                 f"Bundle manifest mode mismatch for {name}")
+    return manifest
 
 
 def validate_artifacts(directory: pathlib.Path, version: str, commit: str,
-                       expected_helper_hash: str | None) -> None:
+                       expected_helper_hash: str | None,
+                       transport: dict[str, object]) -> None:
     require(directory.is_dir(), f"Release artifact directory not found: {directory}")
     present = {path.name for path in directory.iterdir() if path.is_file()}
     require(present == {BUNDLE_NAME, SERVER_NAME},
             "Release artifacts are incomplete or include unexpected platforms/variants")
-    validate_bundle(directory / BUNDLE_NAME, version, commit, expected_helper_hash)
+    manifest = validate_bundle(directory / BUNDLE_NAME, version, commit,
+                               expected_helper_hash, transport)
     server = directory / SERVER_NAME
-    require(not server.is_symlink(), "Server artifact must not be a symlink")
-    require_glibc_amd64(server.read_bytes(), "yumed server artifact")
-    require(server.stat().st_mode & 0o111 != 0, "Server artifact is not executable")
+    require(server.is_file() and not server.is_symlink(),
+            "Server artifact must be a regular file")
+    server_stat = server.stat()
+    require(server_stat.st_size <= MAX_SERVER_BYTES,
+            "Server artifact exceeds size cap")
+    require(stat.S_IMODE(server_stat.st_mode) == 0o755,
+            "Server artifact mode must be 0755")
+    server_bytes = server.read_bytes()
+    require_glibc_amd64(server_bytes, "yumed server artifact")
+    server_metadata = manifest.get("standalone_server", {})
+    require(isinstance(server_metadata, dict),
+            "Bundle manifest standalone server metadata is missing")
+    require(server_metadata.get("file") == SERVER_NAME,
+            "Bundle manifest server filename mismatch")
+    require(server_metadata.get("mode") == "0755",
+            "Bundle manifest server mode mismatch")
+    require(server_metadata.get("size") == len(server_bytes),
+            "Bundle manifest server size mismatch")
+    require(server_metadata.get("sha256") == sha256_bytes(server_bytes),
+            "Bundle manifest server SHA-256 mismatch")
+    observed_version = subprocess.run(
+        [str(server), "--version"], check=True, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10,
+    ).stdout.strip()
+    require(version in observed_version,
+            "Server artifact version does not match source version")
+    require(server_metadata.get("version_output") == observed_version,
+            "Bundle manifest server version output mismatch")
 
 
 def parse_args() -> argparse.Namespace:
@@ -330,9 +373,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     require(args.profile == PROFILE, f"Unsupported release profile: {args.profile}")
-    ref = read_ref()
+    dependency = basefwx_dependency()
+    transport = transport_dependency()
+    ref = dependency["revision"]
     if not args.skip_ref_fetch:
-        validate_ref(ref)
+        validate_ref(ref, dependency["repository"])
     version = source_version()
     commit = source_commit()
     validate_tag(args.tag, version, commit)
@@ -347,8 +392,9 @@ def main() -> None:
         helper_hash = validate_helper_rebuilds(
             args.helper_build_a, args.helper_build_b)
     if args.artifacts is not None:
-        validate_artifacts(args.artifacts, version, commit, helper_hash)
-    print(f"Preflight OK: profile={PROFILE} version={version} BaseFWX={ref}")
+        validate_artifacts(args.artifacts, version, commit, helper_hash, transport)
+    print(f"Preflight OK: profile={PROFILE} version={version} "
+          f"transport={transport['id']} BaseFWX={ref}")
 
 
 if __name__ == "__main__":

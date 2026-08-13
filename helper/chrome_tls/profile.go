@@ -10,6 +10,31 @@ import (
 	utls "github.com/refraction-networking/utls"
 )
 
+type clientHelloProfile struct {
+	profileID   string
+	buildID     string
+	displayName string
+	buildSpec   func() (*utls.ClientHelloSpec, error)
+}
+
+// buildID is retained as the single-profile binary identity used by existing
+// packaging and tests. Connection setup resolves through the registry below,
+// so another reviewed profile does not require branches in the TLS lifecycle.
+const buildID = activeHelperBuildID
+
+func profileForBuildID(expected string) (*clientHelloProfile, bool) {
+	var selected *clientHelloProfile
+	for index := range clientHelloProfiles {
+		if clientHelloProfiles[index].buildID == expected {
+			if selected != nil {
+				return nil, false
+			}
+			selected = &clientHelloProfiles[index]
+		}
+	}
+	return selected, selected != nil
+}
+
 func chrome151Spec() (*utls.ClientHelloSpec, error) {
 	// Chrome 151 retains the Chrome 133 cipher/group/key-share/ALPS/ECH
 	// geometry represented by uTLS v1.8.2, but advertises three additional

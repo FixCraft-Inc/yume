@@ -17,13 +17,13 @@ import subprocess
 import tarfile
 import tempfile
 
+from generate_transport_profiles import ProfileError, active_profile_metadata
+
 
 PROFILE = "linux-desktop-2.0"
 BUNDLE_NAME = "yume-amd64-linux.tar.xz"
 SERVER_NAME = "yumed-amd64-linux"
 BUNDLE_DIRECTORY = "yume-amd64-linux"
-HELPER_BUILD_ID = "yume-chrome151-utls-v1.8.2-ipc-v1"
-TRANSPORT_PROFILE = "chrome151-node24-v1"
 GO_VERSION = "go1.26.5"
 
 
@@ -121,6 +121,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    try:
+        transport = active_profile_metadata()
+    except (OSError, ProfileError) as error:
+        raise SystemExit(f"Invalid active transport profile: {error}") from error
+    helper_build_id = transport["helper_build_id"]
+    transport_profile = transport["id"]
     require(bool(re.fullmatch(r"[0-9a-f]{40}", args.source_commit)),
             "Source commit must be an exact 40-hex Git object ID")
     require_glibc_dynamic(args.yume, "yume client")
@@ -144,9 +150,11 @@ def main() -> None:
     helper_version = version_output(args.helper)
     require(args.version in yume_version, "yume --version does not match source version")
     require(args.version in yumed_version, "yumed --version does not match source version")
-    require(HELPER_BUILD_ID in helper_version, "Chrome TLS helper build identity mismatch")
+    require(helper_build_id in helper_version, "Chrome TLS helper build identity mismatch")
     require("protocol=1" in helper_version, "Chrome TLS helper IPC version mismatch")
     require(f"go={GO_VERSION}" in helper_version, "Chrome TLS helper Go version mismatch")
+    server_hash = sha256_file(args.yumed)
+    server_size = args.yumed.stat().st_size
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     require(args.output_dir.is_dir(), f"Output path is not a directory: {args.output_dir}")
@@ -184,13 +192,20 @@ def main() -> None:
             "platform": "linux",
             "architecture": "x86_64",
             "libc": "glibc",
-            "transport_profile": TRANSPORT_PROFILE,
+            "transport_profile": transport_profile,
             "chrome_tls_helper": {
-                "build_id": HELPER_BUILD_ID,
+                "build_id": helper_build_id,
                 "ipc_protocol": 1,
                 "go_version": GO_VERSION,
                 "sha256": helper_hash,
                 "clean_rebuild_sha256": rebuilt_helper_hash,
+            },
+            "standalone_server": {
+                "file": SERVER_NAME,
+                "mode": "0755",
+                "size": server_size,
+                "sha256": server_hash,
+                "version_output": yumed_version,
             },
             "required_features": {
                 "argon2": True,
@@ -209,6 +224,8 @@ def main() -> None:
 
     shutil.copyfile(args.yumed, server_output)
     server_output.chmod(0o755)
+    require(sha256_file(server_output) == server_hash,
+            "Copied yumed server differs from the validated input")
     print(f"Packaged {bundle_output} ({sha256_file(bundle_output)})")
     print(f"Packaged {server_output} ({sha256_file(server_output)})")
 

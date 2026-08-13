@@ -148,6 +148,9 @@ std::array<std::uint8_t, Size> DecodeArray(Decoder* decoder) {
 }  // namespace
 
 std::vector<std::uint8_t> EncodeRequest(const Request& request) {
+    if (request.expected_build_id.empty()) {
+        throw std::runtime_error("helper build ID must not be empty");
+    }
     if (request.server_name.empty() || request.server_name.size() > 253) {
         throw std::runtime_error("TLS server name must contain 1..253 bytes");
     }
@@ -211,7 +214,11 @@ std::vector<std::uint8_t> EncodeError(const HelperError& error) {
 }
 
 Response DecodeResponse(std::span<const std::uint8_t> wire,
-                        const ConnectionId& expected_connection_id) {
+                        const ConnectionId& expected_connection_id,
+                        std::string_view expected_build_id) {
+    if (expected_build_id.empty() || expected_build_id.size() > 256) {
+        throw std::runtime_error("expected helper build ID is invalid");
+    }
     const Header header = DecodeHeader(wire);
     if (header.connection_id != expected_connection_id) {
         throw std::runtime_error("Chrome TLS helper connection ID mismatch");
@@ -225,7 +232,7 @@ Response DecodeResponse(std::span<const std::uint8_t> wire,
         response.ready.alpn = decoder.String16(255, "ALPN");
         response.ready.leaf_fingerprint = DecodeArray<kSha256Bytes>(&decoder);
         response.ready.exporter = DecodeArray<kExporterBytes>(&decoder);
-        if (response.ready.build_id != kBuildId) {
+        if (response.ready.build_id != expected_build_id) {
             throw std::runtime_error("Chrome TLS helper build identity mismatch");
         }
         if (response.ready.alpn != "h2") {

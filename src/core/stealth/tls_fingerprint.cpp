@@ -448,7 +448,7 @@ std::vector<BrowserFingerprint> get_known_browser_fingerprints() {
     // ways OpenSSL cannot reproduce. This is therefore the TLS policy selected
     // by the coherent cover profile, not a byte-identical ClientHello claim.
     {
-        const auto& cover = cover_profile::chrome151_linux_node24();
+        const auto& cover = cover_profile::active();
         BrowserFingerprint fp;
         fp.profile = cover.tls_profile;
         fp.name = std::string(cover.browser_name) + " " +
@@ -577,7 +577,7 @@ std::optional<BrowserFingerprint> get_browser_profile_info(BrowserProfile profil
 std::string browser_profile_name(BrowserProfile profile) {
     switch (profile) {
         case BrowserProfile::CHROME_151: {
-            const auto& cover = cover_profile::chrome151_linux_node24();
+            const auto& cover = cover_profile::active();
             return std::string(cover.browser_name) + " " +
                    std::string(cover.browser_version);
         }

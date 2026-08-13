@@ -1,13 +1,52 @@
 # YUME 2.0-dev6 Chrome 151 handoff
 
-Status: local development checkpoint, not release-qualified and not pushed.
+Status: integrated development checkpoint on `main`; Gate B and release
+qualification remain incomplete.
 
 The authoritative merge/RC/stable checklist and branch policy are now in
 `docs/YUME_2_0_STABILIZATION.md`. In particular, merging reviewed dev6 into
 `main` and calling a Linux build stable 2.0 are separate milestones.
 
-Verified checkout date: 2026-08-12. Always refresh the Git state and rerun the
+Verified checkout date: 2026-08-13. Always refresh the Git state and rerun the
 relevant gates before relying on the hashes or measurements in this document.
+
+## Current integrated checkpoint (2026-08-13)
+
+The current runtime checkpoint integrated into `main` is signed commit
+`656d6851cedb5e3f21ac9a04537214a2960df135`, tree
+`cd82add238d4cf7ef46704ee182d3543eb111cbc`, subject
+`Seal matched capture evidence inputs`. Its parent is the signed classifier
+input-contract commit `21a262f456c784726fd2970311508715a71c7960`.
+Both signatures verify with EdDSA fingerprint
+`967278FF6FA436F504CBB0058A1588B5E2598DB1`. No PR or temporary branch was
+created; only `main` was pushed and workflow sync continues to own `DEV`.
+
+The latest checkpoint gives the direct normal-Chrome capture target and
+classifier-input validator one frozen workload, exact runtime/source/session
+bindings, portable relative checksums, and a completion marker written only
+after all declared runs verify. Failed, partial, relabeled, symlinked, FIFO,
+oversized, or tampered evidence fails closed. The installed production HTTP/1
+cover backend remains a separate bounded GET/HEAD site; this checkpoint does
+not expose ordinary public WebSocket CONNECT or claim live outer-carrier
+parity.
+
+The scoped read-only code/security diff reviewer returned `MERGE`; that review
+is not the still-missing independent cryptographic, protocol, deployment, and
+adversarial release audit. The full configured native suite passed 63/63
+locally, affected serial ASan+UBSan CTests passed 7/7, and focused
+manifest/finalizer/classifier/sandbox/setup/metadata/Node tests passed. A later
+full local sanitizer rebuild was interrupted and is not claimed as a pass for
+this exact commit. A fresh exact-commit remote checkout independently
+reverified the pinned Chrome/Node hashes and focused suites. Its bounded
+native/sanitizer build lane must be read from the private operational handoff
+before using that result. The automatic CI/CodeQL and `DEV` sync from the
+latest push must also be read back before claiming branch parity.
+
+Gate B remains open. No matched normal/YUME five-run capture, live YUME
+outer-carrier event evidence, external classifier or active-probe campaign,
+matched WAN/loss matrix, uninterrupted deployed-network soak, default switch,
+version bump, tag, publication, RC, release, or stable-2.0 claim is established
+by this checkpoint.
 
 ## Plain verdict
 
@@ -27,10 +66,11 @@ quantum-proof, audited, production-scale, or ready to replace Xray. The accurate
 description is: an evidence-backed Linux desktop vertical slice with promising
 local security, speed, and first-flight camouflage.
 
-## Git checkpoint
+## Historical pre-integration Git checkpoint (2026-08-11)
 
-The local branch is `yume-2-dev6-chrome151`. It intentionally has no upstream
-and must remain unpushed until review.
+At that earlier checkpoint the local branch was `yume-2-dev6-chrome151`, had no
+upstream, and correctly remained unpushed until review. The current integrated
+state above supersedes this retained chronology.
 
 | Commit | Signed subject |
 | --- | --- |
@@ -356,8 +396,9 @@ The safe order is:
    separate worktree/build tree.
 4. Benchmark agent repeats the exact matched matrix against the candidate.
 5. Root reviews the complete diff and artifacts, runs bounded native/sanitizer
-   gates, updates documentation, and creates a signed local commit. Dev6 stays
-   unpushed until explicit review approval.
+   gates, updates documentation, and creates a signed local commit. Any future
+   candidate stays unpushed until explicit review approval; development is
+   never pushed directly to workflow-owned `DEV`.
 
 Parallelize only independent work in isolated worktrees. If only one checkout
 or benchmark host is available, run baseline, edit, and candidate benchmark

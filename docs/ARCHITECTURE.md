@@ -115,6 +115,13 @@ duplicate the transport stack.
 | `src/platform/` | Per-OS executable path helpers |
 | `src/tools/` | `yume-net-map`, selftest benches (optional targets) |
 
+Transport identities are schema-driven rather than selected by browser-specific
+branches in consumers. `config/transport_profiles.json` registers immutable
+capture fixtures, `scripts/generate_transport_profiles.py` produces the checked-in
+C++ and Go helper registries, and TLS/HTTP/H2 code reads
+`cover_profile::active()`. See
+`docs/TRANSPORT_PROFILES.md` for the extension and evidence contract.
+
 ## Dependency direction
 
 Edits should respect this import order:
@@ -150,6 +157,7 @@ man pages. `scripts/check_ascii_diagrams.py` enforces fixed box widths.
 | --- | --- |
 | Traffic routes | `docs/EXPLAINED.md` |
 | Stealth layers | `docs/STEALTH.md` |
+| Transport profiles | `docs/TRANSPORT_PROFILES.md` |
 | Permissions | `docs/PERMISSIONS.md` |
 | Threat stance | `docs/THREAT_MODEL.md` |
 | Security modes | `docs/SECURITY_MODES.md` |

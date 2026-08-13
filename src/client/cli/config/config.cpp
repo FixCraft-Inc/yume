@@ -178,6 +178,16 @@ void load_client_config_file(const ParsedArgs& args,
         if (json.contains("tls_pin") && cfg->tls_pin_sha256.empty()) {
             cfg->tls_pin_sha256 = json["tls_pin"].get<std::string>();
         }
+        if (json.contains("transport_profile")) {
+            cfg->transport_profile = json["transport_profile"].get<std::string>();
+        }
+        if (json.contains("tls_backend")) {
+            cfg->tls_backend = json["tls_backend"].get<std::string>();
+        }
+        if (json.contains("tls_helper_path")) {
+            cfg->tls_helper_path = resolve_cfg_path(
+                json["tls_helper_path"].get<std::string>());
+        }
         if (json.contains("outbound_proxy") && !args.outbound_proxy_override) {
             cfg->outbound_proxy_url = json["outbound_proxy"].get<std::string>();
         }
@@ -454,11 +464,14 @@ void apply_cli_config_overrides(const ParsedArgs& args,
     if (!args.tls_stealth_profile.empty()) {
         cfg->tls_stealth_profile = args.tls_stealth_profile;
     }
-    if (args.tls_stealth_rotate) {
-        cfg->tls_stealth_rotate = true;
+    if (!args.transport_profile.empty()) {
+        cfg->transport_profile = args.transport_profile;
     }
-    if (args.tls_stealth_rotation_interval > 0) {
-        cfg->tls_stealth_rotation_interval = args.tls_stealth_rotation_interval;
+    if (!args.tls_backend.empty()) {
+        cfg->tls_backend = args.tls_backend;
+    }
+    if (!args.tls_helper_path.empty()) {
+        cfg->tls_helper_path = args.tls_helper_path;
     }
     if (args.tls_fingerprint_log) {
         cfg->tls_fingerprint_log = true;
@@ -635,6 +648,9 @@ void save_client_config_file(const ParsedArgs& args, const ClientConfig& cfg) {
     if (!cfg.tls_ca_cert.empty()) json["tls_ca_cert"] = cfg.tls_ca_cert;
     if (!cfg.tls_server_name.empty()) json["tls_server_name"] = cfg.tls_server_name;
     if (!cfg.tls_pin_sha256.empty()) json["tls_pin"] = cfg.tls_pin_sha256;
+    json["transport_profile"] = cfg.transport_profile;
+    json["tls_backend"] = cfg.tls_backend;
+    if (!cfg.tls_helper_path.empty()) json["tls_helper_path"] = cfg.tls_helper_path;
     json["require_anonym"] = cfg.require_anonym;
     json["accept_monitoring"] = cfg.accept_monitoring;
     json["service_streams_only"] = cfg.service_streams_only;

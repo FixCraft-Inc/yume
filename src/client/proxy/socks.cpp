@@ -647,8 +647,21 @@ void SocksSession::on_client_read(const boost::system::error_code& ec, std::size
                              " ms=" + std::to_string(open_to_first) +
                              " bytes=" + std::to_string(bytes));
     }
-    tunnel_->send_data(stream_id_, std::move(payload));
-    start_client_read();
+    auto self = shared_from_this();
+    tunnel_->send_data(
+        stream_id_, std::move(payload),
+        [self](bool ok, std::size_t, const std::string&) {
+            boost::asio::post(self->strand_, [self, ok]() {
+                if (self->closed_) {
+                    return;
+                }
+                if (!ok) {
+                    self->close();
+                    return;
+                }
+                self->start_client_read();
+            });
+        });
 }
 
 void SocksSession::send_client_fin() {

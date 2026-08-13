@@ -32,6 +32,7 @@ cd "${repo_root}"
 
 find . -mindepth 1 \
   \( -path './.git' \
+     -o -path './.cache' \
      -o -path './.claude' \
      -o -path './.codex' \
      -o -path './.wrangler' \
@@ -42,6 +43,7 @@ find . -mindepth 1 \
      -o -path './DEV_services' \
      -o -path './obj-*' \
      -o -path './.private' \
+     -o -path './.secrets' \
      -o -path './third_party' \
      -o -path './vendor' \
      -o -path './website/.jekyll-cache' \

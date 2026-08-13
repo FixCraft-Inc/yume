@@ -4,7 +4,7 @@
 
 Yume Universal Multiprotocol Engine. An open-source post-quantum stealth transport. The name is a single character — 夢 — and we use it the way Japanese uses it: a dream of a network you can trust, where the wire shape blends into ordinary HTTPS and neither endpoint has to advertise YUME by name.
 
-YUME 2.0-dev5 tunnels TCP and UDP through a persistent TLS 1.3 + HTTP/2 +
+YUME 2.0-dev6 tunnels TCP and UDP through a persistent TLS 1.3 + HTTP/2 +
 WebSocket connection. The focused Linux desktop slice uses mandatory
 ML-KEM-1024 + X25519 + random-PSK key establishment, per-message AES-256-GCM
 keys, and independent directional epochs. The default Extreme policy retains
@@ -21,6 +21,8 @@ the optional GUI have not yet passed the 2.0 release gates.
 For the current implementation / testing boundary, including host-controller,
 codec, federation, plugin, and browser status, see
 [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md).
+For the exact dev6 integration lane and the separate stable-ish RC/stable gates,
+see [docs/YUME_2_0_STABILIZATION.md](docs/YUME_2_0_STABILIZATION.md).
 
 ## Why YUME
 
@@ -63,7 +65,12 @@ cd yume
 absent. If `basefwx/` is already an attached developer checkout, the build uses
 that worktree without fetching, detaching its branch, or discarding changes.
 Use `BASEFWX_SYNC_MODE=pinned ./ezbuild.sh` when you explicitly need the clean
-commit recorded in `config/refs/basefwx.ref`.
+commit recorded once in `config/dependencies.json`.
+
+Browser identities are also centralized. See
+[docs/TRANSPORT_PROFILES.md](docs/TRANSPORT_PROFILES.md): installed Chrome may
+update normally, while qualified wire profiles remain immutable and new
+browser versions are added through captured evidence plus one registry entry.
 
 The build produces `build/bin/yume` and `build/bin/yumed`.
 
@@ -214,8 +221,8 @@ Specific hostnames will land here once the fleet is up.
 
 ## Stealth and obfuscation
 
-The first 2.0 target is a captured Chrome 150 client and Node.js 24 LTS cover.
-One immutable Chrome 150/Debian 13 + Node 24 profile now supplies the TLS
+The first 2.0 target is a captured Chrome 151 client and Node.js 24 LTS cover.
+One immutable Chrome 151/Debian 13 + Node 24 profile now supplies the TLS
 selection, User-Agent/client hints, H2 settings/priorities/header order, asset
 sequence, and cover-server identity. After a normal priming page load, the
 client opens an RFC 8441 extended CONNECT stream. Encrypted YUME records remain
@@ -229,8 +236,16 @@ secret material.
 
 This removes the earlier Chrome-version/platform contradiction and raises the
 cost of custom-protocol matching and casual active probing; it does not make
-YUME identical to Chrome or immune to traffic analysis. Stock OpenSSL cannot
-reproduce Chrome's BoringSSL ClientHello ordering upstream of the H2 carrier.
+YUME identical to Chrome or immune to traffic analysis. The default
+`openssl-diagnostic` backend cannot reproduce Chrome's BoringSSL ClientHello.
+An opt-in Linux helper now implements a pinned uTLS Chrome 151 first flight and
+preserves YUME's certificate checks and TLS exporter. Five complete flows pass
+the normalized Chrome/Node first-flight structural gate and the local
+handshake/throughput budgets. The bounded failure/lifecycle matrix,
+1/10/50/100/256 process ramps, 1,000 reconnects, and segmented 30-minute
+full-speed soak also pass. It remains opt-in until matched WAN, exact-Chrome
+same-session, classifier/active-probe, and independent-review gates pass. It
+never silently falls back to OpenSSL.
 See [docs/STEALTH.md](docs/STEALTH.md)
 for the measured scope and [docs/YUME_2_0_IMPLEMENTATION_STATUS.md](docs/YUME_2_0_IMPLEMENTATION_STATUS.md)
 for unfinished release gates.
@@ -651,7 +666,8 @@ sudo ./build/bin/yumed \
 ## Security posture
 
 - AGPL-3.0-or-later, with client, daemon, proxy, GUI, and libyume fully buildable from this tree
-- BaseFWX is pinned by commit (see `config/refs/basefwx.ref`); release CI fails if mandatory crypto support is missing
+- BaseFWX repository, commit, and minimum compatible version come from
+  `config/dependencies.json`; release CI fails if mandatory crypto support is missing
 - Authorized keys are verified by `yume::crypto::verify_key` with OpenSSL
   `EVP_DigestVerify` ([src/core/security/crypto.cpp](src/core/security/crypto.cpp))
 - Client AUTH transmits the Ed25519 public key and transcript signature, never
@@ -666,7 +682,10 @@ sudo ./build/bin/yumed \
 - Admission and inner secrets are separate owner-only files; wrong, malformed,
   expired, replayed, or authority-mismatched admission follows the cover path
   instead of receiving AUTH
-- Session close has a five-second deadline, pending service queues are capped, and detached client EXEC work is capped at four concurrent workers; sanitizer/soak validation is still outstanding
+- Session close has a five-second deadline, pending service queues are capped,
+  and detached client EXEC work is capped at four concurrent workers. Current
+  native sanitizer and segmented loopback soak gates pass; deployed WAN,
+  disk/log-pressure, and adversarial operational soak remain outstanding
 - Protected application payloads are capped at 256 KiB so one frame cannot
   cross a directional epoch byte limit
 - The admission path-token verifier uses `CRYPTO_memcmp` ([src/core/stealth/obfs_signal.cpp](src/core/stealth/obfs_signal.cpp))

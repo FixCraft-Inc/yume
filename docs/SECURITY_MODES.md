@@ -1,6 +1,6 @@
 # YUME security modes
 
-YUME 2.0-dev5 supports four ratchet-policy modes. `extreme` remains the
+YUME 2.0-dev6 supports four ratchet-policy modes. `extreme` remains the
 default and exactly preserves the dev4 epoch limits. The mode changes how much
 traffic may share one hybrid ML-KEM-1024 + X25519 epoch; it does not disable
 TLS 1.3, the random PSK, HKDF, AES-256-GCM, or the fresh one-use key derived
@@ -28,7 +28,7 @@ on a busy connection.
 Both endpoints advertise their accepted limits inside the authenticated AUTH
 transcript. Each sending direction uses the component-wise stricter values, so
 one endpoint can constrain a peer but cannot make the peer accept a wider
-compromise budget. This negotiation is why dev5 intentionally does not
+compromise budget. This negotiation is why dev6 intentionally does not
 interoperate with dev4.
 
 ## Ultimate template

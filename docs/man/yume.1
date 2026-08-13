@@ -1,4 +1,4 @@
-.TH YUME 1 "2026-08-01" "YUME 2.0-dev5" "YUME Manual"
+.TH YUME 1 "2026-08-01" "YUME 2.0-dev6" "YUME Manual"
 .SH NAME
 yume \- stealth post-quantum transport client
 .SH SYNOPSIS
@@ -568,13 +568,30 @@ Pin the server TLS certificate fingerprint.
 .SH TLS STEALTH OPTIONS
 .TP
 .BI "--profile " name
-Select the pinned Chrome 150 Linux profile. In 2.0-dev5,
+Select the pinned Chrome 151 Linux profile. In 2.0-dev6,
 .B chrome
 is the only accepted value.
 .TP
+.BI "--transport-profile " id
+Select the authenticated dev6 transport identity. The only accepted value is
+.BR chrome151-node24-v1 .
+.TP
+.BI "--tls-backend " name
+Select
+.B chrome151
+for the packaged Linux helper or
+.B openssl-diagnostic
+for the explicit non-Chrome-parity diagnostic path. There is no silent
+fallback.
+.TP
+.BI "--tls-helper " path
+Use an explicit absolute helper path. The launcher requires a regular
+executable owned by root or the current user and rejects group/world-writable
+files.
+.TP
 .B "--hide-in-the-crowd chrome"
-Explicit spelling for the same pinned Chrome 150 HTTP User-Agent profile.
-Other HTTP profiles are rejected for 2.0-dev5.
+Explicit spelling for the same pinned Chrome 151 HTTP User-Agent profile.
+Other HTTP profiles are rejected for 2.0-dev6.
 .TP
 .B --no-stealth
 Retired for 2.0 tunnels and rejected.

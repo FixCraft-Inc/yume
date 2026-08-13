@@ -67,9 +67,12 @@
 #include "client/relay/secret.hpp"
 #include "client/relay/runtime.hpp"
 #include "client/transport/tunnel.hpp"
+#include "client/transport/chrome_tls_helper.hpp"
 #include "core/app_codec/codec.hpp"
 #include "core/security/crypto.hpp"
+#include "core/security/channel_binding.hpp"
 #include "core/stealth/http_profile.hpp"
+#include "core/stealth/cover_profile.hpp"
 #include "core/security/inner_crypto.hpp"
 #include "core/stealth/obfs.hpp"
 #include "core/protocol/protocol.hpp"
@@ -90,6 +93,32 @@ namespace {
 constexpr int kSocketBufferBytes = 2 * 1024 * 1024;
 
 constexpr const char kDefaultAnonymCaCertPath[] = "";
+
+std::vector<std::uint8_t> parse_sha256_hex(const std::string& value) {
+    if (value.empty()) {
+        return {};
+    }
+    if (value.size() != 64) {
+        throw std::runtime_error("TLS pin must contain 64 lowercase hexadecimal characters");
+    }
+    auto nibble = [](char character) -> std::uint8_t {
+        if (character >= '0' && character <= '9') {
+            return static_cast<std::uint8_t>(character - '0');
+        }
+        if (character >= 'a' && character <= 'f') {
+            return static_cast<std::uint8_t>(character - 'a' + 10);
+        }
+        throw std::runtime_error(
+            "TLS pin must contain 64 lowercase hexadecimal characters");
+    };
+    std::vector<std::uint8_t> decoded(32);
+    for (std::size_t index = 0; index < decoded.size(); ++index) {
+        decoded[index] = static_cast<std::uint8_t>(
+            (nibble(value[index * 2U]) << 4U) |
+            nibble(value[index * 2U + 1U]));
+    }
+    return decoded;
+}
 
 std::string join_items(const std::vector<std::string>& items) {
     std::string out;
@@ -321,6 +350,60 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
     }
     apply_cli_config_overrides(args, cli_cwd, &cfg);
     normalize_client_config_after_overrides(&args, &cfg);
+    if (cfg.transport_profile != yume::kTransportProfile) {
+        util::log_error(
+            "YUME 2.0-dev6 requires transport_profile " +
+            std::string(yume::kTransportProfile));
+        return 1;
+    }
+    const std::string helper_tls_backend(
+        yume::cover_profile::active().tls_backend);
+    if (cfg.tls_backend != helper_tls_backend &&
+        cfg.tls_backend != "openssl-diagnostic") {
+        util::log_error(
+            "tls_backend must be " + helper_tls_backend +
+            " or openssl-diagnostic");
+        return 1;
+    }
+    try {
+        (void)parse_sha256_hex(cfg.tls_pin_sha256);
+    } catch (const std::exception& error) {
+        util::log_error(error.what());
+        return 1;
+    }
+    if (cfg.tls_backend == helper_tls_backend) {
+#if !defined(__linux__)
+        util::log_error("tls_backend chrome151 currently supports Linux desktop only");
+        return 1;
+#elif !YUME_HAS_CHROME_TLS_HELPER
+        util::log_error(
+            "this build does not include the Chrome 151 TLS helper; rebuild with "
+            "-DYUME_BUILD_CHROME_TLS_HELPER=ON or explicitly select "
+            "tls_backend openssl-diagnostic");
+        return 1;
+#endif
+        if (cfg.tunnel_count != 1) {
+            util::log_error(
+                "tls_backend chrome151 currently supports exactly one outer tunnel");
+            return 1;
+        }
+        if (cfg.tls_fingerprint_verify) {
+            util::log_error(
+                "--tls-fingerprint-verify uses an unrelated OpenSSL probe and "
+                "cannot verify the Chrome helper; use scripts/yume_tls_wire.py "
+                "against the helper's emitted ClientHello");
+            return 1;
+        }
+        if (cfg.tls_fingerprint_log) {
+            util::log_warn(
+                "legacy TLS fingerprint logging cannot observe the Chrome "
+                "helper and will be skipped");
+        }
+    } else {
+        util::log_warn(
+            "TLS backend openssl-diagnostic is not Chrome ClientHello parity; "
+            "there is no silent stealth fallback");
+    }
 #if !defined(__linux__)
     if (!cfg.packet_tun_name.empty()) {
         util::log_error("--packet-tun is supported only on Linux");
@@ -500,11 +583,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             "YUME 2.0 requires TLS stealth and a complete transport profile fixture");
         return 1;
     }
-    if (cfg.tls_stealth_rotate) {
-        util::log_error(
-            "YUME 2.0 rejects TLS profile rotation; the Chrome fixture is pinned");
-        return 1;
-    }
     try {
         cfg.obfs_secret_material = std::make_shared<security::Secret32>(
             security::LoadSecretFile32(cfg.obfs_secret_file));
@@ -592,7 +670,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
     int attempt = 0;
     bool pq_warned = false;
     bool verified_once = false;
-    std::uint64_t completed_tls_connections = 0;
     std::set<tls_fingerprint::BrowserProfile> tls_verification_attempted;
     std::map<tls_fingerprint::BrowserProfile, tls_fingerprint::FingerprintData>
         verified_tls_fingerprints;
@@ -617,7 +694,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             std::unique_ptr<boost::asio::ssl::context> owned_ctx;
             boost::asio::ssl::context* ctx = nullptr;
             tls_fingerprint::BrowserProfile active_tls_profile = tls_fingerprint::BrowserProfile::UNKNOWN;
-            tls_fingerprint::BrowserProfile base_tls_profile = tls_fingerprint::BrowserProfile::UNKNOWN;
             if (cfg.tls_stealth_enabled) {
                 if (cfg.tls_fingerprint_log) {
                     tls_metrics::MetricsManager::instance().initialize(cfg.tls_fingerprint_log_path);
@@ -629,12 +705,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                     throw std::runtime_error("configured transport profile fixture is unavailable");
                 }
                 tls_fingerprint::BrowserProfile profile = transport_profile->tls_profile;
-                base_tls_profile = profile;
-                profile = tls_stealth::profile_for_connection(
-                    profile,
-                    cfg.tls_stealth_rotate,
-                    cfg.tls_stealth_rotation_interval,
-                    completed_tls_connections);
                 active_tls_profile = profile;
                 if (!explicit_http_profile) {
                     if (auto selected = yume::http_profile::transport_client_for_tls_profile(profile)) {
@@ -645,14 +715,11 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 tls_stealth::StealthConfig stealth_config;
                 stealth_config.enabled = true;
                 stealth_config.target_profile = profile;
-                // The reconnect loop owns profile selection because each TLS
-                // context is rebuilt per attempt. Avoid resetting a second,
-                // unreachable rotation counter inside StealthContext.
-                stealth_config.rotate_profiles = false;
-                stealth_config.rotation_interval_connections = cfg.tls_stealth_rotation_interval;
                 stealth_config.log_fingerprints = cfg.tls_fingerprint_log;
                 stealth_config.log_file_path = cfg.tls_fingerprint_log_path;
-                stealth_config.verify_with_external_api = cfg.tls_fingerprint_verify;
+                stealth_config.verify_with_external_api =
+                    cfg.tls_backend == "openssl-diagnostic" &&
+                    cfg.tls_fingerprint_verify;
                 stealth_config.test_endpoint = cfg.tls_fingerprint_test_endpoint;
 
                 tls_stealth::StealthManager::instance().initialize(stealth_config);
@@ -683,7 +750,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             const bool via_proxy = proxy_cfg.type == outbound_proxy::Type::Socks5;
             const std::string& tls_name = effective_tls_server_name(cfg);
 
-            boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, *ctx);
+            boost::asio::ip::tcp::socket connected_socket(io);
 
             if (via_proxy) {
                 // Hand the hostname to the proxy verbatim — Tor needs
@@ -694,7 +761,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                                " to " + cfg.server + ":" + std::to_string(cfg.port));
                 diagnostics::Stopwatch connect_timer(YUME_TIMING_ENABLED());
                 auto dr = outbound_proxy::socks5_dial(
-                    stream.next_layer(), io, proxy_cfg,
+                    connected_socket, io, proxy_cfg,
                     cfg.server, cfg.port, kConnectTimeout,
                     cfg.socket_protect);
                 if (dr.timed_out) {
@@ -736,7 +803,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 diagnostics::Stopwatch connect_timer(YUME_TIMING_ENABLED());
                 try {
                     auto cr = connect_with_timeout(
-                        stream.next_layer(), endpoints, io, kConnectTimeout,
+                        connected_socket, endpoints, io, kConnectTimeout,
                         cfg.socket_protect);
                     if (cr.timed_out) {
                         throw std::runtime_error("server offline, could not reach endpoint (connect timeout)");
@@ -763,28 +830,75 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                                      " port=" + std::to_string(cfg.port));
             }
             boost::system::error_code keep_ec;
-            stream.next_layer().set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
+            connected_socket.set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
             if (keep_ec) {
                 util::log_warn(std::string("keepalive set failed: ") + keep_ec.message());
             }
             boost::system::error_code recvbuf_ec;
-            stream.next_layer().set_option(boost::asio::socket_base::receive_buffer_size(kSocketBufferBytes), recvbuf_ec);
+            connected_socket.set_option(boost::asio::socket_base::receive_buffer_size(kSocketBufferBytes), recvbuf_ec);
             boost::system::error_code sendbuf_ec;
-            stream.next_layer().set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
+            connected_socket.set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
             boost::system::error_code nodelay_ec;
-            stream.next_layer().set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
-            SSL_set_tlsext_host_name(stream.native_handle(), tls_name.c_str());
-            SSL_set1_host(stream.native_handle(), tls_name.c_str());
+            connected_socket.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
             
             auto handshake_start = std::chrono::steady_clock::now();
-            boost::system::error_code hs_ec;
-            {
-                auto hr = handshake_with_timeout(stream, io, kHandshakeTimeout);
-                if (hr.timed_out) {
+            std::unique_ptr<ClientTransportStream> stream_owner;
+            if (cfg.tls_backend == helper_tls_backend) {
+                ChromeTlsHelperOptions helper_options;
+                helper_options.helper_path = cfg.tls_helper_path.empty()
+                    ? DiscoverChromeTlsHelper(
+                          get_self_path(executable_arg.c_str()))
+                    : std::filesystem::path(cfg.tls_helper_path);
+                helper_options.server_name = tls_name;
+                helper_options.ca_path = cfg.tls_ca_cert;
+                helper_options.leaf_pin = parse_sha256_hex(cfg.tls_pin_sha256);
+                helper_options.handshake_timeout = kHandshakeTimeout;
+                stream_owner = std::make_unique<ClientTransportStream>(
+                    LaunchChromeTlsHelper(
+                        io, std::move(connected_socket), helper_options));
+            } else {
+                ClientTransportStream::OpenSslStream tls_stream(
+                    std::move(connected_socket), *ctx);
+                SSL_set_tlsext_host_name(
+                    tls_stream.native_handle(), tls_name.c_str());
+                SSL_set1_host(tls_stream.native_handle(), tls_name.c_str());
+                const auto handshake = handshake_with_timeout(
+                    tls_stream, io, kHandshakeTimeout);
+                if (handshake.timed_out) {
                     throw std::runtime_error("TLS handshake failed: timeout");
                 }
-                hs_ec = hr.ec;
+                if (handshake.ec) {
+                    const long verify_result =
+                        SSL_get_verify_result(tls_stream.native_handle());
+                    const std::string detail =
+                        describe_verify_result(verify_result, tls_name);
+                    const std::string ssl_detail = describe_openssl_error();
+                    std::string message =
+                        "TLS handshake failed: " + handshake.ec.message();
+                    if (!detail.empty()) {
+                        message += " (" + detail + ")";
+                    }
+                    if (!ssl_detail.empty()) {
+                        message += " [" + ssl_detail + "]";
+                    }
+                    throw std::runtime_error(message);
+                }
+                const std::string fingerprint = get_peer_cert_fingerprint(
+                    nullptr, tls_stream.native_handle());
+                if (!cfg.tls_pin_sha256.empty() &&
+                    (fingerprint.empty() || fingerprint != cfg.tls_pin_sha256)) {
+                    throw std::runtime_error("TLS pin mismatch");
+                }
+                TlsConnectionMetadata metadata;
+                metadata.alpn = obfs::selected_alpn(tls_stream.native_handle());
+                metadata.leaf_fingerprint_sha256 = fingerprint;
+                metadata.exporter =
+                    security::ExportChannelBinding(tls_stream.native_handle());
+                stream_owner = std::make_unique<ClientTransportStream>(
+                    std::move(tls_stream));
+                stream_owner->set_metadata(std::move(metadata));
             }
+            ClientTransportStream& stream = *stream_owner;
             auto handshake_end = std::chrono::steady_clock::now();
             auto handshake_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
                 handshake_end - handshake_start);
@@ -795,33 +909,12 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                                      (tls_name == cfg.server ? "" : " tls_name=" + tls_name) +
                                      " port=" + std::to_string(cfg.port));
             
-            if (hs_ec) {
-                long vr = SSL_get_verify_result(stream.native_handle());
-                std::string detail = describe_verify_result(vr, tls_name);
-                std::string ssl_detail = describe_openssl_error();
-                std::string msg = "TLS handshake failed: " + hs_ec.message();
-                if (!detail.empty()) {
-                    msg += " (" + detail + ")";
-                }
-                if (!ssl_detail.empty()) {
-                    msg += " [" + ssl_detail + "]";
-                }
-                throw std::runtime_error(msg);
-            }
-            if (cfg.tls_stealth_enabled) {
-                ++completed_tls_connections;
-            }
             const std::string server_tls_fingerprint_sha256 =
-                get_peer_cert_fingerprint(nullptr, stream.native_handle());
-            if (!cfg.tls_pin_sha256.empty()) {
-                if (server_tls_fingerprint_sha256.empty() ||
-                    server_tls_fingerprint_sha256 != cfg.tls_pin_sha256) {
-                    throw std::runtime_error("TLS pin mismatch");
-                }
-            }
+                stream.metadata().leaf_fingerprint_sha256;
 
             tls_fingerprint::FingerprintData fingerprint_for_metrics;
-            if (cfg.tls_stealth_enabled) {
+            if (cfg.tls_stealth_enabled &&
+                cfg.tls_backend == "openssl-diagnostic") {
                 if (cfg.tls_fingerprint_verify &&
                     tls_verification_attempted.insert(active_tls_profile).second) {
                     auto verification = tls_stealth::evaluate_tls_fingerprint(
@@ -877,7 +970,8 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 }
             }
 
-            if (cfg.tls_stealth_enabled && cfg.tls_fingerprint_log) {
+            if (cfg.tls_stealth_enabled && cfg.tls_fingerprint_log &&
+                cfg.tls_backend == "openssl-diagnostic") {
                 if (cfg.obfuscation) {
                     fingerprint_for_metrics.alpn_protocols = obfs::carrier_alpn_protocols(true);
                     fingerprint_for_metrics.ja4_components.first_alpn = "h2";
@@ -956,7 +1050,8 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             }
             auto v2_ratchet = send_auth_v2_response(
                 stream, io, cfg.identity, auth_challenge,
-                *cfg.inner_psk_material, *h2_carrier, cfg.rekey_window,
+                *cfg.inner_psk_material, stream.take_exporter(),
+                *h2_carrier, cfg.rekey_window,
                 *ratchet_policy);
             YUME_TIMING_LOG("client.auth",
                              "send_response",
@@ -1151,7 +1246,8 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 proof_input.sub_cert_b64 = sub_cert_b64;
                 proof_input.anonym_pubkey = cfg.anonym_pubkey;
                 proof_input.anonym_ca_cert = cfg.anonym_ca_cert;
-                proof_input.peer_cert_fingerprint = get_peer_cert_fingerprint(nullptr, stream.native_handle());
+                proof_input.peer_cert_fingerprint =
+                    stream.metadata().leaf_fingerprint_sha256;
                 proof_input.initial_sub_ok = sub_ok;
                 proof_input.initial_ca_ok = ca_ok;
 
@@ -1322,9 +1418,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 std::move(prefetched_tls_bytes);
             connected_options.server_tls_fingerprint_sha256 =
                 server_tls_fingerprint_sha256;
-            connected_options.base_tls_profile = base_tls_profile;
-            connected_options.completed_tls_connections =
-                &completed_tls_connections;
             connected_options.explicit_http_profile = explicit_http_profile;
             connected_options.server_capabilities = std::move(server_capabilities);
             connected_options.status_block_builder = status_block_builder;

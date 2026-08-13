@@ -32,6 +32,7 @@ from yume_bench_common import (  # noqa: E402
     endpoint_contract,
     generate_keyset,
     invoking_identity,
+    is_pinned_chrome_version,
     parse_rates,
     relay_chunk_kib,
     resolve_pinned_node,
@@ -473,6 +474,7 @@ def run_endpoint(
         "--bench-mib", str(mib),
         "--bench-streams", str(streams),
         "--bench-direction", args.bench_direction,
+        "--tls-backend", args.tls_backend,
         "--boring", "--no-color",
     ]
     if args.bench_chunk_kib is not None:
@@ -757,9 +759,9 @@ def run_client(args: argparse.Namespace) -> int:
     cover_capture_error: str | None = None
     if browser and endpoint_code == 0:
         browser_version = command_version([str(browser), "--version"])
-        if not re.search(r"\b(?:Chrome|Chromium)\s+150\.", browser_version):
+        if not is_pinned_chrome_version(browser_version):
             print(
-                f"[lan] {browser_version} does not match Chrome 150; "
+                f"[lan] {browser_version} does not match Chrome 151; "
                 "the cover capture is functional evidence only",
                 file=sys.stderr,
             )
@@ -802,6 +804,7 @@ def run_client(args: argparse.Namespace) -> int:
             "interrupted": endpoint_interrupted,
             "timed_out": endpoint_timed_out,
             "command": endpoint_runs[0][1] if endpoint_runs else [],
+            "tls_backend": args.tls_backend,
             "mib_per_direction": mib,
             "streams": streams,
             "clients": args.clients,
@@ -970,6 +973,12 @@ def parse_args() -> argparse.Namespace:
         help="explicit upload DATA chunk size; omit to match the client relay buffer",
     )
     client.add_argument("--bench-direction", choices=("both", "up", "down"), default="both")
+    client.add_argument(
+        "--tls-backend",
+        choices=("chrome151", "openssl-diagnostic"),
+        default="openssl-diagnostic",
+        help="outer client TLS backend used for this benchmark",
+    )
     client.add_argument("--timing", action="store_true", help="enable yume timing counters")
     client.add_argument("--resource-sample-ms", type=int, default=250)
     client.add_argument("--no-resource-sampling", action="store_true")

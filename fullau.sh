@@ -387,14 +387,21 @@ APT_UPDATED_FLAG="${APT_UPDATED_FLAG:-${YUME_CACHE_ROOT}/apt-updated}"
 OQS_BUILD_MIPS="${OQS_BUILD_MIPS:-${YUME_TMP_ROOT}/liboqs-mips-build}"
 OQS_BUILD_HOST="${OQS_BUILD_HOST:-${YUME_TMP_ROOT}/liboqs-host-build}"
 
-BASEFWX_REF_FILE="${BASEFWX_REF_FILE:-${YUME_REPO_ROOT}/config/refs/basefwx.ref}"
-if [[ -z "${YUME_BASEFWX_REF:-}" && -f "${BASEFWX_REF_FILE}" ]]; then
+BASEFWX_REF_FILE="${BASEFWX_REF_FILE:-}"
+if [[ -z "${YUME_BASEFWX_REF:-}" && -n "${BASEFWX_REF_FILE}" && -f "${BASEFWX_REF_FILE}" ]]; then
   YUME_BASEFWX_REF="$(tr -d '[:space:]' < "${BASEFWX_REF_FILE}")"
 fi
 if [[ -n "${BASEFWX_REF:-}" && -z "${YUME_BASEFWX_REF:-}" ]]; then
   YUME_BASEFWX_REF="${BASEFWX_REF}"
 fi
+if [[ -z "${YUME_BASEFWX_REF:-}" ]]; then
+  YUME_BASEFWX_REF="$(python3 "${YUME_REPO_ROOT}/scripts/yume_dependencies.py" get basefwx revision)"
+fi
 if [[ -n "${YUME_BASEFWX_REF:-}" ]]; then
+  if [[ ! "${YUME_BASEFWX_REF}" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "[fullau] BaseFWX ref must be an exact lowercase 40-hex commit." >&2
+    exit 2
+  fi
   export YUME_BASEFWX_REF
   export BASEFWX_REF="${YUME_BASEFWX_REF}"
 fi

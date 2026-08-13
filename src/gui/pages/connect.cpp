@@ -185,9 +185,8 @@ public:
                     }
                     ImGui::EndCombo();
                 }
-                cfg_.tls_stealth_rotate = false;
                 ui::muted_text(
-                    "Only complete TLS + HTTP/2 fixtures are listed. Future Firefox or other profiles can be added through the shared registry.");
+                    "YUME 2.0-dev6 exposes one complete Chrome 151 + Node 24 identity.");
                 int_input("IO threads (0 = auto)", cfg_.io_threads);
 
                 const char* relay_modes[] = {"untrusted", "trusted", "operator"};

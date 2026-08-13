@@ -20,6 +20,7 @@
 #include "client/cli/config/args.hpp"
 #include "client/cli/entry.hpp"
 #include "client/proxy/outbound_proxy.hpp"
+#include "client/transport/client_stream.hpp"
 #include "core/security/crypto.hpp"
 #include "core/security/inner_crypto.hpp"
 #include "core/stealth/tls_fingerprint.hpp"
@@ -72,9 +73,6 @@ struct ConnectedSessionOptions {
     crypto::Bytes prefetched_carrier_bytes;
     std::unique_ptr<ratchet::SessionRatchet> ratchet;
     std::string server_tls_fingerprint_sha256;
-    tls_fingerprint::BrowserProfile base_tls_profile{
-        tls_fingerprint::BrowserProfile::UNKNOWN};
-    std::uint64_t* completed_tls_connections{nullptr};
     bool explicit_http_profile{false};
     std::vector<std::string> server_capabilities;
     std::function<std::string()> status_block_builder;
@@ -84,7 +82,7 @@ struct ConnectedSessionOptions {
     RuntimeReadyProvider take_runtime_ready_callback;
 };
 
-using ClientTlsStream = boost::asio::ssl::stream<boost::asio::ip::tcp::socket>;
+using ClientTlsStream = ClientTransportStream;
 
 int run_connected_session(boost::asio::io_context& io,
                           boost::asio::ssl::context& ctx,

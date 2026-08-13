@@ -12,7 +12,7 @@ if (!Number.isInteger(holdMs) || holdMs < 0 || holdMs > 120000) {
 
 const devtoolsBase = `http://127.0.0.1:${port}`;
 const created = await fetch(
-  `${devtoolsBase}/json/new?${encodeURIComponent(targetUrl)}`,
+  `${devtoolsBase}/json/new?${encodeURIComponent('about:blank')}`,
   { method: 'PUT' }
 );
 if (!created.ok) throw new Error(`DevTools target creation failed: ${created.status}`);

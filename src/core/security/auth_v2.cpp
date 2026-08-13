@@ -17,11 +17,15 @@
 namespace yume::auth_v2 {
 namespace {
 
-constexpr std::uint8_t kSchema = 2;
+// Schema 3 is the first format that carries the authenticated dev6 transport
+// profile. Schema 2/dev5 records are rejected rather than interpreted with an
+// implicit profile.
+constexpr std::uint8_t kSchema = 3;
 constexpr std::uint8_t kCritical = 0x01;
-// v2 appends the locally computed TLS exporter; a v1 verifier and a v2 signer
-// derive different inputs and fail loudly instead of downgrading silently.
-constexpr std::string_view kSignatureDomain = "yume/2.0/auth-signature/v2";
+// v3 appends the locally computed TLS exporter to records that explicitly
+// carry the dev6 profile. Older signers derive a different input and fail
+// loudly instead of downgrading silently.
+constexpr std::string_view kSignatureDomain = "yume/2.0/auth-signature/v3";
 
 void AppendU16(Bytes& out, std::uint16_t value) {
     out.push_back(static_cast<std::uint8_t>(value >> 8));
@@ -75,6 +79,18 @@ const Bytes& Required(const Record& record, std::uint8_t id) {
         throw std::runtime_error("AUTH v2 missing required field " + std::to_string(id));
     }
     return it->value;
+}
+
+std::string RequiredProfile(const Record& record, std::uint8_t id) {
+    const Bytes& value = Required(record, id);
+    if (value.empty() || value.size() > 64) {
+        throw std::runtime_error("AUTH v2 transport profile size is invalid");
+    }
+    const std::string profile(value.begin(), value.end());
+    if (profile != kTransportProfile) {
+        throw std::runtime_error("AUTH v2 exact transport profile mismatch");
+    }
+    return profile;
 }
 
 void RequireSize(const Bytes& value, std::size_t size, std::string_view name) {
@@ -236,12 +252,13 @@ Bytes BuildChallenge(const Bytes& challenge, const Bytes& mlkem_public_key,
         {4, true, x25519_public_key}, {5, true, psk_salt},
         {6, true, transcript_salt}, {7, true, WindowBytes(rekey_window)},
         {8, true, PolicyBytes(ratchet_policy)},
+        {9, true, Bytes(kTransportProfile.begin(), kTransportProfile.end())},
     });
 }
 
 Challenge ParseChallenge(const Bytes& encoded) {
     const Record record = DecodeRecord(encoded, RecordKind::Challenge,
-                                       {1, 2, 3, 4, 5, 6, 7, 8});
+                                       {1, 2, 3, 4, 5, 6, 7, 8, 9});
     const Bytes& version = Required(record, 1);
     if (std::string_view(reinterpret_cast<const char*>(version.data()), version.size()) !=
         kTransportVersion) {
@@ -250,7 +267,7 @@ Challenge ParseChallenge(const Bytes& encoded) {
     Challenge out{encoded, Required(record, 2), Required(record, 3),
                   Required(record, 4), Required(record, 5), Required(record, 6),
                   ParseWindow(Required(record, 7)),
-                  ParsePolicy(Required(record, 8))};
+                  ParsePolicy(Required(record, 8)), RequiredProfile(record, 9)};
     RequireSize(out.challenge, 32, "challenge");
     RequireKemBlob(out.mlkem_public_key, "ML-KEM public key");
     RequireSize(out.x25519_public_key, 32, "X25519 public key");
@@ -279,6 +296,7 @@ Bytes BuildUnsignedResponse(const Bytes& x25519_public_key,
         {1, true, x25519_public_key}, {2, true, mlkem_ciphertext},
         {3, true, identity}, {4, true, WindowBytes(rekey_window)},
         {5, true, PolicyBytes(ratchet_policy)},
+        {6, true, Bytes(kTransportProfile.begin(), kTransportProfile.end())},
     });
 }
 
@@ -295,16 +313,19 @@ Bytes BuildResponse(const Bytes& x25519_public_key,
     return EncodeRecord(RecordKind::Response, {
         {1, true, x25519_public_key}, {2, true, mlkem_ciphertext},
         {3, true, identity}, {4, true, WindowBytes(rekey_window)},
-        {5, true, PolicyBytes(ratchet_policy)}, {6, true, signature},
+        {5, true, PolicyBytes(ratchet_policy)},
+        {6, true, Bytes(kTransportProfile.begin(), kTransportProfile.end())},
+        {7, true, signature},
     });
 }
 
 Response ParseResponse(const Bytes& encoded) {
     const Record record = DecodeRecord(encoded, RecordKind::Response,
-                                       {1, 2, 3, 4, 5, 6});
+                                       {1, 2, 3, 4, 5, 6, 7});
     Response out{encoded, Required(record, 1), Required(record, 2),
                  Required(record, 3), ParseWindow(Required(record, 4)),
-                 ParsePolicy(Required(record, 5)), Required(record, 6)};
+                 ParsePolicy(Required(record, 5)), RequiredProfile(record, 6),
+                 Required(record, 7)};
     RequireSize(out.x25519_public_key, 32, "X25519 public key");
     RequireKemBlob(out.mlkem_ciphertext, "ML-KEM ciphertext");
     if (out.identity.empty() || out.identity.size() > 16U * 1024U) {
@@ -345,16 +366,18 @@ Bytes BuildAuthOk(const Bytes& server_info) {
     return EncodeRecord(RecordKind::AuthOk, {
         {1, true, Bytes(kTransportVersion.begin(), kTransportVersion.end())},
         {2, true, server_info},
+        {3, true, Bytes(kTransportProfile.begin(), kTransportProfile.end())},
     });
 }
 
 Bytes ParseAuthOk(const Bytes& encoded) {
-    const Record record = DecodeRecord(encoded, RecordKind::AuthOk, {1, 2});
+    const Record record = DecodeRecord(encoded, RecordKind::AuthOk, {1, 2, 3});
     const Bytes& version = Required(record, 1);
     if (std::string_view(reinterpret_cast<const char*>(version.data()), version.size()) !=
         kTransportVersion) {
         throw std::runtime_error("AUTH_OK exact transport version mismatch");
     }
+    (void)RequiredProfile(record, 3);
     return Required(record, 2);
 }
 

@@ -22,6 +22,7 @@
 #include "config/ratchet_profile_json.hpp"
 #include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
+#include "core/version.hpp"
 #include "server/config/json_values.hpp"
 #include "server/host/host_routes.hpp"
 #include "server/host/host_types.hpp"
@@ -38,6 +39,7 @@ namespace {
 
 server::ServerConfig server_from_json(json const& j, std::filesystem::path const& base) {
     server::ServerConfig s;
+    read_opt(j, cfg_key::transport_profile, s.transport_profile);
     read_opt(j, cfg_key::listen_address, s.listen_address);
     read_opt(j, cfg_key::listen_port, s.listen_port);
     read_opt(j, cfg_key::tls_cert, s.tls_cert);
@@ -300,6 +302,7 @@ bool save_server(server::ServerConfig const& s,
                  std::string* err) {
     json j = {
         {cfg_key::listen_address, s.listen_address},
+        {cfg_key::transport_profile, s.transport_profile},
         {cfg_key::listen_port, s.listen_port},
         {cfg_key::tls_cert, s.tls_cert},
         {cfg_key::tls_key, s.tls_key},
@@ -427,6 +430,11 @@ bool save_server(server::ServerConfig const& s,
 
 ValidationReport validate(server::ServerConfig const& s) {
     ValidationReport r;
+    if (s.transport_profile != yume::kTransportProfile) {
+        r.errors.emplace_back(
+            "transport_profile: must be " +
+            std::string(yume::kTransportProfile));
+    }
     if (s.listen_port <= 0 || s.listen_port > 65535) {
         r.errors.emplace_back("listen_port: must be 1..65535");
     }

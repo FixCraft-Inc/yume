@@ -407,7 +407,8 @@ inline bool looks_like_yume_header(const std::array<uint8_t, 8>& header) {
     return true;
 }
 
-inline protocol::Frame read_frame_with_timeout(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
+template <typename AsyncStream>
+inline protocol::Frame read_frame_with_timeout(AsyncStream& stream,
                                               boost::asio::io_context& io,
                                               std::chrono::milliseconds timeout,
                                               const char* what,
@@ -417,9 +418,13 @@ inline protocol::Frame read_frame_with_timeout(boost::asio::ssl::stream<boost::a
                                               std::vector<uint8_t>* prefetched = nullptr) {
     std::array<uint8_t, 8> header_buf{};
     auto cancel = [&]() {
-        boost::system::error_code ignored;
-        stream.lowest_layer().cancel(ignored);
-        stream.lowest_layer().close(ignored);
+        if constexpr (requires { stream.cancel_and_close(); }) {
+            stream.cancel_and_close();
+        } else {
+            boost::system::error_code ignored;
+            stream.lowest_layer().cancel(ignored);
+            stream.lowest_layer().close(ignored);
+        }
     };
 
     IoOpResult hr = read_exact_with_timeout_prefetched(

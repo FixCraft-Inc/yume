@@ -1,6 +1,11 @@
 # YUME 2.0 desktop implementation status
 
-Status: `2.0-dev5` vertical slice implemented; release gates incomplete.
+Status: `2.0-dev6` vertical slice implemented; release gates incomplete.
+
+The signed-commit inventory, competitive assessment, exact session handoff,
+and ordered next-agent gates are in `docs/YUME_2_0_DEV6_HANDOFF.md`.
+The explicit development-merge, `2.0-rc1`, exact-`2.0`, and branch-sync gates
+are in `docs/YUME_2_0_STABILIZATION.md`.
 
 This is a truthful inventory of the focused Linux x86-64 client/server work. It
 does not claim Android, GUI, nginx, alternate browser profiles, H3, federation,
@@ -8,10 +13,44 @@ or admin/control validation.
 
 ## Implemented
 
-- Version-pinned Chrome `150.0.7871.114` / Node `24.18.0` reference fixture,
-  manifest, and sanitized HTTP/2 profile. One immutable Chrome 150/Debian 13 +
+- A browser-neutral build-time transport-profile registry now owns profile
+  aliases, fixture paths, artifact names, backend routing, and captured
+  HTTP/2/HTTP/WebSocket identity. It generates checked-in immutable C++ data
+  consumed through `cover_profile::active()` and the Go helper registry;
+  active/authenticated-profile drift, stale generation, duplicate profile,
+  alias, or helper identities, escaping artifact paths, unsupported dev6
+  stream geometry, and incomplete metadata fail closed. The Go TLS helper
+  resolves audited ClientHello providers by explicit build identity instead of
+  branching in the connection lifecycle. Dev6 still
+  admits exactly one authenticated profile; this is an extensibility boundary,
+  not runtime profile negotiation or evidence for another browser.
+- BaseFWX repository, exact commit, and minimum version are defined once in
+  `config/dependencies.json` and consumed by CMake, build scripts, CI, CodeQL,
+  and release tooling. The dependency remains immutable and reproducible; a
+  floating branch is rejected.
+
+- Version-pinned Chrome `151.0.7922.71` / Node `24.18.0` reference fixture,
+  manifest, and sanitized HTTP/2 profile. One immutable Chrome 151/Debian 13 +
   Node 24 profile supplies the TLS selection, User-Agent/client hints, H2
   settings/priorities/header order, assets, and cover-server identity.
+- A Linux-only experimental Chrome TLS backend is implemented as one pinned
+  uTLS helper process per outer connection. The C++ parent performs direct or
+  SOCKS/Tor routing and passes only the connected descriptor plus an anonymous
+  IPC socketpair. The helper enforces TLS 1.3, hostname/CA/leaf-pin validation,
+  `h2`, exact build/protocol identity, and returns the live 32-byte TLS
+  exporter before proxying plaintext through bounded buffers. It runs with
+  `no_new_privs`, strict IPC lengths/deadlines, and parent-owned child reaping.
+  The build pins uTLS `v1.8.2`, module checksums, and Go `1.26.5`. Its bounded
+  certificate/exporter, IPC, partial-I/O, cancellation, half-close, teardown,
+  fd/zombie, process-scale, reconnect, and segmented-soak gates pass. It remains
+  opt-in pending matched WAN, same-session stealth, classifier/active-probe,
+  independent-review, and remaining RC gates.
+- A capture-derived TLS wire parser and normalized profile gate now preserve
+  cipher/extension/group/signature/version/ALPN order, key-share geometry,
+  padding, and record lengths while normalizing only documented entropy and
+  GREASE. Five complete authenticated helper flows now pass that structural
+  gate; a fresh same-session normal-Chrome NetLog plus wire recapture remains
+  required for release evidence quality.
 - Persistent nghttp2 carrier with priming page and asset requests, RFC 8441
   extended CONNECT, WebSocket masking/fragmentation/control frames, flow
   control, serialized writes, backpressure, and graceful H2 shutdown.
@@ -21,14 +60,16 @@ or admin/control validation.
 - Strict file-only admission and inner PSK configuration. Both files are
   mandatory 32-byte random secrets encoded as exactly 64 lowercase hex
   characters and protected from group/world access.
-- Version/SNI/hour/nonce HMAC admission, authority matching, bounded replay
-  cache, and ordinary cover behavior before AUTH on rejection.
-- Canonical AUTH v2 transcript with strict parsing and Ed25519 authorization
-  before ML-KEM work.
+- Version/profile/SNI/hour/nonce HMAC admission, authority matching, bounded
+  replay cache, and ordinary cover behavior before AUTH on rejection.
+- Canonical schema-3 AUTH transcript with strict parsing, exact
+  `chrome151-node24-v1` challenge/response/confirmation fields, and Ed25519
+  authorization before ML-KEM work.
 - ML-KEM-1024 + X25519 + high-entropy PSK salted-HKDF root derivation. Argon2 is
   absent at connection establishment and per epoch.
-- AES-256-GCM one-use message keys with version/direction/epoch/sequence/type/
-  stream/flags AAD binding.
+- AES-256-GCM one-use message keys with profile/direction/epoch/sequence/type/
+  stream/flags AAD binding. The same exact profile is included in the
+  establishment root under a new dev6 label.
 - Independent directional hybrid rekeys under an authenticated bounded policy.
   Extreme remains the default at 256 KiB, 512 encrypted data frames, or 500 ms
   of active epoch time; Normal, Soft, and exact bounded Ultimate profiles widen
@@ -44,8 +85,10 @@ or admin/control validation.
   separate TLS/operator CA material, TLS/SNI name, admission secret, inner PSK,
   tunnel count, and operator-proof policy. Legacy v1 files that carried only
   the shared private CA remain importable.
-- Exact `2.0-dev5` admission/AUTH-version equality and no accepted older-dev
-  downgrade path. Legacy
+- Exact `2.0-dev6` version and `chrome151-node24-v1` profile equality at
+  admission, AUTH, establishment, and protected-frame boundaries. Schema-2
+  AUTH/dev5, stale-profile, and missing-profile records have no downgrade path.
+  Legacy
   inner/light/heavy/dual/hop/no-inner/raw-carrier and literal-secret CLI choices
   are rejected. The unreachable client-side 1.x AUTH response, Argon2 challenge
   metadata, and long-lived PQ auto-trust/reconnect implementation have been
@@ -187,15 +230,49 @@ or admin/control validation.
   capture was unavailable on that host, so this adds functional evidence but no
   new ClientHello or Chrome-parity claim. The diagnostic emits JA3, JA4, and
   JA4_r evidence when `dumpcap` or `tcpdump` access is available.
+- Five complete authenticated flows through the pinned uTLS helper passed the
+  normalized Chrome 151 ClientHello and direct-Node ServerHello gate. They
+  produced five distinct allowed extension orders and GREASE-ECH lengths of
+  186, 218, and 282 bytes. The live test also caught and fixed helper build
+  permissions, uTLS renegotiation disabling the mandatory exporter, relay
+  authority binding, late half-close capture handling, and `yumed` choosing
+  TLS cipher `0x1301` instead of Node 24's `0x1302`.
+- Five matched loopback handshakes measured 10 ms median through the helper and
+  1 ms through OpenSSL (+9 ms, within the 10 ms gate). Three matched 256 MiB
+  upload plus 256 MiB download trials at 16 streams measured 1,793.8 Mbit/s
+  helper median versus 1,780.6 Mbit/s OpenSSL median. This passes the local 5%
+  bulk-overhead gate; this comparison itself is not WAN or loss evidence.
+- TCP SOCKS, local-forward, and reverse-forward upload reads now wait for the
+  prior transport write completion before reading another 64 KiB block. This
+  preserves the bounded transport queue under a fast local producer instead of
+  turning legitimate bulk traffic into an `application write queue full`
+  disconnect. The self-test send path now suppresses SIGPIPE, unblocks and
+  joins its reader on failure, and reports the underlying transport error
+  instead of terminating during thread destruction. A fresh 32 MiB
+  bidirectional quick smoke completed at 121.60 MiB/s (1,020.05 Mbit/s) on the
+  development laptop; this is a regression signal, not a release benchmark.
+- At exact clean signed lifecycle commit `30cad6e`, isolated Linux
+  qualification completed 1/10/50/100/256 Chrome-helper process ramps, 1,000
+  sequential reconnects, and a 2,333-second bidirectional full-speed batch.
+  The 256-client run held 256 clients plus 256 helpers and moved 65,536 MiB
+  exactly with zero unexpected failure. Reconnects completed 1,000/1,000 with
+  server fds/threads 8 -> 8 and 34 -> 34, and no post-cleanup helper or zombie.
+  The soak moved 225,280 MiB exactly at 816.607 Mbit/s aggregate with zero
+  timeout, interruption, mismatch, or unexpected server error. It used seven
+  back-to-back segments to preserve the signed endpoint's 16,384 MiB
+  per-invocation bound, so it is not one uninterrupted >16 GiB connection or
+  matched WAN evidence.
 
 ## Required before `2.0-rc1`
 
 - Run an actual desktop tunnel bidirectionally across multiple epochs and
-  reconnect cleanly in the intended deployment environment.
+  reconnect cleanly in the intended deployed network; current long-flow and
+  reconnect qualification is same-host loopback evidence.
 - Complete external HTTP/2/WebSocket conformance checks, not only project tests
   and Chrome interoperability.
-- Exercise partial socket writes, sustained flow-control stalls, malformed
-  carrier paths, backend timeout/failure, and bounded backpressure under load.
+- Exercise sustained carrier flow-control stalls, malformed carrier paths,
+  backend timeout/failure, and bounded backpressure under deployed-network
+  load. Helper partial control/plaintext I/O and teardown are already covered.
 - Decide the time-limit threat model explicitly. Today the receiver
   independently enforces inbound byte/frame usage while the configured active-time boundary is
   sender-local. A signed timestamp does not make a malicious sender's clock
@@ -211,18 +288,21 @@ or admin/control validation.
 - Preserve fixture-backed coherence between the TLS selection, HTTP headers,
   H2 shape, assets, and cover server while closing the remaining OpenSSL
   ClientHello differences.
+- Obtain independent cryptographic/protocol review and adversarial deployment
+  testing before authorizing `2.0-rc1`.
 
 ## Required before exact version `2.0`
 
-- A valid tunnel lasting at least 30 minutes.
-- Sanitizer coverage and a longer concurrency/rekey soak on an approved machine.
+- A valid uninterrupted tunnel lasting at least 30 minutes in the intended
+  deployment environment. The current >30-minute loopback qualification is a
+  seven-segment bounded batch, not one continuous >16 GiB connection.
+- Broader fuzz, disk/log-pressure, graceful reload/shutdown, and adversarial
+  operational soak beyond the completed native sanitizer and loopback gates.
 - Validate the implemented bounded future-epoch window with matched one-tunnel
   WAN upload/download/both matrices at 60, 100, and 210 ms, 100 Mbit/s and
   approximately 1 Gbit/s, plus controlled loss and a 30-minute soak. Diagnose
   the separate measured ceiling near 25 Mbit/s before tuning the ratchet
   further. The LAN result is not this gate.
-- Bulk overhead measurement at or below 5% using the committed capture-derived
-  shaping policy.
 - Security-negative coverage for counter wrap and all malformed/tampered cases
   in the acceptance list, plus independent review of key erasure and failure
   paths.
@@ -232,14 +312,19 @@ or admin/control validation.
 ## Known residual
 
 The former Chrome 131/150 and Windows/Linux identity mismatch is fixed behind
-one immutable Chrome 150/Debian 13 + Node 24 profile. OpenSSL still cannot
-reproduce Chrome/BoringSSL ClientHello/GREASE ordering, so TLS remains a
-classifier-visible difference upstream of the full-session H2 carrier.
-Matching ALPN or a coarse JA4 classification is not enough to claim Chrome
-indistinguishability. BoringSSL is a likely experiment, not a sufficient fix by
-itself; Chrome-specific behavior and entropy-normalized on-wire comparison
-against one pinned build are required. Traffic padding is likewise an
-evidence-driven option, not an automatic improvement.
+one immutable Chrome 151/Debian 13 + Node 24 profile. The normal build still
+defaults to the explicitly named `openssl-diagnostic` backend. The new pinned
+uTLS helper builds reproducibly with official Go 1.26.5 and its five live
+first flights pass the normalized ClientHello/ServerHello structural gate.
+Selecting `chrome151` never silently falls back: a build without the helper
+fails closed. The bounded certificate/exporter and process lifecycle matrix,
+process ramps, reconnect storm, and segmented full-speed soak pass. Matched WAN,
+one uninterrupted deployed-network soak, exact Chrome `151.0.7922.71`
+same-session capture, classifier/active-probe evidence, and independent review
+remain required before that backend becomes the default or YUME claims
+release-qualified Chrome parity. Matching ALPN or a coarse JA3/JA4 summary is
+insufficient. Traffic padding is likewise an evidence-driven option, not an
+automatic improvement.
 
 Client AUTH sends an Ed25519 public key and a signature over the complete
 canonical challenge/response transcript; it never sends the private key. As of

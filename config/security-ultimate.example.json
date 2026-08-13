@@ -1,4 +1,5 @@
 {
+  "transport_profile": "chrome151-node24-v1",
   "security_mode": "ultimate",
   "security_custom": {
     "epoch_bytes": 4194304,

@@ -655,6 +655,24 @@ ParsedArgs parse_args(int argc, char** argv) {
                 return args;
             }
             args.tls_pin_sha256 = value;
+        } else if (arg == "--transport-profile") {
+            const char* value = take_value("--transport-profile");
+            if (!value) {
+                return args;
+            }
+            args.transport_profile = value;
+        } else if (arg == "--tls-backend") {
+            const char* value = take_value("--tls-backend");
+            if (!value) {
+                return args;
+            }
+            args.tls_backend = value;
+        } else if (arg == "--tls-helper") {
+            const char* value = take_value("--tls-helper");
+            if (!value) {
+                return args;
+            }
+            args.tls_helper_path = value;
         } else if (arg == "--proxy") {
             // socks5://[user[:pass]@]host:port.
             const char* value = take_value("--proxy");

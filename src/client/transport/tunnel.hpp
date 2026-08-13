@@ -18,10 +18,9 @@
 #include <vector>
 
 #include <boost/asio.hpp>
-#include <boost/asio/ssl.hpp>
-
 #include <nlohmann/json.hpp>
 
+#include "client/transport/client_stream.hpp"
 #include "client/transport/core.hpp"
 #include "core/stealth/h2_carrier.hpp"
 #include "core/security/session_ratchet.hpp"
@@ -42,7 +41,7 @@ public:
     using ActivityHandler = std::function<void()>;
 
     explicit Tunnel(
-        boost::asio::ssl::stream<boost::asio::ip::tcp::socket>&& stream,
+        ClientTransportStream&& stream,
         std::unique_ptr<obfs::H2Carrier> carrier = {},
         Bytes prefetched_carrier_bytes = {},
         std::unique_ptr<ratchet::SessionRatchet> ratchet = {});
@@ -132,7 +131,7 @@ private:
     void schedule_keepalive();
     void schedule_ratchet_check();
 
-    boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream_;
+    ClientTransportStream stream_;
     boost::asio::strand<boost::asio::any_io_executor> strand_;
     boost::asio::steady_timer keepalive_timer_{stream_.get_executor()};
     boost::asio::steady_timer ratchet_timer_{stream_.get_executor()};

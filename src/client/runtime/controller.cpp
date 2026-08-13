@@ -189,9 +189,6 @@ std::vector<std::string> build_args(std::filesystem::path const& exe,
         args.emplace_back("--no-stealth");
     } else {
         add_arg(args, "--profile", cfg.tls_stealth_profile);
-        if (cfg.tls_stealth_rotate) args.emplace_back("--tls-stealth-rotate");
-        args.emplace_back("--tls-stealth-rotation-interval");
-        args.emplace_back(std::to_string(cfg.tls_stealth_rotation_interval));
         if (cfg.tls_fingerprint_log) args.emplace_back("--tls-fingerprint-log");
         add_arg(args, "--tls-fingerprint-log-path", cfg.tls_fingerprint_log_path);
         if (cfg.tls_fingerprint_verify) args.emplace_back("--tls-fingerprint-verify");

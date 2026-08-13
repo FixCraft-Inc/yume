@@ -14,12 +14,14 @@
 #include "core/protocol/runtime_policy.hpp"
 #include "core/security/ratchet.hpp"
 #include "core/security/secret_file.hpp"
+#include "core/version.hpp"
 #include "server/host/host_types.hpp"
 
 namespace yume::server {
 
 struct ServerConfig {
     int listen_port{443};
+    std::string transport_profile{yume::kTransportProfile};
     // --listen now accepts either "<port>" (legacy: bind 0.0.0.0:<port>)
     // or "<addr>:<port>" (bind specifically to <addr>). When the addr
     // form is used, listen_address holds the parsed address string;

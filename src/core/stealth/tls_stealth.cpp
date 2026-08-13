@@ -394,25 +394,6 @@ tls_fingerprint::FingerprintData parse_tls_verify_response(const std::string& bo
 
 }  // namespace
 
-tls_fingerprint::BrowserProfile profile_for_connection(
-    tls_fingerprint::BrowserProfile base_profile,
-    bool rotate,
-    std::uint32_t interval,
-    std::uint64_t completed_connections) {
-    const std::array profiles{
-        cover_profile::chrome150_debian13_node24().tls_profile,
-        tls_fingerprint::BrowserProfile::FIREFOX_126,
-        tls_fingerprint::BrowserProfile::SAFARI_18,
-    };
-    if (!rotate || interval == 0) return base_profile;
-    auto base = std::find(profiles.begin(), profiles.end(), base_profile);
-    if (base == profiles.end()) return base_profile;
-    const std::size_t base_index = static_cast<std::size_t>(
-        std::distance(profiles.begin(), base));
-    const std::uint64_t rotations = completed_connections / interval;
-    return profiles[(base_index + rotations) % profiles.size()];
-}
-
 std::map<uint16_t, std::string> cipher_name_map = {
     {0x1301, "TLS_AES_128_GCM_SHA256"},
     {0x1302, "TLS_AES_256_GCM_SHA384"},
@@ -477,12 +458,6 @@ StealthContext::StealthContext(const StealthConfig& config)
     : config_(config)
     , ssl_context_(boost::asio::ssl::context::tlsv13_client)
     , current_profile_(config.target_profile) {
-    available_profiles_ = {
-        cover_profile::chrome150_debian13_node24().tls_profile,
-        tls_fingerprint::BrowserProfile::FIREFOX_126,
-        tls_fingerprint::BrowserProfile::SAFARI_18,
-    };
-
     ssl_context_.set_options(boost::asio::ssl::context::default_workarounds);
 
     if (config_.enabled) {
@@ -502,7 +477,7 @@ void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profi
     auto profile_info = tls_fingerprint::get_browser_profile_info(profile);
     if (!profile_info) {
         profile_info = tls_fingerprint::get_browser_profile_info(
-            cover_profile::chrome150_debian13_node24().tls_profile);
+            cover_profile::active().tls_profile);
         if (!profile_info) return;
     }
 
@@ -512,7 +487,7 @@ void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profi
     configure_alpn(profile_info->alpn_protocols);
 
     SSL_CTX* ctx = ssl_context_.native_handle();
-    const auto& cover = cover_profile::chrome150_debian13_node24();
+    const auto& cover = cover_profile::active();
     if (SSL_CTX_set_min_proto_version(ctx, cover.tls_min_version) != 1 ||
         SSL_CTX_set_max_proto_version(ctx, cover.tls_max_version) != 1) {
         throw std::runtime_error(
@@ -672,15 +647,6 @@ void StealthContext::configure_alpn(const std::vector<std::string>& protocols) {
                             static_cast<unsigned int>(alpn_data.size()));
 }
 
-void StealthContext::rotate_profile() {
-    if (!config_.rotate_profiles || available_profiles_.empty()) {
-        return;
-    }
-    
-    profile_rotation_index_ = (profile_rotation_index_ + 1) % available_profiles_.size();
-    apply_stealth_profile(available_profiles_[profile_rotation_index_]);
-}
-
 void StealthContext::log_connection_metrics(const ConnectionMetrics& metrics) {
     if (!config_.log_fingerprints || config_.log_file_path.empty()) {
         return;
@@ -706,12 +672,6 @@ void StealthContext::log_connection_metrics(const ConnectionMetrics& metrics) {
         log_file << j.dump() << "\n";
     }
 
-    connection_counter_++;
-    if (config_.rotate_profiles &&
-        connection_counter_ >= config_.rotation_interval_connections) {
-        connection_counter_ = 0;
-        rotate_profile();
-    }
 }
 
 boost::asio::ssl::context generate_stealth_tls_config(

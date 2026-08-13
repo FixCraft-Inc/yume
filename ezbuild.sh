@@ -47,9 +47,10 @@ WINDOWS_TOOLCHAIN_PREFIX="${YUME_WINDOWS_TOOLCHAIN_PREFIX:-x86_64-w64-mingw32}"
 WINDOWS_TRIPLET="${YUME_WINDOWS_TRIPLET:-x64-mingw-dynamic}"
 VCPKG_ROOT="${VCPKG_ROOT:-}"
 VCPKG_PREFIX=""
-BASEFWX_REPO="${BASEFWX_REPO:-https://github.com/F1xGOD/basefwx.git}"
+DEPENDENCY_TOOL="${EZBUILD_REPO_ROOT}/scripts/yume_dependencies.py"
+BASEFWX_REPO="${BASEFWX_REPO:-}"
 BASEFWX_REF="${BASEFWX_REF:-${YUME_BASEFWX_REF:-}}"
-BASEFWX_REF_FILE="${BASEFWX_REF_FILE:-${PWD}/config/refs/basefwx.ref}"
+BASEFWX_REF_FILE="${BASEFWX_REF_FILE:-}"
 BASEFWX_SYNC_MODE="${BASEFWX_SYNC_MODE:-auto}"
 BASEFWX_EFFECTIVE_SYNC_MODE=""
 YUME_REQUIRE_ARGON2="${YUME_REQUIRE_ARGON2:-0}"
@@ -74,8 +75,14 @@ mkdir -p "${YUME_CACHE_ROOT}"
 IFS='|' read -r YUME_TMP_ROOT YUME_TMP_ROOT_AUTO <<< "$(init_tmp_root)"
 APT_UPDATED_FLAG="${APT_UPDATED_FLAG:-${YUME_CACHE_ROOT}/apt-updated}"
 
-if [[ -z "${BASEFWX_REF}" && -f "${BASEFWX_REF_FILE}" ]]; then
+if [[ -z "${BASEFWX_REPO}" ]]; then
+    BASEFWX_REPO="$(python3 "${DEPENDENCY_TOOL}" get basefwx repository)"
+fi
+if [[ -z "${BASEFWX_REF}" && -n "${BASEFWX_REF_FILE}" && -f "${BASEFWX_REF_FILE}" ]]; then
     BASEFWX_REF="$(tr -d '[:space:]' < "${BASEFWX_REF_FILE}")"
+fi
+if [[ -z "${BASEFWX_REF}" ]]; then
+    BASEFWX_REF="$(python3 "${DEPENDENCY_TOOL}" get basefwx revision)"
 fi
 
 info()  { echo -e "${COLOR_BLUE}[info] $*${COLOR_RESET}"; }
@@ -1080,7 +1087,11 @@ ensure_basefwx() {
     fi
     if [[ ${repo_present} -eq 0 ]]; then
         if [[ -z "${ref}" ]]; then
-            error "Pinned BaseFWX setup requires BASEFWX_REF or a non-empty ${BASEFWX_REF_FILE}."
+            error "Pinned BaseFWX setup requires BASEFWX_REF or config/dependencies.json."
+            return 1
+        fi
+        if [[ ! "${ref}" =~ ^[0-9a-f]{40}$ ]]; then
+            error "Pinned BaseFWX setup requires an exact lowercase 40-hex commit."
             return 1
         fi
         step "Cloning BaseFWX..."
@@ -1127,7 +1138,11 @@ ensure_basefwx() {
     fi
 
     if [[ -z "${ref}" ]]; then
-        error "BASEFWX_SYNC_MODE=pinned requires BASEFWX_REF or a non-empty ${BASEFWX_REF_FILE}."
+        error "BASEFWX_SYNC_MODE=pinned requires BASEFWX_REF or config/dependencies.json."
+        return 1
+    fi
+    if [[ ! "${ref}" =~ ^[0-9a-f]{40}$ ]]; then
+        error "BASEFWX_SYNC_MODE=pinned requires an exact lowercase 40-hex commit."
         return 1
     fi
 

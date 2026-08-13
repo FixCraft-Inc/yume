@@ -27,7 +27,7 @@ class SetupError(RuntimeError):
 def pinned_node_version() -> str:
     script_dir = Path(__file__).resolve().parent
     candidates = (
-        script_dir.parent / "tests/fixtures/chrome150-node24/manifest.json",
+        script_dir.parent / "tests/fixtures/chrome151-node24/manifest.json",
         script_dir.parent / "share/yume/cover-profile/manifest.json",
     )
     manifest_path = next((path for path in candidates if path.is_file()), None)

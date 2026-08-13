@@ -19,6 +19,7 @@
 
 #include "core/security/ratchet.hpp"
 #include "core/security/secret_file.hpp"
+#include "core/version.hpp"
 #include "client/transport/socket_protection.hpp"
 
 namespace yume::client {
@@ -94,6 +95,12 @@ struct ClientConfig {
     std::string tls_ca_material_id;
     std::string tls_server_name;
     std::string tls_pin_sha256;
+    // dev6 supports one authenticated transport identity. The Chrome helper
+    // is opt-in until its qualification gate is complete; OpenSSL is retained
+    // only as an explicitly labelled diagnostic backend.
+    std::string transport_profile{yume::kTransportProfile};
+    std::string tls_backend{"openssl-diagnostic"};
+    std::string tls_helper_path;
     bool require_anonym{false};
     bool accept_monitoring{false};
     bool service_streams_only{false};
@@ -119,8 +126,6 @@ struct ClientConfig {
     // TLS Stealth Mode settings
     bool tls_stealth_enabled{true};  // ON by default
     std::string tls_stealth_profile{"chrome"};  // complete fixture registry key
-    bool tls_stealth_rotate{false};
-    std::uint32_t tls_stealth_rotation_interval{100};
     bool tls_fingerprint_log{false};
     std::string tls_fingerprint_log_path{"./logs/fingerprints"};
     bool tls_fingerprint_verify{false};

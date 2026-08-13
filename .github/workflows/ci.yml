@@ -10,8 +10,6 @@ permissions:
   contents: read
 
 env:
-  BASEFWX_REPO: "https://github.com/F1xGOD/basefwx.git"
-  BASEFWX_REF_FILE: "config/refs/basefwx.ref"
   # GitHub-hosted runners have two cores and limited memory. Release LTO can
   # start several ltrans linkers per target, so concurrent target builds can
   # be killed by the runner without a compiler diagnostic (exit 143).
@@ -83,13 +81,8 @@ jobs:
 
       - name: Ensure BaseFWX sources
         run: |
-          BASEFWX_REF="${BASEFWX_REF:-}"
-          if [[ -z "${BASEFWX_REF}" && -f "${BASEFWX_REF_FILE}" ]]; then
-            BASEFWX_REF="$(tr -d '[:space:]' < "${BASEFWX_REF_FILE}")"
-          fi
-          if [[ -z "${BASEFWX_REF}" ]]; then
-            BASEFWX_REF="main"
-          fi
+          BASEFWX_REPO="$(python3 scripts/yume_dependencies.py get basefwx repository)"
+          BASEFWX_REF="$(python3 scripts/yume_dependencies.py get basefwx revision)"
           if [[ -d basefwx ]] && ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
             rm -rf basefwx
           fi
@@ -171,13 +164,8 @@ jobs:
 
       - name: Ensure BaseFWX sources
         run: |
-          BASEFWX_REF="${BASEFWX_REF:-}"
-          if [[ -z "${BASEFWX_REF}" && -f "${BASEFWX_REF_FILE}" ]]; then
-            BASEFWX_REF="$(tr -d '[:space:]' < "${BASEFWX_REF_FILE}")"
-          fi
-          if [[ -z "${BASEFWX_REF}" ]]; then
-            BASEFWX_REF="main"
-          fi
+          BASEFWX_REPO="$(python3 scripts/yume_dependencies.py get basefwx repository)"
+          BASEFWX_REF="$(python3 scripts/yume_dependencies.py get basefwx revision)"
           if [[ -d basefwx ]] && ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
             rm -rf basefwx
           fi

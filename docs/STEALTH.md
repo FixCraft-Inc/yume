@@ -167,6 +167,26 @@ The resulting `SUMMARY.md`, pcaps, logs, JA3, JA4, and JA4_r values are review
 artifacts, not an automatic parity verdict. Never grant the YUME binaries root
 or packet-capture privileges merely to make this diagnostic pass.
 
+Before feeding two five-run arms to a passive classifier, validate that they
+actually share one frozen comparison contract:
+
+```bash
+python3 scripts/yume_classifier_evidence.py \
+  --normal /private/evidence/normal-chrome \
+  --yume /private/evidence/yume
+```
+
+The validator reads only sanitized JSON, normalized TLS-wire reports, the
+public certificate, and their environment manifests. It rejects symlinks and
+unbounded JSON, requires exact Chrome/Node identities and five runs per arm,
+and compares source cleanliness, certificate, SNI, ALPN, profile, workload,
+and stable H2/WebSocket behavior. `PARITY` means only that the inputs are
+matched enough for later external classifier and active-probe work.
+`KNOWN_GAP` means required evidence is absent; `DRIFT` means an observed value
+differs. The existing carrier diagnostic's public-URL baseline is useful
+functional evidence but is not a same-certificate, same-server classifier
+baseline and therefore cannot satisfy this contract.
+
 ## Known classifier-visible residuals
 
 TLS remains the weakest classifier-visible layer. Stock OpenSSL does not expose

@@ -32,6 +32,7 @@ PINNED_CHROME_VERSION = _COVER_PROFILE["client"]["version"]
 PINNED_NODE_VERSION = _COVER_PROFILE["server"]["version"]
 PINNED_CHROME_LAUNCHER_SHA256 = _COVER_PROFILE["client"]["launcher_sha256"]
 PINNED_CHROME_BINARY_SHA256 = _COVER_PROFILE["client"]["binary_sha256"]
+PINNED_NODE_BINARY_SHA256 = _COVER_PROFILE["server"]["binary_sha256"]
 _PINNED_CHROME_RE = re.compile(
     rf"\b(?:Chrome|Chromium)\s+{re.escape(PINNED_CHROME_VERSION)}\b"
 )

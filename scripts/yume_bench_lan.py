@@ -32,12 +32,13 @@ from yume_bench_common import (  # noqa: E402
     endpoint_contract,
     generate_keyset,
     invoking_identity,
-    is_pinned_chrome_version,
     parse_rates,
     relay_chunk_kib,
+    require_user_namespace_sandbox,
     resolve_pinned_node,
     run_streamed_command,
     start_logged_process,
+    validate_pinned_chrome,
     wait_for_tcp,
 )
 from yume_bench_resources import (  # noqa: E402
@@ -604,9 +605,10 @@ def run_browser_cover(
     argv: list[str] = []
     if os.geteuid() == 0:
         argv.extend(drop_prefix(identity))
+    require_user_namespace_sandbox(list(argv))
     argv.extend([
         "env", f"HOME={home}", f"XDG_RUNTIME_DIR={runtime}",
-        str(browser), "--headless", "--disable-gpu",
+        str(browser), "--headless", "--disable-gpu", "--disable-setuid-sandbox",
         "--disable-breakpad", "--disable-crash-reporter",
         "--disable-background-networking", "--disable-component-update",
         "--no-first-run", "--no-default-browser-check",
@@ -641,10 +643,20 @@ def run_client(args: argparse.Namespace) -> int:
     if os.geteuid() == 0 and args.cover and not shutil.which("setpriv"):
         raise SystemExit("setpriv is required to run Chrome without root privileges")
     browser = None
+    browser_identity: dict[str, str] | None = None
+    identity = invoking_identity()
     if args.cover:
         browser = find_executable(
             args.browser, ("chromium", "chromium-browser", "google-chrome"), "browser"
         )
+        try:
+            browser_identity = validate_pinned_chrome(
+                browser,
+                drop_prefix(identity) if os.geteuid() == 0 else None,
+            )
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from exc
+        browser = Path(browser_identity["launcher"])
     mib, streams = benchmark_shape(args)
     directions = 2 if args.bench_direction == "both" else 1
     total_payload_mib = mib * directions * args.clients
@@ -669,7 +681,6 @@ def run_client(args: argparse.Namespace) -> int:
     home = output / "home"
     runtime.mkdir(mode=0o700)
     home.mkdir(mode=0o700)
-    identity = invoking_identity()
     if os.geteuid() == 0:
         chown_tree(output, identity)
     base_environment = dict(os.environ)
@@ -758,13 +769,7 @@ def run_client(args: argparse.Namespace) -> int:
     browser_result: StreamedCommandResult | None = None
     cover_capture_error: str | None = None
     if browser and endpoint_code == 0:
-        browser_version = command_version([str(browser), "--version"])
-        if not is_pinned_chrome_version(browser_version):
-            print(
-                f"[lan] {browser_version} does not match Chrome 151; "
-                "the cover capture is functional evidence only",
-                file=sys.stderr,
-            )
+        browser_version = browser_identity["version"] if browser_identity else None
         capture = None
         try:
             if args.capture:
@@ -867,6 +872,7 @@ def run_client(args: argparse.Namespace) -> int:
             "interrupted": browser_result.interrupted if browser_result else False,
             "timed_out": browser_result.timed_out if browser_result else False,
             "browser": browser_version,
+            "browser_identity": browser_identity,
             "command": browser_argv,
             "pcap": (
                 "cover-chromium.pcap"

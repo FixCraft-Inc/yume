@@ -30,6 +30,11 @@ import time
 from datetime import datetime
 from typing import Any
 
+from yume_bench_common import (
+    require_user_namespace_sandbox,
+    validate_pinned_chrome,
+)
+
 
 QUICK_URLS = [
     "https://example.com/",
@@ -456,6 +461,7 @@ def chromium_base_args(binary: str, user_data_dir: pathlib.Path, timeout_ms: int
         binary,
         "--headless=new",
         "--disable-gpu",
+        "--disable-setuid-sandbox",
         "--disable-quic",
         "--disable-background-networking",
         "--disable-component-update",
@@ -471,8 +477,6 @@ def chromium_base_args(binary: str, user_data_dir: pathlib.Path, timeout_ms: int
         f"--virtual-time-budget={timeout_ms}",
         f"--user-data-dir={user_data_dir}",
     ]
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        argv.append("--no-sandbox")
     return argv
 
 
@@ -486,7 +490,7 @@ def run_chromium_urls(
 ) -> list[dict[str, Any]]:
     outdir.mkdir(parents=True, exist_ok=True)
     profile = outdir / "profile"
-    profile.mkdir(parents=True, exist_ok=True)
+    profile.mkdir(parents=True, exist_ok=False)
     results = []
     for idx, url in enumerate(urls, 1):
         stem = f"{idx:02d}"
@@ -511,6 +515,7 @@ def run_chromium_urls(
                 timed_out = True
         results.append({
             "url": url,
+            "command": argv,
             "returncode": code,
             "timed_out": timed_out,
             "duration_s": round(time.monotonic() - start, 3),
@@ -750,18 +755,21 @@ def summarize(outdir: pathlib.Path, data: dict[str, Any]) -> None:
     elif dpi:
         report.append(f"- DPI report: not run ({dpi.get('error') or dpi.get('returncode')})")
 
-    browser_failures = [
-        r for r in data.get("target_browser", [])
-        if r.get("returncode") not in (0, None)
-    ]
-    if browser_failures:
-        report.append(f"- Browser navigation failures/timeouts: {len(browser_failures)}")
+    failed_browser_runs = browser_failures(data)
+    if failed_browser_runs:
+        report.append(
+            f"- Browser navigation failures/timeouts: {len(failed_browser_runs)}"
+        )
     report += [
         "",
         "## Diagnosis",
         "",
     ]
-    if not capture_available and selected_h2:
+    if failed_browser_runs:
+        report.append(
+            "FAIL: at least one target or baseline Chrome navigation failed or timed out."
+        )
+    elif not capture_available and selected_h2:
         report.append(
             "FUNCTIONAL PASS: Yume selected HTTP/2 and the tunneled browser run "
             "completed, but no raw packet capture was available."
@@ -851,8 +859,33 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
+def require_unprivileged_browser_driver() -> None:
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        raise RuntimeError(
+            "refusing to launch Chrome as root; run the browser driver unprivileged "
+            "and use a permissioned capture tool or separate privileged capture sidecar"
+        )
+
+
+def browser_failures(data: dict[str, Any]) -> list[dict[str, Any]]:
+    runs = [
+        *data.get("target_browser", []),
+        *data.get("baseline_browser", []),
+    ]
+    return [run for run in runs if run.get("returncode") != 0]
+
+
+def diagnostic_exit_code(data: dict[str, Any]) -> int:
+    return 1 if browser_failures(data) else 0
+
+
 def main() -> int:
     args = parse_args()
+    try:
+        require_unprivileged_browser_driver()
+        require_user_namespace_sandbox()
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
     if args.local_server and args.no_local_server:
         raise SystemExit("--local-server and --no-local-server are mutually exclusive")
 
@@ -870,6 +903,11 @@ def main() -> int:
 
     capture_tool = choose_capture_tool(args.capture_tool)
     chromium = find_chromium(args.chromium)
+    try:
+        chromium_identity = validate_pinned_chrome(pathlib.Path(chromium))
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
+    chromium = chromium_identity["launcher"]
     socks_port = args.socks_port or free_local_port()
     local_yumed_port = args.local_yumed_port or free_local_port()
     local_cover_port = free_local_port()
@@ -879,7 +917,10 @@ def main() -> int:
 
     if args.out:
         outdir = pathlib.Path(args.out).expanduser().resolve()
-        outdir.mkdir(parents=True, exist_ok=True)
+        try:
+            outdir.mkdir(parents=True, exist_ok=False)
+        except FileExistsError as exc:
+            raise SystemExit(f"--out must name a fresh directory: {outdir}") from exc
         cleanup_outdir = False
     else:
         outdir = pathlib.Path(tempfile.mkdtemp(prefix="yume-carrier-diagnose-"))
@@ -892,6 +933,7 @@ def main() -> int:
         "mode": "local" if local_mode else "remote",
         "capture_tool": capture_tool,
         "chromium": chromium,
+        "chromium_identity": chromium_identity,
         "outdir": str(outdir),
         "urls": urls,
         "server_profile": args.server_profile if local_mode else "remote-unknown",
@@ -1094,7 +1136,7 @@ def main() -> int:
         print(f"[+] DPI report: {data['dpi_report']['report']}")
     if cleanup_outdir:
         shutil.rmtree(outdir, ignore_errors=True)
-    return 0
+    return diagnostic_exit_code(data)
 
 
 if __name__ == "__main__":

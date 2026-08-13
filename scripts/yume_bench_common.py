@@ -30,6 +30,8 @@ _COVER_MANIFEST = (
 _COVER_PROFILE = json.loads(_COVER_MANIFEST.read_text(encoding="utf-8"))
 PINNED_CHROME_VERSION = _COVER_PROFILE["client"]["version"]
 PINNED_NODE_VERSION = _COVER_PROFILE["server"]["version"]
+PINNED_CHROME_LAUNCHER_SHA256 = _COVER_PROFILE["client"]["launcher_sha256"]
+PINNED_CHROME_BINARY_SHA256 = _COVER_PROFILE["client"]["binary_sha256"]
 _PINNED_CHROME_RE = re.compile(
     rf"\b(?:Chrome|Chromium)\s+{re.escape(PINNED_CHROME_VERSION)}\b"
 )
@@ -443,6 +445,78 @@ def command_version(argv: list[str]) -> str:
         if re.fullmatch(r"Yume\s+\d[^\s]*", line):
             return line
     return lines[0] if lines else "unknown"
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_pinned_chrome(
+    browser: Path,
+    version_command_prefix: list[str] | None = None,
+) -> dict[str, str]:
+    """Validate the exact normal-Chrome launcher and adjacent browser binary."""
+    launcher = browser.expanduser().resolve()
+    if not launcher.is_file() or not os.access(launcher, os.X_OK):
+        raise RuntimeError(f"Chrome launcher is not executable: {launcher}")
+    launcher_sha256 = sha256_file(launcher)
+    if launcher_sha256 != PINNED_CHROME_LAUNCHER_SHA256:
+        raise RuntimeError(
+            "Chrome launcher SHA-256 does not match the pinned evidence manifest"
+        )
+
+    binary = launcher.parent / Path(_COVER_PROFILE["client"]["binary"]).name
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        raise RuntimeError(f"adjacent Chrome binary is not executable: {binary}")
+    binary_sha256 = sha256_file(binary)
+    if binary_sha256 != PINNED_CHROME_BINARY_SHA256:
+        raise RuntimeError(
+            "Chrome binary SHA-256 does not match the pinned evidence manifest"
+        )
+
+    version = command_version([
+        *(version_command_prefix or []),
+        str(launcher),
+        "--version",
+    ])
+    if not is_pinned_chrome_version(version):
+        raise RuntimeError(
+            f"{version} does not match pinned Chrome {PINNED_CHROME_VERSION}"
+        )
+    return {
+        "version": version,
+        "launcher": str(launcher),
+        "launcher_sha256": launcher_sha256,
+        "binary": str(binary),
+        "binary_sha256": binary_sha256,
+    }
+
+
+def require_user_namespace_sandbox(command_prefix: list[str] | None = None) -> None:
+    """Fail unless an unprivileged user namespace can be created in context."""
+    unshare = shutil.which("unshare")
+    if not unshare:
+        raise RuntimeError("unshare is required for the Chrome user-namespace sandbox")
+    argv = [*(command_prefix or []), unshare, "--user", "--map-root-user", "true"]
+    try:
+        result = subprocess.run(
+            argv,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("could not validate the Chrome user-namespace sandbox") from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip().splitlines()
+        suffix = f": {detail[-1]}" if detail else ""
+        raise RuntimeError(f"Chrome user-namespace sandbox is unavailable{suffix}")
 
 
 def invoking_identity() -> RuntimeIdentity:

@@ -1364,6 +1364,10 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             "${CMAKE_SOURCE_DIR}/scripts/yume_chrome_evidence.py"
             --fixture "${YUME_ACTIVE_PROFILE_FIXTURE}"
     )
+    add_test(NAME yume_browser_sandbox_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/scripts/test_yume_browser_sandbox.py"
+    )
     add_test(NAME yume_tls_wire_test
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_yume_tls_wire.py"

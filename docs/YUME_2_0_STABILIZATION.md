@@ -173,10 +173,13 @@ bumping to `2.0-rc1`.
 4. The corrective checkpoint containing this checklist waits for the exact
    navigated frame and loader, bounds CDP/HTTP/socket operations, passively
    confirms Node is listening before the relay, and registers deterministic
-   Node regressions in package and CTest automation. Focused local validation
-   passes; its independent read-only review, signed checkpoint, automatic
-   workflow read-back, and clean exact-commit artifact preparation control the
-   next launch.
+   Node regressions in package and CTest automation. Signed commit `4a9c24d`
+   passed clean exact-commit artifact preparation and CodeQL. Both CI lanes
+   built and passed 65/66 tests; only a shared isolated fixture failed because
+   it omitted the `rg` executable used by the passive listener wait. The
+   current checkpoint supplies that test-local shim and passes browser-sandbox
+   38/38. Its read-only review, signed checkpoint, automatic read-back, and new
+   clean exact-commit artifact preparation control the next launch.
 5. Rerun the entire five-normal/five-YUME campaign in a fresh root with exact
    Node `24.18.0`, staged Chrome `151.0.7922.71`, a fresh profile, and a valid
    sandbox. Only an accepted matched-input report may unblock external

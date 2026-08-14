@@ -12,11 +12,12 @@ relevant gates before relying on the hashes or measurements in this document.
 
 ## Current integrated checkpoint (2026-08-13)
 
-The current reviewed candidate has the proposed signed subject `Add live outer
-carrier evidence capture`. Until that commit exists and its exact-commit remote
-lane passes, `git log` remains authoritative and this section describes a
-candidate, not an integrated result. The candidate adds an opt-in, payload-free
-observer on the production nghttp2/WebSocket
+The live outer-carrier architecture is integrated as signed commit
+`1593fc62de89d613e107f1e173adf3edb7ed7568`, tree
+`eeead05b222cbd46137828b8ce5c3b089889dc04`, subject `Add live outer carrier
+evidence capture`. Its verified EdDSA fingerprint is
+`967278FF6FA436F504CBB0058A1588B5E2598DB1`. The checkpoint adds an opt-in,
+payload-free observer on the production nghttp2/WebSocket
 carrier plus an exclusive mode-0600 evidence writer. The exact capture mode is
 restricted to one direct `chrome151-node24-v1` tunnel, the pinned `chrome151`
 backend, disabled optional padding/jitter, and a one-shot exact 64-by-16-KiB
@@ -34,7 +35,7 @@ can therefore return `DRIFT` for its absent favicon stream, early server PING,
 authenticated framing, or ratchet overhead; capture mode does not alter those
 wire behaviors to force a match.
 
-The frozen pre-commit candidate has an explicit read-only code/security
+The architecture checkpoint has an explicit read-only code/security
 `GO / MERGE` after three high findings were repaired: ordinary production PING
 and CLOSE wire behavior was restored, passive lifecycle was added to the
 classifier projection, and executable hash gates now precede version probes.
@@ -45,14 +46,35 @@ The combined provenance/manifest/finalizer/classifier/sandbox suite passed
 evidence checks, generator/dependency verification, source release preflight,
 Debian source creation, installed/42-symbol ABI checks, six workflow YAML
 files, shell/Python syntax, diff hygiene, and the tracked private-artifact audit
-also passed. These local CMake caches use warnings-as-errors and strict Argon2,
-but strict OQS/LZMA requirements are off; the fresh exact-commit remote lane
-must supply the strict release acceptance.
+also passed. Those local CMake caches use warnings-as-errors and strict Argon2,
+but strict OQS/LZMA requirements are off.
 
 Two independent exact Go 1.26.5 helper rebuilds and the configured helper are
 identical at
 `f0e2cf15f9f0f1984cf7b105ce6837537074d8b8b3d84343b37d47a9ec84f269`.
-This candidate implements the missing YUME behavior-input capability; it does not claim
+The fresh `raptorlake` checkout of that exact commit and pinned BaseFWX
+`4692d4ce4edec2aa9835d04ad9ff6c3ad3ab9374` then passed strict native 66/66,
+serial ASan+UBSan 66/66, Release/LTO 61/61, pinned Go unit/race, the same 95
+focused evidence tests, Debian/42-symbol ABI, tracked private-artifact audit,
+two clean helper builds, Linux artifact preparation, exact release preflight,
+and artifact-transfer round trip. Every retained evidence log passed its
+SHA-256 check. The prepared bundle, standalone server, and transfer hashes are
+respectively `c3049ab89f1e254f6b94aa096d9ab18e58fdc9e82ccf20e087d80ef2945b2bb8`,
+`7af87fc556a86339e84dde435d35f629fa801f57087a697b0c67c25bd0de3d6c`,
+and `abb637b23ef03b10cd58c628ea5641a16a586dfc5ca525d5cf0ae64f7203816f`.
+
+The first GitHub CI run for `1593fc62` built both native and sanitizer lanes but
+failed their shared browser-sandbox test before its intended hash assertion
+because the minimal runner lacked `ss` or `rg`. The current test supplies inert
+temporary shims for those later-stage prerequisites. It changes no production
+runner, and an independent read-only review returned `MERGE`; complete local
+native and serial sanitizer registrations pass with the correction. CodeQL,
+Code Quality, branch sync, and Pages passed for the architecture commit. The
+corrective checkpoint's CI and branch-sync read-back remains a final automation
+check, not evidence of a wire, crypto, release-artifact, or runtime failure.
+
+This integrated development checkpoint implements the missing YUME
+behavior-input capability; it does not claim
 that a real five-run matched normal/YUME campaign, external classification,
 active probing, WAN/loss qualification, or deployed soak has run.
 

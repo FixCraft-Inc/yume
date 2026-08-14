@@ -234,6 +234,18 @@ and mode-0600 `complete.json` are written. Failed or partial captures have no
 completion marker and are rejected by the validator. Raw NetLogs and all
 private material remain outside Git.
 
+The first real five-plus-five campaign on 2026-08-13 failed closed during
+normal run 3 after two completed normal runs. Its driver could issue the
+fixture evaluation against the old `about:blank` execution context immediately
+after navigation; the YUME arm and matched validator did not run. That partial
+root is diagnosis-only evidence and no run from it may be reused. The corrected
+driver enables lifecycle events before its single navigation, requires the
+returned frame and loader to reach `load`, and then checks the exact fixture URL
+and readiness marker with short synchronous polls. CDP commands, DevTools HTTP
+requests, and socket transitions are bounded, and the runner passively confirms
+the exact loopback Node listener before starting the TLS relay. A fresh exact-
+commit five-plus-five campaign is still required.
+
 For the YUME arm, use the checked-in runner from a clean exact-commit checkout.
 It creates the owner-only output, runs five separate production connections
 through an unprivileged TCP relay that records TLS-wire structure, invokes the

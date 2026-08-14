@@ -12,6 +12,56 @@ relevant gates before relying on the hashes or measurements in this document.
 
 ## Current integrated checkpoint (2026-08-13)
 
+### Gate A closure and first Gate B campaign outcome
+
+Gate A is closed for continued development and remains `NO RELEASE` at signed
+commit `815ea405568edeb661389bae128a6678cb4cdf1b`. All five automatic workflows
+passed, local and `origin/main` agreed, and workflow-owned `DEV` had content
+parity. No PR was opened and `DEV` was not pushed directly.
+
+The clean exact-commit Gate B preparation at
+`/home/f1xgod/yume-gateb-artifacts-815ea40-tRn2xi` passed Release 61/61,
+pinned Go unit/race tests, strict Argon2/OQS/LZMA and warnings-as-errors,
+Debian/42-symbol ABI and installed-layout checks, private-artifact audit, two
+reproducible helper builds, Linux artifact preparation, exact preflight, and
+transfer round trip. The helper, build-tree `yume`, build-tree and standalone
+`yumed`, prepared package, and transfer hashes are respectively
+`f0e2cf15f9f0f1984cf7b105ce6837537074d8b8b3d84343b37d47a9ec84f269`,
+`5a4e4366549d085c45a64f664702615aa60048137bd4e63636e10a73777a1049`,
+`a712fe606343f68f61d43cac57409d30e250cbfab7d9ecd7ac6914fe096b6254`,
+`7d1fb5c888632ad38ee80c17217c88608d918acc33cbdebd1eec4ed070fc9112`,
+and `f53406d780329d94610d678391ccf97b4e0bcbb37d868c29702fda5273e483e3`.
+This qualifies exact capture inputs only.
+
+The first five-normal/five-YUME same-session campaign exited `1` during normal
+run 3. Normal runs 1 and 2 completed and sealed; run 3 is partial, and neither
+the YUME arm nor the matched validator ran. The evidence identifies a capture-
+driver race: `Page.navigate` was followed immediately by an awaited evaluation
+that could remain bound to the old `about:blank` execution context. A separate
+read-only review also found that the runner started the TLS relay without first
+confirming the Node listener. This is a harness failure, not `DRIFT` and not a
+YUME runtime, wire, crypto, or prepared-artifact failure. Preserve the failed
+root outside Git as diagnosis-only evidence and never resume or count it.
+
+The corrective checkpoint containing this section enables lifecycle events
+before exactly one navigation, requires the matching frame/loader `load`, then
+polls only synchronous state until the exact fixture URL and readiness marker
+are present. CDP commands, DevTools HTTP requests, and socket open/close are
+bounded. The normal runner passively waits for the exact loopback Node listener
+before starting its relay. The behavioral Node tests are part of both
+`npm test` and CTest. Focused navigation/package tests, both registered Node
+CTests, browser-sandbox 38/38, the remaining capture/classifier tests,
+generator/dependency/Chrome evidence, exact release preflight, syntax, and diff
+hygiene pass locally. Fresh exact-commit artifact preparation and a completely
+new five-plus-five campaign remain mandatory after this correction is signed;
+none of the partial predecessor runs may be reused.
+
+Gate B therefore remains open. External classifier/active-probe work, matched
+WAN/loss matrices, and deployed-network soak remain blocked on an accepted
+fresh same-session matched-input report.
+
+The architecture chronology below remains retained evidence.
+
 The live outer-carrier architecture is integrated as signed commit
 `1593fc62de89d613e107f1e173adf3edb7ed7568`, tree
 `eeead05b222cbd46137828b8ce5c3b089889dc04`, subject `Add live outer carrier

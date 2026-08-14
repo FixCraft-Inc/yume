@@ -138,11 +138,12 @@ or admin/control validation.
 
 ## Development evidence completed
 
-- Gate A is closed for continued development and remains `NO RELEASE` at
-  signed commit `815ea405568edeb661389bae128a6678cb4cdf1b`: all five automatic
-  workflows passed and workflow-owned `DEV` reached content parity. Its clean
-  exact-commit Gate B artifact preparation passed Release 61/61, pinned Go
-  unit/race, strict dependency, Debian/ABI/installed-layout, reproducibility,
+- Gate A first closed for continued development, with `NO RELEASE`, at signed
+  commit `815ea405568edeb661389bae128a6678cb4cdf1b`: all five automatic
+  workflows passed and workflow-owned `DEV` reached content parity. That
+  checkpoint's clean exact-commit Gate B artifact preparation passed Release
+  61/61, pinned Go unit/race, strict dependency, Debian/ABI/installed-layout,
+  reproducibility,
   Linux preparation, exact preflight, and transfer-round-trip gates.
 - The first same-session five-normal/five-YUME campaign failed closed during
   normal run 3 because the CDP driver could await fixture state in the old
@@ -159,6 +160,21 @@ or admin/control validation.
   browser fixture that supplied fake `ss` but omitted the `rg` now used by the
   passive listener wait. The current checkpoint adds that test-local shim and
   passes browser-sandbox 38/38; production capture behavior is unchanged.
+- Signed checkpoint `e4786e049fea7b786148e55b806e37fea401741e`
+  passed CI, Pages, branch sync, dynamic CodeQL/Code Quality, static CodeQL
+  `31777856725`, tracked-content parity with workflow-owned `DEV`, and fresh
+  exact-commit Release 63/63, pinned Go unit/race, private-artifact,
+  reproducibility, package-preflight, checksum, and transfer-round-trip gates.
+- Its new same-session campaign failed closed during normal Chrome run 1:
+  preflight, private-kit, Xvfb, Chrome DevTools, Node, and relay readiness
+  passed, but real CDP `Page.navigate` did not answer within 15 seconds. No
+  complete normal arm, YUME arm, or matched report exists. A fresh-profile
+  direct Chrome-to-Node canary reproduced the timeout without the TLS relay or
+  any YUME path, so this is a campaign-control failure, not `DRIFT`. The mocked
+  navigation tests did not exercise the real CDP session/deadline. Both failed
+  raw capture roots were deleted after sanitized diagnosis under explicit
+  operator cleanup authority; they cannot be reused or independently
+  revalidated.
 - Signed live-observer architecture commit
   `1593fc62de89d613e107f1e173adf3edb7ed7568` passed independent read-only
   review, complete local native and serial ASan+UBSan suites, and a fresh clean

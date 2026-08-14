@@ -7,20 +7,23 @@ The authoritative merge/RC/stable checklist and branch policy are now in
 `docs/YUME_2_0_STABILIZATION.md`. In particular, merging reviewed dev6 into
 `main` and calling a Linux build stable 2.0 are separate milestones.
 
-Verified checkout date: 2026-08-13. Always refresh the Git state and rerun the
+Verified checkout date: 2026-08-14. Always refresh the Git state and rerun the
 relevant gates before relying on the hashes or measurements in this document.
 
-## Current integrated checkpoint (2026-08-13)
+## Current integrated checkpoint (2026-08-14)
 
 ### Gate A closure and first Gate B campaign outcome
 
 Gate A is closed for continued development and remains `NO RELEASE` at signed
-commit `815ea405568edeb661389bae128a6678cb4cdf1b`. All five automatic workflows
-passed, local and `origin/main` agreed, and workflow-owned `DEV` had content
-parity. No PR was opened and `DEV` was not pushed directly.
+commit `e4786e049fea7b786148e55b806e37fea401741e`, tree
+`81c6012cb77303260528d24b4b63b395ba9ca415`. CI, Pages, branch sync, dynamic
+CodeQL/Code Quality, and static CodeQL `31777856725` passed. Local and
+`origin/main` agree, workflow-owned `DEV` has tracked-content parity, and the
+remote contains only `main` and `DEV`. No PR was opened and `DEV` was not
+pushed directly.
 
-The clean exact-commit Gate B preparation at
-`/home/f1xgod/yume-gateb-artifacts-815ea40-tRn2xi` passed Release 61/61,
+The earlier clean exact-commit Gate B preparation, formerly at the now-cleaned
+`/home/f1xgod/yume-gateb-artifacts-815ea40-tRn2xi`, passed Release 61/61,
 pinned Go unit/race tests, strict Argon2/OQS/LZMA and warnings-as-errors,
 Debian/42-symbol ABI and installed-layout checks, private-artifact audit, two
 reproducible helper builds, Linux artifact preparation, exact preflight, and
@@ -40,8 +43,10 @@ driver race: `Page.navigate` was followed immediately by an awaited evaluation
 that could remain bound to the old `about:blank` execution context. A separate
 read-only review also found that the runner started the TLS relay without first
 confirming the Node listener. This is a harness failure, not `DRIFT` and not a
-YUME runtime, wire, crypto, or prepared-artifact failure. Preserve the failed
-root outside Git as diagnosis-only evidence and never resume or count it.
+YUME runtime, wire, crypto, or prepared-artifact failure. The failed root was
+kept until that diagnosis and its sanitized facts were recorded, then removed
+under the operator's explicit artifact-cleanup instruction. It cannot be
+resumed or counted.
 
 The corrective checkpoint containing this section enables lifecycle events
 before exactly one navigation, requires the matching frame/loader `load`, then
@@ -52,9 +57,9 @@ before starting its relay. The behavioral Node tests are part of both
 `npm test` and CTest. Focused navigation/package tests, both registered Node
 CTests, browser-sandbox 38/38, the remaining capture/classifier tests,
 generator/dependency/Chrome evidence, exact release preflight, syntax, and diff
-hygiene pass locally. Fresh exact-commit artifact preparation and a completely
-new five-plus-five campaign remain mandatory after this correction is signed;
-none of the partial predecessor runs may be reused.
+hygiene pass locally. Those mocked tests did not exercise a real CDP session or
+its new fixed command deadline, a gap exposed by the latest campaign below.
+None of the partial predecessor runs may be reused.
 
 Gate B therefore remains open. External classifier/active-probe work, matched
 WAN/loss matrices, and deployed-network soak remain blocked on an accepted
@@ -70,9 +75,31 @@ that isolated fixture supplied a fake `ss` and omitted the `rg` used by the new
 passive-listener wait. CodeQL passed. The checkpoint containing this paragraph
 adds only the missing test-local `rg` shim; it does not change a production
 runner, Chrome behavior, YUME binary, helper, wire, crypto, or default. The
-focused browser suite passes 38/38 locally. A signed checkpoint, automatic
-read-back, and fresh exact-commit artifact preparation remain required before
-the new campaign may launch.
+focused browser suite passes 38/38 locally. Signed checkpoint `e4786e0`, its
+automatic read-back, and a fresh exact-commit preparation then passed. The
+retained exact root
+`/home/f1xgod/yume-gateb-artifacts-e4786e0-mg9N7f` passed Release 63/63,
+pinned Go 1.26.5 unit/race, tracked-private audit over 625 paths, two identical
+helpers, exact package preflight, and transfer round trip; every retained
+evidence checksum verifies.
+
+The new five-plus-five campaign nevertheless failed closed during normal
+Chrome run 1, before any completed normal arm, YUME arm, or matched-input
+report. Preflight, private-kit creation, and Xvfb passed; exact Chrome DevTools,
+Node, and the passive relay announced ready, but `Page.navigate` did not answer
+within its new 15-second command deadline. The result is `FAIL`, not `DRIFT`,
+with `MATCHED_INPUT_VERDICT/EXIT=not-run`. A bounded fresh-profile canary using
+the same exact Chrome and Node reproduced the timeout with Chrome connected
+directly to Node and no TLS-wire relay, excluding the relay and all YUME
+client/server/helper paths. No resource limit fired and no child, listener, or
+display residue remained. Raw NetLogs and private kits from both failed
+campaigns were deleted during the approved cleanup after their sanitized facts
+were recorded; they are not recoverable evidence.
+
+Before another full campaign, the real CDP boundary needs a reviewed,
+deterministic stalled/late-response test, bounded payload-free navigation-event
+diagnostics, and one isolated exact-Chrome canary. A source correction then
+requires new exact artifacts and a completely fresh five-plus-five root.
 
 The architecture chronology below remains retained evidence.
 

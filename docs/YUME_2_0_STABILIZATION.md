@@ -157,28 +157,31 @@ bumping to `2.0-rc1`.
 
 ## Current continuation boundary (2026-08-13)
 
-1. The reviewed and signed live outer-carrier architecture is on `main` at
-   `1593fc62de89d613e107f1e173adf3edb7ed7568`. Its complete local and fresh
-   strict remote Gate A lanes pass, including release-artifact preparation and
-   round-trip validation.
-2. The first push's CodeQL, Code Quality, branch sync, and Pages runs passed.
-   CI built successfully but its native and sanitizer jobs both reached one
-   non-hermetic negative test that assumed the runner installed `ss` and `rg`.
-   The current tree supplies inert test-local shims, changes no production
-   behavior, passes complete local native and serial sanitizer registrations,
-   and has a read-only `MERGE` review.
-3. Freeze that bounded test/status correction as a signed checkpoint, push only
-   `main` without a PR, and read its CI and workflow-owned `DEV` parity once.
-   A failed correction still blocks the final Gate A verdict; do not relabel it
-   as a runtime or cryptographic failure without evidence.
-4. Once that automation read-back passes, Gate A is `MERGE` for continued
-   development on `main`. It remains `NO RELEASE`: `2.0-dev6`, the opt-in
-   Chrome helper, and the existing backend default are unchanged.
-5. Gate B then requires an exact Node `24.18.0` binary plus the freshly
-   reverified staged Chrome `151.0.7922.71`, launched from a fresh profile with
-   a valid sandbox. Same-session capture, external classifier/active-probe,
-   WAN/netem matrices, and uninterrupted deployed soak remain separate bounded
-   campaigns outside Git.
+1. Gate A is `MERGE` for continued development and `NO RELEASE` at signed
+   commit `815ea405568edeb661389bae128a6678cb4cdf1b`. All five automatic
+   workflows passed and workflow-owned `DEV` had content parity. No PR was
+   opened and `DEV` was not pushed directly.
+2. The exact `815ea40` Gate B artifact preparation passed its fresh strict
+   Release, Go unit/race, Debian/ABI/installed-layout, reproducibility,
+   private-artifact, Linux preparation, preflight, and transfer-round-trip
+   gates. It qualifies capture inputs only.
+3. The first same-session campaign failed closed during normal-Chrome run 3
+   because the driver could evaluate the old `about:blank` context immediately
+   after `Page.navigate`. Runs 1-2 are complete but the third is partial; the
+   YUME arm and matched validator never ran. The result is neither `PARITY` nor
+   `DRIFT`, and no predecessor run may be reused.
+4. The corrective checkpoint containing this checklist waits for the exact
+   navigated frame and loader, bounds CDP/HTTP/socket operations, passively
+   confirms Node is listening before the relay, and registers deterministic
+   Node regressions in package and CTest automation. Focused local validation
+   passes; its independent read-only review, signed checkpoint, automatic
+   workflow read-back, and clean exact-commit artifact preparation control the
+   next launch.
+5. Rerun the entire five-normal/five-YUME campaign in a fresh root with exact
+   Node `24.18.0`, staged Chrome `151.0.7922.71`, a fresh profile, and a valid
+   sandbox. Only an accepted matched-input report may unblock external
+   classifier/active-probe work, WAN/netem matrices, and uninterrupted deployed
+   soak. Gate B remains open.
 
 No agent should silently turn “finish the checks” into permission to change the
 wire contract, weaken fail-closed behavior, push `DEV`, publish artifacts, or

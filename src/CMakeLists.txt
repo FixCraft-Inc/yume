@@ -1386,6 +1386,17 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/scripts/test_yume_browser_sandbox.py"
     )
+    find_program(YUME_NODE_EXECUTABLE NAMES node nodejs)
+    if(YUME_NODE_EXECUTABLE)
+        add_test(NAME yume_cover_node_workload_test
+            COMMAND "${YUME_NODE_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/tools/cover-node/workload_test.mjs"
+        )
+        add_test(NAME yume_chrome_navigation_test
+            COMMAND "${YUME_NODE_EXECUTABLE}" --test
+                "${CMAKE_SOURCE_DIR}/tools/cover-node/test_capture_chrome_navigation.mjs"
+        )
+    endif()
     add_test(NAME yume_classifier_evidence_test
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/scripts/test_yume_classifier_evidence.py"

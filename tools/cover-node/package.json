@@ -8,6 +8,6 @@
   "scripts": {
     "start": "node backend.mjs",
     "capture-reference": "node server.mjs",
-    "test": "node workload_test.mjs"
+    "test": "node workload_test.mjs && node --test test_capture_chrome_navigation.mjs"
   }
 }

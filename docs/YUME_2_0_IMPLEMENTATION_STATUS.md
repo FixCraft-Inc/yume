@@ -138,6 +138,20 @@ or admin/control validation.
 
 ## Development evidence completed
 
+- Gate A is closed for continued development and remains `NO RELEASE` at
+  signed commit `815ea405568edeb661389bae128a6678cb4cdf1b`: all five automatic
+  workflows passed and workflow-owned `DEV` reached content parity. Its clean
+  exact-commit Gate B artifact preparation passed Release 61/61, pinned Go
+  unit/race, strict dependency, Debian/ABI/installed-layout, reproducibility,
+  Linux preparation, exact preflight, and transfer-round-trip gates.
+- The first same-session five-normal/five-YUME campaign failed closed during
+  normal run 3 because the CDP driver could await fixture state in the old
+  `about:blank` context. Two normal runs completed, but the third is partial;
+  no YUME run or matched report exists. The corrective checkpoint waits for the
+  exact frame/loader lifecycle, bounds CDP/HTTP/socket operations, passively
+  confirms Node listener readiness, and registers deterministic Node tests.
+  Focused local tests pass. This is a harness correction, not parity evidence;
+  fresh exact-commit artifacts and an entirely new campaign remain required.
 - Signed live-observer architecture commit
   `1593fc62de89d613e107f1e173adf3edb7ed7568` passed independent read-only
   review, complete local native and serial ASan+UBSan suites, and a fresh clean
@@ -150,10 +164,9 @@ or admin/control validation.
   required for `2.0-rc1`.
 - The architecture push's first GitHub CI run exposed one test-only portability
   defect: the Chrome/Node hash negative test assumed `ss` and `rg` were
-  installed. The current test supplies inert temporary prerequisites, changes
-  no production runner, and passes complete local native and serial sanitizer
-  registrations with an independent read-only `MERGE` verdict. Its corrective
-  workflow read-back remains part of the final Gate A automation check.
+  installed. Signed correction `815ea405568edeb661389bae128a6678cb4cdf1b`
+  supplied inert test-local prerequisites without changing production behavior;
+  its automatic workflows and branch-parity read-back passed.
 
 - Exact Chrome loaded `/`, CSS, and JavaScript through `yumed` backed by exact
   Node `24.18.0`; the page completed its expected DOM readiness marker.

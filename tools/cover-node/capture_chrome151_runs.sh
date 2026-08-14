@@ -316,6 +316,21 @@ if ss -ltn | rg -q ":(${cover_port}|${cover_backend_port}|${devtools_port})\\b";
     exit 1
 fi
 
+wait_for_loopback_listener() {
+    local port=$1
+    local pid=$2
+    for _ in $(seq 1 100); do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            return 1
+        fi
+        if ss -H -ltn "src 127.0.0.1 and sport = :$port" | rg -q .; then
+            return 0
+        fi
+        sleep 0.05
+    done
+    return 1
+}
+
 for run_index in $(seq 1 "$run_count"); do
     run_name=$(printf 'run-%02d' "$run_index")
     run_dir="$output_dir/$run_name"
@@ -332,6 +347,11 @@ for run_index in $(seq 1 "$run_count"); do
         "$node_bin" "$runtime_root/tools/cover-node/server.mjs" \
         >"$run_dir/node.log" 2>&1 &
     node_pid=$!
+    if ! wait_for_loopback_listener "$node_port" "$node_pid"; then
+        sed -n '1,160p' "$run_dir/node.log" >&2
+        echo "$run_name: Node cover did not become ready" >&2
+        exit 1
+    fi
 
     if [[ $capture_tls_wire == 1 ]]; then
         python3 "$runtime_root/scripts/yume_tls_wire.py" relay \

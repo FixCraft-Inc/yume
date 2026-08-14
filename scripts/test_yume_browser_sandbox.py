@@ -624,6 +624,52 @@ class BrowserSandboxTest(unittest.TestCase):
             '[[ -e $git_ancestor/.git || -L $git_ancestor/.git ]]', script
         )
 
+    def test_chrome_capture_waits_for_navigated_fixture_document(self) -> None:
+        driver = (
+            Path(__file__).resolve().parents[1]
+            / "tools/cover-node/capture_chrome.mjs"
+        ).read_text(encoding="utf-8")
+        navigation = "const navigation = await command('Page.navigate'"
+        lifecycle = "await waitForLifecycleEvent({"
+        readiness = "await waitForTargetDocument({ command, targetUrl, deadline, sleep });"
+        fixture = "WebSocket fixture timeout"
+        self.assertIn("export async function navigateToFixture", driver)
+        self.assertIn("Page.setLifecycleEventsEnabled", driver)
+        self.assertIn("event.loaderId === loaderId", driver)
+        self.assertIn("diagnostic.state?.href === targetUrl", driver)
+        self.assertIn("diagnostic.state?.fixtureReady === 'true'", driver)
+        self.assertIn("if (navigation.errorText)", driver)
+        self.assertIn("AbortSignal.timeout(timeoutMs)", driver)
+        self.assertIn("DevTools HTTP request timed out", driver)
+        self.assertIn(navigation, driver)
+        self.assertIn(lifecycle, driver)
+        self.assertIn(readiness, driver)
+        self.assertIn(fixture, driver)
+        self.assertLess(driver.index(navigation), driver.index(lifecycle))
+        self.assertLess(driver.index(lifecycle), driver.index(readiness))
+        self.assertLess(driver.index(readiness), driver.index(fixture))
+        navigation_test = (
+            Path(__file__).resolve().parents[1]
+            / "tools/cover-node/test_capture_chrome_navigation.mjs"
+        ).read_text(encoding="utf-8")
+        self.assertIn("waits for the matching loader", navigation_test)
+        self.assertIn("rejects a Page.navigate error", navigation_test)
+        self.assertIn("times out without a matching frame", navigation_test)
+        self.assertIn("bounds a stalled DevTools HTTP request", navigation_test)
+
+    def test_normal_capture_passively_waits_for_node_before_relay(self) -> None:
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "tools/cover-node/capture_chrome151_runs.sh"
+        ).read_text(encoding="utf-8")
+        listener_wait = 'wait_for_loopback_listener "$node_port" "$node_pid"'
+        relay = 'python3 "$runtime_root/scripts/yume_tls_wire.py" relay'
+        self.assertIn("wait_for_loopback_listener()", script)
+        self.assertIn('ss -H -ltn "src 127.0.0.1 and sport = :$port"', script)
+        self.assertIn(listener_wait, script)
+        self.assertIn(relay, script)
+        self.assertLess(script.index(listener_wait), script.index(relay))
+
     def test_yume_capture_runner_enforces_provenance_and_cleanup_contract(self) -> None:
         script = (
             Path(__file__).resolve().parents[1]
@@ -852,7 +898,10 @@ printf '%s  %s\n' "$hash" "$target"
             )
             self._write_executable(fake_bin / "unshare", "#!/bin/sh\nexit 0\n")
             self._write_executable(fake_bin / "curl", "#!/bin/sh\nexit 0\n")
-            self._write_executable(fake_bin / "ss", "#!/bin/sh\nexit 0\n")
+            self._write_executable(
+                fake_bin / "ss",
+                "#!/bin/sh\ncase \" $* \" in *\"sport = :\"*) echo LISTEN ;; esac\n",
+            )
             self._write_executable(
                 fake_bin / "git",
                 """#!/bin/sh

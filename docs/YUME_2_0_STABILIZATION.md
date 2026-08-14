@@ -36,6 +36,12 @@ branch after integration and parity verification. The ordered path is:
 Do not combine the integration with a version bump, backend-default switch,
 tag, or publication. Those are separate reviewable decisions.
 
+For the current 2026-08-13 live-observer integration the operator explicitly
+forbids a PR or temporary review branch. The authorized path is one reviewed,
+signed commit directly on refreshed `main`, a push only to `main`, and one
+workflow snapshot; do not poll long-running workflows. This narrow operator
+instruction supersedes steps 2-3 above for this change only.
+
 ## Gate A: land dev6 on `main` while it remains development software
 
 All items in this section block merging the current feature branch.
@@ -87,6 +93,14 @@ development label, keep `chrome151` opt-in, and avoid release-parity claims.
   against the same Node `24.18.0` cover, certificate, SNI, ALPN, and workload.
   Preserve private NetLog/PCAP provenance and compare TLS, HTTP headers/client
   hints, H2 settings/priorities, WebSocket behavior, assets, and server identity.
+  The YUME CLI now has an exact-policy `--outer-carrier-evidence` producer for
+  the live `behavior.json`; its presence closes the instrumentation gap only.
+  Gate B still requires five accepted same-session runs and sealed bundle
+  provenance outside Git. Use `capture_yume151_runs.sh` so the YUME executable,
+  adjacent reproducible helper, clean source identity, exact Chrome/Node
+  identities, PEM certificate hash, DER leaf pin, TLS-wire relay, per-run
+  behavior, and runtime snapshot are bound into that arm. The runner never
+  copies the external client config or its secret files.
 - Complete external H2/WebSocket conformance and passive-classifier/active-probe
   tests, including malformed extended CONNECT, replay, ordinary cover paths,
   backend outage, certificate/site consistency, and hosting/IP metadata. Record
@@ -138,23 +152,28 @@ bumping to `2.0-rc1`.
   is not indistinguishability, and Linux qualification is not Android or
   cross-platform support.
 
-## Immediate next-agent order
+## Current continuation order (2026-08-13)
 
-1. Read the public/private handoffs and inspect live Git, sibling repositories,
-   remote refs, and signatures.
-2. Review the uncommitted architecture diff. Fix only concrete findings and
-   rerun affected checks.
-3. With explicit commit authority, create one signed architecture commit.
-4. Recreate the remote build from that exact commit and close every Gate A
-   check, including Go race and actual release-artifact validation.
-5. Synchronize all handoffs with hashes and a merge/no-merge verdict.
-6. If Gate A is green and push/integration authority is explicit, use the
-   temporary-review-branch path above, merge into `main`, let workflow sync
-   `DEV`, verify parity, and remove the temporary branch.
-7. Treat Gate B as a new evidence campaign. Exact Chrome `.71` is staged, but
-   its sandboxed isolated launch/capture and WAN/netem work still require a
-   controlled environment and may require an explicit root-capable benchmark
-   terminal or approved endpoint.
+1. The live outer-carrier observer/capture candidate is frozen. The read-only
+   reviewer returned explicit `GO / MERGE` after all three high findings were
+   closed.
+2. The complete local native and serial ASan+UBSan suites, pinned Go unit/race,
+   metadata/evidence, Debian/ABI, private-artifact, and reproducible-helper
+   checks passed as recorded in the public handoff. Exact Linux artifact
+   preparation remains part of the fresh exact-commit remote lane.
+3. The commit carrying this section must be the one verified signed checkpoint;
+   refresh `origin/main`, push only `main` without a PR, and verify its signature
+   and parity rather than relying on this prose alone.
+4. Launch the bounded remote operator against a fresh checkout of that exact
+   commit and the complete clean BaseFWX source. Return its unit and evidence
+   handles without polling it.
+5. After the user reports completion, inspect that remote result once and give
+   the final Gate A merge/no-merge verdict. Workflow status is likewise read
+   once rather than babysat.
+6. Gate B then uses freshly reverified exact Chrome/Node artifacts and the two
+   capture runners. The historical local `.71` staging path is currently
+   absent; re-stage or use an independently verified remote copy with a valid
+   sandbox before capture. WAN/netem remains a separate controlled campaign.
 
 No agent should silently turn “finish the checks” into permission to change the
 wire contract, weaken fail-closed behavior, push `DEV`, publish artifacts, or

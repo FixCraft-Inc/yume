@@ -619,6 +619,49 @@ class BrowserSandboxTest(unittest.TestCase):
         self.assertIn("YUME_CAPTURE_TLS_CERT", script)
         self.assertIn("scripts/yume_capture_manifest.py", script)
         self.assertIn("capture source checkout changed during capture", script)
+        self.assertIn("capture output must be outside every Git worktree", script)
+        self.assertIn(
+            '[[ -e $git_ancestor/.git || -L $git_ancestor/.git ]]', script
+        )
+
+    def test_yume_capture_runner_enforces_provenance_and_cleanup_contract(self) -> None:
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "tools/cover-node/capture_yume151_runs.sh"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("--no-sandbox", script)
+        self.assertIn("must run as an unprivileged user", script)
+        self.assertIn("--user --map-root-user true", script)
+        self.assertIn("capture source checkout is not clean", script)
+        self.assertIn("capture output must be outside the source checkout", script)
+        self.assertIn("capture output must be outside every Git worktree", script)
+        self.assertIn(
+            '[[ -e $git_ancestor/.git || -L $git_ancestor/.git ]]', script
+        )
+        self.assertIn('mkdir -m 0700 -- "$output_dir"', script)
+        for identity in (
+            "EXPECTED_CHROME_LAUNCHER_SHA256",
+            "EXPECTED_CHROME_BINARY_SHA256",
+            "EXPECTED_NODE_BINARY_SHA256",
+            "EXPECTED_HELPER_SHA256",
+        ):
+            self.assertIn(identity, script)
+        self.assertIn(
+            '$(dirname -- "$yume_bin")/yume-chrome-tls-helper', script
+        )
+        self.assertIn('--tls-helper "$helper_bin"', script)
+        self.assertIn("yume_capture_binary_provenance.py", script)
+        self.assertIn('--bundle "$release_bundle"', script)
+        self.assertIn('openssl x509 -in "$certificate" -outform DER', script)
+        self.assertIn('--tls-pin "$tls_leaf_sha256"', script)
+        self.assertIn('--tls-leaf-sha256 "$tls_leaf_sha256"', script)
+        self.assertIn('for run_index in $(seq 1 "$run_count")', script)
+        self.assertIn('sha256sum -- behavior.json tls-wire.json', script)
+        self.assertIn("scripts/yume_capture_finalize.py", script)
+        self.assertIn("trap cleanup_relay EXIT", script)
+        self.assertIn("trap 'exit 130' INT TERM", script)
+        self.assertNotRegex(script, r"install[^\n]*\$client_config")
+        self.assertNotRegex(script, r"install[^\n]*(secret|private.key)")
 
     def test_normal_capture_rejects_hash_before_executing_browser(self) -> None:
         if os.geteuid() == 0:
@@ -661,6 +704,87 @@ class BrowserSandboxTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Chrome launcher SHA-256 mismatch", result.stderr)
         self.assertFalse(browser_executed)
+
+    def test_yume_capture_rejects_hashes_before_executing_browser_or_node(self) -> None:
+        if os.geteuid() == 0:
+            self.skipTest("the capture script intentionally rejects a root caller first")
+        capture_script = (
+            Path(__file__).resolve().parents[1]
+            / "tools/cover-node/capture_yume151_runs.sh"
+        )
+        for forged_chrome_hashes in (False, True):
+            with self.subTest(
+                forged_chrome_hashes=forged_chrome_hashes
+            ), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                install = root / "chrome install"
+                yume_dir = root / "yume-bin"
+                fake_bin = root / "fake-bin"
+                install.mkdir()
+                yume_dir.mkdir()
+                fake_bin.mkdir()
+                chrome_marker = root / "chrome-executed"
+                node_marker = root / "node-executed"
+                launcher = install / "google-chrome"
+                binary = install / "chrome"
+                node = root / "node"
+                yume = yume_dir / "yume"
+                helper = yume_dir / "yume-chrome-tls-helper"
+                self._write_executable(
+                    launcher,
+                    '#!/bin/sh\ntouch "$CHROME_MARKER"\nexit 0\n',
+                )
+                self._write_executable(binary, "#!/bin/sh\nexit 0\n")
+                self._write_executable(
+                    node,
+                    '#!/bin/sh\ntouch "$NODE_MARKER"\nexit 0\n',
+                )
+                self._write_executable(yume, "#!/bin/sh\nexit 0\n")
+                self._write_executable(helper, "#!/bin/sh\nexit 0\n")
+                for name in ("bundle.tar.xz", "client.json", "server.crt"):
+                    (root / name).write_text("not executed\n", encoding="utf-8")
+
+                environment = dict(os.environ)
+                environment.update({
+                    "CHROME_MARKER": str(chrome_marker),
+                    "NODE_MARKER": str(node_marker),
+                })
+                expected_error = "Chrome launcher SHA-256 mismatch"
+                if forged_chrome_hashes:
+                    self._write_executable(
+                        fake_bin / "sha256sum",
+                        """#!/bin/sh
+for target do :; done
+case "$target" in
+    */google-chrome) hash=aea09d69ce7f24d5901f6bfb15dd44d0c856e793e0a498f8d8393ec7d2c308ec ;;
+    */chrome) hash=4cf210c4a0aeee3e69a73639260918a7448626d6b99892ec61e20750bc7c7079 ;;
+    */node) hash=0000000000000000000000000000000000000000000000000000000000000000 ;;
+    *) exec /usr/bin/sha256sum "$@" ;;
+esac
+printf '%s  %s\n' "$hash" "$target"
+""",
+                    )
+                    environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
+                    expected_error = "Node binary SHA-256 mismatch"
+
+                result = subprocess.run(
+                    [
+                        str(capture_script), str(root / "output"), str(yume),
+                        str(root / "bundle.tar.xz"), str(root / "client.json"),
+                        str(root / "server.crt"), "cover.test", "127.0.0.1:443",
+                        str(launcher), str(binary), str(node), "1",
+                    ],
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=environment,
+                    timeout=10,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected_error, result.stderr)
+                self.assertFalse(chrome_marker.exists())
+                self.assertFalse(node_marker.exists())
 
     def test_normal_capture_rejects_unsuccessful_chrome_exit(self) -> None:
         if os.geteuid() == 0:

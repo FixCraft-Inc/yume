@@ -60,9 +60,38 @@ or admin/control validation.
   output inside the checkout, and executes a private checksummed source
   snapshot. Portable relative checksums plus a final mode-0600 completion
   marker make failed, partial, moved, or tampered arms fail closed. This closes
-  normal-arm provenance and workload-definition gaps; it does not supply the
-  still-missing live YUME outer-carrier `behavior.json`, classifier,
-  active-probe, WAN, or soak evidence.
+  normal-arm provenance and workload-definition gaps.
+- An opt-in production-carrier observer can now write the corresponding YUME
+  `behavior.json` from actual nghttp2 and WebSocket events. It retains bounded,
+  sanitized metadata only, correlates H2 PING/ACK internally without exporting
+  opaque bytes, records real peer-window stalls rather than application data
+  starvation, parses inbound raw frames across TLS-read boundaries (including
+  CONTINUATION), and marks incomplete collection fail-closed without failing
+  the carrier. The CLI accepts it only for the exact direct, single-tunnel,
+  pinned-backend workload: 64 ordered 16-KiB messages are echoed byte-for-byte
+  for exactly 1 MiB each way, then the authenticated application stream remains
+  open through a 42-second quiet interval and a bounded graceful carrier close.
+  Ordinary endpoint benchmarks retain their sequential upload/download
+  behavior and normal logical-stream closes. The classifier reconstructs the
+  stable summaries from the event stream, enforces exact successful H2
+  lifecycle/cardinality and frame bounds, compares the ordered request sequence
+  (including normal Chrome's stream-9 favicon request) and WebSocket control/data
+  order, and rejects placeholders or inconsistencies. This is a capture
+  capability and reports YUME
+  framing/ratchet overhead rather than synthesizing Chrome-sized outer
+  messages. The current production carrier's missing favicon stream and earlier
+  server PING remain truthful classifier-visible drift rather than capture-only
+  wire changes. It is not evidence that the required five matched runs,
+  classifier/active-probe work, WAN matrix, or soak have passed.
+- `tools/cover-node/capture_yume151_runs.sh` is the unprivileged YUME-arm
+  producer. It requires a clean exact source, fresh owner-only output outside
+  every Git worktree, a prepared bundle whose manifest binds the supplied YUME
+  client and adjacent helper to that source commit, pinned Chrome/Node/helper
+  identities, the adjacent helper selected explicitly, a certificate-valid
+  SNI and separate DER leaf pin, and one
+  per-run TLS-wire plus live-behavior report. It copies no config or secret,
+  restores its relay on exit/signal, and seals the arm only after all five runs
+  and their runtime-source/checksum manifests verify.
 - Persistent nghttp2 carrier with priming page and asset requests, RFC 8441
   extended CONNECT, WebSocket masking/fragmentation/control frames, flow
   control, serialized writes, backpressure, and graceful H2 shutdown.

@@ -12,7 +12,53 @@ relevant gates before relying on the hashes or measurements in this document.
 
 ## Current integrated checkpoint (2026-08-13)
 
-The current runtime checkpoint integrated into `main` is signed commit
+The current reviewed candidate has the proposed signed subject `Add live outer
+carrier evidence capture`. Until that commit exists and its exact-commit remote
+lane passes, `git log` remains authoritative and this section describes a
+candidate, not an integrated result. The candidate adds an opt-in, payload-free
+observer on the production nghttp2/WebSocket
+carrier plus an exclusive mode-0600 evidence writer. The exact capture mode is
+restricted to one direct `chrome151-node24-v1` tunnel, the pinned `chrome151`
+backend, disabled optional padding/jitter, and a one-shot exact 64-by-16-KiB
+application echo transaction followed by a completed 42-second quiet interval
+and bounded graceful close. Actual SETTINGS, WINDOW_UPDATE,
+HEADERS/CONTINUATION metadata, WebSocket geometry/control frames, actual
+peer-window stalls/recovery, opaque-correlated H2 PING/ACK, and terminal state
+are reconstructed into `behavior.json`; payloads,
+carrier paths, credentials, peer addresses, TLS secrets, and PING opaque bytes
+are never written to evidence. The classifier rejects incomplete, placeholder,
+malformed, or aggregate-inconsistent live event streams and compares ordered
+request/WebSocket lifecycle, including Chrome's stream-9 favicon request and
+the server-PING/first-fragment relationship. The unchanged production carrier
+can therefore return `DRIFT` for its absent favicon stream, early server PING,
+authenticated framing, or ratchet overhead; capture mode does not alter those
+wire behaviors to force a match.
+
+The frozen pre-commit candidate has an explicit read-only code/security
+`GO / MERGE` after three high findings were repaired: ordinary production PING
+and CLOSE wire behavior was restored, passive lifecycle was added to the
+classifier projection, and executable hash gates now precede version probes.
+The complete local native suite passed 66/66, and the freshly reconfigured
+serial ASan+UBSan suite passed 66/66 with leak detection and halt/abort-on-error.
+The combined provenance/manifest/finalizer/classifier/sandbox suite passed
+95/95; pinned offline Go 1.26.5 unit and race tests, five-flow fixture/TLS
+evidence checks, generator/dependency verification, source release preflight,
+Debian source creation, installed/42-symbol ABI checks, six workflow YAML
+files, shell/Python syntax, diff hygiene, and the tracked private-artifact audit
+also passed. These local CMake caches use warnings-as-errors and strict Argon2,
+but strict OQS/LZMA requirements are off; the fresh exact-commit remote lane
+must supply the strict release acceptance.
+
+Two independent exact Go 1.26.5 helper rebuilds and the configured helper are
+identical at
+`f0e2cf15f9f0f1984cf7b105ce6837537074d8b8b3d84343b37d47a9ec84f269`.
+This candidate implements the missing YUME behavior-input capability; it does not claim
+that a real five-run matched normal/YUME campaign, external classification,
+active probing, WAN/loss qualification, or deployed soak has run.
+
+### Matched-input baseline
+
+The matched-input baseline integrated into `main` is signed commit
 `656d6851cedb5e3f21ac9a04537214a2960df135`, tree
 `cd82add238d4cf7ef46704ee182d3543eb111cbc`, subject
 `Seal matched capture evidence inputs`. Its parent is the signed classifier
@@ -42,8 +88,8 @@ native/sanitizer build lane must be read from the private operational handoff
 before using that result. The automatic CI/CodeQL and `DEV` sync from the
 latest push must also be read back before claiming branch parity.
 
-Gate B remains open. No matched normal/YUME five-run capture, live YUME
-outer-carrier event evidence, external classifier or active-probe campaign,
+Gate B remains open. No real matched normal/YUME five-run capture, accepted
+external classifier or active-probe campaign,
 matched WAN/loss matrix, uninterrupted deployed-network soak, default switch,
 version bump, tag, publication, RC, release, or stable-2.0 claim is established
 by this checkpoint.
@@ -100,11 +146,13 @@ git diff --stat 119b728..HEAD
 git diff --binary 119b728..HEAD
 ```
 
-### Uncommitted post-checkpoint architecture candidate (2026-08-11)
+### Historical post-checkpoint architecture candidate (2026-08-11)
 
 The working tree after signed checkpoint `a673d3e058656ee86ebd68be742f1192cd0cbe95`
-is intentionally dirty with a reviewed but uncommitted modularization slice.
-Do not describe `a673d3e` as containing it. The candidate adds
+was intentionally dirty with a reviewed modularization slice. This retained
+section is chronology only: later signed `main` commits integrated and
+superseded it. Do not use its old remote overlay as current provenance. The
+candidate added
 `config/transport_profiles.json` plus validated generated immutable C++ and Go
 registries, routes production TLS/HTTP/H2 consumers through
 `cover_profile::active()`, and makes the helper choose an audited ClientHello
@@ -139,12 +187,10 @@ temporary remote checkout remains available for review and contains no copied
 contents were deliberately not inspected; the reviewed candidate must prove
 that Debian source creation and validation exclude such roots.
 
-The next agent must convert that dirty overlay into a signed clean commit before
-using new validation as merge evidence. It must repeat the pinned Go race test
-and additionally exercise actual release artifact preparation/reproducible-helper
-validation, because the candidate changed helper selection and release metadata.
-After a successful temporary review branch and signed integration into `main`,
-push only `main`; the branch-sync workflow owns `DEV`.
+The later Gate A integration converted that overlay into signed clean commits.
+The present live-observer candidate is a separate change and must be validated
+from its own fresh exact-commit checkout. The old overlay remains regression
+evidence only.
 
 ### Gate A review fixes in the live dirty candidate (2026-08-12)
 
@@ -177,11 +223,10 @@ evidence—not Gate A release acceptance. Explicit commit authority, one signed
 commit, and the strict fresh exact-commit remote build/artifact lane remain
 mandatory.
 
-### Exact Chrome artifact staged without installation (2026-08-12)
+### Historical exact Chrome staging (2026-08-12)
 
-The exact normal Google Chrome package is still available from Google's
-versioned HTTPS apt pool. It was downloaded without root and extracted without
-installation on `raptorlake` under
+The exact normal Google Chrome package was downloaded without root and
+extracted without installation on `raptorlake` under
 `/home/f1xgod/yume-profile-build-t4CutW/chrome-151.0.7922.71/`.
 
 - Package: `google-chrome-stable_151.0.7922.71-1_amd64.deb`
@@ -204,6 +249,12 @@ use a container/VM with correct sandbox ownership or a separately validated
 user-namespace sandbox. Never use `--no-sandbox` merely to make capture start. The
 artifact makes same-session capture possible; it does not itself constitute a
 new capture or parity result.
+
+That historical local staging root is absent as of the 2026-08-13 live
+checkout audit. Do not assume the path exists. A remote or re-staged copy may
+be used only after rechecking the package, launcher, binary, version, and valid
+sandbox against the values above; never substitute the installed browser or
+add `--no-sandbox`.
 
 ## What changed
 
@@ -231,8 +282,12 @@ The authoritative evidence is under `tests/fixtures/chrome151-node24/`.
 
 - A pinned uTLS `v1.8.2` helper is built with exact Go `1.26.5`, module
   checksums, `-trimpath`, no runtime downloads, and no Go build ID.
-- The reproducible helper SHA-256 is
+- Historical August 10 strict builds produced helper SHA-256
   `6dbcda7e626f4c3bedce687a232fa7c2c02fe8649ecb7f0322497670093f9d36`.
+  The current modularized source rebuilds reproducibly as
+  `f0e2cf15f9f0f1984cf7b105ce6837537074d8b8b3d84343b37d47a9ec84f269`;
+  the capture runner pins this current checkpoint. The immutable August 1 wire
+  fixture retains its own historical artifact hash and is not rewritten.
 - The helper identity is `yume-chrome151-utls-v1.8.2-ipc-v1`.
 - The C++ parent establishes direct or SOCKS/Tor-routed TCP and passes the
   connected descriptor to one helper process per connection over an anonymous

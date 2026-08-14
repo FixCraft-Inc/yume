@@ -969,9 +969,32 @@ int run_connected_session(boost::asio::io_context& io,
             args.bench_streams,
             args.bench_direction,
             args.bench_full,
+            static_cast<bool>(options.outer_carrier_trace),
         };
         const int bench_code = run_endpoint_benchmark(tunnel, cfg, bench_options);
-        tunnel_pool->stop_all("benchmark complete");
+        bool capture_idle_complete = true;
+        if (options.outer_carrier_trace && bench_code == 0) {
+            static constexpr std::uint32_t kCaptureIdleMs = 42000;
+            const auto idle_deadline = std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(kCaptureIdleMs);
+            while (std::chrono::steady_clock::now() < idle_deadline) {
+                if (stop_requested.load(std::memory_order_acquire) ||
+                    !tunnel->is_alive()) {
+                    capture_idle_complete = false;
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            obfs::OuterCarrierEvent idle_event;
+            idle_event.kind = obfs::OuterCarrierEventKind::IdleInterval;
+            idle_event.direction = obfs::OuterCarrierDirection::Sent;
+            idle_event.stream_class = obfs::OuterCarrierStreamClass::Carrier;
+            idle_event.value = kCaptureIdleMs;
+            idle_event.completed = capture_idle_complete;
+            options.outer_carrier_trace->Record(std::move(idle_event));
+        }
+        tunnel_pool->stop_all(
+            capture_idle_complete ? "benchmark complete" : "interrupt");
         // stop_all posts onto each tunnel strand. Let the primary close
         // handler begin (and emit its H2/WebSocket graceful close) before
         // stopping the io_context; otherwise the posted close can be discarded
@@ -984,7 +1007,7 @@ int run_connected_session(boost::asio::io_context& io,
         }
         io.stop();
         io_threads.wait();
-        return bench_code;
+        return capture_idle_complete ? bench_code : 130;
     }
 
     if (!cfg.packet_tun_name.empty()) {

@@ -42,6 +42,7 @@
 #include "server/config/config.hpp"
 #include "server/runtime/kdf_admission.hpp"
 #include "server/session/authorization.hpp"
+#include "server/session/bench_echo.hpp"
 #include "server/session/fair_frame_budget.hpp"
 #include "util.hpp"
 
@@ -508,11 +509,14 @@ private:
         enum class Mode {
             Sink,
             Source,
+            Echo,
         };
         Mode mode{Mode::Sink};
         std::uint64_t requested_bytes{0};
         std::uint64_t upstream_bytes{0};
         std::uint64_t downstream_bytes{0};
+        std::size_t message_bytes{0};
+        std::optional<BenchEchoTransaction> echo_transaction;
         std::uint32_t in_flight_frames{0};
         int64_t open_started_ms{0};
         bool close_sent{false};

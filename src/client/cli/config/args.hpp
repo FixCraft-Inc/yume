@@ -99,6 +99,9 @@ struct ParsedArgs {
     bool bench_chunk_kib_override{false};
     bool bench_streams_override{false};
     bool bench_direction_override{false};
+    // CLI-only, one-shot Gate B evidence destination. This is intentionally
+    // absent from ClientConfig and all persisted/ABI configuration surfaces.
+    std::string outer_carrier_evidence;
     bool help{false};
     bool version{false};
     bool credits{false};

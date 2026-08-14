@@ -9,6 +9,7 @@
 #include <nghttp2/nghttp2.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <ctime>
@@ -18,6 +19,7 @@
 #include <limits>
 #include <map>
 #include <stdexcept>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -81,10 +83,17 @@ std::string NodeDateHeader() {
 
 class H2Carrier::Impl {
 public:
-    explicit Impl(H2CarrierRole role)
+    explicit Impl(H2CarrierRole role,
+                  std::shared_ptr<OuterCarrierTrace> outer_trace)
         : role_(role),
           websocket_(role == H2CarrierRole::Client ? WebSocketRole::Client
-                                                   : WebSocketRole::Server) {
+                                                   : WebSocketRole::Server),
+          outer_trace_(std::move(outer_trace)),
+          inbound_preface_pending_(role == H2CarrierRole::Server) {
+        if (outer_trace_) {
+            websocket_.set_inbound_frame_observer(
+                &Impl::OnWebSocketFrame, this);
+        }
         nghttp2_session_callbacks* callbacks = nullptr;
         Check(nghttp2_session_callbacks_new(&callbacks), "allocate callbacks");
         callbacks_.reset(callbacks);
@@ -161,6 +170,7 @@ public:
                 error_)) {
             return false;
         }
+        QueueTraceHeaders(priming_stream_id_, headers);
         client_started_ = true;
         Flush();
         return !failed();
@@ -201,6 +211,7 @@ public:
                 stream_id, profile.extended_connect.priority, error_)) {
             return false;
         }
+        QueueTraceHeaders(stream_id, headers, path);
         Flush();
         return !failed();
     }
@@ -318,6 +329,7 @@ public:
 
     void Feed(const std::uint8_t* data, std::size_t size) {
         if (failed() || size == 0) return;
+        ObserveInboundH2Wire(data, size);
 #if YUME_ENABLE_DEV_DIAGNOSTICS
         diagnostics::Stopwatch feed_timer(collect_timing_);
 #endif
@@ -361,7 +373,7 @@ public:
                 const std::size_t chunk = std::min(
                     cover_profile::active()
                         .websocket_message_bytes,
-                    size - offset);
+                        size - offset);
                 H2Bytes frame;
                 // The captured Node fixture fragments its first complete
                 // 16-KiB server binary message into 8-KiB binary/continuation
@@ -418,7 +430,8 @@ public:
                                               opaque),
                           "submit captured close PING");
                 }
-                QueueStreamBytes(carrier_stream_id_, websocket_.EncodeClose(websocket_code));
+                QueueStreamBytes(
+                    carrier_stream_id_, websocket_.EncodeClose(websocket_code));
             } catch (const std::exception& ex) {
                 Fail(std::string("encode WebSocket close: ") + ex.what());
                 return;
@@ -428,6 +441,20 @@ public:
                               nghttp2_session_get_last_proc_stream_id(session_.get()),
                               NGHTTP2_NO_ERROR, nullptr, 0);
         Flush();
+    }
+
+    void RecordCloseWireResult(bool completed) noexcept {
+        if (!outer_trace_) return;
+        OuterCarrierEvent event;
+        event.kind = OuterCarrierEventKind::CloseWire;
+        event.direction = OuterCarrierDirection::Sent;
+        event.stream_class = OuterCarrierStreamClass::Carrier;
+        event.completed = completed;
+        outer_trace_->Record(std::move(event));
+    }
+
+    bool capture_observer_active() const noexcept {
+        return static_cast<bool>(outer_trace_);
     }
 
     bool priming_complete() const noexcept { return priming_complete_; }
@@ -462,6 +489,748 @@ private:
         std::size_t front_offset{0};
         std::size_t queued_bytes{0};
     };
+
+    struct PendingTraceHeaders {
+        std::vector<OuterCarrierHeader> headers;
+    };
+
+    static std::uint32_t ReadBe24(const std::uint8_t* data) noexcept {
+        return (static_cast<std::uint32_t>(data[0]) << 16U) |
+               (static_cast<std::uint32_t>(data[1]) << 8U) |
+               static_cast<std::uint32_t>(data[2]);
+    }
+
+    static std::uint32_t ReadBe32(const std::uint8_t* data) noexcept {
+        return (static_cast<std::uint32_t>(data[0]) << 24U) |
+               (static_cast<std::uint32_t>(data[1]) << 16U) |
+               (static_cast<std::uint32_t>(data[2]) << 8U) |
+               static_cast<std::uint32_t>(data[3]);
+    }
+
+    OuterCarrierStreamClass ClassifyStream(
+        std::int32_t stream_id) const noexcept {
+        if (stream_id == 0) return OuterCarrierStreamClass::Connection;
+        if (stream_id == priming_stream_id_) {
+            return OuterCarrierStreamClass::Priming;
+        }
+        if (stream_id == css_stream_id_) {
+            return OuterCarrierStreamClass::AssetCss;
+        }
+        if (stream_id == js_stream_id_) {
+            return OuterCarrierStreamClass::AssetJs;
+        }
+        if (stream_id == carrier_stream_id_) {
+            return OuterCarrierStreamClass::Carrier;
+        }
+        return OuterCarrierStreamClass::Other;
+    }
+
+    bool IsPinnedRequestHeader(
+        std::string_view name, std::string_view value) const {
+        const auto& profile = cover_profile::active();
+        auto contains = [&](const cover_profile::RequestTemplate& request,
+                            std::string_view path = {}) {
+            const auto headers = profile.render_headers(
+                request, "capture.invalid", path);
+            return std::any_of(
+                headers.begin(), headers.end(), [&](const auto& header) {
+                    return header.first == name && header.second == value;
+                });
+        };
+        if (contains(profile.priming_request) ||
+            contains(profile.extended_connect, "/capture")) {
+            return true;
+        }
+        return std::any_of(
+            profile.assets.begin(), profile.assets.end(),
+            [&](const auto& asset) { return contains(asset.request); });
+    }
+
+    std::string SafeHeaderName(
+        std::string_view name, std::string_view value,
+        OuterCarrierDirection direction) const {
+        if (name.empty() || name.size() > 64 ||
+            !std::all_of(name.begin(), name.end(), [](unsigned char ch) {
+                return (ch >= 'a' && ch <= 'z') ||
+                       (ch >= '0' && ch <= '9') || ch == ':' || ch == '-';
+            })) {
+            return "<invalid-header>";
+        }
+        if (name == "authorization" || name == "proxy-authorization" ||
+            name == "cookie" || name == "set-cookie" ||
+            name == "sec-websocket-key") {
+            return "<sensitive-header>";
+        }
+        if (direction == OuterCarrierDirection::Received) {
+            return name == ":status" || name == "date"
+                ? std::string(name)
+                : "<unrecognized-header>";
+        }
+        if (name != ":authority" && name != ":path" && name != "origin" &&
+            name != "referer" && !IsPinnedRequestHeader(name, value)) {
+            return "<unrecognized-header>";
+        }
+        return std::string(name);
+    }
+
+    std::string SafeHeaderValue(
+        std::string_view name, std::string_view value,
+        OuterCarrierStreamClass stream_class,
+        OuterCarrierDirection direction,
+        std::string_view expected_carrier_path = {}) const {
+        if (name == "authorization" || name == "proxy-authorization" ||
+            name == "cookie" || name == "set-cookie" ||
+            name == "sec-websocket-key") {
+            return "<redacted>";
+        }
+        if (name == ":authority") {
+            return value == authority_
+                ? "<cover-authority>" : "<unexpected-authority>";
+        }
+        if (name == "origin") {
+            return value == "https://" + authority_
+                ? "https://<cover-authority>" : "<unexpected-origin>";
+        }
+        if (name == "referer") {
+            return value == "https://" + authority_ + "/"
+                ? "https://<cover-authority>/" : "<unexpected-referer>";
+        }
+        if (name == "date") {
+            const bool date_shape = value.size() == 29 && value[3] == ',' &&
+                value[4] == ' ' && value[7] == ' ' && value[11] == ' ' &&
+                value[16] == ' ' && value[19] == ':' && value[22] == ':' &&
+                value.substr(25) == " GMT";
+            return date_shape ? "<runtime-date>" : "<unexpected-date>";
+        }
+        if (name == ":path") {
+            std::string_view expected;
+            switch (stream_class) {
+                case OuterCarrierStreamClass::Priming: expected = "/"; break;
+                case OuterCarrierStreamClass::AssetCss:
+                    expected = cover_profile::active().assets[0].path;
+                    break;
+                case OuterCarrierStreamClass::AssetJs:
+                    expected = cover_profile::active().assets[1].path;
+                    break;
+                case OuterCarrierStreamClass::Carrier:
+                    return !expected_carrier_path.empty() &&
+                            value == expected_carrier_path
+                        ? "<authenticated-carrier-path>"
+                        : "<unexpected-carrier-path>";
+                default: return "<unexpected-path>";
+            }
+            return value == expected
+                ? std::string(expected) : "<unexpected-path>";
+        }
+        if (direction == OuterCarrierDirection::Received) {
+            if (name == ":status" && value.size() == 3 &&
+                std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+                    return std::isdigit(ch) != 0;
+                })) {
+                return std::string(value);
+            }
+            return "<redacted>";
+        }
+        if (value.size() <= 1024 && IsPinnedRequestHeader(name, value)) {
+            return std::string(value);
+        }
+        return "<redacted>";
+    }
+
+    std::vector<OuterCarrierHeader> SanitizeHeaders(
+        const H2Headers& headers, OuterCarrierStreamClass stream_class,
+        OuterCarrierDirection direction,
+        std::string_view expected_carrier_path = {}) const {
+        std::vector<OuterCarrierHeader> sanitized;
+        sanitized.reserve(headers.size());
+        for (const auto& [name, value] : headers) {
+            sanitized.push_back({
+                SafeHeaderName(name, value, direction),
+                SafeHeaderValue(name, value, stream_class, direction,
+                                expected_carrier_path)});
+        }
+        return sanitized;
+    }
+
+    void QueueTraceHeaders(std::int32_t stream_id,
+                           const H2Headers& headers,
+                           std::string_view expected_carrier_path = {}) noexcept {
+        if (!outer_trace_ || outer_trace_->truncated()) return;
+        try {
+            PendingTraceHeaders pending;
+            pending.headers = SanitizeHeaders(
+                headers, ClassifyStream(stream_id),
+                OuterCarrierDirection::Sent, expected_carrier_path);
+            const auto [_, inserted] = pending_trace_headers_.emplace(
+                stream_id, std::move(pending));
+            if (!inserted) outer_trace_->MarkTruncated();
+        } catch (...) {
+            outer_trace_->MarkTruncated();
+        }
+    }
+
+    void RecordH2Frame(
+        OuterCarrierDirection direction,
+        OuterCarrierStreamClass stream_class,
+        std::int32_t stream_id,
+        std::uint8_t type, std::uint8_t flags, std::uint32_t length,
+        std::vector<OuterCarrierSetting> settings = {},
+        std::vector<OuterCarrierHeader> headers = {},
+        std::uint32_t value = 0, std::uint32_t error_code = 0,
+        bool priority_present = false, bool priority_exclusive = false,
+        std::int32_t priority_parent = 0,
+        std::int32_t priority_weight = 0,
+        std::uint64_t ping_id = 0) noexcept {
+        if (!outer_trace_) return;
+        OuterCarrierEvent event;
+        event.kind = OuterCarrierEventKind::H2Frame;
+        event.direction = direction;
+        event.stream_class = stream_class;
+        event.h2_stream_id = stream_id;
+        event.h2_type = type;
+        event.flags = flags;
+        event.length = length;
+        event.value = value;
+        event.error_code = error_code;
+        event.settings = std::move(settings);
+        event.headers = std::move(headers);
+        event.priority_present = priority_present;
+        event.priority_exclusive = priority_exclusive;
+        event.priority_parent_stream_id = priority_parent;
+        event.priority_weight = priority_weight;
+        event.ping_id = ping_id;
+        outer_trace_->Record(std::move(event));
+    }
+
+    std::uint64_t CorrelateH2Ping(
+        OuterCarrierDirection direction, std::uint8_t flags,
+        const std::uint8_t* payload, std::uint32_t length) noexcept {
+        if (length != 8 || !payload) return 0;
+        const bool ack = (flags & NGHTTP2_FLAG_ACK) != 0;
+        auto equals = [&](const std::array<std::uint8_t, 8>& value) {
+            return std::equal(value.begin(), value.end(), payload);
+        };
+        if (direction == OuterCarrierDirection::Sent) {
+            if (ack) {
+                return last_received_ping_valid_ &&
+                        equals(last_received_ping_opaque_)
+                    ? last_received_ping_id_ : 0;
+            }
+            std::copy_n(payload, 8, last_sent_ping_opaque_.begin());
+            last_sent_ping_valid_ = true;
+            last_sent_ping_id_ = next_ping_id_++;
+            return last_sent_ping_id_;
+        }
+        if (ack) {
+            return last_sent_ping_valid_ && equals(last_sent_ping_opaque_)
+                ? last_sent_ping_id_ : 0;
+        }
+        std::copy_n(payload, 8, last_received_ping_opaque_.begin());
+        last_received_ping_valid_ = true;
+        last_received_ping_id_ = next_ping_id_++;
+        return last_received_ping_id_;
+    }
+
+    void ObserveOutboundH2Wire(const std::uint8_t* data,
+                               std::size_t size) noexcept {
+        if (!outer_trace_ || size == 0) return;
+        try {
+            static constexpr std::string_view kClientPreface =
+                "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+            std::size_t offset = 0;
+            std::uint8_t previous_type = 0xffU;
+            std::uint8_t previous_flags = 0;
+            if (size >= kClientPreface.size() &&
+                std::equal(kClientPreface.begin(), kClientPreface.end(), data)) {
+                offset = kClientPreface.size();
+            }
+            while (offset < size) {
+                if (size - offset < 9) {
+                    outer_trace_->MarkTruncated();
+                    return;
+                }
+                const std::uint8_t* header = data + offset;
+                const std::uint32_t length = ReadBe24(header);
+                if (static_cast<std::size_t>(length) > size - offset - 9) {
+                    outer_trace_->MarkTruncated();
+                    return;
+                }
+                const std::uint8_t type = header[3];
+                const std::uint8_t flags = header[4];
+                const std::int32_t stream_id = static_cast<std::int32_t>(
+                    ReadBe32(header + 5) & 0x7fffffffU);
+                const std::uint8_t* payload = header + 9;
+                const bool carrier_data_preceded_by_ping =
+                    type == NGHTTP2_DATA &&
+                    ClassifyStream(stream_id) ==
+                        OuterCarrierStreamClass::Carrier &&
+                    previous_type == NGHTTP2_PING &&
+                    (previous_flags & NGHTTP2_FLAG_ACK) == 0;
+                std::vector<OuterCarrierSetting> settings;
+                std::vector<OuterCarrierHeader> headers;
+                std::uint32_t value = 0;
+                std::uint32_t error_code = 0;
+                bool priority_present = false;
+                bool priority_exclusive = false;
+                std::int32_t priority_parent = 0;
+                std::int32_t priority_weight = 0;
+                std::uint64_t ping_id = 0;
+
+                if (type == NGHTTP2_SETTINGS &&
+                    (flags & NGHTTP2_FLAG_ACK) == 0) {
+                    if (length % 6 != 0) {
+                        outer_trace_->MarkTruncated();
+                        return;
+                    }
+                    settings.reserve(length / 6);
+                    for (std::size_t index = 0; index < length; index += 6) {
+                        settings.push_back({
+                            static_cast<std::uint32_t>(
+                                (payload[index] << 8U) | payload[index + 1]),
+                            ReadBe32(payload + index + 2)});
+                    }
+                } else if (type == NGHTTP2_WINDOW_UPDATE && length == 4) {
+                    value = ReadBe32(payload) & 0x7fffffffU;
+                } else if (type == NGHTTP2_GOAWAY && length >= 8) {
+                    error_code = ReadBe32(payload + 4);
+                } else if (type == NGHTTP2_PING) {
+                    ping_id = CorrelateH2Ping(
+                        OuterCarrierDirection::Sent, flags, payload, length);
+                } else if (type == NGHTTP2_HEADERS) {
+                    auto pending = pending_trace_headers_.find(stream_id);
+                    if (pending != pending_trace_headers_.end()) {
+                        headers = std::move(pending->second.headers);
+                        pending_trace_headers_.erase(pending);
+                    }
+                    std::size_t priority_offset = 0;
+                    if ((flags & NGHTTP2_FLAG_PADDED) != 0) {
+                        priority_offset = 1;
+                    }
+                    if ((flags & NGHTTP2_FLAG_PRIORITY) != 0 &&
+                        length >= priority_offset + 5) {
+                        const std::uint32_t dependency =
+                            ReadBe32(payload + priority_offset);
+                        priority_present = true;
+                        priority_exclusive =
+                            (dependency & 0x80000000U) != 0;
+                        priority_parent = static_cast<std::int32_t>(
+                            dependency & 0x7fffffffU);
+                        priority_weight =
+                            static_cast<std::int32_t>(
+                                payload[priority_offset + 4]) + 1;
+                    }
+                }
+                RecordH2Frame(
+                    OuterCarrierDirection::Sent, ClassifyStream(stream_id),
+                    stream_id, type, flags, length, std::move(settings),
+                    std::move(headers), value, error_code, priority_present,
+                    priority_exclusive, priority_parent, priority_weight,
+                    ping_id);
+                if (type == NGHTTP2_DATA &&
+                    ClassifyStream(stream_id) ==
+                        OuterCarrierStreamClass::Carrier) {
+                    const std::uint8_t* websocket_payload = payload;
+                    std::size_t websocket_size = length;
+                    if ((flags & NGHTTP2_FLAG_PADDED) != 0) {
+                        if (length == 0 || payload[0] >= length) {
+                            outer_trace_->MarkTruncated();
+                            return;
+                        }
+                        websocket_payload = payload + 1;
+                        websocket_size = length - 1 - payload[0];
+                    }
+                    ObserveOutboundWebSocketBytes(
+                        websocket_payload, websocket_size,
+                        carrier_data_preceded_by_ping);
+                }
+                previous_type = type;
+                previous_flags = flags;
+                offset += 9 + length;
+            }
+        } catch (...) {
+            outer_trace_->MarkTruncated();
+        }
+    }
+
+    void CompleteInboundH2Frame() noexcept {
+        try {
+            std::uint32_t value = 0;
+            std::uint32_t error_code = 0;
+            bool priority_present = false;
+            bool priority_exclusive = false;
+            std::int32_t priority_parent = 0;
+            std::int32_t priority_weight = 0;
+            std::uint64_t ping_id = 0;
+            if (inbound_frame_type_ == NGHTTP2_WINDOW_UPDATE &&
+                inbound_frame_length_ == 4 && inbound_control_used_ == 4) {
+                value = ReadBe32(inbound_control_prefix_.data()) & 0x7fffffffU;
+            } else if (inbound_frame_type_ == NGHTTP2_GOAWAY &&
+                       inbound_frame_length_ >= 8 &&
+                       inbound_control_used_ == 8) {
+                error_code = ReadBe32(inbound_control_prefix_.data() + 4);
+            } else if (inbound_frame_type_ == NGHTTP2_PING) {
+                ping_id = CorrelateH2Ping(
+                    OuterCarrierDirection::Received, inbound_frame_flags_,
+                    inbound_control_prefix_.data(), inbound_frame_length_);
+            } else if (inbound_frame_type_ == NGHTTP2_HEADERS) {
+                const std::size_t priority_offset =
+                    (inbound_frame_flags_ & NGHTTP2_FLAG_PADDED) != 0 ? 1 : 0;
+                if ((inbound_frame_flags_ & NGHTTP2_FLAG_PRIORITY) != 0 &&
+                    inbound_frame_length_ >= priority_offset + 5 &&
+                    inbound_control_used_ >= priority_offset + 5) {
+                    const std::uint32_t dependency = ReadBe32(
+                        inbound_control_prefix_.data() + priority_offset);
+                    priority_present = true;
+                    priority_exclusive =
+                        (dependency & 0x80000000U) != 0;
+                    priority_parent = static_cast<std::int32_t>(
+                        dependency & 0x7fffffffU);
+                    priority_weight = static_cast<std::int32_t>(
+                        inbound_control_prefix_[priority_offset + 4]) + 1;
+                }
+            }
+            RecordH2Frame(
+                OuterCarrierDirection::Received,
+                ClassifyStream(inbound_frame_stream_id_),
+                inbound_frame_stream_id_, inbound_frame_type_,
+                inbound_frame_flags_, inbound_frame_length_,
+                std::move(inbound_frame_settings_), {}, value, error_code,
+                priority_present, priority_exclusive, priority_parent,
+                priority_weight, ping_id);
+        } catch (...) {
+            outer_trace_->MarkTruncated();
+        }
+        inbound_frame_header_used_ = 0;
+        inbound_frame_length_ = 0;
+        inbound_frame_remaining_ = 0;
+        inbound_control_used_ = 0;
+        inbound_setting_used_ = 0;
+        inbound_frame_settings_.clear();
+    }
+
+    void ObserveInboundH2Wire(
+        const std::uint8_t* data, std::size_t size) noexcept {
+        if (!outer_trace_ || size == 0 || outer_trace_->truncated()) return;
+        static constexpr std::uint32_t kMaxObservedFrameBytes =
+            1024U * 1024U;
+        static constexpr std::size_t kMaxObservedSettings = 64;
+        static constexpr std::string_view kClientPreface =
+            "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+        try {
+            std::size_t offset = 0;
+            while (inbound_preface_pending_ && offset < size) {
+                if (data[offset] != static_cast<std::uint8_t>(
+                        kClientPreface[inbound_preface_used_])) {
+                    outer_trace_->MarkTruncated();
+                    return;
+                }
+                ++offset;
+                if (++inbound_preface_used_ == kClientPreface.size()) {
+                    inbound_preface_pending_ = false;
+                }
+            }
+            while (offset < size && !outer_trace_->truncated()) {
+                if (inbound_frame_header_used_ < inbound_frame_header_.size()) {
+                    const std::size_t count = std::min(
+                        inbound_frame_header_.size() -
+                            inbound_frame_header_used_,
+                        size - offset);
+                    std::copy_n(
+                        data + offset, count,
+                        inbound_frame_header_.begin() +
+                            static_cast<std::ptrdiff_t>(
+                                inbound_frame_header_used_));
+                    inbound_frame_header_used_ += count;
+                    offset += count;
+                    if (inbound_frame_header_used_ <
+                        inbound_frame_header_.size()) {
+                        return;
+                    }
+                    inbound_frame_length_ = ReadBe24(
+                        inbound_frame_header_.data());
+                    if (inbound_frame_length_ > kMaxObservedFrameBytes) {
+                        outer_trace_->MarkTruncated();
+                        return;
+                    }
+                    inbound_frame_type_ = inbound_frame_header_[3];
+                    inbound_frame_flags_ = inbound_frame_header_[4];
+                    inbound_frame_stream_id_ = static_cast<std::int32_t>(
+                        ReadBe32(inbound_frame_header_.data() + 5) &
+                        0x7fffffffU);
+                    inbound_frame_remaining_ = inbound_frame_length_;
+                    inbound_control_prefix_.fill(0);
+                    inbound_control_used_ = 0;
+                    inbound_setting_used_ = 0;
+                    inbound_frame_settings_.clear();
+                    if (inbound_frame_type_ == NGHTTP2_SETTINGS &&
+                        (inbound_frame_flags_ & NGHTTP2_FLAG_ACK) == 0) {
+                        if (inbound_frame_length_ % 6 != 0 ||
+                            inbound_frame_length_ / 6 >
+                                kMaxObservedSettings) {
+                            outer_trace_->MarkTruncated();
+                            return;
+                        }
+                        inbound_frame_settings_.reserve(
+                            inbound_frame_length_ / 6);
+                    }
+                    if (inbound_frame_remaining_ == 0) {
+                        CompleteInboundH2Frame();
+                        continue;
+                    }
+                }
+
+                const std::size_t count = std::min<std::size_t>(
+                    inbound_frame_remaining_, size - offset);
+                if (inbound_frame_type_ == NGHTTP2_SETTINGS &&
+                    (inbound_frame_flags_ & NGHTTP2_FLAG_ACK) == 0) {
+                    for (std::size_t index = 0; index < count; ++index) {
+                        inbound_setting_entry_[inbound_setting_used_++] =
+                            data[offset + index];
+                        if (inbound_setting_used_ ==
+                            inbound_setting_entry_.size()) {
+                            inbound_frame_settings_.push_back({
+                                static_cast<std::uint32_t>(
+                                    (inbound_setting_entry_[0] << 8U) |
+                                    inbound_setting_entry_[1]),
+                                ReadBe32(
+                                    inbound_setting_entry_.data() + 2)});
+                            inbound_setting_used_ = 0;
+                        }
+                    }
+                } else if (
+                    inbound_frame_type_ == NGHTTP2_WINDOW_UPDATE ||
+                    inbound_frame_type_ == NGHTTP2_GOAWAY ||
+                    inbound_frame_type_ == NGHTTP2_PING ||
+                    (inbound_frame_type_ == NGHTTP2_HEADERS &&
+                     (inbound_frame_flags_ & NGHTTP2_FLAG_PRIORITY) != 0)) {
+                    std::size_t retained_limit =
+                        inbound_control_prefix_.size();
+                    if (inbound_frame_type_ == NGHTTP2_WINDOW_UPDATE) {
+                        retained_limit = 4;
+                    } else if (inbound_frame_type_ == NGHTTP2_HEADERS) {
+                        retained_limit =
+                            ((inbound_frame_flags_ & NGHTTP2_FLAG_PADDED) != 0
+                                 ? 1U
+                                 : 0U) + 5U;
+                    }
+                    const std::size_t retained = std::min(
+                        count, retained_limit -
+                            std::min(retained_limit, inbound_control_used_));
+                    std::copy_n(
+                        data + offset, retained,
+                        inbound_control_prefix_.begin() +
+                            static_cast<std::ptrdiff_t>(
+                                inbound_control_used_));
+                    inbound_control_used_ += retained;
+                }
+                offset += count;
+                inbound_frame_remaining_ -=
+                    static_cast<std::uint32_t>(count);
+                if (inbound_frame_remaining_ == 0) {
+                    if (inbound_setting_used_ != 0) {
+                        outer_trace_->MarkTruncated();
+                        return;
+                    }
+                    CompleteInboundH2Frame();
+                }
+            }
+        } catch (...) {
+            outer_trace_->MarkTruncated();
+        }
+    }
+
+    void RecordOutboundWebSocketFrame(
+        const WebSocketFrameMetadata& frame,
+        bool carrier_data_preceded_by_ping) noexcept {
+        if (!outer_trace_) return;
+        OuterCarrierEvent event;
+        event.kind = OuterCarrierEventKind::WebSocketFrame;
+        event.direction = OuterCarrierDirection::Sent;
+        event.stream_class = OuterCarrierStreamClass::Carrier;
+        event.websocket_opcode = frame.opcode;
+        event.websocket_final = frame.final;
+        event.websocket_masked = frame.masked;
+        event.websocket_payload_bytes = frame.payload_bytes;
+        event.h2_ping_immediately_before =
+            frame.opcode == 0x8 && carrier_data_preceded_by_ping;
+        outer_trace_->Record(std::move(event));
+    }
+
+    bool CarrierWindowBlocked() const noexcept {
+        if (carrier_stream_id_ <= 0) return false;
+        const auto stream = outbound_streams_.find(carrier_stream_id_);
+        if (stream == outbound_streams_.end() ||
+            stream->second.queued_bytes == 0) {
+            return false;
+        }
+        const std::int32_t stream_window =
+            nghttp2_session_get_stream_remote_window_size(
+                session_.get(), carrier_stream_id_);
+        const std::int32_t connection_window =
+            nghttp2_session_get_remote_window_size(session_.get());
+        return stream_window <= 0 || connection_window <= 0;
+    }
+
+    void ObserveCarrierWindowState() noexcept {
+        if (!outer_trace_) return;
+        const bool blocked = CarrierWindowBlocked();
+        if (blocked == carrier_window_stalled_) return;
+        OuterCarrierEvent event;
+        event.kind = blocked
+            ? OuterCarrierEventKind::FlowWindowStalled
+            : OuterCarrierEventKind::FlowWindowRecovered;
+        event.direction = OuterCarrierDirection::Sent;
+        event.stream_class = OuterCarrierStreamClass::Carrier;
+        outer_trace_->Record(std::move(event));
+        carrier_window_stalled_ = blocked;
+    }
+
+    enum class OutboundWebSocketParseState : std::uint8_t {
+        First,
+        Second,
+        ExtendedLength,
+        Mask,
+        Payload,
+    };
+
+    void CompleteOutboundWebSocketFrame() noexcept {
+        RecordOutboundWebSocketFrame(
+            outbound_websocket_frame_,
+            outbound_websocket_current_h2_ping_before_);
+        outbound_websocket_state_ = OutboundWebSocketParseState::First;
+        outbound_websocket_extended_bytes_ = 0;
+        outbound_websocket_mask_bytes_ = 0;
+        outbound_websocket_payload_remaining_ = 0;
+        outbound_websocket_frame_ = {};
+        outbound_websocket_current_h2_ping_before_ = false;
+    }
+
+    void AdvanceOutboundWebSocketAfterLength() noexcept {
+        outbound_websocket_mask_bytes_ =
+            outbound_websocket_frame_.masked ? 4 : 0;
+        if (outbound_websocket_mask_bytes_ != 0) {
+            outbound_websocket_state_ = OutboundWebSocketParseState::Mask;
+        } else if (outbound_websocket_payload_remaining_ != 0) {
+            outbound_websocket_state_ = OutboundWebSocketParseState::Payload;
+        } else {
+            CompleteOutboundWebSocketFrame();
+        }
+    }
+
+    void ObserveOutboundWebSocketBytes(
+        const std::uint8_t* data, std::size_t size,
+        bool carrier_data_preceded_by_ping) noexcept {
+        if (!outer_trace_ || outer_trace_->truncated()) return;
+        std::size_t offset = 0;
+        while (offset < size) {
+            switch (outbound_websocket_state_) {
+                case OutboundWebSocketParseState::First: {
+                    outbound_websocket_current_h2_ping_before_ =
+                        carrier_data_preceded_by_ping;
+                    const std::uint8_t first = data[offset++];
+                    outbound_websocket_frame_.opcode = first & 0x0fU;
+                    outbound_websocket_frame_.final =
+                        (first & 0x80U) != 0;
+                    outbound_websocket_state_ =
+                        OutboundWebSocketParseState::Second;
+                    break;
+                }
+                case OutboundWebSocketParseState::Second: {
+                    const std::uint8_t second = data[offset++];
+                    outbound_websocket_frame_.masked =
+                        (second & 0x80U) != 0;
+                    const std::uint8_t encoded_length = second & 0x7fU;
+                    if (encoded_length < 126) {
+                        outbound_websocket_frame_.payload_bytes =
+                            encoded_length;
+                        outbound_websocket_payload_remaining_ =
+                            encoded_length;
+                        AdvanceOutboundWebSocketAfterLength();
+                    } else {
+                        outbound_websocket_frame_.payload_bytes = 0;
+                        outbound_websocket_extended_bytes_ =
+                            encoded_length == 126 ? 2 : 8;
+                        outbound_websocket_state_ =
+                            OutboundWebSocketParseState::ExtendedLength;
+                    }
+                    break;
+                }
+                case OutboundWebSocketParseState::ExtendedLength:
+                    outbound_websocket_frame_.payload_bytes =
+                        (outbound_websocket_frame_.payload_bytes << 8U) |
+                        data[offset++];
+                    if (--outbound_websocket_extended_bytes_ == 0) {
+                        outbound_websocket_payload_remaining_ =
+                            outbound_websocket_frame_.payload_bytes;
+                        AdvanceOutboundWebSocketAfterLength();
+                    }
+                    break;
+                case OutboundWebSocketParseState::Mask: {
+                    const std::size_t count = std::min(
+                        outbound_websocket_mask_bytes_, size - offset);
+                    offset += count;
+                    outbound_websocket_mask_bytes_ -= count;
+                    if (outbound_websocket_mask_bytes_ == 0) {
+                        if (outbound_websocket_payload_remaining_ == 0) {
+                            CompleteOutboundWebSocketFrame();
+                        } else {
+                            outbound_websocket_state_ =
+                                OutboundWebSocketParseState::Payload;
+                        }
+                    }
+                    break;
+                }
+                case OutboundWebSocketParseState::Payload: {
+                    const std::uint64_t available = size - offset;
+                    const std::uint64_t count = std::min(
+                        outbound_websocket_payload_remaining_, available);
+                    offset += static_cast<std::size_t>(count);
+                    outbound_websocket_payload_remaining_ -= count;
+                    if (outbound_websocket_payload_remaining_ == 0) {
+                        CompleteOutboundWebSocketFrame();
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    static void OnWebSocketFrame(
+        void* context, const WebSocketFrameMetadata& frame) noexcept {
+        auto& self = *static_cast<Impl*>(context);
+        if (!self.outer_trace_) return;
+        OuterCarrierEvent event;
+        event.kind = OuterCarrierEventKind::WebSocketFrame;
+        event.direction = OuterCarrierDirection::Received;
+        event.stream_class = OuterCarrierStreamClass::Carrier;
+        event.websocket_opcode = frame.opcode;
+        event.websocket_final = frame.final;
+        event.websocket_masked = frame.masked;
+        event.websocket_payload_bytes = frame.payload_bytes;
+        self.outer_trace_->Record(std::move(event));
+    }
+
+    void ObserveInboundH2Frame(const nghttp2_frame& frame) noexcept {
+        if (!outer_trace_ || frame.hd.type != NGHTTP2_HEADERS) return;
+        try {
+            std::vector<OuterCarrierHeader> headers;
+            const auto incoming = incoming_headers_.find(frame.hd.stream_id);
+            if (incoming != incoming_headers_.end()) {
+                headers = SanitizeHeaders(
+                    incoming->second, ClassifyStream(frame.hd.stream_id),
+                    OuterCarrierDirection::Received);
+            }
+            OuterCarrierEvent event;
+            event.kind = OuterCarrierEventKind::H2HeadersDecoded;
+            event.direction = OuterCarrierDirection::Received;
+            event.stream_class = ClassifyStream(frame.hd.stream_id);
+            event.h2_stream_id = frame.hd.stream_id;
+            event.headers = std::move(headers);
+            outer_trace_->Record(std::move(event));
+        } catch (...) {
+            outer_trace_->MarkTruncated();
+        }
+    }
 
     static int OnBeginHeaders(nghttp2_session*, const nghttp2_frame* frame,
                               void* user_data) noexcept {
@@ -502,6 +1271,7 @@ private:
                            void* user_data) noexcept {
         auto& self = *static_cast<Impl*>(user_data);
         try {
+            self.ObserveInboundH2Frame(*frame);
             self.HandleFrame(*frame);
             return self.failed() ? NGHTTP2_ERR_CALLBACK_FAILURE : 0;
         } catch (const std::exception& ex) {
@@ -530,9 +1300,20 @@ private:
     }
 
     static int OnStreamClose(nghttp2_session*, std::int32_t stream_id,
-                             std::uint32_t, void* user_data) noexcept {
+                             std::uint32_t error_code,
+                             void* user_data) noexcept {
         auto& self = *static_cast<Impl*>(user_data);
         try {
+            if (self.outer_trace_) {
+                OuterCarrierEvent event;
+                event.kind = OuterCarrierEventKind::StreamClose;
+                event.direction = OuterCarrierDirection::Received;
+                event.stream_class = self.ClassifyStream(stream_id);
+                event.h2_stream_id = stream_id;
+                event.error_code = error_code;
+                event.completed = error_code == NGHTTP2_NO_ERROR;
+                self.outer_trace_->Record(std::move(event));
+            }
             if (stream_id == self.priming_stream_id_) {
                 if (self.priming_status_ < 200 || self.priming_status_ >= 400) {
                     self.Fail("Chrome priming GET was rejected");
@@ -588,7 +1369,9 @@ private:
         auto& front = stream.chunks.front();
         const std::size_t available = front.size() - stream.front_offset;
         const std::size_t count = std::min(length, available);
-        std::memcpy(buf, front.data() + stream.front_offset, count);
+        if (count != 0) {
+            std::memcpy(buf, front.data() + stream.front_offset, count);
+        }
         stream.front_offset += count;
         stream.queued_bytes -= count;
         if (stream.front_offset == front.size()) {
@@ -713,7 +1496,9 @@ private:
             tunnel_bytes_.insert(tunnel_bytes_.end(), decoded.begin(), decoded.end());
         }
         auto replies = websocket_.TakeWireReplies();
-        if (!replies.empty()) QueueStreamBytes(stream_id, std::move(replies));
+        if (!replies.empty()) {
+            QueueStreamBytes(stream_id, std::move(replies));
+        }
         if (role_ == H2CarrierRole::Server && !server_active_ping_sent_ &&
             !decoded.empty()) {
             static constexpr std::uint8_t kFixturePing[] = {
@@ -773,6 +1558,7 @@ private:
                 error_)) {
             throw std::runtime_error(error_);
         }
+        QueueTraceHeaders(css_stream_id_, css_headers);
 
         H2Headers js_headers =
             profile.render_headers(profile.assets[1].request, authority_);
@@ -800,11 +1586,15 @@ private:
                 js_stream_id_, js_wire_priority, error_)) {
             throw std::runtime_error(error_);
         }
+        QueueTraceHeaders(js_stream_id_, js_headers);
         Flush();
     }
 
     void Flush() {
         if (failed()) return;
+        ObserveCarrierWindowState();
+        const std::size_t trace_output_before =
+            outer_trace_ ? serialized_output_.size() : 0;
 #if YUME_ENABLE_DEV_DIAGNOSTICS
         diagnostics::Stopwatch flush_timer(collect_timing_);
         const std::size_t output_before = serialized_output_.size();
@@ -833,6 +1623,13 @@ private:
             wire_profile_.AppendSerializedBatch(
                 batch, kMaxQueuedOutput, serialized_output_, error_);
         }
+        if (!failed() && outer_trace_ &&
+            serialized_output_.size() > trace_output_before) {
+            ObserveOutboundH2Wire(
+                serialized_output_.data() + trace_output_before,
+                serialized_output_.size() - trace_output_before);
+        }
+        ObserveCarrierWindowState();
 #if YUME_ENABLE_DEV_DIAGNOSTICS
         stats_.h2_flush_calls += 1;
         stats_.h2_flush_bytes +=
@@ -860,6 +1657,7 @@ private:
 
     H2CarrierRole role_;
     WebSocketCodec websocket_;
+    std::shared_ptr<OuterCarrierTrace> outer_trace_;
 #if YUME_ENABLE_DEV_DIAGNOSTICS
     H2CarrierStats stats_;
     bool collect_timing_{false};
@@ -868,6 +1666,8 @@ private:
     std::unique_ptr<nghttp2_session, SessionDeleter> session_;
     std::unordered_map<std::int32_t, H2Headers> incoming_headers_;
     std::unordered_map<std::int32_t, std::size_t> incoming_header_bytes_;
+    std::unordered_map<std::int32_t, PendingTraceHeaders>
+        pending_trace_headers_;
     std::unordered_map<std::int32_t, OutboundStream> outbound_streams_;
     detail::H2WireProfile wire_profile_;
     std::unordered_set<std::int32_t> responded_streams_;
@@ -895,9 +1695,40 @@ private:
     bool graceful_close_started_{false};
     bool server_fragment_fixture_sent_{false};
     bool server_active_ping_sent_{false};
+    OutboundWebSocketParseState outbound_websocket_state_{
+        OutboundWebSocketParseState::First};
+    WebSocketFrameMetadata outbound_websocket_frame_{};
+    std::size_t outbound_websocket_extended_bytes_{0};
+    std::size_t outbound_websocket_mask_bytes_{0};
+    std::uint64_t outbound_websocket_payload_remaining_{0};
+    bool outbound_websocket_current_h2_ping_before_{false};
+    bool carrier_window_stalled_{false};
+    bool inbound_preface_pending_{false};
+    std::size_t inbound_preface_used_{0};
+    std::array<std::uint8_t, 9> inbound_frame_header_{};
+    std::size_t inbound_frame_header_used_{0};
+    std::uint32_t inbound_frame_length_{0};
+    std::uint32_t inbound_frame_remaining_{0};
+    std::uint8_t inbound_frame_type_{0};
+    std::uint8_t inbound_frame_flags_{0};
+    std::int32_t inbound_frame_stream_id_{0};
+    std::array<std::uint8_t, 8> inbound_control_prefix_{};
+    std::size_t inbound_control_used_{0};
+    std::array<std::uint8_t, 6> inbound_setting_entry_{};
+    std::size_t inbound_setting_used_{0};
+    std::vector<OuterCarrierSetting> inbound_frame_settings_;
+    std::uint64_t next_ping_id_{1};
+    std::array<std::uint8_t, 8> last_sent_ping_opaque_{};
+    std::array<std::uint8_t, 8> last_received_ping_opaque_{};
+    std::uint64_t last_sent_ping_id_{0};
+    std::uint64_t last_received_ping_id_{0};
+    bool last_sent_ping_valid_{false};
+    bool last_received_ping_valid_{false};
 };
 
-H2Carrier::H2Carrier(H2CarrierRole role) : impl_(std::make_unique<Impl>(role)) {}
+H2Carrier::H2Carrier(
+    H2CarrierRole role, std::shared_ptr<OuterCarrierTrace> outer_trace)
+    : impl_(std::make_unique<Impl>(role, std::move(outer_trace))) {}
 H2Carrier::H2Carrier(H2Carrier&&) noexcept = default;
 H2Carrier& H2Carrier::operator=(H2Carrier&&) noexcept = default;
 H2Carrier::~H2Carrier() = default;
@@ -956,6 +1787,12 @@ H2CarrierStats H2Carrier::stats() const noexcept { return impl_->stats(); }
 #endif
 void H2Carrier::GracefulClose(std::uint16_t websocket_code) {
     impl_->GracefulClose(websocket_code);
+}
+void H2Carrier::RecordCloseWireResult(bool completed) noexcept {
+    impl_->RecordCloseWireResult(completed);
+}
+bool H2Carrier::capture_observer_active() const noexcept {
+    return impl_->capture_observer_active();
 }
 bool H2Carrier::failed() const noexcept { return impl_->failed(); }
 const std::string& H2Carrier::error() const noexcept { return impl_->error(); }

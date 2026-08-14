@@ -15,6 +15,7 @@
 
 #include "core/diagnostics/timing.hpp"
 #include "core/stealth/cover_profile.hpp"
+#include "core/stealth/outer_carrier_observer.hpp"
 
 namespace yume::obfs {
 
@@ -57,7 +58,9 @@ struct H2CarrierStats {
 // (RFC 8441), never raw YUME bytes.
 class H2Carrier {
 public:
-    explicit H2Carrier(H2CarrierRole role);
+    explicit H2Carrier(
+        H2CarrierRole role,
+        std::shared_ptr<OuterCarrierTrace> outer_trace = {});
     H2Carrier(const H2Carrier&) = delete;
     H2Carrier& operator=(const H2Carrier&) = delete;
     H2Carrier(H2Carrier&&) noexcept;
@@ -114,6 +117,8 @@ public:
 #endif
 
     void GracefulClose(std::uint16_t websocket_code = 1000);
+    void RecordCloseWireResult(bool completed) noexcept;
+    bool capture_observer_active() const noexcept;
 
     bool failed() const noexcept;
     const std::string& error() const noexcept;

@@ -252,7 +252,8 @@ void Session::handle_open(const protocol::Frame& frame) {
         handle_packet_open(stream_id);
         return;
     }
-    if (proto == kBenchSinkProto || proto == kBenchSourceProto) {
+    if (proto == kBenchSinkProto || proto == kBenchSourceProto ||
+        proto == kBenchEchoProto) {
         handle_bench_open(stream_id, proto, open_json);
         return;
     }

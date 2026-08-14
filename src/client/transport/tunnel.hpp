@@ -27,6 +27,8 @@
 
 namespace yume::client {
 
+struct TunnelCloseStateTestPeer;
+
 class Tunnel : public std::enable_shared_from_this<Tunnel> {
 public:
     using Bytes = std::vector<uint8_t>;
@@ -126,6 +128,15 @@ private:
     void complete_carrier_writes(std::size_t count,
                                  bool ok,
                                  const std::string& error);
+    void observe_orderly_peer_close();
+    void complete_orderly_close_write(
+        const boost::system::error_code& error,
+        std::size_t written,
+        std::size_t expected);
+    void handle_orderly_close_timeout(
+        const boost::system::error_code& error);
+    void record_orderly_close_wire_result(bool completed) noexcept;
+    void finish_close(const std::string& reason);
     void start_exec(uint8_t stream_id, std::string command);
     void close_all(const std::string& reason);
     void schedule_keepalive();
@@ -135,12 +146,18 @@ private:
     boost::asio::strand<boost::asio::any_io_executor> strand_;
     boost::asio::steady_timer keepalive_timer_{stream_.get_executor()};
     boost::asio::steady_timer ratchet_timer_{stream_.get_executor()};
+    boost::asio::steady_timer close_timer_{stream_.get_executor()};
     std::vector<uint8_t> read_buf_;
     std::unique_ptr<obfs::H2Carrier> carrier_;
     Bytes prefetched_carrier_bytes_;
     std::deque<WireWrite> wire_writes_;
     std::deque<CarrierCompletion> carrier_completions_;
     bool wire_write_active_{false};
+    bool orderly_close_pending_{false};
+    bool orderly_close_write_complete_{false};
+    bool orderly_close_peer_closed_{false};
+    bool orderly_close_wire_result_recorded_{false};
+    std::string orderly_close_reason_;
     TransportCore core_;
     TunnelCloseHandler close_handler_;
     std::mutex close_handler_mu_;
@@ -150,6 +167,8 @@ private:
     std::atomic<std::uint32_t> active_execs_{0};
     std::atomic<bool> closed_{false};
     static constexpr std::uint32_t kMaxConcurrentExecs = 4;
+
+    friend struct TunnelCloseStateTestPeer;
 };
 
 }  // namespace yume::client

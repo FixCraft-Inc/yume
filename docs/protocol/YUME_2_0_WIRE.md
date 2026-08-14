@@ -23,16 +23,36 @@ not describe a 1.x compatibility mode because none exists.
 The session remains valid HTTP/2 until GOAWAY/close. SETTINGS/ACK,
 WINDOW_UPDATE, PING/PONG, RST_STREAM, fragmented WebSocket messages, partial
 socket writes, and backpressure are protocol behavior, not tunnel payload.
-YUME emits no synthetic traffic while idle. During an active connection it
-mirrors capture-backed behavior: Chrome originates an HTTP/2 PING immediately
-before its WebSocket close and Node acknowledges it. No periodic PING cadence
-is invented. Separately, the Node WebSocket fixture sends one `fixture-ping`
-PING immediately after the first client binary message and Chrome returns a
-masked PONG.
+YUME emits no synthetic traffic while idle. Chrome originates an HTTP/2 PING
+immediately before its WebSocket close and Node acknowledges it; no periodic
+PING cadence is invented. Separately, the reference Node WebSocket workload
+sends one `fixture-ping` PING after the complete client application-message
+sequence and immediately before the first fragmented server echo, and Chrome
+returns a masked PONG. The current production YUME server retains its existing
+behavior of sending that PING after the first decoded carrier data, which can
+be authentication traffic. The matched classifier binds this ordering and the
+normal browser's later stream-9 favicon lifecycle, so those differences yield
+`DRIFT`; capture mode does not change ordinary wire behavior to force parity.
 
 The captured SETTINGS, request headers/order, priorities, window update,
 WebSocket behavior, and component versions are recorded under
 `tests/fixtures/chrome151-node24/`.
+
+An opt-in local observer may report bounded sanitized metadata for these actual
+production-carrier events. It is not a wire extension: it adds no frame, header,
+payload, negotiation field, or peer-visible identifier. Raw inbound H2 frame
+boundaries (including CONTINUATION) and decoded header metadata are recorded as
+separate local event types so evidence does not mistake an nghttp2 callback for
+the complete on-wire frame sequence.
+
+The capture-only `bench-message-echo-v1` application control protocol is not a
+new outer-carrier or authenticated-profile version. It is admitted by `yumed`
+only when benchmarking is enabled and only for exactly 1 MiB split into 64
+16-KiB DATA messages; every message is echoed byte-for-byte and malformed,
+short, long, or overrun input closes that benchmark stream. The client leaves
+the completed logical stream open only for the frozen 42-second capture quiet
+interval. Normal benchmark sink/source protocols and all cryptographic/AAD
+domains are unchanged.
 
 This is the normative target, not a statement that the current emitter has
 complete identity parity. One immutable Chrome 151/Debian 13 + Node 24 profile

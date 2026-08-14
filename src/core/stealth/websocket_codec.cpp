@@ -270,6 +270,12 @@ void WebSocketCodec::Process() {
                                    : "unsupported WebSocket opcode");
                 return;
         }
+        if (inbound_frame_observer_) {
+            inbound_frame_observer_(
+                inbound_frame_observer_context_,
+                WebSocketFrameMetadata{
+                    opcode, fin, masked, payload_size});
+        }
     }
 }
 

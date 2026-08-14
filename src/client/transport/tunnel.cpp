@@ -255,6 +255,12 @@ void Tunnel::read_tls() {
 
 void Tunnel::on_read_tls(const boost::system::error_code& ec, std::size_t bytes) {
     if (ec) {
+        if (orderly_close_pending_) {
+            // A transport EOF is not proof that the peer returned a valid
+            // WebSocket CLOSE. Keep the terminal write alive until its
+            // completion or the one bounded orderly-close timer fires.
+            return;
+        }
         close_all("read failed: " + ec.message());
         return;
     }
@@ -272,6 +278,10 @@ void Tunnel::on_read_tls(const boost::system::error_code& ec, std::size_t bytes)
             }
             flush_carrier_output();
             if (carrier_->carrier_closed()) {
+                if (orderly_close_pending_) {
+                    observe_orderly_peer_close();
+                    return;
+                }
                 close_all("H2 carrier closed");
                 return;
             }
@@ -372,6 +382,51 @@ void Tunnel::complete_carrier_writes(std::size_t count,
     }
 }
 
+void Tunnel::observe_orderly_peer_close() {
+    if (!orderly_close_pending_) return;
+    orderly_close_peer_closed_ = true;
+    if (orderly_close_write_complete_) {
+        finish_close(orderly_close_reason_);
+    }
+}
+
+void Tunnel::record_orderly_close_wire_result(bool completed) noexcept {
+    if (orderly_close_wire_result_recorded_) return;
+    orderly_close_wire_result_recorded_ = true;
+    if (carrier_) carrier_->RecordCloseWireResult(completed);
+}
+
+void Tunnel::complete_orderly_close_write(
+        const boost::system::error_code& error,
+        std::size_t written,
+        std::size_t expected) {
+    if (!orderly_close_pending_) return;
+    const bool complete = !error && written == expected;
+    if (!error && written != 0) {
+        bytes_out_.fetch_add(written, std::memory_order_relaxed);
+    }
+    record_orderly_close_wire_result(complete);
+    orderly_close_write_complete_ = complete;
+    wire_write_active_ = false;
+    if (!complete || orderly_close_peer_closed_) {
+        finish_close(orderly_close_reason_);
+        return;
+    }
+    start_wire_write();
+}
+
+void Tunnel::handle_orderly_close_timeout(
+        const boost::system::error_code& error) {
+    if (error || !orderly_close_pending_) return;
+    // If the terminal write itself did not complete within the bounded close
+    // window, the wire observation must fail closed. A completed write keeps
+    // its truthful result even when the peer never returns a CLOSE.
+    if (!orderly_close_write_complete_) {
+        record_orderly_close_wire_result(false);
+    }
+    finish_close(orderly_close_reason_);
+}
+
 void Tunnel::start_exec(uint8_t stream_id, std::string command) {
     std::uint32_t active = active_execs_.load(std::memory_order_relaxed);
     while (active < kMaxConcurrentExecs &&
@@ -431,15 +486,56 @@ void Tunnel::start_exec(uint8_t stream_id, std::string command) {
 }
 
 void Tunnel::close_all(const std::string& reason) {
-    if (closed_.exchange(true, std::memory_order_relaxed)) {
+    if (closed_.load(std::memory_order_relaxed) || orderly_close_pending_) {
         return;
     }
 
-    // For an orderly locally initiated close, emit the captured Chrome H2
-    // PING, masked WebSocket CLOSE, and GOAWAY before TLS close_notify. This is
-    // a small terminal write and is only attempted after the normal output
-    // queue has drained; error/interrupt paths still close immediately.
-    if (carrier_ && reason != "interrupt" && !wire_write_active_ &&
+    // Evidence capture keeps the read side alive briefly after the terminal
+    // write so the peer's WebSocket CLOSE can be observed. The bounded timer
+    // prevents an unresponsive peer from delaying shutdown indefinitely.
+    if (carrier_ && carrier_->capture_observer_active() &&
+        reason != "interrupt" && !wire_write_active_ &&
+        wire_writes_.empty()) {
+        orderly_close_pending_ = true;
+        orderly_close_write_complete_ = false;
+        orderly_close_peer_closed_ = carrier_->carrier_closed();
+        orderly_close_wire_result_recorded_ = false;
+        orderly_close_reason_ = reason;
+        auto self = shared_from_this();
+        close_timer_.expires_after(std::chrono::milliseconds(750));
+        close_timer_.async_wait(boost::asio::bind_executor(
+            strand_, [self](const boost::system::error_code& timer_error) {
+                self->handle_orderly_close_timeout(timer_error);
+            }));
+        carrier_->GracefulClose();
+        Bytes close_wire = carrier_->TakeOutbound();
+        if (!close_wire.empty() && !carrier_->failed()) {
+            auto data = std::make_shared<Bytes>(std::move(close_wire));
+            // Serialize any H2 reply produced by the read path behind this
+            // terminal write. The peer can schedule its response before our
+            // completion handler runs even though it has received the bytes.
+            wire_write_active_ = true;
+            boost::asio::async_write(
+                stream_, boost::asio::buffer(*data),
+                boost::asio::bind_executor(
+                    strand_, [self, data](
+                        const boost::system::error_code& write_error,
+                        std::size_t written) {
+                        self->complete_orderly_close_write(
+                            write_error, written, data->size());
+                    }));
+            return;
+        }
+        record_orderly_close_wire_result(false);
+        finish_close(reason);
+        return;
+    }
+
+    // Preserve the ordinary production close path when no evidence observer
+    // is attached. Existing callers may stop their io_context immediately
+    // after posting stop(), so this small terminal write remains synchronous.
+    if (carrier_ && !carrier_->capture_observer_active() &&
+        reason != "interrupt" && !wire_write_active_ &&
         wire_writes_.empty()) {
         carrier_->GracefulClose();
         Bytes close_wire = carrier_->TakeOutbound();
@@ -452,6 +548,17 @@ void Tunnel::close_all(const std::string& reason) {
             }
         }
     }
+
+    finish_close(reason);
+}
+
+void Tunnel::finish_close(const std::string& reason) {
+    if (closed_.exchange(true, std::memory_order_relaxed)) return;
+    if (orderly_close_pending_ && !orderly_close_wire_result_recorded_) {
+        record_orderly_close_wire_result(false);
+    }
+    orderly_close_pending_ = false;
+    close_timer_.cancel();
 
 #if YUME_ENABLE_DEV_DIAGNOSTICS
     if (carrier_ && YUME_TIMING_ENABLED()) {

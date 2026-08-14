@@ -191,6 +191,15 @@ case "$output_dir/" in
         exit 1
         ;;
 esac
+git_ancestor=$output_parent
+while :; do
+    if [[ -e $git_ancestor/.git || -L $git_ancestor/.git ]]; then
+        echo 'capture output must be outside every Git worktree' >&2
+        exit 1
+    fi
+    [[ $git_ancestor == / ]] && break
+    git_ancestor=$(dirname -- "$git_ancestor")
+done
 
 mkdir -m 0700 -- "$output_dir"
 readonly runtime_root="$output_dir/runtime-source"
@@ -200,8 +209,13 @@ runtime_sources=(
     tools/cover-node/workload-v1.json
     tools/cover-node/capture_chrome.mjs
     tools/cover-node/sanitize_netlog.mjs
+    tools/cover-node/capture_yume151_runs.sh
+    scripts/yume_capture_binary_provenance.py
     scripts/yume_capture_manifest.py
     scripts/yume_capture_finalize.py
+    scripts/release_preflight.py
+    scripts/generate_transport_profiles.py
+    scripts/yume_dependencies.py
     scripts/yume_bench_common.py
     scripts/yume_bench_resources.py
     scripts/yume_tls_wire.py
@@ -320,7 +334,7 @@ for run_index in $(seq 1 "$run_count"); do
     node_pid=$!
 
     if [[ $capture_tls_wire == 1 ]]; then
-        "$runtime_root/scripts/yume_tls_wire.py" relay \
+        python3 "$runtime_root/scripts/yume_tls_wire.py" relay \
             --listen "127.0.0.1:$cover_port" \
             --target "127.0.0.1:$cover_backend_port" \
             --output "$run_dir/tls-wire.json" \

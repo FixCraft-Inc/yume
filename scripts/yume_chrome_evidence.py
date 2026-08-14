@@ -51,14 +51,17 @@ def require(condition: bool, message: str) -> None:
         raise ValueError(message)
 
 
-def validate_run(run: dict[str, Any], label: str) -> None:
+def validate_run(
+    run: dict[str, Any], label: str, *, require_tls_observation: bool = True
+) -> None:
     require(run.get("schema") == 2, f"{label}: unsupported schema")
     require(run.get("client", {}).get("version") == "151.0.7922.71",
             f"{label}: wrong Chrome version")
     tls = run.get("tls_observation", {})
-    require(tls.get("version") == "TLS 1.3", f"{label}: TLS is not 1.3")
     require(tls.get("alpn") == "h2", f"{label}: ALPN is not h2")
-    require(tls.get("resumed") is False, f"{label}: session unexpectedly resumed")
+    if require_tls_observation:
+        require(tls.get("version") == "TLS 1.3", f"{label}: TLS is not 1.3")
+        require(tls.get("resumed") is False, f"{label}: session unexpectedly resumed")
     require(run.get("client_settings_in_order") == [
         [1, 65536, "SETTINGS_HEADER_TABLE_SIZE"],
         [2, 0, "SETTINGS_ENABLE_PUSH"],
@@ -92,6 +95,12 @@ def validate_run(run: dict[str, Any], label: str) -> None:
     require(run.get("idle_and_close", {}).get(
         "graceful_websocket_close_observed") is True,
         f"{label}: graceful close missing")
+    require(run.get("shaping_policy") == {
+        "synthetic_idle_keepalive": False,
+        "random_padding": False,
+        "random_timing_jitter": False,
+        "bulk_websocket_message_bytes": 16384,
+    }, f"{label}: shaping policy drift")
 
 
 def validate_fixture(fixture: pathlib.Path) -> None:

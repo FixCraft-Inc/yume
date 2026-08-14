@@ -10,6 +10,7 @@ or other out-of-scope subsystems to 2.0 status.
 | Actor | Capability and visibility |
 | --- | --- |
 | Path observer | Sees the TLS ClientHello, server certificate metadata, encrypted record sizes, timing, and volume. |
+| Local evidence reader | May obtain an explicitly requested outer-carrier behavior report, but not payloads, secrets, carrier paths, peer addresses, or opaque PING bytes. |
 | Active prober | Can open TLS/H1/H2 requests to the public endpoint and sees the genuine Node cover path unless it proves admission. |
 | YUME server operator | Terminates TLS and the inner YUME channel; holds TLS material, admission and inner PSK files, and public-key stores; sees requested targets and decrypted YUME stream bytes unless the application independently encrypts them. |
 | Loopback Node process | Receives bounded ordinary GET/HEAD cover requests only; it must never receive tunnel records, client identities, or YUME secrets. |
@@ -19,6 +20,15 @@ or other out-of-scope subsystems to 2.0 status.
 YUME is a stealth transport and relay, not an anonymity system. Additional
 routing changes who sees traffic; it does not remove trust from compromised
 endpoints.
+
+Evidence collection is opt-in and local. It records bounded event metadata and
+sanitized expected header shapes; credentials, cookies, authorization values,
+WebSocket keys, dynamic carrier paths, authorities, origins, peer addresses,
+payload bytes, TLS secrets, and opaque PING bytes are absent or replaced with
+fixed labels. Collection allocation/cap failures do not alter carrier traffic,
+but the output is incomplete and cannot seal a matched arm. Possession of the
+report still exposes timing, stream geometry, frame sizes, and outcome metadata
+and should be treated as private campaign evidence outside Git.
 
 ## Mandatory out-of-band secrets
 

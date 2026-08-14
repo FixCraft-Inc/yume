@@ -297,6 +297,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         core/stealth/http_profile.cpp
         core/stealth/h2_carrier.cpp
         core/stealth/h2_wire_profile.cpp
+        core/stealth/outer_carrier_observer.cpp
         core/security/identity.cpp
         core/security/inner_crypto.cpp
         core/security/ratchet.cpp
@@ -607,6 +608,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/cli/commands/console.cpp
         client/cli/config/config.cpp
         client/cli/connect/diagnostics.cpp
+        client/cli/connect/outer_carrier_capture.cpp
         client/cli/config/files.cpp
         client/cli/config/input.cpp
         client/cli/config/platform.cpp
@@ -1298,6 +1300,11 @@ yume_link_atomic_if_needed(yume_cli_endpoint_parse_test PRIVATE)
 yume_apply_perf_opts(yume_cli_endpoint_parse_test)
 add_test(NAME yume_cli_endpoint_parse_test COMMAND yume_cli_endpoint_parse_test)
 
+add_executable(yume_bench_echo_test server/session/bench_echo_test.cpp)
+target_include_directories(yume_bench_echo_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+yume_apply_perf_opts(yume_bench_echo_test)
+add_test(NAME yume_bench_echo_test COMMAND yume_bench_echo_test)
+
 if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_executable(yume_socket_protection_test
         client/cli/connect/io_socket_protection_test.cpp)
@@ -1327,6 +1334,17 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     yume_link_atomic_if_needed(yume_h2_carrier_test PRIVATE)
     yume_apply_perf_opts(yume_h2_carrier_test)
     add_test(NAME yume_h2_carrier_test COMMAND yume_h2_carrier_test)
+
+    if(UNIX)
+        add_executable(yume_outer_carrier_capture_test
+            client/cli/connect/outer_carrier_capture_test.cpp)
+        target_link_libraries(yume_outer_carrier_capture_test PRIVATE
+            yume_client_lib)
+        yume_link_atomic_if_needed(yume_outer_carrier_capture_test PRIVATE)
+        yume_apply_perf_opts(yume_outer_carrier_capture_test)
+        add_test(NAME yume_outer_carrier_capture_test
+            COMMAND yume_outer_carrier_capture_test)
+    endif()
 
     add_executable(yume_cover_profile_test core/stealth/cover_profile_test.cpp)
     target_link_libraries(yume_cover_profile_test PRIVATE yume_core)
@@ -1375,6 +1393,10 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_test(NAME yume_capture_manifest_test
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/scripts/test_yume_capture_manifest.py"
+    )
+    add_test(NAME yume_capture_binary_provenance_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/scripts/test_yume_capture_binary_provenance.py"
     )
     add_test(NAME yume_capture_finalize_test
         COMMAND "${Python3_EXECUTABLE}"

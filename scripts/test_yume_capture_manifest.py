@@ -75,6 +75,10 @@ class CaptureManifestTest(unittest.TestCase):
             "node_version": f"v{PINNED_NODE_VERSION}",
             "node_binary_sha256": PINNED_NODE_BINARY_SHA256,
             "display": ":99",
+            "yume_binary_sha256": "",
+            "yume_helper_sha256": "",
+            "release_bundle_sha256": "",
+            "tls_leaf_sha256": "",
             "tls_wire_evidence": 1,
         }
         values.update(overrides)
@@ -127,6 +131,30 @@ class CaptureManifestTest(unittest.TestCase):
             build_environment(self.args(arm="baseline"))
         with self.assertRaisesRegex(ManifestError, "Chrome sandbox"):
             build_environment(self.args(chrome_sandbox="disabled"))
+
+    def test_yume_runtime_hashes_are_exact_and_arm_scoped(self) -> None:
+        digest = "c" * 64
+        environment = build_environment(self.args(
+            arm="yume",
+            yume_binary_sha256=digest,
+            yume_helper_sha256=digest,
+            release_bundle_sha256=digest,
+            tls_leaf_sha256=digest,
+        ))
+        self.assertEqual(environment["yume_binary_sha256"], digest)
+        self.assertEqual(environment["yume_helper_sha256"], digest)
+        self.assertEqual(environment["release_bundle_sha256"], digest)
+        self.assertEqual(environment["tls_leaf_sha256"], digest)
+        with self.assertRaisesRegex(ManifestError, "TLS leaf SHA-256"):
+            build_environment(self.args(
+                arm="yume",
+                yume_binary_sha256=digest,
+                yume_helper_sha256=digest,
+                release_bundle_sha256=digest,
+                tls_leaf_sha256="BAD",
+            ))
+        with self.assertRaisesRegex(ManifestError, "normal arm"):
+            build_environment(self.args(tls_leaf_sha256=digest))
 
     def test_workload_asset_order_is_validated(self) -> None:
         document, _digest = load_workload()

@@ -99,6 +99,7 @@ inline constexpr std::size_t kMaxWriteBatchBytes = 1024 * 1024;
 inline constexpr int kSocketBufferBytes = 2 * 1024 * 1024;
 inline constexpr const char kBenchSinkProto[] = "bench-sink-v1";
 inline constexpr const char kBenchSourceProto[] = "bench-source-v1";
+inline constexpr const char kBenchEchoProto[] = "bench-message-echo-v1";
 inline constexpr std::uint64_t kBenchMaxBytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint32_t kBenchSourceWindowFrames = 64;
 inline constexpr int64_t kDirectDnsTimeoutMs = 1500;

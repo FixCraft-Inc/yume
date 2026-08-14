@@ -70,6 +70,7 @@ struct ConnectedSessionOptions {
     std::optional<inner::KdfParams> inner_kdf;
     std::optional<crypto::Bytes> inner_key;
     std::unique_ptr<obfs::H2Carrier> h2_carrier;
+    std::shared_ptr<obfs::OuterCarrierTrace> outer_carrier_trace;
     crypto::Bytes prefetched_carrier_bytes;
     std::unique_ptr<ratchet::SessionRatchet> ratchet;
     std::string server_tls_fingerprint_sha256;

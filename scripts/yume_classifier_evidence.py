@@ -403,6 +403,16 @@ def load_arm(path: Path, *, normal: bool) -> ArmEvidence:
                 f"evidence arm must be {expected_arm!r}, got "
                 f"{environment.get('arm')!r}"
             )
+        if not normal:
+            for field in (
+                "yume_binary_sha256",
+                "yume_helper_sha256",
+                "release_bundle_sha256",
+                "tls_leaf_sha256",
+            ):
+                value = environment.get(field)
+                if not isinstance(value, str) or not SHA256_RE.fullmatch(value):
+                    raise EvidenceError(f"YUME {field} must be lowercase SHA-256")
         runs = _environment_runs(
             environment, "normal Chrome" if normal else "YUME"
         )
@@ -445,6 +455,143 @@ def _value(environment: dict[str, Any], *names: str) -> object:
     return None
 
 
+def _header_pair_value(
+    headers: object, name: str
+) -> object:
+    if not isinstance(headers, list):
+        return None
+    for pair in headers:
+        if (
+            isinstance(pair, list)
+            and len(pair) == 2
+            and pair[0] == name
+            and isinstance(pair[1], str)
+        ):
+            return pair[1]
+    return None
+
+
+def _passive_lifecycle_projection(
+    value: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Project passive-visible request and WebSocket event order."""
+    observations = value.get("observations")
+    if not isinstance(observations, dict):
+        return None
+
+    requests: list[dict[str, Any]] = []
+    websocket: list[dict[str, Any]] = []
+    outer = observations.get("outer_events")
+    if isinstance(outer, list):
+        for event in outer:
+            if not isinstance(event, dict):
+                return None
+            if (
+                event.get("kind") == "h2-frame"
+                and event.get("direction") == "sent"
+                and event.get("h2_type") == 0x01
+            ):
+                method = _header_pair_value(
+                    event.get("headers_in_order"), ":method"
+                )
+                path = _header_pair_value(
+                    event.get("headers_in_order"), ":path"
+                )
+                stream_id = event.get("stream_id")
+                if (
+                    not isinstance(stream_id, int)
+                    or isinstance(stream_id, bool)
+                    or not isinstance(method, str)
+                    or not isinstance(path, str)
+                ):
+                    return None
+                if method == "CONNECT":
+                    path = "<carrier-path>"
+                requests.append({
+                    "stream_id": stream_id,
+                    "method": method,
+                    "path": path,
+                })
+            elif event.get("kind") == "websocket-frame":
+                item = {
+                    "direction": event.get("direction"),
+                    "opcode": event.get("opcode"),
+                    "final": event.get("final"),
+                    "payload_bytes": event.get("payload_bytes"),
+                    "masked": event.get("masked"),
+                }
+                if websocket and all(
+                    websocket[-1].get(key) == item[key] for key in item
+                ):
+                    websocket[-1]["count"] += 1
+                else:
+                    item["count"] = 1
+                    websocket.append(item)
+    else:
+        headers = observations.get("headers")
+        frames = observations.get("websocket_frames")
+        if not isinstance(headers, list) or not isinstance(frames, list):
+            return None
+        for event in headers:
+            if not isinstance(event, dict) or event.get("direction") != "sent":
+                continue
+            raw_headers = event.get("headers")
+            if not isinstance(raw_headers, list) or not all(
+                isinstance(item, str) for item in raw_headers
+            ):
+                return None
+            method = next((
+                item[len(":method: "):]
+                for item in raw_headers if item.startswith(":method: ")
+            ), None)
+            path = next((
+                item[len(":path: "):]
+                for item in raw_headers if item.startswith(":path: ")
+            ), None)
+            stream_id = event.get("stream_id")
+            if (
+                not isinstance(stream_id, int)
+                or isinstance(stream_id, bool)
+                or not isinstance(method, str)
+                or not isinstance(path, str)
+            ):
+                return None
+            if method == "CONNECT":
+                path = "<carrier-path>"
+            requests.append({
+                "stream_id": stream_id,
+                "method": method,
+                "path": path,
+            })
+        for entry in frames:
+            if not isinstance(entry, dict):
+                return None
+            frame = entry.get("frame")
+            count = entry.get("count")
+            if (
+                not isinstance(frame, dict)
+                or not isinstance(count, int)
+                or isinstance(count, bool)
+                or count <= 0
+            ):
+                return None
+            websocket.append({
+                "direction": frame.get("direction"),
+                "opcode": frame.get("opcode"),
+                "final": frame.get("final"),
+                "payload_bytes": frame.get("payload_length"),
+                "masked": frame.get("masked"),
+                "count": count,
+            })
+
+    if not requests or not websocket:
+        return None
+    return {
+        "request_sequence": requests,
+        "websocket_sequence": websocket,
+    }
+
+
 def _stable_behavior(value: dict[str, Any]) -> dict[str, Any]:
     flow_control = value.get("flow_control_fixture", {})
     idle = value.get("idle_and_close", {})
@@ -463,6 +610,8 @@ def _stable_behavior(value: dict[str, Any]) -> dict[str, Any]:
         "graceful_websocket_close_observed": idle.get(
             "graceful_websocket_close_observed"
         ),
+        "shaping_policy": value.get("shaping_policy"),
+        "passive_lifecycle": _passive_lifecycle_projection(value),
     }
 
 
@@ -545,11 +694,658 @@ def _tls_profile_findings(arm: ArmEvidence, label: str) -> list[Finding]:
     return findings
 
 
+def _payload_distribution(events: list[dict[str, Any]]) -> object:
+    counts: dict[int, int] = {}
+    for event in events:
+        size = event.get("payload_bytes")
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            raise ValueError("live WebSocket payload length is invalid")
+        counts[size] = counts.get(size, 0) + 1
+    if len(counts) == 1:
+        return next(iter(counts))
+    return [
+        {"payload_bytes": size, "count": count}
+        for size, count in sorted(counts.items())
+    ]
+
+
+def _live_binary_summary(
+    events: list[dict[str, Any]], *, server: bool
+) -> dict[str, Any]:
+    masks = {event.get("masked") for event in events}
+    return {
+        "unfragmented_count" if server else "count": len(events),
+        "payload_bytes": _payload_distribution(events),
+        "masked": next(iter(masks)) if len(masks) == 1 else None,
+    }
+
+
+def _live_header_summary(event: dict[str, Any]) -> dict[str, Any]:
+    summary = {
+        "stream_id": event.get("stream_id"),
+        "headers_in_order": event.get("headers_in_order"),
+    }
+    priority = event.get("priority")
+    if isinstance(priority, dict):
+        summary.update(priority)
+    return summary
+
+
+def _validate_live_outer_events(run: dict[str, Any]) -> None:
+    observations = run.get("observations")
+    if not isinstance(observations, dict):
+        raise ValueError("YUME live carrier observations are malformed")
+    events = observations.get("outer_events")
+    if not isinstance(events, list) or not 1 <= len(events) <= 4096:
+        raise ValueError("YUME live carrier observations are missing or unbounded")
+    allowed_kinds = {
+        "h2-frame", "websocket-frame", "flow-window-stalled",
+        "flow-window-recovered",
+        "stream-close", "h2-headers-decoded", "idle-interval", "close-wire",
+    }
+    previous_ms = -1
+    flow_window_stalled = False
+    for event in events:
+        if not isinstance(event, dict) or event.get("kind") not in allowed_kinds:
+            raise ValueError("YUME live carrier event is malformed")
+        if event.get("direction") not in {"sent", "received"}:
+            raise ValueError("YUME live carrier direction is malformed")
+        elapsed = event.get("milliseconds_after_session_start")
+        if (
+            not isinstance(elapsed, int)
+            or isinstance(elapsed, bool)
+            or elapsed < previous_ms
+        ):
+            raise ValueError("YUME live carrier timeline is malformed")
+        previous_ms = elapsed
+        kind = event["kind"]
+        stream_class = event.get("stream_class")
+        if stream_class not in {
+            "connection", "priming", "asset-css", "asset-js", "carrier",
+            "other",
+        }:
+            raise ValueError("YUME live carrier stream class is malformed")
+        if kind == "h2-frame":
+            for field, upper in (("h2_type", 0xFF), ("flags", 0xFF)):
+                value = event.get(field)
+                if (
+                    not isinstance(value, int) or isinstance(value, bool)
+                    or not 0 <= value <= upper
+                ):
+                    raise ValueError("YUME live H2 frame metadata is malformed")
+            stream_id = event.get("stream_id")
+            length = event.get("length")
+            if (
+                not isinstance(stream_id, int) or isinstance(stream_id, bool)
+                or not 0 <= stream_id <= 0x7FFFFFFF
+                or not isinstance(length, int) or isinstance(length, bool)
+                or not 0 <= length <= 16 * 1024
+            ):
+                raise ValueError("YUME live H2 frame bounds are malformed")
+            expected_class = {
+                0: "connection", 1: "priming", 3: "asset-css",
+                5: "asset-js", 7: "carrier", 9: "other",
+            }.get(stream_id, "other")
+            if stream_class != expected_class:
+                raise ValueError("YUME live H2 stream classification is inconsistent")
+            if stream_id not in {0, 1, 3, 5, 7, 9}:
+                raise ValueError("YUME live H2 frame uses an unbound stream")
+            frame_type = event["h2_type"]
+            flags = event["flags"]
+            settings = event.get("settings", [])
+            if frame_type > 0x09:
+                raise ValueError("YUME live H2 extension frame is not admitted")
+            if frame_type in {0x02, 0x03, 0x05}:
+                raise ValueError(
+                    "YUME live H2 frame is outside the successful exact lifecycle"
+                )
+            if frame_type in {0x00, 0x01, 0x09} and length == 0:
+                raise ValueError("YUME live H2 payload frame is empty")
+            permitted_flags = {
+                0x00: 0x09,  # END_STREAM | PADDED
+                0x01: 0x2D,  # END_STREAM | END_HEADERS | PADDED | PRIORITY
+                0x02: 0x00,
+                0x03: 0x00,
+                0x04: 0x01,
+                0x05: 0x0C,  # END_HEADERS | PADDED
+                0x06: 0x01,
+                0x07: 0x00,
+                0x08: 0x00,
+                0x09: 0x04,
+            }.get(frame_type)
+            if permitted_flags is not None and flags & ~permitted_flags:
+                raise ValueError("YUME live H2 frame flags are malformed")
+            if frame_type in {0x00, 0x01, 0x02, 0x03, 0x05, 0x09} and stream_id == 0:
+                raise ValueError("YUME live H2 stream-scoped frame uses stream zero")
+            if frame_type in {0x04, 0x06, 0x07} and stream_id != 0:
+                raise ValueError("YUME live H2 connection frame uses a stream")
+            if frame_type == 0x04:
+                if flags & 0x01:
+                    if length != 0 or settings not in ([], None):
+                        raise ValueError("YUME live H2 SETTINGS ACK is malformed")
+                elif (
+                    length % 6 != 0
+                    or not isinstance(settings, list)
+                    or length != 6 * len(settings)
+                    or any(
+                        not isinstance(item, list) or len(item) != 3
+                        or not isinstance(item[0], int)
+                        or isinstance(item[0], bool)
+                        or not 0 <= item[0] <= 0xFFFF
+                        or not isinstance(item[1], int)
+                        or isinstance(item[1], bool)
+                        or not 0 <= item[1] <= 0xFFFFFFFF
+                        or not isinstance(item[2], str)
+                        for item in settings
+                    )
+                ):
+                    raise ValueError("YUME live H2 SETTINGS metadata is malformed")
+            elif frame_type == 0x06 and (
+                length != 8
+                or not isinstance(event.get("is_ack"), bool)
+                or event["is_ack"] is not bool(flags & 0x01)
+                or not isinstance(event.get("unique_id"), int)
+                or isinstance(event.get("unique_id"), bool)
+                or event["unique_id"] < 0
+            ):
+                raise ValueError("YUME live H2 PING metadata is malformed")
+            elif frame_type == 0x08 and (
+                length != 4
+                or not isinstance(event.get("delta"), int)
+                or isinstance(event.get("delta"), bool)
+                or not 1 <= event["delta"] <= 0x7FFFFFFF
+            ):
+                raise ValueError("YUME live H2 WINDOW_UPDATE metadata is malformed")
+            elif frame_type == 0x07 and (
+                length < 8
+                or not isinstance(event.get("error_code"), int)
+                or isinstance(event.get("error_code"), bool)
+                or not 0 <= event["error_code"] <= 0xFFFFFFFF
+            ):
+                raise ValueError("YUME live H2 GOAWAY metadata is malformed")
+            elif frame_type == 0x01:
+                prefix_bytes = (1 if flags & 0x08 else 0) + (
+                    5 if flags & 0x20 else 0
+                )
+                priority = event.get("priority")
+                if length < prefix_bytes or (flags & 0x20) != (
+                    0x20 if isinstance(priority, dict) else 0
+                ):
+                    raise ValueError("YUME live H2 HEADERS prefix is malformed")
+                if isinstance(priority, dict) and (
+                    set(priority) != {"parent_stream_id", "exclusive", "weight"}
+                    or not isinstance(priority.get("parent_stream_id"), int)
+                    or isinstance(priority.get("parent_stream_id"), bool)
+                    or not 0 <= priority["parent_stream_id"] <= 0x7FFFFFFF
+                    or not isinstance(priority.get("exclusive"), bool)
+                    or not isinstance(priority.get("weight"), int)
+                    or isinstance(priority.get("weight"), bool)
+                    or not 1 <= priority["weight"] <= 256
+                ):
+                    raise ValueError("YUME live H2 HEADERS priority is malformed")
+        elif kind == "h2-headers-decoded":
+            if (
+                not isinstance(event.get("stream_id"), int)
+                or isinstance(event.get("stream_id"), bool)
+                or event["stream_id"] <= 0
+                or not isinstance(event.get("headers_in_order"), list)
+            ):
+                raise ValueError("YUME live decoded headers are malformed")
+            expected_class = {
+                1: "priming", 3: "asset-css", 5: "asset-js", 7: "carrier",
+                9: "other",
+            }.get(event["stream_id"])
+            if event["direction"] != "received" or stream_class != expected_class:
+                raise ValueError("YUME decoded headers have impossible provenance")
+        elif kind == "websocket-frame":
+            if (
+                event.get("opcode") not in {0x00, 0x02, 0x08, 0x09, 0x0A}
+                or not isinstance(event.get("final"), bool)
+                or not isinstance(event.get("masked"), bool)
+                or not isinstance(event.get("payload_bytes"), int)
+                or isinstance(event.get("payload_bytes"), bool)
+                or not 0 <= event["payload_bytes"] <= 16 * 1024 * 1024
+            ):
+                raise ValueError("YUME live WebSocket frame metadata is malformed")
+            if stream_class != "carrier":
+                raise ValueError("YUME live WebSocket stream class is malformed")
+            expected_masked = event["direction"] == "sent"
+            if event["masked"] is not expected_masked:
+                raise ValueError("YUME live WebSocket masking role is inconsistent")
+            if event["opcode"] in {0x08, 0x09, 0x0A} and (
+                event["final"] is not True or event["payload_bytes"] > 125
+            ):
+                raise ValueError("YUME live WebSocket control frame is malformed")
+            if (
+                (event["opcode"] == 0x09 and event["direction"] != "received")
+                or (event["opcode"] == 0x0A and event["direction"] != "sent")
+            ):
+                raise ValueError("YUME live WebSocket control role is inconsistent")
+        elif kind in {"flow-window-stalled", "flow-window-recovered"}:
+            if event["direction"] != "sent" or stream_class != "carrier":
+                raise ValueError("YUME live flow event has impossible provenance")
+            if kind == "flow-window-stalled":
+                if flow_window_stalled:
+                    raise ValueError("YUME live flow-window sequence is malformed")
+                flow_window_stalled = True
+            else:
+                if not flow_window_stalled:
+                    raise ValueError("YUME live flow-window sequence is malformed")
+                flow_window_stalled = False
+        elif kind == "stream-close":
+            stream_id = event.get("stream_id")
+            error_code = event.get("error_code")
+            completed = event.get("completed")
+            if (
+                not isinstance(stream_id, int) or isinstance(stream_id, bool)
+                or not 1 <= stream_id <= 0x7FFFFFFF
+                or not isinstance(error_code, int) or isinstance(error_code, bool)
+                or not 0 <= error_code <= 0xFFFFFFFF
+                or not isinstance(completed, bool)
+            ):
+                raise ValueError("YUME stream-close metadata is malformed")
+            expected_class = {
+                1: "priming", 3: "asset-css", 5: "asset-js", 7: "carrier",
+            }.get(stream_id, "other")
+            if event["direction"] != "received" or stream_class != expected_class:
+                raise ValueError("YUME stream-close event has impossible provenance")
+        elif kind in {"idle-interval", "close-wire"}:
+            if event["direction"] != "sent" or stream_class != "carrier":
+                raise ValueError("YUME terminal event has impossible provenance")
+
+    if flow_window_stalled:
+        raise ValueError("YUME live flow-window recovery is incomplete")
+
+    h2 = [event for event in events if event["kind"] == "h2-frame"]
+    websocket = [
+        event for event in events if event["kind"] == "websocket-frame"
+    ]
+
+    def first_h2(direction: str, frame_type: int, stream_id: int | None = None,
+                 *, ack: bool | None = None) -> dict[str, Any] | None:
+        matching = []
+        for event in h2:
+            if event.get("direction") != direction or event.get("h2_type") != frame_type:
+                continue
+            if stream_id is not None and event.get("stream_id") != stream_id:
+                continue
+            if ack is not None and bool(event.get("flags", 0) & 0x01) != ack:
+                continue
+            matching.append(event)
+        return matching[0] if len(matching) == 1 else None
+
+    client_settings = first_h2("sent", 0x04, 0, ack=False)
+    server_settings = first_h2("received", 0x04, 0, ack=False)
+    client_settings_ack = first_h2("sent", 0x04, 0, ack=True)
+    server_settings_ack = first_h2("received", 0x04, 0, ack=True)
+    connection_window = first_h2("sent", 0x08, 0)
+    if (
+        not client_settings
+        or not server_settings
+        or not client_settings_ack
+        or not server_settings_ack
+        or not connection_window
+    ):
+        raise ValueError("YUME live H2 opening observations are incomplete")
+    if client_settings.get("settings") != run.get("client_settings_in_order"):
+        raise ValueError("YUME live client SETTINGS summary is inconsistent")
+    if server_settings.get("settings") != run.get("node_non_default_settings_in_order"):
+        raise ValueError("YUME live server SETTINGS summary is inconsistent")
+    window = run.get("client_connection_window_update")
+    if not isinstance(window, dict):
+        raise ValueError("YUME connection WINDOW_UPDATE summary is malformed")
+    if (
+        window.get("stream_id") != connection_window.get("stream_id")
+        or window.get("delta") != connection_window.get("delta")
+        or window.get("resulting_window") != 65535 + connection_window.get("delta", -65535)
+    ):
+        raise ValueError("YUME live connection WINDOW_UPDATE summary is inconsistent")
+
+    def first_headers(direction: str, stream_id: int) -> dict[str, Any] | None:
+        required_kind = "h2-frame" if direction == "sent" else "h2-headers-decoded"
+        matching = [event for event in events if (
+            event.get("direction") == direction
+            and event.get("kind") == required_kind
+            and (direction != "sent" or event.get("h2_type") == 0x01)
+            and event.get("stream_id") == stream_id
+            and isinstance(event.get("headers_in_order"), list)
+        )]
+        if len(matching) != 1:
+            return None
+        return matching[0]
+
+    requests = [first_headers("sent", stream_id) for stream_id in (1, 3, 5, 7)]
+    response = first_headers("received", 7)
+    if any(event is None for event in requests) or response is None:
+        raise ValueError("YUME live H2 request/response observations are incomplete")
+    priming, css, js, connect = requests
+    assert priming is not None and css is not None and js is not None and connect is not None
+
+    known_streams = {1, 3, 5, 7}
+    if any(event.get("stream_id") == 9 for event in h2):
+        known_streams.add(9)
+    for direction in ("sent", "received"):
+        directional_h2 = [event for event in h2 if event.get("direction") == direction]
+        consumed_continuations: set[int] = set()
+        for stream_id in known_streams:
+            raw_headers = [event for event in directional_h2 if (
+                event.get("h2_type") == 0x01
+                and event.get("stream_id") == stream_id
+            )]
+            if len(raw_headers) != 1:
+                raise ValueError("YUME raw HEADERS cardinality is inconsistent")
+            raw_position = directional_h2.index(raw_headers[0])
+            if not raw_headers[0].get("flags", 0) & 0x04:
+                continuation_position = raw_position + 1
+                while continuation_position < len(directional_h2):
+                    continuation = directional_h2[continuation_position]
+                    if (
+                        continuation.get("h2_type") != 0x09
+                        or continuation.get("stream_id") != stream_id
+                    ):
+                        raise ValueError("YUME raw CONTINUATION chain is incomplete")
+                    consumed_continuations.add(id(continuation))
+                    if continuation.get("flags", 0) & 0x04:
+                        break
+                    continuation_position += 1
+                else:
+                    raise ValueError("YUME raw CONTINUATION chain is incomplete")
+        if any(
+            event.get("h2_type") == 0x09
+            and event.get("stream_id") in known_streams
+            and id(event) not in consumed_continuations
+            for event in directional_h2
+        ):
+            raise ValueError("YUME raw CONTINUATION frame is orphaned")
+
+    for stream_id in known_streams:
+        decoded = first_headers("received", stream_id)
+        if decoded is None:
+            raise ValueError("YUME decoded response headers are incomplete")
+        decoded_index = events.index(decoded)
+        raw_indexes = [index for index, event in enumerate(events) if (
+            event.get("kind") == "h2-frame"
+            and event.get("direction") == "received"
+            and event.get("h2_type") == 0x01
+            and event.get("stream_id") == stream_id
+        )]
+        if len(raw_indexes) != 1 or raw_indexes[0] >= decoded_index:
+            raise ValueError("YUME raw response HEADERS provenance is missing")
+    stream_closes = [
+        event for event in events if event.get("kind") == "stream-close"
+    ]
+    if (
+        any(event["stream_id"] not in {1, 3, 5, 7, 9} for event in stream_closes)
+        or len({event["stream_id"] for event in stream_closes})
+        != len(stream_closes)
+    ):
+        raise ValueError("YUME live stream-close sequence is malformed")
+    for stream_id in (1, 3, 5):
+        decoded = first_headers("received", stream_id)
+        stream_close = next((event for event in stream_closes if (
+            event["stream_id"] == stream_id
+        )), None)
+        if (
+            decoded is None or stream_close is None
+            or stream_close["error_code"] != 0
+            or stream_close["completed"] is not True
+            or events.index(stream_close) <= events.index(decoded)
+        ):
+            raise ValueError("YUME live response stream-close is incomplete")
+    if 9 in known_streams:
+        favicon_response = first_headers("received", 9)
+        favicon_close = next((event for event in stream_closes if (
+            event["stream_id"] == 9
+        )), None)
+        if (
+            favicon_response is None or favicon_close is None
+            or favicon_close["error_code"] != 0
+            or favicon_close["completed"] is not True
+            or events.index(favicon_close) <= events.index(favicon_response)
+        ):
+            raise ValueError("YUME live favicon response lifecycle is incomplete")
+    request_positions = {
+        stream_id: events.index(event)
+        for stream_id, event in zip((1, 3, 5, 7), requests)
+        if event is not None
+    }
+    close_positions = {
+        event["stream_id"]: events.index(event) for event in stream_closes
+    }
+    completed_priming_lifecycle = (
+        request_positions[1] < close_positions[1]
+        < request_positions[3]
+        < request_positions[5]
+        and request_positions[3] < close_positions[3]
+        < request_positions[7]
+        and request_positions[5] < close_positions[5]
+        < request_positions[7]
+    )
+    if not completed_priming_lifecycle:
+        raise ValueError("YUME live request lifecycle is producer-impossible")
+    if 9 in known_streams:
+        favicon_request = first_headers("sent", 9)
+        if (
+            favicon_request is None
+            or events.index(favicon_request) <= request_positions[7]
+        ):
+            raise ValueError("YUME live favicon request order is inconsistent")
+    if _live_header_summary(priming) != run.get("priming_get"):
+        raise ValueError("YUME live priming headers are inconsistent")
+    def header_value(event: dict[str, Any], name: str) -> Any:
+        for pair in event.get("headers_in_order", []):
+            if isinstance(pair, list) and len(pair) == 2 and pair[0] == name:
+                return pair[1]
+        return None
+
+    expected_assets = []
+    for event in (css, js):
+        summary = _live_header_summary(event)
+        summary["path"] = header_value(event, ":path")
+        expected_assets.append(summary)
+    if expected_assets != run.get("asset_sequence"):
+        raise ValueError("YUME live asset headers are inconsistent")
+    expected_connect = _live_header_summary(connect)
+    expected_connect["requires_completed_priming_get"] = (
+        completed_priming_lifecycle
+    )
+    expected_connect["node_response_headers_in_order"] = response.get("headers_in_order")
+    if expected_connect != run.get("extended_connect"):
+        raise ValueError("YUME live extended CONNECT summary is inconsistent")
+
+    sent_binary = [event for event in websocket if (
+        event.get("direction") == "sent" and event.get("opcode") == 0x02
+    )]
+    received_binary = [event for event in websocket if (
+        event.get("direction") == "received" and event.get("opcode") == 0x02
+        and event.get("final") is True
+    )]
+    received_fragments = [event for event in websocket if (
+        event.get("direction") == "received"
+        and event.get("opcode") in {0x00, 0x02}
+        and not (event.get("opcode") == 0x02 and event.get("final") is True)
+    )]
+    fixture = run.get("websocket_fixture")
+    if not isinstance(fixture, dict):
+        raise ValueError("YUME WebSocket summary is malformed")
+    if _live_binary_summary(sent_binary, server=False) != fixture.get("client_binary_messages"):
+        raise ValueError("YUME live client WebSocket summary is inconsistent")
+    if _live_binary_summary(received_binary, server=True) != fixture.get("server_binary_messages"):
+        raise ValueError("YUME live server WebSocket summary is inconsistent")
+    fragmented: list[dict[str, Any]] = []
+    for first, second in zip(received_fragments, received_fragments[1:]):
+        if (
+            first.get("opcode") == 0x02 and first.get("final") is False
+            and second.get("opcode") == 0x00 and second.get("final") is True
+        ):
+            fragmented = [
+                {key: first.get(key) for key in ("opcode", "final", "payload_bytes", "masked")},
+                {key: second.get(key) for key in ("opcode", "final", "payload_bytes", "masked")},
+            ]
+            break
+    if fragmented != fixture.get("server_fragmented_binary_message"):
+        raise ValueError("YUME live fragmented WebSocket summary is inconsistent")
+
+    server_pings = [event for event in websocket if (
+        event.get("direction") == "received" and event.get("opcode") == 0x09
+    )]
+    client_pongs = [event for event in websocket if (
+        event.get("direction") == "sent" and event.get("opcode") == 0x0A
+    )]
+    sent_closes = [event for event in websocket if (
+        event.get("direction") == "sent" and event.get("opcode") == 0x08
+    )]
+    received_closes = [event for event in websocket if (
+        event.get("direction") == "received" and event.get("opcode") == 0x08
+    )]
+    if not all(len(group) == 1 for group in (
+        server_pings, client_pongs, sent_closes, received_closes
+    )):
+        raise ValueError("YUME live WebSocket control counts are inconsistent")
+    server_ping = server_pings[0]
+    client_pong = client_pongs[0]
+    expected_ping_pong = {
+        "server_ping_payload_bytes": server_ping.get("payload_bytes") if server_ping else None,
+        "client_pong_payload_bytes": client_pong.get("payload_bytes") if client_pong else None,
+        "client_pong_masked": client_pong.get("masked") if client_pong else None,
+    }
+    if expected_ping_pong != fixture.get("ping_pong"):
+        raise ValueError("YUME live WebSocket control summary is inconsistent")
+    websocket_positions = {id(event): index for index, event in enumerate(websocket)}
+    first_fragment = received_fragments[0] if received_fragments else None
+    if (
+        not sent_binary or first_fragment is None or not received_binary
+        or websocket_positions[id(sent_binary[-1])]
+        >= websocket_positions[id(server_ping)]
+        or websocket_positions[id(server_ping)] + 1
+        != websocket_positions[id(first_fragment)]
+        or websocket_positions[id(client_pong)]
+        <= websocket_positions[id(received_binary[-1])]
+    ):
+        raise ValueError("YUME live WebSocket PING/echo order is inconsistent")
+    sent_close = sent_closes[0]
+    received_close = received_closes[0]
+    sent_close_index = events.index(sent_close)
+    terminal_ping_index = next((index for index, event in enumerate(events) if (
+        event.get("kind") == "h2-frame"
+        and event.get("direction") == "sent"
+        and event.get("h2_type") == 0x06
+        and not event.get("flags", 0) & 0x01
+    )), None)
+    terminal_data_index = next((index for index, event in enumerate(events) if (
+        terminal_ping_index is not None
+        and terminal_ping_index < index < sent_close_index
+        and event.get("kind") == "h2-frame"
+        and event.get("direction") == "sent"
+        and event.get("h2_type") == 0x00
+        and event.get("stream_id") == 7
+    )), None)
+    terminal_goaway_index = next((index for index, event in enumerate(events) if (
+        index > sent_close_index
+        and event.get("kind") == "h2-frame"
+        and event.get("direction") == "sent"
+        and event.get("h2_type") == 0x07
+        and event.get("stream_id") == 0
+    )), None)
+    if (
+        terminal_ping_index is None or terminal_data_index is None
+        or terminal_goaway_index is None
+        or sent_close.get("h2_ping_immediately_before") is not True
+    ):
+        raise ValueError("YUME live terminal H2/WebSocket sequence is inconsistent")
+    expected_close = {
+        "payload_bytes": sent_close.get("payload_bytes"),
+        "client_masked": sent_close.get("masked"),
+        "server_masked": received_close.get("masked") if received_close else None,
+        "h2_ping_immediately_before_close": sent_close.get(
+            "h2_ping_immediately_before", False
+        ),
+        "h2_ping_originator": "client" if first_h2("sent", 0x06, 0, ack=False) else "unobserved",
+    }
+    if expected_close != fixture.get("close"):
+        raise ValueError("YUME live WebSocket close summary is inconsistent")
+
+    idle_events = [event for event in events if (
+        event.get("kind") == "idle-interval"
+    )]
+    close_wires = [event for event in events if (
+        event.get("kind") == "close-wire"
+    )]
+    if len(idle_events) != 1 or len(close_wires) != 1:
+        raise ValueError("YUME live one-shot terminal events are inconsistent")
+    idle_event = idle_events[0]
+    close_wire = close_wires[0]
+    sent_goaway = first_h2("sent", 0x07, 0)
+    recovered = any(
+        event.get("kind") == "h2-frame"
+        and event.get("direction") == "received"
+        and event.get("h2_type") == 0x08
+        for event in events
+    )
+    if (
+        idle_event is None or idle_event.get("completed") is not True
+        or close_wire is None or close_wire.get("completed") is not True
+        or sent_goaway is None
+        or events.index(idle_event) >= terminal_ping_index
+        or events.index(close_wire) <= terminal_goaway_index
+    ):
+        raise ValueError("YUME live idle/terminal observations are incomplete")
+    flow = run.get("flow_control_fixture")
+    if not isinstance(flow, dict):
+        raise ValueError("YUME flow-control summary is malformed")
+    if flow.get("client_stream_send_stalls") != sum(
+        event.get("kind") == "flow-window-stalled" for event in events
+    ) or flow.get("window_update_recovery_observed") is not recovered:
+        raise ValueError("YUME live flow-control summary is inconsistent")
+    idle = run.get("idle_and_close")
+    if not isinstance(idle, dict):
+        raise ValueError("YUME idle/close summary is malformed")
+    expected_h2_pings = [
+        {
+            "milliseconds_after_session_start": event["milliseconds_after_session_start"],
+            "is_ack": bool(event.get("flags", 0) & 0x01),
+            "type": event["direction"],
+            "unique_id": event.get("unique_id", 0),
+        }
+        for event in h2 if event.get("h2_type") == 0x06
+    ]
+    if (
+        len(expected_h2_pings) != 2
+        or expected_h2_pings[0]["type"] != "sent"
+        or expected_h2_pings[0]["is_ack"] is not False
+        or expected_h2_pings[1]["type"] != "received"
+        or expected_h2_pings[1]["is_ack"] is not True
+        or not isinstance(expected_h2_pings[0]["unique_id"], int)
+        or isinstance(expected_h2_pings[0]["unique_id"], bool)
+        or expected_h2_pings[0]["unique_id"] <= 0
+        or expected_h2_pings[1]["unique_id"]
+        != expected_h2_pings[0]["unique_id"]
+    ):
+        raise ValueError("YUME live H2 PING correlation is inconsistent")
+    if (
+        idle.get("requested_idle_ms") != idle_event.get("requested_ms")
+        or idle.get("h2_pings") != expected_h2_pings
+        or idle.get("graceful_websocket_close_observed") is not (
+            received_close is not None and close_wire.get("completed") is True
+        )
+    ):
+        raise ValueError("YUME live idle/close summary is inconsistent")
+
+
 def _behavior_findings(arm: ArmEvidence, label: str) -> list[Finding]:
     findings: list[Finding] = []
     for index, run in enumerate(arm.behavior_runs, start=1):
         try:
-            validate_run(run, f"{label}-run-{index:02d}")
+            if label == "yume":
+                if run.get("capture_status") != "complete":
+                    raise ValueError("YUME live carrier capture is incomplete")
+                if run.get("capture_source") != "live-production-carrier":
+                    raise ValueError("YUME behavior is not from the live production carrier")
+                _validate_live_outer_events(run)
+            validate_run(
+                run, f"{label}-run-{index:02d}",
+                require_tls_observation=label != "yume",
+            )
             websocket = run["websocket_fixture"]
             if websocket["client_binary_messages"] != (
                 EXPECTED_WORKLOAD["client_binary_messages"]
@@ -592,13 +1388,35 @@ def _behavior_findings(arm: ArmEvidence, label: str) -> list[Finding]:
                 raise ValueError("H2 idle ping/ack behavior drift")
             ping_times = [item.get("milliseconds_after_session_start") for item in pings]
             if any(
-                not isinstance(value, int)
-                or isinstance(value, bool)
-                or not 42000 <= value <= 44000
+                not isinstance(value, int) or isinstance(value, bool)
                 for value in ping_times
             ):
                 raise ValueError("H2 idle ping timing is outside 42-44 seconds")
-        except (KeyError, TypeError, ValueError) as exc:
+            if label == "yume":
+                outer_events = run.get("observations", {}).get("outer_events", [])
+                idle_index = next(
+                    index for index, event in enumerate(outer_events)
+                    if event.get("kind") == "idle-interval"
+                )
+                last_activity_ms = max(
+                    event.get("milliseconds_after_session_start", -1)
+                    for event in outer_events[:idle_index]
+                )
+                quiet_ms = ping_times[0] - last_activity_ms
+                if not 42000 <= quiet_ms <= 44000:
+                    raise ValueError("H2 quiet interval is outside 42-44 seconds")
+            elif any(not 42000 <= value <= 44000 for value in ping_times):
+                raise ValueError("H2 idle ping timing is outside 42-44 seconds")
+            if run.get("shaping_policy") != {
+                "synthetic_idle_keepalive": False,
+                "random_padding": False,
+                "random_timing_jitter": False,
+                "bulk_websocket_message_bytes": 16384,
+            }:
+                raise ValueError("outer-carrier shaping policy is inconsistent")
+            if _passive_lifecycle_projection(run) is None:
+                raise ValueError("passive-visible lifecycle observations are malformed")
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
             findings.append(
                 Finding(
                     "DRIFT",

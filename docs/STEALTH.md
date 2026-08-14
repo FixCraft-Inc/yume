@@ -184,8 +184,12 @@ checksums, rejects symlinks and unbounded inputs, requires exact Chrome/Node
 identities and five runs per arm, rejects a normal/YUME arm relabel, requires a
 user-namespace Chrome sandbox, and compares source cleanliness, certificate,
 SNI, ALPN, profile, the exact `tools/cover-node/workload-v1.json` hash,
-workload, and stable H2/WebSocket behavior. `PARITY` means only that the inputs are
-matched enough for later external classifier and active-probe work.
+workload, and stable H2/WebSocket behavior. The stable projection includes the
+ordered request stream/method/path classes (including Chrome's stream-9
+`/favicon.ico` request) and the compressed WebSocket frame order, so a missing
+favicon lifecycle or an early server PING cannot be hidden by matching aggregate
+counts. `PARITY` means only that the inputs are matched enough for later external
+classifier and active-probe work.
 `KNOWN_GAP` means required evidence is absent; `DRIFT` means an observed value
 differs. The existing carrier diagnostic's public-URL baseline is useful
 functional evidence but is not a same-certificate, same-server classifier
@@ -199,8 +203,9 @@ payload therefore no longer have independent definitions. The installed
 production HTTP/1 cover backend intentionally remains a bounded GET/HEAD site:
 ordinary public RFC 8441 CONNECT is not an admitted YUME carrier and must not
 be forwarded to a new unauthenticated echo service merely to force parity.
-Driving the same workload through production YUME SOCKS still requires the
-live carrier observer and one-shot lifecycle described below.
+Driving the same workload through production YUME uses the opt-in live carrier
+observer and exact one-shot lifecycle described below. It observes the outer
+production carrier directly; it does not infer behavior from SOCKS counters.
 
 For a normal-Chrome arm, run from a clean exact-commit checkout and place the
 fresh output outside the checkout. A matched campaign may supply one private
@@ -229,12 +234,68 @@ and mode-0600 `complete.json` are written. Failed or partial captures have no
 completion marker and are rejected by the validator. Raw NetLogs and all
 private material remain outside Git.
 
-There is not yet a production-carrier event observer or one-shot graceful YUME
-capture lifecycle. Do not synthesize `behavior.json` from the committed
-fixture, `cover_profile::active()`, aggregate timing counters, or the H2 opening
-probe. Until real per-run SETTINGS/header/WebSocket/control/idle/close events
-are sanitized from the live outer connection, the honest YUME behavior verdict
-remains `KNOWN_GAP` or `DRIFT`.
+For the YUME arm, use the checked-in runner from a clean exact-commit checkout.
+It creates the owner-only output, runs five separate production connections
+through an unprivileged TCP relay that records TLS-wire structure, invokes the
+exact capture mode, seals per-run and top-level checksums, snapshots every
+runtime input, and writes `complete.json` only after all runs verify:
+
+```bash
+tools/cover-node/capture_yume151_runs.sh \
+  /private/session/yume-arm \
+  /exact/build/bin/yume \
+  /private/session/release/yume-amd64-linux.tar.xz \
+  /private/session/yume-client.json \
+  /private/session/server.crt \
+  cover.example \
+  192.0.2.10:443 \
+  /exact/chrome/google-chrome \
+  /exact/chrome/chrome \
+  /exact/node-v24.18.0/bin/node \
+  5
+```
+
+The target must terminate with the supplied certificate and the config must
+contain the campaign's external admission/inner credentials. The runner hashes
+the config but never copies it or any referenced secret. It separately records
+the certificate PEM-file checksum and passes the X.509 DER leaf fingerprint as
+the helper pin. It fails closed unless the YUME binary, adjacent helper, exact
+Chrome launcher/binary, exact Node binary, source commit/tree, certificate,
+runtime snapshot, and user-namespace capability remain unchanged. The supplied
+client and its adjacent helper must byte-match the validated prepared Linux
+bundle, whose manifest must name the clean capture source commit. The direct
+CLI flag is intentionally incompatible with SOCKS/forwarding, packet-TUN,
+proxy, multi-tunnel, full-benchmark, padding, and jitter modes.
+
+Each run sends 64 ordered 16-KiB application messages and requires the server
+to echo each parsed message byte-for-byte, for exactly 1 MiB in each direction.
+This capture-only transaction stays open while the authenticated carrier is
+quiet for 42 seconds; the ordinary throughput benchmark remains sequential
+upload/download and closes its logical streams normally. Capture then sends
+the terminal H2 PING/WebSocket CLOSE/GOAWAY and waits at most 750 ms for the
+peer close before shutdown.
+
+The report is reserved before networking, remains mode `0600`, is durably
+written once, and records only bounded sanitized metadata from actual live
+nghttp2/WebSocket events. It never records payloads, admission secrets,
+carrier URLs, peer addresses, TLS secrets, or H2 PING opaque bytes. Collection
+failure does not alter the carrier, but the report is marked incomplete and the
+capture command fails. The stable summaries are reconstructed from the event
+stream; the classifier rejects placeholder, malformed, mismatched PING/ACK,
+and aggregate-inconsistent event evidence.
+
+Do not synthesize `behavior.json` from the committed fixture,
+`cover_profile::active()`, aggregate timing counters, or the H2 opening probe.
+The observer supplies the missing production input, but authenticated YUME
+framing/ratchet overhead is intentionally reported in the outer WebSocket
+geometry and may yield a truthful `DRIFT`; it is never rewritten into the
+normal-Chrome aggregate. The current carrier also has no browser favicon stream,
+and its server PING is triggered by the first decoded carrier data rather than
+the reference workload's first complete application message. Those lifecycle
+differences are retained and must produce `DRIFT`, not be repaired by capture-only
+wire mutations. Gate B remains open
+until five real YUME runs and five normal-Chrome runs are sealed into matched
+same-session arms and accepted before external classifier/active-probe work.
 
 ## Known classifier-visible residuals
 

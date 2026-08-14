@@ -287,7 +287,23 @@ def build_environment(args: argparse.Namespace) -> dict[str, Any]:
     certificate_sha256 = hashlib.sha256(
         read_regular_nofollow(args.certificate)
     ).hexdigest()
-    return {
+    if args.arm == "yume":
+        for field, value in (
+            ("YUME binary SHA-256", args.yume_binary_sha256),
+            ("YUME helper SHA-256", args.yume_helper_sha256),
+            ("release bundle SHA-256", args.release_bundle_sha256),
+            ("TLS leaf SHA-256", args.tls_leaf_sha256),
+        ):
+            if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+                raise ManifestError(f"{field} must be lowercase 64-hex")
+    elif (
+        args.yume_binary_sha256
+        or args.yume_helper_sha256
+        or args.release_bundle_sha256
+        or args.tls_leaf_sha256
+    ):
+        raise ManifestError("normal arm must not declare YUME runtime hashes")
+    environment = {
         "schema": 1,
         "arm": args.arm,
         "source_commit": commit,
@@ -316,6 +332,12 @@ def build_environment(args: argparse.Namespace) -> dict[str, Any]:
         },
         "workload": actual_contract,
     }
+    if args.arm == "yume":
+        environment["yume_binary_sha256"] = args.yume_binary_sha256
+        environment["yume_helper_sha256"] = args.yume_helper_sha256
+        environment["release_bundle_sha256"] = args.release_bundle_sha256
+        environment["tls_leaf_sha256"] = args.tls_leaf_sha256
+    return environment
 
 
 def write_private_json(path: Path, value: dict[str, Any]) -> None:
@@ -354,6 +376,10 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--node-version", required=True)
     result.add_argument("--node-binary-sha256", required=True)
     result.add_argument("--display", required=True)
+    result.add_argument("--yume-binary-sha256", default="")
+    result.add_argument("--yume-helper-sha256", default="")
+    result.add_argument("--release-bundle-sha256", default="")
+    result.add_argument("--tls-leaf-sha256", default="")
     result.add_argument(
         "--tls-wire-evidence", required=True, type=int, choices=(0, 1)
     )

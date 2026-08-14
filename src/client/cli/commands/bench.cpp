@@ -36,10 +36,35 @@
 
 namespace yume::client {
 
+EndpointBenchWorkload select_endpoint_bench_workload(
+        const EndpointBenchOptions& options) noexcept {
+    return options.matched_message_echo
+        ? EndpointBenchWorkload::MatchedMessageEcho
+        : EndpointBenchWorkload::SequentialDirections;
+}
+
+bool EndpointEchoReplyContract::Accept(
+        const std::vector<std::uint8_t>& data) noexcept {
+    if (message_bytes_ == 0 || total_bytes_ == 0 ||
+        total_bytes_ % message_bytes_ != 0 ||
+        data.size() != message_bytes_ || complete() ||
+        data.size() > total_bytes_ ||
+        received_bytes_ > total_bytes_ - data.size() ||
+        std::any_of(data.begin(), data.end(), [](std::uint8_t value) {
+            return value != 0x59U;
+        })) {
+        return false;
+    }
+    received_bytes_ += data.size();
+    ++received_messages_;
+    return true;
+}
+
 namespace {
 
 constexpr const char kBenchSinkProto[] = "bench-sink-v1";
 constexpr const char kBenchSourceProto[] = "bench-source-v1";
+constexpr const char kBenchEchoProto[] = "bench-message-echo-v1";
 constexpr const char kBenchHost[] = "yume-bench.invalid";
 constexpr std::uint64_t kBenchWindowBytes = 8ULL * 1024ULL * 1024ULL;
 constexpr auto kBenchOpenTimeout = std::chrono::seconds(30);
@@ -120,6 +145,28 @@ struct DownloadBenchState {
     std::string error;
     std::string close_reason;
     std::uint64_t received{0};
+    std::atomic<std::uint64_t> progress_bytes{0};
+    std::atomic<bool> cancelled{false};
+};
+
+struct EchoBenchState {
+    EchoBenchState(std::uint64_t total_bytes, std::size_t message_bytes)
+        : reply_contract(total_bytes, message_bytes) {}
+
+    std::mutex mu;
+    std::condition_variable cv;
+    bool open_done{false};
+    bool open_ok{false};
+    bool closed{false};
+    bool write_failed{false};
+    bool payload_mismatch{false};
+    std::string error;
+    std::string close_reason;
+    std::uint64_t queued_bytes{0};
+    std::uint64_t completed_bytes{0};
+    std::uint64_t received_bytes{0};
+    std::uint64_t in_flight_bytes{0};
+    EndpointEchoReplyContract reply_contract;
     std::atomic<std::uint64_t> progress_bytes{0};
     std::atomic<bool> cancelled{false};
 };
@@ -632,6 +679,173 @@ EndpointBenchResult run_endpoint_download_bench(const std::shared_ptr<Tunnel>& t
     return result;
 }
 
+EndpointBenchResult run_endpoint_message_echo_bench(
+        const std::shared_ptr<Tunnel>& tunnel,
+        std::uint64_t total_bytes,
+        std::size_t chunk_size) {
+    EndpointBenchResult result;
+    const uint8_t stream_id = tunnel->reserve_stream_id();
+    if (stream_id == 0) {
+        result.error = "no stream id available";
+        return result;
+    }
+    auto state = std::make_shared<EchoBenchState>(total_bytes, chunk_size);
+    auto write_window = std::make_shared<BenchWriteWindow>();
+    const auto cancel = [&] {
+        state->cancelled.store(true, std::memory_order_release);
+        state->cv.notify_all();
+        write_window->wake_waiters();
+        tunnel->unregister_stream(stream_id);
+    };
+
+    tunnel->register_stream(
+        stream_id,
+        [state](const Tunnel::Bytes& data) {
+            std::lock_guard<std::mutex> lock(state->mu);
+            state->payload_mismatch |= !state->reply_contract.Accept(data);
+            state->received_bytes = state->reply_contract.received_bytes();
+            state->progress_bytes.store(
+                state->received_bytes, std::memory_order_relaxed);
+            state->cv.notify_all();
+        },
+        [state, write_window](const std::string& reason) {
+            {
+                std::lock_guard<std::mutex> lock(state->mu);
+                state->closed = true;
+                state->close_reason = reason;
+            }
+            state->cancelled.store(true, std::memory_order_release);
+            state->cv.notify_all();
+            write_window->wake_waiters();
+        });
+
+    nlohmann::json open{
+        {"proto", kBenchEchoProto},
+        {"host", kBenchHost},
+        {"port", 1},
+        {"bytes", total_bytes},
+        {"message_bytes", chunk_size},
+    };
+    tunnel->open_relay_stream(
+        stream_id, open, [state](bool ok, const std::string& reason) {
+            {
+                std::lock_guard<std::mutex> lock(state->mu);
+                state->open_done = true;
+                state->open_ok = ok;
+                state->error = reason;
+            }
+            state->cv.notify_all();
+        });
+    {
+        std::unique_lock<std::mutex> lock(state->mu);
+        if (!state->cv.wait_for(lock, kBenchOpenTimeout, [&] {
+                return state->open_done || state->closed;
+            })) {
+            result.error = "benchmark echo OPEN timed out";
+            lock.unlock();
+            cancel();
+            return result;
+        }
+        if (!state->open_ok) {
+            result.error = state->error.empty()
+                ? "benchmark echo OPEN failed" : state->error;
+            lock.unlock();
+            cancel();
+            return result;
+        }
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    BenchProgressTicker progress("ECHO", total_bytes, state->progress_bytes);
+    while (true) {
+        std::size_t size = 0;
+        {
+            std::lock_guard<std::mutex> lock(state->mu);
+            if (state->write_failed || state->closed ||
+                state->queued_bytes >= total_bytes) {
+                break;
+            }
+            size = static_cast<std::size_t>(std::min<std::uint64_t>(
+                total_bytes - state->queued_bytes, chunk_size));
+        }
+        if (!write_window->reserve(
+                size, state->cancelled, kBenchStallTimeout)) {
+            result.error = "benchmark echo stalled waiting for the write window";
+            tunnel->send_close(stream_id, "benchmark echo stalled");
+            cancel();
+            return result;
+        }
+        {
+            std::lock_guard<std::mutex> lock(state->mu);
+            if (state->write_failed || state->closed) {
+                write_window->release(size);
+                break;
+            }
+            state->queued_bytes += size;
+            state->in_flight_bytes += size;
+        }
+        Tunnel::Bytes payload(size, 0x59U);
+        tunnel->send_data(
+            stream_id, std::move(payload),
+            [state, write_window, size](
+                bool ok, std::size_t, const std::string& reason) {
+                write_window->release(size);
+                {
+                    std::lock_guard<std::mutex> lock(state->mu);
+                    state->in_flight_bytes = size <= state->in_flight_bytes
+                        ? state->in_flight_bytes - size : 0;
+                    if (ok) {
+                        state->completed_bytes += size;
+                    } else {
+                        state->write_failed = true;
+                        state->error = reason.empty()
+                            ? "benchmark echo write failed" : reason;
+                    }
+                }
+                state->cv.notify_all();
+            });
+    }
+    {
+        std::unique_lock<std::mutex> lock(state->mu);
+        if (!state->cv.wait_for(lock, kBenchStallTimeout, [&] {
+                return state->write_failed || state->payload_mismatch ||
+                    state->closed ||
+                    (state->in_flight_bytes == 0 &&
+                     state->received_bytes >= total_bytes);
+            })) {
+            result.error = "benchmark echo timed out waiting for replies";
+            lock.unlock();
+            tunnel->send_close(stream_id, "benchmark echo stalled");
+            cancel();
+            return result;
+        }
+        if (state->write_failed || state->payload_mismatch ||
+            state->received_bytes != total_bytes ||
+            state->completed_bytes != total_bytes) {
+            result.error = state->payload_mismatch
+                ? "benchmark echo reply message contract mismatch"
+                : (state->error.empty()
+                    ? "benchmark echo byte count mismatch" : state->error);
+            lock.unlock();
+            tunnel->send_close(stream_id, "benchmark echo failed");
+            cancel();
+            return result;
+        }
+    }
+    const auto end = std::chrono::steady_clock::now();
+    progress.stop();
+    // Unlike the ordinary throughput benchmark, the capture transaction
+    // deliberately leaves its authenticated logical stream open. The caller
+    // now holds the same outer WebSocket quiet for 42 seconds and then closes
+    // the carrier; an inner CLOSE here would add traffic absent from Chrome's
+    // frozen application session immediately before the idle interval.
+    result.ok = true;
+    result.bytes = total_bytes * 2;
+    result.seconds = std::chrono::duration<double>(end - start).count();
+    cancel();
+    return result;
+}
+
 EndpointBenchResult run_endpoint_upload_bench_many(const std::shared_ptr<Tunnel>& tunnel,
                                                    std::uint64_t total_bytes,
                                                    std::size_t chunk_size,
@@ -752,6 +966,19 @@ int run_endpoint_benchmark(const std::shared_ptr<Tunnel>& tunnel,
               << "Security ML-KEM-1024+X25519+PSK ratchet=on  AES-256-GCM=on"
                  "  legacy-hop=off\n"
               << "Carrier  TLS1.3=on  H2/WebSocket=on  padding=off  jitter=off\n";
+    if (select_endpoint_bench_workload(options) ==
+        EndpointBenchWorkload::MatchedMessageEcho) {
+        std::cout << "Capture  authenticated message-echo transaction; each"
+                     " application chunk is echoed as parsed\n\n";
+        const auto echo = run_endpoint_message_echo_bench(
+            tunnel, total_bytes, chunk_size);
+        if (!echo.ok) {
+            util::log_error("bench echo failed: " + echo.error);
+            return 1;
+        }
+        std::cout << "ECHO    complete\n";
+        return 0;
+    }
     if (production_stream_shape) {
         std::cout << "Compare  upload DATA geometry matches this process's SOCKS/forward"
                      " relay buffer; download uses yumed target/source policy\n\n";

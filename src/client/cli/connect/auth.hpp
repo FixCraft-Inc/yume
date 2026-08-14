@@ -79,6 +79,7 @@ void perform_h2_carrier_handshake(ClientTransportStream& stream,
                                   int server_port,
                                   const security::Secret32& obfs_secret,
                                   std::vector<uint8_t>* prefetched = nullptr,
-                                  std::unique_ptr<obfs::H2Carrier>* carrier_out = nullptr);
+                                  std::unique_ptr<obfs::H2Carrier>* carrier_out = nullptr,
+                                  std::shared_ptr<obfs::OuterCarrierTrace> outer_trace = {});
 
 }  // namespace yume::client

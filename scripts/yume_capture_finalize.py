@@ -28,8 +28,13 @@ EXPECTED_RUNTIME_FILES = (
     "tools/cover-node/workload-v1.json",
     "tools/cover-node/capture_chrome.mjs",
     "tools/cover-node/sanitize_netlog.mjs",
+    "tools/cover-node/capture_yume151_runs.sh",
+    "scripts/yume_capture_binary_provenance.py",
     "scripts/yume_capture_manifest.py",
     "scripts/yume_capture_finalize.py",
+    "scripts/release_preflight.py",
+    "scripts/generate_transport_profiles.py",
+    "scripts/yume_dependencies.py",
     "scripts/yume_bench_common.py",
     "scripts/yume_bench_resources.py",
     "scripts/yume_tls_wire.py",
@@ -262,6 +267,16 @@ def finalize_capture(root: Path) -> dict[str, Any]:
         tls_wire = environment.get("tls_wire_evidence")
         if not isinstance(tls_wire, bool):
             raise FinalizeError("tls_wire_evidence must be Boolean")
+        if arm == "yume":
+            for field in (
+                "yume_binary_sha256",
+                "yume_helper_sha256",
+                "release_bundle_sha256",
+                "tls_leaf_sha256",
+            ):
+                value = environment.get(field)
+                if not isinstance(value, str) or not SHA256_RE.fullmatch(value):
+                    raise FinalizeError(f"{field} must be lowercase SHA-256")
 
         top_raw = reader.bytes(Path("SHA256SUMS"))
         top_entries = parse_checksum_manifest(top_raw)

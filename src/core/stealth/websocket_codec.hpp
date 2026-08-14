@@ -20,6 +20,16 @@ enum class WebSocketRole {
     Server,
 };
 
+struct WebSocketFrameMetadata {
+    std::uint8_t opcode{0};
+    bool final{false};
+    bool masked{false};
+    std::uint64_t payload_bytes{0};
+};
+
+using WebSocketFrameObserver = void (*)(
+    void* context, const WebSocketFrameMetadata& frame) noexcept;
+
 // RFC 6455 framing used inside RFC 8441 DATA.  The codec deliberately exposes
 // decoded binary payload as a byte stream because YUME's own frame parser sits
 // above it.  It accepts fragmented binary messages and interleaved controls,
@@ -27,6 +37,15 @@ enum class WebSocketRole {
 class WebSocketCodec {
 public:
     explicit WebSocketCodec(WebSocketRole role);
+
+    // The callback receives metadata only, after a complete inbound frame has
+    // passed structural/opcode validation. It must be noexcept and must not
+    // retain or inspect payload data (which is never supplied).
+    void set_inbound_frame_observer(WebSocketFrameObserver observer,
+                                    void* context) noexcept {
+        inbound_frame_observer_ = observer;
+        inbound_frame_observer_context_ = context;
+    }
 
     WebSocketBytes EncodeBinary(const std::uint8_t* data, std::size_t size);
     WebSocketBytes EncodeBinary(const WebSocketBytes& data) {
@@ -73,6 +92,8 @@ private:
     bool close_sent_{false};
     bool closed_{false};
     std::string error_;
+    WebSocketFrameObserver inbound_frame_observer_{nullptr};
+    void* inbound_frame_observer_context_{nullptr};
 };
 
 }  // namespace yume::obfs

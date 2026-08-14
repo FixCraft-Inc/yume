@@ -45,6 +45,20 @@ the installed production HTTP/1 cover backend. Changing it requires new
 matched captures and must not silently rewrite the existing
 `chrome151-node24-v1` evidence claim.
 
+The opt-in YUME `--outer-carrier-evidence` path is admitted only when this
+active profile, its declared `chrome151` helper backend, and the frozen
+one-tunnel workload all match. The capture-only application transaction is 64
+ordered 16-KiB messages echoed byte-for-byte; ordinary endpoint benchmarks do
+not use that protocol. Its stable behavior summary is reconstructed from
+bounded live carrier events; the registry is used to validate and redact
+expected metadata, never to fabricate observed events. The application match
+does not hide YUME framing/ratchet overhead: the observer reports the actual
+outer WebSocket geometry and the classifier may correctly return `DRIFT`. The
+stable classifier projection also retains ordered request and WebSocket
+lifecycle. In particular, normal Chrome's stream-9 favicon request and
+PING-before-first-fragment relationship are compared even though the current
+production YUME carrier does not reproduce them.
+
 The transport and dependency registries are source/build metadata and are not
 installed as runtime examples. The transport registry contains
 repository-relative evidence paths; install rules copy only the active,

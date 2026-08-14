@@ -18,6 +18,7 @@
 #include "client/cli/config/files.hpp"
 #include "client/cli/config/input.hpp"
 #include "client/cli/connect/io.hpp"
+#include "client/cli/connect/outer_carrier_capture.hpp"
 #include "client/cli/config/platform.hpp"
 #include "client/cli/commands/proxy.hpp"
 #include "client/cli/commands/io_runtime.hpp"
@@ -473,22 +474,15 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
     if ((args.control_mode || args.list_controlled) && args.server.empty()) {
         cfg.server = "127.0.0.1";
     }
-    if (args.bench &&
-        ((!args.run_cmd.empty()) ||
-         (args.lport > 0) ||
-         (cfg.socks_port > 0) ||
-         use_reverse ||
-         args.control_mode ||
-         args.list_controlled ||
-         args.directory_mode ||
-         !cfg.app_codec.empty() ||
-         !args.chat_target.empty() ||
-         !args.file_target.empty() ||
-         !args.bytes_target.empty() ||
-         !args.admin_target.empty() ||
-         args.attach_local ||
-         args.service_streams_only ||
-         args.share_export)) {
+    const bool conflicting_endpoint_mode =
+        !args.run_cmd.empty() || args.lport > 0 || cfg.socks_port > 0 ||
+        use_reverse || args.control_mode || args.list_controlled ||
+        args.directory_mode || !cfg.app_codec.empty() ||
+        !args.chat_target.empty() || !args.file_target.empty() ||
+        !args.bytes_target.empty() || !args.admin_target.empty() ||
+        args.attach_local || args.service_streams_only || args.share_export ||
+        !cfg.packet_tun_name.empty();
+    if (args.bench && conflicting_endpoint_mode) {
         util::log_error("--bench/--bench-full is a one-shot endpoint mode; do not combine it with SOCKS, forwards, relay, or control modes");
         return 1;
     }
@@ -523,6 +517,33 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
     if (!has_active_mode) {
         util::log_error("no mode selected (use --packet-tun, --full-bench, --quick-bench, --bench, --socks, --monero-rpc, -L, -R, --run, --directory, --chat, --send-file, --send-bytes, --admin-attach, --control, --attach-local, or --service-streams-only)");
         return 1;
+    }
+
+    if (!args.outer_carrier_evidence.empty()) {
+        const OuterCarrierCapturePolicy capture_policy{
+            .endpoint_bench = args.bench,
+            .full_bench = args.bench_full,
+            .bench_mib = args.bench_mib,
+            .bench_chunk_kib = args.bench_chunk_kib,
+            .bench_streams = args.bench_streams,
+            .bench_direction = args.bench_direction,
+            .tunnel_count = cfg.tunnel_count,
+            .transport_profile = cfg.transport_profile,
+            .tls_backend = cfg.tls_backend,
+            .required_tls_backend = helper_tls_backend,
+            .obfuscation = cfg.obfuscation,
+            .non_interactive = cfg.non_interactive,
+            .conflicting_mode = conflicting_endpoint_mode,
+            .outbound_proxy = !cfg.outbound_proxy_url.empty(),
+            .obfs_pad_multiple = cfg.obfs_pad_multiple,
+            .obfs_jitter_ms = cfg.obfs_jitter_ms,
+        };
+        const std::string policy_error =
+            ValidateOuterCarrierCapturePolicy(capture_policy);
+        if (!policy_error.empty()) {
+            util::log_error(policy_error);
+            return 1;
+        }
     }
 
     if (args.bench) {
@@ -654,6 +675,21 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             util::log_info(drop_summary);
         }
     }
+    std::unique_ptr<OuterCarrierCapture> outer_carrier_capture;
+    if (!args.outer_carrier_evidence.empty()) {
+        std::string capture_error;
+        outer_carrier_capture = OuterCarrierCapture::Reserve(
+            args.outer_carrier_evidence, &capture_error);
+        if (!outer_carrier_capture) {
+            util::log_error(capture_error.empty()
+                                ? "cannot reserve outer-carrier evidence"
+                                : capture_error);
+            return 1;
+        }
+    }
+    const auto outer_carrier_trace = outer_carrier_capture
+        ? outer_carrier_capture->trace()
+        : std::shared_ptr<obfs::OuterCarrierTrace>{};
     RuntimeStopController stop_controller(args.bench);
     stop_controller.install_signal_handler();
     auto external_stop_requested = [this]() {
@@ -993,6 +1029,9 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             if (cfg.obfuscation) {
                 util::log_info("starting HTTPS h2 carrier handshake");
                 require_h2_carrier_alpn(stream, tls_name, cfg.port);
+                if (outer_carrier_trace) {
+                    outer_carrier_trace->SetTlsAlpn(stream.metadata().alpn);
+                }
                 diagnostics::Stopwatch h2_timer(YUME_TIMING_ENABLED());
                 if (!cfg.obfs_secret_material) {
                     throw FatalError("YUME 2.0 admission secret was not loaded");
@@ -1000,7 +1039,8 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 perform_h2_carrier_handshake(stream, io, tls_name, cfg.port,
                                              *cfg.obfs_secret_material,
                                              &prefetched_tls_bytes,
-                                             &h2_carrier);
+                                             &h2_carrier,
+                                             outer_carrier_trace);
                 YUME_TIMING_LOG("client.connect",
                                  "h2_carrier",
                                  "ms=" + std::to_string(
@@ -1414,6 +1454,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             connected_options.inner_key = inner_key;
             connected_options.ratchet = std::move(v2_ratchet);
             connected_options.h2_carrier = std::move(h2_carrier);
+            connected_options.outer_carrier_trace = outer_carrier_trace;
             connected_options.prefetched_carrier_bytes =
                 std::move(prefetched_tls_bytes);
             connected_options.server_tls_fingerprint_sha256 =
@@ -1439,13 +1480,25 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 return std::exchange(runtime_ready_callback_, {});
             };
 
-            return run_connected_session(
+            const int connected_code = run_connected_session(
                 io,
                 *ctx,
                 std::move(stream),
                 proxy_cfg,
                 std::move(connected_options),
                 stop_controller.stop_flag());
+            if (outer_carrier_capture) {
+                std::string capture_error;
+                if (!outer_carrier_capture->Finalize(
+                        connected_code == 0, &capture_error)) {
+                    util::log_error(
+                        capture_error.empty()
+                            ? "outer-carrier evidence is incomplete"
+                            : capture_error);
+                    return connected_code == 0 ? 1 : connected_code;
+                }
+            }
+            return connected_code;
         } catch (const FatalError& ex) {
             if (should_stop()) {
                 return 130;
@@ -1455,6 +1508,11 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
         } catch (const std::exception& ex) {
             if (should_stop()) {
                 return 130;
+            }
+            if (outer_carrier_capture) {
+                util::log_error(
+                    std::string("outer-carrier capture failed: ") + ex.what());
+                return 1;
             }
             std::shared_ptr<RelayRuntime> relay_ptr = stop_controller.active_relay_runtime();
             if ((args.non_interactive || !relay_ptr) && looks_like_endpoint_down(ex.what())) {

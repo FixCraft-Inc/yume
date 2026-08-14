@@ -1,12 +1,20 @@
 #include "core/stealth/websocket_codec.hpp"
 
 #include <cassert>
+#include <vector>
 
 namespace {
 
 using yume::obfs::WebSocketBytes;
 using yume::obfs::WebSocketCodec;
 using yume::obfs::WebSocketRole;
+
+void ObserveFrame(
+    void* context,
+    const yume::obfs::WebSocketFrameMetadata& frame) noexcept {
+    static_cast<std::vector<yume::obfs::WebSocketFrameMetadata>*>(context)
+        ->push_back(frame);
+}
 
 void RoundTripAndMasking() {
     WebSocketCodec client(WebSocketRole::Client);
@@ -69,6 +77,32 @@ void RejectWrongMaskAndText() {
     assert(server2.failed());
 }
 
+void ObserveOnlyCompleteValidatedMetadata() {
+    WebSocketCodec client(WebSocketRole::Client);
+    WebSocketCodec server(WebSocketRole::Server);
+    std::vector<yume::obfs::WebSocketFrameMetadata> observed;
+    observed.reserve(2);
+    server.set_inbound_frame_observer(&ObserveFrame, &observed);
+
+    const WebSocketBytes payload{'s', 'e', 'c', 'r', 'e', 't'};
+    auto wire = client.EncodeBinary(payload);
+    server.Feed(wire.data(), wire.size() - 1);
+    assert(observed.empty());
+    server.Feed(wire.data() + wire.size() - 1, 1);
+    assert(observed.size() == 1);
+    assert(observed[0].opcode == 0x2);
+    assert(observed[0].final);
+    assert(observed[0].masked);
+    assert(observed[0].payload_bytes == payload.size());
+
+    WebSocketCodec invalid(WebSocketRole::Server);
+    invalid.set_inbound_frame_observer(&ObserveFrame, &observed);
+    invalid.Feed(WebSocketBytes{0x81, 0x81, 1, 2, 3, 4,
+                                static_cast<unsigned char>('x' ^ 1)});
+    assert(invalid.failed());
+    assert(observed.size() == 1);
+}
+
 }  // namespace
 
 int main() {
@@ -76,5 +110,6 @@ int main() {
     FragmentAndPing();
     EncodeFragmentedRoundTrip();
     RejectWrongMaskAndText();
+    ObserveOnlyCompleteValidatedMetadata();
     return 0;
 }

@@ -305,6 +305,11 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.bench = true;
             args.bench_direction_override = true;
             args.non_interactive = true;
+        } else if (arg == "--outer-carrier-evidence") {
+            const char* value = take_value("--outer-carrier-evidence");
+            if (!value) return args;
+            args.outer_carrier_evidence = value;
+            args.non_interactive = true;
         } else if (arg == "--threads") {
             if (!parse_int_value("--threads", args.io_threads)) {
                 return args;

@@ -326,14 +326,29 @@ bool Session::handle_bench_open(uint8_t stream_id, const std::string& proto, con
     } catch (...) {
         requested = 0;
     }
-    if (requested == 0 || requested > kBenchMaxBytes) {
+    std::size_t message_bytes = 0;
+    try {
+        message_bytes = json.value("message_bytes", std::size_t{0});
+    } catch (...) {
+        message_bytes = 0;
+    }
+    const bool echo = proto == kBenchEchoProto;
+    const auto echo_transaction = echo
+        ? BenchEchoTransaction::Create(requested, message_bytes)
+        : std::optional<BenchEchoTransaction>{};
+    if (requested == 0 || requested > kBenchMaxBytes ||
+        (echo && !echo_transaction)) {
         send_open_reply(stream_id, false, "invalid benchmark byte count");
         return true;
     }
 
     BenchStream bench;
-    bench.mode = (proto == kBenchSourceProto) ? BenchStream::Mode::Source : BenchStream::Mode::Sink;
+    bench.mode = echo ? BenchStream::Mode::Echo
+        : (proto == kBenchSourceProto
+            ? BenchStream::Mode::Source : BenchStream::Mode::Sink);
     bench.requested_bytes = requested;
+    bench.message_bytes = message_bytes;
+    bench.echo_transaction = echo_transaction;
     bench.open_started_ms = util::now_ms();
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
@@ -357,14 +372,34 @@ bool Session::handle_bench_open(uint8_t stream_id, const std::string& proto, con
 }
 
 bool Session::handle_bench_data(uint8_t stream_id, const crypto::Bytes& payload) {
-    std::lock_guard<std::mutex> lock(streams_mutex_);
-    auto it = bench_streams_.find(stream_id);
-    if (it == bench_streams_.end()) {
-        return false;
+    bool echo = false;
+    bool reject_echo = false;
+    crypto::Bytes echo_payload;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        auto it = bench_streams_.find(stream_id);
+        if (it == bench_streams_.end()) return false;
+        auto& bench = it->second;
+        if (bench.mode == BenchStream::Mode::Sink) {
+            bench.upstream_bytes += static_cast<std::uint64_t>(payload.size());
+        } else if (bench.mode == BenchStream::Mode::Echo) {
+            if (!bench.echo_transaction ||
+                !bench.echo_transaction->Accept(payload, &echo_payload)) {
+                reject_echo = true;
+            } else {
+                bench.upstream_bytes =
+                    bench.echo_transaction->received_bytes();
+                bench.downstream_bytes += echo_payload.size();
+                echo = true;
+            }
+        }
     }
-    if (it->second.mode == BenchStream::Mode::Sink) {
-        it->second.upstream_bytes += static_cast<std::uint64_t>(payload.size());
+    if (reject_echo) {
+        handle_bench_close(stream_id, "invalid benchmark echo message");
+        return true;
     }
+    if (echo) send_control_frame(
+        protocol::DATA, stream_id, echo_payload);
     return true;
 }
 
@@ -406,7 +441,9 @@ bool Session::handle_bench_close(uint8_t stream_id, const std::string& reason) {
                      "session=" + std::to_string(session_id_) +
                          " stream=" + std::to_string(stream_id) +
                          " proto=bench " +
-                         "mode=" + std::string(bench.mode == BenchStream::Mode::Sink ? "sink" : "source") +
+                         "mode=" + std::string(
+                             bench.mode == BenchStream::Mode::Sink ? "sink" :
+                             bench.mode == BenchStream::Mode::Source ? "source" : "echo") +
                          " ms=" + std::to_string(elapsed_ms) +
                          " upstream=" + std::to_string(bench.upstream_bytes) +
                          " downstream=" + std::to_string(bench.downstream_bytes) +

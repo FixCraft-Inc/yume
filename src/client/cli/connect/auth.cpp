@@ -323,14 +323,16 @@ void perform_h2_carrier_handshake(ClientTransportStream& stream,
                                   int server_port,
                                   const security::Secret32& obfs_secret,
                                   std::vector<uint8_t>* prefetched,
-                                  std::unique_ptr<obfs::H2Carrier>* carrier_out) {
+                                  std::unique_ptr<obfs::H2Carrier>* carrier_out,
+                                  std::shared_ptr<obfs::OuterCarrierTrace> outer_trace) {
     crypto::Bytes admission_key = obfs_secret.CopyBytes();
     WipeBytesOnExit wipe_admission_key(admission_key);
     std::int64_t hour = static_cast<std::int64_t>(std::time(nullptr)) / 3600;
     std::string nonce = obfs::random_nonce_hex();
     std::string token = obfs::derive_path_token(admission_key, server_host, hour, nonce);
     std::string path = obfs::build_path(token, nonce);
-    auto carrier = std::make_unique<obfs::H2Carrier>(obfs::H2CarrierRole::Client);
+    auto carrier = std::make_unique<obfs::H2Carrier>(
+        obfs::H2CarrierRole::Client, std::move(outer_trace));
 #if YUME_ENABLE_DEV_DIAGNOSTICS
     carrier->set_timing_enabled(YUME_TIMING_ENABLED());
 #endif

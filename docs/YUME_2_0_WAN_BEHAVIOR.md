@@ -140,6 +140,14 @@ Not yet done:
    against the Chrome/Node fixture.
 4. WAN measurement. Every number in the table above is a protocol model.
 
+The exact `--outer-carrier-evidence` lifecycle is intentionally incompatible
+with WAN benchmark modes other than its frozen one-shot workload. Use it to
+seal same-session behavior inputs first. Its one MiB each way is an exact
+message-echo correctness contract, not a throughput trial. Run the matched
+WAN/loss matrices as separate frozen trials with identical binaries and
+profile. Do not relabel the 42-second capture quiet interval or its
+terminal-close evidence as WAN/throughput/soak qualification.
+
 Multiple independent tunnels still aggregate, but that was never a fix for
 one-tunnel semantics.
 

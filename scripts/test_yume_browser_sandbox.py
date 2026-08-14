@@ -741,6 +741,14 @@ class BrowserSandboxTest(unittest.TestCase):
                 )
                 self._write_executable(yume, "#!/bin/sh\nexit 0\n")
                 self._write_executable(helper, "#!/bin/sh\nexit 0\n")
+                # This case exercises the Chrome/Node hash gates, not host
+                # package discovery. GitHub's minimal runner does not
+                # necessarily provide ss or rg, so keep those later-stage
+                # prerequisites hermetic and inert.
+                for executable in ("ss", "rg"):
+                    self._write_executable(
+                        fake_bin / executable, "#!/bin/sh\nexit 0\n"
+                    )
                 for name in ("bundle.tar.xz", "client.json", "server.crt"):
                     (root / name).write_text("not executed\n", encoding="utf-8")
 
@@ -748,6 +756,7 @@ class BrowserSandboxTest(unittest.TestCase):
                 environment.update({
                     "CHROME_MARKER": str(chrome_marker),
                     "NODE_MARKER": str(node_marker),
+                    "PATH": f"{fake_bin}:{environment['PATH']}",
                 })
                 expected_error = "Chrome launcher SHA-256 mismatch"
                 if forged_chrome_hashes:
@@ -764,7 +773,6 @@ esac
 printf '%s  %s\n' "$hash" "$target"
 """,
                     )
-                    environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
                     expected_error = "Node binary SHA-256 mismatch"
 
                 result = subprocess.run(

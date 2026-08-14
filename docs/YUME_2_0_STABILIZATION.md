@@ -71,13 +71,16 @@ All items in this section block merging the current feature branch.
   merge review and every affected validation rather than silently rebasing
   evidence onto new code.
 
-The current architecture candidate previously passed 54/54 native and 54/54
-serial ASan+UBSan tests on `raptorlake`, seven metadata tests, pinned Go unit
-and race tests, release preflight, and Debian source/ABI checks. Those results
-were from an isolated dirty-source overlay configured with the helper enabled
-but `YUME_WARNINGS_AS_ERRORS=OFF`, `BASEFWX_REQUIRE_OQS=OFF`, and
-`BASEFWX_REQUIRE_LZMA=OFF`; they are regression evidence only and do not
-replace the strict clean exact-commit run above.
+Signed architecture commit
+`1593fc62de89d613e107f1e173adf3edb7ed7568` passed this lane from the fresh
+`raptorlake` checkout recorded in `docs/YUME_2_0_DEV6_HANDOFF.md`. Native and
+serial ASan+UBSan suites passed 66/66, Release/LTO passed 61/61, strict
+Argon2/OQS/LZMA and warnings-as-errors were enabled, pinned Go unit/race and
+95 focused evidence tests passed, Debian and all 42 ABI symbols agreed, and
+two clean helpers were reproducible. Exact Linux artifacts passed source,
+prepared-directory, and transfer-round-trip preflight. This closes the old
+dirty-overlay qualification gap for that architecture checkpoint; it does not
+close any Gate B or Gate C item.
 
 ## Gate B: authorize `2.0-rc1` as a stable-ish Linux preview
 
@@ -152,28 +155,30 @@ bumping to `2.0-rc1`.
   is not indistinguishability, and Linux qualification is not Android or
   cross-platform support.
 
-## Current continuation order (2026-08-13)
+## Current continuation boundary (2026-08-13)
 
-1. The live outer-carrier observer/capture candidate is frozen. The read-only
-   reviewer returned explicit `GO / MERGE` after all three high findings were
-   closed.
-2. The complete local native and serial ASan+UBSan suites, pinned Go unit/race,
-   metadata/evidence, Debian/ABI, private-artifact, and reproducible-helper
-   checks passed as recorded in the public handoff. Exact Linux artifact
-   preparation remains part of the fresh exact-commit remote lane.
-3. The commit carrying this section must be the one verified signed checkpoint;
-   refresh `origin/main`, push only `main` without a PR, and verify its signature
-   and parity rather than relying on this prose alone.
-4. Launch the bounded remote operator against a fresh checkout of that exact
-   commit and the complete clean BaseFWX source. Return its unit and evidence
-   handles without polling it.
-5. After the user reports completion, inspect that remote result once and give
-   the final Gate A merge/no-merge verdict. Workflow status is likewise read
-   once rather than babysat.
-6. Gate B then uses freshly reverified exact Chrome/Node artifacts and the two
-   capture runners. The historical local `.71` staging path is currently
-   absent; re-stage or use an independently verified remote copy with a valid
-   sandbox before capture. WAN/netem remains a separate controlled campaign.
+1. The reviewed and signed live outer-carrier architecture is on `main` at
+   `1593fc62de89d613e107f1e173adf3edb7ed7568`. Its complete local and fresh
+   strict remote Gate A lanes pass, including release-artifact preparation and
+   round-trip validation.
+2. The first push's CodeQL, Code Quality, branch sync, and Pages runs passed.
+   CI built successfully but its native and sanitizer jobs both reached one
+   non-hermetic negative test that assumed the runner installed `ss` and `rg`.
+   The current tree supplies inert test-local shims, changes no production
+   behavior, passes complete local native and serial sanitizer registrations,
+   and has a read-only `MERGE` review.
+3. Freeze that bounded test/status correction as a signed checkpoint, push only
+   `main` without a PR, and read its CI and workflow-owned `DEV` parity once.
+   A failed correction still blocks the final Gate A verdict; do not relabel it
+   as a runtime or cryptographic failure without evidence.
+4. Once that automation read-back passes, Gate A is `MERGE` for continued
+   development on `main`. It remains `NO RELEASE`: `2.0-dev6`, the opt-in
+   Chrome helper, and the existing backend default are unchanged.
+5. Gate B then requires an exact Node `24.18.0` binary plus the freshly
+   reverified staged Chrome `151.0.7922.71`, launched from a fresh profile with
+   a valid sandbox. Same-session capture, external classifier/active-probe,
+   WAN/netem matrices, and uninterrupted deployed soak remain separate bounded
+   campaigns outside Git.
 
 No agent should silently turn “finish the checks” into permission to change the
 wire contract, weaken fail-closed behavior, push `DEV`, publish artifacts, or

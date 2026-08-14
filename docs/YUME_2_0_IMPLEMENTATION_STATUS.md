@@ -136,7 +136,24 @@ or admin/control validation.
   removed; the unvalidated federation path still retains its separate legacy
   AUTH and inner-key flow.
 
-## Local evidence completed
+## Development evidence completed
+
+- Signed live-observer architecture commit
+  `1593fc62de89d613e107f1e173adf3edb7ed7568` passed independent read-only
+  review, complete local native and serial ASan+UBSan suites, and a fresh clean
+  strict `raptorlake` lane: native 66/66, serial ASan+UBSan 66/66,
+  Release/LTO 61/61, exact Go 1.26.5 unit/race, 95 focused evidence tests,
+  strict Argon2/OQS/LZMA, warnings-as-errors, Debian/42-symbol ABI, two
+  reproducible helpers, exact Linux preparation, release preflight, and
+  transfer round trip. This is Gate A development-integration evidence, not
+  the same-session Chrome, WAN, deployed-soak, or independent release audit
+  required for `2.0-rc1`.
+- The architecture push's first GitHub CI run exposed one test-only portability
+  defect: the Chrome/Node hash negative test assumed `ss` and `rg` were
+  installed. The current test supplies inert temporary prerequisites, changes
+  no production runner, and passes complete local native and serial sanitizer
+  registrations with an independent read-only `MERGE` verdict. Its corrective
+  workflow read-back remains part of the final Gate A automation check.
 
 - Exact Chrome loaded `/`, CSS, and JavaScript through `yumed` backed by exact
   Node `24.18.0`; the page completed its expected DOM readiness marker.

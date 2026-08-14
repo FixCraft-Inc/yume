@@ -60,6 +60,20 @@ Gate B therefore remains open. External classifier/active-probe work, matched
 WAN/loss matrices, and deployed-network soak remain blocked on an accepted
 fresh same-session matched-input report.
 
+Signed correction `4a9c24d8204d7acf97a1bdbaf344ef1aa412572f` passed a
+fresh exact-commit preparation: Release CTests 63/63, pinned Go unit/race,
+tracked private-artifact audit, reproducible helpers, exact package preflight,
+and transfer round trip. Its CI build and sanitizer jobs compiled successfully
+and passed 65/66 tests, including both new Node regressions, but their shared
+browser-sandbox test failed before its intended Chrome-exit assertion because
+that isolated fixture supplied a fake `ss` and omitted the `rg` used by the new
+passive-listener wait. CodeQL passed. The checkpoint containing this paragraph
+adds only the missing test-local `rg` shim; it does not change a production
+runner, Chrome behavior, YUME binary, helper, wire, crypto, or default. The
+focused browser suite passes 38/38 locally. A signed checkpoint, automatic
+read-back, and fresh exact-commit artifact preparation remain required before
+the new campaign may launch.
+
 The architecture chronology below remains retained evidence.
 
 The live outer-carrier architecture is integrated as signed commit

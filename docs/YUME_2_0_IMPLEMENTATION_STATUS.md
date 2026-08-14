@@ -152,6 +152,13 @@ or admin/control validation.
   confirms Node listener readiness, and registers deterministic Node tests.
   Focused local tests pass. This is a harness correction, not parity evidence;
   fresh exact-commit artifacts and an entirely new campaign remain required.
+- Signed harness correction `4a9c24d8204d7acf97a1bdbaf344ef1aa412572f`
+  passed fresh exact-commit Release 63/63, pinned Go unit/race, reproducibility,
+  packaging, and round-trip gates. CodeQL passed. Native and sanitizer CI both
+  built and passed 65/66 tests; their only failure was a shared isolated
+  browser fixture that supplied fake `ss` but omitted the `rg` now used by the
+  passive listener wait. The current checkpoint adds that test-local shim and
+  passes browser-sandbox 38/38; production capture behavior is unchanged.
 - Signed live-observer architecture commit
   `1593fc62de89d613e107f1e173adf3edb7ed7568` passed independent read-only
   review, complete local native and serial ASan+UBSan suites, and a fresh clean

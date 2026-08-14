@@ -903,6 +903,10 @@ printf '%s  %s\n' "$hash" "$target"
                 "#!/bin/sh\ncase \" $* \" in *\"sport = :\"*) echo LISTEN ;; esac\n",
             )
             self._write_executable(
+                fake_bin / "rg",
+                "#!/bin/sh\nexec /usr/bin/grep \"$@\"\n",
+            )
+            self._write_executable(
                 fake_bin / "git",
                 """#!/bin/sh
 case " $* " in

@@ -155,32 +155,43 @@ bumping to `2.0-rc1`.
   is not indistinguishability, and Linux qualification is not Android or
   cross-platform support.
 
-## Current continuation boundary (2026-08-13)
+## Current continuation boundary (2026-08-14)
 
 1. Gate A is `MERGE` for continued development and `NO RELEASE` at signed
-   commit `815ea405568edeb661389bae128a6678cb4cdf1b`. All five automatic
-   workflows passed and workflow-owned `DEV` had content parity. No PR was
-   opened and `DEV` was not pushed directly.
-2. The exact `815ea40` Gate B artifact preparation passed its fresh strict
-   Release, Go unit/race, Debian/ABI/installed-layout, reproducibility,
-   private-artifact, Linux preparation, preflight, and transfer-round-trip
-   gates. It qualifies capture inputs only.
+   commit `e4786e049fea7b786148e55b806e37fea401741e`. CI, Pages, branch sync,
+   dynamic CodeQL/Code Quality, and static CodeQL `31777856725` passed.
+   Workflow-owned `DEV` has tracked-content parity. No PR was opened and `DEV`
+   was not pushed directly.
+2. The exact `e4786e0` Gate B artifact preparation passed fresh Release 63/63,
+   pinned Go unit/race, Debian/ABI/installed-layout, reproducibility,
+   private-artifact, Linux preparation, preflight, checksum, and transfer
+   round-trip gates. It qualifies capture inputs only.
 3. The first same-session campaign failed closed during normal-Chrome run 3
    because the driver could evaluate the old `about:blank` context immediately
    after `Page.navigate`. Runs 1-2 are complete but the third is partial; the
    YUME arm and matched validator never ran. The result is neither `PARITY` nor
    `DRIFT`, and no predecessor run may be reused.
-4. The corrective checkpoint containing this checklist waits for the exact
+4. Signed corrective checkpoint `4a9c24d` waits for the exact
    navigated frame and loader, bounds CDP/HTTP/socket operations, passively
    confirms Node is listening before the relay, and registers deterministic
    Node regressions in package and CTest automation. Signed commit `4a9c24d`
    passed clean exact-commit artifact preparation and CodeQL. Both CI lanes
    built and passed 65/66 tests; only a shared isolated fixture failed because
    it omitted the `rg` executable used by the passive listener wait. The
-   current checkpoint supplies that test-local shim and passes browser-sandbox
-   38/38. Its read-only review, signed checkpoint, automatic read-back, and new
-   clean exact-commit artifact preparation control the next launch.
-5. Rerun the entire five-normal/five-YUME campaign in a fresh root with exact
+   signed `e4786e0` checkpoint supplies that test-local shim and passes
+   browser-sandbox 38/38. Its read-only review, automatic read-back, and clean
+   exact-commit artifact preparation passed.
+5. The fresh `e4786e0` campaign failed closed in normal run 1 because real
+   Chrome DevTools did not answer `Page.navigate` within the bounded 15-second
+   command deadline. No normal arm, YUME arm, or matched report completed, so
+   the result is neither `PARITY` nor `DRIFT`. A direct exact-Chrome/Node canary
+   reproduced the timeout without the TLS relay or any YUME path. Mocked tests
+   did not cover this real-CDP deadline. Both failed private capture roots were
+   deleted after sanitized diagnosis under the operator's cleanup instruction.
+6. Add reviewed deterministic stalled/late-CDP coverage and bounded
+   payload-free navigation diagnostics, pass one fresh exact-Chrome canary,
+   rebuild exact artifacts after any source change, then rerun the entire
+   five-normal/five-YUME campaign in a fresh root with exact
    Node `24.18.0`, staged Chrome `151.0.7922.71`, a fresh profile, and a valid
    sandbox. Only an accepted matched-input report may unblock external
    classifier/active-probe work, WAN/netem matrices, and uninterrupted deployed

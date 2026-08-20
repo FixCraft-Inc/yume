@@ -523,9 +523,9 @@ void Session::send_disguise_404(const std::string& path) {
         reason = "served upstream-response replay";
     } else {
         auto profile = yume::http_profile::server(
-            cfg_.http_profile.empty() ? "yumed" : cfg_.http_profile);
+            cfg_.http_profile.empty() ? "nginx" : cfg_.http_profile);
         if (!profile.has_value()) {
-            profile = yume::http_profile::server("yumed");
+            profile = yume::http_profile::server("nginx");
         }
         resp = std::make_shared<std::string>(
             yume::http_profile::render_404(*profile, /*connection_close=*/true));
@@ -605,10 +605,10 @@ void Session::send_real_http_response(const std::string& path, const std::string
         return;
     }
 
-    // Legacy single-page mode (--real-index / default): only "/" is a page;
-    // everything else is a profile 404. The pre-1.0 "302 Location: /" on every
-    // unknown path was a soft fingerprint (real nginx returns 404 for
-    // /random-path), recognisable to any prober that GETs more than one URL.
+    // Single-page mode (--real-index / default): only "/" is a page;
+    // everything else is a profile 404, because real nginx returns 404 for
+    // /random-path and a blanket "302 Location: /" is a soft fingerprint to
+    // any prober that GETs more than one URL.
     if (path != "/") {
         send_disguise_404(path);
         return;
@@ -628,17 +628,15 @@ void Session::send_real_http_response(const std::string& path, const std::string
         body += "<!--" + hidden + "-->";
     }
 
-    // Disguise headers come from yume::http_profile. The default
-    // profile (empty config => "yumed") preserves pre-1.0 behavior;
-    // operators who pass --hide-in-the-crowd <profile> get the
-    // selected disguise. --public-node forces "nginx" if no profile
-    // is set explicitly.
+    // Disguise headers come from yume::http_profile. An unset profile
+    // resolves to "nginx": the server must never identify itself by
+    // default, so the disguise is opt-out, not opt-in.
     auto profile = yume::http_profile::server(
-        cfg_.http_profile.empty() ? "yumed" : cfg_.http_profile);
+        cfg_.http_profile.empty() ? "nginx" : cfg_.http_profile);
     if (!profile.has_value()) {
         // Validation runs at startup, so reaching here means an
-        // operator hot-edited the config; fall back to yumed.
-        profile = yume::http_profile::server("yumed");
+        // operator hot-edited the config into an unknown profile.
+        profile = yume::http_profile::server("nginx");
     }
 
     std::string headers;
@@ -664,9 +662,9 @@ void Session::send_static_file(const std::string& rel_path,
                                bool keep_alive,
                                const std::string& request_headers) {
     auto profile = yume::http_profile::server(
-        cfg_.http_profile.empty() ? "yumed" : cfg_.http_profile);
+        cfg_.http_profile.empty() ? "nginx" : cfg_.http_profile);
     if (!profile.has_value()) {
-        profile = yume::http_profile::server("yumed");
+        profile = yume::http_profile::server("nginx");
     }
 
     const std::uintmax_t len = file.bytes.size();
@@ -774,9 +772,9 @@ void Session::send_static_file(const std::string& rel_path,
 void Session::send_robots_txt_response(bool head_only, bool keep_alive) {
     const std::string body = "User-agent: *\nDisallow: /\n";
     auto profile = yume::http_profile::server(
-        cfg_.http_profile.empty() ? "yumed" : cfg_.http_profile);
+        cfg_.http_profile.empty() ? "nginx" : cfg_.http_profile);
     if (!profile.has_value()) {
-        profile = yume::http_profile::server("yumed");
+        profile = yume::http_profile::server("nginx");
     }
 
     std::string headers;
@@ -1189,7 +1187,7 @@ void Session::send_h2_server_handshake_then_continue() {
     accepted.status = 200;
     accepted.headers.emplace_back("content-type", "application/grpc-web+proto");
     auto profile = yume::http_profile::server(
-        cfg_.http_profile.empty() ? "yumed" : cfg_.http_profile);
+        cfg_.http_profile.empty() ? "nginx" : cfg_.http_profile);
     if (profile.has_value() && !profile->server_header_value.empty()) {
         accepted.headers.emplace_back("server", profile->server_header_value);
     }
@@ -1313,9 +1311,9 @@ void Session::serve_fake_h2_real_index() {
     }
 
     auto profile = yume::http_profile::server(
-        cfg_.http_profile.empty() ? "yumed" : cfg_.http_profile);
+        cfg_.http_profile.empty() ? "nginx" : cfg_.http_profile);
     if (!profile.has_value()) {
-        profile = yume::http_profile::server("yumed");
+        profile = yume::http_profile::server("nginx");
     }
 
     if (!have_response && cfg_.real_http) {

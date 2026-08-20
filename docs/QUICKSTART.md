@@ -43,8 +43,9 @@ yume-setup init \
 ```
 
 The helper uses the operating system CSPRNG for both 256-bit secret files,
-generates browser-compatible ECDSA TLS certificates plus Ed25519
-operator/client keys, writes owner-only configs, and
+generates browser-compatible ECDSA TLS certificates, the delegated operator
+certificate key, and composite Ed25519 + ML-DSA-87 client identities, writes
+owner-only configs, and
 prints the exact server and device paths. It never prints secret values. For a
 real deployment, supply an existing operator CA with `--ca-key` and
 `--ca-cert`; otherwise the generated CA is a test/bootstrap CA whose private
@@ -64,8 +65,9 @@ yume-setup issue-key --kit ~/yume-kit --name controller --type admin
 ```
 
 Bulk credentials are denied relay/admin privileges by default and remain
-independently session-counted and fair-shared. Admin credentials go to the
-separate operator trust store. Each client directory includes a desktop config,
+independently session-counted and fair-shared. An admin profile gets one visitor
+identity in the operator store and a different second identity in `admin_keys`.
+Each client directory includes a desktop config,
 `DEVICE_SETUP.txt`, and launchers. Run `./start-socks` to use the default
 `~/yume/build/bin/yume`, or `./export-yss [output.yss]` to create an encrypted `.yss`
 containing both required YUME 2.0 secrets for Android import. Share passwords

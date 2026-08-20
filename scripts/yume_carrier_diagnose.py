@@ -204,7 +204,7 @@ def terminate_process(proc: subprocess.Popen[Any], grace_s: float = 4.0) -> None
 def redact_args(args: list[str]) -> list[str]:
     redacted = []
     redact_next = False
-    secret_flags = {"--auth", "-i", "--anonym-ca-cert", "--tls-ca", "--tls-pin"}
+    secret_flags = {"--auth", "-i", "--operator-ca-cert", "--tls-ca", "--tls-pin"}
     for item in args:
         if redact_next:
             redacted.append("<redacted>")
@@ -354,7 +354,6 @@ def start_local_yumed(args: argparse.Namespace,
         "--key", str(keyset["server_key"]),
         "--auth-keys", str(keyset["auth_keys"]),
         "--threads", "2",
-        "--obfs",
         "--obfs-secret-file", str(keyset["obfs_secret"]),
         "--inner-psk-file", str(keyset["inner_psk"]),
         "--real-backend", f"loopback://127.0.0.1:{cover_port}",
@@ -395,13 +394,12 @@ def build_yume_args(args: argparse.Namespace, socks_port: int) -> list[str]:
     ]
     if args.auth:
         argv += ["--auth", str(pathlib.Path(args.auth).expanduser())]
-    if args.anonym_ca_cert:
-        argv += ["--anonym-ca-cert", str(pathlib.Path(args.anonym_ca_cert).expanduser())]
+    if args.operator_ca_cert:
+        argv += ["--operator-ca-cert", str(pathlib.Path(args.operator_ca_cert).expanduser())]
     if args.tls_ca:
         argv += ["--tls-ca", str(pathlib.Path(args.tls_ca).expanduser())]
     if args.tls_name:
         argv += ["--tls-name", args.tls_name]
-    argv.append("--obfs")
     if args.obfs_secret_file:
         argv += ["--obfs-secret-file", str(pathlib.Path(args.obfs_secret_file).expanduser())]
     if args.inner_psk_file:
@@ -425,7 +423,6 @@ def build_local_yume_args(args: argparse.Namespace,
         "--profile", args.client_profile,
         "--hide-in-the-crowd", args.client_http_profile or args.client_profile,
         "--self-dpi",
-        "--obfs",
         "--obfs-secret-file", str(keyset["obfs_secret"]),
         "--inner-psk-file", str(keyset["inner_psk"]),
         "--non-interactive",
@@ -810,7 +807,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--no-local-server", action="store_true", help="Require remote mode; --server must be set")
     ap.add_argument("--local-yumed-port", type=int, default=0, help="0 means choose a free local yumed port")
     ap.add_argument("--auth", default=None, help="YUME auth key path")
-    ap.add_argument("--anonym-ca-cert", default=None)
+    ap.add_argument("--operator-ca-cert", default=None)
     ap.add_argument("--tls-ca", default=None)
     ap.add_argument("--tls-name", default=None)
     ap.add_argument("--obfs-secret-file", default=None,
@@ -818,7 +815,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--inner-psk-file", default=None,
                     help="required protected 2.0 inner PSK file in remote mode")
     ap.add_argument("--server-profile", default="nginx",
-                    choices=["nginx", "nginx-stable", "apache", "caddy", "cloudflare", "express", "gunicorn", "none", "yumed"],
+                    choices=["nginx", "nginx-stable", "apache", "caddy", "cloudflare", "express", "gunicorn", "none"],
                     help="local yumed HTTP disguise profile for active-probe responses")
     ap.add_argument("--client-profile", default="chrome", choices=["chrome"],
                     help="pinned YUME outer TLS/H2 cover profile")

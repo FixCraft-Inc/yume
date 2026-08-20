@@ -54,7 +54,8 @@ Argon2/PQ-file fields. `--rekey-window` passes the same validated depth
 (1..64) to both spawned binaries so high-RTT runs can compare the negotiated
 epoch window without changing per-epoch security limits.
 
-The harness creates temporary Ed25519 identity material plus separate 32-byte
+The harness creates temporary composite Ed25519 + ML-DSA-87 identity material
+plus separate 32-byte
 admission and inner PSK files. Both secret files contain exactly 64 lowercase
 hex characters and have owner-only permissions. A small bounded loopback HTTP
 fixture satisfies `yumed`'s required cover-backend health check; it is not used
@@ -438,7 +439,7 @@ traffic then appears inside the encrypted YUME carrier rather than as extra
 public flows in the same PCAP. Use a disposable browser profile so extensions,
 sync, and an existing service worker do not add unrelated traffic.
 
-No `--pq`, `--hop`, or masquerade switch is accepted. ML-KEM-1024 + X25519,
+There is no `--pq`, hop, or masquerade switch. ML-KEM-1024 + X25519,
 per-message encryption, the default Extreme 256 KiB / 512-frame / 500 ms
 directional epochs,
 the Chrome-shaped H2 carrier, and the Node cover routing are mandatory in every

@@ -406,7 +406,7 @@ bool import_text(MaterialType type,
     auto default_name = [&]() -> char const* {
         switch (type) {
             case MaterialType::AuthKey:      return "Imported auth key";
-            case MaterialType::AnonymPubkey: return "Imported legacy proof key";
+            case MaterialType::AnonymPubkey: return "Imported external proof key";
             case MaterialType::TlsCa:        return "Imported TLS CA";
             case MaterialType::AnonymCa:
             default:                         return "Imported operator CA";
@@ -482,7 +482,7 @@ bool remove(std::string const& id, std::string* err) {
 char const* type_label(MaterialType type) {
     switch (type) {
         case MaterialType::AuthKey:      return "Auth key";
-        case MaterialType::AnonymPubkey: return "Legacy proof key";
+        case MaterialType::AnonymPubkey: return "External proof key";
         case MaterialType::TlsCa:        return "TLS CA";
         case MaterialType::AnonymCa:
         default:                         return "Operator CA";

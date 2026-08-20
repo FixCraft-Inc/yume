@@ -75,9 +75,8 @@ struct ClientProfile {
 std::optional<ServerProfile> server(std::string_view name);
 std::optional<ClientProfile> client(std::string_view name);
 
-// For --help text + validation messages.
+// For --help text and startup validation messages.
 std::vector<std::string> server_names();
-std::vector<std::string> client_names();
 
 // Exact client transport fixtures available to the current wire version.
 // Add a future profile only after its TLS and HTTP/2 captures pass the same

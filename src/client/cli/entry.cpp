@@ -456,7 +456,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
         if (cfg.server_in_charge_port > 0) {
             if (cfg.server_in_charge_port < yume::policy::kServerInChargeManualMinPort ||
                 cfg.server_in_charge_port > yume::policy::kServerInChargeManualMaxPort) {
-                util::log_error("--server-in-charge port must be " +
+                util::log_error("--accept-server-control port must be " +
                                 std::to_string(yume::policy::kServerInChargeManualMinPort) + "-" +
                                 std::to_string(yume::policy::kServerInChargeManualMaxPort));
                 return 1;

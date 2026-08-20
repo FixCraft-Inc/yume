@@ -21,7 +21,9 @@ long-running concurrency validation remain.
   target-inbound predicate. Federation still trusts the authenticated source
   server to enforce the caller half; adding a caller-policy proof would require
   an explicit wire-compatibility decision.
-- AUTH rejects imported keys that are not Ed25519.
+- AUTH requires a composite Ed25519 + ML-DSA-87 identity and verifies both
+  signatures. Admin additionally requires a distinct composite identity from
+  the separate admin store.
 - Public-node startup requires obfs and a nonempty secret. Raw frame-looking,
   partial-timeout, malformed, wrong-key, bad-order, missing server-SETTINGS ACK,
   and authority/SNI/listener-port mismatch paths remain outside AUTH.
@@ -35,10 +37,9 @@ long-running concurrency validation remain.
   idle timeout), conditional GET (`If-None-Match`/`If-Modified-Since` -> 304),
   and byte `Range` requests (-> 206 / 416). Static 200s use nginx-style framing;
   per-profile static templates are not yet implemented.
-- The 2.0 CLI pins the only configured Chrome transport path and rejects
-  `--tls-stealth-rotate` and `--tls-stealth-rotation-interval`. Legacy reusable
-  profile-selection helpers remain in the tree but are not a supported 2.0
-  runtime contract.
+- The 2.0 CLI pins the only configured Chrome transport path. There is no flag
+  to rotate or disable the fixture; the client registry holds exactly one
+  profile entry.
 - Whole-session close has a five-second deadline, pending service opens are
   capped at 64 per service and 256 total, and client EXEC dispatch is capped at
   four concurrent workers. Principal shutdown paths use best-effort buffer

@@ -963,8 +963,7 @@ int run_endpoint_benchmark(const std::shared_ptr<Tunnel>& tunnel,
               << "  download-chunk=server-selected\n"
               << "Boundary exact DATA/ratchet/H2/WebSocket/TLS path; excludes local SOCKS"
                  " and target TCP sockets\n"
-              << "Security ML-KEM-1024+X25519+PSK ratchet=on  AES-256-GCM=on"
-                 "  legacy-hop=off\n"
+              << "Security ML-KEM-1024+X25519+PSK ratchet=on  AES-256-GCM=on\n"
               << "Carrier  TLS1.3=on  H2/WebSocket=on  padding=off  jitter=off\n";
     if (select_endpoint_bench_workload(options) ==
         EndpointBenchWorkload::MatchedMessageEcho) {

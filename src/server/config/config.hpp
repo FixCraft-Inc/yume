@@ -22,10 +22,10 @@ namespace yume::server {
 struct ServerConfig {
     int listen_port{443};
     std::string transport_profile{yume::kTransportProfile};
-    // --listen now accepts either "<port>" (legacy: bind 0.0.0.0:<port>)
-    // or "<addr>:<port>" (bind specifically to <addr>). When the addr
+    // --listen accepts either "<port>" (bind 0.0.0.0:<port>) or
+    // "<addr>:<port>" (bind specifically to <addr>). When the addr
     // form is used, listen_address holds the parsed address string;
-    // empty means "bind any" (the legacy default). Under --public-node,
+    // empty means "bind any", the default. Under --public-node,
     // a listen_address that resolves to a private or loopback range is
     // a hard startup error — that's the "private-IP bind refusal" item
     // the banner had been logging.
@@ -67,8 +67,8 @@ struct ServerConfig {
     // bootstrap lanes such as embedder enrollment; all normal relay/control
     // capability remains denied for these sessions.
     std::vector<std::string> preauth_services;
-    // Compatibility shim for older config/CLI spellings. New code should use
-    // allowed_codecs plus the app-codec registry.
+    // Set by --allow-monero-rpc. Prefer allowed_codecs plus the app-codec
+    // registry; this stays as the single-codec shorthand.
     bool allow_monero_rpc_codec{false};
     std::string monero_rpc_backend_host{"127.0.0.1"};
     int monero_rpc_backend_port{18089};
@@ -134,13 +134,13 @@ struct ServerConfig {
     // existing build-feature-silent-downgrade warnings into hard
     // startup errors, requires --auth-keys, and rejects flags that
     // would expose dangerous capabilities (--allow-exec, --allow-local-ip,
-    // --control-full, --no-inner).
+    // --control-full).
     bool public_node{false};
     // --hide-in-the-crowd <profile>. Name of a yume::http_profile::ServerProfile
     // — controls the Server: header, 404 body shape, and supplementary
     // headers (X-Powered-By for express, CF-Ray for cloudflare, etc).
-    // Empty string means "use the default", which is "yumed" unless
-    // --public-node also set, in which case startup overrides to "nginx".
+    // Empty string means "use the default", which is "nginx": the server
+    // never identifies itself by default.
     std::string http_profile;
     // --upstream-response <path>. Path to a pre-captured real HTTP/1.1
     // response (operator captures it once via tcpdump or curl -i

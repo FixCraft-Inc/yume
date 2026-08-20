@@ -59,8 +59,8 @@ struct Frame {
 // Encodes a frame. When `pad_multiple` > 0, the payload is padded with
 // trailing zero bytes plus a 1-byte length so the total on-wire payload is a
 // multiple of `pad_multiple`, and kFlagPadded is OR'd into the header flags.
-// pad_multiple is clamped to [1, 256]; 0 means "no padding" and produces a
-// byte-for-byte legacy frame. The receiver always strips the padding
+// pad_multiple is clamped to [1, 256]; 0 means "no padding" and emits the
+// payload unmodified. The receiver always strips the padding
 // transparently via decode_frame / strip_padding (no caller awareness needed
 // downstream).
 std::vector<uint8_t> encode_frame(FrameType type,

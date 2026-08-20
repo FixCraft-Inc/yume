@@ -6,7 +6,7 @@ yume \- stealth post-quantum transport client
 .B --server
 .I host
 .B -i
-.I id_ed25519
+.I identity_composite
 [
 .I mode
 ]
@@ -492,7 +492,11 @@ Server port. If omitted, the client uses the configured/default server
 port.
 .TP
 .BI "-i, --auth " path
-Client identity key used for server authentication.
+Composite Ed25519 + ML-DSA-87 identity used for server authentication.
+.TP
+.BI "--admin-auth " path
+Distinct composite second identity for an admin session. It must be enrolled in
+the server's admin store; presenting this key is the admin claim.
 .TP
 .BI "--config " path
 Read client configuration from a JSON file.
@@ -533,10 +537,6 @@ Prefer IPv4 behavior for
 Keep root privileges instead of dropping them where supported.
 .SH SECURITY OPTIONS
 .TP
-.B --obfs
-Use the mandatory full-session HTTP/2 carrier. This is always enabled for
-accepted 2.0 tunnels.
-.TP
 .BI "--obfs-secret-file " path
 Load the mandatory admission secret. The file must contain exactly 64
 lowercase hexadecimal characters encoding 32 random bytes, with no newline
@@ -549,16 +549,10 @@ mandatory hybrid exchange, HKDF, or per-message AES-256-GCM keys.
 .TP
 .B "--require-operator-identity"
 Require proof that the endpoint is authorized by the selected operator CA.
-Legacy aliases are
-.B --require-anonym
-and
-.BR --anonym .
 This authenticates the operator; it does not prove no logging or anonymity.
 .TP
 .BI "--operator-ca-cert " path
-Operator CA certificate used to verify endpoint authorization. The legacy
-alias is
-.BR --anonym-ca-cert .
+Operator CA certificate used to verify endpoint authorization.
 .TP
 .BI "--tls-ca " path
 TLS CA certificate.
@@ -592,15 +586,6 @@ files.
 .B "--hide-in-the-crowd chrome"
 Explicit spelling for the same pinned Chrome 151 HTTP User-Agent profile.
 Other HTTP profiles are rejected for 2.0-dev6.
-.TP
-.B --no-stealth
-Retired for 2.0 tunnels and rejected.
-.TP
-.B --tls-stealth-rotate
-Retired for the fixed 2.0 profile and rejected.
-.TP
-.BI "--tls-stealth-rotation-interval " n
-Retired for the fixed 2.0 profile and rejected.
 .TP
 .B --tls-fingerprint-log
 Log TLS fingerprint metrics.
@@ -701,10 +686,10 @@ Create a local forward:
 yume --server origin.example.net -i ~/.yume/id_ed25519 -L 2222:127.0.0.1:22
 .fi
 .TP
-Require operator identity proof and keep obfs enabled:
+Require operator identity proof:
 .nf
 yume --server origin.example.net -i ~/.yume/id_ed25519 --socks 1080 \
-     --require-operator-identity --operator-ca-cert /etc/yume/operator-ca.pem --obfs
+     --require-operator-identity --operator-ca-cert /etc/yume/operator-ca.pem
 .fi
 .SH SECURITY NOTES
 Inner encryption protects YUME frame payloads between the client and
@@ -715,9 +700,7 @@ The YUME server needs enough target metadata to open outbound sockets.
 If the server must not learn final targets, run Tor locally and route Tor
 through YUME.
 .PP
-Avoid
-.B --use-embedded-master
-for production. Use deployment-specific PQ key files.
+Use deployment-specific PQ key files.
 .PP
 Operator identity proof verifies a CA-authorized endpoint and the associated
 mode asks the server to minimize identifying logs. It cannot prove that the

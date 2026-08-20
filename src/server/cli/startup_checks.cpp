@@ -101,7 +101,7 @@ bool prepare_v2_secrets(yume::server::ServerConfig& cfg,
     if (!cfg.obfuscation || !cfg.inner_crypto) {
         yume::util::log_error(
             "YUME 2.0 requires the H2 carrier and mandatory inner encryption; "
-            "--no-obfs/--no-inner are not accepted");
+            "config obfuscation=false / inner_crypto=false are not accepted");
         return false;
     }
     if (cfg.obfs_pad_multiple != 0 || cfg.obfs_jitter_ms != 0) {
@@ -460,7 +460,7 @@ bool apply_public_node_defaults(yume::server::ServerConfig& cfg,
 
     std::vector<std::string> violations;
     if (!cfg.obfuscation) {
-        violations.emplace_back("--no-obfs is forbidden by --public-node (the HTTP/2 carrier must be the outer visible layer)");
+        violations.emplace_back("obfuscation=false is forbidden by --public-node (the HTTP/2 carrier must be the outer visible layer)");
     }
     if (!public_obfs_admission_valid(
             cfg.public_node, cfg.obfuscation, cfg.obfs_secret_file)) {
@@ -476,7 +476,7 @@ bool apply_public_node_defaults(yume::server::ServerConfig& cfg,
         violations.emplace_back("--control-full is forbidden by --public-node (unrestricted address bridging from a public endpoint is a relay hole)");
     }
     if (!cfg.inner_crypto) {
-        violations.emplace_back("--no-inner is forbidden by --public-node (inner crypto is the only post-handshake confidentiality; a public node MUST require it)");
+        violations.emplace_back("inner_crypto=false is forbidden by --public-node (inner crypto is the only post-handshake confidentiality; a public node MUST require it)");
     }
     if (!cfg.inner_required) {
         violations.emplace_back("--public-node requires --inner-required (clients without inner crypto must be rejected)");
@@ -492,7 +492,7 @@ bool apply_public_node_defaults(yume::server::ServerConfig& cfg,
         return false;
     }
     yume::util::log_info("--public-node active; the following protections are enforced at startup:");
-    yume::util::log_info("  - HTTP/2 carrier obfuscation required (--no-obfs rejected)");
+    yume::util::log_info("  - HTTP/2 carrier obfuscation required (it cannot be disabled)");
     yume::util::log_info("  - protected --obfs-secret-file required (missing/wrong admission stays in the web masquerade)");
     yume::util::log_info("  - dangerous capability flags (--allow-exec / --allow-local-ip / --control-full) are rejected");
     yume::util::log_info("  - inner crypto required (no plaintext transport)");
@@ -554,7 +554,7 @@ void log_security_warnings(const yume::server::ServerConfig& cfg) {
         yume::util::log_warn("delegated server certificate is set but its private key is missing; no delegated signature will be produced");
     }
     if (cfg.anonym && yume::policy::anonym_proof_mode_requires_remote(cfg.anonym_proof_mode) && cfg.anonym_api.empty()) {
-        yume::util::log_warn("legacy external proof mode is selected but no proof API is configured");
+        yume::util::log_warn("external operator proof mode is selected but no proof API is configured");
     }
     if (cfg.anonym && yume::policy::anonym_proof_mode_requires_local(cfg.anonym_proof_mode) &&
         cfg.anonym_ca_key.empty() && cfg.anonym_sub_key.empty()) {
@@ -649,7 +649,7 @@ bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
     }
     if (cfg.federation_enable &&
         (cfg.federation_auth_key.empty() || cfg.federation_anonym_ca.empty())) {
-        yume::util::log_error("federation requires --federation-auth-key and --federation-anonym-ca");
+        yume::util::log_error("federation requires --federation-auth-key and --federation-operator-ca");
         return false;
     }
     if (cfg.federation_enable && !cfg.cluster_bootstrap && cfg.federation_peers.empty()) {

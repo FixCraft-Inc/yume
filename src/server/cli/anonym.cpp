@@ -576,9 +576,9 @@ AnonymProof fetch_anonym_proof(const std::string& hash,
         add_proof_source(&proof.proof_sources, yume::policy::kAnonymProofSourceFixcraft);
     } else if (require_remote) {
         if (api_url.empty()) {
-            throw std::runtime_error("legacy external proof mode requires --anonym-api");
+            throw std::runtime_error("external operator proof mode requires --operator-proof-api");
         }
-        throw std::runtime_error("legacy external proof transport is disabled by policy");
+        throw std::runtime_error("external operator proof transport is disabled by policy");
     }
 
     if (enable_local_sign && !ca_key_path.empty()) {

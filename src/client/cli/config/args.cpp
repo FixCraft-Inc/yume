@@ -231,15 +231,15 @@ ParsedArgs parse_args(int argc, char** argv) {
         } else if (arg == "--bench") {
             args.bench = true;
             args.non_interactive = true;
-        } else if (arg == "--bench-full" || arg == "--endpoint-fullbench" || arg == "--endpoint-full-bench") {
+        } else if (arg == "--bench-full") {
             args.bench = true;
             args.bench_full = true;
             args.non_interactive = true;
-        } else if (arg == "--fullbench" || arg == "--full-bench" || arg == "--local-fullbench") {
+        } else if (arg == "--full-bench") {
             args.local_benchmark = true;
             args.local_benchmark_full = true;
             args.non_interactive = true;
-        } else if (arg == "--quickbench" || arg == "--quick-bench" || arg == "--localbench") {
+        } else if (arg == "--quick-bench") {
             args.local_benchmark = true;
             args.local_benchmark_full = false;
             args.non_interactive = true;
@@ -251,7 +251,6 @@ ParsedArgs parse_args(int argc, char** argv) {
                    arg == "--server-threads" ||
                    arg == "--cooldown-ms" ||
                    arg == "--repeat" ||
-                   arg == "--repeats" ||
                    arg == "--configs" ||
                    arg == "--json") {
             if (!pass_local_benchmark_value(arg)) {
@@ -263,9 +262,7 @@ ParsedArgs parse_args(int argc, char** argv) {
                    arg == "--list-configs" ||
                    arg == "--dev" ||
                    arg == "--color" ||
-                   arg == "--colour" ||
-                   arg == "--no-color" ||
-                   arg == "--no-colour") {
+                   arg == "--no-color") {
             args.local_benchmark_args.push_back(arg);
         } else if (arg == "--bench-mib") {
             if (!parse_int_value("--bench-mib", args.bench_mib)) {
@@ -320,13 +317,6 @@ ParsedArgs parse_args(int argc, char** argv) {
                 return args;
             }
             args.tunnel_count_override = true;
-        } else if (arg == "--obfs") {
-            args.obfuscation = true;
-            args.obfuscation_override = true;
-        } else if (arg == "--no-obfs") {
-            args.parse_error =
-                "--no-obfs is not accepted by YUME 2.0; the H2 carrier is mandatory";
-            return args;
         } else if (arg == "--obfs-secret-file") {
             const char* v = take_value("--obfs-secret-file");
             if (!v) return args;
@@ -337,15 +327,6 @@ ParsedArgs parse_args(int argc, char** argv) {
             if (!v) return args;
             args.inner_psk_file = v;
             args.inner_psk_file_override = true;
-        } else if (arg == "--obfs-secret") {
-            args.parse_error =
-                "--obfs-secret is not accepted by YUME 2.0; use --obfs-secret-file";
-            return args;
-        } else if (arg == "--obfs-pad-multiple" || arg == "--obfs-jitter-ms") {
-            args.parse_error =
-                arg + " is not accepted by the pinned YUME 2.0 Chrome profile; "
-                      "the capture contains no random padding or timing jitter";
-            return args;
         } else if (arg == "--lport") {
             if (!parse_int_value("--lport", args.lport)) {
                 return args;
@@ -360,7 +341,7 @@ ParsedArgs parse_args(int argc, char** argv) {
             if (!parse_int_value("--rport", args.rport)) {
                 return args;
             }
-        } else if (arg == "--run" || arg == "-c" || arg == "--cmd") {
+        } else if (arg == "--run" || arg == "-c") {
             const char* cmd = take_value(arg);
             if (!cmd) {
                 return args;
@@ -380,10 +361,9 @@ ParsedArgs parse_args(int argc, char** argv) {
             if (!parse_int_value("--dport", args.dest_port)) {
                 return args;
             }
-        } else if (arg == "--require-operator-identity" ||
-                   arg == "--require-anonym" || arg == "--anonym") {
+        } else if (arg == "--require-operator-identity") {
             args.require_anonym = true;
-        } else if (arg == "--operator-ca-cert" || arg == "--anonym-ca-cert") {
+        } else if (arg == "--operator-ca-cert") {
             const char* cert = take_value(arg.c_str());
             if (!cert) {
                 return args;
@@ -401,12 +381,6 @@ ParsedArgs parse_args(int argc, char** argv) {
                 return args;
             }
             args.ssh_R = value;
-        } else if (arg == "--hop" || arg == "--no-hop" ||
-                   arg == "--hop-interval") {
-            args.parse_error = arg +
-                " is a retired 1.x time-key option; YUME 2.0 has no legacy hop layer"
-                " and always uses the hybrid directional ratchet";
-            return args;
         } else if (arg == "--rekey-window") {
             if (!parse_int_value("--rekey-window", args.rekey_window)) {
                 return args;
@@ -426,11 +400,6 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.local_benchmark_args.push_back(arg);
             args.local_benchmark_args.push_back(
                 std::to_string(args.rekey_window));
-        } else if (arg == "--inner" || arg == "--no-inner" ||
-                   arg == "--inner-heavy" || arg == "--inner-light") {
-            args.parse_error = arg +
-                " is not accepted by YUME 2.0; the hybrid directional ratchet is mandatory";
-            return args;
         } else if (arg == "--udp") {
             args.use_udp = true;
             args.udp_override = true;
@@ -440,10 +409,7 @@ ParsedArgs parse_args(int argc, char** argv) {
         } else if (arg == "--allow-local-ip") {
             args.allow_local_ip = true;
             args.allow_local_ip_override = true;
-        } else if (arg == "--accept-server-control" || arg == "--server-in-charge") {
-            if (arg == "--server-in-charge") {
-                util::log_warn("--server-in-charge is deprecated; use --accept-server-control");
-            }
+        } else if (arg == "--accept-server-control") {
             args.server_in_charge = true;
             args.server_in_charge_override = true;
             if (i + 1 < argc) {
@@ -459,23 +425,18 @@ ParsedArgs parse_args(int argc, char** argv) {
                     ++i;
                 }
             }
-        } else if (arg == "--server-in-charge-port") {
+        } else if (arg == "--accept-server-control-min-port") {
             args.server_in_charge = true;
             args.server_in_charge_override = true;
-            if (!parse_int_value("--server-in-charge-port", args.server_in_charge_port)) {
+            if (!parse_int_value("--accept-server-control-min-port",
+                                 args.server_in_charge_min_port)) {
                 return args;
             }
-            args.server_in_charge_port_override = true;
-        } else if (arg == "--server-in-charge-min-port") {
+        } else if (arg == "--accept-server-control-max-port") {
             args.server_in_charge = true;
             args.server_in_charge_override = true;
-            if (!parse_int_value("--server-in-charge-min-port", args.server_in_charge_min_port)) {
-                return args;
-            }
-        } else if (arg == "--server-in-charge-max-port") {
-            args.server_in_charge = true;
-            args.server_in_charge_override = true;
-            if (!parse_int_value("--server-in-charge-max-port", args.server_in_charge_max_port)) {
+            if (!parse_int_value("--accept-server-control-max-port",
+                                 args.server_in_charge_max_port)) {
                 return args;
             }
         } else if (arg == "--allow-exec") {
@@ -631,24 +592,19 @@ ParsedArgs parse_args(int argc, char** argv) {
             args.bytes_path = path;
         } else if (arg == "--directory") {
             args.directory_mode = true;
-        } else if (arg == "--admin-attach" || arg == "--server-attach") {
+        } else if (arg == "--admin-attach") {
             const char* value = take_value(arg);
             if (!value) {
                 return args;
             }
             args.admin_target = value;
-        } else if (arg == "--pq-pub" || arg == "--use-embedded-master" ||
-                   arg == "--no-embedded-master") {
-            args.parse_error =
-                arg + " is a retired 1.x option and is not accepted by YUME 2.0";
-            return args;
         } else if (arg == "--tls-ca") {
             const char* value = take_value("--tls-ca");
             if (!value) {
                 return args;
             }
             args.tls_ca_cert = value;
-        } else if (arg == "--tls-name" || arg == "--tls-server-name") {
+        } else if (arg == "--tls-name") {
             const char* value = take_value(arg);
             if (!value) {
                 return args;
@@ -692,10 +648,6 @@ ParsedArgs parse_args(int argc, char** argv) {
         } else if (arg == "--tor") {
             args.outbound_proxy_url = "socks5://127.0.0.1:9050";
             args.outbound_proxy_override = true;
-        } else if (arg == "--no-stealth") {
-            args.parse_error =
-                "--no-stealth is not accepted by YUME 2.0; the Chrome profile is mandatory";
-            return args;
         } else if (arg == "--profile") {
             const char* value = take_value("--profile");
             if (!value) {
@@ -707,15 +659,6 @@ ParsedArgs parse_args(int argc, char** argv) {
                 return args;
             }
             args.tls_stealth_profile = value;
-        } else if (arg == "--tls-stealth-rotate") {
-            args.parse_error =
-                "--tls-stealth-rotate is not accepted by YUME 2.0; the Chrome fixture is pinned";
-            return args;
-        } else if (arg == "--tls-stealth-rotation-interval") {
-            args.parse_error =
-                "--tls-stealth-rotation-interval is not accepted by YUME 2.0; "
-                "the Chrome fixture is pinned";
-            return args;
         } else if (arg == "--tls-fingerprint-log") {
             args.tls_fingerprint_log = true;
         } else if (arg == "--tls-fingerprint-log-path") {

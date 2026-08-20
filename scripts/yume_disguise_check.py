@@ -5,9 +5,9 @@
 """
 yume-disguise-check — validate --hide-in-the-crowd profile fidelity.
 
-Spins up yumed once per server profile (without --real and without
---inner / --obfs, so the disguise-404 path is the only thing being
-exercised), probes it with curl, and checks that the response looks
+Spins up yumed once per server profile (without --real, so the
+disguise-404 path is the only thing being exercised), probes it with
+curl, and checks that the response looks
 like the server software the profile claims to mimic:
 
   - Server: header matches the expected pattern (or is absent for
@@ -149,24 +149,14 @@ SERVER_PROFILES = {
         "body_min":       0,
         "body_max":       0,
     },
-    "yumed": {
-        # Legacy default. Listed for completeness; not stealth.
-        "server_re":      r"yumed$",
-        "body_must":      [],
-        "extra_headers":  [],
-        "body_min":       0,
-        "body_max":       0,
-    },
 }
 
+# The client registry holds exactly one entry: the pinned cover profile.
+# There is no firefox/safari/edge/curl/wget/yume client profile to test, and
+# no "yume-tls-verify" User-Agent — active_client_ua() always returns the
+# pinned cover UA.
 CLIENT_PROFILES = {
     "chrome":  r"^Mozilla/5\.0 .* Chrome/[\d.]+ Safari/",
-    "firefox": r"^Mozilla/5\.0 .* Firefox/[\d.]+$",
-    "safari":  r"^Mozilla/5\.0 .* Version/[\d.]+ Safari/",
-    "edge":    r"^Mozilla/5\.0 .* Edg/[\d.]+$",
-    "curl":    r"^curl/[\d.]+$",
-    "wget":    r"^Wget/[\d.]+$",
-    "yume":    r"^yume-tls-verify/[\d.]+$",
 }
 
 # --- helpers ---------------------------------------------------------------
@@ -223,8 +213,6 @@ def start_yumed(yumed: Path, workdir: Path, ks: dict, profile: str, port: int) -
         "--cert", str(ks["server_cert"]),
         "--key",  str(ks["server_key"]),
         "--auth-keys", str(ks["auth_keys_file"]),
-        "--pq-auto-generate",
-        "--no-inner", "--no-obfs",
         "--hide-in-the-crowd", profile,
     ], stdout=log, stderr=subprocess.STDOUT, cwd=str(workdir))
 

@@ -522,21 +522,19 @@ The 32-byte admission secret and separate 32-byte inner PSK are deployment
 inputs. ML-KEM-1024 and X25519 keypairs are ephemeral at establishment and at
 each directional epoch change.
 
-## Directional Ratchet, Not Legacy Hopping
+## Directional Ratchet
 
-The old 1.x time-derived hop layer is not part of YUME 2.0. `--hop`,
-`--no-hop`, and `--hop-interval` are rejected rather than selecting a weaker
-or incomparable transport. Each direction instead pipelines fresh ML-KEM-1024
+YUME 2.0 has no time-derived hop layer and no flag to select one: the
+directional ratchet is the only post-handshake key schedule, so there is no
+weaker or incomparable transport to fall back to. Each direction pipelines fresh ML-KEM-1024
 and X25519 material while bounded current-epoch allowance remains, and never
 lets another application frame cross the negotiated ratchet policy (Extreme
 defaults to 256 KiB, 512 frames, or 500 ms of sender-active epoch time).
-Benchmark output
-therefore reports `legacy-hop=off` and the mandatory hybrid ratchet separately.
 
 ## HTTP/2 Obfs
 
-With `--obfs` enabled, the bytes after TLS form a standards-conformant HTTP/2
-opening exchange before YUME frames begin. The settings and headers are YUME
+The bytes after TLS form a standards-conformant HTTP/2 opening exchange
+before YUME frames begin. The carrier is mandatory and has no off switch. The settings and headers are YUME
 project templates, not byte-identical output from a named browser.
 
 ```text
@@ -570,10 +568,9 @@ project templates, not byte-identical output from a named browser.
 +--------------------------------+
 ```
 
-With a nonempty `--obfs-secret`, the token is bound to that shared secret,
-SNI, and an accepted hourly time window. `--public-node` requires this keyed
-mode. Empty-secret structural admission remains available only in non-public
-development mode and does not authenticate the probe. The opening can reject
+The token is bound to the 32-byte admission secret from `--obfs-secret-file`,
+SNI, and an accepted hourly time window. The secret file is mandatory in 2.0;
+there is no literal-secret flag and no empty-secret structural mode. The opening can reject
 casual probes, but the subsequent carrier is not a full-session HTTP/2 tunnel;
 packet timing and sizes can still distinguish it.
 
@@ -637,8 +634,9 @@ hardening.
   behind the shared admission token. It does not defeat traffic analysis,
   full-session HTTP/2 validation, or endpoint compromise.
 - AUTH:
-  keeps unauthorized clients off the server. The client sends its Ed25519
-  public key and a transcript signature, not the private key. The signature
+  keeps unauthorized clients off the server. The client sends its composite
+  Ed25519 + ML-DSA-87 public identity and both transcript signatures, not the
+  private halves. The signatures
   also covers a TLS exporter each side computes locally, so a malicious
   endpoint cannot forward a live exchange to a second server. It does not help
   if the private key is stolen, and it says nothing about whether the server
@@ -744,7 +742,7 @@ browser identity leaks.
 
 Operational checklist:
 
-- Run `yumed` with `--operator-identity` (legacy `--anonym`) when the server is
+- Run `yumed` with `--operator-identity` when the server is
   meant to minimize identifying logs and publish operator authorization.
 - Configure clients with `--require-operator-identity` and the expected
   operator CA. This detects an endpoint using the wrong CA/key; it is not a

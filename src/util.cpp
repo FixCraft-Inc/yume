@@ -6,6 +6,8 @@
 
 #include "util.hpp"
 
+#include "util_json.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cerrno>

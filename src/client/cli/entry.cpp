@@ -156,6 +156,213 @@ int run_local_benchmark(const char* argv0, const ParsedArgs& args) {
 #endif
 }
 
+// ----------------------------------------------------------------------
+// run_parsed() phases
+// ----------------------------------------------------------------------
+// run_parsed() was a single ~1350-line function mixing argument triage,
+// profile installation, config resolution, transport/TLS selection, endpoint
+// validation, mode selection and security-posture enforcement. Each phase
+// below owns one of those decisions.
+//
+// The shared convention is a std::optional<int> return: nullopt means "phase
+// passed, keep going", a value means "this phase is terminal, return that exit
+// code". That preserves the original early-return control flow exactly rather
+// than reordering checks, which matters because several of these emit
+// user-visible errors in a specific order.
+
+// Resolve and install the effective client HTTP profile. Preference order:
+//   1. --hide-in-the-crowd <name> (explicit; must be a registered profile)
+//   2. --profile <name> (the transport fixture registry also supplies its
+//      TLS fingerprint and HTTP-layer UA)
+//   3. the pinned default fixture (currently Chrome)
+std::optional<int> apply_client_http_profile(const ParsedArgs& args) {
+    std::string ua_profile;
+    if (!args.http_profile.empty()) {
+        auto p = yume::http_profile::transport_client(args.http_profile);
+        if (!p.has_value()) {
+            std::string supported;
+            for (const auto& n : yume::http_profile::transport_client_names()) {
+                if (!supported.empty()) supported += ", ";
+                supported += n;
+            }
+            util::log_error("--hide-in-the-crowd: unknown client profile '" + args.http_profile +
+                            "'. Supported: " + supported);
+            return 1;
+        }
+        ua_profile = p->name;
+        yume::http_profile::require_pinned_client_ua(p->user_agent);
+    } else if (!args.tls_stealth_profile.empty()) {
+        auto p = yume::http_profile::transport_client(args.tls_stealth_profile);
+        if (p.has_value()) {
+            ua_profile = p->name;
+            yume::http_profile::require_pinned_client_ua(p->user_agent);
+        }
+    }
+    if (!ua_profile.empty() && args.timing) {
+        util::log_info("hide-in-the-crowd: active client profile = " + ua_profile);
+    }
+    return std::nullopt;
+}
+
+// One-shot modes that never load a client config or open a connection.
+// Import in particular must dispatch as early as possible so no irrelevant
+// default config is loaded first (which could prompt the user or attempt a
+// local-runtime attach).
+std::optional<int> handle_informational_modes(const ParsedArgs& args,
+                                              const std::string& executable_arg) {
+    if (args.completion) {
+        if (args.completion_shell == "bash") {
+            print_bash_completion();
+            return 0;
+        }
+        util::log_error("unsupported completion shell: " + args.completion_shell);
+        return 1;
+    }
+    if (args.share_import) {
+        return run_import_share(args.share_path, args.share_password_stdin);
+    }
+    if (args.proxycmd) {
+        const int socks_port = args.socks_port > 0 ? args.socks_port : 1080;
+        return run_proxycmd(args.dest_host, args.dest_port, socks_port);
+    }
+    if (args.help) {
+        print_help();
+        return 0;
+    }
+    if (args.version) {
+        print_version();
+        return 0;
+    }
+    if (args.credits) {
+        print_credits();
+        return 0;
+    }
+    if (args.local_benchmark) {
+        return run_local_benchmark(executable_arg.c_str(), args);
+    }
+    return std::nullopt;
+}
+
+// Transport profile and TLS backend admission. YUME 2.0 accepts exactly one
+// transport profile and two backends; there is deliberately no silent stealth
+// fallback between them.
+std::optional<int> validate_transport_and_tls(const ClientConfig& cfg,
+                                              const std::string& helper_tls_backend) {
+    if (cfg.transport_profile != yume::kTransportProfile) {
+        util::log_error(
+            "YUME 2.0-dev6 requires transport_profile " +
+            std::string(yume::kTransportProfile));
+        return 1;
+    }
+    if (cfg.tls_backend != helper_tls_backend &&
+        cfg.tls_backend != "openssl-diagnostic") {
+        util::log_error(
+            "tls_backend must be " + helper_tls_backend +
+            " or openssl-diagnostic");
+        return 1;
+    }
+    try {
+        (void)parse_sha256_hex(cfg.tls_pin_sha256);
+    } catch (const std::exception& error) {
+        util::log_error(error.what());
+        return 1;
+    }
+    if (cfg.tls_backend == helper_tls_backend) {
+#if !defined(__linux__)
+        util::log_error("tls_backend chrome151 currently supports Linux desktop only");
+        return 1;
+#elif !YUME_HAS_CHROME_TLS_HELPER
+        util::log_error(
+            "this build does not include the Chrome 151 TLS helper; rebuild with "
+            "-DYUME_BUILD_CHROME_TLS_HELPER=ON or explicitly select "
+            "tls_backend openssl-diagnostic");
+        return 1;
+#endif
+        if (cfg.tunnel_count != 1) {
+            util::log_error(
+                "tls_backend chrome151 currently supports exactly one outer tunnel");
+            return 1;
+        }
+        if (cfg.tls_fingerprint_verify) {
+            util::log_error(
+                "--tls-fingerprint-verify uses an unrelated OpenSSL probe and "
+                "cannot verify the Chrome helper; use scripts/yume_tls_wire.py "
+                "against the helper's emitted ClientHello");
+            return 1;
+        }
+        if (cfg.tls_fingerprint_log) {
+            util::log_warn(
+                "legacy TLS fingerprint logging cannot observe the Chrome "
+                "helper and will be skipped");
+        }
+    } else {
+        util::log_warn(
+            "TLS backend openssl-diagnostic is not Chrome ClientHello parity; "
+            "there is no silent stealth fallback");
+    }
+    return std::nullopt;
+}
+
+// Mandatory 2.0 security posture. These are refusals, not warnings:
+// carrier-off / inner-off / literal-secret configurations are rejected
+// outright, and the two secret files are loaded and validated here so a bad
+// file fails before any connection is attempted.
+std::optional<int> validate_security_posture(ClientConfig& cfg) {
+    if (!require_file("identity", cfg.identity)) {
+        return 1;
+    }
+    if (!require_file("tls_ca_cert", cfg.tls_ca_cert)) {
+        return 1;
+    }
+    if (!require_file("anonym_ca_cert", cfg.anonym_ca_cert)) {
+        return 1;
+    }
+    if (!require_file("anonym_pubkey", cfg.anonym_pubkey)) {
+        return 1;
+    }
+    if (!cfg.obfs_secret.empty()) {
+        util::log_error(
+            "literal obfs_secret is not accepted by YUME 2.0; use --obfs-secret-file");
+        return 1;
+    }
+    if (cfg.obfs_secret_file.empty() || cfg.inner_psk_file.empty()) {
+        util::log_error(
+            "YUME 2.0 requires --obfs-secret-file and --inner-psk-file");
+        return 1;
+    }
+    if (!cfg.obfuscation || !cfg.inner_crypto) {
+        util::log_error(
+            "YUME 2.0 requires the H2 carrier and mandatory inner encryption; "
+            "carrier-off / inner-off configuration is not accepted");
+        return 1;
+    }
+    if (cfg.obfs_pad_multiple != 0 || cfg.obfs_jitter_ms != 0) {
+        util::log_error(
+            "YUME 2.0 Chrome profile rejects configured obfs padding/jitter; "
+            "the committed capture contains neither");
+        return 1;
+    }
+    std::string profile_name = cfg.tls_stealth_profile;
+    std::transform(profile_name.begin(), profile_name.end(), profile_name.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (!cfg.tls_stealth_enabled ||
+        !yume::http_profile::transport_client_supported(profile_name)) {
+        util::log_error(
+            "YUME 2.0 requires TLS stealth and a complete transport profile fixture");
+        return 1;
+    }
+    try {
+        cfg.obfs_secret_material = std::make_shared<security::Secret32>(
+            security::LoadSecretFile32(cfg.obfs_secret_file));
+        cfg.inner_psk_material = std::make_shared<security::Secret32>(
+            security::LoadSecretFile32(cfg.inner_psk_file));
+    } catch (const std::exception& ex) {
+        util::log_error(std::string("YUME 2.0 secret-file validation failed: ") + ex.what());
+        return 1;
+    }
+    return std::nullopt;
+}
+
 }  // namespace
 
 void Cli::set_runtime_ready_callback(RuntimeReadyCallback cb) {
@@ -210,73 +417,11 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
         }
     }
 
-    // Resolve the effective client HTTP profile, then install it.
-    // Order of preference:
-    //   1. --hide-in-the-crowd <name> (explicit; must be a registered
-    //      client profile)
-    //   2. --profile <name> (the complete transport fixture registry also
-    //      supplies its TLS fingerprint and HTTP-layer UA)
-    //   3. the pinned default fixture (currently Chrome)
-    {
-        std::string ua_profile;
-        if (!args.http_profile.empty()) {
-            auto p = yume::http_profile::transport_client(args.http_profile);
-            if (!p.has_value()) {
-                std::string supported;
-                for (const auto& n : yume::http_profile::transport_client_names()) {
-                    if (!supported.empty()) supported += ", ";
-                    supported += n;
-                }
-                util::log_error("--hide-in-the-crowd: unknown client profile '" + args.http_profile +
-                                "'. Supported: " + supported);
-                return 1;
-            }
-            ua_profile = p->name;
-            yume::http_profile::set_active_client_ua(p->user_agent);
-        } else if (!args.tls_stealth_profile.empty()) {
-            auto p = yume::http_profile::transport_client(args.tls_stealth_profile);
-            if (p.has_value()) {
-                ua_profile = p->name;
-                yume::http_profile::set_active_client_ua(p->user_agent);
-            }
-        }
-        if (!ua_profile.empty() && args.timing) {
-            util::log_info("hide-in-the-crowd: active client profile = " + ua_profile);
-        }
+    if (auto code = apply_client_http_profile(args)) {
+        return *code;
     }
-    if (args.completion) {
-        if (args.completion_shell == "bash") {
-            print_bash_completion();
-            return 0;
-        }
-        util::log_error("unsupported completion shell: " + args.completion_shell);
-        return 1;
-    }
-    // Import is config-less — reads only the share-file. Dispatch as
-    // early as possible so we don't load any irrelevant default config
-    // first (which could prompt the user, attempt local-runtime
-    // attach, etc).
-    if (args.share_import) {
-        return run_import_share(args.share_path, args.share_password_stdin);
-    }
-    if (args.proxycmd) {
-        int socks_port = args.socks_port > 0 ? args.socks_port : 1080;
-        return run_proxycmd(args.dest_host, args.dest_port, socks_port);
-    }
-    if (args.help) {
-        print_help();
-        return 0;
-    }
-    if (args.version) {
-        print_version();
-        return 0;
-    }
-    if (args.credits) {
-        print_credits();
-        return 0;
-    }
-    if (args.local_benchmark) {
-        return run_local_benchmark(executable_arg.c_str(), args);
+    if (auto code = handle_informational_modes(args, executable_arg)) {
+        return *code;
     }
     std::string cli_cwd;
     {
@@ -351,59 +496,10 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
     }
     apply_cli_config_overrides(args, cli_cwd, &cfg);
     normalize_client_config_after_overrides(&args, &cfg);
-    if (cfg.transport_profile != yume::kTransportProfile) {
-        util::log_error(
-            "YUME 2.0-dev6 requires transport_profile " +
-            std::string(yume::kTransportProfile));
-        return 1;
-    }
     const std::string helper_tls_backend(
         yume::cover_profile::active().tls_backend);
-    if (cfg.tls_backend != helper_tls_backend &&
-        cfg.tls_backend != "openssl-diagnostic") {
-        util::log_error(
-            "tls_backend must be " + helper_tls_backend +
-            " or openssl-diagnostic");
-        return 1;
-    }
-    try {
-        (void)parse_sha256_hex(cfg.tls_pin_sha256);
-    } catch (const std::exception& error) {
-        util::log_error(error.what());
-        return 1;
-    }
-    if (cfg.tls_backend == helper_tls_backend) {
-#if !defined(__linux__)
-        util::log_error("tls_backend chrome151 currently supports Linux desktop only");
-        return 1;
-#elif !YUME_HAS_CHROME_TLS_HELPER
-        util::log_error(
-            "this build does not include the Chrome 151 TLS helper; rebuild with "
-            "-DYUME_BUILD_CHROME_TLS_HELPER=ON or explicitly select "
-            "tls_backend openssl-diagnostic");
-        return 1;
-#endif
-        if (cfg.tunnel_count != 1) {
-            util::log_error(
-                "tls_backend chrome151 currently supports exactly one outer tunnel");
-            return 1;
-        }
-        if (cfg.tls_fingerprint_verify) {
-            util::log_error(
-                "--tls-fingerprint-verify uses an unrelated OpenSSL probe and "
-                "cannot verify the Chrome helper; use scripts/yume_tls_wire.py "
-                "against the helper's emitted ClientHello");
-            return 1;
-        }
-        if (cfg.tls_fingerprint_log) {
-            util::log_warn(
-                "legacy TLS fingerprint logging cannot observe the Chrome "
-                "helper and will be skipped");
-        }
-    } else {
-        util::log_warn(
-            "TLS backend openssl-diagnostic is not Chrome ClientHello parity; "
-            "there is no silent stealth fallback");
+    if (auto code = validate_transport_and_tls(cfg, helper_tls_backend)) {
+        return *code;
     }
 #if !defined(__linux__)
     if (!cfg.packet_tun_name.empty()) {
@@ -561,57 +657,8 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             return 1;
         }
     }
-    if (!require_file("identity", cfg.identity)) {
-        return 1;
-    }
-    if (!require_file("tls_ca_cert", cfg.tls_ca_cert)) {
-        return 1;
-    }
-    if (!require_file("anonym_ca_cert", cfg.anonym_ca_cert)) {
-        return 1;
-    }
-    if (!require_file("anonym_pubkey", cfg.anonym_pubkey)) {
-        return 1;
-    }
-    if (!cfg.obfs_secret.empty()) {
-        util::log_error(
-            "literal obfs_secret is not accepted by YUME 2.0; use --obfs-secret-file");
-        return 1;
-    }
-    if (cfg.obfs_secret_file.empty() || cfg.inner_psk_file.empty()) {
-        util::log_error(
-            "YUME 2.0 requires --obfs-secret-file and --inner-psk-file");
-        return 1;
-    }
-    if (!cfg.obfuscation || !cfg.inner_crypto) {
-        util::log_error(
-            "YUME 2.0 requires the H2 carrier and mandatory inner encryption; "
-            "legacy no-obfs/no-inner configuration is not accepted");
-        return 1;
-    }
-    if (cfg.obfs_pad_multiple != 0 || cfg.obfs_jitter_ms != 0) {
-        util::log_error(
-            "YUME 2.0 Chrome profile rejects configured obfs padding/jitter; "
-            "the committed capture contains neither");
-        return 1;
-    }
-    std::string profile_name = cfg.tls_stealth_profile;
-    std::transform(profile_name.begin(), profile_name.end(), profile_name.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    if (!cfg.tls_stealth_enabled ||
-        !yume::http_profile::transport_client_supported(profile_name)) {
-        util::log_error(
-            "YUME 2.0 requires TLS stealth and a complete transport profile fixture");
-        return 1;
-    }
-    try {
-        cfg.obfs_secret_material = std::make_shared<security::Secret32>(
-            security::LoadSecretFile32(cfg.obfs_secret_file));
-        cfg.inner_psk_material = std::make_shared<security::Secret32>(
-            security::LoadSecretFile32(cfg.inner_psk_file));
-    } catch (const std::exception& ex) {
-        util::log_error(std::string("YUME 2.0 secret-file validation failed: ") + ex.what());
-        return 1;
+    if (auto code = validate_security_posture(cfg)) {
+        return *code;
     }
 
     if (cfg.port != 443) {
@@ -744,7 +791,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 active_tls_profile = profile;
                 if (!explicit_http_profile) {
                     if (auto selected = yume::http_profile::transport_client_for_tls_profile(profile)) {
-                        yume::http_profile::set_active_client_ua(selected->user_agent);
+                        yume::http_profile::require_pinned_client_ua(selected->user_agent);
                     }
                 }
 

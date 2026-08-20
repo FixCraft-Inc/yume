@@ -18,6 +18,7 @@
 #include "client/cli/config/input.hpp"
 #include "client/transport/tunnel.hpp"
 #include "util.hpp"
+#include <boost/asio/post.hpp>
 
 namespace yume::client {
 

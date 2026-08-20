@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-#include <boost/asio.hpp>
+#include <boost/asio/io_context.hpp>
 
 #include "core/security/crypto.hpp"
 #include "server/config/config.hpp"

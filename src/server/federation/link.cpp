@@ -22,6 +22,13 @@
 #include <openssl/sha.h>
 #include <openssl/ssl.h>
 
+#include <boost/asio/buffer.hpp>
+#include <boost/asio/connect.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/ssl.hpp>
+#include <boost/asio/write.hpp>
+
 #include "client/proxy/outbound_proxy.hpp"
 #include "core/security/crypto.hpp"
 #include "core/security/inner_crypto.hpp"

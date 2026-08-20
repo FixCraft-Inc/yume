@@ -17,6 +17,7 @@
 #include "client/relay/runtime.hpp"
 #include "client/transport/tunnel.hpp"
 #include "facade/logging/log_sink.hpp"
+#include <boost/asio/io_context.hpp>
 
 namespace yume::facade {
 

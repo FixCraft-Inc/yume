@@ -379,7 +379,7 @@ bool transport_client_supported(std::string_view name) {
     return transport_client(name).has_value();
 }
 
-void set_active_client_ua(std::string ua) {
+void require_pinned_client_ua(std::string_view ua) {
     const auto expected =
         cover_profile::active().user_agent;
     if (ua != expected) {

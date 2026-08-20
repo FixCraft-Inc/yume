@@ -27,6 +27,9 @@
 #include "core/stealth/tls_stealth.hpp"
 #include "core/version.hpp"
 #include "util.hpp"
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/socket_base.hpp>
+#include <boost/asio/ssl.hpp>
 
 namespace yume::client {
 namespace {

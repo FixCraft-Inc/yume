@@ -21,6 +21,7 @@
 #include "server/config/json_values.hpp"
 #include "server/host/host_routes.hpp"
 #include "util.hpp"
+#include "util_json.hpp"
 
 namespace yume::server::cli {
 namespace {

@@ -21,6 +21,7 @@
 #include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
 #include "util.hpp"
+#include "util_json.hpp"
 
 namespace yume::client {
 

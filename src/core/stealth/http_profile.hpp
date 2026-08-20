@@ -104,10 +104,11 @@ std::optional<std::time_t> parse_http_date(std::string_view value);
 // behavior (some profiles use keep-alive, some close).
 std::string render_404(const ServerProfile& profile, bool connection_close = true);
 
-// Compatibility accessors for the pinned profile User-Agent.
-// set_active_client_ua() rejects any value that differs from the immutable
-// profile; active_client_ua() always returns that profile value.
-void set_active_client_ua(std::string ua);
+// The client User-Agent is pinned to the cover profile and is not settable.
+// require_pinned_client_ua() throws if a caller tries to select any other UA,
+// so a profile mismatch fails loudly instead of emitting a second identity;
+// active_client_ua() always returns the pinned value.
+void require_pinned_client_ua(std::string_view ua);
 std::string active_client_ua();
 
 }  // namespace yume::http_profile

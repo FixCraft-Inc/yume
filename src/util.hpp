@@ -7,16 +7,17 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <string>
-
-#include <nlohmann/json.hpp>
 
 #include "core/diagnostics/timing.hpp"
 
 namespace yume::util {
 
-nlohmann::json read_json_config(const std::string& path);
+// read_json_config() lives in util_json.hpp: it is the only declaration here
+// that needed <nlohmann/json.hpp>, and it has two call sites while this header
+// has 54 includers.
 std::string expand_user(const std::string& path);
 std::string resolve_path(const std::string& path,
                          const std::string& base_dir,

@@ -158,6 +158,26 @@ option(YUME_BUILD_TOOLS "Build optional helper tools such as yume-net-map" OFF)
 option(YUME_BUILD_SHARED_ABI "Build and install the stable libyume C ABI shared library" OFF)
 option(YUME_ABI_CLIENT_ONLY "Build libyume with client/stream/packet runtime only" OFF)
 
+# Developer build accelerators. Both default OFF on purpose: this project has a
+# reproducibility gate (two clean helper builds must be byte-identical) and an
+# exact-artifact provenance discipline, so nothing that can perturb the emitted
+# object may be on by default. CI, sanitizer, shared-ABI, and exact-artifact
+# lanes configure CMake directly and leave them disabled. Developer trees may
+# enable them explicitly when build provenance is not being measured.
+option(YUME_COMPILER_LAUNCHER "Use ccache/sccache when available (developer trees only)" OFF)
+option(YUME_PCH "Precompile the heavy asio/json headers (developer trees only)" OFF)
+
+if(YUME_COMPILER_LAUNCHER AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
+    find_program(YUME_CCACHE_EXECUTABLE NAMES ccache sccache)
+    if(YUME_CCACHE_EXECUTABLE)
+        set(CMAKE_C_COMPILER_LAUNCHER "${YUME_CCACHE_EXECUTABLE}" CACHE STRING "" FORCE)
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${YUME_CCACHE_EXECUTABLE}" CACHE STRING "" FORCE)
+        message(STATUS "YUME: compiler launcher ${YUME_CCACHE_EXECUTABLE}")
+    else()
+        message(STATUS "YUME: YUME_COMPILER_LAUNCHER=ON but no ccache/sccache found")
+    endif()
+endif()
+
 # Warnings are part of the security posture, not a style preference: this tree
 # parses untrusted wire input and hand-manages buffers, and the default GCC/MSVC
 # warning set is silent about the mistakes that matter there. Applied only to

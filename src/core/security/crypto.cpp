@@ -14,9 +14,14 @@
 #include <openssl/kdf.h>
 #include <openssl/pem.h>
 #include <openssl/rand.h>
+#include <openssl/crypto.h>
+#include <openssl/sha.h>
+#include <openssl/x509.h>
 
+#include <algorithm>
 #include <cstring>
 #include <stdexcept>
+#include <string_view>
 
 namespace yume::crypto {
 
@@ -36,7 +41,55 @@ const EVP_MD* select_digest(EVP_PKEY* key) {
     if (type == EVP_PKEY_ED25519 || type == EVP_PKEY_ED448) {
         return nullptr;  // EdDSA is one-shot without a digest
     }
+    // ML-DSA is also one-shot, but it is a provider-side algorithm with no
+    // legacy NID, so EVP_PKEY_base_id returns 0 and the check above misses it.
+    // Handing it EVP_sha256() makes EVP_DigestSignInit fail. Match on the
+    // algorithm name instead, which is what OpenSSL 3.5 actually exposes.
+    const char* name = EVP_PKEY_get0_type_name(key);
+    if (name != nullptr && std::string_view(name).starts_with("ML-DSA")) {
+        return nullptr;
+    }
     return EVP_sha256();
+}
+
+bool is_pem_whitespace(std::uint8_t value) {
+    return value == ' ' || value == '\t' || value == '\r' || value == '\n';
+}
+
+bool consume_pem_block(const Bytes& bundle, std::size_t& cursor,
+                       std::string_view label) {
+    while (cursor < bundle.size() && is_pem_whitespace(bundle[cursor])) {
+        ++cursor;
+    }
+
+    const std::string begin = "-----BEGIN " + std::string(label) + "-----";
+    const std::string end = "-----END " + std::string(label) + "-----";
+    if (cursor + begin.size() > bundle.size() ||
+        !std::equal(begin.begin(), begin.end(), bundle.begin() + cursor)) {
+        return false;
+    }
+    cursor += begin.size();
+
+    const auto end_it = std::search(bundle.begin() + cursor, bundle.end(),
+                                    end.begin(), end.end());
+    if (end_it == bundle.end()) return false;
+    cursor = static_cast<std::size_t>(end_it - bundle.begin()) + end.size();
+    if (cursor < bundle.size() && !is_pem_whitespace(bundle[cursor])) {
+        return false;
+    }
+    return true;
+}
+
+bool has_exact_pem_sequence(const Bytes& bundle, std::string_view label,
+                            std::size_t count) {
+    std::size_t cursor = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+        if (!consume_pem_block(bundle, cursor, label)) return false;
+    }
+    while (cursor < bundle.size() && is_pem_whitespace(bundle[cursor])) {
+        ++cursor;
+    }
+    return cursor == bundle.size();
 }
 }  // namespace
 
@@ -427,6 +480,230 @@ Bytes hmac_sha256(const Bytes& data, const Bytes& key) {
         throw ssl_error("hmac failed");
     }
     out.resize(len);
+    return out;
+}
+
+namespace {
+
+KeyPair generate_named_keypair(const char* algorithm) {
+    std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> ctx(
+        EVP_PKEY_CTX_new_from_name(nullptr, algorithm, nullptr),
+        EVP_PKEY_CTX_free);
+    if (!ctx) throw ssl_error(std::string("no provider for ") + algorithm);
+    if (EVP_PKEY_keygen_init(ctx.get()) != 1) {
+        throw ssl_error(std::string("keygen init failed for ") + algorithm);
+    }
+    EVP_PKEY* raw = nullptr;
+    if (EVP_PKEY_keygen(ctx.get(), &raw) != 1) {
+        throw ssl_error(std::string("keygen failed for ") + algorithm);
+    }
+    KeyPair kp;
+    kp.private_key.reset(raw);
+    // The generated object holds both halves; the public view is the same
+    // object with an extra reference rather than a re-derived key.
+    if (EVP_PKEY_up_ref(raw) != 1) {
+        throw ssl_error("failed to reference generated public key");
+    }
+    kp.public_key.reset(raw);
+    return kp;
+}
+
+}  // namespace
+
+CompositeKeyPair generate_composite_keypair() {
+    CompositeKeyPair out;
+    out.classical = generate_named_keypair("ED25519");
+    out.pq = generate_named_keypair(std::string(kCompositePqAlgorithm).c_str());
+    return out;
+}
+
+Bytes sign_composite(const CompositeKeyPair& keys, const Bytes& message) {
+    Bytes classical = sign_message(keys.classical.private_key.get(), message);
+    Bytes pq = sign_message(keys.pq.private_key.get(), message);
+    if (classical.size() != kEd25519SignatureLen) {
+        throw std::runtime_error("composite: unexpected Ed25519 signature size");
+    }
+    if (pq.size() != kMlDsa87SignatureLen) {
+        throw std::runtime_error("composite: unexpected ML-DSA-87 signature size");
+    }
+    Bytes out;
+    out.reserve(kCompositeSignatureLen);
+    out.insert(out.end(), classical.begin(), classical.end());
+    out.insert(out.end(), pq.begin(), pq.end());
+    return out;
+}
+
+bool verify_composite(EVP_PKEY* classical_pub, EVP_PKEY* pq_pub,
+                      const Bytes& message, const Bytes& signature) {
+    if (classical_pub == nullptr || pq_pub == nullptr) return false;
+    if (signature.size() != kCompositeSignatureLen) return false;
+    const Bytes classical(signature.begin(),
+                          signature.begin() + kEd25519SignatureLen);
+    const Bytes pq(signature.begin() + kEd25519SignatureLen, signature.end());
+    // Both, always. Evaluate both halves rather than short-circuiting so a
+    // caller cannot infer which half failed from timing.
+    const bool classical_ok = verify_key(classical_pub, message, classical);
+    const bool pq_ok = verify_key(pq_pub, message, pq);
+    return classical_ok && pq_ok;
+}
+
+CompositeKeyPair load_composite_keypair(const std::string& path_priv) {
+    if (path_priv.empty()) {
+        throw std::runtime_error("load_composite_keypair: empty path");
+    }
+    Bytes pem = security::ReadPrivateKeyFileStrict(path_priv);
+    if (!has_exact_pem_sequence(pem, "PRIVATE KEY", 2)) {
+        security::secure_erase(pem);
+        throw std::runtime_error(
+            "composite identity must contain exactly two PEM private keys "
+            "(Ed25519 then " + std::string(kCompositePqAlgorithm) + ")");
+    }
+    std::unique_ptr<BIO, decltype(&BIO_free)> bio(
+        BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())), BIO_free);
+    if (!bio) {
+        security::secure_erase(pem);
+        throw ssl_error("failed to open composite identity");
+    }
+    EVP_PKEY_ptr classical(
+        PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr),
+        EVP_PKEY_free);
+    EVP_PKEY_ptr pq(
+        classical ? PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr)
+                  : nullptr,
+        EVP_PKEY_free);
+    security::secure_erase(pem);
+    if (!classical || !pq) {
+        throw std::runtime_error(
+            "composite identity must contain two PEM private keys "
+            "(Ed25519 then " + std::string(kCompositePqAlgorithm) + ")");
+    }
+    if (EVP_PKEY_base_id(classical.get()) != EVP_PKEY_ED25519) {
+        throw std::runtime_error("composite identity: first key must be Ed25519");
+    }
+    const char* pq_name = EVP_PKEY_get0_type_name(pq.get());
+    if (pq_name == nullptr || std::string_view(pq_name) != kCompositePqAlgorithm) {
+        throw std::runtime_error("composite identity: second key must be " +
+                                 std::string(kCompositePqAlgorithm));
+    }
+    CompositeKeyPair out;
+    for (auto* slot : {&out.classical, &out.pq}) {
+        EVP_PKEY* src = (slot == &out.classical) ? classical.get() : pq.get();
+        if (EVP_PKEY_up_ref(src) != 1) throw ssl_error("failed to reference identity half");
+        slot->private_key.reset(src);
+        if (EVP_PKEY_up_ref(src) != 1) throw ssl_error("failed to reference identity half");
+        slot->public_key.reset(src);
+    }
+    return out;
+}
+
+Bytes encode_composite_private_pem(const CompositeKeyPair& keys) {
+    Bytes out;
+    for (EVP_PKEY* half : {keys.classical.private_key.get(),
+                           keys.pq.private_key.get()}) {
+        if (half == nullptr) {
+            throw std::runtime_error("encode_composite_private_pem: missing half");
+        }
+        std::unique_ptr<BIO, decltype(&BIO_free)> bio(BIO_new(BIO_s_mem()), BIO_free);
+        if (!bio) throw ssl_error("failed to allocate PEM buffer");
+        if (PEM_write_bio_PrivateKey(bio.get(), half, nullptr, nullptr, 0,
+                                     nullptr, nullptr) != 1) {
+            throw ssl_error("failed to encode private key");
+        }
+        char* data = nullptr;
+        const long length = BIO_get_mem_data(bio.get(), &data);
+        if (length <= 0 || data == nullptr) {
+            throw std::runtime_error("encode_composite_private_pem produced no output");
+        }
+        out.insert(out.end(), data, data + length);
+    }
+    return out;
+}
+
+Bytes encode_public_key_pem(EVP_PKEY* key) {
+    if (key == nullptr) throw std::runtime_error("encode_public_key_pem: null key");
+    std::unique_ptr<BIO, decltype(&BIO_free)> bio(BIO_new(BIO_s_mem()), BIO_free);
+    if (!bio) throw ssl_error("failed to allocate PEM buffer");
+    if (PEM_write_bio_PUBKEY(bio.get(), key) != 1) {
+        throw ssl_error("failed to encode public key");
+    }
+    char* data = nullptr;
+    const long length = BIO_get_mem_data(bio.get(), &data);
+    if (length <= 0 || data == nullptr) {
+        throw std::runtime_error("encode_public_key_pem produced no output");
+    }
+    return Bytes(data, data + length);
+}
+
+Bytes encode_composite_identity(EVP_PKEY* classical_pub, EVP_PKEY* pq_pub) {
+    Bytes out = encode_public_key_pem(classical_pub);
+    const Bytes pq = encode_public_key_pem(pq_pub);
+    out.insert(out.end(), pq.begin(), pq.end());
+    return out;
+}
+
+CompositePublicKey parse_composite_identity(const Bytes& pem_bundle) {
+    CompositePublicKey out;
+    if (pem_bundle.empty() || pem_bundle.size() > 64U * 1024U) return out;
+    if (!has_exact_pem_sequence(pem_bundle, "PUBLIC KEY", 2)) return out;
+    std::unique_ptr<BIO, decltype(&BIO_free)> bio(
+        BIO_new_mem_buf(pem_bundle.data(), static_cast<int>(pem_bundle.size())),
+        BIO_free);
+    if (!bio) return out;
+
+    EVP_PKEY_ptr first(PEM_read_bio_PUBKEY(bio.get(), nullptr, nullptr, nullptr),
+                       EVP_PKEY_free);
+    if (!first) return out;
+    EVP_PKEY_ptr second(PEM_read_bio_PUBKEY(bio.get(), nullptr, nullptr, nullptr),
+                        EVP_PKEY_free);
+    if (!second) return out;
+    if (EVP_PKEY_base_id(first.get()) != EVP_PKEY_ED25519) return out;
+    const char* pq_name = EVP_PKEY_get0_type_name(second.get());
+    if (pq_name == nullptr || std::string_view(pq_name) != kCompositePqAlgorithm) {
+        return out;
+    }
+    out.classical = std::move(first);
+    out.pq = std::move(second);
+    return out;
+}
+
+Bytes composite_canonical_encoding(const CompositePublicKey& key) {
+    if (!key.valid()) return {};
+    // The domain label keeps this value in a different space from a bare
+    // single-key encoding, so a composite identity can never be confused with a
+    // legacy one.
+    static constexpr std::string_view kDomain = "yume/2.0/composite-identity/v1";
+    Bytes input(kDomain.begin(), kDomain.end());
+    for (EVP_PKEY* half : {key.classical.get(), key.pq.get()}) {
+        // OPENSSL_free is a macro, so it cannot be a unique_ptr deleter; wrap it.
+        const auto free_der = [](unsigned char* p) { OPENSSL_free(p); };
+        unsigned char* der = nullptr;
+        const int len = i2d_PUBKEY(half, &der);
+        if (len <= 0 || der == nullptr) throw ssl_error("failed to encode identity half");
+        std::unique_ptr<unsigned char, decltype(free_der)> owned(der, free_der);
+        const auto size = static_cast<std::uint32_t>(len);
+        input.push_back(static_cast<std::uint8_t>(size >> 24));
+        input.push_back(static_cast<std::uint8_t>(size >> 16));
+        input.push_back(static_cast<std::uint8_t>(size >> 8));
+        input.push_back(static_cast<std::uint8_t>(size));
+        input.insert(input.end(), der, der + len);
+    }
+    return input;
+}
+
+std::string composite_fingerprint(const CompositePublicKey& key) {
+    const Bytes input = composite_canonical_encoding(key);
+    if (input.empty()) return {};
+    unsigned char digest[SHA256_DIGEST_LENGTH];
+    if (SHA256(input.data(), input.size(), digest) == nullptr) {
+        throw ssl_error("composite fingerprint hash failed");
+    }
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(sizeof(digest) * 2);
+    for (unsigned char byte : digest) {
+        out.push_back(kHex[byte >> 4]);
+        out.push_back(kHex[byte & 0x0F]);
+    }
     return out;
 }
 

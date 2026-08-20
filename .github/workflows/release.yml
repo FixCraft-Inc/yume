@@ -39,6 +39,7 @@ concurrency:
 
 env:
   GO_VERSION: "1.26.5"
+  YUME_OPENSSL_FORCE_PINNED: "1"
 
 jobs:
   preflight:
@@ -119,13 +120,19 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential cmake ninja-build pkg-config binutils xz-utils \
-            libssl-dev zlib1g-dev liblzma-dev libzstd-dev libargon2-dev \
+            build-essential cmake ninja-build pkg-config binutils xz-utils perl \
+            zlib1g-dev liblzma-dev libzstd-dev libargon2-dev \
             libnghttp2-dev libboost-all-dev libspdlog-dev nlohmann-json3-dev
+          source scripts/ensure-openssl.sh
+          yume_openssl_ensure
           bash scripts/ensure-nghttp2.sh
-          LIBOQS_TARGET=host LIBOQS_BUILD_DIR="${RUNNER_TEMP}/liboqs-host" \
+          YUME_LIBOQS_PREFIX="${RUNNER_TEMP}/liboqs-host-prefix"
+          LIBOQS_TARGET=host \
+            LIBOQS_VERSION=0.16.0 \
+            LIBOQS_BUILD_DIR="${RUNNER_TEMP}/liboqs-host" \
+            LIBOQS_PREFIX_OVERRIDE="${YUME_LIBOQS_PREFIX}" \
             bash scripts/build-liboqs-target.sh
-          sudo ldconfig
+          printf 'YUME_LIBOQS_PREFIX=%s\n' "${YUME_LIBOQS_PREFIX}" >> "${GITHUB_ENV}"
 
       - name: Prime pinned modules, then test offline
         working-directory: helper/chrome_tls
@@ -140,6 +147,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test "$(pkg-config --modversion openssl)" = "3.5.7"
+          openssl list -signature-algorithms | grep -F 'ML-DSA-87'
           cmake -S . -B build-helper-a -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DYUME_USE_BASEFWX=ON \
@@ -154,8 +163,13 @@ jobs:
             -DYUME_NATIVE_OPT=OFF \
             -DYUME_FAST_MATH=OFF \
             -DYUME_WARNINGS_AS_ERRORS=ON \
+            -DCMAKE_SKIP_BUILD_RPATH=ON \
             -DBASEFWX_REQUIRE_ARGON2=ON \
             -DBASEFWX_REQUIRE_OQS=ON \
+            -DBASEFWX_OQS_STATIC=ON \
+            -DOQS_INCLUDE_DIR="${YUME_LIBOQS_PREFIX}/include" \
+            -DOQS_LIBRARY="${YUME_LIBOQS_PREFIX}/lib/liboqs.a" \
+            -DOQS_LIBRARY_STATIC="${YUME_LIBOQS_PREFIX}/lib/liboqs.a" \
             -DBASEFWX_REQUIRE_LZMA=ON
 
       - name: Build and test first clean Linux build
@@ -187,8 +201,13 @@ jobs:
             -DYUME_NATIVE_OPT=OFF \
             -DYUME_FAST_MATH=OFF \
             -DYUME_WARNINGS_AS_ERRORS=ON \
+            -DCMAKE_SKIP_BUILD_RPATH=ON \
             -DBASEFWX_REQUIRE_ARGON2=ON \
             -DBASEFWX_REQUIRE_OQS=ON \
+            -DBASEFWX_OQS_STATIC=ON \
+            -DOQS_INCLUDE_DIR="${YUME_LIBOQS_PREFIX}/include" \
+            -DOQS_LIBRARY="${YUME_LIBOQS_PREFIX}/lib/liboqs.a" \
+            -DOQS_LIBRARY_STATIC="${YUME_LIBOQS_PREFIX}/lib/liboqs.a" \
             -DBASEFWX_REQUIRE_LZMA=ON
           GOTOOLCHAIN=local GOPROXY=off \
             cmake --build build-helper-b \

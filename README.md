@@ -67,6 +67,13 @@ that worktree without fetching, detaching its branch, or discarding changes.
 Use `BASEFWX_SYNC_MODE=pinned ./ezbuild.sh` when you explicitly need the clean
 commit recorded once in `config/dependencies.json`.
 
+Full YUME builds require OpenSSL 3.5 or newer because composite client
+identities use ML-DSA-87. On native Linux, `ezbuild.sh` verifies the provider
+and, when the system library is older, builds the pinned OpenSSL 3.5.7 source
+archive into the user's YUME cache after verifying its SHA-256. Direct CMake
+builds must provide an equivalent OpenSSL development installation, optionally
+through `OPENSSL_ROOT_DIR`.
+
 Browser identities are also centralized. See
 [docs/TRANSPORT_PROFILES.md](docs/TRANSPORT_PROFILES.md): installed Chrome may
 update normally, while qualified wire profiles remain immutable and new
@@ -718,8 +725,9 @@ sudo ./build/bin/yumed \
 - Release workflows run preflight validation against the pinned BaseFWX commit
 - Release artifacts are inspected after build for linkage / runtime expectations
 - Missing mandatory BaseFWX crypto support is a release failure, not a degraded release
-- The 2.0 Linux desktop transport additionally requires nghttp2 >= 1.64 and
-  ML-KEM-1024 support from the pinned BaseFWX/liboqs path
+- The 2.0 Linux desktop transport additionally requires OpenSSL >= 3.5 with
+  ML-DSA-87, nghttp2 >= 1.64, and ML-KEM-1024 support from the pinned
+  BaseFWX/liboqs 0.16.0 path
 
 ## License
 

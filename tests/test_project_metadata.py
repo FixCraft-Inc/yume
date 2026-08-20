@@ -42,6 +42,16 @@ class MetadataTests(unittest.TestCase):
     def test_current_metadata_is_coherent(self) -> None:
         dependencies = load_dependencies()
         self.assertRegex(dependencies["basefwx"]["revision"], r"^[0-9a-f]{40}$")
+        self.assertEqual(dependencies["openssl"]["minimum_version"], "3.5.0")
+        self.assertEqual(
+            dependencies["openssl"]["revision"],
+            "8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
+        )
+        self.assertEqual(dependencies["liboqs"]["minimum_version"], "0.16.0")
+        self.assertEqual(
+            dependencies["liboqs"]["revision"],
+            "5a1a854b0dc9f2141bdc771c555ee60c37950183",
+        )
         profile = active_profile_metadata()
         registry = json.loads(DEFAULT_REGISTRY.read_text(encoding="utf-8"))
         self.assertEqual(profile["id"], registry["active_profile"])

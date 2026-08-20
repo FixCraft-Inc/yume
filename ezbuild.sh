@@ -2127,6 +2127,22 @@ EOF
         esac
     fi
 
+    # Composite AUTH requires OpenSSL 3.5's ML-DSA-87 provider. Native Linux
+    # hosts with an older system libssl get a pinned, checksum-verified build in
+    # the user's cache. Cross targets and macOS use their selected toolchain or
+    # Homebrew prefix instead of this host fallback.
+    if [[ "$(uname -s)" == "Linux" && $OPENWRT -eq 0 && $BUSYBOX -eq 0 \
+          && "${WINDOWS_CROSS}" != "1" && "${YUME_MACOS_CROSS:-0}" != "1" \
+          && -z "${TARGET_ARCH}" && -z "${YUME_TOOLCHAIN_FILE:-}" ]]; then
+        if [[ ! -f "${PWD}/scripts/ensure-openssl.sh" ]]; then
+            error "Missing scripts/ensure-openssl.sh; cannot verify the composite-identity dependency."
+            exit 1
+        fi
+        # shellcheck disable=SC1091
+        source "${PWD}/scripts/ensure-openssl.sh"
+        yume_openssl_ensure || { error "OpenSSL dependency setup failed."; exit 1; }
+    fi
+
     # YUME 2.0 uses nghttp2's v2 receive/submit APIs. Native desktop builds
     # require >= 1.64; older stable distributions get a pinned, checksum-
     # verified lib-only build in the user's cache. Cross targets need their

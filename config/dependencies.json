@@ -5,6 +5,16 @@
       "repository": "https://github.com/F1xGOD/basefwx.git",
       "revision": "4692d4ce4edec2aa9835d04ad9ff6c3ad3ab9374",
       "minimum_version": "3.8.0"
+    },
+    "openssl": {
+      "repository": "https://github.com/openssl/openssl.git",
+      "revision": "8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
+      "minimum_version": "3.5.0"
+    },
+    "liboqs": {
+      "repository": "https://github.com/open-quantum-safe/liboqs.git",
+      "revision": "5a1a854b0dc9f2141bdc771c555ee60c37950183",
+      "minimum_version": "0.16.0"
     }
   }
 }

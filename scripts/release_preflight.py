@@ -69,6 +69,20 @@ def basefwx_dependency() -> dict[str, str]:
         raise SystemExit(f"Invalid BaseFWX dependency metadata: {error}") from error
 
 
+def openssl_dependency() -> dict[str, str]:
+    try:
+        return load_dependencies()["openssl"]
+    except (DependencyError, KeyError) as error:
+        raise SystemExit(f"Invalid OpenSSL dependency metadata: {error}") from error
+
+
+def liboqs_dependency() -> dict[str, str]:
+    try:
+        return load_dependencies()["liboqs"]
+    except (DependencyError, KeyError) as error:
+        raise SystemExit(f"Invalid liboqs dependency metadata: {error}") from error
+
+
 def transport_dependency() -> dict[str, object]:
     try:
         return active_profile_metadata()
@@ -137,6 +151,12 @@ def validate_expected_artifacts() -> None:
 def validate_workflow_guards() -> None:
     release_yml = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     ci_yml = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    codeql_yml = (ROOT / ".github" / "workflows" / "codeql.yml").read_text(encoding="utf-8")
+    cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+    openssl_helper = (ROOT / "scripts" / "ensure-openssl.sh").read_text(encoding="utf-8")
+    liboqs_helper = (ROOT / "scripts" / "build-liboqs-target.sh").read_text(encoding="utf-8")
+    openssl = openssl_dependency()
+    liboqs = liboqs_dependency()
     required_release = (
         "linux-desktop-2.0",
         'go-version: "1.26.5"',
@@ -145,14 +165,21 @@ def validate_workflow_guards() -> None:
         "-DYUME_BUILD_GUI=OFF",
         "-DYUME_STATIC=OFF",
         "-DYUME_WARNINGS_AS_ERRORS=ON",
+        "-DCMAKE_SKIP_BUILD_RPATH=ON",
         "-DBASEFWX_REQUIRE_ARGON2=ON",
         "-DBASEFWX_REQUIRE_OQS=ON",
+        "-DBASEFWX_OQS_STATIC=ON",
+        "-DOQS_LIBRARY=\"${YUME_LIBOQS_PREFIX}/lib/liboqs.a\"",
+        "LIBOQS_PREFIX_OVERRIDE=\"${YUME_LIBOQS_PREFIX}\"",
+        "LIBOQS_VERSION=0.16.0",
         "-DBASEFWX_REQUIRE_LZMA=ON",
         "GOPROXY=off",
         "package_linux_release.py",
         BUNDLE_NAME,
         SERVER_NAME,
         "linux-desktop-2.0-prepared.tar",
+        "yume_openssl_ensure",
+        'YUME_OPENSSL_FORCE_PINNED: "1"',
         "--same-permissions",
         "publish:",
         "default: false",
@@ -161,11 +188,41 @@ def validate_workflow_guards() -> None:
     for needle in required_release:
         require(needle in release_yml, f"release.yml is missing required guard: {needle}")
     for needle in (
+        "bash scripts/ensure-openssl.sh",
+        'YUME_OPENSSL_FORCE_PINNED: "1"',
         "-DBASEFWX_REQUIRE_ARGON2=ON",
         "-DBASEFWX_REQUIRE_OQS=ON",
         "-DBASEFWX_REQUIRE_LZMA=ON",
     ):
         require(needle in ci_yml, f"ci.yml is missing required guard: {needle}")
+    require(openssl["minimum_version"] == "3.5.0",
+            "OpenSSL dependency minimum changed without updating release guards")
+    require("find_package(OpenSSL 3.5 REQUIRED)" in cmake,
+            "CMake must reject OpenSSL versions without ML-DSA-87")
+    require("bash scripts/ensure-openssl.sh" in codeql_yml,
+            "CodeQL C++ setup must provide the pinned OpenSSL dependency")
+    require('YUME_OPENSSL_FORCE_PINNED: "1"' in codeql_yml,
+            "CodeQL must use exact OpenSSL source provenance")
+    require(openssl["revision"] in openssl_helper,
+            "OpenSSL helper source commit does not match dependency metadata")
+    for needle in (
+        'YUME_OPENSSL_SOURCE_VERSION="3.5.7"',
+        'YUME_OPENSSL_SOURCE_SHA256="a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8"',
+        "shared zlib enable-zstd no-tests",
+    ):
+        require(needle in openssl_helper,
+                f"OpenSSL helper is missing required release guard: {needle}")
+    require(liboqs["minimum_version"] == "0.16.0",
+            "liboqs dependency minimum changed without updating release guards")
+    require(liboqs["revision"] in liboqs_helper,
+            "liboqs helper source commit does not match dependency metadata")
+    for needle in (
+        'LIBOQS_PINNED_VERSION="0.16.0"',
+        'LIBOQS_PINNED_SHA256="162d5b510518ee5f285f82fa1f16402a885176e818bf1b1a4c3c91c9a2f01eae"',
+        'actual_hash="$(sha256sum',
+    ):
+        require(needle in liboqs_helper,
+                f"liboqs helper is missing required release guard: {needle}")
     require("branches: [main, DEV]" in ci_yml, "ci.yml must cover main and DEV")
     require(release_yml.count("-B build-helper-") >= 2,
             "release.yml must configure two clean helper build directories")
@@ -193,14 +250,22 @@ def validate_cmake_cache(path: pathlib.Path) -> None:
         "YUME_BUILD_GUI": "OFF",
         "YUME_STATIC": "OFF",
         "YUME_WARNINGS_AS_ERRORS": "ON",
+        "CMAKE_SKIP_BUILD_RPATH": "ON",
         "BASEFWX_REQUIRE_ARGON2": "ON",
         "BASEFWX_REQUIRE_OQS": "ON",
+        "BASEFWX_OQS_STATIC": "ON",
         "BASEFWX_REQUIRE_LZMA": "ON",
     }
     for name, expected in required.items():
         actual = cache_value(cache, name)
         require(actual == expected,
                 f"Release CMake cache requires {name}={expected}, found {actual}")
+    oqs_library = cache_value(cache, "OQS_LIBRARY")
+    oqs_library_static = cache_value(cache, "OQS_LIBRARY_STATIC")
+    require(oqs_library is not None and oqs_library.endswith("/lib/liboqs.a"),
+            f"Release CMake cache requires an explicit static OQS_LIBRARY, found {oqs_library}")
+    require(oqs_library_static == oqs_library,
+            "Release CMake cache OQS_LIBRARY_STATIC must match OQS_LIBRARY")
 
 
 def validate_helper_rebuilds(first: pathlib.Path, second: pathlib.Path) -> str:
@@ -246,6 +311,76 @@ def require_glibc_amd64(data: bytes, description: str) -> None:
             f"{description} is not a glibc x86-64 dynamic executable")
 
 
+def require_no_runtime_search_path(data: bytes, description: str) -> None:
+    program_offset = int.from_bytes(data[32:40], "little")
+    entry_size = int.from_bytes(data[54:56], "little")
+    entry_count = int.from_bytes(data[56:58], "little")
+    load_segments: list[tuple[int, int, int]] = []
+    dynamic_offset = None
+    dynamic_size = None
+    for index in range(entry_count):
+        offset = program_offset + index * entry_size
+        require(offset <= len(data) and entry_size <= len(data) - offset,
+                f"{description} has truncated ELF program headers")
+        segment_type = int.from_bytes(data[offset:offset + 4], "little")
+        file_offset = int.from_bytes(data[offset + 8:offset + 16], "little")
+        virtual_address = int.from_bytes(data[offset + 16:offset + 24], "little")
+        file_size = int.from_bytes(data[offset + 32:offset + 40], "little")
+        if segment_type == 1:  # PT_LOAD
+            load_segments.append((virtual_address, file_offset, file_size))
+        elif segment_type == 2:  # PT_DYNAMIC
+            require(dynamic_offset is None,
+                    f"{description} has multiple ELF dynamic segments")
+            dynamic_offset = file_offset
+            dynamic_size = file_size
+
+    require(dynamic_offset is not None and dynamic_size is not None,
+            f"{description} has no ELF dynamic segment")
+    require(dynamic_size % 16 == 0 and dynamic_offset <= len(data) and
+            dynamic_size <= len(data) - dynamic_offset,
+            f"{description} has invalid ELF dynamic metadata")
+    string_table_address = None
+    string_table_size = None
+    needed_offsets: list[int] = []
+    for item_offset in range(dynamic_offset, dynamic_offset + dynamic_size, 16):
+        tag = int.from_bytes(data[item_offset:item_offset + 8], "little")
+        value = int.from_bytes(data[item_offset + 8:item_offset + 16], "little")
+        if tag == 0:  # DT_NULL
+            break
+        require(tag not in {15, 29},  # DT_RPATH, DT_RUNPATH
+                f"{description} contains an unsafe runtime library search path")
+        if tag == 1:  # DT_NEEDED
+            needed_offsets.append(value)
+        elif tag == 5:  # DT_STRTAB
+            string_table_address = value
+        elif tag == 10:  # DT_STRSZ
+            string_table_size = value
+
+    require(string_table_address is not None and string_table_size is not None,
+            f"{description} has incomplete ELF dynamic string metadata")
+    require(string_table_size <= 16 * 1024 * 1024,
+            f"{description} has an excessive ELF dynamic string table")
+    string_table_offset = None
+    for virtual_address, file_offset, file_size in load_segments:
+        if (virtual_address <= string_table_address and
+                string_table_address - virtual_address < file_size):
+            string_table_offset = file_offset + string_table_address - virtual_address
+            break
+    require(string_table_offset is not None and string_table_offset <= len(data) and
+            string_table_size <= len(data) - string_table_offset,
+            f"{description} has an invalid ELF dynamic string table")
+    string_table = data[string_table_offset:string_table_offset + string_table_size]
+    for needed_offset in needed_offsets:
+        require(needed_offset < len(string_table),
+                f"{description} has an invalid DT_NEEDED entry")
+        terminator = string_table.find(b"\0", needed_offset)
+        require(terminator != -1,
+                f"{description} has an unterminated DT_NEEDED entry")
+        library = string_table[needed_offset:terminator]
+        require(not library.startswith(b"liboqs.so"),
+                f"{description} dynamically links liboqs; release binaries must use the pinned static archive")
+
+
 def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
                     expected_helper_hash: str | None,
                     transport: dict[str, object]) -> dict[str, object]:
@@ -272,6 +407,7 @@ def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
             payloads[name] = handle.read()
 
     require_glibc_amd64(payloads["yume"], "bundled yume")
+    require_no_runtime_search_path(payloads["yume"], "bundled yume")
     require_elf_amd64(payloads[HELPER_NAME], "bundled Chrome TLS helper")
     manifest = json.loads(payloads["manifest.json"].decode("utf-8"))
     require(isinstance(manifest, dict), "Bundle manifest must be an object")
@@ -299,7 +435,10 @@ def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
                 "Bundled helper differs from clean rebuilds")
     features = manifest.get("required_features", {})
     require(features == {
-        "argon2": True, "chrome_tls_helper": True, "post_quantum": True,
+        "argon2": True,
+        "chrome_tls_helper": True,
+        "openssl_minimum": "3.5.0",
+        "post_quantum": True,
     }, "Bundle mandatory feature declarations are incomplete or relaxed")
     entries = manifest.get("files")
     require(isinstance(entries, list), "Bundle manifest file list is missing")
@@ -337,6 +476,7 @@ def validate_artifacts(directory: pathlib.Path, version: str, commit: str,
             "Server artifact mode must be 0755")
     server_bytes = server.read_bytes()
     require_glibc_amd64(server_bytes, "yumed server artifact")
+    require_no_runtime_search_path(server_bytes, "yumed server artifact")
     server_metadata = manifest.get("standalone_server", {})
     require(isinstance(server_metadata, dict),
             "Bundle manifest standalone server metadata is missing")

@@ -427,7 +427,18 @@ Bytes BuildAdminSignatureInput(const Bytes& challenge_record,
     if (base.size() < kSignatureDomain.size()) {
         throw std::runtime_error("AUTH v2 signature input is malformed");
     }
-    Bytes out(kAdminSignatureDomain.begin(), kAdminSignatureDomain.end());
+    const std::size_t suffix_size = base.size() - kSignatureDomain.size();
+    const std::size_t trailer_size = sizeof(std::uint32_t) + visitor_identity.size();
+    if (suffix_size > std::numeric_limits<std::size_t>::max() -
+                          kAdminSignatureDomain.size() - trailer_size) {
+        throw std::runtime_error("AUTH v2 admin signature input is too large");
+    }
+    Bytes out;
+    // Reserve once before appending ranges. Besides avoiding repeated allocation,
+    // this keeps GCC 11 from misdiagnosing vector reallocation as an overread.
+    out.reserve(kAdminSignatureDomain.size() + suffix_size + trailer_size);
+    out.insert(out.end(), kAdminSignatureDomain.begin(),
+               kAdminSignatureDomain.end());
     out.insert(out.end(),
                base.begin() + static_cast<std::ptrdiff_t>(kSignatureDomain.size()),
                base.end());

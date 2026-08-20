@@ -232,15 +232,16 @@ After `yume_server_accept_stream` returns a stream, the embedder can call
 {
   "service": "example-service-v1",
   "peer": "authenticated-peer-id",
-  "auth_fingerprint_sha256": "ed25519-spki-sha256",
+  "auth_fingerprint_sha256": "composite-identity-sha256",
   "session_id": "authenticated-peer-id",
   "server_session_id": "42",
   "remote_addr": "203.0.113.10"
 }
 ```
 
-`auth_fingerprint_sha256` is the authenticated client Ed25519 public-key SPKI
-SHA-256 fingerprint and is the stable field to use for device binding.
+`auth_fingerprint_sha256` is the SHA-256 fingerprint of the domain-separated,
+length-prefixed DER encodings of both authenticated public-key halves and is the
+stable field to use for device binding.
 `session_id` is a stable peer id for the accepted stream; `server_session_id` is
 the server's internal numeric session id serialized as a string for log
 correlation only.

@@ -19,6 +19,11 @@
 #include <unordered_map>
 #include <utility>
 
+#include <boost/asio/buffer.hpp>
+#include <boost/asio/error.hpp>
+#include <boost/asio/ip/address.hpp>
+#include <boost/asio/write.hpp>
+
 #include "util.hpp"
 
 #if defined(__linux__)

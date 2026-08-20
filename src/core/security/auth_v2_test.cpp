@@ -75,7 +75,11 @@ int main() {
     assert(unsigned_response.size() == 1683);
     assert(Sha256Hex(unsigned_response) ==
            "08ab8fdf2387322c4904079db21d0760a634f40c52be4530e60fe8e4c55f5b98");
-    const Bytes signature(64, 0x77);
+    // Composite: Ed25519 (64) followed by ML-DSA-87 (4627). This assertion is
+    // what keeps auth_v2.hpp's kCompositeSignatureLen -- which is duplicated to
+    // keep OpenSSL out of that translation unit -- pinned to crypto.hpp's.
+    static_assert(kCompositeSignatureLen == 64 + 4627);
+    const Bytes signature(kCompositeSignatureLen, 0x77);
     const auto response = ParseResponse(BuildResponse(
         x_public, ciphertext, identity, rekey_window, policy, signature));
     assert(response.signature == signature);
@@ -88,8 +92,65 @@ int main() {
     const Bytes signature_input = BuildSignatureInput(encoded, unsigned_response,
                                                       channel_binding);
     assert(signature_input.size() == 3556);
+    // KAT moved with the v3 -> v4 domain bump. The length is unchanged because
+    // the domain string is the same width; only its content differs, which is
+    // exactly the intended effect -- a v3 signature cannot verify here.
     assert(Sha256Hex(signature_input) ==
-           "a254a33565109da12f50585e704a8edf5cf5ba64156a4ee7002ac09330ea274f");
+           "85ed6c8cef7f91f6fc113bc0ba607719fcf3c262d502b83df4ca01d27d2b6faa");
+
+    // The admin second factor covers the same transcript under a different
+    // domain and is additionally bound to the visitor identity that presented
+    // it. Both properties are load-bearing: without the domain change a visitor
+    // signature would verify as an admin one, and without the identity binding
+    // an admin proof could be lifted onto a different visitor's response.
+    const Bytes admin_input = BuildAdminSignatureInput(
+        encoded, unsigned_response, channel_binding, identity);
+    assert(admin_input != signature_input);
+
+    // Pin the domain separation itself, not just "the two inputs differ".
+    // Appending the visitor identity already makes them differ, so a weaker
+    // assertion passes even when both inputs share the visitor domain -- which
+    // is exactly the state in which a captured visitor signature would verify
+    // as an admin one. Reconstruct what the admin input WOULD be if the domain
+    // had not changed, and require that the real one is not that.
+    Bytes same_domain = signature_input;
+    const auto identity_len = static_cast<std::uint32_t>(identity.size());
+    same_domain.push_back(static_cast<std::uint8_t>(identity_len >> 24));
+    same_domain.push_back(static_cast<std::uint8_t>(identity_len >> 16));
+    same_domain.push_back(static_cast<std::uint8_t>(identity_len >> 8));
+    same_domain.push_back(static_cast<std::uint8_t>(identity_len));
+    same_domain.insert(same_domain.end(), identity.begin(), identity.end());
+    // Only inequality is asserted: the two domain strings are different
+    // lengths, so the sizes legitimately differ too. If the domains were ever
+    // made equal, this reconstruction would match exactly.
+    assert(admin_input != same_domain);
+    const Bytes other_identity(identity.size(), 0x5a);
+    assert(BuildAdminSignatureInput(encoded, unsigned_response, channel_binding,
+                                    other_identity) != admin_input);
+    assert(Throws([&] {
+        (void)BuildAdminSignatureInput(encoded, unsigned_response,
+                                       channel_binding, Bytes{});
+    }));
+
+    // Admin identity and admin signature are both-or-neither. A half-supplied
+    // claim must be rejected outright rather than read as a plain visitor
+    // response with extra data attached.
+    const Bytes admin_signature(kCompositeSignatureLen, 0x66);
+    assert(Throws([&] {
+        (void)BuildResponse(x_public, ciphertext, identity, rekey_window, policy,
+                            signature, identity, Bytes{});
+    }));
+    assert(Throws([&] {
+        (void)BuildResponse(x_public, ciphertext, identity, rekey_window, policy,
+                            signature, Bytes{}, admin_signature);
+    }));
+    const auto admin_response = ParseResponse(BuildResponse(
+        x_public, ciphertext, identity, rekey_window, policy, signature,
+        identity, admin_signature));
+    assert(admin_response.claims_admin());
+    assert(admin_response.admin_signature == admin_signature);
+    // A response without the admin fields must not read as an admin claim.
+    assert(!response.claims_admin());
 
     // The binding is what a relaying endpoint cannot reproduce: the same
     // records under a different live TLS connection sign a different input.
@@ -168,7 +229,7 @@ int main() {
     Record stale_response = DecodeRecord(
         BuildResponse(x_public, ciphertext, identity, rekey_window, policy,
                       signature),
-        RecordKind::Response, {1, 2, 3, 4, 5, 6, 7});
+        RecordKind::Response, {1, 2, 3, 4, 5, 6, 7, 8, 9});
     stale_response.fields[5].value = Bytes{'s', 't', 'a', 'l', 'e'};
     assert(Throws([&] {
         (void)ParseResponse(EncodeRecord(RecordKind::Response,

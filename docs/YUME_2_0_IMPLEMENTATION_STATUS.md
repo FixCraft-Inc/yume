@@ -9,7 +9,10 @@ are in `docs/YUME_2_0_STABILIZATION.md`.
 
 This is a truthful inventory of the focused Linux x86-64 client/server work. It
 does not claim Android, GUI, nginx, alternate browser profiles, H3, federation,
-or admin/control validation.
+Windows runtime, or release qualification. Composite AUTH and dual-identity
+admin are implemented in the CLI/server scope. Development-merge evidence must
+include a fresh full optimized and sanitizer qualification of the exact signed
+tree; results from an earlier checkpoint do not transfer across corrections.
 
 ## Implemented
 
@@ -104,8 +107,14 @@ or admin/control validation.
 - Version/profile/SNI/hour/nonce HMAC admission, authority matching, bounded
   replay cache, and ordinary cover behavior before AUTH on rejection.
 - Canonical schema-3 AUTH transcript with strict parsing, exact
-  `chrome151-node24-v1` challenge/response/confirmation fields, and Ed25519
-  authorization before ML-KEM work.
+  `chrome151-node24-v1` challenge/response/confirmation fields, and composite
+  Ed25519 + ML-DSA-87 authorization before ML-KEM work.
+- Admin AUTH requires a second, different composite identity from the separate
+  `admin_keys` store. The visitor identity must already be enrolled in the
+  regular or operator store, so a preauth-only visitor cannot use an admin
+  factor as an alternate admission route. The signed checkpoint passed the
+  original live 5/5 admin matrix; the current correction passed the paired
+  unenrolled-admin refusal and matched visitor-only preauth control.
 - ML-KEM-1024 + X25519 + high-entropy PSK salted-HKDF root derivation. Argon2 is
   absent at connection establishment and per epoch.
 - AES-256-GCM one-use message keys with profile/direction/epoch/sequence/type/
@@ -420,7 +429,8 @@ release-qualified Chrome parity. Matching ALPN or a coarse JA3/JA4 summary is
 insufficient. Traffic padding is likewise an evidence-driven option, not an
 automatic improvement.
 
-Client AUTH sends an Ed25519 public key and a signature over the complete
+Client AUTH sends a composite Ed25519 + ML-DSA-87 public identity and both
+signatures over the complete
 canonical challenge/response transcript; it never sends the private key. As of
 `2.0-dev4` the signature input also covers a 32-byte RFC 8446 exporter that
 each endpoint derives from its own live TLS object and never transmits, and the
@@ -431,13 +441,13 @@ connection's exporter. Both endpoints require TLS 1.3 and a finished handshake;
 there is no unbound mode and no way to negotiate the binding away.
 
 Identity-file safety is now a creation and loading invariant rather than
-operator hygiene. `generate_ed25519_keypair()` serializes to memory and creates
-both files through the exclusive owner-only writer, wipes the private PEM, and
-refuses to replace an existing path. `crypto::load_keypair()` reads the private
-key through an already-validated descriptor: regular non-symlink file, owned by
-the effective user, no group/world bits, bounded size. Windows has no equivalent
-enforcement and fails closed, which remains open work alongside protected
-secret loading there.
+operator hygiene. Composite generation serializes the Ed25519 and ML-DSA-87
+halves into one private and one public file, creates both through the exclusive
+owner-only writer, wipes the private PEM buffer, and refuses to replace an
+existing path. `crypto::load_composite_keypair()` reads the private file through
+an already-validated descriptor and requires exactly two private-key PEM blocks
+in the fixed order. Windows has no equivalent ownership/mode enforcement and
+fails closed, which remains open work alongside protected secret loading there.
 
 The hybrid ephemeral establishment/rekeys provide a forward-secrecy design
 against later long-term-file compromise, not secrecy from `yumed` itself.

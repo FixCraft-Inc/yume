@@ -5,9 +5,9 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * yumed CLI help/usage/version/credits output, extracted from
- * main_server.cpp. Free functions at global scope so the existing
- * unqualified calls in main() resolve unchanged. No behavior change.
+ * yumed CLI help, usage, version, credits, and completion output. The free
+ * functions remain at global scope because the executable calls them without
+ * namespace qualification.
  */
 
 void print_bash_completion();

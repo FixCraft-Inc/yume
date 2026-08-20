@@ -440,73 +440,43 @@ std::string calculate_akamai_hash(const JA3Components& components) {
     return sha256_hash(akamai_string.str()).substr(0, 32);
 }
 
-std::vector<BrowserFingerprint> get_known_browser_fingerprints() {
-    std::vector<BrowserFingerprint> fingerprints;
-    
-    // Stock-OpenSSL compatibility selection for the pinned Chrome 151 target.
-    // Chrome/BoringSSL additionally controls GREASE and extension ordering in
-    // ways OpenSSL cannot reproduce. This is therefore the TLS policy selected
-    // by the coherent cover profile, not a byte-identical ClientHello claim.
-    {
+namespace {
+
+// Built once from the active cover profile. This used to be reconstructed --
+// four vectors, two strings and two hashes -- on every call, including once per
+// SSL_CTX during connection setup.
+//
+// The cipher/extension/group/sigalg lists are no longer literals here. They are
+// generated into cover_profile::Profile from config/transport_profiles.json, so
+// the cover identity has exactly one owner, and
+// scripts/generate_transport_profiles.py pins their gap against the captured
+// browser ClientHello. Do not reintroduce a second table: a divergence that is
+// not declared in the registry now fails generation.
+const std::vector<BrowserFingerprint>& cached_browser_fingerprints() {
+    static const std::vector<BrowserFingerprint> kFingerprints = [] {
         const auto& cover = cover_profile::active();
+
         BrowserFingerprint fp;
         fp.profile = cover.tls_profile;
         fp.name = std::string(cover.browser_name) + " " +
                   std::string(cover.browser_version);
-        fp.tls_version = 0x0303;  // TLS 1.2 in ClientHello, upgrades to 1.3
-        fp.cipher_suites = {
-            0x1301,  // TLS_AES_128_GCM_SHA256
-            0x1302,  // TLS_AES_256_GCM_SHA384
-            0x1303,  // TLS_CHACHA20_POLY1305_SHA256
-            0xc02b,  // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-            0xc02f,  // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-            0xc02c,  // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
-            0xc030,  // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
-            0xcca9,  // TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
-            0xcca8,  // TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
-            0xc013,  // TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA
-            0xc014,  // TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA
-            0x009c,  // TLS_RSA_WITH_AES_128_GCM_SHA256
-            0x009d,  // TLS_RSA_WITH_AES_256_GCM_SHA384
-            0x002f,  // TLS_RSA_WITH_AES_128_CBC_SHA
-            0x0035,  // TLS_RSA_WITH_AES_256_CBC_SHA
-        };
-        fp.extensions = {
-            0,      // server_name
-            23,     // extended_master_secret
-            65281,  // renegotiation_info
-            10,     // supported_groups
-            11,     // ec_point_formats
-            35,     // session_ticket
-            16,     // application_layer_protocol_negotiation
-            5,      // status_request
-            13,     // signature_algorithms
-            18,     // signed_certificate_timestamp
-            43,     // supported_versions
-            45,     // psk_key_exchange_modes
-            51,     // key_share
-            21,     // padding
-        };
-        fp.supported_groups = {
-            0x001d,  // x25519
-            0x0017,  // secp256r1
-            0x0018,  // secp384r1
-        };
-        fp.ec_point_formats = {0};  // uncompressed
-        fp.alpn_protocols = {"h2", "http/1.1"};
-        fp.signature_algorithms = {
-            0x0403,  // ecdsa_secp256r1_sha256
-            0x0503,  // ecdsa_secp384r1_sha384
-            0x0603,  // ecdsa_secp521r1_sha512
-            0x0807,  // ed25519
-            0x0804,  // rsa_pss_rsae_sha256
-            0x0805,  // rsa_pss_rsae_sha384
-            0x0806,  // rsa_pss_rsae_sha512
-            0x0401,  // rsa_pkcs1_sha256
-            0x0501,  // rsa_pkcs1_sha384
-            0x0601,  // rsa_pkcs1_sha512
-        };
-        
+        // TLS 1.2 in the ClientHello record, upgraded to 1.3 by supported_versions.
+        fp.tls_version = 0x0303;
+        fp.cipher_suites.assign(cover.tls_cipher_suites.begin(),
+                                cover.tls_cipher_suites.end());
+        fp.extensions.assign(cover.tls_extensions.begin(),
+                             cover.tls_extensions.end());
+        fp.supported_groups.assign(cover.tls_supported_groups.begin(),
+                                   cover.tls_supported_groups.end());
+        fp.ec_point_formats.assign(cover.tls_ec_point_formats.begin(),
+                                   cover.tls_ec_point_formats.end());
+        fp.signature_algorithms.assign(cover.tls_signature_algorithms.begin(),
+                                       cover.tls_signature_algorithms.end());
+        fp.alpn_protocols.reserve(cover.tls_alpn_protocols.size());
+        for (const auto& protocol : cover.tls_alpn_protocols) {
+            fp.alpn_protocols.emplace_back(protocol);
+        }
+
         JA3Components ja3;
         ja3.tls_version = fp.tls_version;
         ja3.cipher_suites = fp.cipher_suites;
@@ -514,26 +484,31 @@ std::vector<BrowserFingerprint> get_known_browser_fingerprints() {
         ja3.supported_groups = fp.supported_groups;
         ja3.ec_point_formats = fp.ec_point_formats;
         fp.ja3_hash = calculate_ja3_hash(ja3);
-        
+
         JA4Components ja4;
         ja4.protocol_version = "t13";
         ja4.sni_present = "d";
         ja4.cipher_count = fp.cipher_suites.size();
         ja4.extension_count = fp.extensions.size();
-        ja4.first_alpn = "h2";
+        ja4.first_alpn = fp.alpn_protocols.empty() ? std::string() : fp.alpn_protocols.front();
         ja4.cipher_suites = fp.cipher_suites;
         ja4.extensions = fp.extensions;
         ja4.signature_algorithms = fp.signature_algorithms;
         fp.ja4_hash = calculate_ja4_hash(ja4);
-        
-        fingerprints.push_back(fp);
-    }
-    
-    return fingerprints;
+
+        return std::vector<BrowserFingerprint>{std::move(fp)};
+    }();
+    return kFingerprints;
+}
+
+}  // namespace
+
+std::vector<BrowserFingerprint> get_known_browser_fingerprints() {
+    return cached_browser_fingerprints();
 }
 
 std::pair<BrowserProfile, double> match_browser_profile(const FingerprintData& fingerprint) {
-    auto known_fingerprints = get_known_browser_fingerprints();
+    const auto& known_fingerprints = cached_browser_fingerprints();
     double best_score = 0.0;
     BrowserProfile best_profile = BrowserProfile::UNKNOWN;
     
@@ -565,7 +540,7 @@ std::pair<BrowserProfile, double> match_browser_profile(const FingerprintData& f
 }
 
 std::optional<BrowserFingerprint> get_browser_profile_info(BrowserProfile profile) {
-    auto fingerprints = get_known_browser_fingerprints();
+    const auto& fingerprints = cached_browser_fingerprints();
     for (const auto& fp : fingerprints) {
         if (fp.profile == profile) {
             return fp;

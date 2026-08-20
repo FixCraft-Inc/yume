@@ -15,18 +15,19 @@ struct ServerConfig;
 namespace yume::server::cli {
 
 struct ServerConfigOverrides {
+    bool listen = false;
     bool threads = false;
     bool obfuscation = false;
     bool inner_crypto = false;
     bool inner_dual = false;
     bool inner_required = false;
     bool inner_hop = false;
+    bool pq_auto_generate = false;
     bool hop_interval = false;
     bool argon2_memory_budget = false;
     bool argon2_max_jobs = false;
     bool anonym = false;
     bool anonym_proof_mode = false;
-    bool pq_auto_generate = false;
     bool allow_embedded_master = false;
     bool tls_handshake_timeout = false;
     bool max_sessions = false;

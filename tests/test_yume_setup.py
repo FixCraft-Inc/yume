@@ -37,6 +37,11 @@ class YumeSetupTests(unittest.TestCase):
             self.assertEqual(config["inner_psk_file"], "inner-psk.hex")
             self.assertEqual(config["tunnels"], 1)
             self.assertTrue(config["require_anonym"])
+            self.assertEqual(
+                (kit / "clients" / "phone" / "identity.pub").read_text().count(
+                    "-----BEGIN PUBLIC KEY-----"),
+                2,
+            )
             self.assertTrue((kit / "server" / "start-yumed").stat().st_mode & stat.S_IXUSR)
             for launcher in ("start-socks", "export-yss"):
                 path = kit / "clients" / "phone" / launcher
@@ -71,9 +76,16 @@ class YumeSetupTests(unittest.TestCase):
             self.assertEqual(bulk_policy["key_type"], "bulk")
             self.assertEqual(bulk_policy["max_sessions"], 17)
             self.assertFalse(bulk_policy["permissions"]["allow_bytes"])
-            self.assertTrue(admin_policy["permissions"]["allow_outbound_admin"])
+            self.assertNotIn("permissions", admin_policy)
             admin_config = json.loads((kit / "clients" / "controller" / "yume.json").read_text())
             self.assertTrue(admin_config["allow_outbound_admin"])
+            self.assertEqual(admin_config["admin_identity"], "admin-identity.key")
+            self.assertTrue((kit / "clients" / "controller" / "admin-identity.key").is_file())
+            self.assertEqual(
+                (kit / "server" / "admin_keys").read_text().count(
+                    "-----BEGIN PUBLIC KEY-----"),
+                2,
+            )
 
     def test_installed_layout_finds_cover_backend(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

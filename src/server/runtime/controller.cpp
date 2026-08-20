@@ -16,7 +16,7 @@
 #include <unistd.h>
 #endif
 
-#include <boost/asio.hpp>
+#include <boost/asio/io_context.hpp>
 
 #include "core/security/identity.hpp"
 #include "server/runtime/local_runtime.hpp"

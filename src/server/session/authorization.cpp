@@ -67,6 +67,11 @@ bool post_auth_frame_allowed(SessionTier tier,
     }
 }
 
+bool admin_claim_eligible(bool visitor_signature_valid,
+                          bool visitor_authorized) noexcept {
+    return visitor_signature_valid && visitor_authorized;
+}
+
 bool admin_attach_allowed(bool caller_trusted_relay,
                           bool caller_allow_outbound,
                           bool target_allow_inbound) {

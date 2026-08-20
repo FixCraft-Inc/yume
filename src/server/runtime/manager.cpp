@@ -25,6 +25,10 @@
 #include <string_view>
 #include <stdexcept>
 #include <vector>
+#include <boost/asio/error.hpp>
+#include <boost/asio/ip/address.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/steady_timer.hpp>
 
 namespace yume::server {
 
@@ -175,9 +179,30 @@ void Manager::start() {
         throw std::runtime_error(
             "the same public key is present in auth_keys and operator_keys");
     }
+    std::shared_ptr<const std::vector<crypto::Bytes>> loaded_admin_keys;
+    try {
+        loaded_admin_keys = std::make_shared<const std::vector<crypto::Bytes>>(
+            cfg_.admin_keys.empty()
+                ? std::vector<crypto::Bytes>{}
+                : load_admin_keys(cfg_.admin_keys));
+    } catch (const std::exception& ex) {
+        throw std::runtime_error(std::string("admin_keys load failed: ") +
+                                 ex.what());
+    }
+    // An identity in both stores would satisfy "two distinct keys" using two
+    // credentials the same person already holds for ordinary access, which is
+    // not the separation the requirement asks for. Refuse at startup rather
+    // than discovering it per-session.
+    if (key_sets_overlap(*loaded_keys, *loaded_admin_keys) ||
+        key_sets_overlap(*loaded_operator_keys, *loaded_admin_keys)) {
+        throw std::runtime_error(
+            "the same public key is present in a visitor store and admin_keys; "
+            "the admin list must be disjoint from auth_keys and operator_keys");
+    }
     {
         std::lock_guard<std::mutex> lock(auth_keys_mutex_);
         authorized_keys_ = loaded_keys;
+        admin_keys_ = loaded_admin_keys;
         auth_policies_ = loaded_policies;
         operator_keys_ = loaded_operator_keys;
         operator_policies_ = loaded_operator_policies;
@@ -832,7 +857,8 @@ std::shared_ptr<runtime::ServiceStream> Manager::accept_service_stream(
 
 Manager::AuthStateSnapshot Manager::auth_state_snapshot() const {
     std::lock_guard<std::mutex> lock(auth_keys_mutex_);
-    return {authorized_keys_, auth_policies_, operator_keys_, operator_policies_};
+    return {authorized_keys_, auth_policies_, operator_keys_, operator_policies_,
+            admin_keys_};
 }
 
 void Manager::do_accept() {
@@ -878,6 +904,7 @@ void Manager::do_accept() {
                                                          auth_state.policies,
                                                          auth_state.operator_keys,
                                                          auth_state.operator_policies,
+                                                         auth_state.admin_keys,
                                                          kdf_admission_,
                                                          admission_replay_cache_,
                                                          session_id, this);
@@ -922,12 +949,14 @@ bool Manager::reload_auth(std::string* error) {
     std::string auth_keys_meta_path;
     std::string operator_keys_path;
     std::string operator_keys_meta_path;
+    std::string admin_keys_path;
     {
         std::lock_guard<std::mutex> lock(cfg_mutex_);
         auth_keys_path = cfg_.auth_keys;
         auth_keys_meta_path = cfg_.auth_keys_meta;
         operator_keys_path = cfg_.operator_keys;
         operator_keys_meta_path = cfg_.operator_keys_meta;
+        admin_keys_path = cfg_.admin_keys;
     }
     if (auth_keys_path.empty()) {
         if (error) *error = "auth_keys must be set";
@@ -938,6 +967,7 @@ bool Manager::reload_auth(std::string* error) {
     std::shared_ptr<const AuthKeyPolicyMap> loaded_policies;
     std::shared_ptr<const std::vector<crypto::Bytes>> loaded_operator_keys;
     std::shared_ptr<const AuthKeyPolicyMap> loaded_operator_policies;
+    std::shared_ptr<const std::vector<crypto::Bytes>> loaded_admin_keys;
     try {
         loaded_keys = std::make_shared<const std::vector<crypto::Bytes>>(
             load_authorized_keys(auth_keys_path));
@@ -977,6 +1007,27 @@ bool Manager::reload_auth(std::string* error) {
         }
         return false;
     }
+    try {
+        loaded_admin_keys = std::make_shared<const std::vector<crypto::Bytes>>(
+            admin_keys_path.empty()
+                ? std::vector<crypto::Bytes>{}
+                : load_admin_keys(admin_keys_path));
+    } catch (const std::exception& ex) {
+        if (error) {
+            *error = std::string("admin_keys reload failed: ") + ex.what();
+        }
+        return false;
+    }
+    if (key_sets_overlap(*loaded_keys, *loaded_admin_keys) ||
+        key_sets_overlap(*loaded_operator_keys, *loaded_admin_keys)) {
+        if (error) {
+            *error =
+                "the same public key is present in a visitor store and "
+                "admin_keys; the admin list must be disjoint from auth_keys "
+                "and operator_keys";
+        }
+        return false;
+    }
 
     {
         std::lock_guard<std::mutex> lock(auth_keys_mutex_);
@@ -984,6 +1035,7 @@ bool Manager::reload_auth(std::string* error) {
         auth_policies_ = loaded_policies;
         operator_keys_ = loaded_operator_keys;
         operator_policies_ = loaded_operator_policies;
+        admin_keys_ = loaded_admin_keys;
     }
 
     util::log_info("reloaded " + std::to_string(loaded_keys->size()) +
@@ -991,7 +1043,9 @@ bool Manager::reload_auth(std::string* error) {
                    std::to_string(loaded_policies->size()) +
                    " regular policy entries and " +
                    std::to_string(loaded_operator_keys->size()) +
-                   " operator key(s)");
+                   " operator key(s) and " +
+                   std::to_string(loaded_admin_keys->size()) +
+                   " admin key(s)");
     if (error) error->clear();
     return true;
 }

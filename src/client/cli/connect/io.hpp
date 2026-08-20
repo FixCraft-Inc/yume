@@ -5,9 +5,8 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * CLI low-level async-I/O-with-timeout helpers and wire-inspection
- * diagnostics, extracted verbatim from client/cli/entry.cpp. Several of these
- * are function templates or small inline helpers, so the cluster is
+ * CLI low-level async-I/O-with-timeout helpers and wire-inspection diagnostics.
+ * Several are function templates or small inline helpers, so the cluster is
  * header-resident. Included by CLI connection/auth code.
  */
 
@@ -23,6 +22,7 @@
 #include <boost/asio/ssl.hpp>
 
 #include "core/protocol/protocol.hpp"
+#include "core/stealth/cover_profile.hpp"
 #include "client/transport/socket_protection.hpp"
 
 namespace yume::client {
@@ -230,6 +230,22 @@ inline IoOpResult handshake_with_timeout(boost::asio::ssl::stream<boost::asio::i
 
     io.restart();
     io.run();
+
+    // The cover profile offers a browser-shaped version range, which for a
+    // Chrome-like ClientHello means advertising TLS 1.2 as well as 1.3. Accept
+    // only the version the profile says the handshake must end on, so shaping
+    // the offer never becomes a downgrade on the carrier. Fail closed.
+    if (!res.ec && !res.timed_out) {
+        const std::uint16_t required =
+            yume::cover_profile::active().tls_required_version;
+        if (required != 0 &&
+            SSL_version(stream.native_handle()) != static_cast<int>(required)) {
+            boost::system::error_code ignored;
+            stream.lowest_layer().close(ignored);
+            res.ec = boost::system::errc::make_error_code(
+                boost::system::errc::protocol_not_supported);
+        }
+    }
     return res;
 }
 

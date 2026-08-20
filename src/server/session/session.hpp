@@ -69,6 +69,7 @@ public:
             std::shared_ptr<const AuthKeyPolicyMap> auth_policies,
             std::shared_ptr<const std::vector<crypto::Bytes>> operator_keys,
             std::shared_ptr<const AuthKeyPolicyMap> operator_policies,
+            std::shared_ptr<const std::vector<crypto::Bytes>> admin_keys,
             std::shared_ptr<KdfAdmissionController> kdf_admission,
             std::shared_ptr<obfs::AdmissionReplayCache> admission_replay_cache,
             uint64_t session_id,
@@ -142,7 +143,9 @@ private:
     // so an active probe or TLS-terminating inspector gets a valid HTTP
     // response rather than the TLS-handshake-followed-by-immediate-close
     // fingerprint that the pre-1.0 path used to leak. Profile comes from
-    // cfg_.http_profile (defaults to "yumed" for back-compat, overridden
+    // cfg_.http_profile (defaults to "nginx"; a self-identifying default
+    // would announce the server to any probe, so the safe profile is the
+    // default rather than something --public-node has to opt into), overridden
     // by --hide-in-the-crowd <name> or --public-node which forces nginx).
     // Always closes after the write: the profile template owns its own
     // Connection header, so a 404 ends the (possibly keep-alive) connection
@@ -307,6 +310,13 @@ private:
     std::shared_ptr<const AuthKeyPolicyMap> auth_policies_;
     std::shared_ptr<const std::vector<crypto::Bytes>> operator_keys_;
     std::shared_ptr<const AuthKeyPolicyMap> operator_policies_;
+    // The separate admin store. Deliberately not merged with authorized_keys_:
+    // a key being in one list must never imply membership of the other.
+    std::shared_ptr<const std::vector<crypto::Bytes>> admin_keys_;
+    // Set only by a verified second factor in verify_auth_response(). Nothing
+    // else may write it, and no policy flag can produce it.
+    bool admin_authenticated_{false};
+    std::string admin_fingerprint_;
     std::shared_ptr<KdfAdmissionController> kdf_admission_;
     std::shared_ptr<obfs::AdmissionReplayCache> admission_replay_cache_;
     uint64_t session_id_{0};

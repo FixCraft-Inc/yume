@@ -234,7 +234,7 @@ function(yume_apply_perf_opts target)
                 $<$<CONFIG:MinSizeRel>:/fp:fast>
             )
         endif()
-        if(YUME_LTO)
+        if(YUME_LTO AND NOT _yume_shared_abi_input)
             target_compile_options(${target} PRIVATE
                 $<$<CONFIG:Release>:/GL>
                 $<$<CONFIG:RelWithDebInfo>:/GL>
@@ -254,10 +254,74 @@ function(yume_apply_dev_diagnostics target visibility)
         YUME_ENABLE_DEV_DIAGNOSTICS=${YUME_DEV_DIAGNOSTICS_EXPRESSION})
 endfunction()
 
+# Optional developer-only precompiled header. Measured on this tree with GCC:
+# <boost/asio.hpp> costs about 1.8 s and <nlohmann/json.hpp> about 1.0 s of
+# front-end time *per translation unit*, and roughly 90 TUs pull one or both.
+# Only third-party headers are listed. CMake builds a separate PCH for each
+# target using that target's compile definitions; no YUME header is frozen into
+# the developer cache.
+#
+# PRIVATE on purpose: a PCH must never leak into consumers. Never enabled in
+# CI, release, sanitizer, or shared-ABI lanes (see YUME_PCH in the root file).
+function(yume_apply_pch target)
+    if(NOT YUME_PCH)
+        return()
+    endif()
+    target_precompile_headers(${target} PRIVATE
+        <boost/asio.hpp>
+        <boost/asio/ssl.hpp>
+        <nlohmann/json.hpp>
+    )
+endfunction()
+
 if(YUME_STATIC AND YUME_USE_SPDLOG AND NOT YUME_SPDLOG_TARGET STREQUAL "spdlog::spdlog_header_only")
     message(WARNING "Static link requested but only compiled spdlog was found; disabling spdlog.")
     set(YUME_USE_SPDLOG OFF CACHE BOOL "Disable spdlog for static builds" FORCE)
 endif()
+
+# ----------------------------------------------------------------------
+# Shared protocol/security core
+# ----------------------------------------------------------------------
+# These eight sources are needed by both the full yume_core and the reduced
+# yume_transport_core (the mobile/ABI slice). They used to be listed in both
+# targets, so every full build compiled them twice and both archives defined
+# the same symbols - harmless for ordinary static resolution, but a real
+# duplicate-symbol hazard on the --whole-archive shared-ABI path, where
+# yume_server and yume_client_lib link *both* libraries.
+#
+# They depend only on BaseFWX (plus advapi32 on Windows for the protected-file
+# DACL). Deliberately no OpenSSL/Boost/nlohmann/spdlog here: keeping the link
+# interface this narrow is what lets the transport-only slice stay small.
+add_library(yume_secure_core STATIC
+    core/security/inner_crypto.cpp
+    core/security/auth_v2.cpp
+    core/security/ratchet.cpp
+    core/security/session_ratchet.cpp
+    core/security/secret_file.cpp
+    core/protocol/protocol.cpp
+    core/protocol/packet_bulk.cpp
+    core/runtime/system_profile.cpp
+)
+
+target_include_directories(yume_secure_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+yume_apply_dev_diagnostics(yume_secure_core PUBLIC)
+
+if(TARGET basefwxcpp)
+    target_link_libraries(yume_secure_core PUBLIC basefwxcpp)
+    target_compile_definitions(yume_secure_core PUBLIC YUME_USE_BASEFWX=1)
+else()
+    target_compile_definitions(yume_secure_core PUBLIC YUME_USE_BASEFWX=0)
+endif()
+if(WIN32)
+    # ConvertStringSecurityDescriptorToSecurityDescriptorW, used by
+    # secret_file.cpp to install its protected DACL at creation time.
+    target_link_libraries(yume_secure_core PUBLIC advapi32)
+endif()
+yume_link_atomic_if_needed(yume_secure_core PUBLIC)
+if(YUME_BUILD_SHARED_ABI)
+    yume_prepare_static_for_shared_abi(yume_secure_core)
+endif()
+yume_apply_perf_opts(yume_secure_core)
 
 if(NOT YUME_TRANSPORT_CORE_ONLY)
     set(YUME_GITHUB_CLIENT_SOURCE core/release/github_client.cpp)
@@ -291,7 +355,6 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         core/release/version_status.cpp
         core/protocol/control_protocol.cpp
         core/security/crypto.cpp
-        core/security/auth_v2.cpp
         core/security/channel_binding.cpp
         core/stealth/cover_profile.cpp
         core/stealth/http_profile.cpp
@@ -299,15 +362,8 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         core/stealth/h2_wire_profile.cpp
         core/stealth/outer_carrier_observer.cpp
         core/security/identity.cpp
-        core/security/inner_crypto.cpp
-        core/security/ratchet.cpp
-        core/security/session_ratchet.cpp
-        core/security/secret_file.cpp
         core/runtime/local_runtime.cpp
         core/runtime/service_stream.cpp
-        core/runtime/system_profile.cpp
-        core/protocol/packet_bulk.cpp
-        core/protocol/protocol.cpp
         core/stealth/obfs.cpp
         core/stealth/obfs_h2.cpp
         core/stealth/obfs_signal.cpp
@@ -324,6 +380,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
 
     target_link_libraries(yume_core
         PUBLIC
+            yume_secure_core
             OpenSSL::SSL
             OpenSSL::Crypto
             Threads::Threads
@@ -432,6 +489,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     endif()
 
     yume_apply_perf_opts(yume_core)
+    yume_apply_pch(yume_core)
 
 endif()
 
@@ -442,20 +500,13 @@ add_library(yume_transport_core
     client/transport/write.cpp
     client/transport/dispatch.cpp
     client/transport/crypto.cpp
-    core/runtime/system_profile.cpp
-    core/security/inner_crypto.cpp
-    core/security/auth_v2.cpp
-    core/security/ratchet.cpp
-    core/security/session_ratchet.cpp
-    core/security/secret_file.cpp
-    core/protocol/packet_bulk.cpp
-    core/protocol/protocol.cpp
 )
 
 target_include_directories(yume_transport_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 yume_apply_dev_diagnostics(yume_transport_core PUBLIC)
 target_link_libraries(yume_transport_core
     PUBLIC
+        yume_secure_core
         nlohmann_json::nlohmann_json
 )
 if(YUME_USE_SPDLOG)
@@ -471,15 +522,17 @@ else()
     target_compile_definitions(yume_transport_core PUBLIC YUME_USE_BASEFWX=0)
 endif()
 if(WIN32)
-    # ConvertStringSecurityDescriptorToSecurityDescriptorW is used by the
-    # shared private-file writer to install its protected DACL at creation.
+    # The protected private-file writer that needs advapi32 now lives in
+    # yume_secure_core, which links it PUBLIC. Kept here so the transport-only
+    # slice keeps an explicit, self-describing Windows link line.
     target_link_libraries(yume_transport_core PUBLIC advapi32)
 endif()
 yume_link_atomic_if_needed(yume_transport_core PUBLIC)
-yume_apply_perf_opts(yume_transport_core)
 if(YUME_BUILD_SHARED_ABI)
     yume_prepare_static_for_shared_abi(yume_transport_core)
 endif()
+yume_apply_perf_opts(yume_transport_core)
+yume_apply_pch(yume_transport_core)
 
 if(NOT YUME_TRANSPORT_CORE_ONLY)
     # ------------------------------------------------------------------
@@ -532,6 +585,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         yume_prepare_static_for_shared_abi(yume_server)
     endif()
     yume_apply_perf_opts(yume_server)
+    yume_apply_pch(yume_server)
     if(WIN32)
         target_link_libraries(yume_server PUBLIC ws2_32 mswsock)
         target_compile_definitions(yume_server PUBLIC
@@ -627,6 +681,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         yume_prepare_static_for_shared_abi(yume_client_lib)
     endif()
     yume_apply_perf_opts(yume_client_lib)
+    yume_apply_pch(yume_client_lib)
     if(WIN32)
         target_link_libraries(yume_client_lib PUBLIC ws2_32 mswsock)
         target_compile_definitions(yume_client_lib PUBLIC
@@ -970,6 +1025,32 @@ add_executable(yume_secure_materials_test
 target_link_libraries(yume_secure_materials_test PRIVATE yume_facade)
 yume_apply_perf_opts(yume_secure_materials_test)
 add_test(NAME yume_secure_materials_test COMMAND yume_secure_materials_test)
+
+add_executable(yume_composite_signature_test
+    core/security/composite_signature_test.cpp
+)
+target_link_libraries(yume_composite_signature_test PRIVATE yume_core)
+yume_apply_perf_opts(yume_composite_signature_test)
+add_test(NAME yume_composite_signature_test COMMAND yume_composite_signature_test)
+
+add_executable(yume_dual_key_auth_test
+    server/auth/dual_key_auth_test.cpp
+)
+target_link_libraries(yume_dual_key_auth_test PRIVATE yume_server)
+yume_apply_perf_opts(yume_dual_key_auth_test)
+add_test(NAME yume_dual_key_auth_test COMMAND yume_dual_key_auth_test)
+
+add_executable(yume_server_config_io_test
+    server/cli/config_load_test.cpp
+    server/cli/args.cpp
+    server/cli/cluster.cpp
+    server/cli/config_load.cpp
+    server/cli/help.cpp
+    server/cli/misc.cpp
+)
+target_link_libraries(yume_server_config_io_test PRIVATE yume_facade)
+yume_apply_perf_opts(yume_server_config_io_test)
+add_test(NAME yume_server_config_io_test COMMAND yume_server_config_io_test)
 
 add_executable(yume_transport_core_test
     client/transport/core_test.cpp
@@ -1417,6 +1498,19 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_yume_tls_wire.py"
     )
+    # Compares the ClientHello the production backend actually emits against the
+    # committed browser capture, rather than comparing config to config.
+    add_executable(yume_tls_clienthello_dump core/stealth/clienthello_dump.cpp)
+    target_link_libraries(yume_tls_clienthello_dump PRIVATE yume_core)
+    yume_link_atomic_if_needed(yume_tls_clienthello_dump PRIVATE)
+    yume_apply_perf_opts(yume_tls_clienthello_dump)
+    add_test(NAME yume_native_tls_wire_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_yume_native_tls_wire.py"
+    )
+    set_tests_properties(yume_native_tls_wire_test PROPERTIES
+        ENVIRONMENT
+            "YUME_CLIENTHELLO_DUMP=$<TARGET_FILE:yume_tls_clienthello_dump>")
     add_test(NAME yume_tls_wire_profile_check
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/scripts/yume_tls_wire.py"

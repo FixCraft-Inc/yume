@@ -3,9 +3,7 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * ----------------------------------------------------------------
- * Session upstream-stream I/O and the client-facing write path,
- * extracted verbatim from session.cpp:
+ * Session upstream-stream I/O and the client-facing write path:
  *   - upstream TCP read/write  (start/on_remote_read, *_remote_write,
  *                               shutdown/finish helpers)
  *   - upstream UDP read/write  (start/on_udp_read, *_udp_write)
@@ -13,10 +11,7 @@
  *   - frame write path         (async_write_frame, queue_frame_on_strand,
  *                               queue_encoded_write_on_strand, do_write,
  *                               inbound-read pause/resume backpressure)
- *
- * Same Session:: class, same wire output, no behavior change. Shared
- * helpers via server/session/internal.hpp.
- * ---------------------------------------------------------------- */
+ */
 
 #include "server/session/session.hpp"
 #include "server/runtime/manager.hpp"

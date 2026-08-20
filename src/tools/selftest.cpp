@@ -65,8 +65,8 @@ const std::vector<Config>& builtin_configs() {
             "yume-v2",
             "Mandatory YUME 2.0 H2/WebSocket carrier and hybrid ratchet.",
             false,
-            {"--obfs"},
-            {"--obfs", "--profile", "chrome"},
+            {},
+            {"--profile", "chrome"},
         },
     };
     return configs;
@@ -205,7 +205,7 @@ Args parse_args(int argc, char** argv) {
         } else if (arg == "--cooldown-ms") {
             args.cooldown_ms = std::max(0, std::stoi(require_value(i, arg)));
             args.cooldown_ms_override = true;
-        } else if (arg == "--repeat" || arg == "--repeats") {
+        } else if (arg == "--repeat") {
             args.repeats = std::max(1, std::stoi(require_value(i, arg)));
             args.repeat_count_override = true;
         } else if (arg == "--one-way") {
@@ -219,7 +219,7 @@ Args parse_args(int argc, char** argv) {
             args.dev_style = true;
         } else if (arg == "--no-color" || arg == "--no-colour") {
             args.color = false;
-        } else if (arg == "--color" || arg == "--colour") {
+        } else if (arg == "--color") {
             args.color = true;
         } else if (arg == "--keep-workdir") {
             args.keep_workdir = true;

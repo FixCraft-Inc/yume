@@ -67,6 +67,12 @@ struct Challenge {
     std::string transport_profile;
 };
 
+// Composite signature width: Ed25519 (64) followed by ML-DSA-87 (4627). The
+// constant is duplicated here rather than included from crypto.hpp on purpose --
+// this translation unit deliberately keeps OpenSSL out (see the note on
+// kChannelBindingLen above). The composite test pins the two against each other.
+inline constexpr std::size_t kCompositeSignatureLen = 64 + 4627;
+
 struct Response {
     Bytes encoded;
     Bytes x25519_public_key;
@@ -76,6 +82,16 @@ struct Response {
     ratchet::RatchetPolicy ratchet_policy{};
     std::string transport_profile;
     Bytes signature;
+    // Second factor. Empty for a visitor session. Both must be present or both
+    // absent -- a response carrying one without the other is rejected, so a
+    // half-supplied admin claim can never be read as a valid visitor response
+    // that happens to have extra data attached.
+    Bytes admin_identity;
+    Bytes admin_signature;
+
+    bool claims_admin() const {
+        return !admin_identity.empty() && !admin_signature.empty();
+    }
 };
 
 struct RekeyInit {
@@ -109,7 +125,9 @@ Bytes BuildResponse(const Bytes& x25519_public_key,
                     const Bytes& identity,
                     std::uint16_t rekey_window,
                     const ratchet::RatchetPolicy& ratchet_policy,
-                    const Bytes& signature);
+                    const Bytes& signature,
+                    const Bytes& admin_identity = {},
+                    const Bytes& admin_signature = {});
 Response ParseResponse(const Bytes& encoded);
 // `channel_binding` is the 32-byte TLS 1.3 exporter each endpoint computes
 // from its own live `SSL*` (see `core/security/channel_binding.hpp`). It is
@@ -121,6 +139,20 @@ Response ParseResponse(const Bytes& encoded);
 Bytes BuildSignatureInput(const Bytes& challenge_record,
                           const Bytes& unsigned_response_record,
                           const Bytes& channel_binding);
+
+// Input for the admin second factor. Same transcript as the visitor signature,
+// under a *different* domain string, and additionally bound to the visitor
+// identity that presented it.
+//
+// The domain separation is what stops a captured visitor signature being
+// replayed into the admin field. The visitor-identity binding is what stops a
+// captured admin signature being lifted off one session and attached to a
+// different visitor's response: an admin proof is only ever valid for the
+// specific visitor key it was issued alongside.
+Bytes BuildAdminSignatureInput(const Bytes& challenge_record,
+                               const Bytes& unsigned_response_record,
+                               const Bytes& channel_binding,
+                               const Bytes& visitor_identity);
 
 Bytes BuildAuthOk(const Bytes& server_info);
 Bytes ParseAuthOk(const Bytes& encoded);

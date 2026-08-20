@@ -215,19 +215,6 @@ const std::unordered_map<std::string, ServerProfile>& server_registry() {
             "", "",
         };
 
-        // Legacy default: short response that says yumed. Not for
-        // stealth; kept for back-compat with operators who explicitly
-        // opt out of disguise.
-        m["yumed"] = ServerProfile{
-            "yumed",
-            "Server: yumed\r\n"
-            "Content-Length: 0\r\n"
-            "Connection: close\r\n"
-            "\r\n",
-            "",
-            "yumed", "",
-        };
-
         return m;
     }();
     return kRegistry;
@@ -360,13 +347,6 @@ std::vector<std::string> server_names() {
     return out;
 }
 
-std::vector<std::string> client_names() {
-    std::vector<std::string> out;
-    for (const auto& [k, _] : client_registry()) out.push_back(k);
-    std::sort(out.begin(), out.end());
-    return out;
-}
-
 std::vector<std::string> transport_client_names() {
     std::vector<std::string> out;
     for (const auto& [name, profile] : client_registry()) {
@@ -399,7 +379,7 @@ bool transport_client_supported(std::string_view name) {
     return transport_client(name).has_value();
 }
 
-void set_active_client_ua(std::string ua) {
+void require_pinned_client_ua(std::string_view ua) {
     const auto expected =
         cover_profile::active().user_agent;
     if (ua != expected) {

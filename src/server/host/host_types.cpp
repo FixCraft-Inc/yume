@@ -110,7 +110,7 @@ bool split_host_port(std::string_view rest, std::string* host, int* port, std::s
 
 std::optional<HostMode> parse_host_mode(const std::string& text) {
     const std::string v = lower_copy(text);
-    if (v.empty() || v == "off" || v == "none" || v == "legacy") {
+    if (v.empty() || v == "off" || v == "none") {
         return HostMode::Off;
     }
     if (v == "private" || v == "host") {

@@ -3,8 +3,7 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * CLI help / version / credits / bash-completion output, extracted
- * verbatim from client/cli/entry.cpp. No behavior change.
+ * CLI help, version, credits, and bash-completion output.
  */
 
 #include "client/cli/display/help.hpp"
@@ -23,8 +22,8 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --credits --config --server --cluster --hide-in-the-crowd --port --auth -i --socks --packet-tun --codec --codec-listen --monero-rpc --monero-rpc-listen --quick-bench --quickbench --full-bench --fullbench --localbench --bench --bench-full --endpoint-fullbench --bench-mib --bench-chunk-kib --bench-streams --bench-direction --outer-carrier-evidence --duration-sec --latency-iters --bulk-mib --streams --cooldown-ms --repeat --configs --one-way --json --json-stdout --dev --color --no-color --keep-workdir --list-configs --threads --tunnels --rekey-window --obfs --obfs-secret-file --inner-psk-file export import --lport --rhost --rport --udp --tcp --allow-local-ip --server-in-charge --server-in-charge-port --server-in-charge-min-port --server-in-charge-max-port --allow-exec --exec --control --id --list-controlled --operator-ca-cert --anonym-ca-cert --tls-ca --tls-name --tls-server-name --tls-pin --transport-profile --tls-backend --tls-helper --profile --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-verify --tls-fingerprint-test-endpoint --self-dpi --no-self-dpi --run -c --cmd --run-ipv4 --proxycmd --dest --dport --require-operator-identity --require-anonym --anonym -L -R --boring --non-interactive --live-status --timing --accept-monitoring --service-streams-only --save-server --completion --name --client-id --relay-mode --allow-inbound-admin --deny-inbound-admin --allow-outbound-admin --deny-outbound-admin --allow-chat --deny-chat --allow-file --deny-file --allow-bytes --deny-bytes --history-dir --no-history --relay-key-file --instance --attach-local --directory --chat --send-file --send-bytes --admin-attach --server-attach --root"
-  local file_opts="--config --auth -i --obfs-secret-file --inner-psk-file --operator-ca-cert --anonym-ca-cert --tls-ca --tls-helper --tls-fingerprint-log-path --relay-key-file --outer-carrier-evidence"
+  local opts="-h -i export import -c -L -R --accept-monitoring --accept-server-control --accept-server-control-max-port --accept-server-control-min-port --admin-attach --admin-auth --allow-bytes --allow-chat --allow-exec --allow-file --allow-inbound-admin --allow-local-ip --allow-outbound-admin --attach-local --auth --bench --bench-chunk-kib --bench-direction --bench-full --bench-mib --bench-streams --boring --bulk-mib --chat --client-id --client-threads --cluster --codec --codec-listen --color --completion --config --configs --control --cooldown-ms --credits --deny-bytes --deny-chat --deny-file --deny-inbound-admin --deny-outbound-admin --dest --dev --directory --dport --duration-sec --exec --full-bench --help --hide-in-the-crowd --history-dir --id --inner-psk-file --instance --json --json-stdout --keep-workdir --latency-iters --list-configs --list-controlled --live-status --lport --monero-rpc --monero-rpc-listen --name --no-color --no-history --no-proxy --no-self-dpi --non-interactive --obfs-secret-file --one-way --operator-ca-cert --outer-carrier-evidence --packet-tun --password-stdin --port --profile --proxy --proxycmd --quick-bench --rekey-window --relay-key-file --relay-mode --repeat --require-operator-identity --rhost --root --rport --run --run-ipv4 --save-server --self-dpi --send-bytes --send-file --server --server-threads --service-streams-only --socks --streams --tcp --threads --timing --tls-backend --tls-ca --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-test-endpoint --tls-fingerprint-verify --tls-helper --tls-name --tls-pin --tor --transport-profile --tunnels --udp --version"
+  local file_opts="--config --auth -i --admin-auth --obfs-secret-file --inner-psk-file --operator-ca-cert --tls-ca --tls-helper --tls-fingerprint-log-path --relay-key-file --outer-carrier-evidence"
   case "$prev" in
     --completion)
       COMPREPLY=( $(compgen -W "bash" -- "$cur") )
@@ -97,7 +96,10 @@ void print_help() {
         << "                           Explicit spelling for the pinned Chrome 151\n"
         << "                             HTTP profile; other profiles are rejected.\n"
         << "  --config <path>          Config file\n"
-        << "  -i, --auth <path>        Identity key\n\n"
+        << "  -i, --auth <path>        Identity key (composite Ed25519+ML-DSA-87)\n"
+        << "      --admin-auth <path>    Second key for an admin session. Must differ from\n"
+        << "                             --auth and be enrolled in the server admin store.\n"
+        << "                             Presenting it is the claim; there is no admin flag.\n\n"
         << "Modes:\n"
         << "  --socks [addr:]port      Start a SOCKS5 proxy\n"
         << "                             Example: --socks 127.0.0.1:1080\n"
@@ -181,7 +183,6 @@ void print_help() {
         << "  --boring                 Minimal output\n"
         << "  --                        Service-safe launch\n\n"
         << "Security:\n"
-        << "  --obfs                   Use the mandatory HTTP/2 carrier (default)\n"
         << "  --obfs-secret-file <p>  32-byte admission secret as exactly 64\n"
         << "                             lowercase hex characters in a protected file\n"
         << "  --inner-psk-file <p>    Mandatory 32-byte inner PSK in the same format\n"
@@ -190,10 +191,8 @@ void print_help() {
         << "  limits; see docs/SECURITY_MODES.md. There is no 1.x downgrade.\n"
         << "  --require-operator-identity\n"
         << "                           Require proof authorized by the selected operator CA\n"
-        << "                             (legacy aliases: --require-anonym, --anonym)\n"
         << "  --operator-ca-cert <path>\n"
         << "                           Operator CA certificate used to verify the host\n"
-        << "                             (legacy alias: --anonym-ca-cert)\n"
         << "  This proof identifies the CA-authorized operator; it cannot prove that\n"
         << "  the operator does not inspect or log traffic.\n"
         << "  --tls-ca <path>          TLS CA certificate\n"

@@ -3,8 +3,7 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * yumed help / version / credits / bash-completion output, extracted
- * verbatim from main_server.cpp. No behavior change.
+ * yumed help, version, credits, and bash-completion output.
  */
 
 #include "server/cli/help.hpp"
@@ -22,14 +21,14 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--help -h --version --credits --config --listen --cert --tls_cert --key --tls_key --auth-keys --auth-keys-meta --operator-keys --operator-keys-meta --threads --reverse-port-min --reverse-port-max --dns-server --proxy --obfs --obfs-secret-file --inner-psk-file --real-backend --tls-handshake-timeout-ms --max-sessions --bulk-key-max-sessions --rekey-window --accept-rate-limit --egress-mbps --robots-deny --filter-list --filter-geolite --filter-memory-mib --client-filter-mode --egress-filter-mode --packet-egress --packet-tun-name --packet-cidr --packet-mtu --bench --fullbench --full-bench --allow-exec --allow-local-ip --control-full --codec-allow --allow-codec --allow-monero-rpc --service-allow --monero-rpc-backend --operator-identity --operator-proof-mode --operator-ca-key --operator-ca-cert --operator-delegated-key --operator-delegated-cert --anonym --anonym-proof-mode --anonym-api --anonym-token --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --server-name --server-id --relay-enable --relay-disable --directory-enable --directory-disable --federation-enable --federation-auth-key --federation-anonym-ca --peer --cluster-join --cluster-bootstrap --public-node --attach-local --keys-list --keys-add --keys-remove --keys-alias --keys-gen --keys-gen-add --ui --boring --timing --completion --root"
-  local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --auth-keys-meta --operator-keys --operator-keys-meta --obfs-secret-file --inner-psk-file --filter-geolite --operator-ca-key --operator-ca-cert --operator-delegated-key --operator-delegated-cert --anonym-ca-key --anonym-ca-cert --anonym-sub-key --anonym-sub-cert --federation-auth-key --federation-anonym-ca --keys-add --keys-gen"
+  local opts="-h --accept-rate-limit --accept-yume-clients --admin-keys --allow-exec --allow-local-ip --allow-monero-rpc --attach-local --auth-keys --auth-keys-meta --bench --boring --bulk-key-max-sessions --cert --client-deny-action --client-filter-mode --cluster-bootstrap --cluster-join --codec-allow --completion --config --control-full --credits --directory-disable --directory-enable --dns-server --egress-filter-mode --egress-mbps --exposure-check --federation-auth-key --federation-enable --federation-operator-ca --filter-geolite --filter-list --filter-memory-mib --help --hide-in-the-crowd --host-mode --inner-psk-file --inner-required --key --keys-add --keys-admin --keys-alias --keys-gen --keys-gen-add --keys-list --keys-remove --listen --max-sessions --monero-rpc-backend --no-yume-clients --obfs-secret-file --operator-ca-cert --operator-ca-key --operator-delegated-cert --operator-delegated-key --operator-identity --operator-keys --operator-keys-meta --operator-proof-api --operator-proof-mode --operator-proof-token --packet-cidr --packet-egress --packet-mtu --packet-tun-name --peer --proxy --public-node --real --real-backend --real-index --real-root --real-secret --real-secret-file --rekey-window --relay-disable --relay-enable --reverse-port-max --reverse-port-min --robots-deny --root --server-id --server-name --service-allow --threads --timing --tls-handshake-timeout-ms --tls_cert --tls_key --ui --upstream-response --upstream-response-dir --upstream-response-ttl --version"
+  local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --auth-keys-meta --admin-keys --operator-keys --operator-keys-meta --obfs-secret-file --inner-psk-file --filter-geolite --operator-ca-key --operator-ca-cert --operator-delegated-key --operator-delegated-cert --federation-auth-key --federation-operator-ca --keys-add --keys-gen"
   case "$prev" in
     --completion)
       COMPREPLY=( $(compgen -W "bash" -- "$cur") )
       return 0
       ;;
-    --codec-allow|--allow-codec)
+    --codec-allow)
       COMPREPLY=( $(compgen -W "monero-rpc" -- "$cur") )
       return 0
       ;;
@@ -93,7 +92,7 @@ void print_help() {
         << "  --key <path>             TLS private key\n"
         << "  --auth-keys <path>       Override auth_keys\n"
         << "  --auth-keys-meta <path>  Override per-key permissions JSON\n"
-        << "  --operator-keys <path>   Separate Ed25519 operator public keys\n"
+        << "  --operator-keys <path>   Separate composite operator identities\n"
         << "  --operator-keys-meta <p> Operator-key permissions JSON\n"
         << "  --threads <n>            Worker thread count (0 = auto)\n"
         << "  --reverse-port-min <p>   Reverse listen minimum (default "
@@ -102,7 +101,6 @@ void print_help() {
         << yume::policy::kReversePortMaxDefault << ")\n"
         << "  --dns-server <ip>        Direct DNS resolver for outbound opens\n"
         << "  --proxy <socks5://...>   Route server outbound TCP through SOCKS5\n"
-        << "  --obfs                   Use the mandatory HTTP/2 carrier (default)\n"
         << "  --obfs-secret-file <p>  32-byte admission secret as exactly 64\n"
         << "                             lowercase hex characters in a protected file\n"
         << "  --inner-psk-file <p>    Mandatory 32-byte inner PSK in the same format\n"
@@ -152,14 +150,11 @@ void print_help() {
         << "                           Optional host setup: review yume-packet-quick up --help.\n"
         << "  --bench                 Enable authenticated built-in up/down\n"
         << "                             benchmark streams for yume --bench.\n"
-        << "  --full-bench            Alias for --bench on yumed. Client-side\n"
-        << "                             yume --full-bench benchmarks local YUME 2.0.\n"
         << "  --allow-local-ip         Allow private/loopback destinations\n"
         << "  --control-full           Allow full server-side network control\n"
         << "  --codec-allow <name>     Enable a built-in/plugin application codec\n"
         << "                             (first built-in: monero-rpc; also requires\n"
         << "                             per-key allow_codecs or allow_monero_rpc).\n"
-        << "  --allow-codec <name>     Compatibility alias for --codec-allow\n"
         << "  --allow-monero-rpc       Alias for --codec-allow monero-rpc\n"
         << "  --service-allow <name>   Enable a native ABI named service stream\n"
         << "                             (also requires per-key allow_services\n"
@@ -189,10 +184,9 @@ void print_help() {
         << "  --real-secret-file <path> Load or create secret file\n"
         << "  --operator-identity      Publish an operator identity proof and enable\n"
         << "                             privacy-minimizing server behavior\n"
-        << "                             (legacy alias: --anonym)\n"
         << "  --operator-proof-mode <m> auto, local, or fixcraft\n"
-        << "  --anonym-api <url>       Legacy external proof API URL\n"
-        << "  --anonym-token <str>     Legacy external proof API token\n"
+        << "  --operator-proof-api <url> External proof API URL (fixcraft mode)\n"
+        << "  --operator-proof-token <str> External proof API token\n"
         << "  --operator-ca-key <path> Operator CA private key\n"
         << "  --operator-ca-cert <path> Operator CA certificate\n"
         << "  --operator-delegated-key <path> Delegated server identity key\n"
@@ -209,7 +203,7 @@ void print_help() {
         << "  --directory-disable      Disable endpoint directory\n"
         << "  --federation-enable      Enable static federation mode\n"
         << "  --federation-auth-key <path> Ed25519 key used for peer AUTH\n"
-        << "  --federation-anonym-ca <path> CA used to verify peer servers\n"
+        << "  --federation-operator-ca <path> CA used to verify peer servers\n"
         << "  --peer <json>            Add a federation peer (raw JSON form)\n"
         << "  --cluster-join <spec>    Join cluster via short form; implies --federation-enable.\n"
         << "                             spec: [id@]host[:port][?pin=<sha256>]\n"
@@ -231,7 +225,6 @@ void print_help() {
         << "  --accept-yume-clients    Accept authenticated YUME clients (default).\n"
         << "  --no-yume-clients        Reject YUME AUTH/carrier; disguise only.\n"
         << "  --client-deny-action <a> IP filter deny action: close, reset, drop.\n"
-        << "  --deny-default <a>       Alias for --client-deny-action.\n"
         << "  --exposure-check <host>  Probe whether hostname is direct TCP or CF HTTP.\n"
         << "  --hide-in-the-crowd <p>  HTTP-layer disguise profile for the disguise\n"
         << "                             responses this daemon emits when probed.\n"
@@ -258,12 +251,15 @@ void print_help() {
         << "  --attach-local           Attach to a local yumed\n\n"
         << "Key Management:\n"
         << "  --keys-list              List authorized keys\n"
-        << "  --keys-add <pub.pem>     Add authorized key\n"
+        << "  --keys-add <pub.pem>     Add authorized key (visitor store)\n"
+        << "  --keys-admin             With --keys-add/--keys-gen-add: enrol into the\n"
+        << "                           separate admin store (--admin-keys). Admin still\n"
+        << "                           requires a distinct visitor key as first factor.\n"
         << "  --keys-remove <id>       Remove by fingerprint or alias\n"
         << "  --keys-alias <id> <a>    Set alias\n"
-        << "  --keys-gen <prefix>      Generate Ed25519 keypair (<prefix>.key/.pub)\n"
+        << "  --keys-gen <prefix>      Generate composite Ed25519+ML-DSA-87 identity (<prefix>.key/.pub)\n"
         << "  --keys-gen-add           Append generated public key to auth_keys\n"
-        << "  auth_keys_meta supports key_type (individual|bulk), weight, max_sessions, federation_peer_id, priority (legacy), permissions.allow_codecs, permissions.allow_services, and permissions.{allow_local_ip,control_full,allow_exec,allow_monero_rpc,allow_chat,allow_file,allow_bytes,allow_inbound_admin,allow_outbound_admin}\n"
+        << "  auth_keys_meta supports key_type (individual|bulk), weight, max_sessions, federation_peer_id, priority (legacy), permissions.allow_codecs, permissions.allow_services, and permissions.{allow_local_ip,allow_exec,allow_monero_rpc,allow_chat,allow_file,allow_bytes}. True control_full or inbound/outbound-admin grants are rejected; admin requires a distinct --admin-keys identity, and outbound admin also requires the visitor identity in --operator-keys.\n"
         << "  --ui                     Interactive server manager\n\n"
         << "Other:\n"
         << "  completion bash\n"

@@ -3,17 +3,13 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * ----------------------------------------------------------------
- * Manager relay-mesh methods, extracted verbatim from manager.cpp:
+ * Manager relay-mesh methods:
  * the endpoint registry (register/update/unregister/list endpoints,
  * find_endpoint_session), invite routing (route/respond_invite and
  * their federated variants), relay channels (can_open_channel,
  * open_federated_channel, active-channel tracking), federation status,
  * and admin relationships.
- *
- * Same yume::server::Manager class, same behavior; different translation
- * unit so neither file stays oversized. No logic change.
- * ---------------------------------------------------------------- */
+ */
 
 #include "server/runtime/manager.hpp"
 

@@ -8,7 +8,9 @@
 
 #include <array>
 
-#include <boost/asio.hpp>
+#include <boost/asio/buffer.hpp>
+#include <boost/asio/read.hpp>
+#include <boost/asio/write.hpp>
 
 #include "core/protocol/protocol.hpp"
 

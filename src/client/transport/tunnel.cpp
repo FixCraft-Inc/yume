@@ -13,6 +13,11 @@
 
 #include "client/proxy/forward.hpp"
 #include "util.hpp"
+#include <boost/asio/bind_executor.hpp>
+#include <boost/asio/buffer.hpp>
+#include <boost/asio/error.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/write.hpp>
 
 namespace yume::client {
 

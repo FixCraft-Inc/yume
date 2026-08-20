@@ -197,7 +197,7 @@ void TransportCore::set_ratchet(
     if (!ratchet) throw std::invalid_argument("ratchet must not be null");
     std::lock_guard<std::mutex> lock(state_mu_);
     if (inner_key_.has_value()) {
-        throw std::runtime_error("legacy inner key and YUME 2.0 ratchet are exclusive");
+        throw std::runtime_error("static inner key and the directional ratchet are exclusive");
     }
     ratchet_ = std::move(ratchet);
 }

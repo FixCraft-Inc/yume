@@ -38,6 +38,13 @@ bool post_auth_frame_allowed(SessionTier tier,
                              protocol::FrameType type,
                              const FrameContext& context = {});
 
+// Claiming admin never upgrades an otherwise preauth-only identity. The
+// visitor signature must be valid and that same visitor identity must already
+// belong to a regular or operator trust store before the second factor is
+// considered.
+bool admin_claim_eligible(bool visitor_signature_valid,
+                          bool visitor_authorized) noexcept;
+
 // Admin is directional: the caller must be a trusted relay endpoint whose
 // server-capped outbound bit is true, and the target's server-capped inbound
 // bit must be true. Target outbound permission is intentionally irrelevant.

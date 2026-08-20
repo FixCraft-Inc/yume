@@ -22,6 +22,10 @@
 
 #include "core/stealth/cover_profile.hpp"
 #include "core/stealth/h2_carrier.hpp"
+#include <boost/asio/error.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/local/connect_pair.hpp>
+#include <boost/asio/local/stream_protocol.hpp>
 
 namespace yume::client {
 

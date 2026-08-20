@@ -17,7 +17,10 @@
 #include <string>
 #include <vector>
 
-#include <boost/asio.hpp>
+#include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/strand.hpp>
+#include <boost/system/error_code.hpp>
 #include <nlohmann/json.hpp>
 
 #include "client/transport/client_stream.hpp"

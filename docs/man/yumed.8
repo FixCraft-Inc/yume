@@ -25,7 +25,7 @@ yumed \- YUME server daemon
 is the YUME server. It listens for authenticated YUME clients, validates
 their auth keys, negotiates transport capabilities, and opens outbound
 target sockets for allowed streams. It can also serve a real HTTP facade
-for non-YUME requests, enforce anonym/no-log mode, manage authorized
+for non-YUME requests, enforce operator-identity/no-log mode, manage authorized
 keys, and expose relay/directory features when enabled.
 .PP
 For an accepted 2.0 tunnel, yumed is the public TLS/HTTP/2 endpoint. A
@@ -69,18 +69,27 @@ TLS certificate.
 TLS private key.
 .TP
 .BI "--auth-keys " path
-Authorized client public keys.
+Authorized composite client identities. Each identity is an Ed25519 public key
+followed by an ML-DSA-87 public key.
 .TP
 .BI "--auth-keys-meta " path
 Regular-key policy JSON. Supports individual/bulk type, decimal fair-share
 weight, per-key session caps, and permissions.
 .TP
+.BI "--admin-keys " path
+Distinct composite second-factor identities for admin sessions. This store has
+no policy metadata and must be disjoint from both visitor stores.
+.TP
 .BI "--operator-keys " path
-Physically separate operator/controller public keys. Operator keys cannot be
-bulk and do not receive privileges without matching operator metadata.
+Physically separate composite Ed25519 + ML-DSA-87 operator/controller
+identities. Operator keys cannot be bulk. Outbound admin eligibility requires
+membership in this store plus a different identity from
+.BR admin_keys ;
+metadata alone cannot grant it.
 .TP
 .BI "--operator-keys-meta " path
-Operator-key policy JSON. Only this trust store may grant outbound admin.
+Non-admin policy JSON for operator identities (for example alias, weight, and
+ordinary relay permissions). It cannot grant admin or full control.
 .TP
 .BI "--threads " n
 Worker thread count in the range 0..256. Use
@@ -197,9 +206,6 @@ The .1 address is reserved for the TUN side.
 Packet-native MTU. Default:
 .BR 1420 .
 .TP
-.B --obfs
-Use the mandatory full-session HTTP/2 carrier.
-.TP
 .BI "--obfs-secret-file " path
 Load the mandatory admission secret from a protected file containing exactly
 64 lowercase hexadecimal characters encoding 32 random bytes, with no newline.
@@ -235,9 +241,8 @@ option is unavailable.
 Redundant compatibility spelling for the mandatory 2.0 inner channel. The
 ML-KEM-1024 + X25519 + PSK suite and per-message AES-256-GCM keys cannot be
 disabled or peer-selected. Authenticated bounded ratchet policies may widen
-the hybrid epoch budget without changing those algorithms. The retired
-inner-heavy/light/dual, hop, PQ-key, embedded-master, and Argon2 options are
-rejected.
+the hybrid epoch budget without changing those algorithms. There are no
+flags to select an inner mode, a hop layer, or a transport Argon2 stage.
 .SH HTTP FACADE AND OPERATOR IDENTITY OPTIONS
 .TP
 .B --real
@@ -275,9 +280,7 @@ Load or create a real-facade secret file.
 .TP
 .B --operator-identity
 Publish an operator identity proof and minimize identifying log fields where
-supported. The legacy alias is
-.BR --anonym .
-The proof authenticates CA-authorized operator control; it cannot prove that
+supported. The proof authenticates CA-authorized operator control; it cannot prove that
 the host does not inspect or retain traffic.
 .TP
 .BI "--operator-proof-mode " mode
@@ -286,31 +289,27 @@ Proof policy:
 .BR local ,
 or
 .BR fixcraft .
-The legacy alias is
-.BR --anonym-proof-mode .
 .TP
-.BI "--anonym-api " url
-Legacy external proof API URL.
+.BI "--operator-proof-api " url
+External proof API URL, used by
+.B fixcraft
+proof mode.
 .TP
-.BI "--anonym-token " string
-Legacy external proof API token.
+.BI "--operator-proof-token " string
+External proof API token.
 .TP
 .BI "--operator-ca-key " path
-Operator CA private key. Legacy alias:
-.BR --anonym-ca-key .
+Operator CA private key.
 .TP
 .BI "--operator-ca-cert " path
-Operator CA certificate. Legacy alias:
-.BR --anonym-ca-cert .
+Operator CA certificate.
 .TP
 .BI "--operator-delegated-key " path
-Delegated server identity private key. Legacy alias:
-.BR --anonym-sub-key .
+Delegated server identity private key.
 .TP
 .BI "--operator-delegated-cert " path
 CA-signed delegated server certificate. Its issuer should identify the
-operator and its subject should identify the server name/alias. Legacy alias:
-.BR --anonym-sub-cert .
+operator and its subject should identify the server name/alias.
 .SH RELAY AND DIRECTORY OPTIONS
 .TP
 .BI "--server-name " name
@@ -448,14 +447,14 @@ limits.
 .BI "--federation-auth-key " path
 Ed25519 private key used to authenticate federation peer links.
 .TP
-.BI "--federation-anonym-ca " path
+.BI "--federation-operator-ca " path
 CA certificate peers must present for federated TLS.
 .TP
 .BI "--peer " json
 Add a federation peer using raw JSON (power-user form).
 .SH AUTH_KEYS.META FORMAT
 .B auth_keys.meta
-is JSON keyed by Ed25519 public-key fingerprint (hex). Each entry may
+is JSON keyed by composite identity fingerprint (hex). Each entry may
 include an
 .BR alias ,
 .BR key_type
@@ -488,8 +487,6 @@ Example:
       "allow_local_ip": true,
       "allow_codecs": ["monero-rpc"],
       "allow_services": ["example-service-v1"],
-      "control_full": false,
-      "allow_inbound_admin": true,
       "allow_chat": true,
       "allow_file": true,
       "allow_bytes": true
@@ -498,9 +495,13 @@ Example:
 }
 .fi
 .PP
-Outbound administrator policy belongs only in the physically separate
-.B operator_keys.meta
-store. A public key present in both regular and operator stores is rejected.
+Outbound administrator eligibility requires the visitor identity to be in the
+physically separate
+.B operator_keys
+store and a different proved identity to be in
+.BR admin_keys .
+Visitor metadata cannot grant inbound admin, outbound admin, or full control.
+A public key present in both regular and operator stores is rejected.
 .PP
 Generate fingerprints with
 .BI "yumed --auth-keys " path " --keys-list" .
@@ -546,7 +547,7 @@ Remove an authorized key by fingerprint or alias.
 Set or update a key alias.
 .TP
 .BI "--keys-gen " prefix
-Generate an Ed25519 keypair as
+Generate a composite Ed25519 + ML-DSA-87 identity as
 .IR prefix .key
 and
 .IR prefix .pub .

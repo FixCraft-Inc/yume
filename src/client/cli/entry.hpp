@@ -35,6 +35,8 @@ struct ClientConfig {
     std::string server;
     int port{443};
     std::string identity;
+    // Second factor for an admin session; empty for an ordinary visitor.
+    std::string admin_identity;
     // Empty keeps the historical wildcard bind. Set an IP literal such
     // as 127.0.0.1, 0.0.0.0, ::1, or :: to choose the local SOCKS
     // listener address explicitly.

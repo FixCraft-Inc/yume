@@ -92,6 +92,44 @@ constexpr std::array<AssetTemplate, 2> kProfile0Assets{
     AssetTemplate{"/assets/site.js", RequestTemplate{kProfile0Asset1Headers, H2Priority{-1, 147, true}}},
 };
 
+constexpr std::array<std::uint16_t, 15> kProfile0TlsCiphers{
+    0x1301, 0x1302, 0x1303, 0xc02b, 0xc02f, 0xc02c, 0xc030, 0xcca9, 0xcca8, 0xc013, 0xc014, 0x009c, 0x009d, 0x002f, 0x0035,
+};
+
+constexpr std::array<std::uint16_t, 16> kProfile0TlsExtensions{
+    0x0000, 0x0005, 0x000a, 0x000b, 0x000d, 0x0010, 0x0012, 0x0017, 0x001b, 0x0023, 0x002b, 0x002d, 0x0033, 0x44cd, 0xfe0d, 0xff01,
+};
+
+constexpr std::array<std::uint16_t, 4> kProfile0TlsGroups{
+    0x11ec, 0x001d, 0x0017, 0x0018,
+};
+
+constexpr std::array<std::uint16_t, 11> kProfile0TlsSigAlgs{
+    0x0904, 0x0905, 0x0906, 0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601,
+};
+
+constexpr std::array<std::uint8_t, 1> kProfile0TlsPointFormats{
+    0,
+};
+
+constexpr std::array<std::uint16_t, 4> kProfile0TlsEchGreaseLengths{
+    0x00ba, 0x00da, 0x00fa, 0x011a,
+};
+
+constexpr std::array<InjectedExtension, 5> kProfile0TlsInjectedExtensions{{
+    InjectedExtension{0x0000, InjectedExtensionPayload::GreaseEmpty},
+    InjectedExtension{0x0000, InjectedExtensionPayload::GreaseOneByte},
+    InjectedExtension{0x0012, InjectedExtensionPayload::Empty},
+    InjectedExtension{0x44cd, InjectedExtensionPayload::Alps},
+    InjectedExtension{0xfe0d, InjectedExtensionPayload::GreaseEch},
+}};
+constexpr std::array<std::string_view, 1> kProfile0TlsAlpsProtocols{{
+    "h2",
+}};
+constexpr std::array<std::string_view, 2> kProfile0TlsAlpn{
+    "h2", "http/1.1",
+};
+
 const Profile kProfile0Value{
     "chrome151-node24-v1",
     "chrome",
@@ -105,8 +143,20 @@ const Profile kProfile0Value{
     "?0",
     "\"Linux\"",
     tls_fingerprint::BrowserProfile::CHROME_151,
+    0x0303,
     0x0304,
     0x0304,
+    kProfile0TlsCiphers,
+    kProfile0TlsExtensions,
+    kProfile0TlsGroups,
+    kProfile0TlsSigAlgs,
+    kProfile0TlsPointFormats,
+    kProfile0TlsAlpn,
+    kProfile0TlsInjectedExtensions,
+    kProfile0TlsAlpsProtocols,
+    kProfile0TlsEchGreaseLengths,
+    true,
+    true,
     "Node.js",
     "24.18.0",
     kProfile0ClientSettings,

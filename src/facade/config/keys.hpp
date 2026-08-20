@@ -40,6 +40,7 @@ inline constexpr char argon2_memory_budget_kib[] = "argon2_memory_budget_kib";
 inline constexpr char auth_key_material_id[] = "auth_key_material_id";
 inline constexpr char auth_keys[] = "auth_keys";
 inline constexpr char auth_keys_meta[] = "auth_keys_meta";
+inline constexpr char admin_keys[] = "admin_keys";
 inline constexpr char auto_attach_local[] = "auto_attach_local";
 inline constexpr char boring[] = "boring";
 inline constexpr char client_filter_mode[] = "client_filter_mode";

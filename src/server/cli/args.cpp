@@ -130,6 +130,7 @@ bool parse_server_cli_args(int argc,
             if (!parse_listen_spec(argv[++i], cfg)) {
                 return false;
             }
+            result.config_overrides.listen = true;
         } else if (arg == "--reverse-port-min" && i + 1 < argc) {
             if (!parse_port(argv[++i], "--reverse-port-min", &cfg.reverse_port_min)) return false;
         } else if (arg == "--reverse-port-max" && i + 1 < argc) {
@@ -144,6 +145,8 @@ bool parse_server_cli_args(int argc,
             cfg.tls_key = resolve_cli_path(argv[++i]);
         } else if (arg == "--auth-keys" && i + 1 < argc) {
             cfg.auth_keys = resolve_cli_path(argv[++i]);
+        } else if (arg == "--admin-keys" && i + 1 < argc) {
+            cfg.admin_keys = resolve_cli_path(argv[++i]);
         } else if (arg == "--auth-keys-meta" && i + 1 < argc) {
             cfg.auth_keys_meta = resolve_cli_path(argv[++i]);
         } else if (arg == "--threads" && i + 1 < argc) {
@@ -153,26 +156,10 @@ bool parse_server_cli_args(int argc,
                 return false;
             }
             result.config_overrides.threads = true;
-        } else if (arg == "--obfs") {
-            cfg.obfuscation = true;
-            result.config_overrides.obfuscation = true;
-        } else if (arg == "--no-obfs") {
-            yume::util::log_error(
-                "--no-obfs is not accepted by YUME 2.0; the H2 carrier is mandatory");
-            return false;
         } else if (arg == "--obfs-secret-file" && i + 1 < argc) {
             cfg.obfs_secret_file = resolve_cli_path(argv[++i]);
         } else if (arg == "--inner-psk-file" && i + 1 < argc) {
             cfg.inner_psk_file = resolve_cli_path(argv[++i]);
-        } else if (arg == "--obfs-secret") {
-            yume::util::log_error(
-                "--obfs-secret is not accepted by YUME 2.0; use --obfs-secret-file");
-            return false;
-        } else if (arg == "--obfs-pad-multiple" || arg == "--obfs-jitter-ms") {
-            yume::util::log_error(
-                arg + " is not accepted by the pinned YUME 2.0 Chrome profile; "
-                      "the capture contains no random padding or timing jitter");
-            return false;
         } else if (arg == "--tls-handshake-timeout-ms" && i + 1 < argc) {
             if (!parse_non_negative_u32(argv[++i], "--tls-handshake-timeout-ms", &cfg.tls_handshake_timeout_ms)) return false;
             result.config_overrides.tls_handshake_timeout = true;
@@ -231,40 +218,20 @@ bool parse_server_cli_args(int argc,
         } else if (arg == "--packet-mtu" && i + 1 < argc) {
             if (!parse_non_negative_u32(argv[++i], "--packet-mtu", &cfg.packet_mtu)) return false;
             result.config_overrides.packet_mtu = true;
-        } else if (arg == "--bench" || arg == "--fullbench" || arg == "--full-bench") {
+        } else if (arg == "--bench") {
             cfg.benchmark_enable = true;
-        } else if (arg == "--hop" || arg == "--no-hop" ||
-                   arg == "--hop-interval") {
-            yume::util::log_error(
-                arg + " is a retired 1.x time-key option; YUME 2.0 has no legacy hop layer"
-                      " and always uses the hybrid directional ratchet");
-            return false;
-        } else if (arg == "--inner" || arg == "--no-inner" ||
-                   arg == "--inner-heavy" || arg == "--inner-light" ||
-                   arg == "--inner-dual") {
-            yume::util::log_error(
-                arg + " is not accepted by YUME 2.0; the hybrid directional ratchet is mandatory");
-            return false;
         } else if (arg == "--inner-required") {
             cfg.inner_crypto = true;
             cfg.inner_required = true;
             result.config_overrides.inner_crypto = true;
             result.config_overrides.inner_required = true;
-        } else if (arg == "--argon2-memory-budget-kib" ||
-                   arg == "--argon2-max-jobs" || arg == "--pq-key" ||
-                   arg == "--pq-auto-generate" ||
-                   arg == "--use-embedded-master" ||
-                   arg == "--no-embedded-master") {
-            yume::util::log_error(
-                arg + " is a retired 1.x option and is not accepted by YUME 2.0");
-            return false;
         } else if (arg == "--allow-exec") {
             cfg.allow_exec = true;
         } else if (arg == "--allow-local-ip") {
             cfg.allow_local_ip = true;
         } else if (arg == "--control-full") {
             cfg.control_full = true;
-        } else if ((arg == "--codec-allow" || arg == "--allow-codec") && i + 1 < argc) {
+        } else if (arg == "--codec-allow" && i + 1 < argc) {
             const std::string codec = yume::app_codec::canonical_codec_id(argv[++i]);
             if (!yume::app_codec::is_supported_codec(codec)) {
                 yume::util::log_error("unsupported application codec for " + arg + ": " + codec);
@@ -315,23 +282,23 @@ bool parse_server_cli_args(int argc,
             cfg.real_secret = argv[++i];
         } else if (arg == "--real-secret-file" && i + 1 < argc) {
             cfg.real_secret_file = resolve_cli_path(argv[++i]);
-        } else if (arg == "--operator-identity" || arg == "--anonym") {
+        } else if (arg == "--operator-identity") {
             cfg.anonym = true;
             result.config_overrides.anonym = true;
-        } else if ((arg == "--operator-proof-mode" || arg == "--anonym-proof-mode") && i + 1 < argc) {
+        } else if (arg == "--operator-proof-mode" && i + 1 < argc) {
             cfg.anonym_proof_mode = argv[++i];
             result.config_overrides.anonym_proof_mode = true;
-        } else if (arg == "--anonym-api" && i + 1 < argc) {
+        } else if (arg == "--operator-proof-api" && i + 1 < argc) {
             cfg.anonym_api = argv[++i];
-        } else if (arg == "--anonym-token" && i + 1 < argc) {
+        } else if (arg == "--operator-proof-token" && i + 1 < argc) {
             cfg.anonym_token = argv[++i];
-        } else if ((arg == "--operator-ca-key" || arg == "--anonym-ca-key") && i + 1 < argc) {
+        } else if (arg == "--operator-ca-key" && i + 1 < argc) {
             cfg.anonym_ca_key = resolve_cli_path(argv[++i]);
-        } else if ((arg == "--operator-ca-cert" || arg == "--anonym-ca-cert") && i + 1 < argc) {
+        } else if (arg == "--operator-ca-cert" && i + 1 < argc) {
             cfg.anonym_ca_cert = resolve_cli_path(argv[++i]);
-        } else if ((arg == "--operator-delegated-key" || arg == "--anonym-sub-key") && i + 1 < argc) {
+        } else if (arg == "--operator-delegated-key" && i + 1 < argc) {
             cfg.anonym_sub_key = resolve_cli_path(argv[++i]);
-        } else if ((arg == "--operator-delegated-cert" || arg == "--anonym-sub-cert") && i + 1 < argc) {
+        } else if (arg == "--operator-delegated-cert" && i + 1 < argc) {
             cfg.anonym_sub_cert = resolve_cli_path(argv[++i]);
         } else if (arg == "--server-name" && i + 1 < argc) {
             cfg.server_name = argv[++i];
@@ -349,8 +316,6 @@ bool parse_server_cli_args(int argc,
         } else if (arg == "--directory-disable") {
             cfg.directory_enable = false;
             result.config_overrides.directory_enable = true;
-        } else if (arg == "--allow-remote-server-admin") {
-            yume::util::log_warn("--allow-remote-server-admin was never wired to a check; flag removed (ignored)");
         } else if (arg == "--operator-keys" && i + 1 < argc) {
             cfg.operator_keys = resolve_cli_path(argv[++i]);
         } else if (arg == "--operator-keys-meta" && i + 1 < argc) {
@@ -359,7 +324,7 @@ bool parse_server_cli_args(int argc,
             cfg.federation_enable = true;
         } else if (arg == "--federation-auth-key" && i + 1 < argc) {
             cfg.federation_auth_key = resolve_cli_path(argv[++i]);
-        } else if (arg == "--federation-anonym-ca" && i + 1 < argc) {
+        } else if (arg == "--federation-operator-ca" && i + 1 < argc) {
             cfg.federation_anonym_ca = resolve_cli_path(argv[++i]);
         } else if (arg == "--peer" && i + 1 < argc) {
             cfg.federation_peers.push_back(argv[++i]);
@@ -395,7 +360,7 @@ bool parse_server_cli_args(int argc,
         } else if (arg == "--no-yume-clients") {
             cfg.accept_yume_clients = false;
             result.config_overrides.accept_yume_clients = true;
-        } else if ((arg == "--client-deny-action" || arg == "--deny-default") && i + 1 < argc) {
+        } else if (arg == "--client-deny-action" && i + 1 < argc) {
             auto action = yume::server::host::parse_deny_action(argv[++i]);
             if (!action.has_value()) {
                 yume::util::log_error("--client-deny-action must be close, reset, or drop");
@@ -432,6 +397,11 @@ bool parse_server_cli_args(int argc,
             result.key_command.generate_prefix = argv[++i];
         } else if (arg == "--keys-gen-add") {
             result.key_command.generate_and_add = true;
+        } else if (arg == "--keys-admin") {
+            // Modifier for --keys-add / --keys-gen-add: enrol into the admin
+            // store. Being in that store grants nothing on its own -- an admin
+            // session still requires a distinct visitor key as the first factor.
+            result.key_command.admin = true;
         } else if (arg == "--ui") {
             result.key_command.ui = true;
         } else if (arg == "--boring") {

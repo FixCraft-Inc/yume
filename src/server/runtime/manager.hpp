@@ -203,6 +203,7 @@ private:
         std::shared_ptr<const AuthKeyPolicyMap> policies;
         std::shared_ptr<const std::vector<crypto::Bytes>> operator_keys;
         std::shared_ptr<const AuthKeyPolicyMap> operator_policies;
+        std::shared_ptr<const std::vector<crypto::Bytes>> admin_keys;
     };
 
     void do_accept();
@@ -221,6 +222,8 @@ private:
     std::shared_ptr<const AuthKeyPolicyMap> auth_policies_;
     std::shared_ptr<const std::vector<crypto::Bytes>> operator_keys_;
     std::shared_ptr<const AuthKeyPolicyMap> operator_policies_;
+    // Separate admin store; deliberately not merged with authorized_keys_.
+    std::shared_ptr<const std::vector<crypto::Bytes>> admin_keys_;
     IdentityAdmissionController identity_admission_;
     std::shared_ptr<KdfAdmissionController> kdf_admission_;
     std::shared_ptr<obfs::AdmissionReplayCache> admission_replay_cache_;

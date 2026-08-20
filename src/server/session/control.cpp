@@ -6,9 +6,7 @@
  * ----------------------------------------------------------------
  * Session control-plane methods.
  *
- * Extracted from server/session/session.cpp in 1.0.x to keep that file from
- * growing further beyond its existing 4145 lines. Contains the
- * 9 control-plane methods of yume::server::Session:
+ * Contains the control-plane methods of yume::server::Session:
  *
  *   handle_control          — entry-point dispatch for inbound
  *                             control-channel frames
@@ -17,10 +15,6 @@
  *   send_control_frame      — outbound control-frame writer
  *   send_control_close      — control-channel close helper
  *   send_control_json_to_client — federation/relay JSON push
- *
- * No behavior changes. Same Session:: class, same signatures,
- * same wire output bit-for-bit. The methods were moved verbatim;
- * session.hpp continues to declare them.
  * ---------------------------------------------------------------- */
 
 #include "server/session/session.hpp"

@@ -21,6 +21,7 @@
 #include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
 #include "util.hpp"
+#include "util_json.hpp"
 
 namespace yume::client {
 
@@ -79,6 +80,10 @@ void load_client_config_file(const ParsedArgs& args,
         }
         if (json.contains("identity") && cfg->identity.empty()) {
             cfg->identity = resolve_cfg_path(json["identity"].get<std::string>());
+        }
+        if (json.contains("admin_identity") && cfg->admin_identity.empty()) {
+            cfg->admin_identity = resolve_cfg_path(
+                json["admin_identity"].get<std::string>());
         }
         if (json.contains("socks_port") && !args.socks_port_override && cfg->socks_port == 0) {
             cfg->socks_port = json["socks_port"].get<int>();
@@ -160,8 +165,10 @@ void load_client_config_file(const ParsedArgs& args,
         if (json.contains("pq_public_key") && cfg->pq_public_key.empty()) {
             cfg->pq_public_key = resolve_cfg_path(json["pq_public_key"].get<std::string>());
         }
-        if (json.contains("use_embedded_master") && !args.allow_embedded_master_override) {
-            cfg->allow_embedded_master = json["use_embedded_master"].get<bool>();
+        if (json.contains("allow_embedded_master") &&
+            !args.allow_embedded_master_override) {
+            cfg->allow_embedded_master =
+                json["allow_embedded_master"].get<bool>();
         }
         if (json.contains("anonym_pubkey") && cfg->anonym_pubkey.empty()) {
             cfg->anonym_pubkey = resolve_cfg_path(json["anonym_pubkey"].get<std::string>());
@@ -293,6 +300,9 @@ void apply_cli_config_overrides(const ParsedArgs& args,
     }
     if (args.port > 0) {
         cfg->port = args.port;
+    }
+    if (!args.admin_identity.empty()) {
+        cfg->admin_identity = resolve_cli_path(args.admin_identity);
     }
     if (!args.identity.empty()) {
         cfg->identity = resolve_cli_path(args.identity);
@@ -621,6 +631,7 @@ void save_client_config_file(const ParsedArgs& args, const ClientConfig& cfg) {
     json["server"] = cfg.server;
     if (cfg.port > 0) json["port"] = cfg.port;
     if (!cfg.identity.empty()) json["identity"] = cfg.identity;
+    if (!cfg.admin_identity.empty()) json["admin_identity"] = cfg.admin_identity;
     if (cfg.socks_port > 0) json["socks_port"] = cfg.socks_port;
     if (!cfg.socks_bind_host.empty()) json["socks_bind"] = cfg.socks_bind_host;
     if (!cfg.packet_tun_name.empty()) json["packet_tun_name"] = cfg.packet_tun_name;
@@ -643,7 +654,7 @@ void save_client_config_file(const ParsedArgs& args, const ClientConfig& cfg) {
     if (cfg.server_in_charge_port > 0) json["server_in_charge_port"] = cfg.server_in_charge_port;
     json["allow_exec"] = cfg.allow_exec;
     if (!cfg.pq_public_key.empty()) json["pq_public_key"] = cfg.pq_public_key;
-    json["use_embedded_master"] = cfg.allow_embedded_master;
+    json["allow_embedded_master"] = cfg.allow_embedded_master;
     if (!cfg.anonym_ca_cert.empty()) json["anonym_ca_cert"] = cfg.anonym_ca_cert;
     if (!cfg.tls_ca_cert.empty()) json["tls_ca_cert"] = cfg.tls_ca_cert;
     if (!cfg.tls_server_name.empty()) json["tls_server_name"] = cfg.tls_server_name;

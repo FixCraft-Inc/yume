@@ -12,7 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include <boost/asio.hpp>
+#include <boost/asio/io_context.hpp>
 #include <nlohmann/json.hpp>
 
 #include "core/protocol/control_protocol.hpp"

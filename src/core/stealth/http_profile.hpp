@@ -75,9 +75,8 @@ struct ClientProfile {
 std::optional<ServerProfile> server(std::string_view name);
 std::optional<ClientProfile> client(std::string_view name);
 
-// For --help text + validation messages.
+// For --help text and startup validation messages.
 std::vector<std::string> server_names();
-std::vector<std::string> client_names();
 
 // Exact client transport fixtures available to the current wire version.
 // Add a future profile only after its TLS and HTTP/2 captures pass the same
@@ -105,10 +104,11 @@ std::optional<std::time_t> parse_http_date(std::string_view value);
 // behavior (some profiles use keep-alive, some close).
 std::string render_404(const ServerProfile& profile, bool connection_close = true);
 
-// Compatibility accessors for the pinned profile User-Agent.
-// set_active_client_ua() rejects any value that differs from the immutable
-// profile; active_client_ua() always returns that profile value.
-void set_active_client_ua(std::string ua);
+// The client User-Agent is pinned to the cover profile and is not settable.
+// require_pinned_client_ua() throws if a caller tries to select any other UA,
+// so a profile mismatch fails loudly instead of emitting a second identity;
+// active_client_ua() always returns the pinned value.
+void require_pinned_client_ua(std::string_view ua);
 std::string active_client_ua();
 
 }  // namespace yume::http_profile

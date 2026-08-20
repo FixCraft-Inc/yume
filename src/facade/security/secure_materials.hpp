@@ -16,9 +16,9 @@ namespace yume::facade::secure_materials {
 inline constexpr char kDefaultAnonymCaId[] = "embedded-anonym-ca";
 
 enum class MaterialType {
-    AnonymCa,       // X.509 operator root CA (legacy identifier kept for config compatibility)
+    AnonymCa,       // X.509 operator root CA (serialized as "anonym_ca")
     AuthKey,        // PEM private key the client authenticates with
-    AnonymPubkey,   // legacy external proof signing key (PEM PUBLIC KEY)
+    AnonymPubkey,   // external proof signing key (PEM PUBLIC KEY)
     TlsCa,          // extra X.509 root for the outer TLS verify chain
 };
 

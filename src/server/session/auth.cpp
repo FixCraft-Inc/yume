@@ -3,18 +3,13 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * ----------------------------------------------------------------
- * Session authentication and inner-crypto methods, extracted verbatim
- * from session.cpp:
+ * Session authentication and inner-crypto methods:
  *   - send_auth_challenge   — server-issued AUTH challenge
  *   - handle_auth           — client AUTH-response verification (key
  *                             match, optional inner ML-KEM handshake)
  *   - decrypt/encrypt_inner_payload, current_hop_id — inner AEAD with
  *                             live hop-key derivation
- *
- * Same Session:: class, same wire output, no behavior change. Shared
- * helpers via server/session/internal.hpp.
- * ---------------------------------------------------------------- */
+ */
 
 #include "server/session/session.hpp"
 #include "core/security/secure_erase.hpp"
@@ -222,6 +217,9 @@ bool Session::handle_auth(const protocol::Frame& frame) {
     auth_error_.clear();
     authorization_tier_ = authorization::SessionTier::Unauthenticated;
     operator_authenticated_ = false;
+    admin_authenticated_ = false;
+    auth_fingerprint_.clear();
+    admin_fingerprint_.clear();
     auth_key_type_ = AuthKeyType::Individual;
     try {
         if (!auth_v2_ephemeral_ || !cfg_.inner_psk_material) {
@@ -229,24 +227,11 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             return false;
         }
         const auth_v2::Response response = auth_v2::ParseResponse(frame.payload);
-        const crypto::Bytes& pub_pem = response.identity;
 
-        std::unique_ptr<BIO, decltype(&BIO_free)> pub_bio(
-            BIO_new_mem_buf(pub_pem.data(), static_cast<int>(pub_pem.size())),
-            BIO_free);
-        if (!pub_bio) {
+        const crypto::CompositePublicKey visitor_identity =
+            crypto::parse_composite_identity(response.identity);
+        if (!visitor_identity.valid()) {
             auth_error_ = "access denied: invalid key";
-            return false;
-        }
-        crypto::EVP_PKEY_ptr pubkey(
-            PEM_read_bio_PUBKEY(pub_bio.get(), nullptr, nullptr, nullptr),
-            EVP_PKEY_free);
-        if (!pubkey) {
-            auth_error_ = "access denied: invalid key";
-            return false;
-        }
-        if (EVP_PKEY_base_id(pubkey.get()) != EVP_PKEY_ED25519) {
-            auth_error_ = "access denied: unsupported key type";
             return false;
         }
 
@@ -274,16 +259,72 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             response.ratchet_policy);
         crypto::Bytes signature_input = auth_v2::BuildSignatureInput(
             challenge_, unsigned_response, channel_binding);
-        bool sig_ok = crypto::verify_key(pubkey.get(), signature_input,
-                                         response.signature);
+        bool sig_ok = crypto::verify_composite(
+            visitor_identity.classical.get(), visitor_identity.pq.get(),
+            signature_input, response.signature);
         const bool regular_auth_ok =
-            authorized_keys_ && is_authorized(pubkey.get(), *authorized_keys_);
+            authorized_keys_ &&
+            is_composite_authorized(visitor_identity, *authorized_keys_);
         const bool operator_auth_ok =
-            operator_keys_ && is_authorized(pubkey.get(), *operator_keys_);
+            operator_keys_ &&
+            is_composite_authorized(visitor_identity, *operator_keys_);
         const bool auth_ok = regular_auth_ok || operator_auth_ok;
-        std::string fingerprint = fingerprint_pubkey(pubkey.get());
+        std::string fingerprint = crypto::composite_fingerprint(visitor_identity);
+
+        // An admin claim is a second factor for an already authorized visitor,
+        // never an alternate route out of the deliberately narrower preauth
+        // tier. Reject before parsing or verifying the admin credential so no
+        // preauth session can retain privileged internal state.
+        if (response.claims_admin() &&
+            !authorization::admin_claim_eligible(sig_ok, auth_ok)) {
+            auth_error_ = !sig_ok
+                ? "access denied: bad signature"
+                : "access denied: admin requires an authorized visitor key";
+            return false;
+        }
+
+        // Second factor. Everything about admin is decided here and nowhere
+        // else: a session is admin only if it presented a second, *distinct*
+        // key that appears in the separate admin store and signed this exact
+        // transcript under the admin domain. No policy flag on the visitor key
+        // can produce this, which is the whole point of the requirement.
+        if (response.claims_admin()) {
+            const crypto::CompositePublicKey admin_identity =
+                crypto::parse_composite_identity(response.admin_identity);
+            if (!admin_identity.valid()) {
+                auth_error_ = "access denied: invalid admin key";
+                return false;
+            }
+            const std::string admin_fingerprint =
+                crypto::composite_fingerprint(admin_identity);
+            // Two keys means two *different* keys. Without this, presenting the
+            // same key twice would satisfy a naive "two factors" check.
+            if (admin_fingerprint == fingerprint) {
+                auth_error_ = "access denied: admin key must differ from visitor key";
+                return false;
+            }
+            if (!admin_keys_ ||
+                !is_composite_authorized(admin_identity, *admin_keys_)) {
+                auth_error_ = "access denied: admin key is not in the admin list";
+                return false;
+            }
+            crypto::Bytes admin_input = auth_v2::BuildAdminSignatureInput(
+                challenge_, unsigned_response, channel_binding,
+                response.identity);
+            const bool admin_sig_ok = crypto::verify_composite(
+                admin_identity.classical.get(), admin_identity.pq.get(),
+                admin_input, response.admin_signature);
+            security::secure_erase(admin_input);
+            if (!admin_sig_ok) {
+                auth_error_ = "access denied: admin signature is invalid";
+                return false;
+            }
+            admin_authenticated_ = true;
+            admin_fingerprint_ = admin_fingerprint;
+        }
         auth_fingerprint_ = fingerprint;
-        client_auth_pubkey_b64_ = yume::util::base64_encode(std::string(pub_pem.begin(), pub_pem.end()));
+        client_auth_pubkey_b64_ = yume::util::base64_encode(
+            std::string(response.identity.begin(), response.identity.end()));
 
         const bool preauth_ok =
             sig_ok && !auth_ok && !cfg_.preauth_services.empty();
@@ -352,7 +393,12 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         bandwidth_weight_ = auth_policy.effective_weight();
         const bool key_exec = auth_policy.allow_exec.value_or(false);
         const bool key_local_ip = auth_policy.allow_local_ip.value_or(false);
-        const bool key_control_full = auth_policy.control_full.value_or(false);
+        // Full control and admin no longer come from the visitor key's policy --
+        // load_auth_policies refuses those flags outright now. They come from a
+        // verified second factor: a distinct key in the separate admin store
+        // that signed this transcript under the admin domain. That is the only
+        // route, so a misedited policy file cannot produce an admin session.
+        const bool key_control_full = admin_authenticated_;
         const bool key_monero_rpc = auth_policy.allow_monero_rpc.value_or(false);
         session_allowed_codecs_.clear();
         for (const auto& codec : auth_policy.allowed_codecs) {
@@ -408,10 +454,9 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             util::log_warn("session " + std::to_string(session_id_) +
                           ": Monero RPC codec requested by key but server has not enabled --codec-allow monero-rpc");
         }
-        session_allow_inbound_admin_policy_ = auth_policy.allow_inbound_admin.value_or(false);
+        session_allow_inbound_admin_policy_ = admin_authenticated_;
         session_allow_outbound_admin_policy_ =
-            operator_authenticated_ &&
-            auth_policy.allow_outbound_admin.value_or(false);
+            operator_authenticated_ && admin_authenticated_;
         const bool shared_key = auth_key_type_ == AuthKeyType::Bulk;
         session_allow_chat_policy_ = auth_policy.allow_chat.value_or(!shared_key);
         session_allow_file_policy_ = auth_policy.allow_file.value_or(!shared_key);

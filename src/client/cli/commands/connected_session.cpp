@@ -46,6 +46,8 @@
 #include <utility>
 
 #include <nlohmann/json.hpp>
+#include <boost/asio/executor_work_guard.hpp>
+#include <boost/asio/ssl.hpp>
 
 namespace yume::client {
 namespace {

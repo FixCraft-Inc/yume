@@ -46,6 +46,7 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::tls_key, s.tls_key);
     read_opt(j, cfg_key::auth_keys, s.auth_keys);
     read_opt(j, cfg_key::auth_keys_meta, s.auth_keys_meta);
+    read_opt(j, cfg_key::admin_keys, s.admin_keys);
     read_opt(j, cfg_key::threads, s.threads);
     read_opt(j, cfg_key::tls_handshake_timeout_ms, s.tls_handshake_timeout_ms);
     read_opt(j, cfg_key::max_sessions, s.max_sessions);
@@ -231,6 +232,7 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     resolve_config_path(s.tls_cert, base);
     resolve_config_path(s.tls_key, base);
     resolve_config_path(s.auth_keys, base);
+    resolve_config_path(s.admin_keys, base);
     resolve_config_path(s.pq_private_key, base);
     resolve_config_path(s.real_index_path, base);
     resolve_config_path(s.real_root, base);
@@ -308,6 +310,7 @@ bool save_server(server::ServerConfig const& s,
         {cfg_key::tls_key, s.tls_key},
         {cfg_key::auth_keys, s.auth_keys},
         {cfg_key::auth_keys_meta, s.auth_keys_meta},
+        {cfg_key::admin_keys, s.admin_keys},
         {cfg_key::threads, s.threads},
         {cfg_key::tls_handshake_timeout_ms, s.tls_handshake_timeout_ms},
         {cfg_key::max_sessions, s.max_sessions},

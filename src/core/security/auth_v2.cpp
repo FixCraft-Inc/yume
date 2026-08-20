@@ -25,7 +25,15 @@ constexpr std::uint8_t kCritical = 0x01;
 // v3 appends the locally computed TLS exporter to records that explicitly
 // carry the dev6 profile. Older signers derive a different input and fail
 // loudly instead of downgrading silently.
-constexpr std::string_view kSignatureDomain = "yume/2.0/auth-signature/v3";
+// v4: the signature is now composite (Ed25519 + ML-DSA-87) rather than bare
+// Ed25519. Bumping the domain means a v3 signer's output cannot verify here and
+// vice versa -- old and new fail closed against each other instead of
+// negotiating down to the weaker credential.
+constexpr std::string_view kSignatureDomain = "yume/2.0/auth-signature/v4";
+// Deliberately a different string, not a suffix of the above. The admin proof
+// covers the same transcript, so without separation a visitor signature would
+// be a valid admin signature.
+constexpr std::string_view kAdminSignatureDomain = "yume/2.0/auth-admin/v1";
 
 void AppendU16(Bytes& out, std::uint16_t value) {
     out.push_back(static_cast<std::uint8_t>(value >> 8));
@@ -77,6 +85,20 @@ const Bytes& Required(const Record& record, std::uint8_t id) {
                                  [id](const Field& field) { return field.id == id; });
     if (it == record.fields.end() || !it->critical) {
         throw std::runtime_error("AUTH v2 missing required field " + std::to_string(id));
+    }
+    return it->value;
+}
+
+// Absent is a valid answer; present-but-non-critical is not. A peer must not be
+// able to downgrade an admin claim into an ignorable hint by clearing the
+// critical bit.
+Bytes Optional(const Record& record, std::uint8_t id) {
+    const auto it = std::find_if(record.fields.begin(), record.fields.end(),
+                                 [id](const Field& field) { return field.id == id; });
+    if (it == record.fields.end()) return {};
+    if (!it->critical) {
+        throw std::runtime_error("AUTH v2 field " + std::to_string(id) +
+                                 " must be critical");
     }
     return it->value;
 }
@@ -290,8 +312,8 @@ Bytes BuildUnsignedResponse(const Bytes& x25519_public_key,
     RequireWindow(rekey_window);
     (void)PolicyBytes(ratchet_policy);
     // The client's advertised depth sits inside the signed record, so the
-    // negotiated window is covered by the same Ed25519 signature as the rest
-    // of the transcript and cannot be tampered with on the carrier.
+    // negotiated window is covered by the same composite signature as the
+    // rest of the transcript and cannot be tampered with on the carrier.
     return EncodeRecord(RecordKind::Response, {
         {1, true, x25519_public_key}, {2, true, mlkem_ciphertext},
         {3, true, identity}, {4, true, WindowBytes(rekey_window)},
@@ -304,35 +326,65 @@ Bytes BuildResponse(const Bytes& x25519_public_key,
                     const Bytes& mlkem_ciphertext, const Bytes& identity,
                     std::uint16_t rekey_window,
                     const ratchet::RatchetPolicy& ratchet_policy,
-                    const Bytes& signature) {
-    if (signature.size() != 64) {
-        throw std::runtime_error("AUTH v2 Ed25519 signature must be 64 bytes");
+                    const Bytes& signature,
+                    const Bytes& admin_identity,
+                    const Bytes& admin_signature) {
+    RequireSize(signature, kCompositeSignatureLen, "composite signature");
+    if (admin_identity.empty() != admin_signature.empty()) {
+        throw std::runtime_error(
+            "AUTH v2 admin identity and admin signature must both be present");
     }
     (void)BuildUnsignedResponse(x25519_public_key, mlkem_ciphertext, identity,
                                 rekey_window, ratchet_policy);
-    return EncodeRecord(RecordKind::Response, {
+    std::vector<Field> fields{
         {1, true, x25519_public_key}, {2, true, mlkem_ciphertext},
         {3, true, identity}, {4, true, WindowBytes(rekey_window)},
         {5, true, PolicyBytes(ratchet_policy)},
         {6, true, Bytes(kTransportProfile.begin(), kTransportProfile.end())},
         {7, true, signature},
-    });
+    };
+    if (!admin_identity.empty()) {
+        if (admin_identity.size() > 16U * 1024U) {
+            throw std::runtime_error("AUTH v2 admin identity size is invalid");
+        }
+        RequireSize(admin_signature, kCompositeSignatureLen,
+                    "composite admin signature");
+        // Critical: a server that does not understand the admin fields must
+        // refuse the record outright rather than silently admitting the session
+        // as an ordinary visitor.
+        fields.push_back({8, true, admin_identity});
+        fields.push_back({9, true, admin_signature});
+    }
+    return EncodeRecord(RecordKind::Response, fields);
 }
 
 Response ParseResponse(const Bytes& encoded) {
     const Record record = DecodeRecord(encoded, RecordKind::Response,
-                                       {1, 2, 3, 4, 5, 6, 7});
+                                       {1, 2, 3, 4, 5, 6, 7, 8, 9});
     Response out{encoded, Required(record, 1), Required(record, 2),
                  Required(record, 3), ParseWindow(Required(record, 4)),
                  ParsePolicy(Required(record, 5)), RequiredProfile(record, 6),
-                 Required(record, 7)};
+                 Required(record, 7), Optional(record, 8), Optional(record, 9)};
     RequireSize(out.x25519_public_key, 32, "X25519 public key");
     RequireKemBlob(out.mlkem_ciphertext, "ML-KEM ciphertext");
     if (out.identity.empty() || out.identity.size() > 16U * 1024U) {
         throw std::runtime_error("AUTH v2 identity size is invalid");
     }
     RequireWindow(out.rekey_window);
-    RequireSize(out.signature, 64, "Ed25519 signature");
+    RequireSize(out.signature, kCompositeSignatureLen, "composite signature");
+    // Both or neither. Rejecting the half-supplied case here means every later
+    // consumer can treat claims_admin() as a complete, well-formed claim.
+    if (out.admin_identity.empty() != out.admin_signature.empty()) {
+        throw std::runtime_error(
+            "AUTH v2 admin identity and admin signature must both be present");
+    }
+    if (out.claims_admin()) {
+        if (out.admin_identity.size() > 16U * 1024U) {
+            throw std::runtime_error("AUTH v2 admin identity size is invalid");
+        }
+        RequireSize(out.admin_signature, kCompositeSignatureLen,
+                    "composite admin signature");
+    }
     return out;
 }
 
@@ -356,6 +408,31 @@ Bytes BuildSignatureInput(const Bytes& challenge_record,
                unsigned_response_record.end());
     AppendU32(out, static_cast<std::uint32_t>(channel_binding.size()));
     out.insert(out.end(), channel_binding.begin(), channel_binding.end());
+    return out;
+}
+
+Bytes BuildAdminSignatureInput(const Bytes& challenge_record,
+                               const Bytes& unsigned_response_record,
+                               const Bytes& channel_binding,
+                               const Bytes& visitor_identity) {
+    if (visitor_identity.empty() || visitor_identity.size() > 16U * 1024U) {
+        throw std::runtime_error("AUTH v2 admin binding identity is invalid");
+    }
+    // Reuse the visitor input builder for the shared prefix so the two can never
+    // drift apart in what they cover, then re-domain it and append the identity
+    // this admin proof is bound to.
+    const Bytes base = BuildSignatureInput(challenge_record,
+                                           unsigned_response_record,
+                                           channel_binding);
+    if (base.size() < kSignatureDomain.size()) {
+        throw std::runtime_error("AUTH v2 signature input is malformed");
+    }
+    Bytes out(kAdminSignatureDomain.begin(), kAdminSignatureDomain.end());
+    out.insert(out.end(),
+               base.begin() + static_cast<std::ptrdiff_t>(kSignatureDomain.size()),
+               base.end());
+    AppendU32(out, static_cast<std::uint32_t>(visitor_identity.size()));
+    out.insert(out.end(), visitor_identity.begin(), visitor_identity.end());
     return out;
 }
 

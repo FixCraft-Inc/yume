@@ -137,17 +137,9 @@ std::vector<std::string> build_args(std::filesystem::path const& exe,
     }
     add_arg(args, "--threads", cfg.io_threads);
 
-    args.emplace_back(cfg.obfuscation ? "--obfs" : "--no-obfs");
-    add_arg(args, "--obfs-secret", cfg.obfs_secret);
-    if (cfg.inner_crypto) {
-        args.emplace_back(cfg.inner_heavy ? "--inner-heavy" : "--inner-light");
-        args.emplace_back(cfg.inner_hop ? "--hop" : "--no-hop");
-        args.emplace_back("--hop-interval");
-        args.emplace_back(std::to_string(cfg.hop_interval_ms));
-    } else {
-        args.emplace_back("--no-inner");
-    }
-
+    // The H2 carrier and the directional ratchet are both mandatory in 2.0;
+    // there is no flag to select or defeat either, so nothing is emitted for
+    // them here. Secrets travel as files, never on the command line.
     args.emplace_back(cfg.allow_udp ? "--udp" : "--tcp");
     if (cfg.allow_local_ip) args.emplace_back("--allow-local-ip");
     if (cfg.server_in_charge) {
@@ -157,14 +149,12 @@ std::vector<std::string> build_args(std::filesystem::path const& exe,
         }
     }
     if (cfg.allow_exec) args.emplace_back("--allow-exec");
-    add_arg(args, "--pq-pub", cfg.pq_public_key);
-    args.emplace_back(cfg.allow_embedded_master ? "--use-embedded-master" : "--no-embedded-master");
-    add_arg(args, "--anonym-ca-cert", cfg.anonym_ca_cert);
+    add_arg(args, "--operator-ca-cert", cfg.anonym_ca_cert);
     add_arg(args, "--tls-ca", cfg.tls_ca_cert);
     add_arg(args, "--tls-name", cfg.tls_server_name);
     add_arg(args, "--tls-pin", cfg.tls_pin_sha256);
     add_arg(args, "--proxy", cfg.outbound_proxy_url);
-    if (cfg.require_anonym) args.emplace_back("--require-anonym");
+    if (cfg.require_anonym) args.emplace_back("--require-operator-identity");
     if (cfg.boring) args.emplace_back("--boring");
     args.emplace_back("--non-interactive");
     if (opts.accept_monitoring) args.emplace_back("--accept-monitoring");
@@ -185,15 +175,13 @@ std::vector<std::string> build_args(std::filesystem::path const& exe,
     add_arg(args, "--relay-key-file", cfg.relay_key_file);
     add_arg(args, "--instance", cfg.instance_name);
 
-    if (!cfg.tls_stealth_enabled) {
-        args.emplace_back("--no-stealth");
-    } else {
-        add_arg(args, "--profile", cfg.tls_stealth_profile);
-        if (cfg.tls_fingerprint_log) args.emplace_back("--tls-fingerprint-log");
-        add_arg(args, "--tls-fingerprint-log-path", cfg.tls_fingerprint_log_path);
-        if (cfg.tls_fingerprint_verify) args.emplace_back("--tls-fingerprint-verify");
-        add_arg(args, "--tls-fingerprint-test-endpoint", cfg.tls_fingerprint_test_endpoint);
-    }
+    // The Chrome cover profile is pinned and mandatory; there is no flag to
+    // disable stealth or rotate the fixture.
+    add_arg(args, "--profile", cfg.tls_stealth_profile);
+    if (cfg.tls_fingerprint_log) args.emplace_back("--tls-fingerprint-log");
+    add_arg(args, "--tls-fingerprint-log-path", cfg.tls_fingerprint_log_path);
+    if (cfg.tls_fingerprint_verify) args.emplace_back("--tls-fingerprint-verify");
+    add_arg(args, "--tls-fingerprint-test-endpoint", cfg.tls_fingerprint_test_endpoint);
 
     return args;
 }

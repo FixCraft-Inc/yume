@@ -7,18 +7,14 @@
  * Internal (server-private) helpers shared across the session_*.cpp
  * translation units that together implement yume::server::Session.
  *
- * These were originally a single anonymous namespace at the top of
- * session.cpp. When session.cpp was split by responsibility, the
- * shared constants / free helpers / DirectDnsAQuery had to become
- * visible to more than one TU, so they live here in
- * yume::server::detail. Each session_*.cpp does:
+ * Shared constants, free helpers, and DirectDnsAQuery live in
+ * yume::server::detail because more than one session translation unit needs
+ * them. Each session_*.cpp does:
  *     #include "server/session/internal.hpp"
  *     using namespace detail;   // inside namespace yume::server
- * so the moved method bodies compile unchanged.
  *
  * This is an INTERNAL header: it is included only by the session_*.cpp
- * files, never by a public consumer. No behavior change vs. the
- * former anonymous namespace.
+ * files, never by a public consumer.
  * ---------------------------------------------------------------- */
 
 #pragma once

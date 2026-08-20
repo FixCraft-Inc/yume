@@ -27,6 +27,9 @@
 #include "core/stealth/tls_stealth.hpp"
 #include "core/version.hpp"
 #include "util.hpp"
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/socket_base.hpp>
+#include <boost/asio/ssl.hpp>
 
 namespace yume::client {
 namespace {
@@ -159,7 +162,7 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
         stream, io, cfg.identity, auth_challenge,
         *cfg.inner_psk_material, stream.take_exporter(),
         *h2_carrier, cfg.rekey_window,
-        *ratchet_policy);
+        *ratchet_policy, cfg.admin_identity);
 
     auto server_info_timeout = kServerInfoTimeout;
     protocol::Frame info = h2_carrier

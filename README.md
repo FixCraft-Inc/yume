@@ -215,7 +215,8 @@ FixCraft will operate a small fleet of public `yumed` endpoints. They will:
 - be free to use without an account, payment, or rate-limiting beyond fairness
 - run the unmodified daemon you can build from this tree
 - serve a real HTML page on `/` so that a browser hitting the same hostname sees something normal
-- publish their public keys and authorised-keys fingerprints in advance so clients can pin them
+- publish TLS certificate/pin and operator-proof trust material in advance so
+  clients can authenticate the endpoint
 
 Specific hostnames will land here once the fleet is up.
 
@@ -344,7 +345,7 @@ The proxy applies to the outer transport (TCP → SOCKS5 → TLS → Yume). Inne
 
 ## Operator identity and privacy policy
 
-The historical `--anonym` flag asks `yumed` to minimize identifying logs (no client hostname, no IP, no authentication line) and publish an operator identity proof. The proof establishes that the endpoint is authorized by a CA selected by the client; it cannot prove that the host does not inspect, retain, or correlate traffic. New CLI aliases use `--operator-identity`, `--operator-ca-cert`, and `--operator-delegated-cert`; legacy config/wire names remain compatible.
+The `--operator-identity` flag asks `yumed` to minimize identifying logs (no client hostname, no IP, no authentication line) and publish an operator identity proof. The proof establishes that the endpoint is authorized by a CA selected by the client; it cannot prove that the host does not inspect, retain, or correlate traffic. The related flags are `--operator-ca-cert`, `--operator-delegated-cert`, and `--operator-proof-mode`. The serialized config keys still spell this family `anonym_*`.
 
 `--operator-proof-mode {auto|local|fixcraft}` selects the proof source:
 
@@ -375,12 +376,13 @@ uniform high-entropy key material, not a human password.
 
 ### Client identity, forward secrecy, and server trust
 
-Client authorization uses an Ed25519 key pair. The 2.0 client loads the private
-key locally and sends only its public key plus a signature over the complete
+Client authorization uses a composite Ed25519 + ML-DSA-87 identity. The 2.0
+client loads both private halves locally and sends only the two public keys plus
+both signatures over the complete
 server challenge and unsigned client response. That transcript includes both
 ephemeral key exchanges, negotiated rekey window, and accepted ratchet policies. A server that records
 it cannot derive the private key or turn the signature into a reusable
-impersonation under the Ed25519 security assumption. Generated private-key
+impersonation unless both signature assumptions fail. Generated private-key
 files are created exclusively at mode `0600` and strict loading rejects
 symlinks, foreign ownership, group/world access, and oversized files.
 Protecting the client host and key file remains the client's responsibility.
@@ -404,7 +406,7 @@ call a volunteer node “untrusted” if the intended guarantee is that it canno
 observe or alter non-end-to-end-encrypted application data; YUME does not
 provide that property.
 
-The Ed25519 AUTH transcript is carried inside hostname-verified TLS and is
+The composite AUTH transcript is carried inside hostname-verified TLS and is
 bound to it: the signature covers a 32-byte TLS 1.3 exporter that each endpoint
 computes from its own live connection and never puts on the wire. A malicious
 endpoint that terminates TLS with a client can therefore no longer forward that
@@ -467,7 +469,7 @@ Bootstrap node (cluster entry point, accepts incoming peer dials):
 sudo yumed --listen 443 \
     --cluster-bootstrap \
     --federation-auth-key /etc/yume/fed.key \
-    --federation-anonym-ca /etc/yume/fed-ca.pem \
+    --federation-operator-ca /etc/yume/fed-ca.pem \
     --auth-keys /etc/yume/authorized_keys \
     --obfs-secret-file /etc/yume/secrets/admission.hex \
     --inner-psk-file /etc/yume/secrets/inner.hex \
@@ -482,7 +484,7 @@ sudo yumed --listen 443 \
     --cluster-join alice@bootstrap.example.com:443 \
     --cluster-join bob@second.example.com \
     --federation-auth-key /etc/yume/fed.key \
-    --federation-anonym-ca /etc/yume/fed-ca.pem \
+    --federation-operator-ca /etc/yume/fed-ca.pem \
     --auth-keys /etc/yume/authorized_keys \
     --obfs-secret-file /etc/yume/secrets/admission.hex \
     --inner-psk-file /etc/yume/secrets/inner.hex \
@@ -577,12 +579,17 @@ status is tracked in
 Authentication and authorization use separate regular-user and operator trust
 stores, each split into public keys and policy metadata:
 
-- `authorized_keys` lists Ed25519 public keys that may **connect**.
+- `authorized_keys` lists composite Ed25519 + ML-DSA-87 identities that may
+  **connect**; each logical identity is two consecutive public-key PEM blocks.
 - `auth_keys.meta` maps each regular-key fingerprint to its permissions,
   identity type, per-key session cap, and fair-egress weight.
 - `operator_keys` is a physically separate set of controller identities.
-- `operator_keys.meta` holds their explicit policy. Only this store may grant
-  outbound administration, and operator keys cannot be bulk keys.
+- `operator_keys.meta` holds their non-admin policy; operator keys cannot be
+  bulk keys.
+- `admin_keys` holds only distinct second-factor composite identities. A client
+  is admin only when its enrolled visitor/operator identity and its separate
+  admin identity both sign the same bound AUTH exchange. An unenrolled
+  preauth-only visitor cannot be upgraded by an admin factor.
 
 Regular keys default to `key_type: "individual"` and one authenticated session.
 An administrator may explicitly mark a regular key as `bulk` for many users who
@@ -619,11 +626,11 @@ Prefer `yume-setup issue-key`. The `--keys-gen` path creates both files
 exclusively at mode `0600`, refuses to overwrite either path, and removes the
 private half if it cannot complete the pair.
 
-The four key/policy files are parsed into immutable snapshots at startup.
-Authenticated runtime reload atomically replaces all four together; a parse,
+The five key/policy files are parsed into immutable snapshots at startup.
+Authenticated runtime reload atomically replaces all five together; a parse,
 validation, or duplicate-store failure leaves the previous complete snapshot
 active. Restarting `yumed` is the fallback when runtime reload is unavailable.
-Ed25519 authentication uses OpenSSL `EVP_DigestVerify`.
+Both composite signatures are verified with OpenSSL `EVP_DigestVerify`.
 
 ## Real HTTP facade examples
 
@@ -661,17 +668,17 @@ sudo ./build/bin/yumed \
     --real-secret-file ./.secrets/html_secret
 ```
 
-`--real` and `--obfs` may be set together; they share port 443 and are demuxed by the first cleartext bytes after TLS.
+`--real` and the mandatory HTTP/2 carrier share port 443 and are demuxed by the first cleartext bytes after TLS.
 
 ## Security posture
 
 - AGPL-3.0-or-later, with client, daemon, proxy, GUI, and libyume fully buildable from this tree
 - BaseFWX repository, commit, and minimum compatible version come from
   `config/dependencies.json`; release CI fails if mandatory crypto support is missing
-- Authorized keys are verified by `yume::crypto::verify_key` with OpenSSL
+- Authorized keys are verified by `yume::crypto::verify_composite` with OpenSSL
   `EVP_DigestVerify` ([src/core/security/crypto.cpp](src/core/security/crypto.cpp))
-- Client AUTH transmits the Ed25519 public key and transcript signature, never
-  the private key. The signature is bound to the live TLS 1.3 exporter, so it
+- Client AUTH transmits both composite public keys and signatures, never the
+  private halves. The signatures are bound to the live TLS 1.3 exporter, so they
   cannot be forwarded to authenticate a second TLS connection; this does not
   make the terminating server trustworthy or blind to plaintext
 - Inner-frame AEAD is verified before plaintext is delivered ([basefwx/cpp/src/crypto/crypto.cpp](basefwx/cpp/src/crypto/crypto.cpp))

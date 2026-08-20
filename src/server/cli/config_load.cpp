@@ -21,6 +21,7 @@
 #include "server/config/json_values.hpp"
 #include "server/host/host_routes.hpp"
 #include "util.hpp"
+#include "util_json.hpp"
 
 namespace yume::server::cli {
 namespace {
@@ -61,6 +62,9 @@ void resolve_server_config_paths(yume::server::ServerConfig& cfg,
     }
     if (!cfg.auth_keys_meta.empty()) {
         cfg.auth_keys_meta = resolve_cfg_path(cfg.auth_keys_meta);
+    }
+    if (!cfg.admin_keys.empty()) {
+        cfg.admin_keys = resolve_cfg_path(cfg.admin_keys);
     }
     if (!cfg.pq_private_key.empty()) {
         cfg.pq_private_key = resolve_cfg_path(cfg.pq_private_key);
@@ -149,8 +153,13 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
                 cfg.transport_profile =
                     json["transport_profile"].get<std::string>();
             }
-            if (json.contains("listen_port") && cfg.listen_port == 443) {
+            if (json.contains("listen_port") && !overrides.listen) {
                 cfg.listen_port = json["listen_port"].get<int>();
+            }
+            if (json.contains("listen_address") &&
+                !overrides.listen) {
+                cfg.listen_address =
+                    json["listen_address"].get<std::string>();
             }
             if (json.contains("reverse_port_min") &&
                 cfg.reverse_port_min == yume::policy::kReversePortMinDefault) {
@@ -174,6 +183,14 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
             }
             if (json.contains("auth_keys_meta") && cfg.auth_keys_meta.empty()) {
                 cfg.auth_keys_meta = resolve_cfg_path(json["auth_keys_meta"].get<std::string>());
+            }
+            // The admin store must be reachable from a config file, not only
+            // from --admin-keys. Without this the dual-key requirement is
+            // unreachable for every config-driven deployment: the key is
+            // written by tools/yume_setup.py and was silently ignored, so the
+            // second factor could never be verified. CLI wins, as above.
+            if (json.contains("admin_keys") && cfg.admin_keys.empty()) {
+                cfg.admin_keys = resolve_cfg_path(json["admin_keys"].get<std::string>());
             }
             if (json.contains("threads") && !overrides.threads) {
                 cfg.threads = json["threads"].get<int>();
@@ -209,14 +226,16 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
             if (json.contains("inner_heavy")) {
                 cfg.inner_heavy = json["inner_heavy"].get<bool>();
             }
-            if (json.contains("pq_private_key") && cfg.pq_private_key.empty()) {
-                cfg.pq_private_key = resolve_cfg_path(json["pq_private_key"].get<std::string>());
-            }
             if (json.contains("pq_auto_generate") && !overrides.pq_auto_generate) {
                 cfg.pq_auto_generate = json["pq_auto_generate"].get<bool>();
             }
-            if (json.contains("use_embedded_master") && !overrides.allow_embedded_master) {
-                cfg.allow_embedded_master = json["use_embedded_master"].get<bool>();
+            if (json.contains("pq_private_key") && cfg.pq_private_key.empty()) {
+                cfg.pq_private_key = resolve_cfg_path(json["pq_private_key"].get<std::string>());
+            }
+            if (json.contains("allow_embedded_master") &&
+                !overrides.allow_embedded_master) {
+                cfg.allow_embedded_master =
+                    json["allow_embedded_master"].get<bool>();
             }
             if (json.contains("allow_exec") && !cfg.allow_exec) {
                 cfg.allow_exec = json["allow_exec"].get<bool>();
@@ -277,6 +296,20 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
                         return false;
                     }
                     cfg.allowed_services.push_back(item.get<std::string>());
+                }
+            }
+            if (json.contains("preauth_services")) {
+                if (!json["preauth_services"].is_array()) {
+                    yume::util::log_error("preauth_services must be an array");
+                    return false;
+                }
+                for (const auto& item : json["preauth_services"]) {
+                    if (!item.is_string()) {
+                        yume::util::log_error(
+                            "preauth_services entries must be strings");
+                        return false;
+                    }
+                    cfg.preauth_services.push_back(item.get<std::string>());
                 }
             }
             if (json.contains("monero_rpc_backend")) {

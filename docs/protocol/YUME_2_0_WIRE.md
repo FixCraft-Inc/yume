@@ -105,11 +105,18 @@ limited to 64 KiB before allocation.
 | -- | -- | -- |
 | 1 | yes | 32-byte client ephemeral X25519 public key |
 | 2 | yes | ML-KEM-1024 ciphertext |
-| 3 | yes | existing Ed25519 public identity encoding |
+| 3 | yes | composite public identity: Ed25519 PEM followed by ML-DSA-87 PEM |
 | 4 | yes | `u16` concurrent directional epoch offers the client accepts (1..64) |
 | 5 | yes | 20-byte accepted ratchet policy: `epoch_bytes_u64 || epoch_frames_u64 || epoch_active_ms_u32` |
 | 6 | yes | UTF-8 exact transport profile `chrome151-node24-v1` |
-| 7 | yes | Ed25519 signature |
+| 7 | yes | 4691-byte composite signature: Ed25519 (64) then ML-DSA-87 (4627) |
+| 8 | yes, when present | composite admin public identity (second factor; absent for a visitor session) |
+| 9 | yes, when present | 4691-byte composite admin signature |
+
+Fields 8 and 9 are optional but **critical**: a peer that does not understand
+them must refuse the record rather than admit the session as an ordinary
+visitor. They are both-or-neither -- a response carrying one without the other
+is rejected at parse.
 
 Fields 4 through 6 are part of the record the client signs, while the complete
 challenge (including its profile field) is also in the signature input. The
@@ -122,11 +129,38 @@ bounds in `docs/SECURITY_MODES.md` are fatal on build and parse.
 The signature input is:
 
 ```
-"yume/2.0/auth-signature/v3" ||
+"yume/2.0/auth-signature/v4" ||
 u32(len(challenge_record)) || challenge_record ||
 u32(len(response_without_signature)) || response_without_signature ||
 u32(32) || channel_binding
 ```
+
+The admin second factor, when present, signs the same transcript under a
+different domain and is additionally bound to the visitor identity that
+presented it:
+
+```
+"yume/2.0/auth-admin/v1" ||
+u32(len(challenge_record)) || challenge_record ||
+u32(len(response_without_signature)) || response_without_signature ||
+u32(32) || channel_binding ||
+u32(len(visitor_identity)) || visitor_identity
+```
+
+Both properties are load-bearing. The distinct domain stops a captured visitor
+signature verifying as an admin one over the same transcript; the visitor
+identity binding stops a captured admin signature being lifted off one session
+and attached to a different visitor's response.
+
+A session is admin only when the visitor signature is valid, that visitor is
+enrolled in the regular or operator store, and it presents a second identity
+that parses, has a fingerprint *different* from the visitor identity, appears
+in the server's separate admin store, and signed the above input. An otherwise
+preauth-only visitor cannot use an admin factor as an alternate admission
+route. No key policy flag can produce an admin session:
+`allow_inbound_admin`, `allow_outbound_admin` and `control_full` are refused at
+policy load, and the server refuses to start if any identity appears in both
+the visitor and admin stores.
 
 Admission and this signature are verified before KEM decapsulation or any
 other avoidable expensive operation. `AUTH_OK` is sent only after the inner
@@ -162,9 +196,11 @@ cannot produce a 32-byte binding fails AUTH. The same value is also folded
 into the establishment transcript (see the key schedule below), so a bypassed
 transcript check still yields unrelated roots on the two sides of a relay.
 
-Channel binding does not authenticate the endpoint by itself. Certificate and
-hostname verification, optional pinning, admission, and the Ed25519 trust
-store remain the mechanisms that decide which server a client will talk to.
+Channel binding does not authenticate the endpoint by itself. TLS certificate
+and hostname verification, optional leaf pinning, and optional operator proof
+authenticate the server to the client. Admission and the inner PSK are
+additional deployment gates; the composite client-identity stores are checked
+by the server and do not identify the server to the client.
 
 ## Admission
 

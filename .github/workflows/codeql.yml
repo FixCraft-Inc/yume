@@ -62,8 +62,10 @@ jobs:
             build-essential cmake ninja-build pkg-config perl \
             zlib1g-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
             libboost-all-dev libspdlog-dev nlohmann-json3-dev
-          bash scripts/ensure-openssl.sh
-          bash scripts/ensure-nghttp2.sh
+          source scripts/ensure-openssl.sh
+          yume_openssl_ensure
+          source scripts/ensure-nghttp2.sh
+          yume_nghttp2_ensure
 
       # See ci.yml: the archive is not committed any more, so this fetches it
       # from the published mirror and verifies it against the pinned SHA-256

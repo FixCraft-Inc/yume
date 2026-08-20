@@ -187,8 +187,19 @@ def validate_workflow_guards() -> None:
     )
     for needle in required_release:
         require(needle in release_yml, f"release.yml is missing required guard: {needle}")
+    dependency_setup = (
+        "source scripts/ensure-openssl.sh\n"
+        "          yume_openssl_ensure\n"
+        "          source scripts/ensure-nghttp2.sh\n"
+        "          yume_nghttp2_ensure"
+    )
+    require(ci_yml.count(dependency_setup) == 2,
+            "Both CI build lanes must preserve the combined OpenSSL/nghttp2 environment")
+    require(codeql_yml.count(dependency_setup) == 1,
+            "CodeQL C++ setup must preserve the combined OpenSSL/nghttp2 environment")
+    require(release_yml.count(dependency_setup) == 1,
+            "Release setup must preserve the combined OpenSSL/nghttp2 environment")
     for needle in (
-        "bash scripts/ensure-openssl.sh",
         'YUME_OPENSSL_FORCE_PINNED: "1"',
         "-DBASEFWX_REQUIRE_ARGON2=ON",
         "-DBASEFWX_REQUIRE_OQS=ON",
@@ -199,8 +210,6 @@ def validate_workflow_guards() -> None:
             "OpenSSL dependency minimum changed without updating release guards")
     require("find_package(OpenSSL 3.5 REQUIRED)" in cmake,
             "CMake must reject OpenSSL versions without ML-DSA-87")
-    require("bash scripts/ensure-openssl.sh" in codeql_yml,
-            "CodeQL C++ setup must provide the pinned OpenSSL dependency")
     require('YUME_OPENSSL_FORCE_PINNED: "1"' in codeql_yml,
             "CodeQL must use exact OpenSSL source provenance")
     require(openssl["revision"] in openssl_helper,

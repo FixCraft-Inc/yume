@@ -435,7 +435,11 @@ else()
 endif()
 
 if(NOT YUME_TRANSPORT_CORE_ONLY)
-    find_package(OpenSSL REQUIRED)
+    # Composite AUTH and the qualified native TLS profile both depend on
+    # primitives first provided by OpenSSL 3.5 (ML-DSA and X25519MLKEM768).
+    # Accepting an older library produces binaries that configure and link but
+    # fail closed only when an identity is generated or a session starts.
+    find_package(OpenSSL 3.5 REQUIRED)
     find_package(PkgConfig REQUIRED)
     if(YUME_STATIC)
         # FindPkgConfig's generated imported target resolves -lnghttp2 to the
@@ -648,6 +652,9 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         set(CPACK_DEBIAN_PACKAGE_SECTION "net")
         set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
         set(CPACK_DEBIAN_PACKAGE_MAINTAINER "FixCraft")
+        # Generic EVP provider lookups do not carry a 3.5 symbol version, so
+        # dpkg-shlibdeps cannot infer the ML-DSA runtime floor by itself.
+        set(CPACK_DEBIAN_PACKAGE_DEPENDS "libssl3t64 (>= 3.5.0)")
         set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ${YUME_DEB_SHLIBDEPS})
         if(YUME_BUILD_SHARED_ABI)
             set(CPACK_DEB_COMPONENT_INSTALL ON)
@@ -655,8 +662,10 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             set(CPACK_COMPONENTS_GROUPING IGNORE)
             set(CPACK_DEBIAN_YUME_CLI_PACKAGE_NAME "yume")
             set(CPACK_DEBIAN_YUME_CLI_PACKAGE_SECTION "net")
+            set(CPACK_DEBIAN_YUME_CLI_PACKAGE_DEPENDS "libssl3t64 (>= 3.5.0)")
             set(CPACK_DEBIAN_LIBYUME_RUNTIME_PACKAGE_NAME "libyume1")
             set(CPACK_DEBIAN_LIBYUME_RUNTIME_PACKAGE_SECTION "libs")
+            set(CPACK_DEBIAN_LIBYUME_RUNTIME_PACKAGE_DEPENDS "libssl3t64 (>= 3.5.0)")
             set(CPACK_DEBIAN_LIBYUME_DEVELOPMENT_PACKAGE_NAME "libyume-dev")
             set(CPACK_DEBIAN_LIBYUME_DEVELOPMENT_PACKAGE_SECTION "libdevel")
             set(CPACK_DEBIAN_LIBYUME_DEVELOPMENT_PACKAGE_DEPENDS "libyume1 (= ${YUME_PACKAGE_VERSION})")

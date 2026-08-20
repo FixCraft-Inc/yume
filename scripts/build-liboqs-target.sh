@@ -19,7 +19,8 @@
 #
 # Honored env:
 #   LIBOQS_TARGET       host | armv7 | armv8 | i386            (required)
-#   LIBOQS_VERSION      upstream tag, default 0.11.0
+#   LIBOQS_VERSION      upstream tag, default/pinned 0.16.0
+#   LIBOQS_SOURCE_SHA256  required for a non-default source tag
 #   LIBOQS_BUILD_DIR    scratch dir, default $TMPDIR/liboqs-$target-build
 #   LIBOQS_PREFIX_OVERRIDE  override the default install prefix
 #   LIBOQS_FORCE        rebuild even if .a + header already present at prefix
@@ -27,8 +28,24 @@
 set -euo pipefail
 
 LIBOQS_TARGET="${LIBOQS_TARGET:?LIBOQS_TARGET must be set (host|armv7|armv8|i386)}"
-LIBOQS_VERSION="${LIBOQS_VERSION:-0.11.0}"
+LIBOQS_PINNED_VERSION="0.16.0"
+LIBOQS_PINNED_COMMIT="5a1a854b0dc9f2141bdc771c555ee60c37950183"
+LIBOQS_PINNED_SHA256="162d5b510518ee5f285f82fa1f16402a885176e818bf1b1a4c3c91c9a2f01eae"
+LIBOQS_VERSION="${LIBOQS_VERSION:-${LIBOQS_PINNED_VERSION}}"
+LIBOQS_SOURCE_SHA256="${LIBOQS_SOURCE_SHA256:-}"
 LIBOQS_FORCE="${LIBOQS_FORCE:-0}"
+
+if [[ "${LIBOQS_VERSION}" == "${LIBOQS_PINNED_VERSION}" ]]; then
+    if [[ -n "${LIBOQS_SOURCE_SHA256}" &&
+          "${LIBOQS_SOURCE_SHA256}" != "${LIBOQS_PINNED_SHA256}" ]]; then
+        echo "LIBOQS_SOURCE_SHA256 does not match the pinned ${LIBOQS_PINNED_VERSION} archive" >&2
+        exit 2
+    fi
+    LIBOQS_SOURCE_SHA256="${LIBOQS_PINNED_SHA256}"
+elif [[ ! "${LIBOQS_SOURCE_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "A 64-character LIBOQS_SOURCE_SHA256 is required for non-pinned liboqs versions" >&2
+    exit 2
+fi
 
 case "${LIBOQS_TARGET}" in
     host)
@@ -192,6 +209,19 @@ if [[ ! -f "${src_dir}/CMakeLists.txt" ]]; then
         mv -f "${tarball}.part" "${tarball}"
     else
         echo "Reusing cached liboqs ${LIBOQS_VERSION} tarball at ${tarball}"
+    fi
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual_hash="$(sha256sum "${tarball}" | awk '{print $1}')"
+    elif command -v shasum >/dev/null 2>&1; then
+        actual_hash="$(shasum -a 256 "${tarball}" | awk '{print $1}')"
+    else
+        echo "sha256sum or shasum is required to verify the liboqs source archive" >&2
+        exit 1
+    fi
+    if [[ "${actual_hash}" != "${LIBOQS_SOURCE_SHA256}" ]]; then
+        rm -f -- "${tarball}"
+        echo "liboqs ${LIBOQS_VERSION} source checksum mismatch; cached archive removed" >&2
+        exit 1
     fi
     rm -rf "${src_dir}"
     mkdir -p "${src_dir}"

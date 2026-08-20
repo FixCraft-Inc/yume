@@ -7,7 +7,7 @@ Build-Depends:
  cmake (>= 3.20),
  g++,
  pkgconf,
- libssl-dev,
+ libssl-dev (>= 3.5.0),
  libboost-system-dev,
  nlohmann-json3-dev,
  libspdlog-dev,
@@ -34,6 +34,7 @@ Multi-Arch: same
 Pre-Depends:
  ${misc:Pre-Depends}
 Depends:
+ libssl3t64 (>= 3.5.0),
  ${shlibs:Depends},
  ${misc:Depends}
 Description: YUME stable C ABI runtime library
@@ -61,6 +62,7 @@ Description: YUME stable C ABI development files
 Package: yume
 Architecture: any
 Depends:
+ libssl3t64 (>= 3.5.0),
  ${shlibs:Depends},
  ${misc:Depends}
 Recommends:
@@ -81,6 +83,7 @@ Description: stealth transport command-line client
 Package: yume-daemon
 Architecture: any
 Depends:
+ libssl3t64 (>= 3.5.0),
  ${shlibs:Depends},
  ${misc:Depends}
 Suggests:
@@ -106,8 +109,8 @@ Recommends:
 Description: graphical desktop client for the Yume transport
  yume-gui is an optional Dear ImGui-based desktop application that
  embeds the yume_core library directly. It provides client connection
- management, local server hosting, Ed25519 identity and authorization key
- management, a relay directory and chat, log inspection, and a
+ management, local server hosting, composite Ed25519 + ML-DSA-87 identity and
+ authorization key management, a relay directory and chat, log inspection, and a
  system tray icon with minimise-to-tray behaviour.
  .
  This package is independent of the CLI binaries and can be installed

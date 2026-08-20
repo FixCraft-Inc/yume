@@ -280,6 +280,17 @@ release preflight consume that one fail-closed manifest; BaseFWX remains pinned
 and is not allowed to float to a branch. See `docs/TRANSPORT_PROFILES.md` for
 the extension and evidence contract.
 
+The same manifest records the official OpenSSL source revision used by the
+checksum-pinned CI fallback. Full builds require OpenSSL >= 3.5 because
+composite AUTH uses ML-DSA-87 and the qualified native profile uses
+X25519MLKEM768; older libraries are rejected during CMake configuration rather
+than producing a binary that fails only at first use. CI, CodeQL, and release
+builds force the supported OpenSSL 3.5.7 source pin, while native Linux
+development may use a system OpenSSL >= 3.5 with the required provider.
+The prepared Linux release lane separately pins and checksum-verifies liboqs
+0.16.0 and links its archive statically so artifacts have no `liboqs.so`
+runtime dependency or build-cache search path.
+
 The candidate changes no authenticated profile ID, wire byte, IPC protocol,
 AEAD/AAD label, KDF, algorithm, or default backend. Adding a registry entry is
 not permission to accept it on the wire: a new authenticated ID still requires

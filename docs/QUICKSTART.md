@@ -18,9 +18,11 @@ and is never fetched or detached automatically. Set
 `BASEFWX_SYNC_MODE=pinned` for an explicitly pinned build, or
 `BASEFWX_SYNC_MODE=worktree` to require the current checkout.
 
-`ezbuild.sh` requires nghttp2 1.64 or newer. When the system package is too
-old, it builds the pinned, checksum-verified nghttp2 1.69.0 library under the
-user cache. The default is a portable Release build with `-O3`, LTO, fast-math
+`ezbuild.sh` requires OpenSSL 3.5 or newer with ML-DSA-87 and nghttp2 1.64 or
+newer. When either system package is too old, it builds the pinned,
+checksum-verified OpenSSL 3.5.7 or nghttp2 1.69.0 library under the user cache.
+Direct CMake builds must provide OpenSSL >= 3.5, optionally through
+`OPENSSL_ROOT_DIR`. The default is a portable Release build with `-O3`, LTO, fast-math
 disabled, and developer timing code compiled out. `./ezbuild.sh --native`
 produces the fastest executables for the current CPU but they are not portable;
 `./ezbuild.sh --dev` produces optimized RelWithDebInfo binaries with opt-in

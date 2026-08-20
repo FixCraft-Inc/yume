@@ -15,6 +15,8 @@ env:
   # be killed by the runner without a compiler diagnostic (exit 143).
   CI_RELEASE_BUILD_JOBS: "1"
   CI_SANITIZER_BUILD_JOBS: "2"
+  # CI provenance is exact even if a future runner image grows OpenSSL 3.5+.
+  YUME_OPENSSL_FORCE_PINNED: "1"
 
 jobs:
   website-build:
@@ -99,9 +101,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential cmake ninja-build pkg-config \
-            libssl-dev zlib1g-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
+            build-essential cmake ninja-build pkg-config perl \
+            zlib1g-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
             libboost-all-dev libspdlog-dev nlohmann-json3-dev
+          bash scripts/ensure-openssl.sh
           bash scripts/ensure-nghttp2.sh
 
       # The archive is no longer committed (it was purged from history on
@@ -115,6 +118,8 @@ jobs:
 
       - name: Configure
         run: |
+          test "$(pkg-config --modversion openssl)" = "3.5.7"
+          openssl list -signature-algorithms | grep -F 'ML-DSA-87'
           cmake -S . -B build-ci \
             -DCMAKE_BUILD_TYPE=Release \
             -DYUME_BUILD_TESTING=ON \
@@ -181,9 +186,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential cmake ninja-build pkg-config \
-            libssl-dev zlib1g-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
+            build-essential cmake ninja-build pkg-config perl \
+            zlib1g-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
             libboost-all-dev libspdlog-dev nlohmann-json3-dev
+          bash scripts/ensure-openssl.sh
           bash scripts/ensure-nghttp2.sh
 
       - name: Fetch and verify prebuilt vendor libs
@@ -192,6 +198,8 @@ jobs:
 
       - name: Configure (ASan + UBSan)
         run: |
+          test "$(pkg-config --modversion openssl)" = "3.5.7"
+          openssl list -signature-algorithms | grep -F 'ML-DSA-87'
           # Vendor deps stay ON so the sanitizers cover the real crypto
           # configuration (liboqs ML-KEM, argon2) rather than a reduced one.
           # These prebuilt archives are not themselves instrumented, so a

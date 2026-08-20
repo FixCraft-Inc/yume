@@ -10,6 +10,13 @@ archive and server executable are separate artifacts:
 Android, GUI, Windows, macOS, ARM, OpenWRT, static binaries, and a Debian
 archive are not supported by this release lane.
 
+The native binaries are dynamically linked and require OpenSSL 3.5 or newer at
+runtime. This is a functional requirement, not only a build-host preference:
+composite client identities require the OpenSSL ML-DSA-87 provider.
+The release lane links its pinned liboqs 0.16.0 archive statically; neither `yume` nor
+`yumed` may have a `liboqs.so` runtime dependency or an embedded build/cache
+library search path. Release packaging and preflight reject both conditions.
+
 ## Verify and unpack
 
 Verify the release SHA-256 files and signatures before installation. Then:
@@ -33,9 +40,9 @@ sudo install -m 0755 yumed-amd64-linux /usr/local/bin/yumed
 
 ## Configure and connect
 
-Provision certificates, independent admission and inner PSKs, and an Ed25519
-client identity by following the full `docs/QUICKSTART.md` from the matching
-source release. The opt-in Chrome 151 backend is selected explicitly:
+Provision certificates, independent admission and inner PSKs, and a composite
+Ed25519 + ML-DSA-87 client identity by following the full `docs/QUICKSTART.md`
+from the matching source release. The opt-in Chrome 151 backend is selected explicitly:
 
 ```sh
 ./yume \

@@ -31,6 +31,15 @@ tree; results from an earlier checkpoint do not transfer across corrections.
   `config/dependencies.json` and consumed by CMake, build scripts, CI, CodeQL,
   and release tooling. The dependency remains immutable and reproducible; a
   floating branch is rejected.
+- Full builds now fail configuration below OpenSSL 3.5 instead of discovering
+  the missing ML-DSA-87 provider during AUTH. The official OpenSSL source
+  revision is recorded beside BaseFWX metadata; CI, CodeQL, and release builds
+  force a SHA-256-verified 3.5.7 source fallback, while native Linux development
+  may use a capable system OpenSSL >= 3.5. Debian package metadata carries the
+  same build and runtime floor explicitly.
+- Prepared Linux release artifacts pin and checksum-verify liboqs 0.16.0,
+  link it statically, and are rejected if they contain a dynamic `liboqs.so`
+  dependency or an embedded runtime library search path.
 
 - Version-pinned Chrome `151.0.7922.71` / Node `24.18.0` reference fixture,
   manifest, and sanitized HTTP/2 profile. One immutable Chrome 151/Debian 13 +

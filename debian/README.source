@@ -34,6 +34,11 @@ against vendor/; both are excluded from the Debian source tarball.
 dpkg-shlibdeps should then produce the runtime dependency on libbasefwx3
 from the linked yume binaries and libyume runtime library.
 
+YUME also requires OpenSSL 3.5 or newer for its mandatory composite
+Ed25519 + ML-DSA-87 identities. The generic provider lookup does not reference
+a 3.5-only versioned ELF symbol, so `debian/control` carries an explicit
+`libssl3t64 (>= 3.5.0)` runtime floor in addition to `${shlibs:Depends}`.
+
 This source package emits libyume1, libyume-dev, yume, yume-daemon, and
 yume-gui binary packages. The nogui build profile omits yume-gui only.
 The yume package contains the client CLI; yume-daemon contains yumed, the

@@ -65,6 +65,17 @@ def require_glibc_dynamic(path: pathlib.Path, description: str) -> None:
             f"{description} is not dynamically linked")
     require("ld-linux-x86-64.so.2" in result.stdout,
             f"{description} does not use the x86-64 glibc loader")
+    dynamic = subprocess.run(
+        ["readelf", "-dW", str(path)],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    ).stdout
+    require("(RPATH)" not in dynamic and "(RUNPATH)" not in dynamic,
+            f"{description} contains an unsafe runtime library search path")
+    require("Shared library: [liboqs" not in dynamic,
+            f"{description} dynamically links liboqs; release binaries must use the pinned static archive")
 
 
 def version_output(path: pathlib.Path) -> str:
@@ -211,6 +222,7 @@ def main() -> None:
                 "argon2": True,
                 "post_quantum": True,
                 "chrome_tls_helper": True,
+                "openssl_minimum": "3.5.0",
             },
             "unsupported_in_first_2_0_release": [
                 "android", "gui", "windows", "macos", "arm", "openwrt",

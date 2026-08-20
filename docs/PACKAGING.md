@@ -20,6 +20,13 @@ builds because the current 2.0 development line consumes the 3.8 X25519 and
 ML-KEM-1024 APIs.
 BaseFWX Debian archive builds must use packaged dependencies, including
 `liboqs-dev`; vendored liboqs is only a local development override.
+Full YUME packages also require OpenSSL 3.5 or newer: composite identities use
+the ML-DSA-87 provider, so `debian/control` deliberately rejects older
+`libssl-dev` packages instead of producing a binary that fails during AUTH.
+The prepared `linux-desktop-2.0` archive is a separate contract: it links the
+checksum-verified liboqs 0.16.0 archive statically, leaves OpenSSL dynamic with a declared 3.5
+runtime floor, and rejects any `DT_RPATH`, `DT_RUNPATH`, or dynamic
+`liboqs.so` dependency before copying an executable into the artifact.
 `libyume` is the stable native C embed ABI. In 1.1 it exposes build metadata,
 opaque client/server handles, and direct named service streams for projects
 that need to embed YUME as their secure transport. YUME's `yume_core`,
@@ -161,7 +168,9 @@ Common mappings:
 For cross builds, `ezbuild.sh --deb` disables `dpkg-shlibdeps`
 automatically because host dependency scanning is usually wrong for
 foreign binaries. Prefer static/minimal packages for simple distribution,
-or provide a complete target sysroot and package dependencies manually.
+or provide a complete target sysroot and package dependencies manually. A
+target sysroot with OpenSSL 3.0 is no longer sufficient for a full YUME build;
+`YUME_TRANSPORT_CORE_ONLY` remains the intentionally crypto-free exception.
 
 ## Debian Main Packaging
 
@@ -245,7 +254,10 @@ Debian package dependencies for libraries that were themselves installed from
 Debian packages. If ML-KEM/liboqs is staged manually under `/usr/local`, the
 generated local `.deb` assumes the target machine has that same library path
 available. For archive-style packages, build through `debian/` against a
-packaged `liboqs-dev` instead.
+packaged `liboqs-dev` instead. CPack and `debian/control` also declare
+`libssl3t64 (>= 3.5.0)` explicitly because generic OpenSSL provider lookups do
+not give `dpkg-shlibdeps` a 3.5-only symbol from which to infer that runtime
+floor.
 
 For local testing, build BaseFWX first:
 

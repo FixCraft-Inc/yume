@@ -105,6 +105,9 @@ int main() {
     // an admin proof could be lifted onto a different visitor's response.
     const Bytes admin_input = BuildAdminSignatureInput(
         encoded, unsigned_response, channel_binding, identity);
+    assert(admin_input.size() == 3558);
+    assert(Sha256Hex(admin_input) ==
+           "d16b8219f7b79d6f57a16369c86d017c4d42163a910fe5c67719c008d80a5697");
     assert(admin_input != signature_input);
 
     // Pin the domain separation itself, not just "the two inputs differ".

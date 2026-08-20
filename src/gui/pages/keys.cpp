@@ -59,7 +59,7 @@ public:
             if (ui::primary_button("Generate identity key",
                                    ImVec2(ui::button_width("Generate identity key", 220), button_h))) {
                 std::string err;
-                auto kp = facade::keys::generate_ed25519(keys_dir_, base_name_, &err);
+                auto kp = facade::keys::generate_identity(keys_dir_, base_name_, &err);
                 last_message_ = kp ? ("Generated " + kp->fingerprint)
                                    : ("Failed: " + err);
                 last_was_error_ = !kp.has_value();

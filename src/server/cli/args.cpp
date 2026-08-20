@@ -144,6 +144,8 @@ bool parse_server_cli_args(int argc,
             cfg.tls_key = resolve_cli_path(argv[++i]);
         } else if (arg == "--auth-keys" && i + 1 < argc) {
             cfg.auth_keys = resolve_cli_path(argv[++i]);
+        } else if (arg == "--admin-keys" && i + 1 < argc) {
+            cfg.admin_keys = resolve_cli_path(argv[++i]);
         } else if (arg == "--auth-keys-meta" && i + 1 < argc) {
             cfg.auth_keys_meta = resolve_cli_path(argv[++i]);
         } else if (arg == "--threads" && i + 1 < argc) {
@@ -396,6 +398,11 @@ bool parse_server_cli_args(int argc,
             result.key_command.generate_prefix = argv[++i];
         } else if (arg == "--keys-gen-add") {
             result.key_command.generate_and_add = true;
+        } else if (arg == "--keys-admin") {
+            // Modifier for --keys-add / --keys-gen-add: enrol into the admin
+            // store. Being in that store grants nothing on its own -- an admin
+            // session still requires a distinct visitor key as the first factor.
+            result.key_command.admin = true;
         } else if (arg == "--ui") {
             result.key_command.ui = true;
         } else if (arg == "--boring") {

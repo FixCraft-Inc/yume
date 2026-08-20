@@ -82,6 +82,38 @@ def write_private(path: Path, data: str | bytes) -> None:
             pass
 
 
+def write_private_files(path: Path, sources: tuple[Path, ...]) -> None:
+    """Atomically concatenate private files without loading their contents."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    buffer = bytearray(64 * 1024)
+    try:
+        os.fchmod(fd, 0o600)
+        for source in sources:
+            with source.open("rb", buffering=0) as stream:
+                while True:
+                    count = stream.readinto(buffer)
+                    if not count:
+                        break
+                    view = memoryview(buffer)[:count]
+                    while view:
+                        view = view[os.write(fd, view):]
+                    del view
+                    buffer[:count] = b"\0" * count
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        os.replace(temp_name, path)
+    finally:
+        buffer[:] = b"\0" * len(buffer)
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+
+
 def write_json(path: Path, value: object) -> None:
     write_private(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
 
@@ -110,9 +142,15 @@ def validate_endpoint(host: str, port: int) -> None:
         raise SetupError("host must be an IP literal or a simple DNS name")
 
 
-def openssl_fingerprint(public_key: Path) -> str:
-    der = run(["openssl", "pkey", "-pubin", "-in", str(public_key), "-outform", "DER"])
-    return hashlib.sha256(der).hexdigest()
+def composite_fingerprint(classical_public: bytes, pq_public: bytes) -> str:
+    domain = b"yume/2.0/composite-identity/v1"
+    encoded = bytearray(domain)
+    for pem in (classical_public, pq_public):
+        der = run(["openssl", "pkey", "-pubin", "-outform", "DER"],
+                  input_bytes=pem)
+        encoded.extend(len(der).to_bytes(4, "big"))
+        encoded.extend(der)
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def cert_fingerprint(cert: Path) -> str:
@@ -121,10 +159,20 @@ def cert_fingerprint(cert: Path) -> str:
 
 
 def generate_keypair(private_key: Path, public_key: Path) -> str:
-    run(["openssl", "genpkey", "-algorithm", "Ed25519", "-out", str(private_key)])
-    run(["openssl", "pkey", "-in", str(private_key), "-pubout", "-out", str(public_key)])
-    os.chmod(private_key, 0o600)
-    return openssl_fingerprint(public_key)
+    with tempfile.TemporaryDirectory(prefix="yume-composite-") as work:
+        work_dir = Path(work)
+        classical_private = work_dir / "ed25519.key"
+        pq_private = work_dir / "ml-dsa-87.key"
+        run(["openssl", "genpkey", "-algorithm", "Ed25519",
+             "-out", str(classical_private)])
+        run(["openssl", "genpkey", "-algorithm", "ML-DSA-87",
+             "-out", str(pq_private)])
+        classical_public = run(["openssl", "pkey", "-in", str(classical_private),
+                                "-pubout"])
+        pq_public = run(["openssl", "pkey", "-in", str(pq_private), "-pubout"])
+        write_private_files(private_key, (classical_private, pq_private))
+    write_private(public_key, classical_public + pq_public)
+    return composite_fingerprint(classical_public, pq_public)
 
 
 def sign_leaf(*, ca_key: Path, ca_cert: Path, key: Path, cert: Path,
@@ -186,7 +234,9 @@ def update_policy(store: Path, fingerprint: str, policy: dict[str, object]) -> N
 def copy_client_material(server_dir: Path, client_dir: Path, identity: Path,
                          public_key: Path, *, host: str, port: int,
                          tls_name: str, tls_pin: str, alias: str,
-                         operator: bool) -> None:
+                         operator: bool,
+                         admin_identity: Path | None = None,
+                         admin_public_key: Path | None = None) -> None:
     client_dir.mkdir(mode=0o700, parents=True)
     for source, dest in (
         (identity, "identity.key"),
@@ -197,6 +247,15 @@ def copy_client_material(server_dir: Path, client_dir: Path, identity: Path,
     ):
         shutil.copyfile(source, client_dir / dest)
         os.chmod(client_dir / dest, 0o600)
+    if (admin_identity is None) != (admin_public_key is None):
+        raise SetupError("admin identity must include both private and public files")
+    if admin_identity is not None and admin_public_key is not None:
+        for source, dest in (
+            (admin_identity, "admin-identity.key"),
+            (admin_public_key, "admin-identity.pub"),
+        ):
+            shutil.copyfile(source, client_dir / dest)
+            os.chmod(client_dir / dest, 0o600)
     config = {
         "server": host,
         "port": port,
@@ -220,6 +279,8 @@ def copy_client_material(server_dir: Path, client_dir: Path, identity: Path,
     }
     if operator:
         config["allow_outbound_admin"] = True
+    if admin_identity is not None:
+        config["admin_identity"] = "admin-identity.key"
     write_json(client_dir / "yume.json", config)
     client_runner = """#!/usr/bin/env bash
 set -euo pipefail
@@ -301,13 +362,16 @@ def issue_key(*, kit: Path, alias: str, key_type: str, weight: float,
         public_key = Path(tmp) / "identity.pub"
         fingerprint = generate_keypair(private_key, public_key)
         operator = key_type == "admin"
+        admin_private_key: Path | None = None
+        admin_public_key: Path | None = None
         if operator:
             key_store = server_dir / "operator_keys"
             meta_store = server_dir / "operator_keys.json"
-            policy: dict[str, object] = {
-                "alias": alias, "weight": weight,
-                "permissions": {"allow_outbound_admin": True},
-            }
+            policy: dict[str, object] = {"alias": alias, "weight": weight}
+            admin_private_key = Path(tmp) / "admin-identity.key"
+            admin_public_key = Path(tmp) / "admin-identity.pub"
+            generate_keypair(admin_private_key, admin_public_key)
+            append_public_key(server_dir / "admin_keys", admin_public_key)
         else:
             key_store = server_dir / "authorized_keys"
             meta_store = server_dir / "authorized_keys.json"
@@ -324,6 +388,8 @@ def issue_key(*, kit: Path, alias: str, key_type: str, weight: float,
             host=manifest["host"], port=manifest["port"],
             tls_name=manifest["tls_name"], tls_pin=manifest["tls_pin_sha256"],
             alias=alias, operator=operator,
+            admin_identity=admin_private_key,
+            admin_public_key=admin_public_key,
         )
     return client_dir
 
@@ -453,7 +519,7 @@ def init_kit(args: argparse.Namespace) -> None:
 
         write_private(server_dir / "admission.hex", secrets.token_hex(32))
         write_private(server_dir / "inner-psk.hex", secrets.token_hex(32))
-        for name in ("authorized_keys", "operator_keys"):
+        for name in ("authorized_keys", "operator_keys", "admin_keys"):
             write_private(server_dir / name, b"")
         for name in ("authorized_keys.json", "operator_keys.json"):
             write_json(server_dir / name, {})
@@ -472,6 +538,7 @@ def init_kit(args: argparse.Namespace) -> None:
             "listen_port": args.port,
             "tls_cert": "server-tls.pem", "tls_key": "server-tls.key",
             "auth_keys": "authorized_keys", "auth_keys_meta": "authorized_keys.json",
+            "admin_keys": "admin_keys",
             "operator_keys": "operator_keys", "operator_keys_meta": "operator_keys.json",
             "obfuscation": True, "obfs_secret_file": "admission.hex",
             "inner_psk_file": "inner-psk.hex", "inner_crypto": True,

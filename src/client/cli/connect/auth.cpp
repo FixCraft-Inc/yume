@@ -44,20 +44,6 @@ private:
     crypto::Bytes& bytes_;
 };
 
-crypto::Bytes PublicKeyPem(EVP_PKEY* key) {
-    std::unique_ptr<BIO, decltype(&BIO_free)> bio(BIO_new(BIO_s_mem()), BIO_free);
-    if (!bio || PEM_write_bio_PUBKEY(bio.get(), key) != 1) {
-        throw std::runtime_error("failed to encode Ed25519 public identity");
-    }
-    char* data = nullptr;
-    const long length = BIO_get_mem_data(bio.get(), &data);
-    if (length <= 0 || !data) {
-        throw std::runtime_error("failed to read Ed25519 public identity");
-    }
-    return crypto::Bytes(reinterpret_cast<std::uint8_t*>(data),
-                         reinterpret_cast<std::uint8_t*>(data) + length);
-}
-
 }  // namespace
 
 protocol::Frame read_auth_challenge(ClientTransportStream& stream,
@@ -88,7 +74,8 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
     crypto::Bytes channel_binding,
     obfs::H2Carrier& carrier,
     std::uint16_t rekey_window,
-    const ratchet::RatchetPolicy& ratchet_policy) {
+    const ratchet::RatchetPolicy& ratchet_policy,
+    const std::string& admin_identity_path) {
     WipeBytesOnExit wipe_channel_binding(channel_binding);
     if (channel_binding.size() != auth_v2::kChannelBindingLen) {
         throw FatalError("YUME 2.0 requires an exact TLS exporter binding");
@@ -107,13 +94,28 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
     const ratchet::RatchetPolicy send_policy =
         ratchet::NegotiateRatchetPolicy(
             ratchet_policy, challenge.ratchet_policy);
-    auto identity_key = crypto::load_keypair(identity_path, "");
-    EVP_PKEY* public_key = identity_key.public_key
-        ? identity_key.public_key.get() : identity_key.private_key.get();
-    if (!public_key || EVP_PKEY_base_id(public_key) != EVP_PKEY_ED25519) {
-        throw FatalError("YUME 2.0 requires an Ed25519 client identity");
+    auto identity_key = crypto::load_composite_keypair(identity_path);
+    crypto::Bytes identity = crypto::encode_composite_identity(
+        identity_key.classical.public_key.get(), identity_key.pq.public_key.get());
+
+    // Second factor, if this invocation is claiming admin. Loading it is what
+    // makes the claim -- there is no flag that grants admin without the key, and
+    // the server independently checks the key against its own separate list.
+    std::optional<crypto::CompositeKeyPair> admin_key;
+    if (!admin_identity_path.empty()) {
+        admin_key = crypto::load_composite_keypair(admin_identity_path);
+        const crypto::Bytes admin_public = crypto::encode_composite_identity(
+            admin_key->classical.public_key.get(), admin_key->pq.public_key.get());
+        // Refuse locally as well as at the server: reusing one key for both
+        // factors would turn "two keys" back into one and defeat the whole
+        // point, and catching it here gives the operator a clear error instead
+        // of an opaque server rejection.
+        if (admin_public == identity) {
+            throw FatalError(
+                "admin identity must differ from the visitor identity; "
+                "using one key for both factors defeats the dual-key requirement");
+        }
     }
-    crypto::Bytes identity = PublicKeyPem(public_key);
 
     basefwx::pq::KemResult kem = basefwx::pq::KemEncrypt(
         basefwx::pq::KemAlgorithm::MlKem1024, challenge.mlkem_public_key);
@@ -126,12 +128,24 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
         ratchet_policy);
     crypto::Bytes signature_input = auth_v2::BuildSignatureInput(
         challenge.encoded, unsigned_response, channel_binding);
-    crypto::Bytes signature = crypto::sign_message(
-        identity_key.private_key.get(), signature_input);
+    crypto::Bytes signature = crypto::sign_composite(identity_key, signature_input);
     basefwx::crypto::SecureClear(signature_input);
+
+    crypto::Bytes admin_identity;
+    crypto::Bytes admin_signature;
+    if (admin_key) {
+        admin_identity = crypto::encode_composite_identity(
+            admin_key->classical.public_key.get(),
+            admin_key->pq.public_key.get());
+        crypto::Bytes admin_input = auth_v2::BuildAdminSignatureInput(
+            challenge.encoded, unsigned_response, channel_binding, identity);
+        admin_signature = crypto::sign_composite(*admin_key, admin_input);
+        basefwx::crypto::SecureClear(admin_input);
+    }
+
     crypto::Bytes response_payload = auth_v2::BuildResponse(
         x25519.public_key, kem.ciphertext, identity, local_window,
-        ratchet_policy, signature);
+        ratchet_policy, signature, admin_identity, admin_signature);
 
     basefwx::crypto::SecureBytes file_psk{inner_psk.CopyBytes()};
     basefwx::crypto::SecureBytes psk_key{

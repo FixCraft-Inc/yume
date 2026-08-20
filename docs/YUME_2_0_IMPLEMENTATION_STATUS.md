@@ -420,7 +420,8 @@ release-qualified Chrome parity. Matching ALPN or a coarse JA3/JA4 summary is
 insufficient. Traffic padding is likewise an evidence-driven option, not an
 automatic improvement.
 
-Client AUTH sends an Ed25519 public key and a signature over the complete
+Client AUTH sends a composite Ed25519 + ML-DSA-87 public identity and both
+signatures over the complete
 canonical challenge/response transcript; it never sends the private key. As of
 `2.0-dev4` the signature input also covers a 32-byte RFC 8446 exporter that
 each endpoint derives from its own live TLS object and never transmits, and the
@@ -431,13 +432,13 @@ connection's exporter. Both endpoints require TLS 1.3 and a finished handshake;
 there is no unbound mode and no way to negotiate the binding away.
 
 Identity-file safety is now a creation and loading invariant rather than
-operator hygiene. `generate_ed25519_keypair()` serializes to memory and creates
-both files through the exclusive owner-only writer, wipes the private PEM, and
-refuses to replace an existing path. `crypto::load_keypair()` reads the private
-key through an already-validated descriptor: regular non-symlink file, owned by
-the effective user, no group/world bits, bounded size. Windows has no equivalent
-enforcement and fails closed, which remains open work alongside protected
-secret loading there.
+operator hygiene. Composite generation serializes the Ed25519 and ML-DSA-87
+halves into one private and one public file, creates both through the exclusive
+owner-only writer, wipes the private PEM buffer, and refuses to replace an
+existing path. `crypto::load_composite_keypair()` reads the private file through
+an already-validated descriptor and requires exactly two private-key PEM blocks
+in the fixed order. Windows has no equivalent ownership/mode enforcement and
+fails closed, which remains open work alongside protected secret loading there.
 
 The hybrid ephemeral establishment/rekeys provide a forward-secrecy design
 against later long-term-file compromise, not secrecy from `yumed` itself.

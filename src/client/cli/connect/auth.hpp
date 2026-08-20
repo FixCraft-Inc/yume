@@ -13,7 +13,7 @@
 #include <string_view>
 #include <vector>
 
-#include <boost/asio.hpp>
+#include <boost/asio/io_context.hpp>
 #include "client/transport/client_stream.hpp"
 #include "core/security/crypto.hpp"
 #include "core/security/secret_file.hpp"
@@ -46,7 +46,10 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
     crypto::Bytes channel_binding,
     obfs::H2Carrier& carrier,
     std::uint16_t rekey_window,
-    const ratchet::RatchetPolicy& ratchet_policy);
+    const ratchet::RatchetPolicy& ratchet_policy,
+    // Empty for an ordinary visitor session. Supplying a path is what claims
+    // admin; the server verifies the key against its own separate admin list.
+    const std::string& admin_identity_path = {});
 
 protocol::Frame open_auth_ok_v2(ratchet::SessionRatchet& ratchet,
                                 const protocol::Frame& protected_frame);

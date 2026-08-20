@@ -20,6 +20,11 @@ struct ParsedArgs {
     std::string server;
     int port{0};
     std::string identity;
+    // Second factor. Empty means an ordinary visitor session; supplying it is
+    // what claims admin, and the server checks the key against its own separate
+    // admin list. There is deliberately no boolean that grants admin without
+    // the key being present.
+    std::string admin_identity;
     std::string socks_bind_host;
     int socks_port{0};
     bool socks_port_override{false};

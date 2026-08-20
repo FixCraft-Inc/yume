@@ -1139,7 +1139,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 stream, io, cfg.identity, auth_challenge,
                 *cfg.inner_psk_material, stream.take_exporter(),
                 *h2_carrier, cfg.rekey_window,
-                *ratchet_policy);
+                *ratchet_policy, cfg.admin_identity);
             YUME_TIMING_LOG("client.auth",
                              "send_response",
                              "ms=" + std::to_string(

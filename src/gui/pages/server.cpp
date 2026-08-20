@@ -736,7 +736,7 @@ private:
                       static_cast<long long>(ms));
 
         std::string err;
-        auto kp = facade::keys::generate_ed25519(data_dir, alias, &err);
+        auto kp = facade::keys::generate_identity(data_dir, alias, &err);
         if (!kp) {
             users_message_ = err.empty() ? "Key generation failed." : err;
             users_message_error_ = true;

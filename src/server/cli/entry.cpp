@@ -39,7 +39,7 @@
 #include <unistd.h>
 #endif
 #include "server/cli/help.hpp"
-#include <boost/asio.hpp>
+#include <boost/asio/io_context.hpp>
 
 #include "core/protocol/runtime_policy.hpp"
 #include "core/app_codec/codec.hpp"

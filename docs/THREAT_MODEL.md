@@ -14,7 +14,7 @@ or other out-of-scope subsystems to 2.0 status.
 | Active prober | Can open TLS/H1/H2 requests to the public endpoint and sees the genuine Node cover path unless it proves admission. |
 | YUME server operator | Terminates TLS and the inner YUME channel; holds TLS material, admission and inner PSK files, and public-key stores; sees requested targets and decrypted YUME stream bytes unless the application independently encrypts them. |
 | Loopback Node process | Receives bounded ordinary GET/HEAD cover requests only; it must never receive tunnel records, client identities, or YUME secrets. |
-| Client host | Holds both shared secret files and the client Ed25519 private key; compromise exposes local plaintext and live session state. |
+| Client host | Holds both shared secret files and the client's composite private identity (plus a distinct admin identity when configured); compromise exposes local plaintext and live session state. |
 | Target service | Sees the server egress identity, or another configured routing exit. |
 
 YUME is a stealth transport and relay, not an anonymity system. Additional
@@ -42,13 +42,14 @@ server public key,” empty-secret, or 1.x fallback mode. File parsing is strict
 exactly 64 lowercase hex characters, no newline, and no group/world permissions.
 
 The secrets serve different purposes and must not be reused. Compromise of one
-does not by itself satisfy admission, Ed25519 identity, and the hybrid inner
+does not by itself satisfy admission, composite identity, and the hybrid inner
 handshake, but compromise of the endpoint can expose all live material.
 
 ## Client identity and channel binding
 
-The client loads an Ed25519 private key from its local identity path. AUTH sends
-the corresponding public PEM and a signature, never the private key. The
+The client loads an Ed25519 + ML-DSA-87 composite private identity from its
+local identity path. AUTH sends the corresponding two public PEM blocks and
+both signatures, never the private halves. The
 signature input is domain-separated and contains the complete canonical server
 challenge plus unsigned response: transport version, fresh server challenge,
 server ML-KEM/X25519 public keys, salts, both rekey-window advertisements,
@@ -56,8 +57,8 @@ client X25519 public key, ML-KEM ciphertext, and client public identity. The
 server accepts it only when the signature verifies and the public identity is
 authorized.
 
-Under Ed25519's security assumption, a recorded public key and signature do not
-let the server derive the client private key or forge a new signature.
+The server admits the identity only when both component signatures verify. A
+recorded public identity and signatures do not reveal either private half.
 
 Key files are owner-only as a creation and loading invariant. Both halves of a
 generated pair are created exclusively at mode `0600`, so there is no window in
@@ -175,7 +176,7 @@ window of prepared future roots. Best-effort wiping cannot erase allocator,
 library, swap, core-dump, or prior process-memory copies. A stolen server TLS
 private key and still-valid certificate/pin, plus deployment secrets, can also
 enable future server impersonation until those credentials are revoked and
-rotated; client Ed25519 authentication does not authenticate the server.
+rotated; client composite authentication does not authenticate the server.
 
 ## Single-hop server boundary
 
@@ -274,6 +275,6 @@ implemented behavior from those pending validations.
 
 “Hybrid post-quantum key establishment” is the supported terminology.
 “Quantum-proof,” “uncrackable,” and guaranteed future-proof are not supported
-claims: TLS certificates and Ed25519 authentication remain classical, endpoint
-compromise is in scope, and the complete design has not received an independent
-formal proof or security audit.
+claims: TLS certificates remain classical, the composite AUTH still depends on
+its Ed25519 half as well as ML-DSA-87, endpoint compromise is in scope, and the
+complete design has not received an independent formal proof or security audit.

@@ -33,6 +33,10 @@ struct ServerConfig {
     std::string tls_cert;
     std::string tls_key;
     std::string auth_keys;
+    // Separate admin store. Never merged with auth_keys: a key being in one
+    // list must not imply membership of the other, which is what makes
+    // accidental admin acquisition impossible.
+    std::string admin_keys;
     int threads{0};
     bool obfuscation{true};
     bool inner_crypto{true};
@@ -55,6 +59,7 @@ struct ServerConfig {
     int reverse_port_max{yume::policy::kReversePortMaxDefault};
     std::string dns_server;
     std::string pq_private_key;
+    // Not yet implemented: intended to mint a PQ key when none is configured.
     bool pq_auto_generate{false};
     bool allow_embedded_master{false};
     bool allow_exec{false};

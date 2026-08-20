@@ -117,7 +117,32 @@ std::optional<std::uint32_t> read_policy_max_sessions(const nlohmann::json& entr
     return static_cast<std::uint32_t>(value);
 }
 
-void validate_key_policy(const AuthKeyPolicy& policy) {
+void RejectAdminPrivilegeInVisitorStore(const AuthKeyPolicy& policy,
+                                        const std::string& fingerprint) {
+    // Admin is no longer expressible as a flag on a visitor key. It requires a
+    // second, distinct key from the separate admin store, proven by its own
+    // signature over the AUTH transcript.
+    //
+    // This throws rather than clearing the flag, and it applies to Individual
+    // keys as well as Bulk. Silently downgrading would leave an operator
+    // believing a key is privileged when it is not -- which is the mirror of the
+    // failure this whole design exists to prevent. A loud refusal at startup is
+    // the only safe reading of an admin flag in the wrong file.
+    if (policy.allow_inbound_admin.value_or(false) ||
+        policy.allow_outbound_admin.value_or(false) ||
+        policy.control_full.value_or(false)) {
+        throw std::runtime_error(
+            "auth key policy for " + fingerprint +
+            " grants admin or full control, which visitor keys can no longer "
+            "carry. Admin now requires a second key listed in --admin-keys; "
+            "remove allow_inbound_admin / allow_outbound_admin / control_full "
+            "from this file and enrol the operator's admin key instead");
+    }
+}
+
+void validate_key_policy(const AuthKeyPolicy& policy,
+                         const std::string& fingerprint = "<key>") {
+    RejectAdminPrivilegeInVisitorStore(policy, fingerprint);
     if (policy.key_type == AuthKeyType::Individual &&
         policy.max_sessions.value_or(1) != 1) {
         throw std::runtime_error(
@@ -139,6 +164,7 @@ void validate_key_policy(const AuthKeyPolicy& policy) {
             "bulk auth keys cannot grant exec, local-ip, full-control, codec, service, admin, or federation privileges");
     }
 }
+
 
 void read_policy_codecs(const nlohmann::json& entry, std::vector<std::string>* out) {
     if (!out) {
@@ -239,34 +265,115 @@ double AuthKeyPolicy::effective_weight() const {
     return 1.0;
 }
 
-std::vector<crypto::Bytes> load_authorized_keys(const std::string& path) {
+namespace {
+
+bool is_pem_whitespace(char value) {
+    return value == ' ' || value == '\t' || value == '\r' || value == '\n';
+}
+
+std::optional<crypto::Bytes> take_public_pem_block(
+    std::string_view contents, std::size_t& cursor, const char* what) {
+    while (cursor < contents.size() && is_pem_whitespace(contents[cursor])) {
+        ++cursor;
+    }
+    if (cursor == contents.size()) return std::nullopt;
+
+    static constexpr std::string_view kBegin = "-----BEGIN PUBLIC KEY-----";
+    static constexpr std::string_view kEnd = "-----END PUBLIC KEY-----";
+    if (!contents.substr(cursor).starts_with(kBegin)) {
+        throw std::runtime_error(std::string(what) +
+                                 " contains non-PEM or malformed data");
+    }
+    const std::size_t start = cursor;
+    const std::size_t end_start = contents.find(kEnd, cursor + kBegin.size());
+    if (end_start == std::string_view::npos) {
+        throw std::runtime_error(std::string(what) +
+                                 " contains an unterminated public-key PEM block");
+    }
+    cursor = end_start + kEnd.size();
+    if (cursor < contents.size() && !is_pem_whitespace(contents[cursor])) {
+        throw std::runtime_error(std::string(what) +
+                                 " contains trailing data after a PEM block");
+    }
+    return crypto::Bytes(contents.begin() + static_cast<std::ptrdiff_t>(start),
+                         contents.begin() + static_cast<std::ptrdiff_t>(cursor));
+}
+
+// Reads composite identities from a PEM file. Each identity is two consecutive
+// blocks -- Ed25519 then ML-DSA-87 -- stored as one canonical blob so the pair
+// is matched atomically. A trailing odd block is an error rather than a
+// silently ignored line: a half-written identity in an authorized-keys file
+// should stop the server, not quietly authorize nothing.
+std::vector<crypto::Bytes> load_composite_store(const std::string& path,
+                                                const char* what) {
     std::vector<crypto::Bytes> keys;
-    if (path.empty()) {
-        return keys;
+    if (path.empty()) return keys;
+
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input) {
+        throw std::runtime_error(std::string("failed to open ") + what);
+    }
+    constexpr std::streamoff kMaximumStoreBytes = 64 * 1024 * 1024;
+    const std::streamoff size = input.tellg();
+    if (size < 0 || size > kMaximumStoreBytes) {
+        throw std::runtime_error(std::string(what) + " is too large");
+    }
+    std::string contents(static_cast<std::size_t>(size), '\0');
+    input.seekg(0);
+    if (size != 0 &&
+        !input.read(contents.data(), static_cast<std::streamsize>(size))) {
+        throw std::runtime_error(std::string("failed to read ") + what);
     }
 
-    BIO* bio = BIO_new_file(path.c_str(), "r");
-    if (!bio) {
-        throw std::runtime_error("failed to open authorized_keys");
-    }
-
+    std::size_t cursor = 0;
     while (true) {
-        EVP_PKEY* key = PEM_read_bio_PUBKEY(bio, nullptr, nullptr, nullptr);
-        if (!key) {
-            break;
+        auto classical = take_public_pem_block(contents, cursor, what);
+        if (!classical.has_value()) break;
+        auto pq = take_public_pem_block(contents, cursor, what);
+        if (!pq.has_value()) {
+            throw std::runtime_error(
+                std::string(what) +
+                " contains an incomplete composite identity: every entry must be "
+                "an Ed25519 public key followed by an ML-DSA-87 public key");
         }
-        int len = i2d_PUBKEY(key, nullptr);
-        if (len > 0) {
-            crypto::Bytes der(static_cast<size_t>(len));
-            unsigned char* p = der.data();
-            i2d_PUBKEY(key, &p);
-            keys.push_back(std::move(der));
-        }
-        EVP_PKEY_free(key);
-    }
-    BIO_free(bio);
 
+        crypto::Bytes bundle = std::move(*classical);
+        bundle.push_back('\n');
+        bundle.insert(bundle.end(), pq->begin(), pq->end());
+        crypto::CompositePublicKey composite =
+            crypto::parse_composite_identity(bundle);
+        if (!composite.valid()) {
+            throw std::runtime_error(
+                std::string(what) +
+                ": every entry must be an Ed25519 public key followed by an "
+                "ML-DSA-87 public key");
+        }
+        keys.push_back(crypto::composite_canonical_encoding(composite));
+    }
     return keys;
+}
+
+}  // namespace
+
+std::vector<crypto::Bytes> load_authorized_keys(const std::string& path) {
+    return load_composite_store(path, "authorized_keys");
+}
+
+std::vector<crypto::Bytes> load_admin_keys(const std::string& path) {
+    return load_composite_store(path, "admin_keys");
+}
+
+bool is_composite_authorized(const crypto::CompositePublicKey& key,
+                             const std::vector<crypto::Bytes>& authorized) {
+    if (!key.valid()) return false;
+    const crypto::Bytes canonical = crypto::composite_canonical_encoding(key);
+    if (canonical.empty()) return false;
+    // Constant work per entry; the comparison is over public data, so a plain
+    // equality check is fine here.
+    for (const auto& allowed : authorized) {
+        if (allowed == canonical) return true;
+    }
+    return false;
 }
 
 AuthKeyPolicyMap load_auth_policies(const std::string& meta_path) {

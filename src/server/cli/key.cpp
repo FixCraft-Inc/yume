@@ -33,29 +33,6 @@
 namespace yume::server::cli {
 namespace {
 
-class BioPrivateBufferWiper {
-public:
-    BioPrivateBufferWiper(BIO* bio, bool enabled) noexcept
-        : bio_(bio), enabled_(enabled) {}
-
-    ~BioPrivateBufferWiper() {
-        if (!enabled_ || !bio_) {
-            return;
-        }
-        char* buffer = nullptr;
-        const long buffered = BIO_get_mem_data(bio_, &buffer);
-        if (buffered > 0 && buffer) {
-            OPENSSL_cleanse(buffer, static_cast<std::size_t>(buffered));
-        }
-    }
-
-    BioPrivateBufferWiper(const BioPrivateBufferWiper&) = delete;
-    BioPrivateBufferWiper& operator=(const BioPrivateBufferWiper&) = delete;
-
-private:
-    BIO* bio_;
-    bool enabled_;
-};
 
 class BytesWiper {
 public:
@@ -76,44 +53,6 @@ bool write_file_secure(const std::string& path,
         reinterpret_cast<const std::uint8_t*>(contents.data());
     return security::WriteFileExclusive0600(
         path, std::span<const std::uint8_t>(bytes, contents.size()), error);
-}
-
-// Encodes a key to PEM in memory so the caller can choose how the bytes reach
-// disk. Returns false and leaves *out empty on any OpenSSL failure.
-bool pem_to_bytes(EVP_PKEY* key, bool is_private, crypto::Bytes* out) {
-    if (!key || !out) {
-        return false;
-    }
-    if (is_private) {
-        security::secure_erase(*out);
-    } else {
-        out->clear();
-    }
-    std::unique_ptr<BIO, decltype(&BIO_free)> bio(BIO_new(BIO_s_mem()),
-                                                  BIO_free);
-    if (!bio) {
-        return false;
-    }
-    // BIO_s_mem keeps whatever was written in its own buffer until BIO_free,
-    // and a failed private-key write can still have left key bytes there.
-    // Wipe on every path out, not only the successful one.
-    BioPrivateBufferWiper bio_wiper(bio.get(), is_private);
-
-    const int written = is_private
-        ? PEM_write_bio_PrivateKey(bio.get(), key, nullptr, nullptr, 0,
-                                   nullptr, nullptr)
-        : PEM_write_bio_PUBKEY(bio.get(), key);
-    if (written != 1) {
-        return false;
-    }
-    char* data = nullptr;
-    const long length = BIO_get_mem_data(bio.get(), &data);
-    if (length <= 0 || !data) {
-        return false;
-    }
-    out->assign(reinterpret_cast<std::uint8_t*>(data),
-                reinterpret_cast<std::uint8_t*>(data) + length);
-    return true;
 }
 
 }  // namespace
@@ -161,36 +100,33 @@ std::string load_or_create_secret(const std::string& path) {
     return secret;
 }
 
-bool generate_ed25519_keypair(const std::string& priv_path, const std::string& pub_path) {
-    std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> pctx(
-        EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, nullptr), EVP_PKEY_CTX_free);
-    if (!pctx || EVP_PKEY_keygen_init(pctx.get()) != 1) {
+bool generate_composite_keypair(const std::string& priv_path, const std::string& pub_path) {
+    // A YUME identity is composite: Ed25519 alongside ML-DSA-87, both required.
+    // Each file holds the two PEM blocks concatenated in that fixed order,
+    // which is what crypto::load_composite_keypair and the authorized-key
+    // stores expect. One file per half was rejected: two paths can drift out of
+    // sync, and a half-present identity is exactly the state that must never
+    // authenticate.
+    crypto::Bytes private_pem;
+    BytesWiper private_pem_wiper(private_pem);
+    crypto::Bytes public_pem;
+    try {
+        const auto keys = crypto::generate_composite_keypair();
+        private_pem = crypto::encode_composite_private_pem(keys);
+        public_pem = crypto::encode_composite_identity(
+            keys.classical.public_key.get(), keys.pq.public_key.get());
+    } catch (const std::exception& ex) {
+        std::cerr << "failed to generate composite keypair: " << ex.what() << "\n";
         return false;
     }
-    EVP_PKEY* raw_pkey = nullptr;
-    if (EVP_PKEY_keygen(pctx.get(), &raw_pkey) != 1) {
-        return false;
-    }
-    std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> pkey(raw_pkey,
-                                                             EVP_PKEY_free);
 
     // Serialize to memory first, then create both files exclusively. Writing
     // the private PEM through BIO_new_file would publish it at the process
     // umask and only tighten it afterwards, leaving a readable window and no
     // protection at all against a pre-placed file or symlink.
-    crypto::Bytes private_pem;
-    BytesWiper private_pem_wiper(private_pem);
-    crypto::Bytes public_pem;
-    if (!pem_to_bytes(pkey.get(), /*is_private=*/true, &private_pem) ||
-        !pem_to_bytes(pkey.get(), /*is_private=*/false, &public_pem)) {
-        return false;
-    }
-
     std::string write_error;
-    const bool private_written =
-        security::WriteFileExclusive0600(priv_path, private_pem, &write_error);
-    if (!private_written) {
-        std::cerr << "failed to write Ed25519 private key: "
+    if (!security::WriteFileExclusive0600(priv_path, private_pem, &write_error)) {
+        std::cerr << "failed to write composite private key: "
                   << (write_error.empty() ? "unknown error" : write_error)
                   << "\n";
         return false;
@@ -201,11 +137,11 @@ bool generate_ed25519_keypair(const std::string& priv_path, const std::string& p
         std::error_code remove_error;
         const bool private_removed =
             std::filesystem::remove(priv_path, remove_error);
-        std::cerr << "failed to write Ed25519 public key: "
+        std::cerr << "failed to write composite public key: "
                   << (write_error.empty() ? "unknown error" : write_error)
                   << "\n";
         if (!private_removed && remove_error) {
-            std::cerr << "failed to remove incomplete Ed25519 private key: "
+            std::cerr << "failed to remove incomplete composite private key: "
                       << remove_error.message() << "\n";
         }
         return false;
@@ -228,74 +164,106 @@ std::string auth_keys_write_hint(const std::string& path) {
 bool append_authorized_public_key(const yume::server::ServerConfig& cfg,
                                   const std::string& public_key_path,
                                   const std::string& alias,
-                                  std::string* out_fingerprint) {
-    if (cfg.auth_keys.empty()) {
-        yume::util::log_error("auth_keys must be set before adding a key");
+                                  std::string* out_fingerprint,
+                                  bool to_admin_store) {
+    // The two stores are deliberately separate files and this is the only
+    // place that chooses between them. Enrolling into the admin store grants
+    // nothing by itself: an admin session still needs a distinct visitor key
+    // as its first factor, and the server refuses to start if any identity
+    // appears in both stores.
+    const std::string& store =
+        to_admin_store ? cfg.admin_keys : cfg.auth_keys;
+    if (store.empty()) {
+        yume::util::log_error(to_admin_store
+            ? "admin_keys must be set (--admin-keys) before adding an admin key"
+            : "auth_keys must be set before adding a key");
         return false;
     }
-    auto auth_dir = std::filesystem::path(cfg.auth_keys).parent_path();
+    auto auth_dir = std::filesystem::path(store).parent_path();
     if (!auth_dir.empty() && !ensure_dir(auth_dir.string())) {
         yume::util::log_error("failed to create auth_keys directory: " + auth_dir.string() +
-                              auth_keys_write_hint(cfg.auth_keys));
+                              auth_keys_write_hint(store));
         return false;
     }
 
-    BIO* inbio = BIO_new_file(public_key_path.c_str(), "r");
-    if (!inbio) {
-        yume::util::log_error("failed to open public key: " + public_key_path);
-        return false;
+    // Read the whole file: a composite identity is two PEM blocks and must be
+    // enrolled as a unit. Reading only the first block would append half an
+    // identity, which load_authorized_keys then rejects as incomplete -- a
+    // failure the operator would only see at server start.
+    std::string pem_text;
+    {
+        std::ifstream in(public_key_path, std::ios::binary);
+        if (!in) {
+            yume::util::log_error("failed to open public key: " + public_key_path);
+            return false;
+        }
+        pem_text.assign(std::istreambuf_iterator<char>(in),
+                        std::istreambuf_iterator<char>());
     }
-    yume::crypto::EVP_PKEY_ptr key{PEM_read_bio_PUBKEY(inbio, nullptr, nullptr, nullptr), EVP_PKEY_free};
-    BIO_free(inbio);
-    if (!key) {
-        yume::util::log_error("failed to parse public key: " + public_key_path);
+    const yume::crypto::Bytes pem_bytes(pem_text.begin(), pem_text.end());
+    const auto identity = yume::crypto::parse_composite_identity(pem_bytes);
+    if (!identity.valid()) {
+        yume::util::log_error(
+            "not a composite identity: " + public_key_path +
+            " (expected an Ed25519 public key followed by an ML-DSA-87 public "
+            "key; regenerate with 'yumed key --generate <prefix>')");
         return false;
     }
 
-    const std::string fp = yume::server::fingerprint_pubkey(key.get());
+    const std::string fp = yume::crypto::composite_fingerprint(identity);
     if (out_fingerprint) {
         *out_fingerprint = fp;
     }
 
     bool already_authorized = false;
-    BIO* existing = BIO_new_file(cfg.auth_keys.c_str(), "r");
-    if (existing) {
-        while (true) {
-            yume::crypto::EVP_PKEY_ptr existing_key{
-                PEM_read_bio_PUBKEY(existing, nullptr, nullptr, nullptr), EVP_PKEY_free};
-            if (!existing_key) {
-                break;
-            }
-            if (yume::server::fingerprint_pubkey(existing_key.get()) == fp) {
+    try {
+        // A store that does not exist yet is not an error here -- the first
+        // enrolment creates it. Only an existing but unreadable or half-written
+        // store is refused, because appending to that would produce a file the
+        // server then rejects at start.
+        const auto existing = std::filesystem::exists(store)
+            ? yume::server::load_authorized_keys(store)
+            : std::vector<yume::crypto::Bytes>{};
+        for (const auto& entry : existing) {
+            if (entry == yume::crypto::composite_canonical_encoding(identity)) {
                 already_authorized = true;
                 break;
             }
         }
-        BIO_free(existing);
+    } catch (const std::exception& ex) {
+        // An unreadable or half-written store must not be silently appended to.
+        yume::util::log_error(std::string("existing auth_keys is not usable: ") +
+                              ex.what());
+        return false;
     }
 
     if (!already_authorized) {
-        BIO* outbio = BIO_new_file(cfg.auth_keys.c_str(), "a");
-        if (!outbio) {
-            yume::util::log_error("failed to open auth_keys for append: " + cfg.auth_keys +
-                                  auth_keys_write_hint(cfg.auth_keys));
+        std::ofstream out(store, std::ios::binary | std::ios::app);
+        if (!out) {
+            yume::util::log_error("failed to open auth_keys for append: " + store +
+                                  auth_keys_write_hint(store));
             return false;
         }
-        const bool wrote = PEM_write_bio_PUBKEY(outbio, key.get()) == 1;
-        BIO_free(outbio);
-        if (!wrote) {
-            yume::util::log_error("failed to write public key to auth_keys: " + cfg.auth_keys);
+        out << pem_text;
+        if (!pem_text.empty() && pem_text.back() != '\n') out << '\n';
+        if (!out) {
+            yume::util::log_error("failed to write public key to auth_keys: " + store);
             return false;
         }
     }
 
-    yume::server::update_auth_meta(cfg.auth_keys_meta, fp, alias);
+    // Only the visitor store has policy metadata. Admin keys carry no policy
+    // by design -- privileges come from the verified second factor, not from a
+    // flag attached to a key, which is what the whole change exists to enforce.
+    if (!to_admin_store) {
+        yume::server::update_auth_meta(cfg.auth_keys_meta, fp, alias);
+    }
     std::cout << (already_authorized ? "Already authorized: " : "Authorized: ")
               << fp << "\n";
     if (!alias.empty()) {
         std::cout << "Alias: " << alias << "\n";
     }
-    std::cout << "auth_keys: " << cfg.auth_keys << "\n";
+    std::cout << (to_admin_store ? "admin_keys: " : "auth_keys: ") << store << "\n";
     return true;
 }
 
@@ -391,8 +359,6 @@ CliCommandResult run_server_manager_ui(yume::server::ServerConfig& cfg, ServerKe
         std::string inner_hop = prompt("inner_hop (true/false)", cfg.inner_hop ? "true" : "false");
         std::string hop_interval = prompt("hop_interval_ms", std::to_string(cfg.hop_interval_ms));
         std::string pq = prompt("pq_private_key", cfg.pq_private_key);
-        std::string pq_auto_generate = prompt("pq_auto_generate (true/false)",
-                                              cfg.pq_auto_generate ? "true" : "false");
         std::string use_embedded_master = prompt("use_embedded_master (true/false)",
                                                  cfg.allow_embedded_master ? "true" : "false");
         std::string allow_exec = prompt("allow_exec (true/false)", cfg.allow_exec ? "true" : "false");
@@ -432,7 +398,6 @@ CliCommandResult run_server_manager_ui(yume::server::ServerConfig& cfg, ServerKe
         json["inner_hop"] = (inner_hop == "true");
         json["hop_interval_ms"] = std::stoi(hop_interval);
         if (!pq.empty()) json["pq_private_key"] = pq;
-        json["pq_auto_generate"] = (pq_auto_generate == "true");
         json["use_embedded_master"] = (use_embedded_master == "true");
         json["allow_exec"] = (allow_exec == "true");
         json["allow_local_ip"] = (allow_local_ip == "true");
@@ -558,7 +523,8 @@ CliCommandResult run_server_key_command(yume::server::ServerConfig& cfg, const S
 
     if (!command.add.empty()) {
         free_keys();
-        return {true, append_authorized_public_key(cfg, command.add, command.alias_value) ? 0 : 1};
+        return {true, append_authorized_public_key(cfg, command.add, command.alias_value,
+                                                   nullptr, command.admin) ? 0 : 1};
     }
 
     if (!command.generate_prefix.empty()) {
@@ -582,7 +548,7 @@ CliCommandResult run_server_key_command(yume::server::ServerConfig& cfg, const S
                 return {true, 1};
             }
         }
-        if (!generate_ed25519_keypair(priv_path, pub_path)) {
+        if (!generate_composite_keypair(priv_path, pub_path)) {
             free_keys();
             yume::util::log_error("failed to generate keypair");
             return {true, 1};
@@ -591,7 +557,8 @@ CliCommandResult run_server_key_command(yume::server::ServerConfig& cfg, const S
         std::cout << "Client auth key: " << priv_path << "\n";
         if (command.generate_and_add) {
             free_keys();
-            if (!append_authorized_public_key(cfg, pub_path, command.alias_value)) {
+            if (!append_authorized_public_key(cfg, pub_path, command.alias_value,
+                                              nullptr, command.admin)) {
                 return {true, 1};
             }
             std::cout << "Use this client flag: --auth " << priv_path << "\n";

@@ -81,6 +81,10 @@ void load_client_config_file(const ParsedArgs& args,
         if (json.contains("identity") && cfg->identity.empty()) {
             cfg->identity = resolve_cfg_path(json["identity"].get<std::string>());
         }
+        if (json.contains("admin_identity") && cfg->admin_identity.empty()) {
+            cfg->admin_identity = resolve_cfg_path(
+                json["admin_identity"].get<std::string>());
+        }
         if (json.contains("socks_port") && !args.socks_port_override && cfg->socks_port == 0) {
             cfg->socks_port = json["socks_port"].get<int>();
         }
@@ -294,6 +298,9 @@ void apply_cli_config_overrides(const ParsedArgs& args,
     }
     if (args.port > 0) {
         cfg->port = args.port;
+    }
+    if (!args.admin_identity.empty()) {
+        cfg->admin_identity = resolve_cli_path(args.admin_identity);
     }
     if (!args.identity.empty()) {
         cfg->identity = resolve_cli_path(args.identity);
@@ -622,6 +629,7 @@ void save_client_config_file(const ParsedArgs& args, const ClientConfig& cfg) {
     json["server"] = cfg.server;
     if (cfg.port > 0) json["port"] = cfg.port;
     if (!cfg.identity.empty()) json["identity"] = cfg.identity;
+    if (!cfg.admin_identity.empty()) json["admin_identity"] = cfg.admin_identity;
     if (cfg.socks_port > 0) json["socks_port"] = cfg.socks_port;
     if (!cfg.socks_bind_host.empty()) json["socks_bind"] = cfg.socks_bind_host;
     if (!cfg.packet_tun_name.empty()) json["packet_tun_name"] = cfg.packet_tun_name;

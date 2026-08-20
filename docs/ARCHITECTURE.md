@@ -93,7 +93,7 @@ Entry: `main_client.cpp` → `client/cli/entry.cpp`.
 | `federation/` | Cluster peer links |
 | `filter/` | IP / robots filtering, optional GeoIP |
 | `packet/` | TUN egress for packet-bulk mode |
-| `auth/` | Ed25519 key verification plus validated immutable regular/operator policy snapshots |
+| `auth/` | Composite Ed25519 + ML-DSA-87 verification plus immutable regular/operator/admin snapshots |
 
 Entry: `main_server.cpp` → `server/cli/entry.cpp`.
 
@@ -138,7 +138,7 @@ core  →  client | server  →  facade  →  gui
 
 The standard topology is single hop: `application -> yume -> yumed -> target`.
 The daemon is the terminating cryptographic peer and proxy exit, not a blind
-onion relay. It authenticates the client's Ed25519 public identity from a
+onion relay. It authenticates the client's composite public identity from a
 signed transcript, derives the hybrid session roots, decrypts YUME records, and
 opens target sockets. Application-layer TLS can remain end-to-end through that
 proxy. See `docs/THREAT_MODEL.md` for identity, forward-secrecy, channel-binding,

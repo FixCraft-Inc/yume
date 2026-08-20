@@ -53,6 +53,18 @@ AuthKeyPolicyMap load_auth_policies(const std::string& meta_path);
 
 bool is_authorized(EVP_PKEY* pubkey, const std::vector<crypto::Bytes>& authorized);
 
+// Membership test for a composite identity. Both halves must match the same
+// stored entry -- matching only the Ed25519 half against one entry and the
+// ML-DSA half against another would let two half-compromised keys be combined
+// into an identity neither owner holds.
+bool is_composite_authorized(const crypto::CompositePublicKey& key,
+                             const std::vector<crypto::Bytes>& authorized);
+
+// Loads the admin store. Separate from load_authorized_keys on purpose: the
+// two lists must not be merged, because "second key from a separate list" is
+// the property that makes accidental admin acquisition impossible.
+std::vector<crypto::Bytes> load_admin_keys(const std::string& path);
+
 crypto::Bytes read_field(const crypto::Bytes& payload, size_t& offset);
 
 std::string fingerprint_pubkey(EVP_PKEY* pubkey);

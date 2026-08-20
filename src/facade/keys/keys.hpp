@@ -21,16 +21,19 @@ struct KeyPair {
     std::filesystem::path private_path;
     std::filesystem::path public_path;
     std::string fingerprint;
-    std::string algorithm;  // "ed25519" or "ml-kem-768"
+    std::string algorithm;  // "composite-ed25519-mldsa87" or "ml-kem-768"
 };
 
-// Generates an Ed25519 keypair into <dir>/<base_name>.key and
-// <dir>/<base_name>.pub. Existing files at those paths are NOT overwritten;
-// the caller must move/remove them first. Returns nullopt on failure with
-// *err populated.
-std::optional<KeyPair> generate_ed25519(std::filesystem::path const& dir,
-                                        std::string const& base_name,
-                                        std::string* err);
+// Generates a YUME identity into <dir>/<base_name>.key and
+// <dir>/<base_name>.pub. A YUME identity is composite — Ed25519 alongside
+// ML-DSA-87, both required — and each file holds the two PEM blocks
+// concatenated in that fixed order, which is what the server's
+// authorized-key stores expect. Existing files at those paths are NOT
+// overwritten; the caller must move/remove them first. Returns nullopt on
+// failure with *err populated.
+std::optional<KeyPair> generate_identity(std::filesystem::path const& dir,
+                                         std::string const& base_name,
+                                         std::string* err);
 
 // Wraps yume::inner::generate_pq_keypair() to produce an ML-KEM-768
 // keypair at the given paths. Returns nullopt if BaseFWX/PQ support is

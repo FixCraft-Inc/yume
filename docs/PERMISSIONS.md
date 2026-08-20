@@ -1,53 +1,62 @@
 # YUME permission model
 
-YUME splits authentication from authorization the way SSH does, and uses a
-separate physical trust store for operator/controller keys:
+YUME splits authentication from authorization and uses three physical identity
+stores:
 
-- `authorized_keys` lists regular Ed25519 public keys. Regular keys are either
-  `individual` (the default, one authenticated session) or explicitly `bulk`
-  (several separately counted sessions sharing one credential).
+- `authorized_keys` lists regular composite Ed25519 + ML-DSA-87 identities.
+  Regular identities are either `individual` (the default, one authenticated
+  session) or explicitly `bulk` (several separately counted sessions sharing
+  one credential).
 - `auth_keys.meta` (a JSON file) lists what each connected key is **allowed to do** once inside. Without an entry here, a normally authorized key can use unprivileged transport features but cannot exec, cannot reach LAN addresses, cannot use privileged application codecs, and cannot administer other clients.
-- `operator_keys` and `operator_keys.meta` are the separate controller-key
-  layer. Only an operator key may receive `allow_outbound_admin`. Target-side
-  `allow_inbound_admin` remains on the regular individual key being managed.
+- `operator_keys` and `operator_keys.meta` are the separate controller visitor
+  layer. Operator identities are individual-only.
+- `admin_keys` contains distinct second-factor composite identities and no
+  policy metadata. Admin is proved by presenting and signing with one visitor
+  identity plus one different identity from this list.
 
-The server rejects a public key present in both trust stores, rejects bulk
-operator keys, and rejects `allow_outbound_admin` in regular metadata. This is
-a server-side authorization change only; the authenticated YUME 2.0 wire and
-PQ handshake are unchanged.
+The server rejects overlap between either visitor store and `admin_keys`,
+rejects overlap between regular and operator stores, rejects bulk operator
+identities, and rejects `allow_inbound_admin`, `allow_outbound_admin`, or
+`control_full` in visitor metadata. Those capabilities come from the verified
+second identity, never a policy boolean.
 
 ## The three-layer gate for dangerous features
 
-Any of these features (server-side command execution, LAN/private-IP bridging, unrestricted address bridging) is gated by **all three** of:
+Server-side command execution and LAN/private-IP bridging are gated by **all
+three** of:
 
 1. **Build switch.** `cmake -DYUME_FEATURE_EXEC=ON` (or `_LAN_BRIDGE`, `_FULL_CONTROL`). Stock builds ship with all three OFF. The runtime CLI flag still parses but logs a warning and stays disabled.
 2. **Server flag.** `--allow-exec`, `--allow-local-ip`, `--control-full` (or the equivalent JSON config field). This is the global "feature is allowed on this server" upper bound.
-3. **Per-key meta entry.** `"allow_exec": true` (or `"allow_local_ip"`, `"control_full"`) in `auth_keys.meta`. Default is deny. The server flag never grants permission to a key that does not opt in.
+3. **Per-key meta entry.** `"allow_exec": true` (or `"allow_local_ip"`) in the
+   visitor policy. Default is deny. The server flag never grants permission to
+   an identity that does not opt in.
 
-A request is allowed only when all three layers say yes. Removing the build switch is the cleanest way to make a server physically incapable of running shell commands for clients, regardless of any operator misconfiguration later.
+Unrestricted bridging uses the build switch and server `--control-full` flag,
+but its identity gate is the verified distinct admin factor rather than a
+visitor-policy field. A request is allowed only when every applicable layer
+agrees.
 
 ## File layout
 
 ```
 /etc/yume/
-  authorized_keys           # one PEM-encoded public key per block; "who may connect"
+  authorized_keys           # pairs of public PEM blocks; regular visitors
   auth_keys.meta            # JSON mapping fingerprint → permissions; "what each may do"
-  operator_keys             # physically separate controller public keys
+  operator_keys             # pairs of public PEM blocks; controller visitors
   operator_keys.meta        # explicit operator permissions
+  admin_keys                # distinct composite second factors; no metadata
 ```
 
 A typical layout:
 
 ```text
 $ cat /etc/yume/authorized_keys
+# Alice's composite identity: Ed25519, then ML-DSA-87.
 -----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEA...alice...
+MCowBQYDK2VwAyEA...alice-ed25519...
 -----END PUBLIC KEY-----
 -----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEA...bob...
------END PUBLIC KEY-----
------BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEA...visitor...
+...alice-ml-dsa-87...
 -----END PUBLIC KEY-----
 ```
 
@@ -63,9 +72,6 @@ MCowBQYDK2VwAyEA...visitor...
       "allow_local_ip": true,
       "allow_codecs": ["monero-rpc"],
       "allow_services": ["example-service-v1"],
-      "control_full": false,
-      "allow_inbound_admin": true,
-      "allow_outbound_admin": false,
       "allow_chat": true,
       "allow_file": true,
       "allow_bytes": true
@@ -102,10 +108,7 @@ An operator controller is configured separately:
 {
   "a1092c...operator-fingerprint...": {
     "alias": "primary-admin",
-    "weight": 0.5,
-    "permissions": {
-      "allow_outbound_admin": true
-    }
+    "weight": 0.5
   }
 }
 ```
@@ -113,8 +116,9 @@ An operator controller is configured separately:
 Start the daemon with `--operator-keys /etc/yume/operator_keys` and
 `--operator-keys-meta /etc/yume/operator_keys.meta`. Operator keys are
 individual-only and default to one concurrent authenticated session. Merely
-placing a key in `operator_keys` does not silently grant exec, LAN, full-control,
-or admin permission; those remain explicit policy gates.
+placing an identity in `operator_keys` does not silently grant exec, LAN,
+full-control, or admin permission. Admin additionally requires a different
+identity in `--admin-keys` and `--admin-auth` on the client.
 
 ## Individual and bulk regular keys
 
@@ -143,12 +147,12 @@ abuse.
 | --- | --- | --- | --- |
 | `allow_exec` | deny | Permit the EXEC control feature. The active runtime forwards the request to an opted-in client; yumed does not execute arbitrary shell commands locally. | `--allow-exec` and `YUME_FEATURE_EXEC=ON` |
 | `allow_local_ip` | deny | Open TCP/UDP streams to RFC1918 / loopback addresses through the server | `--allow-local-ip` and `YUME_FEATURE_LAN_BRIDGE=ON` |
-| `control_full` | deny | Open TCP/UDP streams to *any* address (superset of `allow_local_ip`) | `--control-full` and `YUME_FEATURE_FULL_CONTROL=ON` |
+| `control_full` | invalid in metadata | Open TCP/UDP streams to *any* address only after a distinct admin factor | `--control-full`, `YUME_FEATURE_FULL_CONTROL=ON`, and verified admin identity |
 | `allow_codecs` | deny | Use named application codecs, for example `["monero-rpc"]` | `--codec-allow <name>` |
 | `allow_services` | deny | Use native embed named-service streams, for example `["example-service-v1"]` | server config `allow_services` plus `yume_server_register_service` |
 | `allow_monero_rpc` | deny | Compatibility alias for the built-in Monero RPC application codec against the server's loopback monerod backend | `--codec-allow monero-rpc` |
-| `allow_inbound_admin` | deny | Other clients on this server can attach to admin THIS client | none (always honoured) |
-| `allow_outbound_admin` | deny | This operator can attach to admin OTHER clients on the server | separate `operator_keys` trust store |
+| `allow_inbound_admin` | invalid in metadata | Runtime opt-in for this admin-authenticated target | verified admin identity plus client opt-in |
+| `allow_outbound_admin` | invalid in metadata | Runtime opt-in for this admin-authenticated operator caller | `operator_keys`, verified admin identity, and client opt-in |
 | `allow_chat` | individual: allow; bulk: deny | This key can use the chat relay | none |
 | `allow_file` | individual: allow; bulk: deny | This key can use the file relay | none |
 | `allow_bytes` | individual: allow; bulk: deny | This key can use the raw-bytes relay | none |
@@ -173,24 +177,26 @@ Two relationships are independent:
 
 | Mode | Server side | Client side | Use case |
 | --- | --- | --- | --- |
-| **S→C, C→S (full bridge)** | `--allow-exec` (with key `allow_exec`) plus directional admin policy as described below | `--server-in-charge` AND open SOCKS/forward | Operator's own laptop tunnelling through their own server, with the server able to dispatch opted-in control requests |
-| **S→C only** | `--allow-exec` (with key `allow_exec`) | `--server-in-charge`, no `--socks`/`-L`/`-R` | Server dispatches control requests to an opted-in client; the client doesn't tunnel anything outbound |
-| **C→S only** | normal flags, key `allow_local_ip` etc. as needed | `--socks` / `-L` / `-R` (no `--server-in-charge`) | Most common: user wants a SOCKS proxy / port forward, server cannot push requests back |
-| **neither (pure transport)** | no `--allow-exec`, no `--control-full`, no `--allow-local-ip`; key has no per-key permissions | no `--server-in-charge`, no SOCKS | Probe / handshake test only; useful for smoke-testing the tunnel without exposing either side |
+| **S→C, C→S (full bridge)** | `--allow-exec` (with key `allow_exec`) plus directional admin policy as described below | `--accept-server-control` AND open SOCKS/forward | Operator's own laptop tunnelling through their own server, with the server able to dispatch opted-in control requests |
+| **S→C only** | `--allow-exec` (with key `allow_exec`) | `--accept-server-control`, no `--socks`/`-L`/`-R` | Server dispatches control requests to an opted-in client; the client doesn't tunnel anything outbound |
+| **C→S only** | normal flags, key `allow_local_ip` etc. as needed | `--socks` / `-L` / `-R` (no `--accept-server-control`) | Most common: user wants a SOCKS proxy / port forward, server cannot push requests back |
+| **neither (pure transport)** | no `--allow-exec`, no `--control-full`, no `--allow-local-ip`; key has no per-key permissions | no `--accept-server-control`, no SOCKS | Probe / handshake test only; useful for smoke-testing the tunnel without exposing either side |
 
-The implemented client flag is `--server-in-charge`; there is no `--accept-server-control` alias in this release.
+The implemented client flag is `--accept-server-control`.
 
 An admin channel between relayed clients is admitted only when all of these are true:
 
 1. the caller registered `relay_mode=trusted`;
-2. the caller authenticated with an `operator_keys` key, its server-capped `allow_outbound_admin` policy is true, and the caller's runtime opt-in is true; and
-3. the target key's server-capped `allow_inbound_admin` policy and the target's runtime opt-in are both true.
+2. the caller authenticated with an `operator_keys` identity, also proved a
+   distinct `admin_keys` identity, and enabled its outbound runtime opt-in; and
+3. the target also proved a distinct `admin_keys` identity and enabled its
+   inbound runtime opt-in.
 
-Modern `admin.attach` also requires the target to accept the signed invite. The legacy attach message is retained for compatibility but is no longer caller-blind: it applies the same caller/target predicate and additionally requires the target's `--server-in-charge` opt-in. In federation, the authenticated source server enforces the caller half and the target server rechecks the target half; the current wire format does not carry an independently verifiable caller-policy proof across servers.
+Modern `admin.attach` also requires the target to accept the signed invite. The legacy attach message is retained for compatibility but is no longer caller-blind: it applies the same caller/target predicate and additionally requires the target's `--accept-server-control` opt-in. In federation, the authenticated source server enforces the caller half and the target server rechecks the target half; the current wire format does not carry an independently verifiable caller-policy proof across servers.
 
 ## Pre-authenticated service-only tier
 
-`preauth_services` is a deliberately narrower admission path for embedded named services. A peer with any valid self-signed Ed25519 key may enter it only when the server explicitly configures at least one preauth service. That peer is persisted as `PreauthServiceOnly`, not promoted to the normal authorized dispatcher.
+`preauth_services` is a deliberately narrower admission path for embedded named services. A peer with any valid self-signed composite identity may enter it only when the server explicitly configures at least one preauth service. That peer is persisted as `PreauthServiceOnly`, not promoted to the normal authorized dispatcher.
 
 The central post-auth gate permits only:
 
@@ -203,12 +209,14 @@ Control, relay, admin, generic TCP/UDP opens, codecs, benchmark streams, packet 
 ## Operational tips
 
 - **Editing auth_keys.meta is the recommended way to manage permissions.** The server's interactive `--ui` mode is brittle around per-key permissions; it's documented but you'll have a smoother time with a JSON editor.
-- **Reload after edits.** Both regular and operator stores are immutable runtime snapshots. Use the authenticated reload operation where available, or `systemctl restart yumed`; a failed reload preserves the previous complete snapshot.
+- **Reload after edits.** Regular, operator, admin, and policy stores are immutable runtime snapshots. Use the authenticated reload operation where available, or `systemctl restart yumed`; a failed reload preserves the previous complete snapshot.
 - **Application codecs.** Codec permissions are intentionally narrower than `allow_local_ip`: they only enable named protocol-aware codecs listed in `allow_codecs`. The Monero built-in validates allowed wallet RPC paths/methods and reconstructs HTTP only to a loopback backend configured by `--monero-rpc-backend`.
 - **Native service streams.** `allow_services` is for embedded C ABI users and is intentionally separate from `allow_local_ip`, `control_full`, `allow_codecs`, and exec. For a normally authorized key, a service stream opens only when the server config lists the service, the key metadata lists the same service, and the embedding process registered it with `yume_server_register_service`. The separately configured preauth tier follows the narrower rules above.
 - **Revoke a key.** Remove the public-key block from `authorized_keys`. The meta entry can stay; it'll be ignored.
 - **Audit.** Startup logs `auth policy <permissions summary>` for any key that has a non-empty meta entry. Run `yumed --auth-keys ... --keys-list` to dump all configured keys with their aliases.
-- **CI/scripted setup.** Generate fingerprints with `openssl pkey -pubin -in user.pub -outform DER | sha256sum | cut -d' ' -f1`. The same fingerprint format is used by `yumed --keys-list`.
+- **CI/scripted setup.** Use `yumed --keys-list` for composite fingerprints; a
+  one-block `openssl pkey` pipeline hashes only the first half and is not the
+  identity fingerprint.
 
 ## Security posture summary
 
@@ -216,6 +224,9 @@ Control, relay, admin, generic TCP/UDP opens, codecs, benchmark streams, packet 
 - A server built with `YUME_FEATURE_EXEC=ON` but without `--allow-exec` cannot run user commands.
 - A server with `--allow-exec` but no `auth_keys.meta` entry granting `allow_exec` cannot run user commands.
 - The same applies to LAN bridging and unrestricted bridging.
-- Outbound admin requires the separate operator trust store; inbound admin remains an explicit individual target policy. Both directions also require runtime opt-in.
+- Outbound admin requires an operator visitor identity plus a distinct admin
+  identity; inbound admin requires the target's distinct admin identity. Both
+  directions also require runtime opt-in.
 - Bulk keys are separately counted per session and cannot receive privileged controller, exec, LAN, full-control, codec/service, or federation policy.
-- AUTH imports only Ed25519 public keys and verifies the challenge signature with OpenSSL before either normal or preauth admission.
+- AUTH imports only ordered Ed25519 + ML-DSA-87 composite identities and verifies
+  both challenge signatures with OpenSSL before either normal or preauth admission.

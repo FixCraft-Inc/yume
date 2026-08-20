@@ -206,6 +206,15 @@ ParsedArgs parse_args(int argc, char** argv) {
                 return args;
             }
             args.identity = identity;
+        } else if (arg == "--admin-auth") {
+            // Presenting the key is the claim. There is no --admin boolean by
+            // design: a flag that grants admin without the second credential is
+            // exactly the accidental-escalation path this replaces.
+            const char* admin_identity = take_value(arg);
+            if (!admin_identity) {
+                return args;
+            }
+            args.admin_identity = admin_identity;
         } else if (arg == "--socks") {
             const char* raw = take_value("--socks");
             if (!raw) {

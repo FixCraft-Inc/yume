@@ -32,7 +32,10 @@
 #include <openssl/x509.h>
 #include <nlohmann/json.hpp>
 
+#include "core/security/crypto.hpp"
+#include "core/security/secure_erase.hpp"
 #include "core/security/inner_crypto.hpp"
+#include "core/security/secret_file.hpp"
 #include "server/auth/auth.hpp"
 
 namespace yume::facade::keys {
@@ -41,11 +44,6 @@ namespace {
 
 using EVP_PKEY_ptr = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
 using BIO_ptr      = std::unique_ptr<BIO,      decltype(&BIO_free)>;
-
-struct FileDeleter {
-    void operator()(FILE* f) const noexcept { if (f) std::fclose(f); }
-};
-using FILE_ptr = std::unique_ptr<FILE, FileDeleter>;
 
 struct OpenSSLFreeDeleter {
     void operator()(unsigned char* p) const noexcept { OPENSSL_free(p); }
@@ -90,54 +88,6 @@ std::optional<std::string> fingerprint_pem_der(const std::string& pem,
     return hex_lower(digest, SHA256_DIGEST_LENGTH);
 }
 
-bool write_pem(std::filesystem::path const& path, EVP_PKEY* key, bool is_private,
-               std::string* err) {
-    std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
-
-    // Open with O_CREAT|O_EXCL not needed for overwrites here, but we MUST set
-    // an explicit mode. The default umask path through std::fopen leaves the
-    // file at 0666 if umask is 0; private keys must be 0600 to keep them out
-    // of group/other readers on shared hosts.
-#if defined(_WIN32)
-    FILE_ptr f(std::fopen(path.string().c_str(), "wb"));
-#else
-    int oflags = O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC;
-    mode_t mode = is_private ? S_IRUSR | S_IWUSR                                          // 0600
-                             : S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;                     // 0644
-    int fd = ::open(path.string().c_str(), oflags, mode);
-    if (fd < 0) {
-        if (err) *err = "cannot create " + path.string();
-        return false;
-    }
-    // If the file pre-existed with looser permissions, tighten them — open()
-    // does not chmod() when O_CREAT finds an existing file.
-    ::fchmod(fd, mode);
-    FILE_ptr f(::fdopen(fd, "wb"));
-    if (!f) {
-        ::close(fd);
-        if (err) *err = "cannot create " + path.string();
-        return false;
-    }
-#endif
-    if (!f) {
-        if (err) *err = "cannot create " + path.string();
-        return false;
-    }
-    int ok = 0;
-    if (is_private) {
-        ok = PEM_write_PrivateKey(f.get(), key, nullptr, nullptr, 0, nullptr,
-                                  nullptr);
-    } else {
-        ok = PEM_write_PUBKEY(f.get(), key);
-    }
-    if (!ok) {
-        if (err) *err = "failed to write PEM " + path.string();
-        return false;
-    }
-    return true;
-}
-
 #ifndef _WIN32
 void chmod_private_file(std::filesystem::path const& path) {
     std::error_code ec;
@@ -152,9 +102,9 @@ void chmod_private_file(std::filesystem::path const&) {}
 
 }  // namespace
 
-std::optional<KeyPair> generate_ed25519(std::filesystem::path const& dir,
-                                        std::string const& base_name,
-                                        std::string* err) {
+std::optional<KeyPair> generate_identity(std::filesystem::path const& dir,
+                                         std::string const& base_name,
+                                         std::string* err) {
     if (base_name.empty()
         || base_name.find('/') != std::string::npos
         || base_name.find('\\') != std::string::npos) {
@@ -169,48 +119,58 @@ std::optional<KeyPair> generate_ed25519(std::filesystem::path const& dir,
         return std::nullopt;
     }
 
-    std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> ctx(
-        EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, nullptr), EVP_PKEY_CTX_free);
-    if (!ctx) {
-        if (err) *err = "EVP_PKEY_CTX_new_id(ED25519) failed";
-        return std::nullopt;
-    }
-    if (EVP_PKEY_keygen_init(ctx.get()) <= 0) {
-        if (err) *err = "EVP_PKEY_keygen_init failed";
-        return std::nullopt;
-    }
-    EVP_PKEY* raw = nullptr;
-    if (EVP_PKEY_keygen(ctx.get(), &raw) <= 0 || raw == nullptr) {
-        if (err) *err = "EVP_PKEY_keygen failed";
-        return std::nullopt;
-    }
-    EVP_PKEY_ptr pkey(raw, EVP_PKEY_free);
-
-    if (!write_pem(priv_path, pkey.get(), /*is_private=*/true, err)) {
-        return std::nullopt;
-    }
-    chmod_private_file(priv_path);
-    if (!write_pem(pub_path, pkey.get(), /*is_private=*/false, err)) {
-        std::error_code ec;
-        std::filesystem::remove(priv_path, ec);
+    crypto::Bytes private_pem;
+    crypto::Bytes public_pem;
+    std::string fingerprint;
+    try {
+        const auto keys = crypto::generate_composite_keypair();
+        private_pem = crypto::encode_composite_private_pem(keys);
+        public_pem = crypto::encode_composite_identity(
+            keys.classical.public_key.get(), keys.pq.public_key.get());
+        const auto parsed = crypto::parse_composite_identity(public_pem);
+        if (!parsed.valid()) {
+            if (err) *err = "generated identity did not parse as composite";
+            security::secure_erase(private_pem);
+            return std::nullopt;
+        }
+        fingerprint = crypto::composite_fingerprint(parsed);
+    } catch (const std::exception& ex) {
+        if (err) *err = std::string("composite keypair generation failed: ") + ex.what();
+        security::secure_erase(private_pem);
         return std::nullopt;
     }
 
-    unsigned char* der = nullptr;
-    const int der_len = i2d_PUBKEY(pkey.get(), &der);
-    if (der_len <= 0 || der == nullptr) {
-        if (err) *err = "could not encode public key";
+    // Serialize to memory first, then create both files exclusively at 0600.
+    // Writing the private PEM through a normal stream would publish it at the
+    // process umask and only tighten it afterwards, leaving a readable window.
+    std::string write_error;
+    const bool private_written =
+        security::WriteFileExclusive0600(priv_path.string(), private_pem, &write_error);
+    security::secure_erase(private_pem);
+    if (!private_written) {
+        if (err) {
+            *err = "failed to write private key: " +
+                   (write_error.empty() ? std::string("unknown error") : write_error);
+        }
         return std::nullopt;
     }
-    OpenSSLBuf der_guard(der);
-    unsigned char digest[SHA256_DIGEST_LENGTH];
-    SHA256(der, static_cast<std::size_t>(der_len), digest);
+    if (!security::WriteFileExclusive0600(pub_path.string(), public_pem, &write_error)) {
+        // Never leave a private key behind for a pair that was never
+        // completed; the next attempt needs the path free to create again.
+        std::error_code remove_error;
+        std::filesystem::remove(priv_path, remove_error);
+        if (err) {
+            *err = "failed to write public key: " +
+                   (write_error.empty() ? std::string("unknown error") : write_error);
+        }
+        return std::nullopt;
+    }
 
     KeyPair kp;
     kp.private_path = priv_path;
     kp.public_path = pub_path;
-    kp.fingerprint = hex_lower(digest, SHA256_DIGEST_LENGTH);
-    kp.algorithm = "ed25519";
+    kp.fingerprint = std::move(fingerprint);
+    kp.algorithm = "composite-ed25519-mldsa87";
     return kp;
 }
 

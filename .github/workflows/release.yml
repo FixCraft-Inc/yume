@@ -125,7 +125,8 @@ jobs:
             libnghttp2-dev libboost-all-dev libspdlog-dev nlohmann-json3-dev
           source scripts/ensure-openssl.sh
           yume_openssl_ensure
-          bash scripts/ensure-nghttp2.sh
+          source scripts/ensure-nghttp2.sh
+          yume_nghttp2_ensure
           YUME_LIBOQS_PREFIX="${RUNNER_TEMP}/liboqs-host-prefix"
           LIBOQS_TARGET=host \
             LIBOQS_VERSION=0.16.0 \

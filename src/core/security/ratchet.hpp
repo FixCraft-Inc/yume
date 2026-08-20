@@ -60,9 +60,9 @@ static_assert(kMinRekeyWindow >= 1);
 static_assert(kDefaultRekeyWindow >= kMinRekeyWindow);
 static_assert(kDefaultRekeyWindow <= kMaxRekeyWindow);
 
-// Clamp any configured or peer-advertised depth into the supported range. A
-// zero or absent value means "no window", which is the single-exchange dev2
-// behavior rather than an error.
+// Clamp locally configured depth into the supported range. Values below one
+// select the minimum supported depth; decoded peer records are validated
+// separately and zero is rejected.
 constexpr std::uint16_t ClampRekeyWindow(std::uint32_t requested) noexcept {
     if (requested < kMinRekeyWindow) return kMinRekeyWindow;
     if (requested > kMaxRekeyWindow) return kMaxRekeyWindow;

@@ -130,6 +130,7 @@ bool parse_server_cli_args(int argc,
             if (!parse_listen_spec(argv[++i], cfg)) {
                 return false;
             }
+            result.config_overrides.listen = true;
         } else if (arg == "--reverse-port-min" && i + 1 < argc) {
             if (!parse_port(argv[++i], "--reverse-port-min", &cfg.reverse_port_min)) return false;
         } else if (arg == "--reverse-port-max" && i + 1 < argc) {
@@ -315,8 +316,6 @@ bool parse_server_cli_args(int argc,
         } else if (arg == "--directory-disable") {
             cfg.directory_enable = false;
             result.config_overrides.directory_enable = true;
-        } else if (arg == "--allow-remote-server-admin") {
-            yume::util::log_warn("--allow-remote-server-admin was never wired to a check; flag removed (ignored)");
         } else if (arg == "--operator-keys" && i + 1 < argc) {
             cfg.operator_keys = resolve_cli_path(argv[++i]);
         } else if (arg == "--operator-keys-meta" && i + 1 < argc) {

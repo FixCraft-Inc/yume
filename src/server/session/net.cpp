@@ -3,13 +3,9 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * ----------------------------------------------------------------
  * Definitions for the session-private helpers declared in
- * server/session/internal.hpp. These were the free functions of the
- * anonymous namespace formerly at the top of session.cpp; they were
- * promoted to yume::server::detail so the split session_*.cpp TUs can
- * share them. Moved verbatim -- no behavior change.
- * ---------------------------------------------------------------- */
+ * server/session/internal.hpp, shared by the split session translation units.
+ */
 
 #include "server/session/internal.hpp"
 

@@ -359,8 +359,9 @@ CliCommandResult run_server_manager_ui(yume::server::ServerConfig& cfg, ServerKe
         std::string inner_hop = prompt("inner_hop (true/false)", cfg.inner_hop ? "true" : "false");
         std::string hop_interval = prompt("hop_interval_ms", std::to_string(cfg.hop_interval_ms));
         std::string pq = prompt("pq_private_key", cfg.pq_private_key);
-        std::string use_embedded_master = prompt("use_embedded_master (true/false)",
-                                                 cfg.allow_embedded_master ? "true" : "false");
+        std::string allow_embedded_master = prompt(
+            "allow_embedded_master (true/false)",
+            cfg.allow_embedded_master ? "true" : "false");
         std::string allow_exec = prompt("allow_exec (true/false)", cfg.allow_exec ? "true" : "false");
         std::string allow_local_ip = prompt("allow_local_ip (true/false)", cfg.allow_local_ip ? "true" : "false");
         std::string control_full = prompt("control_full (true/false)", cfg.control_full ? "true" : "false");
@@ -398,7 +399,8 @@ CliCommandResult run_server_manager_ui(yume::server::ServerConfig& cfg, ServerKe
         json["inner_hop"] = (inner_hop == "true");
         json["hop_interval_ms"] = std::stoi(hop_interval);
         if (!pq.empty()) json["pq_private_key"] = pq;
-        json["use_embedded_master"] = (use_embedded_master == "true");
+        json["allow_embedded_master"] =
+            (allow_embedded_master == "true");
         json["allow_exec"] = (allow_exec == "true");
         json["allow_local_ip"] = (allow_local_ip == "true");
         json["control_full"] = (control_full == "true");

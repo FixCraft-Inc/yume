@@ -431,9 +431,9 @@ and GREASE. JA3/JA4/JA4S are summaries, not the acceptance oracle.
 - AUTH uses canonical schema 3. Schema 2/dev5, missing profiles, stale
   profiles, and helper protocol mismatches fail closed.
 - `chrome151-node24-v1` is bound into admission, AUTH challenge/response/
-  confirmation, the Ed25519 signature input, establishment derivation, and
+  confirmation, the composite signature input, establishment derivation, and
   protected-frame AAD.
-- The new signature domain is `yume/2.0/auth-signature/v3`.
+- The current signature domain is `yume/2.0/auth-signature/v4`.
 - The new initial-root label is `yume/2.0/root/v3`.
 - The new AEAD AAD domain is `yume/2.0/aad/v2`.
 - There is no dev5 compatibility or downgrade path.
@@ -494,9 +494,10 @@ review gates remain open.
 ### Security
 
 The construction is deliberately conservative: hybrid ML-KEM-1024 + X25519,
-an independent random PSK, live TLS-exporter channel binding, Ed25519 client
-authorization, one-use AES-GCM message keys, authenticated profile/policy
-negotiation, and fail-closed bounds. This is a credible design advantage.
+an independent random PSK, live TLS-exporter channel binding, composite
+Ed25519 + ML-DSA-87 client authorization, one-use AES-GCM message keys,
+authenticated profile/policy negotiation, and fail-closed bounds. This is a
+credible design advantage.
 
 It is not evidence that YUME is safer than Xray. YUME has no independent audit,
 far less deployment exposure, and incomplete adversarial deployment coverage.

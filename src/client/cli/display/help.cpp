@@ -3,8 +3,7 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * CLI help / version / credits / bash-completion output, extracted
- * verbatim from client/cli/entry.cpp. No behavior change.
+ * CLI help, version, credits, and bash-completion output.
  */
 
 #include "client/cli/display/help.hpp"

@@ -3,10 +3,8 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * TransportCore outbound write path: frame queueing, encode + obfs padding, priority-ordered batched dispatch.
- * Extracted verbatim from client/transport/core.cpp. Same
- * yume::client::TransportCore class, no behavior change. Shared helpers
- * via client/transport/internal.hpp.
+ * TransportCore outbound write path: frame queueing, encode + obfs padding,
+ * and priority-ordered batched dispatch.
  */
 
 #include "client/transport/core.hpp"

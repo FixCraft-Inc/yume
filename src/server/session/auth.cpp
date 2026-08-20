@@ -3,18 +3,13 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * ----------------------------------------------------------------
- * Session authentication and inner-crypto methods, extracted verbatim
- * from session.cpp:
+ * Session authentication and inner-crypto methods:
  *   - send_auth_challenge   — server-issued AUTH challenge
  *   - handle_auth           — client AUTH-response verification (key
  *                             match, optional inner ML-KEM handshake)
  *   - decrypt/encrypt_inner_payload, current_hop_id — inner AEAD with
  *                             live hop-key derivation
- *
- * Same Session:: class, same wire output, no behavior change. Shared
- * helpers via server/session/internal.hpp.
- * ---------------------------------------------------------------- */
+ */
 
 #include "server/session/session.hpp"
 #include "core/security/secure_erase.hpp"
@@ -222,6 +217,9 @@ bool Session::handle_auth(const protocol::Frame& frame) {
     auth_error_.clear();
     authorization_tier_ = authorization::SessionTier::Unauthenticated;
     operator_authenticated_ = false;
+    admin_authenticated_ = false;
+    auth_fingerprint_.clear();
+    admin_fingerprint_.clear();
     auth_key_type_ = AuthKeyType::Individual;
     try {
         if (!auth_v2_ephemeral_ || !cfg_.inner_psk_material) {
@@ -273,12 +271,23 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         const bool auth_ok = regular_auth_ok || operator_auth_ok;
         std::string fingerprint = crypto::composite_fingerprint(visitor_identity);
 
+        // An admin claim is a second factor for an already authorized visitor,
+        // never an alternate route out of the deliberately narrower preauth
+        // tier. Reject before parsing or verifying the admin credential so no
+        // preauth session can retain privileged internal state.
+        if (response.claims_admin() &&
+            !authorization::admin_claim_eligible(sig_ok, auth_ok)) {
+            auth_error_ = !sig_ok
+                ? "access denied: bad signature"
+                : "access denied: admin requires an authorized visitor key";
+            return false;
+        }
+
         // Second factor. Everything about admin is decided here and nowhere
         // else: a session is admin only if it presented a second, *distinct*
         // key that appears in the separate admin store and signed this exact
         // transcript under the admin domain. No policy flag on the visitor key
         // can produce this, which is the whole point of the requirement.
-        admin_authenticated_ = false;
         if (response.claims_admin()) {
             const crypto::CompositePublicKey admin_identity =
                 crypto::parse_composite_identity(response.admin_identity);

@@ -9,7 +9,10 @@ are in `docs/YUME_2_0_STABILIZATION.md`.
 
 This is a truthful inventory of the focused Linux x86-64 client/server work. It
 does not claim Android, GUI, nginx, alternate browser profiles, H3, federation,
-or admin/control validation.
+Windows runtime, or release qualification. Composite AUTH and dual-identity
+admin are implemented in the CLI/server scope. Development-merge evidence must
+include a fresh full optimized and sanitizer qualification of the exact signed
+tree; results from an earlier checkpoint do not transfer across corrections.
 
 ## Implemented
 
@@ -104,8 +107,14 @@ or admin/control validation.
 - Version/profile/SNI/hour/nonce HMAC admission, authority matching, bounded
   replay cache, and ordinary cover behavior before AUTH on rejection.
 - Canonical schema-3 AUTH transcript with strict parsing, exact
-  `chrome151-node24-v1` challenge/response/confirmation fields, and Ed25519
-  authorization before ML-KEM work.
+  `chrome151-node24-v1` challenge/response/confirmation fields, and composite
+  Ed25519 + ML-DSA-87 authorization before ML-KEM work.
+- Admin AUTH requires a second, different composite identity from the separate
+  `admin_keys` store. The visitor identity must already be enrolled in the
+  regular or operator store, so a preauth-only visitor cannot use an admin
+  factor as an alternate admission route. The signed checkpoint passed the
+  original live 5/5 admin matrix; the current correction passed the paired
+  unenrolled-admin refusal and matched visitor-only preauth control.
 - ML-KEM-1024 + X25519 + high-entropy PSK salted-HKDF root derivation. Argon2 is
   absent at connection establishment and per epoch.
 - AES-256-GCM one-use message keys with profile/direction/epoch/sequence/type/

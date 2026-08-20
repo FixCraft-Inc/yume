@@ -4,9 +4,6 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
  * TransportCore inner-crypto: AEAD seal/open with live hop-key derivation.
- * Extracted verbatim from client/transport/core.cpp. Same
- * yume::client::TransportCore class, no behavior change. Shared helpers
- * via client/transport/internal.hpp.
  */
 
 #include "client/transport/core.hpp"

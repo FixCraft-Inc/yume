@@ -6,14 +6,11 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
  * ----------------------------------------------------------------
- * Internal helpers shared across the transport translation units
- * that together implement yume::client::TransportCore. Formerly the
- * anonymous namespace at the top of transport/core.cpp; promoted to
- * yume::client::detail (header-only, all inline) so the split TUs
- * (core / write / dispatch / crypto) can share them. Each does:
+ * Internal helpers shared across the transport translation units that
+ * implement yume::client::TransportCore. They are header-only and inline in
+ * yume::client::detail so core/write/dispatch/crypto can share them. Each does:
  *     #include "client/transport/internal.hpp"
  *     using namespace detail;   // inside namespace yume::client
- * so the moved method bodies compile unchanged. No behavior change.
  * ---------------------------------------------------------------- */
 
 #include <cstdint>

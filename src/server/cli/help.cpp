@@ -3,8 +3,7 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * yumed help / version / credits / bash-completion output, extracted
- * verbatim from main_server.cpp. No behavior change.
+ * yumed help, version, credits, and bash-completion output.
  */
 
 #include "server/cli/help.hpp"
@@ -22,7 +21,7 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="-h --accept-rate-limit --accept-yume-clients --admin-keys --allow-exec --allow-local-ip --allow-monero-rpc --allow-remote-server-admin --attach-local --auth-keys --auth-keys-meta --bench --boring --bulk-key-max-sessions --cert --client-deny-action --client-filter-mode --cluster-bootstrap --cluster-join --codec-allow --completion --config --control-full --credits --directory-disable --directory-enable --dns-server --egress-filter-mode --egress-mbps --exposure-check --federation-auth-key --federation-enable --federation-operator-ca --filter-geolite --filter-list --filter-memory-mib --help --hide-in-the-crowd --host-mode --inner-psk-file --inner-required --key --keys-add --keys-admin --keys-alias --keys-gen --keys-gen-add --keys-list --keys-remove --listen --max-sessions --monero-rpc-backend --no-yume-clients --obfs-secret-file --operator-ca-cert --operator-ca-key --operator-delegated-cert --operator-delegated-key --operator-identity --operator-keys --operator-keys-meta --operator-proof-api --operator-proof-mode --operator-proof-token --packet-cidr --packet-egress --packet-mtu --packet-tun-name --peer --proxy --public-node --real --real-backend --real-index --real-root --real-secret --real-secret-file --rekey-window --relay-disable --relay-enable --reverse-port-max --reverse-port-min --robots-deny --root --server-id --server-name --service-allow --threads --timing --tls-handshake-timeout-ms --tls_cert --tls_key --ui --upstream-response --upstream-response-dir --upstream-response-ttl --version"
+  local opts="-h --accept-rate-limit --accept-yume-clients --admin-keys --allow-exec --allow-local-ip --allow-monero-rpc --attach-local --auth-keys --auth-keys-meta --bench --boring --bulk-key-max-sessions --cert --client-deny-action --client-filter-mode --cluster-bootstrap --cluster-join --codec-allow --completion --config --control-full --credits --directory-disable --directory-enable --dns-server --egress-filter-mode --egress-mbps --exposure-check --federation-auth-key --federation-enable --federation-operator-ca --filter-geolite --filter-list --filter-memory-mib --help --hide-in-the-crowd --host-mode --inner-psk-file --inner-required --key --keys-add --keys-admin --keys-alias --keys-gen --keys-gen-add --keys-list --keys-remove --listen --max-sessions --monero-rpc-backend --no-yume-clients --obfs-secret-file --operator-ca-cert --operator-ca-key --operator-delegated-cert --operator-delegated-key --operator-identity --operator-keys --operator-keys-meta --operator-proof-api --operator-proof-mode --operator-proof-token --packet-cidr --packet-egress --packet-mtu --packet-tun-name --peer --proxy --public-node --real --real-backend --real-index --real-root --real-secret --real-secret-file --rekey-window --relay-disable --relay-enable --reverse-port-max --reverse-port-min --robots-deny --root --server-id --server-name --service-allow --threads --timing --tls-handshake-timeout-ms --tls_cert --tls_key --ui --upstream-response --upstream-response-dir --upstream-response-ttl --version"
   local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --auth-keys-meta --admin-keys --operator-keys --operator-keys-meta --obfs-secret-file --inner-psk-file --filter-geolite --operator-ca-key --operator-ca-cert --operator-delegated-key --operator-delegated-cert --federation-auth-key --federation-operator-ca --keys-add --keys-gen"
   case "$prev" in
     --completion)
@@ -93,7 +92,7 @@ void print_help() {
         << "  --key <path>             TLS private key\n"
         << "  --auth-keys <path>       Override auth_keys\n"
         << "  --auth-keys-meta <path>  Override per-key permissions JSON\n"
-        << "  --operator-keys <path>   Separate Ed25519 operator public keys\n"
+        << "  --operator-keys <path>   Separate composite operator identities\n"
         << "  --operator-keys-meta <p> Operator-key permissions JSON\n"
         << "  --threads <n>            Worker thread count (0 = auto)\n"
         << "  --reverse-port-min <p>   Reverse listen minimum (default "
@@ -260,7 +259,7 @@ void print_help() {
         << "  --keys-alias <id> <a>    Set alias\n"
         << "  --keys-gen <prefix>      Generate composite Ed25519+ML-DSA-87 identity (<prefix>.key/.pub)\n"
         << "  --keys-gen-add           Append generated public key to auth_keys\n"
-        << "  auth_keys_meta supports key_type (individual|bulk), weight, max_sessions, federation_peer_id, priority (legacy), permissions.allow_codecs, permissions.allow_services, and permissions.{allow_local_ip,control_full,allow_exec,allow_monero_rpc,allow_chat,allow_file,allow_bytes,allow_inbound_admin,allow_outbound_admin}\n"
+        << "  auth_keys_meta supports key_type (individual|bulk), weight, max_sessions, federation_peer_id, priority (legacy), permissions.allow_codecs, permissions.allow_services, and permissions.{allow_local_ip,allow_exec,allow_monero_rpc,allow_chat,allow_file,allow_bytes}. True control_full or inbound/outbound-admin grants are rejected; admin requires a distinct --admin-keys identity, and outbound admin also requires the visitor identity in --operator-keys.\n"
         << "  --ui                     Interactive server manager\n\n"
         << "Other:\n"
         << "  completion bash\n"

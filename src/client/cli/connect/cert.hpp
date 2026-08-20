@@ -5,8 +5,7 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * CLI certificate / OpenSSL helpers, extracted from client/cli/entry.cpp.
- * No behavior change.
+ * CLI certificate and OpenSSL helpers.
  */
 
 #include <cstddef>

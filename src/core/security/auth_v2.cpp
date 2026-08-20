@@ -312,8 +312,8 @@ Bytes BuildUnsignedResponse(const Bytes& x25519_public_key,
     RequireWindow(rekey_window);
     (void)PolicyBytes(ratchet_policy);
     // The client's advertised depth sits inside the signed record, so the
-    // negotiated window is covered by the same Ed25519 signature as the rest
-    // of the transcript and cannot be tampered with on the carrier.
+    // negotiated window is covered by the same composite signature as the
+    // rest of the transcript and cannot be tampered with on the carrier.
     return EncodeRecord(RecordKind::Response, {
         {1, true, x25519_public_key}, {2, true, mlkem_ciphertext},
         {3, true, identity}, {4, true, WindowBytes(rekey_window)},

@@ -215,7 +215,8 @@ FixCraft will operate a small fleet of public `yumed` endpoints. They will:
 - be free to use without an account, payment, or rate-limiting beyond fairness
 - run the unmodified daemon you can build from this tree
 - serve a real HTML page on `/` so that a browser hitting the same hostname sees something normal
-- publish their public keys and authorised-keys fingerprints in advance so clients can pin them
+- publish TLS certificate/pin and operator-proof trust material in advance so
+  clients can authenticate the endpoint
 
 Specific hostnames will land here once the fleet is up.
 
@@ -586,8 +587,9 @@ stores, each split into public keys and policy metadata:
 - `operator_keys.meta` holds their non-admin policy; operator keys cannot be
   bulk keys.
 - `admin_keys` holds only distinct second-factor composite identities. A client
-  is admin only when its visitor/operator identity and its separate admin
-  identity both sign the same bound AUTH exchange.
+  is admin only when its enrolled visitor/operator identity and its separate
+  admin identity both sign the same bound AUTH exchange. An unenrolled
+  preauth-only visitor cannot be upgraded by an admin factor.
 
 Regular keys default to `key_type: "individual"` and one authenticated session.
 An administrator may explicitly mark a regular key as `bulk` for many users who

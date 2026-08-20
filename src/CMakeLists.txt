@@ -1042,7 +1042,10 @@ add_test(NAME yume_dual_key_auth_test COMMAND yume_dual_key_auth_test)
 
 add_executable(yume_server_config_io_test
     server/cli/config_load_test.cpp
+    server/cli/args.cpp
+    server/cli/cluster.cpp
     server/cli/config_load.cpp
+    server/cli/help.cpp
     server/cli/misc.cpp
 )
 target_link_libraries(yume_server_config_io_test PRIVATE yume_facade)

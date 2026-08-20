@@ -4,7 +4,7 @@
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
  * Selftest/benchmark terminal presentation: progress bar, ANSI color,
- * and grade colouring. Extracted verbatim from tools/selftest.cpp.
+ * and grade colouring.
  */
 
 #include "tools/selftest/render.hpp"

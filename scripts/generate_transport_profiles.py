@@ -232,8 +232,8 @@ def captured_client_hello(path: pathlib.Path, profile_id: str) -> dict[str, list
     """The real browser ClientHello recorded in the committed capture.
 
     Only the fields the OpenSSL diagnostic backend can express are extracted.
-    GREASE entries are dropped: they are per-connection randomisation, not part
-    of a selection policy.
+    GREASE entries are dropped: their exact code points are runtime
+    randomisation, not part of a selection policy.
     """
     document = read_json(path)
     hello = document.get("client_hello")
@@ -279,7 +279,7 @@ def injected_extensions(selection: dict[str, Any],
     """Extensions OpenSSL will not emit itself, injected via add_custom_ext.
 
     A "GREASE" type emits 0, which the C++ side reads as "allocate an RFC 8701
-    value per connection" rather than a fixed extension number.
+    value when configuring the SSL_CTX" rather than a registry-fixed number.
     """
     field = f"{profile_id}.openssl_selection.injected_extensions"
     entries = selection.get("injected_extensions", [])

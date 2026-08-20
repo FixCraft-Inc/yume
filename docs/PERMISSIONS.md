@@ -12,13 +12,15 @@ stores:
   layer. Operator identities are individual-only.
 - `admin_keys` contains distinct second-factor composite identities and no
   policy metadata. Admin is proved by presenting and signing with one visitor
-  identity plus one different identity from this list.
+  identity plus one different identity from this list. The visitor must itself
+  be enrolled in the regular or operator store; a preauth-only identity cannot
+  be upgraded by presenting an admin factor.
 
 The server rejects overlap between either visitor store and `admin_keys`,
 rejects overlap between regular and operator stores, rejects bulk operator
-identities, and rejects `allow_inbound_admin`, `allow_outbound_admin`, or
-`control_full` in visitor metadata. Those capabilities come from the verified
-second identity, never a policy boolean.
+identities, and rejects true `allow_inbound_admin`, `allow_outbound_admin`, or
+`control_full` grants in visitor metadata. Those capabilities come from the
+verified second identity, never a policy boolean.
 
 ## The three-layer gate for dangerous features
 

@@ -5,9 +5,8 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * CLI help/usage text and version/credits output, extracted from
- * client/cli/entry.cpp to keep that entrypoint file from carrying ~200 lines
- * of static text. No behavior change.
+ * CLI help, usage, version, credits, and completion output. Kept separate so
+ * the entrypoint owns control flow rather than static presentation text.
  */
 
 namespace yume::client {

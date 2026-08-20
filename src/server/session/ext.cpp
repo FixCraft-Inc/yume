@@ -3,18 +3,14 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * ----------------------------------------------------------------
- * Session extension channels, extracted verbatim from session.cpp:
+ * Session extension channels:
  *   - federation relay  (attach_federated_stream, complete_federated_open,
  *                        send_federated_data / send_federated_close)
  *   - packet egress     (handle_packet_open / handle_packet_data,
  *                        queue_packet_downstream, flush_packet_downstream)
  *   - throughput bench  (handle_bench_open / data / close, pump_bench_sources,
  *                        maybe_finish_bench_source)
- *
- * Same Session:: class, same wire output, no behavior change. Shared
- * helpers via server/session/internal.hpp.
- * ---------------------------------------------------------------- */
+ */
 
 #include "server/session/session.hpp"
 #include "server/runtime/manager.hpp"

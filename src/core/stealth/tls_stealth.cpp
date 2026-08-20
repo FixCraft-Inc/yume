@@ -42,9 +42,10 @@ namespace yume::tls_stealth {
 namespace {
 
 // RFC 8701 §2.1: GREASE values reserved for cipher_suites,
-// supported_groups, extensions, and ALPN. We pick one per category
-// per-connection (via a rotating process-local counter). Different categories
-// use different "buckets" of the
+// supported_groups, extensions, and ALPN. This backend currently uses the
+// picker while configuring injected extension types on an SSL_CTX. OpenSSL
+// binds each custom-extension number at registration, so a long-lived context
+// reuses it across connections. Different categories use different buckets of the
 // wheel so they don't collide in a single ClientHello (RFC 8701
 // §3.3: "the GREASE value used for one extension SHOULD be
 // different from any other GREASE value used in the same
@@ -656,9 +657,9 @@ void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profi
     std::size_t rejected = 0;
     std::size_t slot = 0;
     for (const auto& injected : cover.tls_injected_extensions) {
-        // A registry type of 0 means "pick an RFC 8701 GREASE value". The
-        // bucket is the slot index, so two GREASE extensions in one ClientHello
-        // cannot draw the same value (RFC 8701 §3.3).
+        // A registry type of 0 means "pick an RFC 8701 GREASE value while this
+        // SSL_CTX is configured". The bucket is the slot index, so the two
+        // registered GREASE extensions cannot collide (RFC 8701 §3.3).
         const unsigned int ext_type =
             injected.type != 0 ? injected.type
                                : pick_grease(static_cast<unsigned>(++slot));

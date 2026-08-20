@@ -5,9 +5,8 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * CLI low-level async-I/O-with-timeout helpers and wire-inspection
- * diagnostics, extracted verbatim from client/cli/entry.cpp. Several of these
- * are function templates or small inline helpers, so the cluster is
+ * CLI low-level async-I/O-with-timeout helpers and wire-inspection diagnostics.
+ * Several are function templates or small inline helpers, so the cluster is
  * header-resident. Included by CLI connection/auth code.
  */
 

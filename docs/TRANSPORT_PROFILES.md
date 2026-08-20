@@ -88,7 +88,7 @@ flattened evidence files that installed diagnostics consume.
    | `signature_algorithms` | Offered schemes, in order. JA4 hashes these in order, so the sequence is load-bearing, not just the set. |
    | `supported_groups` | Offered groups, in order. |
    | `extensions` | The target extension set. Not an emission order: see below. |
-   | `injected_extensions` | Extensions OpenSSL will not emit itself, each with a body shape. `"GREASE"` as the type allocates an RFC 8701 value per connection. |
+   | `injected_extensions` | Extensions OpenSSL will not emit itself, each with a body shape. `"GREASE"` as the type allocates an RFC 8701 value when the `SSL_CTX` is configured; OpenSSL then reuses that registered type for the context's connections. |
    | `alps_protocols` | Body for the injected `0x44cd` extension. |
    | `ech_grease_lengths` | Permitted total lengths for the injected `0xfe0d` GREASE ECH body, taken from the capture. |
    | `no_encrypt_then_mac` | Suppresses `0x0016`, which OpenSSL offers by default and browsers generally do not. |

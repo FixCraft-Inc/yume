@@ -3,15 +3,11 @@
  * Copyright (C) 2026  FixCraft Inc.
  * Licensed under the GNU Affero General Public License v3.0 or later.
  *
- * ----------------------------------------------------------------
- * Session carrier / disguise methods, extracted verbatim from
- * session.cpp. Implements the HTTP/2 stealth carrier: the TLS preface
+ * Session carrier / disguise methods. Implements the HTTP/2 stealth carrier:
+ * the TLS preface
  * read, HTTP-probe disguise responses (404 / real-index / robots.txt),
  * and the H2 carrier handshake probe that precedes YUME auth.
- *
- * Same Session:: class, same signatures, same wire output. No behavior
- * change. Shared helpers come from server/session/internal.hpp.
- * ---------------------------------------------------------------- */
+ */
 
 #include <algorithm>
 #include <chrono>

@@ -417,11 +417,12 @@ sanitizer/build coverage.
 YUME 2.0 uses hybrid ML-KEM-1024 + X25519 + a uniformly random 32-byte PSK for
 establishment and fresh hybrid material for directional epochs. It is accurate
 to call this **hybrid post-quantum key establishment**. It is not accurate to
-call YUME “quantum-proof,” “uncrackable,” or guaranteed future-proof: Ed25519
-client authentication and the public TLS certificate remain classical, the PSK
-is a deployment secret, endpoint compromise exposes live plaintext/state, and
-the complete construction has not received an independent formal proof or
-security audit.
+call YUME “quantum-proof,” “uncrackable,” or guaranteed future-proof: the
+composite client identity still depends on its classical Ed25519 half as well
+as ML-DSA-87, the public TLS certificate remains classical, the PSK is a
+deployment secret, endpoint compromise exposes live plaintext/state, and the
+complete construction has not received an independent formal proof or security
+audit.
 
 The Extreme profile's 500 ms constant is a maximum **sender-active epoch age**, starting with the
 first application frame. Byte or frame use may rotate an epoch sooner; an idle

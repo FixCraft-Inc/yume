@@ -63,8 +63,10 @@ enum class InjectedExtensionPayload : std::uint8_t {
 };
 
 struct InjectedExtension {
-    // 0 means "allocate an RFC 8701 GREASE value per connection" rather than a
-    // fixed extension number; the generator emits 0 for a "GREASE" entry.
+    // 0 means "allocate an RFC 8701 GREASE value when the SSL_CTX is
+    // configured" rather than a registry-fixed extension number. OpenSSL
+    // binds that number at registration, so one context reuses it across its
+    // connections; the generator emits 0 for a "GREASE" entry.
     std::uint16_t type;
     InjectedExtensionPayload payload;
 };

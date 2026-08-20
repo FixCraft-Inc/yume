@@ -165,8 +165,10 @@ void load_client_config_file(const ParsedArgs& args,
         if (json.contains("pq_public_key") && cfg->pq_public_key.empty()) {
             cfg->pq_public_key = resolve_cfg_path(json["pq_public_key"].get<std::string>());
         }
-        if (json.contains("use_embedded_master") && !args.allow_embedded_master_override) {
-            cfg->allow_embedded_master = json["use_embedded_master"].get<bool>();
+        if (json.contains("allow_embedded_master") &&
+            !args.allow_embedded_master_override) {
+            cfg->allow_embedded_master =
+                json["allow_embedded_master"].get<bool>();
         }
         if (json.contains("anonym_pubkey") && cfg->anonym_pubkey.empty()) {
             cfg->anonym_pubkey = resolve_cfg_path(json["anonym_pubkey"].get<std::string>());
@@ -652,7 +654,7 @@ void save_client_config_file(const ParsedArgs& args, const ClientConfig& cfg) {
     if (cfg.server_in_charge_port > 0) json["server_in_charge_port"] = cfg.server_in_charge_port;
     json["allow_exec"] = cfg.allow_exec;
     if (!cfg.pq_public_key.empty()) json["pq_public_key"] = cfg.pq_public_key;
-    json["use_embedded_master"] = cfg.allow_embedded_master;
+    json["allow_embedded_master"] = cfg.allow_embedded_master;
     if (!cfg.anonym_ca_cert.empty()) json["anonym_ca_cert"] = cfg.anonym_ca_cert;
     if (!cfg.tls_ca_cert.empty()) json["tls_ca_cert"] = cfg.tls_ca_cert;
     if (!cfg.tls_server_name.empty()) json["tls_server_name"] = cfg.tls_server_name;

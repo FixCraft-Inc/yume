@@ -32,6 +32,7 @@ from yume_tls_wire import is_grease, normalize_client_hello  # noqa: E402
 
 FIXTURE = REPO_ROOT / "tests/fixtures/chrome151-node24/chrome_tls_wire_profile.json"
 REGISTRY = REPO_ROOT / "config/transport_profiles.json"
+EXPECTED_CAPTURE_JA4 = "t13d1516h2_8daaf6152771_806a8c22fdea"
 
 # JA4 hashes the extension list with SNI and ALPN removed: both are attacker- or
 # destination-controlled rather than client properties.
@@ -66,16 +67,52 @@ def ja4_parts(ciphers: list[int], extensions: list[int],
     return ja4_b, ja4_c
 
 
-def from_capture() -> tuple[list[int], list[int], list[int]]:
+def ja4_a(supported_versions: list[int], has_domain_sni: bool,
+          ciphers: list[int], extensions: list[int],
+          alpn_protocols: list[str]) -> str:
+    """JA4's unhashed A component for a TCP ClientHello."""
+    versions = {
+        0x0304: "13",
+        0x0303: "12",
+        0x0302: "11",
+        0x0301: "10",
+    }
+    real_versions = [v for v in supported_versions if not is_grease(v)]
+    if not real_versions or max(real_versions) not in versions:
+        raise AssertionError(f"unsupported JA4 TLS versions: {real_versions}")
+    alpn = alpn_protocols[0] if alpn_protocols else ""
+    alpn_code = f"{alpn[0]}{alpn[-1]}" if alpn else "00"
+    return (f"t{versions[max(real_versions)]}"
+            f"{'d' if has_domain_sni else 'i'}"
+            f"{len(ciphers):02d}{len(extensions):02d}{alpn_code}")
+
+
+def ja4_fingerprint(supported_versions: list[int], has_domain_sni: bool,
+                    ciphers: list[int], extensions: list[int],
+                    sigalgs: list[int], alpn_protocols: list[str]) -> str:
+    ja4_b, ja4_c = ja4_parts(ciphers, extensions, sigalgs)
+    return (f"{ja4_a(supported_versions, has_domain_sni, ciphers, extensions, alpn_protocols)}"
+            f"_{ja4_b}_{ja4_c}")
+
+
+def from_capture() -> tuple[list[int], list[int], list[int], list[int],
+                            list[int], list[str], bool]:
     hello = json.loads(FIXTURE.read_text())["client_hello"]
+    structured = hello["structured_extensions"]
     ciphers = [as_int(c) for c in hello["cipher_suites"] if c != "GREASE"]
     # The capture records the two GREASE extensions separately from the
     # permuted middle block, and JA4 drops GREASE anyway.
     exts = [as_int(e) for e in hello["middle_extension_types"]]
+    groups = [as_int(group) for group in structured["0x000a"]["values"]
+              if group != "GREASE"]
     sigalgs = [as_int(s)
-               for s in hello["structured_extensions"]["0x000d"]["values"]
+               for s in structured["0x000d"]["values"]
                if s != "GREASE"]
-    return ciphers, exts, sigalgs
+    versions = [as_int(version) for version in structured["0x002b"]["versions"]
+                if version != "GREASE"]
+    alpns = list(structured["0x0010"]["protocols"])
+    has_domain_sni = bool(structured["0x0000"]["server_names"])
+    return ciphers, exts, groups, sigalgs, versions, alpns, has_domain_sni
 
 
 def raw_extension_types(data: bytes) -> list[int]:
@@ -99,7 +136,8 @@ def raw_extension_types(data: bytes) -> list[int]:
     return types
 
 
-def from_native() -> tuple[list[int], list[int], list[int], dict, list[int]]:
+def from_native() -> tuple[list[int], list[int], list[int], list[int],
+                           list[int], list[str], bool, dict, list[int]]:
     tool = dump_tool()
     with tempfile.TemporaryDirectory() as work:
         target = pathlib.Path(work) / "clienthello.bin"
@@ -110,17 +148,33 @@ def from_native() -> tuple[list[int], list[int], list[int], dict, list[int]]:
     ciphers = [as_int(c) for c in hello["cipher_suites"] if c != "GREASE"]
     exts = [as_int(e["type"]) for e in hello["extensions"]
             if e["type"] != "GREASE"]
+    groups: list[int] = []
     sigalgs: list[int] = []
+    versions: list[int] = []
+    alpns: list[str] = []
+    has_domain_sni = False
     for extension in hello["extensions"]:
-        if extension["type"] == "0x000d":
+        if extension["type"] == "0x0000":
+            has_domain_sni = bool(extension["server_names"])
+        elif extension["type"] == "0x000a":
+            groups = [as_int(v) for v in extension["values"] if v != "GREASE"]
+        elif extension["type"] == "0x000d":
             sigalgs = [as_int(v) for v in extension["values"] if v != "GREASE"]
-    return ciphers, exts, sigalgs, hello, raw_extension_types(raw)
+        elif extension["type"] == "0x0010":
+            alpns = list(extension["protocols"])
+        elif extension["type"] == "0x002b":
+            versions = [as_int(v) for v in extension["versions"] if v != "GREASE"]
+    return (ciphers, exts, groups, sigalgs, versions, alpns, has_domain_sni,
+            hello, raw_extension_types(raw))
 
 
 class NativeWireTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.cap_ciphers, self.cap_exts, self.cap_sigalgs = from_capture()
-        (self.nat_ciphers, self.nat_exts, self.nat_sigalgs,
+        (self.cap_ciphers, self.cap_exts, self.cap_groups, self.cap_sigalgs,
+         self.cap_versions, self.cap_alpns,
+         self.cap_has_domain_sni) = from_capture()
+        (self.nat_ciphers, self.nat_exts, self.nat_groups, self.nat_sigalgs,
+         self.nat_versions, self.nat_alpns, self.nat_has_domain_sni,
          self.native_hello, self.nat_raw_exts) = from_native()
 
     def test_cipher_list_matches_capture_exactly(self) -> None:
@@ -133,13 +187,24 @@ class NativeWireTests(unittest.TestCase):
         # must match as a sequence.
         self.assertEqual(self.nat_sigalgs, self.cap_sigalgs)
 
+    def test_supported_groups_match_capture_exactly(self) -> None:
+        self.assertEqual(self.nat_groups, self.cap_groups)
+
     def test_extension_set_matches_capture(self) -> None:
         self.assertEqual(set(self.nat_exts), set(self.cap_exts))
 
-    def test_ja4_hash_components_match_capture(self) -> None:
+    def test_complete_ja4_matches_capture(self) -> None:
+        captured = ja4_fingerprint(
+            self.cap_versions, self.cap_has_domain_sni,
+            self.cap_ciphers, self.cap_exts, self.cap_sigalgs,
+            self.cap_alpns)
+        self.assertEqual(captured, EXPECTED_CAPTURE_JA4)
         self.assertEqual(
-            ja4_parts(self.nat_ciphers, self.nat_exts, self.nat_sigalgs),
-            ja4_parts(self.cap_ciphers, self.cap_exts, self.cap_sigalgs))
+            ja4_fingerprint(
+                self.nat_versions, self.nat_has_domain_sni,
+                self.nat_ciphers, self.nat_exts, self.nat_sigalgs,
+                self.nat_alpns),
+            captured)
 
     def test_ja4_extension_count_matches_capture(self) -> None:
         # ja4_a encodes the extension count; a mismatch changes the fingerprint
@@ -166,6 +231,9 @@ class NativeWireTests(unittest.TestCase):
             "cipher_suites": (
                 [f"0x{c:04x}" for c in self.cap_ciphers if c not in self.nat_ciphers],
                 [f"0x{c:04x}" for c in self.nat_ciphers if c not in self.cap_ciphers]),
+            "supported_groups": (
+                [f"0x{g:04x}" for g in self.cap_groups if g not in self.nat_groups],
+                [f"0x{g:04x}" for g in self.nat_groups if g not in self.cap_groups]),
             "signature_algorithms": (
                 [f"0x{s:04x}" for s in self.cap_sigalgs if s not in self.nat_sigalgs],
                 [f"0x{s:04x}" for s in self.nat_sigalgs if s not in self.cap_sigalgs]),

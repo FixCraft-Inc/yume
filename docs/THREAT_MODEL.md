@@ -63,10 +63,11 @@ recorded public identity and signatures do not reveal either private half.
 Key files are owner-only as a creation and loading invariant. Both halves of a
 generated pair are created exclusively at mode `0600`, so there is no window in
 which the private PEM sits at the process umask, and an existing path is never
-silently replaced. `crypto::load_keypair()` reads the private key through a
-descriptor it has already validated: a regular non-symlink file, owned by the
-effective user, with no group or world permission bits, and within a bounded
-size. A key that fails any of those checks cannot sign an AUTH transcript.
+silently replaced. `crypto::load_composite_keypair()` reads the private key
+through a descriptor it has already validated: a regular non-symlink file,
+owned by the effective user, with no group or world permission bits, and within
+a bounded size. A key that fails any of those checks cannot sign an AUTH
+transcript.
 This is enforced on Linux/POSIX; Windows has no equivalent enforcement yet and
 loading fails closed there rather than accepting whatever the ACL allows.
 
@@ -102,10 +103,10 @@ authority-mismatched requests do not cross the admission boundary and never
 receive AUTH. They render the ordinary captured Node cover path. A 1.x client
 receives cover behavior, not a downgrade offer or recognizable protocol error.
 
-After admission, the server verifies the Ed25519 signature over the complete
-canonical AUTH transcript before KEM decapsulation or other avoidable expensive
-work. Unknown critical fields, duplicates, out-of-order fields, trailing bytes,
-and oversized records fail closed.
+After admission, the server verifies both the Ed25519 and ML-DSA-87 signatures
+over the complete canonical AUTH transcript before KEM decapsulation or other
+avoidable expensive work. Unknown critical fields, duplicates, out-of-order
+fields, trailing bytes, and oversized records fail closed.
 
 ## Inner channel and blast radius
 
@@ -209,9 +210,10 @@ ordinary cover failure behavior, never a plaintext YUME diagnostic.
 ## Identity admission and resource containment
 
 Regular user identities and operator/controller identities live in physically
-separate trust stores. A public key present in both stores is rejected. Only an
-individual operator key with explicit operator metadata may receive outbound
-admin policy; regular keys cannot acquire it through metadata alone.
+separate trust stores. A public key present in both stores is rejected.
+Outbound admin requires an individual identity enrolled in the operator store
+and a second, different identity enrolled in `admin_keys`; metadata in either
+visitor store cannot grant admin or full control.
 
 Regular keys are individual by default and therefore admit one authenticated
 session. An administrator can explicitly create a bounded `bulk` key when

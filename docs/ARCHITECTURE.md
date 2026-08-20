@@ -18,40 +18,47 @@ Debian packages split these into `yume`, `yume-daemon`, `yume-gui`,
 ## CMake target graph
 
 ```text
-                    +------------------+
-                    |    yume_core     |
-                    | protocol/security|
-                    | stealth/runtime  |
-                    +--------+---------+
-                             |
-              +--------------+--------------+
-              |                             |
-    +---------v---------+         +---------v---------+
-    | yume_transport_   |         |   (shared core)   |
-    | core              |         +---------+---------+
-    +---------+---------+                   |
-              |              +--------------+--------------+
-              |              |                             |
-    +---------v---------+    |                 +---------v---------+
-    | yume_client_lib   |    |                 |   yume_server     |
-    | cli/transport/... |    |                 | session/runtime/..|
-    +---------+---------+    |                 +---------+---------+
-              |              |                             |
-    +---------v---------+    +-------------+---------------+
-    |      yume         |                  |
-    |  main_client.cpp  |         +--------v--------+
-    +-------------------+         |  yume_facade    |
-                                  | session/config  |
-    +-------------------+         +--------+--------+
-    |      yumed        |                  |
-    | main_server.cpp   |         +--------v--------+
-    | server/cli/*      |         |    yume-gui     |
-    +-------------------+         |  gui/* + ImGui  |
-                                  +-----------------+
+                         +----------------------+
+                         | yume_secure_core     |
+                         | STATIC protocol, AUTH|
+                         | ratchet, secret files|
+                         +----------+-----------+
+                                    |
+                    +---------------+---------------+
+                    |                               |
+          +---------v---------+           +---------v---------+
+          |     yume_core     |           | yume_transport_   |
+          | stealth/runtime/  |           | core              |
+          | shared facilities |           | reduced transport |
+          +---------+---------+           +---------+---------+
+                    |                               |
+                    +---------------+---------------+
+                                    |
+                    +---------------+---------------+
+                    |                               |
+          +---------v---------+           +---------v---------+
+          | yume_client_lib   |           |   yume_server     |
+          | cli/transport/... |           | session/runtime/..|
+          +----+--------------+           +----+--------------+
+               |    \                       /    |
+               |     +---------+-----------+     |
+               |               |                 |
+       +-------v-------+   +----v-------------+  +v--------------+
+       |     yume      |   |   yume_facade    |  |     yumed      |
+       +---------------+   | session/config   |  +----------------+
+                           +---------+--------+
+                                     |
+                           +---------v---------+
+                           | yume-gui / ABI    |
+                           +-------------------+
 ```
 
-`yume_transport_core` is always built — Android and embedders link it
-without pulling the full CLI or server stacks.
+`yume_secure_core` is a STATIC library that gives the shared protocol,
+composite-AUTH, ratchet, and secret-material sources one compiled owner.
+`yume_core` and `yume_transport_core` both link it instead of compiling those
+sources twice. `yume_transport_core` is always built, so Android and embedders
+can link the reduced transport slice without pulling the full CLI or server
+stacks.
 
 ## Source layout
 

@@ -15,6 +15,7 @@ struct ServerConfig;
 namespace yume::server::cli {
 
 struct ServerConfigOverrides {
+    bool listen = false;
     bool threads = false;
     bool obfuscation = false;
     bool inner_crypto = false;

@@ -96,6 +96,14 @@ void test_admin_directional_policy_quadrants() {
     assert(!admin_attach_allowed(false, true, true));
 }
 
+void test_admin_claim_requires_an_authorized_visitor() {
+    using yume::server::authorization::admin_claim_eligible;
+    assert(admin_claim_eligible(true, true));
+    assert(!admin_claim_eligible(false, true));
+    assert(!admin_claim_eligible(true, false));
+    assert(!admin_claim_eligible(false, false));
+}
+
 }  // namespace
 
 int main() {
@@ -103,6 +111,7 @@ int main() {
     test_preauth_service_open_payload_is_unambiguous();
     test_authorized_and_unauthenticated_tiers();
     test_admin_directional_policy_quadrants();
+    test_admin_claim_requires_an_authorized_visitor();
     std::puts("authorization_test: all cases passed");
     return 0;
 }

@@ -9,6 +9,7 @@
 #include <iostream>
 #include <tuple>
 
+#include "core/stealth/cover_profile.hpp"
 #include "core/stealth/tls_fingerprint.hpp"
 
 namespace {
@@ -68,10 +69,28 @@ void test_browser_match_thresholds() {
     assert(!yume::tls_fingerprint::evaluate_fingerprint(observed).looks_like_browser);
 }
 
-void test_profiles_accept_ed25519_server_certificates() {
+// This used to assert the opposite: that every profile advertises ed25519
+// (0x0807) so a cover server presenting an ed25519 certificate stays reachable.
+// That requirement and the cover goal are mutually exclusive. The captured
+// Chrome 151 ClientHello does not offer 0x0807 -- Chrome does not support
+// ed25519 server certificates at all -- so advertising it was a standing
+// one-algorithm divergence from the browser we claim to look like. A cover
+// server holding an ed25519 certificate is in any case already undeployable as
+// cover, because no real Chrome could complete a handshake with it.
+//
+// The live invariant is therefore the inverse, and it is pinned against the
+// capture rather than hand-written: profiles must offer exactly what the
+// registry generated from the committed browser capture.
+void test_profiles_offer_no_signature_algorithm_the_browser_omits() {
+    const auto& cover = yume::cover_profile::active();
     for (const auto& profile : yume::tls_fingerprint::get_known_browser_fingerprints()) {
+        if (profile.profile != cover.tls_profile) continue;
+        assert(std::equal(profile.signature_algorithms.begin(),
+                          profile.signature_algorithms.end(),
+                          cover.tls_signature_algorithms.begin(),
+                          cover.tls_signature_algorithms.end()));
         assert(std::find(profile.signature_algorithms.begin(),
-                         profile.signature_algorithms.end(), 0x0807) !=
+                         profile.signature_algorithms.end(), 0x0807) ==
                profile.signature_algorithms.end());
     }
 }
@@ -82,7 +101,7 @@ int main() {
     test_official_ja4_vector();
     test_empty_components_and_count_clamp();
     test_browser_match_thresholds();
-    test_profiles_accept_ed25519_server_certificates();
+    test_profiles_offer_no_signature_algorithm_the_browser_omits();
     std::cout << "tls_fingerprint_test ok\n";
     return 0;
 }

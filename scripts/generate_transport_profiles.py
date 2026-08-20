@@ -19,6 +19,7 @@ DEFAULT_VERSION_HEADER = ROOT / "src" / "core" / "version.hpp"
 MAX_JSON_BYTES = 4 * 1024 * 1024
 PROFILE_ID_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 ALIAS_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
+HEX16_RE = re.compile(r"0x[0-9a-f]{4}")
 HELPER_PROVIDERS = {
     "chrome151": ("chrome151Spec", "Chrome 151"),
 }
@@ -212,6 +213,139 @@ def source_for(name: str, value: str, identity: dict[str, str]) -> tuple[str, st
     return (selected, "") if selected is not None else ("Literal", value)
 
 
+def hex16(value: Any, field: str) -> int:
+    """Parse a '0xNNNN' IANA code point from the registry."""
+    require(isinstance(value, str) and HEX16_RE.fullmatch(value) is not None,
+            f"{field} must be a 0xNNNN string, got {value!r}")
+    return int(value, 16)
+
+
+def code_point_list(value: Any, field: str, *, maximum: int = 64) -> list[int]:
+    require(isinstance(value, list) and 1 <= len(value) <= maximum,
+            f"{field} must contain 1..{maximum} entries")
+    parsed = [hex16(item, f"{field}[{i}]") for i, item in enumerate(value)]
+    require(len(set(parsed)) == len(parsed), f"{field} contains duplicates")
+    return parsed
+
+
+def captured_client_hello(path: pathlib.Path, profile_id: str) -> dict[str, list[str]]:
+    """The real browser ClientHello recorded in the committed capture.
+
+    Only the fields the OpenSSL diagnostic backend can express are extracted.
+    GREASE entries are dropped: they are per-connection randomisation, not part
+    of a selection policy.
+    """
+    document = read_json(path)
+    hello = document.get("client_hello")
+    require(isinstance(hello, dict), f"{profile_id}: capture has no client_hello")
+    structured = hello.get("structured_extensions")
+    require(isinstance(structured, dict),
+            f"{profile_id}: capture has no structured_extensions")
+
+    def without_grease(values: Any, field: str) -> list[str]:
+        require(isinstance(values, list), f"{profile_id}.{field} must be a list")
+        return [v.lower() for v in values
+                if isinstance(v, str) and v != "GREASE"]
+
+    def extension(code: str, key: str) -> list[str]:
+        block = structured.get(code)
+        require(isinstance(block, dict), f"{profile_id}: capture lacks extension {code}")
+        return without_grease(block.get(key), f"capture.{code}.{key}")
+
+    return {
+        "cipher_suites": without_grease(hello.get("cipher_suites"), "cipher_suites"),
+        "extensions": without_grease(hello.get("middle_extension_types"),
+                                     "middle_extension_types"),
+        "supported_groups": extension("0x000a", "values"),
+        "signature_algorithms": extension("0x000d", "values"),
+    }
+
+
+# draft-ietf-tls-esni outer ECHClientHello fixed overhead: 1 type + 2 KDF +
+# 2 AEAD + 1 config_id + 2 enc length + 32 X25519 enc + 2 payload length.
+ECH_OUTER_OVERHEAD = 42
+
+INJECTED_PAYLOADS = {
+    "empty": "Empty",
+    "alps": "Alps",
+    "grease_ech": "GreaseEch",
+    "grease_empty": "GreaseEmpty",
+    "grease_one_byte": "GreaseOneByte",
+}
+
+
+def injected_extensions(selection: dict[str, Any],
+                        profile_id: str) -> list[tuple[int, str]]:
+    """Extensions OpenSSL will not emit itself, injected via add_custom_ext.
+
+    A "GREASE" type emits 0, which the C++ side reads as "allocate an RFC 8701
+    value per connection" rather than a fixed extension number.
+    """
+    field = f"{profile_id}.openssl_selection.injected_extensions"
+    entries = selection.get("injected_extensions", [])
+    require(isinstance(entries, list) and len(entries) <= 16,
+            f"{field} must contain 0..16 entries")
+    rows: list[tuple[int, str]] = []
+    for item in entries:
+        require(isinstance(item, dict), f"{field} entries must be objects")
+        raw = item.get("type")
+        require(isinstance(raw, str), f"{field}.type must be a string")
+        kind = item.get("payload")
+        require(kind in INJECTED_PAYLOADS,
+                f"{field}.payload must be one of {sorted(INJECTED_PAYLOADS)}")
+        rows.append((0 if raw == "GREASE" else hex16(raw, f"{field}.type"),
+                     INJECTED_PAYLOADS[kind]))
+    return rows
+
+
+def check_tls_divergence(entry: dict[str, Any], selection: dict[str, Any],
+                         capture: dict[str, list[str]], profile_id: str) -> None:
+    """Pin the accepted gap between the diagnostic selection and the capture.
+
+    The openssl-diagnostic backend deliberately does not reproduce the captured
+    ClientHello -- stock OpenSSL cannot emit ECH, ALPS, compress_certificate or
+    the ML-DSA signature schemes. That gap is allowed, but it must stay exactly
+    what the registry declares. If either side drifts (the capture is refreshed,
+    or someone edits a selection list), this fails and forces a conscious
+    decision instead of silently widening a classifier-visible difference.
+
+    Ordering is intentionally NOT compared: stock OpenSSL does not let the
+    caller fix extension or group order, so order is a known, untracked gap.
+    """
+    declared = entry.get("known_tls_divergence")
+    require(isinstance(declared, dict),
+            f"{profile_id}.known_tls_divergence must be an object")
+    for field in ("cipher_suites", "supported_groups",
+                  "signature_algorithms", "extensions"):
+        offered = [v.lower() for v in selection[field]]
+        recorded = capture[field]
+        actual = {
+            "missing": [v for v in recorded if v not in offered],
+            "extra": [v for v in offered if v not in recorded],
+        }
+        expected = declared.get(field)
+        require(isinstance(expected, dict),
+                f"{profile_id}.known_tls_divergence.{field} must be an object")
+        for side in ("missing", "extra"):
+            want = expected.get(side)
+            require(isinstance(want, list),
+                    f"{profile_id}.known_tls_divergence.{field}.{side} must be a list")
+            got = actual[side]
+            require([v.lower() for v in want] == got,
+                    f"{profile_id}: TLS divergence drift in {field}.{side}: "
+                    f"registry declares {want}, capture vs selection gives {got}")
+
+
+def emit_code_point_array(lines: list[str], symbol: str, values: list[int],
+                          kind: str = "std::uint16_t") -> None:
+    lines.append(f"constexpr std::array<{kind}, {len(values)}> {symbol}{{")
+    body = ", ".join(f"0x{v:04x}" if kind == "std::uint16_t" else str(v)
+                     for v in values)
+    lines.append(f"    {body},")
+    lines.append("};")
+    lines.append("")
+
+
 def emit_header_array(lines: list[str], symbol: str,
                       values: list[tuple[str, str]], identity: dict[str, str]) -> None:
     lines.append(f"constexpr std::array<HeaderTemplate, {len(values)}> {symbol}{{")
@@ -344,6 +478,109 @@ def emit_profile(entry: dict[str, Any], index: int,
                               f"{profile_id}.websocket_message_bytes", minimum=1,
                               maximum=16 * 1024 * 1024)
 
+    # TLS selection policy for the openssl-diagnostic backend. It used to be
+    # free literals inside tls_fingerprint.cpp, keyed only by the BrowserProfile
+    # enum, with nothing binding it to the committed capture. It now lives in
+    # the registry, is generated into the profile alongside the H2 geometry, and
+    # its gap against the capture is pinned below.
+    selection = entry.get("openssl_selection")
+    require(isinstance(selection, dict),
+            f"{profile_id}.openssl_selection must be an object")
+    tls_ciphers = code_point_list(selection.get("cipher_suites"),
+                                  f"{profile_id}.openssl_selection.cipher_suites")
+    tls_extensions = code_point_list(selection.get("extensions"),
+                                     f"{profile_id}.openssl_selection.extensions")
+    tls_groups = code_point_list(selection.get("supported_groups"),
+                                 f"{profile_id}.openssl_selection.supported_groups")
+    tls_sigalgs = code_point_list(selection.get("signature_algorithms"),
+                                  f"{profile_id}.openssl_selection.signature_algorithms")
+    point_formats = selection.get("ec_point_formats")
+    require(isinstance(point_formats, list) and 1 <= len(point_formats) <= 8,
+            f"{profile_id}.openssl_selection.ec_point_formats must contain 1..8 entries")
+    tls_point_formats = [integer(v, f"{profile_id}.openssl_selection.ec_point_formats",
+                                 maximum=255) for v in point_formats]
+    alpn = selection.get("alpn_protocols")
+    require(isinstance(alpn, list) and 1 <= len(alpn) <= 8,
+            f"{profile_id}.openssl_selection.alpn_protocols must contain 1..8 entries")
+    tls_alpn = [text(v, f"{profile_id}.openssl_selection.alpn_protocols", maximum=32)
+                for v in alpn]
+    # Offered version range, and the version the handshake is required to end
+    # on. Chrome offers TLS 1.2 and 1.3; offering only 1.3 silently drops the
+    # TLS 1.2 half of the cipher list and extension 0xff01. Requiring 1.3 as the
+    # negotiated result keeps the ClientHello browser-shaped without accepting a
+    # downgrade on the carrier.
+    tls_min_version = hex16(selection.get("min_version", "0x0303"),
+                            f"{profile_id}.openssl_selection.min_version")
+    tls_max_version = hex16(selection.get("max_version", "0x0304"),
+                            f"{profile_id}.openssl_selection.max_version")
+    require_raw = selection.get("require_negotiated_version", "")
+    tls_require_version = (hex16(require_raw,
+                                 f"{profile_id}.openssl_selection."
+                                 "require_negotiated_version")
+                           if require_raw else 0)
+    require(tls_min_version <= tls_max_version,
+            f"{profile_id}.openssl_selection: min_version exceeds max_version")
+    require(tls_require_version == 0 or
+            tls_min_version <= tls_require_version <= tls_max_version,
+            f"{profile_id}.openssl_selection: require_negotiated_version "
+            "must lie inside the offered range")
+    tls_injected = injected_extensions(selection, profile_id)
+    alps = selection.get("alps_protocols", [])
+    require(isinstance(alps, list) and len(alps) <= 8,
+            f"{profile_id}.openssl_selection.alps_protocols must contain 0..8 entries")
+    tls_alps = [text(v, f"{profile_id}.openssl_selection.alps_protocols", maximum=32)
+                for v in alps]
+    ech_lengths = selection.get("ech_grease_lengths", [])
+    require(isinstance(ech_lengths, list) and len(ech_lengths) <= 16,
+            f"{profile_id}.openssl_selection.ech_grease_lengths must contain 0..16 entries")
+    tls_ech_lengths = [
+        integer(v, f"{profile_id}.openssl_selection.ech_grease_lengths",
+                minimum=ECH_OUTER_OVERHEAD + 1, maximum=4096)
+        for v in ech_lengths]
+    no_etm = selection.get("no_encrypt_then_mac", False)
+    require(isinstance(no_etm, bool),
+            f"{profile_id}.openssl_selection.no_encrypt_then_mac must be a boolean")
+    status_request = selection.get("status_request", "")
+    require(status_request in ("", "ocsp"),
+            f"{profile_id}.openssl_selection.status_request must be \"ocsp\" or absent")
+
+    check_tls_divergence(
+        entry,
+        {
+            "cipher_suites": selection["cipher_suites"],
+            "extensions": selection["extensions"],
+            "supported_groups": selection["supported_groups"],
+            "signature_algorithms": selection["signature_algorithms"],
+        },
+        captured_client_hello(artifacts["tls_wire_profile"], profile_id),
+        profile_id)
+
+    emit_code_point_array(lines, f"{prefix}TlsCiphers", tls_ciphers)
+    emit_code_point_array(lines, f"{prefix}TlsExtensions", tls_extensions)
+    emit_code_point_array(lines, f"{prefix}TlsGroups", tls_groups)
+    emit_code_point_array(lines, f"{prefix}TlsSigAlgs", tls_sigalgs)
+    emit_code_point_array(lines, f"{prefix}TlsPointFormats", tls_point_formats,
+                          kind="std::uint8_t")
+    emit_code_point_array(lines, f"{prefix}TlsEchGreaseLengths", tls_ech_lengths)
+    lines.append(
+        f"constexpr std::array<InjectedExtension, {len(tls_injected)}> "
+        f"{prefix}TlsInjectedExtensions{{{{")
+    for ext_type, payload in tls_injected:
+        lines.append(f"    InjectedExtension{{0x{ext_type:04x}, "
+                     f"InjectedExtensionPayload::{payload}}},")
+    lines.append("}};")
+    lines.append(
+        f"constexpr std::array<std::string_view, {len(tls_alps)}> "
+        f"{prefix}TlsAlpsProtocols{{{{")
+    for proto in tls_alps:
+        lines.append(f"    {cpp_string(proto)},")
+    lines.append("}};")
+    lines.append(f"constexpr std::array<std::string_view, {len(tls_alpn)}> "
+                 f"{prefix}TlsAlpn{{")
+    lines.append("    " + ", ".join(cpp_string(v) for v in tls_alpn) + ",")
+    lines.append("};")
+    lines.append("")
+
     def priority_cpp(value: tuple[int, int, bool]) -> str:
         parent, weight, exclusive = value
         return f"H2Priority{{{parent}, {weight}, {str(exclusive).lower()}}}"
@@ -364,8 +601,20 @@ def emit_profile(entry: dict[str, Any], index: int,
     lines.extend(f"    {cpp_string(value)}," for value in values)
     lines.append(f"    {tls_mapping[openssl_profile]},")
     lines.extend([
-        "    0x0304,",
-        "    0x0304,",
+        f"    0x{tls_min_version:04x},",
+        f"    0x{tls_max_version:04x},",
+        f"    0x{tls_require_version:04x},",
+        f"    {prefix}TlsCiphers,",
+        f"    {prefix}TlsExtensions,",
+        f"    {prefix}TlsGroups,",
+        f"    {prefix}TlsSigAlgs,",
+        f"    {prefix}TlsPointFormats,",
+        f"    {prefix}TlsAlpn,",
+        f"    {prefix}TlsInjectedExtensions,",
+        f"    {prefix}TlsAlpsProtocols,",
+        f"    {prefix}TlsEchGreaseLengths,",
+        f"    {'true' if no_etm else 'false'},",
+        f"    {'true' if status_request == 'ocsp' else 'false'},",
         f"    {cpp_string(text(server.get('runtime'), f'{profile_id}.server.runtime', maximum=128))},",
         f"    {cpp_string(text(server.get('version'), f'{profile_id}.server.version', maximum=128))},",
         f"    {prefix}ClientSettings,",

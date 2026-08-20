@@ -311,10 +311,49 @@ same-session arms and accepted before external classifier/active-probe work.
 
 ## Known classifier-visible residuals
 
-TLS remains the weakest classifier-visible layer. Stock OpenSSL does not expose
-enough control to reproduce Chrome/BoringSSL extension and GREASE ordering. It
-therefore remains available only as the explicitly named
-`openssl-diagnostic` backend and is not a Chrome-parity fallback.
+TLS remains the weakest classifier-visible layer, but the shape of that weakness
+changed and the earlier description here was wrong. It claimed stock OpenSSL
+could not be driven close to Chrome at all. Measured against OpenSSL 3.5.6, the
+`openssl-diagnostic` backend now emits the captured browser's **exact non-GREASE
+cipher list, in order**, its **exact signature algorithm list, in order**
+(ML-DSA `0x0904`/`0x0905`/`0x0906` included — OpenSSL 3.5 emits all three), and
+its **full extension set**. `0x0012`, `0x44cd` (ALPS) and `0xfe0d` (GREASE ECH)
+are injected through `SSL_CTX_add_custom_ext`, which accepts any extension
+number OpenSSL does not own internally; `0x0005` comes from
+`SSL_CTX_set_tlsext_status_type`, which is required because `add_custom_ext`
+refuses internally-owned numbers; and `0x0016`, which OpenSSL offers and the
+browser does not, is suppressed with `SSL_OP_NO_ENCRYPT_THEN_MAC`.
+
+Those three lists are what JA4 hashes, and the measured result is an exact
+match against the committed capture:
+
+```
+capture JA4:  t13d1516h2_8daaf6152771_806a8c22fdea
+native  JA4:  t13d1516h2_8daaf6152771_806a8c22fdea
+```
+
+`tests/test_yume_native_tls_wire.py` gates this on emitted bytes — it renders a
+ClientHello through the production `StealthContext` and compares against the
+fixture, rather than comparing configuration to configuration. Extension
+*order* is deliberately not claimed: Chrome has permuted its own extension order
+on every connection since v110, which is what broke JA3 as a Chrome
+discriminator and motivated JA4's sorted, GREASE-excluding construction. There
+is no stable order to match.
+
+What stock OpenSSL still cannot do, and what patching its internals would be
+required to fix: GREASE is absent from the cipher list, `supported_groups`,
+`supported_versions` and `key_share`; both injected GREASE extensions land at
+the front rather than first-and-last, because `add_custom_ext` prepends; and
+`compress_certificate` advertises OpenSSL's zlib+zstd rather than the browser's
+brotli. The two GREASE extension types are also fixed per `SSL_CTX` rather than
+redrawn per connection, because `SSL_CTX_add_custom_ext` binds the extension
+number at registration time; the starting point is drawn from the CSPRNG so the
+values vary across installs and restarts, but one long-lived context reuses
+them. JA4 excludes GREASE, so those do not move JA4 — but they are
+real, they are visible to anything that inspects the raw ClientHello, and they
+are why this backend is still not a parity claim. The exact gap is recorded in
+`known_tls_divergence` in `config/transport_profiles.json` and re-derived from
+emitted bytes by the same test, so it cannot widen unnoticed.
 
 The experimental Linux `chrome151` backend isolates pinned uTLS `v1.8.2` in a
 per-connection helper built with exact Go `1.26.5`. The C++ parent establishes

@@ -62,8 +62,14 @@ int main() {
            manifest["server"]["runtime"].get<std::string>());
     assert(profile.cover_runtime_version ==
            manifest["server"]["version"].get<std::string>());
-    assert(profile.tls_min_version == 0x0304);
+    // The offered range is browser-shaped: the captured Chrome ClientHello
+    // advertises both TLS 1.2 and 1.3, and offering only 1.3 would drop the
+    // TLS 1.2 half of the cipher list plus extension 0xff01. Security of the
+    // carrier comes from tls_required_version, which is enforced after the
+    // handshake and fails closed, not from narrowing the offer.
+    assert(profile.tls_min_version == 0x0303);
     assert(profile.tls_max_version == 0x0304);
+    assert(profile.tls_required_version == 0x0304);
     assert(captured["tls_observation"]["version"] == "TLS 1.3");
 
     const auto client = yume::http_profile::transport_client(

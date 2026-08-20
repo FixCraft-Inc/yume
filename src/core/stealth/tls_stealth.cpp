@@ -6,7 +6,10 @@
 
 #include "core/stealth/tls_stealth.hpp"
 
+#include "core/security/crypto.hpp"
+#include "core/stealth/cover_profile.hpp"
 #include "core/stealth/http_profile.hpp"
+#include "util.hpp"
 
 #include <boost/asio/read.hpp>
 #include <boost/asio/write.hpp>
@@ -22,6 +25,7 @@
 #include <chrono>
 #include <cctype>
 #include <cstdint>
+#include <cstdio>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -50,23 +54,90 @@ constexpr std::uint16_t kGreaseValues[16] = {
     0x8A8A, 0x9A9A, 0xAAAA, 0xBABA, 0xCACA, 0xDADA, 0xEAEA, 0xFAFA,
 };
 std::uint16_t pick_grease(unsigned bucket) {
-    static std::atomic<unsigned> seed{0};
+    // The starting point must come from the CSPRNG, not from zero. A fixed
+    // seed makes the first ClientHello of every process on every install carry
+    // the same two GREASE values -- constant where a browser's are random,
+    // which is itself the distinguisher this extension exists to avoid.
+    static std::atomic<unsigned> seed{[] {
+        try {
+            const auto draw = crypto::random_bytes(2);
+            return static_cast<unsigned>((draw[0] << 8) | draw[1]);
+        } catch (const std::exception&) {
+            // Never fail a handshake over GREASE selection; a clock-derived
+            // start is still install-varying, unlike a constant.
+            return static_cast<unsigned>(
+                std::chrono::steady_clock::now().time_since_epoch().count());
+        }
+    }()};
     const unsigned s = seed.fetch_add(1, std::memory_order_relaxed);
+    // bucket * 7 keeps two GREASE slots in one ClientHello on different wheel
+    // positions: 7 and 14 are distinct mod 16.
     return kGreaseValues[(s + bucket * 7u) & 0x0Fu];
 }
 
-std::string current_timestamp() {
-    auto now = std::chrono::system_clock::now();
-    auto time_t = std::chrono::system_clock::to_time_t(now);
-    std::tm tm;
-#if defined(_WIN32)
-    localtime_s(&tm, &time_t);
-#else
-    localtime_r(&time_t, &tm);
-#endif
-    std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
-    return oss.str();
+// Bodies for extensions stock OpenSSL will not emit itself. SSL_CTX_add_custom_ext
+// accepts any extension number OpenSSL does not already own internally, which
+// covers the GREASE range, SCT (0x0012), ALPS (0x44cd) and ECH (0xfe0d). The
+// buffer handed back through *out must stay valid until free_cb runs, so each
+// body is heap-allocated per handshake and released there.
+std::vector<std::uint8_t> build_alps_body() {
+    // ALPN-shaped protocol vector: u16 list length, then u8-prefixed names.
+    std::vector<std::uint8_t> list;
+    for (std::string_view proto : cover_profile::active().tls_alps_protocols) {
+        list.push_back(static_cast<std::uint8_t>(proto.size()));
+        list.insert(list.end(), proto.begin(), proto.end());
+    }
+    std::vector<std::uint8_t> body;
+    body.push_back(static_cast<std::uint8_t>(list.size() >> 8));
+    body.push_back(static_cast<std::uint8_t>(list.size() & 0xFFU));
+    body.insert(body.end(), list.begin(), list.end());
+    return body;
+}
+
+std::vector<std::uint8_t> build_grease_ech_body() {
+    // draft-ietf-tls-esni outer ECHClientHello carrying random bytes. A browser
+    // emits exactly this shape whenever it holds no ECHConfig for the
+    // destination, which is the common case, so random content IS the correct
+    // content here -- no HPKE operation is performed, and none is needed. The
+    // permitted total lengths come from the captured browser.
+    const auto lengths = cover_profile::active().tls_ech_grease_lengths;
+    // 1 type + 2 KDF + 2 AEAD + 1 config_id + 2 enc length + 32 enc + 2 payload
+    // length. Keep in step with ECH_OUTER_OVERHEAD in the generator.
+    constexpr std::size_t kOverhead = 42;
+    constexpr std::size_t kEncLen = 32;  // X25519 HPKE encapsulated key
+    std::size_t total = lengths.empty()
+        ? kOverhead + 144
+        : lengths[crypto::random_bytes(1)[0] % lengths.size()];
+    if (total <= kOverhead) total = kOverhead + 144;
+
+    const std::size_t payload_len = total - kOverhead;
+    const auto entropy = crypto::random_bytes(1 + kEncLen + payload_len);
+
+    std::vector<std::uint8_t> body;
+    body.reserve(total);
+    body.push_back(0x00);                     // ECHClientHelloType.outer
+    body.push_back(0x00); body.push_back(0x01);  // HKDF-SHA256
+    body.push_back(0x00); body.push_back(0x01);  // AES-128-GCM
+    body.push_back(entropy[0]);               // config_id
+    body.push_back(0x00); body.push_back(static_cast<std::uint8_t>(kEncLen));
+    body.insert(body.end(), entropy.begin() + 1, entropy.begin() + 1 + kEncLen);
+    body.push_back(static_cast<std::uint8_t>(payload_len >> 8));
+    body.push_back(static_cast<std::uint8_t>(payload_len & 0xFFU));
+    body.insert(body.end(), entropy.begin() + 1 + kEncLen, entropy.end());
+    return body;
+}
+
+std::vector<std::uint8_t> build_injected_body(
+    cover_profile::InjectedExtensionPayload kind) {
+    using P = cover_profile::InjectedExtensionPayload;
+    switch (kind) {
+        case P::Empty:         return {};
+        case P::GreaseEmpty:   return {};
+        case P::GreaseOneByte: return {0x00};
+        case P::Alps:          return build_alps_body();
+        case P::GreaseEch:     return build_grease_ech_body();
+    }
+    return {};
 }
 
 struct VerificationEndpoint {
@@ -188,10 +259,10 @@ std::vector<uint8_t> build_http2_request_headers(const VerificationEndpoint& end
     hpack_encode_indexed_field(block, 7);   // :scheme: https
     hpack_encode_literal_indexed_name(block, 4, endpoint.path);       // :path
     hpack_encode_literal_indexed_name(block, 1, endpoint.authority);  // :authority
-    // UA: pulled from yume::http_profile::active_client_ua() so that
-    // --hide-in-the-crowd <chrome|firefox|…> on the client CLI is
-    // reflected in stealth-probe traffic too. Defaults to the
-    // historical "yume-tls-verify/1.0" if no profile was set.
+    // UA comes from yume::http_profile::active_client_ua(), which always
+    // returns the pinned cover-profile User-Agent. Stealth probes therefore
+    // carry the same identity as tunnel traffic; there is no YUME-specific
+    // fallback string for an unset profile.
     hpack_encode_literal_indexed_name(block, 58, yume::http_profile::active_client_ua());
     hpack_encode_literal_indexed_name(block, 19, "application/json");
     return block;
@@ -392,6 +463,20 @@ tls_fingerprint::FingerprintData parse_tls_verify_response(const std::string& bo
     return fingerprint;
 }
 
+std::string current_timestamp() {
+    auto now = std::chrono::system_clock::now();
+    auto time_t = std::chrono::system_clock::to_time_t(now);
+    std::tm tm;
+#if defined(_WIN32)
+    localtime_s(&tm, &time_t);
+#else
+    localtime_r(&time_t, &tm);
+#endif
+    std::ostringstream oss;
+    oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+    return oss.str();
+}
+
 }  // namespace
 
 std::map<uint16_t, std::string> cipher_name_map = {
@@ -406,9 +491,28 @@ std::map<uint16_t, std::string> cipher_name_map = {
     {0xc023, "ECDHE-ECDSA-AES128-SHA256"},
     {0xc028, "ECDHE-RSA-AES256-SHA384"},
     {0xc027, "ECDHE-RSA-AES128-SHA256"},
+    // The TLS 1.2 tail of the captured Chrome cipher list. Without these the
+    // profile's suites silently fall back to a hex string, which OpenSSL
+    // rejects, and the offered list is truncated to whatever happened to map.
+    {0xcca9, "ECDHE-ECDSA-CHACHA20-POLY1305"},
+    {0xcca8, "ECDHE-RSA-CHACHA20-POLY1305"},
+    {0xc009, "ECDHE-ECDSA-AES128-SHA"},
+    {0xc00a, "ECDHE-ECDSA-AES256-SHA"},
+    {0xc013, "ECDHE-RSA-AES128-SHA"},
+    {0xc014, "ECDHE-RSA-AES256-SHA"},
+    {0x009c, "AES128-GCM-SHA256"},
+    {0x009d, "AES256-GCM-SHA384"},
+    {0x002f, "AES128-SHA"},
+    {0x0035, "AES256-SHA"},
 };
 
 std::map<uint16_t, std::string> group_name_map = {
+    // Hybrid post-quantum key exchange, and the group real Chrome 151
+    // negotiates against the committed cover capture. OpenSSL only gained an
+    // emitter for it in 3.5; on an older library SSL_CTX_set1_groups_list
+    // rejects the whole list, so configure_supported_groups() drops unknown
+    // names rather than failing the connection.
+    {0x11ec, "X25519MLKEM768"},
     {0x001d, "X25519"},
     {0x0017, "secp256r1"},
     {0x0018, "secp384r1"},
@@ -494,37 +598,85 @@ void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profi
             "failed to enforce cover-profile TLS version bounds");
     }
 
-    // RFC 8701 GREASE: register one extension at a GREASE-range type
-    // (0x0A0A, 0x1A1A, …, 0xFAFA, rotated per-connection via
-    // pick_grease). add_cb returning 1 + setting *out_len=0 emits
-    // the extension with an empty payload, a standards-conformant GREASE
-    // shape. SSL_EXT_CLIENT_HELLO scopes it to
-    // outbound ClientHellos only. Registration once per CTX; the
-    // callback is invoked per handshake.
-    static const auto grease_add_cb =
+    // Chrome does not offer encrypt_then_mac; OpenSSL does by default. Dropping
+    // it closes the one extension we would otherwise emit that the capture
+    // does not contain.
+    if (cover.tls_no_encrypt_then_mac) {
+        SSL_CTX_set_options(ctx, SSL_OP_NO_ENCRYPT_THEN_MAC);
+    }
+    // status_request (0x0005) is internally owned by OpenSSL, so add_custom_ext
+    // refuses it; the dedicated setter emits the same 5-byte body the capture
+    // records.
+    if (cover.tls_status_request_ocsp) {
+        SSL_CTX_set_tlsext_status_type(ctx, TLSEXT_STATUSTYPE_ocsp);
+    }
+
+    // Extensions OpenSSL will not emit itself, driven entirely from the
+    // registry so that a new browser profile is a data change. add_cb returning
+    // 1 emits the extension; SSL_EXT_CLIENT_HELLO scopes it to outbound
+    // ClientHellos. Registration happens once per CTX, the callback runs per
+    // handshake, so per-connection randomness (GREASE ECH body) is drawn there.
+    //
+    // Verified against OpenSSL 3.5.6 (Debian 13) by dumping the rendered
+    // ClientHello: every type below returns 1. A 0 return is survivable --
+    // it means the type is already registered (rotate_profile re-entry) or a
+    // future OpenSSL claimed the number -- but it silently narrows the
+    // fingerprint, so it is counted and reported rather than ignored.
+    static const auto injected_add_cb =
         +[](SSL*, unsigned int /*ext_type*/, unsigned int /*context*/,
             const unsigned char** out, size_t* out_len,
             X509* /*x*/, size_t /*chainidx*/, int* /*al*/,
-            void* /*add_arg*/) -> int {
-            *out = nullptr;
-            *out_len = 0;
+            void* add_arg) -> int {
+            const auto kind = static_cast<cover_profile::InjectedExtensionPayload>(
+                reinterpret_cast<std::uintptr_t>(add_arg));
+            std::vector<std::uint8_t> body;
+            try {
+                body = build_injected_body(kind);
+            } catch (const std::exception&) {
+                return 0;  // omit this extension rather than fail the handshake
+            }
+            if (body.empty()) {
+                *out = nullptr;
+                *out_len = 0;
+                return 1;
+            }
+            auto* buffer = new (std::nothrow) std::uint8_t[body.size()];
+            if (buffer == nullptr) return 0;
+            std::copy(body.begin(), body.end(), buffer);
+            *out = buffer;
+            *out_len = body.size();
             return 1;
         };
-    static const auto grease_free_cb =
+    static const auto injected_free_cb =
         +[](SSL*, unsigned int /*ext_type*/, unsigned int /*context*/,
-            const unsigned char* /*out*/, void* /*add_arg*/) {};
-    const unsigned int grease_ext_type = pick_grease(/*bucket=*/1);
-    // Verified against OpenSSL 3.5.6 (Debian 13) by hex-dumping the
-    // rendered ClientHello via the JA3-self-check BIO-mem pattern:
-    // returns 1, and the extension appears at the front of the
-    // extensions block (e.g. "7a 7a 00 00" — GREASE type, length 0
-    // payload). Best-effort: a 0 return (already registered on
-    // rotate_profile re-entry, or hypothetical future OpenSSL that
-    // rejects the type) is harmless — handshake proceeds normally.
-    (void)SSL_CTX_add_custom_ext(
-        ctx, grease_ext_type, SSL_EXT_CLIENT_HELLO,
-        grease_add_cb, grease_free_cb, nullptr,
-        /*parse_cb=*/nullptr, /*parse_arg=*/nullptr);
+            const unsigned char* out, void* /*add_arg*/) {
+            delete[] out;
+        };
+
+    std::size_t rejected = 0;
+    std::size_t slot = 0;
+    for (const auto& injected : cover.tls_injected_extensions) {
+        // A registry type of 0 means "pick an RFC 8701 GREASE value". The
+        // bucket is the slot index, so two GREASE extensions in one ClientHello
+        // cannot draw the same value (RFC 8701 §3.3).
+        const unsigned int ext_type =
+            injected.type != 0 ? injected.type
+                               : pick_grease(static_cast<unsigned>(++slot));
+        if (SSL_CTX_add_custom_ext(
+                ctx, ext_type, SSL_EXT_CLIENT_HELLO,
+                injected_add_cb, injected_free_cb,
+                reinterpret_cast<void*>(
+                    static_cast<std::uintptr_t>(injected.payload)),
+                /*parse_cb=*/nullptr, /*parse_arg=*/nullptr) != 1) {
+            ++rejected;
+        }
+    }
+    if (rejected != 0) {
+        util::log_warn("tls: " + std::to_string(rejected) + " of " +
+                       std::to_string(cover.tls_injected_extensions.size()) +
+                       " cover-profile extensions were refused by OpenSSL; "
+                       "the emitted ClientHello is narrower than the profile");
+    }
 }
 
 void StealthContext::configure_cipher_suites(const std::vector<uint16_t>& suites) {
@@ -558,18 +710,50 @@ void StealthContext::configure_cipher_suites(const std::vector<uint16_t>& suites
         if (!tls13_str.empty()) tls13_str += ":";
         tls13_str += n;
     }
+    // No silent default here. Substituting a stock list would emit suites the
+    // cover profile never asked for, which is precisely the fingerprint
+    // divergence this class exists to prevent.
     if (tls13_str.empty()) {
-        // Fallback to the historical default if the profile didn't list
-        // any TLS 1.3 suites (e.g. an outdated profile entry).
-        tls13_str = "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256";
+        throw std::runtime_error(
+            "cover profile lists no TLS 1.3 cipher suites");
     }
-    SSL_CTX_set_ciphersuites(ctx, tls13_str.c_str());
+    if (SSL_CTX_set_ciphersuites(ctx, tls13_str.c_str()) != 1) {
+        throw std::runtime_error(
+            "cover profile TLS 1.3 cipher list rejected by OpenSSL: " + tls13_str);
+    }
 
-    std::string tls12_str = cipher_list_to_openssl_string(tls12_ids);
-    if (tls12_str.empty()) {
-        tls12_str = cipher_list_to_openssl_string(suites);  // legacy fallback
+    // Every TLS 1.2 suite in the profile must map to a name OpenSSL knows.
+    // cipher_suite_name falls back to a hex string, which OpenSSL cannot parse,
+    // and SSL_CTX_set_cipher_list drops unparseable entries while still
+    // returning success -- so an unmapped suite silently shortens the offered
+    // list and moves the fingerprint. Refuse instead of degrading quietly.
+    std::vector<std::uint16_t> unmapped;
+    for (std::uint16_t id : tls12_ids) {
+        if (cipher_name_map.find(id) == cipher_name_map.end()) unmapped.push_back(id);
     }
-    SSL_CTX_set_cipher_list(ctx, tls12_str.c_str());
+    if (!unmapped.empty()) {
+        std::string names;
+        for (std::uint16_t id : unmapped) {
+            char buf[8];
+            std::snprintf(buf, sizeof(buf), "0x%04x", id);
+            if (!names.empty()) names += ",";
+            names += buf;
+        }
+        throw std::runtime_error(
+            "cover profile lists TLS 1.2 cipher suites with no OpenSSL name: " +
+            names);
+    }
+
+    // A profile that offers TLS 1.3 only has no TLS 1.2 suites to install, and
+    // that is not an error -- but feeding TLS 1.3 names to set_cipher_list, as
+    // the previous fallback did, is. Leave the TLS 1.2 list alone instead.
+    if (tls12_ids.empty()) return;
+
+    const std::string tls12_str = cipher_list_to_openssl_string(tls12_ids);
+    if (SSL_CTX_set_cipher_list(ctx, tls12_str.c_str()) != 1) {
+        throw std::runtime_error(
+            "cover profile TLS 1.2 cipher list rejected by OpenSSL: " + tls12_str);
+    }
 }
 
 void StealthContext::configure_supported_groups(const std::vector<uint16_t>& groups) {
@@ -581,9 +765,54 @@ void StealthContext::configure_supported_groups(const std::vector<uint16_t>& gro
     // supported_groups extension drifted away from our profile
     // data. Stick with the string form, which validates per name
     // and emits the result verbatim when every name is known.
-    std::string groups_string = groups_to_openssl_string(groups);
+    //
+    // The list is rejected as a whole if ANY name is unknown, and a rejected
+    // call leaves OpenSSL's defaults in place. That is a silent stealth
+    // regression, so the result is checked: the profile now offers
+    // X25519MLKEM768, which only exists from OpenSSL 3.5. On an older library
+    // we drop the groups this build cannot name and retry, reporting exactly
+    // what was lost, rather than emitting an unrelated default list.
     SSL_CTX* ctx = ssl_context_.native_handle();
-    SSL_CTX_set1_groups_list(ctx, groups_string.c_str());
+    const std::string groups_string = groups_to_openssl_string(groups);
+    if (SSL_CTX_set1_groups_list(ctx, groups_string.c_str()) == 1) {
+        return;
+    }
+
+    std::vector<uint16_t> supported;
+    std::vector<uint16_t> dropped;
+    for (uint16_t group : groups) {
+        // Probe each name on its own; a single-entry list keeps the failure
+        // attributable instead of bisecting the whole profile.
+        const std::string one = supported_group_name(group);
+        if (SSL_CTX_set1_groups_list(ctx, one.c_str()) == 1) {
+            supported.push_back(group);
+        } else {
+            dropped.push_back(group);
+        }
+    }
+
+    if (supported.empty()) {
+        // Leaving OpenSSL's defaults installed would silently emit a
+        // supported_groups extension that belongs to no profile.
+        throw std::runtime_error(
+            "TLS profile supported_groups rejected by this OpenSSL build: " +
+            groups_string);
+    }
+
+    const std::string reduced = groups_to_openssl_string(supported);
+    if (SSL_CTX_set1_groups_list(ctx, reduced.c_str()) != 1) {
+        throw std::runtime_error(
+            "TLS profile supported_groups could not be installed: " + reduced);
+    }
+
+    std::string lost;
+    for (uint16_t group : dropped) {
+        if (!lost.empty()) lost += ", ";
+        lost += supported_group_name(group);
+    }
+    util::log_warn(
+        "TLS profile degraded: this OpenSSL build does not support " + lost +
+        "; the offered supported_groups no longer matches the cover profile");
 }
 
 void StealthContext::configure_signature_algorithms(const std::vector<uint16_t>& algorithms) {
@@ -603,12 +832,19 @@ void StealthContext::configure_signature_algorithms(const std::vector<uint16_t>&
         return;
     }
     std::string list;
+    std::vector<std::uint16_t> unmapped;
     auto add = [&](const char* tok) {
         if (!list.empty()) list += ":";
         list += tok;
     };
     for (std::uint16_t a : algorithms) {
         switch (a) {
+            // ML-DSA. OpenSSL 3.5 emits all three, which is what lets the
+            // diagnostic backend reproduce the captured sigalgs list exactly --
+            // JA4 hashes signature algorithms in order, so these are load-bearing.
+            case 0x0904: add("mldsa44"); break;
+            case 0x0905: add("mldsa65"); break;
+            case 0x0906: add("mldsa87"); break;
             case 0x0403: add("ECDSA+SHA256"); break;
             case 0x0503: add("ECDSA+SHA384"); break;
             case 0x0603: add("ECDSA+SHA512"); break;
@@ -623,15 +859,34 @@ void StealthContext::configure_signature_algorithms(const std::vector<uint16_t>&
             case 0x0601: add("RSA+SHA512"); break;
             case 0x0807: add("ed25519"); break;
             case 0x0808: add("ed448"); break;
-            default: break;  // ignore unknown IDs
+            default: unmapped.push_back(a); break;
         }
     }
     if (list.empty()) {
         // Fall back rather than emit a sigalgs ext we don't want.
         SSL_CTX_set1_sigalgs_list(ctx,
             "ECDSA+SHA256:RSA-PSS+SHA256:RSA+SHA256");
-    } else {
-        SSL_CTX_set1_sigalgs_list(ctx, list.c_str());
+        return;
+    }
+    // Same fail-open shape as the supported_groups path: OpenSSL rejects the
+    // list as a whole and leaves its own defaults installed, which would
+    // silently emit a non-cover sigalgs extension. Refuse instead.
+    if (SSL_CTX_set1_sigalgs_list(ctx, list.c_str()) != 1) {
+        throw std::runtime_error(
+            "cover profile signature algorithms rejected by OpenSSL: " + list);
+    }
+    if (!unmapped.empty()) {
+        std::string dropped;
+        for (std::uint16_t a : unmapped) {
+            char buf[8];
+            std::snprintf(buf, sizeof(buf), "0x%04x", a);
+            if (!dropped.empty()) dropped += ",";
+            dropped += buf;
+        }
+        util::log_warn(
+            "tls: cover profile lists signature algorithms with no OpenSSL "
+            "name (" + dropped + "); the emitted sigalgs extension is narrower "
+            "than the profile");
     }
 }
 
@@ -647,31 +902,88 @@ void StealthContext::configure_alpn(const std::vector<std::string>& protocols) {
                             static_cast<unsigned int>(alpn_data.size()));
 }
 
-void StealthContext::log_connection_metrics(const ConnectionMetrics& metrics) {
-    if (!config_.log_fingerprints || config_.log_file_path.empty()) {
-        return;
-    }
-    
-    // Log to file in JSON format
-    nlohmann::json j;
-    j["connection_id"] = metrics.connection_id;
-    j["timestamp"] = metrics.timestamp;
-    j["server_host"] = metrics.server_host;
-    j["server_port"] = metrics.server_port;
-    j["profile"] = tls_fingerprint::browser_profile_name(metrics.used_profile);
-    j["ja3_hash"] = metrics.fingerprint.ja3_hash;
-    j["ja4_hash"] = metrics.fingerprint.ja4_hash;
-    j["handshake_succeeded"] = metrics.handshake_succeeded;
-    j["handshake_duration_ms"] = metrics.handshake_duration_ms;
-    if (!metrics.error_message.empty()) {
-        j["error"] = metrics.error_message;
-    }
-    
-    std::ofstream log_file(config_.log_file_path, std::ios::app);
-    if (log_file) {
-        log_file << j.dump() << "\n";
-    }
+FingerprintTestResult evaluate_tls_fingerprint(
+    const std::string& test_endpoint,
+    uint16_t port,
+    tls_fingerprint::BrowserProfile target_profile) {
+    FingerprintTestResult result;
+    try {
+        const VerificationEndpoint endpoint = parse_verification_endpoint(test_endpoint, port);
+        boost::asio::io_context io_context;
+        StealthConfig config;
+        config.enabled = true;
+        config.target_profile = target_profile;
 
+        StealthContext stealth_ctx(config);
+        boost::asio::ip::tcp::resolver resolver(io_context);
+        auto endpoints = resolver.resolve(endpoint.host, std::to_string(endpoint.port));
+        boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(
+            io_context, stealth_ctx.get_context());
+        SSL_set_tlsext_host_name(stream.native_handle(), endpoint.host.c_str());
+        boost::asio::connect(stream.lowest_layer(), endpoints);
+        stream.handshake(boost::asio::ssl::stream_base::client);
+
+        const unsigned char* alpn_data = nullptr;
+        unsigned int alpn_len = 0;
+        SSL_get0_alpn_selected(stream.native_handle(), &alpn_data, &alpn_len);
+        const std::string negotiated_alpn(
+            reinterpret_cast<const char*>(alpn_data),
+            static_cast<size_t>(alpn_len));
+
+        const std::string body = negotiated_alpn == "h2"
+            ? fetch_http2_json(stream, endpoint)
+            : fetch_http11_json(stream, endpoint);
+
+        result.detected_fingerprint = parse_tls_verify_response(body);
+        result.ja3_from_server = result.detected_fingerprint.ja3_hash;
+        result.ja4_from_server = result.detected_fingerprint.ja4_hash;
+
+        auto profile_info = tls_fingerprint::get_browser_profile_info(target_profile);
+        if (profile_info) {
+            result.matches_target_profile =
+                result.detected_fingerprint.ja3_hash == profile_info->ja3_hash
+                && result.detected_fingerprint.ja4_hash == profile_info->ja4_hash;
+        }
+        result.success = !result.detected_fingerprint.ja3_hash.empty()
+            || !result.detected_fingerprint.ja4_hash.empty();
+        if (!result.success) {
+            throw std::runtime_error("TLS fingerprint test endpoint returned no JA3/JA4 hashes");
+        }
+
+        boost::system::error_code ec;
+        stream.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
+        stream.lowest_layer().close(ec);
+    } catch (const std::exception& e) {
+        result.success = false;
+        result.error_message = e.what();
+    }
+    
+    return result;
+}
+
+StealthManager& StealthManager::instance() {
+    static StealthManager instance;
+    return instance;
+}
+
+void StealthManager::initialize(const StealthConfig& config) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    config_ = config;
+    context_ = std::make_unique<StealthContext>(config);
+
+    if (!config.log_file_path.empty()) {
+        logger_ = std::make_unique<MetricsLogger>(config.log_file_path);
+    }
+}
+
+StealthContext& StealthManager::get_context() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!context_) {
+        StealthConfig default_config;
+        default_config.enabled = true;
+        context_ = std::make_unique<StealthContext>(default_config);
+    }
+    return *context_;
 }
 
 boost::asio::ssl::context generate_stealth_tls_config(
@@ -791,63 +1103,31 @@ StealthConnectionResult connect_with_stealth_mode(
     return result;
 }
 
-FingerprintTestResult evaluate_tls_fingerprint(
-    const std::string& test_endpoint,
-    uint16_t port,
-    tls_fingerprint::BrowserProfile target_profile) {
-    FingerprintTestResult result;
-    try {
-        const VerificationEndpoint endpoint = parse_verification_endpoint(test_endpoint, port);
-        boost::asio::io_context io_context;
-        StealthConfig config;
-        config.enabled = true;
-        config.target_profile = target_profile;
-
-        StealthContext stealth_ctx(config);
-        boost::asio::ip::tcp::resolver resolver(io_context);
-        auto endpoints = resolver.resolve(endpoint.host, std::to_string(endpoint.port));
-        boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(
-            io_context, stealth_ctx.get_context());
-        SSL_set_tlsext_host_name(stream.native_handle(), endpoint.host.c_str());
-        boost::asio::connect(stream.lowest_layer(), endpoints);
-        stream.handshake(boost::asio::ssl::stream_base::client);
-
-        const unsigned char* alpn_data = nullptr;
-        unsigned int alpn_len = 0;
-        SSL_get0_alpn_selected(stream.native_handle(), &alpn_data, &alpn_len);
-        const std::string negotiated_alpn(
-            reinterpret_cast<const char*>(alpn_data),
-            static_cast<size_t>(alpn_len));
-
-        const std::string body = negotiated_alpn == "h2"
-            ? fetch_http2_json(stream, endpoint)
-            : fetch_http11_json(stream, endpoint);
-
-        result.detected_fingerprint = parse_tls_verify_response(body);
-        result.ja3_from_server = result.detected_fingerprint.ja3_hash;
-        result.ja4_from_server = result.detected_fingerprint.ja4_hash;
-
-        auto profile_info = tls_fingerprint::get_browser_profile_info(target_profile);
-        if (profile_info) {
-            result.matches_target_profile =
-                result.detected_fingerprint.ja3_hash == profile_info->ja3_hash
-                && result.detected_fingerprint.ja4_hash == profile_info->ja4_hash;
-        }
-        result.success = !result.detected_fingerprint.ja3_hash.empty()
-            || !result.detected_fingerprint.ja4_hash.empty();
-        if (!result.success) {
-            throw std::runtime_error("TLS fingerprint test endpoint returned no JA3/JA4 hashes");
-        }
-
-        boost::system::error_code ec;
-        stream.lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
-        stream.lowest_layer().close(ec);
-    } catch (const std::exception& e) {
-        result.success = false;
-        result.error_message = e.what();
+void StealthContext::log_connection_metrics(const ConnectionMetrics& metrics) {
+    if (!config_.log_fingerprints || config_.log_file_path.empty()) {
+        return;
     }
     
-    return result;
+    // Log to file in JSON format
+    nlohmann::json j;
+    j["connection_id"] = metrics.connection_id;
+    j["timestamp"] = metrics.timestamp;
+    j["server_host"] = metrics.server_host;
+    j["server_port"] = metrics.server_port;
+    j["profile"] = tls_fingerprint::browser_profile_name(metrics.used_profile);
+    j["ja3_hash"] = metrics.fingerprint.ja3_hash;
+    j["ja4_hash"] = metrics.fingerprint.ja4_hash;
+    j["handshake_succeeded"] = metrics.handshake_succeeded;
+    j["handshake_duration_ms"] = metrics.handshake_duration_ms;
+    if (!metrics.error_message.empty()) {
+        j["error"] = metrics.error_message;
+    }
+
+    std::ofstream log_file(config_.log_file_path, std::ios::app);
+    if (log_file) {
+        log_file << j.dump() << "\n";
+    }
+
 }
 
 MetricsLogger::MetricsLogger(const std::string& log_file_path)
@@ -890,31 +1170,6 @@ void MetricsLogger::flush() {
     if (log_stream_) {
         log_stream_->flush();
     }
-}
-
-StealthManager& StealthManager::instance() {
-    static StealthManager instance;
-    return instance;
-}
-
-void StealthManager::initialize(const StealthConfig& config) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    config_ = config;
-    context_ = std::make_unique<StealthContext>(config);
-    
-    if (!config.log_file_path.empty()) {
-        logger_ = std::make_unique<MetricsLogger>(config.log_file_path);
-    }
-}
-
-StealthContext& StealthManager::get_context() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!context_) {
-        StealthConfig default_config;
-        default_config.enabled = true;
-        context_ = std::make_unique<StealthContext>(default_config);
-    }
-    return *context_;
 }
 
 void StealthManager::log_connection(const ConnectionMetrics& metrics) {

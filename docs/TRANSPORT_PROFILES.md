@@ -78,7 +78,36 @@ flattened evidence files that installed diagnostics consume.
    browser name or uTLS preset is not proof of parity; the provider must pass
    the ordered wire comparator, certificate/pin/ALPN/exporter failures, and
    lifecycle tests.
-5. Regenerate and validate:
+5. Fill in `openssl_selection` for the native backend. This is what lets the
+   in-process OpenSSL path track the same browser without a helper, and it is
+   deliberately data rather than code so a new browser needs no C++ change:
+
+   | Key | Meaning |
+   | --- | --- |
+   | `cipher_suites` | Offered suites, in order. Split across `SSL_CTX_set_ciphersuites` (TLS 1.3) and `SSL_CTX_set_cipher_list` (TLS 1.2); both preserve order. |
+   | `signature_algorithms` | Offered schemes, in order. JA4 hashes these in order, so the sequence is load-bearing, not just the set. |
+   | `supported_groups` | Offered groups, in order. |
+   | `extensions` | The target extension set. Not an emission order: see below. |
+   | `injected_extensions` | Extensions OpenSSL will not emit itself, each with a body shape. `"GREASE"` as the type allocates an RFC 8701 value per connection. |
+   | `alps_protocols` | Body for the injected `0x44cd` extension. |
+   | `ech_grease_lengths` | Permitted total lengths for the injected `0xfe0d` GREASE ECH body, taken from the capture. |
+   | `no_encrypt_then_mac` | Suppresses `0x0016`, which OpenSSL offers by default and browsers generally do not. |
+   | `status_request` | `"ocsp"` emits `0x0005`, which `add_custom_ext` cannot because OpenSSL owns that number internally. |
+   | `min_version` / `max_version` | The offered range. Browser-shaped, so usually TLS 1.2 through 1.3 — offering only 1.3 silently drops the TLS 1.2 half of the cipher list and extension `0xff01`. |
+   | `require_negotiated_version` | The version the handshake must actually end on. Keeps a browser-shaped offer from becoming a carrier downgrade; enforced in `handshake_with_timeout` and fails closed. |
+
+   Extension *emission order* is not configurable and is not claimed. OpenSSL
+   fixes the order of its built-in extensions and prepends injected ones, and
+   Chrome has permuted its own order per connection since v110 — which is what
+   broke JA3 as a browser discriminator and motivated JA4's sorted,
+   GREASE-excluding construction. The gate targets JA4.
+
+6. Record the residual gap in `known_tls_divergence` and let the tests pin it.
+   `scripts/generate_transport_profiles.py` compares the declared selection
+   against the capture, and `tests/test_yume_native_tls_wire.py` re-derives the
+   same gap from the bytes the production backend actually emits. Both fail if
+   the gap widens, so a divergence cannot be introduced silently.
+7. Regenerate and validate:
 
    ```sh
    python3 scripts/generate_transport_profiles.py
@@ -86,7 +115,7 @@ flattened evidence files that installed diagnostics consume.
    python3 tests/test_project_metadata.py
    ```
 
-6. Bind the new ID only in a deliberate development protocol revision, update
+8. Bind the new ID only in a deliberate development protocol revision, update
    KATs and wire documentation, then run same-session capture, matched
    performance, sanitizer, classifier/active-probe, soak, packaging, and
    independent-review gates.

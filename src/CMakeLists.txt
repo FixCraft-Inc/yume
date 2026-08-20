@@ -1495,6 +1495,19 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_executable(yume_obfs_test core/stealth/obfs_test.cpp)
     target_link_libraries(yume_obfs_test PRIVATE yume_core)
     yume_link_atomic_if_needed(yume_obfs_test PRIVATE)
+    # Compares the ClientHello the production backend actually emits against the
+    # committed browser capture, rather than comparing config to config.
+    add_executable(yume_tls_clienthello_dump core/stealth/clienthello_dump.cpp)
+    target_link_libraries(yume_tls_clienthello_dump PRIVATE yume_core)
+    yume_link_atomic_if_needed(yume_tls_clienthello_dump PRIVATE)
+    yume_apply_perf_opts(yume_tls_clienthello_dump)
+    add_test(NAME yume_native_tls_wire_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_yume_native_tls_wire.py"
+    )
+    set_tests_properties(yume_native_tls_wire_test PROPERTIES
+        ENVIRONMENT
+            "YUME_CLIENTHELLO_DUMP=$<TARGET_FILE:yume_tls_clienthello_dump>")
     yume_apply_perf_opts(yume_obfs_test)
     add_test(NAME yume_obfs_test COMMAND yume_obfs_test)
 endif()

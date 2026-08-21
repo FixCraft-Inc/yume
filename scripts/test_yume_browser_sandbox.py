@@ -934,7 +934,9 @@ exit 1
             environment = dict(os.environ)
             environment.update({
                 "DISPLAY": ":99",
-                "PATH": f"{fake_bin}:/usr/bin:/bin",
+                # Retain dependency prefixes so the OpenSSL executable matches
+                # the libraries inherited through LD_LIBRARY_PATH in CI.
+                "PATH": f"{fake_bin}:{environment['PATH']}",
                 "SANITIZER_MARKER": str(sanitizer_marker),
                 "YUME_CHROME_LAUNCHER": str(launcher),
                 "YUME_CHROME_BINARY": str(binary),

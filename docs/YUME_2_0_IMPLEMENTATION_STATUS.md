@@ -156,6 +156,22 @@ tree; results from an earlier checkpoint do not transfer across corrections.
 
 ## Development evidence completed
 
+- At the 2026-08-21 read-back, the latest signed product-code checkpoint was
+  `97ed846dcae92c4d8b5a67173c8d9a5c1e7c4341`. Local `main` and
+  `origin/main` agreed, workflow-owned `origin/DEV` had exact tree parity, and
+  CodeQL, Code Quality, and branch sync passed. CI run `32443839339` confirmed
+  the pinned OpenSSL 3.5.7 plus nghttp2 environment and built both native and
+  sanitizer configurations, but each lane passed 69/70 because the same
+  isolated browser-sandbox fixture exited before its intended fake-Chrome
+  failure assertion. This is not an observed YUME runtime, AUTH, wire, or
+  sanitizer defect, but that product-code checkpoint's development
+  qualification is incomplete. Refresh Git before relying on branch tips.
+- The next correction must make that unit fixture's certificate prerequisite
+  hermetic while preserving fake-command precedence and production fail-closed
+  behavior. Afterward, require 70/70 native and sanitizer CI plus the complete
+  fresh exact-tree dependency/reproducibility/package/preflight lane before
+  claiming current-head Gate A acceptance. Earlier exact-tree results remain
+  evidence for their named commits only.
 - Gate A first closed for continued development, with `NO RELEASE`, at signed
   commit `815ea405568edeb661389bae128a6678cb4cdf1b`: all five automatic
   workflows passed and workflow-owned `DEV` reached content parity. That

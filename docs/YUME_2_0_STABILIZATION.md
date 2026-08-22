@@ -155,7 +155,33 @@ bumping to `2.0-rc1`.
   is not indistinguishability, and Linux qualification is not Android or
   cross-platform support.
 
-## Current continuation boundary (2026-08-14)
+## Current continuation boundary (2026-08-21)
+
+1. At the 2026-08-21 read-back, the latest product-code checkpoint on local
+   `main` and `origin/main` was signed commit
+   `97ed846dcae92c4d8b5a67173c8d9a5c1e7c4341`; workflow-owned `origin/DEV`
+   had exact tracked-tree parity. CodeQL, Code Quality, and branch sync passed
+   for that commit. Refresh Git before relying on branch tips.
+2. CI run `32443839339` proved the pinned OpenSSL 3.5.7/nghttp2 environment and
+   completed both native and sanitizer builds. Both CTest lanes passed 69/70;
+   only `yume_browser_sandbox_test` failed.
+3. The failing unit fixture still invokes real certificate generation before
+   the behavior it means to test. Its previous fixed `PATH` paired Ubuntu's
+   OpenSSL 3.0 executable with pinned 3.5.7 libraries; retaining the inherited
+   path removed that crash but the exact CI fixture still exits silently before
+   the intended fake-Chrome diagnostic. Make certificate generation hermetic
+   inside the test, keep fake commands first, and do not weaken production
+   sandboxing, hash gates, or capture failure handling.
+4. After the focused 38-test sandbox suite passes, require all 70 native and
+   sanitizer CI tests to pass. Then complete the fresh exact-signed-tree
+   dependency, sanitizer, reproducibility, Debian/ABI, package, preflight, and
+   artifact checks that were not reached by the prior remote run.
+5. The `97ed846` source checkpoint is **NO MERGE CLAIM / NO RELEASE**.
+   A documentation-only successor does not change that verdict. Historical
+   Gate A closure remains valid only for its named checkpoints. Gate B remains
+   open on the separate real-CDP navigation/campaign boundary.
+
+## Earlier continuation boundary (2026-08-14)
 
 1. Gate A is `MERGE` for continued development and `NO RELEASE` at signed
    commit `e4786e049fea7b786148e55b806e37fea401741e`. CI, Pages, branch sync,

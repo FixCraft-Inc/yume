@@ -7,10 +7,73 @@ The authoritative merge/RC/stable checklist and branch policy are now in
 `docs/YUME_2_0_STABILIZATION.md`. In particular, merging reviewed dev6 into
 `main` and calling a Linux build stable 2.0 are separate milestones.
 
-Verified checkout date: 2026-08-14. Always refresh the Git state and rerun the
+Verified checkout date: 2026-08-21. Always refresh the Git state and rerun the
 relevant gates before relying on the hashes or measurements in this document.
 
-## Current integrated checkpoint (2026-08-14)
+## Current continuation checkpoint (2026-08-21)
+
+At the 2026-08-21 read-back, the latest signed product-code checkpoint on
+local `main` and `origin/main` was
+`97ed846dcae92c4d8b5a67173c8d9a5c1e7c4341`, tree
+`3b6b967c62c1779a750a244feb2721443c04e6cf`. The signature verifies with
+EdDSA fingerprint `967278FF6FA436F504CBB0058A1588B5E2598DB1`. Workflow-owned
+`origin/DEV` is commit `81f59a68e0a56519fe4997fcd4c17a35e5bd9b00`
+with the same tree. CodeQL run `32443839284`, Code Quality run `32443838665`,
+and branch-sync run `32443839323` passed. No PR was opened and `DEV` was not
+pushed directly.
+
+The exact Chrome `151.0.7922.71` staging directory remains present on
+`192.168.1.165` at
+`/home/f1xgod/yume-profile-build-t4CutW/chrome-151.0.7922.71`; reverify the
+documented package, launcher, and binary hashes before use. The failed
+`yume-final-0a7468a.service` unit remains visible as status evidence, but its
+temporary validation root was removed and cannot be resumed.
+
+The dependency hardening after `f2ffce6` made the product's real cryptographic
+minimum explicit: full builds require OpenSSL >= 3.5, CI/CodeQL/release use the
+checksum-pinned OpenSSL 3.5.7 source fallback, and prepared releases use the
+exact liboqs 0.16.0 source pin with static linkage plus RPATH/RUNPATH and
+dynamic-liboqs rejection. Local optimized and serial ASan+UBSan suites passed
+67/67 before those dependency/release changes. A later fresh remote run reached
+66/67; its only failure was the isolated normal-Chrome sandbox fixture, and it
+therefore did not reach the final reproducibility/package portion. Do not
+reuse the earlier 67/67 result as exact-tree qualification.
+
+Signed commit `b677938d361c37a47da822a3eeb756a3d83399ee` corrected a GitHub
+Actions environment bug: invoking the OpenSSL and nghttp2 helpers in separate
+child shells caused the later `GITHUB_ENV` assignment to discard OpenSSL's
+pkg-config prefix. All affected CI, CodeQL, and release lanes now source and
+invoke both helpers in one shell, and release preflight enforces the exact
+2/1/1 occurrence counts. The next CI run proved the combined environment,
+configured and built both native and sanitizer targets, and then exposed a
+test-only executable/library mismatch: the browser-sandbox fixture replaced
+`PATH` with `/usr/bin:/bin` while retaining the pinned 3.5.7
+`LD_LIBRARY_PATH`, so Ubuntu's 3.0 OpenSSL executable crashed against 3.5.7
+libraries.
+
+Signed commit `97ed846dcae92c4d8b5a67173c8d9a5c1e7c4341` retained the inherited
+dependency path behind the fixture's fake-command directory. Locally the full
+browser-sandbox suite passed 38/38 and its intended Chrome-exit case passed
+20/20. Exact CI run `32443839339` confirmed pinned OpenSSL 3.5.7 and nghttp2
+environment propagation plus successful native and sanitizer configure/build,
+but both test lanes still passed only 69/70. The same isolated case exited
+nonzero with empty stderr before its expected `Chrome exited unsuccessfully`
+diagnostic. Because certificate generation suppresses OpenSSL output, the next
+agent must first make this unit fixture hermetic—prefer a test-local fake
+`openssl` that creates the dummy key/certificate outputs, restore the bounded
+fixture `PATH`, and prove the intended Chrome failure is reached—rather than
+weakening the production capture runner or merely changing the assertion.
+
+Verdict for the `97ed846` product-code checkpoint: **NO MERGE CLAIM / NO
+RELEASE** until that fixture is fixed, native and sanitizer CI pass all 70
+tests, and an exact signed-tree qualification completes every applicable
+dependency, reproducibility, package/preflight, and artifact check. Gate B
+remains independently open on the real Chrome DevTools navigation boundary and
+all later classifier/WAN/soak work. The older evidence below remains historical
+and must not be generalized to `97ed846`. A documentation-only successor does
+not change this product-code verdict; refresh Git before acting.
+
+## Earlier integrated checkpoint (2026-08-14)
 
 ### Gate A closure and first Gate B campaign outcome
 

@@ -47,6 +47,15 @@ build-selftest/bin/yume-selftest --full --no-color
 build-selftest/bin/yume-selftest --full --rekey-window 1
 ```
 
+The full preset's four-tunnel fixture is fail-closed and independently
+authenticated. It generates one composite individual identity per tunnel,
+enrolls every public identity with the same narrowly scoped loopback permission,
+passes tunnels 2..N through repeated `--secondary-auth`, and refuses to start
+the SOCKS measurement if any secondary authentication fails. Before measuring,
+the harness queries `runtime.status` and requires `requested_tunnels`,
+`authenticated_tunnels`, and `live_tunnels` to equal the requested count. Those
+three values are also retained in each JSON result's `breakdown` object.
+
 The normal result table always shows median/p95 latency, MiB/s, and Mbit/s.
 `--dev` adds hot-path rows, startup timing, backpressure timing, repeat detail,
 and score components. JSON schema 2 records the 2.0 workload without retired
@@ -55,6 +64,7 @@ Argon2/PQ-file fields. `--rekey-window` passes the same validated depth
 epoch window without changing per-epoch security limits.
 
 The harness creates temporary composite Ed25519 + ML-DSA-87 identity material
+(one identity for each requested tunnel)
 plus separate 32-byte
 admission and inner PSK files. Both secret files contain exactly 64 lowercase
 hex characters and have owner-only permissions. A small bounded loopback HTTP
@@ -352,8 +362,10 @@ cleanly, returns status 130, and retains a partial `endpoint.log` and
 
 The endpoint run always exercises the 2.0 ML-KEM-1024 + X25519 + PSK suite,
 directional ratchets, H2/WebSocket carrier, and Node masquerade. `--cover` is a
-separate real-browser request to the same public endpoint. Hop mode and nginx
-are intentionally absent because neither is part of the focused 2.0 wire path.
+separate real-browser request to the same public endpoint. There is no hop mode
+to exercise -- the time-derived hop layer was removed, see
+`docs/SECURITY_MODES.md` -- and nginx is absent because it is not part of the
+focused 2.0 wire path.
 
 The bundle contains shared high-entropy admission and inner PSK files. Treat
 the SCP step as out-of-band secret distribution: do not publish or commit the

@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -28,6 +29,7 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
                                                  const outbound_proxy::Config& proxy_cfg,
                                                  int index,
                                                  std::optional<tls_fingerprint::BrowserProfile> profile,
-                                                 std::uint64_t* completed_tls_connections);
+                                                 std::uint64_t* completed_tls_connections,
+                                                 const std::function<bool()>& should_stop = {});
 
 }  // namespace yume::client

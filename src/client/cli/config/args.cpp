@@ -34,6 +34,13 @@ bool parse_int_strict(std::string_view text, int& out) {
     return true;
 }
 
+bool valid_sha256_fingerprint(std::string_view value) {
+    return value.size() == 64 &&
+        std::all_of(value.begin(), value.end(), [](unsigned char c) {
+            return std::isxdigit(c) != 0;
+        });
+}
+
 bool parse_cluster_spec(const std::string& spec, std::string* host, int* port, std::string* err) {
     if (spec.empty()) {
         if (err) *err = "--cluster argument is empty";
@@ -206,6 +213,12 @@ ParsedArgs parse_args(int argc, char** argv) {
                 return args;
             }
             args.identity = identity;
+        } else if (arg == "--secondary-auth") {
+            const char* identity = take_value(arg);
+            if (!identity) {
+                return args;
+            }
+            args.secondary_identities.emplace_back(identity);
         } else if (arg == "--admin-auth") {
             // Presenting the key is the claim. There is no --admin boolean by
             // design: a flag that grants admin without the second credential is
@@ -449,14 +462,17 @@ ParsedArgs parse_args(int argc, char** argv) {
                 return args;
             }
         } else if (arg == "--allow-exec") {
-            args.allow_exec = true;
-            args.allow_exec_override = true;
+            args.parse_error =
+                "--allow-exec is unavailable: inbound remote command "
+                "execution is disabled until child processes have bounded "
+                "shutdown support";
+            return args;
         } else if (arg == "--exec") {
             if (i + 1 < argc && argv[i + 1][0] != '-') {
                 args.exec_cmd = argv[++i];
             } else {
-                args.allow_exec = true;
-                args.allow_exec_override = true;
+                args.parse_error = "--exec requires a command";
+                return args;
             }
         } else if (arg == "--control") {
             args.control_mode = true;
@@ -489,6 +505,36 @@ ParsedArgs parse_args(int argc, char** argv) {
                 return args;
             }
             args.relay_mode = value;
+            args.relay_mode_override = true;
+        } else if (arg == "--relay-trust-mode") {
+            const char* value = take_value("--relay-trust-mode");
+            if (!value) {
+                return args;
+            }
+            args.relay_trust_mode = value;
+            args.relay_trust_mode_override = true;
+        } else if (arg == "--relay-trust-dir") {
+            const char* value = take_value("--relay-trust-dir");
+            if (!value) {
+                return args;
+            }
+            args.relay_trust_dir = value;
+            args.relay_trust_dir_override = true;
+        } else if (arg == "--relay-peer-pin") {
+            const char* value = take_value("--relay-peer-pin");
+            if (!value) {
+                return args;
+            }
+            const std::string_view pin(value);
+            const auto separator = pin.find('=');
+            if (separator == std::string_view::npos || separator == 0 ||
+                separator + 1 >= pin.size() ||
+                !valid_sha256_fingerprint(pin.substr(separator + 1))) {
+                args.parse_error =
+                    "--relay-peer-pin expects endpoint=64-hex-fingerprint";
+                return args;
+            }
+            args.relay_peer_pins.emplace_back(pin);
         } else if (arg == "--allow-inbound-admin") {
             args.allow_inbound_admin = true;
             args.allow_inbound_admin_override = true;
@@ -528,6 +574,12 @@ ParsedArgs parse_args(int argc, char** argv) {
             }
             args.history_dir = value;
             args.history_override = true;
+        } else if (arg == "--relay-receive-dir") {
+            const char* value = take_value("--relay-receive-dir");
+            if (!value) {
+                return args;
+            }
+            args.relay_receive_dir = value;
         } else if (arg == "--no-history") {
             args.history_enabled = false;
             args.history_override = true;
@@ -668,22 +720,27 @@ ParsedArgs parse_args(int argc, char** argv) {
                 return args;
             }
             args.tls_stealth_profile = value;
+            args.tls_stealth_profile_override = true;
         } else if (arg == "--tls-fingerprint-log") {
             args.tls_fingerprint_log = true;
+            args.tls_fingerprint_log_override = true;
         } else if (arg == "--tls-fingerprint-log-path") {
             const char* value = take_value("--tls-fingerprint-log-path");
             if (!value) {
                 return args;
             }
             args.tls_fingerprint_log_path = value;
+            args.tls_fingerprint_log_path_override = true;
         } else if (arg == "--tls-fingerprint-verify") {
             args.tls_fingerprint_verify = true;
+            args.tls_fingerprint_verify_override = true;
         } else if (arg == "--tls-fingerprint-test-endpoint") {
             const char* value = take_value("--tls-fingerprint-test-endpoint");
             if (!value) {
                 return args;
             }
             args.tls_fingerprint_test_endpoint = value;
+            args.tls_fingerprint_test_endpoint_override = true;
         } else if (arg == "--self-dpi") {
             args.self_dpi = true;
             args.self_dpi_override = true;

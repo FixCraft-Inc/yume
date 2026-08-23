@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "core/runtime/service_stream.hpp"
+#include "core/runtime/operation_status.hpp"
 #include "server/config/config.hpp"
 
 namespace yume::server {
@@ -43,19 +44,29 @@ public:
     RuntimeController(RuntimeController const&) = delete;
     RuntimeController& operator=(RuntimeController const&) = delete;
 
-    bool start(ServerConfig cfg, std::string* error = nullptr);
+    // Synchronous lifecycle operations. Concurrent start/stop/reload calls are
+    // serialized; facade::ServerSession moves them off embedder/UI threads.
+    bool start(ServerConfig cfg,
+               std::string* error = nullptr,
+               runtime::OperationStatus* operation_status = nullptr);
     bool stop();
     bool running() const;
-    bool reload_auth(std::string* error = nullptr);
+    bool reload_auth(
+        std::string* error = nullptr,
+        runtime::OperationStatus* operation_status = nullptr);
 
     Status status() const;
     std::vector<SessionSnapshot> sessions() const;
     ServerConfig config() const;
-    bool register_service(const std::string& service, std::string* error = nullptr);
+    bool register_service(
+        const std::string& service,
+        std::string* error = nullptr,
+        runtime::OperationStatus* operation_status = nullptr);
     std::shared_ptr<runtime::ServiceStream> accept_service_stream(
         const std::string& service,
         std::uint32_t timeout_ms,
-        std::string* error = nullptr);
+        std::string* error = nullptr,
+        runtime::OperationStatus* operation_status = nullptr);
 
     static std::string instance_key_for(ServerConfig const& cfg,
                                         std::string const& config_path = {});

@@ -18,11 +18,14 @@
 
 #include <boost/asio.hpp>
 
+#include "client/proxy/udp_queue.hpp"
 #include "client/transport/tunnel.hpp"
+#include "core/runtime/stream_queue_limits.hpp"
 
 namespace yume::client {
 
 class TunnelPool;
+struct SocksSessionTestPeer;
 
 class SocksSession : public std::enable_shared_from_this<SocksSession> {
 public:
@@ -34,6 +37,15 @@ public:
     void start();
 
 private:
+    using WriteReservation =
+        runtime::ConcurrentInboundQueueBudget::Reservation;
+    struct PendingLocalWrite {
+        std::shared_ptr<std::vector<uint8_t>> data;
+        std::function<void()> on_done;
+        WriteReservation reservation;
+        Tunnel::InboundCredit inbound_credit;
+    };
+
     void read_greeting();
     void on_read_greeting(const boost::system::error_code& ec, std::size_t bytes);
     void on_read_methods(const boost::system::error_code& ec, std::size_t bytes);
@@ -49,18 +61,39 @@ private:
     void start_udp_associate();
     void start_udp_read();
     void on_udp_read(const boost::system::error_code& ec, std::size_t bytes);
-    void deliver_udp(uint8_t stream_id, const Tunnel::Bytes& data);
+    void deliver_udp(uint8_t stream_id,
+                     const Tunnel::Bytes& data,
+                     Tunnel::InboundCredit inbound_credit);
+    void deliver_udp_on_strand(
+        uint8_t stream_id,
+        std::shared_ptr<std::vector<uint8_t>> data,
+        detail::UdpQueueBudget::Reservation reservation,
+        Tunnel::InboundCredit inbound_credit);
+    void enqueue_udp_send(
+        uint8_t stream_id,
+        std::shared_ptr<std::vector<uint8_t>> data,
+        detail::UdpQueueBudget::Reservation reservation,
+        Tunnel::InboundCredit inbound_credit);
+    void do_udp_send();
+    void on_udp_open_result(uint8_t stream_id,
+                            bool ok,
+                            const std::string& reason);
     void close_udp_assoc(uint8_t stream_id, const std::string& reason);
 
     void start_client_read();
     void on_client_read(const boost::system::error_code& ec, std::size_t bytes);
     void send_client_fin();
 
-    void deliver_from_tunnel(const Tunnel::Bytes& data);
+    void deliver_from_tunnel(const Tunnel::Bytes& data,
+                             Tunnel::InboundCredit inbound_credit);
     void close_from_tunnel();
     void remote_fin_from_tunnel(const std::string& reason);
 
     void enqueue_write(std::shared_ptr<std::vector<uint8_t>> data, std::function<void()> on_done = {});
+    void enqueue_write_on_strand(std::shared_ptr<std::vector<uint8_t>> data,
+                                 std::function<void()> on_done,
+                                 WriteReservation reservation,
+                                 Tunnel::InboundCredit inbound_credit = {});
     void do_write();
     void request_socket_send_shutdown();
     void maybe_finish_cleanly();
@@ -88,12 +121,14 @@ private:
 
     std::vector<uint8_t> read_buf_;
 
-    std::deque<std::pair<std::shared_ptr<std::vector<uint8_t>>, std::function<void()>>> write_queue_;
+    std::deque<PendingLocalWrite> write_queue_;
+    runtime::ConcurrentInboundQueueBudget write_budget_;
     bool write_in_flight_{false};
 
     std::string target_host_;
     int target_port_{0};
     uint8_t stream_id_{0};
+    bool open_result_received_{false};
     bool open_confirmed_{false};
     bool awaiting_domain_len_{false};
     uint8_t pending_cmd_{0};
@@ -111,14 +146,30 @@ private:
     bool socket_send_shutdown_done_{false};
 
     struct UdpAssoc {
+        explicit UdpAssoc(detail::UdpQueueBudget& pending_budget)
+            : pending(pending_budget) {}
+
         std::string host;
         int port{0};
         uint8_t stream_id{0};
+        bool open_result_received{false};
         bool open_confirmed{false};
-        std::deque<Tunnel::Bytes> pending;
+        detail::BudgetedUdpDatagramQueue pending;
     };
+    struct PendingUdpSend {
+        uint8_t stream_id{0};
+        std::shared_ptr<std::vector<uint8_t>> data;
+        detail::UdpQueueBudget::Reservation reservation;
+        Tunnel::InboundCredit inbound_credit;
+    };
+    detail::UdpQueueBudget udp_pending_budget_;
+    detail::UdpQueueBudget udp_local_send_budget_;
+    std::deque<PendingUdpSend> udp_send_queue_;
+    bool udp_send_in_flight_{false};
     std::unordered_map<std::string, std::shared_ptr<UdpAssoc>> udp_assoc_;
     std::unordered_map<uint8_t, std::shared_ptr<UdpAssoc>> udp_assoc_by_stream_;
+
+    friend struct SocksSessionTestPeer;
 };
 
 class SocksServer {

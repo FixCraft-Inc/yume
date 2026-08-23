@@ -36,6 +36,11 @@ struct H2Request {
     H2Headers headers;
 };
 
+struct H2StreamClose {
+    std::int32_t stream_id{-1};
+    std::uint32_t error_code{0};
+};
+
 #if YUME_ENABLE_DEV_DIAGNOSTICS
 struct H2CarrierStats {
     std::uint64_t h2_feed_calls{0};
@@ -81,6 +86,12 @@ public:
     // The caller either proxies one to Node with RespondHttp(), or validates an
     // extended CONNECT and calls AcceptCarrier()/RejectCarrier().
     std::vector<H2Request> TakeRequests();
+    // Server only. Reports peer resets and ordinary stream completion so an
+    // asynchronous cover backend can cancel/release its matching work.
+    std::vector<H2StreamClose> TakeStreamCloses();
+    // Server only. Retryable overload response which does not retain an HTTP
+    // response body. Normal traffic never takes this path.
+    bool RefuseStream(std::int32_t stream_id);
     bool RespondHttp(std::int32_t stream_id,
                      unsigned status,
                      const H2Headers& headers,
@@ -104,7 +115,15 @@ public:
 
     bool SendBinary(const std::uint8_t* data, std::size_t size);
     bool SendBinary(const H2Bytes& data) { return SendBinary(data.data(), data.size()); }
+    // Both roles. TakeTunnelBytes() transfers ownership of the matching H2
+    // receive credit to the caller. Return that credit after the bytes have
+    // drained into the downstream sink. Over-consumption fails closed; credit
+    // returned after the carrier stream closes still retires connection-level
+    // flow control safely. Non-carrier cover DATA is consumed immediately and
+    // never enters this ledger.
     H2Bytes TakeTunnelBytes();
+    bool ConsumeTunnelBytes(std::size_t size);
+    std::size_t unconsumed_tunnel_bytes() const noexcept;
 
     bool priming_complete() const noexcept;
     bool peer_extended_connect_enabled() const noexcept;

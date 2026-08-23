@@ -51,14 +51,15 @@ protocol::Frame read_auth_challenge(ClientTransportStream& stream,
                                     const std::string& server_host,
                                     int server_port,
                                     std::vector<uint8_t>* prefetched,
-                                    obfs::H2Carrier* carrier) {
+                                    obfs::H2Carrier* carrier,
+                                    const StopPredicate& should_stop) {
     protocol::Frame challenge = carrier
         ? read_frame_over_h2_with_timeout(stream, io, *carrier, prefetched,
                                           kAuthChallengeTimeout, "AUTH challenge",
-                                          server_host, server_port)
+                                          server_host, server_port, should_stop)
         : read_frame_with_timeout(stream, io, kAuthChallengeTimeout,
                                   "AUTH challenge", server_host, server_port,
-                                  true, prefetched);
+                                  true, prefetched, should_stop);
     if (challenge.header.type != protocol::AUTH) {
         throw FatalError("this endpoint is not a yume server (server did not send AUTH challenge); please check the origin and try again");
     }
@@ -75,7 +76,8 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
     obfs::H2Carrier& carrier,
     std::uint16_t rekey_window,
     const ratchet::RatchetPolicy& ratchet_policy,
-    const std::string& admin_identity_path) {
+    const std::string& admin_identity_path,
+    const StopPredicate& should_stop) {
     WipeBytesOnExit wipe_channel_binding(channel_binding);
     if (channel_binding.size() != auth_v2::kChannelBindingLen) {
         throw FatalError("YUME 2.0 requires an exact TLS exporter binding");
@@ -126,10 +128,13 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
     crypto::Bytes unsigned_response = auth_v2::BuildUnsignedResponse(
         x25519.public_key, kem.ciphertext, identity, local_window,
         ratchet_policy);
-    crypto::Bytes signature_input = auth_v2::BuildSignatureInput(
-        challenge.encoded, unsigned_response, channel_binding);
-    crypto::Bytes signature = crypto::sign_composite(identity_key, signature_input);
-    basefwx::crypto::SecureClear(signature_input);
+    crypto::Bytes signature;
+    {
+        crypto::Bytes signature_input = auth_v2::BuildSignatureInput(
+            challenge.encoded, unsigned_response, channel_binding);
+        WipeBytesOnExit wipe_signature_input(signature_input);
+        signature = crypto::sign_composite(identity_key, signature_input);
+    }
 
     crypto::Bytes admin_identity;
     crypto::Bytes admin_signature;
@@ -139,8 +144,8 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
             admin_key->pq.public_key.get());
         crypto::Bytes admin_input = auth_v2::BuildAdminSignatureInput(
             challenge.encoded, unsigned_response, channel_binding, identity);
+        WipeBytesOnExit wipe_admin_input(admin_input);
         admin_signature = crypto::sign_composite(*admin_key, admin_input);
-        basefwx::crypto::SecureClear(admin_input);
     }
 
     crypto::Bytes response_payload = auth_v2::BuildResponse(
@@ -150,12 +155,13 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
     basefwx::crypto::SecureBytes file_psk{inner_psk.CopyBytes()};
     basefwx::crypto::SecureBytes psk_key{
         ratchet::DerivePskKey(file_psk.bytes(), challenge.psk_salt)};
-    crypto::Bytes initial_root = ratchet::DeriveInitialRoot(
-        kem.shared, x_shared.bytes(), psk_key.bytes(),
-        challenge.transcript_salt, channel_binding);
+    basefwx::crypto::SecureBytes initial_root{
+        ratchet::DeriveInitialRoot(
+            kem.shared, x_shared.bytes(), psk_key.bytes(),
+            challenge.transcript_salt, channel_binding)};
     auto session_ratchet = std::make_unique<ratchet::SessionRatchet>(
         ratchet::EndpointRole::Client, std::move(initial_root),
-        psk_key.Release(), send_window, local_window, send_policy,
+        std::move(psk_key), send_window, local_window, send_policy,
         send_policy);
     // The negotiated depth sets the per-round-trip transfer ceiling, so it is
     // the first thing to check when a high-latency link underperforms.
@@ -177,7 +183,8 @@ std::unique_ptr<ratchet::SessionRatchet> send_auth_v2_response(
                               protocol::AUTH, 0, 0},
                              std::move(response_payload)};
     send_frame_over_h2_with_timeout(stream, io, carrier, response,
-                                    kAuthChallengeTimeout, "AUTH v2 response");
+                                    kAuthChallengeTimeout, "AUTH v2 response",
+                                    should_stop);
     return session_ratchet;
 #else
     (void)stream;
@@ -214,7 +221,8 @@ void send_frame_over_h2_with_timeout(
     obfs::H2Carrier& carrier,
     const protocol::Frame& frame,
     std::chrono::milliseconds timeout,
-    const char* what) {
+    const char* what,
+    const StopPredicate& should_stop) {
     crypto::Bytes encoded = protocol::encode_frame(
         static_cast<protocol::FrameType>(frame.header.type),
         frame.header.stream_id, frame.header.flags, frame.payload);
@@ -230,7 +238,10 @@ void send_frame_over_h2_with_timeout(
         stream.cancel_and_close();
     };
     const IoOpResult result = write_all_with_timeout(
-        stream, io, boost::asio::buffer(wire), timeout, cancel);
+        stream, io, boost::asio::buffer(wire), timeout, cancel, should_stop);
+    if (result.cancelled) {
+        throw FatalError(std::string("operation cancelled while sending ") + what);
+    }
     if (result.timed_out) {
         throw FatalError(std::string("timed out sending ") + what + " over H2");
     }
@@ -248,7 +259,8 @@ protocol::Frame read_frame_over_h2_with_timeout(
     std::chrono::milliseconds timeout,
     const char* what,
     const std::string& server_host,
-    int server_port) {
+    int server_port,
+    const StopPredicate& should_stop) {
     std::vector<uint8_t> local_prefetched;
     std::vector<uint8_t>& decoded = prefetched ? *prefetched : local_prefetched;
     std::array<uint8_t, 16U * 1024U> scratch{};
@@ -259,7 +271,11 @@ protocol::Frame read_frame_over_h2_with_timeout(
         crypto::Bytes replies = carrier.TakeOutbound();
         if (replies.empty()) return;
         const IoOpResult result = write_all_with_timeout(
-            stream, io, boost::asio::buffer(replies), timeout, cancel);
+            stream, io, boost::asio::buffer(replies), timeout, cancel,
+            should_stop);
+        if (result.cancelled) {
+            throw FatalError(std::string("operation cancelled while reading ") + what);
+        }
         if (result.timed_out) {
             throw FatalError(std::string("timed out sending H2 reply while reading ") + what);
         }
@@ -279,7 +295,11 @@ protocol::Frame read_frame_over_h2_with_timeout(
                                   ": " + carrier.error()));
             }
             const IoOpResult result = read_some_with_timeout(
-                stream, io, boost::asio::buffer(scratch), timeout, cancel);
+                stream, io, boost::asio::buffer(scratch), timeout, cancel,
+                should_stop);
+            if (result.cancelled) {
+                throw FatalError(std::string("operation cancelled while reading ") + what);
+            }
             if (result.timed_out) {
                 throw FatalError(std::string("timed out waiting for ") + what + " (" +
                                  server_host + ":" + std::to_string(server_port) + ")");
@@ -316,7 +336,19 @@ protocol::Frame read_frame_over_h2_with_timeout(
                           decoded.begin() + static_cast<std::ptrdiff_t>(8U + payload_size));
     decoded.erase(decoded.begin(),
                   decoded.begin() + static_cast<std::ptrdiff_t>(8U + payload_size));
-    return protocol::decode_frame(encoded);
+    protocol::Frame frame = protocol::decode_frame(encoded);
+    // TakeTunnelBytes() transfers receive-credit responsibility to its caller.
+    // Authentication consumes only the frame it decoded; any prefetched tail
+    // remains charged until Tunnel takes ownership and drains it.
+    if (!carrier.ConsumeTunnelBytes(encoded.size())) {
+        throw FatalError(std::string("failed to retire H2 receive credit for ") +
+                         what + ": " + carrier.error());
+    }
+    // Manual credit can make nghttp2 queue connection/stream WINDOW_UPDATEs.
+    // Flush them before waiting for the next authentication frame so a large
+    // handshake cannot permanently leak the peer's send window.
+    write_protocol_replies();
+    return frame;
 }
 
 void require_h2_carrier_alpn(ClientTransportStream& stream,
@@ -338,7 +370,8 @@ void perform_h2_carrier_handshake(ClientTransportStream& stream,
                                   const security::Secret32& obfs_secret,
                                   std::vector<uint8_t>* prefetched,
                                   std::unique_ptr<obfs::H2Carrier>* carrier_out,
-                                  std::shared_ptr<obfs::OuterCarrierTrace> outer_trace) {
+                                  std::shared_ptr<obfs::OuterCarrierTrace> outer_trace,
+                                  const StopPredicate& should_stop) {
     crypto::Bytes admission_key = obfs_secret.CopyBytes();
     WipeBytesOnExit wipe_admission_key(admission_key);
     std::int64_t hour = static_cast<std::int64_t>(std::time(nullptr)) / 3600;
@@ -364,7 +397,9 @@ void perform_h2_carrier_handshake(ClientTransportStream& stream,
         crypto::Bytes wire = carrier->TakeOutbound();
         if (wire.empty()) return;
         IoOpResult wr = write_all_with_timeout(
-            stream, io, boost::asio::buffer(wire), kAuthChallengeTimeout, cancel);
+            stream, io, boost::asio::buffer(wire), kAuthChallengeTimeout,
+            cancel, should_stop);
+        if (wr.cancelled) throw FatalError("H2 carrier write cancelled");
         if (wr.timed_out) throw FatalError("H2 carrier write timed out");
         if (wr.ec) throw FatalError("H2 carrier write failed: " + wr.ec.message());
     };
@@ -373,7 +408,9 @@ void perform_h2_carrier_handshake(ClientTransportStream& stream,
     std::array<std::uint8_t, 16U * 1024U> scratch{};
     auto receive = [&]() {
         IoOpResult rr = read_some_with_timeout(
-            stream, io, boost::asio::buffer(scratch), kAuthChallengeTimeout, cancel);
+            stream, io, boost::asio::buffer(scratch), kAuthChallengeTimeout,
+            cancel, should_stop);
+        if (rr.cancelled) throw FatalError("H2 carrier read cancelled");
         if (rr.timed_out) {
             throw FatalError("this endpoint is not a yume obfs endpoint (" + server_host + ":" +
                              std::to_string(server_port) + "; h2 server reply timed out)");

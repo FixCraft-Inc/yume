@@ -61,9 +61,6 @@ ServerInfoPayload parse_server_info_payload(const protocol::Frame& frame) {
     info.server_cap_pq = json.value("cap_pq", false);
     info.server_cap_argon2 = json.value("cap_argon2", false);
     info.server_cap_pbkdf2 = json.value("cap_pbkdf2", false);
-    info.server_hop_enabled = json.value("hop_enabled", false);
-    info.server_hop_interval_ms = static_cast<std::uint32_t>(json.value("hop_interval_ms", 0));
-    info.server_time_ms = json.value("server_time_ms", 0LL);
 
     if (info.announced_proof_sources.empty()) {
         if (!info.sig.empty()) {

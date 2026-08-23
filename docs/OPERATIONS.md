@@ -8,20 +8,25 @@ Each release is expected to publish:
 
 - client and daemon artifacts for supported targets
 - per-artifact `.sha256` files
-- per-artifact `.md5` files
-- aggregate `SHA256SUMS.txt` and `MD5SUMS.txt`
+- aggregate `SHA256SUMS.txt`
 - `release-manifest.json`
-- optional `.sig` detached signatures when GPG secrets are configured
+- detached signatures once the stable publication gate is enabled
 
 Recommended verification:
 
 ```bash
 sha256sum -c SHA256SUMS.txt
-md5sum -c MD5SUMS.txt
 gpg --verify yumed-amd64-linux.sig yumed-amd64-linux
 ```
 
-The manifest records file size, OS, architecture, component, linkage, hashes, and signature sidecars. Treat missing mandatory hashes as a release problem.
+The manifest currently records file size, OS, architecture, component, linkage,
+SHA-256 and an informational MD5 digest. The workflow does not emit MD5 sidecar
+files, and it generates the manifest before signing, so its current signature
+fields remain null even when `.sig` files are subsequently produced. Treat a
+missing mandatory SHA-256 as a release problem. Before stable publication,
+generate/finalize the manifest after signing and make commit/tag verification
+and artifact signatures mandatory rather than silently continuing when the
+signing secret is absent.
 
 ## BaseFWX pinning
 
@@ -74,6 +79,27 @@ loopback address. Start and health-check it before `yumed`; do not expose its
 port publicly. Keep `auth_keys.meta`, TLS private keys, and both 32-byte secret
 files readable only by the daemon user. Each secret file is exactly 64 lowercase
 hex characters with no group/world permission bits.
+
+H2 cover proxying admits four retained GET/HEAD streams per connection and 32
+per process. A slot spans backend work and flow-controlled H2 response lifetime;
+reset or disconnect cancels it. The resulting maximum cover-body state is 32
+MiB per connection and 256 MiB process-wide before protocol/header overhead,
+with a separate 32-MiB carrier output cap. Serialized cover wire also remains
+charged at 32 MiB per connection and 256 MiB process-wide until the TLS write
+finishes. The conservative combined maxima, when new backend bodies coexist
+with wire from earlier requests, are therefore 64 MiB per connection and 512
+MiB process-wide before protocol/TLS overhead. Request-count saturation returns
+retryable `REFUSED_STREAM`; exhausting the downstream wire budget closes that
+connection fail-closed. Alert on either: it can be an undersized/slow cover
+backend, a slow reader, or an unauthenticated fan-out/window-update attempt.
+Raising the fixed limits without a measured memory and active-probe review is
+not an operational fix.
+
+The current preparation-only release output copies `yumed` as a bare binary and
+does not bundle `tools/cover-node/backend.mjs` or a Node service unit. It is
+therefore not a standalone deployable server artifact despite the binary name;
+use the exact-source/CMake install layout for development. Packaging the pinned
+cover backend and supervision contract is a release blocker.
 
 ## Capacity, fairness, and process limits
 
@@ -168,6 +194,74 @@ sudo yume-packet-quick down
 The helper refuses existing TUN/nft objects, does not flush firewall state or
 change default policies, and stores the exact resources it owns under `/run`.
 `yumed` itself never invokes it.
+
+## Weak-host and portable-server status
+
+The current 2.0 qualification target is glibc Linux x86_64 for the CLI,
+daemon, and Chrome helper. This document does **not** claim that YUME is ready
+for every server, architecture, libc, container image, or init system. Add a
+support-matrix cell only after its exact dependency build, package, startup,
+service, helper discovery, certificate/exporter, multi-epoch transfer and
+shutdown checks pass; name QEMU/emulation evidence when real hardware was not
+used.
+
+Two useful future qualification targets are a constrained 1-vCPU/1-GiB host
+and a small 2-vCPU/2-GiB host. They are test targets, not current minimum-system
+claims.
+
+`scripts/yume_constrained_host.py` applies those tiers. It runs the workload in
+a transient systemd user scope with `CPUQuota`, `MemoryMax`, `MemorySwapMax=0`
+and `TasksMax` set, and reads the accounting back from the scope's own cgroup:
+`memory.peak` and `pids.peak` are exact high-water marks, where sampling from
+outside only sees whatever a poll happened to catch. Swap is pinned off because
+a tier that silently swaps is not the tier it claims. No privilege is needed
+where the `cpu`, `memory` and `pids` controllers are delegated to the user
+slice, and the tool refuses to report a tier at all when they are not -- an
+unbounded run must not be recorded as a bounded one.
+
+    scripts/yume_constrained_host.py --tier 1v1g -- <workload command>
+
+`--repeat N` runs the workload N times in one scope, which is what percentiles
+and leak detection need: peak descriptors, tasks and RSS that do not scale with
+N are evidence nothing is retained between sessions. `--collect
+NAME=GLOB:PATH` reads a numeric value out of each iteration's JSON and reports
+p50/p95/p99 by nearest rank, so a reported p99 is a value that actually
+occurred. `--evidence GLOB` points at the logs proving the cryptographic stack
+stayed on, restricted to files written during the run so a stale tree cannot
+satisfy the check.
+
+The verdict is deliberately hard to earn. A workload that was OOM-killed fails
+even if it exited zero, missing accounting fails as unproven rather than
+passing, and output showing the cryptographic stack was reduced to fit the tier
+fails regardless of resource use. That last rule is the point of the exercise:
+fitting a small host by weakening post-quantum establishment, ratcheting or
+verification is not a pass.
+
+Freeze a workload and explicit cgroup CPU, memory, task and fd limits, then
+retain artifacts for:
+
+- cold and warm handshake plus rekey p50/p95/p99;
+- steady and peak RSS, CPU, helper/Node tasks, open fds and queue depth;
+- upload, download, interactive latency and high-RTT prepared-depth behavior;
+- admission floods, backend slowdown, memory pressure, session-cap rejection,
+  cleanup and recovery; and
+- a sustained run with no root/window leak, unbounded queue growth, helper
+  residue or cryptographic downgrade.
+
+Derive `threads`, `max_sessions`, `bulk_key_max_sessions`, `rekey_window`,
+`filter_memory_mib`, socket credit and cgroup values from those measurements;
+do not publish an untested “low-memory preset.” A smaller `rekey_window` reduces
+per-session ML-KEM work and retained future roots, but can reduce throughput on
+a high-RTT path. Solve that trade-off with a bounded authenticated-ACK
+preparation policy and admission/resource caps, never by enlarging the
+per-epoch byte/frame/time limits or disabling hybrid-PQ establishment, TLS
+verification, ratcheting, replay protection, or fail-closed behavior.
+
+On overload, the desired behavior is bounded rejection and recovery. An OOM
+kill, swap storm, helper fork storm, silent fallback to the diagnostic TLS
+backend, or a cover identity that changes with machine size fails the tier.
+See `docs/YUME_2_0_WAN_BEHAVIOR.md` for the separate high-latency design and
+validation boundary.
 
 ## Key and permission operations
 

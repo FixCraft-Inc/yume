@@ -84,6 +84,7 @@ std::vector<AuthorizedKeyEntry> list_authorized(
 // to the meta file.
 bool append_authorized(std::filesystem::path const& auth_keys_file,
                        std::filesystem::path const& meta_file,
+                       std::filesystem::path const& admin_keys_file,
                        std::string const& pem,
                        AuthorizedKeyEntry const& entry_meta,
                        std::string* err);

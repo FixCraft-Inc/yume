@@ -311,12 +311,44 @@ yume_vendor_validate_archive_layout() {
     return 0
 }
 
+# Hash an extracted vendor tree in a way that includes paths, file contents,
+# modes, and symlink targets while ignoring extraction timestamps and owners.
+# The ensure command runs on GNU/Linux CI/release hosts, where these GNU tar
+# normalization options are available.
+yume_vendor_tree_digest() {
+    local _yvtd_root="$1"
+    local _yvtd_outvar="$2"
+    local _yvtd_digest=""
+
+    if [[ ! -d "${_yvtd_root}/vendor" || -L "${_yvtd_root}/vendor" ]]; then
+        _yume_vendor_err "vendor tree is not a real directory: ${_yvtd_root}/vendor"
+        return 1
+    fi
+    if ! _yvtd_digest="$(
+        set -o pipefail
+        tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+            --format=gnu -cf - -C "${_yvtd_root}" vendor |
+            sha256sum | awk '{print $1}'
+    )"; then
+        _yume_vendor_err "could not hash vendor tree: ${_yvtd_root}/vendor"
+        return 1
+    fi
+    if [[ ! "${_yvtd_digest}" =~ ^[0-9a-f]{64}$ ]]; then
+        _yume_vendor_err "invalid vendor tree digest for ${_yvtd_root}/vendor"
+        return 1
+    fi
+    printf -v "${_yvtd_outvar}" '%s' "${_yvtd_digest}"
+}
+
 # Obtain + verify + extract into <dest-root> (default: repository root).
 # The archive contains vendor/<target>/... so extraction is relative to root.
 yume_vendor_ensure_extracted() {
     local _yve_dest_root="${1:-${YUME_VENDOR_REPO_ROOT}}"
     local _yve_source="${2:-${YUME_VENDOR_SOURCE:-}}"
     local _yve_archive=""
+    local _yve_stage=""
+    local _yve_expected_digest=""
+    local _yve_existing_digest=""
 
     if ! yume_vendor_obtain "${_yve_source}" _yve_archive; then
         return 1
@@ -334,19 +366,43 @@ yume_vendor_ensure_extracted() {
         yume_vendor_cleanup "${_yve_archive}"
         return 1
     fi
+    if ! _yve_stage="$(mktemp -d "${_yve_dest_root}/.vendor-extract.XXXXXX")"; then
+        _yume_vendor_err "could not create private vendor staging directory."
+        yume_vendor_cleanup "${_yve_archive}"
+        return 1
+    fi
+    if ! tar -xJf "${_yve_archive}" -C "${_yve_stage}"; then
+        _yume_vendor_err "extraction failed."
+        rm -rf -- "${_yve_stage}"
+        yume_vendor_cleanup "${_yve_archive}"
+        return 1
+    fi
     if [[ -e "${_yve_dest_root}/vendor" ||
           -L "${_yve_dest_root}/vendor" ]]; then
-        _yume_vendor_err \
-            "refusing to overwrite existing vendor path: ${_yve_dest_root}/vendor"
+        if ! yume_vendor_tree_digest "${_yve_stage}" _yve_expected_digest ||
+           ! yume_vendor_tree_digest "${_yve_dest_root}" _yve_existing_digest; then
+            rm -rf -- "${_yve_stage}"
+            yume_vendor_cleanup "${_yve_archive}"
+            return 1
+        fi
+        if [[ "${_yve_expected_digest}" == "${_yve_existing_digest}" ]]; then
+            rm -rf -- "${_yve_stage}"
+            yume_vendor_cleanup "${_yve_archive}"
+            _yume_vendor_info "existing vendor tree matches the pinned archive."
+            return 0
+        fi
+        _yume_vendor_err "existing vendor tree differs from the pinned archive; refusing to overwrite it."
+        rm -rf -- "${_yve_stage}"
         yume_vendor_cleanup "${_yve_archive}"
         return 1
     fi
-    if ! tar -xJf "${_yve_archive}" -C "${_yve_dest_root}"; then
-        _yume_vendor_err "extraction failed."
-        rm -rf -- "${_yve_dest_root}/vendor"
+    if ! mv -T -- "${_yve_stage}/vendor" "${_yve_dest_root}/vendor"; then
+        _yume_vendor_err "could not install the verified vendor tree."
+        rm -rf -- "${_yve_stage}"
         yume_vendor_cleanup "${_yve_archive}"
         return 1
     fi
+    rm -rf -- "${_yve_stage}"
     yume_vendor_cleanup "${_yve_archive}"
     _yume_vendor_info "extracted verified vendor libraries into ${_yve_dest_root}/vendor"
     return 0

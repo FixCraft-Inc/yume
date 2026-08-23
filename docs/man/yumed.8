@@ -431,10 +431,10 @@ Implies
 .TP
 .BI "--cluster-join " spec
 Dial a peer using the short form
-.BI [id@]host[:port][?pin=sha256] .
+.BI [id@]host[:port]?psk_file=path&carrier_secret_file=path[&pin=sha256] .
 Bracket IPv6 addresses as
 .BR [2001:db8::1]:443 .
-Repeat for multiple peers.
+Both secret-file parameters are mandatory. Repeat for multiple peers.
 .TP
 .B --public-node
 Internet-facing hardening preset. Rejects dangerous server flags, requires
@@ -444,14 +444,26 @@ and a nonempty
 a mandatory inner PSK file, and the loopback Node backend, and tightens session
 limits.
 .TP
-.BI "--federation-auth-key " path
-Ed25519 private key used to authenticate federation peer links.
+.BI "--federation-identity " path
+Composite identity (Ed25519 + ML-DSA-87 PEM bundle) presented when dialing
+federation peers. The peer must enroll this identity in its
+.B --auth-keys
+with a
+.B federation_peer_id
+meta entry.
 .TP
 .BI "--federation-operator-ca " path
 CA certificate peers must present for federated TLS.
 .TP
 .BI "--peer " json
-Add a federation peer using raw JSON (power-user form).
+Add a federation peer using raw JSON (power-user form). Each peer requires
+.B psk_file
+(the pairwise AUTH v2 PSK, identical on both nodes) and
+.B carrier_secret_file
+(the peer's admission secret, i.e. the value of its
+.BR --obfs-secret-file ),
+because YUME 2.0 federation dials pass the same H2-carrier admission as
+clients.
 .SH AUTH_KEYS.META FORMAT
 .B auth_keys.meta
 is JSON keyed by composite identity fingerprint (hex). Each entry may
@@ -562,7 +574,7 @@ Open the interactive server manager.
 Dangerous server features are behind three gates:
 .IP 1. 4
 compile-time feature switches, such as
-.BR YUME_FEATURE_EXEC ;
+.BR YUME_FEATURE_LAN_BRIDGE ;
 .IP 2. 4
 runtime server flags, such as
 .BR --allow-local-ip ;
@@ -572,6 +584,10 @@ per-key metadata in
 .PP
 A key without metadata can authenticate, but dangerous permissions default
 to deny.
+.PP
+EXEC policy fields remain reserved, but this version has no command-execution
+backend. Direct and relayed EXEC requests fail closed regardless of build flag,
+server config, or key metadata.
 .SH EXAMPLES
 .TP
 Start a basic server:

@@ -22,14 +22,16 @@ identities, and rejects true `allow_inbound_admin`, `allow_outbound_admin`, or
 `control_full` grants in visitor metadata. Those capabilities come from the
 verified second identity, never a policy boolean.
 
-## The three-layer gate for dangerous features
+## Dangerous-feature gates
 
-Server-side command execution and LAN/private-IP bridging are gated by **all
-three** of:
+LAN/private-IP bridging is gated by **all three** of:
 
-1. **Build switch.** `cmake -DYUME_FEATURE_EXEC=ON` (or `_LAN_BRIDGE`, `_FULL_CONTROL`). Stock builds ship with all three OFF. The runtime CLI flag still parses but logs a warning and stays disabled.
-2. **Server flag.** `--allow-exec`, `--allow-local-ip`, `--control-full` (or the equivalent JSON config field). This is the global "feature is allowed on this server" upper bound.
-3. **Per-key meta entry.** `"allow_exec": true` (or `"allow_local_ip"`) in the
+1. **Build switch.** `cmake -DYUME_FEATURE_LAN_BRIDGE=ON` (or
+   `_FULL_CONTROL`). Stock builds ship with both OFF.
+2. **Server flag.** `--allow-local-ip` or `--control-full` (or the equivalent
+   JSON config field). This is the global "feature is allowed on this server"
+   upper bound.
+3. **Per-key meta entry.** `"allow_local_ip": true` in the
    visitor policy. Default is deny. The server flag never grants permission to
    an identity that does not opt in.
 
@@ -37,6 +39,14 @@ Unrestricted bridging uses the build switch and server `--control-full` flag,
 but its identity gate is the verified distinct admin factor rather than a
 visitor-policy field. A request is allowed only when every applicable layer
 agrees.
+
+`YUME_FEATURE_EXEC`, the server `--allow-exec` setting, and the metadata
+`allow_exec` field remain parsed as reserved policy inputs, but they do not
+enable command execution in `2.0-dev6`. Direct client-to-server EXEC receives
+`EXEC disabled for safety`; clients never advertise or accept inbound EXEC,
+and `--allow-exec` / persisted `allow_exec=true` fail clearly on the client.
+This fail-closed state remains until child processes have portable bounded
+cancellation and join semantics.
 
 ## File layout
 
@@ -70,7 +80,7 @@ MCowBQYDK2VwAyEA...alice-ed25519...
     "key_type": "individual",
     "weight": 1.5,
     "permissions": {
-      "allow_exec": true,
+      "allow_exec": false,
       "allow_local_ip": true,
       "allow_codecs": ["monero-rpc"],
       "allow_services": ["example-service-v1"],
@@ -118,7 +128,7 @@ An operator controller is configured separately:
 Start the daemon with `--operator-keys /etc/yume/operator_keys` and
 `--operator-keys-meta /etc/yume/operator_keys.meta`. Operator keys are
 individual-only and default to one concurrent authenticated session. Merely
-placing an identity in `operator_keys` does not silently grant exec, LAN,
+placing an identity in `operator_keys` does not silently grant reserved EXEC, LAN,
 full-control, or admin permission. Admin additionally requires a different
 identity in `--admin-keys` and `--admin-auth` on the client.
 
@@ -145,9 +155,28 @@ abuse.
 
 ## Permission fields
 
+> **Development warning (`2.0-dev6`):** the current tree accepts exact relay
+> protocol version 2 only. It fails closed on channel kind, endpoint role,
+> message-state transition, record schema/order, transcript identity/context,
+> and target `allow_chat/file/bytes` policy. Canonical Ed25519 + ML-DSA-87 peer
+> signatures and ephemeral ML-KEM-1024 + X25519 establishment feed a
+> per-channel epoch/message ratchet. Ordinary channels require the already-
+> derived out-of-band relay PSK; admin forbids that password path and requires
+> an explicit peer pin in addition to the trusted-relay permission predicate.
+> TOFU state is written only after the complete handshake verifies. POSIX file
+> receive uses a configured descriptor-confined, exclusive/no-follow owner-only
+> sink with declared/chunk/cumulative/time bounds and partial cleanup; Windows
+> file/bytes receive remains unadvertised and fails closed. Each endpoint
+> retains at most 64 incoming and 64 outgoing invites for two minutes, and the
+> server retains at most 4096. POSIX relay-key, history, and peer-trust storage
+> reject unsafe links/ownership/modes; Windows secure mutable trust/history
+> storage remains fail closed. These controls have focused negative tests, but
+> this unsigned tree has no external audit or release qualification. The table
+> below is implemented development policy, not a release claim.
+
 | Field | Default | What it grants | Server flag required |
 | --- | --- | --- | --- |
-| `allow_exec` | deny | Permit the EXEC control feature. The active runtime forwards the request to an opted-in client; yumed does not execute arbitrary shell commands locally. | `--allow-exec` and `YUME_FEATURE_EXEC=ON` |
+| `allow_exec` | deny | Reserved EXEC policy bit. The current runtime never grants it: yumed rejects direct EXEC and clients never advertise or accept inbound EXEC. | none; deliberately unavailable in `2.0-dev6` |
 | `allow_local_ip` | deny | Open TCP/UDP streams to RFC1918 / loopback addresses through the server | `--allow-local-ip` and `YUME_FEATURE_LAN_BRIDGE=ON` |
 | `control_full` | invalid in metadata | Open TCP/UDP streams to *any* address only after a distinct admin factor | `--control-full`, `YUME_FEATURE_FULL_CONTROL=ON`, and verified admin identity |
 | `allow_codecs` | deny | Use named application codecs, for example `["monero-rpc"]` | `--codec-allow <name>` |
@@ -174,19 +203,24 @@ Top-level resource fields are separate from `permissions`:
 
 Two relationships are independent:
 
-- **server-controls-client** (S → C): the server sends the client commands or open requests, and the client executes them.
-- **client-controls-server** (C → S): the client opens streams through the server (SOCKS, port-forward, exec) or attaches to administer other clients.
+- **server-controls-client** (S → C): after the trusted admin-attach gates,
+  the server may ask an opted-in client to open a bounded TCP stream. Command
+  execution is not part of this current contract.
+- **client-controls-server** (C → S): the client opens ordinary streams
+  through the server (SOCKS or port-forward) or attaches to administer other
+  clients. `--exec <command>` remains an outbound protocol request syntax, but
+  the current server answers it with the explicit safety denial.
 
 | Mode | Server side | Client side | Use case |
 | --- | --- | --- | --- |
-| **S→C, C→S (full bridge)** | `--allow-exec` (with key `allow_exec`) plus directional admin policy as described below | `--accept-server-control` AND open SOCKS/forward | Operator's own laptop tunnelling through their own server, with the server able to dispatch opted-in control requests |
-| **S→C only** | `--allow-exec` (with key `allow_exec`) | `--accept-server-control`, no `--socks`/`-L`/`-R` | Server dispatches control requests to an opted-in client; the client doesn't tunnel anything outbound |
+| **S→C, C→S (full bridge)** | directional admin policy as described below | `--accept-server-control` AND open SOCKS/forward | Operator's own laptop tunnels through its server while accepting policy-checked TCP control opens; EXEC stays disabled |
+| **S→C only** | directional admin policy as described below | `--accept-server-control`, no `--socks`/`-L`/`-R` | Server dispatches bounded TCP open requests to an opted-in client; EXEC stays disabled |
 | **C→S only** | normal flags, key `allow_local_ip` etc. as needed | `--socks` / `-L` / `-R` (no `--accept-server-control`) | Most common: user wants a SOCKS proxy / port forward, server cannot push requests back |
-| **neither (pure transport)** | no `--allow-exec`, no `--control-full`, no `--allow-local-ip`; key has no per-key permissions | no `--accept-server-control`, no SOCKS | Probe / handshake test only; useful for smoke-testing the tunnel without exposing either side |
+| **neither (pure transport)** | no `--control-full`, no `--allow-local-ip`; key has no per-key permissions | no `--accept-server-control`, no SOCKS | Probe / handshake test only; useful for smoke-testing the tunnel without exposing either side |
 
 The implemented client flag is `--accept-server-control`.
 
-An admin channel between relayed clients is admitted only when all of these are true:
+An admin channel is admitted only when all of these are true:
 
 1. the caller registered `relay_mode=trusted`;
 2. the caller authenticated with an `operator_keys` identity, also proved a
@@ -222,10 +256,10 @@ Control, relay, admin, generic TCP/UDP opens, codecs, benchmark streams, packet 
 
 ## Security posture summary
 
-- A server built without `YUME_FEATURE_EXEC` cannot run user commands even if every other layer is misconfigured.
-- A server built with `YUME_FEATURE_EXEC=ON` but without `--allow-exec` cannot run user commands.
-- A server with `--allow-exec` but no `auth_keys.meta` entry granting `allow_exec` cannot run user commands.
-- The same applies to LAN bridging and unrestricted bridging.
+- The current server and client have no command-execution backend: direct and
+  relayed EXEC fail closed regardless of compile flag, config, or metadata.
+- LAN bridging and unrestricted bridging still require every applicable build,
+  server, identity, and directional-admin gate.
 - Outbound admin requires an operator visitor identity plus a distinct admin
   identity; inbound admin requires the target's distinct admin identity. Both
   directions also require runtime opt-in.

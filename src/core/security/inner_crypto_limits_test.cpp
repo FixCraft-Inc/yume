@@ -54,5 +54,58 @@ int main() {
     assert(resolved.argon2_memory > 0);
     assert(resolved.argon2_parallelism > 0);
 
+    // These resolvers pin the retired legacy KDF policy values. AUTH v2 does
+    // not accept these parameters from a peer.
+    const auto light = yume::inner::resolve_client_kdf_params(cfg, false);
+    assert(light.name == "hkdf");
+    assert(light.argon2_memory == 0);
+
+    const auto heavy = yume::inner::resolve_client_kdf_params(cfg, true);
+    assert(heavy.name == "argon2");
+    assert(heavy.argon2_time > 0);
+    assert(heavy.argon2_memory > 0);
+    assert(heavy.argon2_parallelism > 0);
+
+    // A configured ceiling still clamps the reported legacy policy value.
+    yume::inner::Config capped;
+    capped.argon2_limits.memory_max = heavy.argon2_memory / 2;
+    capped.argon2_limits.time_max = heavy.argon2_time;
+    capped.argon2_limits.parallelism_max = heavy.argon2_parallelism;
+    const auto clamped = yume::inner::resolve_client_kdf_params(capped, true);
+    assert(clamped.name == "argon2");
+    assert(clamped.argon2_memory <= capped.argon2_limits.memory_max);
+    assert(clamped.argon2_memory > 0);
+
+    // Hop-key trial decryption was removed with the unreachable hop surface.
+    // Keep focused negatives on the remaining legacy AEAD primitive: a wrong
+    // key, wrong AAD field, or modified ciphertext must fail closed.
+#if YUME_USE_BASEFWX
+    {
+        const yume::inner::Bytes key(32, 0x3C);
+        const yume::inner::Bytes plaintext{1, 2, 3, 4, 5};
+        const auto sealed = yume::inner::encrypt_payload(key, 7, 3, plaintext);
+        assert(yume::inner::decrypt_payload(key, 7, 3, sealed) == plaintext);
+
+        auto rejected = [&](const yume::inner::Bytes& candidate_key,
+                            std::uint8_t frame_type,
+                            std::uint8_t stream_id,
+                            yume::inner::Bytes blob) {
+            try {
+                (void)yume::inner::decrypt_payload(
+                    candidate_key, frame_type, stream_id, blob);
+                return false;
+            } catch (...) {
+                return true;
+            }
+        };
+        assert(rejected(yume::inner::Bytes(32, 0x5E), 7, 3, sealed));
+        assert(rejected(key, 8, 3, sealed));
+        assert(rejected(key, 7, 4, sealed));
+        auto tampered = sealed;
+        tampered.back() ^= 0x01;
+        assert(rejected(key, 7, 3, std::move(tampered)));
+    }
+#endif
+
     return 0;
 }

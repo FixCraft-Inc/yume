@@ -9,24 +9,34 @@
 #include "util_json.hpp"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <cerrno>
+#include <condition_variable>
 #include <cstdio>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
-#include <mutex>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <optional>
+#include <stdexcept>
+#include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
 #include <io.h>
 #else
+#include <fcntl.h>
 #include <grp.h>
+#include <poll.h>
 #include <pwd.h>
 #include <unistd.h>
 #endif
@@ -42,8 +52,6 @@
 namespace yume::util {
 
 namespace {
-std::function<void(int)> g_signal_handler;
-std::mutex g_signal_mutex;
 bool g_logging_enabled = true;
 std::mutex g_status_mutex;
 std::string g_status_text;
@@ -345,11 +353,383 @@ std::string expand_env_vars(const std::string& input) {
     return out;
 }
 
-void signal_dispatch(int signum) {
-    std::lock_guard<std::mutex> lock(g_signal_mutex);
-    if (g_signal_handler) {
-        g_signal_handler(signum);
+struct RegisteredSignalHandler {
+    RegisteredSignalHandler(std::uint64_t registration_generation,
+                            std::function<void(int)> registration_callback)
+        : generation(registration_generation),
+          callback(std::move(registration_callback)) {}
+
+    bool begin_callback() noexcept {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!enabled) return false;
+        ++active_callbacks;
+        return true;
     }
+
+    void end_callback() noexcept {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (active_callbacks > 0) --active_callbacks;
+        cv.notify_all();
+    }
+
+    void disable_and_wait(bool called_from_this_callback) noexcept {
+        std::unique_lock<std::mutex> lock(mutex);
+        enabled = false;
+        const std::size_t allowed_callbacks = called_from_this_callback ? 1U : 0U;
+        cv.wait(lock, [&]() { return active_callbacks <= allowed_callbacks; });
+    }
+
+    const std::uint64_t generation;
+    const std::function<void(int)> callback;
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool enabled{true};
+    std::size_t active_callbacks{0};
+};
+
+thread_local RegisteredSignalHandler* g_active_signal_handler = nullptr;
+
+#if defined(_WIN32)
+static_assert(std::atomic<unsigned int>::is_always_lock_free);
+static_assert(std::atomic<int>::is_always_lock_free);
+std::atomic<unsigned int> g_pending_signal_count{0};
+std::atomic<int> g_pending_signal{SIGTERM};
+
+void signal_dispatch(int signum) noexcept {
+    g_pending_signal.store(signum, std::memory_order_relaxed);
+    unsigned int pending = g_pending_signal_count.load(std::memory_order_relaxed);
+    while (pending < 4U &&
+           !g_pending_signal_count.compare_exchange_weak(
+               pending, pending + 1U, std::memory_order_release,
+               std::memory_order_relaxed)) {
+    }
+}
+#else
+volatile std::sig_atomic_t g_signal_write_fd = -1;
+
+void signal_dispatch(int signum) noexcept {
+    const int saved_errno = errno;
+    const int write_fd = static_cast<int>(g_signal_write_fd);
+    if (write_fd >= 0) {
+        const unsigned char encoded = static_cast<unsigned char>(signum);
+        // One non-blocking, one-byte write keeps handler work strictly
+        // bounded even under nested SIGINT/SIGTERM storms. A full or
+        // interrupted pipe drops this event; ordinary first/second delivery
+        // has ample capacity and the managed queue is bounded independently.
+        const ssize_t result = ::write(write_fd, &encoded, sizeof(encoded));
+        (void)result;
+    }
+    errno = saved_errno;
+}
+#endif
+
+class SignalDispatcher final {
+public:
+    SignalDispatcher() {
+#if !defined(_WIN32)
+        int descriptors[2]{-1, -1};
+        if (::pipe(descriptors) != 0) {
+            throw std::system_error(
+                errno, std::generic_category(), "create signal dispatch pipe");
+        }
+        read_fd_ = descriptors[0];
+        write_fd_ = descriptors[1];
+        try {
+            set_fd_flag(read_fd_, F_GETFD, F_SETFD, FD_CLOEXEC);
+            set_fd_flag(write_fd_, F_GETFD, F_SETFD, FD_CLOEXEC);
+            set_fd_flag(write_fd_, F_GETFL, F_SETFL, O_NONBLOCK);
+        } catch (...) {
+            ::close(read_fd_);
+            ::close(write_fd_);
+            read_fd_ = -1;
+            write_fd_ = -1;
+            throw;
+        }
+#endif
+        try {
+            callback_workers_.reserve(kCallbackWorkerCount);
+            for (std::size_t i = 0; i < kCallbackWorkerCount; ++i) {
+                callback_workers_.emplace_back([this]() { callback_worker(); });
+            }
+            reader_thread_ = std::thread([this]() { reader_loop(); });
+        } catch (...) {
+            stop_threads();
+            close_descriptors();
+            throw;
+        }
+
+    }
+
+    ~SignalDispatcher() {
+        std::shared_ptr<RegisteredSignalHandler> previous;
+        {
+            std::lock_guard<std::mutex> lock(registration_mutex_);
+            previous = std::move(current_handler_);
+            restore_os_handlers();
+        }
+        if (previous) {
+            previous->disable_and_wait(
+                g_active_signal_handler == previous.get());
+        }
+        restore_os_handlers();
+        stop_threads();
+        close_descriptors();
+    }
+
+    SignalDispatcher(const SignalDispatcher&) = delete;
+    SignalDispatcher& operator=(const SignalDispatcher&) = delete;
+
+    std::uint64_t install(std::function<void(int)> callback) {
+        if (!callback) return 0;
+
+        std::shared_ptr<RegisteredSignalHandler> previous;
+        std::shared_ptr<RegisteredSignalHandler> replacement;
+        {
+            std::lock_guard<std::mutex> lock(registration_mutex_);
+            replacement = std::make_shared<RegisteredSignalHandler>(
+                next_generation_, std::move(callback));
+            if (!handlers_installed_) {
+                install_os_handlers();
+            }
+            ++next_generation_;
+            previous = std::exchange(current_handler_, replacement);
+        }
+        if (previous) {
+            previous->disable_and_wait(
+                g_active_signal_handler == previous.get());
+        }
+        return replacement->generation;
+    }
+
+    void reset(std::uint64_t generation) noexcept {
+        if (generation == 0) return;
+        std::shared_ptr<RegisteredSignalHandler> previous;
+        {
+            std::lock_guard<std::mutex> lock(registration_mutex_);
+            if (!current_handler_ ||
+                current_handler_->generation != generation) {
+                return;
+            }
+            previous = std::move(current_handler_);
+            restore_os_handlers();
+        }
+        previous->disable_and_wait(
+            g_active_signal_handler == previous.get());
+    }
+
+private:
+    struct PendingSignal {
+        int signum{0};
+        std::shared_ptr<RegisteredSignalHandler> handler;
+    };
+
+    static constexpr std::size_t kCallbackWorkerCount = 2;
+    static constexpr std::size_t kMaxPendingSignals = 4;
+
+#if !defined(_WIN32)
+    static void set_fd_flag(int fd, int get_command, int set_command,
+                            int flag) {
+        const int current = ::fcntl(fd, get_command);
+        if (current < 0 || ::fcntl(fd, set_command, current | flag) != 0) {
+            throw std::system_error(
+                errno, std::generic_category(), "configure signal dispatch pipe");
+        }
+    }
+#endif
+
+    void enqueue(int signum) {
+        std::shared_ptr<RegisteredSignalHandler> handler;
+        {
+            std::lock_guard<std::mutex> lock(registration_mutex_);
+            handler = current_handler_;
+        }
+        if (!handler) return;
+
+        {
+            std::lock_guard<std::mutex> lock(queue_mutex_);
+            if (pending_signals_.size() >= kMaxPendingSignals) {
+                return;
+            }
+            pending_signals_.push_back(PendingSignal{signum, std::move(handler)});
+        }
+        queue_cv_.notify_one();
+    }
+
+    void reader_loop() noexcept {
+#if defined(_WIN32)
+        while (!reader_stop_.load(std::memory_order_acquire)) {
+            const unsigned int count =
+                g_pending_signal_count.exchange(0, std::memory_order_acq_rel);
+            const int signum = g_pending_signal.load(std::memory_order_acquire);
+            for (unsigned int i = 0; i < count; ++i) enqueue(signum);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+#else
+        std::array<unsigned char, 64> encoded{};
+        while (!reader_stop_.load(std::memory_order_acquire)) {
+            pollfd descriptor{read_fd_, POLLIN, 0};
+            const int poll_result = ::poll(&descriptor, 1, -1);
+            if (poll_result < 0) {
+                if (errno == EINTR) continue;
+                break;
+            }
+            if ((descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0 &&
+                (descriptor.revents & POLLIN) == 0) {
+                break;
+            }
+            const ssize_t count = ::read(read_fd_, encoded.data(), encoded.size());
+            if (count < 0) {
+                if (errno == EINTR || errno == EAGAIN) continue;
+                break;
+            }
+            for (ssize_t i = 0; i < count; ++i) {
+                if (encoded[static_cast<std::size_t>(i)] != 0U) {
+                    enqueue(static_cast<int>(encoded[static_cast<std::size_t>(i)]));
+                }
+            }
+        }
+#endif
+    }
+
+    void callback_worker() noexcept {
+        for (;;) {
+            PendingSignal pending;
+            {
+                std::unique_lock<std::mutex> lock(queue_mutex_);
+                queue_cv_.wait(lock, [&]() {
+                    return callback_stop_ || !pending_signals_.empty();
+                });
+                if (callback_stop_ && pending_signals_.empty()) return;
+                pending = std::move(pending_signals_.front());
+                pending_signals_.pop_front();
+            }
+            if (!pending.handler || !pending.handler->begin_callback()) {
+                continue;
+            }
+            RegisteredSignalHandler* const previous_active =
+                g_active_signal_handler;
+            g_active_signal_handler = pending.handler.get();
+            try {
+                pending.handler->callback(pending.signum);
+            } catch (...) {
+                // A signal callback cannot report failure back to the sender.
+                // Keep the dispatcher alive so a later signal can still force
+                // termination or cancel another registered runtime.
+            }
+            g_active_signal_handler = previous_active;
+            pending.handler->end_callback();
+        }
+    }
+
+    void stop_threads() noexcept {
+        reader_stop_.store(true, std::memory_order_release);
+#if !defined(_WIN32)
+        if (write_fd_ >= 0) {
+            const unsigned char wake = 0;
+            const ssize_t ignored = ::write(write_fd_, &wake, sizeof(wake));
+            (void)ignored;
+        }
+#endif
+        if (reader_thread_.joinable()) reader_thread_.join();
+        {
+            std::lock_guard<std::mutex> lock(queue_mutex_);
+            callback_stop_ = true;
+        }
+        queue_cv_.notify_all();
+        for (auto& worker : callback_workers_) {
+            if (worker.joinable()) worker.join();
+        }
+    }
+
+    void close_descriptors() noexcept {
+#if !defined(_WIN32)
+        if (read_fd_ >= 0) {
+            ::close(read_fd_);
+            read_fd_ = -1;
+        }
+        if (write_fd_ >= 0) {
+            ::close(write_fd_);
+            write_fd_ = -1;
+        }
+#endif
+    }
+
+    void install_os_handlers() {
+#if defined(_WIN32)
+        previous_sigint_ = std::signal(SIGINT, signal_dispatch);
+        if (previous_sigint_ == SIG_ERR) {
+            throw std::runtime_error("install SIGINT handler failed");
+        }
+        previous_sigterm_ = std::signal(SIGTERM, signal_dispatch);
+        if (previous_sigterm_ == SIG_ERR) {
+            std::signal(SIGINT, previous_sigint_);
+            previous_sigint_ = SIG_DFL;
+            throw std::runtime_error("install SIGTERM handler failed");
+        }
+        handlers_installed_ = true;
+#else
+        struct sigaction action {};
+        action.sa_handler = signal_dispatch;
+        ::sigemptyset(&action.sa_mask);
+        action.sa_flags = SA_RESTART;
+        g_signal_write_fd = static_cast<std::sig_atomic_t>(write_fd_);
+        if (::sigaction(SIGINT, &action, &previous_sigint_) != 0) {
+            g_signal_write_fd = -1;
+            throw std::system_error(
+                errno, std::generic_category(), "install SIGINT handler");
+        }
+        if (::sigaction(SIGTERM, &action, &previous_sigterm_) != 0) {
+            const int saved_errno = errno;
+            ::sigaction(SIGINT, &previous_sigint_, nullptr);
+            g_signal_write_fd = -1;
+            throw std::system_error(
+                saved_errno, std::generic_category(), "install SIGTERM handler");
+        }
+        handlers_installed_ = true;
+#endif
+    }
+
+    void restore_os_handlers() noexcept {
+        if (!handlers_installed_) return;
+#if defined(_WIN32)
+        std::signal(SIGINT, previous_sigint_);
+        std::signal(SIGTERM, previous_sigterm_);
+#else
+        ::sigaction(SIGINT, &previous_sigint_, nullptr);
+        ::sigaction(SIGTERM, &previous_sigterm_, nullptr);
+        g_signal_write_fd = -1;
+#endif
+        handlers_installed_ = false;
+    }
+
+    std::mutex registration_mutex_;
+    std::shared_ptr<RegisteredSignalHandler> current_handler_;
+    std::uint64_t next_generation_{1};
+
+    std::mutex queue_mutex_;
+    std::condition_variable queue_cv_;
+    std::deque<PendingSignal> pending_signals_;
+    bool callback_stop_{false};
+    std::vector<std::thread> callback_workers_;
+    std::thread reader_thread_;
+    std::atomic<bool> reader_stop_{false};
+
+    bool handlers_installed_{false};
+#if defined(_WIN32)
+    using SignalFunction = void (*)(int);
+    SignalFunction previous_sigint_{SIG_DFL};
+    SignalFunction previous_sigterm_{SIG_DFL};
+#else
+    int read_fd_{-1};
+    int write_fd_{-1};
+    struct sigaction previous_sigint_ {};
+    struct sigaction previous_sigterm_ {};
+#endif
+};
+
+SignalDispatcher& signal_dispatcher() {
+    static SignalDispatcher dispatcher;
+    return dispatcher;
 }
 
 bool should_log_rate_limited(const std::string& key, int64_t interval_ms) {
@@ -711,11 +1091,33 @@ std::string base64_encode(const std::string& input) {
     return out;
 }
 
-void install_signal_handlers(const std::function<void(int)>& handler) {
-    std::lock_guard<std::mutex> lock(g_signal_mutex);
-    g_signal_handler = handler;
-    std::signal(SIGINT, signal_dispatch);
-    std::signal(SIGTERM, signal_dispatch);
+SignalHandlerRegistration::SignalHandlerRegistration(
+        std::function<void(int)> handler) {
+    if (handler) {
+        generation_ = signal_dispatcher().install(std::move(handler));
+    }
+}
+
+SignalHandlerRegistration::~SignalHandlerRegistration() {
+    reset();
+}
+
+SignalHandlerRegistration::SignalHandlerRegistration(
+        SignalHandlerRegistration&& other) noexcept
+    : generation_(std::exchange(other.generation_, 0)) {}
+
+SignalHandlerRegistration& SignalHandlerRegistration::operator=(
+        SignalHandlerRegistration&& other) noexcept {
+    if (this != &other) {
+        reset();
+        generation_ = std::exchange(other.generation_, 0);
+    }
+    return *this;
+}
+
+void SignalHandlerRegistration::reset() noexcept {
+    if (generation_ == 0) return;
+    signal_dispatcher().reset(std::exchange(generation_, 0));
 }
 
 }  // namespace yume::util

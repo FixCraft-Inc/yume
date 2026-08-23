@@ -147,6 +147,7 @@ std::string render_json(const Args& args,
     out << "  \"latency_iters\": " << args.latency_iters << ",\n";
     out << "  \"bulk_mib\": " << args.bulk_mib << ",\n";
     out << "  \"streams\": " << args.streams << ",\n";
+    out << "  \"requested_tunnels\": " << args.tunnels << ",\n";
     out << "  \"cooldown_ms\": " << args.cooldown_ms << ",\n";
     out << "  \"repeat\": " << args.repeats << ",\n";
     out << "  \"hot_paths\": [\n";
@@ -205,7 +206,10 @@ std::string render_json(const Args& args,
         out << "        \"warmup_ms\": " << r.breakdown.warmup_ms << ",\n";
         out << "        \"bulk_streams\": " << r.breakdown.bulk_streams << ",\n";
         out << "        \"bulk_total_s\": " << r.breakdown.bulk_total_s << ",\n";
-        out << "        \"bulk_send_s\": " << r.breakdown.bulk_send_s << "\n";
+        out << "        \"bulk_send_s\": " << r.breakdown.bulk_send_s << ",\n";
+        out << "        \"requested_tunnels\": " << r.breakdown.requested_tunnels << ",\n";
+        out << "        \"authenticated_tunnels\": " << r.breakdown.authenticated_tunnels << ",\n";
+        out << "        \"live_tunnels\": " << r.breakdown.live_tunnels << "\n";
         out << "      },\n";
         out << "      \"wall_s\": " << r.wall_s << "\n";
         out << "    }" << (i + 1 == results.size() ? "\n" : ",\n");

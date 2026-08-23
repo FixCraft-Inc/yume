@@ -92,7 +92,7 @@ void Session::on_remote_read(uint8_t stream_id, const boost::system::error_code&
     }
     remote->downstream_bytes += static_cast<std::uint64_t>(bytes);
     if (remote->first_downstream_ms == 0) {
-        remote->first_downstream_ms = util::now_ms();
+        remote->first_downstream_ms = diagnostics::timing_now_ms();
         YUME_TIMING_LOG("server.stream",
                          "first_downstream",
                          "session=" + std::to_string(session_id_) +
@@ -165,7 +165,7 @@ void Session::on_udp_read(uint8_t stream_id, const boost::system::error_code& ec
     }
     udp->downstream_bytes += static_cast<std::uint64_t>(bytes);
     if (udp->first_downstream_ms == 0) {
-        udp->first_downstream_ms = util::now_ms();
+        udp->first_downstream_ms = diagnostics::timing_now_ms();
         YUME_TIMING_LOG("server.stream",
                          "first_downstream",
                          "session=" + std::to_string(session_id_) +
@@ -187,7 +187,9 @@ void Session::on_udp_read(uint8_t stream_id, const boost::system::error_code& ec
     start_udp_read(stream_id);
 }
 
-void Session::enqueue_udp_write(uint8_t stream_id, const crypto::Bytes& data) {
+void Session::enqueue_udp_write(uint8_t stream_id,
+                                const crypto::Bytes& data,
+                                runtime::InboundCredit inbound_credit) {
     std::shared_ptr<UdpStream> udp;
     bool should_write = false;
     std::string overflow_reason;
@@ -201,11 +203,12 @@ void Session::enqueue_udp_write(uint8_t stream_id, const crypto::Bytes& data) {
         if (!udp->inbound_budget.can_enqueue(data.size(), &overflow_reason)) {
             udp.reset();
         } else {
-            udp->write_queue.push_back(data);
+            udp->write_queue.push_back(
+                {data, std::move(inbound_credit)});
             udp->inbound_budget.record_enqueue(data.size());
             udp->upstream_bytes += static_cast<std::uint64_t>(data.size());
             if (udp->first_upstream_ms == 0) {
-                udp->first_upstream_ms = util::now_ms();
+                udp->first_upstream_ms = diagnostics::timing_now_ms();
                 YUME_TIMING_LOG("server.stream",
                                  "first_upstream",
                                  "session=" + std::to_string(session_id_) +
@@ -240,6 +243,7 @@ std::chrono::milliseconds Session::reserve_egress_delay(std::size_t bytes) const
 void Session::do_udp_write(uint8_t stream_id) {
     std::shared_ptr<UdpStream> udp;
     crypto::Bytes data_to_write;
+    runtime::InboundCredit inbound_credit;
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
         auto it = udp_streams_.find(stream_id);
@@ -252,19 +256,27 @@ void Session::do_udp_write(uint8_t stream_id) {
             return;
         }
         udp->write_in_flight = true;
-        const std::size_t queued_bytes = udp->write_queue.front().size();
-        data_to_write = std::move(udp->write_queue.front());
+        auto pending = std::move(udp->write_queue.front());
         udp->write_queue.pop_front();
-        udp->inbound_budget.record_dequeue(queued_bytes);
+        data_to_write = std::move(pending.data);
+        inbound_credit = std::move(pending.credit);
     }
     auto buffer = std::make_shared<crypto::Bytes>(std::move(data_to_write));
+    auto credit = std::make_shared<runtime::InboundCredit>(
+        std::move(inbound_credit));
     auto self = shared_from_this();
-    auto fire_write = [self, udp, buffer, stream_id]() {
+    auto fire_write = [self, udp, buffer, credit, stream_id]() {
         udp->socket.async_send(
             boost::asio::buffer(*buffer),
             boost::asio::bind_executor(
                 self->strand_,
-                [self, buffer, stream_id](const boost::system::error_code& ec, std::size_t) {
+                [self, udp, buffer, credit, stream_id](
+                    const boost::system::error_code& ec, std::size_t) {
+                    {
+                        std::lock_guard<std::mutex> lock(self->streams_mutex_);
+                        udp->inbound_budget.record_dequeue(buffer->size());
+                    }
+                    credit->release_now();
                     if (ec) {
                         self->handle_close(stream_id, "udp send failed");
                         self->send_control_close(stream_id, "");
@@ -285,7 +297,9 @@ void Session::do_udp_write(uint8_t stream_id) {
     });
 }
 
-void Session::enqueue_remote_write(uint8_t stream_id, const std::vector<uint8_t>& data) {
+void Session::enqueue_remote_write(uint8_t stream_id,
+                                   const std::vector<uint8_t>& data,
+                                   runtime::InboundCredit inbound_credit) {
     std::shared_ptr<RemoteStream> remote;
     bool should_write = false;
     std::string overflow_reason;
@@ -299,11 +313,12 @@ void Session::enqueue_remote_write(uint8_t stream_id, const std::vector<uint8_t>
         if (!remote->inbound_budget.can_enqueue(data.size(), &overflow_reason)) {
             remote.reset();
         } else {
-            remote->write_queue.push_back(data);
+            remote->write_queue.push_back(
+                {data, std::move(inbound_credit)});
             remote->inbound_budget.record_enqueue(data.size());
             remote->upstream_bytes += static_cast<std::uint64_t>(data.size());
             if (remote->first_upstream_ms == 0) {
-                remote->first_upstream_ms = util::now_ms();
+                remote->first_upstream_ms = diagnostics::timing_now_ms();
                 YUME_TIMING_LOG("server.stream",
                                  "first_upstream",
                                  "session=" + std::to_string(session_id_) +
@@ -331,6 +346,7 @@ void Session::enqueue_remote_write(uint8_t stream_id, const std::vector<uint8_t>
 void Session::do_remote_write(uint8_t stream_id) {
     std::shared_ptr<RemoteStream> remote;
     std::vector<uint8_t> data_to_write;
+    runtime::InboundCredit inbound_credit;
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
         auto it = streams_.find(stream_id);
@@ -361,10 +377,10 @@ void Session::do_remote_write(uint8_t stream_id) {
         }
         if (!remote->write_queue.empty()) {
             remote->write_in_flight = true;
-            const std::size_t queued_bytes = remote->write_queue.front().size();
-            data_to_write = std::move(remote->write_queue.front());
+            auto pending = std::move(remote->write_queue.front());
             remote->write_queue.pop_front();
-            remote->inbound_budget.record_dequeue(queued_bytes);
+            data_to_write = std::move(pending.data);
+            inbound_credit = std::move(pending.credit);
         }
     }
 
@@ -376,11 +392,18 @@ void Session::do_remote_write(uint8_t stream_id) {
     }
 
     auto buffer = std::make_shared<std::vector<uint8_t>>(std::move(data_to_write));
+    auto credit = std::make_shared<runtime::InboundCredit>(
+        std::move(inbound_credit));
     auto self = shared_from_this();
-    auto fire_write = [self, remote, buffer, stream_id]() {
+    auto fire_write = [self, remote, buffer, credit, stream_id]() {
         boost::asio::async_write(remote->socket, boost::asio::buffer(*buffer),
                                  boost::asio::bind_executor(self->strand_,
-                                                            [self, buffer, stream_id](const boost::system::error_code& ec, std::size_t) {
+                                                            [self, remote, buffer, credit, stream_id](const boost::system::error_code& ec, std::size_t) {
+                                                                {
+                                                                    std::lock_guard<std::mutex> lock(self->streams_mutex_);
+                                                                    remote->inbound_budget.record_dequeue(buffer->size());
+                                                                }
+                                                                credit->release_now();
                                                                 if (ec) {
                                                                     self->handle_close(stream_id, "remote write failed");
                                                                     self->send_control_close(stream_id, "");
@@ -475,6 +498,17 @@ void Session::queue_frame_on_strand(const protocol::Frame& frame,
                 protocol::Frame init = ratchet_->BeginOutboundRekey(now);
 #if YUME_ENABLE_DEV_DIAGNOSTICS
                 outbound_rekey_wait_.start_if(YUME_TIMING_ENABLED(), now);
+                // Preparation depth at each offer. `prepared` approaching the
+                // negotiated window means the direction is pipelining; a
+                // steady prepared=0 means it is advancing one epoch per round
+                // trip and the window is the throughput ceiling.
+                YUME_TIMING_LOG(
+                    "server.ratchet", "offer",
+                    "session=" + std::to_string(session_id_) +
+                        " prepared=" +
+                        std::to_string(ratchet_->prepared_outbound_epochs()) +
+                        " in_flight=" +
+                        std::to_string(ratchet_->outbound_rekeys_in_flight()));
 #endif
                 arm_ratchet_timeout_on_strand();
                 // INIT must enter the ordered H2/TLS stream first. Re-process
@@ -542,6 +576,7 @@ void Session::flush_ratchet_blocked_writes_on_strand() {
         }
         queue_frame_on_strand(write.frame, std::move(write.handler));
     }
+    maybe_resume_inbound_reads_on_strand();
 }
 
 void Session::arm_ratchet_timeout_on_strand() {
@@ -573,7 +608,10 @@ void Session::queue_encoded_write_on_strand(
             if (handler) handler(boost::asio::error::operation_aborted, 0);
             return;
         }
-        if (v2_h2_pending_app_writes_.size() >= kMaxWriteQueueSize) {
+        const std::size_t app_bytes = data ? data->size() : 0U;
+        if (v2_h2_app_write_frames_ >= kMaxWriteQueueSize ||
+            app_bytes > kH2AppWriteMaxBytes ||
+            v2_h2_app_write_bytes_ > kH2AppWriteMaxBytes - app_bytes) {
             if (handler) handler(boost::asio::error::no_buffer_space, 0);
             close_with_reason("v2 H2 application write queue overrun");
             return;
@@ -587,6 +625,8 @@ void Session::queue_encoded_write_on_strand(
         v2_h2_pending_app_writes_.push_back(
             {std::move(data), frame_type, stream_id, payload_size,
              std::move(handler)});
+        ++v2_h2_app_write_frames_;
+        v2_h2_app_write_bytes_ += app_bytes;
         schedule_v2_h2_wire_flush_on_strand();
         return;
     }
@@ -635,11 +675,19 @@ void Session::enqueue_tls_write_on_strand(
 }
 
 bool Session::should_pause_inbound_reads_on_strand() const {
-    return close_state_ != CloseState::Open || write_queue_depth_ >= kWriteQueueHighWatermark;
+    return close_state_ != CloseState::Open ||
+           ratchet_blocked_writes_.size() >= kWriteQueueHighWatermark ||
+           write_queue_depth_ >= kWriteQueueHighWatermark ||
+           v2_h2_app_write_frames_ >= kWriteQueueHighWatermark ||
+           v2_h2_app_write_bytes_ >= kH2AppWriteHighWatermarkBytes;
 }
 
 void Session::maybe_resume_inbound_reads_on_strand() {
-    if (close_state_ != CloseState::Open || write_queue_depth_ > kWriteQueueLowWatermark) {
+    if (close_state_ != CloseState::Open ||
+        ratchet_blocked_writes_.size() > kWriteQueueLowWatermark ||
+        write_queue_depth_ > kWriteQueueLowWatermark ||
+        v2_h2_app_write_frames_ > kWriteQueueLowWatermark ||
+        v2_h2_app_write_bytes_ > kH2AppWriteLowWatermarkBytes) {
         return;
     }
 

@@ -495,6 +495,14 @@ port.
 Composite Ed25519 + ML-DSA-87 identity used to authenticate this client to the
 server.
 .TP
+.BI "--secondary-auth " path
+Composite identity for one data-only secondary SOCKS tunnel. Repeat exactly
+.IR N-1
+times with
+.BI "--tunnels " N .
+Every secondary must authenticate before the SOCKS listener is considered
+ready; the primary admin factor is never replayed on these data-only tunnels.
+.TP
 .BI "--admin-auth " path
 Distinct composite second identity for an admin session. It must be enrolled in
 the server's admin store; presenting this key is the admin claim.
@@ -613,6 +621,24 @@ Relay trust mode:
 or
 .BR trusted .
 .TP
+.BI "--relay-trust-mode " mode
+End-to-end relay-v2 peer identity policy.  The default
+.B tofu
+records the first identity only after a successful authenticated ordinary-channel
+handshake.  The
+.B pinned
+mode refuses peers without an explicit pin.  Neither mode permits identity
+replacement.
+.TP
+.BI "--relay-trust-dir " path
+Owner-only relay-v2 peer identity store.  Entries are bound to the exact endpoint
+ID and are opened without following links.
+.TP
+.BI "--relay-peer-pin " endpoint=64hex
+Configure an explicit composite-identity SHA-256 pin.  This option is repeatable.
+Admin channels require an explicit matching pin even when ordinary channels use
+TOFU.
+.TP
 .B "--allow-inbound-admin, --deny-inbound-admin"
 Allow or deny inbound admin attach requests.
 .TP
@@ -632,11 +658,21 @@ Allow or deny byte relay features.
 Relay key file.
 .SH RUNTIME OPTIONS
 .TP
+.BI "--tunnels " n
+Open 1 to 16 parallel TLS tunnels. Counts above one require either a bulk-key
+session policy or one distinct
+.B --secondary-auth
+identity for every secondary tunnel.
+.TP
 .BI "--instance " name
 Runtime instance name.
 .TP
 .BI "--history-dir " path
 Chat history directory.
+.TP
+.BI "--relay-receive-dir " path
+Directory for received relay file/byte transfers. Files are created
+exclusively with mode 0600 and never overwrite or follow an existing entry.
 .TP
 .B --no-history
 Disable chat history.

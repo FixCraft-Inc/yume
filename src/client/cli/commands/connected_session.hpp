@@ -64,9 +64,6 @@ struct ConnectedSessionOptions {
     bool have_inner_caps{false};
     bool server_inner_dual{false};
     bool server_inner_active{false};
-    bool hop_enabled{false};
-    std::uint32_t hop_interval_ms{0};
-    std::int64_t hop_offset_ms{0};
     std::optional<inner::KdfParams> inner_kdf;
     std::optional<crypto::Bytes> inner_key;
     std::unique_ptr<obfs::H2Carrier> h2_carrier;
@@ -77,6 +74,10 @@ struct ConnectedSessionOptions {
     bool explicit_http_profile{false};
     std::vector<std::string> server_capabilities;
     std::function<std::string()> status_block_builder;
+    // Connection setup drives asynchronous operations synchronously on `io`.
+    // Poll cancellation instead of stopping the io_context while those
+    // operations still have stack-bound completion state.
+    std::function<bool()> should_stop;
 
     std::function<void()> announce_stopping;
     SetActiveRuntimeCallback set_active_runtime;

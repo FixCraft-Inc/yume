@@ -37,6 +37,13 @@ bool timing_enabled() noexcept {
     return timing_env_enabled();
 }
 
+std::int64_t timing_now_ms() noexcept {
+    // Runtime gate as well as the build gate: a diagnostics build that is not
+    // collecting must cost the same as Release on the stream lifecycle path.
+    if (!timing_enabled()) return 0;
+    return util::now_ms();
+}
+
 void log_timing(const std::string& component,
                 const std::string& event,
                 const std::string& details) {

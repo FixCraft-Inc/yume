@@ -69,6 +69,7 @@ constexpr const char kBenchHost[] = "yume-bench.invalid";
 constexpr std::uint64_t kBenchWindowBytes = 8ULL * 1024ULL * 1024ULL;
 constexpr auto kBenchOpenTimeout = std::chrono::seconds(30);
 constexpr auto kBenchStallTimeout = std::chrono::seconds(60);
+constexpr auto kBenchAdmissionPoll = std::chrono::milliseconds(100);
 constexpr auto kBenchCloseTimeout = std::chrono::seconds(60);
 
 struct EndpointBenchResult {
@@ -118,6 +119,54 @@ private:
     std::condition_variable cv_;
     std::uint64_t reserved_bytes_{0};
 };
+
+template <typename CompletionFactory>
+bool wait_for_bench_write_admission(
+        const std::shared_ptr<Tunnel>& tunnel,
+        std::uint8_t stream_id,
+        Tunnel::Bytes& payload,
+        const std::atomic<bool>& cancelled,
+        CompletionFactory&& make_completion,
+        std::string* error) {
+    using Admission = TransportCore::DataWriteAdmission;
+    const auto deadline = std::chrono::steady_clock::now() + kBenchStallTimeout;
+    while (!cancelled.load(std::memory_order_acquire)) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            if (error) {
+                *error = "benchmark stalled waiting for transport write capacity";
+            }
+            return false;
+        }
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - now);
+        const auto wait_for = std::max(
+            std::chrono::milliseconds(1),
+            std::min(kBenchAdmissionPoll, remaining));
+        const auto admission = tunnel->wait_send_data(
+            stream_id, std::move(payload), wait_for, make_completion());
+        if (admission == Admission::accepted) {
+            return true;
+        }
+        if (admission == Admission::timeout ||
+            admission == Admission::would_block) {
+            // wait_send_data consumes neither payload nor completion unless it
+            // accepts the write. Polling keeps stream-close cancellation
+            // responsive while the overall stall deadline remains bounded.
+            continue;
+        }
+        if (error) {
+            *error = admission == Admission::stopped
+                ? "transport stopped while waiting for benchmark write capacity"
+                : "benchmark payload was rejected as invalid";
+        }
+        return false;
+    }
+    if (error) {
+        *error = "benchmark stream closed while waiting for write capacity";
+    }
+    return false;
+}
 
 struct UploadBenchState {
     std::mutex mu;
@@ -365,7 +414,7 @@ EndpointBenchResult run_endpoint_upload_bench(const std::shared_ptr<Tunnel>& tun
 
     tunnel->register_stream(
         stream_id,
-        [state](const Tunnel::Bytes& data) {
+        [state](const Tunnel::Bytes& data, Tunnel::InboundCredit) {
             std::lock_guard<std::mutex> lock(state->mu);
             state->summary_bytes.insert(state->summary_bytes.end(), data.begin(), data.end());
         },
@@ -403,6 +452,8 @@ EndpointBenchResult run_endpoint_upload_bench(const std::shared_ptr<Tunnel>& tun
             })) {
             result.error = "benchmark upload OPEN timed out";
             lock.unlock();
+            tunnel->send_close(stream_id, "benchmark upload OPEN timed out");
+            tunnel->retire_stream_id(stream_id);
             cancel();
             return result;
         }
@@ -458,35 +509,56 @@ EndpointBenchResult run_endpoint_upload_bench(const std::shared_ptr<Tunnel>& tun
         for (std::size_t i = 0; i < n; ++i) {
             payload[i] = static_cast<std::uint8_t>((offset + i) & 0xffu);
         }
-        tunnel->send_data(
-            stream_id,
-            std::move(payload),
-            [state, write_window, aggregate_progress, n](
-                bool ok, std::size_t, const std::string& reason) {
-                write_window->release(n);
-                {
-                    std::lock_guard<std::mutex> lock(state->mu);
-                    state->in_flight_bytes = n <= state->in_flight_bytes
-                        ? state->in_flight_bytes - n : 0;
-                    if (!ok) {
-                        state->write_failed = true;
-                        state->error = reason.empty()
-                            ? "benchmark upload write failed" : reason;
-                    } else {
-                        state->completed_bytes += n;
-                        state->progress_bytes.store(
-                            state->completed_bytes, std::memory_order_relaxed);
-                        if (aggregate_progress) {
-                            aggregate_progress->fetch_add(n, std::memory_order_relaxed);
+        auto make_completion =
+            [state, write_window, aggregate_progress, n]() {
+                return [state, write_window, aggregate_progress, n](
+                           bool ok, std::size_t, const std::string& reason) {
+                    write_window->release(n);
+                    {
+                        std::lock_guard<std::mutex> lock(state->mu);
+                        state->in_flight_bytes = n <= state->in_flight_bytes
+                            ? state->in_flight_bytes - n : 0;
+                        if (!ok) {
+                            state->write_failed = true;
+                            state->error = reason.empty()
+                                ? "benchmark upload write failed" : reason;
+                        } else {
+                            state->completed_bytes += n;
+                            state->progress_bytes.store(
+                                state->completed_bytes,
+                                std::memory_order_relaxed);
+                            if (aggregate_progress) {
+                                aggregate_progress->fetch_add(
+                                    n, std::memory_order_relaxed);
+                            }
                         }
                     }
-                }
-                if (!ok) {
-                    state->cancelled.store(true, std::memory_order_release);
-                    write_window->wake_waiters();
-                }
-                state->cv.notify_all();
-            });
+                    if (!ok) {
+                        state->cancelled.store(true, std::memory_order_release);
+                        write_window->wake_waiters();
+                    }
+                    state->cv.notify_all();
+                };
+            };
+        std::string admission_error;
+        if (!wait_for_bench_write_admission(
+                tunnel, stream_id, payload, state->cancelled,
+                make_completion, &admission_error)) {
+            write_window->release(n);
+            {
+                std::lock_guard<std::mutex> lock(state->mu);
+                state->queued_bytes = n <= state->queued_bytes
+                    ? state->queued_bytes - n : 0;
+                state->in_flight_bytes = n <= state->in_flight_bytes
+                    ? state->in_flight_bytes - n : 0;
+                state->write_failed = true;
+                state->error = std::move(admission_error);
+            }
+            state->cancelled.store(true, std::memory_order_release);
+            state->cv.notify_all();
+            write_window->wake_waiters();
+            break;
+        }
     }
 
     {
@@ -580,7 +652,8 @@ EndpointBenchResult run_endpoint_download_bench(const std::shared_ptr<Tunnel>& t
 
     tunnel->register_stream(
         stream_id,
-        [state, aggregate_progress](const Tunnel::Bytes& data) {
+        [state, aggregate_progress](const Tunnel::Bytes& data,
+                                    Tunnel::InboundCredit) {
             std::lock_guard<std::mutex> lock(state->mu);
             state->received += static_cast<std::uint64_t>(data.size());
             state->progress_bytes.store(state->received, std::memory_order_relaxed);
@@ -622,6 +695,8 @@ EndpointBenchResult run_endpoint_download_bench(const std::shared_ptr<Tunnel>& t
             })) {
             result.error = "benchmark download OPEN timed out";
             lock.unlock();
+            tunnel->send_close(stream_id, "benchmark download OPEN timed out");
+            tunnel->retire_stream_id(stream_id);
             cancel();
             return result;
         }
@@ -700,7 +775,7 @@ EndpointBenchResult run_endpoint_message_echo_bench(
 
     tunnel->register_stream(
         stream_id,
-        [state](const Tunnel::Bytes& data) {
+        [state](const Tunnel::Bytes& data, Tunnel::InboundCredit) {
             std::lock_guard<std::mutex> lock(state->mu);
             state->payload_mismatch |= !state->reply_contract.Accept(data);
             state->received_bytes = state->reply_contract.received_bytes();
@@ -743,6 +818,8 @@ EndpointBenchResult run_endpoint_message_echo_bench(
             })) {
             result.error = "benchmark echo OPEN timed out";
             lock.unlock();
+            tunnel->send_close(stream_id, "benchmark echo OPEN timed out");
+            tunnel->retire_stream_id(stream_id);
             cancel();
             return result;
         }
@@ -785,10 +862,9 @@ EndpointBenchResult run_endpoint_message_echo_bench(
             state->in_flight_bytes += size;
         }
         Tunnel::Bytes payload(size, 0x59U);
-        tunnel->send_data(
-            stream_id, std::move(payload),
-            [state, write_window, size](
-                bool ok, std::size_t, const std::string& reason) {
+        auto make_completion = [state, write_window, size]() {
+            return [state, write_window, size](
+                       bool ok, std::size_t, const std::string& reason) {
                 write_window->release(size);
                 {
                     std::lock_guard<std::mutex> lock(state->mu);
@@ -803,7 +879,27 @@ EndpointBenchResult run_endpoint_message_echo_bench(
                     }
                 }
                 state->cv.notify_all();
-            });
+            };
+        };
+        std::string admission_error;
+        if (!wait_for_bench_write_admission(
+                tunnel, stream_id, payload, state->cancelled,
+                make_completion, &admission_error)) {
+            write_window->release(size);
+            {
+                std::lock_guard<std::mutex> lock(state->mu);
+                state->queued_bytes = size <= state->queued_bytes
+                    ? state->queued_bytes - size : 0;
+                state->in_flight_bytes = size <= state->in_flight_bytes
+                    ? state->in_flight_bytes - size : 0;
+                state->write_failed = true;
+                state->error = std::move(admission_error);
+            }
+            state->cancelled.store(true, std::memory_order_release);
+            state->cv.notify_all();
+            write_window->wake_waiters();
+            break;
+        }
     }
     {
         std::unique_lock<std::mutex> lock(state->mu);

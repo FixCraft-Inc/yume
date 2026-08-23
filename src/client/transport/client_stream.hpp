@@ -100,6 +100,11 @@ public:
     const TlsConnectionMetadata& metadata() const noexcept { return metadata_; }
     std::vector<std::uint8_t> take_exporter();
 
+    // Pins SO_RCVBUF/SO_SNDBUF. Do NOT call this on the tunnel socket: any
+    // explicit value sets SOCK_{RCV,SND}BUF_LOCK on Linux and disables window
+    // autotuning for the connection's lifetime, which caps throughput at a
+    // fraction of the bandwidth-delay product on a delayed path. Retained for
+    // loopback sockets, where there is no BDP to grow into.
     void set_socket_buffers(int bytes);
     void cancel_and_close() noexcept;
     void shutdown_and_close() noexcept;

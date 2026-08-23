@@ -188,124 +188,135 @@ void Session::handle_rlisten(const protocol::Frame& frame) {
     send_open_reply(
         frame.header.stream_id, true, std::to_string(listen_port));
 
-    auto self = shared_from_this();
-    auto do_accept = std::make_shared<std::function<void()>>();
-    *do_accept =
-        [self,
-         acceptor,
-         listen_id = frame.header.stream_id,
-         do_accept]() {
-            acceptor->async_accept(boost::asio::bind_executor(
-                self->strand_,
-                [self, acceptor, listen_id, do_accept](
-                    const boost::system::error_code& ec2,
-                    boost::asio::ip::tcp::socket socket) {
-                    if (!ec2) {
-                        const uint8_t stream_id =
-                            self->reserve_stream_id();
-                        if (stream_id == 0) {
-                            boost::system::error_code close_ec;
-                            socket.close(close_ec);
-                        } else {
-                            auto remote =
-                                std::make_shared<RemoteStream>(
-                                    self->stream_.get_executor());
-                            remote->socket = std::move(socket);
-                            remote->open_started_ms = util::now_ms();
-                            remote->connected = true;
-                            boost::system::error_code keep_ec;
-                            remote->socket.set_option(
-                                boost::asio::socket_base::keep_alive(
-                                    true),
-                                keep_ec);
-                            boost::system::error_code nodelay_ec;
-                            remote->socket.set_option(
-                                boost::asio::ip::tcp::no_delay(true),
-                                nodelay_ec);
-                            boost::system::error_code recvbuf_ec;
-                            remote->socket.set_option(
-                                boost::asio::socket_base::
-                                    receive_buffer_size(
-                                        kSocketBufferBytes),
-                                recvbuf_ec);
-                            boost::system::error_code sendbuf_ec;
-                            remote->socket.set_option(
-                                boost::asio::socket_base::
-                                    send_buffer_size(
-                                        kSocketBufferBytes),
-                                sendbuf_ec);
-                            {
-                                std::lock_guard<std::mutex> lock(
-                                    self->streams_mutex_);
-                                self->streams_[stream_id] = remote;
-                            }
-                            self->pending_reverse_.insert(stream_id);
-                            remote->open_timer =
-                                std::make_unique<
-                                    boost::asio::steady_timer>(
-                                    self->strand_);
-                            remote->open_timer->expires_after(
-                                std::chrono::milliseconds(
-                                    kReverseAcceptTimeoutMs));
-                            remote->open_timer->async_wait(
-                                boost::asio::bind_executor(
-                                    self->strand_,
-                                    [self, stream_id](
-                                        const boost::system::
-                                            error_code& timer_ec) {
-                                        if (timer_ec ||
-                                            self->close_state_ !=
-                                                CloseState::Open) {
-                                            return;
-                                        }
-                                        if (self->pending_reverse_.erase(
-                                                stream_id) == 0) {
-                                            return;
-                                        }
-                                        util::log_warn(
-                                            "session " +
-                                            std::to_string(
-                                                self->session_id_) +
-                                            ": reverse open timeout for "
-                                            "stream " +
-                                            std::to_string(stream_id));
-                                        self->send_control_close(
-                                            stream_id,
-                                            "reverse open timeout");
-                                        self->handle_close(
-                                            stream_id,
-                                            "reverse open timeout");
-                                    }));
+    arm_reverse_accept(frame.header.stream_id, acceptor);
+}
 
-                            nlohmann::json json{
-                                {"listen_id", listen_id}};
-                            std::string payload_str = json.dump();
-                            std::vector<uint8_t> notify_payload(
-                                payload_str.begin(), payload_str.end());
-                            uint16_t flags = 0;
-                            if (self->inner_key_.has_value()) {
-                                notify_payload =
-                                    self->encrypt_inner_payload(
-                                        protocol::ROPEN,
-                                        stream_id,
-                                        notify_payload);
-                                flags |=
-                                    protocol::kFlagInnerEncrypted;
-                            }
-                            protocol::Frame notify{
-                                {static_cast<uint32_t>(
-                                     notify_payload.size()),
-                                 protocol::ROPEN,
-                                 stream_id,
-                                 flags},
-                                notify_payload};
-                            self->async_write_frame(notify);
-                        }
-                    }
-                    (*do_accept)();
-                }));
-        };
-    (*do_accept)();
+bool Session::reverse_listener_is_active(
+    uint8_t listen_id,
+    const std::shared_ptr<boost::asio::ip::tcp::acceptor>& acceptor) {
+    if (close_state_ != CloseState::Open || !acceptor ||
+        !acceptor->is_open()) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(streams_mutex_);
+    const auto it = reverse_listeners_.find(listen_id);
+    return it != reverse_listeners_.end() && it->second == acceptor;
+}
+
+void Session::arm_reverse_accept(
+    uint8_t listen_id,
+    const std::shared_ptr<boost::asio::ip::tcp::acceptor>& acceptor) {
+    if (!reverse_listener_is_active(listen_id, acceptor)) return;
+    acceptor->async_accept(boost::asio::bind_executor(
+        strand_,
+        [weak = weak_from_this(), acceptor, listen_id](
+            const boost::system::error_code& error,
+            boost::asio::ip::tcp::socket socket) mutable {
+            if (auto self = weak.lock()) {
+                self->on_reverse_accept(
+                    listen_id, acceptor, error, std::move(socket));
+            } else {
+                boost::system::error_code ignored;
+                socket.close(ignored);
+            }
+        }));
+}
+
+void Session::on_reverse_accept(
+    uint8_t listen_id,
+    const std::shared_ptr<boost::asio::ip::tcp::acceptor>& acceptor,
+    const boost::system::error_code& error,
+    boost::asio::ip::tcp::socket socket) {
+    if (error) {
+        if (error == boost::asio::error::connection_aborted &&
+            reverse_listener_is_active(listen_id, acceptor)) {
+            arm_reverse_accept(listen_id, acceptor);
+        } else if (error != boost::asio::error::operation_aborted &&
+                   reverse_listener_is_active(listen_id, acceptor)) {
+            const std::string reason =
+                "reverse listener accept failed: " + error.message();
+            util::log_warn("session " + std::to_string(session_id_) +
+                           ": " + reason);
+            send_control_close(listen_id, reason);
+            handle_close(listen_id, reason);
+        }
+        return;
+    }
+    if (!reverse_listener_is_active(listen_id, acceptor)) {
+        boost::system::error_code ignored;
+        socket.close(ignored);
+        return;
+    }
+
+    auto stream_reservation = reserve_stream_id();
+    if (!stream_reservation) {
+        boost::system::error_code ignored;
+        socket.close(ignored);
+        arm_reverse_accept(listen_id, acceptor);
+        return;
+    }
+    const uint8_t stream_id = stream_reservation.stream_id();
+
+    auto remote =
+        std::make_shared<RemoteStream>(stream_.get_executor());
+    remote->socket = std::move(socket);
+    remote->open_started_ms = diagnostics::timing_now_ms();
+    remote->connected = true;
+    boost::system::error_code keep_error;
+    remote->socket.set_option(
+        boost::asio::socket_base::keep_alive(true), keep_error);
+    boost::system::error_code nodelay_error;
+    remote->socket.set_option(
+        boost::asio::ip::tcp::no_delay(true), nodelay_error);
+    // Buffers remain kernel-autotuned; see session.cpp.
+    bool stream_inserted = false;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        stream_inserted = streams_.try_emplace(stream_id, remote).second;
+    }
+    if (!stream_inserted) {
+        boost::system::error_code ignored;
+        remote->socket.close(ignored);
+        arm_reverse_accept(listen_id, acceptor);
+        return;
+    }
+    pending_reverse_.insert(stream_id);
+    remote->open_timer =
+        std::make_unique<boost::asio::steady_timer>(strand_);
+    remote->open_timer->expires_after(
+        std::chrono::milliseconds(kReverseAcceptTimeoutMs));
+    remote->open_timer->async_wait(boost::asio::bind_executor(
+        strand_,
+        [self = shared_from_this(), stream_id](
+            const boost::system::error_code& timer_error) {
+            if (timer_error || self->close_state_ != CloseState::Open) {
+                return;
+            }
+            if (self->pending_reverse_.erase(stream_id) == 0) return;
+            util::log_warn(
+                "session " + std::to_string(self->session_id_) +
+                ": reverse open timeout for stream " +
+                std::to_string(stream_id));
+            self->send_control_close(stream_id, "reverse open timeout");
+            self->handle_close(stream_id, "reverse open timeout");
+        }));
+
+    nlohmann::json json{{"listen_id", listen_id}};
+    const std::string payload_text = json.dump();
+    std::vector<uint8_t> notify_payload(
+        payload_text.begin(), payload_text.end());
+    uint16_t flags = 0;
+    if (inner_key_.has_value()) {
+        notify_payload = encrypt_inner_payload(
+            protocol::ROPEN, stream_id, notify_payload);
+        flags |= protocol::kFlagInnerEncrypted;
+    }
+    protocol::Frame notify{
+        {static_cast<uint32_t>(notify_payload.size()),
+         protocol::ROPEN, stream_id, flags},
+        std::move(notify_payload)};
+    async_write_frame(notify);
+    arm_reverse_accept(listen_id, acceptor);
 }
 
 }  // namespace yume::server

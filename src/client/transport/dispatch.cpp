@@ -10,7 +10,11 @@
 #include "client/transport/internal.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
 #include <cstdio>
+#include <optional>
+#include <string_view>
 #include <thread>
 
 #include "core/security/inner_crypto.hpp"
@@ -19,7 +23,71 @@ namespace yume::client {
 
 using namespace detail;
 
-void TransportCore::handle_frame(const protocol::Frame& frame) {
+namespace {
+
+constexpr std::size_t kMaxServerControlHostBytes = 255U;
+constexpr std::array<std::string_view, 3> kServerControlOpenFields{
+    "host", "port", "proto",
+};
+
+struct ServerControlOpen {
+    std::string host;
+    int port{0};
+};
+
+std::optional<ServerControlOpen> ParseServerControlOpen(
+    const nlohmann::json& json) noexcept {
+    try {
+        if (!json.is_object() ||
+            json.size() > kServerControlOpenFields.size()) {
+            return std::nullopt;
+        }
+        for (auto it = json.begin(); it != json.end(); ++it) {
+            if (std::find(kServerControlOpenFields.begin(),
+                          kServerControlOpenFields.end(),
+                          it.key()) == kServerControlOpenFields.end()) {
+                return std::nullopt;
+            }
+        }
+        if (!json.contains("host") || !json["host"].is_string() ||
+            !json.contains("port")) {
+            return std::nullopt;
+        }
+        const auto& host = json["host"].get_ref<const std::string&>();
+        if (host.empty() || host.size() > kMaxServerControlHostBytes ||
+            !std::all_of(host.begin(), host.end(), [](unsigned char byte) {
+                return byte >= 0x21U && byte != 0x7fU;
+            })) {
+            return std::nullopt;
+        }
+
+        std::int64_t port = 0;
+        if (json["port"].is_number_unsigned()) {
+            const auto value = json["port"].get<std::uint64_t>();
+            if (value > 65535U) return std::nullopt;
+            port = static_cast<std::int64_t>(value);
+        } else if (json["port"].is_number_integer()) {
+            port = json["port"].get<std::int64_t>();
+        } else {
+            return std::nullopt;
+        }
+        if (port < 1 || port > 65535) return std::nullopt;
+
+        if (json.contains("proto") &&
+            (!json["proto"].is_string() ||
+             json["proto"].get_ref<const std::string&>() != "tcp")) {
+            return std::nullopt;
+        }
+        return ServerControlOpen{host, static_cast<int>(port)};
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+}  // namespace
+
+void TransportCore::handle_frame(const protocol::Frame& frame,
+                                 InboundCredit inbound_credit) {
     const uint8_t stream_id = frame.header.stream_id;
     Bytes decrypted_payload;
     const Bytes* payload = &frame.payload;
@@ -82,15 +150,46 @@ void TransportCore::handle_frame(const protocol::Frame& frame) {
                 std::lock_guard<std::mutex> lock(state_mu_);
                 reverse_handler = reverse_handler_;
             }
-            if (reverse_handler) {
-                try {
-                    auto json = nlohmann::json::parse(payload_to_string(*payload));
-                    const auto listen_id = static_cast<uint8_t>(json.value("listen_id", 0));
-                    if (listen_id != 0) {
-                        reverse_handler(listen_id, stream_id);
-                    }
-                } catch (...) {
-                }
+            if (!reverse_handler) {
+                send_open_ack(stream_id, false, "reverse open unavailable");
+                break;
+            }
+            int listen_id_value = 0;
+            try {
+                const auto json =
+                    nlohmann::json::parse(payload_to_string(*payload));
+                listen_id_value = json.value("listen_id", 0);
+            } catch (...) {
+                send_open_ack(stream_id, false, "invalid reverse open payload");
+                break;
+            }
+            if (listen_id_value <= 0 || listen_id_value > 255 ||
+                stream_id == 0) {
+                send_open_ack(stream_id, false, "invalid reverse open payload");
+                break;
+            }
+            if (!try_reserve_peer_stream_id(stream_id)) {
+                send_open_ack(stream_id, false, "reverse stream id in use");
+                break;
+            }
+            std::string reason;
+            bool accepted = false;
+            try {
+                accepted = reverse_handler(
+                    static_cast<uint8_t>(listen_id_value), stream_id, &reason);
+            } catch (...) {
+                reason = "reverse open handler failed";
+            }
+            if (!accepted) {
+                unregister_stream(stream_id);
+                send_open_ack(
+                    stream_id, false,
+                    reason.empty() ? "reverse open failed" : reason);
+                break;
+            }
+            if (!peer_stream_registration_complete(stream_id)) {
+                send_open_ack(stream_id, false,
+                              "reverse open did not register stream");
             }
             break;
         }
@@ -104,44 +203,90 @@ void TransportCore::handle_frame(const protocol::Frame& frame) {
                 server_stream_open_handler = server_stream_open_handler_;
                 server_in_charge = server_in_charge_;
             }
+            nlohmann::json json;
             try {
-                auto json = nlohmann::json::parse(payload_to_string(*payload));
-                if (json.contains("channel_kind")) {
-                    if (inbound_open_handler) {
-                        inbound_open_handler(stream_id, json);
-                    } else {
-                        send_open_ack(stream_id, false, "inbound control unavailable");
-                    }
+                json = nlohmann::json::parse(payload_to_string(*payload));
+            } catch (...) {
+                send_open_ack(stream_id, false, "invalid control payload");
+                break;
+            }
+            if (stream_id == 0) {
+                send_open_ack(stream_id, false, "invalid stream id");
+                break;
+            }
+            if (json.contains("channel_kind")) {
+                if (!inbound_open_handler) {
+                    send_open_ack(stream_id, false,
+                                  "inbound control unavailable");
                     break;
                 }
-                if (!server_in_charge) {
-                    send_open_ack(stream_id, false, "server control disabled");
-                    break;
-                }
-                const std::string host = json.value("host", "");
-                const int port = json.value("port", 0);
-                const std::string proto = json.value("proto", "tcp");
-                if (host.empty() || port <= 0) {
-                    send_open_ack(stream_id, false, "invalid control target");
-                    break;
-                }
-                if (proto != "tcp") {
-                    send_open_ack(stream_id, false, "unsupported control proto");
-                    break;
-                }
-                if (!server_stream_open_handler) {
-                    send_open_ack(stream_id, false, "server control unavailable");
+                if (!try_reserve_peer_stream_id(stream_id)) {
+                    send_open_ack(stream_id, false,
+                                  "inbound stream id in use");
                     break;
                 }
                 std::string reason;
-                if (!server_stream_open_handler(stream_id, host, port, &reason)) {
-                    send_open_ack(stream_id, false, reason.empty() ? "local control open failed" : reason);
+                bool accepted = false;
+                try {
+                    accepted =
+                        inbound_open_handler(stream_id, json, &reason);
+                } catch (...) {
+                    reason = "inbound control handler failed";
+                }
+                if (!accepted) {
+                    unregister_stream(stream_id);
+                    send_open_ack(
+                        stream_id, false,
+                        reason.empty() ? "inbound control open failed"
+                                       : reason);
                     break;
                 }
-                std::lock_guard<std::mutex> lock(state_mu_);
-                reserved_streams_.insert(stream_id);
+                if (!peer_stream_registration_complete(stream_id)) {
+                    send_open_ack(stream_id, false,
+                                  "inbound control did not register stream");
+                    break;
+                }
+                send_open_ack(stream_id, true, "");
+                break;
+            }
+            if (!server_in_charge) {
+                send_open_ack(stream_id, false, "server control disabled");
+                break;
+            }
+            auto control_open = ParseServerControlOpen(json);
+            if (!control_open) {
+                send_open_ack(stream_id, false, "invalid control target");
+                break;
+            }
+            if (!server_stream_open_handler) {
+                send_open_ack(stream_id, false,
+                              "server control unavailable");
+                break;
+            }
+            if (!try_reserve_peer_stream_id(stream_id)) {
+                send_open_ack(stream_id, false,
+                              "server control stream id in use");
+                break;
+            }
+            std::string reason;
+            bool accepted = false;
+            try {
+                accepted = server_stream_open_handler(
+                    stream_id, control_open->host, control_open->port,
+                    &reason);
             } catch (...) {
-                send_open_ack(stream_id, false, "invalid control payload");
+                reason = "local control open handler failed";
+            }
+            if (!accepted) {
+                unregister_stream(stream_id);
+                send_open_ack(
+                    stream_id, false,
+                    reason.empty() ? "local control open failed" : reason);
+                break;
+            }
+            if (!peer_stream_registration_complete(stream_id)) {
+                send_open_ack(stream_id, false,
+                              "local control did not register stream");
             }
             break;
         }
@@ -177,7 +322,7 @@ void TransportCore::handle_frame(const protocol::Frame& frame) {
                 if (activity_handler) {
                     activity_handler();
                 }
-                on_data(*payload);
+                on_data(*payload, std::move(inbound_credit));
             }
             break;
         }

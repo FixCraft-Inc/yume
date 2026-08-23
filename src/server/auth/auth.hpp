@@ -70,6 +70,9 @@ crypto::Bytes read_field(const crypto::Bytes& payload, size_t& offset);
 std::string fingerprint_pubkey(EVP_PKEY* pubkey);
 const char* auth_key_type_name(AuthKeyType type);
 std::string summarize_auth_policy(const AuthKeyPolicy& policy);
-void update_auth_meta(const std::string& meta_path, const std::string& fingerprint, const std::string& alias = "");
+bool update_auth_meta(const std::string& meta_path,
+                      const std::string& fingerprint,
+                      const std::string& alias = "",
+                      std::string* error = nullptr);
 
 }  // namespace yume::server

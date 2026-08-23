@@ -8,10 +8,11 @@ they're browser/OS behavior — but yume can't fix them from inside the
 SOCKS server. This page lists each leak vector and the exact knob to
 close it.
 
-If you want full coverage with no per-app config, use the Android
-client (the `VpnService` TUN routes every TCP and UDP packet through
-the tunnel) or set up the OS-level iptables route-tight option at the
-bottom of this page.
+For the supported YUME 2.0 Linux desktop slice, full-system enforcement requires
+an independently reviewed OS-level routing/kill-switch setup such as the
+iptables design at the bottom of this page. The separate Android client is
+currently on the incompatible `2.0-dev1` wire and is not a supported or
+qualified YUME 2.0 leak-tight option.
 
 ## What leaks, and why
 
@@ -164,23 +165,23 @@ iptables wall and fails closed.
 nothing on the box should be able to reach the internet. If anything
 still loads, your rule set has a hole.
 
-## Android: it's already covered
+## Android: historical design, not current 2.0 support
 
-The Android client uses `android.net.VpnService` which sets up a TUN
-device that captures every IP packet from every app on the device.
-There's no per-app SOCKS layer to bypass — every TCP and UDP packet
-goes through the userspace tunnel, and yume's transport routes them
-to the server. WebRTC, QUIC, system DNS, OS updates all flow through.
+The intended Android architecture uses `android.net.VpnService` and a TUN
+device to capture app traffic. That architecture does not establish current
+behavior: the separate Android checkout remains on `2.0-dev1`, is rejected by
+desktop `2.0-dev6`, and has not passed current ABI/JNI, packet, lifecycle, leak,
+or recovery qualification.
 
-The Android client does not need any of the per-browser flags on this
-page. If you're seeing leaks on Android specifically, file an issue
-with logs — that would be a different bug.
+Do not rely on the present Android build as a YUME 2.0 kill switch. After it is
+ported, its TUN capture, route/DNS policy, bypass behavior, and fail-closed
+recovery need direct device evidence before this claim can be restored.
 
 ## Quick decision tree
 
 ```
 Are you on Android?
-├─ Yes → VPN mode covers everything. Done.
+├─ Yes → Current YUME 2.0 support is not qualified; do not rely on it yet.
 └─ No → Are you OK with browser-only coverage?
         ├─ Yes → Use the Chromium / Firefox flags above.
         └─ No  → Set up redsocks + iptables for full-system tight.

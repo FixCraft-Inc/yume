@@ -51,30 +51,22 @@ bool write_all(boost::asio::ip::tcp::socket& sock,
                boost::asio::io_context& io,
                void const* data, std::size_t len,
                std::chrono::milliseconds timeout,
-               std::string& err) {
-    boost::system::error_code ec;
-    bool done = false;
-    bool timed = false;
-    boost::asio::steady_timer t(io);
-    t.expires_after(timeout);
-    t.async_wait([&](boost::system::error_code te) {
-        if (!te && !done) {
-            timed = true;
-            boost::system::error_code ig; sock.cancel(ig);
-        }
-    });
-    boost::asio::async_write(
-        sock,
-        boost::asio::buffer(data, len),
-        [&](boost::system::error_code we, std::size_t /*n*/) {
-            ec = we;
-            done = true;
-            t.cancel();
-        });
-    io.restart();
-    io.run();
-    if (timed) { err = "timeout writing to proxy"; return false; }
-    if (ec)    { err = "proxy write failed: " + ec.message(); return false; }
+               std::string& err,
+               bool& cancelled,
+               const StopPredicate& should_stop) {
+    auto cancel = [&]() {
+        boost::system::error_code ignored;
+        sock.cancel(ignored);
+    };
+    const auto result = write_all_with_timeout(
+        sock, io, boost::asio::buffer(data, len), timeout, cancel, should_stop);
+    cancelled = result.cancelled;
+    if (result.cancelled) { err = "proxy operation cancelled"; return false; }
+    if (result.timed_out) { err = "timeout writing to proxy"; return false; }
+    if (result.ec) {
+        err = "proxy write failed: " + result.ec.message();
+        return false;
+    }
     return true;
 }
 
@@ -82,30 +74,22 @@ bool read_exact(boost::asio::ip::tcp::socket& sock,
                 boost::asio::io_context& io,
                 void* data, std::size_t len,
                 std::chrono::milliseconds timeout,
-                std::string& err) {
-    boost::system::error_code ec;
-    bool done = false;
-    bool timed = false;
-    boost::asio::steady_timer t(io);
-    t.expires_after(timeout);
-    t.async_wait([&](boost::system::error_code te) {
-        if (!te && !done) {
-            timed = true;
-            boost::system::error_code ig; sock.cancel(ig);
-        }
-    });
-    boost::asio::async_read(
-        sock,
-        boost::asio::buffer(data, len),
-        [&](boost::system::error_code re, std::size_t /*n*/) {
-            ec = re;
-            done = true;
-            t.cancel();
-        });
-    io.restart();
-    io.run();
-    if (timed) { err = "timeout reading from proxy"; return false; }
-    if (ec)    { err = "proxy read failed: " + ec.message(); return false; }
+                std::string& err,
+                bool& cancelled,
+                const StopPredicate& should_stop) {
+    auto cancel = [&]() {
+        boost::system::error_code ignored;
+        sock.cancel(ignored);
+    };
+    const auto result = read_exact_with_timeout(
+        sock, io, boost::asio::buffer(data, len), timeout, cancel, should_stop);
+    cancelled = result.cancelled;
+    if (result.cancelled) { err = "proxy operation cancelled"; return false; }
+    if (result.timed_out) { err = "timeout reading from proxy"; return false; }
+    if (result.ec) {
+        err = "proxy read failed: " + result.ec.message();
+        return false;
+    }
     return true;
 }
 
@@ -117,7 +101,8 @@ DialResult socks5_dial(boost::asio::ip::tcp::socket& sock,
                        std::string const& target_host,
                        int target_port,
                        std::chrono::milliseconds timeout,
-                       const SocketProtectCallback& protect_socket) {
+                       const SocketProtectCallback& protect_socket,
+                       const std::function<bool()>& should_stop) {
     DialResult res;
 
     if (target_host.empty() || target_host.size() > 255) {
@@ -131,19 +116,31 @@ DialResult socks5_dial(boost::asio::ip::tcp::socket& sock,
 
     // ---- TCP connect to the proxy itself ----------------------------------
     boost::asio::ip::tcp::resolver resolver(io);
-    boost::asio::ip::tcp::resolver::results_type endpoints;
-    {
-        boost::system::error_code rec;
-        endpoints = resolver.resolve(cfg.host,
-                                     std::to_string(cfg.port), rec);
-        if (rec) {
-            res.error = "could not resolve proxy '" + cfg.host + "': " + rec.message();
-            return res;
-        }
+    const auto resolved = resolve_with_timeout(
+        resolver, io, cfg.host, std::to_string(cfg.port), timeout, should_stop);
+    if (resolved.cancelled) {
+        res.cancelled = true;
+        res.error = "proxy operation cancelled";
+        return res;
+    }
+    if (resolved.timed_out) {
+        res.timed_out = true;
+        res.error = "proxy DNS resolution timed out";
+        return res;
+    }
+    if (resolved.ec) {
+        res.error = "could not resolve proxy '" + cfg.host + "': " +
+                    resolved.ec.message();
+        return res;
     }
 
     auto connect_result = connect_with_timeout(
-        sock, endpoints, io, timeout, protect_socket);
+        sock, resolved.endpoints, io, timeout, protect_socket, should_stop);
+    if (connect_result.cancelled) {
+        res.cancelled = true;
+        res.error = "proxy operation cancelled";
+        return res;
+    }
     if (connect_result.timed_out) {
         res.timed_out = true;
         res.error = "connect to proxy timed out";
@@ -165,11 +162,13 @@ DialResult socks5_dial(boost::asio::ip::tcp::socket& sock,
             greet[1] = 0x01;          // one method offered
             greet[2] = kAuthNone;
         }
-        if (!write_all(sock, io, greet, greet_len, timeout, res.error)) return res;
+        if (!write_all(sock, io, greet, greet_len, timeout, res.error,
+                       res.cancelled, should_stop)) return res;
     }
 
     std::uint8_t method_reply[2]{};
-    if (!read_exact(sock, io, method_reply, 2, timeout, res.error)) return res;
+    if (!read_exact(sock, io, method_reply, 2, timeout, res.error,
+                    res.cancelled, should_stop)) return res;
     if (method_reply[0] != kVer5) {
         res.error = "proxy did not speak SOCKS5";
         return res;
@@ -193,9 +192,11 @@ DialResult socks5_dial(boost::asio::ip::tcp::socket& sock,
         auth.append(cfg.username);
         auth.push_back(static_cast<char>(cfg.password.size()));
         auth.append(cfg.password);
-        if (!write_all(sock, io, auth.data(), auth.size(), timeout, res.error)) return res;
+        if (!write_all(sock, io, auth.data(), auth.size(), timeout, res.error,
+                       res.cancelled, should_stop)) return res;
         std::uint8_t auth_reply[2]{};
-        if (!read_exact(sock, io, auth_reply, 2, timeout, res.error)) return res;
+        if (!read_exact(sock, io, auth_reply, 2, timeout, res.error,
+                        res.cancelled, should_stop)) return res;
         if (auth_reply[0] != kAuthVer || auth_reply[1] != 0x00) {
             res.error = "SOCKS5 authentication failed";
             return res;
@@ -219,12 +220,14 @@ DialResult socks5_dial(boost::asio::ip::tcp::socket& sock,
     req.append(target_host);
     req.push_back(static_cast<char>((target_port >> 8) & 0xFF));
     req.push_back(static_cast<char>(target_port & 0xFF));
-    if (!write_all(sock, io, req.data(), req.size(), timeout, res.error)) return res;
+    if (!write_all(sock, io, req.data(), req.size(), timeout, res.error,
+                   res.cancelled, should_stop)) return res;
 
     // Reply is `[VER REP RSV ATYP BND.ADDR BND.PORT]`. The BND fields
     // vary by ATYP — we just discard them.
     std::uint8_t hdr[4]{};
-    if (!read_exact(sock, io, hdr, 4, timeout, res.error)) return res;
+    if (!read_exact(sock, io, hdr, 4, timeout, res.error,
+                    res.cancelled, should_stop)) return res;
     if (hdr[0] != kVer5) {
         res.error = "proxy reply had wrong version";
         return res;
@@ -239,7 +242,8 @@ DialResult socks5_dial(boost::asio::ip::tcp::socket& sock,
         case kAtypIpv6:   skip = 16; break;
         case kAtypDomain: {
             std::uint8_t dlen = 0;
-            if (!read_exact(sock, io, &dlen, 1, timeout, res.error)) return res;
+            if (!read_exact(sock, io, &dlen, 1, timeout, res.error,
+                            res.cancelled, should_stop)) return res;
             skip = dlen;
             break;
         }
@@ -248,7 +252,8 @@ DialResult socks5_dial(boost::asio::ip::tcp::socket& sock,
             return res;
     }
     std::array<std::uint8_t, 256 + 2> bnd{};
-    if (!read_exact(sock, io, bnd.data(), skip + 2, timeout, res.error)) return res;
+    if (!read_exact(sock, io, bnd.data(), skip + 2, timeout, res.error,
+                    res.cancelled, should_stop)) return res;
 
     res.ok = true;
     return res;

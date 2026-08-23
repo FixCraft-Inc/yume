@@ -18,8 +18,9 @@ namespace yume::facade {
 
 class TrafficMeter;
 
-// Wraps server::RuntimeController for GUI hosts. Mirrors ClientSession in
-// shape: non-blocking, thread-safe, owns its io_context + worker pool.
+// Wraps server::RuntimeController for embedder hosts. Mirrors ClientSession in
+// shape: start()/stop() are non-blocking on the caller, while destruction joins
+// every owned worker and runtime thread.
 class ServerSession {
 public:
     explicit ServerSession(server::ServerConfig cfg);
@@ -50,6 +51,8 @@ public:
     std::vector<ConnectedSession> list_sessions() const;
 
     using StatusCallback = std::function<void(ServerStatus const&)>;
+    // Callbacks are serialized outside lifecycle locks, may re-enter
+    // start()/stop(), and cannot unwind through the facade.
     void set_status_callback(StatusCallback cb);
 
 private:

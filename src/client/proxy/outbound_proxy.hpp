@@ -13,6 +13,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <string>
 
 #include <boost/asio/io_context.hpp>
@@ -38,6 +39,7 @@ struct Config {
 struct DialResult {
     bool        ok{false};
     bool        timed_out{false};
+    bool        cancelled{false};
     std::string error;
 };
 
@@ -54,7 +56,8 @@ DialResult socks5_dial(boost::asio::ip::tcp::socket& sock,
                        std::string const& target_host,
                        int target_port,
                        std::chrono::milliseconds timeout,
-                       const SocketProtectCallback& protect_socket = {});
+                       const SocketProtectCallback& protect_socket = {},
+                       const std::function<bool()>& should_stop = {});
 
 // "socks5://[user[:pass]@]host:port" — parse helper used by both the
 // CLI flag and the JSON config loader. Returns false (and fills err)

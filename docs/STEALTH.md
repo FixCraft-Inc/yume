@@ -55,6 +55,13 @@ fragmentation, PING/PONG, CLOSE, RST_STREAM, GOAWAY, partial socket writes, and
 bounded backpressure. It uses one serialized output path and never drops or
 truncates tunnel data.
 
+Both HTTP/2 roles use manual receive credit for the carrier stream. WebSocket
+framing and control bytes are credited immediately, while decoded tunnel bytes
+retain their matching credit until the owning downstream path reports them
+consumed. Ordinary cover-response DATA is credited immediately because it has
+no tunnel sink. This changes credit ownership, not the captured HTTP/2 SETTINGS
+or normal opening wire.
+
 Idle connections originate no keepalive or rekey traffic. “Idle silent” does
 not mean “never originate a protocol frame”: the captured active Chrome/Node
 fixture shows Chrome originating an HTTP/2 PING immediately before its
@@ -104,6 +111,22 @@ The proxy bounds request headers to 32 KiB, response headers to 64 KiB, response
 bodies to 8 MiB, and applies bounded connection/response timeouts. Hop-by-hop
 headers are stripped. Backend health is checked at startup. A later outage uses
 an ordinary Node-shaped 502/close path, not a YUME-specific error.
+
+Unauthenticated H2 cover work also has lifetime admission: at most four
+GET/HEAD streams per public connection and 32 across the process may own a
+backend fetch or flow-controlled cover response. With the 8-MiB body limit,
+that bounds this response state to 32 MiB per connection and 256 MiB
+process-wide; the carrier's separate 32-MiB output ceiling still applies. Bytes
+already serialized out of the carrier retain a second 32-MiB-per-connection,
+256-MiB-process-wide budget until their TLS write completes, so repeated
+WINDOW_UPDATE/RST cycles cannot bypass the carrier cap through its downstream
+write queue. Backend/response state and already-serialized wire can coexist for
+different requests, making the conservative combined maxima 64 MiB per
+connection and 512 MiB process-wide before protocol/TLS overhead.
+Overload uses retryable H2 `REFUSED_STREAM` rather than allocating another
+response. `RST_STREAM` and connection shutdown cancel the loopback operation
+and release admission before its late callback can respond. These are
+availability bounds, not proof of normal-cover parity during overload.
 
 The old static responder may remain an emergency fallback in the wider codebase,
 but it is not the evidence-backed YUME 2.0 cover and must not be described as
@@ -366,6 +389,25 @@ process ramps, reconnect storm, and segmented full-speed loopback soak also
 pass. Matched WAN, one uninterrupted deployed-network soak, exact-Chrome
 same-session capture, classifier/active-probe evidence, and independent review
 remain incomplete.
+
+The Go helper is therefore **retained**, not scheduled for removal in this
+checkpoint. Reaching exact JA4 and exact non-GREASE list equality in the stock
+OpenSSL C++ path is valuable, but it is not the same as passing the helper's raw
+first-flight gate: GREASE placement/rotation and brotli-only certificate
+compression remain observably different. Removing Go now would narrow the
+available stealth backend and invalidate its wire/lifecycle/reproducibility
+evidence. Reconsider removal only when a C++ backend passes the same normalized
+raw-wire, same-session, classifier, process-lifecycle, and reproducible-build
+gates; any removal must then update the profile registry, generated consumers,
+tests, packaging, and evidence together. The helper stays experimental,
+Linux-only, opt-in, and `OFF` in a default build.
+
+Each helper connection currently creates fresh uTLS state without a session
+cache, so reconnects always exercise a full TLS 1.3 handshake. The committed
+fixture and present structural gate cover that fresh-session arm only; ordinary
+Chrome also uses resumed/PSK handshakes. Add explicit reconnect/resumption
+classifier arms, or design persistent ticket state and requalify exporter,
+pinning, process lifecycle, and failure behavior before claiming that population.
 The helper name or a matching JA3/JA4 value is not evidence of parity.
 
 YUME also does not currently disguise traffic volume and timing beyond the
@@ -407,10 +449,35 @@ goal, not a current security claim. Move toward it in this order:
    distinguishes YUME; do not turn a passed fixture test into a DPI-immunity
    claim.
 
+For the classifier gate, a packet-random train/test split is invalid because
+packets from one session share the same network and implementation artifacts.
+Group by complete session and hold out capture day, client/server host, network
+and provider. Use multiple classifier families and an untouched final set;
+freeze feature extraction, overhead budget and acceptance thresholds before
+examining candidate labels. Report sample counts, confidence intervals,
+ROC-AUC, PR-AUC and true-positive rate at operationally low false-positive
+rates, alongside a matched real-Chrome baseline and simple metadata-only
+baselines. Active-probe success/failure and response shape are part of the same
+evidence, not a separate marketing claim.
+
+No finite capture campaign can prove that a future DPI or neural classifier
+“cannot learn YUME.” An observer can also classify endpoint/IP reputation,
+certificate reuse, connection timing and transferred volume even when the TLS
+and H2 bytes are excellent. The defensible target is a pre-declared, low
+measured distinguishing advantage against a named cover distribution under
+held-out conditions, plus an honest list of residual features.
+
 Changing the TLS stack, adding padding, or changing wire fields is not complete
 until these gates have repeatable artifacts. Any TLS-stack migration must also
 preserve certificate validation, pinning, ALPN, error handling, packaging, and
 sanitizer/build coverage.
+
+Likewise, do not introduce a generic “randomish millisecond” cadence. If a
+captured cover workload supports early rotation or timing shaping, use a
+bounded versioned distribution derived from that capture, retain the hard
+ratchet maxima, and require a held-out classifier improvement. Independent
+per-host jitter or uniform random delay is an implementation feature a model
+can learn, not evidence of camouflage.
 
 ## Cryptographic claim vocabulary
 

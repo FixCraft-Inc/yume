@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -19,6 +20,36 @@ namespace yume::crypto {
 
 using Bytes = std::vector<uint8_t>;
 using EVP_PKEY_ptr = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
+
+// Move-only, single-use incremental SHA-256. OpenSSL state stays behind this
+// core boundary so streaming callers never open their own EVP path. Finish()
+// and FinishHex() consume the state; update/finalize after completion or after
+// an internal failure throws rather than silently starting a second digest.
+class Sha256Stream {
+public:
+    Sha256Stream();
+    Sha256Stream(const Sha256Stream&) = delete;
+    Sha256Stream& operator=(const Sha256Stream&) = delete;
+    Sha256Stream(Sha256Stream&& other) noexcept;
+    Sha256Stream& operator=(Sha256Stream&& other) noexcept;
+    ~Sha256Stream();
+
+    void Update(std::span<const std::uint8_t> input);
+    Bytes Finish();
+    std::string FinishHex();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+// Generic, non-secret SHA-256 identifier. Protocol-specific fingerprints
+// should delegate to this helper after constructing their domain-separated
+// canonical input rather than duplicating OpenSSL digest/hex code.
+Bytes sha256(std::span<const std::uint8_t> input);
+Bytes sha256(std::string_view input);
+std::string sha256_hex(std::span<const std::uint8_t> input);
+std::string sha256_hex(std::string_view input);
 
 struct KeyPair {
     EVP_PKEY_ptr private_key{nullptr, EVP_PKEY_free};
@@ -115,8 +146,21 @@ Bytes composite_canonical_encoding(const CompositePublicKey& key);
 // encoding. Distinct from either half's own fingerprint, so a composite
 // identity can never collide with a single-key fingerprint.
 std::string composite_fingerprint(const CompositePublicKey& key);
+// Same digest, for callers that already hold the canonical encoding -- notably
+// the authorized-key store, which keeps identities in that form. Sharing one
+// implementation is deliberate: two ways to compute an identity is how the
+// classical and composite fingerprints drifted apart in the first place.
+std::string composite_fingerprint_from_canonical(const Bytes& canonical);
 
-Bytes generate_session_key(EVP_PKEY* ecdh_local, EVP_PKEY* ecdh_remote, size_t out_len = 32);
+// ECDH shared secret collapsed through HKDF-SHA256. The caller owns the info
+// label: it names the protocol role of the derived key, so two derivations can
+// never collide across purposes. Labels are versioned (Rule: every HKDF info
+// string carries a version suffix) and bump together with their schedule.
+// The raw ECDH output is wiped before this returns.
+Bytes generate_session_key(EVP_PKEY* ecdh_local,
+                           EVP_PKEY* ecdh_remote,
+                           std::string_view info,
+                           size_t out_len = 32);
 EVP_PKEY_ptr generate_x25519_key();
 EVP_PKEY_ptr import_x25519_public_key(const Bytes& raw_public_key);
 Bytes export_raw_public_key(EVP_PKEY* key);

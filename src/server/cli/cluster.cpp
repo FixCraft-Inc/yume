@@ -19,6 +19,8 @@ std::string expand_cluster_join_spec(const std::string& spec) {
     }
     std::string body = spec;
     std::string pin;
+    std::string psk_file;
+    std::string carrier_secret_file;
     auto qpos = body.find('?');
     if (qpos != std::string::npos) {
         std::string query = body.substr(qpos + 1);
@@ -34,6 +36,10 @@ std::string expand_cluster_join_spec(const std::string& spec) {
             std::string val = pair.substr(eq + 1);
             if (key == "pin") {
                 pin = std::move(val);
+            } else if (key == "psk_file") {
+                psk_file = std::move(val);
+            } else if (key == "carrier_secret_file") {
+                carrier_secret_file = std::move(val);
             }
         }
     }
@@ -81,6 +87,10 @@ std::string expand_cluster_join_spec(const std::string& spec) {
     if (port <= 0 || port > 65535) {
         throw std::runtime_error("--cluster-join: port out of range in " + spec);
     }
+    if (psk_file.empty() || carrier_secret_file.empty()) {
+        throw std::runtime_error(
+            "--cluster-join requires psk_file and carrier_secret_file query parameters");
+    }
     if (id.empty()) {
         id = host;
     }
@@ -93,6 +103,8 @@ std::string expand_cluster_join_spec(const std::string& spec) {
     if (!pin.empty()) {
         peer["tls_pin"] = pin;
     }
+    peer["psk_file"] = std::move(psk_file);
+    peer["carrier_secret_file"] = std::move(carrier_secret_file);
     return peer.dump();
 }
 

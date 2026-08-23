@@ -97,6 +97,43 @@ bool resolve_secure_materials(client::ClientConfig& cfg, std::string* err) {
     return true;
 }
 
+void push_client_log(LogLevel level, std::string message) noexcept {
+    try {
+        LogSink::instance().push(
+            level, "facade.client", std::move(message));
+    } catch (...) {
+        // Diagnostic subscribers are consumer code. They must not unwind a
+        // lifecycle worker or suppress its terminal state notification.
+    }
+}
+
+void push_client_runtime_log(LogLevel level, std::string message) noexcept {
+    try {
+        LogSink::instance().push(
+            level, "client.runtime", std::move(message));
+    } catch (...) {
+    }
+}
+
+void notify_client_status(ClientSession::StatusCallback const& callback,
+                          ClientStatus const& status) noexcept {
+    if (!callback) return;
+    try {
+        callback(status);
+    } catch (std::exception const& ex) {
+        try {
+            push_client_log(
+                LogLevel::Error,
+                std::string("client status callback threw: ") + ex.what());
+        } catch (...) {
+        }
+    } catch (...) {
+        push_client_log(
+            LogLevel::Error,
+            "client status callback threw an unknown exception");
+    }
+}
+
 }  // namespace
 
 struct ClientSession::Impl {
@@ -114,6 +151,9 @@ struct ClientSession::Impl {
     std::atomic<bool> worker_busy{false};
     std::thread stop_worker;
     std::atomic<bool> stop_busy{false};
+    std::mutex lifecycle_mtx;
+    std::recursive_mutex notification_mtx;
+    std::atomic<std::uint64_t> lifecycle_generation{0};
 
     // Periodic IPC poll task: asks the runtime for bytes_in/bytes_out
     // every ~500 ms, deltas into the TrafficMeter so the dashboard
@@ -127,12 +167,9 @@ struct ClientSession::Impl {
 
     StatusCallback status_callback() const { return status_cb; }
 
-    void join_previous_worker() {
-        if (worker.joinable()) worker.join();
-    }
-
-    void join_previous_stop_worker() {
-        if (stop_worker.joinable()) stop_worker.join();
+    bool current_start(std::uint64_t generation) const noexcept {
+        return lifecycle_generation.load(std::memory_order_acquire) == generation &&
+               !stop_busy.load(std::memory_order_acquire);
     }
 
     void start_stats_thread() {
@@ -166,7 +203,15 @@ struct ClientSession::Impl {
         });
     }
 
-    void stop_stats_thread(bool disable_future_starts = false) {
+    void request_stats_stop(bool disable_future_starts = false) {
+        if (disable_future_starts) {
+            std::lock_guard<std::mutex> lock(stats_thread_mtx);
+            stats_start_enabled = false;
+        }
+        stats_stop.store(true, std::memory_order_release);
+    }
+
+    void join_stats_thread(bool disable_future_starts = false) {
         // Creation, joinability checks, move/assignment, and join all share one
         // lock. The worker never takes this lock, so joining while holding it
         // cannot deadlock with the polling loop.
@@ -179,6 +224,11 @@ struct ClientSession::Impl {
         last_bytes_in = 0;
         last_bytes_out = 0;
     }
+
+    bool has_stats_thread() {
+        std::lock_guard<std::mutex> lock(stats_thread_mtx);
+        return stats_thread.joinable();
+    }
 };
 
 ClientSession::ClientSession(client::ClientConfig cfg)
@@ -190,59 +240,122 @@ ClientSession::ClientSession(client::ClientConfig cfg)
             ? (impl_->cfg.inner_heavy ? "heavy" : "light")
             : "off";
     impl_->status.server_endpoint = endpoint_for(impl_->cfg);
-    impl_->runtime.set_log_callback([](std::string const& line) {
-        std::string clean = strip_ansi(line);
-        LogLevel level = LogLevel::Info;
-        if (clean.find("[ERROR]") != std::string::npos || clean.find("error") != std::string::npos) {
-            level = LogLevel::Error;
-        } else if (clean.find("[WARN]") != std::string::npos || clean.find("warn") != std::string::npos) {
-            level = LogLevel::Warn;
+    impl_->runtime.set_log_callback([](std::string const& line) noexcept {
+        try {
+            std::string clean = strip_ansi(line);
+            LogLevel level = LogLevel::Info;
+            if (clean.find("[ERROR]") != std::string::npos ||
+                clean.find("error") != std::string::npos) {
+                level = LogLevel::Error;
+            } else if (clean.find("[WARN]") != std::string::npos ||
+                       clean.find("warn") != std::string::npos) {
+                level = LogLevel::Warn;
+            }
+            push_client_runtime_log(level, std::move(clean));
+        } catch (...) {
         }
-        LogSink::instance().push(level, "client.runtime", std::move(clean));
     });
 }
 
 ClientSession::~ClientSession() {
+    // Consumer callbacks are not part of teardown. Clear them before asking
+    // worker threads to stop so destruction cannot re-enter a partially
+    // destroyed facade object.
+    {
+        std::lock_guard<std::recursive_mutex> notification_lock(
+            impl_->notification_mtx);
+        std::lock_guard<std::mutex> lock(impl_->mtx);
+        impl_->status_cb = {};
+        impl_->chat_cb = {};
+    }
     stop();
-    impl_->stop_stats_thread(true);
-    impl_->join_previous_worker();
-    impl_->join_previous_stop_worker();
+    impl_->request_stats_stop(true);
+    impl_->runtime.request_stop("client session destroyed");
+
+    std::thread stop_worker;
+    {
+        std::lock_guard<std::mutex> lock(impl_->lifecycle_mtx);
+        if (impl_->stop_worker.joinable()) {
+            stop_worker = std::move(impl_->stop_worker);
+        }
+    }
+    if (stop_worker.joinable()) stop_worker.join();
+
+    impl_->runtime.stop(nullptr, "client session destroyed");
+    std::thread start_worker;
+    {
+        std::lock_guard<std::mutex> lock(impl_->lifecycle_mtx);
+        if (impl_->worker.joinable()) {
+            start_worker = std::move(impl_->worker);
+        }
+    }
+    if (start_worker.joinable()) start_worker.join();
+    impl_->join_stats_thread(true);
 }
 
 bool ClientSession::start(std::string* err) {
     client::ClientConfig cfg;
     StatusCallback cb;
     ClientStatus snapshot;
+    std::uint64_t generation = 0;
     {
-        std::lock_guard<std::mutex> lock(impl_->mtx);
+        std::lock_guard<std::mutex> lifecycle_lock(impl_->lifecycle_mtx);
+        const bool has_stats_thread = impl_->has_stats_thread();
         if (impl_->runtime.running() || impl_->worker_busy.load() ||
-            impl_->stop_busy.load(std::memory_order_acquire)) {
+            impl_->stop_busy.load(std::memory_order_acquire) ||
+            has_stats_thread) {
             if (err) *err = impl_->stop_busy.load(std::memory_order_relaxed)
                 ? "client runtime is still stopping"
-                : "client runtime is already running";
+                : (has_stats_thread
+                       ? "previous client runtime still needs stop cleanup"
+                       : "client runtime is already running");
             return false;
         }
-        cfg = impl_->cfg;
-        impl_->status.state = ConnectionState::Connecting;
-        impl_->status.message = "starting yume client runtime";
-        snapshot = impl_->status;
-        cb = impl_->status_callback();
+        // A false busy flag is published only after the corresponding worker
+        // has completed all state access, so these joins cannot block.
+        if (impl_->stop_worker.joinable()) impl_->stop_worker.join();
+        if (impl_->worker.joinable()) impl_->worker.join();
+        generation = impl_->lifecycle_generation.fetch_add(
+            1, std::memory_order_acq_rel) + 1;
+        impl_->worker_busy.store(true, std::memory_order_release);
     }
-    // Fire the status callback BEFORE spawning the worker so the GUI sees
-    // an immediate "Connecting" state on the same frame the user clicked.
-    if (cb) cb(snapshot);
-
-    // Reap any previous worker (start/stop alternation).
-    impl_->join_previous_stop_worker();
-    impl_->join_previous_worker();
-    impl_->worker_busy.store(true);
+    {
+        std::lock_guard<std::recursive_mutex> notification_lock(
+            impl_->notification_mtx);
+        if (!impl_->current_start(generation)) {
+            impl_->worker_busy.store(false, std::memory_order_release);
+            if (err) err->clear();
+            return true;
+        }
+        {
+            std::lock_guard<std::mutex> lock(impl_->mtx);
+            cfg = impl_->cfg;
+            impl_->status.state = ConnectionState::Connecting;
+            impl_->status.message = "starting yume client runtime";
+            snapshot = impl_->status;
+            cb = impl_->status_callback();
+        }
+        // Fire the status callback BEFORE spawning the worker so the GUI sees
+        // an immediate "Connecting" state on the same frame the user clicked.
+        // notification_mtx serializes this with terminal stop/failure events.
+        notify_client_status(cb, snapshot);
+    }
 
     // Hand the blocking material-resolve + config-save + runtime.start
     // (which polls the IPC socket for up to ~1.5s) off to a worker thread
     // so the GUI thread never stalls on click.
-    impl_->worker = std::thread([this, cfg = std::move(cfg)]() mutable {
-        auto fail = [this](std::string msg) {
-            if (impl_->stop_busy.load(std::memory_order_acquire)) {
+    try {
+        std::lock_guard<std::mutex> lifecycle_lock(impl_->lifecycle_mtx);
+        if (!impl_->current_start(generation)) {
+            impl_->worker_busy.store(false, std::memory_order_release);
+            return true;
+        }
+        impl_->worker = std::thread(
+            [this, cfg = std::move(cfg), generation]() mutable {
+        auto fail = [this, generation](std::string msg) {
+            std::lock_guard<std::recursive_mutex> notification_lock(
+                impl_->notification_mtx);
+            if (!impl_->current_start(generation)) {
                 return;
             }
             StatusCallback fcb;
@@ -254,22 +367,32 @@ bool ClientSession::start(std::string* err) {
                 fsnap = impl_->status;
                 fcb = impl_->status_callback();
             }
-            LogSink::instance().push(LogLevel::Error, "facade.client", msg);
-            if (fcb) fcb(fsnap);
+            push_client_log(LogLevel::Error, msg);
+            notify_client_status(fcb, fsnap);
         };
 
         try {
             std::string mat_err;
             if (!resolve_secure_materials(cfg, &mat_err)) {
                 fail(mat_err.empty() ? "secure materials not ready" : mat_err);
-                impl_->worker_busy.store(false);
+                impl_->worker_busy.store(false, std::memory_order_release);
+                return;
+            }
+
+            if (!impl_->current_start(generation)) {
+                impl_->worker_busy.store(false, std::memory_order_release);
                 return;
             }
 
             std::string save_err;
             if (!config_io::save_client(cfg, config_io::default_client_config_path(), &save_err)) {
                 fail("client config save before start failed: " + save_err);
-                impl_->worker_busy.store(false);
+                impl_->worker_busy.store(false, std::memory_order_release);
+                return;
+            }
+
+            if (!impl_->current_start(generation)) {
+                impl_->worker_busy.store(false, std::memory_order_release);
                 return;
             }
 
@@ -281,33 +404,50 @@ bool ClientSession::start(std::string* err) {
             if (!impl_->runtime.start(std::move(cfg), &start_err,
                                       std::chrono::seconds(30))) {
                 fail(start_err.empty() ? "client start failed" : start_err);
-                impl_->worker_busy.store(false);
+                impl_->worker_busy.store(false, std::memory_order_release);
                 return;
             }
 
-            auto runtime_status = impl_->runtime.status();
-            StatusCallback ok_cb;
-            ClientStatus ok_snap;
-            {
-                std::lock_guard<std::mutex> lock(impl_->mtx);
-                impl_->status.state = runtime_status.ipc_available
-                                          ? ConnectionState::Connected
-                                          : ConnectionState::Authenticating;
-                impl_->status.message = runtime_status.message;
-                if (runtime_status.ipc_available &&
-                    impl_->status.connected_since.time_since_epoch().count() == 0) {
-                    impl_->status.connected_since = std::chrono::system_clock::now();
-                }
-                ok_snap = impl_->status;
-                ok_cb = impl_->status_callback();
+            if (!impl_->current_start(generation)) {
+                impl_->runtime.request_stop("stale client startup");
+                impl_->worker_busy.store(false, std::memory_order_release);
+                return;
             }
-            LogSink::instance().push(LogLevel::Info, "facade.client", "client runtime started");
-            if (ok_cb) ok_cb(ok_snap);
+
+            {
+                std::lock_guard<std::recursive_mutex> notification_lock(
+                    impl_->notification_mtx);
+                if (!impl_->current_start(generation)) {
+                    impl_->runtime.request_stop("stale client startup");
+                    impl_->worker_busy.store(false, std::memory_order_release);
+                    return;
+                }
+                auto runtime_status = impl_->runtime.status();
+                StatusCallback ok_cb;
+                ClientStatus ok_snap;
+                {
+                    std::lock_guard<std::mutex> lock(impl_->mtx);
+                    impl_->status.state = runtime_status.ipc_available
+                                              ? ConnectionState::Connected
+                                              : ConnectionState::Authenticating;
+                    impl_->status.message = runtime_status.message;
+                    if (runtime_status.ipc_available &&
+                        impl_->status.connected_since.time_since_epoch().count() == 0) {
+                        impl_->status.connected_since =
+                            std::chrono::system_clock::now();
+                    }
+                    ok_snap = impl_->status;
+                    ok_cb = impl_->status_callback();
+                }
+                push_client_log(
+                    LogLevel::Info, "client runtime started");
+                notify_client_status(ok_cb, ok_snap);
+            }
 
             // Spin up the stats-poll thread now that IPC is up. It loops
             // until stats_stop flips; each pass asks the runtime for
             // bytes_in/bytes_out and feeds the delta into the meter.
-            if (!impl_->stop_busy.load(std::memory_order_acquire)) {
+            if (impl_->current_start(generation)) {
                 impl_->start_stats_thread();
             }
         } catch (std::exception const& ex) {
@@ -316,15 +456,70 @@ bool ClientSession::start(std::string* err) {
             fail("client startup exception: unknown error");
         }
 
-        impl_->worker_busy.store(false);
+        impl_->worker_busy.store(false, std::memory_order_release);
     });
+    } catch (std::exception const& ex) {
+        impl_->worker_busy.store(false, std::memory_order_release);
+        const std::string failure =
+            std::string("failed to start client lifecycle worker: ") + ex.what();
+        if (err) *err = failure;
+        if (impl_->current_start(generation)) {
+            std::lock_guard<std::recursive_mutex> notification_lock(
+                impl_->notification_mtx);
+            if (!impl_->current_start(generation)) return false;
+            StatusCallback fail_cb;
+            ClientStatus fail_snapshot;
+            {
+                std::lock_guard<std::mutex> lock(impl_->mtx);
+                impl_->status.state = ConnectionState::Failed;
+                impl_->status.message = failure;
+                fail_snapshot = impl_->status;
+                fail_cb = impl_->status_callback();
+            }
+            notify_client_status(fail_cb, fail_snapshot);
+        }
+        return false;
+    } catch (...) {
+        impl_->worker_busy.store(false, std::memory_order_release);
+        if (err) *err = "failed to start client lifecycle worker";
+        if (impl_->current_start(generation)) {
+            std::lock_guard<std::recursive_mutex> notification_lock(
+                impl_->notification_mtx);
+            if (!impl_->current_start(generation)) return false;
+            StatusCallback fail_cb;
+            ClientStatus fail_snapshot;
+            {
+                std::lock_guard<std::mutex> lock(impl_->mtx);
+                impl_->status.state = ConnectionState::Failed;
+                impl_->status.message = "failed to start client lifecycle worker";
+                fail_snapshot = impl_->status;
+                fail_cb = impl_->status_callback();
+            }
+            notify_client_status(fail_cb, fail_snapshot);
+        }
+        return false;
+    }
 
+    if (err) err->clear();
     return true;
 }
 
 void ClientSession::stop() {
-    if ((!impl_->runtime.running() && !impl_->worker_busy.load()) ||
-        impl_->stop_busy.exchange(true)) return;
+    std::unique_lock<std::recursive_mutex> notification_lock(
+        impl_->notification_mtx);
+    {
+        std::lock_guard<std::mutex> lifecycle_lock(impl_->lifecycle_mtx);
+        if (impl_->stop_busy.load(std::memory_order_acquire)) {
+            return;
+        }
+        if (!impl_->runtime.running() && !impl_->worker_busy.load() &&
+            !impl_->worker.joinable() && !impl_->has_stats_thread()) {
+            return;
+        }
+        impl_->lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
+        impl_->stop_busy.store(true, std::memory_order_release);
+        if (impl_->stop_worker.joinable()) impl_->stop_worker.join();
+    }
 
     // Mark intent immediately so the UI shows "Disconnecting".
     StatusCallback cb;
@@ -336,32 +531,73 @@ void ClientSession::stop() {
         snap = impl_->status;
         cb = impl_->status_callback();
     }
-    if (cb) cb(snap);
+    notify_client_status(cb, snap);
+    notification_lock.unlock();
 
-    impl_->stop_stats_thread();
+    impl_->request_stats_stop();
+    impl_->runtime.request_stop("client stopping");
 
     // Do not join the startup worker here. It may be waiting for the full
     // connect/auth timeout, and ClientSession::stop() is called directly from
     // the GUI action path. The runtime cancellation and its join happen off
     // that thread instead.
-    impl_->join_previous_stop_worker();
-    impl_->stop_worker = std::thread([this]() {
-        std::string stop_error;
-        impl_->runtime.stop(&stop_error);
-        StatusCallback done_cb;
-        ClientStatus done_snap;
+    try {
+        std::lock_guard<std::mutex> lifecycle_lock(impl_->lifecycle_mtx);
+        impl_->stop_worker = std::thread([this]() {
+            std::string stop_error;
+            impl_->runtime.stop(&stop_error);
+            impl_->request_stats_stop();
+            impl_->join_stats_thread();
+
+            std::thread start_worker;
+            {
+                std::lock_guard<std::mutex> lifecycle_lock(
+                    impl_->lifecycle_mtx);
+                if (impl_->worker.joinable()) {
+                    start_worker = std::move(impl_->worker);
+                }
+            }
+            if (start_worker.joinable()) start_worker.join();
+            {
+                std::lock_guard<std::recursive_mutex> notification_lock(
+                    impl_->notification_mtx);
+                StatusCallback done_cb;
+                ClientStatus done_snap;
+                {
+                    std::lock_guard<std::mutex> lock(impl_->mtx);
+                    impl_->status.state = ConnectionState::Disconnected;
+                    impl_->status.message = stop_error.empty()
+                        ? "stopped"
+                        : stop_error;
+                    impl_->status.connected_since = {};
+                    done_snap = impl_->status;
+                    done_cb = impl_->status_callback();
+                }
+                impl_->worker_busy.store(false, std::memory_order_release);
+                notify_client_status(done_cb, done_snap);
+                // Keep new starts excluded until the terminal callback completes
+                // so observers cannot see a later Connecting event first.
+                impl_->stop_busy.store(false, std::memory_order_release);
+            }
+        });
+    } catch (...) {
+        // Thread construction failure must not strand the runtime. This path
+        // may block, but it is the only fail-closed fallback available when
+        // the system cannot create the asynchronous stop worker.
+        impl_->runtime.stop();
+        impl_->request_stats_stop();
+        impl_->join_stats_thread();
+        std::thread start_worker;
         {
-            std::lock_guard<std::mutex> lock(impl_->mtx);
-            impl_->status.state = ConnectionState::Disconnected;
-            impl_->status.message = stop_error.empty() ? "stopped" : stop_error;
-            impl_->status.connected_since = {};
-            done_snap = impl_->status;
-            done_cb = impl_->status_callback();
+            std::lock_guard<std::mutex> lifecycle_lock(impl_->lifecycle_mtx);
+            if (impl_->worker.joinable()) {
+                start_worker = std::move(impl_->worker);
+            }
         }
-        if (done_cb) done_cb(done_snap);
-        impl_->worker_busy.store(false);
-        impl_->stop_busy.store(false);
-    });
+        if (start_worker.joinable()) start_worker.join();
+        impl_->worker_busy.store(false, std::memory_order_release);
+        impl_->stop_busy.store(false, std::memory_order_release);
+    }
 }
 
 bool ClientSession::running() const noexcept {
@@ -389,7 +625,7 @@ ClientStatus ClientSession::status() const {
     }
     s.server_tls_fingerprint_sha256 =
         runtime_status.server_tls_fingerprint_sha256;
-    s.server_capabilities = impl_->runtime.server_capabilities();
+    s.server_capabilities = runtime_status.server_capabilities;
     s.packet_bulk_supported = std::find(
         s.server_capabilities.begin(), s.server_capabilities.end(),
         "packet_bulk_v1") != s.server_capabilities.end();
@@ -516,6 +752,8 @@ std::vector<ClientSession::ChatMessage> ClientSession::chat_history(
 }
 
 void ClientSession::set_status_callback(StatusCallback cb) {
+    std::lock_guard<std::recursive_mutex> notification_lock(
+        impl_->notification_mtx);
     std::lock_guard<std::mutex> lock(impl_->mtx);
     impl_->status_cb = std::move(cb);
 }

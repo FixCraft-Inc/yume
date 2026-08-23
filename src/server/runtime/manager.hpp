@@ -25,7 +25,9 @@
 #include <boost/asio/ssl.hpp>
 
 #include "core/protocol/control_protocol.hpp"
+#include "core/protocol/directory_policy.hpp"
 #include "core/runtime/service_stream.hpp"
+#include "core/runtime/operation_status.hpp"
 #include "core/security/crypto.hpp"
 #include "core/security/identity.hpp"
 #include "server/auth/auth.hpp"
@@ -39,7 +41,6 @@
 #include "server/host/host_routes.hpp"
 #include "server/packet/tun_egress.hpp"
 #include "server/runtime/identity_admission.hpp"
-#include "server/runtime/kdf_admission.hpp"
 
 namespace yume::server {
 
@@ -103,8 +104,10 @@ public:
                                    control::ClientLifecycleEvent event,
                                    control::ClientLifecycleEvent* stored_event = nullptr);
     void unregister_endpoint(Session* session);
-    std::vector<control::EndpointInfo> list_local_endpoints() const;
-    std::vector<control::EndpointInfo> list_endpoints() const;
+    std::vector<control::EndpointInfo> list_local_endpoints(
+        std::size_t limit = control::kMaxDirectoryEndpoints) const;
+    std::vector<control::EndpointInfo> list_endpoints(
+        std::size_t limit = control::kMaxDirectoryEndpoints) const;
     std::vector<control::EndpointRuntimeStatus> list_endpoint_statuses() const;
     std::vector<control::ClientLifecycleEvent> list_recent_lifecycle_events(std::size_t limit = 200) const;
     std::shared_ptr<Session> find_endpoint_session(const std::string& query, control::EndpointInfo* info);
@@ -125,7 +128,8 @@ public:
                                   std::shared_ptr<Session>* initiator_session,
                                   control::PendingInvite* invite_out,
                                   std::string* error);
-    bool can_open_channel(const std::string& channel_id,
+    bool can_open_channel(const std::shared_ptr<Session>& origin,
+                          const std::string& channel_id,
                           const std::string& from_id,
                           const std::string& to_id,
                           control::ChannelKind channel_kind,
@@ -141,8 +145,6 @@ public:
     std::vector<control::ActiveRelayChannel> list_active_channels() const;
     std::vector<FederationPeerStatus> federation_statuses() const;
     bool disconnect_endpoint(const std::string& query, std::string* error);
-    void add_admin_relationship(const std::string& controller_id, const std::string& target_id);
-    void remove_admin_relationship(const std::string& controller_id, const std::string& target_id);
     const ServerConfig& config_snapshot() const;
     const std::string& server_id() const { return server_id_; }
     const std::string& server_name() const { return server_name_; }
@@ -186,14 +188,19 @@ public:
     // Called once at startup and (if TTL > 0) by the periodic timer.
     std::size_t reload_upstream_responses();
 
-    bool register_service(const std::string& service, std::string* error = nullptr);
+    bool register_service(
+        const std::string& service,
+        std::string* error = nullptr,
+        runtime::OperationStatus* operation_status = nullptr);
     bool enqueue_service_stream(const std::string& service,
                                 std::shared_ptr<runtime::ServiceStream> stream,
-                                std::string* error = nullptr);
+                                std::string* error = nullptr,
+                                runtime::OperationStatus* operation_status = nullptr);
     std::shared_ptr<runtime::ServiceStream> accept_service_stream(
         const std::string& service,
         std::uint32_t timeout_ms,
-        std::string* error = nullptr);
+        std::string* error = nullptr,
+        runtime::OperationStatus* operation_status = nullptr);
 
 private:
     static constexpr std::size_t kMaxLifecycleEvents = 512;
@@ -209,6 +216,14 @@ private:
     void do_accept();
     void refuse_client_socket(boost::asio::ip::tcp::socket& socket);
     void append_lifecycle_event_locked(const control::ClientLifecycleEvent& event);
+    void unregister_endpoint_locked(Session* session,
+                                    bool append_disconnect_event);
+    void prune_expired_relay_invites_locked(
+        std::chrono::steady_clock::time_point now);
+    bool relay_invite_capacity_available_locked(
+        const control::PendingInvite& invite,
+        std::string* error);
+    void schedule_relay_invite_expiry_locked();
     void schedule_upstream_reload();
     AuthStateSnapshot auth_state_snapshot() const;
 
@@ -225,7 +240,6 @@ private:
     // Separate admin store; deliberately not merged with authorized_keys_.
     std::shared_ptr<const std::vector<crypto::Bytes>> admin_keys_;
     IdentityAdmissionController identity_admission_;
-    std::shared_ptr<KdfAdmissionController> kdf_admission_;
     std::shared_ptr<obfs::AdmissionReplayCache> admission_replay_cache_;
 
     std::atomic<uint64_t> next_session_id_{1};
@@ -245,19 +259,24 @@ private:
         std::weak_ptr<Session> session;
     };
     struct InviteEntry {
+        enum class State { awaiting_response, accepted, opening };
         control::PendingInvite invite;
         std::weak_ptr<Session> from_session;
         std::weak_ptr<Session> to_session;
+        State state{State::awaiting_response};
         bool outbound_federated{false};
         bool inbound_federated{false};
         std::string federation_peer_id;
         std::string federation_remote_id;
+        std::chrono::steady_clock::time_point expires_at{};
     };
     mutable std::mutex endpoint_mutex_;
     std::unordered_map<std::string, EndpointEntry> endpoints_;
     std::unordered_map<Session*, std::string> session_endpoints_;
     std::unordered_map<std::string, std::string> endpoint_names_;
     std::unordered_map<std::string, InviteEntry> invites_;
+    std::unique_ptr<boost::asio::steady_timer> invite_expiry_timer_;
+    bool invite_expiry_stopped_{false};
     std::unordered_map<std::string, control::ActiveRelayChannel> active_channels_;
     std::deque<control::ClientLifecycleEvent> lifecycle_events_;
     std::string server_id_;

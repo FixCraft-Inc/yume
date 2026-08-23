@@ -6,33 +6,37 @@
 
 #include "server/federation/link.hpp"
 
+#include "core/protocol/directory_policy.hpp"
+#include "core/protocol/relay_policy.hpp"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstring>
-#include <filesystem>
-#include <fstream>
-#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <vector>
 
 #include <openssl/err.h>
-#include <openssl/pem.h>
 #include <openssl/sha.h>
 #include <openssl/ssl.h>
+#include <openssl/x509.h>
 
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/read.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/asio/write.hpp>
 
+#include "client/cli/connect/auth.hpp"
+#include "client/cli/connect/io.hpp"
 #include "client/proxy/outbound_proxy.hpp"
+#include "core/security/channel_binding.hpp"
 #include "core/security/crypto.hpp"
-#include "core/security/inner_crypto.hpp"
-#include "core/protocol/protocol_stream.hpp"
+#include "core/security/ratchet.hpp"
+#include "core/stealth/obfs.hpp"
 #include "server/federation/manager.hpp"
 #include "server/session/session.hpp"
 #include "util.hpp"
@@ -41,8 +45,11 @@ namespace yume::server {
 
 namespace {
 
+// Both endpoints are Yume servers we control, so TLS 1.3 only -- consistent
+// with the obfs / tls_stealth contexts and required by channel binding
+// (ExportChannelBinding refuses anything older).
 constexpr std::chrono::milliseconds kConnectTimeout{15000};
-constexpr std::size_t kMaxFederationRead = 64U * 1024U;
+constexpr std::chrono::milliseconds kHelloTimeout{10000};
 
 std::string hex_encode(const unsigned char* data, std::size_t len) {
     static const char* kHex = "0123456789abcdef";
@@ -78,110 +85,6 @@ std::string peer_cert_sha256(SSL* ssl) {
     return hex_encode(hash, SHA256_DIGEST_LENGTH);
 }
 
-crypto::Bytes public_pem(EVP_PKEY* key) {
-    BIO* bio = BIO_new(BIO_s_mem());
-    if (!bio) {
-        throw std::runtime_error("failed to allocate public-key BIO");
-    }
-    if (PEM_write_bio_PUBKEY(bio, key) != 1) {
-        BIO_free(bio);
-        throw std::runtime_error("failed to encode public key");
-    }
-    char* data = nullptr;
-    long len = BIO_get_mem_data(bio, &data);
-    if (len <= 0 || !data) {
-        BIO_free(bio);
-        throw std::runtime_error("failed to read public key");
-    }
-    crypto::Bytes out(reinterpret_cast<std::uint8_t*>(data),
-                      reinterpret_cast<std::uint8_t*>(data) + len);
-    BIO_free(bio);
-    return out;
-}
-
-void append_field(crypto::Bytes& payload, const crypto::Bytes& field) {
-    if (field.size() > 0xFFFF) {
-        throw std::runtime_error("auth field too large");
-    }
-    payload.push_back(static_cast<std::uint8_t>((field.size() >> 8) & 0xFF));
-    payload.push_back(static_cast<std::uint8_t>(field.size() & 0xFF));
-    payload.insert(payload.end(), field.begin(), field.end());
-}
-
-crypto::Bytes auth_payload(EVP_PKEY* pubkey,
-                           const crypto::Bytes& signature,
-                           const std::optional<crypto::Bytes>& pq_ciphertext,
-                           const std::optional<crypto::Bytes>& pq_salt,
-                           const std::optional<std::string>& inner_mode,
-                           const std::optional<bool>& inner_hop,
-                           const std::optional<inner::KdfParams>& inner_kdf) {
-    crypto::Bytes payload;
-    append_field(payload, public_pem(pubkey));
-    append_field(payload, signature);
-    if (pq_ciphertext) {
-        append_field(payload, *pq_ciphertext);
-        append_field(payload, pq_salt.value_or(crypto::Bytes{}));
-        if (inner_mode) {
-            append_field(payload, crypto::Bytes(inner_mode->begin(), inner_mode->end()));
-        }
-        if (inner_hop) {
-            append_field(payload, crypto::Bytes{*inner_hop ? static_cast<std::uint8_t>('1')
-                                                           : static_cast<std::uint8_t>('0')});
-        }
-        if (inner_kdf) {
-            append_field(payload, crypto::Bytes(inner_kdf->name.begin(), inner_kdf->name.end()));
-            crypto::Bytes params(16, 0);
-            auto put = [&](std::size_t off, std::uint32_t v) {
-                params[off] = static_cast<std::uint8_t>((v >> 24) & 0xFF);
-                params[off + 1] = static_cast<std::uint8_t>((v >> 16) & 0xFF);
-                params[off + 2] = static_cast<std::uint8_t>((v >> 8) & 0xFF);
-                params[off + 3] = static_cast<std::uint8_t>(v & 0xFF);
-            };
-            put(0, inner_kdf->argon2_time);
-            put(4, inner_kdf->argon2_memory);
-            put(8, inner_kdf->argon2_parallelism);
-            put(12, inner_kdf->pbkdf2_iters);
-            append_field(payload, params);
-        }
-    }
-    return payload;
-}
-
-inner::Argon2Limits parse_argon2_limits(const protocol::Frame& challenge) {
-    inner::Argon2Limits limits;
-    if (challenge.payload.size() <= 32 || challenge.payload[32] != static_cast<std::uint8_t>('{')) {
-        return limits;
-    }
-    try {
-        std::string text(challenge.payload.begin() + 32, challenge.payload.end());
-        auto json = nlohmann::json::parse(text);
-        auto read = [&](const char* key) -> std::uint32_t {
-            if (!json.contains(key) || !json[key].is_number()) {
-                return 0;
-            }
-            return static_cast<std::uint32_t>(
-                std::min<std::uint64_t>(json[key].get<std::uint64_t>(),
-                                        std::numeric_limits<std::uint32_t>::max()));
-        };
-        limits.time_max = read("argon2_time_max");
-        limits.memory_max = read("argon2_mem_max");
-        limits.parallelism_max = read("argon2_par_max");
-    } catch (...) {
-    }
-    return limits;
-}
-
-std::string write_temp_pq_public(const std::string& peer_id, const std::string& raw) {
-    auto path = std::filesystem::temp_directory_path() /
-                ("yume-federation-" + peer_id + "-pq_public.key");
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) {
-        throw std::runtime_error("failed to create federation PQ public key file");
-    }
-    out.write(raw.data(), static_cast<std::streamsize>(raw.size()));
-    return path.string();
-}
-
 }  // namespace
 
 FederationLink::FederationLink(boost::asio::io_context& server_io,
@@ -201,14 +104,23 @@ void FederationLink::start() {
     if (worker_.joinable()) {
         return;
     }
+    // Deterministic configuration problems must not become a retry loop: load
+    // the pairwise secrets here, once, and refuse to start the link on error.
+    try {
+        psk_ = security::LoadSecretFile32(peer_.psk_file);
+        carrier_secret_ = security::LoadSecretFile32(peer_.carrier_secret_file);
+    } catch (const std::exception& ex) {
+        set_state("failed", std::string("secret load failed: ") + ex.what());
+        util::log_error("federation peer " + peer_.id + ": " + ex.what());
+        return;
+    }
     closing_.store(false);
     worker_ = std::thread([self = shared_from_this()] {
         self->run_loop();
     });
     directory_worker_ = std::thread([self = shared_from_this()] {
-        while (!self->closing_.load()) {
-            std::this_thread::sleep_for(std::chrono::seconds(5));
-            if (!self->closing_.load() && self->is_ready()) {
+        while (!self->wait_for_close(std::chrono::seconds(5))) {
+            if (self->is_ready()) {
                 self->request_directory();
             }
         }
@@ -217,13 +129,17 @@ void FederationLink::start() {
 
 void FederationLink::close() {
     closing_.store(true);
+    attempt_alive_.store(false);
+    close_wait_cv_.notify_all();
+    std::shared_ptr<client::Tunnel> tunnel;
     {
-        std::lock_guard<std::mutex> lock(write_mutex_);
-        if (active_stream_) {
-            boost::system::error_code ec;
-            active_stream_->lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
-            active_stream_->lowest_layer().close(ec);
-        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        tunnel = tunnel_;
+    }
+    if (tunnel) {
+        // Unblocks the worker's io_context run loop through the normal close
+        // path; Tunnel::stop is safe from a foreign thread (the GUI does it).
+        tunnel->stop("federation link closing");
     }
     if (worker_.joinable()) {
         worker_.join();
@@ -232,6 +148,12 @@ void FederationLink::close() {
         directory_worker_.join();
     }
     reset_transport();
+}
+
+bool FederationLink::wait_for_close(std::chrono::milliseconds duration) {
+    std::unique_lock<std::mutex> lock(close_wait_mutex_);
+    return close_wait_cv_.wait_for(
+        lock, duration, [this] { return closing_.load(); });
 }
 
 bool FederationLink::is_ready() const {
@@ -267,16 +189,13 @@ void FederationLink::set_state(std::string state, std::string error) {
 }
 
 void FederationLink::reset_transport() {
-    std::unique_ptr<client::TransportCore> transport;
+    std::shared_ptr<client::Tunnel> tunnel;
     std::vector<LinkChannel> closed_channels;
-    {
-        std::lock_guard<std::mutex> write_lock(write_mutex_);
-        active_stream_ = nullptr;
-    }
     {
         std::lock_guard<std::mutex> lock(mutex_);
         ready_ = false;
-        transport = std::move(transport_);
+        attempt_alive_.store(false);
+        tunnel = std::move(tunnel_);
         closed_channels.reserve(channels_.size());
         for (const auto& entry : channels_) {
             closed_channels.push_back(entry.second);
@@ -284,15 +203,26 @@ void FederationLink::reset_transport() {
         channels_.clear();
         channels_active_ = 0;
     }
-    if (transport) {
-        (void)transport->shutdown();
+    if (tunnel) {
+        tunnel->stop("federation link closed");
     }
     for (const auto& channel : closed_channels) {
         if (auto session = channel.origin.lock()) {
-            boost::asio::post(server_io_, [session, origin_stream = channel.origin_stream] {
-                session->send_federated_close(origin_stream, "federation link closed");
+            boost::asio::post(server_io_, [session,
+                                           origin_stream = channel.origin_stream,
+                                           open_pending = channel.open_pending] {
+                if (open_pending) {
+                    session->complete_federated_open(
+                        origin_stream, false, "federation link closed");
+                } else {
+                    session->send_federated_close(
+                        origin_stream, "federation link closed");
+                }
             });
         }
+    }
+    if (owner_) {
+        owner_->clear_directory(peer_.id);
     }
 }
 
@@ -301,293 +231,408 @@ void FederationLink::run_loop() {
     while (!closing_.load()) {
         try {
             set_state("dialing");
+            // Each attempt gets a private io_context that owns the stream,
+            // the H2 carrier and the Tunnel's timers for that connection.
+            // It dies before the Tunnel does: dial_v2's returned Tunnel is
+            // released by reset_transport below, which runs before this scope
+            // exits on every path out of the iteration.
             boost::asio::io_context io;
-            // Both endpoints are Yume servers we control, so TLS 1.3 only.
-            // Consistent with the obfs / tls_stealth contexts elsewhere.
-            boost::asio::ssl::context ctx(boost::asio::ssl::context::tlsv13_client);
-            ctx.set_options(boost::asio::ssl::context::default_workarounds);
-            SSL_CTX_set_min_proto_version(ctx.native_handle(), TLS1_3_VERSION);
-            SSL_CTX_set_max_proto_version(ctx.native_handle(), TLS1_3_VERSION);
-            ctx.set_verify_mode(boost::asio::ssl::verify_peer);
-            ctx.set_default_verify_paths();
-            if (!cfg_.federation_anonym_ca.empty()) {
-                ctx.load_verify_file(cfg_.federation_anonym_ca);
-            }
-            // Heap-owned so no other thread ever holds a pointer into this
-            // frame. Asio still requires the stream to die before `io`, so the
-            // guard below releases the shared slot first and this local
-            // reference is the last one at scope exit.
-            auto stream = std::make_shared<TlsStream>(io, ctx);
-            struct ActiveStreamReset final {
-                std::mutex& mutex;
-                std::shared_ptr<TlsStream>& active;
-                const TlsStream* expected;
-
-                ~ActiveStreamReset() {
-                    std::lock_guard<std::mutex> lock(mutex);
-                    if (active.get() == expected) {
-                        active.reset();
+            auto tunnel = dial_v2(io);
+            // The synchronous client dial helpers drive io.run() to completion,
+            // which leaves this private context stopped. Restart it before the
+            // asynchronous Tunnel posts its first read and CONTROL writes.
+            io.restart();
+            tunnel->set_allow_server_streams(false);
+            tunnel->set_close_handler([this, &io](const std::string& reason) {
+                handle_disconnect(reason);
+                attempt_alive_.store(false);
+                io.stop();
+            });
+            tunnel->set_control_handler(
+                [weak = weak_from_this(),
+                 source_tunnel = std::weak_ptr<client::Tunnel>(tunnel)](
+                    const nlohmann::json& json) {
+                if (auto self = weak.lock()) {
+                    if (auto source = source_tunnel.lock()) {
+                        boost::asio::post(self->server_io_, [self, source, json] {
+                            self->handle_control(json, source);
+                        });
                     }
                 }
-            } active_stream_reset{write_mutex_, active_stream_, stream.get()};
-            if (!connect_and_auth(io, stream)) {
-                continue;
+            });
+            tunnel->start();
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                tunnel_ = std::move(tunnel);
+                ready_ = false;
+                remote_namespace_for_local_.clear();
+                state_ = "hello";
+                last_error_.clear();
             }
+            attempt_alive_.store(true);
+            util::log_info(
+                "federation peer transport authenticated; awaiting hello: " +
+                peer_.id);
+            send_hello();
             backoff_ms = 1000;
-            std::array<std::uint8_t, kMaxFederationRead> buf{};
-            while (!closing_.load()) {
-                boost::system::error_code ec;
-                std::size_t n = stream->read_some(boost::asio::buffer(buf), ec);
-                if (ec) {
-                    throw boost::system::system_error(ec);
-                }
-                client::TransportCore* transport = nullptr;
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    transport = transport_.get();
-                }
-                if (transport && n > 0) {
-                    transport->feed_tls_bytes(buf.data(), n);
+            const auto hello_deadline =
+                std::chrono::steady_clock::now() + kHelloTimeout;
+            bool hello_timeout_requested = false;
+            // The Tunnel runs on async completion handlers serviced by this
+            // thread until the peer disconnects, the transport fails, or the
+            // link closes.
+            while (!closing_.load() && attempt_alive_.load()) {
+                io.run_for(std::chrono::milliseconds(100));
+                if (!hello_timeout_requested && !is_ready() &&
+                    std::chrono::steady_clock::now() >= hello_deadline) {
+                    hello_timeout_requested = true;
+                    std::shared_ptr<client::Tunnel> active_tunnel;
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        active_tunnel = tunnel_;
+                    }
+                    if (active_tunnel) {
+                        active_tunnel->stop("federation hello timed out");
+                    }
                 }
             }
         } catch (const std::exception& ex) {
             if (!closing_.load()) {
                 handle_disconnect(ex.what());
                 reset_transport();
-                std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
+                if (wait_for_close(std::chrono::milliseconds(backoff_ms))) {
+                    break;
+                }
                 backoff_ms = std::min(backoff_ms * 2, 30000);
+                continue;
             }
+        }
+        reset_transport();
+        if (!closing_.load()) {
+            if (wait_for_close(std::chrono::milliseconds(backoff_ms))) {
+                break;
+            }
+            backoff_ms = std::min(backoff_ms * 2, 30000);
         }
     }
     set_state("closed");
     reset_transport();
 }
 
-bool FederationLink::connect_and_auth(boost::asio::io_context& io,
-                                      const std::shared_ptr<TlsStream>& owned_stream) {
-    TlsStream& stream = *owned_stream;
+std::shared_ptr<client::Tunnel> FederationLink::dial_v2(boost::asio::io_context& io) {
+#if YUME_USE_BASEFWX
+    const client::StopPredicate should_stop =
+        [this] { return closing_.load(); };
+    // ---- TCP dial (optionally through the outbound SOCKS proxy) ----------
+    boost::asio::ip::tcp::socket socket(io);
     if (!cfg_.outbound_proxy_url.empty()) {
         client::outbound_proxy::Config proxy_cfg;
         std::string parse_error;
         if (!client::outbound_proxy::parse_proxy_url(cfg_.outbound_proxy_url, proxy_cfg, &parse_error)) {
             throw std::runtime_error("outbound proxy: " + parse_error);
         }
-        auto result = client::outbound_proxy::socks5_dial(stream.next_layer(),
+        auto result = client::outbound_proxy::socks5_dial(socket,
                                                           io,
                                                           proxy_cfg,
                                                           peer_.host,
                                                           peer_.port,
-                                                          kConnectTimeout);
+                                                          kConnectTimeout,
+                                                          {}, should_stop);
+        if (result.cancelled) {
+            throw std::runtime_error("federation link closing");
+        }
         if (!result.ok) {
             throw std::runtime_error(result.error.empty() ? "proxy dial failed" : result.error);
         }
+        if (closing_.load()) {
+            boost::system::error_code ignored;
+            socket.close(ignored);
+            throw std::runtime_error("federation link closing");
+        }
     } else {
         boost::asio::ip::tcp::resolver resolver(io);
-        auto endpoints = resolver.resolve(peer_.host, std::to_string(peer_.port));
-        boost::asio::connect(stream.next_layer(), endpoints);
+        auto resolved = client::resolve_with_timeout(
+            resolver, io, peer_.host, std::to_string(peer_.port),
+            kConnectTimeout, should_stop);
+        if (resolved.cancelled) {
+            throw std::runtime_error("federation link closing");
+        }
+        if (resolved.timed_out) {
+            throw std::runtime_error("federation DNS resolution timed out");
+        }
+        if (resolved.ec) {
+            throw boost::system::system_error(resolved.ec);
+        }
+        auto connected = client::connect_with_timeout(
+            socket, resolved.endpoints, io, kConnectTimeout, {}, should_stop);
+        if (connected.cancelled) {
+            throw std::runtime_error("federation link closing");
+        }
+        if (connected.timed_out) {
+            throw std::runtime_error("federation connect timed out");
+        }
+        if (connected.ec) {
+            throw boost::system::system_error(connected.ec);
+        }
     }
-    stream.next_layer().set_option(boost::asio::ip::tcp::no_delay(true));
-    SSL_set_tlsext_host_name(stream.native_handle(), peer_.host.c_str());
-    SSL_set1_host(stream.native_handle(), peer_.host.c_str());
-    stream.handshake(boost::asio::ssl::stream_base::client);
-    if (!peer_.tls_pin_sha256.empty() && peer_cert_sha256(stream.native_handle()) != peer_.tls_pin_sha256) {
+    socket.set_option(boost::asio::ip::tcp::no_delay(true));
+
+    // ---- TLS 1.3 with certificate pin ------------------------------------
+    boost::asio::ssl::context ctx(boost::asio::ssl::context::tlsv13_client);
+    ctx.set_options(boost::asio::ssl::context::default_workarounds);
+    SSL_CTX_set_min_proto_version(ctx.native_handle(), TLS1_3_VERSION);
+    SSL_CTX_set_max_proto_version(ctx.native_handle(), TLS1_3_VERSION);
+    // The admitted carrier is RFC 8441 over HTTP/2. A raw Asio client context
+    // advertises no ALPN, so use the same carrier offer as the normal client
+    // path before the handshake; require_h2_carrier_alpn below then verifies
+    // that the peer actually selected h2.
+    obfs::configure_alpn(ctx, false, true);
+    ctx.set_verify_mode(boost::asio::ssl::verify_peer);
+    ctx.set_default_verify_paths();
+    if (!cfg_.federation_anonym_ca.empty()) {
+        ctx.load_verify_file(cfg_.federation_anonym_ca);
+    }
+    client::ClientTransportStream::OpenSslStream tls_stream(std::move(socket), ctx);
+    SSL_set_tlsext_host_name(tls_stream.native_handle(), peer_.host.c_str());
+    SSL_set1_host(tls_stream.native_handle(), peer_.host.c_str());
+    auto handshake = client::handshake_with_timeout(
+        tls_stream, io, kConnectTimeout, should_stop);
+    if (handshake.cancelled) {
+        throw std::runtime_error("federation link closing");
+    }
+    if (handshake.timed_out) {
+        throw std::runtime_error("federation TLS handshake timed out");
+    }
+    if (handshake.ec) {
+        throw std::runtime_error(
+            "federation TLS handshake failed: " + handshake.ec.message());
+    }
+    const std::string fingerprint = peer_cert_sha256(tls_stream.native_handle());
+    if (!peer_.tls_pin_sha256.empty() &&
+        (fingerprint.empty() || fingerprint != peer_.tls_pin_sha256)) {
         throw std::runtime_error("TLS pin mismatch");
     }
 
+    client::TlsConnectionMetadata metadata;
+    metadata.alpn = obfs::selected_alpn(tls_stream.native_handle());
+    metadata.leaf_fingerprint_sha256 = fingerprint;
+    // Channel binding comes from our own live connection and never crosses
+    // the wire. Transfer the one exporter buffer directly into the stream so
+    // there is no second secret-bearing vector to wipe on exceptional paths.
+    metadata.exporter =
+        security::ExportChannelBinding(tls_stream.native_handle());
+    client::ClientTransportStream stream(std::move(tls_stream));
+    stream.set_metadata(std::move(metadata));
+
+    // ---- Carrier admission ------------------------------------------------
+    // A YUME 2.0 AUTH challenge is only issued behind the admitted H2
+    // carrier, so a federating dial passes the same gate as any client.
+    client::require_h2_carrier_alpn(stream, peer_.host, peer_.port);
+    std::vector<uint8_t> prefetched;
+    std::unique_ptr<obfs::H2Carrier> carrier;
+    client::perform_h2_carrier_handshake(stream, io, peer_.host, peer_.port,
+                                 carrier_secret_, &prefetched, &carrier, {},
+                                 should_stop);
+
+    // ---- AUTH v2 ----------------------------------------------------------
     set_state("authenticating");
-    protocol::Frame challenge = protocol::read_frame(stream);
-    if (challenge.header.type != protocol::AUTH) {
-        throw std::runtime_error("peer did not send AUTH challenge");
+    protocol::Frame challenge = client::read_auth_challenge(
+        stream, io, peer_.host, peer_.port, &prefetched, carrier.get(),
+        should_stop);
+    const auto ratchet_policy =
+        ratchet::ResolveSecurityProfile(cfg_.security_profile);
+    if (!ratchet_policy.has_value()) {
+        throw std::runtime_error("invalid local security profile for federation");
     }
+    auto ratchet = client::send_auth_v2_response(
+        stream, io, cfg_.federation_identity, challenge, psk_,
+        stream.take_exporter(), *carrier,
+        ratchet::ClampRekeyWindow(cfg_.rekey_window), *ratchet_policy, {},
+        should_stop);
 
-    std::optional<crypto::Bytes> pq_ciphertext;
-    std::optional<crypto::Bytes> pq_salt;
-    std::optional<crypto::Bytes> inner_key;
-    std::optional<std::string> inner_mode;
-    std::optional<bool> inner_hop;
-    std::optional<inner::KdfParams> inner_kdf;
-    if (!cached_peer_pq_public_path_.empty()) {
-        inner::Config inner_cfg;
-        inner_cfg.enabled = true;
-        inner_cfg.pq_public_key = cached_peer_pq_public_path_;
-        inner_cfg.allow_embedded_master = cfg_.allow_embedded_master;
-        inner_cfg.argon2_limits = parse_argon2_limits(challenge);
-        auto hs = inner::client_prepare(inner_cfg, cfg_.inner_heavy);
-        if (!hs.enabled || hs.key.empty()) {
-            throw std::runtime_error("inner crypto init failed");
-        }
-        pq_ciphertext = hs.pq_ciphertext;
-        pq_salt = hs.salt;
-        inner_key = hs.key;
-        inner_mode = cfg_.inner_heavy ? std::optional<std::string>("heavy")
-                                      : std::optional<std::string>("light");
-        inner_hop = cfg_.inner_hop;
-        if (!hs.kdf.empty()) {
-            inner::KdfParams params;
-            params.name = hs.kdf;
-            params.argon2_time = hs.argon2_time;
-            params.argon2_memory = hs.argon2_memory;
-            params.argon2_parallelism = hs.argon2_parallelism;
-            params.pbkdf2_iters = hs.pbkdf2_iters;
-            inner_kdf = params;
-        }
-    }
-
-    auto kp = crypto::load_keypair(cfg_.federation_auth_key, "");
-    crypto::Bytes signature = crypto::sign_message(kp.private_key.get(), challenge.payload);
-    crypto::Bytes payload = auth_payload(kp.public_key.get() ? kp.public_key.get() : kp.private_key.get(),
-                                         signature,
-                                         pq_ciphertext,
-                                         pq_salt,
-                                         inner_mode,
-                                         inner_hop,
-                                         inner_kdf);
-    protocol::Frame auth{{static_cast<std::uint32_t>(payload.size()), protocol::AUTH, 0, 0}, payload};
-    protocol::send_frame(stream, auth);
-
-    protocol::Frame anon = protocol::read_frame(stream);
+    protocol::Frame sealed_info = client::read_frame_over_h2_with_timeout(
+        stream, io, *carrier, &prefetched,
+        client::kServerInfoTimeout, "federation server info",
+        peer_.host, peer_.port, should_stop);
+    protocol::Frame anon = client::open_auth_ok_v2(*ratchet, sealed_info);
     if (anon.header.type != protocol::ANON) {
-        throw std::runtime_error("peer did not send server info");
+        throw std::runtime_error("federation peer did not send server info");
     }
-    nlohmann::json info = nlohmann::json::parse(std::string(anon.payload.begin(), anon.payload.end()));
+    nlohmann::json info = nlohmann::json::parse(
+        std::string(anon.payload.begin(), anon.payload.end()));
     const std::string server_error = info.value("error", "");
     if (!server_error.empty()) {
-        std::string pq_path;
-        std::string pq_error;
-        if (!inner_key && configure_inner_from_server_info(info, &pq_path, &pq_error)) {
-            cached_peer_pq_public_path_ = pq_path;
-            set_state("dialing", "peer requested inner crypto; retrying with PQ");
-            return false;
-        }
-        throw std::runtime_error(server_error);
+        throw std::runtime_error("federation peer refused auth: " + server_error);
     }
 
-    auto transport = std::make_unique<client::TransportCore>();
-    transport->set_write_handler([this](std::shared_ptr<client::TransportCore::Bytes> data,
-                                        client::TransportCore::WriteCompletion done) {
-        boost::system::error_code ec;
-        std::size_t n = 0;
+    // ---- Hand the established session to its Tunnel -----------------------
+    auto tunnel = std::make_shared<client::Tunnel>(
+        std::move(stream), std::move(carrier), std::move(prefetched),
+        std::move(ratchet));
+    return tunnel;
+#else
+    (void)io;
+    throw std::runtime_error("YUME 2.0 federation requires BaseFWX");
+#endif
+}
+
+void FederationLink::handle_control(
+    const nlohmann::json& json,
+    const std::shared_ptr<client::Tunnel>& source_tunnel) {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!source_tunnel || tunnel_ != source_tunnel) {
+            return;
+        }
+    }
+    if (!json.is_object() || !json.contains("cmd") ||
+        !json["cmd"].is_string()) {
+        util::log_warn("federation peer sent a malformed control message");
+        return;
+    }
+    const std::string cmd = json["cmd"].get<std::string>();
+    if (cmd == "federation.hello") {
+        const bool valid = json.size() == 6U &&
+            json.contains("ok") && json["ok"].is_boolean() &&
+            json["ok"].get<bool>() &&
+            json.contains("peer_id") && json["peer_id"].is_string() &&
+            json.contains("your_peer_id") &&
+            json["your_peer_id"].is_string() &&
+            json.contains("server_id") && json["server_id"].is_string() &&
+            json.contains("server_name") &&
+            json["server_name"].is_string() &&
+            json["peer_id"].get_ref<const std::string&>() ==
+                json["your_peer_id"].get_ref<const std::string&>() &&
+            is_valid_federation_peer_id(
+                json["your_peer_id"].get_ref<const std::string&>()) &&
+            control::is_valid_directory_server_identity(
+                json["server_id"].get_ref<const std::string&>(),
+                json["server_name"].get_ref<const std::string&>(), true);
+        if (!valid) {
+            util::log_warn(
+                "federation peer " + peer_.id +
+                " returned an invalid or rejected hello");
+            std::shared_ptr<client::Tunnel> tunnel;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                ready_ = false;
+                state_ = "failed";
+                last_error_ = "invalid federation hello";
+                tunnel = tunnel_;
+            }
+            if (tunnel) {
+                tunnel->stop("invalid federation hello");
+            }
+            return;
+        }
+        const std::string remote_namespace =
+            json["your_peer_id"].get<std::string>();
+        bool became_ready = false;
+        bool namespace_changed = false;
+        std::shared_ptr<client::Tunnel> tunnel;
         {
-            std::lock_guard<std::mutex> lock(write_mutex_);
-            if (!active_stream_) {
-                if (done) {
-                    done(false, 0, "federation stream unavailable");
-                }
+            std::lock_guard<std::mutex> lock(mutex_);
+            tunnel = tunnel_;
+            if (!tunnel_) {
                 return;
             }
-            n = boost::asio::write(*active_stream_, boost::asio::buffer(*data), ec);
+            if (ready_) {
+                namespace_changed =
+                    remote_namespace_for_local_ != remote_namespace;
+            } else if (state_ == "hello") {
+                remote_namespace_for_local_ = remote_namespace;
+                ready_ = true;
+                last_handshake_ts_ = epoch_now_ms();
+                state_ = "ready";
+                last_error_.clear();
+                became_ready = true;
+            } else {
+                namespace_changed = true;
+            }
+            if (namespace_changed) {
+                ready_ = false;
+                state_ = "failed";
+                last_error_ = "federation hello changed namespace or state";
+            }
         }
-        if (done) {
-            done(!ec, n, ec ? ec.message() : std::string{});
+        if (namespace_changed) {
+            util::log_warn(
+                "federation peer " + peer_.id +
+                " changed its accepted hello namespace or state");
+            if (tunnel) {
+                tunnel->stop("federation hello namespace changed");
+            }
+            return;
         }
-    });
-    transport->set_close_transport_handler([this](const std::string& reason) {
-        handle_disconnect(reason);
-    });
-    transport->set_control_handler([weak = weak_from_this()](const nlohmann::json& json) {
-        if (auto self = weak.lock()) {
-            boost::asio::post(self->server_io_, [self, json] {
-                self->handle_control(json);
-            });
+        if (became_ready) {
+            util::log_info("federation peer ready: " + peer_.id);
+            request_directory();
         }
-    });
-    if (inner_key) {
-        transport->set_inner_key(*inner_key);
-        const bool hop_enabled = info.value("hop_enabled", false);
-        const std::uint32_t hop_interval = static_cast<std::uint32_t>(info.value("hop_interval_ms", 0));
-        const std::int64_t server_time = info.value("server_time_ms", 0LL);
-        transport->set_hop(hop_enabled, hop_interval, server_time == 0 ? 0 : server_time - epoch_now_ms());
+        return;
     }
-    transport->start();
-    {
-        std::lock_guard<std::mutex> write_lock(write_mutex_);
-        // The dial loop's scope guard clears this slot before the stream and
-        // its io_context are destroyed; the counted reference means a racing
-        // writer can only ever see a live stream or an empty slot.
-        active_stream_ = owned_stream;
-    }
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        transport_ = std::move(transport);
-        ready_ = true;
-        last_handshake_ts_ = epoch_now_ms();
-        state_ = "ready";
-        last_error_.clear();
-    }
-    util::log_info("federation peer ready: " + peer_.id);
-    client::TransportCore* t = nullptr;
+    bool command_before_hello = false;
+    std::shared_ptr<client::Tunnel> pre_hello_tunnel;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        t = transport_.get();
-    }
-    if (t) {
-        t->send_control_json({{"cmd", "federation.hello"},
-                              {"peer_id", cfg_.server_id},
-                              {"server_id", cfg_.server_id},
-                              {"server_name", cfg_.server_name}});
-    }
-    request_directory();
-    return true;
-}
-
-bool FederationLink::configure_inner_from_server_info(const nlohmann::json& info,
-                                                      std::string* pq_public_path,
-                                                      std::string* error) {
-    const std::string pq_pub_b64 = info.value("pq_pub", "");
-    if (pq_pub_b64.empty()) {
-        if (error) {
-            *error = "peer did not provide pq_pub";
+        if (!ready_) {
+            command_before_hello = true;
+            state_ = "failed";
+            last_error_ = "federation command received before accepted hello";
+            pre_hello_tunnel = tunnel_;
         }
-        return false;
     }
-    std::string raw = util::base64_decode(pq_pub_b64);
-    if (raw.empty()) {
-        if (error) {
-            *error = "peer pq_pub decode failed";
+    if (command_before_hello) {
+        util::log_warn(
+            "federation peer " + peer_.id +
+            " sent an application command before accepted hello");
+        if (pre_hello_tunnel) {
+            pre_hello_tunnel->stop(
+                "federation application command before hello");
         }
-        return false;
-    }
-    try {
-        if (pq_public_path) {
-            *pq_public_path = write_temp_pq_public(peer_.id, raw);
-        }
-        return true;
-    } catch (const std::exception& ex) {
-        if (error) {
-            *error = ex.what();
-        }
-        return false;
-    }
-}
-
-void FederationLink::handle_control(const nlohmann::json& json) {
-    const std::string cmd = json.value("cmd", "");
-    if (cmd == "federation.hello") {
-        std::lock_guard<std::mutex> lock(mutex_);
-        remote_namespace_for_local_ = json.value("your_peer_id", remote_namespace_for_local_);
         return;
     }
     if (cmd == "federation.directory") {
-        std::vector<control::EndpointInfo> endpoints;
-        if (json.contains("endpoints") && json["endpoints"].is_array()) {
-            for (const auto& item : json["endpoints"]) {
-                endpoints.push_back(control::endpoint_from_json(item));
+        std::string parse_error;
+        auto directory = control::try_directory_response_from_json(
+            json, control::DirectoryNamespace::FederationRaw, &parse_error);
+        if (!directory) {
+            util::log_warn(
+                "federation peer " + peer_.id +
+                " sent an invalid directory response: " +
+                (parse_error.empty() ? "policy violation" : parse_error));
+            if (owner_) owner_->clear_directory(peer_.id);
+            std::shared_ptr<client::Tunnel> tunnel;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                tunnel = tunnel_;
             }
+            if (tunnel) {
+                tunnel->stop("invalid federation directory response");
+            }
+            return;
         }
         if (owner_) {
             owner_->update_directory(peer_.id,
-                                     json.value("server_id", ""),
-                                     json.value("server_name", ""),
-                                     endpoints);
+                                     directory->server_id,
+                                     directory->server_name,
+                                     directory->endpoints);
         }
         return;
     }
     if (cmd == "federation.invite.reply" || cmd == "invite.reply") {
+        if (!json.contains("channel_kind") ||
+            !json["channel_kind"].is_string() ||
+            !control::try_relay_channel_kind(
+                json["channel_kind"].get_ref<const std::string&>())) {
+            util::log_warn("federation invite reply has an invalid channel kind");
+            return;
+        }
         std::shared_ptr<Session> initiator;
         control::PendingInvite invite;
         std::string error;
-        if (owner_ && owner_->handle_invite_reply(peer_.id,
-                                                  control::invite_from_json(json),
+        const auto parsed_invite = control::try_relay_invite_from_json(json);
+        if (owner_ && parsed_invite && owner_->handle_invite_reply(peer_.id,
+                                                  *parsed_invite,
                                                   &initiator,
                                                   &invite,
                                                   &error) && initiator) {
@@ -600,37 +645,53 @@ void FederationLink::handle_control(const nlohmann::json& json) {
     }
 }
 
-void FederationLink::request_directory() {
-    client::TransportCore* transport = nullptr;
+void FederationLink::send_hello() {
+    std::shared_ptr<client::Tunnel> tunnel;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!ready_ || !transport_) {
+        tunnel = tunnel_;
+    }
+    if (tunnel) {
+        tunnel->send_control_json({{"cmd", "federation.hello"},
+                                   {"peer_id", cfg_.server_id},
+                                   {"server_id", cfg_.server_id},
+                                   {"server_name", cfg_.server_name}});
+    }
+}
+
+void FederationLink::request_directory() {
+    std::shared_ptr<client::Tunnel> tunnel;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!ready_) {
             return;
         }
-        transport = transport_.get();
+        tunnel = tunnel_;
     }
-    transport->send_control_json({{"cmd", "federation.directory"},
-                                  {"request_id", "dir-" + std::to_string(epoch_now_ms())}});
+    if (tunnel) {
+        tunnel->send_control_json({{"cmd", "federation.directory"},
+                                   {"request_id", "dir-" + std::to_string(epoch_now_ms())}});
+    }
 }
 
 bool FederationLink::send_invite_request(const control::PendingInvite& invite,
                                          const std::string& raw_remote_id,
                                          std::string* error) {
-    client::TransportCore* transport = nullptr;
+    std::shared_ptr<client::Tunnel> tunnel;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!ready_ || !transport_) {
+        if (!ready_ || !tunnel_) {
             if (error) {
                 *error = "federation peer not ready";
             }
             return false;
         }
-        transport = transport_.get();
+        tunnel = tunnel_;
     }
     nlohmann::json req = control::invite_to_json(invite, false);
     req["cmd"] = "federation.invite.request";
     req["raw_to_id"] = raw_remote_id;
-    transport->send_control_json(req);
+    tunnel->send_control_json(req);
     return true;
 }
 
@@ -639,154 +700,395 @@ bool FederationLink::open_channel(const std::shared_ptr<Session>& origin,
                                   const control::PendingInvite& invite,
                                   const nlohmann::json& open_json,
                                   std::string* error) {
-    client::TransportCore* transport = nullptr;
+    std::shared_ptr<client::Tunnel> tunnel;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!ready_ || !transport_) {
+        if (!ready_ || !tunnel_) {
             if (error) {
                 *error = "federation peer not ready";
             }
             return false;
         }
-        transport = transport_.get();
+        tunnel = tunnel_;
     }
-    const std::uint8_t remote_stream = transport->reserve_stream_id();
+    const std::uint8_t remote_stream = tunnel->reserve_stream_id();
     if (remote_stream == 0) {
         if (error) {
             *error = "no federation stream ids available";
         }
         return false;
     }
-    if (!origin->attach_federated_stream(
+    bool attached = false;
+    try {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!ready_ || tunnel_ != tunnel) {
+            tunnel->release_reserved_stream(remote_stream);
+            if (error) {
+                *error = "federation peer disconnected during open";
+            }
+            return false;
+        }
+        const auto [channel_it, inserted] = channels_.emplace(
+            remote_stream,
+            LinkChannel{origin, origin_stream_id, remote_stream,
+                        invite.invite_id, true});
+        (void)channel_it;
+        if (!inserted) {
+            tunnel->release_reserved_stream(remote_stream);
+            if (error) {
+                *error = "federation stream id is already registered";
+            }
+            return false;
+        }
+        attached = origin->attach_federated_stream(
             origin_stream_id,
             invite.channel_kind,
             invite.invite_id,
             invite.from_endpoint_id,
             invite.to_endpoint_id,
-            [weak = weak_from_this(), remote_stream](const crypto::Bytes& payload) {
+            [weak = weak_from_this(), remote_stream,
+             channel_id = invite.invite_id](
+                const crypto::Bytes& payload,
+                runtime::InboundCredit inbound_credit) {
                 if (auto self = weak.lock()) {
-                    self->send_data(remote_stream, payload);
+                    self->send_data(remote_stream, channel_id, payload,
+                                    std::move(inbound_credit));
                 }
             },
-            [weak = weak_from_this(), remote_stream](const std::string& reason) {
+            [weak = weak_from_this(), remote_stream,
+             channel_id = invite.invite_id](const std::string& reason) {
                 if (auto self = weak.lock()) {
-                    self->close_channel(remote_stream, reason);
+                    self->close_channel(remote_stream, channel_id, reason);
                 }
-            })) {
-        transport->release_reserved_stream(remote_stream);
+            });
+        if (!attached) {
+            channels_.erase(remote_stream);
+            tunnel->release_reserved_stream(remote_stream);
+            if (error) {
+                *error = "stream already exists";
+            }
+            return false;
+        }
+        channels_active_ = static_cast<std::uint32_t>(channels_.size());
+    } catch (const std::exception& ex) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            channels_.erase(remote_stream);
+            channels_active_ = static_cast<std::uint32_t>(channels_.size());
+        }
+        tunnel->release_reserved_stream(remote_stream);
         if (error) {
-            *error = "stream already exists";
+            *error = std::string("federation stream registration failed: ") +
+                     ex.what();
         }
         return false;
     }
 
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        channels_[remote_stream] = LinkChannel{origin, origin_stream_id, remote_stream, invite.invite_id};
-        channels_active_ = static_cast<std::uint32_t>(channels_.size());
-    }
-    transport->register_stream(
-        remote_stream,
-        [weak = weak_from_this(), remote_stream](const client::TransportCore::Bytes& payload) {
-            if (auto self = weak.lock()) {
-                std::weak_ptr<Session> origin;
-                std::uint8_t origin_stream = 0;
-                {
-                    std::lock_guard<std::mutex> lock(self->mutex_);
-                    auto it = self->channels_.find(remote_stream);
-                    if (it == self->channels_.end()) {
-                        return;
-                    }
-                    origin = it->second.origin;
-                    origin_stream = it->second.origin_stream;
-                }
-                if (auto session = origin.lock()) {
-                    boost::asio::post(self->server_io_, [session, origin_stream, payload] {
-                        session->send_federated_data(origin_stream, payload);
-                    });
-                }
-            }
-        },
-        [weak = weak_from_this(), remote_stream](const std::string& reason) {
-            if (auto self = weak.lock()) {
-                std::weak_ptr<Session> origin;
-                std::uint8_t origin_stream = 0;
-                {
-                    std::lock_guard<std::mutex> lock(self->mutex_);
-                    auto it = self->channels_.find(remote_stream);
-                    if (it == self->channels_.end()) {
-                        return;
-                    }
-                    origin = it->second.origin;
-                    origin_stream = it->second.origin_stream;
-                    self->channels_.erase(it);
-                    self->channels_active_ = static_cast<std::uint32_t>(self->channels_.size());
-                }
-                if (auto session = origin.lock()) {
-                    boost::asio::post(self->server_io_, [session, origin_stream, reason] {
-                        session->send_federated_close(origin_stream, reason);
-                    });
-                }
-            }
-        });
-
-    nlohmann::json forwarded = open_json;
-    transport->open_relay_stream(
-        remote_stream,
-        forwarded,
-        [weak = weak_from_this(), origin, origin_stream_id, remote_stream](bool ok, const std::string& reason) {
-            if (auto self = weak.lock()) {
-                boost::asio::post(self->server_io_, [self, origin, origin_stream_id, remote_stream, ok, reason] {
-                    origin->complete_federated_open(origin_stream_id, ok, reason);
-                    if (!ok) {
+    try {
+        tunnel->register_stream(
+            remote_stream,
+            [weak = weak_from_this(), remote_stream,
+             channel_id = invite.invite_id](
+                const client::Tunnel::Bytes& payload,
+                client::Tunnel::InboundCredit inbound_credit) {
+                if (auto self = weak.lock()) {
+                    std::weak_ptr<Session> origin_session;
+                    std::uint8_t origin_stream = 0;
+                    bool open_pending = false;
+                    {
                         std::lock_guard<std::mutex> lock(self->mutex_);
-                        self->channels_.erase(remote_stream);
-                        self->channels_active_ = static_cast<std::uint32_t>(self->channels_.size());
+                        const auto it = self->channels_.find(remote_stream);
+                        if (it == self->channels_.end() ||
+                            it->second.channel_id != channel_id) {
+                            return;
+                        }
+                        origin_session = it->second.origin;
+                        origin_stream = it->second.origin_stream;
+                        open_pending = it->second.open_pending;
                     }
-                });
-            }
-        });
+                    if (open_pending) {
+                        self->fail_channel(
+                            remote_stream, channel_id,
+                            "federation DATA arrived before OPEN completion");
+                        return;
+                    }
+                    if (auto session = origin_session.lock()) {
+                        try {
+                            boost::asio::post(
+                                self->server_io_,
+                                [session, origin_stream, payload,
+                                 inbound_credit =
+                                     std::move(inbound_credit)]() mutable {
+                                session->send_federated_data(
+                                    origin_stream, payload,
+                                    std::move(inbound_credit));
+                            });
+                            return;
+                        } catch (const std::exception&) {
+                        }
+                    }
+                    self->fail_channel(remote_stream, channel_id,
+                                       "federation relay origin unavailable");
+                }
+            },
+            [weak = weak_from_this(), remote_stream,
+             channel_id = invite.invite_id](const std::string& reason) {
+                if (auto self = weak.lock()) {
+                    self->handle_remote_channel_close(
+                        remote_stream, channel_id, reason);
+                }
+            });
+
+        tunnel->open_relay_stream(
+            remote_stream,
+            open_json,
+            [weak = weak_from_this(), remote_stream,
+             channel_id = invite.invite_id](
+                bool ok, const std::string& reason) {
+                if (auto self = weak.lock()) {
+                    self->complete_channel_open(
+                        remote_stream, channel_id, ok, reason);
+                }
+            });
+    } catch (const std::exception& ex) {
+        // Ownership of the local OPEN transferred when attach succeeded.
+        // Complete it here instead of returning false and making the caller
+        // emit a second negative ACK.
+        complete_channel_open(
+            remote_stream, invite.invite_id, false,
+            std::string("federation OPEN failed: ") + ex.what());
+    } catch (...) {
+        complete_channel_open(remote_stream, invite.invite_id, false,
+                              "federation OPEN failed");
+    }
     return true;
 }
 
-void FederationLink::close_channel(std::uint8_t remote_stream, const std::string& reason) {
-    client::TransportCore* transport = nullptr;
+void FederationLink::complete_channel_open(
+    std::uint8_t remote_stream,
+    const std::string& channel_id,
+    bool ok,
+    const std::string& reason) {
+    std::weak_ptr<Session> origin_session;
+    std::uint8_t origin_stream = 0;
+    std::shared_ptr<client::Tunnel> tunnel;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (transport_) {
-            transport = transport_.get();
+        const auto it = channels_.find(remote_stream);
+        if (it == channels_.end() || it->second.channel_id != channel_id ||
+            !it->second.open_pending) {
+            return;
         }
-        channels_.erase(remote_stream);
-        channels_active_ = static_cast<std::uint32_t>(channels_.size());
+        it->second.open_pending = false;
+        origin_session = it->second.origin;
+        origin_stream = it->second.origin_stream;
+        tunnel = tunnel_;
+        if (!ok) {
+            channels_.erase(it);
+            channels_active_ =
+                static_cast<std::uint32_t>(channels_.size());
+        }
     }
-    if (transport) {
-        transport->send_close(remote_stream, reason);
-        transport->unregister_stream(remote_stream);
+    if (!ok && tunnel) {
+        tunnel->unregister_stream(remote_stream);
+    }
+    if (auto session = origin_session.lock()) {
+        try {
+            boost::asio::post(
+                server_io_, [session, origin_stream, ok, reason] {
+                    session->complete_federated_open(origin_stream, ok, reason);
+                });
+            return;
+        } catch (const std::exception&) {
+            session->complete_federated_open(origin_stream, ok, reason);
+            return;
+        }
+    }
+    if (ok) {
+        fail_channel(remote_stream, channel_id,
+                     "federation relay origin unavailable");
     }
 }
 
-void FederationLink::send_data(std::uint8_t remote_stream, const client::TransportCore::Bytes& payload) {
-    client::TransportCore* transport = nullptr;
+void FederationLink::handle_remote_channel_close(
+    std::uint8_t remote_stream,
+    const std::string& channel_id,
+    const std::string& reason) {
+    LinkChannel channel;
+    std::shared_ptr<client::Tunnel> tunnel;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!ready_ || !transport_) {
+        const auto it = channels_.find(remote_stream);
+        if (it == channels_.end() || it->second.channel_id != channel_id) {
             return;
         }
-        transport = transport_.get();
+        channel = std::move(it->second);
+        channels_.erase(it);
+        channels_active_ = static_cast<std::uint32_t>(channels_.size());
+        tunnel = tunnel_;
     }
-    transport->send_data(remote_stream, payload);
+    if (tunnel) {
+        tunnel->unregister_stream(remote_stream);
+    }
+    if (auto session = channel.origin.lock()) {
+        try {
+            boost::asio::post(
+                server_io_, [session, origin_stream = channel.origin_stream,
+                             open_pending = channel.open_pending, reason] {
+                    if (open_pending) {
+                        session->complete_federated_open(
+                            origin_stream, false, reason);
+                    } else {
+                        session->send_federated_close(origin_stream, reason);
+                    }
+                });
+        } catch (const std::exception&) {
+            if (channel.open_pending) {
+                session->complete_federated_open(
+                    channel.origin_stream, false, reason);
+            } else {
+                session->send_federated_close(
+                    channel.origin_stream, reason);
+            }
+        }
+    }
+}
+
+void FederationLink::fail_channel(std::uint8_t remote_stream,
+                                  const std::string& channel_id,
+                                  const std::string& reason) {
+    LinkChannel channel;
+    std::shared_ptr<client::Tunnel> tunnel;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto it = channels_.find(remote_stream);
+        if (it == channels_.end() || it->second.channel_id != channel_id) {
+            return;
+        }
+        channel = std::move(it->second);
+        channels_.erase(it);
+        channels_active_ = static_cast<std::uint32_t>(channels_.size());
+        tunnel = tunnel_;
+    }
+    if (tunnel) {
+        try {
+            tunnel->send_close(remote_stream, reason);
+        } catch (const std::exception&) {
+        }
+        tunnel->unregister_stream(remote_stream);
+    }
+    if (auto session = channel.origin.lock()) {
+        try {
+            boost::asio::post(
+                server_io_, [session, origin_stream = channel.origin_stream,
+                             open_pending = channel.open_pending, reason] {
+                    if (open_pending) {
+                        session->complete_federated_open(
+                            origin_stream, false, reason);
+                    } else {
+                        session->send_federated_close(origin_stream, reason);
+                    }
+                });
+        } catch (const std::exception&) {
+            if (channel.open_pending) {
+                session->complete_federated_open(
+                    channel.origin_stream, false, reason);
+            } else {
+                session->send_federated_close(
+                    channel.origin_stream, reason);
+            }
+        }
+    }
+}
+
+void FederationLink::close_channel(std::uint8_t remote_stream,
+                                   const std::string& channel_id,
+                                   const std::string& reason) {
+    std::shared_ptr<client::Tunnel> tunnel;
+    bool removed = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto it = channels_.find(remote_stream);
+        if (it == channels_.end() || it->second.channel_id != channel_id) {
+            return;
+        }
+        tunnel = tunnel_;
+        channels_.erase(it);
+        removed = true;
+        channels_active_ = static_cast<std::uint32_t>(channels_.size());
+    }
+    if (removed && tunnel) {
+        try {
+            tunnel->send_close(remote_stream, reason);
+        } catch (const std::exception&) {
+        }
+        tunnel->unregister_stream(remote_stream);
+    }
+}
+
+void FederationLink::send_data(
+    std::uint8_t remote_stream,
+    const std::string& channel_id,
+    const client::Tunnel::Bytes& payload,
+    client::Tunnel::InboundCredit inbound_credit) {
+    std::shared_ptr<client::Tunnel> tunnel;
+    bool invalid_channel = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto it = channels_.find(remote_stream);
+        if (!ready_ || !tunnel_ || it == channels_.end() ||
+            it->second.channel_id != channel_id || it->second.open_pending) {
+            invalid_channel = true;
+        } else {
+            tunnel = tunnel_;
+        }
+    }
+    if (invalid_channel) {
+        fail_channel(remote_stream, channel_id,
+                     "federation channel is not ready for DATA");
+        return;
+    }
+
+    try {
+        auto retained_credit =
+            std::make_shared<client::Tunnel::InboundCredit>(
+                std::move(inbound_credit));
+        client::Tunnel::Bytes forwarded(payload);
+        auto completion_credit = retained_credit;
+        (void)tunnel->try_send_data(
+            remote_stream, std::move(forwarded),
+            [weak = weak_from_this(), remote_stream, channel_id,
+             retained_credit = std::move(completion_credit)](
+                bool ok, std::size_t, const std::string& write_error) {
+                retained_credit->release_now();
+                if (!ok) {
+                    if (auto self = weak.lock()) {
+                        self->fail_channel(
+                            remote_stream, channel_id,
+                            write_error.empty()
+                                ? "federation DATA write was not admitted"
+                                : write_error);
+                    }
+                }
+            });
+    } catch (const std::exception& ex) {
+        fail_channel(remote_stream, channel_id,
+                     std::string("federation DATA forwarding failed: ") +
+                         ex.what());
+    } catch (...) {
+        fail_channel(remote_stream, channel_id,
+                     "federation DATA forwarding failed");
+    }
 }
 
 void FederationLink::handle_disconnect(const std::string& reason) {
     if (closing_.load()) {
         return;
     }
-    set_state("closed", reason);
-    std::lock_guard<std::mutex> lock(write_mutex_);
-    if (active_stream_) {
-        boost::system::error_code ec;
-        active_stream_->lowest_layer().close(ec);
-    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    ready_ = false;
+    state_ = "closed";
+    last_error_ = reason;
 }
 
 }  // namespace yume::server

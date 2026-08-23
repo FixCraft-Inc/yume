@@ -33,7 +33,31 @@ constexpr std::size_t kMaxRequestHeaders = 32U * 1024U;
 constexpr std::size_t kMaxResponseHeaders = 64U * 1024U;
 constexpr std::size_t kMaxResponseBody = 8U * 1024U * 1024U;
 constexpr std::size_t kMaxQueuedOutput = 32U * 1024U * 1024U;
-constexpr std::int32_t kAuthenticatedReceiveWindow = 2 * 1024 * 1024;
+constexpr std::size_t kMaxPendingServerRequests = 64U;
+constexpr std::size_t kMaxPendingServerStreamCloses = 256U;
+// Receive window advertised on the carrier once the peer is authenticated.
+//
+// This is the binding constraint on inbound throughput at WAN latency, not the
+// ratchet and not TCP: a window of W delivers at most W/RTT, so 2 MiB capped a
+// 60 ms path near 280 Mbit/s while the kernel's autotuned TCP window had
+// already grown to ~3.9 MB (545 Mbit/s) underneath it. 8 MiB is approximately
+// one bandwidth-delay product for a 1 Gbit/s path at 60 ms (7.5 MB). It does
+// not guarantee uninterrupted 1 Gbit/s delivery: nghttp2 normally sends a
+// WINDOW_UPDATE after roughly half the window is consumed, so the remaining
+// credit must also cover the update's return trip.
+//
+// The WINDOW_UPDATE increment is TLS-encrypted and its frame remains 13 bytes,
+// so the magnitude is not directly visible. A larger receive window can still
+// change externally observable burst and timing geometry, and therefore needs
+// separate capture and classifier evidence.
+//
+// Why not larger. Server receive credit is now returned explicitly after
+// WebSocket framing is handled and tunnel payload drains downstream, so a fast
+// peer stalls at this bounded window instead of filling application queues.
+// Increasing it would still enlarge retained protocol/parser state and change
+// WINDOW_UPDATE timing; that belongs with separate WAN and classifier evidence.
+// See docs/YUME_2_0_WAN_BEHAVIOR.md.
+constexpr std::int32_t kAuthenticatedReceiveWindow = 8 * 1024 * 1024;
 
 nghttp2_nv Nv(std::string& name, std::string& value) {
     return nghttp2_nv{
@@ -87,7 +111,8 @@ public:
                   std::shared_ptr<OuterCarrierTrace> outer_trace)
         : role_(role),
           websocket_(role == H2CarrierRole::Client ? WebSocketRole::Client
-                                                   : WebSocketRole::Server),
+                                                   : WebSocketRole::Server,
+                     cover_profile::active().websocket_message_bytes),
           outer_trace_(std::move(outer_trace)),
           inbound_preface_pending_(role == H2CarrierRole::Server) {
         if (outer_trace_) {
@@ -106,10 +131,19 @@ public:
         nghttp2_session_callbacks_set_on_stream_close_callback(
             callbacks, &Impl::OnStreamClose);
 
+        nghttp2_option* raw_option = nullptr;
+        Check(nghttp2_option_new(&raw_option),
+              "allocate HTTP/2 receive-credit options");
+        const std::unique_ptr<nghttp2_option, decltype(&nghttp2_option_del)>
+            option(raw_option, &nghttp2_option_del);
+        nghttp2_option_set_no_auto_window_update(option.get(), 1);
+
         nghttp2_session* session = nullptr;
         const int rv = role_ == H2CarrierRole::Client
-            ? nghttp2_session_client_new(&session, callbacks, this)
-            : nghttp2_session_server_new(&session, callbacks, this);
+            ? nghttp2_session_client_new2(
+                  &session, callbacks, this, option.get())
+            : nghttp2_session_server_new2(
+                  &session, callbacks, this, option.get());
         Check(rv, "create HTTP/2 session");
         session_.reset(session);
 
@@ -222,11 +256,34 @@ public:
         return out;
     }
 
+    std::vector<H2StreamClose> TakeStreamCloses() {
+        std::vector<H2StreamClose> out;
+        out.swap(stream_closes_);
+        return out;
+    }
+
+    bool RefuseStream(std::int32_t stream_id) {
+        if (role_ != H2CarrierRole::Server || stream_id <= 0 || failed()) {
+            return Fail("invalid HTTP/2 stream refusal");
+        }
+        if (!CheckBool(nghttp2_submit_rst_stream(
+                           session_.get(), NGHTTP2_FLAG_NONE, stream_id,
+                           NGHTTP2_REFUSED_STREAM),
+                       "refuse saturated HTTP/2 stream")) {
+            return false;
+        }
+        Flush();
+        return !failed();
+    }
+
     bool RespondHttp(std::int32_t stream_id, unsigned status,
                      const H2Headers& input_headers, H2Bytes body,
                      bool head_request) {
         if (role_ != H2CarrierRole::Server || status < 100 || status > 599 ||
-            body.size() > kMaxResponseBody || responded_streams_.count(stream_id) != 0) {
+            body.size() > kMaxResponseBody ||
+            body.size() > kMaxQueuedOutput -
+                std::min(kMaxQueuedOutput, queued_output_bytes()) ||
+            responded_streams_.count(stream_id) != 0) {
             return Fail("invalid or duplicate HTTP/2 response");
         }
         H2Headers headers{{":status", std::to_string(status)}};
@@ -253,14 +310,19 @@ public:
             OutboundStream state{true};
             state.queued_bytes = body.size();
             state.chunks.push_back(std::move(body));
-            outbound_streams_.emplace(stream_id, std::move(state));
+            if (!outbound_streams_.emplace(stream_id, std::move(state)).second) {
+                return Fail("duplicate HTTP/2 output stream state");
+            }
             nghttp2_data_provider2 provider{};
             provider.source.ptr = this;
             provider.read_callback = &Impl::ReadData;
             rv = nghttp2_submit_response2(session_.get(), stream_id,
                                           nva.data(), nva.size(), &provider);
         }
-        if (!CheckBool(rv, "submit HTTP/2 response")) return false;
+        if (!CheckBool(rv, "submit HTTP/2 response")) {
+            outbound_streams_.erase(stream_id);
+            return false;
+        }
         responded_streams_.insert(stream_id);
         Flush();
         return !failed();
@@ -410,9 +472,33 @@ public:
     }
 
     H2Bytes TakeTunnelBytes() {
+        if (unconsumed_tunnel_bytes_ >
+                received_unconsumed_carrier_bytes_ ||
+            tunnel_bytes_.size() >
+                received_unconsumed_carrier_bytes_ -
+                    unconsumed_tunnel_bytes_) {
+            Fail("HTTP/2 tunnel receive-credit ledger mismatch");
+            return {};
+        }
+        unconsumed_tunnel_bytes_ += tunnel_bytes_.size();
         H2Bytes out;
         out.swap(tunnel_bytes_);
         return out;
+    }
+
+    bool ConsumeTunnelBytes(std::size_t size) {
+        if (size > unconsumed_tunnel_bytes_) {
+            return Fail("HTTP/2 tunnel receive-credit over-consumption");
+        }
+        if (size == 0) return !failed();
+        if (!ConsumeCarrierBytes(size)) return false;
+        unconsumed_tunnel_bytes_ -= size;
+        Flush();
+        return !failed();
+    }
+
+    std::size_t unconsumed_tunnel_bytes() const noexcept {
+        return unconsumed_tunnel_bytes_;
     }
 
     void GracefulClose(std::uint16_t websocket_code) {
@@ -1334,10 +1420,29 @@ private:
             if (stream_id == self.carrier_stream_id_) {
                 self.carrier_closed_ = true;
                 self.carrier_active_ = false;
+                self.carrier_h2_stream_closed_ = true;
+            }
+            if (self.role_ == H2CarrierRole::Server) {
+                if (self.stream_closes_.size() >=
+                    kMaxPendingServerStreamCloses) {
+                    self.Fail("too many pending HTTP/2 stream-close events");
+                    return NGHTTP2_ERR_CALLBACK_FAILURE;
+                }
+                self.stream_closes_.push_back(
+                    H2StreamClose{stream_id, error_code});
             }
             self.outbound_streams_.erase(stream_id);
             self.incoming_headers_.erase(stream_id);
             self.incoming_header_bytes_.erase(stream_id);
+            self.pending_trace_headers_.erase(stream_id);
+            self.responded_streams_.erase(stream_id);
+            self.requests_.erase(
+                std::remove_if(
+                    self.requests_.begin(), self.requests_.end(),
+                    [stream_id](const H2Request& request) {
+                        return request.stream_id == stream_id;
+                    }),
+                self.requests_.end());
             return self.failed() ? NGHTTP2_ERR_CALLBACK_FAILURE : 0;
         } catch (const std::exception& ex) {
             self.Fail(std::string("HTTP/2 stream-close callback: ") + ex.what());
@@ -1417,6 +1522,10 @@ private:
                 Fail("HTTP/2 request is missing method or authority");
                 return;
             }
+            if (requests_.size() >= kMaxPendingServerRequests) {
+                Fail("too many pending HTTP/2 requests");
+                return;
+            }
             requests_.push_back(std::move(request));
             return;
         }
@@ -1451,6 +1560,11 @@ private:
     void HandleData(std::int32_t stream_id, const std::uint8_t* data,
                     std::size_t len) {
         if (stream_id != carrier_stream_id_) {
+            // Cover responses and non-carrier request bodies are bounded by
+            // their own parsers and have no downstream sink. Retire their H2
+            // credit immediately in both roles so manual carrier credit does
+            // not stall or retain ordinary cover traffic.
+            if (!ConsumeData(stream_id, len)) return;
             if (role_ == H2CarrierRole::Client &&
                 (stream_id == priming_stream_id_ || stream_id == css_stream_id_ ||
                  stream_id == js_stream_id_)) {
@@ -1465,6 +1579,7 @@ private:
         // attempted stream. Its Node-shaped body is cover content, not a
         // WebSocket frame, and must never reach the tunnel parser.
         if (!carrier_active_) {
+            if (!ConsumeData(stream_id, len)) return;
             priming_body_bytes_ += len;
             if (priming_body_bytes_ > kMaxResponseBody) {
                 Fail("cover rejection body exceeds 8 MiB");
@@ -1474,12 +1589,32 @@ private:
 #if YUME_ENABLE_DEV_DIAGNOSTICS
         diagnostics::Stopwatch decode_timer(collect_timing_);
 #endif
+        if (len > std::numeric_limits<std::size_t>::max() -
+                      received_unconsumed_carrier_bytes_) {
+            Fail("HTTP/2 carrier receive-credit ledger overflow");
+            return;
+        }
+        received_unconsumed_carrier_bytes_ += len;
         websocket_.Feed(data, len);
         if (websocket_.failed()) {
             Fail("WebSocket carrier: " + websocket_.error());
             return;
         }
-        auto decoded = websocket_.TakeDecoded();
+        auto drain = websocket_.TakeDrain();
+        auto decoded = std::move(drain.tunnel_bytes);
+        const bool had_decoded_tunnel_bytes = !decoded.empty();
+        if (drain.immediately_consumable_wire_bytes >
+                received_unconsumed_carrier_bytes_ ||
+            decoded.size() >
+                received_unconsumed_carrier_bytes_ -
+                    drain.immediately_consumable_wire_bytes) {
+            Fail("WebSocket/H2 receive-credit ledger mismatch");
+            return;
+        }
+        if (!ConsumeCarrierBytes(
+                drain.immediately_consumable_wire_bytes)) {
+            return;
+        }
 #if YUME_ENABLE_DEV_DIAGNOSTICS
         stats_.websocket_decode_bytes += len;
         if (collect_timing_) {
@@ -1500,7 +1635,7 @@ private:
             QueueStreamBytes(stream_id, std::move(replies));
         }
         if (role_ == H2CarrierRole::Server && !server_active_ping_sent_ &&
-            !decoded.empty()) {
+            had_decoded_tunnel_bytes) {
             static constexpr std::uint8_t kFixturePing[] = {
                 'f', 'i', 'x', 't', 'u', 'r', 'e', '-', 'p', 'i', 'n', 'g'};
             QueueStreamBytes(
@@ -1509,6 +1644,30 @@ private:
             server_active_ping_sent_ = true;
         }
         if (websocket_.closed()) carrier_closed_ = true;
+    }
+
+    bool ConsumeData(std::int32_t stream_id, std::size_t size) {
+        if (size == 0) return true;
+        return CheckBool(
+            nghttp2_session_consume(session_.get(), stream_id, size),
+            "consume HTTP/2 receive credit");
+    }
+
+    bool ConsumeCarrierBytes(std::size_t size) {
+        if (size > received_unconsumed_carrier_bytes_) {
+            return Fail("HTTP/2 carrier receive-credit over-consumption");
+        }
+        const int rv = carrier_h2_stream_closed_
+            ? nghttp2_session_consume_connection(session_.get(), size)
+            : nghttp2_session_consume(
+                  session_.get(), carrier_stream_id_, size);
+        if (!CheckBool(rv, carrier_h2_stream_closed_
+                               ? "consume closed HTTP/2 carrier connection credit"
+                               : "consume HTTP/2 carrier receive credit")) {
+            return false;
+        }
+        received_unconsumed_carrier_bytes_ -= size;
+        return true;
     }
 
     bool QueueStreamBytes(std::int32_t stream_id, H2Bytes bytes) {
@@ -1672,8 +1831,11 @@ private:
     detail::H2WireProfile wire_profile_;
     std::unordered_set<std::int32_t> responded_streams_;
     std::vector<H2Request> requests_;
+    std::vector<H2StreamClose> stream_closes_;
     H2Bytes serialized_output_;
     H2Bytes tunnel_bytes_;
+    std::size_t received_unconsumed_carrier_bytes_{0};
+    std::size_t unconsumed_tunnel_bytes_{0};
     std::string authority_;
     std::string error_;
     std::int32_t priming_stream_id_{-1};
@@ -1691,6 +1853,7 @@ private:
     bool peer_connect_enabled_{false};
     bool carrier_active_{false};
     bool carrier_closed_{false};
+    bool carrier_h2_stream_closed_{false};
     bool authenticated_receive_window_enabled_{false};
     bool graceful_close_started_{false};
     bool server_fragment_fixture_sent_{false};
@@ -1746,6 +1909,12 @@ bool H2Carrier::SubmitExtendedConnect(std::string path,
     return impl_->SubmitExtendedConnect(std::move(path), additional_headers);
 }
 std::vector<H2Request> H2Carrier::TakeRequests() { return impl_->TakeRequests(); }
+std::vector<H2StreamClose> H2Carrier::TakeStreamCloses() {
+    return impl_->TakeStreamCloses();
+}
+bool H2Carrier::RefuseStream(std::int32_t stream_id) {
+    return impl_->RefuseStream(stream_id);
+}
 bool H2Carrier::RespondHttp(std::int32_t stream_id, unsigned status,
                             const H2Headers& headers, H2Bytes body,
                             bool head_request) {
@@ -1770,6 +1939,12 @@ bool H2Carrier::SendBinary(const std::uint8_t* data, std::size_t size) {
     return impl_->SendBinary(data, size);
 }
 H2Bytes H2Carrier::TakeTunnelBytes() { return impl_->TakeTunnelBytes(); }
+bool H2Carrier::ConsumeTunnelBytes(std::size_t size) {
+    return impl_->ConsumeTunnelBytes(size);
+}
+std::size_t H2Carrier::unconsumed_tunnel_bytes() const noexcept {
+    return impl_->unconsumed_tunnel_bytes();
+}
 bool H2Carrier::priming_complete() const noexcept { return impl_->priming_complete(); }
 bool H2Carrier::peer_extended_connect_enabled() const noexcept {
     return impl_->peer_extended_connect_enabled();

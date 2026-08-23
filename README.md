@@ -134,7 +134,14 @@ For a privileged port 443 on Linux, run `yumed` with `sudo` or grant `cap_net_bi
 
 ## Optional desktop GUI (`yume-gui`)
 
-A Dear ImGui + GLFW desktop application is available in the same tree and is **off** by default. It uses the shared facade library and drives the same linked, in-process client runtime as the CLI; no client subprocess or local IPC round trip is required. The GUI is intended for desktop users; the CLI remains the supported automation surface.
+A Dear ImGui + GLFW desktop application is available in the same tree and is
+**off** by default. It uses the shared facade library and drives the same linked,
+in-process client runtime as the CLI; no client subprocess or local IPC round
+trip is required. The shared facade now has serialized, generation-scoped
+start/stop and prompt pre-ready cancellation, but the GUI remains a development
+preview: its stale security controls, detached page-level resolver, partial
+chat/log contract, honest headless failure behavior, and real lifecycle smoke
+still need GUI-owned work. The CLI remains the supported automation surface.
 
 ### Build
 
@@ -143,7 +150,7 @@ cmake -B build-gui -DYUME_BUILD_GUI=ON
 cmake --build build-gui -j$(nproc)
 ./build-gui/bin/yume-gui          # main window
 ./build-gui/bin/yume-gui --help   # CLI options
-./build-gui/bin/yume-gui --headless   # facade-only smoke test
+./build-gui/bin/yume-gui --headless   # facade diagnostic; may skip startup
 ```
 
 `YUME_BUILD_GUI=ON` pulls Dear ImGui, GLFW, and ImPlot via CMake `FetchContent` (pinned tags). On Linux the system tray (minimise-to-tray) is enabled automatically when `libayatana-appindicator3-dev` is present; without it the GUI builds normally but the tray icon is disabled.
@@ -172,9 +179,10 @@ GUI profile, trust material, generated keys, and runtime data live under `~/.yum
 
 ### Limitations of the current MVP
 
-- `ServerSession::start()` runs a real in-process `yumed` runtime through the shared server manager. Privileged ports still require root or `cap_net_bind_service`.
-- `ClientSession::start()` hosts the current CLI connection runtime in-process. Its lifecycle remains deliberately isolated from the GUI thread; CLI parsing and terminal-only commands stay in the `yume` executable.
-- Chat / directory pages depend on a connected background client and use the live `RelayRuntime` IPC surface.
+- `ServerSession::start()` runs a real in-process `yumed` runtime through the shared server manager; start/stop work is separately owned so a caller-side stop does not join blocking startup on the UI thread. Privileged ports still require root or `cap_net_bind_service`.
+- `ClientSession::start()` hosts the CLI connection runtime in-process. Shared start/stop/restart/destructor races, stalled pre-ready TLS cancellation, and callback exception/reentrancy now have focused regression coverage. A real GUI window-level connect/restart smoke is still required.
+- `--headless` validates parseable configs and attempts lifecycle actions, but currently reports success even when configs are absent or a valid session fails to start. It is not a real connection gate.
+- Chat / directory pages depend on a connected background client. Chat close and callback delivery are incomplete in the current facade.
 - The tray code path is present but only assembles when `libayatana-appindicator3-dev` is installed; the rest of the GUI works without it.
 
 ## Install, man pages, and Debian packages
@@ -464,18 +472,23 @@ describe 1.x and are not evidence for the 2.0 release gates.
 
 ## Cluster federation
 
-Federation is not supported by the v2-only runtime. Its retained implementation
-still sends the legacy AUTH/inner-key flow, while normal 2.0 sessions require
-AUTH v2, TLS-exporter binding, and `SessionRatchet`; current peers therefore do
-not interoperate. The examples below preserve the legacy configuration shape
-for port-or-retire work only and must not be used as a deployment guide.
+Federation uses the same admitted H2 carrier, TLS-exporter-bound AUTH v2, and
+directional ratchet as a normal client. Generate a separate composite identity
+for each node with `yumed --keys-gen`; each peer enrolls the remote public
+identity in `--auth-keys` and assigns it a unique `federation_peer_id` in
+`--auth-keys-meta` (see [docs/PERMISSIONS.md](docs/PERMISSIONS.md)).
+
+Every outbound `--peer` JSON requires a pairwise `psk_file` and the remote
+node's `carrier_secret_file`. Secret files are exact 64-hex-character values
+with owner-only permissions. A missing or malformed file fails startup instead
+of entering the reconnect loop.
 
 Bootstrap node (cluster entry point, accepts incoming peer dials):
 
 ```bash
 sudo yumed --listen 443 \
     --cluster-bootstrap \
-    --federation-auth-key /etc/yume/fed.key \
+    --federation-identity /etc/yume/federation.key \
     --federation-operator-ca /etc/yume/fed-ca.pem \
     --auth-keys /etc/yume/authorized_keys \
     --obfs-secret-file /etc/yume/secrets/admission.hex \
@@ -484,13 +497,13 @@ sudo yumed --listen 443 \
     --public-node
 ```
 
-Joining node (dials out to the bootstrap; implies `--federation-enable`):
+Joining node (dials the bootstrap):
 
 ```bash
 sudo yumed --listen 443 \
-    --cluster-join alice@bootstrap.example.com:443 \
-    --cluster-join bob@second.example.com \
-    --federation-auth-key /etc/yume/fed.key \
+    --federation-enable \
+    --peer '{"id":"bootstrap","url":"yume://bootstrap.example.com:443","psk_file":"/etc/yume/secrets/bootstrap.psk","carrier_secret_file":"/etc/yume/secrets/bootstrap-admission.hex"}' \
+    --federation-identity /etc/yume/federation.key \
     --federation-operator-ca /etc/yume/fed-ca.pem \
     --auth-keys /etc/yume/authorized_keys \
     --obfs-secret-file /etc/yume/secrets/admission.hex \
@@ -499,7 +512,8 @@ sudo yumed --listen 443 \
     --public-node
 ```
 
-The short-form spec is `[id@]host[:port][?pin=<sha256>]` — bracket IPv6 as `[2001:db8::1]:443`. The raw `--peer '<json>'` form still works for power users; `--cluster-join` is just a friendlier wrapper that emits the same JSON internally.
+Add one `--peer` object per outbound link. `tls_pin` is optional when the
+configured federation CA and hostname validation are sufficient.
 
 ASCII cluster map from any node:
 
@@ -559,7 +573,8 @@ SSH (auto-wrapped to route via local SOCKS when `nc`, `ncat`, or `connect-proxy`
 yume --server yume.example.com --auth id_ed25519 --run "ssh user@host"
 ```
 
-Server-side command execution is disabled by default for safety. Use SOCKS or port forwarding.
+Command execution is disabled in both directions for safety. Use SOCKS or port
+forwarding.
 
 Application codec, Monero RPC:
 
@@ -614,13 +629,25 @@ full schema and privilege matrix.
 
 An explicitly configured `preauth_services` peer is not a normally authorized key. It remains in a persisted `PreauthServiceOnly` tier that admits only registered named-service OPEN/DATA/CLOSE plus PING/PONG. Admin attach separately requires trusted relay mode, caller outbound policy and opt-in, and target inbound policy and opt-in; the legacy attach form uses the same predicate.
 
-Dangerous server features (server-side exec, LAN bridging, unrestricted address bridging) sit behind a **three-layer gate** that all must agree:
+LAN bridging and unrestricted address bridging sit behind a **three-layer
+gate** that all must agree:
 
-1. **Build switch**: `cmake -DYUME_FEATURE_EXEC=ON` (also `_LAN_BRIDGE`, `_FULL_CONTROL`). Stock builds ship with all three OFF; the runtime CLI flag still parses but logs a warning and stays disabled.
-2. **Runtime flag**: `--allow-exec`, `--allow-local-ip`, `--control-full` on `yumed`.
-3. **Per-key meta**: `"allow_exec": true` (etc.) in `auth_keys.meta` for the specific key.
+1. **Build switch**: `cmake -DYUME_FEATURE_LAN_BRIDGE=ON` (also
+   `_FULL_CONTROL`). Stock builds ship with both OFF.
+2. **Runtime flag**: `--allow-local-ip` or `--control-full` on `yumed`.
+3. **Per-key meta**: `"allow_local_ip": true` in `auth_keys.meta` for the
+   specific key; unrestricted control additionally requires the distinct admin
+   identity and directional opt-ins.
 
-Removing any one layer is enough to keep the feature off. The bridge / admin matrix (server-controls-client × client-controls-server, four quadrants) and the full meta JSON schema are documented in [docs/PERMISSIONS.md](docs/PERMISSIONS.md).
+EXEC policy inputs remain reserved, but command execution is deliberately
+unavailable in `2.0-dev6`: the server rejects direct EXEC and clients reject
+`--allow-exec`, persisted `allow_exec=true`, and every inbound EXEC request.
+The outbound `--exec <command>` request syntax remains distinct from inbound
+permission and receives the server's explicit safety denial.
+
+Removing any one layer is enough to keep bridging off. The bridge/admin matrix
+and full meta JSON schema are documented in
+[docs/PERMISSIONS.md](docs/PERMISSIONS.md).
 
 ```bash
 ./build/bin/yumed --auth-keys /etc/yume/authorized_keys --keys-list
@@ -690,14 +717,18 @@ sudo ./build/bin/yumed \
   make the terminating server trustworthy or blind to plaintext
 - Inner-frame AEAD is verified before plaintext is delivered ([basefwx/cpp/src/crypto/crypto.cpp](basefwx/cpp/src/crypto/crypto.cpp))
 - Mandatory ML-KEM-1024 + X25519 + random-PSK establishment; no 1.x downgrade or public-key-only mode
-- Server-side exec / LAN bridging / unrestricted bridging are off at compile time by default ([CMakeLists.txt](CMakeLists.txt) `YUME_FEATURE_EXEC` / `_LAN_BRIDGE` / `_FULL_CONTROL`); enabling them requires opting in at build, runtime flag, AND per-key meta (see [docs/PERMISSIONS.md](docs/PERMISSIONS.md))
+- Command execution is fail-closed in both directions; LAN bridging and
+  unrestricted bridging are off at compile time by default and require their
+  build, runtime, per-key, and admin gates (see
+  [docs/PERMISSIONS.md](docs/PERMISSIONS.md))
 - Preauth service peers are centrally confined to the named-service frame family
 - Admin attach requires caller outbound and target inbound permission/opt-in; both default to deny
 - Admission and inner secrets are separate owner-only files; wrong, malformed,
   expired, replayed, or authority-mismatched admission follows the cover path
   instead of receiving AUTH
 - Session close has a five-second deadline, pending service queues are capped,
-  and detached client EXEC work is capped at four concurrent workers. Current
+  packet senders are joined, and the unsafe detached inbound-EXEC worker was
+  removed with the feature left explicitly unavailable. Current
   native sanitizer and segmented loopback soak gates pass; deployed WAN,
   disk/log-pressure, and adversarial operational soak remain outstanding
 - Protected application payloads are capped at 256 KiB so one frame cannot

@@ -44,6 +44,14 @@ downgrade mode exists.
 
 ### Changed
 
+- **OpenSSL parity boundary and helper retention.** The C++ OpenSSL backend now
+  emits the captured Chrome 151 JA4 plus the exact non-GREASE cipher,
+  signature, and extension sets. It still cannot reproduce raw browser GREASE
+  placement/rotation or brotli-only certificate compression. The pinned
+  Go/uTLS helper therefore remains an experimental Linux-only opt-in and stays
+  disabled by default; removal is deferred until a C++ backend passes the same
+  raw-wire, same-session, lifecycle, classifier, and reproducibility gates.
+
 - **One coherent identity.** Chrome is rebased to exact Google Chrome
   `151.0.7922.71` and official Node `24.18.0`. The incomplete Firefox/Safari
   presets and dead rotation state were removed instead of being carried as
@@ -81,6 +89,64 @@ downgrade mode exists.
   or WAN behavior.
 
 ### Fixed
+
+- **Core receive backpressure and bounded queues.** Both H2 roles transfer
+  move-only receive-credit ownership through ordinary TCP, UDP, service,
+  codec, packet, forwarding, and federation sinks. Slow consumers plateau and
+  resume without automatic credit. Cover requests, pre-auth serialized wire,
+  service writes, packet batches, and client UDP paths have independent bounded
+  admission, cancellation, shutdown wakeup, and recovery behavior.
+
+- **Strict peer-controlled schemas and stream ownership.** Generic OPEN,
+  client SOPEN/ROPEN, CONTROL registration/lifecycle, relay, codec, and auth
+  metadata reject unknown fields, wrong scalar types, over-length strings, and
+  invalid ranges without escaping the session boundary. Client and server
+  stream IDs reserve atomically through map publication; collisions never
+  replace local, pending, control, federated, or retired owners.
+
+- **Durable configuration and authorization snapshots.** Client/server config
+  saves use owner-only temporary files and durable atomic replacement on the
+  qualified POSIX path. Authorization-key and metadata operations share
+  canonical persistent sidecar locks; daemon startup/reload parses one locked
+  five-resource visitor/operator/admin snapshot before publishing it. ABI
+  config/lifecycle/stream/packet outcomes now derive from typed internal
+  statuses rather than diagnostic strings.
+
+- **Relay and listener lifecycle hardening.** Relay v2 binds composite peer
+  identity, hybrid ML-KEM-1024/X25519 establishment, ratchet state, record
+  counters, invite lifetimes, target policy, and trust persistence. Outbound
+  files are hashed and streamed from one pinned regular-file descriptor, and
+  POSIX receive publication is confined, no-clobber, bounded, and atomic.
+  Federation duplicate peer IDs and reverse-listener accept ownership now fail
+  without orphaning links, retaining sessions, or spinning cancellation paths.
+
+- **EXEC fail-closed cleanup.** Direct and relayed command execution remain
+  unavailable regardless of reserved policy fields or build option. Clients do
+  not advertise or enable inbound EXEC, and the former detached worker is
+  removed pending a cancellable, joinable, sandboxed design.
+
+- **Exceptional-path key lifetime.** Superseded inner keys, AUTH transcripts,
+  relay pending/KDF/channel state, ratchet roots/message keys, PSKs, exporters,
+  and raw shared secrets are scoped or explicitly wiped across failure, throw,
+  close, and teardown paths covered by the stabilization tests.
+
+- **Sanitized ABI integration.** Linux address-sanitizer builds resolve the
+  selected compiler's ASan and C++ runtimes and preload them in loader order
+  for the Python/ctypes strict-C integration orchestrator. Instrumented
+  `libyume` is therefore never loaded late into an unsanitized Python process,
+  and the sanitizer suite does not depend on an undocumented caller
+  environment.
+
+- **Parallel federation fixture isolation.** The real two-node federation
+  integration gives each daemon the fixture's private HOME and XDG runtime,
+  matching its client. Independent build matrices no longer contend for one
+  user-level daemon instance lock when their federation tests overlap.
+
+- **Repeat-safe BaseFWX dependency discovery.** The pinned BaseFWX revision is
+  now `216a48a6110e8f6606b2a63b51950511466bf25a`. It clears CMake's cached
+  private `find_library` result between distinct pkg-config entries, so a
+  repeated shared-ABI configure cannot silently reuse the `rt`/`dl` result and
+  omit `libargon2`. Crypto APIs and wire contracts are unchanged.
 
 - **Helper crash and truncation lifecycle.** After `posix_spawn`, the parent
   retained duplicate copies of the child-side IPC and connected TCP

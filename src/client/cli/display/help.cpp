@@ -22,8 +22,8 @@ _yume_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="-h -i export import -c -L -R --accept-monitoring --accept-server-control --accept-server-control-max-port --accept-server-control-min-port --admin-attach --admin-auth --allow-bytes --allow-chat --allow-exec --allow-file --allow-inbound-admin --allow-local-ip --allow-outbound-admin --attach-local --auth --bench --bench-chunk-kib --bench-direction --bench-full --bench-mib --bench-streams --boring --bulk-mib --chat --client-id --client-threads --cluster --codec --codec-listen --color --completion --config --configs --control --cooldown-ms --credits --deny-bytes --deny-chat --deny-file --deny-inbound-admin --deny-outbound-admin --dest --dev --directory --dport --duration-sec --exec --full-bench --help --hide-in-the-crowd --history-dir --id --inner-psk-file --instance --json --json-stdout --keep-workdir --latency-iters --list-configs --list-controlled --live-status --lport --monero-rpc --monero-rpc-listen --name --no-color --no-history --no-proxy --no-self-dpi --non-interactive --obfs-secret-file --one-way --operator-ca-cert --outer-carrier-evidence --packet-tun --password-stdin --port --profile --proxy --proxycmd --quick-bench --rekey-window --relay-key-file --relay-mode --repeat --require-operator-identity --rhost --root --rport --run --run-ipv4 --save-server --self-dpi --send-bytes --send-file --server --server-threads --service-streams-only --socks --streams --tcp --threads --timing --tls-backend --tls-ca --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-test-endpoint --tls-fingerprint-verify --tls-helper --tls-name --tls-pin --tor --transport-profile --tunnels --udp --version"
-  local file_opts="--config --auth -i --admin-auth --obfs-secret-file --inner-psk-file --operator-ca-cert --tls-ca --tls-helper --tls-fingerprint-log-path --relay-key-file --outer-carrier-evidence"
+  local opts="-h -i export import -c -L -R --accept-monitoring --accept-server-control --accept-server-control-max-port --accept-server-control-min-port --admin-attach --admin-auth --allow-bytes --allow-chat --allow-file --allow-inbound-admin --allow-local-ip --allow-outbound-admin --attach-local --auth --bench --bench-chunk-kib --bench-direction --bench-full --bench-mib --bench-streams --boring --bulk-mib --chat --client-id --client-threads --cluster --codec --codec-listen --color --completion --config --configs --control --cooldown-ms --credits --deny-bytes --deny-chat --deny-file --deny-inbound-admin --deny-outbound-admin --dest --dev --directory --dport --duration-sec --exec --full-bench --help --hide-in-the-crowd --history-dir --id --inner-psk-file --instance --json --json-stdout --keep-workdir --latency-iters --list-configs --list-controlled --live-status --lport --monero-rpc --monero-rpc-listen --name --no-color --no-history --no-proxy --no-self-dpi --non-interactive --obfs-secret-file --one-way --operator-ca-cert --outer-carrier-evidence --packet-tun --password-stdin --port --profile --proxy --proxycmd --quick-bench --rekey-window --relay-key-file --relay-mode --relay-peer-pin --relay-receive-dir --relay-trust-dir --relay-trust-mode --repeat --require-operator-identity --rhost --root --rport --run --run-ipv4 --save-server --secondary-auth --self-dpi --send-bytes --send-file --server --server-threads --service-streams-only --socks --streams --tcp --threads --timing --tls-backend --tls-ca --tls-fingerprint-log --tls-fingerprint-log-path --tls-fingerprint-test-endpoint --tls-fingerprint-verify --tls-helper --tls-name --tls-pin --tor --transport-profile --tunnels --udp --version"
+  local file_opts="--config --auth -i --secondary-auth --admin-auth --obfs-secret-file --inner-psk-file --operator-ca-cert --tls-ca --tls-helper --tls-fingerprint-log-path --relay-key-file --relay-receive-dir --relay-trust-dir --outer-carrier-evidence"
   case "$prev" in
     --completion)
       COMPREPLY=( $(compgen -W "bash" -- "$cur") )
@@ -31,6 +31,14 @@ _yume_complete() {
       ;;
     --profile)
       COMPREPLY=( $(compgen -W "chrome" -- "$cur") )
+      return 0
+      ;;
+    --relay-mode)
+      COMPREPLY=( $(compgen -W "untrusted trusted" -- "$cur") )
+      return 0
+      ;;
+    --relay-trust-mode)
+      COMPREPLY=( $(compgen -W "tofu pinned" -- "$cur") )
       return 0
       ;;
     --codec)
@@ -97,6 +105,10 @@ void print_help() {
         << "                             HTTP profile; other profiles are rejected.\n"
         << "  --config <path>          Config file\n"
         << "  -i, --auth <path>        Identity key (composite Ed25519+ML-DSA-87)\n"
+        << "      --secondary-auth <path>\n"
+        << "                           Repeat once for every data-only SOCKS tunnel\n"
+        << "                             after the primary. Requires exactly N-1 values\n"
+        << "                             with --tunnels N; all must authenticate.\n"
         << "      --admin-auth <path>    Second key for an admin session. Must differ from\n"
         << "                             --auth and be enrolled in the server admin store.\n"
         << "                             Presenting it is the claim; there is no admin flag.\n\n"
@@ -150,6 +162,11 @@ void print_help() {
         << "  --name <slug>            Display name\n"
         << "  --client-id <32hex>      Stable client ID\n"
         << "  --relay-mode <mode>      untrusted or trusted\n"
+        << "  --relay-trust-mode <mode> tofu (default) or pinned\n"
+        << "  --relay-trust-dir <path> Owner-only relay-v2 peer identity store\n"
+        << "  --relay-peer-pin <id=64hex>\n"
+        << "                           Explicit composite identity pin; repeatable.\n"
+        << "                             Required for admin channels in both modes.\n"
         << "  --allow-inbound-admin / --deny-inbound-admin\n"
         << "                           Inbound admin attach\n"
         << "  --allow-outbound-admin / --deny-outbound-admin\n"
@@ -163,13 +180,16 @@ void print_help() {
         << "Runtime:\n"
         << "  --threads <n>            IO threads (0 = auto)\n"
         << "  --tunnels <n>            Parallel TLS tunnels to the server (1..16; default 1;\n"
-        << "                             values above 1 require bulk-key session policy)\n"
+        << "                             values above 1 require bulk-key session policy,\n"
+        << "                             or N-1 distinct --secondary-auth identities)\n"
         << "  --rekey-window <n>       Concurrent directional epoch offers (1..64;\n"
         << "                             default 8). Each prepared epoch adds\n"
         << "                             one negotiated epoch budget per rekey\n"
         << "                             round trip. Capped by the server.\n"
         << "  --instance <name>        Runtime instance name\n"
         << "  --history-dir <path>     Chat history directory\n"
+        << "  --relay-receive-dir <path>\n"
+        << "                           Confined file/byte receive directory\n"
         << "  --relay-key-file <path>  Relay key file\n"
         << "  --no-history             Disable chat history\n"
         << "  --udp                    Enable UDP forwarding\n"

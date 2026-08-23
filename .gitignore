@@ -17,7 +17,7 @@ DEV_services
 .vscode/
 .idea/
 *.swp
-
+opencode.json
 # AI tools — per-machine state, not for the repo
 .claude/
 .codex/

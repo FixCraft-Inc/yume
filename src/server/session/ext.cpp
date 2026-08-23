@@ -27,7 +27,9 @@ bool Session::attach_federated_stream(uint8_t stream_id,
                                       const std::string& channel_id,
                                       const std::string& left_endpoint_id,
                                       const std::string& right_endpoint_id,
-                                      std::function<void(const crypto::Bytes&)> on_data,
+                                      std::function<void(
+                                          const crypto::Bytes&,
+                                          runtime::InboundCredit)> on_data,
                                       std::function<void(const std::string&)> on_close) {
     if (stream_id == 0) {
         return false;
@@ -68,7 +70,8 @@ void Session::complete_federated_open(uint8_t stream_id, bool ok, const std::str
             federated_streams_.erase(it);
         }
     }
-    if (ok && manager_ && !channel_id.empty()) {
+    bool established = ok;
+    if (established && manager_ && !channel_id.empty()) {
         control::ActiveRelayChannel channel;
         channel.channel_id = channel_id;
         channel.channel_kind = channel_kind;
@@ -80,15 +83,45 @@ void Session::complete_federated_open(uint8_t stream_id, bool ok, const std::str
         channel.federated = true;
         channel.route_hops = 1;
         manager_->register_active_channel(channel);
+
+        // The origin can close while the federation ACK is being dispatched
+        // on another server io_context worker. Do not resurrect a channel
+        // that begin_close/send_federated_close removed in that window.
+        {
+            std::lock_guard<std::mutex> lock(control_mutex_);
+            auto it = federated_streams_.find(stream_id);
+            established = it != federated_streams_.end() &&
+                !it->second.pending && it->second.channel_id == channel_id;
+        }
+        if (!established) {
+            manager_->unregister_active_channel(channel_id);
+        }
     }
     if (!ok && manager_ && !channel_id.empty()) {
         manager_->unregister_active_channel(channel_id);
     }
-    send_open_reply(stream_id, ok, message);
+    send_open_reply(stream_id,
+                    established,
+                    established || !ok
+                        ? message : "federated channel closed during open");
 }
 
-void Session::send_federated_data(uint8_t stream_id, const crypto::Bytes& payload) {
-    send_control_frame(protocol::DATA, stream_id, payload);
+void Session::send_federated_data(
+    uint8_t stream_id,
+    const crypto::Bytes& payload,
+    runtime::InboundCredit inbound_credit) {
+    if (!inbound_credit) {
+        send_control_frame(protocol::DATA, stream_id, payload);
+        return;
+    }
+    auto retained_credit = std::make_shared<runtime::InboundCredit>(
+        std::move(inbound_credit));
+    send_control_frame(
+        protocol::DATA, stream_id, payload, 0,
+        [retained_credit = std::move(retained_credit)](
+            const boost::system::error_code&, std::size_t) {
+            retained_credit->release_now();
+        });
 }
 
 void Session::send_federated_close(uint8_t stream_id, const std::string& reason) {
@@ -139,7 +172,7 @@ bool Session::handle_packet_open(uint8_t stream_id) {
     packet.mtu = assignment->mtu;
     packet.dns_servers = assignment->dns_servers;
     packet.downstream_encoded_bytes = protocol::packet_bulk::kHeaderBytes;
-    packet.open_started_ms = util::now_ms();
+    packet.open_started_ms = diagnostics::timing_now_ms();
     packet.flush_timer = std::make_unique<boost::asio::steady_timer>(stream_.get_executor());
     packet_stream_ = std::move(packet);
 
@@ -345,7 +378,7 @@ bool Session::handle_bench_open(uint8_t stream_id, const std::string& proto, con
     bench.requested_bytes = requested;
     bench.message_bytes = message_bytes;
     bench.echo_transaction = echo_transaction;
-    bench.open_started_ms = util::now_ms();
+    bench.open_started_ms = diagnostics::timing_now_ms();
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
         bench_streams_[stream_id] = bench;
@@ -420,7 +453,7 @@ bool Session::handle_bench_close(uint8_t stream_id, const std::string& reason) {
         reservation_ready_sources = bench_source_budget_.ready_sources();
     }
 
-    const int64_t elapsed_ms = bench.open_started_ms > 0 ? (util::now_ms() - bench.open_started_ms) : 0;
+    const int64_t elapsed_ms = diagnostics::elapsed_ms_since(bench.open_started_ms);
     if (bench.mode == BenchStream::Mode::Sink) {
         nlohmann::json summary{
             {"mode", "up"},

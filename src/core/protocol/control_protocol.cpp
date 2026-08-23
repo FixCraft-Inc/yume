@@ -217,22 +217,18 @@ nlohmann::json endpoint_runtime_status_to_json(const EndpointRuntimeStatus& stat
 
 nlohmann::json invite_to_json(const PendingInvite& invite, bool include_response) {
     nlohmann::json json;
+    json[fields::relay_protocol_version] = invite.relay_protocol_version;
     json[fields::invite_id] = invite.invite_id;
     json[fields::from_id] = invite.from_endpoint_id;
     json[fields::to_id] = invite.to_endpoint_id;
     json[fields::channel_kind] = to_string(invite.channel_kind);
     json[fields::created_ms] = invite.created_ms;
     json[fields::requires_password] = invite.requires_password;
-    if (!invite.metadata_json.empty()) {
-        try {
-            json[fields::metadata] = nlohmann::json::parse(invite.metadata_json);
-        } catch (...) {
-            json[fields::metadata_json] = invite.metadata_json;
-        }
-    }
-    json[fields::ephemeral_pubkey_b64] = invite.ephemeral_pubkey_b64;
-    json[fields::ephemeral_signature_b64] = invite.ephemeral_signature_b64;
-    json[fields::nonce_b64] = invite.nonce_b64;
+    // The relay-v2 handshake signs a digest over these exact bytes. Never
+    // parse and re-emit this string as a JSON object: doing so would silently
+    // change the representation that endpoints bind cryptographically.
+    json[fields::metadata_json] = invite.metadata_json;
+    json[fields::handshake_request_b64] = invite.handshake_request_b64;
     json[fields::from_display_name] = invite.from_display_name;
     if (!invite.from_auth_pubkey_b64.empty()) {
         json[fields::from_auth_pubkey_b64] = invite.from_auth_pubkey_b64;
@@ -242,12 +238,13 @@ nlohmann::json invite_to_json(const PendingInvite& invite, bool include_response
         if (!invite.response_reason.empty()) {
             json[fields::reason] = invite.response_reason;
         }
-        if (!invite.response_ephemeral_pubkey_b64.empty()) {
-            json[fields::response_ephemeral_pubkey_b64] = invite.response_ephemeral_pubkey_b64;
+        if (!invite.handshake_response_b64.empty()) {
+            json[fields::handshake_response_b64] =
+                invite.handshake_response_b64;
         }
-        if (!invite.response_ephemeral_signature_b64.empty()) {
-            json[fields::response_ephemeral_signature_b64] =
-                invite.response_ephemeral_signature_b64;
+        if (!invite.responder_auth_pubkey_b64.empty()) {
+            json[fields::responder_auth_pubkey_b64] =
+                invite.responder_auth_pubkey_b64;
         }
     }
     return json;
@@ -255,28 +252,31 @@ nlohmann::json invite_to_json(const PendingInvite& invite, bool include_response
 
 PendingInvite invite_from_json(const nlohmann::json& json) {
     PendingInvite invite;
-    invite.invite_id = json.value(fields::invite_id, "");
-    invite.from_endpoint_id = json.value(fields::from_id, "");
-    invite.to_endpoint_id = json.value(fields::to_id, "");
-    invite.channel_kind = channel_kind_from_string(json.value(fields::channel_kind, "chat"));
-    invite.created_ms = json.value(fields::created_ms, 0LL);
-    invite.requires_password = json.value(fields::requires_password, true);
-    if (json.contains(fields::metadata)) {
-        invite.metadata_json = json[fields::metadata].dump();
-    } else {
-        invite.metadata_json = json.value(fields::metadata_json, "");
-    }
-    invite.ephemeral_pubkey_b64 = json.value(fields::ephemeral_pubkey_b64, "");
-    invite.ephemeral_signature_b64 = json.value(fields::ephemeral_signature_b64, "");
-    invite.nonce_b64 = json.value(fields::nonce_b64, "");
+    // Required keys use at()/get() deliberately. The strict outer parser
+    // validates their exact types before calling this function, and a direct
+    // caller must not acquire relay-v2 semantics from struct defaults.
+    invite.relay_protocol_version =
+        json.at(fields::relay_protocol_version).get<std::uint16_t>();
+    invite.invite_id = json.at(fields::invite_id).get<std::string>();
+    invite.from_endpoint_id = json.at(fields::from_id).get<std::string>();
+    invite.to_endpoint_id = json.at(fields::to_id).get<std::string>();
+    invite.channel_kind = channel_kind_from_string(
+        json.at(fields::channel_kind).get<std::string>());
+    invite.created_ms = json.at(fields::created_ms).get<std::int64_t>();
+    invite.requires_password =
+        json.at(fields::requires_password).get<bool>();
+    invite.metadata_json = json.value(fields::metadata_json, "");
+    invite.handshake_request_b64 =
+        json.at(fields::handshake_request_b64).get<std::string>();
     invite.from_display_name = json.value(fields::from_display_name, "");
     invite.from_auth_pubkey_b64 = json.value(fields::from_auth_pubkey_b64, "");
+    invite.response_present = json.contains(fields::accepted);
     invite.accepted = json.value(fields::accepted, false);
     invite.response_reason = json.value(fields::reason, "");
-    invite.response_ephemeral_pubkey_b64 =
-        json.value(fields::response_ephemeral_pubkey_b64, "");
-    invite.response_ephemeral_signature_b64 =
-        json.value(fields::response_ephemeral_signature_b64, "");
+    invite.handshake_response_b64 =
+        json.value(fields::handshake_response_b64, "");
+    invite.responder_auth_pubkey_b64 =
+        json.value(fields::responder_auth_pubkey_b64, "");
     return invite;
 }
 

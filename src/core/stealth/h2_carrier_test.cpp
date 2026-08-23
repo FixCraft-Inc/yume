@@ -8,6 +8,8 @@
 #include <string>
 #include <thread>
 
+#include <nghttp2/nghttp2.h>
+
 #include "core/stealth/cover_profile.hpp"
 
 namespace {
@@ -32,6 +34,50 @@ void Pump(H2Carrier& from, H2Carrier& to) {
     assert(false && "HTTP/2 pump did not quiesce");
 }
 
+H2Bytes RstStream(std::uint32_t stream_id, std::uint32_t error_code) {
+    return H2Bytes{
+        0x00, 0x00, 0x04,  // payload length
+        0x03, 0x00,        // RST_STREAM, no flags
+        static_cast<std::uint8_t>((stream_id >> 24U) & 0x7fU),
+        static_cast<std::uint8_t>((stream_id >> 16U) & 0xffU),
+        static_cast<std::uint8_t>((stream_id >> 8U) & 0xffU),
+        static_cast<std::uint8_t>(stream_id & 0xffU),
+        static_cast<std::uint8_t>((error_code >> 24U) & 0xffU),
+        static_cast<std::uint8_t>((error_code >> 16U) & 0xffU),
+        static_cast<std::uint8_t>((error_code >> 8U) & 0xffU),
+        static_cast<std::uint8_t>(error_code & 0xffU)};
+}
+
+struct WindowUpdateSummary {
+    bool connection{false};
+    bool carrier_stream{false};
+};
+
+WindowUpdateSummary InspectWindowUpdates(const H2Bytes& wire,
+                                         std::uint32_t carrier_stream_id) {
+    WindowUpdateSummary summary;
+    for (std::size_t offset = 0; offset < wire.size();) {
+        assert(wire.size() - offset >= 9);
+        const std::size_t length =
+            (static_cast<std::size_t>(wire[offset]) << 16U) |
+            (static_cast<std::size_t>(wire[offset + 1]) << 8U) |
+            static_cast<std::size_t>(wire[offset + 2]);
+        assert(length + 9 <= wire.size() - offset);
+        const auto type = wire[offset + 3];
+        const auto id =
+            (static_cast<std::uint32_t>(wire[offset + 5] & 0x7fU) << 24U) |
+            (static_cast<std::uint32_t>(wire[offset + 6]) << 16U) |
+            (static_cast<std::uint32_t>(wire[offset + 7]) << 8U) |
+            static_cast<std::uint32_t>(wire[offset + 8]);
+        if (type == 0x08) {
+            summary.connection |= id == 0;
+            summary.carrier_stream |= id == carrier_stream_id;
+        }
+        offset += 9 + length;
+    }
+    return summary;
+}
+
 H2Bytes PumpFragmentedAndTake(H2Carrier& from, H2Carrier& to,
                               std::size_t feed_bytes) {
     H2Bytes decoded;
@@ -44,6 +90,7 @@ H2Bytes PumpFragmentedAndTake(H2Carrier& from, H2Carrier& to,
             assert(!to.failed());
             auto part = to.TakeTunnelBytes();
             decoded.insert(decoded.end(), part.begin(), part.end());
+            assert(to.ConsumeTunnelBytes(part.size()));
             offset += size;
         }
     }
@@ -70,6 +117,28 @@ void CompleteChromeAssets(H2Carrier& client, H2Carrier& server) {
     Pump(server, client);
     Pump(client, server);
     assert(client.priming_complete());
+}
+
+void OpenCarrier(H2Carrier& client, H2Carrier& server) {
+    assert(client.StartClient("cover.example"));
+    Pump(client, server);
+    Pump(server, client);
+
+    auto requests = server.TakeRequests();
+    assert(requests.size() == 1);
+    assert(server.RespondHttp(requests[0].stream_id, 200,
+                              {{"content-type", "text/html"}}, {}));
+    Pump(server, client);
+    CompleteChromeAssets(client, server);
+
+    assert(client.SubmitExtendedConnect("/carrier"));
+    Pump(client, server);
+    requests = server.TakeRequests();
+    assert(requests.size() == 1);
+    assert(server.AcceptCarrier(requests[0].stream_id));
+    Pump(server, client);
+    Pump(client, server);
+    assert(client.carrier_active() && server.carrier_active());
 }
 
 void FullSessionRoundTrip() {
@@ -137,7 +206,9 @@ void FullSessionRoundTrip() {
     }
     assert(client.SendBinary(up));
     Pump(client, server);
-    assert(server.TakeTunnelBytes() == up);
+    auto received_up = server.TakeTunnelBytes();
+    assert(received_up == up);
+    assert(server.ConsumeTunnelBytes(received_up.size()));
 
     H2Bytes fragmented_up(200329U);
     for (std::size_t i = 0; i < fragmented_up.size(); ++i) {
@@ -159,7 +230,10 @@ void FullSessionRoundTrip() {
     // write.
     assert(server.SendBinary(control_like));
     Pump(server, client);
-    assert(client.TakeTunnelBytes() == down);
+    const auto received_down = client.TakeTunnelBytes();
+    assert(received_down == down);
+    assert(client.unconsumed_tunnel_bytes() == received_down.size());
+    assert(client.ConsumeTunnelBytes(received_down.size()));
 
     // The captured Chrome role originates one H2 PING immediately before its
     // masked WebSocket close. nghttp2 makes the Node/server role ACK it while
@@ -394,6 +468,272 @@ void RejectCarrierLooksHttp() {
     assert(!client.carrier_active());
 }
 
+void ServerResetDropsPendingRequestAndReportsClose() {
+    H2Carrier client(H2CarrierRole::Client);
+    H2Carrier server(H2CarrierRole::Server);
+    assert(client.StartClient("cover.example"));
+    Pump(client, server);
+
+    server.Feed(RstStream(1, NGHTTP2_CANCEL));
+    assert(!server.failed());
+    assert(server.TakeRequests().empty());
+    const auto closes = server.TakeStreamCloses();
+    assert(closes.size() == 1);
+    assert(closes[0].stream_id == 1);
+    assert(closes[0].error_code == NGHTTP2_CANCEL);
+    assert(server.TakeStreamCloses().empty());
+}
+
+void ServerSaturationRefusalIsRetryableAndReleasesState() {
+    H2Carrier client(H2CarrierRole::Client);
+    H2Carrier server(H2CarrierRole::Server);
+    assert(client.StartClient("cover.example"));
+    Pump(client, server);
+    auto requests = server.TakeRequests();
+    assert(requests.size() == 1);
+    assert(server.RefuseStream(requests[0].stream_id));
+    assert(!server.failed());
+    assert(!server.TakeOutbound().empty());
+    const auto closes = server.TakeStreamCloses();
+    assert(closes.size() == 1);
+    assert(closes[0].stream_id == requests[0].stream_id);
+    assert(closes[0].error_code == NGHTTP2_REFUSED_STREAM);
+}
+
+void ServerManualFlowControlStallsAndResumes() {
+    H2Carrier client(H2CarrierRole::Client);
+    H2Carrier server(H2CarrierRole::Server);
+    OpenCarrier(client, server);
+
+    H2Bytes payload(3U * 65535U);
+    for (std::size_t i = 0; i < payload.size(); ++i) {
+        payload[i] = static_cast<std::uint8_t>((i * 29U + i / 257U) & 0xffU);
+    }
+    assert(client.SendBinary(payload));
+    Pump(client, server);
+
+    H2Bytes received = server.TakeTunnelBytes();
+    assert(!received.empty());
+    assert(received.size() < payload.size());
+    assert(client.queued_output_bytes() != 0);
+    assert(client.TakeOutbound().empty());
+    assert(server.unconsumed_tunnel_bytes() == received.size());
+
+    (void)server.TakeOutbound();
+    const std::size_t first_release = received.size() / 2;
+    assert(server.ConsumeTunnelBytes(first_release));
+    assert(server.unconsumed_tunnel_bytes() ==
+           received.size() - first_release);
+    assert(server.TakeOutbound().empty());
+
+    assert(server.ConsumeTunnelBytes(received.size() - first_release));
+    assert(server.unconsumed_tunnel_bytes() == 0);
+    const auto resume_wire = server.TakeOutbound();
+    const auto updates = InspectWindowUpdates(
+        resume_wire,
+        static_cast<std::uint32_t>(server.carrier_stream_id()));
+    assert(updates.connection && updates.carrier_stream);
+    client.Feed(resume_wire);
+    assert(!client.failed());
+
+    for (int round = 0;
+         received.size() < payload.size() && round < 16; ++round) {
+        Pump(client, server);
+        auto part = server.TakeTunnelBytes();
+        assert(!part.empty());
+        received.insert(received.end(), part.begin(), part.end());
+        assert(server.unconsumed_tunnel_bytes() == part.size());
+        assert(server.ConsumeTunnelBytes(part.size()));
+        Pump(server, client);
+    }
+    assert(received == payload);
+    assert(client.queued_output_bytes() == 0);
+    assert(server.unconsumed_tunnel_bytes() == 0);
+}
+
+void ClientCoverDataReturnsCreditImmediately() {
+    H2Carrier client(H2CarrierRole::Client);
+    H2Carrier server(H2CarrierRole::Server);
+    assert(client.StartClient("cover.example"));
+    Pump(client, server);
+    Pump(server, client);
+
+    auto requests = server.TakeRequests();
+    assert(requests.size() == 1);
+    const auto stream_id = static_cast<std::uint32_t>(requests[0].stream_id);
+    assert(server.RespondHttp(
+        requests[0].stream_id, 200, {{"content-type", "text/html"}},
+        H2Bytes(8U * 1024U * 1024U, 0x63)));
+
+    // The response is larger than Chrome's 6-MiB stream window. With manual
+    // receive credit enabled on the client it can only finish if ordinary
+    // cover DATA is consumed immediately rather than retained for a sink.
+    auto first_wire = server.TakeOutbound();
+    assert(!first_wire.empty());
+    client.Feed(first_wire);
+    assert(!client.failed());
+    assert(client.unconsumed_tunnel_bytes() == 0);
+    auto updates_wire = client.TakeOutbound();
+    const auto updates = InspectWindowUpdates(updates_wire, stream_id);
+    assert(updates.carrier_stream);
+    server.Feed(updates_wire);
+    assert(!server.failed());
+
+    for (int round = 0; round < 8 && !client.priming_complete(); ++round) {
+        Pump(server, client);
+        Pump(client, server);
+        // Stream completion submits the two asset requests; they are the
+        // observable proof that the oversized priming response drained.
+        if (!server.TakeRequests().empty()) return;
+    }
+    assert(false && "oversized cover response did not release receive credit");
+}
+
+void ClientManualFlowControlStallsAndResumes() {
+    H2Carrier client(H2CarrierRole::Client);
+    H2Carrier server(H2CarrierRole::Server);
+    OpenCarrier(client, server);
+    (void)client.TakeOutbound();
+
+    H2Bytes payload(7U * 1024U * 1024U);
+    for (std::size_t i = 0; i < payload.size(); ++i) {
+        payload[i] = static_cast<std::uint8_t>((i * 31U + i / 251U) & 0xffU);
+    }
+    assert(server.SendBinary(payload));
+    Pump(server, client);
+
+    H2Bytes received = client.TakeTunnelBytes();
+    assert(!received.empty());
+    assert(received.size() < payload.size());
+    assert(server.queued_output_bytes() != 0);
+    assert(server.TakeOutbound().empty());
+    assert(client.unconsumed_tunnel_bytes() == received.size());
+
+    (void)client.TakeOutbound();
+    const std::size_t first_release = received.size() / 2;
+    assert(client.ConsumeTunnelBytes(first_release));
+    assert(client.unconsumed_tunnel_bytes() ==
+           received.size() - first_release);
+    assert(client.TakeOutbound().empty());
+
+    assert(client.ConsumeTunnelBytes(received.size() - first_release));
+    assert(client.unconsumed_tunnel_bytes() == 0);
+    const auto resume_wire = client.TakeOutbound();
+    const auto updates = InspectWindowUpdates(
+        resume_wire,
+        static_cast<std::uint32_t>(client.carrier_stream_id()));
+    assert(updates.carrier_stream);
+    server.Feed(resume_wire);
+    assert(!server.failed());
+
+    for (int round = 0;
+         received.size() < payload.size() && round < 16; ++round) {
+        Pump(server, client);
+        auto part = client.TakeTunnelBytes();
+        assert(!part.empty());
+        received.insert(received.end(), part.begin(), part.end());
+        assert(client.unconsumed_tunnel_bytes() == part.size());
+        assert(client.ConsumeTunnelBytes(part.size()));
+        Pump(client, server);
+    }
+    assert(received == payload);
+    assert(server.queued_output_bytes() == 0);
+    assert(client.unconsumed_tunnel_bytes() == 0);
+}
+
+void ServerOverConsumeFailsClosed() {
+    H2Carrier client(H2CarrierRole::Client);
+    H2Carrier server(H2CarrierRole::Server);
+    OpenCarrier(client, server);
+
+    const H2Bytes payload(31, 0x5a);
+    assert(client.SendBinary(payload));
+    Pump(client, server);
+    auto received = server.TakeTunnelBytes();
+    assert(received == payload);
+    assert(server.unconsumed_tunnel_bytes() == payload.size());
+    assert(!server.ConsumeTunnelBytes(payload.size() + 1));
+    assert(server.failed());
+    assert(server.unconsumed_tunnel_bytes() == payload.size());
+}
+
+void PaddedDataIsRetiredWithoutTunnelCredit() {
+    H2Carrier client(H2CarrierRole::Client);
+    H2Carrier server(H2CarrierRole::Server);
+    OpenCarrier(client, server);
+    (void)server.TakeOutbound();
+
+    const auto stream_id =
+        static_cast<std::uint32_t>(server.carrier_stream_id());
+    H2Bytes padded_frames;
+    constexpr std::size_t kFrameCount = 126;
+    constexpr std::size_t kDataLength = 262;
+    padded_frames.reserve(kFrameCount * (9 + kDataLength));
+    for (std::size_t frame = 0; frame < kFrameCount; ++frame) {
+        padded_frames.insert(padded_frames.end(), {
+            0x00, 0x01, 0x06,  // 262-byte DATA payload
+            0x00, 0x08,        // DATA, PADDED
+            static_cast<std::uint8_t>((stream_id >> 24) & 0x7fU),
+            static_cast<std::uint8_t>((stream_id >> 16) & 0xffU),
+            static_cast<std::uint8_t>((stream_id >> 8) & 0xffU),
+            static_cast<std::uint8_t>(stream_id & 0xffU),
+            0xff,              // 255 trailing padding bytes
+            0x82, 0x80,        // masked empty WebSocket binary frame
+            0x00, 0x00, 0x00, 0x00});
+        padded_frames.insert(padded_frames.end(), 255, 0x00);
+    }
+    server.Feed(padded_frames);
+    assert(!server.failed());
+    assert(server.TakeTunnelBytes().empty());
+    assert(server.unconsumed_tunnel_bytes() == 0);
+
+    // nghttp2 owns the Pad Length and trailing padding accounting. Together
+    // with the six WebSocket framing bytes per empty message, the consumed
+    // DATA crosses half the default window and updates both levels.
+    const auto updates = InspectWindowUpdates(server.TakeOutbound(), stream_id);
+    assert(updates.connection && updates.carrier_stream);
+}
+
+void ServerCreditCanRetireAfterStreamClose() {
+    H2Carrier client(H2CarrierRole::Client);
+    H2Carrier server(H2CarrierRole::Server);
+    OpenCarrier(client, server);
+
+    const H2Bytes payload(40000, 0x6b);
+    assert(client.SendBinary(payload));
+    Pump(client, server);
+    auto received = server.TakeTunnelBytes();
+    assert(received == payload);
+    assert(server.unconsumed_tunnel_bytes() == payload.size());
+    // Discard any unrelated output produced while handling the DATA. The
+    // assertion below must be tied specifically to the late credit release.
+    (void)server.TakeOutbound();
+
+    const auto stream_id =
+        static_cast<std::uint32_t>(server.carrier_stream_id());
+    const H2Bytes rst_stream{
+        0x00, 0x00, 0x04,  // payload length
+        0x03, 0x00,        // RST_STREAM, no flags
+        static_cast<std::uint8_t>((stream_id >> 24) & 0x7fU),
+        static_cast<std::uint8_t>((stream_id >> 16) & 0xffU),
+        static_cast<std::uint8_t>((stream_id >> 8) & 0xffU),
+        static_cast<std::uint8_t>(stream_id & 0xffU),
+        0x00, 0x00, 0x00, 0x00};  // NGHTTP2_NO_ERROR
+    server.Feed(rst_stream);
+    assert(!server.failed());
+    assert(server.carrier_closed());
+
+    // The carrier retires connection-level credit after its stream object is
+    // gone. The release crosses the half-window threshold and therefore
+    // produces a connection WINDOW_UPDATE, never a stream update.
+    assert(server.ConsumeTunnelBytes(received.size()));
+    assert(server.unconsumed_tunnel_bytes() == 0);
+    const auto updates =
+        InspectWindowUpdates(server.TakeOutbound(), stream_id);
+    assert(updates.connection);
+    assert(!updates.carrier_stream);
+}
+
 }  // namespace
 
 int main() {
@@ -403,5 +743,13 @@ int main() {
     ObserverCapIsFailOpenAndBounded();
     ObserverClockStartsAtFirstCarrierEvent();
     RejectCarrierLooksHttp();
+    ServerResetDropsPendingRequestAndReportsClose();
+    ServerSaturationRefusalIsRetryableAndReleasesState();
+    ServerManualFlowControlStallsAndResumes();
+    ClientCoverDataReturnsCreditImmediately();
+    ClientManualFlowControlStallsAndResumes();
+    ServerOverConsumeFailsClosed();
+    PaddedDataIsRetiredWithoutTunnelCredit();
+    ServerCreditCanRetireAfterStreamClose();
     return 0;
 }

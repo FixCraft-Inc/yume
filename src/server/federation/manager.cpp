@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <unordered_set>
 
 #include "server/federation/link.hpp"
 #include "server/runtime/manager.hpp"
@@ -48,9 +49,12 @@ FederationPeer FederationManager::parse_peer(const std::string& raw) {
     peer.raw_json = raw;
     peer.id = json.value("id", "");
     peer.tls_pin_sha256 = json.value("tls_pin", "");
+    peer.psk_file = json.value("psk_file", "");
+    peer.carrier_secret_file = json.value("carrier_secret_file", "");
     const std::string url = json.value("url", "");
     constexpr std::string_view scheme = "yume://";
-    if (peer.id.empty() || url.rfind(scheme, 0) != 0) {
+    if (!is_valid_federation_peer_id(peer.id) ||
+        url.rfind(scheme, 0) != 0) {
         throw std::runtime_error("peer requires id and yume://host:port url");
     }
     std::string hostport = url.substr(scheme.size());
@@ -70,23 +74,49 @@ FederationPeer FederationManager::parse_peer(const std::string& raw) {
     if (peer.host.empty() || peer.port <= 0 || peer.port > 65535) {
         throw std::runtime_error("peer url host/port invalid");
     }
+    if (peer.psk_file.empty()) {
+        throw std::runtime_error("peer requires psk_file (pairwise AUTH v2 PSK)");
+    }
+    if (peer.carrier_secret_file.empty()) {
+        throw std::runtime_error(
+            "peer requires carrier_secret_file (the peer's --obfs-secret value; "
+            "YUME 2.0 federation dials pass the same H2 admission as clients)");
+    }
     return peer;
 }
 
 void FederationManager::start() {
     std::lock_guard<std::mutex> lock(mutex_);
+    std::unordered_set<std::string> configured_ids;
     for (const auto& raw : cfg_.federation_peers) {
         try {
             auto peer = parse_peer(raw);
+            if (!configured_ids.insert(peer.id).second) {
+                util::log_warn("duplicate federation peer id rejected: " +
+                               peer.id);
+                continue;
+            }
+            if (links_.find(peer.id) != links_.end()) {
+                util::log_warn("federation peer already started: " + peer.id);
+                continue;
+            }
             if (ends_with(peer.host, ".onion") && cfg_.outbound_proxy_url.empty()) {
                 util::log_warn("federation peer " + peer.id + " uses .onion; outbound_proxy is required");
                 continue;
             }
             auto link = std::make_shared<FederationLink>(io_, cfg_, peer, this);
-            links_[peer.id] = link;
+            // Publish ownership before starting worker threads. If thread
+            // construction throws after one worker starts, stop() can still
+            // find and join the partially started link.
+            const bool inserted = links_.emplace(peer.id, link).second;
+            if (!inserted) {
+                util::log_warn("duplicate federation peer id rejected: " +
+                               peer.id);
+                continue;
+            }
             link->start();
         } catch (const std::exception& ex) {
-            util::log_warn("federation peer parse failed: " + std::string(ex.what()));
+            util::log_warn("federation peer setup failed: " + std::string(ex.what()));
         }
     }
     if (links_.empty()) {
@@ -117,12 +147,16 @@ std::shared_ptr<FederationLink> FederationManager::find(const std::string& peer_
     return it == links_.end() ? nullptr : it->second;
 }
 
-std::vector<control::EndpointInfo> FederationManager::remote_endpoints() const {
+std::vector<control::EndpointInfo> FederationManager::remote_endpoints(
+        std::size_t limit) const {
+    limit = std::min(limit, control::kMaxDirectoryEndpoints);
     std::vector<control::EndpointInfo> out;
+    if (limit == 0U) return out;
     std::lock_guard<std::mutex> lock(mutex_);
-    out.reserve(remote_by_visible_id_.size());
+    out.reserve(std::min(remote_by_visible_id_.size(), limit));
     for (const auto& entry : remote_by_visible_id_) {
         out.push_back(entry.second);
+        if (out.size() == limit) break;
     }
     return out;
 }
@@ -212,13 +246,27 @@ void FederationManager::update_directory(const std::string& peer_id,
         }
     }
     for (auto endpoint : endpoints) {
-        if (endpoint.endpoint_id.empty()) {
+        if (remote_by_visible_id_.size() >=
+                control::kMaxFederatedCachedEndpoints ||
+            !control::directory_endpoint_accounted_bytes(
+                endpoint, control::DirectoryNamespace::FederationRaw)) {
+            continue;
+        }
+        const auto visible_id =
+            control::try_make_federated_visible_endpoint_id(
+                peer_id, endpoint.endpoint_id);
+        if (!visible_id) {
             continue;
         }
         endpoint.remote = true;
         endpoint.federation_peer_id = peer_id;
         endpoint.remote_endpoint_id = endpoint.endpoint_id;
-        endpoint.endpoint_id = peer_id + ":" + endpoint.remote_endpoint_id;
+        endpoint.endpoint_id = *visible_id;
+        // Relationship IDs are meaningful only inside the advertising
+        // server's namespace and are never consulted for federated routing or
+        // authorization. Do not transpose them into this server's namespace.
+        endpoint.controller_ids.clear();
+        endpoint.controlled_target_ids.clear();
         if (endpoint.server_id.empty()) {
             endpoint.server_id = server_id;
         }
@@ -226,7 +274,23 @@ void FederationManager::update_directory(const std::string& peer_id,
             endpoint.server_name = server_name;
         }
         endpoint.online = true;
+        if (!control::directory_endpoint_accounted_bytes(
+                endpoint, control::DirectoryNamespace::ClientVisible)) {
+            continue;
+        }
         remote_by_visible_id_[endpoint.endpoint_id] = std::move(endpoint);
+    }
+}
+
+void FederationManager::clear_directory(const std::string& peer_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto it = remote_by_visible_id_.begin();
+         it != remote_by_visible_id_.end();) {
+        if (it->second.federation_peer_id == peer_id) {
+            it = remote_by_visible_id_.erase(it);
+        } else {
+            ++it;
+        }
     }
 }
 

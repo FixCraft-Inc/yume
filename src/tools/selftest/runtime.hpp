@@ -89,6 +89,9 @@ struct Breakdown {
     double bulk_total_s{0.0};
     double bulk_send_s{0.0};
     int bulk_streams{1};
+    int requested_tunnels{0};
+    int authenticated_tunnels{0};
+    int live_tunnels{0};
 };
 
 struct Result {

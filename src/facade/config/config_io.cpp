@@ -8,10 +8,9 @@
 
 #include <filesystem>
 #include <fstream>
-#include <system_error>
-
 #include <nlohmann/json.hpp>
 
+#include "core/runtime/atomic_file.hpp"
 #include "facade/config/detail.hpp"
 #include "facade/config/keys.hpp"
 
@@ -57,14 +56,11 @@ GuiPreferences load_gui_preferences() {
 
 bool save_gui_preferences(GuiPreferences const& prefs) {
     const auto path = default_gui_preferences_path();
-    std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
     json j = {{cfg_key::dark_mode, prefs.dark_mode},
               {cfg_key::minimize_to_tray_on_close, prefs.minimize_to_tray_on_close}};
-    std::ofstream out(path);
-    if (!out) return false;
-    out << j.dump(2);
-    return out.good();
+    return yume::runtime::AtomicWriteFile(
+        path, j.dump(2), nullptr,
+        yume::runtime::ParentDirectoryPolicy::Create);
 }
 
 }  // namespace yume::facade::config_io

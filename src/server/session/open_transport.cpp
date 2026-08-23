@@ -17,7 +17,7 @@ void Session::start_udp_open(uint8_t stream_id, const std::string& host, int por
     auto udp = std::make_shared<UdpStream>(stream_.get_executor());
     udp->host = host;
     udp->port = port;
-    udp->open_started_ms = util::now_ms();
+    udp->open_started_ms = diagnostics::timing_now_ms();
     udp->resolve_started_ms = udp->open_started_ms;
     const bool resolve_any_family = server_resolve_any_family_enabled();
     const std::string resolve_family = resolve_any_family ? "any" : "ipv4";
@@ -53,9 +53,7 @@ void Session::start_udp_open(uint8_t stream_id, const std::string& host, int por
             const boost::asio::ip::udp::resolver::results_type& results) {
             resolver_timer->cancel();
             [[maybe_unused]] const int64_t resolve_ms =
-                udp->resolve_started_ms > 0
-                    ? (util::now_ms() - udp->resolve_started_ms)
-                    : 0;
+                diagnostics::elapsed_ms_since(udp->resolve_started_ms);
             {
                 std::lock_guard<std::mutex> lock(self->streams_mutex_);
                 if (self->udp_streams_.find(stream_id) ==
@@ -175,7 +173,7 @@ void Session::start_udp_open(uint8_t stream_id, const std::string& host, int por
                 "session=" + std::to_string(self->session_id_) +
                     " stream=" + std::to_string(stream_id) +
                     " proto=udp ok=1 ms=" +
-                    std::to_string(util::now_ms() - udp->open_started_ms));
+                    std::to_string(diagnostics::elapsed_ms_since(udp->open_started_ms)));
             self->start_udp_read(stream_id);
         };
 
@@ -306,8 +304,7 @@ void Session::start_udp_open(uint8_t stream_id, const std::string& host, int por
                     "session=" + std::to_string(self->session_id_) +
                         " stream=" + std::to_string(stream_id) +
                         " proto=udp ok=1 ms=" +
-                        std::to_string(util::now_ms() -
-                                       udp->open_started_ms));
+                        std::to_string(diagnostics::elapsed_ms_since(udp->open_started_ms)));
                 self->start_udp_read(stream_id);
             });
         direct_dns->start();
@@ -351,7 +348,7 @@ void Session::start_tcp_open(uint8_t stream_id, const std::string& host, int por
     auto remote = std::make_shared<RemoteStream>(stream_.get_executor());
     remote->host = host;
     remote->port = port;
-    remote->open_started_ms = util::now_ms();
+    remote->open_started_ms = diagnostics::timing_now_ms();
     remote->resolve_started_ms = remote->open_started_ms;
     const bool resolve_any_family = server_resolve_any_family_enabled();
     const std::string resolve_family = resolve_any_family ? "any" : "ipv4";
@@ -451,7 +448,7 @@ void Session::start_tcp_open(uint8_t stream_id, const std::string& host, int por
                 std::make_shared<boost::asio::deadline_timer>(
                     self->stream_.get_executor());
             auto connect_timed_out = std::make_shared<bool>(false);
-            remote->connect_started_ms = util::now_ms();
+            remote->connect_started_ms = diagnostics::timing_now_ms();
             connect_timer->expires_from_now(
                 boost::posix_time::milliseconds(kConnectTimeoutMs));
 
@@ -466,10 +463,7 @@ void Session::start_tcp_open(uint8_t stream_id, const std::string& host, int por
                         const boost::asio::ip::tcp::endpoint&) {
                         connect_timer->cancel();
                         [[maybe_unused]] const int64_t connect_ms =
-                            remote->connect_started_ms > 0
-                                ? (util::now_ms() -
-                                   remote->connect_started_ms)
-                                : 0;
+                            diagnostics::elapsed_ms_since(remote->connect_started_ms);
                         {
                             std::lock_guard<std::mutex> lock(
                                 self->streams_mutex_);
@@ -508,16 +502,14 @@ void Session::start_tcp_open(uint8_t stream_id, const std::string& host, int por
                         remote->socket.set_option(
                             boost::asio::ip::tcp::no_delay(true),
                             nodelay_ec);
-                        boost::system::error_code remote_recvbuf_ec;
-                        remote->socket.set_option(
-                            boost::asio::socket_base::receive_buffer_size(
-                                kSocketBufferBytes),
-                            remote_recvbuf_ec);
-                        boost::system::error_code remote_sendbuf_ec;
-                        remote->socket.set_option(
-                            boost::asio::socket_base::send_buffer_size(
-                                kSocketBufferBytes),
-                            remote_sendbuf_ec);
+                        // Buffers left to the kernel: an explicit
+                        // SO_RCVBUF/SO_SNDBUF disables Linux window
+                        // autotuning for the connection's lifetime. This is
+                        // the exit leg to the target, frequently the longest
+                        // path in a deployment, so it is exactly where the
+                        // window has to grow into the bandwidth-delay
+                        // product. Same reasoning as the tunnel socket in
+                        // session.cpp.
                         remote->connected = true;
                         self->send_open_reply(stream_id, true, "");
                         YUME_TIMING_LOG(
@@ -529,8 +521,7 @@ void Session::start_tcp_open(uint8_t stream_id, const std::string& host, int por
                                 " proto=tcp ok=1 connect_ms=" +
                                 std::to_string(connect_ms) +
                                 " total_ms=" +
-                                std::to_string(util::now_ms() -
-                                               remote->open_started_ms));
+                                std::to_string(diagnostics::elapsed_ms_since(remote->open_started_ms)));
                         self->start_remote_read(stream_id);
                         self->do_remote_write(stream_id);
                     }));
@@ -553,9 +544,7 @@ void Session::start_tcp_open(uint8_t stream_id, const std::string& host, int por
             const boost::asio::ip::tcp::resolver::results_type& results) {
             resolver_timer->cancel();
             const int64_t resolve_ms =
-                remote->resolve_started_ms > 0
-                    ? (util::now_ms() - remote->resolve_started_ms)
-                    : 0;
+                diagnostics::elapsed_ms_since(remote->resolve_started_ms);
             {
                 std::lock_guard<std::mutex> lock(self->streams_mutex_);
                 if (self->streams_.find(stream_id) ==

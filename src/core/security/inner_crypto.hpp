@@ -41,6 +41,12 @@ struct ClientHandshake {
     std::uint32_t pbkdf2_iters{0};
 };
 
+// Builds the legacy client-side inner handshake material. Like the resolvers
+// below, this is no longer on a shipped path: the 2.0 client establishes its
+// inner channel through AUTH v2 (ML-KEM-1024 + X25519 + PSK), never through a
+// config-derived legacy KDF. It is retained because the KDF policy tests pin
+// their expected parameters against it. Do not treat a call site appearing here
+// as evidence that legacy establishment is reachable.
 ClientHandshake client_prepare(const Config& cfg, bool heavy);
 struct DerivedKey {
     Bytes key;
@@ -55,25 +61,25 @@ struct KdfParams {
     std::uint32_t pbkdf2_iters{0};
 };
 
-// Resolves zero/omitted KDF fields to the exact values server_derive_key will
-// use. Callers that reserve resources or enforce caps before derivation must
-// use this rather than accounting the peer's raw zeros.
+// Resolves zero/omitted KDF fields to the exact values a legacy server-side
+// derivation would use. Callers that reserve resources or enforce caps before
+// derivation must use this rather than accounting the peer's raw zeros.
+//
+// No shipped code path performs a server-side legacy KDF derivation. The
+// server session speaks only AUTH v2, which pins its KDF to HKDF and never
+// accepts a peer-supplied KDF request, and federation dials speak AUTH v2 too
+// (yume/federation-v2). The resolver and the *_exceed_limits guards below are
+// therefore not live controls; they are retained because the admission tests
+// pin their policy values. Do not read their presence as runtime enforcement,
+// and do not wire a peer-selectable KDF back in: that revives attack surface
+// AUTH v2 deliberately removed.
 KdfParams resolve_server_kdf_params(const Config& cfg,
                                     bool heavy,
                                     const std::optional<KdfParams>& kdf_params);
 
-std::optional<DerivedKey> server_derive_key(const Config& cfg,
-                                            const Bytes& pq_ciphertext,
-                                            const Bytes& salt,
-                                            bool heavy,
-                                            const std::optional<KdfParams>& kdf_params);
-std::optional<DerivedKey> server_derive_key_resolved(
-    const Config& cfg,
-    const Bytes& pq_ciphertext,
-    const Bytes& salt,
-    bool heavy,
-    const KdfParams& resolved_params,
-    bool allow_kdf_fallback);
+// The client-side counterpart, reporting exactly the parameters client_prepare
+// would use for this config. Non-live for the same reason: see client_prepare.
+KdfParams resolve_client_kdf_params(const Config& cfg, bool heavy);
 
 bool pq_supported();
 bool argon2_supported();
@@ -88,9 +94,6 @@ std::uint32_t pbkdf2_env_iters_max();
 bool pbkdf2_params_exceed_limits(const KdfParams& params,
                                  std::uint32_t iters_max,
                                  std::string* reason);
-
-std::uint64_t hop_id_from_time_ms(std::int64_t now_ms, std::uint32_t interval_ms, std::int64_t offset_ms);
-Bytes derive_hop_key(const Bytes& base_key, std::uint64_t hop_id);
 
 bool generate_pq_keypair(const std::string& private_path,
                          const std::string& public_path,

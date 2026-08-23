@@ -158,6 +158,13 @@ option(YUME_BUILD_TOOLS "Build optional helper tools such as yume-net-map" OFF)
 option(YUME_BUILD_SHARED_ABI "Build and install the stable libyume C ABI shared library" OFF)
 option(YUME_ABI_CLIENT_ONLY "Build libyume with client/stream/packet runtime only" OFF)
 
+# Compile at least one consumer as C whenever the public C ABI is enabled.
+# Keeping C conditional avoids imposing a second compiler on ordinary C++-only
+# and cross builds that do not produce libyume.
+if(YUME_BUILD_SHARED_ABI)
+    enable_language(C)
+endif()
+
 # Developer build accelerators. Both default OFF on purpose: this project has a
 # reproducibility gate (two clean helper builds must be byte-identical) and an
 # exact-artifact provenance discipline, so nothing that can perturb the emitted
@@ -198,13 +205,18 @@ set_property(CACHE YUME_SANITIZE PROPERTY STRINGS
 # configurations. Release and MinSizeRel binaries contain no diagnostic
 # counters, handlers, event strings, or environment-variable activation path.
 #
-# NOT yet true of clocks: about nine stream-lifecycle sites still call
-# util::now_ms() unconditionally and feed a YUME_TIMING_LOG that compiles away,
-# so the reads happen and the results are discarded. Per-stream, not per-frame,
-# so the throughput cost is negligible - but do not read this comment as a
-# guarantee that Release takes no timestamps. Closing that gap needs a
-# diagnostics::elapsed_ms_since() helper that reads no clock when
-# YUME_ENABLE_DEV_DIAGNOSTICS is 0; see the engineering backlog.
+# This now includes clocks. The stream-lifecycle sites that used to call
+# util::now_ms() unconditionally - feeding a YUME_TIMING_LOG that compiled away,
+# so the read happened and the result was discarded - go through
+# diagnostics::timing_now_ms() / diagnostics::elapsed_ms_since(), which are
+# constexpr 0 when YUME_ENABLE_DEV_DIAGNOSTICS is 0 and read no clock even in a
+# diagnostics build until collection is switched on. Verified by symbol: no
+# Release session or proxy object references yume::util::now_ms().
+# tests/test_release_diagnostics_cost.py guards it.
+#
+# Two gates, deliberately: this build-time switch decides whether the code
+# exists at all, and --timing / YUME_TIMING decides whether an instrumented
+# build collects. Neither costs a normal user anything.
 set(YUME_DEV_DIAGNOSTICS_EXPRESSION
     "$<IF:$<OR:$<CONFIG:Debug>,$<CONFIG:RelWithDebInfo>>,1,0>")
 
@@ -359,8 +371,14 @@ function(yume_prepare_static_for_shared_abi target)
         )
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
             # Also overrides directory-level -flto inherited by bundled
-            # BaseFWX, which does not use yume_apply_perf_opts().
-            target_compile_options(${target} PRIVATE -fno-lto)
+            # BaseFWX, which does not use yume_apply_perf_opts(). Consumers
+            # must inherit the same policy: GCC 14 cannot reliably resolve
+            # hidden inline/template definitions when an LTO object links
+            # these deliberately non-LTO archives.
+            target_compile_options(${target}
+                PRIVATE -fno-lto
+                INTERFACE -fno-lto)
+            target_link_options(${target} INTERFACE -fno-lto)
         endif()
     endif()
 endfunction()
@@ -421,6 +439,40 @@ if(NOT _yume_sanitize STREQUAL "none")
     add_link_options(${_yume_sanitize_flags})
     if(_yume_sanitize MATCHES "undefined")
         add_compile_options(-fno-sanitize-recover=all)
+    endif()
+
+    # The strict-C ABI integration is orchestrated by Python and loads the
+    # instrumented shared library through ctypes. Unlike the C/C++ test
+    # executables, that Python process is not linked by this build, so Linux
+    # ASan must be preloaded before ctypes opens libyume. Resolve the compiler's
+    # own runtime instead of guessing a GCC-versioned system path. The test
+    # property is applied where the integration test is declared.
+    if(_yume_sanitize MATCHES "address" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        execute_process(
+            COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=libasan.so
+            OUTPUT_VARIABLE _yume_asan_runtime
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE _yume_asan_runtime_result)
+        if(NOT _yume_asan_runtime_result EQUAL 0 OR
+           NOT IS_ABSOLUTE "${_yume_asan_runtime}" OR
+           NOT EXISTS "${_yume_asan_runtime}")
+            message(FATAL_ERROR
+                "Unable to resolve the compiler ASan runtime for ctypes integration: '${_yume_asan_runtime}'")
+        endif()
+        execute_process(
+            COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=libstdc++.so.6
+            OUTPUT_VARIABLE _yume_cxx_runtime
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE _yume_cxx_runtime_result)
+        if(NOT _yume_cxx_runtime_result EQUAL 0 OR
+           NOT IS_ABSOLUTE "${_yume_cxx_runtime}" OR
+           NOT EXISTS "${_yume_cxx_runtime}")
+            message(FATAL_ERROR
+                "Unable to resolve the compiler C++ runtime for ctypes integration: '${_yume_cxx_runtime}'")
+        endif()
+        # ASan must be first, while libstdc++ must already be present when ASan
+        # installs its __cxa_throw interceptor. Python normally loads neither.
+        set(_yume_asan_preload "${_yume_asan_runtime}:${_yume_cxx_runtime}")
     endif()
 
     message(STATUS "YUME sanitizers: ${_yume_sanitize} (LTO forced OFF; do not distribute this build)")
@@ -676,9 +728,9 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             endif()
         endif()
         set(CPACK_DEBIAN_PACKAGE_DESCRIPTION
-"YUME is a TLS 1.3 stealth transport with optional HTTP/2 masking,
-BaseFWX-backed inner crypto, live key hopping, SOCKS, forwarding,
-relay, and server daemon modes.")
+"YUME is an authenticated TLS 1.3 HTTP/2/WebSocket transport with
+hybrid post-quantum identity, forward-secure session ratchets, SOCKS,
+forwarding, relay, and server daemon modes.")
     else()
         set(CPACK_GENERATOR "TGZ")
     endif()

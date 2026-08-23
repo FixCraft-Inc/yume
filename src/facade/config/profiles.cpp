@@ -16,6 +16,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "core/runtime/atomic_file.hpp"
 #include "facade/config/config_io.hpp"
 
 namespace yume::facade::profiles {
@@ -115,12 +116,9 @@ std::string active_id() {
 }
 
 bool set_active(std::string const& id) {
-    std::error_code ec;
-    std::filesystem::create_directories(profiles_dir(), ec);
-    std::ofstream out(active_marker(), std::ios::trunc);
-    if (!out) return false;
-    out << id;
-    return out.good();
+    return yume::runtime::AtomicWriteFile(
+        active_marker(), id, nullptr,
+        yume::runtime::ParentDirectoryPolicy::Create);
 }
 
 std::optional<client::ClientConfig> load(std::string const& id, std::string* err) {
@@ -147,10 +145,10 @@ bool save(std::string const& id,
     }
     in.close();
     j["display_name"] = display_name;
-    std::ofstream out(path, std::ios::trunc);
-    if (!out) return true;
-    out << j.dump(2);
-    return out.good();
+    if (!yume::runtime::AtomicWriteFile(path, j.dump(2), err)) {
+        return false;
+    }
+    return true;
 }
 
 bool remove(std::string const& id, std::string* err) {

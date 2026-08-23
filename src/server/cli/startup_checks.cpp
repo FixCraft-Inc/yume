@@ -10,7 +10,6 @@
 #include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
 #include "core/protocol/runtime_policy.hpp"
-#include "core/security/secret_file.hpp"
 #include "core/version.hpp"
 #include "server/cli/key.hpp"
 #include "server/cli/security_policy.hpp"
@@ -18,7 +17,7 @@
 #include "server/filter/ip_filter.hpp"
 #include "server/host/host_types.hpp"
 #include "server/host/host_routes.hpp"
-#include "server/host/http_backend_client.hpp"
+#include "server/runtime/security_config.hpp"
 #include "util.hpp"
 
 #include <algorithm>
@@ -81,67 +80,8 @@ bool validate_required_files(const yume::server::ServerConfig& cfg, bool key_man
            require_readable("anonym_ca_cert", cfg.anonym_ca_cert) &&
            require_readable("anonym_sub_key", cfg.anonym_sub_key) &&
            require_readable("anonym_sub_cert", cfg.anonym_sub_cert) &&
-           require_readable("federation_auth_key", cfg.federation_auth_key) &&
+           require_readable("federation_identity", cfg.federation_identity) &&
            require_readable("federation_anonym_ca", cfg.federation_anonym_ca);
-}
-
-bool prepare_v2_secrets(yume::server::ServerConfig& cfg,
-                        bool key_management_only) {
-    if (key_management_only) return true;
-    if (!cfg.obfs_secret.empty()) {
-        yume::util::log_error(
-            "literal obfs_secret is not accepted by YUME 2.0; configure obfs_secret_file");
-        return false;
-    }
-    if (cfg.obfs_secret_file.empty() || cfg.inner_psk_file.empty()) {
-        yume::util::log_error(
-            "YUME 2.0 requires --obfs-secret-file and --inner-psk-file");
-        return false;
-    }
-    if (!cfg.obfuscation || !cfg.inner_crypto) {
-        yume::util::log_error(
-            "YUME 2.0 requires the H2 carrier and mandatory inner encryption; "
-            "config obfuscation=false / inner_crypto=false are not accepted");
-        return false;
-    }
-    if (cfg.obfs_pad_multiple != 0 || cfg.obfs_jitter_ms != 0) {
-        yume::util::log_error(
-            "YUME 2.0 Chrome profile rejects configured obfs padding/jitter; "
-            "the committed capture contains neither");
-        return false;
-    }
-    cfg.inner_required = true;
-    if (cfg.real_backend.empty()) {
-        yume::util::log_error(
-            "YUME 2.0 requires --real-backend "
-            "loopback://<loopback-ip-literal>:<port>");
-        return false;
-    }
-    if (!yume::server::host::parse_loopback_backend(cfg.real_backend).has_value()) {
-        yume::util::log_error(
-            "--real-backend must be loopback://<loopback-ip-literal>:<port>");
-        return false;
-    }
-    const auto backend = yume::server::host::parse_loopback_backend(
-        cfg.real_backend);
-    std::string probe_error;
-    if (!yume::server::host::probe_loopback_http(
-            backend->first, backend->second, &probe_error)) {
-        yume::util::log_error("--real-backend startup health check failed: " +
-                              probe_error);
-        return false;
-    }
-    try {
-        cfg.obfs_secret_material = std::make_shared<yume::security::Secret32>(
-            yume::security::LoadSecretFile32(cfg.obfs_secret_file));
-        cfg.inner_psk_material = std::make_shared<yume::security::Secret32>(
-            yume::security::LoadSecretFile32(cfg.inner_psk_file));
-    } catch (const std::exception& ex) {
-        yume::util::log_error(std::string("YUME 2.0 secret-file validation failed: ") +
-                              ex.what());
-        return false;
-    }
-    return true;
 }
 
 bool validate_http_profile(const yume::server::ServerConfig& cfg) {
@@ -648,8 +588,8 @@ bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
             "(see docs/PERMISSIONS.md)");
     }
     if (cfg.federation_enable &&
-        (cfg.federation_auth_key.empty() || cfg.federation_anonym_ca.empty())) {
-        yume::util::log_error("federation requires --federation-auth-key and --federation-operator-ca");
+        (cfg.federation_identity.empty() || cfg.federation_anonym_ca.empty())) {
+        yume::util::log_error("federation requires --federation-identity and --federation-operator-ca");
         return false;
     }
     if (cfg.federation_enable && !cfg.cluster_bootstrap && cfg.federation_peers.empty()) {
@@ -657,6 +597,7 @@ bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
         return false;
     }
 
+    std::string security_error;
     if (!validate_resource_limits(cfg) ||
         !validate_http_profile(cfg) ||
         !validate_filters(cfg) ||
@@ -665,7 +606,11 @@ bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
         !validate_host_controller(cfg) ||
         !load_upstream_response(cfg) ||
         !validate_upstream_response_dir(cfg) ||
-        !prepare_v2_secrets(cfg, options.key_management_only)) {
+        !prepare_v2_security_config(
+            cfg, options.key_management_only, &security_error)) {
+        if (!security_error.empty()) {
+            yume::util::log_error(security_error);
+        }
         return false;
     }
     log_obfs_tuning(cfg);

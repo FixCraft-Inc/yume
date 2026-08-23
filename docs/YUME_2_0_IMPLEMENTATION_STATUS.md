@@ -1,18 +1,156 @@
 # YUME 2.0 desktop implementation status
 
-Status: `2.0-dev6` vertical slice implemented; release gates incomplete.
+Status: core/ABI/CLI stabilization checkpoint implemented; frontend/platform
+and release gates remain incomplete.
 
-The signed-commit inventory, competitive assessment, exact session handoff,
-and ordered next-agent gates are in `docs/YUME_2_0_DEV6_HANDOFF.md`.
+The older signed-commit inventory and performance chronology are in
+`docs/YUME_2_0_DEV6_HANDOFF.md`; its dated ordered-work sections are historical.
+This page carries the current implementation and consumer-readiness boundary.
 The explicit development-merge, `2.0-rc1`, exact-`2.0`, and branch-sync gates
 are in `docs/YUME_2_0_STABILIZATION.md`.
 
 This is a truthful inventory of the focused Linux x86-64 client/server work. It
-does not claim Android, GUI, nginx, alternate browser profiles, H3, federation,
-Windows runtime, or release qualification. Composite AUTH and dual-identity
-admin are implemented in the CLI/server scope. Development-merge evidence must
+does not claim Android, GUI, nginx, alternate browser profiles, H3, multi-hop
+anonymity, Windows runtime, or release qualification. Composite AUTH,
+dual-identity admin, and single-hop federation are implemented in the CLI/server
+scope. Development-merge evidence must
 include a fresh full optimized and sanitizer qualification of the exact signed
 tree; results from an earlier checkpoint do not transfer across corrections.
+
+## 2026-08-23 stabilization checkpoint (authoritative)
+
+The shared Linux x86-64 core, stable C ABI, and CLI gate selected before later
+GUI/Android synchronization is closed in this checkpoint. This supersedes the
+older 80/86-test development totals below. It does not qualify a release,
+mobile/desktop consumer, Windows, or ARM.
+
+Implemented and regression-covered:
+
+- bounded carrier receive credit, cover-request/pending-wire admission,
+  service and endpoint writes, packet batches, and TCP/UDP proxy queues;
+- strict typed OPEN/CONTROL/auth schemas and containment, disabled inbound
+  EXEC, collision-safe stream-ID reservation, and rollback-safe publication;
+- durable atomic POSIX config/key transactions, immutable five-file server
+  authorization snapshots, typed ABI errors, and real strict-C stream
+  integration;
+- relay-v2 composite peer identity, pinned/TOFU trust, ephemeral hybrid KEX,
+  per-channel ratchet, ordered bounded records, pinned outbound file sources,
+  atomic receive publication, and deterministic teardown;
+- facade, transport, reverse-listener, federation, cancellation, and callback
+  lifecycle ownership, plus scope-bound wiping of exceptional-path secrets.
+
+The exact-source Release matrix passed 102/102 tests with both system OpenSSL
+3.5.6 and pinned OpenSSL 3.5.7 under first-party warnings-as-errors. Eight
+high-risk tests passed 20 repeats apiece, the C++ and Go Chrome-helper tests
+passed ten repeats apiece, and the exact Go 1.26.5 module passed its offline
+read-only race suite. Shared-library and CLI dependency scans found no missing
+or unresolved symbols; the normal developer Release lanes statically link the
+prepared liboqs and Argon2 archives.
+
+The client-only warnings-as-errors ABI build completed 379 build steps and
+passed 101/101 tests plus `ldd -r`. The full serial
+ASan+UBSan+LeakSanitizer suite passed 102/102 with leak detection and
+halt-on-error enabled. Eight concurrency/lifecycle tests each passed ten
+executions under TSan. The optional GUI completed 231 warnings-as-errors build
+steps, `ldd -r`, and its help-path smoke; that is only a compile/link gate. A
+checksum-pinned liboqs 0.16.0 archive was built from the declared source,
+selected by exact cache and link path, reported as 0.16.0 by the CLI, and
+passed 102/102 Release tests.
+
+The Go/uTLS helper is not scheduled for removal in this checkpoint. It remains
+an experimental, opt-in, default-off backend because it is the only current
+backend that passes the normalized Chrome 151 raw-first-flight gate. OpenSSL
+C++ reaches exact JA4 and exact non-GREASE cipher/signature/extension sets, but
+still lacks equivalent GREASE geometry, extension placement/rotation, and the
+required certificate-compression offer. Any later removal must first put the
+C++ backend through the same wire, same-session, classifier, lifecycle, and
+reproducibility gates.
+
+Remaining work is deliberately outside the shared checkpoint: GUI/Android
+consumer behavior; Windows/ARM/NDK/hardware; release/tag/artifact signing and
+reproducible publishing; same-session Chrome/resumption/active-classifier
+evidence; deployed slow-reader and WAN loss/jitter/bidirectional/soak; a
+matched Xray/VLESS comparison; relay ancestor-symlink policy against another
+local account; caller-synchronized ABI destruction; and server-to-client
+layering cleanup.
+
+### Historical pre-checkpoint core/ABI/CLI continuation
+
+The current development tree also carries the completed core/ABI/CLI slice:
+
+- The stable C header has prefix-safe build-info negotiation, documented exact
+  millisecond timeout and zero-time poll behavior, clean EOF versus aborted
+  stream semantics, strict config error mapping, and a real strict-C11
+  server/client integration that exercises TLS/H2/AUTH, named streams,
+  peer metadata, bidirectional payloads, half-close/EOF, and abort propagation.
+- In-process server startup now crosses the same mandatory obfs/inner-secret and
+  loopback-backend preparation boundary as CLI startup. Packet writes use a
+  condition-variable-backed bounded batch queue with nonblocking, timeout, and
+  shutdown wakeup behavior instead of polling.
+- Relay setup is strict protocol version 2. Canonical composite signatures bind
+  the channel context and both peer identities; ephemeral ML-KEM-1024 + X25519
+  plus the fixed ordinary-channel PSK policy feed a per-channel
+  `SessionRatchet`. The exact `YRR2` record schema, one ordered DATA/INIT/ACK
+  path, bounded pending-application queue, rekey deadline, target policy, and
+  kind/role/state authorization are covered by focused negative and lifecycle
+  tests. TOFU commits only after a verified transcript; pinned mode and admin
+  use explicit out-of-band composite fingerprints. The bounded POSIX file sink
+  remains in use and Windows file/bytes/trust persistence fails closed where
+  equivalent descriptor-relative protection is unavailable. The unused v1
+  record/KDF implementation and tests have been removed.
+- Linux qualification of this unsigned working tree passed the full optimized
+  suite (80/80), full shared ABI (86/86), client-only shared ABI (85/85), and
+  full shared-ABI Debug ASan+UBSan+LeakSanitizer suite (86/86). These are
+  development results, not exact signed-commit or release qualification.
+
+### Consumer synchronization gate (2026-08-23)
+
+The stable C ABI is sufficient to begin Android and other consumer-side source
+synchronization. An ABI v2 redesign is **not** a prerequisite: ABI v1 has exact
+millisecond timeout/poll behavior, readiness through status polling, packet and
+named-stream surfaces, and a real strict-C integration gate. Beginning a port is
+not a support claim, however. The following consumer-specific defects must be
+closed before either frontend is called synchronized or qualified:
+
+- **Packet/VPN congestion (shared core closed):** `PacketChannel` retains an
+  accepted, encoded outbound batch while waiting in bounded,
+  cancellation-aware slices for transport admission. Temporary saturation no
+  longer loses the dequeued batch or closes the channel; saturation/recovery,
+  shutdown wakeup, and exact queue caps have focused tests. Android still needs
+  its own JNI/device/VPN saturation gate.
+- **Android migration:** the separate Android checkout still pins
+  `2.0-dev1`, accepts a bare Ed25519 PEM even though dev6 requires the exact
+  Ed25519 + ML-DSA-87 composite private identity, and its BaseFWX Java sync list
+  omits direct dependencies `PasswordPolicy.java` and
+  `PayloadKeySeparation.java` (plus the separately required `X25519.java`
+  parity file). The socket-protector callback covers connected carrier sockets,
+  not the resolver that runs first; use a numeric underlying-network endpoint
+  plus `tls_server_name` until a protected resolver handoff exists. Shared
+  pre-ready DNS/connect/proxy/TLS/H2/AUTH/helper cancellation is now prompt and
+  regression-tested, but Android must still prove its VpnService revoke and
+  airplane-mode handoff. Packet v1 is IPv4-only, so the VPN must block IPv6
+  deliberately rather than route it to native or let it bypass. NDK/ARM, JNI
+  lifecycle, device
+  leak/revoke/reconnect, and forward/reverse throughput gates remain unrun.
+- **GUI lifecycle (shared facade closed):** client/server facade start, stop,
+  restart, join, callback reentrancy/exception, and destruction use serialized
+  generations and separately owned workers. Pre-ready stop reaches every
+  connection phase and cannot be followed by a late successful start. This
+  removes the shared blocker; a real GUI window-level lifecycle smoke is still
+  required before functional GUI qualification.
+- **GUI surface:** remove the obsolete light/heavy/dual/optional inner-crypto
+  controls and status, fix the detached DNS worker that captures `App*`, and
+  either complete or clearly remove the partial chat
+  callback/close contract. The in-process status message is never populated and
+  log callbacks are stored but never delivered. `--headless` currently exits
+  successfully when valid session startup fails or configurations are absent,
+  so it is not a real connect/stop/reconnect gate.
+
+An isolated `YUME_BUILD_GUI=ON` RelWithDebInfo build of this exact source on
+`192.168.1.165` completed all 209 build steps and `ldd -r` found no missing or
+unresolved symbols. That closes only the compile/link check; no real GUI
+connection, cancellation, restart, window, tray, or platform behavior was
+qualified.
 
 ## Implemented
 
@@ -29,8 +167,10 @@ tree; results from an earlier checkpoint do not transfer across corrections.
   not runtime profile negotiation or evidence for another browser.
 - BaseFWX repository, exact commit, and minimum version are defined once in
   `config/dependencies.json` and consumed by CMake, build scripts, CI, CodeQL,
-  and release tooling. The dependency remains immutable and reproducible; a
-  floating branch is rejected.
+  and release tooling; a floating branch is rejected. The repeated Argon2
+  discovery cache-reset correction is separately signed, pushed, and pinned at
+  `216a48a6110e8f6606b2a63b51950511466bf25a`, so the YUME candidate no longer
+  depends on an unpublished BaseFWX worktree.
 - Full builds now fail configuration below OpenSSL 3.5 instead of discovering
   the missing ML-DSA-87 provider during AUTH. The official OpenSSL source
   revision is recorded beside BaseFWX metadata; CI, CodeQL, and release builds
@@ -151,8 +291,13 @@ tree; results from an earlier checkpoint do not transfer across corrections.
   inner/light/heavy/dual/hop/no-inner/raw-carrier and literal-secret CLI choices
   are rejected. The unreachable client-side 1.x AUTH response, Argon2 challenge
   metadata, and long-lived PQ auto-trust/reconnect implementation have been
-  removed; the unvalidated federation path still retains its separate legacy
-  AUTH and inner-key flow.
+  removed. The federation dial now speaks AUTH v2 as well (`yume/federation-v2`):
+  carrier admission, composite identity, channel binding, per-peer PSK and
+  ratchet establishment, so no live path retains the separate legacy AUTH and
+  inner-key flow. Legacy hop derivation, skew-window decryption, cached state,
+  configuration/share/status fields, and the inert Argon2 admission controller
+  have now been removed. Focused legacy-AEAD negatives reject wrong key, wrong
+  AAD fields, and ciphertext modification.
 
 ## Development evidence completed
 
@@ -166,12 +311,19 @@ tree; results from an earlier checkpoint do not transfer across corrections.
   failure assertion. This is not an observed YUME runtime, AUTH, wire, or
   sanitizer defect, but that product-code checkpoint's development
   qualification is incomplete. Refresh Git before relying on branch tips.
-- The next correction must make that unit fixture's certificate prerequisite
-  hermetic while preserving fake-command precedence and production fail-closed
-  behavior. Afterward, require 70/70 native and sanitizer CI plus the complete
-  fresh exact-tree dependency/reproducibility/package/preflight lane before
-  claiming current-head Gate A acceptance. Earlier exact-tree results remain
-  evidence for their named commits only.
+- The current working-tree correction makes that unit fixture's certificate
+  prerequisite hermetic with a strict test-local `openssl`, restores the
+  bounded fake-command-first `PATH`, and leaves production fail-closed behavior
+  unchanged. The direct browser-sandbox suite passes 38/38, including the
+  intended unsuccessful-Chrome diagnostic and absent sanitizer marker. A
+  subsequent isolated GCC 14.2 run exposed and corrected the shared-ABI
+  mixed-LTO link policy and made signed vendor extraction safely repeatable.
+  The resulting strict shared-ABI Release and serial ASan+UBSan lanes passed
+  70/70 each; CLI help smokes and pinned Go 1.26.5 unit/race tests also passed.
+  Ordinary non-shared-ABI builds retain LTO. Require 70/70 native and sanitizer
+  CI plus the complete fresh exact-tree dependency/reproducibility/package/
+  preflight lane before claiming current-head Gate A acceptance. Earlier
+  exact-tree results remain evidence for their named commits only.
 - Gate A first closed for continued development, with `NO RELEASE`, at signed
   commit `815ea405568edeb661389bae128a6678cb4cdf1b`: all five automatic
   workflows passed and workflow-owned `DEV` reached content parity. That
@@ -413,6 +565,13 @@ tree; results from an earlier checkpoint do not transfer across corrections.
   sequencing makes this carrier boundary security-critical.
 - Capture and compare the live YUME connection against the committed fixture;
   record every remaining classifier-visible TLS/H2 difference.
+- Run the external-classifier gate on complete-session groups with held-out
+  day, host, network and provider rather than a packet-random split. Freeze the
+  feature set and threshold first; report multiple classifier families,
+  confidence intervals, ROC/PR results and detection at low false-positive
+  rates. Include active probes and metadata-only baselines. This can bound a
+  measured advantage; it cannot prove that future DPI or a neural model is
+  unable to learn YUME.
 - Preserve fixture-backed coherence between the TLS selection, HTTP headers,
   H2 shape, assets, and cover server while closing the remaining OpenSSL
   ClientHello differences.
@@ -426,16 +585,37 @@ tree; results from an earlier checkpoint do not transfer across corrections.
   seven-segment bounded batch, not one continuous >16 GiB connection.
 - Broader fuzz, disk/log-pressure, graceful reload/shutdown, and adversarial
   operational soak beyond the completed native sanitizer and loopback gates.
-- Validate the implemented bounded future-epoch window with matched one-tunnel
-  WAN upload/download/both matrices at 60, 100, and 210 ms, 100 Mbit/s and
-  approximately 1 Gbit/s, plus controlled loss and a 30-minute soak. Diagnose
-  the separate measured ceiling near 25 Mbit/s before tuning the ratchet
-  further. The LAN result is not this gate.
+- Complete the implemented bounded-future-epoch qualification with matched
+  one-tunnel upload/download/both matrices at 60, 100, and 210 ms, 100 Mbit/s
+  and approximately 1 Gbit/s, plus controlled loss and a 30-minute soak. The
+  exact candidate already has three interleaved default-path repeats at 60 ms
+  and two diagnostic repeats at 100/210 ms under a 1-Gbit/s, zero-loss cap;
+  those runs found no manual-credit regression or stall. The former ~25-Mbit/s
+  result was diagnosed as pinned TCP buffers followed by H2/ratchet credit, not
+  cryptographic CPU or offer pacing. The missing rate/loss/bidirectional/soak
+  arms remain release work; see `docs/YUME_2_0_WAN_BEHAVIOR.md`.
 - Security-negative coverage for counter wrap and all malformed/tampered cases
   in the acceptance list, plus independent review of key erasure and failure
   paths.
 - Directly affected CLI, wire, stealth, threat-model, and deployment docs
   reconciled with the final capture and commands.
+- If the release claims constrained-host support, qualify the named CPU/RAM
+  tier with the full Chrome-helper/Node/hybrid-PQ stack under cgroup limits and
+  retain latency, RSS/fd/queue, overload-rejection and recovery evidence. If it
+  does not pass, omit the claim rather than weakening cryptography.
+- If the release claims any target beyond glibc Linux x86_64 CLI/server/helper,
+  add an exact OS/architecture/libc/toolchain/package matrix with native or
+  explicitly named emulation smoke evidence. “Any server” is not a supported
+  scope.
+
+The negotiated rekey window and preparation lead remain static, but the ACK
+deadline is implemented as `clamp(SRTT + 4*RTTVAR, 5 s, 30 s)` from locally
+measured, authenticated, offer-ordered ACKs and is frozen per offer. This is a
+liveness adaptation only: it never expands negotiated byte/frame/sender-active-
+time security caps. Extreme-RTT claims still require real first-exchange,
+steady-state, loss, reordering, outage, and recovery evidence. Any future
+preparation-depth/lead adaptation is wire-visible and remains classifier-gated;
+arbitrary “randomish millisecond” rotation is not an accepted substitute.
 
 ## Known residual
 
@@ -446,11 +626,12 @@ uTLS helper builds reproducibly with official Go 1.26.5 and its five live
 first flights pass the normalized ClientHello/ServerHello structural gate.
 Selecting `chrome151` never silently falls back: a build without the helper
 fails closed. The bounded certificate/exporter and process lifecycle matrix,
-process ramps, reconnect storm, and segmented full-speed soak pass. Matched WAN,
-one uninterrupted deployed-network soak, exact Chrome `151.0.7922.71`
-same-session capture, classifier/active-probe evidence, and independent review
-remain required before that backend becomes the default or YUME claims
-release-qualified Chrome parity. Matching ALPN or a coarse JA3/JA4 summary is
+process ramps, reconnect storm, segmented full-speed soak, and partial matched
+WAN qualification pass. The remaining WAN loss/rate/soak arms, one
+uninterrupted deployed-network soak, exact Chrome `151.0.7922.71` same-session
+capture, classifier/active-probe evidence, and independent review remain
+required before that backend becomes the default or YUME claims release-
+qualified Chrome parity. Matching ALPN or a coarse JA3/JA4 summary is
 insufficient. Traffic padding is likewise an evidence-driven option, not an
 automatic improvement.
 

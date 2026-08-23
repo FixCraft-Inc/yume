@@ -7,8 +7,7 @@
  *   - send_auth_challenge   — server-issued AUTH challenge
  *   - handle_auth           — client AUTH-response verification (key
  *                             match, optional inner ML-KEM handshake)
- *   - decrypt/encrypt_inner_payload, current_hop_id — inner AEAD with
- *                             live hop-key derivation
+ *   - decrypt/encrypt_inner_payload — legacy inner AEAD
  */
 
 #include "server/session/session.hpp"
@@ -33,14 +32,16 @@ using namespace detail;
 
 namespace {
 
-// The TLS exporter derives from the master secret and feeds the initial root,
-// so it is wiped on every path out of AUTH, including the early refusals.
+// Scope-bound wipe for transient AUTH transcript inputs. The TLS exporter
+// derives from the master secret and feeds the initial root; signature inputs
+// also combine it with authentication material. Every return and exception
+// path must clear their retained vector capacity.
 class WipeBytesOnExit {
 public:
     explicit WipeBytesOnExit(crypto::Bytes& bytes) noexcept : bytes_(bytes) {}
     WipeBytesOnExit(const WipeBytesOnExit&) = delete;
     WipeBytesOnExit& operator=(const WipeBytesOnExit&) = delete;
-    ~WipeBytesOnExit() { security::secure_erase(bytes_); }
+    ~WipeBytesOnExit() noexcept { security::secure_erase(bytes_); }
 
 private:
     crypto::Bytes& bytes_;
@@ -95,13 +96,6 @@ void Session::send_auth_challenge() {
 #endif
 }
 
-void Session::clear_hop_key_cache() {
-    security::secure_erase(encrypt_hop_key_);
-    security::secure_erase(decrypt_hop_key_);
-    encrypt_hop_id_.reset();
-    decrypt_hop_id_.reset();
-}
-
 bool Session::decrypt_inner_payload(uint8_t frame_type,
                                     uint8_t stream_id,
                                     const crypto::Bytes& input,
@@ -115,47 +109,8 @@ bool Session::decrypt_inner_payload(uint8_t frame_type,
     }
     auto try_decrypt = [&](const crypto::Bytes& key) -> bool {
         try {
-            if (!hop_enabled_ || hop_interval_ms_ == 0) {
-                *output = inner::decrypt_payload(key, frame_type, stream_id, input);
-                return true;
-            }
-            std::uint64_t hop_id = current_hop_id();
-            auto in_window = [hop_id](std::uint64_t id) {
-                return id <= hop_id
-                    ? (hop_id - id) <= kHopDecryptWindow
-                    : (id - hop_id) <= kHopDecryptWindow;
-            };
-            if (decrypt_hop_id_.has_value() && !decrypt_hop_key_.empty() && in_window(*decrypt_hop_id_)) {
-                try {
-                    *output = inner::decrypt_payload(decrypt_hop_key_, frame_type, stream_id, input);
-                    return true;
-                } catch (...) {
-                }
-            }
-            std::uint64_t candidates[1 + (kHopDecryptWindow * 2)];
-            std::size_t candidate_count = 0;
-            candidates[candidate_count++] = hop_id;
-            for (std::uint64_t delta = 1; delta <= kHopDecryptWindow; ++delta) {
-                if (hop_id >= delta) {
-                    candidates[candidate_count++] = hop_id - delta;
-                }
-                candidates[candidate_count++] = hop_id + delta;
-            }
-            for (std::size_t i = 0; i < candidate_count; ++i) {
-                std::uint64_t id = candidates[i];
-                if (decrypt_hop_id_.has_value() && *decrypt_hop_id_ == id) {
-                    continue;
-                }
-                crypto::Bytes hop_key = inner::derive_hop_key(key, id);
-                try {
-                    *output = inner::decrypt_payload(hop_key, frame_type, stream_id, input);
-                    decrypt_hop_id_ = id;
-                    decrypt_hop_key_ = hop_key;
-                    return true;
-                } catch (...) {
-                }
-            }
-            return false;
+            *output = inner::decrypt_payload(key, frame_type, stream_id, input);
+            return true;
         } catch (...) {
             return false;
         }
@@ -167,9 +122,12 @@ bool Session::decrypt_inner_payload(uint8_t frame_type,
     if (!inner_key_alt_.has_value()) {
         return false;
     }
-    clear_hop_key_cache();
     if (try_decrypt(*inner_key_alt_)) {
-        inner_key_ = inner_key_alt_;
+        // Assigning over the optional would free the superseded key without
+        // clearing it, and copying rather than moving would leave a second
+        // live copy in the alternate slot until reset().
+        if (inner_key_) security::secure_erase(*inner_key_);
+        inner_key_ = std::move(inner_key_alt_);
         inner_key_alt_.reset();
         if (!inner_alt_mode_.empty()) {
             inner_mode_ = inner_alt_mode_;
@@ -190,27 +148,7 @@ crypto::Bytes Session::encrypt_inner_payload(uint8_t frame_type,
     if (!inner_key_.has_value()) {
         return input;
     }
-    if (!hop_enabled_ || hop_interval_ms_ == 0) {
-        return inner::encrypt_payload(*inner_key_, frame_type, stream_id, input);
-    }
-    std::uint64_t hop_id = current_hop_id();
-    crypto::Bytes hop_key;
-    if (encrypt_hop_id_.has_value() && *encrypt_hop_id_ == hop_id && !encrypt_hop_key_.empty()) {
-        hop_key = encrypt_hop_key_;
-    }
-    if (hop_key.empty()) {
-        hop_key = inner::derive_hop_key(*inner_key_, hop_id);
-        encrypt_hop_id_ = hop_id;
-        encrypt_hop_key_ = hop_key;
-    }
-    return inner::encrypt_payload(hop_key, frame_type, stream_id, input);
-}
-
-std::uint64_t Session::current_hop_id() const {
-    if (!hop_enabled_ || hop_interval_ms_ == 0) {
-        return 0;
-    }
-    return inner::hop_id_from_time_ms(epoch_now_ms(), hop_interval_ms_, hop_offset_ms_);
+    return inner::encrypt_payload(*inner_key_, frame_type, stream_id, input);
 }
 
 bool Session::handle_auth(const protocol::Frame& frame) {
@@ -259,6 +197,7 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             response.ratchet_policy);
         crypto::Bytes signature_input = auth_v2::BuildSignatureInput(
             challenge_, unsigned_response, channel_binding);
+        WipeBytesOnExit wipe_signature_input(signature_input);
         bool sig_ok = crypto::verify_composite(
             visitor_identity.classical.get(), visitor_identity.pq.get(),
             signature_input, response.signature);
@@ -311,10 +250,10 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             crypto::Bytes admin_input = auth_v2::BuildAdminSignatureInput(
                 challenge_, unsigned_response, channel_binding,
                 response.identity);
+            WipeBytesOnExit wipe_admin_input(admin_input);
             const bool admin_sig_ok = crypto::verify_composite(
                 admin_identity.classical.get(), admin_identity.pq.get(),
                 admin_input, response.admin_signature);
-            security::secure_erase(admin_input);
             if (!admin_sig_ok) {
                 auth_error_ = "access denied: admin signature is invalid";
                 return false;
@@ -491,9 +430,10 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         basefwx::crypto::SecureBytes psk_key{
             ratchet::DerivePskKey(file_psk.bytes(),
                                  auth_v2_ephemeral_->psk_salt)};
-        crypto::Bytes initial_root = ratchet::DeriveInitialRoot(
-            kem_shared.bytes(), x_shared.bytes(), psk_key.bytes(),
-            auth_v2_ephemeral_->transcript_salt, channel_binding);
+        basefwx::crypto::SecureBytes initial_root{
+            ratchet::DeriveInitialRoot(
+                kem_shared.bytes(), x_shared.bytes(), psk_key.bytes(),
+                auth_v2_ephemeral_->transcript_salt, channel_binding)};
         // Send no deeper than the client will accept, and accept no deeper
         // than this server advertised in its TLS-protected challenge. The
         // response signature binds both advertisements to the transcript.
@@ -511,7 +451,7 @@ bool Session::handle_auth(const protocol::Frame& frame) {
                 *local_policy, response.ratchet_policy);
         ratchet_ = std::make_unique<ratchet::SessionRatchet>(
             ratchet::EndpointRole::Server, std::move(initial_root),
-            psk_key.Release(), send_window, local_window, send_policy,
+            std::move(psk_key), send_window, local_window, send_policy,
             send_policy);
         util::log_info("session " + std::to_string(session_id_) +
                        ": ratchet epoch window send=" +
@@ -530,10 +470,6 @@ bool Session::handle_auth(const protocol::Frame& frame) {
         auth_v2_ephemeral_.reset();
         inner_mode_ = "ratchet";
         inner_kdf_ = "hkdf";
-        hop_enabled_ = false;
-        hop_interval_ms_ = 0;
-        hop_offset_ms_ = 0;
-        clear_hop_key_cache();
         YUME_TIMING_LOG("server.auth", "v2_hybrid",
                          "session=" + std::to_string(session_id_) +
                          " ms=" + std::to_string(
@@ -544,10 +480,15 @@ bool Session::handle_auth(const protocol::Frame& frame) {
 #endif
 
         if (!cfg_.anonym && !preauth_session) {
-            update_auth_meta(operator_authenticated_
-                                 ? cfg_.operator_keys_meta
-                                 : cfg_.auth_keys_meta,
-                             fingerprint);
+            std::string metadata_error;
+            if (!update_auth_meta(operator_authenticated_
+                                      ? cfg_.operator_keys_meta
+                                      : cfg_.auth_keys_meta,
+                                  fingerprint, "", &metadata_error)) {
+                util::log_warn(
+                    "session " + std::to_string(session_id_) +
+                    ": could not persist auth last_seen: " + metadata_error);
+            }
         }
         authorization_tier_ = preauth_session
             ? authorization::SessionTier::PreauthServiceOnly

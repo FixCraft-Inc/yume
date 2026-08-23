@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <utility>
 
@@ -22,6 +23,51 @@
 #include "util.hpp"
 
 namespace yume::client {
+namespace {
+
+std::optional<control::PendingInvite> SelectPendingInvite(
+    const std::vector<control::PendingInvite>& invites,
+    const std::string& selector,
+    bool* ambiguous) {
+    if (ambiguous) *ambiguous = false;
+    for (const auto& invite : invites) {
+        if (invite.invite_id == selector) return invite;
+    }
+    std::optional<control::PendingInvite> match;
+    for (const auto& invite : invites) {
+        if (invite.from_endpoint_id != selector &&
+            invite.from_display_name != selector) {
+            continue;
+        }
+        if (match) {
+            if (ambiguous) *ambiguous = true;
+            return std::nullopt;
+        }
+        match = invite;
+    }
+    return match;
+}
+
+std::string TransferInviteSummary(const control::PendingInvite& invite) {
+    if (invite.channel_kind != control::ChannelKind::file &&
+        invite.channel_kind != control::ChannelKind::bytes) {
+        return {};
+    }
+    try {
+        const auto metadata = nlohmann::json::parse(invite.metadata_json);
+        if (metadata.contains("name") && metadata["name"].is_string() &&
+            metadata.contains("size") &&
+            metadata["size"].is_number_unsigned()) {
+            return " name=" + metadata["name"].get<std::string>() +
+                " size=" +
+                std::to_string(metadata["size"].get<std::uint64_t>());
+        }
+    } catch (const std::exception&) {
+    }
+    return " metadata=invalid";
+}
+
+}  // namespace
 
 InteractiveConsoleSession::InteractiveConsoleSession(std::shared_ptr<std::atomic<bool>> stop,
                                                      std::thread worker)
@@ -99,6 +145,7 @@ InteractiveConsoleSession start_interactive_console(
                                 ]() {
         while (!console_stop->load()) {
             std::string line;
+            RelaySecretWiper line_wiper(line);
 #if !defined(_WIN32)
             if (!line_reader->read_line(&line, 250)) {
                 if (stop_requested.load()) {
@@ -172,7 +219,8 @@ InteractiveConsoleSession start_interactive_console(
                 for (const auto& invite : invites) {
                     std::cout << invite.invite_id << " from="
                               << (invite.from_display_name.empty() ? invite.from_endpoint_id : invite.from_display_name)
-                              << " kind=" << control::to_string(invite.channel_kind) << std::endl;
+                              << " kind=" << control::to_string(invite.channel_kind)
+                              << TransferInviteSummary(invite) << std::endl;
                 }
                 continue;
             }
@@ -187,6 +235,7 @@ InteractiveConsoleSession start_interactive_console(
                     continue;
                 }
                 std::string relay_secret_b64;
+                RelaySecretWiper relay_secret_wiper(relay_secret_b64);
                 std::string error;
                 if (!resolve_relay_secret(cfg, "", "chat with " + rest, &relay_secret_b64, &error)) {
                     util::log_warn(error);
@@ -212,6 +261,7 @@ InteractiveConsoleSession start_interactive_console(
                     continue;
                 }
                 std::string relay_secret_b64;
+                RelaySecretWiper relay_secret_wiper(relay_secret_b64);
                 std::string error;
                 if (!resolve_relay_secret(cfg, "", "file send to " + peer, &relay_secret_b64, &error)) {
                     util::log_warn(error);
@@ -235,6 +285,7 @@ InteractiveConsoleSession start_interactive_console(
                     continue;
                 }
                 std::string relay_secret_b64;
+                RelaySecretWiper relay_secret_wiper(relay_secret_b64);
                 std::string error;
                 if (!resolve_relay_secret(cfg, "", "bytes send to " + peer, &relay_secret_b64, &error)) {
                     util::log_warn(error);
@@ -259,15 +310,32 @@ InteractiveConsoleSession start_interactive_console(
             if (line.rfind("accept ", 0) == 0) {
                 std::string invite_id;
                 std::string password;
+                RelaySecretWiper password_wiper(password);
                 split_first_token(line.substr(7), &invite_id, &password);
                 if (invite_id.empty()) {
                     util::log_warn("usage: accept <invite|from> [password]");
                     continue;
                 }
                 std::string relay_secret_b64;
+                RelaySecretWiper relay_secret_wiper(relay_secret_b64);
                 std::string error;
-                if (!resolve_relay_secret(cfg, password, "accept invite " + invite_id, &relay_secret_b64, &error)) {
-                    util::log_warn(error);
+                bool ambiguous = false;
+                const auto pending = SelectPendingInvite(
+                    relay_runtime->pending_invites(), invite_id, &ambiguous);
+                if (!pending) {
+                    util::log_warn(ambiguous
+                        ? "invite selector is ambiguous" : "invite not found");
+                    continue;
+                }
+                if (pending->requires_password) {
+                    if (!resolve_relay_secret(cfg, password,
+                                              "accept invite " + invite_id,
+                                              &relay_secret_b64, &error)) {
+                        util::log_warn(error);
+                        continue;
+                    }
+                } else if (!password.empty()) {
+                    util::log_warn("admin invites do not accept a relay password");
                     continue;
                 }
                 if (!relay_runtime->accept_invite(invite_id, relay_secret_b64, &error)) {
@@ -356,7 +424,8 @@ InteractiveConsoleSession start_interactive_console(
                 }
                 tunnel->register_stream(
                     stream_id,
-                    [stream_id](const Tunnel::Bytes& data) {
+                    [stream_id](const Tunnel::Bytes& data,
+                                Tunnel::InboundCredit) {
                         std::cout.write(reinterpret_cast<const char*>(data.data()), data.size());
                         std::cout.flush();
                     },

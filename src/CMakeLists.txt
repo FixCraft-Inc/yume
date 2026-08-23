@@ -137,13 +137,13 @@ function(yume_apply_warnings target)
             # cheapest memory-safety mistakes to make in this codebase.
             -Wformat-security
             -Wvla
-            -Wnon-virtual-dtor
+            $<$<COMPILE_LANGUAGE:CXX>:-Wnon-virtual-dtor>
             $<$<BOOL:${YUME_WARNINGS_AS_ERRORS}>:-Werror>
         )
     elseif(MSVC)
         target_compile_options(${target} PRIVATE
             /W4
-            /permissive-
+            $<$<COMPILE_LANGUAGE:CXX>:/permissive->
             $<$<BOOL:${YUME_WARNINGS_AS_ERRORS}>:/WX>
         )
     endif()
@@ -354,6 +354,9 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         core/release/version_report.cpp
         core/release/version_status.cpp
         core/protocol/control_protocol.cpp
+        core/protocol/control_command_policy.cpp
+        core/protocol/directory_policy.cpp
+        core/protocol/relay_policy.cpp
         core/security/crypto.cpp
         core/security/channel_binding.cpp
         core/stealth/cover_profile.cpp
@@ -362,6 +365,8 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         core/stealth/h2_wire_profile.cpp
         core/stealth/outer_carrier_observer.cpp
         core/security/identity.cpp
+        core/runtime/atomic_file.cpp
+        core/runtime/file_transaction_lock.cpp
         core/runtime/local_runtime.cpp
         core/runtime/service_stream.cpp
         core/stealth/obfs.cpp
@@ -536,6 +541,41 @@ yume_apply_pch(yume_transport_core)
 
 if(NOT YUME_TRANSPORT_CORE_ONLY)
     # ------------------------------------------------------------------
+    # Shared outbound/federation transport
+    # ------------------------------------------------------------------
+    # Federation is a server feature, but it dials another yumed through the
+    # same authenticated transport primitives used by the client.  Keep that
+    # deliberately small common slice separate from yume_client_lib: linking
+    # the full client library into yume_server used to pull CLI/runtime/share
+    # code across the server boundary and also compiled outbound_proxy.cpp in
+    # both archives.
+    add_library(yume_outbound_transport STATIC
+        client/transport/client_stream.cpp
+        client/transport/tunnel.cpp
+        client/proxy/forward.cpp
+        client/proxy/outbound_proxy.cpp
+        client/cli/connect/auth.cpp
+    )
+    target_include_directories(yume_outbound_transport
+        PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(yume_outbound_transport
+        PUBLIC yume_core yume_transport_core)
+    if(YUME_BUILD_SHARED_ABI)
+        yume_prepare_static_for_shared_abi(yume_outbound_transport)
+    endif()
+    yume_apply_perf_opts(yume_outbound_transport)
+    yume_apply_pch(yume_outbound_transport)
+    if(WIN32)
+        target_link_libraries(yume_outbound_transport PUBLIC ws2_32 mswsock)
+        target_compile_definitions(yume_outbound_transport PUBLIC
+            WIN32_LEAN_AND_MEAN
+            NOMINMAX
+            WINVER=0x0600
+            _WIN32_WINNT=0x0600
+        )
+    endif()
+
+    # ------------------------------------------------------------------
     # Server library
     # ------------------------------------------------------------------
     # Extracted so both the yumed executable and the optional yume_facade
@@ -554,11 +594,12 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/host/http_proxy.cpp
         server/host/http_backend_client.cpp
         server/host/extra_listeners.cpp
-        server/runtime/kdf_admission.cpp
         server/runtime/identity_admission.cpp
         server/runtime/weighted_egress_limiter.cpp
+        server/runtime/admin_relationships.cpp
         server/runtime/manager.cpp
         server/runtime/manager_relay.cpp
+        server/runtime/security_config.cpp
         server/packet/tun_egress.cpp
         server/auth/auth.cpp
         server/session/session.cpp
@@ -577,10 +618,10 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/session/static_site.cpp
         server/session/http_masq.cpp
         server/runtime/controller.cpp
-        client/proxy/outbound_proxy.cpp
     )
     target_include_directories(yume_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(yume_server PUBLIC yume_core yume_transport_core)
+    target_link_libraries(yume_server PUBLIC yume_core yume_transport_core
+        yume_outbound_transport)
     if(YUME_BUILD_SHARED_ABI)
         yume_prepare_static_for_shared_abi(yume_server)
     endif()
@@ -632,28 +673,28 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     # here so the facade can construct a client session without
     # duplicating the transport stack.
     add_library(yume_client_lib STATIC
+        client/relay/file_receiver.cpp
         client/relay/history.cpp
+        client/relay/outbound_source.cpp
+        client/relay/peer_trust.cpp
+        client/relay/relay_v2_crypto.cpp
+        client/relay/relay_v2_record.cpp
         client/runtime/local_runtime.cpp
         client/relay/secret.cpp
         client/relay/runtime.cpp
         client/relay/runtime_control.cpp
         client/runtime/controller.cpp
-        client/transport/client_stream.cpp
         client/transport/chrome_tls_helper.cpp
-        client/transport/tunnel.cpp
         client/transport/tunnel_pool.cpp
         client/codec/monero_rpc.cpp
         client/packet/channel.cpp
         client/packet/tun_adapter.cpp
         client/proxy/socks.cpp
-        client/proxy/forward.cpp
-        client/proxy/outbound_proxy.cpp
         client/transfer/share_file.cpp
         client/cli/entry.cpp
         client/cli/display/anonym_proof.cpp
         client/cli/commands/attach.cpp
         client/cli/config/args.cpp
-        client/cli/connect/auth.cpp
         client/cli/commands/bench.cpp
         client/cli/commands/connected_session.cpp
         client/cli/connect/capabilities.cpp
@@ -676,7 +717,8 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/cli/display/status.cpp
     )
     target_include_directories(yume_client_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(yume_client_lib PUBLIC yume_core yume_transport_core)
+    target_link_libraries(yume_client_lib PUBLIC yume_core yume_transport_core
+        yume_outbound_transport)
     if(YUME_BUILD_SHARED_ABI)
         yume_prepare_static_for_shared_abi(yume_client_lib)
     endif()
@@ -1026,6 +1068,14 @@ target_link_libraries(yume_secure_materials_test PRIVATE yume_facade)
 yume_apply_perf_opts(yume_secure_materials_test)
 add_test(NAME yume_secure_materials_test COMMAND yume_secure_materials_test)
 
+add_executable(yume_facade_lifecycle_test
+    facade/session/lifecycle_test.cpp
+)
+target_link_libraries(yume_facade_lifecycle_test PRIVATE yume_facade)
+yume_apply_perf_opts(yume_facade_lifecycle_test)
+add_test(NAME yume_facade_lifecycle_test COMMAND yume_facade_lifecycle_test)
+set_tests_properties(yume_facade_lifecycle_test PROPERTIES TIMEOUT 30)
+
 add_executable(yume_composite_signature_test
     core/security/composite_signature_test.cpp
 )
@@ -1035,8 +1085,9 @@ add_test(NAME yume_composite_signature_test COMMAND yume_composite_signature_tes
 
 add_executable(yume_dual_key_auth_test
     server/auth/dual_key_auth_test.cpp
+    server/cli/key.cpp
 )
-target_link_libraries(yume_dual_key_auth_test PRIVATE yume_server)
+target_link_libraries(yume_dual_key_auth_test PRIVATE yume_facade)
 yume_apply_perf_opts(yume_dual_key_auth_test)
 add_test(NAME yume_dual_key_auth_test COMMAND yume_dual_key_auth_test)
 
@@ -1052,6 +1103,19 @@ target_link_libraries(yume_server_config_io_test PRIVATE yume_facade)
 yume_apply_perf_opts(yume_server_config_io_test)
 add_test(NAME yume_server_config_io_test COMMAND yume_server_config_io_test)
 
+add_executable(yume_signal_dispatch_test util_signal_test.cpp)
+target_link_libraries(yume_signal_dispatch_test PRIVATE yume_core)
+yume_apply_perf_opts(yume_signal_dispatch_test)
+add_test(NAME yume_signal_dispatch_test COMMAND yume_signal_dispatch_test)
+set_tests_properties(yume_signal_dispatch_test PROPERTIES TIMEOUT 10)
+
+add_executable(yume_client_config_io_test
+    facade/config/client_config_io_test.cpp
+)
+target_link_libraries(yume_client_config_io_test PRIVATE yume_facade)
+yume_apply_perf_opts(yume_client_config_io_test)
+add_test(NAME yume_client_config_io_test COMMAND yume_client_config_io_test)
+
 add_executable(yume_transport_core_test
     client/transport/core_test.cpp
 )
@@ -1061,6 +1125,30 @@ yume_link_atomic_if_needed(yume_transport_core_test PRIVATE)
 yume_apply_perf_opts(yume_transport_core_test)
 
 add_test(NAME yume_transport_core_test COMMAND yume_transport_core_test)
+
+add_executable(yume_relay_channel_policy_test
+    core/protocol/relay_policy_test.cpp)
+target_link_libraries(yume_relay_channel_policy_test PRIVATE yume_core)
+yume_link_atomic_if_needed(yume_relay_channel_policy_test PRIVATE)
+yume_apply_perf_opts(yume_relay_channel_policy_test)
+add_test(NAME yume_relay_channel_policy_test
+    COMMAND yume_relay_channel_policy_test)
+
+add_executable(yume_directory_policy_test
+    core/protocol/directory_policy_test.cpp)
+target_link_libraries(yume_directory_policy_test PRIVATE yume_core)
+yume_link_atomic_if_needed(yume_directory_policy_test PRIVATE)
+yume_apply_perf_opts(yume_directory_policy_test)
+add_test(NAME yume_directory_policy_test
+    COMMAND yume_directory_policy_test)
+
+add_executable(yume_control_command_policy_test
+    core/protocol/control_command_policy_test.cpp)
+target_link_libraries(yume_control_command_policy_test PRIVATE yume_core)
+yume_link_atomic_if_needed(yume_control_command_policy_test PRIVATE)
+yume_apply_perf_opts(yume_control_command_policy_test)
+add_test(NAME yume_control_command_policy_test
+    COMMAND yume_control_command_policy_test)
 
 add_executable(yume_chrome_tls_protocol_test
     client/transport/chrome_tls_protocol_test.cpp
@@ -1146,6 +1234,90 @@ if(TARGET yume_client_lib)
     yume_apply_perf_opts(yume_packet_channel_contract_test)
     add_test(NAME yume_packet_channel_contract_test
         COMMAND yume_packet_channel_contract_test)
+
+    add_executable(yume_tunnel_exec_policy_test
+        client/transport/tunnel_exec_policy_test.cpp)
+    target_link_libraries(yume_tunnel_exec_policy_test PRIVATE yume_client_lib)
+    yume_link_atomic_if_needed(yume_tunnel_exec_policy_test PRIVATE)
+    yume_apply_perf_opts(yume_tunnel_exec_policy_test)
+    add_test(NAME yume_tunnel_exec_policy_test
+        COMMAND yume_tunnel_exec_policy_test)
+
+    add_executable(yume_relay_persistence_test
+        client/relay/relay_persistence_test.cpp)
+    target_link_libraries(yume_relay_persistence_test PRIVATE yume_client_lib)
+    yume_link_atomic_if_needed(yume_relay_persistence_test PRIVATE)
+    yume_apply_perf_opts(yume_relay_persistence_test)
+    add_test(NAME yume_relay_persistence_test
+        COMMAND yume_relay_persistence_test)
+
+    add_executable(yume_relay_runtime_lifecycle_test
+        client/relay/relay_runtime_lifecycle_test.cpp)
+    target_link_libraries(yume_relay_runtime_lifecycle_test PRIVATE
+        yume_client_lib)
+    yume_link_atomic_if_needed(yume_relay_runtime_lifecycle_test PRIVATE)
+    yume_apply_perf_opts(yume_relay_runtime_lifecycle_test)
+    add_test(NAME yume_relay_runtime_lifecycle_test
+        COMMAND yume_relay_runtime_lifecycle_test)
+
+    add_executable(yume_relay_file_receiver_test
+        client/relay/file_receiver_test.cpp)
+    target_link_libraries(yume_relay_file_receiver_test PRIVATE yume_client_lib)
+    yume_link_atomic_if_needed(yume_relay_file_receiver_test PRIVATE)
+    yume_apply_perf_opts(yume_relay_file_receiver_test)
+    add_test(NAME yume_relay_file_receiver_test
+        COMMAND yume_relay_file_receiver_test)
+
+    add_executable(yume_relay_outbound_source_test
+        client/relay/outbound_source_test.cpp)
+    target_link_libraries(yume_relay_outbound_source_test PRIVATE
+        yume_client_lib)
+    yume_link_atomic_if_needed(yume_relay_outbound_source_test PRIVATE)
+    yume_apply_perf_opts(yume_relay_outbound_source_test)
+    add_test(NAME yume_relay_outbound_source_test
+        COMMAND yume_relay_outbound_source_test)
+
+    add_executable(yume_relay_v2_crypto_test
+        client/relay/relay_v2_crypto_test.cpp)
+    target_link_libraries(yume_relay_v2_crypto_test PRIVATE yume_client_lib)
+    yume_link_atomic_if_needed(yume_relay_v2_crypto_test PRIVATE)
+    yume_apply_perf_opts(yume_relay_v2_crypto_test)
+    add_test(NAME yume_relay_v2_crypto_test
+        COMMAND yume_relay_v2_crypto_test)
+
+    add_executable(yume_relay_peer_trust_test
+        client/relay/peer_trust_test.cpp
+        client/relay/peer_trust.cpp)
+    target_link_libraries(yume_relay_peer_trust_test PRIVATE yume_core)
+    yume_link_atomic_if_needed(yume_relay_peer_trust_test PRIVATE)
+    yume_apply_perf_opts(yume_relay_peer_trust_test)
+    add_test(NAME yume_relay_peer_trust_test
+        COMMAND yume_relay_peer_trust_test)
+
+    add_executable(yume_relay_v2_record_test
+        client/relay/relay_v2_record_test.cpp
+        client/relay/relay_v2_record.cpp)
+    target_link_libraries(yume_relay_v2_record_test PRIVATE yume_secure_core)
+    yume_link_atomic_if_needed(yume_relay_v2_record_test PRIVATE)
+    yume_apply_perf_opts(yume_relay_v2_record_test)
+    add_test(NAME yume_relay_v2_record_test
+        COMMAND yume_relay_v2_record_test)
+
+    add_executable(yume_relay_cli_config_test
+        client/cli/config/relay_config_test.cpp)
+    target_link_libraries(yume_relay_cli_config_test PRIVATE yume_client_lib)
+    yume_link_atomic_if_needed(yume_relay_cli_config_test PRIVATE)
+    yume_apply_perf_opts(yume_relay_cli_config_test)
+    add_test(NAME yume_relay_cli_config_test
+        COMMAND yume_relay_cli_config_test)
+
+    add_executable(yume_reverse_forward_write_test
+        client/proxy/forward_test.cpp)
+    target_link_libraries(yume_reverse_forward_write_test PRIVATE yume_client_lib)
+    yume_link_atomic_if_needed(yume_reverse_forward_write_test PRIVATE)
+    yume_apply_perf_opts(yume_reverse_forward_write_test)
+    add_test(NAME yume_reverse_forward_write_test
+        COMMAND yume_reverse_forward_write_test)
 endif()
 
 add_executable(yume_fair_frame_budget_test
@@ -1195,16 +1367,6 @@ yume_link_atomic_if_needed(yume_tls_fingerprint_test PRIVATE)
 yume_apply_perf_opts(yume_tls_fingerprint_test)
 add_test(NAME yume_tls_fingerprint_test COMMAND yume_tls_fingerprint_test)
 
-add_executable(yume_kdf_admission_test
-    server/runtime/kdf_admission_test.cpp
-    server/runtime/kdf_admission.cpp
-)
-target_include_directories(yume_kdf_admission_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(yume_kdf_admission_test PRIVATE Threads::Threads)
-yume_link_atomic_if_needed(yume_kdf_admission_test PRIVATE)
-yume_apply_perf_opts(yume_kdf_admission_test)
-add_test(NAME yume_kdf_admission_test COMMAND yume_kdf_admission_test)
-
 add_executable(yume_identity_admission_test
     server/runtime/identity_admission_test.cpp
     server/runtime/identity_admission.cpp
@@ -1234,7 +1396,63 @@ yume_link_atomic_if_needed(yume_session_authorization_test PRIVATE)
 yume_apply_perf_opts(yume_session_authorization_test)
 add_test(NAME yume_session_authorization_test COMMAND yume_session_authorization_test)
 
+add_executable(yume_admin_relationships_test
+    server/runtime/admin_relationships_test.cpp
+    server/runtime/admin_relationships.cpp
+)
+target_include_directories(yume_admin_relationships_test
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+yume_link_atomic_if_needed(yume_admin_relationships_test PRIVATE)
+yume_apply_perf_opts(yume_admin_relationships_test)
+add_test(NAME yume_admin_relationships_test
+    COMMAND yume_admin_relationships_test)
+
 if(TARGET yume_server)
+    add_executable(yume_server_control_survival_test
+        server/session/control_survival_test.cpp)
+    target_link_libraries(yume_server_control_survival_test
+        PRIVATE yume_server Threads::Threads)
+    yume_link_atomic_if_needed(yume_server_control_survival_test PRIVATE)
+    yume_apply_perf_opts(yume_server_control_survival_test)
+    add_test(NAME yume_server_control_survival_test
+        COMMAND yume_server_control_survival_test)
+
+    add_executable(yume_federation_link_lifecycle_test
+        server/federation/link_lifecycle_test.cpp)
+    target_link_libraries(yume_federation_link_lifecycle_test
+        PRIVATE yume_server Threads::Threads)
+    yume_link_atomic_if_needed(yume_federation_link_lifecycle_test PRIVATE)
+    yume_apply_perf_opts(yume_federation_link_lifecycle_test)
+    add_test(NAME yume_federation_link_lifecycle_test
+        COMMAND yume_federation_link_lifecycle_test)
+
+    add_executable(yume_reverse_listener_lifecycle_test
+        server/session/reverse_listener_lifecycle_test.cpp)
+    target_link_libraries(yume_reverse_listener_lifecycle_test
+        PRIVATE yume_server Threads::Threads)
+    yume_link_atomic_if_needed(yume_reverse_listener_lifecycle_test PRIVATE)
+    yume_apply_perf_opts(yume_reverse_listener_lifecycle_test)
+    add_test(NAME yume_reverse_listener_lifecycle_test
+        COMMAND yume_reverse_listener_lifecycle_test)
+
+    add_executable(yume_stream_id_reservation_test
+        server/session/stream_id_reservation_test.cpp)
+    target_link_libraries(yume_stream_id_reservation_test
+        PRIVATE yume_server Threads::Threads)
+    yume_link_atomic_if_needed(yume_stream_id_reservation_test PRIVATE)
+    yume_apply_perf_opts(yume_stream_id_reservation_test)
+    add_test(NAME yume_stream_id_reservation_test
+        COMMAND yume_stream_id_reservation_test)
+
+    add_executable(yume_http_backend_client_test
+        server/host/http_backend_client_test.cpp)
+    target_link_libraries(yume_http_backend_client_test
+        PRIVATE yume_server Threads::Threads)
+    yume_link_atomic_if_needed(yume_http_backend_client_test PRIVATE)
+    yume_apply_perf_opts(yume_http_backend_client_test)
+    add_test(NAME yume_http_backend_client_test
+        COMMAND yume_http_backend_client_test)
+
     add_executable(yume_auth_policy_values_test
         server/auth/auth_policy_values_test.cpp)
     target_link_libraries(yume_auth_policy_values_test
@@ -1253,6 +1471,15 @@ if(TARGET yume_server)
     add_test(NAME yume_auth_policy_concurrency_test
         COMMAND yume_auth_policy_concurrency_test)
 endif()
+
+add_executable(yume_h2_cover_fetches_test
+    server/session/h2_cover_fetches_test.cpp)
+target_include_directories(yume_h2_cover_fetches_test
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+yume_link_atomic_if_needed(yume_h2_cover_fetches_test PRIVATE)
+yume_apply_perf_opts(yume_h2_cover_fetches_test)
+add_test(NAME yume_h2_cover_fetches_test
+    COMMAND yume_h2_cover_fetches_test)
 
 add_executable(yume_static_site_test
     server/session/static_site_test.cpp
@@ -1391,7 +1618,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         client/cli/connect/io_socket_protection_test.cpp)
     target_include_directories(yume_socket_protection_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(yume_socket_protection_test PRIVATE
-        Boost::system OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+        yume_core Boost::system OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
     yume_link_atomic_if_needed(yume_socket_protection_test PRIVATE)
     yume_apply_perf_opts(yume_socket_protection_test)
     add_test(NAME yume_socket_protection_test COMMAND yume_socket_protection_test)
@@ -1417,6 +1644,15 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_test(NAME yume_h2_carrier_test COMMAND yume_h2_carrier_test)
 
     if(UNIX)
+        add_executable(yume_auth_h2_credit_test
+            client/cli/connect/auth_h2_credit_test.cpp)
+        target_link_libraries(yume_auth_h2_credit_test PRIVATE
+            yume_client_lib)
+        yume_link_atomic_if_needed(yume_auth_h2_credit_test PRIVATE)
+        yume_apply_perf_opts(yume_auth_h2_credit_test)
+        add_test(NAME yume_auth_h2_credit_test
+            COMMAND yume_auth_h2_credit_test)
+
         add_executable(yume_outer_carrier_capture_test
             client/cli/connect/outer_carrier_capture_test.cpp)
         target_link_libraries(yume_outer_carrier_capture_test PRIVATE
@@ -1452,6 +1688,24 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/tests/test_project_metadata.py"
     )
+    add_test(NAME yume_socket_autotuning_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_socket_autotuning.py"
+    )
+    add_test(NAME yume_release_diagnostics_cost_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/tests/test_release_diagnostics_cost.py"
+    )
+    if(UNIX AND TARGET yume AND TARGET yumed)
+        add_test(NAME yume_federation_v2_integration_test
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/tests/test_yume_federation_v2.py"
+                --yume "$<TARGET_FILE:yume>"
+                --yumed "$<TARGET_FILE:yumed>"
+        )
+        set_tests_properties(yume_federation_v2_integration_test PROPERTIES
+            TIMEOUT 90)
+    endif()
     add_test(NAME yume_h2_fingerprint_check
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/scripts/yume_h2_fingerprint.py"
@@ -1477,10 +1731,22 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             COMMAND "${YUME_NODE_EXECUTABLE}" --test
                 "${CMAKE_SOURCE_DIR}/tools/cover-node/test_capture_chrome_navigation.mjs"
         )
+        add_test(NAME yume_cover_server_protocols_test
+            COMMAND "${YUME_NODE_EXECUTABLE}" --test
+                "${CMAKE_SOURCE_DIR}/tools/cover-node/test_cover_server_protocols.mjs"
+        )
     endif()
     add_test(NAME yume_classifier_evidence_test
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_SOURCE_DIR}/scripts/test_yume_classifier_evidence.py"
+    )
+    add_test(NAME yume_classifier_gate_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/scripts/test_yume_classifier_gate.py"
+    )
+    add_test(NAME yume_constrained_host_test
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_SOURCE_DIR}/scripts/test_yume_constrained_host.py"
     )
     add_test(NAME yume_capture_manifest_test
         COMMAND "${Python3_EXECUTABLE}"
@@ -1540,11 +1806,35 @@ endif()
 
 if(YUME_BUILD_SHARED_ABI AND TARGET yume_abi)
     add_executable(yume_abi_test abi/yume_c_test.cpp)
+    target_include_directories(yume_abi_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(yume_abi_test PRIVATE yume_abi)
     yume_apply_warnings(yume_abi_test)
     target_compile_definitions(yume_abi_test PRIVATE
         YUME_ABI_CLIENT_ONLY=$<BOOL:${YUME_ABI_CLIENT_ONLY}>)
     add_test(NAME yume_abi_test COMMAND yume_abi_test)
+    if(NOT YUME_ABI_CLIENT_ONLY AND TARGET yumed)
+        add_executable(yume_abi_stream_probe
+            abi/stream_integration_probe.c)
+        set_target_properties(yume_abi_stream_probe PROPERTIES
+            C_STANDARD 11
+            C_STANDARD_REQUIRED ON
+            C_EXTENSIONS OFF)
+        target_link_libraries(yume_abi_stream_probe PRIVATE yume_abi)
+        yume_apply_warnings(yume_abi_stream_probe)
+        add_test(NAME yume_abi_stream_integration
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/tests/test_yume_abi_stream.py"
+                --probe "$<TARGET_FILE:yume_abi_stream_probe>"
+                --yumed "$<TARGET_FILE:yumed>"
+                --library "$<TARGET_FILE:yume_abi>")
+        set_tests_properties(yume_abi_stream_integration PROPERTIES
+            TIMEOUT 90)
+        if(DEFINED _yume_asan_preload AND NOT _yume_asan_preload STREQUAL "")
+            set_property(TEST yume_abi_stream_integration APPEND PROPERTY
+                ENVIRONMENT "LD_PRELOAD=${_yume_asan_preload}")
+        endif()
+    endif()
     if(UNIX AND CMAKE_NM)
         if(APPLE)
             set(_yume_abi_format macho)

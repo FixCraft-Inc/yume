@@ -21,6 +21,7 @@
 #include "core/security/identity.hpp"
 #include "server/runtime/local_runtime.hpp"
 #include "server/runtime/manager.hpp"
+#include "server/runtime/security_config.hpp"
 
 namespace yume::server {
 
@@ -51,6 +52,10 @@ bool privileged_port_requires_elevation(int port) {
 }  // namespace
 
 struct RuntimeController::Impl {
+    // Lifecycle operations take lifecycle_mtx before mtx. Read-only snapshots
+    // take only mtx. This prevents start from publishing a new manager after a
+    // concurrent stop has already observed an empty controller.
+    std::mutex lifecycle_mtx;
     mutable std::mutex mtx;
     ServerConfig cfg;
     Status status;
@@ -59,8 +64,13 @@ struct RuntimeController::Impl {
     std::shared_ptr<LocalRuntime> local_runtime;
     std::vector<std::thread> workers;
     std::atomic<bool> running{false};
+    std::atomic<bool> runtime_stop_requested{false};
 
     void request_stop_from_runtime() {
+        // This callback can arrive while start() still owns local (unpublished)
+        // resources. Publish intent first; start() rechecks it under mtx before
+        // committing those resources.
+        runtime_stop_requested.store(true, std::memory_order_release);
         std::lock_guard<std::mutex> lock(mtx);
         running.store(false);
         status.running = false;
@@ -77,14 +87,23 @@ RuntimeController::~RuntimeController() {
     stop();
 }
 
-bool RuntimeController::start(ServerConfig cfg, std::string* error) {
+bool RuntimeController::start(
+    ServerConfig cfg,
+    std::string* error,
+    runtime::OperationStatus* operation_status) {
     if (error) error->clear();
+    runtime::SetOperationStatus(
+        operation_status, runtime::OperationStatus::InternalError);
+    std::unique_lock<std::mutex> lifecycle_lock(impl_->lifecycle_mtx);
 
     // Record the failure on impl_->status so a subsequent status() poll
     // returns it — without this, the GUI sees `running=false, message=""`
     // and the user has no idea why nothing happened.
-    auto fail_with = [&](std::string msg) {
+    auto fail_with = [&](std::string msg,
+                         runtime::OperationStatus status =
+                             runtime::OperationStatus::InternalError) {
         if (error) *error = msg;
+        runtime::SetOperationStatus(operation_status, status);
         std::lock_guard<std::mutex> lock(impl_->mtx);
         impl_->status.running = false;
         impl_->status.message = std::move(msg);
@@ -93,7 +112,8 @@ bool RuntimeController::start(ServerConfig cfg, std::string* error) {
 
     if (privileged_port_requires_elevation(cfg.listen_port)) {
         return fail_with("listen port " + std::to_string(cfg.listen_port) +
-                         " requires root or cap_net_bind_service");
+                         " requires root or cap_net_bind_service",
+                         runtime::OperationStatus::PermissionDenied);
     }
 
     {
@@ -101,14 +121,30 @@ bool RuntimeController::start(ServerConfig cfg, std::string* error) {
         {
             std::lock_guard<std::mutex> lock(impl_->mtx);
             if (impl_->running.load()) {
-                return true;
+                runtime::SetOperationStatus(
+                    operation_status,
+                    runtime::OperationStatus::AlreadyRunning);
+                if (error) {
+                    *error = "server runtime is already running";
+                }
+                return false;
             }
             still_unwinding = impl_->io || impl_->manager ||
                               !impl_->workers.empty();
         }
         if (still_unwinding) {
-            return fail_with("server runtime is still stopping");
+            return fail_with("server runtime is still stopping",
+                             runtime::OperationStatus::WouldBlock);
         }
+    }
+    impl_->runtime_stop_requested.store(false, std::memory_order_release);
+
+    std::string security_error;
+    if (!prepare_v2_security_config(cfg, false, &security_error)) {
+        return fail_with(security_error.empty()
+                             ? "server security configuration is invalid"
+                             : std::move(security_error),
+                         runtime::OperationStatus::InvalidArgument);
     }
 
     auto io = std::make_unique<boost::asio::io_context>(worker_count_for(cfg));
@@ -142,30 +178,73 @@ bool RuntimeController::start(ServerConfig cfg, std::string* error) {
 
     std::vector<std::thread> workers;
     const int workers_count = worker_count_for(cfg);
-    workers.reserve(static_cast<std::size_t>(workers_count));
-    for (int i = 0; i < workers_count; ++i) {
-        workers.emplace_back([raw = io.get()]() { raw->run(); });
+    auto rollback_worker_start = [&]() {
+        // Worker creation can fail after earlier workers have entered run().
+        // Stop every producer first, then the io_context, before joining so
+        // the local vector never destroys a joinable std::thread.
+        try {
+            runtime->stop();
+        } catch (...) {
+        }
+        try {
+            manager->stop();
+        } catch (...) {
+        }
+        try {
+            io->stop();
+        } catch (...) {
+        }
+        for (auto& worker : workers) {
+            if (worker.joinable()) worker.join();
+        }
+    };
+
+    try {
+        workers.reserve(static_cast<std::size_t>(workers_count));
+        for (int i = 0; i < workers_count; ++i) {
+            workers.emplace_back([raw = io.get()]() { raw->run(); });
+        }
+    } catch (std::exception const& ex) {
+        rollback_worker_start();
+        return fail_with(std::string("failed to start server worker threads: ") +
+                         ex.what());
+    } catch (...) {
+        rollback_worker_start();
+        return fail_with("failed to start server worker threads: unknown error");
     }
 
+    bool cancelled_before_publish = false;
     {
         std::lock_guard<std::mutex> lock(impl_->mtx);
-        impl_->cfg = std::move(cfg);
-        impl_->status.running = true;
-        impl_->status.listen_endpoint = listen_endpoint_for(impl_->cfg);
-        impl_->status.ipc_path = ipc_path;
-        impl_->status.started = std::chrono::system_clock::now();
-        impl_->status.message = ipc_warning.empty() ? "running" : ipc_warning;
-        impl_->io = std::move(io);
-        impl_->manager = std::move(manager);
-        impl_->local_runtime = std::move(runtime);
-        impl_->workers = std::move(workers);
-        impl_->running.store(true);
+        cancelled_before_publish = impl_->runtime_stop_requested.load(
+            std::memory_order_acquire);
+        if (!cancelled_before_publish) {
+            impl_->cfg = std::move(cfg);
+            impl_->status.running = true;
+            impl_->status.listen_endpoint = listen_endpoint_for(impl_->cfg);
+            impl_->status.ipc_path = ipc_path;
+            impl_->status.started = std::chrono::system_clock::now();
+            impl_->status.message = ipc_warning.empty() ? "running" : ipc_warning;
+            impl_->io = std::move(io);
+            impl_->manager = std::move(manager);
+            impl_->local_runtime = std::move(runtime);
+            impl_->workers = std::move(workers);
+            impl_->running.store(true);
+        }
+    }
+    if (cancelled_before_publish) {
+        rollback_worker_start();
+        return fail_with("server startup was cancelled",
+                         runtime::OperationStatus::NotRunning);
     }
 
+    runtime::SetOperationStatus(
+        operation_status, runtime::OperationStatus::Success);
     return true;
 }
 
 bool RuntimeController::stop() {
+    std::unique_lock<std::mutex> lifecycle_lock(impl_->lifecycle_mtx);
     std::unique_ptr<boost::asio::io_context> io;
     std::shared_ptr<Manager> manager;
     std::shared_ptr<LocalRuntime> local_runtime;
@@ -198,7 +277,13 @@ bool RuntimeController::running() const {
     return impl_->running.load();
 }
 
-bool RuntimeController::reload_auth(std::string* error) {
+bool RuntimeController::reload_auth(
+    std::string* error,
+    runtime::OperationStatus* operation_status) {
+    if (error) error->clear();
+    runtime::SetOperationStatus(
+        operation_status, runtime::OperationStatus::InternalError);
+    std::unique_lock<std::mutex> lifecycle_lock(impl_->lifecycle_mtx);
     std::shared_ptr<Manager> manager;
     {
         std::lock_guard<std::mutex> lock(impl_->mtx);
@@ -206,9 +291,16 @@ bool RuntimeController::reload_auth(std::string* error) {
     }
     if (!manager) {
         if (error) *error = "server runtime is not running";
+        runtime::SetOperationStatus(
+            operation_status, runtime::OperationStatus::NotRunning);
         return false;
     }
-    return manager->reload_auth(error);
+    if (!manager->reload_auth(error)) {
+        return false;
+    }
+    runtime::SetOperationStatus(
+        operation_status, runtime::OperationStatus::Success);
+    return true;
 }
 
 RuntimeController::Status RuntimeController::status() const {
@@ -241,19 +333,28 @@ std::vector<RuntimeController::SessionSnapshot> RuntimeController::sessions() co
     return out;
 }
 
-bool RuntimeController::register_service(const std::string& service, std::string* error) {
+bool RuntimeController::register_service(
+    const std::string& service,
+    std::string* error,
+    runtime::OperationStatus* operation_status) {
+    if (error) error->clear();
     std::lock_guard<std::mutex> lock(impl_->mtx);
     if (!impl_->manager) {
         if (error) *error = "server runtime is not running";
+        runtime::SetOperationStatus(
+            operation_status, runtime::OperationStatus::NotRunning);
         return false;
     }
-    return impl_->manager->register_service(service, error);
+    return impl_->manager->register_service(
+        service, error, operation_status);
 }
 
 std::shared_ptr<runtime::ServiceStream> RuntimeController::accept_service_stream(
     const std::string& service,
     std::uint32_t timeout_ms,
-    std::string* error) {
+    std::string* error,
+    runtime::OperationStatus* operation_status) {
+    if (error) error->clear();
     std::shared_ptr<Manager> manager;
     {
         std::lock_guard<std::mutex> lock(impl_->mtx);
@@ -261,9 +362,12 @@ std::shared_ptr<runtime::ServiceStream> RuntimeController::accept_service_stream
     }
     if (!manager) {
         if (error) *error = "server runtime is not running";
+        runtime::SetOperationStatus(
+            operation_status, runtime::OperationStatus::NotRunning);
         return {};
     }
-    return manager->accept_service_stream(service, timeout_ms, error);
+    return manager->accept_service_stream(
+        service, timeout_ms, error, operation_status);
 }
 
 ServerConfig RuntimeController::config() const {

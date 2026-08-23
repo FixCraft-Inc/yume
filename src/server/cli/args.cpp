@@ -322,8 +322,8 @@ bool parse_server_cli_args(int argc,
             cfg.operator_keys_meta = resolve_cli_path(argv[++i]);
         } else if (arg == "--federation-enable") {
             cfg.federation_enable = true;
-        } else if (arg == "--federation-auth-key" && i + 1 < argc) {
-            cfg.federation_auth_key = resolve_cli_path(argv[++i]);
+        } else if (arg == "--federation-identity" && i + 1 < argc) {
+            cfg.federation_identity = resolve_cli_path(argv[++i]);
         } else if (arg == "--federation-operator-ca" && i + 1 < argc) {
             cfg.federation_anonym_ca = resolve_cli_path(argv[++i]);
         } else if (arg == "--peer" && i + 1 < argc) {

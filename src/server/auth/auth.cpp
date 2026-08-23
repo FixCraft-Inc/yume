@@ -11,6 +11,7 @@
 
 #include <mutex>
 #include <fstream>
+#include <filesystem>
 #include <ctime>
 #include <algorithm>
 #include <cmath>
@@ -21,6 +22,10 @@
 
 #include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
+#include "core/runtime/atomic_file.hpp"
+#include "core/runtime/file_transaction_lock.hpp"
+#include "server/auth/auth_metadata_json.hpp"
+#include "server/federation/types.hpp"
 
 namespace yume::server {
 
@@ -45,16 +50,31 @@ std::optional<std::uint32_t> read_policy_uint(const nlohmann::json& entry,
                                               const char* key,
                                               std::uint32_t min_value,
                                               std::uint32_t max_value) {
-    const auto read_value = [&](const nlohmann::json& value) -> std::optional<std::uint32_t> {
-        if (!value.is_number_unsigned() && !value.is_number_integer()) {
-            return std::nullopt;
+    const auto read_value = [&](const nlohmann::json& value) {
+        std::uint64_t parsed = 0;
+        if (value.is_number_unsigned()) {
+            parsed = value.get<std::uint64_t>();
+        } else if (value.is_number_integer()) {
+            const auto signed_value = value.get<std::int64_t>();
+            if (signed_value < 0) {
+                throw std::runtime_error(
+                    std::string("auth key policy ") + key + " must be in " +
+                    std::to_string(min_value) + ".." +
+                    std::to_string(max_value));
+            }
+            parsed = static_cast<std::uint64_t>(signed_value);
+        } else {
+            throw std::runtime_error(
+                std::string("auth key policy ") + key + " must be an integer");
         }
-        const auto parsed = value.get<std::int64_t>();
-        if (parsed <= 0) {
-            return min_value;
+        if (parsed < min_value || parsed > max_value) {
+            throw std::runtime_error(
+                std::string("auth key policy ") + key + " must be in " +
+                std::to_string(min_value) + ".." +
+                std::to_string(max_value));
         }
-        const auto clamped = std::clamp(static_cast<std::uint32_t>(parsed), min_value, max_value);
-        return clamped;
+        return std::optional<std::uint32_t>(
+            static_cast<std::uint32_t>(parsed));
     };
 
     if (entry.contains("permissions") && entry["permissions"].is_object()) {
@@ -110,8 +130,18 @@ std::optional<std::uint32_t> read_policy_max_sessions(const nlohmann::json& entr
     if (!it->is_number_integer() && !it->is_number_unsigned()) {
         throw std::runtime_error("auth key policy max_sessions must be a positive integer");
     }
-    const auto value = it->get<std::int64_t>();
-    if (value <= 0 || value > 65535) {
+    std::uint64_t value = 0;
+    if (it->is_number_unsigned()) {
+        value = it->get<std::uint64_t>();
+    } else {
+        const auto signed_value = it->get<std::int64_t>();
+        if (signed_value <= 0) {
+            throw std::runtime_error(
+                "auth key policy max_sessions must be in 1..65535");
+        }
+        value = static_cast<std::uint64_t>(signed_value);
+    }
+    if (value == 0 || value > 65535) {
         throw std::runtime_error("auth key policy max_sessions must be in 1..65535");
     }
     return static_cast<std::uint32_t>(value);
@@ -143,6 +173,12 @@ void RejectAdminPrivilegeInVisitorStore(const AuthKeyPolicy& policy,
 void validate_key_policy(const AuthKeyPolicy& policy,
                          const std::string& fingerprint = "<key>") {
     RejectAdminPrivilegeInVisitorStore(policy, fingerprint);
+    if (!policy.federation_peer_id.empty() &&
+        !is_valid_federation_peer_id(policy.federation_peer_id)) {
+        throw std::runtime_error(
+            "federation_peer_id must be 1-64 ASCII letters, digits, '.', "
+            "'_', or '-' (':' is reserved for visible endpoint IDs)");
+    }
     if (policy.key_type == AuthKeyType::Individual &&
         policy.max_sessions.value_or(1) != 1) {
         throw std::runtime_error(
@@ -383,9 +419,30 @@ AuthKeyPolicyMap load_auth_policies(const std::string& meta_path) {
         return policies;
     }
 
-    std::ifstream in(meta_path);
-    if (!in) {
+    constexpr std::uintmax_t kMaximumMetadataBytes =
+        16U * 1024U * 1024U;
+    std::error_code status_error;
+    const bool exists = std::filesystem::exists(meta_path, status_error);
+    if (status_error) {
+        throw std::runtime_error(
+            "failed to inspect auth_keys_meta: " + status_error.message());
+    }
+    if (!exists) {
         return policies;
+    }
+    const auto size = std::filesystem::file_size(meta_path, status_error);
+    if (status_error) {
+        throw std::runtime_error(
+            "failed to inspect auth_keys_meta size: " +
+            status_error.message());
+    }
+    if (size > kMaximumMetadataBytes) {
+        throw std::runtime_error("auth_keys_meta exceeds 16 MiB");
+    }
+
+    std::ifstream in(meta_path, std::ios::binary);
+    if (!in) {
+        throw std::runtime_error("failed to open auth_keys_meta");
     }
 
     nlohmann::json meta = nlohmann::json::object();
@@ -394,14 +451,18 @@ AuthKeyPolicyMap load_auth_policies(const std::string& meta_path) {
     } catch (const std::exception& ex) {
         throw std::runtime_error(std::string("failed to parse auth_keys_meta: ") + ex.what());
     }
+    if (in.bad()) {
+        throw std::runtime_error("failed to finish reading auth_keys_meta");
+    }
     if (!meta.is_object()) {
         throw std::runtime_error("auth_keys_meta root must be an object");
     }
+    std::string validation_error;
+    if (!validate_auth_metadata_json_types(meta, &validation_error)) {
+        throw std::runtime_error(validation_error);
+    }
 
     for (auto it = meta.begin(); it != meta.end(); ++it) {
-        if (!it.value().is_object()) {
-            continue;
-        }
         AuthKeyPolicy policy;
         policy.allow_exec = read_policy_bool(it.value(), "allow_exec");
         policy.allow_local_ip = read_policy_bool(it.value(), "allow_local_ip");
@@ -566,20 +627,72 @@ std::string summarize_auth_policy(const AuthKeyPolicy& policy) {
     return out.str();
 }
 
-void update_auth_meta(const std::string& meta_path, const std::string& fingerprint, const std::string& alias) {
+bool update_auth_meta(const std::string& meta_path,
+                      const std::string& fingerprint,
+                      const std::string& alias,
+                      std::string* error) {
+    if (error) error->clear();
     if (meta_path.empty() || fingerprint.empty()) {
-        return;
+        return true;
     }
+    runtime::FileTransactionLock transaction_lock;
+    if (!transaction_lock.Acquire({meta_path}, error)) return false;
+
+    // Validate semantic policy state before taking the in-process reader lock.
+    // The lock order is always file transaction -> auth_meta_file_mutex, which
+    // avoids deadlock with CLI/facade writers that validate policies while
+    // holding the same sidecar lock.
+    try {
+        (void)load_auth_policies(meta_path);
+    } catch (const std::exception& ex) {
+        if (error) *error = ex.what();
+        return false;
+    }
+
     std::lock_guard<std::mutex> lock(auth_meta_file_mutex);
 
     nlohmann::json meta = nlohmann::json::object();
-    std::ifstream in(meta_path);
-    if (in) {
+    std::error_code status_error;
+    const bool exists = std::filesystem::exists(meta_path, status_error);
+    if (status_error) {
+        if (error) {
+            *error = "cannot inspect auth metadata '" + meta_path + "': " +
+                     status_error.message();
+        }
+        return false;
+    }
+    if (exists) {
+        constexpr std::uintmax_t kMaximumMetadataBytes =
+            16U * 1024U * 1024U;
+        const auto size = std::filesystem::file_size(meta_path, status_error);
+        if (status_error || size > kMaximumMetadataBytes) {
+            if (error) {
+                *error = status_error
+                             ? "cannot inspect auth metadata size: " +
+                                   status_error.message()
+                             : "auth metadata file is too large";
+            }
+            return false;
+        }
+        std::ifstream in(meta_path, std::ios::binary);
+        if (!in) {
+            if (error) *error = "cannot open auth metadata: " + meta_path;
+            return false;
+        }
         try {
             in >> meta;
-        } catch (...) {
-            meta = nlohmann::json::object();
+        } catch (const std::exception& ex) {
+            if (error) {
+                *error = "cannot parse auth metadata '" + meta_path +
+                         "': " + ex.what();
+            }
+            return false;
         }
+        if (in.bad()) {
+            if (error) *error = "cannot finish reading auth metadata: " + meta_path;
+            return false;
+        }
+        if (!validate_auth_metadata_json_types(meta, error)) return false;
     }
     nlohmann::json entry = meta.value(fingerprint, nlohmann::json::object());
     if (!alias.empty()) {
@@ -588,8 +701,16 @@ void update_auth_meta(const std::string& meta_path, const std::string& fingerpri
     entry["last_seen"] = static_cast<long long>(std::time(nullptr));
     meta[fingerprint] = entry;
 
-    std::ofstream out(meta_path);
-    out << meta.dump(2);
+    std::string serialized;
+    try {
+        serialized = meta.dump(2);
+    } catch (const std::exception& ex) {
+        if (error) *error = std::string("cannot serialize auth metadata: ") + ex.what();
+        return false;
+    }
+    return runtime::AtomicWriteFile(
+        meta_path, serialized, error,
+        runtime::ParentDirectoryPolicy::Create);
 }
 
 }  // namespace yume::server

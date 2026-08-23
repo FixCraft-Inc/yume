@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -22,6 +23,7 @@
 #include "config/ratchet_profile_json.hpp"
 #include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
+#include "core/runtime/atomic_file.hpp"
 #include "core/version.hpp"
 #include "server/config/json_values.hpp"
 #include "server/host/host_routes.hpp"
@@ -38,6 +40,9 @@ namespace cfg_key = keys;
 namespace {
 
 server::ServerConfig server_from_json(json const& j, std::filesystem::path const& base) {
+    if (!j.is_object()) {
+        throw std::runtime_error("config root must be a JSON object");
+    }
     server::ServerConfig s;
     read_opt(j, cfg_key::transport_profile, s.transport_profile);
     read_opt(j, cfg_key::listen_address, s.listen_address);
@@ -59,19 +64,9 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::inner_heavy, s.inner_heavy);
     read_opt(j, cfg_key::inner_dual, s.inner_dual);
     read_opt(j, cfg_key::inner_required, s.inner_required);
-    read_opt(j, cfg_key::inner_hop, s.inner_hop);
-    read_opt(j, cfg_key::hop_interval_ms, s.hop_interval_ms);
     read_opt(j, cfg_key::rekey_window, s.rekey_window);
     s.security_profile = yume::config::ParseSecurityProfile(
         j, s.security_profile);
-    if (j.contains(cfg_key::argon2_memory_budget_kib)) {
-        s.argon2_memory_budget_kib = server::json_positive_u32(
-            j, cfg_key::argon2_memory_budget_kib);
-    }
-    if (j.contains(cfg_key::argon2_max_jobs)) {
-        s.argon2_max_jobs = server::json_positive_u32(
-            j, cfg_key::argon2_max_jobs);
-    }
     read_opt(j, cfg_key::reverse_port_min, s.reverse_port_min);
     read_opt(j, cfg_key::reverse_port_max, s.reverse_port_max);
     read_opt(j, cfg_key::dns_server, s.dns_server);
@@ -99,11 +94,20 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     auto const read_codec_allow = [&](char const* key) {
         auto it = j.find(key);
         if (it == j.end()) return;
-        if (!it->is_array()) return;
+        if (!it->is_array()) {
+            throw std::runtime_error(std::string(key) + " must be an array");
+        }
         for (auto const& item : *it) {
-            if (!item.is_string()) continue;
+            if (!item.is_string()) {
+                throw std::runtime_error(
+                    std::string(key) + " entries must be strings");
+            }
             auto const codec = yume::app_codec::canonical_codec_id(item.get<std::string>());
-            if (!yume::app_codec::is_supported_codec(codec)) continue;
+            if (!yume::app_codec::is_supported_codec(codec)) {
+                throw std::runtime_error(
+                    std::string("unsupported application codec in ") +
+                    key + ": " + codec);
+            }
             yume::app_codec::add_codec_unique(&s.allowed_codecs, codec);
             if (codec == std::string(yume::app_codec::builtin::kMoneroRpcCodecId)) {
                 s.allow_monero_rpc_codec = true;
@@ -122,6 +126,8 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
         if (ep.has_value()) {
             s.monero_rpc_backend_host = ep->host;
             s.monero_rpc_backend_port = ep->port;
+        } else {
+            throw std::runtime_error("monero_rpc_backend: " + parse_error);
         }
     }
     read_opt(j, cfg_key::monero_rpc_backend_host, s.monero_rpc_backend_host);
@@ -149,16 +155,22 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::ipc_enable, s.ipc_enable);
     read_opt(j, cfg_key::ipc_path, s.ipc_path);
     read_opt(j, cfg_key::federation_enable, s.federation_enable);
-    if (auto it = j.find(cfg_key::federation_peers); it != j.end() && it->is_array()) {
+    if (auto it = j.find(cfg_key::federation_peers); it != j.end()) {
+        if (!it->is_array()) {
+            throw std::runtime_error("federation_peers must be an array");
+        }
         for (const auto& peer : *it) {
             if (peer.is_string()) {
                 s.federation_peers.push_back(peer.get<std::string>());
             } else if (peer.is_object()) {
                 s.federation_peers.push_back(peer.dump());
+            } else {
+                throw std::runtime_error(
+                    "federation_peers entries must be strings or objects");
             }
         }
     }
-    read_opt(j, cfg_key::federation_auth_key, s.federation_auth_key);
+    read_opt(j, cfg_key::federation_identity, s.federation_identity);
     read_opt(j, cfg_key::federation_anonym_ca, s.federation_anonym_ca);
     read_opt(j, cfg_key::operator_keys, s.operator_keys);
     read_opt(j, cfg_key::operator_keys_meta, s.operator_keys_meta);
@@ -168,13 +180,7 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::egress_filter_mode, s.egress_filter_mode);
     read_opt(j, cfg_key::filter_geolite, s.filter_geolite);
     read_opt(j, cfg_key::filter_memory_mib, s.filter_memory_mib);
-    if (auto it = j.find(cfg_key::filter_lists); it != j.end() && it->is_array()) {
-        for (const auto& item : *it) {
-            if (item.is_string()) {
-                s.filter_lists.push_back(item.get<std::string>());
-            }
-        }
-    }
+    read_opt(j, cfg_key::filter_lists, s.filter_lists);
     read_opt(j, cfg_key::packet_egress, s.packet_egress);
     read_opt(j, cfg_key::packet_tun_name, s.packet_tun_name);
     read_opt(j, cfg_key::packet_cidr, s.packet_cidr);
@@ -244,7 +250,7 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     resolve_config_path(s.anonym_sub_key, base);
     resolve_config_path(s.anonym_sub_cert, base);
     resolve_config_path(s.ipc_path, base);
-    resolve_config_path(s.federation_auth_key, base);
+    resolve_config_path(s.federation_identity, base);
     resolve_config_path(s.federation_anonym_ca, base);
     resolve_config_path(s.operator_keys, base);
     resolve_config_path(s.operator_keys_meta, base);
@@ -258,10 +264,19 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
 }  // namespace
 
 std::optional<server::ServerConfig> load_server(
-    std::filesystem::path const& path, std::string* err) {
+    std::filesystem::path const& path,
+    std::string* err,
+    ConfigLoadError* load_error) {
+    if (err) err->clear();
+    if (load_error) *load_error = ConfigLoadError::None;
+    errno = 0;
     std::ifstream in(path);
     if (!in) {
+        const int open_errno = errno;
         if (err) *err = "cannot open " + path.string();
+        if (load_error) {
+            *load_error = ConfigOpenErrorFromErrno(open_errno);
+        }
         return std::nullopt;
     }
     json j;
@@ -269,6 +284,7 @@ std::optional<server::ServerConfig> load_server(
         in >> j;
     } catch (std::exception const& e) {
         if (err) *err = std::string{"invalid JSON: "} + e.what();
+        if (load_error) *load_error = ConfigLoadError::Parse;
         return std::nullopt;
     }
 
@@ -276,6 +292,7 @@ std::optional<server::ServerConfig> load_server(
         return server_from_json(j, path.parent_path());
     } catch (std::exception const& e) {
         if (err) *err = e.what();
+        if (load_error) *load_error = ConfigLoadError::Parse;
         return std::nullopt;
     }
 }
@@ -284,6 +301,7 @@ std::optional<server::ServerConfig> parse_server_json(
     std::string_view text,
     std::filesystem::path const& base_dir,
     std::string* err) {
+    if (err) err->clear();
     json j;
     try {
         j = json::parse(text.begin(), text.end());
@@ -302,6 +320,7 @@ std::optional<server::ServerConfig> parse_server_json(
 bool save_server(server::ServerConfig const& s,
                  std::filesystem::path const& path,
                  std::string* err) {
+    if (err) err->clear();
     json j = {
         {cfg_key::listen_address, s.listen_address},
         {cfg_key::transport_profile, s.transport_profile},
@@ -316,18 +335,13 @@ bool save_server(server::ServerConfig const& s,
         {cfg_key::max_sessions, s.max_sessions},
         {cfg_key::accept_rate_limit, s.accept_rate_limit},
         {cfg_key::obfuscation, s.obfuscation},
-        {cfg_key::obfs_secret, s.obfs_secret},
         {cfg_key::obfs_secret_file, s.obfs_secret_file},
         {cfg_key::inner_psk_file, s.inner_psk_file},
         {cfg_key::inner_crypto, s.inner_crypto},
         {cfg_key::inner_heavy, s.inner_heavy},
         {cfg_key::inner_dual, s.inner_dual},
         {cfg_key::inner_required, s.inner_required},
-        {cfg_key::inner_hop, s.inner_hop},
-        {cfg_key::hop_interval_ms, s.hop_interval_ms},
         {cfg_key::rekey_window, s.rekey_window},
-        {cfg_key::argon2_memory_budget_kib, s.argon2_memory_budget_kib},
-        {cfg_key::argon2_max_jobs, s.argon2_max_jobs},
         {cfg_key::reverse_port_min, s.reverse_port_min},
         {cfg_key::reverse_port_max, s.reverse_port_max},
         {cfg_key::dns_server, s.dns_server},
@@ -366,7 +380,7 @@ bool save_server(server::ServerConfig const& s,
         {cfg_key::ipc_path, s.ipc_path},
         {cfg_key::federation_enable, s.federation_enable},
         {cfg_key::federation_peers, s.federation_peers},
-        {cfg_key::federation_auth_key, s.federation_auth_key},
+        {cfg_key::federation_identity, s.federation_identity},
         {cfg_key::federation_anonym_ca, s.federation_anonym_ca},
         {cfg_key::operator_keys, s.operator_keys},
         {cfg_key::operator_keys_meta, s.operator_keys_meta},
@@ -420,15 +434,9 @@ bool save_server(server::ServerConfig const& s,
         j[cfg_key::listeners] = listeners;
     }
 
-    std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
-    std::ofstream out(path);
-    if (!out) {
-        if (err) *err = "cannot write " + path.string();
-        return false;
-    }
-    out << j.dump(2);
-    return out.good();
+    return yume::runtime::AtomicWriteFile(
+        path, j.dump(2), err,
+        yume::runtime::ParentDirectoryPolicy::Create);
 }
 
 ValidationReport validate(server::ServerConfig const& s) {
@@ -500,8 +508,8 @@ ValidationReport validate(server::ServerConfig const& s) {
         }
     }
     if (s.federation_enable) {
-        if (s.federation_auth_key.empty()) {
-            r.errors.emplace_back("federation_auth_key: required when federation_enable=true");
+        if (s.federation_identity.empty()) {
+            r.errors.emplace_back("federation_identity: required when federation_enable=true");
         }
         if (s.federation_anonym_ca.empty()) {
             r.errors.emplace_back("federation_anonym_ca: required when federation_enable=true");

@@ -53,11 +53,26 @@ its internal transport code private.
 
 The ABI v1 stream API is synchronous by design. Async callbacks can be added in
 a later ABI version without forcing embedders into YUME's internal threading
-model now.
+model now. All ABI timeout values are measured at millisecond granularity; they
+are not rounded to whole seconds. For stream and packet operations:
 
-`yume_stream_write` accepts `timeout_ms` for ABI stability, but ABI v1 writes
-only synchronously enqueue bytes into the YUME stream and ignore the value. Pass
-`0` unless a future ABI revision documents write-deadline behavior.
+- `yume_client_open_stream` and `yume_client_open_packet` require a positive
+  deadline for their request/ack exchange. A zero timeout returns
+  `YUME_STATUS_WOULD_BLOCK` without sending an `OPEN` request.
+- `yume_server_accept_stream`, `yume_stream_read`, and `yume_stream_write` use a
+  zero timeout as a nonblocking poll. No pending stream/data/admission slot
+  returns `YUME_STATUS_WOULD_BLOCK`.
+- An expired positive deadline returns `YUME_STATUS_TIMEOUT`.
+- A stream read that returns `YUME_STATUS_OK` with `bytes_read == 0` is clean
+  peer EOF. A reset, local close, or transport close returns
+  `YUME_STATUS_NOT_RUNNING` and preserves the close reason in the handle error.
+- Stream writes are all-or-none admissions to a bounded transport queue.
+  `bytes_written` is set to the complete input size only after admission.
+  Server-accepted streams use a per-session FIFO capped at 64 complete writes
+  and 4 MiB; poll/deadline waits reserve capacity only while live, and close or
+  server stop wakes every waiter. A successful return therefore means the
+  write reached bounded Session/transport ownership, not merely that a strand
+  callback was posted.
 
 `yume_server_stop` and `yume_server_destroy` interrupt an in-flight
 `yume_server_accept_stream` wait. The accept call returns
@@ -70,9 +85,9 @@ retained for source compatibility. Packet write inputs are copied before
 return and admitted all-or-none. Reads copy complete packets into caller-owned
 contiguous storage and caller-owned offset/length arrays. If the first packet
 does not fit, `YUME_STATUS_BUFFER_TOO_SMALL` reports its size without consuming
-it. Zero timeout means poll, saturation returns `YUME_STATUS_WOULD_BLOCK`, and
-an expired positive deadline returns `YUME_STATUS_TIMEOUT`. Client or packet
-stop interrupts blocking packet calls.
+it. For batch reads and writes, zero timeout means poll, saturation returns
+`YUME_STATUS_WOULD_BLOCK`, and an expired positive deadline returns
+`YUME_STATUS_TIMEOUT`. Client or packet stop interrupts blocking packet calls.
 
 `yume_client_status_json` returns:
 
@@ -97,7 +112,9 @@ fingerprint. It is present as an empty string before the client is connected.
 
 `yume_client_start_json` and `yume_server_start_json` parse the same JSON keys
 as the facade config files. Relative path fields are resolved against the
-`base_dir` argument. Unknown keys are ignored for forward compatibility.
+`base_dir` argument. Unknown keys are ignored for forward compatibility, but
+the root must be an object and known keys with the wrong JSON type fail with
+`YUME_STATUS_PARSE_ERROR` instead of silently falling back to defaults.
 
 Android and other in-process VPN embedders may configure
 `yume_client_set_socket_protector` before starting a client. YUME invokes the
@@ -107,10 +124,37 @@ the connection with `YUME_STATUS_PERMISSION_DENIED`. The callback must be
 thread-safe, must not re-enter the same client, and its callback/user-data pair
 must remain valid until it is cleared or `yume_client_destroy` returns.
 
-Android packages use the client-only ABI build profile. It preserves the ABI
-v1 export surface for loaders, but server lifecycle calls report
+The callback does not protect Boost.Asio's hostname-resolution sockets, which
+run before the carrier socket is opened. Until an embedder-supplied/protected
+resolver boundary is implemented, an Android `VpnService` integration should
+resolve on the underlying network and pass a numeric `server` address while
+retaining the certificate name in `tls_server_name`; otherwise DNS can recurse
+through the VPN route.
+
+Pre-ready stop is a tested cancellation boundary. Resolver, direct/proxy
+connect, SOCKS, OpenSSL TLS, HTTP/2/AUTH/server-info, and Chrome-helper IPC
+operations poll the shared stop predicate in bounded slices; helper
+cancellation also kills and reaps the child. C ABI start admission publishes a
+generation before configuration parsing or file I/O, so a concurrent
+`yume_client_stop` cannot complete and then be followed by a late runtime
+start. The lifecycle suite covers a stalled TLS peer, while the ABI suite uses
+a FIFO config fixture to cover cancellation before runtime handoff.
+
+Android integrations targeting dev6 should use the client-only ABI build
+profile. The current separate Android checkout still targets dev1 and is not a
+qualified dev6 consumer. The client-only profile preserves the ABI v1 export
+surface for loaders, but server lifecycle calls report
 `YUME_STATUS_PERMISSION_DENIED` or `YUME_STATUS_NOT_RUNNING`; no server runtime
 is linked into the APK. Client, stream, and packet behavior is unchanged.
+
+Packet-native v1 is IPv4-only. An Android VPN must install an explicit IPv6
+block or otherwise prove there is no bypass; passing IPv6 into the current
+packet channel is a fatal protocol error. An accepted outbound batch remains
+owned by the sender while it waits in bounded, cancellation-aware slices for
+transport capacity; temporary saturation no longer discards the dequeued batch
+or closes the packet channel. Saturation/recovery and stop wakeup are covered
+by the packet contract tests. Device/NDK/JNI and IPv6-policy qualification are
+still separate Android gates.
 
 Minimum server-side embed shape for a named service:
 
@@ -160,7 +204,7 @@ Minimum client-side embed shape:
   "service_streams_only": true,
   "tls_ca_cert": "server.crt",
   "tls_server_name": "embedder.local",
-  "tls_pin_sha256": "lowercase-hex-sha256-of-tls-leaf",
+  "tls_pin": "lowercase-hex-sha256-of-tls-leaf",
   "accept_monitoring": false,
   "auto_attach_local": false,
   "obfuscation": true,
@@ -169,9 +213,10 @@ Minimum client-side embed shape:
 }
 ```
 
-`tls_pin_sha256` is optional when `tls_ca_cert`/`tls_server_name` are sufficient,
-but embedders that already have a manifest pin should pass it and may also
-compare `server_tls_fingerprint_sha256` in `yume_client_status_json`.
+`tls_pin` is optional when `tls_ca_cert`/`tls_server_name` are sufficient, but
+embedders that already have a manifest pin should pass it and may also compare
+`server_tls_fingerprint_sha256` in `yume_client_status_json`. Readers continue
+to accept the legacy `tls_pin_sha256` alias; writers emit only `tls_pin`.
 In-process clients are non-interactive: a normal-mode server is rejected unless
 `accept_monitoring` is explicitly true. Keep it false when operator identity
 verification is required; no terminal consent prompt is attempted through the
@@ -254,9 +299,15 @@ correlation only.
   argument meaning for the lifetime of SONAME `1`.
 - Structs that cross the ABI must start with `struct_size`.
 - New fields may only be appended to public structs.
+- Callers should zero-initialize `yume_build_info` and pass the size they know.
+  `yume_get_build_info` accepts any buffer at least
+  `YUME_BUILD_INFO_MIN_SIZE`, writes only complete fields that fit, and reports
+  the library's known layout size in `struct_size`. Callers must not read fields
+  that do not fit in the smaller of their size and the returned `struct_size`.
 - Functions must not throw exceptions across the ABI.
-- Returned strings are owned by the library and remain valid for the process
-  lifetime.
+- Build/version strings are owned by the library and remain valid for the
+  process lifetime. Error-string lifetimes follow the thread-local rules in
+  the Handle Lifetime section below.
 - Do not expose internal C++ headers from `src/`.
 
 ## Symbol Control
@@ -295,6 +346,15 @@ Handle arguments must be live objects of the correct type returned by this ABI.
 Destroy functions accept `NULL`; no other call probes arbitrary or stale
 pointers. Callers must synchronize destruction with every other operation on
 the same handle, including `yume_handle_last_error`.
+
+`yume_client_start_*` and `yume_client_stop` may run concurrently on one live
+client handle. Stop cancels either configuration admission or the active
+runtime generation and joins runtime teardown; another start is rejected until
+the first start call has returned. Destruction still requires exclusive handle
+ownership. Service OPEN deadlines send a matching CLOSE and tombstone that
+8-bit stream id until connection shutdown, preventing a delayed ACK/DATA frame
+from being mistaken for a later stream; exhausting the remaining ids returns
+`YUME_STATUS_RESOURCE_EXHAUSTED`.
 
 Errors are stored per handle. `yume_handle_last_error` copies the selected
 error into thread-local storage, so its return pointer remains valid until the

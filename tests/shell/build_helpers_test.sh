@@ -13,6 +13,8 @@ source "${repo_root}/scripts/lib/safe_paths.sh"
 source "${repo_root}/scripts/lib/user_context.sh"
 # shellcheck source=scripts/lib/macos_sdk.sh
 source "${repo_root}/scripts/lib/macos_sdk.sh"
+# shellcheck source=scripts/vendor_prebuilt.sh
+source "${repo_root}/scripts/vendor_prebuilt.sh"
 
 fail() {
     printf 'FAIL: %s\n' "$*" >&2
@@ -114,5 +116,38 @@ mkdir -p "${sdk_home}/macos-sdk/MacOSX15.0.sdk"
 yume_ensure_macos_sdk_tarball "${sdk_home}" "${osxcross_root}"
 [[ -f "${osxcross_root}/tarballs/MacOSX15.0.sdk.tar.xz" ]] ||
     fail "macOS SDK archive was not staged"
+
+vendor_archive_root="${fixture_root}/vendor-archive"
+vendor_archive="${fixture_root}/vendor-test.tar.xz"
+vendor_dest="${fixture_root}/vendor-dest"
+mkdir -p "${vendor_archive_root}/vendor/linux-test/lib"
+printf 'verified fixture\n' \
+    > "${vendor_archive_root}/vendor/linux-test/lib/libfixture.a"
+tar -cJf "${vendor_archive}" -C "${vendor_archive_root}" vendor
+
+# The signature/checksum path is covered by release preflight. Override only
+# archive acquisition here so this unit test can exercise transactional and
+# repeatable extraction without a network or private signing key.
+yume_vendor_obtain() {
+    local _test_outvar="$2"
+    printf -v "${_test_outvar}" '%s' "${vendor_archive}"
+}
+
+yume_vendor_ensure_extracted "${vendor_dest}"
+[[ -f "${vendor_dest}/vendor/linux-test/lib/libfixture.a" ]] ||
+    fail "verified vendor fixture was not installed"
+yume_vendor_ensure_extracted "${vendor_dest}"
+
+printf 'local drift\n' \
+    > "${vendor_dest}/vendor/linux-test/lib/libfixture.a"
+if yume_vendor_ensure_extracted "${vendor_dest}" >/dev/null 2>&1; then
+    fail "drifted vendor tree was accepted"
+fi
+grep -qxF 'local drift' \
+    "${vendor_dest}/vendor/linux-test/lib/libfixture.a" ||
+    fail "drifted vendor tree was overwritten"
+if compgen -G "${vendor_dest}/.vendor-extract.*" >/dev/null; then
+    fail "vendor staging directory leaked"
+fi
 
 printf 'build helper tests passed\n'

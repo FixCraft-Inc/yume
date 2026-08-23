@@ -52,9 +52,6 @@
 namespace yume::client {
 namespace {
 
-// Must match the server's kHopDecryptWindow (server/session/session.cpp). 120
-// hops at 500 ms intervals = +/-60 s tolerance for queued-frame staleness.
-constexpr std::uint64_t kHopDecryptWindow = 120;
 
 struct LongRunningWaitState {
     void signal() {
@@ -77,47 +74,11 @@ struct LongRunningWaitState {
 
 using LongRunningWaitStatePtr = std::shared_ptr<LongRunningWaitState>;
 
-crypto::Bytes derive_hop_key(const crypto::Bytes& key,
-                             bool hop_enabled,
-                             std::uint32_t hop_interval_ms,
-                             std::int64_t hop_offset_ms) {
-    if (!hop_enabled || hop_interval_ms == 0) {
-        return key;
-    }
-    const std::uint64_t hop_id =
-        inner::hop_id_from_time_ms(util::now_ms(), hop_interval_ms, hop_offset_ms);
-    return inner::derive_hop_key(key, hop_id);
-}
-
 crypto::Bytes decrypt_control_payload(const crypto::Bytes& key,
                                       uint8_t frame_type,
                                       uint8_t stream_id,
-                                      const crypto::Bytes& blob,
-                                      bool hop_enabled,
-                                      std::uint32_t hop_interval_ms,
-                                      std::int64_t hop_offset_ms) {
-    if (!hop_enabled || hop_interval_ms == 0) {
-        return inner::decrypt_payload(key, frame_type, stream_id, blob);
-    }
-    const std::uint64_t hop_id =
-        inner::hop_id_from_time_ms(util::now_ms(), hop_interval_ms, hop_offset_ms);
-    std::uint64_t candidates[1 + (kHopDecryptWindow * 2)];
-    std::size_t candidate_count = 0;
-    candidates[candidate_count++] = hop_id;
-    for (std::uint64_t delta = 1; delta <= kHopDecryptWindow; ++delta) {
-        if (hop_id >= delta) {
-            candidates[candidate_count++] = hop_id - delta;
-        }
-        candidates[candidate_count++] = hop_id + delta;
-    }
-    for (std::size_t i = 0; i < candidate_count; ++i) {
-        crypto::Bytes hop_key = inner::derive_hop_key(key, candidates[i]);
-        try {
-            return inner::decrypt_payload(hop_key, frame_type, stream_id, blob);
-        } catch (...) {
-        }
-    }
-    throw std::runtime_error("control decrypt failed");
+                                      const crypto::Bytes& blob) {
+    return inner::decrypt_payload(key, frame_type, stream_id, blob);
 }
 
 class ControlFrameClient {
@@ -125,18 +86,12 @@ public:
     ControlFrameClient(ClientTlsStream& stream,
                        boost::asio::io_context& io,
                        const std::optional<crypto::Bytes>& inner_key,
-                       bool hop_enabled,
-                       std::uint32_t hop_interval_ms,
-                       std::int64_t hop_offset_ms,
                        obfs::H2Carrier* carrier,
                        crypto::Bytes* prefetched,
                        ratchet::SessionRatchet* ratchet)
         : stream_(stream),
           io_(io),
           inner_key_(inner_key),
-          hop_enabled_(hop_enabled),
-          hop_interval_ms_(hop_interval_ms),
-          hop_offset_ms_(hop_offset_ms),
           carrier_(carrier),
           prefetched_(prefetched),
           ratchet_(ratchet) {}
@@ -146,8 +101,7 @@ public:
         crypto::Bytes payload(payload_str.begin(), payload_str.end());
         uint16_t flags = 0;
         if (inner_key_.has_value() && !ratchet_) {
-            crypto::Bytes key = derive_hop_key(*inner_key_, hop_enabled_, hop_interval_ms_, hop_offset_ms_);
-            payload = inner::encrypt_payload(key, protocol::CONTROL, 0, payload);
+            payload = inner::encrypt_payload(*inner_key_, protocol::CONTROL, 0, payload);
             flags |= protocol::kFlagInnerEncrypted;
         }
         protocol::Frame frame{{static_cast<uint32_t>(payload.size()), protocol::CONTROL, 0, flags}, payload};
@@ -207,10 +161,7 @@ public:
                 *inner_key_,
                 protocol::CONTROL,
                 resp_frame.header.stream_id,
-                resp_frame.payload,
-                hop_enabled_,
-                hop_interval_ms_,
-                hop_offset_ms_);
+                resp_frame.payload);
         }
         return nlohmann::json::parse(std::string(payload.begin(), payload.end()));
     }
@@ -219,16 +170,13 @@ private:
     ClientTlsStream& stream_;
     boost::asio::io_context& io_;
     const std::optional<crypto::Bytes>& inner_key_;
-    bool hop_enabled_{false};
-    std::uint32_t hop_interval_ms_{0};
-    std::int64_t hop_offset_ms_{0};
     obfs::H2Carrier* carrier_{nullptr};
     crypto::Bytes* prefetched_{nullptr};
     ratchet::SessionRatchet* ratchet_{nullptr};
 };
 
 void register_control_client_if_needed(const ClientConfig& cfg, ControlFrameClient& control_client) {
-    if (!cfg.server_in_charge && !cfg.allow_exec) {
+    if (!cfg.server_in_charge) {
         return;
     }
     nlohmann::json reg;
@@ -236,7 +184,10 @@ void register_control_client_if_needed(const ClientConfig& cfg, ControlFrameClie
     reg["hostname"] = get_system_hostname();
     reg["wan_ip"] = "";
     reg["server_in_charge"] = cfg.server_in_charge;
-    reg["allow_exec"] = cfg.allow_exec;
+    // Inbound EXEC is fail-closed until child processes can be cancelled and
+    // joined within the owning tunnel lifetime. Never advertise a permission
+    // that the transport cannot safely honor.
+    reg["allow_exec"] = false;
     control_client.send(reg);
 }
 
@@ -330,6 +281,13 @@ RelayRuntime::Options make_relay_options(const ClientConfig& cfg) {
     relay_opts.allow_bytes = cfg.allow_bytes;
     relay_opts.history_enabled = cfg.history_enabled;
     relay_opts.history_dir = util::expand_user(cfg.history_dir);
+    relay_opts.receive_dir = util::expand_user(cfg.relay_receive_dir);
+    relay_opts.peer_trust.directory = util::expand_user(cfg.relay_trust_dir);
+    relay_opts.peer_trust.mode = cfg.relay_trust_mode == "pinned"
+        ? relay_v2::PeerTrustMode::Pinned
+        : relay_v2::PeerTrustMode::Tofu;
+    relay_opts.peer_trust.explicit_pins.insert(
+        cfg.relay_peer_pins.begin(), cfg.relay_peer_pins.end());
     return relay_opts;
 }
 
@@ -338,7 +296,6 @@ std::string effective_protection_summary(const ClientConfig& cfg,
                                          bool have_inner_caps,
                                          bool server_inner_dual,
                                          bool server_inner_active,
-                                         bool hop_enabled,
                                          const std::optional<inner::KdfParams>& inner_kdf) {
     if (!inner_key_established && !server_inner_active) {
         return "TLS over 443";
@@ -346,9 +303,6 @@ std::string effective_protection_summary(const ClientConfig& cfg,
     std::string protection = (have_inner_caps && server_inner_dual)
         ? "Inner dual"
         : (std::string("Inner ") + (cfg.inner_heavy ? "heavy" : "light"));
-    if (hop_enabled) {
-        protection += " + hop";
-    }
     protection += " over 443";
     std::string kdf_name;
     if (inner_kdf.has_value()) {
@@ -389,21 +343,54 @@ std::vector<std::shared_ptr<Tunnel>> open_secondary_socks_tunnels(
     const outbound_proxy::Config& proxy_cfg,
     const ParsedArgs& args,
     bool use_reverse,
-    const std::shared_ptr<TunnelPool>& tunnel_pool) {
+    const std::shared_ptr<TunnelPool>& tunnel_pool,
+    const StopPredicate& should_stop) {
     std::vector<std::shared_ptr<Tunnel>> secondary_tunnels;
     if (!should_open_secondary_socks_tunnels(cfg, args, use_reverse) || cfg.tunnel_count <= 1) {
         return secondary_tunnels;
     }
+    const bool distinct_identities = !args.secondary_identities.empty();
+    const auto required_secondary_count =
+        static_cast<std::size_t>(cfg.tunnel_count - 1);
+    if (distinct_identities &&
+        args.secondary_identities.size() != required_secondary_count) {
+        throw std::invalid_argument(
+            "--tunnels " + std::to_string(cfg.tunnel_count) +
+            " requires exactly " + std::to_string(required_secondary_count) +
+            " --secondary-auth values");
+    }
     for (int i = 2; i <= cfg.tunnel_count; ++i) {
+        if (stop_is_requested(should_stop)) {
+            throw std::runtime_error("secondary tunnel startup cancelled");
+        }
         try {
             util::log_info("opening SOCKS secondary tunnel " +
                            std::to_string(i) + "/" +
                            std::to_string(cfg.tunnel_count));
+            ClientConfig secondary_cfg = cfg;
+            if (distinct_identities) {
+                secondary_cfg.identity = args.secondary_identities[
+                    static_cast<std::size_t>(i - 2)];
+                // Secondary connections are data-only. Never replay the
+                // primary's admin factor merely to add SOCKS capacity.
+                secondary_cfg.admin_identity.clear();
+            }
             auto extra = connect_secondary_tunnel(
-                io, ctx, cfg, proxy_cfg, i, std::nullopt, nullptr);
+                io, ctx, secondary_cfg, proxy_cfg, i, std::nullopt, nullptr,
+                should_stop);
             tunnel_pool->add(extra);
             secondary_tunnels.push_back(extra);
         } catch (const std::exception& ex) {
+            if (stop_is_requested(should_stop)) {
+                throw std::runtime_error("secondary tunnel startup cancelled");
+            }
+            if (distinct_identities) {
+                throw std::runtime_error(
+                    "required SOCKS secondary tunnel " +
+                    std::to_string(i) + "/" +
+                    std::to_string(cfg.tunnel_count) +
+                    " failed: " + ex.what());
+            }
             util::log_warn("SOCKS secondary tunnel " +
                            std::to_string(i) + "/" +
                            std::to_string(cfg.tunnel_count) +
@@ -413,48 +400,45 @@ std::vector<std::shared_ptr<Tunnel>> open_secondary_socks_tunnels(
     return secondary_tunnels;
 }
 
-class HopStatusGuard {
+class StatusLineGuard {
 public:
-    HopStatusGuard(std::shared_ptr<std::atomic<bool>> stop, std::thread* thread)
-        : stop_(std::move(stop)), thread_(thread) {}
-    HopStatusGuard(const HopStatusGuard&) = delete;
-    HopStatusGuard& operator=(const HopStatusGuard&) = delete;
-    ~HopStatusGuard() {
-        if (stop_) {
-            stop_->store(true);
+    StatusLineGuard() = default;
+    StatusLineGuard(const StatusLineGuard&) = delete;
+    StatusLineGuard& operator=(const StatusLineGuard&) = delete;
+    ~StatusLineGuard() { util::clear_status_line(); }
+};
+
+class JoinableOneShotTask final {
+public:
+    JoinableOneShotTask() = default;
+    JoinableOneShotTask(const JoinableOneShotTask&) = delete;
+    JoinableOneShotTask& operator=(const JoinableOneShotTask&) = delete;
+
+    ~JoinableOneShotTask() {
+        if (worker_.joinable()) worker_.join();
+    }
+
+    void start(std::function<void()> work) noexcept {
+        if (started_.exchange(true, std::memory_order_acq_rel)) return;
+        try {
+            worker_ = std::thread(std::move(work));
+        } catch (const std::exception& ex) {
+            util::log_warn(
+                std::string("failed to start lifecycle notification: ") +
+                ex.what());
+        } catch (...) {
+            util::log_warn("failed to start lifecycle notification");
         }
-        if (thread_ && thread_->joinable()) {
-            thread_->join();
-        }
-        util::clear_status_line();
     }
 
 private:
-    std::shared_ptr<std::atomic<bool>> stop_;
-    std::thread* thread_{nullptr};
+    std::atomic<bool> started_{false};
+    std::thread worker_;
 };
 
 void start_live_status_if_needed(bool live_status_enabled,
-                                 bool hop_enabled,
-                                 std::uint32_t hop_interval_ms,
-                                 const std::shared_ptr<std::atomic<bool>>& hop_status_stop,
-                                 const std::function<std::string()>& status_block_builder,
-                                 std::thread* hop_status_thread) {
-    if (!live_status_enabled) {
-        return;
-    }
-    if (status_block_builder && hop_enabled) {
-        const int refresh_raw = static_cast<int>(hop_interval_ms / 2) + 137;
-        const auto refresh_ms = std::chrono::milliseconds(
-            std::clamp<int>(refresh_raw, 300, 1200));
-        *hop_status_thread = std::thread([hop_status_stop, status_block_builder, refresh_ms]() {
-            while (!hop_status_stop->load()) {
-                util::set_status_line(status_block_builder());
-                std::this_thread::sleep_for(refresh_ms);
-            }
-            util::clear_status_line();
-        });
-    } else if (status_block_builder) {
+                                 const std::function<std::string()>& status_block_builder) {
+    if (live_status_enabled && status_block_builder) {
         util::set_status_line(status_block_builder());
     }
 }
@@ -515,6 +499,7 @@ int start_relay_one_shots(const ParsedArgs& args,
                           std::string* relay_error) {
     if (!args.chat_target.empty()) {
         std::string relay_secret_b64;
+        RelaySecretWiper relay_secret_wiper(relay_secret_b64);
         if (!resolve_relay_secret(cfg, "", "chat with " + args.chat_target, &relay_secret_b64, relay_error)) {
             util::log_error("chat open failed: " + *relay_error);
             return 1;
@@ -526,6 +511,7 @@ int start_relay_one_shots(const ParsedArgs& args,
     }
     if (!args.file_target.empty()) {
         std::string relay_secret_b64;
+        RelaySecretWiper relay_secret_wiper(relay_secret_b64);
         if (!resolve_relay_secret(cfg, "", "file send to " + args.file_target, &relay_secret_b64, relay_error)) {
             util::log_error("file send failed: " + *relay_error);
             return 1;
@@ -537,6 +523,7 @@ int start_relay_one_shots(const ParsedArgs& args,
     }
     if (!args.bytes_target.empty()) {
         std::string relay_secret_b64;
+        RelaySecretWiper relay_secret_wiper(relay_secret_b64);
         if (!resolve_relay_secret(cfg, "", "bytes send to " + args.bytes_target, &relay_secret_b64, relay_error)) {
             util::log_error("bytes send failed: " + *relay_error);
             return 1;
@@ -562,16 +549,33 @@ struct ReverseTarget {
 void install_reverse_handler(const std::shared_ptr<Tunnel>& tunnel,
                              const std::shared_ptr<std::unordered_map<uint8_t, ReverseTarget>>& reverse_targets,
                              const std::shared_ptr<std::unordered_map<uint8_t, std::shared_ptr<ReverseForwardSession>>>& reverse_sessions) {
-    tunnel->set_reverse_handler([reverse_targets, reverse_sessions, tunnel](uint8_t listen_id, uint8_t stream_id) {
+    tunnel->set_reverse_handler([reverse_targets, reverse_sessions, tunnel](
+                                    uint8_t listen_id,
+                                    uint8_t stream_id,
+                                    std::string* reason) {
         auto it = reverse_targets->find(listen_id);
         if (it == reverse_targets->end()) {
-            tunnel->send_open_ack(stream_id, false, "unknown reverse listener");
-            return;
+            if (reason) {
+                *reason = "unknown reverse listener";
+            }
+            return false;
         }
         auto session = std::make_shared<ReverseForwardSession>(
             tunnel, stream_id, it->second.host, it->second.port);
-        (*reverse_sessions)[stream_id] = session;
-        session->start();
+        try {
+            (*reverse_sessions)[stream_id] = session;
+            if (!session->start()) {
+                reverse_sessions->erase(stream_id);
+                if (reason) {
+                    *reason = "reverse stream id registration failed";
+                }
+                return false;
+            }
+        } catch (...) {
+            reverse_sessions->erase(stream_id);
+            throw;
+        }
+        return true;
     });
 }
 
@@ -644,7 +648,8 @@ int run_exec_mode(const ParsedArgs& args,
     }
     auto done = std::make_shared<std::atomic<bool>>(false);
     tunnel->register_stream(stream_id,
-                            [stream_id](const Tunnel::Bytes& data) {
+                            [stream_id](const Tunnel::Bytes& data,
+                                        Tunnel::InboundCredit) {
                                 (void)stream_id;
                                 std::cout.write(reinterpret_cast<const char*>(data.data()), data.size());
                                 std::cout.flush();
@@ -802,9 +807,6 @@ int run_connected_session(boost::asio::io_context& io,
         stream,
         io,
         options.inner_key,
-        options.hop_enabled,
-        options.hop_interval_ms,
-        options.hop_offset_ms,
         options.h2_carrier.get(),
         &options.prefetched_carrier_bytes,
         options.ratchet.get());
@@ -833,9 +835,6 @@ int run_connected_session(boost::asio::io_context& io,
             }
         }
     } active_runtime_reset{&options.set_active_runtime};
-    if (options.set_active_runtime) {
-        options.set_active_runtime(&io, tunnel, nullptr, {});
-    }
     if (cfg.allow_embedded_master) {
         util::log_warn(
             "embedded master PQ keypair enabled; connection security depends on basefwx-bundled keys "
@@ -844,17 +843,14 @@ int run_connected_session(boost::asio::io_context& io,
     if (options.inner_key.has_value()) {
         tunnel->set_inner_key(*options.inner_key);
     }
-    tunnel->set_hop(options.hop_enabled, options.hop_interval_ms, options.hop_offset_ms);
     tunnel->set_obfs_shape(cfg.obfs_pad_multiple, cfg.obfs_jitter_ms);
     tunnel->set_server_in_charge(cfg.server_in_charge);
-    tunnel->set_allow_exec(cfg.allow_exec);
+    tunnel->set_allow_exec(false);
 
     std::string close_reason;
-    auto hop_status_stop = std::make_shared<std::atomic<bool>>(false);
     auto wait_state = std::make_shared<LongRunningWaitState>();
-    tunnel->set_close_handler([&close_reason, &io, hop_status_stop, wait_state](const std::string& reason) {
+    tunnel->set_close_handler([&close_reason, &io, wait_state](const std::string& reason) {
         close_reason = reason;
-        hop_status_stop->store(true);
         wait_state->signal();
         io.stop();
     });
@@ -885,17 +881,20 @@ int run_connected_session(boost::asio::io_context& io,
         options.have_inner_caps,
         options.server_inner_dual,
         options.server_inner_active,
-        options.hop_enabled,
         options.inner_kdf);
 
     auto tunnel_pool = std::make_shared<TunnelPool>(TunnelPool::Policy::LeastLoaded);
     tunnel_pool->add(tunnel);
     auto secondary_tunnels = open_secondary_socks_tunnels(
-        io, ctx, cfg, proxy_cfg, args, options.use_reverse, tunnel_pool);
+        io, ctx, cfg, proxy_cfg, args, options.use_reverse, tunnel_pool,
+        options.should_stop);
+    relay_runtime->set_tunnel_pool(
+        tunnel_pool, static_cast<std::size_t>(cfg.tunnel_count));
 
     auto disconnect_once = std::make_shared<std::atomic<bool>>(false);
+    const std::weak_ptr<RelayRuntime> weak_relay_runtime = relay_runtime;
     auto request_disconnect = [disconnect_once,
-                               relay_runtime,
+                               weak_relay_runtime,
                                tunnel_pool,
                                &io,
                                &stop_requested,
@@ -914,15 +913,19 @@ int run_connected_session(boost::asio::io_context& io,
         }
         wait_state->signal();
         std::string lifecycle_error;
-        relay_runtime->notify_disconnecting(lifecycle_message, &lifecycle_error);
+        if (auto runtime = weak_relay_runtime.lock()) {
+            runtime->notify_disconnecting(
+                lifecycle_message, &lifecycle_error);
+        }
         tunnel_pool->stop_all(reason);
         io.stop();
     };
 
     relay_runtime->set_stop_callback([request_disconnect]() {
-        std::thread([request_disconnect]() {
-            request_disconnect("runtime stop", "im disconnecting", true);
-        }).detach();
+        // RelayRuntime invokes this outside its mutex. Run synchronously so no
+        // detached worker can retain request_disconnect's references to this
+        // connected session after its stack has unwound.
+        request_disconnect("runtime stop", "im disconnecting", true);
     });
 
     std::string relay_error;
@@ -936,27 +939,59 @@ int run_connected_session(boost::asio::io_context& io,
         }
     }
 
-    tunnel->set_control_handler([relay_runtime](const nlohmann::json& json) {
-        relay_runtime->on_control_message(json);
+    tunnel->set_control_handler([weak_relay_runtime](const nlohmann::json& json) {
+        if (auto runtime = weak_relay_runtime.lock()) {
+            runtime->on_control_message(json);
+        }
     });
-    tunnel->set_inbound_open_handler([relay_runtime](uint8_t stream_id, const nlohmann::json& json) {
-        relay_runtime->on_inbound_open(stream_id, json);
+    tunnel->set_inbound_open_handler([weak_relay_runtime](
+                                         uint8_t stream_id,
+                                         const nlohmann::json& json,
+                                         std::string* reason) {
+        if (auto runtime = weak_relay_runtime.lock()) {
+            return runtime->on_inbound_open(stream_id, json, reason);
+        }
+        if (reason) {
+            *reason = "relay runtime unavailable";
+        }
+        return false;
     });
-    auto traffic_lifecycle_started = std::make_shared<std::atomic<bool>>(false);
-    tunnel->set_activity_handler([relay_runtime, protection_summary, traffic_lifecycle_started]() {
-        if (traffic_lifecycle_started->exchange(true)) {
+    auto traffic_lifecycle_task = std::make_shared<JoinableOneShotTask>();
+    const std::weak_ptr<JoinableOneShotTask> weak_traffic_lifecycle_task =
+        traffic_lifecycle_task;
+    tunnel->set_activity_handler([weak_relay_runtime,
+                                  protection_summary,
+                                  weak_traffic_lifecycle_task]() {
+        auto runtime = weak_relay_runtime.lock();
+        auto task = weak_traffic_lifecycle_task.lock();
+        if (!runtime || !task) {
             return;
         }
-        std::thread([relay_runtime, protection_summary]() {
-            std::string ignored_error;
-            relay_runtime->notify_traffic_flow(protection_summary, &ignored_error);
-        }).detach();
+        task->start(
+            [runtime = std::move(runtime), protection_summary]() {
+                std::string ignored_error;
+                runtime->notify_traffic_flow(
+                    protection_summary, &ignored_error);
+            });
     });
 
+    // Publishing the io_context only after every synchronous secondary setup
+    // operation has drained prevents SIGINT from calling io.stop() while those
+    // operations still own stack-capturing completion handlers. Do not publish
+    // a runtime after a stop that already won; the second check closes the
+    // narrow race between the first check and publication.
+    if (stop_is_requested(options.should_stop)) {
+        return 130;
+    }
     if (options.set_active_runtime) {
-        options.set_active_runtime(&io, tunnel, relay_runtime, [request_disconnect](const std::string& reason) {
-            request_disconnect(reason, "im disconnecting", true);
-        });
+        options.set_active_runtime(
+            &io, tunnel, relay_runtime,
+            [request_disconnect](const std::string& reason) {
+                request_disconnect(reason, "im disconnecting", true);
+            });
+    }
+    if (stop_is_requested(options.should_stop)) {
+        return 130;
     }
     tunnel->start();
     for (auto& secondary : secondary_tunnels) {
@@ -1060,15 +1095,10 @@ int run_connected_session(boost::asio::io_context& io,
         return relay_start_code;
     }
 
-    std::thread hop_status_thread;
     start_live_status_if_needed(
         options.live_status_enabled,
-        options.hop_enabled,
-        options.hop_interval_ms,
-        hop_status_stop,
-        options.status_block_builder,
-        &hop_status_thread);
-    HopStatusGuard hop_guard{hop_status_stop, &hop_status_thread};
+        options.status_block_builder);
+    StatusLineGuard status_guard;
 
     InteractiveConsoleSession console_guard;
     if (should_enable_interactive_console(cfg, args, options.use_reverse)) {

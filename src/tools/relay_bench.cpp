@@ -286,7 +286,10 @@ Endpoints make_endpoints(std::uint8_t sid) {
     ep.receiver->start();
     ep.receiver->register_stream(
         sid,
-        [raw](const Bytes& data) { raw->delivered += data.size(); },
+        [raw](const Bytes& data, yume::runtime::InboundCredit credit) {
+            raw->delivered += data.size();
+            credit.release_now();
+        },
         [](const std::string&) {});
     return ep;
 }

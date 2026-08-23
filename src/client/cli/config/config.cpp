@@ -6,16 +6,22 @@
 
 #include "client/cli/config/config.hpp"
 
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
+#include <limits>
 #include <stdexcept>
+#include <string_view>
 #include <system_error>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
 #include "config/ratchet_profile_json.hpp"
 #include "core/security/ratchet.hpp"
+#include "core/runtime/atomic_file.hpp"
 #include "client/cli/connect/cert.hpp"
 #include "client/cli/config/platform.hpp"
 #include "core/app_codec/builtin/monero_rpc.hpp"
@@ -30,6 +36,153 @@ namespace {
 bool path_exists_noexcept(const std::filesystem::path& path) noexcept {
     std::error_code ec;
     return std::filesystem::exists(path, ec);
+}
+
+std::string format_endpoint_spec(std::string_view host, int port) {
+    std::string endpoint;
+    if (host.find(':') != std::string_view::npos) {
+        endpoint = "[" + std::string(host) + "]";
+    } else {
+        endpoint = std::string(host);
+    }
+    endpoint += ":" + std::to_string(port);
+    return endpoint;
+}
+
+bool validate_client_config_json_types(const nlohmann::json& document,
+                                       std::string* error) {
+    if (error) error->clear();
+    if (!document.is_object()) {
+        if (error) *error = "client config root must be a JSON object";
+        return false;
+    }
+    const auto require_all = [&](std::initializer_list<const char*> keys,
+                                 const auto& predicate,
+                                 const char* expected) {
+        for (const char* key : keys) {
+            const auto it = document.find(key);
+            if (it != document.end() && !predicate(*it)) {
+                if (error) *error = std::string(key) + " must be " + expected;
+                return false;
+            }
+        }
+        return true;
+    };
+    const auto is_int = [](const nlohmann::json& value) {
+        if (value.is_number_unsigned()) {
+            return value.get<std::uint64_t>() <=
+                   static_cast<std::uint64_t>(
+                       std::numeric_limits<int>::max());
+        }
+        if (!value.is_number_integer()) return false;
+        const auto parsed = value.get<std::int64_t>();
+        return parsed >= std::numeric_limits<int>::min() &&
+               parsed <= std::numeric_limits<int>::max();
+    };
+    const auto is_u32 = [](const nlohmann::json& value) {
+        if (value.is_number_unsigned()) {
+            return value.get<std::uint64_t>() <=
+                   std::numeric_limits<std::uint32_t>::max();
+        }
+        if (!value.is_number_integer()) return false;
+        const auto parsed = value.get<std::int64_t>();
+        return parsed >= 0 &&
+               static_cast<std::uint64_t>(parsed) <=
+                   std::numeric_limits<std::uint32_t>::max();
+    };
+
+    if (!require_all(
+            {"server", "identity", "admin_identity", "socks_bind",
+             "packet_tun_name", "obfs_secret_file", "inner_psk_file",
+             "obfs_secret", "pq_public_key", "anonym_pubkey",
+             "anonym_pubkey_material_id", "anonym_ca_cert",
+             "anonym_ca_material_id", "auth_key_material_id",
+             "tls_ca_cert", "tls_ca_material_id", "tls_server_name",
+             "tls_pin", "tls_pin_sha256", "transport_profile",
+             "tls_backend", "tls_helper_path", "outbound_proxy",
+             "instance_name", "preferred_name", "preferred_id",
+             "relay_mode", "relay_trust_mode", "relay_trust_dir",
+             "history_dir", "relay_receive_dir", "relay_key_file",
+             "app_codec", "codec", "app_codec_listen",
+             "app_codec_listen_host", "tls_stealth_profile",
+             "tls_fingerprint_log_path", "tls_fingerprint_test_endpoint",
+             "security_mode"},
+            [](const nlohmann::json& value) { return value.is_string(); },
+            "a string")) {
+        return false;
+    }
+    if (!require_all(
+            {"obfuscation", "inner_crypto", "inner_heavy", "udp",
+             "allow_udp", "allow_local_ip", "server_in_charge",
+             "allow_exec", "allow_embedded_master", "require_anonym",
+             "accept_monitoring", "service_streams_only", "boring",
+             "non_interactive", "allow_inbound_admin",
+             "allow_outbound_admin", "allow_chat", "allow_file",
+             "allow_bytes", "history_enabled", "auto_attach_local",
+             "tls_stealth_enabled", "tls_fingerprint_log",
+             "tls_fingerprint_verify", "self_dpi"},
+            [](const nlohmann::json& value) { return value.is_boolean(); },
+            "a boolean")) {
+        return false;
+    }
+    if (!require_all(
+            {"port", "socks_port", "threads", "io_threads", "tunnels",
+             "server_in_charge_port", "app_codec_listen_port"},
+            is_int, "an integer representable as int")) {
+        return false;
+    }
+    if (!require_all({"obfs_jitter_ms"}, is_u32,
+                     "an integer in 0..4294967295")) {
+        return false;
+    }
+    const auto pad = document.find("obfs_pad_multiple");
+    if (pad != document.end() && (!is_u32(*pad) ||
+                                  (pad->is_number_unsigned()
+                                       ? pad->get<std::uint64_t>()
+                                       : static_cast<std::uint64_t>(
+                                             pad->get<std::int64_t>())) > 256)) {
+        if (error) *error = "obfs_pad_multiple must be an integer in 0..256";
+        return false;
+    }
+    const auto rekey = document.find("rekey_window");
+    if (rekey != document.end() && !is_int(*rekey)) {
+        if (error) *error = "rekey_window must be an integer";
+        return false;
+    }
+    const auto pins = document.find("relay_peer_pins");
+    if (pins != document.end()) {
+        if (!pins->is_object()) {
+            if (error) *error = "relay_peer_pins must be a JSON object";
+            return false;
+        }
+        for (auto it = pins->begin(); it != pins->end(); ++it) {
+            if (!it.value().is_string()) {
+                if (error) *error = "relay_peer_pins values must be strings";
+                return false;
+            }
+        }
+    }
+    const auto custom = document.find("security_custom");
+    if (custom != document.end() && !custom->is_object()) {
+        if (error) *error = "security_custom must be a JSON object";
+        return false;
+    }
+    try {
+        (void)yume::config::ParseSecurityProfile(document);
+    } catch (const std::exception& ex) {
+        if (error) *error = ex.what();
+        return false;
+    }
+    return true;
+}
+
+std::uint32_t json_non_negative_u32(const nlohmann::json& document,
+                                    const char* key) {
+    const auto& value = document.at(key);
+    if (value.is_number_unsigned()) {
+        return static_cast<std::uint32_t>(value.get<std::uint64_t>());
+    }
+    return static_cast<std::uint32_t>(value.get<std::int64_t>());
 }
 
 }  // namespace
@@ -52,13 +205,21 @@ void resolve_config_path(ParsedArgs* args, const std::string& exe_dir) {
     }
 }
 
-void load_client_config_file(const ParsedArgs& args,
+bool load_client_config_file(const ParsedArgs& args,
                              const std::string& exe_dir,
-                             ClientConfig* cfg) {
-    if (!cfg || (!args.config_specified && !path_exists_noexcept(args.config_path))) {
-        return;
+                             ClientConfig* out_cfg,
+                             std::string* error) {
+    if (error) error->clear();
+    if (!out_cfg) {
+        if (error) *error = "client config output is null";
+        return false;
+    }
+    if (!args.config_specified && !path_exists_noexcept(args.config_path)) {
+        return true;
     }
 
+    ClientConfig candidate = *out_cfg;
+    ClientConfig* const cfg = &candidate;
     try {
         std::error_code ec;
         std::string config_dir;
@@ -72,6 +233,15 @@ void load_client_config_file(const ParsedArgs& args,
             return util::resolve_path(value, config_dir, exe_dir);
         };
         auto json = util::read_json_config(args.config_path);
+        std::string validation_error;
+        if (!validate_client_config_json_types(json, &validation_error)) {
+            throw std::runtime_error(validation_error);
+        }
+        if (json.contains("tls_stealth_rotate") ||
+            json.contains("tls_stealth_rotation_interval")) {
+            throw std::runtime_error(
+                "TLS profile rotation keys were removed in YUME 2.0-dev6");
+        }
         if (json.contains("server") && cfg->server.empty()) {
             cfg->server = json["server"].get<std::string>();
         }
@@ -94,8 +264,11 @@ void load_client_config_file(const ParsedArgs& args,
         if (json.contains("packet_tun_name") && !args.packet_tun_override) {
             cfg->packet_tun_name = json["packet_tun_name"].get<std::string>();
         }
-        if (json.contains("threads") && cfg->io_threads == 0 && !args.io_threads_override) {
-            cfg->io_threads = json["threads"].get<int>();
+        const char* threads_key = json.contains("threads")
+            ? "threads"
+            : (json.contains("io_threads") ? "io_threads" : nullptr);
+        if (threads_key && cfg->io_threads == 0 && !args.io_threads_override) {
+            cfg->io_threads = json[threads_key].get<int>();
         }
         if (json.contains("tunnels") && !args.tunnel_count_override) {
             cfg->tunnel_count = json["tunnels"].get<int>();
@@ -115,27 +288,18 @@ void load_client_config_file(const ParsedArgs& args,
             cfg->obfs_secret = json["obfs_secret"].get<std::string>();
         }
         if (json.contains("obfs_pad_multiple") && !args.obfs_pad_multiple_override) {
-            int v = json["obfs_pad_multiple"].get<int>();
-            if (v < 0) v = 0;
-            if (v > 256) v = 256;
-            cfg->obfs_pad_multiple = static_cast<std::uint16_t>(v);
+            cfg->obfs_pad_multiple = static_cast<std::uint16_t>(
+                json_non_negative_u32(json, "obfs_pad_multiple"));
         }
         if (json.contains("obfs_jitter_ms") && !args.obfs_jitter_ms_override) {
-            int v = json["obfs_jitter_ms"].get<int>();
-            if (v < 0) v = 0;
-            cfg->obfs_jitter_ms = static_cast<std::uint32_t>(v);
+            cfg->obfs_jitter_ms =
+                json_non_negative_u32(json, "obfs_jitter_ms");
         }
         if (json.contains("inner_crypto") && !args.inner_crypto_override) {
             cfg->inner_crypto = json["inner_crypto"].get<bool>();
         }
         if (json.contains("inner_heavy")) {
             cfg->inner_heavy = json["inner_heavy"].get<bool>();
-        }
-        if (json.contains("inner_hop")) {
-            cfg->inner_hop = json["inner_hop"].get<bool>();
-        }
-        if (json.contains("hop_interval_ms")) {
-            cfg->hop_interval_ms = static_cast<std::uint32_t>(json["hop_interval_ms"].get<int>());
         }
         if (json.contains("rekey_window") && !args.rekey_window_override) {
             const int window = json["rekey_window"].get<int>();
@@ -147,8 +311,11 @@ void load_client_config_file(const ParsedArgs& args,
         }
         cfg->security_profile = yume::config::ParseSecurityProfile(
             json, cfg->security_profile);
-        if (json.contains("udp") && !args.udp_override) {
-            cfg->allow_udp = json["udp"].get<bool>();
+        const char* udp_key = json.contains("udp")
+            ? "udp"
+            : (json.contains("allow_udp") ? "allow_udp" : nullptr);
+        if (udp_key && !args.udp_override) {
+            cfg->allow_udp = json[udp_key].get<bool>();
         }
         if (json.contains("allow_local_ip") && !args.allow_local_ip_override) {
             cfg->allow_local_ip = json["allow_local_ip"].get<bool>();
@@ -173,17 +340,36 @@ void load_client_config_file(const ParsedArgs& args,
         if (json.contains("anonym_pubkey") && cfg->anonym_pubkey.empty()) {
             cfg->anonym_pubkey = resolve_cfg_path(json["anonym_pubkey"].get<std::string>());
         }
+        if (json.contains("anonym_pubkey_material_id")) {
+            cfg->anonym_pubkey_material_id =
+                json["anonym_pubkey_material_id"].get<std::string>();
+        }
         if (json.contains("anonym_ca_cert")) {
             cfg->anonym_ca_cert = resolve_cfg_path(json["anonym_ca_cert"].get<std::string>());
+        }
+        if (json.contains("anonym_ca_material_id")) {
+            cfg->anonym_ca_material_id =
+                json["anonym_ca_material_id"].get<std::string>();
+        }
+        if (json.contains("auth_key_material_id")) {
+            cfg->auth_key_material_id =
+                json["auth_key_material_id"].get<std::string>();
         }
         if (json.contains("tls_ca_cert") && cfg->tls_ca_cert.empty()) {
             cfg->tls_ca_cert = resolve_cfg_path(json["tls_ca_cert"].get<std::string>());
         }
+        if (json.contains("tls_ca_material_id")) {
+            cfg->tls_ca_material_id =
+                json["tls_ca_material_id"].get<std::string>();
+        }
         if (json.contains("tls_server_name") && cfg->tls_server_name.empty()) {
             cfg->tls_server_name = json["tls_server_name"].get<std::string>();
         }
-        if (json.contains("tls_pin") && cfg->tls_pin_sha256.empty()) {
-            cfg->tls_pin_sha256 = json["tls_pin"].get<std::string>();
+        const char* tls_pin_key = json.contains("tls_pin")
+            ? "tls_pin"
+            : (json.contains("tls_pin_sha256") ? "tls_pin_sha256" : nullptr);
+        if (tls_pin_key && cfg->tls_pin_sha256.empty()) {
+            cfg->tls_pin_sha256 = json[tls_pin_key].get<std::string>();
         }
         if (json.contains("transport_profile")) {
             cfg->transport_profile = json["transport_profile"].get<std::string>();
@@ -225,6 +411,31 @@ void load_client_config_file(const ParsedArgs& args,
         if (json.contains("relay_mode")) {
             cfg->relay_mode = json["relay_mode"].get<std::string>();
         }
+        if (json.contains("relay_trust_mode") &&
+            !args.relay_trust_mode_override) {
+            cfg->relay_trust_mode =
+                json["relay_trust_mode"].get<std::string>();
+        }
+        if (json.contains("relay_trust_dir") &&
+            !args.relay_trust_dir_override) {
+            cfg->relay_trust_dir = resolve_cfg_path(
+                json["relay_trust_dir"].get<std::string>());
+        }
+        if (json.contains("relay_peer_pins")) {
+            const auto& pins = json["relay_peer_pins"];
+            if (!pins.is_object()) {
+                throw std::runtime_error(
+                    "relay_peer_pins must be a JSON object");
+            }
+            for (auto it = pins.begin(); it != pins.end(); ++it) {
+                if (!it.value().is_string()) {
+                    throw std::runtime_error(
+                        "relay_peer_pins values must be strings");
+                }
+                cfg->relay_peer_pins[it.key()] =
+                    it.value().get<std::string>();
+            }
+        }
         if (json.contains("allow_inbound_admin") && !args.allow_inbound_admin_override) {
             cfg->allow_inbound_admin = json["allow_inbound_admin"].get<bool>();
         }
@@ -245,6 +456,11 @@ void load_client_config_file(const ParsedArgs& args,
         }
         if (json.contains("history_dir") && cfg->history_dir.empty()) {
             cfg->history_dir = resolve_cfg_path(json["history_dir"].get<std::string>());
+        }
+        if (json.contains("relay_receive_dir") &&
+            cfg->relay_receive_dir.empty()) {
+            cfg->relay_receive_dir = resolve_cfg_path(
+                json["relay_receive_dir"].get<std::string>());
         }
         if (json.contains("relay_key_file") && cfg->relay_key_file.empty()) {
             cfg->relay_key_file = resolve_cfg_path(json["relay_key_file"].get<std::string>());
@@ -277,12 +493,42 @@ void load_client_config_file(const ParsedArgs& args,
         if (json.contains("app_codec_listen_port") && !args.app_codec_listen_override) {
             cfg->app_codec_listen_port = json["app_codec_listen_port"].get<int>();
         }
+        if (json.contains("tls_stealth_enabled") && !args.tls_stealth_override) {
+            cfg->tls_stealth_enabled = json["tls_stealth_enabled"].get<bool>();
+        }
+        if (json.contains("tls_stealth_profile") &&
+            !args.tls_stealth_profile_override) {
+            cfg->tls_stealth_profile =
+                json["tls_stealth_profile"].get<std::string>();
+        }
+        if (json.contains("tls_fingerprint_log") &&
+            !args.tls_fingerprint_log_override) {
+            cfg->tls_fingerprint_log = json["tls_fingerprint_log"].get<bool>();
+        }
+        if (json.contains("tls_fingerprint_log_path") &&
+            !args.tls_fingerprint_log_path_override) {
+            cfg->tls_fingerprint_log_path = resolve_cfg_path(
+                json["tls_fingerprint_log_path"].get<std::string>());
+        }
+        if (json.contains("tls_fingerprint_verify") &&
+            !args.tls_fingerprint_verify_override) {
+            cfg->tls_fingerprint_verify =
+                json["tls_fingerprint_verify"].get<bool>();
+        }
+        if (json.contains("tls_fingerprint_test_endpoint") &&
+            !args.tls_fingerprint_test_endpoint_override) {
+            cfg->tls_fingerprint_test_endpoint =
+                json["tls_fingerprint_test_endpoint"].get<std::string>();
+        }
         if (json.contains("self_dpi") && !args.self_dpi_override) {
             cfg->self_dpi = json["self_dpi"].get<bool>();
         }
     } catch (const std::exception& ex) {
-        util::log_warn(std::string("config load failed: ") + ex.what());
+        if (error) *error = std::string("config load failed: ") + ex.what();
+        return false;
     }
+    *out_cfg = std::move(candidate);
+    return true;
 }
 
 void apply_cli_config_overrides(const ParsedArgs& args,
@@ -324,7 +570,7 @@ void apply_cli_config_overrides(const ParsedArgs& args,
         cfg->tunnel_count = 1;
     }
     if (cfg->tunnel_count > 16) {
-        // Per-tunnel TLS state, auth handshake, and key-hopping timer
+        // Per-tunnel TLS state and authentication handshake
         // aren't free; 16 is the empirical sweet spot above which the
         // server-side rate limiter (default 100 accepts/s) starts to
         // drop handshakes anyway. Clamp loudly rather than crash much
@@ -353,12 +599,6 @@ void apply_cli_config_overrides(const ParsedArgs& args,
     }
     if (args.inner_crypto) {
         cfg->inner_heavy = args.inner_heavy;
-    }
-    if (args.inner_hop_override) {
-        cfg->inner_hop = args.inner_hop;
-    }
-    if (args.hop_interval_override) {
-        cfg->hop_interval_ms = args.hop_interval_ms;
     }
     if (args.rekey_window_override) {
         cfg->rekey_window = ratchet::ClampRekeyWindow(
@@ -406,8 +646,19 @@ void apply_cli_config_overrides(const ParsedArgs& args,
     if (!args.preferred_id.empty()) {
         cfg->preferred_id = args.preferred_id;
     }
-    if (!args.relay_mode.empty()) {
+    if (args.relay_mode_override) {
         cfg->relay_mode = args.relay_mode;
+    }
+    if (args.relay_trust_mode_override) {
+        cfg->relay_trust_mode = args.relay_trust_mode;
+    }
+    if (args.relay_trust_dir_override) {
+        cfg->relay_trust_dir = resolve_cli_path(args.relay_trust_dir);
+    }
+    for (const auto& pin : args.relay_peer_pins) {
+        const auto separator = pin.find('=');
+        cfg->relay_peer_pins[pin.substr(0, separator)] =
+            pin.substr(separator + 1);
     }
     if (args.accept_monitoring) {
         cfg->accept_monitoring = true;
@@ -432,6 +683,9 @@ void apply_cli_config_overrides(const ParsedArgs& args,
     }
     if (!args.history_dir.empty()) {
         cfg->history_dir = resolve_cli_path(args.history_dir);
+    }
+    if (!args.relay_receive_dir.empty()) {
+        cfg->relay_receive_dir = resolve_cli_path(args.relay_receive_dir);
     }
     if (!args.relay_key_file.empty()) {
         cfg->relay_key_file = resolve_cli_path(args.relay_key_file);
@@ -471,7 +725,7 @@ void apply_cli_config_overrides(const ParsedArgs& args,
     if (args.tls_stealth_override) {
         cfg->tls_stealth_enabled = args.tls_stealth;
     }
-    if (!args.tls_stealth_profile.empty()) {
+    if (args.tls_stealth_profile_override) {
         cfg->tls_stealth_profile = args.tls_stealth_profile;
     }
     if (!args.transport_profile.empty()) {
@@ -483,16 +737,16 @@ void apply_cli_config_overrides(const ParsedArgs& args,
     if (!args.tls_helper_path.empty()) {
         cfg->tls_helper_path = args.tls_helper_path;
     }
-    if (args.tls_fingerprint_log) {
-        cfg->tls_fingerprint_log = true;
+    if (args.tls_fingerprint_log_override) {
+        cfg->tls_fingerprint_log = args.tls_fingerprint_log;
     }
-    if (!args.tls_fingerprint_log_path.empty()) {
+    if (args.tls_fingerprint_log_path_override) {
         cfg->tls_fingerprint_log_path = args.tls_fingerprint_log_path;
     }
-    if (args.tls_fingerprint_verify) {
-        cfg->tls_fingerprint_verify = true;
+    if (args.tls_fingerprint_verify_override) {
+        cfg->tls_fingerprint_verify = args.tls_fingerprint_verify;
     }
-    if (!args.tls_fingerprint_test_endpoint.empty()) {
+    if (args.tls_fingerprint_test_endpoint_override) {
         cfg->tls_fingerprint_test_endpoint = args.tls_fingerprint_test_endpoint;
     }
     if (args.self_dpi_override) {
@@ -509,12 +763,6 @@ void normalize_client_config_after_overrides(ParsedArgs* args, ClientConfig* cfg
         cfg->tls_ca_cert = cfg->anonym_ca_cert;
     }
 #endif
-    if (cfg->inner_hop && !cfg->inner_crypto) {
-        cfg->inner_crypto = true;
-    }
-    if (!cfg->inner_crypto) {
-        cfg->inner_hop = false;
-    }
     if (args->bench) {
         if (!args->bench_chunk_kib_override) {
             args->bench_chunk_kib = static_cast<int>(
@@ -558,13 +806,6 @@ void normalize_client_config_after_overrides(ParsedArgs* args, ClientConfig* cfg
             cfg->server_in_charge_port = 0;
         }
     }
-    if (cfg->hop_interval_ms > 0) {
-        if (cfg->hop_interval_ms < 250) {
-            cfg->hop_interval_ms = 250;
-        } else if (cfg->hop_interval_ms > 1000) {
-            cfg->hop_interval_ms = 1000;
-        }
-    }
     if (cfg->history_dir.empty()) {
         const char* xdg = std::getenv("XDG_CONFIG_HOME");
         const char* home = std::getenv("HOME");
@@ -572,6 +813,18 @@ void normalize_client_config_after_overrides(ParsedArgs* args, ClientConfig* cfg
             ? std::filesystem::path(xdg)
             : ((home && *home) ? std::filesystem::path(home) : std::filesystem::path("."));
         cfg->history_dir = ((home && *home) ? (base / ".yume" / "history") : (base / "history")).string();
+    }
+    if (cfg->relay_receive_dir.empty()) {
+        const std::filesystem::path history_path(cfg->history_dir);
+        const auto parent = history_path.has_parent_path()
+            ? history_path.parent_path() : std::filesystem::path(".");
+        cfg->relay_receive_dir = (parent / "received").string();
+    }
+    if (cfg->relay_trust_dir.empty()) {
+        const std::filesystem::path history_path(cfg->history_dir);
+        const auto parent = history_path.has_parent_path()
+            ? history_path.parent_path() : std::filesystem::path(".");
+        cfg->relay_trust_dir = (parent / "relay-trust").string();
     }
     if (cfg->relay_mode != "trusted") {
         cfg->relay_mode = "untrusted";
@@ -613,21 +866,85 @@ void discover_default_pq_public_key(const char* argv0, ClientConfig* cfg) {
     }
 }
 
-void save_client_config_file(const ParsedArgs& args, const ClientConfig& cfg) {
+bool save_client_config_file(const ParsedArgs& args,
+                             const ClientConfig& cfg,
+                             std::string* error) {
+    if (error) error->clear();
     if (!args.save_server || cfg.server.empty()) {
-        return;
+        return true;
     }
-    nlohmann::json json;
-    std::ifstream in(args.config_path);
-    if (in) {
+    nlohmann::json json = nlohmann::json::object();
+    const std::filesystem::path config_path(args.config_path);
+    std::error_code exists_error;
+    const bool config_exists = std::filesystem::exists(config_path, exists_error);
+    if (exists_error) {
+        if (error) {
+            *error = "cannot inspect existing client config '" +
+                     config_path.string() + "': " + exists_error.message();
+        }
+        return false;
+    }
+    if (config_exists) {
+        std::ifstream in(config_path);
+        if (!in) {
+            if (error) {
+                *error = "cannot read existing client config '" +
+                         config_path.string() + "'";
+            }
+            return false;
+        }
         try {
             in >> json;
-        } catch (...) {
-            json = nlohmann::json::object();
+        } catch (const std::exception& ex) {
+            if (error) {
+                *error = "cannot parse existing client config '" +
+                         config_path.string() + "': " + ex.what();
+            }
+            return false;
         }
-    } else {
-        json = nlohmann::json::object();
+        if (in.bad()) {
+            if (error) {
+                *error = "cannot finish reading existing client config '" +
+                         config_path.string() + "'";
+            }
+            return false;
+        }
+        if (!json.is_object()) {
+            if (error) {
+                *error = "existing client config root must be a JSON object: '" +
+                         config_path.string() + "'";
+            }
+            return false;
+        }
+        if (json.contains("tls_stealth_rotate") ||
+            json.contains("tls_stealth_rotation_interval")) {
+            if (error) {
+                *error = "existing client config is not usable: TLS profile "
+                         "rotation keys were removed in YUME 2.0-dev6";
+            }
+            return false;
+        }
+        std::string validation_error;
+        if (!validate_client_config_json_types(json, &validation_error)) {
+            if (error) {
+                *error = "existing client config is not usable: " +
+                         validation_error;
+            }
+            return false;
+        }
     }
+    // Normalize files written by older facade/CLI versions. Canonical keys
+    // below win on read; removing aliases also prevents inline 1.x secrets or
+    // retired ratchet/profile controls from surviving a save operation.
+    json.erase("io_threads");
+    json.erase("allow_udp");
+    json.erase("tls_pin_sha256");
+    json.erase("codec");
+    json.erase("obfs_secret");
+    json.erase("inner_hop");
+    json.erase("hop_interval_ms");
+    json.erase("tls_stealth_rotate");
+    json.erase("tls_stealth_rotation_interval");
     json["server"] = cfg.server;
     if (cfg.port > 0) json["port"] = cfg.port;
     if (!cfg.identity.empty()) json["identity"] = cfg.identity;
@@ -644,8 +961,6 @@ void save_client_config_file(const ParsedArgs& args, const ClientConfig& cfg) {
     if (cfg.obfs_jitter_ms > 0) json["obfs_jitter_ms"] = cfg.obfs_jitter_ms;
     json["inner_crypto"] = cfg.inner_crypto;
     json["inner_heavy"] = cfg.inner_heavy;
-    json["inner_hop"] = cfg.inner_hop;
-    json["hop_interval_ms"] = cfg.hop_interval_ms;
     json["rekey_window"] = cfg.rekey_window;
     yume::config::WriteSecurityProfile(json, cfg.security_profile);
     json["udp"] = cfg.allow_udp;
@@ -655,13 +970,31 @@ void save_client_config_file(const ParsedArgs& args, const ClientConfig& cfg) {
     json["allow_exec"] = cfg.allow_exec;
     if (!cfg.pq_public_key.empty()) json["pq_public_key"] = cfg.pq_public_key;
     json["allow_embedded_master"] = cfg.allow_embedded_master;
+    if (!cfg.anonym_pubkey.empty()) json["anonym_pubkey"] = cfg.anonym_pubkey;
+    if (!cfg.anonym_pubkey_material_id.empty()) {
+        json["anonym_pubkey_material_id"] = cfg.anonym_pubkey_material_id;
+    }
     if (!cfg.anonym_ca_cert.empty()) json["anonym_ca_cert"] = cfg.anonym_ca_cert;
+    if (!cfg.anonym_ca_material_id.empty()) {
+        json["anonym_ca_material_id"] = cfg.anonym_ca_material_id;
+    }
+    if (!cfg.auth_key_material_id.empty()) {
+        json["auth_key_material_id"] = cfg.auth_key_material_id;
+    }
     if (!cfg.tls_ca_cert.empty()) json["tls_ca_cert"] = cfg.tls_ca_cert;
+    if (!cfg.tls_ca_material_id.empty()) {
+        json["tls_ca_material_id"] = cfg.tls_ca_material_id;
+    }
     if (!cfg.tls_server_name.empty()) json["tls_server_name"] = cfg.tls_server_name;
     if (!cfg.tls_pin_sha256.empty()) json["tls_pin"] = cfg.tls_pin_sha256;
     json["transport_profile"] = cfg.transport_profile;
     json["tls_backend"] = cfg.tls_backend;
     if (!cfg.tls_helper_path.empty()) json["tls_helper_path"] = cfg.tls_helper_path;
+    if (!cfg.outbound_proxy_url.empty()) {
+        json["outbound_proxy"] = cfg.outbound_proxy_url;
+    } else {
+        json.erase("outbound_proxy");
+    }
     json["require_anonym"] = cfg.require_anonym;
     json["accept_monitoring"] = cfg.accept_monitoring;
     json["service_streams_only"] = cfg.service_streams_only;
@@ -671,6 +1004,11 @@ void save_client_config_file(const ParsedArgs& args, const ClientConfig& cfg) {
     json["preferred_name"] = cfg.preferred_name;
     json["preferred_id"] = cfg.preferred_id;
     json["relay_mode"] = cfg.relay_mode;
+    json["relay_trust_mode"] = cfg.relay_trust_mode;
+    if (!cfg.relay_trust_dir.empty()) {
+        json["relay_trust_dir"] = cfg.relay_trust_dir;
+    }
+    json["relay_peer_pins"] = cfg.relay_peer_pins;
     json["allow_inbound_admin"] = cfg.allow_inbound_admin;
     json["allow_outbound_admin"] = cfg.allow_outbound_admin;
     json["allow_chat"] = cfg.allow_chat;
@@ -678,18 +1016,43 @@ void save_client_config_file(const ParsedArgs& args, const ClientConfig& cfg) {
     json["allow_bytes"] = cfg.allow_bytes;
     json["history_enabled"] = cfg.history_enabled;
     if (!cfg.history_dir.empty()) json["history_dir"] = cfg.history_dir;
+    if (!cfg.relay_receive_dir.empty()) {
+        json["relay_receive_dir"] = cfg.relay_receive_dir;
+    }
     if (!cfg.relay_key_file.empty()) json["relay_key_file"] = cfg.relay_key_file;
     json["auto_attach_local"] = cfg.auto_attach_local;
     if (!cfg.app_codec.empty()) {
         json["app_codec"] = cfg.app_codec;
-        json["app_codec_listen"] = cfg.app_codec_listen_host + ":" +
-                                   std::to_string(cfg.app_codec_listen_port);
+        json["app_codec_listen"] = format_endpoint_spec(
+            cfg.app_codec_listen_host, cfg.app_codec_listen_port);
+    } else {
+        json.erase("app_codec");
+        json.erase("app_codec_listen");
     }
+    json["tls_stealth_enabled"] = cfg.tls_stealth_enabled;
+    json["tls_stealth_profile"] = cfg.tls_stealth_profile;
+    json["tls_fingerprint_log"] = cfg.tls_fingerprint_log;
+    if (!cfg.tls_fingerprint_log_path.empty()) {
+        json["tls_fingerprint_log_path"] = cfg.tls_fingerprint_log_path;
+    } else {
+        json.erase("tls_fingerprint_log_path");
+    }
+    json["tls_fingerprint_verify"] = cfg.tls_fingerprint_verify;
+    json["tls_fingerprint_test_endpoint"] =
+        cfg.tls_fingerprint_test_endpoint;
     json["self_dpi"] = cfg.self_dpi;
-    std::ofstream out(args.config_path);
-    if (out) {
-        out << json.dump(2);
+    std::string serialized;
+    try {
+        serialized = json.dump(2);
+    } catch (const std::exception& ex) {
+        if (error) {
+            *error = "cannot serialize client config: " +
+                     std::string(ex.what());
+        }
+        return false;
     }
+    return yume::runtime::AtomicWriteFile(
+        config_path, serialized, error);
 }
 
 }  // namespace yume::client

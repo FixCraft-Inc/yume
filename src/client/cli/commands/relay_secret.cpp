@@ -27,6 +27,7 @@ bool prompt_relay_password(const std::string& purpose,
         ? "Relay password: "
         : "Relay password for " + purpose + ": ";
     std::string first;
+    RelaySecretWiper first_wiper(first);
     if (!prompt_hidden_input(prompt, &first, error)) {
         return false;
     }
@@ -43,6 +44,7 @@ bool prompt_relay_password(const std::string& purpose,
         return true;
     }
     std::string second;
+    RelaySecretWiper second_wiper(second);
     if (!prompt_hidden_input("Confirm relay password: ", &second, error)) {
         return false;
     }
@@ -71,6 +73,9 @@ bool resolve_relay_secret(const ClientConfig& cfg,
         }
         return false;
     }
+    // The API never leaves a prior secret in the caller's output on failure,
+    // and assignment cannot release an old allocation before it is cleared.
+    wipe_relay_secret(*relay_secret_b64);
 
     const std::string relay_key_file = cfg.relay_key_file.empty()
         ? std::string()
@@ -120,6 +125,7 @@ bool resolve_relay_secret(const ClientConfig& cfg,
     }
 
     std::string password;
+    RelaySecretWiper password_wiper(password);
     if (!prompt_relay_password(purpose, has_key_file && !key_file_exists, &password, error)) {
         return false;
     }

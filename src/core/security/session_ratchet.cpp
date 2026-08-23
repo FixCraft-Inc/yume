@@ -6,6 +6,8 @@
 
 #include "core/security/session_ratchet.hpp"
 
+#include <algorithm>
+#include <cstdint>
 #include <deque>
 #include <limits>
 #include <mutex>
@@ -23,7 +25,16 @@
 namespace yume::ratchet {
 namespace {
 
-constexpr auto kRekeyTimeout = std::chrono::seconds(5);
+// RFC 6298 estimator gains, expressed as shifts so the update is exact integer
+// arithmetic with no rounding drift: SRTT += (R - SRTT) / 8,
+// RTTVAR += (|SRTT - R| - RTTVAR) / 4, deadline base = SRTT + 4 * RTTVAR.
+// A 1/8 gain is roughly an eight-sample time constant, which is the hysteresis
+// the design calls for: a single jitter spike moves the deadline by an eighth
+// of its excess, and a burst has to persist to move it far.
+constexpr std::int64_t kRttGainDivisor = 8;
+constexpr std::int64_t kRttVarGainDivisor = 4;
+constexpr std::int64_t kRttVarWeight = 4;
+
 constexpr std::size_t kEnvelopePrefix = 16;
 constexpr std::size_t kGcmTagBytes = 16;
 
@@ -46,11 +57,27 @@ std::uint64_t ReadU64(const Bytes& input, std::size_t offset) {
     return value;
 }
 
+#if YUME_USE_BASEFWX
+const Bytes& SecretBytes(const basefwx::crypto::SecureBytes& bytes) noexcept {
+    return bytes.bytes();
+}
+#else
+const Bytes& SecretBytes(const Bytes& bytes) noexcept {
+    return bytes;
+}
+#endif
+
 }  // namespace
 
 class SessionRatchet::Impl {
 public:
+#if YUME_USE_BASEFWX
+    Impl(EndpointRole role,
+         basefwx::crypto::SecureBytes initial_root,
+         basefwx::crypto::SecureBytes psk_key,
+#else
     Impl(EndpointRole role, Bytes initial_root, Bytes psk_key,
+#endif
          std::uint16_t outbound_window, std::uint16_t inbound_window,
          RatchetPolicy outbound_policy, RatchetPolicy inbound_policy)
         : role_(role),
@@ -58,19 +85,18 @@ public:
           inbound_window_(ClampRekeyWindow(inbound_window)),
           outbound_(role == EndpointRole::Client ? Direction::ClientToServer
                                                  : Direction::ServerToClient,
-                    DeriveDirectionRoot(initial_root,
+                    DeriveDirectionRoot(SecretBytes(initial_root),
                         role == EndpointRole::Client ? Direction::ClientToServer
                                                      : Direction::ServerToClient),
                     outbound_policy),
           inbound_(role == EndpointRole::Client ? Direction::ServerToClient
                                                 : Direction::ClientToServer,
-                   DeriveDirectionRoot(initial_root,
+                   DeriveDirectionRoot(SecretBytes(initial_root),
                        role == EndpointRole::Client ? Direction::ServerToClient
                                                     : Direction::ClientToServer),
                    inbound_policy),
 #if YUME_USE_BASEFWX
           psk_key_(std::move(psk_key)) {
-        basefwx::crypto::SecureClear(initial_root);
 #else
           psk_key_(std::move(psk_key)) {
         (void)initial_root;
@@ -85,6 +111,16 @@ public:
         std::lock_guard<std::mutex> lock(mu_);
         if (!IsApplicationFrame(plaintext.header.type)) return false;
         if (OutboundDepthLocked() >= outbound_window_) return false;
+        // TODO(yume/offer-pacing): adaptive preparation remains a classifier-
+        // gated research item, not a known throughput fix. The old attribution
+        // to this rule came from a probe that omitted sealed application frames
+        // and desynchronised the peer's record sequence. The corrected probe
+        // reaches the negotiated preparation window, and live-path sweeps now
+        // show H2/ratchet credit -- not mark pacing -- setting the WAN knee.
+        // Do not implement the rejected offer-pacing design. If a future
+        // capture campaign motivates adaptation, first measure live prepared
+        // depth and preserve the negotiated root-retention bound. Any pacing
+        // change is timing-visible and remains behind the classifier gate.
         // Pace preparation against real application progress. Without this an
         // exhausted epoch would re-offer on every selector pass and emit the
         // whole window as one classifier-visible burst of rekey records. The
@@ -126,6 +162,16 @@ public:
             basefwx::pq::KemAlgorithm::MlKem1024);
         pending->x25519 = basefwx::x25519::GenerateKeyPair();
         pending->started = now;
+        pending->deadline = now + RekeyAllowanceLocked();
+        // Keep the queue's deadlines non-decreasing. ACKs are answered in offer
+        // order, so a later offer is waiting on the earlier ones and must never
+        // expire before them; without this a shrinking estimator could make the
+        // queue front jump to an already-past deadline the moment the exchange
+        // ahead of it completes.
+        if (!pending_outbound_.empty() &&
+            pending->deadline < pending_outbound_.back()->deadline) {
+            pending->deadline = pending_outbound_.back()->deadline;
+        }
         protocol::Frame init{{0, protocol::REKEY_INIT, 0, 0},
             auth_v2::BuildRekeyInit(pending->next_epoch,
                                     pending->mlkem.public_key,
@@ -210,7 +256,7 @@ public:
         if (opened.header.type == protocol::REKEY_INIT) {
             result.control_response = HandleRekeyInitLocked(opened, now);
         } else if (opened.header.type == protocol::REKEY_ACK) {
-            HandleRekeyAckLocked(opened);
+            HandleRekeyAckLocked(opened, now);
             result.outbound_rekey_completed = true;
         } else {
             result.application_frame = std::move(opened);
@@ -226,8 +272,20 @@ public:
     std::optional<std::chrono::steady_clock::time_point> rekey_deadline() const {
         std::lock_guard<std::mutex> lock(mu_);
         if (pending_outbound_.empty()) return std::nullopt;
-        // ACKs are answered in order, so the oldest exchange bounds them all.
-        return pending_outbound_.front()->started + kRekeyTimeout;
+        // ACKs are answered in order and the queue's deadlines are
+        // non-decreasing, so the oldest exchange bounds them all. The whole
+        // queue is still bounded: the front expires at most
+        // `kMaxRekeyAckDeadline` after the oldest unanswered offer was sent.
+        return pending_outbound_.front()->deadline;
+    }
+
+    RekeyRttEstimate rekey_rtt_estimate() const {
+        std::lock_guard<std::mutex> lock(mu_);
+        using Ms = std::chrono::milliseconds;
+        return {rtt_samples_,
+                std::chrono::duration_cast<Ms>(srtt_),
+                std::chrono::duration_cast<Ms>(rttvar_),
+                std::chrono::duration_cast<Ms>(RekeyAllowanceLocked())};
     }
 
     std::size_t outbound_rekeys_in_flight() const {
@@ -272,6 +330,11 @@ private:
         basefwx::pq::KemKeyPair mlkem;
         basefwx::x25519::KeyPair x25519;
         std::chrono::steady_clock::time_point started{};
+        // Frozen when the offer is created, never recomputed. A later estimator
+        // update must not be able to retroactively shorten a deadline that has
+        // already been granted, and the transport arms a one-shot timer at this
+        // instant, so a moving target would fire early and never re-arm.
+        std::chrono::steady_clock::time_point deadline{};
     };
 #else
     struct PendingOutbound {};
@@ -287,6 +350,53 @@ private:
     // share one mark, which paces preparation without consulting a clock.
     std::pair<std::uint64_t, std::uint64_t> OutboundMarkLocked() const noexcept {
         return {outbound_.epoch(), outbound_.epoch_messages()};
+    }
+
+    // Deadline the next offer receives. Monotone in the estimator and clamped
+    // into the reviewed range, so it is never shorter than the previous fixed
+    // deadline and never longer than the cap.
+    std::chrono::steady_clock::duration RekeyAllowanceLocked() const noexcept {
+        if (rtt_samples_ == 0) {
+            // No authenticated sample yet: the first exchange of a session
+            // always uses the conservative static fallback.
+            return kMinRekeyAckDeadline;
+        }
+        using D = std::chrono::steady_clock::duration;
+        const std::chrono::nanoseconds base = srtt_ + kRttVarWeight * rttvar_;
+        if (base <= kMinRekeyAckDeadline) return std::chrono::duration_cast<D>(
+            kMinRekeyAckDeadline);
+        if (base >= kMaxRekeyAckDeadline) return std::chrono::duration_cast<D>(
+            kMaxRekeyAckDeadline);
+        return std::chrono::duration_cast<D>(base);
+    }
+
+    // Folds one authenticated ACK round trip into the estimator. The caller must
+    // already have verified the ACK: it is decrypted and AEAD-authenticated by
+    // the inbound chain and matched strictly against the oldest outstanding
+    // offer's epoch before this runs. An off-path attacker therefore cannot
+    // inject a sample, and an on-path attacker can only delay a genuine ACK,
+    // which enlarges a liveness allowance and no security limit.
+    void ObserveAckRttLocked(std::chrono::steady_clock::duration sample) {
+        // A caller-supplied `now` earlier than the send instant is not a usable
+        // measurement; drop it rather than corrupt the estimator with it.
+        if (sample < std::chrono::steady_clock::duration::zero()) return;
+        // Clamp before folding so one pathological exchange cannot pin the
+        // estimator near the cap for the rest of the session.
+        auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::min<std::chrono::steady_clock::duration>(
+                sample, kMaxRekeyAckDeadline));
+        if (rtt_samples_ == 0) {
+            srtt_ = ns;
+            rttvar_ = ns / 2;
+        } else {
+            const std::chrono::nanoseconds deviation =
+                srtt_ > ns ? srtt_ - ns : ns - srtt_;
+            // Integer division truncates toward zero, so `rttvar_` decays to
+            // zero without ever crossing it.
+            rttvar_ += (deviation - rttvar_) / kRttVarGainDivisor;
+            srtt_ += (ns - srtt_) / kRttGainDivisor;
+        }
+        ++rtt_samples_;
     }
 
     void CommitNextOutboundLocked() {
@@ -350,13 +460,13 @@ private:
             ? inbound_ : *prepared_inbound_.back();
         basefwx::pq::KemResult kem = basefwx::pq::KemEncrypt(
             basefwx::pq::KemAlgorithm::MlKem1024, init.mlkem_public_key);
+        basefwx::crypto::SecureBytes kem_shared{std::move(kem.shared)};
         basefwx::x25519::KeyPair x25519 = basefwx::x25519::GenerateKeyPair();
         basefwx::crypto::SecureBytes x_shared{
             basefwx::x25519::DeriveSharedSecret(x25519.private_key,
                                                 init.x25519_public_key)};
         prepared_inbound_.push_back(
-            base.MakeAdvanced(kem.shared, x_shared.bytes(), Psk()));
-        basefwx::crypto::SecureClear(kem.shared);
+            base.MakeAdvanced(kem_shared.bytes(), x_shared.bytes(), Psk()));
         (void)now;
         // Returned unsealed on purpose; see OpenResult::control_response.
         return protocol::Frame{{0, protocol::REKEY_ACK, 0, 0},
@@ -368,7 +478,8 @@ private:
 #endif
     }
 
-    void HandleRekeyAckLocked(const protocol::Frame& frame) {
+    void HandleRekeyAckLocked(const protocol::Frame& frame,
+                              std::chrono::steady_clock::time_point now) {
         if (pending_outbound_.empty()) {
             throw std::runtime_error("YUME 2.0 unsolicited rekey ACK");
         }
@@ -394,10 +505,17 @@ private:
             ? outbound_ : *prepared_outbound_.back();
         prepared_outbound_.push_back(
             base.MakeAdvanced(kem_shared.bytes(), x_shared.bytes(), Psk()));
+        // Sampled only here, once every acceptance check above has passed. The
+        // interval measured is offer-send to ACK-accept, which includes this
+        // offer's wait behind ordered carrier traffic and is therefore an upper
+        // bound on network RTT, never an underestimate. That is the conservative
+        // direction: it is exactly the delay the deadline has to tolerate.
+        ObserveAckRttLocked(now - oldest.started);
         // Retires this exchange's ephemeral ML-KEM and X25519 private keys:
         // both key pair types wipe on destruction.
         pending_outbound_.pop_front();
 #else
+        (void)now;
         (void)ack;
         throw std::runtime_error("YUME 2.0 rekey requires BaseFWX");
 #endif
@@ -418,6 +536,12 @@ private:
     std::pair<std::uint64_t, std::uint64_t> last_init_mark_{
         std::numeric_limits<std::uint64_t>::max(),
         std::numeric_limits<std::uint64_t>::max()};
+    // Authenticated-ACK round-trip estimator. Held in nanoseconds so the shift
+    // updates stay exact; `std::chrono::nanoseconds::rep` is signed, which the
+    // difference terms rely on.
+    std::uint64_t rtt_samples_{0};
+    std::chrono::nanoseconds srtt_{0};
+    std::chrono::nanoseconds rttvar_{0};
 #if YUME_USE_BASEFWX
     basefwx::crypto::SecureBytes psk_key_;
 #else
@@ -425,6 +549,30 @@ private:
 #endif
 };
 
+#if YUME_USE_BASEFWX
+SessionRatchet::SessionRatchet(
+    EndpointRole role,
+    basefwx::crypto::SecureBytes initial_root,
+    basefwx::crypto::SecureBytes psk_key,
+    std::uint16_t outbound_window,
+    std::uint16_t inbound_window,
+    RatchetPolicy outbound_policy,
+    RatchetPolicy inbound_policy)
+    : impl_(std::make_unique<Impl>(
+          role, std::move(initial_root), std::move(psk_key),
+          outbound_window, inbound_window, outbound_policy, inbound_policy)) {}
+
+SessionRatchet::SessionRatchet(EndpointRole role, Bytes initial_root,
+                               Bytes psk_key, std::uint16_t outbound_window,
+                               std::uint16_t inbound_window,
+                               RatchetPolicy outbound_policy,
+                               RatchetPolicy inbound_policy)
+    : SessionRatchet(
+          role,
+          basefwx::crypto::SecureBytes{std::move(initial_root)},
+          basefwx::crypto::SecureBytes{std::move(psk_key)},
+          outbound_window, inbound_window, outbound_policy, inbound_policy) {}
+#else
 SessionRatchet::SessionRatchet(EndpointRole role, Bytes initial_root,
                                Bytes psk_key, std::uint16_t outbound_window,
                                std::uint16_t inbound_window,
@@ -434,6 +582,7 @@ SessionRatchet::SessionRatchet(EndpointRole role, Bytes initial_root,
                                    std::move(psk_key), outbound_window,
                                    inbound_window, outbound_policy,
                                    inbound_policy)) {}
+#endif
 SessionRatchet::SessionRatchet(SessionRatchet&&) noexcept = default;
 SessionRatchet& SessionRatchet::operator=(SessionRatchet&&) noexcept = default;
 SessionRatchet::~SessionRatchet() = default;
@@ -468,6 +617,10 @@ bool SessionRatchet::outbound_rekey_pending() const {
 std::optional<std::chrono::steady_clock::time_point>
 SessionRatchet::rekey_deadline() const {
     return impl_->rekey_deadline();
+}
+
+RekeyRttEstimate SessionRatchet::rekey_rtt_estimate() const {
+    return impl_->rekey_rtt_estimate();
 }
 bool SessionRatchet::rekey_timed_out(
     std::chrono::steady_clock::time_point now) const {

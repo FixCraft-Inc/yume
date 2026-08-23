@@ -31,6 +31,7 @@
 
 #include "core/protocol/control_protocol.hpp"
 #include "core/app_codec/codec.hpp"
+#include "core/runtime/inbound_credit.hpp"
 #include "core/runtime/service_stream.hpp"
 #include "core/security/crypto.hpp"
 #include "server/auth/auth.hpp"
@@ -40,10 +41,10 @@
 #include "core/stealth/obfs_signal.hpp"
 #include "core/protocol/protocol.hpp"
 #include "server/config/config.hpp"
-#include "server/runtime/kdf_admission.hpp"
 #include "server/session/authorization.hpp"
 #include "server/session/bench_echo.hpp"
 #include "server/session/fair_frame_budget.hpp"
+#include "server/session/h2_cover_fetches.hpp"
 #include "util.hpp"
 
 namespace yume::server::static_site {
@@ -51,9 +52,16 @@ struct FileContents;  // full definition in static_site.hpp; forward-declared
                       // here so session.hpp need not pull in <filesystem>.
 }
 
+namespace yume::server::host {
+struct BackendHttpResponse;
+}
+
 namespace yume::server {
 
 class Manager;
+struct SessionControlSurvivalTestPeer;
+struct SessionReverseListenerTestPeer;
+struct SessionStreamReservationTestPeer;
 
 // Wall-clock helper defined in session.cpp. Exposed here because
 // session_control.cpp (split out in f6db161) also calls it; the
@@ -70,7 +78,6 @@ public:
             std::shared_ptr<const std::vector<crypto::Bytes>> operator_keys,
             std::shared_ptr<const AuthKeyPolicyMap> operator_policies,
             std::shared_ptr<const std::vector<crypto::Bytes>> admin_keys,
-            std::shared_ptr<KdfAdmissionController> kdf_admission,
             std::shared_ptr<obfs::AdmissionReplayCache> admission_replay_cache,
             uint64_t session_id,
             Manager* manager);
@@ -90,6 +97,19 @@ public:
         return client_relay_mode_ == control::RelayMode::trusted;
     }
     bool allows_outbound_admin() const { return client_allow_outbound_admin_; }
+    bool allows_relay_kind(control::ChannelKind kind) const noexcept {
+        switch (kind) {
+            case control::ChannelKind::chat:
+                return client_allow_chat_;
+            case control::ChannelKind::file:
+                return client_allow_file_;
+            case control::ChannelKind::bytes:
+                return client_allow_bytes_;
+            case control::ChannelKind::admin:
+                return client_allow_outbound_admin_;
+        }
+        return false;
+    }
     bool allows_inbound_admin() const { return client_allow_inbound_admin_; }
     void send_control_json_to_client(const nlohmann::json& json);
     bool attach_federated_stream(uint8_t stream_id,
@@ -97,15 +117,22 @@ public:
                                  const std::string& channel_id,
                                  const std::string& left_endpoint_id,
                                  const std::string& right_endpoint_id,
-                                 std::function<void(const crypto::Bytes&)> on_data,
+                                 std::function<void(
+                                     const crypto::Bytes&,
+                                     runtime::InboundCredit)> on_data,
                                  std::function<void(const std::string&)> on_close);
     void complete_federated_open(uint8_t stream_id, bool ok, const std::string& message);
-    void send_federated_data(uint8_t stream_id, const crypto::Bytes& payload);
+    void send_federated_data(
+        uint8_t stream_id,
+        const crypto::Bytes& payload,
+        runtime::InboundCredit inbound_credit = {});
     void send_federated_close(uint8_t stream_id, const std::string& reason);
 
     std::optional<boost::asio::ssl::stream<boost::asio::ip::tcp::socket>> release_for_host_proxy();
 
 private:
+    friend struct SessionControlSurvivalTestPeer;
+
     struct PendingWrite;
 
     void on_handshake(const boost::system::error_code& ec);
@@ -168,6 +195,13 @@ private:
     void on_v2_h2_cover_read(const boost::system::error_code& ec,
                              std::size_t bytes);
     void process_v2_h2_requests();
+    void process_v2_h2_stream_closes();
+    void complete_v2_h2_cover_fetch(
+        std::int32_t stream_id,
+        bool head_request,
+        std::string error,
+        host::BackendHttpResponse response);
+    void cancel_v2_h2_cover_fetches();
     void schedule_v2_h2_wire_flush_on_strand();
     void flush_v2_h2_wire_on_strand();
     void start_v2_h2_exact_read(
@@ -184,7 +218,8 @@ private:
     void arm_frame_read_deadline(std::chrono::milliseconds timeout, std::string reason);
     void cancel_frame_read_deadline();
 
-    void handle_frame(protocol::Frame frame);
+    void handle_frame(protocol::Frame frame,
+                      runtime::InboundCredit inbound_credit = {});
     bool frame_allowed_by_authorization_tier(const protocol::Frame& frame);
     bool handle_auth(const protocol::Frame& frame);
     void handle_open(const protocol::Frame& frame);
@@ -195,7 +230,8 @@ private:
                            const crypto::Bytes& payload);
     void start_udp_open(uint8_t stream_id, const std::string& host, int port);
     void start_tcp_open(uint8_t stream_id, const std::string& host, int port);
-    void handle_data(const protocol::Frame& frame);
+    void handle_data(const protocol::Frame& frame,
+                     runtime::InboundCredit inbound_credit);
     bool handle_packet_open(uint8_t stream_id);
     bool handle_packet_data(uint8_t stream_id, const crypto::Bytes& payload);
     void queue_packet_downstream(crypto::Bytes packet);
@@ -206,17 +242,32 @@ private:
     void pump_bench_sources();
     void maybe_finish_bench_source(uint8_t stream_id);
     bool handle_codec_open(uint8_t stream_id, const nlohmann::json& json);
-    bool handle_codec_data(uint8_t stream_id, const crypto::Bytes& payload);
+    bool handle_codec_data(uint8_t stream_id,
+                           const crypto::Bytes& payload,
+                           runtime::InboundCredit* inbound_credit = nullptr);
     bool handle_codec_close(uint8_t stream_id, const std::string& reason);
     bool handle_service_open(uint8_t stream_id, const nlohmann::json& json);
-    bool handle_service_data(uint8_t stream_id, const crypto::Bytes& payload);
+    bool handle_service_data(uint8_t stream_id,
+                             const crypto::Bytes& payload,
+                             runtime::InboundCredit* inbound_credit = nullptr);
     bool handle_service_close(uint8_t stream_id, const std::string& reason, bool discard_buffered = false);
     bool handle_service_fin(uint8_t stream_id, const std::string& reason);
-    void send_service_data(uint8_t stream_id, runtime::ServiceStream::Bytes payload);
+    runtime::ServiceStream::WriteResult send_service_data(
+        uint8_t stream_id,
+        runtime::ServiceStream::Bytes payload,
+        std::uint32_t timeout_ms,
+        std::weak_ptr<runtime::ServiceStream> owner,
+        runtime::ServiceStream::WriteCompletion completion,
+        std::string* error);
+    void schedule_service_write_drain();
+    void drain_service_write_on_strand();
+    void stop_service_streams(const std::string& reason);
     void send_service_close(uint8_t stream_id, std::string reason);
     void send_service_fin(uint8_t stream_id, std::string reason);
     void send_codec_error(uint8_t stream_id, int http_status, const std::string& message);
-    void start_codec_backend(uint8_t stream_id, const crypto::Bytes& payload);
+    void start_codec_backend(uint8_t stream_id,
+                             const crypto::Bytes& payload,
+                             runtime::InboundCredit inbound_credit = {});
     void on_codec_backend_connect(uint8_t stream_id, const boost::system::error_code& ec);
     void on_codec_backend_write(uint8_t stream_id, const boost::system::error_code& ec, std::size_t bytes);
     void on_codec_backend_headers(uint8_t stream_id, const boost::system::error_code& ec, std::size_t bytes);
@@ -227,12 +278,51 @@ private:
     std::string decode_close_reason(const protocol::Frame& frame, bool* ok);
     void handle_exec(const protocol::Frame& frame);
     void handle_rlisten(const protocol::Frame& frame);
-    void handle_control(const protocol::Frame& frame);
+    void arm_reverse_accept(
+        uint8_t listen_id,
+        const std::shared_ptr<boost::asio::ip::tcp::acceptor>& acceptor);
+    void on_reverse_accept(
+        uint8_t listen_id,
+        const std::shared_ptr<boost::asio::ip::tcp::acceptor>& acceptor,
+        const boost::system::error_code& error,
+        boost::asio::ip::tcp::socket socket);
+    bool reverse_listener_is_active(
+        uint8_t listen_id,
+        const std::shared_ptr<boost::asio::ip::tcp::acceptor>& acceptor);
+    void handle_control(const protocol::Frame& frame) noexcept;
+    void handle_control_impl(const protocol::Frame& frame);
     bool handle_control_open_request(const protocol::Frame& frame);
     bool handle_control_open_ack(const protocol::Frame& frame);
-    bool handle_control_data(const protocol::Frame& frame);
+    bool handle_control_data(
+        const protocol::Frame& frame,
+        runtime::InboundCredit&& inbound_credit);
     bool handle_control_close(const protocol::Frame& frame);
     bool handle_control_exec(const protocol::Frame& frame);
+    class StreamIdReservation {
+    public:
+        StreamIdReservation() = default;
+        StreamIdReservation(const StreamIdReservation&) = delete;
+        StreamIdReservation& operator=(const StreamIdReservation&) = delete;
+        StreamIdReservation(StreamIdReservation&&) noexcept = default;
+        StreamIdReservation& operator=(StreamIdReservation&&) noexcept =
+            default;
+
+        explicit operator bool() const noexcept {
+            return stream_id_ != 0 && allocation_lock_.owns_lock();
+        }
+        uint8_t stream_id() const noexcept { return stream_id_; }
+
+    private:
+        friend class Session;
+        StreamIdReservation(
+            uint8_t stream_id,
+            std::unique_lock<std::recursive_mutex> allocation_lock)
+            : stream_id_(stream_id),
+              allocation_lock_(std::move(allocation_lock)) {}
+
+        uint8_t stream_id_{0};
+        std::unique_lock<std::recursive_mutex> allocation_lock_;
+    };
     void send_control_frame(protocol::FrameType type,
                             uint8_t stream_id,
                             const crypto::Bytes& payload,
@@ -240,7 +330,7 @@ private:
                             std::function<void(const boost::system::error_code&, std::size_t)> handler = {});
     void send_control_close(uint8_t stream_id, const std::string& reason);
     void send_control_fin(uint8_t stream_id, const std::string& reason);
-    uint8_t reserve_stream_id();
+    StreamIdReservation reserve_stream_id();
     bool stream_id_in_use_locked(uint8_t stream_id) const;
     bool decrypt_inner_payload(uint8_t frame_type,
                                uint8_t stream_id,
@@ -249,19 +339,21 @@ private:
     crypto::Bytes encrypt_inner_payload(uint8_t frame_type,
                                         uint8_t stream_id,
                                         const crypto::Bytes& input);
-    std::uint64_t current_hop_id() const;
-    void clear_hop_key_cache();
 
     void send_open_reply(uint8_t stream_id, bool ok, const std::string& message);
     void start_remote_read(uint8_t stream_id);
     void on_remote_read(uint8_t stream_id, const boost::system::error_code& ec, std::size_t bytes);
-    void enqueue_remote_write(uint8_t stream_id, const std::vector<uint8_t>& data);
+    void enqueue_remote_write(uint8_t stream_id,
+                              const std::vector<uint8_t>& data,
+                              runtime::InboundCredit inbound_credit = {});
     void do_remote_write(uint8_t stream_id);
     void shutdown_remote_send_if_ready(uint8_t stream_id);
     void finish_remote_stream_if_done(uint8_t stream_id);
     void start_udp_read(uint8_t stream_id);
     void on_udp_read(uint8_t stream_id, const boost::system::error_code& ec, std::size_t bytes);
-    void enqueue_udp_write(uint8_t stream_id, const crypto::Bytes& data);
+    void enqueue_udp_write(uint8_t stream_id,
+                           const crypto::Bytes& data,
+                           runtime::InboundCredit inbound_credit = {});
     void do_udp_write(uint8_t stream_id);
 
     void async_write_frame(const protocol::Frame& frame,
@@ -293,6 +385,10 @@ private:
     std::chrono::milliseconds reserve_egress_delay(std::size_t bytes) const;
     bool should_pause_inbound_reads_on_strand() const;
     void maybe_resume_inbound_reads_on_strand();
+    runtime::InboundCredit make_v2_h2_inbound_credit_on_strand(
+        std::size_t bytes);
+    void release_v2_h2_inbound_credit(std::size_t bytes);
+    void flush_v2_h2_inbound_credit_on_strand();
 
     void close_with_reason(const std::string& reason);
     void begin_close();
@@ -317,7 +413,6 @@ private:
     // else may write it, and no policy flag can produce it.
     bool admin_authenticated_{false};
     std::string admin_fingerprint_;
-    std::shared_ptr<KdfAdmissionController> kdf_admission_;
     std::shared_ptr<obfs::AdmissionReplayCache> admission_replay_cache_;
     uint64_t session_id_{0};
     Manager* manager_{nullptr};
@@ -340,6 +435,7 @@ private:
     bool carrier_settings_ack_wait_active_{false};
     std::unique_ptr<obfs::H2InboundDecoder> carrier_decoder_;
     std::unique_ptr<obfs::H2Carrier> v2_h2_carrier_;
+    detail::H2CoverFetches v2_h2_cover_fetches_;
     bool v2_h2_tunnel_active_{false};
     bool v2_h2_tls_read_in_flight_{false};
     crypto::Bytes v2_h2_decoded_;
@@ -349,6 +445,9 @@ private:
     std::size_t v2_h2_read_copied_{0};
     std::function<void(const boost::system::error_code&, std::size_t)>
         v2_h2_read_handler_;
+    std::size_t v2_h2_pending_credit_release_bytes_{0};
+    bool v2_h2_credit_release_scheduled_{false};
+    bool v2_h2_credit_release_failed_{false};
     std::array<uint8_t, 4096> carrier_scratch_{};
     boost::asio::steady_timer preface_timer_;
     // Per-connection TLS handshake deadline (RFC 7540 has none; this
@@ -385,13 +484,6 @@ private:
     std::string inner_alt_mode_;
     std::string inner_kdf_;
     std::string inner_alt_kdf_;
-    bool hop_enabled_{false};
-    std::uint32_t hop_interval_ms_{0};
-    std::int64_t hop_offset_ms_{0};
-    std::optional<std::uint64_t> encrypt_hop_id_;
-    crypto::Bytes encrypt_hop_key_;
-    std::optional<std::uint64_t> decrypt_hop_id_;
-    crypto::Bytes decrypt_hop_key_;
     boost::asio::steady_timer idle_timer_;
     boost::asio::steady_timer frame_read_timer_;
     boost::asio::steady_timer ratchet_timer_;
@@ -399,11 +491,16 @@ private:
     boost::asio::steady_timer http_idle_timer_;
     std::atomic<int64_t> last_activity_ms_{0};
 
+    struct InboundWrite {
+        crypto::Bytes data;
+        runtime::InboundCredit credit;
+    };
+
     struct RemoteStream {
         boost::asio::ip::tcp::socket socket;
         boost::asio::ip::tcp::resolver resolver;
         std::vector<uint8_t> read_buf;
-        std::deque<std::vector<uint8_t>> write_queue;
+        std::deque<InboundWrite> write_queue;
         runtime::InboundQueueBudget inbound_budget;
         std::string host;
         int port{0};
@@ -437,7 +534,7 @@ private:
         boost::asio::ip::udp::resolver resolver;
         boost::asio::ip::udp::endpoint remote;
         std::array<uint8_t, 65535> read_buf{};
-        std::deque<crypto::Bytes> write_queue;
+        std::deque<InboundWrite> write_queue;
         runtime::InboundQueueBudget inbound_budget;
         std::string host;
         int port{0};
@@ -464,6 +561,7 @@ private:
         std::string codec_id;
         std::vector<uint8_t> request_bytes;
         std::vector<uint8_t> response_body;
+        runtime::InboundCredit inbound_credit;
         std::string backend_host;
         int backend_port{0};
         int64_t open_started_ms{0};
@@ -514,6 +612,8 @@ private:
     // than allowing an authenticated peer to multiply the per-response limit.
     std::size_t codec_response_bytes_{0};
     std::unordered_map<uint8_t, std::shared_ptr<runtime::ServiceStream>> service_streams_;
+    runtime::ServiceStreamAdmissionGate service_stream_admission_gate_;
+    runtime::ServiceWriteAdmissionQueue service_write_queue_;
     std::optional<PacketStream> packet_stream_;
     struct BenchStream {
         enum class Mode {
@@ -559,6 +659,12 @@ private:
 
     std::mutex control_mutex_;
     std::mutex streams_mutex_;
+    // Serializes every session's stream-id availability check through map
+    // publication. A class-wide recursive mutex avoids A->B/B->A lock cycles
+    // when two sessions concurrently open relay channels to each other; the
+    // recursion is needed when a local OPEN synchronously reserves an id on
+    // its target session. Only OPEN setup is serialized, never DATA.
+    inline static std::recursive_mutex stream_id_allocation_mutex_;
     std::unordered_map<uint8_t, ControlLink> control_outbound_;
     std::unordered_map<uint8_t, ControlLink> control_inbound_;
     struct FederatedStream {
@@ -566,7 +672,9 @@ private:
         std::string channel_id;
         std::string left_endpoint_id;
         std::string right_endpoint_id;
-        std::function<void(const crypto::Bytes&)> on_data;
+        std::function<void(
+            const crypto::Bytes&,
+            runtime::InboundCredit)> on_data;
         std::function<void(const std::string&)> on_close;
         bool pending{true};
     };
@@ -578,6 +686,10 @@ private:
     bool client_server_in_charge_{false};
     std::string client_id_;
     std::string client_display_name_;
+    // Federation authentication identifies the peer key; application relay
+    // commands remain gated until that peer has also completed the explicit
+    // hello exchange with a bounded, valid server identity.
+    bool federation_hello_accepted_{false};
     std::string auth_fingerprint_;
     std::string bandwidth_fair_key_;
     double bandwidth_weight_{1.0};
@@ -627,6 +739,8 @@ private:
     std::array<std::deque<std::uint8_t>, 5> write_ready_streams_;
     std::array<std::int8_t, 256> write_ready_priority_{};
     std::deque<PendingWrite> v2_h2_pending_app_writes_;
+    std::size_t v2_h2_app_write_frames_{0};
+    std::size_t v2_h2_app_write_bytes_{0};
     bool v2_h2_flush_scheduled_{false};
     std::deque<RatchetBlockedWrite> ratchet_blocked_writes_;
     bool write_in_flight_{false};
@@ -640,6 +754,9 @@ private:
         Closed,
     };
     CloseState close_state_{CloseState::Open};
+
+    friend struct SessionReverseListenerTestPeer;
+    friend struct SessionStreamReservationTestPeer;
     bool transport_shutdown_in_flight_{false};
     bool closed_{false};
     std::string close_reason_;

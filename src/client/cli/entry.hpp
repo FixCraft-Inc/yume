@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -49,7 +50,7 @@ struct ClientConfig {
     // Number of parallel TLS tunnels the client opens to the server.
     // The first is the "primary" — owns control / relay / activity
     // handlers. The remaining are data-only and share the data plane
-    // via TunnelPool round-robin. Clamped to [1, 16]; 1 disables
+    // via TunnelPool least-loaded selection. Clamped to [1, 16]; 1 disables
     // multi-tunnel and matches the pre-3.7.1 single-tunnel layout.
     // Individual identities admit one authenticated server session by
     // default. Bulk identities may opt into additional parallel tunnels.
@@ -71,8 +72,6 @@ struct ClientConfig {
     std::uint32_t obfs_jitter_ms{0};
     bool inner_crypto{true};
     bool inner_heavy{true};
-    bool inner_hop{true};
-    std::uint32_t hop_interval_ms{500};
     // --rekey-window <N>. Concurrent directional epoch offers this client
     // accepts inbound and, capped by the server's advertised depth, uses
     // outbound. One outstanding exchange caps a saturated direction at one
@@ -112,6 +111,13 @@ struct ClientConfig {
     std::string preferred_name;
     std::string preferred_id;
     std::string relay_mode{"untrusted"};
+    // Relay-v2 authenticates each peer's composite identity end-to-end. TOFU
+    // records the first successfully completed ordinary-channel handshake;
+    // pinned requires a configured entry before any handshake is attempted.
+    // Admin channels always require an explicit configured pin in either mode.
+    std::string relay_trust_mode{"tofu"};
+    std::string relay_trust_dir;
+    std::map<std::string, std::string> relay_peer_pins;
     bool allow_inbound_admin{false};
     bool allow_outbound_admin{false};
     bool allow_chat{true};
@@ -119,6 +125,7 @@ struct ClientConfig {
     bool allow_bytes{true};
     bool history_enabled{true};
     std::string history_dir;
+    std::string relay_receive_dir;
     std::string relay_key_file;
     bool auto_attach_local{true};
     std::string app_codec;
@@ -167,10 +174,10 @@ public:
     // and then post requests onto Tunnel's executor — same flow the
     // local-runtime IPC handler uses, just without the socket round-trip.
     //
-    // Lifetime: shared_ptrs returned outlive Cli::run, so the callback
-    // recipient is free to keep them until it explicitly stops the
-    // tunnel (which terminates Cli::run's io.run() and lets the thread
-    // join).
+    // Lifetime: these objects are bound to the connected session's
+    // io_context and must be released before run_connected_session returns.
+    // InProcClient enforces that boundary with RuntimeLifetimeGate leases;
+    // other embedders must provide equivalent operation-scoped ownership.
     using RuntimeReadyCallback = std::function<void(
         std::shared_ptr<Tunnel>,
         std::shared_ptr<RelayRuntime>,

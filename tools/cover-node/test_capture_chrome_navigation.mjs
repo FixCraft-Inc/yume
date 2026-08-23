@@ -47,7 +47,10 @@ test('waits for the matching loader before evaluating the fixture', async () => 
   };
 
   await navigateToFixture({
-    command, lifecycleEvents, targetUrl, timeoutMs: 100, sleep: delay
+    // The fixture intentionally needs three 25 ms document polls. Leave
+    // enough scheduler margin for this success-path test to remain stable
+    // while the full CTest suite is compiling/running in parallel.
+    command, lifecycleEvents, targetUrl, timeoutMs: 500, sleep: delay
   });
   assert.equal(calls.filter(call => call.method === 'Page.navigate').length, 1);
   assert.equal(evaluations, 3);

@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -16,6 +17,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/protocol/control_protocol.hpp"
+#include "core/protocol/directory_policy.hpp"
 #include "server/config/config.hpp"
 #include "server/federation/types.hpp"
 
@@ -34,7 +36,8 @@ public:
     void stop();
 
     std::shared_ptr<FederationLink> find(const std::string& peer_id) const;
-    std::vector<control::EndpointInfo> remote_endpoints() const;
+    std::vector<control::EndpointInfo> remote_endpoints(
+        std::size_t limit = control::kMaxDirectoryEndpoints) const;
     bool resolve_remote_endpoint(const std::string& visible_id,
                                  std::string* peer_id,
                                  std::string* remote_id,
@@ -58,6 +61,7 @@ public:
                           const std::string& server_id,
                           const std::string& server_name,
                           const std::vector<control::EndpointInfo>& endpoints);
+    void clear_directory(const std::string& peer_id);
     std::vector<FederationPeerStatus> statuses() const;
 
 private:

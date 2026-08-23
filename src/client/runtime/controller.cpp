@@ -172,6 +172,7 @@ std::vector<std::string> build_args(std::filesystem::path const& exe,
     } else {
         args.emplace_back("--no-history");
     }
+    add_arg(args, "--relay-receive-dir", cfg.relay_receive_dir);
     add_arg(args, "--relay-key-file", cfg.relay_key_file);
     add_arg(args, "--instance", cfg.instance_name);
 

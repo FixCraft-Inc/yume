@@ -39,6 +39,7 @@ extern "C" {
 #define YUME_STATUS_PERMISSION_DENIED -8
 #define YUME_STATUS_PARSE_ERROR -9
 #define YUME_STATUS_WOULD_BLOCK -10
+#define YUME_STATUS_RESOURCE_EXHAUSTED -11
 
 #define YUME_FEATURE_BASEFWX 0x00000001u
 #define YUME_FEATURE_PQ_MLKEM768 0x00000002u
@@ -56,6 +57,13 @@ typedef struct yume_build_info {
     const char* pq_backend;
     const char* argon2_backend;
 } yume_build_info;
+
+/*
+ * Minimum prefix accepted by yume_get_build_info. Callers should zero the
+ * complete object they provide. The library writes only complete fields that
+ * fit in out_size and reports its known layout size in struct_size.
+ */
+#define YUME_BUILD_INFO_MIN_SIZE offsetof(yume_build_info, yume_version)
 
 typedef struct yume_client yume_client;
 typedef struct yume_server yume_server;
@@ -82,11 +90,15 @@ typedef int (*yume_socket_protect_fn)(intptr_t socket_handle, void* user_data);
  * - JSON output helpers write a NUL-terminated string to caller-owned memory.
  *   Pass a too-small buffer to receive YUME_STATUS_BUFFER_TOO_SMALL and the
  *   required byte count, including the trailing NUL, in *needed.
- * - Timeout values are milliseconds. A timeout of 0 means poll/no wait for
- *   stream open, accept, and read calls.
- * - yume_stream_write accepts timeout_ms for ABI stability, but ABI v1 writes
- *   enqueue synchronously and ignore the value. Pass 0 for forward-compatible
- *   callers that do not require a future write deadline.
+ * - Timeout values are milliseconds. A timeout of 0 means nonblocking.
+ *   Stream OPEN calls require a request/ack exchange, so a zero-time open
+ *   returns YUME_STATUS_WOULD_BLOCK without sending a request. Accept, read,
+ *   and write calls poll their existing handle or queue state.
+ * - Stream writes are admitted to a bounded transport queue. A zero-time
+ *   write returns YUME_STATUS_WOULD_BLOCK when no slot is immediately
+ *   available; a positive timeout waits for admission and returns
+ *   YUME_STATUS_TIMEOUT on expiry. bytes_written is nonzero only after the
+ *   complete input was admitted.
  * - Errors are stored per handle. yume_handle_last_error copies the selected
  *   error into thread-local storage; the returned pointer remains valid until
  *   the next yume_handle_last_error call on the same thread.
@@ -101,6 +113,11 @@ YUME_API uint32_t yume_feature_flags(void);
 YUME_API const char* yume_basefwx_version(void);
 YUME_API const char* yume_pq_backend(void);
 YUME_API const char* yume_argon2_backend(void);
+/*
+ * Writes every complete field that fits in out_size. out_size must be at
+ * least YUME_BUILD_INFO_MIN_SIZE. New fields may be appended to
+ * yume_build_info without making older callers fail.
+ */
 YUME_API int yume_get_build_info(yume_build_info* out, size_t out_size);
 YUME_API const char* yume_strerror(int status);
 YUME_API int yume_generate_pq_keypair(const char* private_path,

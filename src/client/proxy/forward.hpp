@@ -17,9 +17,14 @@
 
 #include <boost/asio.hpp>
 
+#include "client/proxy/udp_queue.hpp"
 #include "client/transport/tunnel.hpp"
+#include "core/runtime/stream_queue_limits.hpp"
 
 namespace yume::client {
+
+struct ReverseForwardSessionTestPeer;
+struct UdpForwardServerTestPeer;
 
 class ForwardSession : public std::enable_shared_from_this<ForwardSession> {
 public:
@@ -31,16 +36,27 @@ public:
     void start();
 
 private:
+    using WriteReservation =
+        runtime::ConcurrentInboundQueueBudget::Reservation;
+    struct PendingLocalWrite {
+        std::shared_ptr<std::vector<uint8_t>> data;
+        WriteReservation reservation;
+        Tunnel::InboundCredit inbound_credit;
+    };
+
     void start_tunnel();
     void start_client_read();
     void on_client_read(const boost::system::error_code& ec, std::size_t bytes);
     void send_client_fin();
 
-    void deliver_from_tunnel(const Tunnel::Bytes& data);
+    void deliver_from_tunnel(const Tunnel::Bytes& data,
+                             Tunnel::InboundCredit inbound_credit);
     void close_from_tunnel();
     void remote_fin_from_tunnel(const std::string& reason);
 
-    void enqueue_write(std::shared_ptr<std::vector<uint8_t>> data);
+    void enqueue_write(std::shared_ptr<std::vector<uint8_t>> data,
+                       WriteReservation reservation,
+                       Tunnel::InboundCredit inbound_credit);
     void do_write();
     void request_socket_send_shutdown();
     void maybe_finish_cleanly();
@@ -52,12 +68,14 @@ private:
     boost::asio::strand<boost::asio::any_io_executor> strand_;
 
     std::array<uint8_t, 65536> read_buf_{};
-    std::deque<std::shared_ptr<std::vector<uint8_t>>> write_queue_;
+    std::deque<PendingLocalWrite> write_queue_;
+    runtime::ConcurrentInboundQueueBudget write_budget_;
     bool write_in_flight_{false};
 
     std::string target_host_;
     int target_port_{0};
     uint8_t stream_id_{0};
+    bool open_result_received_{false};
     bool open_confirmed_{false};
     bool closed_{false};
     bool local_fin_sent_{false};
@@ -100,13 +118,26 @@ public:
                           std::string target_host,
                           int target_port);
 
-    void start();
+    bool start();
 
 private:
+    using WriteReservation =
+        runtime::ConcurrentInboundQueueBudget::Reservation;
+    struct PendingLocalWrite {
+        std::shared_ptr<std::vector<uint8_t>> data;
+        WriteReservation reservation;
+        Tunnel::InboundCredit inbound_credit;
+    };
+
     void start_connect();
     void start_local_read();
     void on_local_read(const boost::system::error_code& ec, std::size_t bytes);
-    void deliver_from_tunnel(const Tunnel::Bytes& data);
+    void deliver_from_tunnel(const Tunnel::Bytes& data,
+                             Tunnel::InboundCredit inbound_credit);
+    void enqueue_write(std::shared_ptr<std::vector<uint8_t>> data,
+                       WriteReservation reservation,
+                       Tunnel::InboundCredit inbound_credit);
+    void do_write();
     void close_from_tunnel();
     void close();
 
@@ -117,10 +148,16 @@ private:
     boost::asio::ip::tcp::resolver resolver_;
     boost::asio::strand<boost::asio::any_io_executor> strand_;
     std::array<uint8_t, 65536> read_buf_{};
+    std::deque<PendingLocalWrite> write_queue_;
+    runtime::ConcurrentInboundQueueBudget write_budget_;
+    bool write_in_flight_{false};
 
     std::string target_host_;
     int target_port_{0};
     bool open_confirmed_{false};
+    bool closed_{false};
+
+    friend struct ReverseForwardSessionTestPeer;
 };
 
 class ForwardServer {
@@ -165,16 +202,41 @@ public:
 
 private:
     struct UdpMapping {
+        explicit UdpMapping(detail::UdpQueueBudget& pending_budget)
+            : pending(pending_budget) {}
+
         boost::asio::ip::udp::endpoint client;
         uint8_t stream_id{0};
+        bool open_result_received{false};
         bool open_confirmed{false};
-        std::deque<Tunnel::Bytes> pending;
+        detail::BudgetedUdpDatagramQueue pending;
+    };
+    struct PendingUdpSend {
+        uint8_t stream_id{0};
+        boost::asio::ip::udp::endpoint client;
+        std::shared_ptr<std::vector<uint8_t>> data;
+        detail::UdpQueueBudget::Reservation reservation;
+        Tunnel::InboundCredit inbound_credit;
     };
 
     void do_receive();
     void handle_datagram(const boost::asio::ip::udp::endpoint& client, const Tunnel::Bytes& data);
     void on_open_result(uint8_t stream_id, bool ok, const std::string& reason);
-    void deliver_from_tunnel(uint8_t stream_id, const Tunnel::Bytes& data);
+    void deliver_from_tunnel(uint8_t stream_id,
+                             const Tunnel::Bytes& data,
+                             Tunnel::InboundCredit inbound_credit);
+    void deliver_from_tunnel_on_strand(
+        uint8_t stream_id,
+        std::shared_ptr<std::vector<uint8_t>> data,
+        detail::UdpQueueBudget::Reservation reservation,
+        Tunnel::InboundCredit inbound_credit);
+    void enqueue_udp_send(
+        uint8_t stream_id,
+        const boost::asio::ip::udp::endpoint& client,
+        std::shared_ptr<std::vector<uint8_t>> data,
+        detail::UdpQueueBudget::Reservation reservation,
+        Tunnel::InboundCredit inbound_credit);
+    void do_udp_send();
     void close_stream(uint8_t stream_id, const std::string& reason);
 
     boost::asio::ip::udp::socket socket_;
@@ -189,8 +251,14 @@ private:
     bool blocked_local_warned_{false};
     std::array<uint8_t, 65535> read_buf_{};
     boost::asio::ip::udp::endpoint sender_{};
+    detail::UdpQueueBudget udp_pending_budget_;
+    detail::UdpQueueBudget udp_local_send_budget_;
+    std::deque<PendingUdpSend> udp_send_queue_;
+    bool udp_send_in_flight_{false};
     std::unordered_map<std::string, std::shared_ptr<UdpMapping>> by_client_;
     std::unordered_map<uint8_t, std::shared_ptr<UdpMapping>> by_stream_;
+
+    friend struct UdpForwardServerTestPeer;
 };
 
 }  // namespace yume::client

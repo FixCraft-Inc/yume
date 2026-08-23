@@ -38,6 +38,13 @@ Install the server separately if this machine hosts a YUME endpoint:
 sudo install -m 0755 yumed-amd64-linux /usr/local/bin/yumed
 ```
 
+The current preparation-only server download is not self-contained: YUME 2.0
+also requires the Node 24 loopback cover backend, but this bare-binary artifact
+does not include `backend.mjs` or a service unit. Do not treat it as a deployable
+stable server package. Development installs should use the matching exact
+source/CMake install layout until release packaging carries and pins the cover
+service contract.
+
 ## Configure and connect
 
 Provision certificates, independent admission and inner PSKs, and a composite

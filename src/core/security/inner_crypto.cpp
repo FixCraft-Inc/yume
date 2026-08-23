@@ -40,7 +40,6 @@ namespace yume::inner {
 
 namespace {
 constexpr const char kHkdfInfo[] = "yume-inner-v1";
-constexpr const char kHopInfoPrefix[] = "yume-hop-v1:";
 
 Bytes read_file(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
@@ -101,51 +100,6 @@ Bytes load_pq_public_key(const std::string& path, bool allow_embedded_master) {
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
         cache.path = cache_key;
-        cache.bytes = loaded;
-        cache.valid = true;
-    }
-    return loaded;
-#endif
-}
-
-Bytes load_pq_private_key(const std::string& path, bool allow_embedded_master) {
-#if !YUME_USE_BASEFWX
-    (void)path;
-    (void)allow_embedded_master;
-    throw std::runtime_error("inner crypto not available: BaseFWX disabled");
-#else
-    struct Cache {
-        std::string path;
-        Bytes bytes;
-        bool valid{false};
-    };
-    static std::mutex cache_mutex;
-    static Cache cache;
-    const std::string cache_key = (path.empty() ? std::string("<default>") : path) +
-                                  (allow_embedded_master ? "|embedded=1" : "|embedded=0");
-    {
-        std::lock_guard<std::mutex> lock(cache_mutex);
-        if (cache.valid && cache.path == cache_key) {
-            return cache.bytes;
-        }
-    }
-
-    Bytes loaded;
-    if (!path.empty()) {
-        loaded = basefwx::pq::DecodeKeyBytes(read_file(path));
-    } else if (allow_embedded_master) {
-        loaded = basefwx::pq::LoadMasterPrivateKey();
-        if (loaded.empty()) {
-            throw std::runtime_error("PQ private key not configured");
-        }
-    } else {
-        throw std::runtime_error(
-            "PQ private key not configured (set --pq-key or enable --use-embedded-master)");
-    }
-    {
-        std::lock_guard<std::mutex> lock(cache_mutex);
-        cache.path = cache_key;
-        basefwx::crypto::SecureClear(cache.bytes);
         cache.bytes = loaded;
         cache.valid = true;
     }
@@ -462,6 +416,15 @@ DerivedKey derive_key_heavy(const Bytes& shared,
 #endif
 }
 
+// The legacy pre-ratchet AAD binds only the frame type and stream id -- no
+// epoch, no sequence -- so a captured ciphertext would replay within the
+// static-key lifetime. Since yume/federation-v2 the only establishment path in
+// the product is AUTH v2, whose ratchet binds epoch, sequence, direction,
+// profile and flags; no wire path reaches this AAD anymore. It remains only as
+// an unreachable legacy static-inner primitive retained for its direct tests.
+// Adding sequence binding here is not a local fix -- it needs per-direction
+// state and a wire/AAD version bump -- which is why removal, not repair, is
+// the plan.
 Bytes build_aad(std::uint8_t frame_type, std::uint8_t stream_id) {
     Bytes aad(6);
     aad[0] = static_cast<std::uint8_t>('Y');
@@ -474,11 +437,20 @@ Bytes build_aad(std::uint8_t frame_type, std::uint8_t stream_id) {
 }
 }  // namespace
 
-// Safe-by-default Argon2 caps. The server-side guard at
-// server/session/auth.cpp calls argon2_params_exceed_limits with
-// the value returned here — and prior to 1.0.x this function returned
-// {0,0,0} when no env var was set, which the guard interpreted as
-// "no cap". That made the daemon vulnerable to a remote pre-auth
+// Safe-by-default Argon2 caps.
+//
+// NOTE: these ceilings are currently unreachable in the shipped server. The
+// v2 session path pins `inner_kdf_` to "hkdf" and never accepts a peer-supplied
+// KDF request. The server derivation family and its inert admission controller
+// were removed with the legacy hop plumbing. These guards remain only as
+// test-pinned policy helpers; do not read the presence of these
+// constants as evidence that a peer-supplied Argon2 request is bounded at
+// runtime — no such request is accepted today. Wire the guard before admitting
+// one. The rationale below is the history that produced the caps.
+//
+// The guard is called with the value returned here. Prior to 1.0.x this
+// function returned {0,0,0} when no env var was set, which the guard
+// interpreted as "no cap". That made the daemon vulnerable to a remote pre-auth
 // resource-exhaustion: a hostile client could request
 // argon2_memory = UINT32_MAX KiB and the server would attempt to
 // allocate it after an authorized or explicitly preauth-admitted AUTH frame.
@@ -723,61 +695,14 @@ KdfParams resolve_server_kdf_params(const Config& cfg,
     return params;
 }
 
-std::optional<DerivedKey> server_derive_key(const Config& cfg,
-                                            const Bytes& pq_ciphertext,
-                                            const Bytes& salt,
-                                            bool heavy,
-                                            const std::optional<KdfParams>& kdf_params) {
-    const bool allow_fallback = !kdf_params.has_value() || kdf_params->name.empty();
-    const KdfParams resolved = resolve_server_kdf_params(cfg, heavy, kdf_params);
-    return server_derive_key_resolved(
-        cfg, pq_ciphertext, salt, heavy, resolved, allow_fallback);
-}
-
-std::optional<DerivedKey> server_derive_key_resolved(
-    const Config& cfg,
-    const Bytes& pq_ciphertext,
-    const Bytes& salt,
-    bool heavy,
-    const KdfParams& resolved_params,
-    bool allow_kdf_fallback) {
-    if (!cfg.enabled) {
-        return std::nullopt;
-    }
-#if !YUME_USE_BASEFWX
-    (void)cfg;
-    (void)pq_ciphertext;
-    (void)salt;
-    (void)heavy;
-    (void)resolved_params;
-    (void)allow_kdf_fallback;
-    throw std::runtime_error("inner crypto not available: BaseFWX disabled");
-#else
-    // priv (PQ private key) and shared (KEM secret) are key material;
-    // SecureBytes wraps each so the destructor wipes them on scope
-    // exit, in reverse construction order, with the wrap holding the
-    // bytes (no SecretGuard raw-pointer lifetime trap).
-    basefwx::crypto::SecureBytes priv{
-        load_pq_private_key(cfg.pq_private_key, cfg.allow_embedded_master)};
-    basefwx::crypto::SecureBytes shared{
-        basefwx::pq::KemDecrypt(priv.bytes(), pq_ciphertext)};
+KdfParams resolve_client_kdf_params(const Config& cfg, bool heavy) {
     if (!heavy) {
-        DerivedKey out;
-        out.kdf = "hkdf";
-        out.key = derive_key(shared.bytes());
-        return out;
+        KdfParams light;
+        light.name = "hkdf";
+        return light;
     }
-    KdfParams params = resolved_params;
-    if (params.name == "argon2"
-        && argon2_params_exceed_limits(params, argon2_env_limits(), nullptr)) {
-        return std::nullopt;
-    }
-    if ((params.name == "argon2" || params.name == "pbkdf2") &&
-        pbkdf2_params_exceed_limits(params, pbkdf2_env_iters_max(), nullptr)) {
-        return std::nullopt;
-    }
-    return derive_key_heavy(shared.bytes(), salt, params, allow_kdf_fallback);
-#endif
+    // Same call client_prepare makes, so the reported cost is the cost.
+    return select_argon2_params(cfg.argon2_limits);
 }
 
 bool pq_supported() {
@@ -829,37 +754,6 @@ std::string argon2_backend_version() {
     return out;
 #else
     return "unavailable";
-#endif
-}
-
-std::uint64_t hop_id_from_time_ms(std::int64_t now_ms, std::uint32_t interval_ms, std::int64_t offset_ms) {
-    if (interval_ms == 0) {
-        return 0;
-    }
-    std::int64_t adjusted = now_ms + offset_ms;
-    if (adjusted < 0) {
-        adjusted = 0;
-    }
-    return static_cast<std::uint64_t>(adjusted / static_cast<std::int64_t>(interval_ms));
-}
-
-Bytes derive_hop_key(const Bytes& base_key, std::uint64_t hop_id) {
-#if !YUME_USE_BASEFWX
-    (void)base_key;
-    (void)hop_id;
-    throw std::runtime_error("inner crypto not available: BaseFWX disabled");
-#else
-    std::array<char, 64> info{};
-    constexpr std::string_view prefix(kHopInfoPrefix);
-    std::memcpy(info.data(), prefix.data(), prefix.size());
-    auto [ptr, ec] = std::to_chars(info.data() + prefix.size(),
-                                   info.data() + info.size(),
-                                   hop_id);
-    std::size_t len = prefix.size();
-    if (ec == std::errc()) {
-        len = static_cast<std::size_t>(ptr - info.data());
-    }
-    return basefwx::crypto::HkdfSha256(base_key, std::string_view(info.data(), len), 32);
 #endif
 }
 

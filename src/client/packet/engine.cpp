@@ -43,6 +43,13 @@ bool PacketBatchEngine::can_admit_locked(std::size_t packets,
 
 QueueResult PacketBatchEngine::enqueue_outbound(const std::vector<Bytes>& packets,
                                                 std::string* error) {
+    return enqueue_outbound(packets, std::chrono::milliseconds{0}, error);
+}
+
+QueueResult PacketBatchEngine::enqueue_outbound(
+    const std::vector<Bytes>& packets,
+    std::chrono::milliseconds timeout,
+    std::string* error) {
     if (packets.empty()) {
         set_error(error, "packet write batch is empty");
         return QueueResult::invalid;
@@ -59,27 +66,46 @@ QueueResult PacketBatchEngine::enqueue_outbound(const std::vector<Bytes>& packet
         }
         bytes += packet.size();
     }
+    if (packets.size() > limits_.max_queue_packets ||
+        bytes > limits_.max_queue_bytes) {
+        set_error(error, "packet write batch exceeds queue capacity");
+        return QueueResult::invalid;
+    }
 
-    {
-        std::lock_guard<std::mutex> lock(mu_);
+    std::unique_lock<std::mutex> lock(mu_);
+    auto can_admit = [&] {
+        return can_admit_locked(packets.size(), bytes,
+                                outbound_.size(), outbound_bytes_);
+    };
+    if (stopped_) {
+        set_error(error, stop_reason_);
+        return QueueResult::stopped;
+    }
+    if (!can_admit()) {
+        if (timeout.count() == 0) {
+            set_error(error, "packet outbound queue full");
+            return QueueResult::would_block;
+        }
+        if (!cv_.wait_for(lock, timeout, [&] {
+                return stopped_ || can_admit();
+            })) {
+            set_error(error, "packet outbound queue wait timed out");
+            return QueueResult::timeout;
+        }
         if (stopped_) {
             set_error(error, stop_reason_);
             return QueueResult::stopped;
         }
-        if (!can_admit_locked(packets.size(), bytes,
-                              outbound_.size(), outbound_bytes_)) {
-            set_error(error, "packet outbound queue full");
-            return QueueResult::would_block;
-        }
-        const bool was_empty = outbound_.empty();
-        for (const auto& packet : packets) {
-            outbound_.push_back(packet);
-        }
-        outbound_bytes_ += bytes;
-        if (was_empty) {
-            outbound_first_queued_ = std::chrono::steady_clock::now();
-        }
     }
+    const bool was_empty = outbound_.empty();
+    for (const auto& packet : packets) {
+        outbound_.push_back(packet);
+    }
+    outbound_bytes_ += bytes;
+    if (was_empty) {
+        outbound_first_queued_ = std::chrono::steady_clock::now();
+    }
+    lock.unlock();
     cv_.notify_all();
     return QueueResult::ok;
 }
@@ -195,7 +221,8 @@ QueueResult PacketBatchEngine::accept_inbound_payload(const Bytes& payload,
 
 QueueResult PacketBatchEngine::accept_inbound_batch(
     protocol::packet_bulk::Batch batch,
-    std::string* error) {
+    std::string* error,
+    runtime::InboundCredit inbound_credit) {
     std::size_t bytes = 0;
     for (const auto& packet : batch.packets) {
         bytes += packet.size();
@@ -217,7 +244,12 @@ QueueResult PacketBatchEngine::accept_inbound_batch(
             return QueueResult::would_block;
         }
         const std::size_t packet_count = batch.packets.size();
-        for (auto& packet : batch.packets) {
+        for (std::size_t index = 0; index < batch.packets.size(); ++index) {
+            InboundPacket packet;
+            packet.data = std::move(batch.packets[index]);
+            if (index + 1U == batch.packets.size()) {
+                packet.batch_credit = std::move(inbound_credit);
+            }
             inbound_.push_back(std::move(packet));
         }
         inbound_bytes_ += bytes;
@@ -258,19 +290,19 @@ QueueResult PacketBatchEngine::read_inbound(
     if (inbound_.empty() && stopped_) {
         return QueueResult::stopped;
     }
-    if (inbound_.front().size() > max_bytes) {
+    if (inbound_.front().data.size() > max_bytes) {
         if (required_first_bytes) {
-            *required_first_bytes = inbound_.front().size();
+            *required_first_bytes = inbound_.front().data.size();
         }
         return QueueResult::buffer_too_small;
     }
 
     std::size_t bytes = 0;
     while (!inbound_.empty() && packets->size() < max_packets &&
-           inbound_.front().size() <= max_bytes - bytes) {
-        bytes += inbound_.front().size();
-        inbound_bytes_ -= inbound_.front().size();
-        packets->push_back(std::move(inbound_.front()));
+           inbound_.front().data.size() <= max_bytes - bytes) {
+        bytes += inbound_.front().data.size();
+        inbound_bytes_ -= inbound_.front().data.size();
+        packets->push_back(std::move(inbound_.front().data));
         inbound_.pop_front();
     }
     lock.unlock();

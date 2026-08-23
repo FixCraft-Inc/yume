@@ -20,10 +20,10 @@ namespace yume::facade {
 
 class TrafficMeter;
 
-// High-level non-blocking client lifecycle. Starts the real yume client
-// runtime and talks to its local IPC socket from the GUI thread. This keeps
-// the CLI TLS/auth path as the current source of truth while exposing a
-// GUI-safe facade for connect, disconnect, directory, chat, and history.
+// High-level non-blocking client lifecycle. Starts the real yume client in
+// process while keeping the CLI TLS/auth path as the source of truth. start()
+// and stop() only admit/signal work on the caller; destruction performs the
+// final synchronous join.
 class ClientSession {
 public:
     explicit ClientSession(client::ClientConfig cfg);
@@ -74,6 +74,10 @@ public:
 
     using StatusCallback = std::function<void(ClientStatus const&)>;
     using ChatCallback   = std::function<void(ChatMessage const&)>;
+    // Status callbacks are serialized, never run under the lifecycle mutex,
+    // and may re-enter start()/stop(). Exceptions are contained by the facade.
+    // As with any member callback, the owner must keep this session alive until
+    // the callback returns.
     void set_status_callback(StatusCallback cb);
     void set_chat_callback(ChatCallback cb);
 

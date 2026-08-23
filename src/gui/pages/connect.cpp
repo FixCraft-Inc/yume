@@ -129,8 +129,6 @@ public:
             ui::section_label("Connection");
             cfg_.inner_crypto = true;
             cfg_.inner_heavy = false;
-            cfg_.inner_hop = false;
-            cfg_.hop_interval_ms = 0;
             cfg_.pq_public_key.clear();
             ui::muted_text(
                 "YUME 2.0 always uses ML-KEM-1024 + X25519 + PSK and directional ratchets.");
@@ -525,9 +523,8 @@ private:
                 ImGui::Text("Operator CA: %s", b.anonym_ca_cert_pem.empty() ? "(none)" : "PRESENT");
                 ImGui::Text("PQ pubkey:   %s", b.pq_public_key_pem.empty() ? "(none)" : "PRESENT");
                 ImGui::Text("Obfs secret: %s", b.obfs_secret.empty() ? "(none)" : "PRESENT");
-                ImGui::Text("Inner:       %s; hop=%s",
-                    b.inner_crypto ? (b.inner_heavy ? "heavy" : "light") : "off",
-                    b.inner_hop ? "on" : "off");
+                ImGui::Text("Inner:       %s",
+                    b.inner_crypto ? (b.inner_heavy ? "heavy" : "light") : "off");
                 ImGui::Dummy(ImVec2(0, 6 * sc));
                 if (ui::primary_button("Apply: write to ~/.yume/imported/",
                                        ImVec2(300 * sc, 38 * sc))) {
@@ -576,8 +573,6 @@ private:
         in.anonym_pubkey = cfg_.anonym_pubkey;
         in.inner_crypto = cfg_.inner_crypto;
         in.inner_heavy = cfg_.inner_heavy;
-        in.inner_hop = cfg_.inner_hop;
-        in.hop_interval_ms = cfg_.hop_interval_ms;
         in.tunnel_count = static_cast<std::uint8_t>(
             std::clamp(cfg_.tunnel_count, 1, 16));
         in.require_operator_identity = cfg_.require_anonym;

@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -42,6 +43,10 @@ enum class BundleType : std::uint8_t {
                  // operator's own private auth key. Recipient becomes
                  // (or stays) the same user on the target server.
 };
+
+// Operator-configured/OOB relay-v2 pins only. Learned TOFU state is local
+// runtime state and is deliberately not representable in a share bundle.
+using RelayPeerPins = std::map<std::string, std::string>;
 
 // All fields are optional except server.host + server.port.
 // Anything not set at export time is omitted from the bundle JSON so
@@ -78,12 +83,16 @@ struct ShareBundle {
     // client behavior recommendations
     bool inner_crypto{true};
     bool inner_heavy{true};
-    bool inner_hop{true};
-    std::uint32_t hop_interval_ms{500};
     std::uint8_t tunnel_count{1};
     bool require_operator_identity{false};
     bool allow_udp{false};
     bool allow_local_ip{false};
+
+    // End-to-end relay peer trust policy. `relay_trust_dir` is intentionally
+    // absent: imports use the platform-local configured/default trust store;
+    // neither its path nor learned TOFU records are portable authorization.
+    std::string relay_trust_mode{"tofu"};
+    RelayPeerPins relay_peer_pins;
 };
 
 // Encode + encrypt to bytes ready to write to disk. New exports require
@@ -145,12 +154,14 @@ struct BackupInputs {
     std::uint32_t obfs_jitter_ms{0};
     bool          inner_crypto{true};
     bool          inner_heavy{true};
-    bool          inner_hop{true};
-    std::uint32_t hop_interval_ms{500};
     std::uint8_t tunnel_count{1};
     bool          require_operator_identity{false};
     bool          allow_udp{false};
     bool          allow_local_ip{false};
+
+    // Explicit/OOB pins are portable. The learned TOFU directory/store is not.
+    std::string   relay_trust_mode{"tofu"};
+    RelayPeerPins relay_peer_pins;
 };
 
 // Build a ShareBundle from the inputs above by reading the referenced
@@ -171,13 +182,16 @@ struct ApplyResult {
     std::string inner_psk_path;  // <target_dir>/inner-psk.hex (if any)
 };
 
-// Write extracted bundle contents to a directory under the user's
-// home (~/.yume/imported/<server-host>/). Creates the directory at
-// mode 0700 and writes each file at 0600. Always writes a
-// config.json that points at the just-written files so the operator
-// can `yume --config <config_path>` directly. Returns false on I/O
-// errors; partial writes are not rolled back (the directory may
-// contain a subset of files).
+// Transactionally publish extracted bundle contents under the user's home
+// (~/.yume/imported/<server-host>/). POSIX persistence walks HOME and all
+// managed path components descriptor-relative without following links,
+// requires owner-controlled directories, stages 0600 files in a 0700
+// directory, fsyncs them, and atomically publishes the complete directory.
+// Existing imports are replaced only where an atomic directory exchange is
+// supported. Decode/inspection remain portable, but persistence fails closed
+// on platforms (including Windows) without the required secure filesystem
+// semantics. Always writes a config.json pointing at the published files so
+// the operator can `yume --config <config_path>` directly.
 bool apply_imported_bundle(const ShareBundle& bundle,
                            ApplyResult* out,
                            std::string* error);

@@ -94,6 +94,23 @@ void test_unsafe_combinations_fail_closed() {
                   "\"allow_services\":[\"example-service-v1\"]}}}");
     require_rejected(file, prefix + "\"weight\":0}}");
     require_rejected(file, prefix + "\"key_type\":\"shared\"}}");
+    require_rejected(file, prefix +
+                              "\"federation_peer_id\":\"ambiguous:peer\"}}");
+    require_rejected(file, prefix +
+                              "\"federation_peer_id\":\"bad peer\"}}");
+    require_rejected(file, prefix + "\"federation_peer_id\":\"" +
+                              std::string(65, 'p') + "\"}}");
+}
+
+void test_federation_peer_id_grammar() {
+    TemporaryPolicyFile file;
+    const std::string fingerprint(64, 'd');
+    file.write("{\"" + fingerprint +
+               "\":{\"federation_peer_id\":\"edge-west_2.example\"}}");
+    const auto policies = yume::server::load_auth_policies(file.path());
+    require(policies.at(fingerprint).federation_peer_id ==
+                "edge-west_2.example",
+            "valid federation peer id was not preserved");
 }
 
 }  // namespace
@@ -101,5 +118,6 @@ void test_unsafe_combinations_fail_closed() {
 int main() {
     test_bulk_weight_and_limit();
     test_unsafe_combinations_fail_closed();
+    test_federation_peer_id_grammar();
     return 0;
 }

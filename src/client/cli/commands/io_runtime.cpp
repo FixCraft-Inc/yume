@@ -100,13 +100,14 @@ RuntimeStopController::RuntimeStopController(bool immediate_benchmark_exit)
     : immediate_benchmark_exit_(immediate_benchmark_exit) {}
 
 RuntimeStopController::~RuntimeStopController() {
-    util::install_signal_handlers({});
+    // Disabling the registration waits for any dispatcher callback that still
+    // owns `this` before the remaining controller state is destroyed.
+    signal_handler_.reset();
 }
 
 void RuntimeStopController::install_signal_handler() {
-    util::install_signal_handlers([this](int) {
-        request_stop_from_signal();
-    });
+    signal_handler_ = std::make_unique<util::SignalHandlerRegistration>(
+        [this](int) { request_stop_from_signal(); });
 }
 
 void RuntimeStopController::announce_stopping() {

@@ -41,6 +41,24 @@ static_assert(kRekeyByteLead < kEpochByteLimit);
 static_assert(kRekeyMessageLead < kEpochMessageLimit);
 static_assert(kRekeyTimeLead < kEpochActiveLimit);
 
+// Authenticated-ACK deadline bounds (dev6). These bound *liveness* only: how
+// long this endpoint waits for the authenticated REKEY_ACK that answers an
+// offer it already sent. They are deliberately not security parameters. The
+// negotiated per-epoch byte, application-frame and sender-active-time limits in
+// `RatchetPolicy` are what bound the cryptographic blast radius, they are
+// enforced independently by sender and receiver, and no round-trip measurement
+// may widen them. Raising the deadline can only postpone a fail-closed
+// shutdown; it can never let one epoch key protect more plaintext.
+//
+// The floor reproduces the previous fixed deadline exactly, so a session that
+// never obtains an RTT sample behaves as it did before. The cap is the reviewed
+// upper bound on how long a stalled exchange may hold its retained ephemeral
+// ML-KEM/X25519 private keys, and is deliberately below the 60 s transport
+// keepalive stall bound so the ratchet still fails closed first.
+inline constexpr auto kMinRekeyAckDeadline = std::chrono::seconds(5);
+inline constexpr auto kMaxRekeyAckDeadline = std::chrono::seconds(30);
+static_assert(kMinRekeyAckDeadline < kMaxRekeyAckDeadline);
+
 // Bounded multi-epoch window (dev3). One pending exchange caps a byte-saturated
 // direction at `kEpochByteLimit` per rekey round trip, which is about 35 Mbit/s
 // at 60 ms and 52 Mbit/s at 40 ms. A window of `w` authenticated, strictly

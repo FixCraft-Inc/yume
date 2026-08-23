@@ -108,6 +108,9 @@ TunnelPool::Snapshot TunnelPool::snapshot() const {
     snap.tunnel_count = entries_.size();
     snap.sessions_per_tunnel.reserve(entries_.size());
     for (auto& entry : entries_) {
+        if (entry->tunnel && entry->tunnel->is_alive()) {
+            ++snap.live_tunnel_count;
+        }
         const std::size_t load = entry->active_sessions.load();
         snap.sessions_per_tunnel.push_back(load);
         snap.total_sessions += load;

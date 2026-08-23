@@ -108,13 +108,15 @@ development label, keep `chrome151` opt-in, and avoid release-parity claims.
   tests, including malformed extended CONNECT, replay, ordinary cover paths,
   backend outage, certificate/site consistency, and hosting/IP metadata. Record
   every remaining classifier-visible difference; do not claim DPI immunity.
-- Run matched one-tunnel WAN upload, download, and bidirectional matrices at
-  60, 100, and 210 ms, at 100 Mbit/s and approximately 1 Gbit/s, with controlled
-  loss. Freeze binaries, TLS backend, payload, stream geometry, NIC state, and
-  exact commands; retain machine-readable reports for at least three matched
-  samples where medians are compared.
-- Diagnose the observed roughly 25 Mbit/s delayed-path ceiling before accepting
-  high-RTT performance or tuning the ratchet again.
+- Complete matched one-tunnel WAN upload, download, and bidirectional matrices
+  at 60, 100, and 210 ms, at 100 Mbit/s and approximately 1 Gbit/s, with
+  controlled loss. The current exact candidate already has three interleaved
+  default-path repeats at 60 ms and two diagnostic repeats at 100/210 ms under
+  a 1-Gbit/s, zero-loss cap, with machine-readable artifacts and no manual-
+  credit regression or stall. The former ~25-Mbit/s ceiling was diagnosed as
+  pinned TCP buffers followed by H2/ratchet credit; do not reopen offer pacing
+  or cryptographic CPU as its cause. The 100-Mbit/s, controlled-loss,
+  bidirectional, three-repeat high-RTT, and soak arms remain open.
 - Run one uninterrupted authenticated tunnel for at least 30 minutes in the
   intended deployed-network environment. The prior seven-segment loopback soak
   is not a substitute.
@@ -145,15 +147,110 @@ bumping to `2.0-rc1`.
 - Rebuild all versioned ABI/package targets after the version bump; pass native,
   sanitizer, Go race, Debian source/binary metadata, installed-consumer,
   reproducibility, license, private-artifact, and release-manifest checks from a
-  clean tag candidate.
+  clean tag candidate. Add a second clean C++ binary comparison (today only the
+  Go helper is byte-compared), pin release Actions by reviewed commit, and bind
+  the dynamic `DT_NEEDED` set, glibc/libstdc++ floors, nghttp2/toolchain inputs,
+  SBOM, and provenance attestation into the release evidence. Exercise the
+  separate publish job in a declared compatible runtime: it currently receives
+  binaries linked to source-built OpenSSL 3.5.7 without bundling that runtime,
+  while its fresh Ubuntu 22.04 environment does not activate the pinned build
+  before executing `yumed --version`.
 - Review the final `origin/main` delta, create a signed release commit and signed
   tag, and run the preparation-only release workflow with its explicit
   independent-review and RC-gate acknowledgements. Inspect artifacts before any
-  publication action.
+  publication action. Before publication is enabled, make automation enforce
+  this policy: current preflight checks only that the named tag resolves to
+  `HEAD`, not `git verify-commit`/`git verify-tag`, and artifact signatures are
+  optional when `GPG_PRIVATE_KEY` is absent. A publish job must fail when the
+  trusted commit/tag signatures or required artifact signatures are missing.
 - Publish only claims directly supported by retained evidence. In particular,
   hybrid post-quantum establishment is not “quantum-proof,” structural parity
   is not indistinguishability, and Linux qualification is not Android or
   cross-platform support.
+
+## Product goals that require evidence, not promises
+
+The longer-term goal is to make YUME difficult to distinguish from its chosen
+cover workload while remaining safe and usable on constrained and high-latency
+hosts. “DPI/neural cannot learn YUME,” “works on any server,” and “high ping can
+never interrupt a session” are not acceptable release claims. Use these
+bounded gates instead:
+
+- **Classifier resistance (scoring engine frozen, dev6):** the decision rules
+  now live in `config/classifier_gate_v1.json` and are executed by
+  `scripts/yume_classifier_gate.py`. They were written before any candidate
+  capture existed, which is the whole point: thresholds chosen after seeing
+  results are not a gate. The protocol is hashed into every result, the split is
+  leave-one-group-out over capture day / host / network / provider, the
+  bootstrap resamples whole groups rather than sessions, and the verdict follows
+  the *strongest* classifier because an adversary picks the best one. Feature
+  extraction is deliberately a separate later stage so it cannot influence the
+  frozen thresholds. Calibration is pinned by
+  `scripts/test_yume_classifier_gate.py`: identical arms pass, a half-sigma
+  difference fails, and a per-group bias applied to both arms yields no
+  advantage. `config/classifier_gate_v1.json` is still
+  `status: draft-pending-signoff` -- the numeric ceilings need an explicit
+  decision *before* the first real evaluation, after which they must not move.
+
+  **Consequence for capture planning:** the preconditions require at least 40
+  sessions per arm spread across at least four groups, and refuse to return a
+  verdict otherwise (exit status 2, `INSUFFICIENT`, never a pass). The planned
+  five-run campaign supplies five sessions per arm from one host on one day. It
+  is roughly an order of magnitude short of what any held-out claim needs, and
+  no threshold choice fixes that. Capture volume and diversity have to grow
+  before the gate can return anything but `INSUFFICIENT`.
+
+- **Classifier resistance (remaining):** evaluate complete sessions with train/test groups
+  separated by capture day, host, network and provider; compare more than one
+  classifier; report confidence intervals, ROC-AUC, PR-AUC and true-positive
+  rate at pre-declared low false-positive rates. Include active probes and the
+  metadata an observer really sees. Freeze thresholds before examining the
+  candidate results. A passed fixture or matching JA3/JA4 is not this gate.
+- **Latency tolerance:** retain the negotiated byte, frame and sender-active
+  time limit as hard security caps. The authenticated-ACK RTT estimator landed
+  in dev6 and drives the rekey ACK deadline only, as
+  `clamp(SRTT + 4 * RTTVAR, 5 s, 30 s)` frozen per offer; the 60 s keepalive
+  stall bound remains the separate watchdog and the cap sits below it. See
+  `docs/YUME_2_0_WAN_BEHAVIOR.md`. Preparation depth and lead time are still
+  static, on purpose: they are wire-visible and the deadline is not, so they
+  stay behind the classifier-evidence gate. Peer-supplied timestamps and
+  unauthenticated observations do not steer the estimator. Unit coverage exists
+  for clamping, freezing, queue ordering and the epoch-limit invariant; still
+  required before any latency-tolerance claim are the real first-exchange,
+  steady-state, loss, reordering, outage and recovery matrices.
+- **Constrained operation:** publish minimum/candidate host tiers only after the
+  full TLS, hybrid-PQ, ratchet and Node cover stack passes under explicit cgroup
+  CPU, RSS, task and fd limits. Record handshake/rekey p95/p99, throughput,
+  queue growth, overload rejection and recovery. Resource pressure must not
+  silently downgrade cryptography or change cover identity.
+- **Portability:** replace “any server” with an exact OS, architecture, libc,
+  toolchain and package matrix. Each supported cell needs a reproducible build,
+  dependency/SBOM evidence, startup/service check and real or named-emulation
+  smoke. The current narrow target remains glibc Linux x86_64 CLI/server/helper
+  until another cell passes.
+
+Timing or padding shaping may be considered only after real-cover captures
+define the target distribution and a held-out comparison demonstrates benefit
+within a frozen overhead budget. Uniform or per-install “randomish” timing is
+not automatically camouflage and may create a durable classifier feature.
+
+The reason is worth keeping explicit, because “add random jitter” keeps
+resurfacing as a proposal. Under Kerckhoffs the adversary knows the algorithm,
+so they know the distribution being sampled from and can test against it. Three
+consequences follow. First, randomising a rotation interval cannot improve a
+security bound: the bound is the tail of the distribution, so either it is
+capped -- in which case the cap is the real parameter and the randomness only
+adds cost -- or it is uncapped, in which case there is no bound at all. Second,
+a per-install or per-host random parameter is a fingerprint: an observer who
+sees `n` intervals estimates the parameter with error shrinking as
+`1/sqrt(n)`, so after enough rotations the draw itself links sessions to a
+host. Randomness that is not identically distributed across the whole
+population identifies the population member. Third, uniform or Gaussian jitter
+is not what real traffic looks like -- inter-arrival times in browser workloads
+are heavy-tailed -- so injecting it is a positive signal, and a two-sample test
+separates it from the cover with power growing in `sqrt(n)`. The target is
+never randomness; it is the cover's measured distribution, which is why the
+capture gate exists.
 
 ## Current continuation boundary (2026-08-21)
 
@@ -165,21 +262,39 @@ bumping to `2.0-rc1`.
 2. CI run `32443839339` proved the pinned OpenSSL 3.5.7/nghttp2 environment and
    completed both native and sanitizer builds. Both CTest lanes passed 69/70;
    only `yume_browser_sandbox_test` failed.
-3. The failing unit fixture still invokes real certificate generation before
-   the behavior it means to test. Its previous fixed `PATH` paired Ubuntu's
-   OpenSSL 3.0 executable with pinned 3.5.7 libraries; retaining the inherited
-   path removed that crash but the exact CI fixture still exits silently before
-   the intended fake-Chrome diagnostic. Make certificate generation hermetic
-   inside the test, keep fake commands first, and do not weaken production
-   sandboxing, hash gates, or capture failure handling.
-4. After the focused 38-test sandbox suite passes, require all 70 native and
-   sanitizer CI tests to pass. Then complete the fresh exact-signed-tree
-   dependency, sanitizer, reproducibility, Debian/ABI, package, preflight, and
-   artifact checks that were not reached by the prior remote run.
+3. The failing unit fixture invoked real certificate generation before the
+   behavior it meant to test. Its previous fixed `PATH` paired Ubuntu's OpenSSL
+   3.0 executable with pinned 3.5.7 libraries; retaining the inherited path
+   removed that crash but exact CI still exited silently before the intended
+   fake-Chrome diagnostic. The current working-tree correction supplies a
+   strict test-local `openssl` that creates only the dummy fixture outputs and
+   restores `fake-bin:/usr/bin:/bin`; production sandboxing, hash gates, and
+   capture failure handling are unchanged.
+4. The direct browser-sandbox suite passes 38/38 with the correction, including
+   the intended unsuccessful-Chrome diagnostic and absent sanitizer marker. A
+   subsequent isolated GCC 14.2 run found a mixed-LTO/shared-ABI link defect and
+   a non-repeatable vendor `ensure` path. The working-tree corrections propagate
+   the required non-LTO policy from protected ABI input archives, retain LTO for
+   ordinary builds without the shared ABI, and accept an existing vendor tree
+   only when it matches a fresh verified extraction. Strict shared-ABI Release
+   and serial ASan+UBSan then passed 70/70 each; CLI smokes and pinned Go unit/
+   race tests passed. Require the same 70/70 result in CI, then complete the
+   fresh exact-signed-tree dependency, sanitizer, reproducibility, Debian/ABI,
+   package, preflight, and artifact checks not reached by the prior remote run.
 5. The `97ed846` source checkpoint is **NO MERGE CLAIM / NO RELEASE**.
    A documentation-only successor does not change that verdict. Historical
-   Gate A closure remains valid only for its named checkpoints. Gate B remains
-   open on the separate real-CDP navigation/campaign boundary.
+   Gate A closure remains valid only for its named checkpoints.
+6. Gate B's blocker is cleared but Gate B is not closed. The real-CDP
+   `Page.navigate` timeout was Chrome's own startup service traffic stalling the
+   browser's network pipeline for about 24 seconds, not a YUME, Node, or driver
+   defect; captures now run inside a loopback-only network namespace via
+   `scripts/yume_capture_netns.sh`, and a real two-run campaign completed with
+   the pinned Chrome and Node. See `docs/YUME_2_0_DEV6_HANDOFF.md`. Still
+   required: the matched five-run normal and YUME campaign, the validator
+   comparison, and every classifier and probe gate above. Note also that all
+   pre-existing captures were taken with egress and therefore contain
+   Chrome-to-Google traffic the YUME arm never produced; they cannot be reused
+   as matched inputs.
 
 ## Earlier continuation boundary (2026-08-14)
 

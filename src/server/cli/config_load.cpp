@@ -9,11 +9,15 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <limits>
+#include <stdexcept>
 #include <string>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
 #include "config/ratchet_profile_json.hpp"
+#include "server/cli/config_json_types.hpp"
 #include "server/cli/misc.hpp"
 #include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
@@ -27,22 +31,35 @@ namespace yume::server::cli {
 namespace {
 
 std::uint32_t json_non_negative_u32(const nlohmann::json& json, const char* key) {
-    int v = json[key].get<int>();
-    if (v < 0) {
-        v = 0;
+    const auto& entry = json.at(key);
+    std::uint64_t value = 0;
+    if (entry.is_number_unsigned()) {
+        value = entry.get<std::uint64_t>();
+    } else if (entry.is_number_integer()) {
+        const auto signed_value = entry.get<std::int64_t>();
+        if (signed_value < 0) {
+            throw std::runtime_error(std::string(key) +
+                                     " must be a non-negative integer");
+        }
+        value = static_cast<std::uint64_t>(signed_value);
+    } else {
+        throw std::runtime_error(std::string(key) +
+                                 " must be a non-negative integer");
     }
-    return static_cast<std::uint32_t>(v);
+    if (value > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error(std::string(key) +
+                                 " must be in 0..4294967295");
+    }
+    return static_cast<std::uint32_t>(value);
 }
 
 std::uint16_t json_obfs_pad_multiple(const nlohmann::json& json) {
-    int v = json["obfs_pad_multiple"].get<int>();
-    if (v < 0) {
-        v = 0;
+    const std::uint32_t value =
+        json_non_negative_u32(json, "obfs_pad_multiple");
+    if (value > 256) {
+        throw std::runtime_error("obfs_pad_multiple must be in 0..256");
     }
-    if (v > 256) {
-        v = 256;
-    }
-    return static_cast<std::uint16_t>(v);
+    return static_cast<std::uint16_t>(value);
 }
 
 void resolve_server_config_paths(yume::server::ServerConfig& cfg,
@@ -102,8 +119,8 @@ void resolve_server_config_paths(yume::server::ServerConfig& cfg,
     if (!cfg.operator_keys_meta.empty()) {
         cfg.operator_keys_meta = resolve_cfg_path(cfg.operator_keys_meta);
     }
-    if (!cfg.federation_auth_key.empty()) {
-        cfg.federation_auth_key = resolve_cfg_path(cfg.federation_auth_key);
+    if (!cfg.federation_identity.empty()) {
+        cfg.federation_identity = resolve_cfg_path(cfg.federation_identity);
     }
     if (!cfg.federation_anonym_ca.empty()) {
         cfg.federation_anonym_ca = resolve_cfg_path(cfg.federation_anonym_ca);
@@ -118,9 +135,14 @@ void resolve_server_config_paths(yume::server::ServerConfig& cfg,
 
 }  // namespace
 
-bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
-                                               ServerConfigLoadContext& context,
+bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& out_cfg,
+                                               ServerConfigLoadContext& out_context,
                                                const ServerConfigOverrides& overrides) {
+    // Parse and resolve into private candidates. A late type, collection, or
+    // semantic error must not leak fields or a rewritten config path to the
+    // caller that supplied the last known-good state.
+    yume::server::ServerConfig cfg = out_cfg;
+    ServerConfigLoadContext context = out_context;
     context.config_path = yume::util::expand_user(context.config_path);
     if (!context.config_specified && !context.exe_dir.empty()) {
         std::filesystem::path cfg_path(context.config_path);
@@ -149,6 +171,11 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
     if (context.config_specified || std::filesystem::exists(context.config_path)) {
         try {
             auto json = yume::util::read_json_config(context.config_path);
+            std::string validation_error;
+            if (!validate_server_config_json_types(json, &validation_error)) {
+                yume::util::log_error(validation_error);
+                return false;
+            }
             if (json.contains("transport_profile")) {
                 cfg.transport_profile =
                     json["transport_profile"].get<std::string>();
@@ -206,22 +233,6 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
             }
             if (json.contains("inner_required") && !overrides.inner_required) {
                 cfg.inner_required = json["inner_required"].get<bool>();
-            }
-            if (json.contains("inner_hop") && !overrides.inner_hop) {
-                cfg.inner_hop = json["inner_hop"].get<bool>();
-            }
-            if (json.contains("hop_interval_ms") && !overrides.hop_interval) {
-                cfg.hop_interval_ms = static_cast<std::uint32_t>(json["hop_interval_ms"].get<int>());
-            }
-            if (json.contains("argon2_memory_budget_kib") &&
-                !overrides.argon2_memory_budget) {
-                cfg.argon2_memory_budget_kib =
-                    yume::server::json_positive_u32(
-                        json, "argon2_memory_budget_kib");
-            }
-            if (json.contains("argon2_max_jobs") && !overrides.argon2_max_jobs) {
-                cfg.argon2_max_jobs =
-                    yume::server::json_positive_u32(json, "argon2_max_jobs");
             }
             if (json.contains("inner_heavy")) {
                 cfg.inner_heavy = json["inner_heavy"].get<bool>();
@@ -421,14 +432,21 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
             if (json.contains("filter_geolite") && !overrides.filter_geolite) {
                 cfg.filter_geolite = resolve_cfg_path(json["filter_geolite"].get<std::string>());
             }
-            if (json.contains("filter_lists") && json["filter_lists"].is_array()) {
+            if (json.contains("filter_lists")) {
+                if (!json["filter_lists"].is_array()) {
+                    yume::util::log_error("filter_lists must be an array");
+                    return false;
+                }
                 for (const auto& item : json["filter_lists"]) {
-                    if (item.is_string()) {
-                        cfg.filter_lists.push_back(
-                            resolve_filter_list_spec_path(item.get<std::string>(),
-                                                          context.config_dir,
-                                                          context.exe_dir));
+                    if (!item.is_string()) {
+                        yume::util::log_error(
+                            "filter_lists entries must be strings");
+                        return false;
                     }
+                    cfg.filter_lists.push_back(
+                        resolve_filter_list_spec_path(item.get<std::string>(),
+                                                      context.config_dir,
+                                                      context.exe_dir));
                 }
             }
             if (json.contains("packet_egress") && !overrides.packet_egress) {
@@ -504,12 +522,21 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
                 cfg.federation_enable = json["federation_enable"].get<bool>();
             }
             if (json.contains("federation_peers") && cfg.federation_peers.empty()) {
+                if (!json["federation_peers"].is_array()) {
+                    yume::util::log_error("federation_peers must be an array");
+                    return false;
+                }
                 for (const auto& peer : json["federation_peers"]) {
+                    if (!peer.is_object()) {
+                        yume::util::log_error(
+                            "federation_peers entries must be objects");
+                        return false;
+                    }
                     cfg.federation_peers.push_back(peer.dump());
                 }
             }
-            if (json.contains("federation_auth_key") && cfg.federation_auth_key.empty()) {
-                cfg.federation_auth_key = resolve_cfg_path(json["federation_auth_key"].get<std::string>());
+            if (json.contains("federation_identity") && cfg.federation_identity.empty()) {
+                cfg.federation_identity = resolve_cfg_path(json["federation_identity"].get<std::string>());
             }
             if (json.contains("federation_anonym_ca") && cfg.federation_anonym_ca.empty()) {
                 cfg.federation_anonym_ca = resolve_cfg_path(json["federation_anonym_ca"].get<std::string>());
@@ -586,6 +613,8 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& cfg,
     }
 
     resolve_server_config_paths(cfg, context);
+    out_cfg = std::move(cfg);
+    out_context = std::move(context);
     return true;
 }
 

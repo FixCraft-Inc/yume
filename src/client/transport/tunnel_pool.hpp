@@ -73,6 +73,7 @@ public:
     // Diagnostic snapshot, for logging.
     struct Snapshot {
         std::size_t tunnel_count{0};
+        std::size_t live_tunnel_count{0};
         std::size_t total_sessions{0};
         std::vector<std::size_t> sessions_per_tunnel;
     };

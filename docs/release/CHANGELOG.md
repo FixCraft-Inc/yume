@@ -44,6 +44,12 @@ downgrade mode exists.
 
 ### Changed
 
+- **Go helper dependency floor.** The opt-in uTLS helper now requires Go 1.25
+  module semantics while retaining the exact Go 1.26.5 build toolchain. Its
+  indirect `golang.org/x/crypto` dependency moves from 0.36.0 to 0.52.0 and
+  `golang.org/x/sys` from 0.31.0 to 0.45.0, leaving GitHub's reported vulnerable
+  module ranges while preserving the pinned uTLS and wire protocol versions.
+
 - **OpenSSL parity boundary and helper retention.** The C++ OpenSSL backend now
   emits the captured Chrome 151 JA4 plus the exact non-GREASE cipher,
   signature, and extension sets. It still cannot reproduce raw browser GREASE

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "client/cli/entry.hpp"
+#include "facade/config/load_error.hpp"
 #include "server/config/config.hpp"
 
 namespace yume::facade::config_io {
@@ -27,7 +28,9 @@ struct ValidationReport {
 // the GUI and CLI can share config files. Unknown keys are ignored
 // (forward-compatible). Returns nullopt with *err populated on parse fail.
 std::optional<client::ClientConfig> load_client(
-    std::filesystem::path const& path, std::string* err);
+    std::filesystem::path const& path,
+    std::string* err,
+    ConfigLoadError* load_error = nullptr);
 std::optional<client::ClientConfig> parse_client_json(
     std::string_view text,
     std::filesystem::path const& base_dir,
@@ -39,7 +42,9 @@ ValidationReport validate(client::ClientConfig const& cfg);
 
 // JSON ↔ ServerConfig. Same conventions as load_client/save_client.
 std::optional<server::ServerConfig> load_server(
-    std::filesystem::path const& path, std::string* err);
+    std::filesystem::path const& path,
+    std::string* err,
+    ConfigLoadError* load_error = nullptr);
 std::optional<server::ServerConfig> parse_server_json(
     std::string_view text,
     std::filesystem::path const& base_dir,

@@ -6,10 +6,9 @@
 
 #include "client/transport/tunnel.hpp"
 
-#include <array>
 #include <chrono>
-#include <cstdio>
-#include <thread>
+#include <limits>
+#include <utility>
 
 #include "client/proxy/forward.hpp"
 #include "util.hpp"
@@ -21,10 +20,6 @@
 
 namespace yume::client {
 
-namespace {
-constexpr int kSocketBufferBytes = 2 * 1024 * 1024;
-}
-
 Tunnel::Tunnel(ClientTransportStream&& stream,
                std::unique_ptr<obfs::H2Carrier> carrier,
                Bytes prefetched_carrier_bytes,
@@ -34,7 +29,9 @@ Tunnel::Tunnel(ClientTransportStream&& stream,
     , carrier_(std::move(carrier))
     , prefetched_carrier_bytes_(std::move(prefetched_carrier_bytes)) {
     read_buf_.resize(util::relay_read_buf_size());
-    stream_.set_socket_buffers(kSocketBufferBytes);
+    // Not pinned: see the matching note in server/session/session.cpp. An
+    // explicit SO_RCVBUF/SO_SNDBUF disables Linux window autotuning and caps
+    // throughput far below the bandwidth-delay product on a delayed path.
     if (ratchet) core_.set_ratchet(std::move(ratchet));
 #if YUME_ENABLE_DEV_DIAGNOSTICS
     if (YUME_TIMING_ENABLED()) {
@@ -93,22 +90,40 @@ Tunnel::Tunnel(ClientTransportStream&& stream,
     core_.set_server_stream_open_handler([this](uint8_t stream_id,
                                                 const std::string& host,
                                                 int port,
-                                                std::string*) {
+                                                std::string* reason) {
+        if (!allow_server_streams_.load(std::memory_order_relaxed)) {
+            if (reason) {
+                *reason = "peer-initiated streams are disabled";
+            }
+            return false;
+        }
         auto session = std::make_shared<ReverseForwardSession>(shared_from_this(), stream_id, host, port);
-        session->start();
+        if (!session->start()) {
+            if (reason) {
+                *reason = "stream id registration failed";
+            }
+            return false;
+        }
         return true;
-    });
-    core_.set_exec_handler([this](uint8_t stream_id, const std::string& command) {
-        start_exec(stream_id, command);
     });
 }
 
 void Tunnel::start() {
+    if (carrier_) {
+        std::weak_ptr<Tunnel> weak = weak_from_this();
+        core_.set_inbound_credit_release_handler(
+            [weak = std::move(weak)](std::size_t bytes) {
+                if (auto self = weak.lock()) {
+                    self->release_inbound_credit(bytes);
+                }
+            });
+    }
     core_.start();
     if (!carrier_) {
         schedule_keepalive();
     } else if (!prefetched_carrier_bytes_.empty()) {
         core_.feed_tls_bytes(prefetched_carrier_bytes_.data(),
+                             prefetched_carrier_bytes_.size(),
                              prefetched_carrier_bytes_.size());
         prefetched_carrier_bytes_.clear();
     }
@@ -118,10 +133,6 @@ void Tunnel::start() {
 
 void Tunnel::set_inner_key(const Bytes& key) {
     core_.set_inner_key(key);
-}
-
-void Tunnel::set_hop(bool enabled, std::uint32_t interval_ms, std::int64_t offset_ms) {
-    core_.set_hop(enabled, interval_ms, offset_ms);
 }
 
 void Tunnel::set_obfs_shape(std::uint16_t pad_multiple, std::uint32_t jitter_ms_max) {
@@ -134,7 +145,16 @@ void Tunnel::set_server_in_charge(bool enabled) {
 }
 
 void Tunnel::set_allow_exec(bool enabled) {
-    core_.set_allow_exec(enabled);
+    if (enabled) {
+        util::log_warn(
+            "inbound remote command execution remains disabled because "
+            "child-process shutdown is not bounded");
+    }
+    core_.set_allow_exec(false);
+}
+
+void Tunnel::set_allow_server_streams(bool allowed) {
+    allow_server_streams_.store(allowed, std::memory_order_relaxed);
 }
 
 void Tunnel::set_reverse_handler(ReverseOpenHandler handler) {
@@ -166,15 +186,25 @@ uint8_t Tunnel::reserve_stream_id() {
     return core_.reserve_stream_id();
 }
 
-void Tunnel::register_stream(uint8_t stream_id,
+bool Tunnel::register_stream(uint8_t stream_id,
                              DataHandler on_data,
                              CloseHandler on_close,
                              HalfCloseHandler on_half_close) {
-    core_.register_stream(stream_id, std::move(on_data), std::move(on_close), std::move(on_half_close));
+    return core_.register_stream(stream_id, std::move(on_data),
+                                 std::move(on_close),
+                                 std::move(on_half_close));
 }
 
 void Tunnel::unregister_stream(uint8_t stream_id) {
     core_.unregister_stream(stream_id);
+}
+
+void Tunnel::retire_stream_id(uint8_t stream_id) {
+    core_.retire_stream_id(stream_id);
+}
+
+void Tunnel::release_reserved_stream(uint8_t stream_id) {
+    core_.release_reserved_stream(stream_id);
 }
 
 void Tunnel::open_stream(uint8_t stream_id,
@@ -206,6 +236,19 @@ void Tunnel::stop(const std::string& reason) {
     });
 }
 
+void Tunnel::cancel_runtime_operations(const std::string& reason) {
+    auto close_callbacks = core_.shutdown();
+    for (auto& callback : close_callbacks) {
+        if (!callback) continue;
+        try {
+            callback(reason);
+        } catch (...) {
+            // Teardown must continue settling every registered operation even
+            // when an embedder-provided close callback misbehaves.
+        }
+    }
+}
+
 void Tunnel::send_data(uint8_t stream_id, const Bytes& data) {
     core_.send_data(stream_id, data);
 }
@@ -225,6 +268,15 @@ bool Tunnel::try_send_data(uint8_t stream_id,
                            TransportCore::WriteCompletion completion) {
     return core_.try_send_data(
         stream_id, std::move(data), std::move(completion));
+}
+
+TransportCore::DataWriteAdmission Tunnel::wait_send_data(
+    uint8_t stream_id,
+    Bytes&& data,
+    std::chrono::milliseconds timeout,
+    TransportCore::WriteCompletion completion) {
+    return core_.wait_send_data(
+        stream_id, std::move(data), timeout, std::move(completion));
 }
 
 void Tunnel::send_close(uint8_t stream_id, const std::string& reason) {
@@ -279,7 +331,8 @@ void Tunnel::on_read_tls(const boost::system::error_code& ec, std::size_t bytes)
             }
             Bytes decoded = carrier_->TakeTunnelBytes();
             if (!decoded.empty()) {
-                core_.feed_tls_bytes(decoded.data(), decoded.size());
+                core_.feed_tls_bytes(
+                    decoded.data(), decoded.size(), decoded.size());
             }
             flush_carrier_output();
             if (carrier_->carrier_closed()) {
@@ -387,6 +440,57 @@ void Tunnel::complete_carrier_writes(std::size_t count,
     }
 }
 
+void Tunnel::release_inbound_credit(std::size_t bytes) {
+    if (bytes == 0U) {
+        return;
+    }
+    if (!strand_.running_in_this_thread()) {
+        boost::asio::post(
+            strand_, [self = shared_from_this(), bytes]() {
+                self->release_inbound_credit(bytes);
+            });
+        return;
+    }
+    if (!carrier_ || closed_.load(std::memory_order_relaxed) ||
+        inbound_credit_release_failed_) {
+        return;
+    }
+    if (bytes > std::numeric_limits<std::size_t>::max() -
+                    pending_inbound_credit_bytes_) {
+        inbound_credit_release_failed_ = true;
+        close_all("H2 receive-credit release overflow");
+        return;
+    }
+    pending_inbound_credit_bytes_ += bytes;
+    if (inbound_credit_release_scheduled_) {
+        return;
+    }
+    inbound_credit_release_scheduled_ = true;
+    boost::asio::post(strand_, [self = shared_from_this()] {
+        self->flush_inbound_credit_on_strand();
+    });
+}
+
+void Tunnel::flush_inbound_credit_on_strand() {
+    if (!inbound_credit_release_scheduled_) {
+        return;
+    }
+    inbound_credit_release_scheduled_ = false;
+    const std::size_t bytes =
+        std::exchange(pending_inbound_credit_bytes_, 0U);
+    if (bytes == 0U || !carrier_ ||
+        closed_.load(std::memory_order_relaxed) ||
+        inbound_credit_release_failed_) {
+        return;
+    }
+    if (!carrier_->ConsumeTunnelBytes(bytes)) {
+        inbound_credit_release_failed_ = true;
+        close_all("H2 receive-credit release failed: " + carrier_->error());
+        return;
+    }
+    flush_carrier_output();
+}
+
 void Tunnel::observe_orderly_peer_close() {
     if (!orderly_close_pending_) return;
     orderly_close_peer_closed_ = true;
@@ -430,64 +534,6 @@ void Tunnel::handle_orderly_close_timeout(
         record_orderly_close_wire_result(false);
     }
     finish_close(orderly_close_reason_);
-}
-
-void Tunnel::start_exec(uint8_t stream_id, std::string command) {
-    std::uint32_t active = active_execs_.load(std::memory_order_relaxed);
-    while (active < kMaxConcurrentExecs &&
-           !active_execs_.compare_exchange_weak(
-               active, active + 1,
-               std::memory_order_acq_rel,
-               std::memory_order_relaxed)) {
-    }
-    if (active >= kMaxConcurrentExecs) {
-        send_data(stream_id, Bytes({'E', 'X', 'E', 'C', ' ', 'b', 'u', 's', 'y'}));
-        send_close(stream_id, "exec concurrency limit reached");
-        core_.release_reserved_stream(stream_id);
-        return;
-    }
-
-    auto self = shared_from_this();
-    std::thread([self, stream_id, command = std::move(command)]() {
-        struct ExecSlotGuard {
-            Tunnel* tunnel;
-            ~ExecSlotGuard() {
-                tunnel->active_execs_.fetch_sub(1, std::memory_order_acq_rel);
-            }
-        } slot{self.get()};
-#if defined(_WIN32)
-        std::string exec_cmd = "cmd /C " + command;
-        FILE* pipe = _popen(exec_cmd.c_str(), "r");
-#else
-        std::string exec_cmd = command + " 2>&1";
-        FILE* pipe = popen(exec_cmd.c_str(), "r");
-#endif
-        if (!pipe) {
-            self->send_data(stream_id, Bytes({'E', 'X', 'E', 'C', ' ', 'f', 'a', 'i', 'l', 'e', 'd'}));
-            self->send_close(stream_id, "exec failed");
-            self->core_.release_reserved_stream(stream_id);
-            return;
-        }
-        std::array<char, 4096> buf{};
-        while (true) {
-            size_t n = std::fread(buf.data(), 1, buf.size(), pipe);
-            if (n > 0) {
-                Bytes out(reinterpret_cast<uint8_t*>(buf.data()),
-                          reinterpret_cast<uint8_t*>(buf.data()) + n);
-                self->send_data(stream_id, out);
-            }
-            if (n < buf.size()) {
-                break;
-            }
-        }
-#if defined(_WIN32)
-        _pclose(pipe);
-#else
-        pclose(pipe);
-#endif
-        self->send_close(stream_id, "exec done");
-        self->core_.release_reserved_stream(stream_id);
-    }).detach();
 }
 
 void Tunnel::close_all(const std::string& reason) {
@@ -591,7 +637,7 @@ void Tunnel::finish_close(const std::string& reason) {
     TunnelCloseHandler close_handler;
     {
         std::lock_guard<std::mutex> lock(close_handler_mu_);
-        close_handler = close_handler_;
+        close_handler = std::move(close_handler_);
     }
 
     if (reason == "interrupt" || reason == "server closed" || reason == "server shutdown") {

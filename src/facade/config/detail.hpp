@@ -8,6 +8,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 
@@ -21,8 +22,9 @@ void read_opt(nlohmann::json const& j, const char* key, T& dst) {
     if (it != j.end() && !it->is_null()) {
         try {
             dst = it->get<T>();
-        } catch (...) {
-            // Ignore type mismatch; field keeps its default value.
+        } catch (const nlohmann::json::exception& error) {
+            throw std::runtime_error(
+                std::string(key) + ": invalid value: " + error.what());
         }
     }
 }

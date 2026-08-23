@@ -130,7 +130,15 @@ Bytes DeriveInitialRoot(const Bytes& mlkem_shared,
     if (channel_binding.size() != kChannelBindingLen) {
         throw std::runtime_error("invalid YUME 2.0 channel binding");
     }
+#if YUME_USE_BASEFWX
+    // The concatenation contains every establishment secret. Own it with an
+    // RAII wiper before the first allocation so reserve/append/HKDF failures
+    // cannot leave the retained vector capacity uncleared.
+    basefwx::crypto::SecureBytes guarded_input;
+    Bytes& input = guarded_input.bytes();
+#else
     Bytes input;
+#endif
     input.reserve(mlkem_shared.size() + x25519_shared.size() +
                   psk_key.size() + channel_binding.size() +
                   yume::kTransportProfile.size() + 20);
@@ -140,11 +148,7 @@ Bytes DeriveInitialRoot(const Bytes& mlkem_shared,
     AppendLengthPrefixed(input, channel_binding);
     AppendLengthPrefixed(input, Bytes(yume::kTransportProfile.begin(),
                                       yume::kTransportProfile.end()));
-    Bytes root = Hkdf(input, transcript_salt, kInitialRootLabel, 32);
-#if YUME_USE_BASEFWX
-    basefwx::crypto::SecureClear(input);
-#endif
-    return root;
+    return Hkdf(input, transcript_salt, kInitialRootLabel, 32);
 }
 
 Bytes DeriveDirectionRoot(const Bytes& initial_root, Direction direction) {
@@ -167,11 +171,10 @@ DirectionalRatchet::DirectionalRatchet(Direction direction,
     if (SecretBytes(root_).size() != 32) {
         throw std::runtime_error("YUME 2.0 direction root must be 32 bytes");
     }
-    Bytes chain = Hkdf(SecretBytes(root_), {}, kChainLabel, 32);
 #if YUME_USE_BASEFWX
-    chain_.Reset(std::move(chain));
+    chain_.Reset(Hkdf(SecretBytes(root_), {}, kChainLabel, 32));
 #else
-    chain_ = std::move(chain);
+    chain_ = Hkdf(SecretBytes(root_), {}, kChainLabel, 32);
 #endif
 }
 
@@ -226,11 +229,10 @@ SealedFrame DirectionalRatchet::Encrypt(
         throw std::runtime_error("YUME 2.0 epoch rekey required before data");
     }
     const std::uint64_t sequence = sequence_;
-    Bytes key = DeriveMessageKey();
     Bytes nonce = BuildNonce(sequence);
     Bytes aad = BuildAad(frame_type, stream_id, flags, epoch_, sequence);
 #if YUME_USE_BASEFWX
-    basefwx::crypto::SecureBytes guarded_key{std::move(key)};
+    basefwx::crypto::SecureBytes guarded_key{DeriveMessageKey()};
     Bytes ciphertext = basefwx::crypto::AesGcmEncryptWithIv(
         guarded_key.bytes(), nonce, plaintext, aad);
 #else
@@ -260,15 +262,17 @@ Bytes DirectionalRatchet::Decrypt(
     if (sequence_ == std::numeric_limits<std::uint64_t>::max()) {
         throw std::runtime_error("YUME 2.0 sequence exhausted");
     }
-    Bytes key = DeriveMessageKey();
     Bytes nonce = BuildNonce(sealed.sequence);
     Bytes aad = BuildAad(frame_type, stream_id, flags, sealed.epoch,
                          sealed.sequence);
 #if YUME_USE_BASEFWX
-    basefwx::crypto::SecureBytes guarded_key{std::move(key)};
-    Bytes plaintext = basefwx::crypto::AesGcmDecryptWithIv(
-        guarded_key.bytes(), nonce, sealed.ciphertext, aad);
+    basefwx::crypto::SecureBytes guarded_key{DeriveMessageKey()};
+    basefwx::crypto::SecureBytes guarded_plaintext{
+        basefwx::crypto::AesGcmDecryptWithIv(
+            guarded_key.bytes(), nonce, sealed.ciphertext, aad)};
+    Bytes& plaintext = guarded_plaintext.bytes();
 #else
+    Bytes plaintext;
     throw std::runtime_error("YUME 2.0 ratchet requires BaseFWX");
 #endif
     if (plaintext.size() > kMaxProtectedPayload) {
@@ -285,7 +289,11 @@ Bytes DirectionalRatchet::Decrypt(
     StepChain();
     ++sequence_;
     if (application) Account(plaintext.size(), now);
+#if YUME_USE_BASEFWX
+    return guarded_plaintext.Release();
+#else
     return plaintext;
+#endif
 }
 
 bool DirectionalRatchet::WouldExceedUsage(
@@ -309,20 +317,34 @@ std::unique_ptr<DirectionalRatchet> DirectionalRatchet::MakeAdvanced(
         established_psk_key.size() != 32) {
         throw std::runtime_error("incomplete YUME 2.0 epoch secrets");
     }
+#if YUME_USE_BASEFWX
+    basefwx::crypto::SecureBytes guarded_epoch_psk{
+        DeriveEpochPskContribution(established_psk_key, direction_, epoch_ + 1)};
+    basefwx::crypto::SecureBytes guarded_input;
+    Bytes& epoch_psk_contribution = guarded_epoch_psk.bytes();
+    Bytes& input = guarded_input.bytes();
+#else
     Bytes epoch_psk_contribution = DeriveEpochPskContribution(
         established_psk_key, direction_, epoch_ + 1);
     Bytes input;
+#endif
     AppendLengthPrefixed(input, SecretBytes(root_));
     AppendLengthPrefixed(input, mlkem_shared);
     AppendLengthPrefixed(input, x25519_shared);
     AppendLengthPrefixed(input, epoch_psk_contribution);
-    Bytes next_root = Hkdf(input, SecretBytes(root_), kEpochRootLabel, 32);
 #if YUME_USE_BASEFWX
-    basefwx::crypto::SecureClear(epoch_psk_contribution);
-    basefwx::crypto::SecureClear(input);
-#endif
+    basefwx::crypto::SecureBytes guarded_next_root{
+        Hkdf(input, SecretBytes(root_), kEpochRootLabel, 32)};
+    // Keep the returned root guarded while make_unique performs its allocation.
+    // DirectionalRatchet then copies it into its SecureBytes member before any
+    // validation that can throw.
     auto next = std::make_unique<DirectionalRatchet>(
-        direction_, std::move(next_root), policy_);
+        direction_, guarded_next_root.bytes(), policy_);
+#else
+    auto next = std::make_unique<DirectionalRatchet>(
+        direction_, Hkdf(input, SecretBytes(root_), kEpochRootLabel, 32),
+        policy_);
+#endif
     next->epoch_ = epoch_ + 1;
     return next;
 }
@@ -367,11 +389,10 @@ Bytes DirectionalRatchet::DeriveMessageKey() const {
 }
 
 void DirectionalRatchet::StepChain() {
-    Bytes next = Hkdf(SecretBytes(chain_), {}, kChainNextLabel, 32);
 #if YUME_USE_BASEFWX
-    chain_.Reset(std::move(next));
+    chain_.Reset(Hkdf(SecretBytes(chain_), {}, kChainNextLabel, 32));
 #else
-    chain_ = std::move(next);
+    chain_ = Hkdf(SecretBytes(chain_), {}, kChainNextLabel, 32);
 #endif
 }
 

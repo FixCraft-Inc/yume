@@ -14,6 +14,8 @@
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
+#include <limits>
+#include <utility>
 
 #include <boost/beast/http/status.hpp>
 
@@ -471,11 +473,12 @@ std::string Session::build_hidden_blob() {
         return "";
     }
     basefwx::crypto::Bytes salt = basefwx::crypto::RandomBytes(basefwx::constants::kUserKdfSaltSize);
-    basefwx::crypto::Bytes key = basefwx::crypto::Pbkdf2HmacSha256(
-        cfg_.real_secret,
-        salt,
-        basefwx::constants::kUserKdfIterations,
-        32);
+    basefwx::crypto::SecureBytes key{
+        basefwx::crypto::Pbkdf2HmacSha256(
+            cfg_.real_secret,
+            salt,
+            basefwx::constants::kUserKdfIterations,
+            32)};
     nlohmann::json meta{
         {"ts", static_cast<long long>(std::time(nullptr))},
         {"sid", static_cast<long long>(session_id_)},
@@ -484,7 +487,8 @@ std::string Session::build_hidden_blob() {
     std::string meta_str = meta.dump();
     basefwx::crypto::Bytes payload(meta_str.begin(), meta_str.end());
     basefwx::crypto::Bytes aad{'y', 'u', 'm', 'e', '-', 'r', 'e', 'a', 'l'};
-    basefwx::crypto::Bytes blob = basefwx::crypto::AeadEncrypt(key, payload, aad);
+    basefwx::crypto::Bytes blob =
+        basefwx::crypto::AeadEncrypt(key.bytes(), payload, aad);
 
     basefwx::crypto::Bytes combined;
     combined.reserve(salt.size() + blob.size());
@@ -804,6 +808,7 @@ void Session::start_v2_h2_session() {
         v2_h2_carrier_->Feed(preface_accum_.data(), preface_accum_.size());
         preface_accum_.clear();
     }
+    process_v2_h2_stream_closes();
     if (v2_h2_carrier_->failed()) {
         close_with_reason("v2 HTTP/2 opening rejected: " +
                           v2_h2_carrier_->error());
@@ -840,6 +845,7 @@ void Session::on_v2_h2_cover_read(const boost::system::error_code& ec,
         return;
     }
     v2_h2_carrier_->Feed(carrier_scratch_.data(), bytes);
+    process_v2_h2_stream_closes();
     if (v2_h2_carrier_->failed()) {
         close_with_reason("v2 HTTP/2 protocol error: " +
                           v2_h2_carrier_->error());
@@ -851,49 +857,64 @@ void Session::on_v2_h2_cover_read(const boost::system::error_code& ec,
 
 void Session::process_v2_h2_requests() {
     if (!v2_h2_carrier_ || close_state_ != CloseState::Open) return;
+    process_v2_h2_stream_closes();
     auto requests = v2_h2_carrier_->TakeRequests();
     for (auto& request : requests) {
         if (request.method == "GET" || request.method == "HEAD") {
+            if (!v2_h2_cover_fetches_.admit(request.stream_id)) {
+                if (!v2_h2_carrier_->RefuseStream(request.stream_id)) {
+                    close_with_reason(
+                        "failed to refuse saturated HTTP/2 cover stream: " +
+                        v2_h2_carrier_->error());
+                    return;
+                }
+                process_v2_h2_stream_closes();
+                flush_v2_h2_wire_on_strand();
+                process_v2_h2_stream_closes();
+                continue;
+            }
             const auto backend = host::parse_loopback_backend(cfg_.real_backend);
             if (!backend.has_value()) {
+                (void)v2_h2_cover_fetches_.complete_fetch(request.stream_id);
                 v2_h2_carrier_->RespondHttp(
                     request.stream_id, 502,
                     {{"content-type", "text/plain; charset=utf-8"},
                      {"date", yume::http_profile::http_date_now()}},
                     crypto::Bytes{'B', 'a', 'd', ' ', 'G', 'a', 't', 'e', 'w', 'a', 'y', '\n'},
                     request.method == "HEAD");
+                if (v2_h2_carrier_->failed()) {
+                    close_with_reason("Node cover response failed: " +
+                                      v2_h2_carrier_->error());
+                    return;
+                }
+                process_v2_h2_stream_closes();
                 flush_v2_h2_wire_on_strand();
+                process_v2_h2_stream_closes();
                 continue;
             }
-            auto self = shared_from_this();
-            host::fetch_loopback_http(
+            std::weak_ptr<Session> weak = weak_from_this();
+            auto fetch = host::fetch_loopback_http(
                 strand_, backend->first, backend->second, request.method,
                 request.path.empty() ? std::string("/") : request.path,
                 {},
-                [self, stream_id = request.stream_id,
+                [weak = std::move(weak), stream_id = request.stream_id,
                  head = request.method == "HEAD"](
                     std::string error, host::BackendHttpResponse response) mutable {
-                    if (!self->v2_h2_carrier_ ||
-                        self->close_state_ != CloseState::Open) return;
-                    if (!error.empty()) {
-                        self->v2_h2_carrier_->RespondHttp(
-                            stream_id, 502,
-                            {{"content-type", "text/plain; charset=utf-8"},
-                             {"date", yume::http_profile::http_date_now()}},
-                            crypto::Bytes{'B', 'a', 'd', ' ', 'G', 'a', 't', 'e', 'w', 'a', 'y', '\n'},
-                            head);
-                    } else {
-                        self->v2_h2_carrier_->RespondHttp(
-                            stream_id, response.status, response.headers,
-                            std::move(response.body), head);
+                    if (auto self = weak.lock()) {
+                        self->complete_v2_h2_cover_fetch(
+                            stream_id, head, std::move(error),
+                            std::move(response));
                     }
-                    if (self->v2_h2_carrier_->failed()) {
-                        self->close_with_reason("Node cover response failed: " +
-                                                self->v2_h2_carrier_->error());
-                        return;
-                    }
-                    self->flush_v2_h2_wire_on_strand();
                 });
+            const auto cancel_fetch = fetch;
+            if (!v2_h2_cover_fetches_.attach_cancel(
+                    request.stream_id,
+                    [cancel_fetch]() { cancel_fetch->cancel(); })) {
+                fetch->cancel();
+                close_with_reason(
+                    "HTTP/2 cover fetch registry lost admitted stream");
+                return;
+            }
             continue;
         }
 
@@ -921,7 +942,13 @@ void Session::process_v2_h2_requests() {
                     {{"content-type", "text/plain; charset=utf-8"},
                      {"date", yume::http_profile::http_date_now()}},
                     crypto::Bytes{'N', 'o', 't', ' ', 'F', 'o', 'u', 'n', 'd', '\n'});
+                if (v2_h2_carrier_->failed()) {
+                    close_with_reason("failed to reject v2 extended CONNECT: " +
+                                      v2_h2_carrier_->error());
+                    return;
+                }
                 flush_v2_h2_wire_on_strand();
+                process_v2_h2_stream_closes();
                 continue;
             }
             if (!v2_h2_carrier_->AcceptCarrier(request.stream_id)) {
@@ -930,6 +957,7 @@ void Session::process_v2_h2_requests() {
                 return;
             }
             v2_h2_tunnel_active_ = true;
+            process_v2_h2_stream_closes();
             flush_v2_h2_wire_on_strand();
             send_auth_challenge();
             return;
@@ -940,9 +968,62 @@ void Session::process_v2_h2_requests() {
             {{"content-type", "text/plain; charset=utf-8"},
              {"date", yume::http_profile::http_date_now()}},
             crypto::Bytes{'N', 'o', 't', ' ', 'F', 'o', 'u', 'n', 'd', '\n'});
+        if (v2_h2_carrier_->failed()) {
+            close_with_reason("HTTP/2 cover rejection failed: " +
+                              v2_h2_carrier_->error());
+            return;
+        }
         flush_v2_h2_wire_on_strand();
+        process_v2_h2_stream_closes();
     }
     read_v2_h2_cover();
+}
+
+void Session::process_v2_h2_stream_closes() {
+    if (!v2_h2_carrier_) {
+        return;
+    }
+    for (const auto& closed : v2_h2_carrier_->TakeStreamCloses()) {
+        (void)v2_h2_cover_fetches_.close_stream(closed.stream_id);
+    }
+}
+
+void Session::complete_v2_h2_cover_fetch(
+    std::int32_t stream_id,
+    bool head_request,
+    std::string error,
+    host::BackendHttpResponse response) {
+    if (!v2_h2_cover_fetches_.complete_fetch(stream_id)) {
+        return;
+    }
+    if (!v2_h2_carrier_ || close_state_ != CloseState::Open) {
+        (void)v2_h2_cover_fetches_.close_stream(stream_id);
+        return;
+    }
+    if (!error.empty()) {
+        v2_h2_carrier_->RespondHttp(
+            stream_id, 502,
+            {{"content-type", "text/plain; charset=utf-8"},
+             {"date", yume::http_profile::http_date_now()}},
+            crypto::Bytes{'B', 'a', 'd', ' ', 'G', 'a', 't', 'e', 'w', 'a', 'y', '\n'},
+            head_request);
+    } else {
+        v2_h2_carrier_->RespondHttp(
+            stream_id, response.status, response.headers,
+            std::move(response.body), head_request);
+    }
+    if (v2_h2_carrier_->failed()) {
+        close_with_reason("Node cover response failed: " +
+                          v2_h2_carrier_->error());
+        return;
+    }
+    process_v2_h2_stream_closes();
+    flush_v2_h2_wire_on_strand();
+    process_v2_h2_stream_closes();
+}
+
+void Session::cancel_v2_h2_cover_fetches() {
+    v2_h2_cover_fetches_.cancel_all();
 }
 
 void Session::schedule_v2_h2_wire_flush_on_strand() {
@@ -969,18 +1050,52 @@ void Session::flush_v2_h2_wire_on_strand() {
     if (wire.empty()) return;
 
     auto data = std::make_shared<std::vector<std::uint8_t>>(std::move(wire));
+    const std::size_t cover_output_bytes = v2_h2_tunnel_active_
+        ? 0U : data->size();
+    if (cover_output_bytes != 0U &&
+        !v2_h2_cover_fetches_.reserve_output_bytes(cover_output_bytes)) {
+        close_with_reason(
+            "unauthenticated HTTP/2 cover TLS output budget exhausted");
+        return;
+    }
     std::deque<PendingWrite> completed_app_writes;
+    std::size_t completed_app_bytes = 0U;
     if (v2_h2_carrier_->queued_output_bytes() == 0) {
         completed_app_writes.swap(v2_h2_pending_app_writes_);
+        for (const auto& item : completed_app_writes) {
+            if (item.data) {
+                completed_app_bytes += item.data->size();
+            }
+        }
     }
     enqueue_tls_write_on_strand(
         data, protocol::DATA, 0, data->size(),
-        [completed = std::move(completed_app_writes)](
+        [self = shared_from_this(),
+         completed = std::move(completed_app_writes),
+         completed_app_bytes,
+         cover_output_bytes](
             const boost::system::error_code& ec, std::size_t bytes) mutable {
+            if (cover_output_bytes != 0U &&
+                !self->v2_h2_cover_fetches_.release_output_bytes(
+                    cover_output_bytes)) {
+                self->close_with_reason(
+                    "unauthenticated HTTP/2 cover TLS output ledger mismatch");
+            }
+            self->v2_h2_app_write_frames_ =
+                completed.size() <= self->v2_h2_app_write_frames_
+                    ? self->v2_h2_app_write_frames_ - completed.size()
+                    : 0U;
+            self->v2_h2_app_write_bytes_ =
+                completed_app_bytes <= self->v2_h2_app_write_bytes_
+                    ? self->v2_h2_app_write_bytes_ - completed_app_bytes
+                    : 0U;
             for (auto& item : completed) {
                 if (item.handler) {
                     item.handler(ec, !ec && item.data ? item.data->size() : bytes);
                 }
+            }
+            if (!ec) {
+                self->maybe_resume_inbound_reads_on_strand();
             }
         });
 }
@@ -997,6 +1112,79 @@ void Session::start_v2_h2_exact_read(
     v2_h2_read_copied_ = 0;
     v2_h2_read_handler_ = std::move(handler);
     continue_v2_h2_exact_read();
+}
+
+runtime::InboundCredit Session::make_v2_h2_inbound_credit_on_strand(
+    std::size_t bytes) {
+    if (bytes == 0U || !v2_h2_tunnel_active_ || !v2_h2_carrier_) {
+        return {};
+    }
+    std::weak_ptr<Session> weak = weak_from_this();
+    return runtime::InboundCredit(
+        bytes, [weak = std::move(weak)](std::size_t released_bytes) {
+            if (auto self = weak.lock()) {
+                self->release_v2_h2_inbound_credit(released_bytes);
+            }
+        });
+}
+
+void Session::release_v2_h2_inbound_credit(std::size_t bytes) {
+    if (bytes == 0U) {
+        return;
+    }
+    if (!strand_.running_in_this_thread()) {
+        boost::asio::post(
+            strand_, [self = shared_from_this(), bytes]() {
+                self->release_v2_h2_inbound_credit(bytes);
+            });
+        return;
+    }
+    if (!v2_h2_carrier_ || close_state_ != CloseState::Open ||
+        v2_h2_credit_release_failed_) {
+        return;
+    }
+    if (bytes > std::numeric_limits<std::size_t>::max() -
+                    v2_h2_pending_credit_release_bytes_) {
+        v2_h2_pending_credit_release_bytes_ = 0U;
+        v2_h2_credit_release_scheduled_ = false;
+        v2_h2_credit_release_failed_ = true;
+        boost::asio::post(strand_, [self = shared_from_this()]() {
+            if (self->close_state_ == CloseState::Open) {
+                self->close_with_reason(
+                    "v2 HTTP/2 receive-credit release overflow");
+            }
+        });
+        return;
+    }
+    v2_h2_pending_credit_release_bytes_ += bytes;
+    if (v2_h2_credit_release_scheduled_) {
+        return;
+    }
+    v2_h2_credit_release_scheduled_ = true;
+    boost::asio::post(strand_, [self = shared_from_this()]() {
+        self->flush_v2_h2_inbound_credit_on_strand();
+    });
+}
+
+void Session::flush_v2_h2_inbound_credit_on_strand() {
+    if (!v2_h2_credit_release_scheduled_) {
+        return;
+    }
+    v2_h2_credit_release_scheduled_ = false;
+    const std::size_t bytes =
+        std::exchange(v2_h2_pending_credit_release_bytes_, 0U);
+    if (bytes == 0U || !v2_h2_carrier_ ||
+        close_state_ != CloseState::Open || v2_h2_credit_release_failed_) {
+        return;
+    }
+    if (!v2_h2_carrier_->ConsumeTunnelBytes(bytes)) {
+        v2_h2_credit_release_failed_ = true;
+        close_with_reason(
+            "v2 HTTP/2 receive-credit release failed: " +
+            v2_h2_carrier_->error());
+        return;
+    }
+    schedule_v2_h2_wire_flush_on_strand();
 }
 
 void Session::continue_v2_h2_exact_read() {
@@ -1050,6 +1238,7 @@ void Session::on_v2_h2_exact_tls_read(const boost::system::error_code& ec,
         return;
     }
     v2_h2_carrier_->Feed(carrier_scratch_.data(), bytes);
+    process_v2_h2_stream_closes();
     if (v2_h2_carrier_->failed()) {
         if (v2_h2_read_handler_) {
             auto handler = std::move(v2_h2_read_handler_);
@@ -1057,7 +1246,12 @@ void Session::on_v2_h2_exact_tls_read(const boost::system::error_code& ec,
         }
         return;
     }
+    process_v2_h2_requests();
+    if (close_state_ != CloseState::Open) {
+        return;
+    }
     flush_v2_h2_wire_on_strand();
+    process_v2_h2_stream_closes();
     continue_v2_h2_exact_read();
 }
 

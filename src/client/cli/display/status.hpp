@@ -13,18 +13,11 @@
 
 namespace yume::client {
 
-struct HopStatusSnapshot {
-    bool enabled = false;
-    std::uint32_t interval_ms = 0;
-    std::int64_t offset_ms = 0;
-};
-
 struct ConnectionStatusSummary {
     std::string server;
     std::string version;
     std::string inner_kdf_name;
     std::vector<std::string> verified_proof_sources;
-    HopStatusSnapshot hop;
     bool obfuscation_enabled = false;
     bool inner_established = false;
     bool inner_heavy = false;

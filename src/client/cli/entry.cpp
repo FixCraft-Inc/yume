@@ -35,6 +35,7 @@
 #include <optional>
 #include <set>
 #include <stdexcept>
+#include <string_view>
 #include <cctype>
 #include <cstdint>
 #include <utility>
@@ -91,7 +92,6 @@
 namespace yume::client {
 
 namespace {
-constexpr int kSocketBufferBytes = 2 * 1024 * 1024;
 
 constexpr const char kDefaultAnonymCaCertPath[] = "";
 
@@ -303,11 +303,56 @@ std::optional<int> validate_transport_and_tls(const ClientConfig& cfg,
     return std::nullopt;
 }
 
+bool valid_relay_endpoint_id(std::string_view value) {
+    return !value.empty() && value.size() <= 255 &&
+        std::all_of(value.begin(), value.end(), [](unsigned char c) {
+            return std::isalnum(c) != 0 || c == '-' || c == '_' ||
+                   c == '.' || c == ':';
+        });
+}
+
+bool normalize_relay_fingerprint(std::string* value) {
+    if (!value || value->size() != 64 ||
+        !std::all_of(value->begin(), value->end(), [](unsigned char c) {
+            return std::isxdigit(c) != 0;
+        })) {
+        return false;
+    }
+    std::transform(value->begin(), value->end(), value->begin(),
+                   [](unsigned char c) {
+                       return static_cast<char>(std::tolower(c));
+                   });
+    return true;
+}
+
 // Mandatory 2.0 security posture. These are refusals, not warnings:
 // carrier-off / inner-off / literal-secret configurations are rejected
 // outright, and the two secret files are loaded and validated here so a bad
 // file fails before any connection is attempted.
 std::optional<int> validate_security_posture(ClientConfig& cfg) {
+    if (cfg.relay_trust_mode != "tofu" &&
+        cfg.relay_trust_mode != "pinned") {
+        util::log_error("relay_trust_mode must be tofu or pinned");
+        return 1;
+    }
+    if (cfg.relay_trust_dir.empty()) {
+        util::log_error("relay_trust_dir must not be empty");
+        return 1;
+    }
+    for (auto& [endpoint_id, fingerprint] : cfg.relay_peer_pins) {
+        if (!valid_relay_endpoint_id(endpoint_id)) {
+            util::log_error(
+                "relay_peer_pins contains an invalid endpoint id: " +
+                endpoint_id);
+            return 1;
+        }
+        if (!normalize_relay_fingerprint(&fingerprint)) {
+            util::log_error(
+                "relay_peer_pins fingerprint for " + endpoint_id +
+                " must be exactly 64 hexadecimal characters");
+            return 1;
+        }
+    }
     if (!require_file("identity", cfg.identity)) {
         return 1;
     }
@@ -492,10 +537,26 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             cfg.anonym_ca_cert = kDefaultAnonymCaCertPath;
         }
     } else {
-        load_client_config_file(args, exe_dir, &cfg);
+        std::string config_error;
+        if (!load_client_config_file(args, exe_dir, &cfg, &config_error)) {
+            util::log_error(config_error.empty()
+                                ? "client config load failed"
+                                : config_error);
+            return 1;
+        }
     }
     apply_cli_config_overrides(args, cli_cwd, &cfg);
+    for (auto& secondary_identity : args.secondary_identities) {
+        secondary_identity = util::resolve_path(secondary_identity, cli_cwd, "");
+    }
     normalize_client_config_after_overrides(&args, &cfg);
+    if (cfg.allow_exec) {
+        util::log_error(
+            "allow_exec=true is unavailable: inbound remote command "
+            "execution is disabled until child processes have bounded "
+            "shutdown support");
+        return 1;
+    }
     const std::string helper_tls_backend(
         yume::cover_profile::active().tls_backend);
     if (auto code = validate_transport_and_tls(cfg, helper_tls_backend)) {
@@ -615,6 +676,50 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
         return 1;
     }
 
+    if (!args.secondary_identities.empty()) {
+        const bool plain_socks_pool =
+            cfg.socks_port > 0 &&
+            args.run_cmd.empty() &&
+            args.exec_cmd.empty() &&
+            args.lport <= 0 &&
+            args.rhost.empty() &&
+            args.rport <= 0 &&
+            !use_reverse &&
+            !args.directory_mode &&
+            cfg.app_codec.empty() &&
+            args.chat_target.empty() &&
+            args.file_target.empty() &&
+            args.bytes_target.empty() &&
+            args.admin_target.empty() &&
+            !args.control_mode &&
+            !args.service_streams_only &&
+            cfg.packet_tun_name.empty() &&
+            !args.bench;
+        if (!plain_socks_pool) {
+            util::log_error(
+                "--secondary-auth is valid only for a plain multi-tunnel "
+                "SOCKS mode");
+            return 1;
+        }
+        const auto expected = cfg.tunnel_count > 0
+            ? static_cast<std::size_t>(cfg.tunnel_count - 1) : 0U;
+        if (args.secondary_identities.size() != expected) {
+            util::log_error(
+                "--tunnels " + std::to_string(cfg.tunnel_count) +
+                " requires exactly " + std::to_string(expected) +
+                " --secondary-auth values");
+            return 1;
+        }
+        for (std::size_t index = 0;
+             index < args.secondary_identities.size(); ++index) {
+            if (!require_file(
+                    ("secondary identity " + std::to_string(index + 2)).c_str(),
+                    args.secondary_identities[index])) {
+                return 1;
+            }
+        }
+    }
+
     if (!args.outer_carrier_evidence.empty()) {
         const OuterCarrierCapturePolicy capture_policy{
             .endpoint_bench = args.bench,
@@ -680,7 +785,13 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
         return run_export_share(args.share_path, cfg, args.share_password_stdin);
     }
 
-    save_client_config_file(args, cfg);
+    std::string save_error;
+    if (!save_client_config_file(args, cfg, &save_error)) {
+        util::log_error(save_error.empty()
+                            ? "client config save failed"
+                            : save_error);
+        return 1;
+    }
 
     if (args.exec_cmd.size() && !args.control_mode) {
         util::log_error("--exec requires --control");
@@ -738,7 +849,12 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
         ? outer_carrier_capture->trace()
         : std::shared_ptr<obfs::OuterCarrierTrace>{};
     RuntimeStopController stop_controller(args.bench);
-    stop_controller.install_signal_handler();
+    // Embedded runtimes have an explicit cancellation flag and must not
+    // replace the embedding process's SIGINT/SIGTERM policy. Standalone CLI
+    // ownership remains process-global and is scoped to stop_controller.
+    if (!external_stop_flag_) {
+        stop_controller.install_signal_handler();
+    }
     auto external_stop_requested = [this]() {
         return external_stop_flag_ &&
                external_stop_flag_->load(std::memory_order_acquire);
@@ -749,6 +865,9 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
         }
         stop_controller.announce_stopping();
         return true;
+    };
+    const StopPredicate io_should_stop = [&]() {
+        return stop_controller.stop_requested() || external_stop_requested();
     };
     int attempt = 0;
     bool pq_warned = false;
@@ -764,7 +883,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
         std::function<std::string()> status_block_builder;
         try {
             boost::asio::io_context io(resolve_io_threads(cfg.io_threads));
-            stop_controller.set_active(&io, nullptr);
             struct ActiveRuntimeGuard {
                 std::function<void()> cleanup;
                 ~ActiveRuntimeGuard() {
@@ -846,7 +964,10 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 auto dr = outbound_proxy::socks5_dial(
                     connected_socket, io, proxy_cfg,
                     cfg.server, cfg.port, kConnectTimeout,
-                    cfg.socket_protect);
+                    cfg.socket_protect, io_should_stop);
+                if (dr.cancelled) {
+                    throw std::runtime_error("connection cancelled");
+                }
                 if (dr.timed_out) {
                     throw std::runtime_error("server offline, proxy timed out");
                 }
@@ -866,11 +987,22 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 boost::asio::ip::tcp::resolver resolver(io);
                 boost::asio::ip::tcp::resolver::results_type endpoints;
                 diagnostics::Stopwatch resolve_timer(YUME_TIMING_ENABLED());
-                try {
-                    endpoints = resolver.resolve(boost::asio::ip::tcp::v4(), cfg.server, std::to_string(cfg.port));
-                } catch (const boost::system::system_error& ex) {
-                    throw std::runtime_error("server offline, could not reach endpoint (DNS resolution failed: " + std::string(ex.what()) + ")");
+                const auto resolve_result = resolve_with_timeout(
+                    resolver, io, cfg.server, std::to_string(cfg.port),
+                    kConnectTimeout, io_should_stop);
+                if (resolve_result.cancelled) {
+                    throw std::runtime_error("DNS resolution cancelled");
                 }
+                if (resolve_result.timed_out) {
+                    throw std::runtime_error(
+                        "server offline, could not reach endpoint (DNS resolution timeout)");
+                }
+                if (resolve_result.ec) {
+                    throw std::runtime_error(
+                        "server offline, could not reach endpoint (DNS resolution failed: " +
+                        resolve_result.ec.message() + ")");
+                }
+                endpoints = resolve_result.endpoints;
                 std::size_t endpoint_count = 0;
                 for (const auto& endpoint : endpoints) {
                     (void)endpoint;
@@ -887,7 +1019,10 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 try {
                     auto cr = connect_with_timeout(
                         connected_socket, endpoints, io, kConnectTimeout,
-                        cfg.socket_protect);
+                        cfg.socket_protect, io_should_stop);
+                    if (cr.cancelled) {
+                        throw std::runtime_error("connection cancelled");
+                    }
                     if (cr.timed_out) {
                         throw std::runtime_error("server offline, could not reach endpoint (connect timeout)");
                     }
@@ -917,10 +1052,11 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             if (keep_ec) {
                 util::log_warn(std::string("keepalive set failed: ") + keep_ec.message());
             }
-            boost::system::error_code recvbuf_ec;
-            connected_socket.set_option(boost::asio::socket_base::receive_buffer_size(kSocketBufferBytes), recvbuf_ec);
-            boost::system::error_code sendbuf_ec;
-            connected_socket.set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
+            // This is the tunnel socket: buffers stay with the kernel so TCP
+            // window autotuning can grow into the path's bandwidth-delay
+            // product. Pinning either buffer sets SOCK_{RCV,SND}BUF_LOCK on
+            // Linux and freezes the window for the connection's lifetime.
+            // See server/session/session.cpp for the measurement.
             boost::system::error_code nodelay_ec;
             connected_socket.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
             
@@ -936,6 +1072,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 helper_options.ca_path = cfg.tls_ca_cert;
                 helper_options.leaf_pin = parse_sha256_hex(cfg.tls_pin_sha256);
                 helper_options.handshake_timeout = kHandshakeTimeout;
+                helper_options.should_stop = io_should_stop;
                 stream_owner = std::make_unique<ClientTransportStream>(
                     LaunchChromeTlsHelper(
                         io, std::move(connected_socket), helper_options));
@@ -946,7 +1083,10 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                     tls_stream.native_handle(), tls_name.c_str());
                 SSL_set1_host(tls_stream.native_handle(), tls_name.c_str());
                 const auto handshake = handshake_with_timeout(
-                    tls_stream, io, kHandshakeTimeout);
+                    tls_stream, io, kHandshakeTimeout, io_should_stop);
+                if (handshake.cancelled) {
+                    throw std::runtime_error("TLS handshake cancelled");
+                }
                 if (handshake.timed_out) {
                     throw std::runtime_error("TLS handshake failed: timeout");
                 }
@@ -1087,7 +1227,8 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                                              *cfg.obfs_secret_material,
                                              &prefetched_tls_bytes,
                                              &h2_carrier,
-                                             outer_carrier_trace);
+                                             outer_carrier_trace,
+                                             io_should_stop);
                 YUME_TIMING_LOG("client.connect",
                                  "h2_carrier",
                                  "ms=" + std::to_string(
@@ -1109,7 +1250,8 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 tls_name,
                 cfg.port,
                 &prefetched_tls_bytes,
-                h2_carrier.get());
+                h2_carrier.get(),
+                io_should_stop);
             YUME_TIMING_LOG("client.auth",
                              "challenge",
                              "ms=" + std::to_string(
@@ -1139,7 +1281,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 stream, io, cfg.identity, auth_challenge,
                 *cfg.inner_psk_material, stream.take_exporter(),
                 *h2_carrier, cfg.rekey_window,
-                *ratchet_policy, cfg.admin_identity);
+                *ratchet_policy, cfg.admin_identity, io_should_stop);
             YUME_TIMING_LOG("client.auth",
                              "send_response",
                              "ms=" + std::to_string(
@@ -1153,10 +1295,12 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 anon_frame = h2_carrier
                     ? read_frame_over_h2_with_timeout(
                           stream, io, *h2_carrier, &prefetched_tls_bytes,
-                          server_info_timeout, "server info", cfg.server, cfg.port)
+                          server_info_timeout, "server info", cfg.server, cfg.port,
+                          io_should_stop)
                     : read_frame_with_timeout(stream, io, server_info_timeout,
                                               "server info", cfg.server, cfg.port,
-                                              true, &prefetched_tls_bytes);
+                                              true, &prefetched_tls_bytes,
+                                              io_should_stop);
                 YUME_TIMING_LOG("client.auth",
                                  "server_info",
                                  "ms=" + std::to_string(
@@ -1190,15 +1334,9 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             bool server_cap_pq = false;
             bool server_cap_argon2 = false;
             bool server_cap_pbkdf2 = false;
-            bool server_hop_enabled = false;
-            std::uint32_t server_hop_interval_ms = 0;
-            std::int64_t server_time_ms = 0;
             std::string server_version;
             std::string server_error;
             std::string mode = "normal";
-            std::uint32_t hop_interval_ms = 0;
-            std::int64_t hop_offset_ms = 0;
-            bool hop_enabled = false;
             std::string hash;
             std::string sig;
             std::string ts;
@@ -1235,9 +1373,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                 server_cap_pq = server_info.server_cap_pq;
                 server_cap_argon2 = server_info.server_cap_argon2;
                 server_cap_pbkdf2 = server_info.server_cap_pbkdf2;
-                server_hop_enabled = server_info.server_hop_enabled;
-                server_hop_interval_ms = server_info.server_hop_interval_ms;
-                server_time_ms = server_info.server_time_ms;
             } catch (const nlohmann::json::parse_error&) {
                 throw FatalError("this endpoint is not a yume server (invalid server response); please check the origin and try again");
             } catch (const std::exception& ex) {
@@ -1297,8 +1432,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             capability_input.inner_crypto_requested = true;
             capability_input.inner_disabled_for_session = inner_disabled_for_session;
             capability_input.inner_heavy = false;
-            capability_input.inner_hop = false;
-            capability_input.inner_key_established = v2_ratchet != nullptr;
             capability_input.have_inner_caps = have_inner_caps;
             capability_input.server_inner_supported = server_inner_supported;
             capability_input.server_inner_required = server_inner_required;
@@ -1306,19 +1439,12 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             capability_input.server_cap_pq = server_cap_pq;
             capability_input.server_cap_argon2 = server_cap_argon2;
             capability_input.server_cap_pbkdf2 = server_cap_pbkdf2;
-            capability_input.server_hop_enabled = server_hop_enabled;
-            capability_input.client_hop_interval_ms = cfg.hop_interval_ms;
-            capability_input.server_hop_interval_ms = server_hop_interval_ms;
-            capability_input.server_time_ms = server_time_ms;
 
             ServerCapabilityResult capability = evaluate_server_capabilities(capability_input);
             if (!capability.error.empty()) {
                 print_red(capability.error);
                 return 1;
             }
-            hop_interval_ms = capability.hop_interval_ms;
-            hop_offset_ms = capability.hop_offset_ms;
-            hop_enabled = capability.hop_enabled;
 
             if (mode == "anonym") {
                 AnonymProofInput proof_input;
@@ -1439,7 +1565,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                     summary.inner_kdf_name = inner_kdf->name;
                 }
                 summary.verified_proof_sources = verified_proof_sources;
-                summary.hop = {hop_enabled, hop_interval_ms, hop_offset_ms};
                 summary.obfuscation_enabled = cfg.obfuscation;
                 summary.inner_established = v2_ratchet != nullptr;
                 summary.inner_heavy = false;
@@ -1466,9 +1591,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
                     if (!silent_) {
                         std::cout << status_block_builder();
                     }
-                    if (hop_enabled) {
-                        util::log_info("live hop updates are disabled; use --live-status (or YUME_LIVE_STATUS=1) to update periodically");
-                    }
                 } else {
                     util::set_status_line(status_block_builder());
                 }
@@ -1494,9 +1616,6 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             connected_options.have_inner_caps = have_inner_caps;
             connected_options.server_inner_dual = server_inner_dual;
             connected_options.server_inner_active = server_inner_active;
-            connected_options.hop_enabled = hop_enabled;
-            connected_options.hop_interval_ms = hop_interval_ms;
-            connected_options.hop_offset_ms = hop_offset_ms;
             connected_options.inner_kdf = inner_kdf;
             connected_options.inner_key = inner_key;
             connected_options.ratchet = std::move(v2_ratchet);
@@ -1509,6 +1628,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             connected_options.explicit_http_profile = explicit_http_profile;
             connected_options.server_capabilities = std::move(server_capabilities);
             connected_options.status_block_builder = status_block_builder;
+            connected_options.should_stop = io_should_stop;
             connected_options.announce_stopping = [&stop_controller]() {
                 stop_controller.announce_stopping();
             };

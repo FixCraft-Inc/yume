@@ -34,7 +34,6 @@
 namespace yume::client {
 namespace {
 
-constexpr int kSocketBufferBytes = 2 * 1024 * 1024;
 
 }  // namespace
 
@@ -44,7 +43,11 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
                                                  const outbound_proxy::Config& proxy_cfg,
                                                  int index,
                                                  std::optional<tls_fingerprint::BrowserProfile> profile,
-                                                 std::uint64_t* completed_tls_connections) {
+                                                 std::uint64_t* completed_tls_connections,
+                                                 const std::function<bool()>& should_stop) {
+    if (stop_is_requested(should_stop)) {
+        throw std::runtime_error("secondary tunnel startup cancelled");
+    }
     std::unique_ptr<tls_stealth::StealthContext> owned_stealth_context;
     boost::asio::ssl::context* connection_ctx = &ctx;
     if (profile.has_value()) {
@@ -73,7 +76,10 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
         auto dr = outbound_proxy::socks5_dial(
             ssl_stream.next_layer(), io, proxy_cfg,
             cfg.server, cfg.port, kConnectTimeout,
-            cfg.socket_protect);
+            cfg.socket_protect, should_stop);
+        if (dr.cancelled) {
+            throw std::runtime_error("secondary tunnel proxy dial cancelled");
+        }
         if (dr.timed_out) {
             throw std::runtime_error("proxy timed out");
         }
@@ -83,10 +89,24 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
         }
     } else {
         boost::asio::ip::tcp::resolver resolver(io);
-        auto endpoints = resolver.resolve(boost::asio::ip::tcp::v4(), cfg.server, std::to_string(cfg.port));
+        const auto resolved = resolve_with_timeout(
+            resolver, io, cfg.server, std::to_string(cfg.port),
+            kConnectTimeout, should_stop);
+        if (resolved.cancelled) {
+            throw std::runtime_error("secondary tunnel DNS resolution cancelled");
+        }
+        if (resolved.timed_out) {
+            throw std::runtime_error("secondary tunnel DNS resolution timeout");
+        }
+        if (resolved.ec) {
+            throw boost::system::system_error(resolved.ec);
+        }
         auto cr = connect_with_timeout(
-            ssl_stream.next_layer(), endpoints, io, kConnectTimeout,
-            cfg.socket_protect);
+            ssl_stream.next_layer(), resolved.endpoints, io, kConnectTimeout,
+            cfg.socket_protect, should_stop);
+        if (cr.cancelled) {
+            throw std::runtime_error("secondary tunnel connect cancelled");
+        }
         if (cr.timed_out) {
             throw std::runtime_error("connect timeout");
         }
@@ -97,16 +117,18 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
 
     boost::system::error_code keep_ec;
     ssl_stream.next_layer().set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
-    boost::system::error_code recvbuf_ec;
-    ssl_stream.next_layer().set_option(boost::asio::socket_base::receive_buffer_size(kSocketBufferBytes), recvbuf_ec);
-    boost::system::error_code sendbuf_ec;
-    ssl_stream.next_layer().set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
+    // Buffers left to the kernel; pinning either one disables TCP window
+    // autotuning for this connection. See server/session/session.cpp.
     boost::system::error_code nodelay_ec;
     ssl_stream.next_layer().set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
     SSL_set_tlsext_host_name(ssl_stream.native_handle(), tls_name.c_str());
     SSL_set1_host(ssl_stream.native_handle(), tls_name.c_str());
 
-    auto hr = handshake_with_timeout(ssl_stream, io, kHandshakeTimeout);
+    auto hr = handshake_with_timeout(
+        ssl_stream, io, kHandshakeTimeout, should_stop);
+    if (hr.cancelled) {
+        throw std::runtime_error("secondary tunnel TLS handshake cancelled");
+    }
     if (hr.timed_out) {
         throw std::runtime_error("TLS handshake timeout");
     }
@@ -140,7 +162,8 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
         }
         perform_h2_carrier_handshake(stream, io, tls_name, cfg.port,
                                      *cfg.obfs_secret_material,
-                                     &prefetched_tls_bytes, &h2_carrier);
+                                     &prefetched_tls_bytes, &h2_carrier,
+                                     {}, should_stop);
     }
 
     protocol::Frame auth_challenge = read_auth_challenge(
@@ -149,7 +172,8 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
         tls_name,
         cfg.port,
         &prefetched_tls_bytes,
-        h2_carrier.get());
+        h2_carrier.get(),
+        should_stop);
     if (!h2_carrier || !cfg.inner_psk_material) {
         throw std::runtime_error("YUME 2.0 requires H2 carrier and inner PSK");
     }
@@ -162,16 +186,17 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
         stream, io, cfg.identity, auth_challenge,
         *cfg.inner_psk_material, stream.take_exporter(),
         *h2_carrier, cfg.rekey_window,
-        *ratchet_policy, cfg.admin_identity);
+        *ratchet_policy, cfg.admin_identity, should_stop);
 
     auto server_info_timeout = kServerInfoTimeout;
     protocol::Frame info = h2_carrier
         ? read_frame_over_h2_with_timeout(
               stream, io, *h2_carrier, &prefetched_tls_bytes,
-              server_info_timeout, "server info", cfg.server, cfg.port)
+              server_info_timeout, "server info", cfg.server, cfg.port,
+              should_stop)
         : read_frame_with_timeout(
               stream, io, server_info_timeout, "server info", cfg.server,
-              cfg.port, true, &prefetched_tls_bytes);
+              cfg.port, true, &prefetched_tls_bytes, should_stop);
     info = open_auth_ok_v2(*v2_ratchet, info);
     if (info.header.type != protocol::ANON) {
         throw std::runtime_error("unexpected server info response");
@@ -185,6 +210,9 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
     }
     if (cfg.require_anonym && server_info.mode != "anonym") {
         throw std::runtime_error("server did not provide the required operator identity proof");
+    }
+    if (stop_is_requested(should_stop)) {
+        throw std::runtime_error("secondary tunnel startup cancelled");
     }
     auto tunnel = std::make_shared<Tunnel>(
         std::move(stream), std::move(h2_carrier),

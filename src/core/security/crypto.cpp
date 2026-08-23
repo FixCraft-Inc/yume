@@ -15,7 +15,6 @@
 #include <openssl/pem.h>
 #include <openssl/rand.h>
 #include <openssl/crypto.h>
-#include <openssl/sha.h>
 #include <openssl/x509.h>
 
 #include <algorithm>
@@ -24,6 +23,108 @@
 #include <string_view>
 
 namespace yume::crypto {
+
+namespace {
+
+constexpr std::size_t kSha256Bytes = 32U;
+
+std::string DigestHex(std::span<const std::uint8_t> digest) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(digest.size() * 2U);
+    for (const std::uint8_t byte : digest) {
+        out.push_back(kHex[byte >> 4U]);
+        out.push_back(kHex[byte & 0x0FU]);
+    }
+    return out;
+}
+
+}  // namespace
+
+struct Sha256Stream::Impl {
+    Impl() : context(EVP_MD_CTX_new(), EVP_MD_CTX_free) {
+        if (!context ||
+            EVP_DigestInit_ex(context.get(), EVP_sha256(), nullptr) != 1) {
+            throw std::runtime_error("SHA-256 stream initialization failed");
+        }
+    }
+
+    ~Impl() { Invalidate(); }
+
+    void Invalidate() noexcept {
+        if (context) (void)EVP_MD_CTX_reset(context.get());
+        active = false;
+    }
+
+    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context;
+    bool active{true};
+};
+
+Sha256Stream::Sha256Stream() : impl_(std::make_unique<Impl>()) {}
+Sha256Stream::Sha256Stream(Sha256Stream&& other) noexcept = default;
+Sha256Stream& Sha256Stream::operator=(Sha256Stream&& other) noexcept = default;
+Sha256Stream::~Sha256Stream() = default;
+
+void Sha256Stream::Update(std::span<const std::uint8_t> input) {
+    if (!impl_ || !impl_->active) {
+        throw std::logic_error("SHA-256 stream is no longer active");
+    }
+    if (input.empty()) return;
+    if (EVP_DigestUpdate(impl_->context.get(), input.data(), input.size()) != 1) {
+        impl_->Invalidate();
+        throw std::runtime_error("SHA-256 stream update failed");
+    }
+}
+
+Bytes Sha256Stream::Finish() {
+    if (!impl_ || !impl_->active) {
+        throw std::logic_error("SHA-256 stream is no longer active");
+    }
+    Bytes digest(kSha256Bytes);
+    unsigned int digest_length = 0;
+    const int result = EVP_DigestFinal_ex(
+        impl_->context.get(), digest.data(), &digest_length);
+    impl_->Invalidate();
+    if (result != 1 || digest_length != kSha256Bytes) {
+        security::secure_erase(digest);
+        throw std::runtime_error("SHA-256 stream finalization failed");
+    }
+    return digest;
+}
+
+std::string Sha256Stream::FinishHex() {
+    Bytes digest = Finish();
+    try {
+        std::string encoded = DigestHex(digest);
+        security::secure_erase(digest);
+        return encoded;
+    } catch (...) {
+        security::secure_erase(digest);
+        throw;
+    }
+}
+
+Bytes sha256(std::span<const std::uint8_t> input) {
+    Sha256Stream stream;
+    stream.Update(input);
+    return stream.Finish();
+}
+
+Bytes sha256(std::string_view input) {
+    return sha256(std::span<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(input.data()), input.size()));
+}
+
+std::string sha256_hex(std::span<const std::uint8_t> input) {
+    Sha256Stream stream;
+    stream.Update(input);
+    return stream.FinishHex();
+}
+
+std::string sha256_hex(std::string_view input) {
+    return sha256_hex(std::span<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(input.data()), input.size()));
+}
 
 namespace {
 std::runtime_error ssl_error(const std::string& msg) {
@@ -195,7 +296,10 @@ Bytes sign_message(EVP_PKEY* privkey, const Bytes& message) {
     return sig;
 }
 
-Bytes generate_session_key(EVP_PKEY* ecdh_local, EVP_PKEY* ecdh_remote, size_t out_len) {
+Bytes generate_session_key(EVP_PKEY* ecdh_local,
+                           EVP_PKEY* ecdh_remote,
+                           std::string_view info,
+                           size_t out_len) {
     if (!ecdh_local || !ecdh_remote) {
         throw std::runtime_error("generate_session_key: missing ECDH keys");
     }
@@ -222,6 +326,12 @@ Bytes generate_session_key(EVP_PKEY* ecdh_local, EVP_PKEY* ecdh_remote, size_t o
     }
 
     Bytes secret(secret_len);
+    // The raw ECDH output must not outlive this frame; several paths below
+    // throw, so the wipe is tied to scope exit rather than the return.
+    struct SecretWiper {
+        Bytes& bytes;
+        ~SecretWiper() { security::secure_erase(bytes); }
+    } secret_wiper{secret};
     if (EVP_PKEY_derive(dctx, secret.data(), &secret_len) != 1) {
         EVP_PKEY_CTX_free(dctx);
         throw ssl_error("derive failed");
@@ -249,10 +359,13 @@ Bytes generate_session_key(EVP_PKEY* ecdh_local, EVP_PKEY* ecdh_remote, size_t o
         throw ssl_error("hkdf set key failed");
     }
 
-    const char info[] = "yume-session";
-    if (EVP_PKEY_CTX_add1_hkdf_info(hctx,
-                                   reinterpret_cast<const unsigned char*>(info),
-                                   sizeof(info) - 1) != 1) {
+    if (info.empty()) {
+        EVP_PKEY_CTX_free(hctx);
+        throw std::runtime_error("hkdf set info failed: empty derivation label");
+    }
+    if (EVP_PKEY_CTX_add1_hkdf_info(
+            hctx, reinterpret_cast<const unsigned char*>(info.data()),
+            info.size()) != 1) {
         EVP_PKEY_CTX_free(hctx);
         throw ssl_error("hkdf set info failed");
     }
@@ -690,21 +803,13 @@ Bytes composite_canonical_encoding(const CompositePublicKey& key) {
     return input;
 }
 
+std::string composite_fingerprint_from_canonical(const Bytes& canonical) {
+    if (canonical.empty()) return {};
+    return sha256_hex(canonical);
+}
+
 std::string composite_fingerprint(const CompositePublicKey& key) {
-    const Bytes input = composite_canonical_encoding(key);
-    if (input.empty()) return {};
-    unsigned char digest[SHA256_DIGEST_LENGTH];
-    if (SHA256(input.data(), input.size(), digest) == nullptr) {
-        throw ssl_error("composite fingerprint hash failed");
-    }
-    static constexpr char kHex[] = "0123456789abcdef";
-    std::string out;
-    out.reserve(sizeof(digest) * 2);
-    for (unsigned char byte : digest) {
-        out.push_back(kHex[byte >> 4]);
-        out.push_back(kHex[byte & 0x0F]);
-    }
-    return out;
+    return composite_fingerprint_from_canonical(composite_canonical_encoding(key));
 }
 
 Bytes random_bytes(size_t len) {

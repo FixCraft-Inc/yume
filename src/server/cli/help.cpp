@@ -21,8 +21,8 @@ _yumed_complete() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="-h --accept-rate-limit --accept-yume-clients --admin-keys --allow-exec --allow-local-ip --allow-monero-rpc --attach-local --auth-keys --auth-keys-meta --bench --boring --bulk-key-max-sessions --cert --client-deny-action --client-filter-mode --cluster-bootstrap --cluster-join --codec-allow --completion --config --control-full --credits --directory-disable --directory-enable --dns-server --egress-filter-mode --egress-mbps --exposure-check --federation-auth-key --federation-enable --federation-operator-ca --filter-geolite --filter-list --filter-memory-mib --help --hide-in-the-crowd --host-mode --inner-psk-file --inner-required --key --keys-add --keys-admin --keys-alias --keys-gen --keys-gen-add --keys-list --keys-remove --listen --max-sessions --monero-rpc-backend --no-yume-clients --obfs-secret-file --operator-ca-cert --operator-ca-key --operator-delegated-cert --operator-delegated-key --operator-identity --operator-keys --operator-keys-meta --operator-proof-api --operator-proof-mode --operator-proof-token --packet-cidr --packet-egress --packet-mtu --packet-tun-name --peer --proxy --public-node --real --real-backend --real-index --real-root --real-secret --real-secret-file --rekey-window --relay-disable --relay-enable --reverse-port-max --reverse-port-min --robots-deny --root --server-id --server-name --service-allow --threads --timing --tls-handshake-timeout-ms --tls_cert --tls_key --ui --upstream-response --upstream-response-dir --upstream-response-ttl --version"
-  local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --auth-keys-meta --admin-keys --operator-keys --operator-keys-meta --obfs-secret-file --inner-psk-file --filter-geolite --operator-ca-key --operator-ca-cert --operator-delegated-key --operator-delegated-cert --federation-auth-key --federation-operator-ca --keys-add --keys-gen"
+  local opts="-h --accept-rate-limit --accept-yume-clients --admin-keys --allow-exec --allow-local-ip --allow-monero-rpc --attach-local --auth-keys --auth-keys-meta --bench --boring --bulk-key-max-sessions --cert --client-deny-action --client-filter-mode --cluster-bootstrap --cluster-join --codec-allow --completion --config --control-full --credits --directory-disable --directory-enable --dns-server --egress-filter-mode --egress-mbps --exposure-check --federation-identity --federation-enable --federation-operator-ca --filter-geolite --filter-list --filter-memory-mib --help --hide-in-the-crowd --host-mode --inner-psk-file --inner-required --key --keys-add --keys-admin --keys-alias --keys-gen --keys-gen-add --keys-list --keys-remove --listen --max-sessions --monero-rpc-backend --no-yume-clients --obfs-secret-file --operator-ca-cert --operator-ca-key --operator-delegated-cert --operator-delegated-key --operator-identity --operator-keys --operator-keys-meta --operator-proof-api --operator-proof-mode --operator-proof-token --packet-cidr --packet-egress --packet-mtu --packet-tun-name --peer --proxy --public-node --real --real-backend --real-index --real-root --real-secret --real-secret-file --rekey-window --relay-disable --relay-enable --reverse-port-max --reverse-port-min --robots-deny --root --server-id --server-name --service-allow --threads --timing --tls-handshake-timeout-ms --tls_cert --tls_key --ui --upstream-response --upstream-response-dir --upstream-response-ttl --version"
+  local file_opts="--config --cert --tls_cert --key --tls_key --auth-keys --auth-keys-meta --admin-keys --operator-keys --operator-keys-meta --obfs-secret-file --inner-psk-file --filter-geolite --operator-ca-key --operator-ca-cert --operator-delegated-key --operator-delegated-cert --federation-identity --federation-operator-ca --keys-add --keys-gen"
   case "$prev" in
     --completion)
       COMPREPLY=( $(compgen -W "bash" -- "$cur") )
@@ -202,13 +202,12 @@ void print_help() {
         << "  --directory-enable       Enable endpoint directory\n"
         << "  --directory-disable      Disable endpoint directory\n"
         << "  --federation-enable      Enable static federation mode\n"
-        << "  --federation-auth-key <path> Ed25519 key used for peer AUTH\n"
+        << "  --federation-identity <path> composite identity used for peer AUTH v2\n"
         << "  --federation-operator-ca <path> CA used to verify peer servers\n"
         << "  --peer <json>            Add a federation peer (raw JSON form)\n"
         << "  --cluster-join <spec>    Join cluster via short form; implies --federation-enable.\n"
-        << "                             spec: [id@]host[:port][?pin=<sha256>]\n"
-        << "                             e.g. alice@alice.example.com:443\n"
-        << "                                  alice.example.com (id+port defaulted)\n"
+        << "                             spec: [id@]host[:port]?psk_file=<path>&\n"
+        << "                                   carrier_secret_file=<path>[&pin=<sha256>]\n"
         << "                             repeat for multiple peers\n"
         << "  --cluster-bootstrap      Mark this node as a cluster entry point;\n"
         << "                             federation enabled but no outbound --peer required\n"

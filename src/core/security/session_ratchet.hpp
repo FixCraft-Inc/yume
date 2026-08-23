@@ -32,6 +32,24 @@ struct OpenResult {
     bool outbound_rekey_completed{false};
 };
 
+// Local, aggregate view of the authenticated-ACK round-trip estimator. Nothing
+// in it is transmitted, negotiated, or added to the wire contract, and no field
+// is derived from a peer-supplied timestamp: every sample is this endpoint's own
+// `steady_clock` delta between sending an offer and accepting the AEAD-
+// authenticated, offer-ordered ACK that answers it. It exists so an operator can
+// see why a deadline was chosen and so tests can assert the clamping rules.
+struct RekeyRttEstimate {
+    // Authenticated samples folded in so far. Zero means the conservative
+    // static fallback is in force.
+    std::uint64_t samples{0};
+    // RFC 6298-style smoothed estimate and mean deviation.
+    std::chrono::milliseconds smoothed{0};
+    std::chrono::milliseconds variation{0};
+    // Deadline the *next* offer would receive, already clamped into
+    // [kMinRekeyAckDeadline, kMaxRekeyAckDeadline].
+    std::chrono::milliseconds allowance{0};
+};
+
 // Owns both independent directional chains and the authenticated ML-KEM +
 // X25519 epoch exchange. The implementation is hidden so ephemeral private
 // keys never leak into client/server session headers.
@@ -43,6 +61,19 @@ struct OpenResult {
 // `kMinRekeyWindow` for both reproduces the single-exchange behavior exactly.
 class SessionRatchet {
 public:
+#if YUME_USE_BASEFWX
+    // Preferred establishment path. Keeping both inputs under move-only RAII
+    // ownership before an outer make_unique allocation closes the last OOM/
+    // constructor-exception window in which roots or PSKs could otherwise be
+    // released by an ordinary vector destructor without being cleared.
+    SessionRatchet(EndpointRole role,
+                   basefwx::crypto::SecureBytes initial_root,
+                   basefwx::crypto::SecureBytes psk_key,
+                   std::uint16_t outbound_window = kMinRekeyWindow,
+                   std::uint16_t inbound_window = kMinRekeyWindow,
+                   RatchetPolicy outbound_policy = kExtremePolicy,
+                   RatchetPolicy inbound_policy = kExtremePolicy);
+#endif
     SessionRatchet(EndpointRole role, Bytes initial_root, Bytes psk_key,
                    std::uint16_t outbound_window = kMinRekeyWindow,
                    std::uint16_t inbound_window = kMinRekeyWindow,
@@ -69,6 +100,8 @@ public:
 
     bool outbound_rekey_pending() const;
     std::optional<std::chrono::steady_clock::time_point> rekey_deadline() const;
+    // Aggregate estimator state; see RekeyRttEstimate. Read-only and local.
+    RekeyRttEstimate rekey_rtt_estimate() const;
     bool rekey_timed_out(std::chrono::steady_clock::time_point now) const;
     std::uint64_t outbound_epoch() const;
     std::uint64_t inbound_epoch() const;

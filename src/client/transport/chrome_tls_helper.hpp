@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,9 @@ struct ChromeTlsHelperOptions {
     std::filesystem::path ca_path;
     std::vector<std::uint8_t> leaf_pin;
     std::chrono::milliseconds handshake_timeout{12000};
+    // Polled while waiting for the helper's READY response. The predicate
+    // must be non-blocking; true aborts and reaps the helper before return.
+    std::function<bool()> should_stop;
 };
 
 // The caller establishes and routes the TCP socket first. On success this

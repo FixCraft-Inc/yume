@@ -13,6 +13,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
@@ -37,17 +38,102 @@ struct FatalError : public std::runtime_error {
 struct IoOpResult {
     boost::system::error_code ec;
     bool timed_out{false};
+    bool cancelled{false};
     std::size_t bytes{0};
 };
+
+struct ResolveOpResult : IoOpResult {
+    boost::asio::ip::tcp::resolver::results_type endpoints;
+};
+
+using StopPredicate = std::function<bool()>;
+
+inline constexpr std::chrono::milliseconds kStopPollInterval{10};
+
+inline bool stop_is_requested(const StopPredicate& should_stop) noexcept {
+    if (!should_stop) return false;
+    try {
+        return should_stop();
+    } catch (...) {
+        // Cancellation predicates cross an executor boundary. Treat a broken
+        // embedder callback as stop intent so no exception can unwind io.run()
+        // while asynchronous handlers still reference this helper's stack.
+        return true;
+    }
+}
+
+inline ResolveOpResult resolve_with_timeout(
+        boost::asio::ip::tcp::resolver& resolver,
+        boost::asio::io_context& io,
+        const std::string& host,
+        const std::string& service,
+        std::chrono::milliseconds timeout,
+        const StopPredicate& should_stop = {}) {
+    ResolveOpResult res{};
+    bool done = false;
+    if (stop_is_requested(should_stop)) {
+        res.cancelled = true;
+        res.ec = boost::asio::error::operation_aborted;
+        return res;
+    }
+
+    boost::asio::steady_timer deadline(io);
+    deadline.expires_after(timeout);
+    deadline.async_wait([&](const boost::system::error_code& ec) {
+        if (!ec && !done) {
+            res.timed_out = true;
+            resolver.cancel();
+        }
+    });
+
+    boost::asio::steady_timer stop_poll(io);
+    std::function<void()> arm_stop_poll;
+    arm_stop_poll = [&]() {
+        if (!should_stop || done) return;
+        stop_poll.expires_after(kStopPollInterval);
+        stop_poll.async_wait([&](const boost::system::error_code& ec) {
+            if (ec || done) return;
+            if (stop_is_requested(should_stop)) {
+                res.cancelled = true;
+                resolver.cancel();
+                return;
+            }
+            arm_stop_poll();
+        });
+    };
+    arm_stop_poll();
+
+    resolver.async_resolve(
+        boost::asio::ip::tcp::v4(), host, service,
+        [&](const boost::system::error_code& ec,
+            boost::asio::ip::tcp::resolver::results_type endpoints) {
+            res.ec = ec;
+            res.endpoints = std::move(endpoints);
+            done = true;
+            (void)deadline.cancel();
+            (void)stop_poll.cancel();
+        });
+
+    io.restart();
+    io.run();
+    return res;
+}
 
 template <typename AsyncStream, typename CancelFn>
 IoOpResult read_exact_with_timeout(AsyncStream& stream,
                                   boost::asio::io_context& io,
                                   const boost::asio::mutable_buffer& buf,
                                   std::chrono::milliseconds timeout,
-                                  CancelFn cancel) {
+                                  CancelFn cancel,
+                                  const StopPredicate& should_stop = {}) {
     IoOpResult res{};
     bool done = false;
+
+    if (stop_is_requested(should_stop)) {
+        res.cancelled = true;
+        cancel();
+        return res;
+    }
 
     boost::asio::steady_timer timer(io);
     timer.expires_after(timeout);
@@ -58,11 +144,29 @@ IoOpResult read_exact_with_timeout(AsyncStream& stream,
         }
     });
 
+    boost::asio::steady_timer stop_poll(io);
+    std::function<void()> arm_stop_poll;
+    arm_stop_poll = [&]() {
+        if (!should_stop || done) return;
+        stop_poll.expires_after(kStopPollInterval);
+        stop_poll.async_wait([&](const boost::system::error_code& ec) {
+            if (ec || done) return;
+            if (stop_is_requested(should_stop)) {
+                res.cancelled = true;
+                cancel();
+                return;
+            }
+            arm_stop_poll();
+        });
+    };
+    arm_stop_poll();
+
     boost::asio::async_read(stream, buf, [&](const boost::system::error_code& ec, std::size_t bytes) {
         res.ec = ec;
         res.bytes = bytes;
         done = true;
         (void)timer.cancel();
+        (void)stop_poll.cancel();
     });
 
     io.restart();
@@ -75,9 +179,15 @@ IoOpResult read_some_with_timeout(AsyncStream& stream,
                                   boost::asio::io_context& io,
                                   const boost::asio::mutable_buffer& buf,
                                   std::chrono::milliseconds timeout,
-                                  CancelFn cancel) {
+                                  CancelFn cancel,
+                                  const StopPredicate& should_stop = {}) {
     IoOpResult res{};
     bool done = false;
+    if (stop_is_requested(should_stop)) {
+        res.cancelled = true;
+        cancel();
+        return res;
+    }
     boost::asio::steady_timer timer(io);
     timer.expires_after(timeout);
     timer.async_wait([&](const boost::system::error_code& ec) {
@@ -86,12 +196,29 @@ IoOpResult read_some_with_timeout(AsyncStream& stream,
             cancel();
         }
     });
+    boost::asio::steady_timer stop_poll(io);
+    std::function<void()> arm_stop_poll;
+    arm_stop_poll = [&]() {
+        if (!should_stop || done) return;
+        stop_poll.expires_after(kStopPollInterval);
+        stop_poll.async_wait([&](const boost::system::error_code& ec) {
+            if (ec || done) return;
+            if (stop_is_requested(should_stop)) {
+                res.cancelled = true;
+                cancel();
+                return;
+            }
+            arm_stop_poll();
+        });
+    };
+    arm_stop_poll();
     stream.async_read_some(buf, [&](const boost::system::error_code& ec,
                                     std::size_t bytes) {
         res.ec = ec;
         res.bytes = bytes;
         done = true;
         (void)timer.cancel();
+        (void)stop_poll.cancel();
     });
     io.restart();
     io.run();
@@ -104,7 +231,8 @@ IoOpResult read_exact_with_timeout_prefetched(AsyncStream& stream,
                                               const boost::asio::mutable_buffer& buf,
                                               std::chrono::milliseconds timeout,
                                               CancelFn cancel,
-                                              std::vector<uint8_t>* prefetched) {
+                                              std::vector<uint8_t>* prefetched,
+                                              const StopPredicate& should_stop = {}) {
     IoOpResult res{};
     auto* out = static_cast<uint8_t*>(buf.data());
     const std::size_t target = buf.size();
@@ -126,7 +254,8 @@ IoOpResult read_exact_with_timeout_prefetched(AsyncStream& stream,
         io,
         boost::asio::buffer(out + copied, target - copied),
         timeout,
-        cancel);
+        cancel,
+        should_stop);
     tail.bytes += copied;
     return tail;
 }
@@ -135,7 +264,8 @@ inline IoOpResult connect_with_timeout(boost::asio::ip::tcp::socket& sock,
                                        const boost::asio::ip::tcp::resolver::results_type& endpoints,
                                        boost::asio::io_context& io,
                                        std::chrono::milliseconds timeout,
-                                       const SocketProtectCallback& protect_socket = {}) {
+                                       const SocketProtectCallback& protect_socket = {},
+                                       const StopPredicate& should_stop = {}) {
     IoOpResult res{};
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     if (endpoints.empty()) {
@@ -144,6 +274,13 @@ inline IoOpResult connect_with_timeout(boost::asio::ip::tcp::socket& sock,
     }
 
     for (const auto& entry : endpoints) {
+        if (stop_is_requested(should_stop)) {
+            boost::system::error_code ignored;
+            sock.close(ignored);
+            res.cancelled = true;
+            res.ec = boost::asio::error::operation_aborted;
+            return res;
+        }
         boost::system::error_code ignored;
         sock.close(ignored);
 
@@ -189,15 +326,34 @@ inline IoOpResult connect_with_timeout(boost::asio::ip::tcp::socket& sock,
                 sock.close(cancel_ec);
             }
         });
+        boost::asio::steady_timer stop_poll(io);
+        std::function<void()> arm_stop_poll;
+        arm_stop_poll = [&]() {
+            if (!should_stop || done) return;
+            stop_poll.expires_after(kStopPollInterval);
+            stop_poll.async_wait([&](const boost::system::error_code& ec) {
+                if (ec || done) return;
+                if (stop_is_requested(should_stop)) {
+                    res.cancelled = true;
+                    boost::system::error_code cancel_ec;
+                    sock.cancel(cancel_ec);
+                    sock.close(cancel_ec);
+                    return;
+                }
+                arm_stop_poll();
+            });
+        };
+        arm_stop_poll();
         sock.async_connect(entry.endpoint(), [&](const boost::system::error_code& ec) {
             res.ec = ec;
             done = true;
             (void)timer.cancel();
+            (void)stop_poll.cancel();
         });
 
         io.restart();
         io.run();
-        if (!res.ec || res.timed_out) {
+        if (!res.ec || res.timed_out || res.cancelled) {
             return res;
         }
     }
@@ -206,9 +362,17 @@ inline IoOpResult connect_with_timeout(boost::asio::ip::tcp::socket& sock,
 
 inline IoOpResult handshake_with_timeout(boost::asio::ssl::stream<boost::asio::ip::tcp::socket>& stream,
                                          boost::asio::io_context& io,
-                                         std::chrono::milliseconds timeout) {
+                                         std::chrono::milliseconds timeout,
+                                         const StopPredicate& should_stop = {}) {
     IoOpResult res{};
     bool done = false;
+
+    if (stop_is_requested(should_stop)) {
+        res.cancelled = true;
+        boost::system::error_code ignored;
+        stream.lowest_layer().close(ignored);
+        return res;
+    }
 
     boost::asio::steady_timer timer(io);
     timer.expires_after(timeout);
@@ -221,11 +385,31 @@ inline IoOpResult handshake_with_timeout(boost::asio::ssl::stream<boost::asio::i
         }
     });
 
+    boost::asio::steady_timer stop_poll(io);
+    std::function<void()> arm_stop_poll;
+    arm_stop_poll = [&]() {
+        if (!should_stop || done) return;
+        stop_poll.expires_after(kStopPollInterval);
+        stop_poll.async_wait([&](const boost::system::error_code& ec) {
+            if (ec || done) return;
+            if (stop_is_requested(should_stop)) {
+                res.cancelled = true;
+                boost::system::error_code ignored;
+                stream.lowest_layer().cancel(ignored);
+                stream.lowest_layer().close(ignored);
+                return;
+            }
+            arm_stop_poll();
+        });
+    };
+    arm_stop_poll();
+
     stream.async_handshake(boost::asio::ssl::stream_base::client,
                            [&](const boost::system::error_code& ec) {
                                res.ec = ec;
                                done = true;
                                (void)timer.cancel();
+                               (void)stop_poll.cancel();
                            });
 
     io.restart();
@@ -235,7 +419,7 @@ inline IoOpResult handshake_with_timeout(boost::asio::ssl::stream<boost::asio::i
     // Chrome-like ClientHello means advertising TLS 1.2 as well as 1.3. Accept
     // only the version the profile says the handshake must end on, so shaping
     // the offer never becomes a downgrade on the carrier. Fail closed.
-    if (!res.ec && !res.timed_out) {
+    if (!res.ec && !res.timed_out && !res.cancelled) {
         const std::uint16_t required =
             yume::cover_profile::active().tls_required_version;
         if (required != 0 &&
@@ -254,9 +438,16 @@ IoOpResult write_all_with_timeout(AsyncStream& stream,
                                   boost::asio::io_context& io,
                                   const boost::asio::const_buffer& buf,
                                   std::chrono::milliseconds timeout,
-                                  CancelFn cancel) {
+                                  CancelFn cancel,
+                                  const StopPredicate& should_stop = {}) {
     IoOpResult res{};
     bool done = false;
+
+    if (stop_is_requested(should_stop)) {
+        res.cancelled = true;
+        cancel();
+        return res;
+    }
 
     boost::asio::steady_timer timer(io);
     timer.expires_after(timeout);
@@ -267,11 +458,29 @@ IoOpResult write_all_with_timeout(AsyncStream& stream,
         }
     });
 
+    boost::asio::steady_timer stop_poll(io);
+    std::function<void()> arm_stop_poll;
+    arm_stop_poll = [&]() {
+        if (!should_stop || done) return;
+        stop_poll.expires_after(kStopPollInterval);
+        stop_poll.async_wait([&](const boost::system::error_code& ec) {
+            if (ec || done) return;
+            if (stop_is_requested(should_stop)) {
+                res.cancelled = true;
+                cancel();
+                return;
+            }
+            arm_stop_poll();
+        });
+    };
+    arm_stop_poll();
+
     boost::asio::async_write(stream, buf, [&](const boost::system::error_code& ec, std::size_t bytes) {
         res.ec = ec;
         res.bytes = bytes;
         done = true;
         (void)timer.cancel();
+        (void)stop_poll.cancel();
     });
 
     io.restart();
@@ -285,7 +494,8 @@ IoOpResult read_until_with_timeout(AsyncStream& stream,
                                    std::string* data,
                                    std::string_view delimiter,
                                    std::chrono::milliseconds timeout,
-                                   CancelFn cancel) {
+                                   CancelFn cancel,
+                                   const StopPredicate& should_stop = {}) {
     IoOpResult res{};
     if (!data) {
         res.ec = boost::asio::error::invalid_argument;
@@ -293,6 +503,11 @@ IoOpResult read_until_with_timeout(AsyncStream& stream,
     }
 
     bool done = false;
+    if (stop_is_requested(should_stop)) {
+        res.cancelled = true;
+        cancel();
+        return res;
+    }
     const std::string delim(delimiter);
     boost::asio::steady_timer timer(io);
     timer.expires_after(timeout);
@@ -302,6 +517,22 @@ IoOpResult read_until_with_timeout(AsyncStream& stream,
             cancel();
         }
     });
+    boost::asio::steady_timer stop_poll(io);
+    std::function<void()> arm_stop_poll;
+    arm_stop_poll = [&]() {
+        if (!should_stop || done) return;
+        stop_poll.expires_after(kStopPollInterval);
+        stop_poll.async_wait([&](const boost::system::error_code& ec) {
+            if (ec || done) return;
+            if (stop_is_requested(should_stop)) {
+                res.cancelled = true;
+                cancel();
+                return;
+            }
+            arm_stop_poll();
+        });
+    };
+    arm_stop_poll();
 
     boost::asio::async_read_until(stream, boost::asio::dynamic_buffer(*data), delim,
                                   [&](const boost::system::error_code& ec, std::size_t bytes) {
@@ -309,6 +540,7 @@ IoOpResult read_until_with_timeout(AsyncStream& stream,
                                       res.bytes = bytes;
                                       done = true;
                                       (void)timer.cancel();
+                                      (void)stop_poll.cancel();
                                   });
 
     io.restart();
@@ -431,7 +663,8 @@ inline protocol::Frame read_frame_with_timeout(AsyncStream& stream,
                                               const std::string& host,
                                               int port,
                                               bool tls_handshake_succeeded,
-                                              std::vector<uint8_t>* prefetched = nullptr) {
+                                              std::vector<uint8_t>* prefetched = nullptr,
+                                              const StopPredicate& should_stop = {}) {
     std::array<uint8_t, 8> header_buf{};
     auto cancel = [&]() {
         if constexpr (requires { stream.cancel_and_close(); }) {
@@ -449,7 +682,12 @@ inline protocol::Frame read_frame_with_timeout(AsyncStream& stream,
         boost::asio::buffer(header_buf),
         timeout,
         cancel,
-        prefetched);
+        prefetched,
+        should_stop);
+    if (hr.cancelled) {
+        throw FatalError("operation cancelled while reading " +
+                         std::string(what ? what : "frame"));
+    }
     if (hr.timed_out) {
         if (what && std::strcmp(what, "server info") == 0) {
             throw FatalError(std::string("timed out waiting for server confirmation (") + host + ":" + std::to_string(port) +
@@ -494,7 +732,12 @@ inline protocol::Frame read_frame_with_timeout(AsyncStream& stream,
             boost::asio::buffer(frame.payload),
             timeout,
             cancel,
-            prefetched);
+            prefetched,
+            should_stop);
+        if (pr.cancelled) {
+            throw FatalError("operation cancelled while reading " +
+                             std::string(what ? what : "frame"));
+        }
         if (pr.timed_out) {
             throw FatalError(std::string("this endpoint is not a yume server (") + host + ":" + std::to_string(port) +
                              "; timed out reading " + what +

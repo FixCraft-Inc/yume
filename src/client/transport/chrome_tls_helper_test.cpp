@@ -9,6 +9,7 @@
 #include <boost/asio.hpp>
 
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cerrno>
 #include <chrono>
@@ -352,6 +353,50 @@ void RunCancellationCase(const std::filesystem::path& helper_path) {
     std::filesystem::remove(pid_path, ignored);
 }
 
+void RunHandshakeCancellationCase(const std::filesystem::path& helper_path) {
+    using namespace std::chrono_literals;
+    const auto pid_path = PidPath("hang-cancelled");
+    std::error_code ignored;
+    std::filesystem::remove(pid_path, ignored);
+    ScopedEnvironment mode_environment("YUME_TEST_HELPER_MODE", "hang");
+    ScopedEnvironment pid_environment(
+        "YUME_TEST_HELPER_PID_FILE", pid_path.string());
+
+    boost::asio::io_context io;
+    boost::asio::ip::tcp::socket peer(io);
+    auto connected = ConnectedSocket(io, &peer);
+    std::atomic<bool> stop{false};
+    yume::client::ChromeTlsHelperOptions options;
+    options.helper_path = helper_path;
+    options.server_name = "localhost";
+    options.handshake_timeout = 5s;
+    options.should_stop = [&]() {
+        return stop.load(std::memory_order_acquire);
+    };
+    std::thread canceller([&]() {
+        std::this_thread::sleep_for(30ms);
+        stop.store(true, std::memory_order_release);
+    });
+    const auto started = std::chrono::steady_clock::now();
+    try {
+        (void)yume::client::LaunchChromeTlsHelper(
+            io, std::move(connected), options);
+    } catch (const std::runtime_error& error) {
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        canceller.join();
+        if (std::string(error.what()).find("cancelled") == std::string::npos ||
+            elapsed >= 500ms) {
+            throw;
+        }
+        const pid_t pid = ReadPid(pid_path);
+        ExpectReaped(pid);
+        std::filesystem::remove(pid_path, ignored);
+        return;
+    }
+    canceller.join();
+    assert(false && "expected helper handshake cancellation");
+}
+
 void RunRepeatedLifecycleCases(const std::filesystem::path& helper_path,
                                std::size_t expected_fd_count) {
     constexpr int kIterations = 64;
@@ -379,6 +424,7 @@ int main(int argc, char** argv) {
     RunFailureCase(helper_path, "oversized", "exceeds cap");
     RunFailureCase(helper_path, "crash", "closed early");
     RunFailureCase(helper_path, "hang", "timed out");
+    RunHandshakeCancellationCase(helper_path);
 
     RunPathValidationCases(helper_path);
     RunEchoCase(helper_path);

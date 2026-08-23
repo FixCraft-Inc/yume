@@ -7,10 +7,14 @@
 #include "client/transport/core.hpp"
 #include "core/protocol/packet_bulk.hpp"
 
+#include <array>
 #include <cassert>
+#include <atomic>
+#include <chrono>
 #include <deque>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -77,6 +81,31 @@ std::vector<yume::protocol::Frame> decode_all_frames(const std::vector<uint8_t>&
     return out;
 }
 
+void feed_json_frame(yume::client::TransportCore* core,
+                     yume::protocol::FrameType frame_type,
+                     std::uint8_t stream_id,
+                     const nlohmann::json& json) {
+    assert(core != nullptr);
+    const std::string payload_text = json.dump();
+    const std::vector<std::uint8_t> payload(payload_text.begin(),
+                                            payload_text.end());
+    core->feed_tls_bytes(yume::protocol::encode_frame(
+        frame_type, stream_id, 0, payload));
+}
+
+void assert_rejected_open(const Recorder& recorder,
+                          std::uint8_t stream_id,
+                          const std::string& reason) {
+    assert(recorder.writes.size() == 1U);
+    const auto frames = decode_all_frames(recorder.writes.front());
+    assert(frames.size() == 1U);
+    assert(frames.front().header.type == yume::protocol::OPEN);
+    assert(frames.front().header.stream_id == stream_id);
+    assert((frames.front().header.flags & yume::protocol::kFlagOpenOk) == 0);
+    assert(std::string(frames.front().payload.begin(),
+                       frames.front().payload.end()) == reason);
+}
+
 void test_open_round_trip() {
     Recorder recorder;
     yume::client::TransportCore core(recorder.writer(), recorder.closer());
@@ -114,7 +143,8 @@ void test_inner_crypto_round_trip() {
     std::vector<uint8_t> received;
     bool delivered = false;
     core.register_stream(9,
-                         [&](const std::vector<uint8_t>& data) {
+                         [&](const std::vector<uint8_t>& data,
+                             yume::client::TransportCore::InboundCredit) {
                              delivered = true;
                              received = data;
                          },
@@ -142,7 +172,8 @@ void test_incremental_frame_decoder_handles_fragmented_concatenated_frames() {
     std::vector<std::vector<std::uint8_t>> received;
     core.register_stream(
         7,
-        [&](const std::vector<std::uint8_t>& payload) {
+        [&](const std::vector<std::uint8_t>& payload,
+            yume::client::TransportCore::InboundCredit) {
             received.push_back(payload);
         },
         [&](const std::string&) {});
@@ -171,6 +202,62 @@ void test_incremental_frame_decoder_handles_fragmented_concatenated_frames() {
     assert(received.size() == 2);
     assert(received[0] == first);
     assert(received[1] == second);
+}
+
+void test_inbound_credit_follows_complete_frames_and_partial_shutdown() {
+    using Core = yume::client::TransportCore;
+
+    std::size_t released = 0U;
+    Core core;
+    core.set_inbound_credit_release_handler(
+        [&](std::size_t bytes) { released += bytes; });
+    core.start();
+
+    std::vector<Core::InboundCredit> held;
+    std::vector<std::vector<std::uint8_t>> received;
+    core.register_stream(
+        7,
+        [&](const std::vector<std::uint8_t>& payload,
+            Core::InboundCredit credit) {
+            received.push_back(payload);
+            held.push_back(std::move(credit));
+        },
+        [](const std::string&) {});
+
+    const std::vector<std::uint8_t> first{0x10, 0x20, 0x30};
+    const std::vector<std::uint8_t> second{0x40, 0x50};
+    auto first_wire = yume::protocol::encode_frame(
+        yume::protocol::DATA, 7, 0, first);
+    auto second_wire = yume::protocol::encode_frame(
+        yume::protocol::DATA, 7, 0, second);
+    std::vector<std::uint8_t> wire = first_wire;
+    wire.insert(wire.end(), second_wire.begin(), second_wire.end());
+
+    core.feed_tls_bytes(wire.data(), 3U, 3U);
+    assert(released == 0U);
+    assert(held.empty());
+    core.feed_tls_bytes(wire.data() + 3U, wire.size() - 3U,
+                        wire.size() - 3U);
+    assert(received.size() == 2U);
+    assert(received[0] == first);
+    assert(received[1] == second);
+    assert(held.size() == 2U);
+    assert(held[0].size() == first_wire.size());
+    assert(held[1].size() == second_wire.size());
+    assert(released == 0U);
+
+    held.erase(held.begin());
+    assert(released == first_wire.size());
+    held.clear();
+    assert(released == wire.size());
+
+    const auto partial = yume::protocol::encode_frame(
+        yume::protocol::DATA, 7, 0,
+        std::vector<std::uint8_t>{0x60, 0x70, 0x80});
+    core.feed_tls_bytes(partial.data(), 5U, 5U);
+    assert(released == wire.size());
+    (void)core.shutdown();
+    assert(released == wire.size() + 5U);
 }
 
 void test_padded_frame_round_trip() {
@@ -263,7 +350,8 @@ void test_shutdown_closes_registered_streams() {
     bool closed = false;
     std::string close_reason;
     core.register_stream(5,
-                         [&](const std::vector<uint8_t>&) {},
+                         [&](const std::vector<uint8_t>&,
+                             yume::client::TransportCore::InboundCredit) {},
                          [&](const std::string& reason) {
                              closed = true;
                              close_reason = reason;
@@ -274,6 +362,534 @@ void test_shutdown_closes_registered_streams() {
     callbacks.front()("test shutdown");
     assert(closed);
     assert(close_reason == "test shutdown");
+}
+
+void test_retired_stream_id_is_not_reused() {
+    Recorder recorder;
+    yume::client::TransportCore core(recorder.writer(), recorder.closer());
+    core.start();
+
+    const std::uint8_t retired = core.reserve_stream_id();
+    assert(retired != 0);
+    core.register_stream(
+        retired,
+        [](const std::vector<std::uint8_t>&,
+           yume::client::TransportCore::InboundCredit) {},
+        [](const std::string&) {});
+    core.retire_stream_id(retired);
+    // A CLOSE callback may already have detached from the callback map when a
+    // local OPEN timeout retires the id. Its eventual cleanup must not erase
+    // the tombstone and make a late ACK/DATA frame alias a new stream.
+    core.unregister_stream(retired);
+
+    for (int i = 0; i < 254; ++i) {
+        const std::uint8_t candidate = core.reserve_stream_id();
+        assert(candidate != 0);
+        assert(candidate != retired);
+    }
+    assert(core.reserve_stream_id() == 0);
+}
+
+enum class StreamIdOwner {
+    active,
+    pending_open,
+    pending_remote_listen,
+    reserved,
+    retired,
+};
+
+struct StreamOwnerObservation {
+    bool active_data_received{false};
+    bool pending_result_received{false};
+};
+
+std::uint8_t install_stream_id_owner(
+    yume::client::TransportCore* core,
+    StreamIdOwner owner,
+    StreamOwnerObservation* observation) {
+    assert(core != nullptr);
+    assert(observation != nullptr);
+    const std::uint8_t stream_id = core->reserve_stream_id();
+    assert(stream_id != 0);
+    switch (owner) {
+        case StreamIdOwner::active:
+            assert(core->register_stream(
+                stream_id,
+                [observation](const std::vector<std::uint8_t>&,
+                              yume::client::TransportCore::InboundCredit) {
+                    observation->active_data_received = true;
+                },
+                [](const std::string&) {}));
+            break;
+        case StreamIdOwner::pending_open:
+            core->open_stream(
+                stream_id, "example.test", 443,
+                [observation](bool, const std::string&) {
+                    observation->pending_result_received = true;
+                });
+            break;
+        case StreamIdOwner::pending_remote_listen:
+            core->request_remote_listen(
+                stream_id, "127.0.0.1", 2200,
+                [observation](bool, const std::string&) {
+                    observation->pending_result_received = true;
+                });
+            break;
+        case StreamIdOwner::reserved:
+            break;
+        case StreamIdOwner::retired:
+            core->retire_stream_id(stream_id);
+            break;
+    }
+    return stream_id;
+}
+
+void verify_stream_owner_survived_collision(
+    yume::client::TransportCore* core,
+    StreamIdOwner owner,
+    std::uint8_t stream_id,
+    StreamOwnerObservation* observation) {
+    assert(core != nullptr);
+    assert(observation != nullptr);
+    switch (owner) {
+        case StreamIdOwner::active: {
+            const auto wire = yume::protocol::encode_frame(
+                yume::protocol::DATA, stream_id, 0,
+                std::vector<std::uint8_t>{0x41});
+            core->feed_tls_bytes(wire);
+            assert(observation->active_data_received);
+            assert(!core->register_stream(
+                stream_id,
+                [](const std::vector<std::uint8_t>&,
+                   yume::client::TransportCore::InboundCredit) {},
+                [](const std::string&) {}));
+            break;
+        }
+        case StreamIdOwner::pending_open: {
+            const auto wire = yume::protocol::encode_frame(
+                yume::protocol::OPEN, stream_id,
+                yume::protocol::kFlagOpenOk, {});
+            core->feed_tls_bytes(wire);
+            assert(observation->pending_result_received);
+            break;
+        }
+        case StreamIdOwner::pending_remote_listen: {
+            const auto wire = yume::protocol::encode_frame(
+                yume::protocol::OPEN, stream_id,
+                yume::protocol::kFlagOpenOk, {});
+            core->feed_tls_bytes(wire);
+            assert(observation->pending_result_received);
+            break;
+        }
+        case StreamIdOwner::reserved:
+            assert(core->register_stream(
+                stream_id,
+                [](const std::vector<std::uint8_t>&,
+                   yume::client::TransportCore::InboundCredit) {},
+                [](const std::string&) {}));
+            break;
+        case StreamIdOwner::retired:
+            assert(!core->register_stream(
+                stream_id,
+                [](const std::vector<std::uint8_t>&,
+                   yume::client::TransportCore::InboundCredit) {},
+                [](const std::string&) {}));
+            break;
+    }
+}
+
+void test_peer_open_collisions_preserve_every_stream_id_owner() {
+    constexpr std::array<StreamIdOwner, 5> owners{
+        StreamIdOwner::active,
+        StreamIdOwner::pending_open,
+        StreamIdOwner::pending_remote_listen,
+        StreamIdOwner::reserved,
+        StreamIdOwner::retired,
+    };
+    constexpr std::array<yume::protocol::FrameType, 2> frame_types{
+        yume::protocol::SOPEN,
+        yume::protocol::ROPEN,
+    };
+
+    for (const yume::protocol::FrameType frame_type : frame_types) {
+        for (const StreamIdOwner owner : owners) {
+            Recorder recorder;
+            yume::client::TransportCore core(recorder.writer(),
+                                             recorder.closer());
+            core.start();
+            StreamOwnerObservation observation;
+            const std::uint8_t stream_id =
+                install_stream_id_owner(&core, owner, &observation);
+            bool handler_called = false;
+            core.set_inbound_open_handler(
+                [&](std::uint8_t id,
+                    const nlohmann::json&,
+                    std::string*) {
+                    handler_called = true;
+                    return core.register_stream(
+                        id,
+                        [](const std::vector<std::uint8_t>&,
+                           yume::client::TransportCore::InboundCredit) {},
+                        [](const std::string&) {});
+                });
+            core.set_reverse_handler(
+                [&](std::uint8_t,
+                    std::uint8_t id,
+                    std::string*) {
+                    handler_called = true;
+                    return core.register_stream(
+                        id,
+                        [](const std::vector<std::uint8_t>&,
+                           yume::client::TransportCore::InboundCredit) {},
+                        [](const std::string&) {});
+                });
+            recorder.writes.clear();
+
+            if (frame_type == yume::protocol::SOPEN) {
+                feed_json_frame(
+                    &core, frame_type, stream_id,
+                    nlohmann::json{{"channel_kind", "chat"}});
+                assert_rejected_open(recorder, stream_id,
+                                     "inbound stream id in use");
+            } else {
+                feed_json_frame(
+                    &core, frame_type, stream_id,
+                    nlohmann::json{{"listen_id", 9}});
+                assert_rejected_open(recorder, stream_id,
+                                     "reverse stream id in use");
+            }
+            assert(!handler_called);
+            verify_stream_owner_survived_collision(
+                &core, owner, stream_id, &observation);
+        }
+    }
+}
+
+void test_peer_open_handler_failure_releases_reservation() {
+    {
+        Recorder recorder;
+        yume::client::TransportCore core(recorder.writer(),
+                                         recorder.closer());
+        core.start();
+        core.set_inbound_open_handler(
+            [](std::uint8_t, const nlohmann::json&, std::string* reason) {
+                if (reason) {
+                    *reason = "relay rejected";
+                }
+                return false;
+            });
+        feed_json_frame(
+            &core, yume::protocol::SOPEN, 77,
+            nlohmann::json{{"channel_kind", "chat"}});
+        assert_rejected_open(recorder, 77, "relay rejected");
+
+        recorder.writes.clear();
+        bool data_received = false;
+        core.set_inbound_open_handler(
+            [&](std::uint8_t id,
+                const nlohmann::json&,
+                std::string*) {
+                return core.register_stream(
+                    id,
+                    [&](const std::vector<std::uint8_t>&,
+                        yume::client::TransportCore::InboundCredit) {
+                        data_received = true;
+                    },
+                    [](const std::string&) {});
+            });
+        feed_json_frame(
+            &core, yume::protocol::SOPEN, 77,
+            nlohmann::json{{"channel_kind", "chat"}});
+        assert(recorder.writes.size() == 1U);
+        const auto frames = decode_all_frames(recorder.writes.front());
+        assert(frames.size() == 1U);
+        assert(frames.front().header.type == yume::protocol::OPEN);
+        assert(frames.front().header.stream_id == 77);
+        assert((frames.front().header.flags &
+                yume::protocol::kFlagOpenOk) != 0);
+        core.feed_tls_bytes(yume::protocol::encode_frame(
+            yume::protocol::DATA, 77, 0,
+            std::vector<std::uint8_t>{0x52}));
+        assert(data_received);
+    }
+
+    {
+        Recorder recorder;
+        yume::client::TransportCore core(recorder.writer(),
+                                         recorder.closer());
+        core.start();
+        core.set_reverse_handler(
+            [](std::uint8_t, std::uint8_t, std::string* reason) {
+                if (reason) {
+                    *reason = "listener rejected";
+                }
+                return false;
+            });
+        feed_json_frame(
+            &core, yume::protocol::ROPEN, 88,
+            nlohmann::json{{"listen_id", 9}});
+        assert_rejected_open(recorder, 88, "listener rejected");
+
+        recorder.writes.clear();
+        bool data_received = false;
+        core.set_reverse_handler(
+            [&](std::uint8_t, std::uint8_t id, std::string*) {
+                return core.register_stream(
+                    id,
+                    [&](const std::vector<std::uint8_t>&,
+                        yume::client::TransportCore::InboundCredit) {
+                        data_received = true;
+                    },
+                    [](const std::string&) {});
+            });
+        feed_json_frame(
+            &core, yume::protocol::ROPEN, 88,
+            nlohmann::json{{"listen_id", 9}});
+        assert(recorder.writes.empty());
+        core.feed_tls_bytes(yume::protocol::encode_frame(
+            yume::protocol::DATA, 88, 0,
+            std::vector<std::uint8_t>{0x63}));
+        assert(data_received);
+    }
+}
+
+void test_server_control_open_reserves_before_handler() {
+    Recorder recorder;
+    yume::client::TransportCore core(recorder.writer(), recorder.closer());
+    core.start();
+    core.set_server_in_charge(true);
+
+    const std::uint8_t stream_id = core.reserve_stream_id();
+    assert(stream_id != 0);
+    bool original_data_received = false;
+    assert(core.register_stream(
+        stream_id,
+        [&](const std::vector<std::uint8_t>&,
+            yume::client::TransportCore::InboundCredit) {
+            original_data_received = true;
+        },
+        [](const std::string&) {}));
+    bool handler_called = false;
+    core.set_server_stream_open_handler(
+        [&](std::uint8_t,
+            const std::string&,
+            int,
+            std::string*) {
+            handler_called = true;
+            return true;
+        });
+    feed_json_frame(
+        &core, yume::protocol::SOPEN, stream_id,
+        nlohmann::json{{"host", "example.test"},
+                       {"port", 443},
+                       {"proto", "tcp"}});
+    assert_rejected_open(recorder, stream_id,
+                         "server control stream id in use");
+    assert(!handler_called);
+    core.feed_tls_bytes(yume::protocol::encode_frame(
+        yume::protocol::DATA, stream_id, 0,
+        std::vector<std::uint8_t>{0x74}));
+    assert(original_data_received);
+
+    core.unregister_stream(stream_id);
+    recorder.writes.clear();
+    core.set_server_stream_open_handler(
+        [](std::uint8_t,
+           const std::string&,
+           int,
+           std::string* reason) {
+            if (reason) {
+                *reason = "dial rejected";
+            }
+            return false;
+        });
+    feed_json_frame(
+        &core, yume::protocol::SOPEN, stream_id,
+        nlohmann::json{{"host", "example.test"},
+                       {"port", 443},
+                       {"proto", "tcp"}});
+    assert_rejected_open(recorder, stream_id, "dial rejected");
+
+    recorder.writes.clear();
+    bool replacement_data_received = false;
+    core.set_server_stream_open_handler(
+        [&](std::uint8_t id,
+            const std::string&,
+            int,
+            std::string*) {
+            return core.register_stream(
+                id,
+                [&](const std::vector<std::uint8_t>&,
+                    yume::client::TransportCore::InboundCredit) {
+                    replacement_data_received = true;
+                },
+                [](const std::string&) {});
+        });
+    feed_json_frame(
+        &core, yume::protocol::SOPEN, stream_id,
+        nlohmann::json{{"host", "example.test"},
+                       {"port", 443},
+                       {"proto", "tcp"}});
+    assert(recorder.writes.empty());
+    core.feed_tls_bytes(yume::protocol::encode_frame(
+        yume::protocol::DATA, stream_id, 0,
+        std::vector<std::uint8_t>{0x75}));
+    assert(replacement_data_received);
+}
+
+void test_server_control_open_schema_rejects_types_and_survives() {
+    Recorder recorder;
+    yume::client::TransportCore core(recorder.writer(), recorder.closer());
+    core.start();
+    core.set_server_in_charge(true);
+
+    bool handler_called = false;
+    core.set_server_stream_open_handler(
+        [&](std::uint8_t,
+            const std::string&,
+            int,
+            std::string*) {
+            handler_called = true;
+            return false;
+        });
+
+    const auto reject = [&](const nlohmann::json& json) {
+        recorder.writes.clear();
+        feed_json_frame(&core, yume::protocol::SOPEN, 90, json);
+        assert_rejected_open(recorder, 90, "invalid control target");
+        assert(!handler_called);
+        assert(recorder.close_reason.empty());
+    };
+
+    reject({{"host", 1}, {"port", 443}, {"proto", "tcp"}});
+    reject({{"host", "example.test"}, {"port", "443"}, {"proto", "tcp"}});
+    reject({{"host", "example.test"}, {"port", 443}, {"proto", 1}});
+    reject({{"host", "example.test"}, {"port", 0}, {"proto", "tcp"}});
+    reject({{"host", "example.test"}, {"port", 65536}, {"proto", "tcp"}});
+    reject({{"host", std::string(256U, 'h')},
+            {"port", 443},
+            {"proto", "tcp"}});
+    reject({{"host", "example.test"},
+            {"port", 443},
+            {"proto", "tcp"},
+            {"future_field", true}});
+    reject(nlohmann::json::array({"example.test", 443, "tcp"}));
+
+    recorder.writes.clear();
+    bool data_received = false;
+    core.set_server_stream_open_handler(
+        [&](std::uint8_t id,
+            const std::string& host,
+            int port,
+            std::string*) {
+            handler_called = true;
+            assert(host == "example.test");
+            assert(port == 443);
+            return core.register_stream(
+                id,
+                [&](const std::vector<std::uint8_t>&,
+                    yume::client::TransportCore::InboundCredit) {
+                    data_received = true;
+                },
+                [](const std::string&) {});
+        });
+    feed_json_frame(
+        &core, yume::protocol::SOPEN, 90,
+        nlohmann::json{{"host", "example.test"}, {"port", 443}});
+    assert(handler_called);
+    assert(recorder.writes.empty());
+    assert(recorder.close_reason.empty());
+    core.feed_tls_bytes(yume::protocol::encode_frame(
+        yume::protocol::DATA, 90, 0,
+        std::vector<std::uint8_t>{0x71}));
+    assert(data_received);
+}
+
+void test_register_stream_if_unused_is_atomic() {
+    yume::client::TransportCore core;
+    core.start();
+    std::atomic<int> ready{0};
+    std::atomic<bool> go{false};
+    std::array<bool, 2> registered{false, false};
+    std::array<std::thread, 2> workers;
+    for (std::size_t i = 0; i < workers.size(); ++i) {
+        workers[i] = std::thread([&, i] {
+            ready.fetch_add(1, std::memory_order_release);
+            while (!go.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            registered[i] = core.register_stream(
+                123,
+                [](const std::vector<std::uint8_t>&,
+                   yume::client::TransportCore::InboundCredit) {},
+                [](const std::string&) {});
+        });
+    }
+    while (ready.load(std::memory_order_acquire) != 2) {
+        std::this_thread::yield();
+    }
+    go.store(true, std::memory_order_release);
+    for (auto& worker : workers) {
+        worker.join();
+    }
+    assert(registered[0] != registered[1]);
+    assert(!core.register_stream(
+        123,
+        [](const std::vector<std::uint8_t>&,
+           yume::client::TransportCore::InboundCredit) {},
+        [](const std::string&) {}));
+}
+
+void test_shutdown_releases_runtime_handlers() {
+    yume::client::TransportCore core;
+    auto owner = std::make_shared<int>(42);
+    const std::weak_ptr<int> weak_owner = owner;
+    std::function<void()> retain_owner = [owner]() { (void)owner; };
+
+    core.set_write_handler(
+        [retain_owner](std::shared_ptr<std::vector<std::uint8_t>>,
+                       yume::client::TransportCore::WriteCompletion) {
+            retain_owner();
+        });
+    core.set_close_transport_handler(
+        [retain_owner](const std::string&) { retain_owner(); });
+    core.set_reverse_handler(
+        [retain_owner](std::uint8_t, std::uint8_t, std::string*) {
+            retain_owner();
+            return true;
+        });
+    core.set_control_handler(
+        [retain_owner](const nlohmann::json&) { retain_owner(); });
+    core.set_inbound_open_handler(
+        [retain_owner](std::uint8_t,
+                       const nlohmann::json&,
+                       std::string*) {
+            retain_owner();
+            return true;
+        });
+    core.set_activity_handler(retain_owner);
+    core.set_server_stream_open_handler(
+        [retain_owner](std::uint8_t,
+                       const std::string&,
+                       int,
+                       std::string*) {
+            retain_owner();
+            return true;
+        });
+    core.set_exec_handler(
+        [retain_owner](std::uint8_t, const std::string&) { retain_owner(); });
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    core.set_timing_handler(
+        [retain_owner](const std::string&,
+                       const std::string&,
+                       const std::string&) { retain_owner(); });
+#endif
+
+    retain_owner = {};
+    owner.reset();
+    assert(!weak_owner.expired());
+    (void)core.shutdown();
+    assert(weak_owner.expired());
 }
 
 void test_write_scheduler_prioritizes_control_without_reordering_stream() {
@@ -333,6 +949,127 @@ void test_transport_bulk_backpressure_is_bounded() {
     }
     assert(accepted == 448);
     assert(rejected == 1);
+}
+
+void test_transport_waiting_admission_is_bounded_and_truthful() {
+    using Admission = yume::client::TransportCore::DataWriteAdmission;
+
+    Recorder recorder;
+    recorder.complete_immediately = false;
+    yume::client::TransportCore core(recorder.writer(), recorder.closer());
+    core.start();
+
+    for (std::size_t i = 0; i < 448; ++i) {
+        assert(core.try_send_data(
+            static_cast<std::uint8_t>((i % 200) + 1),
+            std::vector<uint8_t>{0x31}));
+    }
+    assert(core.wait_send_data(
+               201, std::vector<uint8_t>{0x32},
+               std::chrono::milliseconds::zero()) ==
+           Admission::would_block);
+    assert(core.wait_send_data(
+               201, std::vector<uint8_t>{0x33},
+               std::chrono::milliseconds{2}) ==
+           Admission::timeout);
+
+    std::atomic<Admission> result{Admission::invalid};
+    std::thread waiter([&] {
+        result.store(core.wait_send_data(
+            201, std::vector<uint8_t>{0x34},
+            std::chrono::milliseconds{500}));
+    });
+    auto completion = std::move(recorder.completions.front());
+    recorder.completions.clear();
+    completion(true, recorder.writes.front().size(), {});
+    waiter.join();
+    assert(result.load() == Admission::accepted);
+}
+
+void test_transport_shutdown_wakes_capacity_waiter() {
+    using Admission = yume::client::TransportCore::DataWriteAdmission;
+
+    Recorder recorder;
+    recorder.complete_immediately = false;
+    yume::client::TransportCore core(recorder.writer(), recorder.closer());
+    core.start();
+    assert(core.try_send_data(
+        1, std::vector<uint8_t>(15U * 1024U * 1024U, 0x41)));
+
+    std::atomic<Admission> result{Admission::invalid};
+    std::thread waiter([&] {
+        result.store(core.wait_send_data(
+            2, std::vector<uint8_t>{0x42},
+            std::chrono::seconds{2}));
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    (void)core.shutdown();
+    waiter.join();
+    assert(result.load() == Admission::stopped);
+
+    auto completion = std::move(recorder.completions.front());
+    completion(true, recorder.writes.front().size(), {});
+}
+
+void test_transport_writer_exception_settles_without_wedging() {
+    using Admission = yume::client::TransportCore::DataWriteAdmission;
+    std::size_t writer_calls = 0;
+    std::size_t completion_calls = 0;
+    std::string close_reason;
+    yume::client::TransportCore core(
+        [&](std::shared_ptr<std::vector<std::uint8_t>>,
+            yume::client::TransportCore::WriteCompletion) {
+            ++writer_calls;
+            throw std::runtime_error("writer boom");
+        },
+        [&](const std::string& reason) { close_reason = reason; });
+    core.start();
+
+    const auto result = core.wait_send_data(
+        1, std::vector<std::uint8_t>{0x51},
+        std::chrono::milliseconds::zero(),
+        [&](bool ok, std::size_t, const std::string& reason) {
+            assert(!ok);
+            assert(reason == "writer boom");
+            ++completion_calls;
+        });
+    assert(result == Admission::accepted);
+    assert(writer_calls == 1);
+    assert(completion_calls == 1);
+    assert(close_reason == "write failed: writer boom");
+
+    // The failed dispatch released its reservation and scheduler state.
+    assert(core.wait_send_data(
+               2, std::vector<std::uint8_t>{0x52},
+               std::chrono::milliseconds::zero(),
+               [&](bool, std::size_t, const std::string&) {
+                   ++completion_calls;
+               }) == Admission::accepted);
+    assert(writer_calls == 2);
+    assert(completion_calls == 2);
+}
+
+void test_transport_advisory_callbacks_cannot_break_admission() {
+    Recorder recorder;
+    yume::client::TransportCore core(recorder.writer(), recorder.closer());
+    core.start();
+    core.set_activity_handler([] { throw std::runtime_error("activity boom"); });
+
+    bool completion_called = false;
+    const bool accepted = core.try_send_data(
+        1, std::vector<std::uint8_t>{0x61},
+        [&](bool ok, std::size_t, const std::string&) {
+            completion_called = true;
+            assert(ok);
+            throw std::runtime_error("completion boom");
+        });
+    assert(accepted);
+    assert(completion_called);
+    assert(recorder.writes.size() == 1);
+
+    // A throwing completion did not leave write_in_flight_ wedged.
+    assert(core.try_send_data(2, std::vector<std::uint8_t>{0x62}));
+    assert(recorder.writes.size() == 2);
 }
 
 void test_shutdown_completes_queued_and_inflight_writes_once() {
@@ -514,13 +1251,25 @@ int main() {
     test_open_round_trip();
     test_inner_crypto_round_trip();
     test_incremental_frame_decoder_handles_fragmented_concatenated_frames();
+    test_inbound_credit_follows_complete_frames_and_partial_shutdown();
     test_padded_frame_round_trip();
     test_padded_frame_rejects_bad_length();
     test_packet_bulk_round_trip();
     test_packet_bulk_rejects_malformed_payload();
     test_shutdown_closes_registered_streams();
+    test_retired_stream_id_is_not_reused();
+    test_peer_open_collisions_preserve_every_stream_id_owner();
+    test_peer_open_handler_failure_releases_reservation();
+    test_server_control_open_reserves_before_handler();
+    test_server_control_open_schema_rejects_types_and_survives();
+    test_register_stream_if_unused_is_atomic();
+    test_shutdown_releases_runtime_handlers();
     test_write_scheduler_prioritizes_control_without_reordering_stream();
     test_transport_bulk_backpressure_is_bounded();
+    test_transport_waiting_admission_is_bounded_and_truthful();
+    test_transport_shutdown_wakes_capacity_waiter();
+    test_transport_writer_exception_settles_without_wedging();
+    test_transport_advisory_callbacks_cannot_break_admission();
     test_shutdown_completes_queued_and_inflight_writes_once();
     test_ratchet_batches_cross_rekeys_in_wire_order();
     test_ratchet_sends_bounded_data_while_rekey_ack_is_in_flight();

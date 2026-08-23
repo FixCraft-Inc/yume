@@ -43,8 +43,6 @@ struct ServerConfig {
     bool inner_heavy{true};
     bool inner_dual{false};
     bool inner_required{false};
-    bool inner_hop{true};
-    std::uint32_t hop_interval_ms{500};
     // Concurrent directional epoch offers accepted from one session, and the
     // ceiling on this server's own sending window. Higher values lift the
     // per-round-trip transfer ceiling on high-RTT links without changing the
@@ -53,8 +51,6 @@ struct ServerConfig {
     ratchet::SecurityProfileConfig security_profile{};
     // Aggregate admission bounds for authorized/preauth Argon2 handshake
     // work. These are reservations made before Argon2 allocates memory.
-    std::uint32_t argon2_memory_budget_kib{1u << 19};  // 512 MiB
-    std::uint32_t argon2_max_jobs{4};
     int reverse_port_min{yume::policy::kReversePortMinDefault};
     int reverse_port_max{yume::policy::kReversePortMaxDefault};
     std::string dns_server;
@@ -232,7 +228,7 @@ struct ServerConfig {
     std::uint32_t packet_mtu{1420};
     bool benchmark_enable{false};
     std::vector<std::string> federation_peers;
-    std::string federation_auth_key;
+    std::string federation_identity;
     std::string federation_anonym_ca;
     std::string operator_keys;
     std::string operator_keys_meta;

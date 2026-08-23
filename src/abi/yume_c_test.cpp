@@ -6,19 +6,125 @@
 
 #include "yume/yume.h"
 
+#include "service_open_wait.hpp"
+#include "service_status.hpp"
+#include "client/transport/runtime_lifetime.hpp"
+
+#include <atomic>
+#include <chrono>
 #include <cstring>
+#include <functional>
+#include <memory>
 #include <string>
+#include <thread>
 
 #if !defined(_WIN32)
+#include <cerrno>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
 
 namespace {
+
+static_assert(YUME_BUILD_INFO_MIN_SIZE ==
+              offsetof(yume_build_info, yume_version));
+static_assert(yume::abi::detail::service_read_status(
+                  yume::runtime::ServiceStream::ReadResult::Data, 0) ==
+              YUME_STATUS_OK);
+static_assert(yume::abi::detail::service_read_status(
+                  yume::runtime::ServiceStream::ReadResult::Eof, 0) ==
+              YUME_STATUS_OK);
+static_assert(yume::abi::detail::service_read_status(
+                  yume::runtime::ServiceStream::ReadResult::Timeout, 0) ==
+              YUME_STATUS_WOULD_BLOCK);
+static_assert(yume::abi::detail::service_read_status(
+                  yume::runtime::ServiceStream::ReadResult::Timeout, 1) ==
+              YUME_STATUS_TIMEOUT);
+static_assert(yume::abi::detail::service_read_status(
+                  yume::runtime::ServiceStream::ReadResult::Closed, 0) ==
+              YUME_STATUS_NOT_RUNNING);
+
+int test_service_open_wait_lifetime_and_cancellation() {
+    using Wait = yume::abi::detail::ServiceOpenWait;
+
+    auto timed_out = std::make_shared<Wait>();
+    std::weak_ptr<Wait> weak_timed_out = timed_out;
+    std::function<void()> late_callback = [timed_out] {
+        timed_out->complete(true, "late acceptance");
+    };
+
+    const auto timeout_result = timed_out->wait_for(std::chrono::milliseconds{0});
+    if (timeout_result.outcome != Wait::Outcome::timed_out) return 42;
+    timed_out.reset();
+    if (weak_timed_out.expired()) return 43;
+
+    late_callback();
+    auto retained = weak_timed_out.lock();
+    if (!retained) return 44;
+    const auto late_result = retained->wait_for(std::chrono::milliseconds{0});
+    if (late_result.outcome != Wait::Outcome::timed_out) return 45;
+    retained.reset();
+    late_callback = {};
+    if (!weak_timed_out.expired()) return 46;
+
+    auto cancelled = std::make_shared<Wait>();
+    cancelled->cancel("tunnel disconnected");
+    cancelled->complete(true, "late acceptance");
+    const auto cancel_result = cancelled->wait_for(std::chrono::milliseconds{0});
+    if (cancel_result.outcome != Wait::Outcome::cancelled) return 47;
+    if (cancel_result.reason != "tunnel disconnected") return 48;
+
+    auto wakeable = std::make_shared<Wait>();
+    Wait::Result wake_result;
+    std::thread waiter([wakeable, &wake_result] {
+        wake_result = wakeable->wait_for(std::chrono::seconds{2});
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    const auto cancel_started = std::chrono::steady_clock::now();
+    wakeable->cancel("client stop");
+    waiter.join();
+    const auto cancel_elapsed = std::chrono::steady_clock::now() - cancel_started;
+    if (wake_result.outcome != Wait::Outcome::cancelled) return 49;
+    if (cancel_elapsed >= std::chrono::seconds{1}) return 50;
+
+    return 0;
+}
+
+int test_runtime_lifetime_gate_revocation_barrier() {
+    using Gate = yume::client::RuntimeLifetimeGate;
+    auto gate = std::make_shared<Gate>();
+    if (!gate->activate() || !gate->active()) return 51;
+
+    auto lease = gate->try_acquire();
+    if (!lease) return 52;
+    gate->revoke();
+    if (gate->active() || gate->try_acquire()) return 53;
+
+    std::atomic<bool> entered{false};
+    std::atomic<bool> quiesced{false};
+    std::thread waiter([gate, &entered, &quiesced] {
+        entered.store(true, std::memory_order_release);
+        gate->wait_for_quiescence();
+        quiesced.store(true, std::memory_order_release);
+    });
+    while (!entered.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    if (quiesced.load(std::memory_order_acquire)) {
+        lease.release();
+        waiter.join();
+        return 54;
+    }
+    lease.release();
+    waiter.join();
+    return quiesced.load(std::memory_order_acquire) ? 0 : 55;
+}
 
 #if !defined(_WIN32)
 int test_inproc_ignores_desktop_config_path() {
@@ -94,11 +200,124 @@ int test_pq_public_path_failure_removes_private_key() {
     if (public_contents != "do-not-replace") return 41;
     return 0;
 }
+
+int test_client_config_file_statuses() {
+    char work_dir_template[] = "/tmp/yume-abi-client-config-XXXXXX";
+    char* const work_dir = ::mkdtemp(work_dir_template);
+    if (!work_dir) return 61;
+
+    const auto base = std::filesystem::path(work_dir);
+    const auto invalid_path = base / "invalid.json";
+    {
+        std::ofstream output(invalid_path);
+        output << R"({"server":"localhost","port":"443"})";
+        if (!output) return 62;
+    }
+
+    yume_client* client = yume_client_create();
+    if (!client) return 63;
+    const int invalid_status = yume_client_start_file(
+        client, invalid_path.c_str(), 1);
+    const int missing_status = yume_client_start_file(
+        client, (base / "missing.json").c_str(), 1);
+    yume_client_destroy(client);
+
+    std::error_code cleanup_error;
+    std::filesystem::remove_all(base, cleanup_error);
+    if (invalid_status != YUME_STATUS_PARSE_ERROR) return 64;
+    if (missing_status != YUME_STATUS_NOT_FOUND) return 65;
+    return 0;
+}
+
+int test_stop_cancels_start_during_config_io() {
+    char work_dir_template[] = "/tmp/yume-abi-start-handoff-XXXXXX";
+    char* const work_dir = ::mkdtemp(work_dir_template);
+    if (!work_dir) return 67;
+
+    const auto base = std::filesystem::path(work_dir);
+    const auto config_fifo = base / "client.json.fifo";
+    if (::mkfifo(config_fifo.c_str(), S_IRUSR | S_IWUSR) != 0) {
+        std::error_code ignored;
+        std::filesystem::remove_all(base, ignored);
+        return 68;
+    }
+
+    yume_client* client = yume_client_create();
+    if (!client) {
+        std::error_code ignored;
+        std::filesystem::remove_all(base, ignored);
+        return 69;
+    }
+    std::atomic<int> start_status{YUME_STATUS_INTERNAL_ERROR};
+    std::thread starter([&] {
+        start_status.store(
+            yume_client_start_file(client, config_fifo.c_str(), 5'000),
+            std::memory_order_release);
+    });
+
+    int writer = -1;
+    const auto writer_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < writer_deadline) {
+        writer = ::open(config_fifo.c_str(), O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+        if (writer >= 0) break;
+        if (errno != ENXIO && errno != EINTR) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    if (writer < 0) {
+        // Opening both ends releases a start thread that failed to reach the
+        // intended blocking read, so the test can still clean up safely.
+        const int wake = ::open(
+            config_fifo.c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        if (wake >= 0) (void)::close(wake);
+        (void)yume_client_stop(client);
+        starter.join();
+        yume_client_destroy(client);
+        std::error_code ignored;
+        std::filesystem::remove_all(base, ignored);
+        return 70;
+    }
+
+    // The FIFO writer cannot open until load_client() has opened its read end.
+    // Start admission and its cancellation token are therefore definitely
+    // published while the caller remains blocked in configuration I/O.
+    const int stop_status = yume_client_stop(client);
+    static constexpr char kConfig[] =
+        R"({"server":"127.0.0.1","port":1,"tunnels":1,"inner_crypto":true})";
+    std::size_t written = 0;
+    while (written < sizeof(kConfig) - 1) {
+        const ssize_t count = ::write(
+            writer, kConfig + written, sizeof(kConfig) - 1 - written);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) break;
+        written += static_cast<std::size_t>(count);
+    }
+    (void)::close(writer);
+    starter.join();
+    const int observed_start_status =
+        start_status.load(std::memory_order_acquire);
+    yume_client_destroy(client);
+    std::error_code ignored;
+    std::filesystem::remove_all(base, ignored);
+
+    if (written != sizeof(kConfig) - 1) return 71;
+    if (stop_status != YUME_STATUS_OK) return 72;
+    if (observed_start_status != YUME_STATUS_NOT_RUNNING) return 73;
+    return 0;
+}
 #endif
 
 }  // namespace
 
 int main() {
+    if (const int rc = test_service_open_wait_lifetime_and_cancellation();
+        rc != 0) {
+        return rc;
+    }
+    if (const int rc = test_runtime_lifetime_gate_revocation_barrier();
+        rc != 0) {
+        return rc;
+    }
     if (yume_abi_version() != YUME_ABI_VERSION) {
         return 1;
     }
@@ -117,8 +336,30 @@ int main() {
     }
 
     yume_build_info info{};
-    if (yume_get_build_info(&info, sizeof(info) - 1) != YUME_STATUS_BUFFER_TOO_SMALL) {
+    if (yume_get_build_info(&info, YUME_BUILD_INFO_MIN_SIZE - 1) !=
+        YUME_STATUS_BUFFER_TOO_SMALL) {
         return 5;
+    }
+    static constexpr char kUnwritten[] = "unwritten";
+    info.yume_version = kUnwritten;
+    info.basefwx_version = kUnwritten;
+    info.pq_backend = kUnwritten;
+    info.argon2_backend = kUnwritten;
+    if (yume_get_build_info(&info, YUME_BUILD_INFO_MIN_SIZE) !=
+        YUME_STATUS_OK) {
+        return 56;
+    }
+    if (info.struct_size != sizeof(info) ||
+        info.abi_version != YUME_ABI_VERSION ||
+        info.yume_version != kUnwritten ||
+        info.basefwx_version != kUnwritten ||
+        info.pq_backend != kUnwritten ||
+        info.argon2_backend != kUnwritten) {
+        return 57;
+    }
+    if (yume_get_build_info(&info, sizeof(info) - 1) != YUME_STATUS_OK ||
+        info.argon2_backend != kUnwritten) {
+        return 58;
     }
     if (yume_get_build_info(&info, sizeof(info)) != YUME_STATUS_OK) {
         return 6;
@@ -132,6 +373,10 @@ int main() {
     if (std::strcmp(yume_strerror(YUME_STATUS_TIMEOUT), "timeout") != 0) {
         return 9;
     }
+    if (std::strcmp(yume_strerror(YUME_STATUS_RESOURCE_EXHAUSTED),
+                    "resource exhausted") != 0) {
+        return 66;
+    }
 
     yume_client* client = yume_client_create();
     if (!client) {
@@ -141,6 +386,12 @@ int main() {
         YUME_STATUS_OK) {
         yume_client_destroy(client);
         return 23;
+    }
+    if (yume_client_start_json(
+            client, R"({"server":"localhost","port":"443"})",
+            nullptr, 1) != YUME_STATUS_PARSE_ERROR) {
+        yume_client_destroy(client);
+        return 60;
     }
     if (yume_client_start_json(
             client, R"({"server":"localhost","port":443,"tunnels":0})",
@@ -155,6 +406,13 @@ int main() {
     if (!yume_handle_last_error(client) || yume_handle_last_error(client)[0] == '\0') {
         yume_client_destroy(client);
         return 12;
+    }
+    yume_stream* client_stream = nullptr;
+    if (yume_client_open_stream(client, "example-service-v1", 0,
+                                &client_stream) != YUME_STATUS_WOULD_BLOCK ||
+        client_stream != nullptr) {
+        yume_client_destroy(client);
+        return 59;
     }
     yume_packet* packet = nullptr;
     if (yume_client_open_packet(client, 0, &packet) != YUME_STATUS_WOULD_BLOCK || packet) {
@@ -176,6 +434,12 @@ int main() {
     }
     if (const int rc = test_pq_public_path_failure_removes_private_key();
         rc != 0) {
+        return rc;
+    }
+    if (const int rc = test_client_config_file_statuses(); rc != 0) {
+        return rc;
+    }
+    if (const int rc = test_stop_cancels_start_during_config_io(); rc != 0) {
         return rc;
     }
 #endif

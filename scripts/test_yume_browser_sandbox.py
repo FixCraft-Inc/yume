@@ -840,7 +840,29 @@ printf '%s  %s\n' "$hash" "$target"
                 self.assertFalse(chrome_marker.exists())
                 self.assertFalse(node_marker.exists())
 
-    def test_normal_capture_rejects_unsuccessful_chrome_exit(self) -> None:
+    _ISOLATED_IP_STUB = """#!/bin/sh
+case "$*" in
+    *"route show default"*) exit 0 ;;
+    *"link show"*) printf '1: lo: <LOOPBACK,UP> mtu 65536\\n' ;;
+esac
+exit 0
+"""
+
+    _CONNECTED_IP_STUB = """#!/bin/sh
+case "$*" in
+    *"route show default"*) printf 'default via 192.168.1.1 dev eth0\\n' ;;
+    *"link show"*)
+        printf '1: lo: <LOOPBACK,UP> mtu 65536\\n'
+        printf '2: eth0: <BROADCAST,MULTICAST,UP> mtu 1500\\n'
+        ;;
+esac
+exit 0
+"""
+
+    def _run_normal_capture(self, ip_stub: str) -> tuple[subprocess.CompletedProcess, bool]:
+        """Drives the normal-Chrome capture runner far enough to reach the run
+        loop, with every external command supplied by the fixture. `ip_stub`
+        decides what the runner sees when it checks for network isolation."""
         if os.geteuid() == 0:
             self.skipTest("the capture script intentionally rejects a root caller first")
         capture_script = (
@@ -898,6 +920,8 @@ printf '%s  %s\n' "$hash" "$target"
             )
             self._write_executable(fake_bin / "unshare", "#!/bin/sh\nexit 0\n")
             self._write_executable(fake_bin / "curl", "#!/bin/sh\nexit 0\n")
+            # The real `ip` is not on this fixture's bounded PATH.
+            self._write_executable(fake_bin / "ip", ip_stub)
             self._write_executable(
                 fake_bin / "ss",
                 "#!/bin/sh\ncase \" $* \" in *\"sport = :\"*) echo LISTEN ;; esac\n",
@@ -905,6 +929,33 @@ printf '%s  %s\n' "$hash" "$target"
             self._write_executable(
                 fake_bin / "rg",
                 "#!/bin/sh\nexec /usr/bin/grep \"$@\"\n",
+            )
+            self._write_executable(
+                fake_bin / "openssl",
+                """#!/bin/sh
+[ "${1-}" = "req" ] || exit 64
+shift
+keyout=
+certout=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -keyout)
+            shift
+            [ "$#" -gt 0 ] || exit 64
+            keyout=$1
+            ;;
+        -out)
+            shift
+            [ "$#" -gt 0 ] || exit 64
+            certout=$1
+            ;;
+    esac
+    shift
+done
+[ -n "$keyout" ] && [ -n "$certout" ] || exit 64
+printf 'test private key\n' >"$keyout"
+printf 'test certificate\n' >"$certout"
+""",
             )
             self._write_executable(
                 fake_bin / "git",
@@ -934,9 +985,7 @@ exit 1
             environment = dict(os.environ)
             environment.update({
                 "DISPLAY": ":99",
-                # Retain dependency prefixes so the OpenSSL executable matches
-                # the libraries inherited through LD_LIBRARY_PATH in CI.
-                "PATH": f"{fake_bin}:{environment['PATH']}",
+                "PATH": f"{fake_bin}:/usr/bin:/bin",
                 "SANITIZER_MARKER": str(sanitizer_marker),
                 "YUME_CHROME_LAUNCHER": str(launcher),
                 "YUME_CHROME_BINARY": str(binary),
@@ -950,9 +999,23 @@ exit 1
                 env=environment,
                 timeout=10,
             )
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("Chrome exited unsuccessfully", result.stderr)
-            self.assertFalse(sanitizer_marker.exists())
+            return result, sanitizer_marker.exists()
+
+    def test_normal_capture_rejects_unsuccessful_chrome_exit(self) -> None:
+        result, sanitizer_ran = self._run_normal_capture(self._ISOLATED_IP_STUB)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Chrome exited unsuccessfully", result.stderr)
+        self.assertFalse(sanitizer_ran)
+
+    def test_normal_capture_requires_isolated_network(self) -> None:
+        """A capture with egress stalls on Chrome's own startup service calls
+        and records Chrome-to-Google connections the fixture never produced, so
+        the runner refuses rather than emit a contaminated capture."""
+        result, sanitizer_ran = self._run_normal_capture(self._CONNECTED_IP_STUB)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("loopback-only network namespace", result.stderr)
+        self.assertNotIn("Chrome exited unsuccessfully", result.stderr)
+        self.assertFalse(sanitizer_ran)
 
     def test_carrier_refuses_root_browser_driver(self) -> None:
         with mock.patch("yume_carrier_diagnose.os.geteuid", return_value=0):

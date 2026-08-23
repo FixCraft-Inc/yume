@@ -40,6 +40,46 @@ nlohmann::json request_local_client_runtime(const std::string& socket_path,
         10000);
 }
 
+std::optional<nlohmann::json> SelectPendingInvite(
+    const nlohmann::json& invites,
+    const std::string& selector,
+    bool* ambiguous) {
+    if (ambiguous) *ambiguous = false;
+    if (!invites.is_array()) return std::nullopt;
+    for (const auto& invite : invites) {
+        if (invite.value("invite_id", "") == selector) return invite;
+    }
+    std::optional<nlohmann::json> match;
+    for (const auto& invite : invites) {
+        if (invite.value("from_id", "") != selector &&
+            invite.value("from_display_name", "") != selector) {
+            continue;
+        }
+        if (match) {
+            if (ambiguous) *ambiguous = true;
+            return std::nullopt;
+        }
+        match = invite;
+    }
+    return match;
+}
+
+std::string TransferInviteSummary(const nlohmann::json& invite) {
+    const std::string kind = invite.value("channel_kind", "");
+    if (kind != "file" && kind != "bytes") return {};
+    if (invite.contains("metadata") && invite["metadata"].is_object()) {
+        const auto& metadata = invite["metadata"];
+        if (metadata.contains("name") && metadata["name"].is_string() &&
+            metadata.contains("size") &&
+            metadata["size"].is_number_unsigned()) {
+            return " name=" + metadata["name"].get<std::string>() +
+                " size=" +
+                std::to_string(metadata["size"].get<std::uint64_t>());
+        }
+    }
+    return " metadata=invalid";
+}
+
 }  // namespace
 
 bool prompt_attach_existing(const std::string& kind) {
@@ -94,6 +134,7 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
     }
     if (!args.chat_target.empty()) {
         std::string relay_secret_b64;
+        RelaySecretWiper relay_secret_wiper(relay_secret_b64);
         if (!resolve_relay_secret(cfg, "", "chat with " + args.chat_target, &relay_secret_b64, &error)) {
             util::log_error(error);
             return 1;
@@ -108,6 +149,7 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
     }
     if (!args.file_target.empty()) {
         std::string relay_secret_b64;
+        RelaySecretWiper relay_secret_wiper(relay_secret_b64);
         if (!resolve_relay_secret(cfg, "", "file send to " + args.file_target, &relay_secret_b64, &error)) {
             util::log_error(error);
             return 1;
@@ -122,6 +164,7 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
     }
     if (!args.bytes_target.empty()) {
         std::string relay_secret_b64;
+        RelaySecretWiper relay_secret_wiper(relay_secret_b64);
         if (!resolve_relay_secret(cfg, "", "bytes send to " + args.bytes_target, &relay_secret_b64, &error)) {
             util::log_error(error);
             return 1;
@@ -164,6 +207,7 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
 #endif
     for (;;) {
         std::string line;
+        RelaySecretWiper line_wiper(line);
 #if !defined(_WIN32)
         if (line_reader.has_value()) {
             for (;;) {
@@ -241,9 +285,10 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
             for (const auto& invite : resp["result"]) {
                 std::cout << invite.value("invite_id", "") << " from="
                           << (invite.value("from_display_name", "").empty()
-                                  ? invite.value("from_endpoint_id", "")
+                                  ? invite.value("from_id", "")
                                   : invite.value("from_display_name", ""))
                           << " kind=" << invite.value("channel_kind", "")
+                          << TransferInviteSummary(invite)
                           << std::endl;
             }
             continue;
@@ -259,6 +304,7 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
                 continue;
             }
             std::string relay_secret_b64;
+            RelaySecretWiper relay_secret_wiper(relay_secret_b64);
             if (!resolve_relay_secret(cfg, "", "chat with " + peer, &relay_secret_b64, &error)) {
                 util::log_warn(error);
                 error.clear();
@@ -285,6 +331,7 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
                 continue;
             }
             std::string relay_secret_b64;
+            RelaySecretWiper relay_secret_wiper(relay_secret_b64);
             if (!resolve_relay_secret(cfg, "", "file send to " + peer, &relay_secret_b64, &error)) {
                 util::log_warn(error);
                 error.clear();
@@ -311,6 +358,7 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
                 continue;
             }
             std::string relay_secret_b64;
+            RelaySecretWiper relay_secret_wiper(relay_secret_b64);
             if (!resolve_relay_secret(cfg, "", "bytes send to " + peer, &relay_secret_b64, &error)) {
                 util::log_warn(error);
                 error.clear();
@@ -340,15 +388,41 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
         if (line.rfind("accept ", 0) == 0) {
             std::string invite_id;
             std::string password;
+            RelaySecretWiper password_wiper(password);
             split_first_token(line.substr(7), &invite_id, &password);
             if (invite_id.empty()) {
                 util::log_warn("usage: accept <invite|from> [password]");
                 continue;
             }
             std::string relay_secret_b64;
-            if (!resolve_relay_secret(cfg, password, "accept invite " + invite_id, &relay_secret_b64, &error)) {
-                util::log_warn(error);
+            RelaySecretWiper relay_secret_wiper(relay_secret_b64);
+            auto invites = request_local_client_runtime(
+                socket_path, "invite.list", nlohmann::json::object(), &error);
+            if (!error.empty() || !invites.value("ok", false)) {
+                util::log_warn(error.empty()
+                    ? invites.value("error", "invite lookup failed") : error);
                 error.clear();
+                continue;
+            }
+            bool ambiguous = false;
+            const auto pending = SelectPendingInvite(
+                invites.value("result", nlohmann::json::array()),
+                invite_id, &ambiguous);
+            if (!pending) {
+                util::log_warn(ambiguous
+                    ? "invite selector is ambiguous" : "invite not found");
+                continue;
+            }
+            if (pending->value("requires_password", true)) {
+                if (!resolve_relay_secret(cfg, password,
+                                          "accept invite " + invite_id,
+                                          &relay_secret_b64, &error)) {
+                    util::log_warn(error);
+                    error.clear();
+                    continue;
+                }
+            } else if (!password.empty()) {
+                util::log_warn("admin invites do not accept a relay password");
                 continue;
             }
             auto resp = request_local_client_runtime(socket_path, "invite.accept",

@@ -14,14 +14,17 @@
 namespace yume::client {
 
 void resolve_config_path(ParsedArgs* args, const std::string& exe_dir);
-void load_client_config_file(const ParsedArgs& args,
+bool load_client_config_file(const ParsedArgs& args,
                              const std::string& exe_dir,
-                             ClientConfig* cfg);
+                             ClientConfig* cfg,
+                             std::string* error = nullptr);
 void apply_cli_config_overrides(const ParsedArgs& args,
                                 const std::string& cli_cwd,
                                 ClientConfig* cfg);
 void normalize_client_config_after_overrides(ParsedArgs* args, ClientConfig* cfg);
 void discover_default_pq_public_key(const char* argv0, ClientConfig* cfg);
-void save_client_config_file(const ParsedArgs& args, const ClientConfig& cfg);
+bool save_client_config_file(const ParsedArgs& args,
+                             const ClientConfig& cfg,
+                             std::string* error = nullptr);
 
 }  // namespace yume::client

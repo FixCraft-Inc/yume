@@ -7,6 +7,8 @@
 #include "facade/session/server_session.hpp"
 
 #include <atomic>
+#include <cstdint>
+#include <exception>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -25,14 +27,21 @@ struct ServerSession::Impl {
     TrafficMeter traffic;
     StatusCallback status_cb;
 
-    // Worker for blocking start/stop; same pattern as ClientSession::Impl.
+    // Blocking controller work stays off facade callers. Admission and thread
+    // object ownership are serialized separately from user-visible state.
     std::thread worker;
     std::atomic<bool> worker_busy{false};
+    std::thread stop_worker;
+    std::atomic<bool> stop_busy{false};
+    std::mutex lifecycle_mtx;
+    std::recursive_mutex notification_mtx;
+    std::atomic<std::uint64_t> lifecycle_generation{0};
 
     StatusCallback status_callback() const { return status_cb; }
 
-    void join_previous_worker() {
-        if (worker.joinable()) worker.join();
+    bool current_start(std::uint64_t generation) const noexcept {
+        return lifecycle_generation.load(std::memory_order_acquire) == generation &&
+               !stop_busy.load(std::memory_order_acquire);
     }
 };
 
@@ -59,8 +68,36 @@ ServerStatus to_facade_status(server::RuntimeController::Status const& runtime,
     return s;
 }
 
-void push_server_log(LogLevel level, std::string message) {
-    LogSink::instance().push(level, "facade.server", std::move(message));
+void push_server_log(LogLevel level, std::string message) noexcept {
+    try {
+        LogSink::instance().push(
+            level, "facade.server", std::move(message));
+    } catch (...) {
+        // Log subscribers are embedder callbacks. Lifecycle state and status
+        // delivery must remain reliable even when one of them throws.
+    }
+}
+
+void notify_server_status(ServerSession::StatusCallback const& callback,
+                          ServerStatus const& status) noexcept {
+    if (!callback) return;
+    try {
+        callback(status);
+    } catch (std::exception const& ex) {
+        try {
+            push_server_log(
+                LogLevel::Error,
+                std::string("server status callback threw: ") + ex.what());
+        } catch (...) {
+        }
+    } catch (...) {
+        try {
+            push_server_log(
+                LogLevel::Error,
+                "server status callback threw an unknown exception");
+        } catch (...) {
+        }
+    }
 }
 
 }  // namespace
@@ -71,72 +108,184 @@ ServerSession::ServerSession(server::ServerConfig cfg)
 }
 
 ServerSession::~ServerSession() {
+    {
+        std::lock_guard<std::recursive_mutex> notification_lock(
+            impl_->notification_mtx);
+        std::lock_guard<std::mutex> lock(impl_->mtx);
+        impl_->status_cb = {};
+    }
     stop();
-    impl_->join_previous_worker();
+
+    std::thread stop_worker;
+    {
+        std::lock_guard<std::mutex> lifecycle_lock(impl_->lifecycle_mtx);
+        if (impl_->stop_worker.joinable()) {
+            stop_worker = std::move(impl_->stop_worker);
+        }
+    }
+    if (stop_worker.joinable()) stop_worker.join();
+
+    impl_->runtime.stop();
+    std::thread start_worker;
+    {
+        std::lock_guard<std::mutex> lifecycle_lock(impl_->lifecycle_mtx);
+        if (impl_->worker.joinable()) {
+            start_worker = std::move(impl_->worker);
+        }
+    }
+    if (start_worker.joinable()) start_worker.join();
 }
 
 bool ServerSession::start(std::string* err) {
     server::ServerConfig cfg;
+    std::uint64_t generation = 0;
     {
-        std::lock_guard<std::mutex> lock(impl_->mtx);
-        if (impl_->runtime.running() || impl_->worker_busy.load()) {
-            if (err) *err = "server runtime is already running";
+        std::lock_guard<std::mutex> lifecycle_lock(impl_->lifecycle_mtx);
+        if (impl_->runtime.running() || impl_->worker_busy.load() ||
+            impl_->stop_busy.load(std::memory_order_acquire)) {
+            if (err) {
+                *err = impl_->stop_busy.load(std::memory_order_relaxed)
+                    ? "server runtime is still stopping"
+                    : "server runtime is already running";
+            }
             return false;
         }
-        cfg = impl_->cfg;
+        if (impl_->stop_worker.joinable()) impl_->stop_worker.join();
+        if (impl_->worker.joinable()) impl_->worker.join();
+        generation = impl_->lifecycle_generation.fetch_add(
+            1, std::memory_order_acq_rel) + 1;
+        impl_->worker_busy.store(true, std::memory_order_release);
     }
 
     // Optimistic immediate status update so the UI shows "Starting" right away.
     {
+        std::lock_guard<std::recursive_mutex> notification_lock(
+            impl_->notification_mtx);
+        if (!impl_->current_start(generation)) {
+            impl_->worker_busy.store(false, std::memory_order_release);
+            if (err) err->clear();
+            return true;
+        }
         StatusCallback cb;
         ServerStatus snap;
         {
             std::lock_guard<std::mutex> lock(impl_->mtx);
+            cfg = impl_->cfg;
             snap = to_facade_status(impl_->runtime.status(), impl_->traffic, impl_->cfg);
             snap.message = "starting server";
             cb = impl_->status_callback();
         }
-        if (cb) cb(snap);
+        notify_server_status(cb, snap);
     }
-
-    impl_->join_previous_worker();
-    impl_->worker_busy.store(true);
 
     // Run the blocking yumed spawn + IPC wait on a worker so the GUI thread
     // doesn't stall. The optional out-param err can't carry async failures;
     // callers should poll status() or subscribe via set_status_callback().
-    impl_->worker = std::thread([this, cfg = std::move(cfg)]() {
-        std::string local_error;
-        const bool ok = impl_->runtime.start(cfg, &local_error);
+    try {
+        std::lock_guard<std::mutex> lifecycle_lock(impl_->lifecycle_mtx);
+        if (!impl_->current_start(generation)) {
+            impl_->worker_busy.store(false, std::memory_order_release);
+            if (err) err->clear();
+            return true;
+        }
+        impl_->worker = std::thread(
+            [this, cfg = std::move(cfg), generation]() mutable {
+                std::string local_error;
+                bool ok = false;
+                try {
+                    ok = impl_->runtime.start(cfg, &local_error);
+                } catch (std::exception const& ex) {
+                    local_error = std::string("server startup exception: ") +
+                                  ex.what();
+                } catch (...) {
+                    local_error = "server startup exception: unknown error";
+                }
 
-        StatusCallback cb;
-        ServerStatus snap;
-        {
-            std::lock_guard<std::mutex> lock(impl_->mtx);
-            snap = to_facade_status(impl_->runtime.status(), impl_->traffic, impl_->cfg);
-            if (!ok) {
-                snap.running = false;
-                snap.message = local_error.empty() ? "server start failed" : local_error;
-            }
-            cb = impl_->status_callback();
-        }
-        if (ok) {
-            push_server_log(LogLevel::Info,
+                std::lock_guard<std::recursive_mutex> notification_lock(
+                    impl_->notification_mtx);
+                if (!impl_->current_start(generation)) {
+                    if (ok) impl_->runtime.stop();
+                    impl_->worker_busy.store(false, std::memory_order_release);
+                    return;
+                }
+
+                StatusCallback cb;
+                ServerStatus snap;
+                {
+                    std::lock_guard<std::mutex> lock(impl_->mtx);
+                    snap = to_facade_status(
+                        impl_->runtime.status(), impl_->traffic, impl_->cfg);
+                    if (!ok) {
+                        snap.running = false;
+                        snap.message = local_error.empty()
+                            ? "server start failed"
+                            : local_error;
+                    }
+                    cb = impl_->status_callback();
+                }
+                if (ok) {
+                    try {
+                        push_server_log(
+                            LogLevel::Info,
                             "server started on " + snap.listen_endpoint);
-        } else {
-            push_server_log(LogLevel::Error,
+                    } catch (...) {
+                    }
+                } else {
+                    try {
+                        push_server_log(
+                            LogLevel::Error,
                             "server start failed: " + snap.message);
+                    } catch (...) {
+                    }
+                }
+                notify_server_status(cb, snap);
+                impl_->worker_busy.store(false, std::memory_order_release);
+            });
+    } catch (std::exception const& ex) {
+        impl_->worker_busy.store(false, std::memory_order_release);
+        const std::string failure =
+            std::string("failed to start server lifecycle worker: ") + ex.what();
+        if (err) *err = failure;
+        std::lock_guard<std::recursive_mutex> notification_lock(
+            impl_->notification_mtx);
+        if (impl_->current_start(generation)) {
+            StatusCallback cb;
+            ServerStatus snap;
+            {
+                std::lock_guard<std::mutex> lock(impl_->mtx);
+                snap = to_facade_status(
+                    impl_->runtime.status(), impl_->traffic, impl_->cfg);
+                snap.running = false;
+                snap.message = failure;
+                cb = impl_->status_callback();
+            }
+            notify_server_status(cb, snap);
         }
-        if (cb) cb(snap);
-        impl_->worker_busy.store(false);
-    });
+        return false;
+    } catch (...) {
+        impl_->worker_busy.store(false, std::memory_order_release);
+        if (err) *err = "failed to start server lifecycle worker";
+        return false;
+    }
 
     if (err) err->clear();
     return true;  // kickoff succeeded; outcome arrives via status callback
 }
 
 void ServerSession::stop() {
-    if (!impl_->runtime.running() && !impl_->worker_busy.load()) return;
+    std::unique_lock<std::recursive_mutex> notification_lock(
+        impl_->notification_mtx);
+    {
+        std::lock_guard<std::mutex> lifecycle_lock(impl_->lifecycle_mtx);
+        if (impl_->stop_busy.load(std::memory_order_acquire)) return;
+        if (!impl_->runtime.running() && !impl_->worker_busy.load() &&
+            !impl_->worker.joinable()) {
+            return;
+        }
+        impl_->lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
+        impl_->stop_busy.store(true, std::memory_order_release);
+        if (impl_->stop_worker.joinable()) impl_->stop_worker.join();
+    }
 
     // Immediate optimistic status flip so the UI shows "stopping".
     {
@@ -148,27 +297,56 @@ void ServerSession::stop() {
             snap.message = "stopping server";
             cb = impl_->status_callback();
         }
-        if (cb) cb(snap);
+        notify_server_status(cb, snap);
     }
+    notification_lock.unlock();
 
-    impl_->join_previous_worker();
-    impl_->worker_busy.store(true);
+    try {
+        std::lock_guard<std::mutex> lifecycle_lock(impl_->lifecycle_mtx);
+        impl_->stop_worker = std::thread([this]() {
+            impl_->runtime.stop();
 
-    impl_->worker = std::thread([this]() {
+            std::thread start_worker;
+            {
+                std::lock_guard<std::mutex> lifecycle_lock(
+                    impl_->lifecycle_mtx);
+                if (impl_->worker.joinable()) {
+                    start_worker = std::move(impl_->worker);
+                }
+            }
+            if (start_worker.joinable()) start_worker.join();
+
+            std::lock_guard<std::recursive_mutex> notification_lock(
+                impl_->notification_mtx);
+            StatusCallback cb;
+            ServerStatus snap;
+            {
+                std::lock_guard<std::mutex> lock(impl_->mtx);
+                snap = to_facade_status(
+                    impl_->runtime.status(), impl_->traffic, impl_->cfg);
+                snap.running = false;
+                snap.message = "stopped";
+                cb = impl_->status_callback();
+            }
+            push_server_log(LogLevel::Info, "server stopped");
+            impl_->worker_busy.store(false, std::memory_order_release);
+            notify_server_status(cb, snap);
+            impl_->stop_busy.store(false, std::memory_order_release);
+        });
+    } catch (...) {
+        // Fail closed if the asynchronous teardown worker cannot be created.
         impl_->runtime.stop();
-        StatusCallback cb;
-        ServerStatus snap;
+        std::thread start_worker;
         {
-            std::lock_guard<std::mutex> lock(impl_->mtx);
-            snap = to_facade_status(impl_->runtime.status(), impl_->traffic, impl_->cfg);
-            snap.running = false;
-            snap.message = "stopped";
-            cb = impl_->status_callback();
+            std::lock_guard<std::mutex> lifecycle_lock(impl_->lifecycle_mtx);
+            if (impl_->worker.joinable()) {
+                start_worker = std::move(impl_->worker);
+            }
         }
-        push_server_log(LogLevel::Info, "server stopped");
-        if (cb) cb(snap);
-        impl_->worker_busy.store(false);
-    });
+        if (start_worker.joinable()) start_worker.join();
+        impl_->worker_busy.store(false, std::memory_order_release);
+        impl_->stop_busy.store(false, std::memory_order_release);
+    }
 }
 
 bool ServerSession::running() const noexcept {
@@ -212,6 +390,8 @@ std::vector<ServerSession::ConnectedSession> ServerSession::list_sessions() cons
 }
 
 void ServerSession::set_status_callback(StatusCallback cb) {
+    std::lock_guard<std::recursive_mutex> notification_lock(
+        impl_->notification_mtx);
     std::lock_guard<std::mutex> lock(impl_->mtx);
     impl_->status_cb = std::move(cb);
 }

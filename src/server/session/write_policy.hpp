@@ -15,7 +15,8 @@ namespace yume::server::detail {
 
 // Lower values are selected first. Rekey traffic must remain ahead of DATA:
 // starving an authenticated REKEY_INIT/ACK behind a saturated packet stream
-// turns ordinary congestion into a transport-wide five-second rekey timeout.
+// turns ordinary congestion into a transport-wide fail-closed ACK timeout
+// (locally RTT-adaptive, bounded to 5..30 seconds).
 inline constexpr int frame_write_priority(std::uint8_t frame_type,
                                           std::size_t payload_size) noexcept {
     switch (frame_type) {

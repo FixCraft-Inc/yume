@@ -22,6 +22,7 @@ namespace {
 constexpr auto kCodecBackendTimeout = std::chrono::milliseconds(30000);
 constexpr std::size_t kMaxCodecStreamsPerSession = 8;
 constexpr std::size_t kCodecResponseBudgetBytes = 32U * 1024U * 1024U;
+constexpr std::size_t kMaxCodecIdBytes = 64U;
 
 // Maps a codec to the config fields that spell its backend override. Codecs may
 // name their own flags on the product surface, so this is the single place that
@@ -48,7 +49,27 @@ std::shared_ptr<Session::CodecStream> Session::find_codec_stream(uint8_t stream_
 }
 
 bool Session::handle_codec_open(uint8_t stream_id, const nlohmann::json& json) {
-    const std::string codec_id = app_codec::canonical_codec_id(json.value("codec", ""));
+    if (!json.contains("codec") || !json["codec"].is_string()) {
+        send_open_reply(stream_id, false, "invalid application codec id");
+        return true;
+    }
+    const auto& requested_codec =
+        json["codec"].get_ref<const std::string&>();
+    if (requested_codec.empty() ||
+        requested_codec.size() > kMaxCodecIdBytes ||
+        !std::all_of(
+            requested_codec.begin(), requested_codec.end(),
+            [](unsigned char byte) {
+                return (byte >= 'a' && byte <= 'z') ||
+                       (byte >= 'A' && byte <= 'Z') ||
+                       (byte >= '0' && byte <= '9') || byte == '-' ||
+                       byte == '_' || byte == '.';
+            })) {
+        send_open_reply(stream_id, false, "invalid application codec id");
+        return true;
+    }
+    const std::string codec_id =
+        app_codec::canonical_codec_id(requested_codec);
     auto descriptor = app_codec::builtin_codec(codec_id);
     if (!descriptor.has_value()) {
         send_open_reply(stream_id, false, "unsupported application codec");
@@ -75,7 +96,7 @@ bool Session::handle_codec_open(uint8_t stream_id, const nlohmann::json& json) {
     codec->codec_id = descriptor->id;
     codec->backend_host = backend.host;
     codec->backend_port = backend.port;
-    codec->open_started_ms = util::now_ms();
+    codec->open_started_ms = diagnostics::timing_now_ms();
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
         if (codec_streams_.find(stream_id) != codec_streams_.end()) {
@@ -97,14 +118,21 @@ bool Session::handle_codec_open(uint8_t stream_id, const nlohmann::json& json) {
     return true;
 }
 
-bool Session::handle_codec_data(uint8_t stream_id, const crypto::Bytes& payload) {
+bool Session::handle_codec_data(
+    uint8_t stream_id,
+    const crypto::Bytes& payload,
+    runtime::InboundCredit* inbound_credit) {
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
         if (codec_streams_.find(stream_id) == codec_streams_.end()) {
             return false;
         }
     }
-    start_codec_backend(stream_id, payload);
+    runtime::InboundCredit credit;
+    if (inbound_credit) {
+        credit = std::move(*inbound_credit);
+    }
+    start_codec_backend(stream_id, payload, std::move(credit));
     return true;
 }
 
@@ -127,7 +155,7 @@ bool Session::handle_codec_close(uint8_t stream_id,
     if (codec && !codec->close_summary_logged) {
         codec->close_summary_logged = true;
         [[maybe_unused]] const int64_t elapsed =
-            codec->open_started_ms > 0 ? (util::now_ms() - codec->open_started_ms) : 0;
+            diagnostics::elapsed_ms_since(codec->open_started_ms);
         YUME_TIMING_LOG("server.stream",
                          "summary",
                          "session=" + std::to_string(session_id_) +
@@ -140,6 +168,7 @@ bool Session::handle_codec_close(uint8_t stream_id,
                              " reason=" + reason);
     }
     if (codec) {
+        codec->inbound_credit.release_now();
         boost::system::error_code ec;
         codec->timer.cancel();
         codec->socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
@@ -160,7 +189,10 @@ void Session::send_codec_error(uint8_t stream_id, int http_status, const std::st
     send_control_close(stream_id, message);
 }
 
-void Session::start_codec_backend(uint8_t stream_id, const crypto::Bytes& payload) {
+void Session::start_codec_backend(
+    uint8_t stream_id,
+    const crypto::Bytes& payload,
+    runtime::InboundCredit inbound_credit) {
     std::shared_ptr<CodecStream> codec = find_codec_stream(stream_id);
     if (!codec) {
         return;
@@ -207,8 +239,9 @@ void Session::start_codec_backend(uint8_t stream_id, const crypto::Bytes& payloa
         return;
     }
     codec->request_bytes.assign(http_request->begin(), http_request->end());
+    codec->inbound_credit = std::move(inbound_credit);
     codec->upstream_bytes = envelope.request.body.size();
-    codec->request_started_ms = util::now_ms();
+    codec->request_started_ms = diagnostics::timing_now_ms();
 
     boost::system::error_code addr_ec;
     const auto backend_addr = boost::asio::ip::make_address(codec->backend_host, addr_ec);
@@ -269,6 +302,7 @@ void Session::on_codec_backend_write(uint8_t stream_id,
     if (!codec) {
         return;
     }
+    codec->inbound_credit.release_now();
     if (ec) {
         send_codec_error(stream_id, 502, "Monero RPC backend write failed");
         handle_codec_close(stream_id, "backend write failed: " + ec.message());

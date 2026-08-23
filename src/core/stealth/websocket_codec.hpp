@@ -27,6 +27,15 @@ struct WebSocketFrameMetadata {
     std::uint64_t payload_bytes{0};
 };
 
+// Bytes produced by one or more complete inbound WebSocket frames. HTTP/2
+// flow control applies to the WebSocket wire bytes carried in DATA. Framing
+// and control bytes can be retired as soon as the codec handles them, while
+// binary payload remains tied 1:1 to the returned tunnel bytes.
+struct WebSocketDrain {
+    WebSocketBytes tunnel_bytes;
+    std::size_t immediately_consumable_wire_bytes{0};
+};
+
 using WebSocketFrameObserver = void (*)(
     void* context, const WebSocketFrameMetadata& frame) noexcept;
 
@@ -36,7 +45,13 @@ using WebSocketFrameObserver = void (*)(
 // enforces client masking, and bounds all retained input.
 class WebSocketCodec {
 public:
-    explicit WebSocketCodec(WebSocketRole role);
+    static constexpr std::size_t kDefaultMaxInboundBinaryMessageBytes =
+        16U * 1024U * 1024U;
+
+    explicit WebSocketCodec(
+        WebSocketRole role,
+        std::size_t max_inbound_binary_message_bytes =
+            kDefaultMaxInboundBinaryMessageBytes);
 
     // The callback receives metadata only, after a complete inbound frame has
     // passed structural/opcode validation. It must be noexcept and must not
@@ -68,6 +83,9 @@ public:
     void Feed(const std::uint8_t* data, std::size_t size);
     void Feed(const WebSocketBytes& data) { Feed(data.data(), data.size()); }
 
+    WebSocketDrain TakeDrain();
+    // Compatibility helper for users without external flow control. Framing
+    // credit is discarded together with the drain metadata.
     WebSocketBytes TakeDecoded();
     WebSocketBytes TakeWireReplies();
 
@@ -88,6 +106,8 @@ private:
     WebSocketBytes decoded_;
     WebSocketBytes fragmented_;
     WebSocketBytes wire_replies_;
+    std::size_t immediately_consumable_wire_bytes_{0};
+    std::size_t max_inbound_binary_message_bytes_;
     bool fragmented_binary_{false};
     bool close_sent_{false};
     bool closed_{false};

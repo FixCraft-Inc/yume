@@ -20,6 +20,10 @@ struct ParsedArgs {
     std::string server;
     int port{0};
     std::string identity;
+    // CLI-only identities for data-only SOCKS tunnels 2..N. When present,
+    // there must be exactly tunnel_count - 1 entries and every secondary
+    // authentication must succeed before the local listener becomes ready.
+    std::vector<std::string> secondary_identities;
     // Second factor. Empty means an ordinary visitor session; supplying it is
     // what claims admin, and the server checks the key against its own separate
     // admin list. There is deliberately no boolean that grants admin without
@@ -57,10 +61,6 @@ struct ParsedArgs {
     bool inner_crypto{false};
     bool inner_crypto_override{false};
     bool inner_heavy{true};
-    bool inner_hop{true};
-    bool inner_hop_override{false};
-    std::uint32_t hop_interval_ms{0};
-    bool hop_interval_override{false};
     int rekey_window{0};
     bool rekey_window_override{false};
     bool use_udp{false};
@@ -83,12 +83,17 @@ struct ParsedArgs {
     bool tls_stealth{true};
     bool tls_stealth_override{false};
     std::string tls_stealth_profile{"chrome"};
+    bool tls_stealth_profile_override{false};
     // Empty means derive the HTTP-layer profile from tls_stealth_profile.
     std::string http_profile;
     bool tls_fingerprint_log{false};
+    bool tls_fingerprint_log_override{false};
     std::string tls_fingerprint_log_path{"./logs/fingerprints"};
+    bool tls_fingerprint_log_path_override{false};
     bool tls_fingerprint_verify{false};
+    bool tls_fingerprint_verify_override{false};
     std::string tls_fingerprint_test_endpoint{"tls.peet.ws"};
+    bool tls_fingerprint_test_endpoint_override{false};
     bool self_dpi{false};
     bool self_dpi_override{false};
     bool local_benchmark{false};
@@ -137,7 +142,13 @@ struct ParsedArgs {
     std::string control_id;
     std::string preferred_name;
     std::string preferred_id;
-    std::string relay_mode{"untrusted"};
+    std::string relay_mode;
+    bool relay_mode_override{false};
+    std::string relay_trust_mode;
+    bool relay_trust_mode_override{false};
+    std::string relay_trust_dir;
+    bool relay_trust_dir_override{false};
+    std::vector<std::string> relay_peer_pins;
     bool allow_inbound_admin{false};
     bool allow_inbound_admin_override{false};
     bool allow_outbound_admin{false};
@@ -150,6 +161,7 @@ struct ParsedArgs {
     bool allow_bytes{true};
     bool allow_bytes_override{false};
     std::string history_dir;
+    std::string relay_receive_dir;
     bool history_enabled{true};
     bool history_override{false};
     std::string relay_key_file;
@@ -160,7 +172,6 @@ struct ParsedArgs {
     std::string app_codec_listen;
     bool app_codec_listen_override{false};
     std::string chat_target;
-    std::string chat_password;
     std::string file_target;
     std::string file_path;
     std::string bytes_target;

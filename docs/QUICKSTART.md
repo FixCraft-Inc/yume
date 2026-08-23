@@ -72,8 +72,10 @@ identity in the operator store and a different second identity in `admin_keys`.
 Each client directory includes a desktop config,
 `DEVICE_SETUP.txt`, and launchers. Run `./start-socks` to use the default
 `~/yume/build/bin/yume`, or `./export-yss [output.yss]` to create an encrypted `.yss`
-containing both required YUME 2.0 secrets for Android import. Share passwords
-must be at least 12 characters, matching BaseFWX itself.
+containing both required YUME 2.0 secrets. The export format is preparatory only:
+the separate Android client remains on the incompatible `2.0-dev1` wire and is
+not a supported `2.0-dev6` consumer. Share passwords must be at least 12
+characters, matching BaseFWX itself.
 
 ## Create local test material
 

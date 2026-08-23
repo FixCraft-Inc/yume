@@ -33,10 +33,18 @@ function acceptReferenceWebSocket(stream) {
     stream, () => stream.close(constants.NGHTTP2_PROTOCOL_ERROR));
 }
 
+// HTTP/2 only, deliberately. With `allowHTTP1` Node accepts an HTTP/1.1
+// connection and emits `request`, and this server has no such listener, so the
+// client is parsed and never answered -- it hangs until its own deadline rather
+// than failing. Adding the listener is not the fix: registering `request` also
+// switches on Node's HTTP/2 compatibility layer, which attaches to every stream
+// and consumes the extended-CONNECT stream the reference WebSocket needs.
+// Refusing at ALPN instead fails fast, and is invisible to an HTTP/2 client:
+// the ServerHello carries only the selected protocol, never the server's list.
 const server = createSecureServer({
   key: readFileSync(keyPath),
   cert: readFileSync(certPath),
-  allowHTTP1: true,
+  allowHTTP1: false,
   settings: { enableConnectProtocol: true }
 });
 

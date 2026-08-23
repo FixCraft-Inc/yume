@@ -1,16 +1,547 @@
 # YUME 2.0-dev6 Chrome 151 handoff
 
-Status: integrated development checkpoint on `main`; Gate B and release
-qualification remain incomplete.
+Status: core/ABI/CLI stabilization checkpoint completed for Linux x86-64;
+consumer and release qualification remain incomplete.
+
+## 2026-08-23 core/ABI/CLI stabilization checkpoint
+
+This section supersedes the older implementation totals and ordered-work lists
+below. Those sections are retained as engineering history. The checkpoint
+closes the shared work selected before later GUI and Android synchronization;
+it is not a claim that either frontend, another platform, or a release is
+qualified.
+
+The closed shared boundaries are:
+
+- H2 receive credit follows downstream ownership, unauthenticated cover work
+  and pending TLS output have connection/process caps, service admission and
+  endpoint queues are bounded, and UDP/packet producers preserve or reject
+  work under explicit backpressure instead of growing without limit.
+- OPEN and CONTROL decoding is schema-strict and authorization is applied
+  before dispatch. Inbound EXEC is disabled in both directions. Stream IDs are
+  reserved through publication, collisions fail closed, and failed opens roll
+  back without publishing orphan state.
+- Config replacement and key metadata updates use locked, owner-only durable
+  transactions on the qualified POSIX path. The server publishes a validated
+  five-file authorization snapshot atomically. The stable C ABI reports typed
+  parse/type/missing/permission/I/O outcomes and has a strict-C integration
+  fixture covering a real TLS/H2/AUTH named-stream lifecycle.
+- Relay setup is exact protocol v2: canonical composite peer signatures,
+  pinned or post-verification TOFU identity, ephemeral ML-KEM-1024 + X25519,
+  per-channel ratcheting, bounded records/queues, and deterministic lifecycle
+  cleanup. POSIX receive publication is descriptor-confined and atomic; relay
+  outbound hashing and streaming use the same pinned regular-file descriptor.
+- Reverse listeners, federation links, facade sessions, transport callbacks,
+  cancellation, and shutdown now use owned/weak lifetimes and bounded cleanup.
+  Principal exceptional paths wipe KEM, root, PSK, transcript, ratchet, and
+  pending-channel material on success, failure, throw, and teardown.
+
+Exact-source qualification on the 32-core Linux x86-64 host includes two full
+warnings-as-errors Release suites: system OpenSSL 3.5.6 and the declared
+OpenSSL 3.5.7 build each passed 102/102 CTest cases. Eight high-risk
+control/stream/federation/listener/relay/auth tests each passed 20 consecutive
+executions, and the helper C++ and Go integration tests each passed ten
+consecutive executions. The exact Go 1.26.5 helper module also passed
+`go test -race -mod=readonly -count=1 ./...` with network module resolution
+disabled. The separate client-only warnings-as-errors build passed 101/101
+tests; eight concurrency/lifecycle tests passed ten executions each under
+TSan; and the optional GUI completed its 231-step warnings-as-errors build,
+`ldd -r`, and help-path smoke. The full serial
+ASan+UBSan+LeakSanitizer lane passed 102/102 with leak detection and
+halt-on-error enabled. A separately built checksum-pinned liboqs 0.16.0 archive
+was selected by exact CMake cache/link path, reported by the CLI, and passed the
+full 102/102 Release suite.
+
+BaseFWX is independently signed and published at
+`216a48a6110e8f6606b2a63b51950511466bf25a`; YUME pins that exact commit. The
+experimental Go/uTLS Chrome helper remains opt-in and disabled by default. It
+is intentionally retained because the OpenSSL C++ backend matches the current
+Chrome 151 JA4 and normalized non-GREASE sets but does not yet match the raw
+first-flight GREASE, extension placement/rotation, or brotli-only certificate
+compression gate. Removing the helper now would narrow the supported stealth
+experiment and invalidate its wire/lifecycle evidence.
+
+Still outside this checkpoint are GUI/Android functionality; Windows,
+ARM/NDK, and hardware qualification; release/tag/artifact signing and a second
+reproducible clean build; same-session Chrome resumption/raw-wire and active
+classifier campaigns; deployed slow-reader and WAN loss/jitter/bidirectional/
+soak work; a matched Xray/VLESS reference run; relay destination ancestor-
+symlink policy under a malicious local account; ABI handle destruction without
+caller synchronization; and removal of remaining server-to-client layering.
+These are explicit next gates, not hidden claims of this checkpoint.
+
+The material below begins with a historical 2026-08-21 checkpoint. Its
+ordered-next-work list predates
+the TCP-autotuning, bounded H2-credit, exact Release/sanitizer, and matched WAN
+work recorded in `docs/YUME_2_0_WAN_BEHAVIOR.md` and
+`.private/ai/CURRENT_STATE.md`; use those live records before acting on an old
+performance item below.
 
 The authoritative merge/RC/stable checklist and branch policy are now in
 `docs/YUME_2_0_STABILIZATION.md`. In particular, merging reviewed dev6 into
 `main` and calling a Linux build stable 2.0 are separate milestones.
 
-Verified checkout date: 2026-08-14. Always refresh the Git state and rerun the
+Verified checkout date: 2026-08-21. Always refresh the Git state and rerun the
 relevant gates before relying on the hashes or measurements in this document.
 
-## Current integrated checkpoint (2026-08-14)
+## Current continuation checkpoint (2026-08-21)
+
+### Independent audit findings, verified
+
+An independent read-only audit was checked against the source. Most of it holds;
+three items were corrected, and one gap it flagged turned out to be larger than
+reported.
+
+Confirmed and fixed in the working tree:
+
+- Superseded inner keys were freed without clearing. `server/session/auth.cpp`
+  promoted the alternate key by copy, leaving two live copies until the
+  alternate slot was reset; it now wipes the outgoing key and moves. The client
+  `TransportCore::set_inner_key` now wipes before assigning. Both types are
+  `std::optional<crypto::Bytes>`, so nothing was clearing them.
+- The raw ECDH shared secret in `crypto.cpp generate_session_key` outlived its
+  use. It is now wiped on scope exit, which also covers the throwing paths.
+- `anonym.cpp` used `util::random_hex(16)` for a proof nonce without checking
+  the result. It now fails instead of shipping an empty replay binding.
+
+Confirmed, still open (recorded, not fixed here):
+
+- The legacy inner AEAD has no replay binding: `build_aad` is
+  `'YUME' | frame_type | stream_id`, with no epoch or sequence, so a captured
+  ciphertext would replay under the retained static key. Since the federation port
+  to AUTH v2 (`yume/federation-v2`) no establishment path can arm that layer,
+  so the weakness is unreachable rather than live. Hop plumbing has been
+  removed; the primitive remains only for direct fail-closed tests and awaits
+  the broader legacy-static-inner retirement. Resolution is removal, not a
+  partial AAD patch without per-direction state and a wire version.
+- `crypto.cpp` remains a parallel raw-EVP stack. Its relay key-schedule HKDF
+  info strings are now versioned as one schedule (`yume-relay-*-v1`,
+  `client/relay/runtime.hpp`, closed 2026-08-22); what remains open for that
+  file is consolidation onto the basefwx primitive layer and an AAD-capable
+  ChaCha API.
+
+Corrected:
+
+- **The KDF guard was dead code, not an active enforcement gap, and the gap was
+  wider than reported.** The audit found `server_derive_key` unused; the
+  `KdfAdmissionController` also had no live consumer after federation moved to
+  AUTH v2. This was
+  not exploitable, because the v2 session path pins `inner_kdf_` to `"hkdf"` and
+  never accepts a peer-supplied KDF request, so no attacker-controlled Argon2
+  parameter reaches a derivation. What was real is the comment above the caps,
+  which asserted that `server/session/auth.cpp` calls
+  `argon2_params_exceed_limits` -- it does not. That comment has been corrected,
+  because a false claim that a control exists is more dangerous than the dead
+  code. The server derivation family, controller, injection surface, standalone
+  test, and obsolete budget configuration were subsequently removed.
+- **The inherited master-PQ-private-cache finding is not reproducible in the
+  current tree.** The only static cache in `inner_crypto.cpp` holds a public
+  key; `LoadMasterPrivateKey` has no production caller, and private-key loads
+  use scoped wiping. There is no process-lifetime cached private master key to
+  list as a residual.
+- **The non-constant-time KEM comparison is not a vulnerability.** It sits in
+  `validate_pq_keypair`, a local self-check where both operands are derived from
+  local files. There is no attacker input and no timing oracle.
+- **`random_hex` does not swallow RNG failure.** It returns empty on
+  `RAND_bytes` failure, and `key.cpp` checks it. One caller did not; see above.
+
+Release and ASan+UBSan suites pass 72/72 with these changes.
+
+### Per-key permissions now reach AUTH v2 sessions (fixed)
+
+The routed loopback benchmark had never produced a number: it always reported
+`FAILED SOCKS CONNECT rejected` because its key never received
+`allow_local_ip`. The cause was that one key had two fingerprints.
+
+An authorized identity is a composite -- two consecutive PEM blocks, classical
+Ed25519 then ML-DSA-87 -- and the server both authorizes on
+`composite_canonical_encoding` and looks up per-key permissions by
+`crypto::composite_fingerprint`. Key *generation* already recorded that same
+composite value. But `facade::keys::list_authorized` split the file into single
+PEM blocks and fingerprinted each one classically, so it reported one identity
+as two `ed25519` entries under values the server never looks anything up by, and
+`append_authorized` wrote meta under the same wrong value. This was therefore
+not a policy question about which fingerprint should be canonical: generation
+and the server already agreed, and listing and appending were the outliers.
+
+Fixed by making every reader composite-aware. In the facade,
+`list_authorized` pairs consecutive blocks into one identity and reports the
+composite fingerprint, `append_authorized` records meta under it, and
+`fingerprint_pubkey_file` returns it. The classical `fingerprint_pem_der` helper
+is retained and documented as what it is -- a SubjectPublicKeyInfo digest for
+non-composite material such as TLS leaf pinning -- and is explicitly not an
+AUTH v2 identity.
+
+`yumed --keys-list` had its own copy of the defect: it read the store as a flat
+list of public keys and called the classical `fingerprint_pubkey` on each, so it
+printed one identity as two entries. It now lists through
+`server::load_authorized_keys`, which applies the same pairing the server does.
+Verified: a freshly generated key is two PEM blocks and `--keys-list` reports
+exactly one fingerprint, where it previously reported two.
+
+To keep one identity from being computed two ways again, the digest itself now
+has a single implementation: `crypto::composite_fingerprint_from_canonical`
+hashes the canonical encoding, and `composite_fingerprint` delegates to it. The
+store already holds identities in canonical form, so the CLI needs no second
+parse.
+
+`src/tools/selftest.cpp` had the same defect twice over: it derived the
+fingerprint by shelling out to `openssl pkey -pubin`, which reads only the
+first PEM block, and it never passed `--auth-keys-meta` to yumed, so the file it
+wrote was never read. Both are fixed; the fingerprint is now computed with
+`crypto::composite_fingerprint`, which also removes an openssl dependency from
+that path.
+
+Result: the YUME 2.0 local transport benchmark runs for the first time.
+Unconstrained on `192.168.1.165` it reports 0.743 ms median, 0.876 ms p95 and
+1154.87 Mbit/s over loopback. That number is a useful bound for the separate
+delayed-path investigation: loopback throughput is not the constraint at
+roughly 25 Mbit/s over a 60 ms path.
+
+### First constrained-host tier results
+
+With the benchmark working, `scripts/yume_constrained_host.py` produced the
+first real tier measurements. Both pass with the full hybrid post-quantum,
+ratcheting stack on, verified from the daemon and client logs the run leaves
+behind rather than from stdout:
+
+| Tier | Verdict | Peak RSS | Of tier | Tasks | CPU used | Throttled |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 vCPU / 1 GiB | PASS | 19 MiB | 1.81% | 66 | 0.86 s | yes, 7x |
+| 2 vCPU / 2 GiB | PASS | 18 MiB | 0.88% | 66 | 0.33 s | no |
+
+The shape is informative: memory headroom is enormous and the 1-vCPU tier is
+CPU-bound, throttling while still completing.
+
+### Handshake percentiles and leak behaviour
+
+`--repeat N` runs the workload N times in one scope, so percentiles have a
+sample and a leak has somewhere to show up. Twenty iterations per tier, hybrid
+post-quantum handshake, verified from the run's own logs:
+
+| Metric | 1 vCPU / 1 GiB | 2 vCPU / 2 GiB |
+| --- | --- | --- |
+| Handshake p50 | 1.42 ms | 1.42 ms |
+| Handshake p95 | 2.01 ms | 1.70 ms |
+| Handshake p99 | 2.29 ms | 1.93 ms |
+| Round-trip p95 (median of runs) | 0.51 ms | 0.66 ms |
+| Throughput p50 | 120.1 MiB/s | 151.2 MiB/s |
+| Peak RSS | 23 MiB (2.20%) | 18 MiB (0.88%) |
+| Peak open fds | 36 | 36 |
+| Peak tasks | 66 | 66 |
+| CPU throttle events | 43 | 3 |
+
+Handshake p50 is identical across tiers: the ML-KEM-1024 + X25519 exchange is
+not CPU-starved at one vCPU, and only the tail moves (p99 2.29 ms against
+1.93 ms). Throughput is where the missing core shows, about 20 percent lower
+with 43 throttle events against three. Memory is not the constraint at either
+tier.
+
+Leak check, same workload at 5 and at 40 iterations on the 1 vCPU tier -- eight
+times the work:
+
+| | repeat 5 | repeat 40 |
+| --- | --- | --- |
+| Peak open fds | 36 | 36 |
+| fd steady drift | 0 | 0 |
+| Peak tasks | 66 | 66 |
+| Peak RSS | 16 MiB | 19 MiB |
+| Handshake p50 | 1.14 ms | 1.34 ms |
+
+Descriptors, tasks and RSS do not scale with iteration count, so nothing is
+being retained between sessions. Note that the drift figure compares the second
+half of the samples against the first half rather than last against first: every
+run ramps from zero to its working set, and a first-to-last delta reports that
+startup as if it were a leak.
+
+Note what none of this establishes. It bounds resources; it does not emulate
+slower cores, storage or NICs, the transfer is loopback, and the
+admission-flood, backend-slowdown, session-cap-rejection, recovery and sustained
+soak parts of the `docs/OPERATIONS.md` matrix have not been run. A tier may not
+be published on this alone.
+
+### Legacy hop plumbing removed
+
+After the federation AUTH v2 port made the time-derived inner hop unreachable,
+the remaining implementation and configuration surface was removed rather than
+retained as decoration: key derivation, skew-window trial decryption, cached
+keys/ids, TransportCore and Session branches, CLI/facade/GUI fields, share
+bundle fields, and status output. `docs/SECURITY_MODES.md` records why hop was
+not a lighter ratchet: every hop derived from one retained base key, while the
+directional ratchet performs a fresh authenticated hybrid exchange per epoch.
+
+`inner_crypto_limits_test.cpp` now pins fail-closed negatives on the remaining
+unreachable legacy AEAD primitive: wrong key, frame type, stream id, and
+ciphertext tampering are all rejected. Ratchet ordering, window, timeout, and
+key-retirement negatives remain in the ratchet suites.
+
+### Argon2 admission: superseded by the federation port
+
+`KdfAdmissionController` was constructed, injected into every session, and never
+called; `server_derive_key` and its Argon2 ceilings had no callers either. The
+second group was genuinely orphaned rather than missing: the server session
+speaks only AUTH v2, which pins its KDF to HKDF and never accepts a
+peer-supplied KDF request. With the federation dial now on AUTH v2 as well,
+`server_derive_key`/`server_derive_key_resolved` have been deleted outright;
+`resolve_server_kdf_params` and the `*_exceed_limits` guards survive only as
+policy pinned by tests, with their non-live status stated in the header.
+
+The admission controller's original consumer -- the legacy federation dialer
+running `inner::client_prepare` (Argon2, 256 MiB per dial) inside the server
+process -- is gone with that dial. The controller is currently constructed but
+inert; it was deleted with the hop-retire cleanup, including its standalone
+unit target and the server/session/federation injection surface. The obsolete
+Argon2 admission-budget configuration fields were removed at the same time.
+
+### Classifier gate: scoring engine frozen before any data exists
+
+`config/classifier_gate_v1.json` plus `scripts/yume_classifier_gate.py` freeze
+the classifier-resistance decision rules ahead of the first capture, which is
+the only order in which "frozen thresholds" means anything. See
+`docs/YUME_2_0_STABILIZATION.md`. The immediate planning consequence is that the
+five-run campaign is about an order of magnitude too small to produce a verdict;
+the gate returns `INSUFFICIENT` rather than a pass, by design.
+
+### Gate B blocker cleared: Chrome startup traffic, not YUME
+
+The `Page.navigate` timeout that blocked every capture campaign is diagnosed and
+fixed. It was never a YUME, Node, or CDP-driver defect.
+
+A direct Chrome 151.0.7922.71 to Node 24.18.0 canary on `192.168.1.165`, with no
+TLS relay and no YUME path, reproduced it exactly. Instrumenting both ends showed
+Chrome completing TCP and TLS 1.3 to the fixture immediately, negotiating ALPN
+`h2` and opening the session, then sending no HEADERS for about 11 seconds.
+Chrome's netlog named the cause: the browser's network pipeline goes completely
+silent for roughly 10 seconds at a time, twice, while Chrome performs its startup
+service calls (`optimizationguide-pa.googleapis.com/v1:GetModels`,
+`accounts.google.com/ListAccounts`, `clients2.google.com/time`). Every queued
+request waits in `NETWORK_DELEGATE_BEFORE_START_TRANSACTION` until those finish,
+about 24 seconds in. The fixture navigation is behind them, so the driver's
+bounded 15 second CDP deadline expires first. A marginal 15 second deadline
+against a roughly 24 second stall also explains why earlier campaigns failed at
+different run indices instead of consistently.
+
+The host was not at fault: DNS resolved in about 20 ms, Google was reachable in
+43 ms, and an HTTPS fetch returned 200 in 120 ms.
+
+Measured remedies, identical hardware, toolchain and navigation ladder:
+
+| Variant | plain HTTP | HTTPS by IP | HTTPS by SNI |
+| --- | --- | --- | --- |
+| Current runner flags | timeout at 12 s | 11423 ms | 6 ms |
+| `--host-resolver-rules=MAP * 127.0.0.1` | timeout at 12 s | 11430 ms | 5 ms |
+| Dead `--proxy-server` with fixture bypassed | timeout at 12 s | 11420 ms | 6 ms |
+| Service feature flags disabled | timeout at 12 s | 11452 ms | 6 ms |
+| **Loopback-only network namespace** | **3 ms** | **11 ms** | **4 ms** |
+
+Only real namespace isolation works. Making the Google requests fail fast does
+not help; Chrome skips the work only when no network exists at all.
+
+This matters beyond the timeout. In an unisolated run the netlog records a
+*completed* TLS handshake against a Google Trust Services certificate inside the
+capture window, so every capture taken so far carried non-fixture traffic that
+the YUME arm neither has nor should reproduce.
+
+`scripts/yume_capture_netns.sh` implements the fix. `setup` creates the
+`yume-capture` namespace and brings `lo` up; `exec` re-enters it and drops back
+to the invoking user via `SUDO_UID`/`SUDO_GID`, restoring `HOME`, `USER` and
+`LOGNAME` because `setpriv` changes credentials but not the environment. Only
+namespace creation needs privilege. Because the capture itself runs as the
+normal user, Chrome keeps its user-namespace sandbox and artifacts stay owned by
+that user, so `chrome_sandbox: user-namespace` remains accurate and neither
+`scripts/yume_capture_manifest.py` nor `scripts/yume_classifier_evidence.py`
+needed changing.
+
+Both capture runners now refuse to start outside that namespace, after their
+binary-hash and clean-source gates so the more fundamental errors still surface
+first. `scripts/test_yume_browser_sandbox.py` covers both sides through one
+parameterised fixture: an isolated `ip` stub reaches the intended Chrome-exit
+diagnostic, a connected one is refused without executing the browser.
+
+Verified end to end on `192.168.1.165`: a real two-run campaign with the pinned
+Chrome and Node completed (`run-01: complete`, `run-02: complete`) and produced
+`sanitized.json` plus `SHA256SUMS` per run. In that capture only two TLS sessions
+completed, both `next_proto: h2` to the fixture; every Google attempt failed
+first with `NAME_NOT_RESOLVED`, `INTERNET_DISCONNECTED` or `ADDRESS_UNREACHABLE`.
+Chrome still *tries* those requests, and the netlog still records the attempts
+and the hardcoded URLs; what changed is that none of them reach the network.
+
+This is unsigned working-tree evidence from a scratch clone, not exact-signed-
+tree qualification, and it does not by itself close Gate B: the matched five-run
+normal and YUME campaign, the validator comparison and the classifier work all
+remain. It does remove the blocker that prevented any campaign from running.
+
+Usage:
+
+```
+sudo scripts/yume_capture_netns.sh setup
+sudo scripts/yume_capture_netns.sh exec -- \
+    tools/cover-node/capture_chrome151_runs.sh <out> <node> [runs] [idle-ms]
+sudo scripts/yume_capture_netns.sh teardown
+```
+
+### Cover server HTTP/1.1 hang (fixed in the working tree)
+
+Separately, `tools/cover-node/server.mjs` set `allowHTTP1: true` -- so Node
+accepts an HTTP/1.1 connection -- but registered only a `stream` handler. An
+HTTP/1.1 client was parsed and never answered, hanging until its own deadline.
+Measured before the fix: h2 returned 200 in 5 ms, HTTP/1.1 never returned. This
+did not cause the campaign failure above, but it produces exactly the same
+symptom and would have been indistinguishable from it.
+
+The first attempted fix, adding a `request` listener, was wrong and the capture
+campaign caught it: registering `request` also switches on Node's HTTP/2
+compatibility layer, which attaches to every stream and consumes the
+extended-CONNECT stream the reference WebSocket runs on. The capture then failed
+with `WebSocket fixture timeout` while still answering the CONNECT with 200, so
+a status-only assertion would have passed. The server is now `allowHTTP1: false`:
+an HTTP/1.1-only client is refused at ALPN instead of hanging, and this is
+invisible to an HTTP/2 client because the ServerHello carries only the selected
+protocol, never the server's list.
+
+`tools/cover-node/test_cover_server_protocols.mjs` drives the real server with
+bounded deadlines and covers both regressions: restoring `allowHTTP1: true`
+fails with `HTTP/1.1 request did not answer within 5000 ms`, and adding the
+`request` listener fails with `extended CONNECT did not answer within 5000 ms`.
+The WebSocket case asserts a masked-ping/pong round trip rather than the CONNECT
+status, because only the data path breaks.
+
+### Latest working-tree change: authenticated-ACK rekey deadline
+
+The candidate now also carries the first half of the RTT-adaptation item. The
+fixed five-second rekey ACK deadline in `src/core/security/session_ratchet.cpp`
+is replaced by an RFC 6298-shaped estimator over authenticated ACK round trips,
+granting each offer `clamp(SRTT + 4 * RTTVAR, 5 s, 30 s)`, frozen at offer time.
+The design, its invariants and its one honest cost are in
+`docs/YUME_2_0_WAN_BEHAVIOR.md` under "Authenticated-ACK deadline adaptation".
+
+What did **not** change is the point of the change: the negotiated per-epoch
+byte, frame and sender-active-time limits are untouched, and a test asserts that
+a session which has measured a 20 s path and one which has measured a 1 ms path
+advance through exactly the same epochs on the same workload. Latency now buys
+patience, never a larger blast radius.
+
+Preparation depth and lead time were deliberately left static. The deadline is
+invisible on the wire; depth and lead decide when `REKEY_INIT` records appear,
+so adapting them writes measured network conditions into the traffic shape.
+They stay behind the capture/classifier gate.
+
+Evidence for this change alone, on `192.168.1.165` in `build-ci`: full Release
+suite 70/70 with warnings-as-errors, including three new ratchet cases
+(`TestAckDeadlineClampedInBothDirections`,
+`TestGrantedAckDeadlineIsFrozenAtOfferTime`,
+`TestRttAdaptationNeverWidensEpochLimits`). This is unsigned working-tree
+evidence and does not alter the NO MERGE CLAIM / NO RELEASE verdict below.
+
+### Working tree the next agent receives
+
+The handoff is intentionally an **uncommitted candidate**, based on signed
+commit `a0745fec638b0391af58e8c4cb3f13ebb3f30d31` (tree
+`ab55d3d9af2be56671bc4bf4164092ef38d57099`). Do not reset, clean, or replace
+it with `origin/main`. Begin with `git status --short`, `git diff --check`, and
+`git diff`; every current change is part of the candidate and there are no
+known unrelated edits. BaseFWX is a separate clean checkout at pinned commit
+`4692d4ce4edec2aa9835d04ad9ff6c3ad3ab9374` and must remain separate.
+
+The candidate changes the shared-ABI/LTO build policy, the hermetic browser
+sandbox fixture, the transactional signed-vendor `ensure` path and its tests,
+plus the public handoff/status/gate text. Its isolated copy on
+`192.168.1.165` is
+`/home/f1xgod/yume-current-test-da1EUE/repo`. The existing network path to that
+host was sufficient for build and correctness tests; it is **not** accepted as
+a direct-gigabit benchmark path. Connect and inventory the dedicated NIC before
+using that host for LAN throughput evidence.
+
+The unsigned candidate passed strict shared-ABI Release 70/70, serial
+ASan+UBSan 70/70, CLI help smokes, pinned Go 1.26.5 unit/race tests, an ordinary
+non-shared-ABI focused LTO check, and repeat signed-vendor `ensure` checks on
+that isolated host. These results make the tree ready for review and continued
+editing, not for release: no commit or push was made, registered CI has not run
+on it, and exact signed-tree dependency/reproducibility/Debian/package/artifact
+qualification remains mandatory.
+
+At the 2026-08-21 read-back, the latest signed product-code checkpoint on
+local `main` and `origin/main` was
+`97ed846dcae92c4d8b5a67173c8d9a5c1e7c4341`, tree
+`3b6b967c62c1779a750a244feb2721443c04e6cf`. The signature verifies with
+EdDSA fingerprint `967278FF6FA436F504CBB0058A1588B5E2598DB1`. Workflow-owned
+`origin/DEV` is commit `81f59a68e0a56519fe4997fcd4c17a35e5bd9b00`
+with the same tree. CodeQL run `32443839284`, Code Quality run `32443838665`,
+and branch-sync run `32443839323` passed. No PR was opened and `DEV` was not
+pushed directly.
+
+The exact Chrome `151.0.7922.71` staging directory remains present on
+`192.168.1.165` at
+`/home/f1xgod/yume-profile-build-t4CutW/chrome-151.0.7922.71`; reverify the
+documented package, launcher, and binary hashes before use. The failed
+`yume-final-0a7468a.service` unit remains visible as status evidence, but its
+temporary validation root was removed and cannot be resumed.
+
+The dependency hardening after `f2ffce6` made the product's real cryptographic
+minimum explicit: full builds require OpenSSL >= 3.5, CI/CodeQL/release use the
+checksum-pinned OpenSSL 3.5.7 source fallback, and prepared releases use the
+exact liboqs 0.16.0 source pin with static linkage plus RPATH/RUNPATH and
+dynamic-liboqs rejection. Local optimized and serial ASan+UBSan suites passed
+67/67 before those dependency/release changes. A later fresh remote run reached
+66/67; its only failure was the isolated normal-Chrome sandbox fixture, and it
+therefore did not reach the final reproducibility/package portion. Do not
+reuse the earlier 67/67 result as exact-tree qualification.
+
+Signed commit `b677938d361c37a47da822a3eeb756a3d83399ee` corrected a GitHub
+Actions environment bug: invoking the OpenSSL and nghttp2 helpers in separate
+child shells caused the later `GITHUB_ENV` assignment to discard OpenSSL's
+pkg-config prefix. All affected CI, CodeQL, and release lanes now source and
+invoke both helpers in one shell, and release preflight enforces the exact
+2/1/1 occurrence counts. The next CI run proved the combined environment,
+configured and built both native and sanitizer targets, and then exposed a
+test-only executable/library mismatch: the browser-sandbox fixture replaced
+`PATH` with `/usr/bin:/bin` while retaining the pinned 3.5.7
+`LD_LIBRARY_PATH`, so Ubuntu's 3.0 OpenSSL executable crashed against 3.5.7
+libraries.
+
+Signed commit `97ed846dcae92c4d8b5a67173c8d9a5c1e7c4341` retained the inherited
+dependency path behind the fixture's fake-command directory. Locally the full
+browser-sandbox suite passed 38/38 and its intended Chrome-exit case passed
+20/20. Exact CI run `32443839339` confirmed pinned OpenSSL 3.5.7 and nghttp2
+environment propagation plus successful native and sanitizer configure/build,
+but both test lanes still passed only 69/70. The same isolated case exited
+nonzero with empty stderr before its expected `Chrome exited unsuccessfully`
+diagnostic. Because certificate generation suppresses OpenSSL output, the next
+agent must first make this unit fixture hermetic—prefer a test-local fake
+`openssl` that creates the dummy key/certificate outputs, restore the bounded
+fixture `PATH`, and prove the intended Chrome failure is reached—rather than
+weakening the production capture runner or merely changing the assertion.
+
+The current working-tree correction on signed documentation base `a0745fe`
+does exactly that: its test-local `openssl` accepts only `req`, requires both
+fixture output paths, creates the dummy key and certificate, and lets the
+fixture return to `fake-bin:/usr/bin:/bin`. The direct browser-sandbox suite
+passed 38/38, including the intended `Chrome exited unsuccessfully` path with
+the sanitizer marker absent.
+
+A fresh isolated run of that working tree on `192.168.1.165` then found two
+build-harness defects. GCC 14.2 could not link LTO-enabled test objects against
+the deliberately non-LTO, hidden static archives used to construct `libyume`;
+the same Release build without LTO passed 70/70. Shared-ABI input archives now
+propagate their required `-fno-lto` policy to consumers, while ordinary builds
+without `YUME_BUILD_SHARED_ABI` retain LTO. The signed vendor-archive `ensure`
+path is also transactional and repeatable: an existing tree is accepted only
+when its normalized content/metadata digest matches a fresh verified
+extraction, and drift still fails without overwrite. With those corrections,
+the strict shared-ABI Release lane passed 70/70, serial ASan+UBSan passed 70/70,
+both CLI help smokes passed, and pinned Go 1.26.5 unit/race tests passed. This
+is unsigned working-tree evidence, not exact-signed-tree qualification or CI.
+
+Verdict for the `97ed846` product-code checkpoint: **NO MERGE CLAIM / NO
+RELEASE** until the fixture correction is signed, native and sanitizer CI pass
+all 70 tests, and an exact signed-tree qualification completes every applicable
+dependency, reproducibility, package/preflight, and artifact check. Gate B
+remains independently open on the real Chrome DevTools navigation boundary and
+all later classifier/WAN/soak work. The older evidence below remains historical
+and must not be generalized to `97ed846`. A documentation-only successor does
+not change this product-code verdict; refresh Git before acting.
+
+## Earlier integrated checkpoint (2026-08-14)
 
 ### Gate A closure and first Gate B campaign outcome
 
@@ -614,42 +1145,63 @@ control, or CPU governor in the middle of a comparison. Record it first.
 Change it only for a reproducible fault or an explicitly isolated experiment,
 then reboot when required and restart the complete baseline/candidate series.
 
-## Remaining ordered work for the next agent
+## Historical ordered work (superseded 2026-08-23)
 
 The bounded helper negative matrix, 1/10/50/100/256 ramps, 1,000 sequential
 reconnects, and segmented 30-minute full-speed soak are complete as documented
-below. Do not silently rerun or broaden them without freezing a new workload
-and artifact location.
+below. This list predates the completed core/ABI/CLI continuation and is kept
+for chronology, not as the current queue. The current consumer-sync boundary is
+in `docs/YUME_2_0_IMPLEMENTATION_STATUS.md`; do not silently rerun or broaden
+old campaigns without freezing a new workload and artifact location.
 
-1. **Re-derive current state.** Verify the branch, signed commits, clean
-   BaseFWX boundary, helper hash, exact Chrome/Node manifest, and absence of an
-   upstream. Do not trust an old private handoff over the live checkout.
-2. **Produce same-session stealth evidence.** Restore exact Chrome
-   `151.0.7922.71`, then capture five fresh normal-Chrome
-   and five YUME flows under identical certificate/SNI/ALPN/server conditions,
-   including privileged raw packets where available. Compare TLS records, H2,
-   request/asset sequence, WebSocket controls, bulk, idle, close, and timing
-   distributions. Add external classifier and active-probe tests. Keep verdicts
-   `PARITY`, `KNOWN_GAP`, or `DRIFT`.
-3. **Run the WAN matrix.** Use matched Release binaries at 60/100/210 ms RTT,
-   100 Mbit/s and approximately 1 Gbit/s, then 0.1% and 1% loss. Measure upload,
-   download, bidirectional flows, reconnect, rekey wait/depth, H2/TCP stalls,
-   retransmits, CPU, RSS, and binary hashes. Diagnose the recorded ~25 Mbit/s
-   WAN ceiling before changing crypto limits.
-4. **Harden operations.** Add useful health/metrics without exporting secrets or
-   a stable wire marker; test graceful shutdown/reload, systemd/cgroup limits,
-   disk/log pressure, per-key fairness, backend failure, and Debian installed
-   helper discovery/ownership/permissions.
-5. **Expand clients honestly.** Design Android and other-platform TLS backends
-   separately; the Linux helper is not portable evidence. Keep unsupported
-   platforms and multi-tunnel configurations explicit failures until each has
-   its own profile and gates.
-6. **Switch the default only after evidence.** Make `chrome151` the default and
-   retain `openssl-diagnostic` only after all certificate/exporter/lifecycle,
-   install-layout, performance, and soak gates pass. Never silently fall back.
-7. **Seek independent review.** Commission cryptographic/protocol review and
-    adversarial deployment testing before `2.0-rc1`; treat findings as release
-    blockers, not documentation exceptions.
+1. **Preserve and qualify this candidate.** Review the complete dirty diff,
+   freeze it only after approval, then require native and sanitizer CI 70/70
+   plus an exact signed-commit remote run through dependency, reproducibility,
+   Debian/ABI, package/preflight, and artifact checks. Do not convert the
+   unsigned results above into a release claim.
+2. **Repair the deterministic Chrome/CDP boundary.** Reproduce the direct
+   exact-Chrome-to-Node `Page.navigate` timeout with no YUME process in the
+   path, add bounded late/stalled-response coverage, and pass a fresh exact
+   Chrome canary. Only then run a new five-normal/five-YUME same-session
+   campaign; no partial predecessor capture may be reused.
+3. **Measure learnability, not just structural parity.** Split sessions rather
+   than packets and hold out capture day, host, network and provider. Freeze
+   acceptance thresholds before the run; report multiple classifiers,
+   confidence intervals, ROC/PR results and detection rate at operationally low
+   false-positive rates. Include active TLS/H1/H2/WebSocket probes and record
+   endpoint, certificate, timing and volume features that remain visible.
+4. **Finish WAN qualification without reopening the diagnosed defect.** The
+   former approximately 25-Mbit/s result was traced to pinned TCP buffers and
+   then H2/ratchet credit geometry, not crypto CPU or offer pacing. The matched
+   60/100/210-ms zero-loss measurements are complete for their named arms;
+   100-Mbit/s, controlled loss, bidirectional and soak arms remain. If future
+   adaptation is added, authenticated ACK observations may select preparation
+   depth and a bounded deadline; RTT must never relax or select the
+   cryptographic byte/frame/time limit. See
+   `docs/YUME_2_0_WAN_BEHAVIOR.md`.
+5. **Qualify weak-host operation.** Freeze constrained-host tiers, exercise the
+   complete crypto and cover stack under cgroup CPU/RSS/fd limits, and measure
+   handshake/rekey latency, queue growth, overload rejection and recovery. Do
+   not save resources by disabling PQ establishment, authenticated ratchets,
+   TLS verification, or fail-closed admission.
+6. **Synchronize consumers, then publish a tested platform matrix.** The
+   selected core/ABI/CLI gate is complete enough for Android and GUI source work
+   to begin; ABI v2 is not a prerequisite. Packet backpressure and facade
+   lifecycle races must be fixed first, then each consumer needs its own exact
+   build, cancellation/restart, transport, and platform tests. Current supported
+   scope remains glibc Linux x86_64 CLI/server/helper, not “any server.”
+7. **Finish operations and independent review.** Validate reload/shutdown,
+   backend and disk/log failure, installed helper discovery and permissions,
+   per-key fairness, resource telemetry without a new wire marker, and obtain
+   independent cryptographic/protocol plus adversarial deployment review before
+   `2.0-rc1`.
+
+The long-term stealth target is low measured classifier advantage against a
+specific cover distribution, not a promise that DPI or a neural classifier can
+never track or learn YUME. Endpoint/IP reputation, certificate, connection
+volume, timing and operator mistakes remain observable unless the deployment
+and cover workload match them too. Arbitrary random padding or a “randomish
+millisecond” cadence can itself become the most stable YUME signature.
 
 ## 2026-08-10 helper lifecycle and Linux release closure
 

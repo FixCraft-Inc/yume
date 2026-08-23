@@ -1,0 +1,31 @@
+{
+  "schema": "yume.classifier-gate/1",
+  "id": "classifier-gate-v1",
+  "status": "draft-pending-signoff",
+  "summary": "Frozen scoring protocol for the YUME classifier-resistance gate. Declared before any candidate capture exists so thresholds cannot be chosen after seeing results.",
+  "decision": {
+    "primary_metric": "roc_auc",
+    "roc_auc_upper_ci_max": 0.60,
+    "tpr_at_fpr_max": {"0.01": 0.10, "0.001": 0.05},
+    "aggregation": "worst_classifier",
+    "confidence": 0.95,
+    "bootstrap_resamples": 2000,
+    "bootstrap_unit": "group"
+  },
+  "preconditions": {
+    "min_groups": 4,
+    "min_sessions_per_class": 40,
+    "min_groups_per_class": 2
+  },
+  "split": {
+    "policy": "leave-one-group-out",
+    "group_keys": ["capture_day", "host", "network", "provider"]
+  },
+  "classifiers": ["logistic_regression", "gaussian_naive_bayes"],
+  "seed": 20260821,
+  "does_not_prove": [
+    "That no future classifier or feature set can separate the arms.",
+    "That an adversary with different vantage, more samples, or active probes sees the same advantage.",
+    "Anything about arms, features, or captures outside the evaluated set."
+  ]
+}

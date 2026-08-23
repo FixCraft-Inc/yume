@@ -20,6 +20,24 @@ namespace yume::config {
 inline ratchet::SecurityProfileConfig ParseSecurityProfile(
     const nlohmann::json& config,
     ratchet::SecurityProfileConfig fallback = {}) {
+    const auto read_u64 = [](const nlohmann::json& object,
+                             const char* key) -> std::uint64_t {
+        const auto& value = object.at(key);
+        if (value.is_number_unsigned()) {
+            return value.get<std::uint64_t>();
+        }
+        if (!value.is_number_integer()) {
+            throw std::runtime_error(std::string(key) +
+                                     " must be a non-negative integer");
+        }
+        const auto parsed = value.get<std::int64_t>();
+        if (parsed < 0) {
+            throw std::runtime_error(std::string(key) +
+                                     " must be a non-negative integer");
+        }
+        return static_cast<std::uint64_t>(parsed);
+    };
+
     if (config.contains("security_mode")) {
         if (!config["security_mode"].is_string()) {
             throw std::runtime_error("security_mode must be a string");
@@ -42,8 +60,9 @@ inline ratchet::SecurityProfileConfig ParseSecurityProfile(
                 "security_custom requires epoch_bytes, epoch_frames, and "
                 "epoch_active_ms");
         }
-        const std::uint64_t active_ms =
-            custom["epoch_active_ms"].get<std::uint64_t>();
+        const std::uint64_t epoch_bytes = read_u64(custom, "epoch_bytes");
+        const std::uint64_t epoch_frames = read_u64(custom, "epoch_frames");
+        const std::uint64_t active_ms = read_u64(custom, "epoch_active_ms");
         const auto max_active_ms =
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 ratchet::kMaxEpochActiveLimit)
@@ -52,8 +71,8 @@ inline ratchet::SecurityProfileConfig ParseSecurityProfile(
             throw std::runtime_error("security_custom values are out of range");
         }
         ratchet::RatchetPolicy policy{
-            custom["epoch_bytes"].get<std::uint64_t>(),
-            custom["epoch_frames"].get<std::uint64_t>(),
+            epoch_bytes,
+            epoch_frames,
             std::chrono::milliseconds(static_cast<std::int64_t>(active_ms)),
         };
         if (!ratchet::IsRatchetPolicyValid(policy)) {

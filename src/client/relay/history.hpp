@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -40,6 +41,7 @@ private:
 
     std::filesystem::path root_dir_;
     std::string instance_key_;
+    mutable std::mutex mutex_;
 };
 
 }  // namespace yume::client

@@ -149,6 +149,27 @@ class NetworkLab:
         self._run(["ip", "-n", namespace, "addr", "add", address, "dev", interface])
         self._run(["ip", "-n", namespace, "link", "set", interface, "up"])
 
+    def tune_tcp_memory(self, max_bytes: int) -> None:
+        """Raise the per-namespace TCP autotuning ceiling.
+
+        A single TCP connection at high RTT is bounded by tcp_rmem/tcp_wmem
+        maxima long before it is bounded by TCP itself: at 60 ms the Debian
+        defaults (6 MiB read / 4 MiB write) cap one stream near 390 Mbit/s,
+        while a 64 MiB ceiling lets the same stream reach ~5.3 Gbit/s. YUME
+        multiplexes every logical stream onto one tunnel, so it inherits that
+        single-connection ceiling exactly. Sweep this to separate a deployment
+        tuning limit from a limit inside YUME.
+        """
+        for namespace in (self.server_ns, self.client_ns):
+            for key, default_min, default_start in (
+                    ("net.ipv4.tcp_rmem", 4096, 131072),
+                    ("net.ipv4.tcp_wmem", 4096, 16384)):
+                subprocess.run(
+                    ["ip", "netns", "exec", namespace, "sysctl", "-qw",
+                     f"{key}={default_min} {default_start} {max_bytes}"],
+                    check=False, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL)
+
     def _shape(self, namespace: str, interface: str) -> None:
         delay = max(self.profile.rtt_ms / 2.0, 0.1)
         jitter = self.profile.jitter_ms / 2.0
@@ -197,6 +218,39 @@ def parse_args() -> argparse.Namespace:
         help="explicit upload DATA chunk size; omit to match the client relay buffer",
     )
     parser.add_argument("--bench-direction", choices=("both", "up", "down"), default="both")
+    parser.add_argument(
+        "--tcp-mem-max",
+        type=int,
+        metavar="MIB",
+        help=(
+            "raise net.ipv4.tcp_rmem/tcp_wmem maxima inside the lab "
+            "namespaces. YUME muxes every stream onto one tunnel, so it is "
+            "bounded by what a single TCP connection can do, which at high RTT "
+            "is set by these caps rather than by TCP"
+        ),
+    )
+    parser.add_argument(
+        "--security-mode",
+        choices=("extreme", "normal", "soft", "session"),
+        help=(
+            "ratchet epoch policy on both endpoints. extreme is the default "
+            "256 KiB/512 frames/500 ms; normal 8 GiB/60 s; soft 256 GiB/30 min; "
+            "session is an `ultimate` custom policy at the maximum permitted "
+            "limits, i.e. effectively one key for the whole session. Anything "
+            "other than extreme widens the cryptographic compromise window and "
+            "is for measurement, not deployment"
+        ),
+    )
+    parser.add_argument(
+        "--rekey-window",
+        type=int,
+        metavar="N",
+        help=(
+            "concurrent directional epoch offers on both endpoints (1..64); "
+            "omit to use the negotiated default. Sweep it to test whether the "
+            "ratchet is the binding constraint at a given RTT"
+        ),
+    )
     parser.add_argument(
         "--tls-backend",
         choices=("chrome151", "openssl-diagnostic"),
@@ -283,6 +337,10 @@ def validate_args(args: argparse.Namespace, profile: WanProfile) -> None:
         raise SystemExit("--bench-streams must be 1..240")
     if args.bench_chunk_kib is not None and not 1 <= args.bench_chunk_kib <= 256:
         raise SystemExit("--bench-chunk-kib must be 1..256")
+    if args.rekey_window is not None and not 1 <= args.rekey_window <= 64:
+        raise SystemExit("--rekey-window must be 1..64")
+    if args.tcp_mem_max is not None and not 1 <= args.tcp_mem_max <= 1024:
+        raise SystemExit("--tcp-mem-max must be 1..1024 (MiB)")
     if not 100 <= args.resource_sample_ms <= 5000:
         raise SystemExit("--resource-sample-ms must be 100..5000")
 
@@ -324,6 +382,34 @@ def start_node(
     return process, security
 
 
+# Ratchet policy is a config-file setting, not a flag, deliberately: it is a
+# security knob rather than a tuning one. The harness writes a minimal config
+# so a measurement can sweep it without adding CLI surface to the product.
+SECURITY_MODE_CONFIG = {
+    "extreme": {"security_mode": "extreme"},
+    "normal": {"security_mode": "normal"},
+    "soft": {"security_mode": "soft"},
+    # `ultimate` takes exact bounded values; these are the maxima the policy
+    # validator accepts, which is as close to "one key per session" as the
+    # wire format allows.
+    "session": {
+        "security_mode": "ultimate",
+        "security_custom": {
+            "epoch_bytes": 1 << 40,
+            "epoch_frames": 1 << 30,
+            "epoch_active_ms": 24 * 60 * 60 * 1000,
+        },
+    },
+}
+
+
+def write_security_config(workdir: Path, name: str, mode: str) -> Path:
+    path = workdir / f"{name}-security.json"
+    path.write_text(json.dumps(SECURITY_MODE_CONFIG[mode], indent=2) + "\n",
+                    encoding="utf-8")
+    return path
+
+
 def start_yumed(
     lab: NetworkLab,
     yumed: Path,
@@ -333,10 +419,14 @@ def start_yumed(
     resource_sampling: bool,
     resource_sample_ms: int,
     isolated_userns: bool,
+    rekey_window: int | None,
+    security_config: Path | None,
 ) -> tuple[ManagedProcess, dict[str, object] | None]:
     command = [
         str(yumed),
         *(["--root"] if isolated_userns else []),
+        *(["--rekey-window", str(rekey_window)] if rekey_window else []),
+        *(["--config", str(security_config)] if security_config else []),
         "--listen", f"{SERVER_IP}:{lab.yume_port}",
         "--cert", str(keys.server_cert),
         "--key", str(keys.server_key),
@@ -439,6 +529,13 @@ def run_endpoint(
         "--bench-mib", str(mib),
         "--bench-streams", str(streams),
         "--bench-direction", args.bench_direction,
+        *(["--bench-chunk-kib", str(args.bench_chunk_kib)]
+          if args.bench_chunk_kib is not None else []),
+        *(["--rekey-window", str(args.rekey_window)]
+          if args.rekey_window else []),
+        *(["--config", str(write_security_config(
+            workdir, "client", args.security_mode))]
+          if args.security_mode else []),
         "--non-interactive", "--accept-monitoring", "--boring", "--no-color",
     ]
     argv = lab.command(lab.client_ns, [
@@ -446,8 +543,6 @@ def run_endpoint(
         "env", f"HOME={workdir / 'home'}", f"XDG_RUNTIME_DIR={workdir / 'runtime'}",
         *(guarded_command(command) if args.isolated_controller else command),
     ])
-    if args.bench_chunk_kib is not None:
-        argv.extend(["--bench-chunk-kib", str(args.bench_chunk_kib)])
     directions = 2 if args.bench_direction == "both" else 1
     transfer_seconds = mib * 8 * directions / max(1, lab.profile.bandwidth_mbit)
     timeout = max(120, int(transfer_seconds * 4 + 90))
@@ -664,6 +759,8 @@ def main() -> int:
         (workdir / "runtime").mkdir(mode=0o700)
         chown_tree(workdir, run_identity)
         lab.create()
+        if args.tcp_mem_max:
+            lab.tune_tcp_memory(args.tcp_mem_max * 1024 * 1024)
         node_process, node_security = start_node(
             lab,
             frozen_node,
@@ -682,6 +779,10 @@ def main() -> int:
             resource_sampling=not args.no_resource_sampling,
             resource_sample_ms=args.resource_sample_ms,
             isolated_userns=args.isolated_controller,
+            rekey_window=args.rekey_window,
+            security_config=(write_security_config(
+                workdir, "server", args.security_mode)
+                if args.security_mode else None),
         )
         processes.append(yumed_process)
 
@@ -822,6 +923,16 @@ def main() -> int:
             "finished_utc": datetime.now(timezone.utc).isoformat(),
             "profile_name": args.profile,
             "network": asdict(profile),
+            "ratchet": {
+                # None means "whatever the endpoints negotiate by default".
+                # Recorded explicitly so a window sweep is reproducible from
+                # the report alone.
+                "rekey_window_override": args.rekey_window,
+                "security_mode_override": args.security_mode,
+            },
+            "host_tuning": {
+                "tcp_mem_max_mib": args.tcp_mem_max,
+            },
             "internal_endpoint": {
                 "server_ip": SERVER_IP,
                 "client_ip": CLIENT_IP,

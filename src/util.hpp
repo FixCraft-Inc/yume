@@ -49,6 +49,32 @@ std::size_t server_relay_read_buf_size();
 std::string base64_decode(const std::string& input);
 std::string base64_encode(const std::string& input);
 
-void install_signal_handlers(const std::function<void(int)>& handler);
+// Owns the process-wide SIGINT/SIGTERM callback registration. POSIX signal
+// handlers only enqueue the signal into an async-signal-safe bridge; the user
+// callback runs on a managed dispatcher thread. Destroying a registration
+// disables it and waits for any in-flight callback before captured state can
+// disappear, then restores the process's preceding OS handlers.
+//
+// There is deliberately one process-wide slot. Installing a newer standalone
+// CLI/server registration supersedes an older one; destroying the older token
+// cannot clear the newer callback. Embedded runtimes must leave signal policy
+// to their host and use their explicit cancellation channel instead.
+class SignalHandlerRegistration final {
+public:
+    SignalHandlerRegistration() noexcept = default;
+    explicit SignalHandlerRegistration(std::function<void(int)> handler);
+    ~SignalHandlerRegistration();
+
+    SignalHandlerRegistration(const SignalHandlerRegistration&) = delete;
+    SignalHandlerRegistration& operator=(const SignalHandlerRegistration&) = delete;
+    SignalHandlerRegistration(SignalHandlerRegistration&& other) noexcept;
+    SignalHandlerRegistration& operator=(SignalHandlerRegistration&& other) noexcept;
+
+    void reset() noexcept;
+    explicit operator bool() const noexcept { return generation_ != 0; }
+
+private:
+    std::uint64_t generation_{0};
+};
 
 }  // namespace yume::util

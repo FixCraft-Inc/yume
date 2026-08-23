@@ -111,6 +111,15 @@ exactly. Malformed, duplicate, regressed, exhausted, IPv6, wrong-address, or
 over-MTU traffic closes the packet channel while leaving the authenticated
 tunnel available to other adapters.
 
+After the packet engine dequeues and sequence-numbers a batch, the channel
+retains that exact encoded payload until the bounded transport queue admits it.
+Temporary saturation is retried in bounded slices rather than closing the
+channel or skipping a sequence. Transport shutdown wakes the admission wait;
+local channel shutdown is observed between slices, so teardown cannot wait
+indefinitely on capacity. Deterministic saturation/recovery and stop tests pin
+these guarantees. This closes the source-side loss defect but does not by
+itself qualify the Android always-on VPN path.
+
 `libyume.so.1` exposes the same engine through the opaque `yume_packet` handle:
 `yume_client_open_packet`, status JSON, caller-owned batched reads/writes,
 close, and destroy. No library-owned packet buffer or C++ type crosses the ABI.
@@ -176,6 +185,8 @@ explicitly excludes the packet ABI and TUN path.
   path as TCP/UDP stream bytes.
 - Sequence numbers are part of the encrypted batch payload and are reserved
   for replay/drop accounting in the packet engine.
-- Android IPv6 is still fail-closed for packet-native v1.
+- Android IPv6 is still fail-closed for packet-native v1. The VPN must block it
+  explicitly; feeding IPv6 into native closes the packet channel, while omitting
+  an IPv6 route without a block can leak traffic outside the VPN.
 - Packet egress is an operator-controlled server network path. Firewall and
   NAT policy for that TUN must enforce the site's allowed destinations.

@@ -91,6 +91,9 @@ struct PresenceReply {
 };
 
 struct PendingInvite {
+    static constexpr std::uint16_t kRelayProtocolVersion = 2;
+
+    std::uint16_t relay_protocol_version{kRelayProtocolVersion};
     std::string invite_id;
     std::string from_endpoint_id;
     std::string to_endpoint_id;
@@ -98,15 +101,17 @@ struct PendingInvite {
     std::int64_t created_ms{0};
     bool requires_password{true};
     std::string metadata_json;
-    std::string ephemeral_pubkey_b64;
-    std::string ephemeral_signature_b64;
-    std::string nonce_b64;
+    std::string handshake_request_b64;
     std::string from_display_name;
     std::string from_auth_pubkey_b64;
+    // Internal parse/state marker. The wire representation is the explicit
+    // `accepted` key; this flag prevents a request-shaped object from being
+    // accepted as an implicit rejection response.
+    bool response_present{false};
     bool accepted{false};
     std::string response_reason;
-    std::string response_ephemeral_pubkey_b64;
-    std::string response_ephemeral_signature_b64;
+    std::string handshake_response_b64;
+    std::string responder_auth_pubkey_b64;
 };
 
 struct ActiveRelayChannel {

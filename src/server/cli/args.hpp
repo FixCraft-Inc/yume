@@ -27,8 +27,6 @@ struct ServerCliParseResult {
 
     bool inner_heavy_override{false};
     bool inner_heavy_value{true};
-    bool inner_hop_override{false};
-    bool inner_hop_value{true};
     bool attach_local{false};
     bool keep_root{false};
 };

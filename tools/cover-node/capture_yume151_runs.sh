@@ -74,6 +74,29 @@ for executable in "$timeout_bin" "$git_bin" "$unshare_bin" "$ss_bin" \
     fi
 done
 
+# Capture runs must have no network egress. Chrome will not service a navigation
+# until its own startup service calls finish, and those block the browser's
+# network pipeline for about ten seconds at a time; the driver's bounded CDP
+# deadline expires first. Any capture taken with egress also records real
+# Chrome-to-Google TLS connections that the fixture workload never produced.
+# Failing closed here is deliberate: a contaminated capture is worse than none.
+require_isolated_network() {
+    local interfaces
+    interfaces=$(ip -o link show | awk -F': ' '{print $2}')
+    if [[ $interfaces != 'lo' ]] || [[ -n $(ip route show default) ]]; then
+        cat >&2 <<'ISOLATION'
+capture requires the loopback-only network namespace
+
+  sudo scripts/yume_capture_netns.sh setup
+  sudo scripts/yume_capture_netns.sh exec -- <this command>
+
+Only namespace creation needs privilege; the capture itself runs as the
+invoking user so Chrome keeps its user-namespace sandbox.
+ISOLATION
+        return 1
+    fi
+}
+
 yume_bin=$(realpath -e -- "$yume_input")
 client_config=$(realpath -e -- "$config_input")
 certificate=$(realpath -e -- "$certificate_input")
@@ -288,6 +311,10 @@ cleanup_relay() {
 }
 trap cleanup_relay EXIT
 trap 'exit 130' INT TERM
+
+if ! require_isolated_network; then
+    exit 1
+fi
 
 for run_index in $(seq 1 "$run_count"); do
     run_name=$(printf 'run-%02d' "$run_index")

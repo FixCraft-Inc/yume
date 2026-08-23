@@ -549,6 +549,11 @@ AnonymProof fetch_anonym_proof(const std::string& hash,
     proof.hash = hash;
     proof.ts = std::to_string(static_cast<long long>(std::time(nullptr)));
     proof.nonce = yume::util::random_hex(16);
+    // random_hex returns empty when the RNG fails; an empty proof nonce would
+    // silently remove the replay binding rather than fail the operation.
+    if (proof.nonce.empty()) {
+        throw std::runtime_error("failed to generate anonym proof nonce");
+    }
     proof.certfp = certfp;
     proof.proof_policy = yume::policy::normalize_anonym_proof_mode(proof_mode);
     nlohmann::json req{{"hash", proof.hash},

@@ -16,6 +16,10 @@
 
 #include <boost/asio/io_context.hpp>
 
+namespace yume::util {
+class SignalHandlerRegistration;
+}
+
 namespace yume::client {
 
 class RelayRuntime;
@@ -73,6 +77,7 @@ private:
     std::weak_ptr<Tunnel> active_tunnel_;
     std::weak_ptr<RelayRuntime> active_relay_runtime_;
     std::function<void(const std::string&)> active_disconnect_;
+    std::unique_ptr<util::SignalHandlerRegistration> signal_handler_;
 };
 
 }  // namespace yume::client

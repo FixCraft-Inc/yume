@@ -8,6 +8,9 @@
 #include "server/runtime/service_queue_policy.hpp"
 #include "server/runtime/weighted_egress_limiter.hpp"
 
+#include "core/protocol/directory_policy.hpp"
+#include "core/runtime/file_transaction_lock.hpp"
+
 #include <algorithm>
 #include "server/federation/manager.hpp"
 #include "server/auth/auth.hpp"
@@ -90,13 +93,21 @@ Manager::Manager(boost::asio::io_context& io, const ServerConfig& cfg)
     , auth_policies_(std::make_shared<const AuthKeyPolicyMap>())
     , operator_keys_(std::make_shared<const std::vector<crypto::Bytes>>())
     , operator_policies_(std::make_shared<const AuthKeyPolicyMap>())
-    , kdf_admission_(std::make_shared<KdfAdmissionController>(KdfAdmissionLimits{
-          cfg.argon2_memory_budget_kib, cfg.argon2_max_jobs}))
     , admission_replay_cache_(std::make_shared<obfs::AdmissionReplayCache>())
     , server_id_(cfg.server_id.empty() ? yume::identity::generate_endpoint_id() : cfg.server_id)
     , server_name_(cfg.server_name.empty() ? std::string("yumed") : cfg.server_name) {
     cfg_.server_id = server_id_;
     cfg_.server_name = server_name_;
+    if (!control::is_valid_directory_server_identity(
+            server_id_, server_name_, cfg_.federation_enable)) {
+        throw std::runtime_error(
+            cfg_.federation_enable
+                ? "invalid server identity: federation server_id must be 1-64 "
+                  "ASCII letters, digits, '.', '_' or '-', and server_name "
+                  "must be safe text within the directory limit"
+                : "invalid server identity: server_id/server_name must be "
+                  "nonempty safe text within the directory limits");
+    }
     if (cfg_.egress_mbps > 0) {
         egress_limiter_ = std::make_unique<WeightedEgressLimiter>(cfg_.egress_mbps);
     }
@@ -148,6 +159,16 @@ void Manager::start() {
     std::shared_ptr<const AuthKeyPolicyMap> loaded_policies;
     std::shared_ptr<const std::vector<crypto::Bytes>> loaded_operator_keys;
     std::shared_ptr<const AuthKeyPolicyMap> loaded_operator_policies;
+    std::shared_ptr<const std::vector<crypto::Bytes>> loaded_admin_keys;
+    runtime::FileTransactionLock snapshot_lock;
+    std::string lock_error;
+    if (!snapshot_lock.Acquire(
+            {cfg_.auth_keys, cfg_.auth_keys_meta, cfg_.operator_keys,
+             cfg_.operator_keys_meta, cfg_.admin_keys},
+            &lock_error)) {
+        throw std::runtime_error(
+            "authorization snapshot lock failed: " + lock_error);
+    }
     try {
         loaded_keys = std::make_shared<const std::vector<crypto::Bytes>>(
             load_authorized_keys(cfg_.auth_keys));
@@ -179,7 +200,6 @@ void Manager::start() {
         throw std::runtime_error(
             "the same public key is present in auth_keys and operator_keys");
     }
-    std::shared_ptr<const std::vector<crypto::Bytes>> loaded_admin_keys;
     try {
         loaded_admin_keys = std::make_shared<const std::vector<crypto::Bytes>>(
             cfg_.admin_keys.empty()
@@ -207,6 +227,7 @@ void Manager::start() {
         operator_keys_ = loaded_operator_keys;
         operator_policies_ = loaded_operator_policies;
     }
+    snapshot_lock.Unlock();
 
     if (loaded_keys->empty()) {
         util::log_warn("authorized_keys is empty");
@@ -219,8 +240,8 @@ void Manager::start() {
                        " operator key(s) from " + cfg_.operator_keys);
     }
     if (cfg_.federation_enable) {
-        if (cfg_.federation_auth_key.empty() || cfg_.federation_anonym_ca.empty() || cfg_.federation_peers.empty()) {
-            util::log_warn("federation disabled: federation_auth_key, federation_anonym_ca, and peers are required");
+        if (cfg_.federation_identity.empty() || cfg_.federation_anonym_ca.empty() || cfg_.federation_peers.empty()) {
+            util::log_warn("federation disabled: federation_identity, federation_anonym_ca, and peers are required");
             cfg_.federation_enable = false;
         } else {
             federation_ = std::make_unique<FederationManager>(io_, cfg_, this);
@@ -324,6 +345,14 @@ void Manager::stop() {
         // an ordinary timer cancellation.
         upstream_reload_timer_->cancel();
         upstream_reload_stopped_ = true;
+    }
+    {
+        std::lock_guard<std::mutex> lock(endpoint_mutex_);
+        invite_expiry_stopped_ = true;
+        if (invite_expiry_timer_) {
+            invite_expiry_timer_->cancel();
+        }
+        invites_.clear();
     }
     boost::system::error_code ec;
     acceptor_.close(ec);
@@ -760,9 +789,17 @@ bool Manager::admit_accept() {
     return true;
 }
 
-bool Manager::register_service(const std::string& service, std::string* error) {
+bool Manager::register_service(
+    const std::string& service,
+    std::string* error,
+    runtime::OperationStatus* operation_status) {
+    if (error) error->clear();
+    runtime::SetOperationStatus(
+        operation_status, runtime::OperationStatus::InternalError);
     if (!valid_service_name(service)) {
         if (error) *error = "invalid service name";
+        runtime::SetOperationStatus(
+            operation_status, runtime::OperationStatus::InvalidArgument);
         return false;
     }
     {
@@ -770,59 +807,87 @@ bool Manager::register_service(const std::string& service, std::string* error) {
         if (std::find(cfg_.allowed_services.begin(), cfg_.allowed_services.end(), service) ==
             cfg_.allowed_services.end()) {
             if (error) *error = "service is not enabled in server config";
+            runtime::SetOperationStatus(
+                operation_status, runtime::OperationStatus::PermissionDenied);
             return false;
         }
     }
     std::lock_guard<std::mutex> lock(service_mutex_);
     if (services_stopping_) {
         if (error) *error = "server is stopping";
+        runtime::SetOperationStatus(
+            operation_status, runtime::OperationStatus::NotRunning);
         return false;
     }
     registered_services_.insert(service);
+    runtime::SetOperationStatus(
+        operation_status, runtime::OperationStatus::Success);
     return true;
 }
 
 bool Manager::enqueue_service_stream(const std::string& service,
                                      std::shared_ptr<runtime::ServiceStream> stream,
-                                     std::string* error) {
+                                     std::string* error,
+                                     runtime::OperationStatus* operation_status) {
+    if (error) error->clear();
+    runtime::SetOperationStatus(
+        operation_status, runtime::OperationStatus::InternalError);
     if (!valid_service_name(service) || !stream) {
         if (error) *error = "invalid service stream";
+        runtime::SetOperationStatus(
+            operation_status, runtime::OperationStatus::InvalidArgument);
         return false;
     }
     {
         std::lock_guard<std::mutex> lock(service_mutex_);
         if (services_stopping_) {
             if (error) *error = "server is stopping";
+            runtime::SetOperationStatus(
+                operation_status, runtime::OperationStatus::NotRunning);
             return false;
         }
         if (registered_services_.find(service) == registered_services_.end()) {
             if (error) *error = "service is not registered";
+            runtime::SetOperationStatus(
+                operation_status, runtime::OperationStatus::NotFound);
             return false;
         }
         auto& queue = pending_service_streams_[service];
         if (!service_queue_policy::admission_allowed(
                 pending_service_stream_count_, queue.size())) {
             if (error) *error = "pending service stream limit reached";
+            runtime::SetOperationStatus(
+                operation_status, runtime::OperationStatus::ResourceExhausted);
             return false;
         }
         queue.push_back(std::move(stream));
         ++pending_service_stream_count_;
     }
     service_cv_.notify_all();
+    runtime::SetOperationStatus(
+        operation_status, runtime::OperationStatus::Success);
     return true;
 }
 
 std::shared_ptr<runtime::ServiceStream> Manager::accept_service_stream(
     const std::string& service,
     std::uint32_t timeout_ms,
-    std::string* error) {
+    std::string* error,
+    runtime::OperationStatus* operation_status) {
+    if (error) error->clear();
+    runtime::SetOperationStatus(
+        operation_status, runtime::OperationStatus::InternalError);
     if (!valid_service_name(service)) {
         if (error) *error = "invalid service name";
+        runtime::SetOperationStatus(
+            operation_status, runtime::OperationStatus::InvalidArgument);
         return {};
     }
     std::unique_lock<std::mutex> lock(service_mutex_);
     if (registered_services_.find(service) == registered_services_.end()) {
         if (error) *error = "service is not registered";
+        runtime::SetOperationStatus(
+            operation_status, runtime::OperationStatus::NotFound);
         return {};
     }
     auto has_pending = [&]() {
@@ -832,15 +897,21 @@ std::shared_ptr<runtime::ServiceStream> Manager::accept_service_stream(
     if (!has_pending()) {
         if (timeout_ms == 0) {
             if (error) *error = "no service stream is pending";
+            runtime::SetOperationStatus(
+                operation_status, runtime::OperationStatus::WouldBlock);
             return {};
         }
         if (!service_cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms), has_pending)) {
             if (error) *error = "timed out waiting for service stream";
+            runtime::SetOperationStatus(
+                operation_status, runtime::OperationStatus::Timeout);
             return {};
         }
     }
     if (services_stopping_) {
         if (error) *error = "server is stopping";
+        runtime::SetOperationStatus(
+            operation_status, runtime::OperationStatus::NotRunning);
         return {};
     }
     auto& queue = pending_service_streams_[service];
@@ -852,6 +923,8 @@ std::shared_ptr<runtime::ServiceStream> Manager::accept_service_stream(
     if (queue.empty()) {
         pending_service_streams_.erase(service);
     }
+    runtime::SetOperationStatus(
+        operation_status, runtime::OperationStatus::Success);
     return stream;
 }
 
@@ -905,7 +978,6 @@ void Manager::do_accept() {
                                                          auth_state.operator_keys,
                                                          auth_state.operator_policies,
                                                          auth_state.admin_keys,
-                                                         kdf_admission_,
                                                          admission_replay_cache_,
                                                          session_id, this);
                 register_session(session);
@@ -968,6 +1040,17 @@ bool Manager::reload_auth(std::string* error) {
     std::shared_ptr<const std::vector<crypto::Bytes>> loaded_operator_keys;
     std::shared_ptr<const AuthKeyPolicyMap> loaded_operator_policies;
     std::shared_ptr<const std::vector<crypto::Bytes>> loaded_admin_keys;
+    runtime::FileTransactionLock snapshot_lock;
+    std::string lock_error;
+    if (!snapshot_lock.Acquire(
+            {auth_keys_path, auth_keys_meta_path, operator_keys_path,
+             operator_keys_meta_path, admin_keys_path},
+            &lock_error)) {
+        if (error) {
+            *error = "authorization snapshot lock failed: " + lock_error;
+        }
+        return false;
+    }
     try {
         loaded_keys = std::make_shared<const std::vector<crypto::Bytes>>(
             load_authorized_keys(auth_keys_path));
@@ -1037,6 +1120,7 @@ bool Manager::reload_auth(std::string* error) {
         operator_policies_ = loaded_operator_policies;
         admin_keys_ = loaded_admin_keys;
     }
+    snapshot_lock.Unlock();
 
     util::log_info("reloaded " + std::to_string(loaded_keys->size()) +
                    " authorized key(s) and " +

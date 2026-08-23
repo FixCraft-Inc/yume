@@ -6,7 +6,6 @@
 
 #pragma once
 
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -31,18 +30,20 @@
 namespace yume::client {
 
 struct TunnelCloseStateTestPeer;
+struct TunnelExecPolicyTestPeer;
 
 class Tunnel : public std::enable_shared_from_this<Tunnel> {
 public:
     using Bytes = std::vector<uint8_t>;
+    using InboundCredit = TransportCore::InboundCredit;
     using OpenHandler = std::function<void(bool, const std::string&)>;
-    using DataHandler = std::function<void(const Bytes&)>;
+    using DataHandler = std::function<void(const Bytes&, InboundCredit)>;
     using CloseHandler = std::function<void(const std::string&)>;
     using HalfCloseHandler = std::function<void(const std::string&)>;
     using TunnelCloseHandler = std::function<void(const std::string&)>;
-    using ReverseOpenHandler = std::function<void(uint8_t listen_id, uint8_t stream_id)>;
+    using ReverseOpenHandler = TransportCore::ReverseOpenHandler;
     using ControlHandler = std::function<void(const nlohmann::json&)>;
-    using InboundOpenHandler = std::function<void(uint8_t stream_id, const nlohmann::json&)>;
+    using InboundOpenHandler = TransportCore::InboundOpenHandler;
     using ActivityHandler = std::function<void()>;
 
     explicit Tunnel(
@@ -53,7 +54,6 @@ public:
 
     void start();
     void set_inner_key(const Bytes& key);
-    void set_hop(bool enabled, std::uint32_t interval_ms, std::int64_t offset_ms);
     // Send-side obfs shape. `pad_multiple` is forwarded to TransportCore
     // for per-frame padding; `jitter_ms_max` is consumed here in the
     // tunnel's write_handler to defer the actual TLS write by a uniform
@@ -61,6 +61,11 @@ public:
     void set_obfs_shape(std::uint16_t pad_multiple, std::uint32_t jitter_ms_max);
     void set_server_in_charge(bool enabled);
     void set_allow_exec(bool enabled);
+    // Peer-initiated local dial (SOPEN). Enabled by default because ordinary
+    // clients are proxies; a federation link must opt out, since a federating
+    // peer should never be able to make this server open arbitrary local
+    // connections.
+    void set_allow_server_streams(bool allowed);
     void set_reverse_handler(ReverseOpenHandler handler);
     void set_close_handler(TunnelCloseHandler handler);
     void set_control_handler(ControlHandler handler);
@@ -69,11 +74,13 @@ public:
     boost::asio::any_io_executor get_executor();
 
     uint8_t reserve_stream_id();
-    void register_stream(uint8_t stream_id,
+    bool register_stream(uint8_t stream_id,
                          DataHandler on_data,
                          CloseHandler on_close,
                          HalfCloseHandler on_half_close = {});
     void unregister_stream(uint8_t stream_id);
+    void retire_stream_id(uint8_t stream_id);
+    void release_reserved_stream(uint8_t stream_id);
 
     void open_stream(uint8_t stream_id,
                      const std::string& host,
@@ -89,6 +96,12 @@ public:
                                int min_port = 0,
                                int max_port = 0);
     void stop(const std::string& reason = "client stopping");
+    // In-process embedder teardown may run after io_context workers have
+    // stopped, when posting stop() cannot settle pending API calls. This
+    // synchronously closes TransportCore waiters without touching the socket;
+    // normal Tunnel destruction still performs final stream cleanup.
+    void cancel_runtime_operations(
+        const std::string& reason = "in-process runtime disconnected");
     void send_data(uint8_t stream_id, const Bytes& data);
     void send_data(uint8_t stream_id, Bytes&& data);
     void send_data(uint8_t stream_id,
@@ -97,6 +110,11 @@ public:
     bool try_send_data(uint8_t stream_id,
                        Bytes&& data,
                        TransportCore::WriteCompletion completion = {});
+    TransportCore::DataWriteAdmission wait_send_data(
+        uint8_t stream_id,
+        Bytes&& data,
+        std::chrono::milliseconds timeout,
+        TransportCore::WriteCompletion completion = {});
     void send_close(uint8_t stream_id, const std::string& reason);
     void send_stream_fin(uint8_t stream_id, const std::string& reason);
     void send_open_ack(uint8_t stream_id, bool ok, const std::string& reason);
@@ -131,6 +149,8 @@ private:
     void complete_carrier_writes(std::size_t count,
                                  bool ok,
                                  const std::string& error);
+    void release_inbound_credit(std::size_t bytes);
+    void flush_inbound_credit_on_strand();
     void observe_orderly_peer_close();
     void complete_orderly_close_write(
         const boost::system::error_code& error,
@@ -140,7 +160,6 @@ private:
         const boost::system::error_code& error);
     void record_orderly_close_wire_result(bool completed) noexcept;
     void finish_close(const std::string& reason);
-    void start_exec(uint8_t stream_id, std::string command);
     void close_all(const std::string& reason);
     void schedule_keepalive();
     void schedule_ratchet_check();
@@ -155,7 +174,10 @@ private:
     Bytes prefetched_carrier_bytes_;
     std::deque<WireWrite> wire_writes_;
     std::deque<CarrierCompletion> carrier_completions_;
+    std::size_t pending_inbound_credit_bytes_{0};
     bool wire_write_active_{false};
+    bool inbound_credit_release_scheduled_{false};
+    bool inbound_credit_release_failed_{false};
     bool orderly_close_pending_{false};
     bool orderly_close_write_complete_{false};
     bool orderly_close_peer_closed_{false};
@@ -167,11 +189,11 @@ private:
     std::atomic<std::uint64_t> bytes_in_{0};
     std::atomic<std::uint64_t> bytes_out_{0};
     std::atomic<std::uint32_t> obfs_jitter_ms_max_{0};
-    std::atomic<std::uint32_t> active_execs_{0};
+    std::atomic<bool> allow_server_streams_{true};
     std::atomic<bool> closed_{false};
-    static constexpr std::uint32_t kMaxConcurrentExecs = 4;
 
     friend struct TunnelCloseStateTestPeer;
+    friend struct TunnelExecPolicyTestPeer;
 };
 
 }  // namespace yume::client

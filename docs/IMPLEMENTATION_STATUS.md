@@ -11,16 +11,33 @@ trace, or a replacement for a full anonymity network by itself.
 
 ## Masquerade and authorization hardening
 
-Status: implemented with focused unit/build validation; external protocol and
-long-running concurrency validation remain.
+Status: transport AUTH/permission gates and the relay-v2 authorization,
+peer-identity, hybrid-establishment, ratcheted-record, and confined-file
+boundaries are implemented with focused unit/build validation. External audit,
+cross-platform qualification, and long-running adversarial concurrency/soak
+validation remain.
 
 - `PreauthServiceOnly` is persisted on the session and enforced by one
   post-auth dispatcher gate. Its allowlist is service.v1 OPEN, DATA/CLOSE on
   accepted service streams, and PING/PONG.
 - Modern and legacy admin attach use the same trusted-relay, caller-outbound,
-  target-inbound predicate. Federation still trusts the authenticated source
-  server to enforce the caller half; adding a caller-policy proof would require
-  an explicit wire-compatibility decision.
+  target-inbound predicate at server admission. Ordinary relay routing enforces
+  the target's chat/file/bytes policy, accepted OPEN must match the invite kind,
+  and endpoint dispatch applies an exact kind/role/state transition table before
+  handling decrypted JSON. Relay setup accepts exact protocol version 2 only:
+  both endpoints composite-sign a canonical context containing the channel
+  kind, visible endpoint IDs, fixed password policy, nonce, metadata digest,
+  ephemeral ML-KEM-1024 and X25519 contributions, and the peer identities.
+  Verified peers enter a per-channel `SessionRatchet`; DATA and rekey records
+  share one ordered, bounded queue and an exact `YRR2` schema. TOFU commits only
+  after transcript verification, pinned mode requires an explicit or persisted
+  match, and admin always requires an explicit out-of-band pin. POSIX file
+  receive is descriptor-confined, exclusive/no-follow, owner-only, and bounded
+  by declared/chunk/cumulative/time limits; partials are removed. Windows
+  file/bytes receive and secure mutable peer-trust storage remain unadvertised
+  or fail closed. Federation still trusts the authenticated source server to
+  enforce the caller half; adding a caller-policy proof would require an
+  explicit wire-compatibility decision.
 - AUTH requires a composite Ed25519 + ML-DSA-87 identity and verifies both
   signatures. Admin additionally requires a distinct composite identity from
   the separate admin store.
@@ -41,14 +58,20 @@ long-running concurrency validation remain.
   to rotate or disable the fixture; the client registry holds exactly one
   profile entry.
 - Whole-session close has a five-second deadline, pending service opens are
-  capped at 64 per service and 256 total, and client EXEC dispatch is capped at
-  four concurrent workers. Principal shutdown paths use best-effort buffer
-  erasure.
+  capped at 64 per service and 256 total, service writes have bounded
+  completion-owned admission, and packet senders are joined at shutdown.
+  Inbound client EXEC is unavailable and the former detached process worker is
+  removed. Principal shutdown paths use best-effort buffer erasure.
 
 Focused validation in the current development tree covers the obfs codec and
-decoy classifier, authorization predicate/tier, public-node policy, TLS profile
-selection helpers, transport core, and service-queue policy. `yume`, `yumed`, and
-`yume_facade` also link in the focused build tree.
+decoy classifier, authorization predicate/tier, relay channel policy,
+relay-v2 handshake/trust/record/runtime lifecycle and rekey queues, confined
+file receive, public-node policy, TLS profile selection helpers, transport
+core, and service-queue policy. A registered integration fixture launches two
+real `yumed` nodes and two real clients, waits for reciprocal AUTH-v2
+federation/directory exchange, then checks exact relayed bytes and channel
+close. Final exact-tree sanitizer and repeated integration results are recorded
+in the private handoff rather than inferred from the presence of the fixture.
 
 ## Capacity, admission, and key tiers
 
@@ -88,17 +111,22 @@ Not done / not fully tested:
 
 - Version-pinned Chrome/Firefox captures or an external HTTP/2 conformance
   client against both accepted and decoy paths.
-- Thread-race (TSan), long-running close/reconnect, and resource-pressure soak
-  testing. ASan + UBSan are configured to run the focused unit suite in CI
-  (`YUME_SANITIZE`), but that gate is not soak or concurrency evidence.
-- Detached EXEC workers are bounded but are not cancellable/joined at shutdown.
+- Repository-wide TSan, long-running close/reconnect, and resource-pressure
+  soak testing. Focused signal, service-admission, packet-close, and lifecycle
+  concurrency tests pass TSan, and ASan + UBSan are configured for the unit
+  suite, but those gates are not soak evidence.
+- Portable bounded child-process cancellation is not implemented, so inbound
+  EXEC remains explicitly disabled instead of starting detached work.
 - Best-effort erasure is not a locked allocator and cannot erase prior copies.
 - External HTTP/2 conformance, exact native browser/web-server identity, and
   ML/DPI immunity are not implemented claims. Full-session HTTP/2 is present in
   `2.0-dev6`, but external conformance and sustained-session release gates are
   still open. Direct one-stream LAN traffic reached line rate, and dev3 removes
-  the modeled one-pending-epoch ceiling. A separate measured high-RTT ceiling
-  remains unidentified; see `docs/YUME_2_0_WAN_BEHAVIOR.md`.
+  the modeled one-pending-epoch ceiling. The former high-RTT ceiling was traced
+  first to explicit TCP buffer pins and then to H2/ratchet credit geometry, not
+  cryptographic CPU or an offer-pacing defect. Matched 60/100/210-ms zero-loss
+  evidence and the still-open loss/rate/bidirectional/soak arms are recorded in
+  `docs/YUME_2_0_WAN_BEHAVIOR.md`.
 
 ## Host controller
 
@@ -187,14 +215,22 @@ validation, timeout, permission, and test coverage.
 
 ## Federation and multi-hop privacy
 
-Status: retained legacy implementation; unsupported and non-interoperable with
-the v2-only runtime.
+Status: AUTH v2 implementation with a real two-node loopback integration gate;
+this is federation, not multi-hop anonymity.
 
-- Federation still constructs the legacy AUTH/inner-key exchange. Normal 2.0
-  sessions require AUTH v2, TLS-exporter binding, and `SessionRatchet`, so
-  current `yumed` federation peers do not establish a supported 2.0 link.
-- It must either be ported with integration tests or retired before public
-  cluster support can be claimed. It is not a Tor-like onion-routing layer.
+- Federation dials now speak AUTH v2 end to end (`yume/federation-v2`): the
+  link performs H2-carrier admission, AUTH v2 with a composite identity
+  (`--federation-identity`) and TLS-exporter channel binding, a per-peer PSK,
+  and ratchet establishment, then rides the same protected-frame path as a
+  client. The accepting peer needs no federation-specific inbound code; it
+  identifies federating peers by their enrolled composite key's
+  `federation_peer_id` auth-keys meta.
+- `yume_federation_v2_integration_test` launches two real `yumed` nodes and two
+  real clients, proves both links ready, exchanges both directory endpoints,
+  and verifies exact relayed bytes plus channel CLOSE. Legacy hop plumbing and
+  its inert Argon2 admission controller are removed. Release/soak and
+  classifier evidence remain separate gates. It is not a Tor-like onion-
+  routing layer.
 
 Planned but not implemented:
 

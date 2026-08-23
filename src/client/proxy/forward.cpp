@@ -44,7 +44,7 @@
 namespace yume::client {
 
 namespace {
-constexpr int kSocketBufferBytes = 2 * 1024 * 1024;
+constexpr int64_t kUdpQueueWarningIntervalMs = 30000;
 
 void validate_listen_port(int port) {
     if (port < 0 || port > 65535) {
@@ -80,13 +80,9 @@ boost::asio::ip::udp::endpoint make_udp_listen_endpoint(const std::string& liste
     return {address, static_cast<unsigned short>(listen_port)};
 }
 
-void tune_tcp_socket(boost::asio::ip::tcp::socket& socket) {
+void enable_tcp_no_delay(boost::asio::ip::tcp::socket& socket) {
     boost::system::error_code ec;
     socket.set_option(boost::asio::ip::tcp::no_delay(true), ec);
-    boost::system::error_code recvbuf_ec;
-    socket.set_option(boost::asio::socket_base::receive_buffer_size(kSocketBufferBytes), recvbuf_ec);
-    boost::system::error_code sendbuf_ec;
-    socket.set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
 }
 
 std::string pid_path_for_port(const char* proto, int port) {
@@ -316,7 +312,7 @@ ForwardSession::ForwardSession(boost::asio::ip::tcp::socket socket,
     , strand_(socket_.get_executor())
     , target_host_(std::move(target_host))
     , target_port_(target_port) {
-    tune_tcp_socket(socket_);
+    enable_tcp_no_delay(socket_);
 }
 
 void ForwardSession::start() {
@@ -333,19 +329,29 @@ void ForwardSession::start_tunnel() {
 
     tunnel_->register_stream(
         stream_id_,
-        [self = shared_from_this()](const Tunnel::Bytes& data) { self->deliver_from_tunnel(data); },
+        [self = shared_from_this()](const Tunnel::Bytes& data,
+                                    Tunnel::InboundCredit credit) {
+            self->deliver_from_tunnel(data, std::move(credit));
+        },
         [self = shared_from_this()](const std::string&) { self->close_from_tunnel(); },
         [self = shared_from_this()](const std::string& reason) { self->remote_fin_from_tunnel(reason); });
 
     tunnel_->open_stream(stream_id_, target_host_, target_port_,
                          [self = shared_from_this()](bool ok, const std::string& reason) {
-                             if (!ok) {
-                                 util::log_warn("forward open failed: " + reason);
-                                 self->close();
-                                 return;
-                             }
-                             self->open_confirmed_ = true;
-                             self->start_client_read();
+                             boost::asio::post(
+                                 self->strand_,
+                                 [self, ok, reason]() {
+                                     if (self->closed_) return;
+                                     self->open_result_received_ = true;
+                                     if (!ok) {
+                                         util::log_warn(
+                                             "forward open failed: " + reason);
+                                         self->close();
+                                         return;
+                                     }
+                                     self->open_confirmed_ = true;
+                                     self->start_client_read();
+                                 });
                          });
 }
 
@@ -397,14 +403,37 @@ void ForwardSession::send_client_fin() {
     maybe_finish_cleanly();
 }
 
-void ForwardSession::deliver_from_tunnel(const Tunnel::Bytes& data) {
+void ForwardSession::deliver_from_tunnel(
+    const Tunnel::Bytes& data,
+    Tunnel::InboundCredit inbound_credit) {
     auto self = shared_from_this();
-    boost::asio::post(strand_, [self, data]() {
+    std::string reason;
+    bool closed_by_rejection = false;
+    auto reservation = write_budget_.reserve(
+        data.size(), &reason, &closed_by_rejection);
+    if (!reservation) {
+        if (closed_by_rejection) {
+            boost::asio::post(strand_, [self, reason = std::move(reason)]() {
+                if (!self->closed_) {
+                    util::log_warn(
+                        "forward local write backlog exceeded: " + reason);
+                    self->close();
+                }
+            });
+        }
+        return;
+    }
+    auto buffer = std::make_shared<std::vector<uint8_t>>(data.begin(), data.end());
+    boost::asio::post(
+        strand_,
+        [self, buffer = std::move(buffer),
+         reservation = std::move(*reservation),
+         inbound_credit = std::move(inbound_credit)]() mutable {
         if (self->closed_) {
             return;
         }
-        auto buf = std::make_shared<std::vector<uint8_t>>(data.begin(), data.end());
-        self->enqueue_write(buf);
+        self->enqueue_write(std::move(buffer), std::move(reservation),
+                            std::move(inbound_credit));
     });
 }
 
@@ -425,13 +454,16 @@ void ForwardSession::remote_fin_from_tunnel(const std::string&) {
     });
 }
 
-void ForwardSession::enqueue_write(std::shared_ptr<std::vector<uint8_t>> data) {
-    boost::asio::post(strand_, [self = shared_from_this(), data = std::move(data)]() mutable {
-        self->write_queue_.push_back(std::move(data));
-        if (!self->write_in_flight_) {
-            self->do_write();
-        }
-    });
+void ForwardSession::enqueue_write(
+    std::shared_ptr<std::vector<uint8_t>> data,
+    WriteReservation reservation,
+    Tunnel::InboundCredit inbound_credit) {
+    write_queue_.push_back(
+        {std::move(data), std::move(reservation),
+         std::move(inbound_credit)});
+    if (!write_in_flight_) {
+        do_write();
+    }
 }
 
 void ForwardSession::do_write() {
@@ -443,13 +475,21 @@ void ForwardSession::do_write() {
     }
     write_in_flight_ = true;
 
-    auto data = std::move(write_queue_.front());
+    auto write = std::move(write_queue_.front());
     write_queue_.pop_front();
+    auto data = std::move(write.data);
+    auto reservation = std::move(write.reservation);
+    auto inbound_credit = std::move(write.inbound_credit);
 
     auto self = shared_from_this();
     boost::asio::async_write(socket_, boost::asio::buffer(*data),
                              boost::asio::bind_executor(strand_,
-                                                        [self, data](const boost::system::error_code& ec, std::size_t) {
+                                                        [self,
+                                                         data,
+                                                         reservation = std::move(reservation),
+                                                         inbound_credit = std::move(inbound_credit)](const boost::system::error_code& ec, std::size_t) mutable {
+                                                            reservation.release_now();
+                                                            inbound_credit.release_now();
                                                             if (ec) {
                                                                 self->close();
                                                                 return;
@@ -476,6 +516,7 @@ void ForwardSession::maybe_finish_cleanly() {
         return;
     }
     closed_ = true;
+    write_budget_.close();
     if (stream_id_ != 0) {
         tunnel_->unregister_stream(stream_id_);
         stream_id_ = 0;
@@ -490,9 +531,15 @@ void ForwardSession::close() {
         return;
     }
     closed_ = true;
+    write_queue_.clear();
+    write_budget_.close();
     if (stream_id_ != 0) {
         tunnel_->send_close(stream_id_, "client closed");
-        tunnel_->unregister_stream(stream_id_);
+        if (open_result_received_) {
+            tunnel_->unregister_stream(stream_id_);
+        } else {
+            tunnel_->retire_stream_id(stream_id_);
+        }
         stream_id_ = 0;
     }
 
@@ -615,6 +662,11 @@ UdpForwardServer::UdpForwardServer(boost::asio::io_context& io,
 }
 
 UdpForwardServer::~UdpForwardServer() {
+    udp_pending_budget_.close();
+    udp_local_send_budget_.close();
+    udp_send_queue_.clear();
+    by_stream_.clear();
+    by_client_.clear();
     remove_pidfile(pid_path_);
 }
 
@@ -652,7 +704,7 @@ void UdpForwardServer::handle_datagram(const boost::asio::ip::udp::endpoint& cli
             util::log_warn("udp forward: no stream ids available");
             return;
         }
-        auto mapping = std::make_shared<UdpMapping>();
+        auto mapping = std::make_shared<UdpMapping>(udp_pending_budget_);
         mapping->client = client;
         mapping->stream_id = stream_id;
         by_client_[key] = mapping;
@@ -660,13 +712,29 @@ void UdpForwardServer::handle_datagram(const boost::asio::ip::udp::endpoint& cli
 
         tunnel_->register_stream(
             stream_id,
-            [self = shared_from_this(), stream_id](const Tunnel::Bytes& payload) { self->deliver_from_tunnel(stream_id, payload); },
+            [self = shared_from_this(), stream_id](
+                const Tunnel::Bytes& payload,
+                Tunnel::InboundCredit credit) {
+                self->deliver_from_tunnel(
+                    stream_id, payload, std::move(credit));
+            },
             [self = shared_from_this(), stream_id](const std::string& reason) {
-                self->close_stream(stream_id, reason.empty() ? "remote closed" : reason);
+                boost::asio::post(
+                    self->strand_,
+                    [self, stream_id, reason]() {
+                        self->close_stream(
+                            stream_id,
+                            reason.empty() ? "remote closed" : reason);
+                    });
             });
         tunnel_->open_stream(stream_id, target_host_, target_port_,
                              [self = shared_from_this(), stream_id](bool ok, const std::string& reason) {
-                                 self->on_open_result(stream_id, ok, reason);
+                                 boost::asio::post(
+                                     self->strand_,
+                                     [self, stream_id, ok, reason]() {
+                                         self->on_open_result(
+                                             stream_id, ok, reason);
+                                     });
                              },
                              "udp");
         it = by_client_.find(key);
@@ -674,9 +742,22 @@ void UdpForwardServer::handle_datagram(const boost::asio::ip::udp::endpoint& cli
 
     auto mapping = it->second;
     if (mapping->open_confirmed) {
-        tunnel_->send_data(mapping->stream_id, data);
-    } else {
-        mapping->pending.push_back(data);
+        Tunnel::Bytes payload = data;
+        if (!tunnel_->try_send_data(
+                mapping->stream_id, std::move(payload))) {
+            util::log_warn_rate_limited(
+                "udp-forward-transport-saturated",
+                "UDP forward dropped newest datagram: transport queue is full",
+                kUdpQueueWarningIntervalMs);
+        }
+    } else if (!mapping->pending.try_push(data)) {
+        util::log_warn_rate_limited(
+            "udp-forward-open-backlog",
+            "UDP forward dropped newest pre-OPEN datagram: backlog limit is " +
+                std::to_string(detail::kMaxUdpQueuedDatagrams) +
+                " datagrams / " +
+                std::to_string(detail::kMaxUdpQueuedBytes) + " bytes",
+            kUdpQueueWarningIntervalMs);
     }
 }
 
@@ -686,29 +767,119 @@ void UdpForwardServer::on_open_result(uint8_t stream_id, bool ok, const std::str
         return;
     }
     auto mapping = it->second;
+    mapping->open_result_received = true;
     if (!ok) {
         util::log_warn("udp forward open failed: " + reason);
         close_stream(stream_id, "open failed");
         return;
     }
     mapping->open_confirmed = true;
-    while (!mapping->pending.empty()) {
-        tunnel_->send_data(stream_id, mapping->pending.front());
-        mapping->pending.pop_front();
+    while (auto payload = mapping->pending.pop_front()) {
+        if (!tunnel_->try_send_data(stream_id, std::move(*payload))) {
+            mapping->pending.clear();
+            util::log_warn_rate_limited(
+                "udp-forward-open-drain-saturated",
+                "UDP forward dropped pre-OPEN datagrams while draining: "
+                "transport queue is full",
+                kUdpQueueWarningIntervalMs);
+            break;
+        }
     }
 }
 
-void UdpForwardServer::deliver_from_tunnel(uint8_t stream_id, const Tunnel::Bytes& data) {
+void UdpForwardServer::deliver_from_tunnel(
+    uint8_t stream_id,
+    const Tunnel::Bytes& data,
+    Tunnel::InboundCredit inbound_credit) {
+    auto reservation = udp_local_send_budget_.try_reserve(data.size());
+    if (!reservation) {
+        util::log_warn_rate_limited(
+            "udp-forward-local-backlog",
+            "UDP forward dropped newest local datagram: send backlog limit is " +
+                std::to_string(detail::kMaxUdpQueuedDatagrams) +
+                " datagrams / " +
+                std::to_string(detail::kMaxUdpQueuedBytes) + " bytes",
+            kUdpQueueWarningIntervalMs);
+        return;
+    }
+    auto buffer = std::make_shared<std::vector<uint8_t>>(
+        data.begin(), data.end());
+    auto self = shared_from_this();
+    boost::asio::post(
+        strand_,
+        [self, stream_id, buffer,
+         reservation = std::move(*reservation),
+         inbound_credit = std::move(inbound_credit)]() mutable {
+            self->deliver_from_tunnel_on_strand(
+                stream_id, std::move(buffer), std::move(reservation),
+                std::move(inbound_credit));
+        });
+}
+
+void UdpForwardServer::deliver_from_tunnel_on_strand(
+    uint8_t stream_id,
+    std::shared_ptr<std::vector<uint8_t>> data,
+    detail::UdpQueueBudget::Reservation reservation,
+    Tunnel::InboundCredit inbound_credit) {
     auto it = by_stream_.find(stream_id);
     if (it == by_stream_.end()) {
         return;
     }
     auto mapping = it->second;
-    auto buffer = std::make_shared<std::vector<uint8_t>>(data.begin(), data.end());
+    enqueue_udp_send(
+        stream_id, mapping->client, std::move(data), std::move(reservation),
+        std::move(inbound_credit));
+}
+
+void UdpForwardServer::enqueue_udp_send(
+    uint8_t stream_id,
+    const boost::asio::ip::udp::endpoint& client,
+    std::shared_ptr<std::vector<uint8_t>> data,
+    detail::UdpQueueBudget::Reservation reservation,
+    Tunnel::InboundCredit inbound_credit) {
+    udp_send_queue_.push_back(
+        {stream_id, client, std::move(data), std::move(reservation),
+         std::move(inbound_credit)});
+    if (!udp_send_in_flight_) {
+        do_udp_send();
+    }
+}
+
+void UdpForwardServer::do_udp_send() {
+    if (udp_send_queue_.empty() || !socket_.is_open()) {
+        udp_send_in_flight_ = false;
+        return;
+    }
+    udp_send_in_flight_ = true;
+
+    auto send = std::move(udp_send_queue_.front());
+    udp_send_queue_.pop_front();
+    auto data = std::move(send.data);
+    auto reservation = std::move(send.reservation);
+    auto inbound_credit = std::move(send.inbound_credit);
+    const auto client = send.client;
+
     auto self = shared_from_this();
-    socket_.async_send_to(boost::asio::buffer(*buffer), mapping->client,
-                          boost::asio::bind_executor(strand_,
-                                                     [self, buffer](const boost::system::error_code&, std::size_t) {}));
+    socket_.async_send_to(
+        boost::asio::buffer(*data), client,
+        boost::asio::bind_executor(
+            strand_,
+            [self, data, reservation = std::move(reservation),
+             inbound_credit = std::move(inbound_credit)](
+                const boost::system::error_code& ec,
+                std::size_t) mutable {
+                reservation.release_now();
+                inbound_credit.release_now();
+                self->udp_send_in_flight_ = false;
+                if (ec && ec != boost::asio::error::operation_aborted) {
+                    util::log_warn_rate_limited(
+                        "udp-forward-local-send",
+                        "UDP forward local send failed; datagram dropped: " +
+                            ec.message(),
+                        kUdpQueueWarningIntervalMs);
+                }
+                self->do_udp_send();
+            }));
 }
 
 void UdpForwardServer::close_stream(uint8_t stream_id, const std::string&) {
@@ -719,7 +890,16 @@ void UdpForwardServer::close_stream(uint8_t stream_id, const std::string&) {
     auto mapping = it->second;
     by_stream_.erase(it);
     by_client_.erase(udp_endpoint_key(mapping->client));
-    tunnel_->unregister_stream(stream_id);
+    std::erase_if(
+        udp_send_queue_,
+        [stream_id](const PendingUdpSend& send) {
+            return send.stream_id == stream_id;
+        });
+    if (mapping->open_result_received) {
+        tunnel_->unregister_stream(stream_id);
+    } else {
+        tunnel_->retire_stream_id(stream_id);
+    }
 }
 
 LocalForwardSession::LocalForwardSession(boost::asio::ip::tcp::socket socket,
@@ -731,7 +911,7 @@ LocalForwardSession::LocalForwardSession(boost::asio::ip::tcp::socket socket,
     , strand_(socket_.get_executor())
     , target_host_(std::move(target_host))
     , target_port_(target_port) {
-    tune_tcp_socket(socket_);
+    enable_tcp_no_delay(socket_);
 }
 
 void LocalForwardSession::start() {
@@ -758,7 +938,7 @@ void LocalForwardSession::start_connect() {
                                                                                                                          self->close();
                                                                                                                          return;
                                                                                                                      }
-                                                                                                                     tune_tcp_socket(self->remote_);
+                                                                                                                     enable_tcp_no_delay(self->remote_);
                                                                                                                      self->start_client_read();
                                                                                                                      self->start_remote_read();
                                                                                                                  }));
@@ -837,12 +1017,20 @@ ReverseForwardSession::ReverseForwardSession(std::shared_ptr<Tunnel> tunnel,
     , target_host_(std::move(target_host))
     , target_port_(target_port) {}
 
-void ReverseForwardSession::start() {
-    tunnel_->register_stream(
+bool ReverseForwardSession::start() {
+    if (!tunnel_->register_stream(
         stream_id_,
-        [self = shared_from_this()](const Tunnel::Bytes& data) { self->deliver_from_tunnel(data); },
-        [self = shared_from_this()](const std::string&) { self->close_from_tunnel(); });
+        [self = shared_from_this()](const Tunnel::Bytes& data,
+                                    Tunnel::InboundCredit credit) {
+            self->deliver_from_tunnel(data, std::move(credit));
+        },
+        [self = shared_from_this()](const std::string&) {
+            self->close_from_tunnel();
+        })) {
+        return false;
+    }
     start_connect();
+    return true;
 }
 
 void ReverseForwardSession::start_connect() {
@@ -865,7 +1053,7 @@ void ReverseForwardSession::start_connect() {
                                                                                                                          self->close();
                                                                                                                          return;
                                                                                                                      }
-                                                                                                                     tune_tcp_socket(self->local_);
+                                                                                                                     enable_tcp_no_delay(self->local_);
                                                                                                                      self->open_confirmed_ = true;
                                                                                                                      self->tunnel_->send_open_ack(self->stream_id_, true, "");
                                                                                                                      self->start_local_read();
@@ -905,20 +1093,82 @@ void ReverseForwardSession::on_local_read(const boost::system::error_code& ec, s
         });
 }
 
-void ReverseForwardSession::deliver_from_tunnel(const Tunnel::Bytes& data) {
+void ReverseForwardSession::deliver_from_tunnel(
+    const Tunnel::Bytes& data,
+    Tunnel::InboundCredit inbound_credit) {
     auto self = shared_from_this();
-    boost::asio::post(strand_, [self, data]() {
-        if (!self->open_confirmed_) {
+    std::string reason;
+    bool closed_by_rejection = false;
+    auto reservation = write_budget_.reserve(
+        data.size(), &reason, &closed_by_rejection);
+    if (!reservation) {
+        if (closed_by_rejection) {
+            boost::asio::post(strand_, [self, reason = std::move(reason)]() {
+                if (!self->closed_) {
+                    util::log_warn(
+                        "reverse forward local write backlog exceeded: " + reason);
+                    self->close();
+                }
+            });
+        }
+        return;
+    }
+    auto buffer = std::make_shared<std::vector<uint8_t>>(data.begin(), data.end());
+    boost::asio::post(
+        strand_,
+        [self, buffer = std::move(buffer),
+         reservation = std::move(*reservation),
+         inbound_credit = std::move(inbound_credit)]() mutable {
+        if (self->closed_ || !self->open_confirmed_) {
             return;
         }
-        boost::asio::async_write(self->local_, boost::asio::buffer(data),
-                                 boost::asio::bind_executor(self->strand_,
-                                                            [self](const boost::system::error_code& ec, std::size_t) {
-                                                                if (ec) {
-                                                                    self->close();
-                                                                }
-                                                            }));
+        self->enqueue_write(std::move(buffer), std::move(reservation),
+                            std::move(inbound_credit));
     });
+}
+
+void ReverseForwardSession::enqueue_write(
+    std::shared_ptr<std::vector<uint8_t>> data,
+    WriteReservation reservation,
+    Tunnel::InboundCredit inbound_credit) {
+    write_queue_.push_back(
+        {std::move(data), std::move(reservation),
+         std::move(inbound_credit)});
+    if (!write_in_flight_) {
+        do_write();
+    }
+}
+
+void ReverseForwardSession::do_write() {
+    if (write_queue_.empty()) {
+        write_in_flight_ = false;
+        return;
+    }
+    write_in_flight_ = true;
+
+    auto write = std::move(write_queue_.front());
+    write_queue_.pop_front();
+    auto data = std::move(write.data);
+    auto reservation = std::move(write.reservation);
+    auto inbound_credit = std::move(write.inbound_credit);
+
+    auto self = shared_from_this();
+    boost::asio::async_write(local_, boost::asio::buffer(*data),
+                             boost::asio::bind_executor(
+                                 strand_,
+                                 [self, data,
+                                  reservation = std::move(reservation),
+                                  inbound_credit = std::move(inbound_credit)](
+                                     const boost::system::error_code& ec,
+                                     std::size_t) mutable {
+                                     reservation.release_now();
+                                     inbound_credit.release_now();
+                                     if (ec) {
+                                         self->close();
+                                         return;
+                                     }
+                                     self->do_write();
+                                 }));
 }
 
 void ReverseForwardSession::close_from_tunnel() {
@@ -927,6 +1177,13 @@ void ReverseForwardSession::close_from_tunnel() {
 }
 
 void ReverseForwardSession::close() {
+    if (closed_) {
+        return;
+    }
+    closed_ = true;
+    open_confirmed_ = false;
+    write_queue_.clear();
+    write_budget_.close();
     if (stream_id_ != 0) {
         tunnel_->send_close(stream_id_, "reverse closed");
         tunnel_->unregister_stream(stream_id_);

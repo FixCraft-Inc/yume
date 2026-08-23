@@ -7,8 +7,10 @@
 #include "server/host/http_backend_client.hpp"
 
 #include <boost/asio/connect.hpp>
+#include <boost/asio/dispatch.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/address.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 
@@ -44,7 +46,8 @@ std::size_t RequestHeaderBytes(const http::request<http::empty_body>& request) {
     return bytes + sizeof("\r\n") - 1U;
 }
 
-class Fetch : public std::enable_shared_from_this<Fetch> {
+class Fetch final : public BackendFetch,
+                    public std::enable_shared_from_this<Fetch> {
 public:
     Fetch(boost::asio::any_io_executor executor,
           std::string ip, int port, std::string method, std::string target,
@@ -54,6 +57,12 @@ public:
           limits_(limits), handler_(std::move(handler)) {}
 
     void Start() {
+        // Cancellation may be queued before this posted start on a generic
+        // executor. Finish() consumes the handler, so no backend socket should
+        // be opened after the operation has already completed.
+        if (!handler_) {
+            return;
+        }
         boost::system::error_code ec;
         const auto address = boost::asio::ip::make_address(ip_, ec);
         if (ec || !address.is_loopback() || port_ < 1 || port_ > 65535) {
@@ -82,6 +91,13 @@ public:
         stream_.async_connect(tcp::endpoint(address, static_cast<unsigned short>(port_)),
             [self = shared_from_this()](const boost::system::error_code& connect_ec) {
                 self->OnConnect(connect_ec);
+            });
+    }
+
+    void cancel() override {
+        boost::asio::dispatch(stream_.get_executor(),
+            [self = shared_from_this()]() {
+                self->Finish("backend request cancelled");
             });
     }
 
@@ -167,13 +183,18 @@ private:
 
 }  // namespace
 
-void fetch_loopback_http(boost::asio::any_io_executor executor,
-                         std::string loopback_ip, int port,
-                         std::string method, std::string target,
-                         BackendHttpLimits limits, BackendFetchHandler handler) {
-    std::make_shared<Fetch>(executor, std::move(loopback_ip), port,
-                            std::move(method), std::move(target), limits,
-                            std::move(handler))->Start();
+std::shared_ptr<BackendFetch> fetch_loopback_http(
+    boost::asio::any_io_executor executor,
+    std::string loopback_ip, int port,
+    std::string method, std::string target,
+    BackendHttpLimits limits, BackendFetchHandler handler) {
+    auto fetch = std::make_shared<Fetch>(
+        executor, std::move(loopback_ip), port, std::move(method),
+        std::move(target), limits, std::move(handler));
+    // Always defer Start: callers can first retain the cancellation handle and
+    // cannot observe a validation failure callback during registry insertion.
+    boost::asio::post(executor, [fetch]() { fetch->Start(); });
+    return fetch;
 }
 
 bool probe_loopback_http(const std::string& loopback_ip, int port,

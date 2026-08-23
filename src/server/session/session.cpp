@@ -28,7 +28,6 @@ Session::Session(boost::asio::ip::tcp::socket socket,
                  std::shared_ptr<const std::vector<crypto::Bytes>> operator_keys,
                  std::shared_ptr<const AuthKeyPolicyMap> operator_policies,
                  std::shared_ptr<const std::vector<crypto::Bytes>> admin_keys,
-                 std::shared_ptr<KdfAdmissionController> kdf_admission,
                  std::shared_ptr<obfs::AdmissionReplayCache> admission_replay_cache,
                  uint64_t session_id,
                  Manager* manager)
@@ -39,7 +38,6 @@ Session::Session(boost::asio::ip::tcp::socket socket,
     , operator_keys_(std::move(operator_keys))
     , operator_policies_(std::move(operator_policies))
     , admin_keys_(std::move(admin_keys))
-    , kdf_admission_(std::move(kdf_admission))
     , admission_replay_cache_(std::move(admission_replay_cache))
     , session_id_(session_id)
     , manager_(manager)
@@ -66,10 +64,16 @@ void Session::start() {
     auto self = shared_from_this();
     boost::system::error_code keep_ec;
     stream_.lowest_layer().set_option(boost::asio::socket_base::keep_alive(true), keep_ec);
-    boost::system::error_code recvbuf_ec;
-    stream_.lowest_layer().set_option(boost::asio::socket_base::receive_buffer_size(kSocketBufferBytes), recvbuf_ec);
-    boost::system::error_code sendbuf_ec;
-    stream_.lowest_layer().set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
+    // Socket buffers are deliberately left to the kernel on the tunnel socket.
+    // Any explicit SO_RCVBUF/SO_SNDBUF sets SOCK_{RCV,SND}BUF_LOCK on Linux and
+    // permanently disables receive/send window autotuning, whatever value is
+    // passed. Pinning 2 MiB here held the advertised receive window at a low
+    // self-limiting equilibrium -- measured at 83 KB against a 7.5 MB
+    // bandwidth-delay product at 60 ms/1 Gbit/s -- which capped upload at
+    // 83 KB per round trip with zero packet loss. Autotuning grows the window
+    // toward the real BDP instead. It also matches what a browser's sockets do,
+    // since Chrome does not pin these either.
+    // See docs/YUME_2_0_WAN_BEHAVIOR.md, "Root cause: pinned socket buffers".
 
     // Arm the TLS-handshake deadline before kicking off async_handshake.
     // If the timer fires before on_handshake completes, we close the
@@ -97,6 +101,10 @@ void Session::start() {
 }
 
 void Session::stop() {
+    // Wake application threads synchronously. The io_context may already be
+    // stopping, in which case a strand-posted transition alone is not a
+    // durable notification for ServiceStream writers waiting on capacity.
+    stop_service_streams("session stopping");
     boost::asio::post(strand_, [self = shared_from_this()]() { self->close(); });
 }
 
@@ -117,6 +125,10 @@ std::optional<boost::asio::ssl::stream<boost::asio::ip::tcp::socket>> Session::r
 }
 
 void Session::notify_server_shutdown(const std::string& reason) {
+    // RuntimeController stops the io_context immediately after Manager::stop
+    // returns. Publish terminal ServiceStream state before the strand post so
+    // accepted handles cannot depend on that post running to wake their waits.
+    stop_service_streams(reason.empty() ? "server stopping" : reason);
     boost::asio::post(strand_, [self = shared_from_this(), reason]() {
         if (self->close_state_ != CloseState::Open) {
             return;
@@ -173,11 +185,10 @@ void Session::on_handshake(const boost::system::error_code& ec) {
     // page with --real, or profile-driven 404 otherwise) instead of
     // closing on non-yume probes. Activated by --real, --obfs, or
     // --hide-in-the-crowd / --public-node (which sets http_profile).
-    // Cost: ~200 ms preface_timer wait on the first byte from
-    // legitimate yume clients, which they already eat under --real
-    // and --obfs. Without any of these, fall through to the fast
-    // AUTH-challenge path (preserves pre-1.0 latency for operators
-    // who haven't opted in to stealth).
+    // The first-byte deadline bounds silent/partial probes. A recognized H2
+    // prefix dispatches immediately and cancels the timer, so a legitimate
+    // current carrier does not pay the full deadline. Without any of these,
+    // fall through to the direct AUTH-challenge path.
     if (cfg_.real_http || cfg_.robots_deny || cfg_.obfuscation || !cfg_.http_profile.empty()
         || !cfg_.upstream_response_bytes.empty()
         || !cfg_.upstream_response_dir.empty()
@@ -310,7 +321,10 @@ void Session::on_read_header(const boost::system::error_code& ec, std::size_t) {
             return;
         }
         protocol::Frame frame{current_header_, {}};
-        handle_frame(frame);
+        handle_frame(
+            frame,
+            make_v2_h2_inbound_credit_on_strand(
+                v2_h2_tunnel_active_ ? header_buf_.size() : 0U));
         return;
     }
 
@@ -351,6 +365,9 @@ void Session::on_read_payload(const boost::system::error_code& ec, std::size_t) 
         return;
     }
 
+    const std::size_t inbound_wire_bytes = v2_h2_tunnel_active_
+        ? header_buf_.size() + static_cast<std::size_t>(current_header_.len)
+        : 0U;
     protocol::Frame frame{current_header_, {}};
     frame.payload.swap(payload_buf_);
     if ((frame.header.flags & protocol::kFlagPadded) != 0 && !protocol::strip_padding(frame)) {
@@ -358,7 +375,9 @@ void Session::on_read_payload(const boost::system::error_code& ec, std::size_t) 
         close_with_reason("malformed padded frame: pad length exceeds payload");
         return;
     }
-    handle_frame(frame);
+    handle_frame(
+        frame,
+        make_v2_h2_inbound_credit_on_strand(inbound_wire_bytes));
     payload_buf_.swap(frame.payload);
 }
 
@@ -416,7 +435,8 @@ bool Session::frame_allowed_by_authorization_tier(const protocol::Frame& frame) 
         authorization_tier_, type, context);
 }
 
-void Session::handle_frame(protocol::Frame frame) {
+void Session::handle_frame(protocol::Frame frame,
+                           runtime::InboundCredit inbound_credit) {
     if (close_state_ != CloseState::Open) {
         return;
     }
@@ -507,8 +527,6 @@ void Session::handle_frame(protocol::Frame frame) {
         if (!inner_kdf_.empty()) {
             anon["inner_kdf"] = inner_kdf_;
         }
-        anon["hop_enabled"] = false;
-        anon["hop_interval_ms"] = 0;
         anon["server_time_ms"] = epoch_now_ms();
         anon["cap_pq"] = true;
         anon["cap_argon2"] = false;
@@ -618,8 +636,8 @@ void Session::handle_frame(protocol::Frame frame) {
             }
             break;
         case protocol::DATA:
-            if (!handle_control_data(frame)) {
-                handle_data(frame);
+            if (!handle_control_data(frame, std::move(inbound_credit))) {
+                handle_data(frame, std::move(inbound_credit));
             }
             break;
         case protocol::EXEC: {
@@ -689,7 +707,8 @@ void Session::handle_frame(protocol::Frame frame) {
 // same signatures — different translation unit so neither
 // file gets bigger.
 
-void Session::handle_data(const protocol::Frame& frame) {
+void Session::handle_data(const protocol::Frame& frame,
+                          runtime::InboundCredit inbound_credit) {
     crypto::Bytes decrypted_payload;
     const crypto::Bytes* payload = &frame.payload;
     if (inner_key_.has_value() && (frame.header.flags & protocol::kFlagInnerEncrypted)) {
@@ -701,7 +720,9 @@ void Session::handle_data(const protocol::Frame& frame) {
         }
         payload = &decrypted_payload;
     }
-    std::function<void(const crypto::Bytes&)> federated_data;
+    std::function<void(
+        const crypto::Bytes&,
+        runtime::InboundCredit)> federated_data;
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
         auto it = federated_streams_.find(frame.header.stream_id);
@@ -710,7 +731,7 @@ void Session::handle_data(const protocol::Frame& frame) {
         }
     }
     if (federated_data) {
-        federated_data(*payload);
+        federated_data(*payload, std::move(inbound_credit));
         return;
     }
     if (handle_packet_data(frame.header.stream_id, *payload)) {
@@ -719,18 +740,22 @@ void Session::handle_data(const protocol::Frame& frame) {
     if (handle_bench_data(frame.header.stream_id, *payload)) {
         return;
     }
-    if (handle_codec_data(frame.header.stream_id, *payload)) {
+    if (handle_codec_data(frame.header.stream_id, *payload,
+                          &inbound_credit)) {
         return;
     }
-    if (handle_service_data(frame.header.stream_id, *payload)) {
+    if (handle_service_data(frame.header.stream_id, *payload,
+                            &inbound_credit)) {
         return;
     }
     auto it_udp = udp_streams_.find(frame.header.stream_id);
     if (it_udp != udp_streams_.end()) {
-        enqueue_udp_write(frame.header.stream_id, *payload);
+        enqueue_udp_write(frame.header.stream_id, *payload,
+                          std::move(inbound_credit));
         return;
     }
-    enqueue_remote_write(frame.header.stream_id, *payload);
+    enqueue_remote_write(frame.header.stream_id, *payload,
+                         std::move(inbound_credit));
 }
 
 std::string Session::decode_close_reason(const protocol::Frame& frame, bool* ok) {
@@ -779,20 +804,24 @@ void Session::handle_stream_fin(uint8_t stream_id, const std::string& reason) {
 void Session::handle_close(uint8_t stream_id, const std::string& reason) {
     std::function<void(const std::string&)> federated_close;
     std::string federated_channel_id;
+    bool federated_found = false;
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
         auto it = federated_streams_.find(stream_id);
         if (it != federated_streams_.end()) {
+            federated_found = true;
             federated_close = it->second.on_close;
             federated_channel_id = it->second.channel_id;
             federated_streams_.erase(it);
         }
     }
-    if (federated_close) {
+    if (federated_found) {
         if (manager_ && !federated_channel_id.empty()) {
             manager_->unregister_active_channel(federated_channel_id);
         }
-        federated_close(reason);
+        if (federated_close) {
+            federated_close(reason);
+        }
         return;
     }
     if (packet_stream_.has_value() && packet_stream_->stream_id == stream_id) {
@@ -801,7 +830,7 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
         if (!packet.close_summary_logged) {
             packet.close_summary_logged = true;
             [[maybe_unused]] const int64_t elapsed =
-                packet.open_started_ms > 0 ? (util::now_ms() - packet.open_started_ms) : 0;
+                diagnostics::elapsed_ms_since(packet.open_started_ms);
             YUME_TIMING_LOG("server.stream",
                              "summary",
                              "session=" + std::to_string(session_id_) +
@@ -862,7 +891,7 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
             if (!udp->close_summary_logged) {
                 udp->close_summary_logged = true;
                 [[maybe_unused]] const int64_t elapsed =
-                    udp->open_started_ms > 0 ? (util::now_ms() - udp->open_started_ms) : 0;
+                    diagnostics::elapsed_ms_since(udp->open_started_ms);
                 YUME_TIMING_LOG("server.stream",
                                  "summary",
                                  "session=" + std::to_string(session_id_) +
@@ -900,7 +929,7 @@ void Session::handle_close(uint8_t stream_id, const std::string& reason) {
         if (!remote->close_summary_logged) {
             remote->close_summary_logged = true;
             [[maybe_unused]] const int64_t elapsed =
-                remote->open_started_ms > 0 ? (util::now_ms() - remote->open_started_ms) : 0;
+                diagnostics::elapsed_ms_since(remote->open_started_ms);
             YUME_TIMING_LOG("server.stream",
                              "summary",
                              "session=" + std::to_string(session_id_) +
@@ -1004,6 +1033,37 @@ void Session::begin_close() {
         flush_v2_h2_wire_on_strand();
     }
     close_state_ = CloseState::Closing;
+    stop_service_streams(
+        close_reason_.empty() ? "session closing" : close_reason_);
+    // Cover requests run before YUME authentication and may be blocked on a
+    // slow loopback backend. Closing the public connection must release both
+    // their sockets and the process-wide admission budget immediately.
+    cancel_v2_h2_cover_fetches();
+    // Application writes still retained by the H2 carrier cannot make
+    // progress once the session stops accepting peer flow-control updates.
+    // Complete only those unsent items as aborted; writes already handed to
+    // the TLS queue retain their normal completion path.
+    std::deque<PendingWrite> abandoned_h2_writes;
+    abandoned_h2_writes.swap(v2_h2_pending_app_writes_);
+    std::size_t abandoned_h2_bytes = 0U;
+    for (const auto& write : abandoned_h2_writes) {
+        if (write.data) {
+            abandoned_h2_bytes += write.data->size();
+        }
+    }
+    v2_h2_app_write_frames_ =
+        abandoned_h2_writes.size() <= v2_h2_app_write_frames_
+            ? v2_h2_app_write_frames_ - abandoned_h2_writes.size()
+            : 0U;
+    v2_h2_app_write_bytes_ =
+        abandoned_h2_bytes <= v2_h2_app_write_bytes_
+            ? v2_h2_app_write_bytes_ - abandoned_h2_bytes
+            : 0U;
+    for (auto& write : abandoned_h2_writes) {
+        if (write.handler) {
+            write.handler(boost::asio::error::operation_aborted, 0);
+        }
+    }
     close_started_at_ = std::chrono::steady_clock::now();
     arm_close_deadline();
     if (close_reason_.empty()) {
@@ -1071,6 +1131,11 @@ void Session::begin_close() {
     }
 
     std::vector<std::pair<std::shared_ptr<Session>, uint8_t>> control_peers;
+    struct FederatedClose {
+        std::string channel_id;
+        std::function<void(const std::string&)> callback;
+    };
+    std::vector<FederatedClose> federated_closes;
     {
         std::lock_guard<std::mutex> lock(control_mutex_);
         for (const auto& entry : control_outbound_) {
@@ -1083,11 +1148,25 @@ void Session::begin_close() {
                 control_peers.emplace_back(peer, entry.second.peer_stream_id);
             }
         }
+        federated_closes.reserve(federated_streams_.size());
+        for (auto& entry : federated_streams_) {
+            federated_closes.push_back(FederatedClose{
+                entry.second.channel_id, std::move(entry.second.on_close)});
+        }
         control_outbound_.clear();
         control_inbound_.clear();
+        federated_streams_.clear();
     }
     for (const auto& entry : control_peers) {
         entry.first->send_control_close(entry.second, "control peer closed");
+    }
+    for (auto& entry : federated_closes) {
+        if (manager_ && !entry.channel_id.empty()) {
+            manager_->unregister_active_channel(entry.channel_id);
+        }
+        if (entry.callback) {
+            entry.callback("federated origin closed");
+        }
     }
 
     for (auto& entry : streams_) {
@@ -1102,10 +1181,10 @@ void Session::begin_close() {
         entry.second->socket.close(ec);
     }
     streams_.clear();
-    for (auto& entry : service_streams_) {
-        entry.second->receive_close(close_reason_);
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        service_streams_.clear();
     }
-    service_streams_.clear();
     for (auto& entry : reverse_listeners_) {
         entry.second->close(ec);
     }
@@ -1128,7 +1207,6 @@ void Session::begin_close() {
         security::secure_erase(*inner_key_alt_);
         inner_key_alt_.reset();
     }
-    clear_hop_key_cache();
 
     maybe_finish_close();
 }

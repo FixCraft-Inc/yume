@@ -10,13 +10,15 @@
 #include <array>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 #include "core/security/crypto.hpp"
 
 namespace yume::obfs {
 namespace {
 
-constexpr std::size_t kMaxMessageBytes = 16U * 1024U * 1024U;
+constexpr std::size_t kMaxMessageBytes =
+    WebSocketCodec::kDefaultMaxInboundBinaryMessageBytes;
 constexpr std::size_t kMaxPendingBytes = 32U * 1024U * 1024U;
 
 void AppendU16(WebSocketBytes& out, std::uint16_t value) {
@@ -40,7 +42,15 @@ std::uint64_t ReadU64(const std::uint8_t* data) {
 
 }  // namespace
 
-WebSocketCodec::WebSocketCodec(WebSocketRole role) : role_(role) {
+WebSocketCodec::WebSocketCodec(
+    WebSocketRole role, std::size_t max_inbound_binary_message_bytes)
+    : role_(role),
+      max_inbound_binary_message_bytes_(max_inbound_binary_message_bytes) {
+    if (max_inbound_binary_message_bytes_ == 0 ||
+        max_inbound_binary_message_bytes_ > kMaxMessageBytes) {
+        throw std::invalid_argument(
+            "invalid WebSocket inbound binary message limit");
+    }
     inbound_.reserve(4096);
     decoded_.reserve(4096);
     wire_replies_.reserve(256);
@@ -173,8 +183,9 @@ void WebSocketCodec::Process() {
                 return;
             }
         }
-        if (payload_size > kMaxMessageBytes) {
-            Fail("WebSocket message exceeds 16 MiB");
+        if (!control &&
+            payload_size > max_inbound_binary_message_bytes_) {
+            Fail("WebSocket binary message exceeds configured limit");
             return;
         }
         if (control && (!fin || payload_size > 125)) {
@@ -207,8 +218,10 @@ void WebSocketCodec::Process() {
                     Fail("unexpected WebSocket continuation");
                     return;
                 }
-                if (payload.size() > kMaxMessageBytes - fragmented_.size()) {
-                    Fail("fragmented WebSocket message exceeds 16 MiB");
+                if (payload.size() > max_inbound_binary_message_bytes_ -
+                                         fragmented_.size()) {
+                    Fail("fragmented WebSocket binary message exceeds "
+                         "configured limit");
                     return;
                 }
                 fragmented_.insert(fragmented_.end(), payload.begin(), payload.end());
@@ -270,6 +283,15 @@ void WebSocketCodec::Process() {
                                    : "unsupported WebSocket opcode");
                 return;
         }
+        const std::size_t immediately_consumable =
+            control ? total : total - static_cast<std::size_t>(payload_size);
+        if (immediately_consumable >
+            std::numeric_limits<std::size_t>::max() -
+                immediately_consumable_wire_bytes_) {
+            Fail("WebSocket flow-control accounting overflow");
+            return;
+        }
+        immediately_consumable_wire_bytes_ += immediately_consumable;
         if (inbound_frame_observer_) {
             inbound_frame_observer_(
                 inbound_frame_observer_context_,
@@ -279,10 +301,16 @@ void WebSocketCodec::Process() {
     }
 }
 
+WebSocketDrain WebSocketCodec::TakeDrain() {
+    WebSocketDrain drain;
+    drain.tunnel_bytes.swap(decoded_);
+    drain.immediately_consumable_wire_bytes =
+        std::exchange(immediately_consumable_wire_bytes_, 0);
+    return drain;
+}
+
 WebSocketBytes WebSocketCodec::TakeDecoded() {
-    WebSocketBytes out;
-    out.swap(decoded_);
-    return out;
+    return TakeDrain().tunnel_bytes;
 }
 
 WebSocketBytes WebSocketCodec::TakeWireReplies() {

@@ -21,6 +21,7 @@
 
 #include "client/cli/entry.hpp"
 #include "client/cli/config/input.hpp"
+#include "client/relay/secret.hpp"
 #include "client/transfer/share_file.hpp"
 #include "core/version.hpp"
 #include "util.hpp"
@@ -60,6 +61,7 @@ bool prompt_share_password(const std::string& purpose,
                            std::string* error) {
     if (from_stdin) {
         std::string line;
+        RelaySecretWiper line_wiper(line);
         if (!std::getline(std::cin, line)) {
             if (error) *error = "could not read password from stdin";
             return false;
@@ -82,6 +84,8 @@ bool prompt_share_password(const std::string& purpose,
 
     if (purpose == "export") {
         std::string first, second;
+        RelaySecretWiper first_wiper(first);
+        RelaySecretWiper second_wiper(second);
         if (!prompt_hidden_input("Set a password to protect the export: ", &first, error)) {
             return false;
         }
@@ -116,6 +120,7 @@ int run_export_share(const std::string& out_path,
     }
 
     yume::share::BackupInputs in;
+    RelaySecretWiper inline_obfs_secret_wiper(in.obfs_secret);
     in.label = cfg.server + (cfg.port > 0 ? ":" + std::to_string(cfg.port) : std::string());
     in.created_by = std::string("yume ") + yume::kVersion;
     in.server_host = cfg.server;
@@ -136,15 +141,18 @@ int run_export_share(const std::string& out_path,
     in.anonym_pubkey = cfg.anonym_pubkey;
     in.inner_crypto = cfg.inner_crypto;
     in.inner_heavy = cfg.inner_heavy;
-    in.inner_hop = cfg.inner_hop;
-    in.hop_interval_ms = cfg.hop_interval_ms;
     in.tunnel_count = static_cast<std::uint8_t>(
         std::clamp(cfg.tunnel_count, 1, 16));
     in.require_operator_identity = cfg.require_anonym;
     in.allow_udp = cfg.allow_udp;
     in.allow_local_ip = cfg.allow_local_ip;
+    in.relay_trust_mode = cfg.relay_trust_mode;
+    in.relay_peer_pins = cfg.relay_peer_pins;
 
     yume::share::ShareBundle bundle;
+    RelaySecretWiper auth_key_wiper(bundle.auth_private_key_pem);
+    RelaySecretWiper obfs_secret_wiper(bundle.obfs_secret);
+    RelaySecretWiper inner_psk_wiper(bundle.inner_psk);
     std::string err;
     if (!yume::share::build_backup_bundle(in, &bundle, &err)) {
         util::log_error("export: " + err);
@@ -152,12 +160,12 @@ int run_export_share(const std::string& out_path,
     }
 
     std::string password;
+    RelaySecretWiper password_wiper(password);
     if (!prompt_share_password("export", password_stdin, &password, &err)) {
         util::log_error("export: " + err);
         return 1;
     }
     auto bytes = yume::share::encode_share(bundle, password, &err);
-    std::fill(password.begin(), password.end(), '\0');
     if (bytes.empty()) {
         util::log_error("export: " + err);
         return 1;
@@ -189,17 +197,20 @@ int run_import_share(const std::string& in_path, bool password_stdin) {
 
     std::string err;
     std::string password;
+    RelaySecretWiper password_wiper(password);
     if (!prompt_share_password("import", password_stdin, &password, &err)) {
         util::log_error("import: " + err);
         return 1;
     }
     auto bundle_opt = yume::share::decode_share(blob, password, &err);
-    std::fill(password.begin(), password.end(), '\0');
     if (!bundle_opt) {
         util::log_error("import: " + err);
         return 1;
     }
-    const auto& bundle = *bundle_opt;
+    auto& bundle = *bundle_opt;
+    RelaySecretWiper auth_key_wiper(bundle.auth_private_key_pem);
+    RelaySecretWiper obfs_secret_wiper(bundle.obfs_secret);
+    RelaySecretWiper inner_psk_wiper(bundle.inner_psk);
 
     std::cout << "\n────────── share-file summary ──────────\n";
     if (!bundle.label.empty())           std::cout << "Label:        " << bundle.label << "\n";
@@ -213,9 +224,10 @@ int run_import_share(const std::string& in_path, bool password_stdin) {
     std::cout                             << "PQ pubkey:    " << (bundle.pq_public_key_pem.empty() ? "(none)" : "PRESENT") << "\n";
     std::cout                             << "Obfs secret:  " << (bundle.obfs_secret.empty() ? "(none)" : "PRESENT") << "\n";
     std::cout                             << "Inner PSK:    " << (bundle.inner_psk.empty() ? "(none)" : "PRESENT") << "\n";
-    std::cout                             << "Inner crypto: " << (bundle.inner_crypto ? (bundle.inner_heavy ? "heavy" : "light") : "off")
-                                          << "; hop=" << (bundle.inner_hop ? "on" : "off") << "\n";
+    std::cout                             << "Inner crypto: " << (bundle.inner_crypto ? (bundle.inner_heavy ? "heavy" : "light") : "off") << "\n";
     std::cout                             << "Tunnels:      " << static_cast<unsigned>(bundle.tunnel_count) << "\n";
+    std::cout                             << "Relay trust:  " << bundle.relay_trust_mode << "\n";
+    std::cout                             << "Explicit pins: " << bundle.relay_peer_pins.size() << "\n";
     std::cout << "─────────────────────────────────────────\n\n";
 
     if (!password_stdin) {

@@ -14,10 +14,13 @@
 #include "server/runtime/manager.hpp"
 
 #include <algorithm>
+#include "core/protocol/relay_limits.hpp"
+#include "core/protocol/relay_policy.hpp"
 #include "server/federation/manager.hpp"
 #include "server/auth/auth.hpp"
 #include "server/filter/ip_filter.hpp"
 #include "server/packet/tun_egress.hpp"
+#include "server/runtime/admin_relationships.hpp"
 #include "server/session/authorization.hpp"
 #include "server/session/session.hpp"
 #include "util.hpp"
@@ -28,9 +31,127 @@
 #include <random>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace yume::server {
+
+namespace {
+
+bool ValidateRelayV2Request(const control::PendingInvite& invite,
+                            std::string* error) {
+    if (control::relay_v2_invite_request_valid(invite)) return true;
+    if (error) {
+        *error = "invalid relay-v2 request envelope, identity, or password policy";
+    }
+    return false;
+}
+
+bool ValidateRelayV2Response(const control::PendingInvite& invite,
+                             std::string* error) {
+    if (control::relay_v2_invite_response_valid(invite)) return true;
+    if (error) {
+        *error = "invalid relay-v2 response envelope, identity, or password policy";
+    }
+    return false;
+}
+
+bool OrdinaryCallerAllows(const std::shared_ptr<Session>& session,
+                          control::ChannelKind kind,
+                          std::string* error) {
+    if (kind == control::ChannelKind::admin) return true;
+    if (session && session->allows_relay_kind(kind)) return true;
+    if (error) {
+        *error = "relay invite origin is not allowed to use the requested channel kind";
+    }
+    return false;
+}
+
+bool TargetAllows(const control::EndpointInfo& target,
+                  control::ChannelKind kind,
+                  std::string* error) {
+    if (control::relay_target_allows(target, kind)) return true;
+    if (error) {
+        *error = "relay target disabled the requested channel kind";
+    }
+    return false;
+}
+
+}  // namespace
+
+void Manager::prune_expired_relay_invites_locked(
+    std::chrono::steady_clock::time_point now) {
+    for (auto it = invites_.begin(); it != invites_.end();) {
+        if (control::pending_relay_invite_expired(
+                it->second.expires_at, now)) {
+            it = invites_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+bool Manager::relay_invite_capacity_available_locked(
+    const control::PendingInvite& invite,
+    std::string* error) {
+    prune_expired_relay_invites_locked(std::chrono::steady_clock::now());
+    std::size_t from_count = 0;
+    std::size_t to_count = 0;
+    for (const auto& [id, entry] : invites_) {
+        (void)id;
+        from_count += static_cast<std::size_t>(
+            entry.invite.from_endpoint_id == invite.from_endpoint_id);
+        to_count += static_cast<std::size_t>(
+            entry.invite.to_endpoint_id == invite.to_endpoint_id);
+    }
+    switch (control::pending_relay_invite_admission(
+            invites_.size(), from_count, to_count)) {
+        case control::PendingRelayInviteAdmission::allowed:
+            return true;
+        case control::PendingRelayInviteAdmission::server_limit:
+            if (error) *error = "server pending relay invite limit reached";
+            return false;
+        case control::PendingRelayInviteAdmission::origin_limit:
+            if (error) *error = "relay invite origin pending limit reached";
+            return false;
+        case control::PendingRelayInviteAdmission::target_limit:
+            if (error) *error = "relay invite target pending limit reached";
+            return false;
+    }
+    if (error) *error = "invalid relay invite admission state";
+    return false;
+}
+
+void Manager::schedule_relay_invite_expiry_locked() {
+    if (invite_expiry_stopped_) {
+        return;
+    }
+    if (invites_.empty()) {
+        if (invite_expiry_timer_) {
+            invite_expiry_timer_->cancel();
+        }
+        return;
+    }
+    const auto earliest = std::min_element(
+        invites_.begin(), invites_.end(),
+        [](const auto& left, const auto& right) {
+            return left.second.expires_at < right.second.expires_at;
+        })->second.expires_at;
+    if (!invite_expiry_timer_) {
+        invite_expiry_timer_ =
+            std::make_unique<boost::asio::steady_timer>(io_);
+    }
+    invite_expiry_timer_->expires_at(earliest);
+    invite_expiry_timer_->async_wait(
+        [this](const boost::system::error_code& error) {
+            if (error) return;
+            std::lock_guard<std::mutex> lock(endpoint_mutex_);
+            if (invite_expiry_stopped_) return;
+            prune_expired_relay_invites_locked(
+                std::chrono::steady_clock::now());
+            schedule_relay_invite_expiry_locked();
+        });
+}
 
 EndpointRegistrationResult Manager::register_endpoint(const std::shared_ptr<Session>& session,
                                                       const control::PresenceAnnouncement& announce,
@@ -85,12 +206,7 @@ EndpointRegistrationResult Manager::register_endpoint(const std::shared_ptr<Sess
 
     auto it_existing = session_endpoints_.find(session.get());
     if (it_existing != session_endpoints_.end()) {
-        auto it_endpoint = endpoints_.find(it_existing->second);
-        if (it_endpoint != endpoints_.end()) {
-            endpoint_names_.erase(it_endpoint->second.info.display_name);
-            endpoints_.erase(it_endpoint);
-        }
-        session_endpoints_.erase(it_existing);
+        unregister_endpoint_locked(session.get(), false);
     }
 
     result.endpoint.endpoint_id = allocate_id();
@@ -147,6 +263,11 @@ void Manager::unregister_endpoint(Session* session) {
         return;
     }
     std::lock_guard<std::mutex> lock(endpoint_mutex_);
+    unregister_endpoint_locked(session, true);
+}
+
+void Manager::unregister_endpoint_locked(Session* session,
+                                         bool append_disconnect_event) {
     auto it_session = session_endpoints_.find(session);
     if (it_session == session_endpoints_.end()) {
         return;
@@ -156,7 +277,7 @@ void Manager::unregister_endpoint(Session* session) {
         const auto latest_state = it->second.latest_lifecycle.has_value()
             ? it->second.latest_lifecycle->state
             : std::string();
-        if (latest_state != "disconnecting") {
+        if (append_disconnect_event && latest_state != "disconnecting") {
             control::ClientLifecycleEvent event;
             event.endpoint_id = it->second.info.endpoint_id;
             event.display_name = it->second.info.display_name;
@@ -169,12 +290,22 @@ void Manager::unregister_endpoint(Session* session) {
             event.server_time_ms = yume::util::now_ms();
             append_lifecycle_event_locked(event);
         }
-        endpoint_names_.erase(it->second.info.display_name);
         const std::string removed_id = it->second.info.endpoint_id;
-        endpoints_.erase(it);
+        std::vector<std::pair<std::string, std::string>> relationships;
+        relationships.reserve(it->second.info.controlled_target_ids.size() +
+                              it->second.info.controller_ids.size());
+        for (const auto& target_id : it->second.info.controlled_target_ids) {
+            relationships.emplace_back(removed_id, target_id);
+        }
+        for (const auto& controller_id : it->second.info.controller_ids) {
+            relationships.emplace_back(controller_id, removed_id);
+        }
         for (auto invite_it = invites_.begin(); invite_it != invites_.end();) {
+            const auto invite_from = invite_it->second.from_session.lock();
+            const auto invite_to = invite_it->second.to_session.lock();
             if (invite_it->second.invite.from_endpoint_id == removed_id ||
-                invite_it->second.invite.to_endpoint_id == removed_id) {
+                invite_it->second.invite.to_endpoint_id == removed_id ||
+                invite_from.get() == session || invite_to.get() == session) {
                 invite_it = invites_.erase(invite_it);
             } else {
                 ++invite_it;
@@ -183,19 +314,41 @@ void Manager::unregister_endpoint(Session* session) {
         for (auto channel_it = active_channels_.begin(); channel_it != active_channels_.end();) {
             if (channel_it->second.left_endpoint_id == removed_id ||
                 channel_it->second.right_endpoint_id == removed_id) {
+                if (admin_relationships::is_established_admin_channel(
+                        channel_it->second)) {
+                    relationships.emplace_back(
+                        channel_it->second.left_endpoint_id,
+                        channel_it->second.right_endpoint_id);
+                }
                 channel_it = active_channels_.erase(channel_it);
             } else {
                 ++channel_it;
             }
         }
+        for (const auto& relationship : relationships) {
+            auto controller_it = endpoints_.find(relationship.first);
+            auto target_it = endpoints_.find(relationship.second);
+            admin_relationships::remove_local_relationship_if_unused(
+                active_channels_,
+                controller_it == endpoints_.end()
+                    ? nullptr : &controller_it->second.info,
+                target_it == endpoints_.end()
+                    ? nullptr : &target_it->second.info,
+                relationship.first,
+                relationship.second);
+        }
+        endpoint_names_.erase(it->second.info.display_name);
+        endpoints_.erase(it);
     }
     session_endpoints_.erase(it_session);
 }
 
-std::vector<control::EndpointInfo> Manager::list_endpoints() const {
-    auto out = list_local_endpoints();
-    if (federation_) {
-        auto remote = federation_->remote_endpoints();
+std::vector<control::EndpointInfo> Manager::list_endpoints(
+        std::size_t limit) const {
+    limit = std::min(limit, control::kMaxDirectoryEndpoints);
+    auto out = list_local_endpoints(limit);
+    if (federation_ && out.size() < limit) {
+        auto remote = federation_->remote_endpoints(limit - out.size());
         out.insert(out.end(), remote.begin(), remote.end());
     }
     std::sort(out.begin(), out.end(), [](const control::EndpointInfo& a, const control::EndpointInfo& b) {
@@ -204,15 +357,19 @@ std::vector<control::EndpointInfo> Manager::list_endpoints() const {
     return out;
 }
 
-std::vector<control::EndpointInfo> Manager::list_local_endpoints() const {
+std::vector<control::EndpointInfo> Manager::list_local_endpoints(
+        std::size_t limit) const {
+    limit = std::min(limit, control::kMaxDirectoryEndpoints);
     std::vector<control::EndpointInfo> out;
+    if (limit == 0U) return out;
     std::lock_guard<std::mutex> lock(endpoint_mutex_);
-    out.reserve(endpoints_.size());
+    out.reserve(std::min(endpoints_.size(), limit));
     for (const auto& entry : endpoints_) {
         if (entry.second.session.expired()) {
             continue;
         }
         out.push_back(entry.second.info);
+        if (out.size() == limit) break;
     }
     std::sort(out.begin(), out.end(), [](const control::EndpointInfo& a, const control::EndpointInfo& b) {
         return a.display_name < b.display_name;
@@ -269,8 +426,17 @@ std::shared_ptr<Session> Manager::find_endpoint_session(const std::string& query
     }
     auto session = it->second.session.lock();
     if (!session) {
-        endpoint_names_.erase(it->second.info.display_name);
-        endpoints_.erase(it);
+        auto stale_session = std::find_if(
+            session_endpoints_.begin(), session_endpoints_.end(),
+            [&](const auto& entry) { return entry.second == endpoint_id; });
+        if (stale_session != session_endpoints_.end()) {
+            unregister_endpoint_locked(stale_session->first, true);
+        } else {
+            // Defensive fallback for an inconsistent registry. A normal
+            // registration always has a session_endpoints_ reverse entry.
+            endpoint_names_.erase(it->second.info.display_name);
+            endpoints_.erase(it);
+        }
         return nullptr;
     }
     if (info) {
@@ -290,9 +456,38 @@ bool Manager::route_invite(const std::shared_ptr<Session>& from_session,
     if (federated) {
         *federated = false;
     }
+    if (!from_session || !ValidateRelayV2Request(invite, error) ||
+        !OrdinaryCallerAllows(from_session, invite.channel_kind, error)) {
+        return false;
+    }
+    if (from_session->endpoint_id().empty() ||
+        from_session->endpoint_id() != invite.from_endpoint_id) {
+        if (error) *error = "relay invite origin does not match its registered session";
+        return false;
+    }
+    control::EndpointInfo origin_info;
+    const auto registered_origin =
+        find_endpoint_session(invite.from_endpoint_id, &origin_info);
+    if (!registered_origin || registered_origin.get() != from_session.get() ||
+        origin_info.auth_pubkey_b64.empty() ||
+        origin_info.auth_pubkey_b64 != invite.from_auth_pubkey_b64) {
+        if (error) {
+            *error = "relay invite origin identity does not match its authenticated session";
+        }
+        return false;
+    }
     control::EndpointInfo target_info;
     auto target = find_endpoint_session(invite.to_endpoint_id, &target_info);
     if (target) {
+        if (target_info.endpoint_id != invite.to_endpoint_id) {
+            if (error) {
+                *error = "relay target must be an exact endpoint id, not an alias";
+            }
+            return false;
+        }
+        if (!TargetAllows(target_info, invite.channel_kind, error)) {
+            return false;
+        }
         if (invite.channel_kind == control::ChannelKind::admin &&
             (!from_session ||
              !authorization::admin_attach_allowed(
@@ -305,11 +500,23 @@ bool Manager::route_invite(const std::shared_ptr<Session>& from_session,
             return false;
         }
         std::lock_guard<std::mutex> lock(endpoint_mutex_);
+        if (!relay_invite_capacity_available_locked(invite, error)) {
+            return false;
+        }
         InviteEntry entry;
         entry.invite = invite;
         entry.from_session = from_session;
         entry.to_session = target;
-        invites_[invite.invite_id] = std::move(entry);
+        entry.expires_at = std::chrono::steady_clock::now() +
+            control::kPendingRelayInviteLifetime;
+        const auto [stored, inserted] =
+            invites_.emplace(invite.invite_id, std::move(entry));
+        (void)stored;
+        if (!inserted) {
+            if (error) *error = "relay invite id is already in use";
+            return false;
+        }
+        schedule_relay_invite_expiry_locked();
         if (local_target_session) {
             *local_target_session = target;
         }
@@ -322,6 +529,9 @@ bool Manager::route_invite(const std::shared_ptr<Session>& from_session,
         control::EndpointInfo remote_info;
         if (federation_->resolve_remote_endpoint(
                 invite.to_endpoint_id, &peer_id, &remote_id, &remote_info)) {
+            if (!TargetAllows(remote_info, invite.channel_kind, error)) {
+                return false;
+            }
             if (invite.channel_kind == control::ChannelKind::admin &&
                 (!from_session ||
                  !authorization::admin_attach_allowed(
@@ -335,17 +545,30 @@ bool Manager::route_invite(const std::shared_ptr<Session>& from_session,
             }
             {
                 std::lock_guard<std::mutex> lock(endpoint_mutex_);
+                if (!relay_invite_capacity_available_locked(invite, error)) {
+                    return false;
+                }
                 InviteEntry entry;
                 entry.invite = invite;
                 entry.from_session = from_session;
                 entry.outbound_federated = true;
                 entry.federation_peer_id = peer_id;
                 entry.federation_remote_id = remote_id;
-                invites_[invite.invite_id] = std::move(entry);
+                entry.expires_at = std::chrono::steady_clock::now() +
+                    control::kPendingRelayInviteLifetime;
+                const auto [stored, inserted] =
+                    invites_.emplace(invite.invite_id, std::move(entry));
+                (void)stored;
+                if (!inserted) {
+                    if (error) *error = "relay invite id is already in use";
+                    return false;
+                }
+                schedule_relay_invite_expiry_locked();
             }
             if (!federation_->send_invite_request(invite, peer_id, remote_id, error)) {
                 std::lock_guard<std::mutex> lock(endpoint_mutex_);
                 invites_.erase(invite.invite_id);
+                schedule_relay_invite_expiry_locked();
                 return false;
             }
             if (federated) {
@@ -368,12 +591,28 @@ bool Manager::route_federated_invite(const std::shared_ptr<Session>& from_sessio
     if (local_target_session) {
         local_target_session->reset();
     }
+    if (!from_session || !from_session->is_federation_authenticated() ||
+        !ValidateRelayV2Request(invite, error)) {
+        if (error && error->empty()) *error = "authenticated federation invite required";
+        return false;
+    }
+    const std::string exact_local_target =
+        raw_target_id.empty() ? invite.to_endpoint_id : raw_target_id;
     control::EndpointInfo target_info;
-    auto target = find_endpoint_session(raw_target_id.empty() ? invite.to_endpoint_id : raw_target_id, &target_info);
+    auto target = find_endpoint_session(exact_local_target, &target_info);
     if (!target) {
         if (error) {
             *error = "target not found";
         }
+        return false;
+    }
+    if (target_info.endpoint_id != exact_local_target) {
+        if (error) {
+            *error = "federated relay target must be an exact endpoint id, not an alias";
+        }
+        return false;
+    }
+    if (!TargetAllows(target_info, invite.channel_kind, error)) {
         return false;
     }
     if (invite.channel_kind == control::ChannelKind::admin &&
@@ -385,27 +624,44 @@ bool Manager::route_federated_invite(const std::shared_ptr<Session>& from_sessio
     }
     const std::string peer_id = from_session ? from_session->federation_peer_id() : std::string{};
     std::lock_guard<std::mutex> lock(endpoint_mutex_);
+    if (!relay_invite_capacity_available_locked(invite, error)) {
+        return false;
+    }
     InviteEntry entry;
     entry.invite = invite;
     entry.from_session = from_session;
     entry.to_session = target;
     entry.inbound_federated = true;
     entry.federation_peer_id = peer_id;
-    invites_[invite.invite_id] = std::move(entry);
+    entry.expires_at = std::chrono::steady_clock::now() +
+        control::kPendingRelayInviteLifetime;
+    const auto [stored, inserted] =
+        invites_.emplace(invite.invite_id, std::move(entry));
+    (void)stored;
+    if (!inserted) {
+        if (error) *error = "relay invite id is already in use";
+        return false;
+    }
+    schedule_relay_invite_expiry_locked();
     if (local_target_session) {
         *local_target_session = target;
     }
     return true;
 }
 
-// The responder's own session is not needed here: the invite record already
-// carries the initiator side, which is the only session this resolves against.
-bool Manager::respond_invite([[maybe_unused]] const std::shared_ptr<Session>& from_session,
+// Bind a reply to the authenticated session stored when the invite was routed;
+// peer-provided endpoint fields are corroborating immutable transcript data,
+// never the source of responder authorization.
+bool Manager::respond_invite(const std::shared_ptr<Session>& from_session,
                              const control::PendingInvite& response,
                              std::shared_ptr<Session>* initiator_session,
                              control::PendingInvite* invite_out,
                              std::string* error) {
+    if (!ValidateRelayV2Response(response, error)) {
+        return false;
+    }
     std::lock_guard<std::mutex> lock(endpoint_mutex_);
+    prune_expired_relay_invites_locked(std::chrono::steady_clock::now());
     auto it = invites_.find(response.invite_id);
     if (it == invites_.end()) {
         if (error) {
@@ -413,23 +669,56 @@ bool Manager::respond_invite([[maybe_unused]] const std::shared_ptr<Session>& fr
         }
         return false;
     }
-    if (it->second.invite.to_endpoint_id != response.from_endpoint_id &&
-        it->second.invite.to_endpoint_id != response.to_endpoint_id) {
+    auto expected_responder = it->second.to_session.lock();
+    if (!from_session || !expected_responder ||
+        expected_responder.get() != from_session.get()) {
         if (error) {
-            *error = "invite responder mismatch";
+            *error = "invite response did not come from the invited session";
         }
         return false;
     }
+    if (it->second.state != InviteEntry::State::awaiting_response) {
+        if (error) *error = "relay invite has already been answered";
+        return false;
+    }
+    if (!control::relay_v2_request_fields_match(
+            it->second.invite, response)) {
+        if (error) *error = "invite response changed immutable request fields";
+        return false;
+    }
+    if (response.accepted) {
+        const auto responder_session_it =
+            session_endpoints_.find(from_session.get());
+        const auto responder_it = responder_session_it == session_endpoints_.end()
+            ? endpoints_.end()
+            : endpoints_.find(responder_session_it->second);
+        if (responder_it == endpoints_.end() ||
+            responder_it->second.info.auth_pubkey_b64.empty() ||
+            responder_it->second.info.auth_pubkey_b64 !=
+                response.responder_auth_pubkey_b64) {
+            if (error) {
+                *error = "relay invite responder identity does not match its authenticated session";
+            }
+            return false;
+        }
+    }
+    it->second.invite.response_present = true;
     it->second.invite.accepted = response.accepted;
     it->second.invite.response_reason = response.response_reason;
-    it->second.invite.response_ephemeral_pubkey_b64 = response.response_ephemeral_pubkey_b64;
-    it->second.invite.response_ephemeral_signature_b64 = response.response_ephemeral_signature_b64;
+    it->second.invite.handshake_response_b64 =
+        response.handshake_response_b64;
+    it->second.invite.responder_auth_pubkey_b64 =
+        response.responder_auth_pubkey_b64;
+    if (response.accepted) {
+        it->second.state = InviteEntry::State::accepted;
+    }
     auto initiator = it->second.from_session.lock();
     if (!initiator) {
         if (error) {
             *error = "invite initiator unavailable";
         }
         invites_.erase(it);
+        schedule_relay_invite_expiry_locked();
         return false;
     }
     if (initiator_session) {
@@ -440,6 +729,7 @@ bool Manager::respond_invite([[maybe_unused]] const std::shared_ptr<Session>& fr
     }
     if (!it->second.invite.accepted) {
         invites_.erase(it);
+        schedule_relay_invite_expiry_locked();
     }
     return true;
 }
@@ -449,7 +739,11 @@ bool Manager::respond_federated_invite(const std::string& peer_id,
                                        std::shared_ptr<Session>* initiator_session,
                                        control::PendingInvite* invite_out,
                                        std::string* error) {
+    if (!ValidateRelayV2Response(response, error)) {
+        return false;
+    }
     std::lock_guard<std::mutex> lock(endpoint_mutex_);
+    prune_expired_relay_invites_locked(std::chrono::steady_clock::now());
     auto it = invites_.find(response.invite_id);
     if (it == invites_.end()) {
         if (error) {
@@ -463,16 +757,32 @@ bool Manager::respond_federated_invite(const std::string& peer_id,
         }
         return false;
     }
+    if (it->second.state != InviteEntry::State::awaiting_response) {
+        if (error) *error = "relay invite has already been answered";
+        return false;
+    }
+    if (!control::relay_v2_request_fields_match(
+            it->second.invite, response)) {
+        if (error) *error = "invite response changed immutable request fields";
+        return false;
+    }
+    it->second.invite.response_present = true;
     it->second.invite.accepted = response.accepted;
     it->second.invite.response_reason = response.response_reason;
-    it->second.invite.response_ephemeral_pubkey_b64 = response.response_ephemeral_pubkey_b64;
-    it->second.invite.response_ephemeral_signature_b64 = response.response_ephemeral_signature_b64;
+    it->second.invite.handshake_response_b64 =
+        response.handshake_response_b64;
+    it->second.invite.responder_auth_pubkey_b64 =
+        response.responder_auth_pubkey_b64;
+    if (response.accepted) {
+        it->second.state = InviteEntry::State::accepted;
+    }
     auto initiator = it->second.from_session.lock();
     if (!initiator) {
         if (error) {
             *error = "invite initiator unavailable";
         }
         invites_.erase(it);
+        schedule_relay_invite_expiry_locked();
         return false;
     }
     if (initiator_session) {
@@ -483,11 +793,13 @@ bool Manager::respond_federated_invite(const std::string& peer_id,
     }
     if (!it->second.invite.accepted) {
         invites_.erase(it);
+        schedule_relay_invite_expiry_locked();
     }
     return true;
 }
 
-bool Manager::can_open_channel(const std::string& channel_id,
+bool Manager::can_open_channel(const std::shared_ptr<Session>& origin,
+                               const std::string& channel_id,
                                const std::string& from_id,
                                const std::string& to_id,
                                control::ChannelKind channel_kind,
@@ -495,6 +807,7 @@ bool Manager::can_open_channel(const std::string& channel_id,
                                control::PendingInvite* invite_out,
                                std::string* error) {
     std::lock_guard<std::mutex> lock(endpoint_mutex_);
+    prune_expired_relay_invites_locked(std::chrono::steady_clock::now());
     auto it = invites_.find(channel_id);
     if (it == invites_.end()) {
         if (error) {
@@ -503,7 +816,7 @@ bool Manager::can_open_channel(const std::string& channel_id,
         return false;
     }
     const auto& invite = it->second.invite;
-    if (!invite.accepted) {
+    if (!invite.accepted || it->second.state != InviteEntry::State::accepted) {
         if (error) {
             *error = "invite not accepted";
         }
@@ -515,6 +828,16 @@ bool Manager::can_open_channel(const std::string& channel_id,
         }
         return false;
     }
+    auto expected_origin = it->second.from_session.lock();
+    if (!origin || !expected_origin || expected_origin.get() != origin.get()) {
+        if (error) *error = "relay OPEN did not come from the inviting session";
+        return false;
+    }
+    if (!ValidateRelayV2Response(invite, error) || !invite.accepted ||
+        (!it->second.inbound_federated &&
+         !OrdinaryCallerAllows(origin, channel_kind, error))) {
+        return false;
+    }
     auto target = it->second.to_session.lock();
     if (!target) {
         if (error) {
@@ -523,9 +846,15 @@ bool Manager::can_open_channel(const std::string& channel_id,
         invites_.erase(it);
         return false;
     }
+    auto target_session_it = session_endpoints_.find(target.get());
+    auto target_it = target_session_it == session_endpoints_.end()
+        ? endpoints_.end() : endpoints_.find(target_session_it->second);
+    if (target_it == endpoints_.end() ||
+        !TargetAllows(target_it->second.info, channel_kind, error)) {
+        return false;
+    }
     if (channel_kind == control::ChannelKind::admin) {
         bool allowed = false;
-        auto target_it = endpoints_.find(to_id);
         if (target_it != endpoints_.end() && target_it->second.info.allow_inbound_admin) {
             if (it->second.inbound_federated) {
                 // The originating federation peer enforces its local caller's
@@ -554,6 +883,7 @@ bool Manager::can_open_channel(const std::string& channel_id,
     if (invite_out) {
         *invite_out = invite;
     }
+    it->second.state = InviteEntry::State::opening;
     return true;
 }
 
@@ -567,13 +897,28 @@ bool Manager::open_federated_channel(const std::shared_ptr<Session>& origin,
     const std::string target_id = open_json.value("target_id", "");
     const std::string from_id = open_json.value("from_id", origin->endpoint_id());
     const std::string channel_id = open_json.value("channel_id", "");
-    const auto channel_kind = control::channel_kind_from_string(open_json.value("channel_kind", "chat"));
+    if (!open_json.contains("channel_kind") ||
+        !open_json["channel_kind"].is_string()) {
+        if (error) *error = "invalid relay channel kind";
+        return true;
+    }
+    const auto parsed_kind = control::try_relay_channel_kind(
+        open_json["channel_kind"].get_ref<const std::string&>());
+    if (!parsed_kind) {
+        if (error) *error = "invalid relay channel kind";
+        return true;
+    }
+    const auto channel_kind = *parsed_kind;
     std::string peer_id;
     std::string remote_id;
     control::EndpointInfo remote_info;
     if (!federation_->resolve_remote_endpoint(
             target_id, &peer_id, &remote_id, &remote_info)) {
         return false;
+    }
+    if (!OrdinaryCallerAllows(origin, channel_kind, error) ||
+        !TargetAllows(remote_info, channel_kind, error)) {
+        return true;
     }
     if (channel_kind == control::ChannelKind::admin &&
         !authorization::admin_attach_allowed(
@@ -588,6 +933,7 @@ bool Manager::open_federated_channel(const std::shared_ptr<Session>& origin,
     control::PendingInvite invite;
     {
         std::lock_guard<std::mutex> lock(endpoint_mutex_);
+        prune_expired_relay_invites_locked(std::chrono::steady_clock::now());
         auto it = invites_.find(channel_id);
         if (it == invites_.end()) {
             if (error) {
@@ -602,7 +948,8 @@ bool Manager::open_federated_channel(const std::shared_ptr<Session>& origin,
             }
             return true;
         }
-        if (!invite.accepted) {
+        if (!invite.accepted ||
+            it->second.state != InviteEntry::State::accepted) {
             if (error) {
                 *error = "invite not accepted";
             }
@@ -614,6 +961,15 @@ bool Manager::open_federated_channel(const std::shared_ptr<Session>& origin,
             }
             return true;
         }
+        auto expected_origin = it->second.from_session.lock();
+        if (!expected_origin || expected_origin.get() != origin.get() ||
+            !ValidateRelayV2Response(invite, error) || !invite.accepted) {
+            if (error && error->empty()) {
+                *error = "relay OPEN did not come from the inviting session";
+            }
+            return true;
+        }
+        it->second.state = InviteEntry::State::opening;
     }
     control::ActiveRelayChannel channel;
     channel.channel_id = invite.invite_id;
@@ -634,14 +990,63 @@ bool Manager::open_federated_channel(const std::shared_ptr<Session>& origin,
 }
 
 void Manager::register_active_channel(const control::ActiveRelayChannel& channel) {
+    if (channel.channel_id.empty()) {
+        return;
+    }
     std::lock_guard<std::mutex> lock(endpoint_mutex_);
+    std::optional<control::ActiveRelayChannel> previous;
+    auto previous_it = active_channels_.find(channel.channel_id);
+    if (previous_it != active_channels_.end()) {
+        previous = previous_it->second;
+    }
     active_channels_[channel.channel_id] = channel;
+
+    auto local_endpoint = [&](const std::string& endpoint_id)
+        -> control::EndpointInfo* {
+        auto it = endpoints_.find(endpoint_id);
+        return it == endpoints_.end() ? nullptr : &it->second.info;
+    };
+    if (previous &&
+        admin_relationships::is_established_admin_channel(*previous)) {
+        admin_relationships::remove_local_relationship_if_unused(
+            active_channels_,
+            local_endpoint(previous->left_endpoint_id),
+            local_endpoint(previous->right_endpoint_id),
+            previous->left_endpoint_id,
+            previous->right_endpoint_id);
+    }
+    if (admin_relationships::is_established_admin_channel(channel)) {
+        admin_relationships::add_local_relationship(
+            local_endpoint(channel.left_endpoint_id),
+            local_endpoint(channel.right_endpoint_id),
+            channel.left_endpoint_id,
+            channel.right_endpoint_id);
+    }
 }
 
 void Manager::unregister_active_channel(const std::string& channel_id) {
     std::lock_guard<std::mutex> lock(endpoint_mutex_);
-    active_channels_.erase(channel_id);
+    std::optional<control::ActiveRelayChannel> removed;
+    auto it = active_channels_.find(channel_id);
+    if (it != active_channels_.end()) {
+        removed = it->second;
+        active_channels_.erase(it);
+    }
     invites_.erase(channel_id);
+    if (!removed ||
+        !admin_relationships::is_established_admin_channel(*removed)) {
+        return;
+    }
+    auto controller_it = endpoints_.find(removed->left_endpoint_id);
+    auto target_it = endpoints_.find(removed->right_endpoint_id);
+    admin_relationships::remove_local_relationship_if_unused(
+        active_channels_,
+        controller_it == endpoints_.end()
+            ? nullptr : &controller_it->second.info,
+        target_it == endpoints_.end()
+            ? nullptr : &target_it->second.info,
+        removed->left_endpoint_id,
+        removed->right_endpoint_id);
 }
 
 std::vector<control::ActiveRelayChannel> Manager::list_active_channels() const {
@@ -671,42 +1076,6 @@ bool Manager::disconnect_endpoint(const std::string& query, std::string* error) 
     }
     session->stop();
     return true;
-}
-
-void Manager::add_admin_relationship(const std::string& controller_id, const std::string& target_id) {
-    std::lock_guard<std::mutex> lock(endpoint_mutex_);
-    auto add_unique = [](std::vector<std::string>* values, const std::string& value) {
-        if (!values || value.empty()) {
-            return;
-        }
-        if (std::find(values->begin(), values->end(), value) == values->end()) {
-            values->push_back(value);
-        }
-    };
-    auto it_controller = endpoints_.find(controller_id);
-    auto it_target = endpoints_.find(target_id);
-    if (it_controller != endpoints_.end() && it_target != endpoints_.end()) {
-        add_unique(&it_controller->second.info.controlled_target_ids, target_id);
-        add_unique(&it_target->second.info.controller_ids, controller_id);
-    }
-}
-
-void Manager::remove_admin_relationship(const std::string& controller_id, const std::string& target_id) {
-    std::lock_guard<std::mutex> lock(endpoint_mutex_);
-    auto remove_value = [](std::vector<std::string>* values, const std::string& value) {
-        if (!values) {
-            return;
-        }
-        values->erase(std::remove(values->begin(), values->end(), value), values->end());
-    };
-    auto it_controller = endpoints_.find(controller_id);
-    auto it_target = endpoints_.find(target_id);
-    if (it_controller != endpoints_.end()) {
-        remove_value(&it_controller->second.info.controlled_target_ids, target_id);
-    }
-    if (it_target != endpoints_.end()) {
-        remove_value(&it_target->second.info.controller_ids, controller_id);
-    }
 }
 
 }  // namespace yume::server

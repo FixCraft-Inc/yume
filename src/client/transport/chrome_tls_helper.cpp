@@ -215,19 +215,40 @@ std::chrono::steady_clock::time_point Deadline(
     return std::chrono::steady_clock::now() + timeout;
 }
 
+bool StopRequested(const std::function<bool()>& should_stop) {
+    if (!should_stop) return false;
+    try {
+        return should_stop();
+    } catch (...) {
+        return true;
+    }
+}
+
+void ThrowIfStopped(const std::function<bool()>& should_stop) {
+    if (StopRequested(should_stop)) {
+        throw std::runtime_error("Chrome TLS helper IPC cancelled");
+    }
+}
+
 void WaitFd(int fd, short events,
-            std::chrono::steady_clock::time_point deadline) {
+            std::chrono::steady_clock::time_point deadline,
+            const std::function<bool()>& should_stop) {
     for (;;) {
+        ThrowIfStopped(should_stop);
         const auto now = std::chrono::steady_clock::now();
         if (now >= deadline) {
             throw std::runtime_error("Chrome TLS helper IPC timed out");
         }
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
             deadline - now);
-        const int timeout_ms = static_cast<int>(
-            std::clamp<std::int64_t>(remaining.count(), 1, 120000));
+        std::int64_t timeout_ms =
+            std::clamp<std::int64_t>(remaining.count(), 1, 120000);
+        if (should_stop) {
+            timeout_ms = std::min<std::int64_t>(timeout_ms, 10);
+        }
         pollfd descriptor{fd, events, 0};
-        const int result = ::poll(&descriptor, 1, timeout_ms);
+        const int result = ::poll(
+            &descriptor, 1, static_cast<int>(timeout_ms));
         if (result > 0) {
             if ((descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0 &&
                 (descriptor.revents & events) == 0) {
@@ -237,7 +258,10 @@ void WaitFd(int fd, short events,
                 return;
             }
         } else if (result == 0) {
-            throw std::runtime_error("Chrome TLS helper IPC timed out");
+            ThrowIfStopped(should_stop);
+            if (std::chrono::steady_clock::now() >= deadline) {
+                throw std::runtime_error("Chrome TLS helper IPC timed out");
+            }
         } else if (errno != EINTR) {
             throw std::system_error(errno, std::generic_category(),
                                     "poll Chrome TLS helper IPC");
@@ -246,10 +270,11 @@ void WaitFd(int fd, short events,
 }
 
 void WriteAll(int fd, std::span<const std::uint8_t> bytes,
-              std::chrono::steady_clock::time_point deadline) {
+              std::chrono::steady_clock::time_point deadline,
+              const std::function<bool()>& should_stop) {
     std::size_t offset = 0;
     while (offset < bytes.size()) {
-        WaitFd(fd, POLLOUT, deadline);
+        WaitFd(fd, POLLOUT, deadline, should_stop);
         const ssize_t written = ::write(fd, bytes.data() + offset,
                                         bytes.size() - offset);
         if (written > 0) {
@@ -264,10 +289,11 @@ void WriteAll(int fd, std::span<const std::uint8_t> bytes,
 }
 
 void ReadExact(int fd, std::span<std::uint8_t> bytes,
-               std::chrono::steady_clock::time_point deadline) {
+               std::chrono::steady_clock::time_point deadline,
+               const std::function<bool()>& should_stop) {
     std::size_t offset = 0;
     while (offset < bytes.size()) {
-        WaitFd(fd, POLLIN, deadline);
+        WaitFd(fd, POLLIN, deadline, should_stop);
         const ssize_t received = ::read(fd, bytes.data() + offset,
                                         bytes.size() - offset);
         if (received > 0) {
@@ -282,10 +308,11 @@ void ReadExact(int fd, std::span<std::uint8_t> bytes,
 }
 
 std::vector<std::uint8_t> ReadResponse(
-        int fd, std::chrono::steady_clock::time_point deadline) {
+        int fd, std::chrono::steady_clock::time_point deadline,
+        const std::function<bool()>& should_stop) {
     constexpr std::size_t kHeaderBytes = 32;
     std::vector<std::uint8_t> wire(kHeaderBytes);
-    ReadExact(fd, wire, deadline);
+    ReadExact(fd, wire, deadline, should_stop);
     const std::uint32_t payload_size =
         (static_cast<std::uint32_t>(wire[12]) << 24U) |
         (static_cast<std::uint32_t>(wire[13]) << 16U) |
@@ -295,7 +322,8 @@ std::vector<std::uint8_t> ReadResponse(
         throw std::runtime_error("Chrome TLS helper IPC payload exceeds cap");
     }
     wire.resize(kHeaderBytes + payload_size);
-    ReadExact(fd, std::span<std::uint8_t>(wire).subspan(kHeaderBytes), deadline);
+    ReadExact(fd, std::span<std::uint8_t>(wire).subspan(kHeaderBytes), deadline,
+              should_stop);
     return wire;
 }
 
@@ -339,6 +367,7 @@ ClientTransportStream LaunchChromeTlsHelper(
     throw std::runtime_error("Chrome TLS helper supports Linux desktop only");
 #else
     ValidateHelperFile(options.helper_path);
+    ThrowIfStopped(options.should_stop);
     if (options.handshake_timeout.count() < 1000 ||
         options.handshake_timeout.count() > 120000) {
         throw std::runtime_error("Chrome TLS handshake timeout is out of range");
@@ -403,8 +432,9 @@ ClientTransportStream LaunchChromeTlsHelper(
         chrome_tls::EncodeRequest(request);
     const auto deadline = Deadline(options.handshake_timeout +
                                    std::chrono::seconds(3));
-    WriteAll(parent_ipc.Get(), encoded, deadline);
-    auto response_wire = ReadResponse(parent_ipc.Get(), deadline);
+    WriteAll(parent_ipc.Get(), encoded, deadline, options.should_stop);
+    auto response_wire = ReadResponse(
+        parent_ipc.Get(), deadline, options.should_stop);
     ScopedVectorWiper response_wire_wiper(response_wire);
     chrome_tls::Response response = chrome_tls::DecodeResponse(
         response_wire, request.connection_id, request.expected_build_id);

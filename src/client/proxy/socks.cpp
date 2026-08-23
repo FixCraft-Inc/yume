@@ -30,7 +30,8 @@ constexpr uint8_t kCmdUdpAssociate = 0x03;
 constexpr uint8_t kAtypV4 = 0x01;
 constexpr uint8_t kAtypDomain = 0x03;
 constexpr uint8_t kAtypV6 = 0x04;
-constexpr int kSocketBufferBytes = 2 * 1024 * 1024;
+constexpr std::size_t kMaxSocksUdpHeaderBytes = 3U + 1U + 1U + 255U + 2U;
+constexpr int64_t kUdpQueueWarningIntervalMs = 30000;
 
 void validate_listen_port(int port) {
     if (port < 0 || port > 65535) {
@@ -120,10 +121,6 @@ SocksSession::SocksSession(boost::asio::ip::tcp::socket socket,
     read_buf_.resize(util::relay_read_buf_size());
     boost::system::error_code ec;
     socket_.set_option(boost::asio::ip::tcp::no_delay(true), ec);
-    boost::system::error_code recvbuf_ec;
-    socket_.set_option(boost::asio::socket_base::receive_buffer_size(kSocketBufferBytes), recvbuf_ec);
-    boost::system::error_code sendbuf_ec;
-    socket_.set_option(boost::asio::socket_base::send_buffer_size(kSocketBufferBytes), sendbuf_ec);
 }
 
 void SocksSession::start() {
@@ -329,7 +326,7 @@ void SocksSession::start_tunnel() {
         send_reply(kReplyGeneralFailure, [self = shared_from_this()]() { self->close(); });
         return;
     }
-    opened_started_ms_ = util::now_ms();
+    opened_started_ms_ = diagnostics::timing_now_ms();
     YUME_TIMING_LOG("client.socks",
                      "open_start",
                      "stream=" + std::to_string(stream_id_) +
@@ -337,7 +334,10 @@ void SocksSession::start_tunnel() {
 
     tunnel_->register_stream(
         stream_id_,
-        [self = shared_from_this()](const Tunnel::Bytes& data) { self->deliver_from_tunnel(data); },
+        [self = shared_from_this()](const Tunnel::Bytes& data,
+                                    Tunnel::InboundCredit credit) {
+            self->deliver_from_tunnel(data, std::move(credit));
+        },
         [self = shared_from_this()](const std::string&) { self->close_from_tunnel(); },
         [self = shared_from_this()](const std::string& reason) { self->remote_fin_from_tunnel(reason); });
 
@@ -354,36 +354,48 @@ void SocksSession::start_tunnel() {
     // mapped from the server's reason string via reason_to_rep).
     tunnel_->open_stream(stream_id_, target_host_, target_port_,
                          [self = shared_from_this()](bool ok, const std::string& reason) {
-                             // Consumed only by the timing log, which compiles
-                             // out entirely in production builds.
-                             [[maybe_unused]] const int64_t elapsed =
-                                 self->opened_started_ms_ > 0
-                                     ? (util::now_ms() - self->opened_started_ms_)
-                                     : 0;
-                             YUME_TIMING_LOG("client.socks",
-                                              "open_done",
-                                              "stream=" + std::to_string(self->stream_id_) +
-                                                  " ok=" + std::string(ok ? "1" : "0") +
-                                                  " ms=" + std::to_string(elapsed) +
-                                                  " target=" + self->target_host_ + ":" +
-                                                  std::to_string(self->target_port_) +
-                                                  (reason.empty() ? std::string{} : " reason=" + reason));
-                             if (!ok) {
-                                 const uint8_t rep = reason_to_rep(reason);
-                                 const std::string message = "SOCKS open failed (REP=0x" +
-                                     std::to_string(rep) + "): " + reason;
-                                 if (noisy_open_failure(reason)) {
-                                     util::log_info_rate_limited("socks-open-noisy-failure", message, 30000);
-                                 } else {
-                                     util::log_warn(message);
-                                 }
-                                 self->send_reply(rep,
-                                     [self]() { self->close(); });
-                                 return;
-                             }
-                             self->open_confirmed_ = true;
-                             self->send_reply(kReplySuccess,
-                                 [self]() { self->start_client_read(); });
+                             boost::asio::post(
+                                 self->strand_,
+                                 [self, ok, reason]() {
+                                     if (self->closed_) return;
+                                     self->open_result_received_ = true;
+                                     // Consumed only by the timing log, which
+                                     // compiles out entirely in production.
+                                     [[maybe_unused]] const int64_t elapsed =
+                                         diagnostics::elapsed_ms_since(
+                                             self->opened_started_ms_);
+                                     YUME_TIMING_LOG(
+                                         "client.socks",
+                                         "open_done",
+                                         "stream=" + std::to_string(self->stream_id_) +
+                                             " ok=" + std::string(ok ? "1" : "0") +
+                                             " ms=" + std::to_string(elapsed) +
+                                             " target=" + self->target_host_ + ":" +
+                                             std::to_string(self->target_port_) +
+                                             (reason.empty()
+                                                  ? std::string{}
+                                                  : " reason=" + reason));
+                                     if (!ok) {
+                                         const uint8_t rep = reason_to_rep(reason);
+                                         const std::string message =
+                                             "SOCKS open failed (REP=0x" +
+                                             std::to_string(rep) + "): " + reason;
+                                         if (noisy_open_failure(reason)) {
+                                             util::log_info_rate_limited(
+                                                 "socks-open-noisy-failure",
+                                                 message, 30000);
+                                         } else {
+                                             util::log_warn(message);
+                                         }
+                                         self->send_reply(
+                                             rep, [self]() { self->close(); });
+                                         return;
+                                     }
+                                     self->open_confirmed_ = true;
+                                     self->send_reply(
+                                         kReplySuccess,
+                                         [self]() { self->start_client_read(); });
+                                 });
                          });
 }
 
@@ -505,7 +517,7 @@ void SocksSession::on_udp_read(const boost::system::error_code& ec, std::size_t 
             start_udp_read();
             return;
         }
-        auto assoc = std::make_shared<UdpAssoc>();
+        auto assoc = std::make_shared<UdpAssoc>(udp_pending_budget_);
         assoc->host = host;
         assoc->port = port;
         assoc->stream_id = stream_id;
@@ -514,26 +526,27 @@ void SocksSession::on_udp_read(const boost::system::error_code& ec, std::size_t 
 
         tunnel_->register_stream(
             stream_id,
-            [self = shared_from_this(), stream_id](const Tunnel::Bytes& data) { self->deliver_udp(stream_id, data); },
+            [self = shared_from_this(), stream_id](
+                const Tunnel::Bytes& data, Tunnel::InboundCredit credit) {
+                self->deliver_udp(stream_id, data, std::move(credit));
+            },
             [self = shared_from_this(), stream_id](const std::string& reason) {
-                self->close_udp_assoc(stream_id, reason.empty() ? "remote closed" : reason);
+                boost::asio::post(
+                    self->strand_,
+                    [self, stream_id, reason]() {
+                        self->close_udp_assoc(
+                            stream_id,
+                            reason.empty() ? "remote closed" : reason);
+                    });
             });
         tunnel_->open_stream(stream_id, host, port,
                              [self = shared_from_this(), stream_id](bool ok, const std::string& reason) {
-                                 auto it_assoc = self->udp_assoc_by_stream_.find(stream_id);
-                                 if (it_assoc == self->udp_assoc_by_stream_.end()) {
-                                     return;
-                                 }
-                                 auto assoc = it_assoc->second;
-                                 if (!ok) {
-                                     self->close_udp_assoc(stream_id, "open failed: " + reason);
-                                     return;
-                                 }
-                                 assoc->open_confirmed = true;
-                                 while (!assoc->pending.empty()) {
-                                     self->tunnel_->send_data(stream_id, assoc->pending.front());
-                                     assoc->pending.pop_front();
-                                 }
+                                 boost::asio::post(
+                                     self->strand_,
+                                     [self, stream_id, ok, reason]() {
+                                         self->on_udp_open_result(
+                                             stream_id, ok, reason);
+                                     });
                              },
                              "udp");
         it = udp_assoc_.find(key);
@@ -541,17 +554,97 @@ void SocksSession::on_udp_read(const boost::system::error_code& ec, std::size_t 
 
     auto assoc = it->second;
     if (assoc->open_confirmed) {
-        tunnel_->send_data(assoc->stream_id, payload);
-    } else {
-        assoc->pending.push_back(std::move(payload));
+        if (!tunnel_->try_send_data(assoc->stream_id, std::move(payload))) {
+            util::log_warn_rate_limited(
+                "socks-udp-transport-saturated",
+                "SOCKS UDP dropped newest datagram: transport queue is full",
+                kUdpQueueWarningIntervalMs);
+        }
+    } else if (!assoc->pending.try_push(std::move(payload))) {
+        util::log_warn_rate_limited(
+            "socks-udp-open-backlog",
+            "SOCKS UDP dropped newest pre-OPEN datagram: backlog limit is " +
+                std::to_string(detail::kMaxUdpQueuedDatagrams) +
+                " datagrams / " +
+                std::to_string(detail::kMaxUdpQueuedBytes) + " bytes",
+            kUdpQueueWarningIntervalMs);
     }
 
     start_udp_read();
 }
 
-void SocksSession::deliver_udp(uint8_t stream_id, const Tunnel::Bytes& data) {
+void SocksSession::on_udp_open_result(
+    uint8_t stream_id,
+    bool ok,
+    const std::string& reason) {
     auto it = udp_assoc_by_stream_.find(stream_id);
-    if (it == udp_assoc_by_stream_.end() || !udp_active_) {
+    if (it == udp_assoc_by_stream_.end() || closed_) {
+        return;
+    }
+    auto assoc = it->second;
+    assoc->open_result_received = true;
+    if (!ok) {
+        close_udp_assoc(stream_id, "open failed: " + reason);
+        return;
+    }
+
+    assoc->open_confirmed = true;
+    while (auto payload = assoc->pending.pop_front()) {
+        if (!tunnel_->try_send_data(stream_id, std::move(*payload))) {
+            // UDP permits loss. Drop this datagram and the rest of the burst;
+            // later reads can recover once the transport queue drains.
+            assoc->pending.clear();
+            util::log_warn_rate_limited(
+                "socks-udp-open-drain-saturated",
+                "SOCKS UDP dropped pre-OPEN datagrams while draining: "
+                "transport queue is full",
+                kUdpQueueWarningIntervalMs);
+            break;
+        }
+    }
+}
+
+void SocksSession::deliver_udp(
+    uint8_t stream_id,
+    const Tunnel::Bytes& data,
+    Tunnel::InboundCredit inbound_credit) {
+    if (data.size() > std::numeric_limits<std::size_t>::max() -
+                          kMaxSocksUdpHeaderBytes) {
+        return;
+    }
+    auto reservation = udp_local_send_budget_.try_reserve(
+        data.size() + kMaxSocksUdpHeaderBytes);
+    if (!reservation) {
+        util::log_warn_rate_limited(
+            "socks-udp-local-backlog",
+            "SOCKS UDP dropped newest local datagram: send backlog limit is " +
+                std::to_string(detail::kMaxUdpQueuedDatagrams) +
+                " datagrams / " +
+                std::to_string(detail::kMaxUdpQueuedBytes) + " bytes",
+            kUdpQueueWarningIntervalMs);
+        return;
+    }
+    auto payload = std::make_shared<std::vector<uint8_t>>(
+        data.begin(), data.end());
+    auto self = shared_from_this();
+    boost::asio::post(
+        strand_,
+        [self, stream_id, payload,
+         reservation = std::move(*reservation),
+         inbound_credit = std::move(inbound_credit)]() mutable {
+            self->deliver_udp_on_strand(
+                stream_id, std::move(payload), std::move(reservation),
+                std::move(inbound_credit));
+        });
+}
+
+void SocksSession::deliver_udp_on_strand(
+    uint8_t stream_id,
+    std::shared_ptr<std::vector<uint8_t>> data,
+    detail::UdpQueueBudget::Reservation reservation,
+    Tunnel::InboundCredit inbound_credit) {
+    auto it = udp_assoc_by_stream_.find(stream_id);
+    if (it == udp_assoc_by_stream_.end() || !udp_active_ || closed_) {
         return;
     }
     if (udp_client_endpoint_.address().is_unspecified() || udp_client_endpoint_.port() == 0) {
@@ -568,7 +661,7 @@ void SocksSession::deliver_udp(uint8_t stream_id, const Tunnel::Bytes& data) {
     };
     size_t reserve = 0;
     if (!add_size(4, assoc->host.size(), reserve) ||
-        !add_size(reserve, data.size(), reserve) ||
+        !add_size(reserve, data->size(), reserve) ||
         !add_size(reserve, 8, reserve)) {
         return;
     }
@@ -596,13 +689,63 @@ void SocksSession::deliver_udp(uint8_t stream_id, const Tunnel::Bytes& data) {
     }
     resp.push_back(static_cast<uint8_t>((assoc->port >> 8) & 0xFF));
     resp.push_back(static_cast<uint8_t>(assoc->port & 0xFF));
-    resp.insert(resp.end(), data.begin(), data.end());
+    resp.insert(resp.end(), data->begin(), data->end());
 
     auto buffer = std::make_shared<std::vector<uint8_t>>(std::move(resp));
+    enqueue_udp_send(stream_id, std::move(buffer), std::move(reservation),
+                     std::move(inbound_credit));
+}
+
+void SocksSession::enqueue_udp_send(
+    uint8_t stream_id,
+    std::shared_ptr<std::vector<uint8_t>> data,
+    detail::UdpQueueBudget::Reservation reservation,
+    Tunnel::InboundCredit inbound_credit) {
+    udp_send_queue_.push_back(
+        {stream_id, std::move(data), std::move(reservation),
+         std::move(inbound_credit)});
+    if (!udp_send_in_flight_) {
+        do_udp_send();
+    }
+}
+
+void SocksSession::do_udp_send() {
+    if (udp_send_queue_.empty() || !udp_active_ || closed_) {
+        udp_send_in_flight_ = false;
+        return;
+    }
+    udp_send_in_flight_ = true;
+
+    auto send = std::move(udp_send_queue_.front());
+    udp_send_queue_.pop_front();
+    auto data = std::move(send.data);
+    auto reservation = std::move(send.reservation);
+    auto inbound_credit = std::move(send.inbound_credit);
+    const auto endpoint = udp_client_endpoint_;
+
     auto self = shared_from_this();
-    udp_socket_.async_send_to(boost::asio::buffer(*buffer), udp_client_endpoint_,
-                              boost::asio::bind_executor(strand_,
-                                                         [self, buffer](const boost::system::error_code&, std::size_t) {}));
+    udp_socket_.async_send_to(
+        boost::asio::buffer(*data), endpoint,
+        boost::asio::bind_executor(
+            strand_,
+            [self, data, reservation = std::move(reservation),
+             inbound_credit = std::move(inbound_credit)](
+                const boost::system::error_code& ec,
+                std::size_t) mutable {
+                reservation.release_now();
+                inbound_credit.release_now();
+                self->udp_send_in_flight_ = false;
+                if (ec && ec != boost::asio::error::operation_aborted) {
+                    util::log_warn_rate_limited(
+                        "socks-udp-local-send",
+                        "SOCKS UDP local send failed; datagram dropped: " +
+                            ec.message(),
+                        kUdpQueueWarningIntervalMs);
+                }
+                if (!self->closed_) {
+                    self->do_udp_send();
+                }
+            }));
 }
 
 void SocksSession::close_udp_assoc(uint8_t stream_id, const std::string&) {
@@ -613,7 +756,16 @@ void SocksSession::close_udp_assoc(uint8_t stream_id, const std::string&) {
     auto assoc = it->second;
     udp_assoc_by_stream_.erase(it);
     udp_assoc_.erase(udp_assoc_key(assoc->host, assoc->port));
-    tunnel_->unregister_stream(stream_id);
+    std::erase_if(
+        udp_send_queue_,
+        [stream_id](const PendingUdpSend& send) {
+            return send.stream_id == stream_id;
+        });
+    if (assoc->open_result_received) {
+        tunnel_->unregister_stream(stream_id);
+    } else {
+        tunnel_->retire_stream_id(stream_id);
+    }
 }
 
 void SocksSession::start_client_read() {
@@ -638,7 +790,7 @@ void SocksSession::on_client_read(const boost::system::error_code& ec, std::size
     Tunnel::Bytes payload(read_buf_.data(), read_buf_.data() + bytes);
     upload_bytes_ += static_cast<std::uint64_t>(bytes);
     if (first_upload_ms_ == 0) {
-        first_upload_ms_ = util::now_ms();
+        first_upload_ms_ = diagnostics::timing_now_ms();
         [[maybe_unused]] const int64_t open_to_first =
             opened_started_ms_ > 0 ? (first_upload_ms_ - opened_started_ms_) : 0;
         YUME_TIMING_LOG("client.socks",
@@ -675,16 +827,38 @@ void SocksSession::send_client_fin() {
     maybe_finish_cleanly();
 }
 
-void SocksSession::deliver_from_tunnel(const Tunnel::Bytes& data) {
+void SocksSession::deliver_from_tunnel(
+    const Tunnel::Bytes& data,
+    Tunnel::InboundCredit inbound_credit) {
     auto self = shared_from_this();
+    std::string reason;
+    bool closed_by_rejection = false;
+    auto reservation = write_budget_.reserve(
+        data.size(), &reason, &closed_by_rejection);
+    if (!reservation) {
+        if (closed_by_rejection) {
+            boost::asio::post(strand_, [self, reason = std::move(reason)]() {
+                if (!self->closed_) {
+                    util::log_warn(
+                        "SOCKS local write backlog exceeded: " + reason);
+                    self->close();
+                }
+            });
+        }
+        return;
+    }
     auto buf = std::make_shared<std::vector<uint8_t>>(data.begin(), data.end());
-    boost::asio::post(strand_, [self, buf = std::move(buf)]() mutable {
+    boost::asio::post(
+        strand_,
+        [self, buf = std::move(buf),
+         reservation = std::move(*reservation),
+         inbound_credit = std::move(inbound_credit)]() mutable {
         if (self->closed_) {
             return;
         }
         self->download_bytes_ += static_cast<std::uint64_t>(buf->size());
         if (self->first_download_ms_ == 0) {
-            self->first_download_ms_ = util::now_ms();
+            self->first_download_ms_ = diagnostics::timing_now_ms();
             [[maybe_unused]] const int64_t open_to_first =
                 self->opened_started_ms_ > 0
                     ? (self->first_download_ms_ - self->opened_started_ms_)
@@ -695,10 +869,9 @@ void SocksSession::deliver_from_tunnel(const Tunnel::Bytes& data) {
                                  " ms=" + std::to_string(open_to_first) +
                                  " bytes=" + std::to_string(buf->size()));
         }
-        self->write_queue_.emplace_back(std::move(buf), std::function<void()>{});
-        if (!self->write_in_flight_) {
-            self->do_write();
-        }
+        self->enqueue_write_on_strand(
+            std::move(buf), std::function<void()>{},
+            std::move(reservation), std::move(inbound_credit));
     });
 }
 
@@ -720,12 +893,48 @@ void SocksSession::remote_fin_from_tunnel(const std::string&) {
 }
 
 void SocksSession::enqueue_write(std::shared_ptr<std::vector<uint8_t>> data, std::function<void()> on_done) {
-    boost::asio::post(strand_, [self = shared_from_this(), data = std::move(data), on_done = std::move(on_done)]() mutable {
-        self->write_queue_.emplace_back(std::move(data), std::move(on_done));
-        if (!self->write_in_flight_) {
-            self->do_write();
+    auto self = shared_from_this();
+    const std::size_t bytes = data ? data->size() : 0U;
+    std::string reason;
+    bool closed_by_rejection = false;
+    auto reservation = write_budget_.reserve(
+        bytes, &reason, &closed_by_rejection);
+    if (!reservation) {
+        if (closed_by_rejection) {
+            boost::asio::post(strand_, [self, reason = std::move(reason)]() {
+                if (!self->closed_) {
+                    util::log_warn(
+                        "SOCKS local write backlog exceeded: " + reason);
+                    self->close();
+                }
+            });
         }
-    });
+        return;
+    }
+    boost::asio::post(
+        strand_,
+        [self, data = std::move(data), on_done = std::move(on_done),
+         reservation = std::move(*reservation)]() mutable {
+            if (self->closed_) {
+                return;
+            }
+            self->enqueue_write_on_strand(
+                std::move(data), std::move(on_done),
+                std::move(reservation));
+        });
+}
+
+void SocksSession::enqueue_write_on_strand(
+    std::shared_ptr<std::vector<uint8_t>> data,
+    std::function<void()> on_done,
+    WriteReservation reservation,
+    Tunnel::InboundCredit inbound_credit) {
+    write_queue_.push_back(
+        {std::move(data), std::move(on_done), std::move(reservation),
+         std::move(inbound_credit)});
+    if (!write_in_flight_) {
+        do_write();
+    }
 }
 
 void SocksSession::do_write() {
@@ -739,21 +948,29 @@ void SocksSession::do_write() {
 
     auto item = std::move(write_queue_.front());
     write_queue_.pop_front();
-    auto data = item.first;
-    auto done = std::move(item.second);
+    auto data = std::move(item.data);
+    auto done = std::move(item.on_done);
+    auto inbound_credit = std::move(item.inbound_credit);
 
     auto self = shared_from_this();
     boost::asio::async_write(socket_, boost::asio::buffer(*data),
                              boost::asio::bind_executor(strand_,
-                                                        [self, data, done = std::move(done)](const boost::system::error_code& ec, std::size_t) mutable {
-                                                            if (done) {
-                                                                done();
-                                                            }
+                                                        [self, data,
+                                                         done = std::move(done),
+                                                         reservation = std::move(item.reservation),
+                                                         inbound_credit = std::move(inbound_credit)](const boost::system::error_code& ec, std::size_t) mutable {
+                                                            reservation.release_now();
+                                                            inbound_credit.release_now();
                                                             if (ec) {
                                                                 self->close();
                                                                 return;
                                                             }
-                                                            self->do_write();
+                                                            if (done) {
+                                                                done();
+                                                            }
+                                                            if (!self->closed_) {
+                                                                self->do_write();
+                                                            }
                                                         }));
 }
 
@@ -777,6 +994,8 @@ void SocksSession::maybe_finish_cleanly() {
         return;
     }
     closed_ = true;
+    write_queue_.clear();
+    write_budget_.close();
     log_summary_once();
     if (stream_id_ != 0) {
         tunnel_->unregister_stream(stream_id_);
@@ -799,7 +1018,7 @@ void SocksSession::log_summary_once() {
     if (!close_summary_logged_ && (opened_started_ms_ > 0 || upload_bytes_ > 0 || download_bytes_ > 0)) {
         close_summary_logged_ = true;
         [[maybe_unused]] const int64_t elapsed =
-            opened_started_ms_ > 0 ? (util::now_ms() - opened_started_ms_) : 0;
+            diagnostics::elapsed_ms_since(opened_started_ms_);
         YUME_TIMING_LOG("client.socks",
                          "stream_summary",
                          "stream=" + std::to_string(stream_id_) +
@@ -815,17 +1034,33 @@ void SocksSession::close() {
         return;
     }
     closed_ = true;
+    // Queued handshake callbacks commonly capture this session. Dropping the
+    // queue here both releases retained payloads and prevents a close-time
+    // self-cycle; the in-flight item remains owned by its Asio handler.
+    write_queue_.clear();
+    write_budget_.close();
     log_summary_once();
     if (stream_id_ != 0) {
         tunnel_->send_close(stream_id_, "client closed");
-        tunnel_->unregister_stream(stream_id_);
+        if (open_result_received_) {
+            tunnel_->unregister_stream(stream_id_);
+        } else {
+            tunnel_->retire_stream_id(stream_id_);
+        }
         stream_id_ = 0;
     }
     release_pool_session();
     for (auto& entry : udp_assoc_by_stream_) {
         tunnel_->send_close(entry.first, "udp associate closed");
-        tunnel_->unregister_stream(entry.first);
+        if (entry.second->open_result_received) {
+            tunnel_->unregister_stream(entry.first);
+        } else {
+            tunnel_->retire_stream_id(entry.first);
+        }
     }
+    udp_pending_budget_.close();
+    udp_local_send_budget_.close();
+    udp_send_queue_.clear();
     udp_assoc_by_stream_.clear();
     udp_assoc_.clear();
     if (udp_active_) {

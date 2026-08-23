@@ -8,6 +8,11 @@ YUME is a stealth transport and relay. It does not provide anonymity by
 itself. The route you choose decides who can see the client, who can see
 the target, and how much trust is placed in the YUME server.
 
+The current qualified-development scope is the glibc Linux x86-64 CLI/server/
+helper slice. Android diagrams below describe the intended architecture only:
+the separate Android client remains on the incompatible `2.0-dev1` wire and is
+not a supported or validated `2.0-dev6` path.
+
 ## Diagram Style
 
 Every diagram uses the same fixed-width box shape. The format is stable
@@ -156,9 +161,9 @@ application connections are independent logical streams inside it.
 
 ## Android Routes
 
-On Android, apps usually do not speak SOCKS directly. YUME captures app
-traffic through Android `VpnService`, then hands the captured packets to
-one of the routing backends.
+This is a future/current-design diagram, not an operational support claim. Once
+ported, Android apps would be captured through `VpnService`, then handed to one
+of the routing backends.
 
 ```text
 +--------------------------------+
@@ -780,8 +785,8 @@ time:
 
 - direct internet from the server to the target
 - desktop YUME SOCKS to the same target
-- Android tun2socks to the same target
-- Android native direct to the same target
+- Android tun2socks to the same target (only after the dev6 port/qualification)
+- Android native direct to the same target (only after the dev6 port/qualification)
 - production 64 KiB DATA geometry versus explicitly labelled custom geometry
 - stream-core, actual SOCKS, and actual packet-ABI boundaries as separate runs
 

@@ -1,4 +1,4 @@
-.TH YUME-GUI 1 "2026-06-27" "YUME 1.1" "YUME Manual"
+.TH YUME-GUI 1 "2026-08-23" "YUME 2.0-dev6" "YUME Manual"
 .SH NAME
 yume-gui \- desktop UI for the YUME post-quantum stealth transport
 .SH SYNOPSIS
@@ -61,9 +61,10 @@ Project version and license notice.
 .SH OPTIONS
 .TP
 .B --headless
-Run a no-window smoke test of the embedded facade. Exits after
-verifying that client and server sessions initialize. Useful on CI
-hosts without a display server.
+Run a no-window facade diagnostic. It validates existing configuration
+files and attempts start/stop for valid profiles. The current command
+still exits successfully when profiles are absent or a valid session
+fails to start, so it does not by itself verify a working connection.
 .TP
 .B --start-minimized
 Open hidden. Use the tray menu (when available) to show the main
@@ -93,6 +94,16 @@ the sidebar layout adapts to narrow widths.
 .PP
 There is no global accelerator table yet. Use the sidebar to switch
 pages.
+.SH DEVELOPMENT STATUS
+The dev6 GUI compiles and links, but it is not yet a qualified frontend.
+Shared client/server lifecycle serialization, prompt pre-ready cancellation,
+and atomic configuration replacement are covered by core/facade tests.
+Obsolete inner-crypto controls/status, the GUI page's detached resolver
+lifetime, partial chat/log delivery, honest headless failure behavior, and a
+real window-level connect/stop/reconnect test remain GUI-owned work.
+Use the CLI for supported automation and do not treat
+.B --headless
+as release evidence.
 .SH SYSTEM TRAY
 When tray support is compiled in and not disabled with
 .BR --no-tray ,

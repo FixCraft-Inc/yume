@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <condition_variable>
 #include <mutex>
+#include <system_error>
 
 #include <boost/asio/ip/address_v4.hpp>
 #include <nlohmann/json.hpp>
@@ -39,6 +40,19 @@ struct OpenWaitState {
     bool closed{false};
     std::string payload;
 };
+
+QueueResult queue_result(
+    TransportCore::DataWriteAdmission admission) noexcept {
+    using Admission = TransportCore::DataWriteAdmission;
+    switch (admission) {
+    case Admission::accepted: return QueueResult::ok;
+    case Admission::would_block: return QueueResult::would_block;
+    case Admission::timeout: return QueueResult::timeout;
+    case Admission::stopped: return QueueResult::stopped;
+    case Admission::invalid: return QueueResult::invalid;
+    }
+    return QueueResult::invalid;
+}
 
 }  // namespace
 
@@ -118,8 +132,11 @@ bool validate_assigned_ipv4_packet(const Assignment& assignment,
     return true;
 }
 
-PacketChannel::PacketChannel(std::shared_ptr<Tunnel> tunnel)
-    : tunnel_(std::move(tunnel)) {}
+PacketChannel::PacketChannel(
+    std::shared_ptr<Tunnel> tunnel,
+    std::shared_ptr<RuntimeLifetimeGate> lifetime_gate)
+    : tunnel_(std::move(tunnel))
+    , lifetime_gate_(std::move(lifetime_gate)) {}
 
 PacketChannel::~PacketChannel() {
     close("packet channel destroyed");
@@ -129,30 +146,79 @@ std::shared_ptr<PacketChannel> PacketChannel::open(
     std::shared_ptr<Tunnel> tunnel,
     const std::vector<std::string>& server_capabilities,
     std::chrono::milliseconds timeout,
-    std::string* error) {
+    std::string* error,
+    std::shared_ptr<RuntimeLifetimeGate> lifetime_gate,
+    OpenResult* open_result) {
+    auto fail = [&](OpenStatus status, std::string detail) {
+        if (error) *error = detail;
+        if (open_result) {
+            open_result->status = status;
+            open_result->detail = std::move(detail);
+        }
+        return std::shared_ptr<PacketChannel>{};
+    };
+    auto succeed = [&] {
+        if (error) error->clear();
+        if (open_result) {
+            open_result->status = OpenStatus::success;
+            open_result->detail.clear();
+        }
+    };
+
     if (!tunnel) {
-        if (error) *error = "packet channel requires a tunnel";
-        return {};
+        return fail(OpenStatus::invalid_argument,
+                    "packet channel requires a tunnel");
+    }
+    if (timeout.count() < 0) {
+        return fail(OpenStatus::invalid_argument,
+                    "packet channel OPEN timeout must be non-negative");
+    }
+    if (!tunnel->is_alive()) {
+        return fail(OpenStatus::not_running,
+                    "packet transport is not running");
     }
     if (!has_packet_bulk_capability(server_capabilities)) {
-        if (error) *error = "server does not advertise packet_bulk_v1";
-        return {};
+        return fail(OpenStatus::capability_unavailable,
+                    "server does not advertise packet_bulk_v1");
     }
 
+    struct RuntimeRefs {
+        RuntimeLifetimeGate::Lease lease;
+        std::shared_ptr<Tunnel> tunnel;
+    } runtime;
+    if (lifetime_gate) {
+        runtime.lease = lifetime_gate->try_acquire();
+        if (!runtime.lease) {
+            return fail(OpenStatus::not_running,
+                        "packet runtime is stopping");
+        }
+    }
+    // RuntimeRefs declares the lease before the executor-bound pointer, so
+    // reverse destruction drops Tunnel ownership before teardown can observe
+    // the lease count reaching zero. Leave the by-value parameter empty.
+    runtime.tunnel = std::move(tunnel);
+
     auto channel = std::shared_ptr<PacketChannel>(
-        new PacketChannel(std::move(tunnel)));
-    channel->stream_id_ = channel->tunnel_->reserve_stream_id();
+        new PacketChannel(runtime.tunnel, lifetime_gate));
+    channel->stream_id_ = runtime.tunnel->reserve_stream_id();
     if (channel->stream_id_ == 0) {
-        if (error) *error = "no stream id available for packet channel";
-        return {};
+        if (!runtime.tunnel->is_alive() ||
+            (lifetime_gate && !lifetime_gate->active())) {
+            return fail(OpenStatus::not_running,
+                        "packet transport stopped while reserving a stream");
+        }
+        return fail(OpenStatus::resource_exhausted,
+                    "no stream id available for packet channel");
     }
 
     auto wait = std::make_shared<OpenWaitState>();
     std::weak_ptr<PacketChannel> weak = channel;
-    channel->tunnel_->register_stream(
+    runtime.tunnel->register_stream(
         channel->stream_id_,
-        [weak](const Bytes& payload) {
-            if (auto self = weak.lock()) self->on_data(payload);
+        [weak](const Bytes& payload, Tunnel::InboundCredit credit) {
+            if (auto self = weak.lock()) {
+                self->on_data(payload, std::move(credit));
+            }
         },
         [weak, wait](const std::string& reason) {
             {
@@ -167,7 +233,7 @@ std::shared_ptr<PacketChannel> PacketChannel::open(
     nlohmann::json request{
         {"proto", std::string(protocol::packet_bulk::kOpenProto)},
     };
-    channel->tunnel_->open_relay_stream(
+    runtime.tunnel->open_relay_stream(
         channel->stream_id_, request,
         [wait](bool ok, const std::string& payload) {
             {
@@ -185,34 +251,66 @@ std::shared_ptr<PacketChannel> PacketChannel::open(
         if (!wait->cv.wait_for(lock, timeout, [&] {
                 return wait->done || wait->closed;
             })) {
-            if (error) *error = "packet channel OPEN timed out";
             lock.unlock();
+            // OPEN crossed the ordered transport but never received a peer
+            // disposition. Keep this id tombstoned for the connection so a
+            // late ACK or DATA record cannot alias a later packet channel.
+            runtime.tunnel->retire_stream_id(channel->stream_id_);
             channel->close("packet channel OPEN timed out");
-            return {};
+            return fail(OpenStatus::timeout,
+                        "packet channel OPEN timed out");
         }
-        if (!wait->done || !wait->ok) {
-            if (error) {
-                *error = wait->payload.empty()
-                    ? "packet channel OPEN failed" : wait->payload;
-            }
+        if (!wait->done) {
+            const std::string detail = wait->payload.empty()
+                ? "packet transport closed during OPEN" : wait->payload;
             lock.unlock();
-            channel->close("packet channel OPEN failed");
-            return {};
+            channel->close(detail);
+            return fail(OpenStatus::not_running, detail);
+        }
+        if (!wait->ok) {
+            const std::string detail = wait->payload.empty()
+                ? "packet channel OPEN rejected" : wait->payload;
+            lock.unlock();
+            channel->close(detail);
+            return fail(OpenStatus::peer_rejected, detail);
         }
         ack = wait->payload;
     }
-    if (!parse_packet_assignment(ack, &channel->assignment_, error)) {
+    std::string parse_error;
+    if (!parse_packet_assignment(
+            ack, &channel->assignment_, &parse_error)) {
         channel->close("malformed packet channel acknowledgement");
-        return {};
+        return fail(OpenStatus::protocol_error, parse_error.empty()
+            ? "malformed packet channel acknowledgement" : parse_error);
     }
-    channel->sender_ = std::thread([self = channel.get()] {
-        self->sender_loop();
-    });
+    if (lifetime_gate && !lifetime_gate->active()) {
+        channel->close("packet runtime stopped during OPEN");
+        return fail(OpenStatus::not_running,
+                    "packet runtime stopped during OPEN");
+    }
+    try {
+        channel->sender_ = std::thread([self = channel.get()] {
+            self->sender_loop();
+        });
+    } catch (const std::system_error& ex) {
+        const std::string detail =
+            std::string("packet sender could not start: ") + ex.what();
+        channel->close(detail);
+        return fail(OpenStatus::resource_exhausted, detail);
+    }
+    succeed();
     return channel;
 }
 
 QueueResult PacketChannel::write_packets(const std::vector<Bytes>& packets,
                                          std::string* error) {
+    return write_packets(packets, std::chrono::milliseconds{0}, error);
+}
+
+QueueResult PacketChannel::write_packets(
+    const std::vector<Bytes>& packets,
+    std::chrono::milliseconds timeout,
+    std::string* error) {
     if (closed_.load(std::memory_order_acquire)) {
         if (error) *error = "packet channel is closed";
         return QueueResult::stopped;
@@ -223,7 +321,7 @@ QueueResult PacketChannel::write_packets(const std::vector<Bytes>& packets,
             return QueueResult::invalid;
         }
     }
-    return engine_.enqueue_outbound(packets, error);
+    return engine_.enqueue_outbound(packets, timeout, error);
 }
 
 QueueResult PacketChannel::read_packets(std::size_t max_packets,
@@ -239,7 +337,9 @@ EngineStats PacketChannel::stats() const {
     return engine_.stats();
 }
 
-void PacketChannel::on_data(const Bytes& payload) {
+void PacketChannel::on_data(
+    const Bytes& payload,
+    runtime::InboundCredit inbound_credit) {
     std::string reason;
     auto batch = protocol::packet_bulk::decode_batch(payload, &reason);
     if (!batch.has_value()) {
@@ -253,7 +353,8 @@ void PacketChannel::on_data(const Bytes& payload) {
             return;
         }
     }
-    const auto result = engine_.accept_inbound_batch(std::move(*batch), &reason);
+    const auto result = engine_.accept_inbound_batch(
+        std::move(*batch), &reason, std::move(inbound_credit));
     if (result != QueueResult::ok) {
         stop_local(reason.empty() ? "packet inbound admission failed" : reason);
     }
@@ -273,17 +374,40 @@ void PacketChannel::sender_loop() {
             break;
         }
         std::weak_ptr<PacketChannel> weak = weak_from_this();
-        if (!tunnel_->try_send_data(
-                stream_id_, std::move(payload),
-                [weak](bool ok, std::size_t, const std::string& error) {
-                    if (!ok) {
-                        if (auto self = weak.lock()) {
-                            self->stop_local(error.empty()
-                                ? "packet transport write failed" : error);
+        RuntimeLifetimeGate::Lease runtime_lease;
+        if (lifetime_gate_) {
+            runtime_lease = lifetime_gate_->try_acquire();
+            if (!runtime_lease) {
+                stop_local("packet runtime is stopping");
+                break;
+            }
+        }
+        auto tunnel = tunnel_.lock();
+        if (!tunnel || !tunnel->is_alive()) {
+            stop_local("packet transport is no longer active");
+            break;
+        }
+        auto wait_send =
+            [tunnel, stream_id = stream_id_, weak](
+                Bytes&& pending,
+                std::chrono::milliseconds timeout) {
+                return queue_result(tunnel->wait_send_data(
+                    stream_id, std::move(pending), timeout,
+                    [weak](bool ok, std::size_t,
+                           const std::string& error) {
+                        if (!ok) {
+                            if (auto self = weak.lock()) {
+                                self->stop_local(error.empty()
+                                    ? "packet transport write failed" : error);
+                            }
                         }
-                    }
-                })) {
-            stop_local("packet transport backpressure");
+                    }));
+            };
+        const auto admission = wait_for_transport_capacity(
+            &payload, wait_send, closed_, &reason);
+        if (admission != QueueResult::ok) {
+            stop_local(reason.empty()
+                ? "packet transport admission failed" : reason);
             break;
         }
     }
@@ -294,20 +418,30 @@ void PacketChannel::stop_local(const std::string& reason) {
         return;
     }
     engine_.stop(reason);
-    if (tunnel_ && stream_id_ != 0) {
-        tunnel_->send_close(stream_id_, reason);
-        tunnel_->unregister_stream(stream_id_);
+    if (stream_id_ != 0) {
+        RuntimeLifetimeGate::Lease runtime_lease;
+        if (lifetime_gate_) {
+            runtime_lease = lifetime_gate_->try_acquire();
+            if (!runtime_lease) {
+                return;
+            }
+        }
+        if (auto tunnel = tunnel_.lock(); tunnel && tunnel->is_alive()) {
+            tunnel->send_close(stream_id_, reason);
+            tunnel->unregister_stream(stream_id_);
+        }
     }
 }
 
 void PacketChannel::close(const std::string& reason) {
     stop_local(reason);
+    std::lock_guard<std::mutex> lock(sender_join_mu_);
     if (sender_.joinable()) {
-        if (sender_.get_id() == std::this_thread::get_id()) {
-            sender_.detach();
-        } else {
-            sender_.join();
-        }
+        // The sender holds a non-owning pointer and never calls close(); its
+        // lifetime is controlled by external PacketChannel owners. Joining
+        // is therefore the ownership invariant. Detaching here would let the
+        // sender continue through a destroyed PacketChannel.
+        sender_.join();
     }
 }
 

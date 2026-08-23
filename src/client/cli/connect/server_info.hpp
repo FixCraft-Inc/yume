@@ -40,9 +40,6 @@ struct ServerInfoPayload {
     bool server_cap_pq = false;
     bool server_cap_argon2 = false;
     bool server_cap_pbkdf2 = false;
-    bool server_hop_enabled = false;
-    std::uint32_t server_hop_interval_ms = 0;
-    std::int64_t server_time_ms = 0;
 };
 
 ServerInfoPayload parse_server_info_payload(const protocol::Frame& frame);

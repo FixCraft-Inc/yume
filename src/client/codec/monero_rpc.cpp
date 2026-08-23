@@ -73,6 +73,10 @@ private:
                 if (ec || self->closed_) {
                     return;
                 }
+                if (self->stream_id_ != 0 &&
+                    !self->open_result_received_) {
+                    self->tunnel_->retire_stream_id(self->stream_id_);
+                }
                 self->fail_local(504, reason);
             }));
     }
@@ -167,9 +171,12 @@ private:
         }
         tunnel_->register_stream(
             stream_id_,
-            [self = shared_from_this()](const Tunnel::Bytes& data) {
-                boost::asio::post(self->strand_, [self, data]() {
-                    self->on_codec_data(data);
+            [self = shared_from_this()](const Tunnel::Bytes& data,
+                                        Tunnel::InboundCredit credit) {
+                boost::asio::post(
+                    self->strand_,
+                    [self, data, credit = std::move(credit)]() mutable {
+                    self->on_codec_data(data, std::move(credit));
                 });
             },
             [self = shared_from_this()](const std::string& reason) {
@@ -194,6 +201,7 @@ private:
     }
 
     void on_open_result(bool ok, const std::string& reason) {
+        open_result_received_ = true;
         if (closed_) {
             return;
         }
@@ -208,7 +216,8 @@ private:
         arm_deadline(kCodecResponseTimeout, "Monero RPC backend timed out");
     }
 
-    void on_codec_data(const Tunnel::Bytes& data) {
+    void on_codec_data(const Tunnel::Bytes& data,
+                       Tunnel::InboundCredit credit) {
         if (closed_ || responded_) {
             return;
         }
@@ -227,7 +236,9 @@ private:
             return;
         }
         responded_ = true;
-        write_http_response(app_codec::build_client_http_response(envelope.response));
+        write_http_response(
+            app_codec::build_client_http_response(envelope.response),
+            std::move(credit));
     }
 
     void on_codec_close(const std::string& reason) {
@@ -249,7 +260,9 @@ private:
             make_error_response(status, message)));
     }
 
-    void write_http_response(std::string response) {
+    void write_http_response(
+        std::string response,
+        Tunnel::InboundCredit inbound_credit = {}) {
         timer_.cancel();
         auto data = std::make_shared<std::string>(std::move(response));
         auto self = shared_from_this();
@@ -258,7 +271,10 @@ private:
             boost::asio::buffer(*data),
             boost::asio::bind_executor(
                 strand_,
-                [self, data](const boost::system::error_code&, std::size_t) {
+                [self, data,
+                 inbound_credit = std::move(inbound_credit)](
+                    const boost::system::error_code&, std::size_t) mutable {
+                    inbound_credit.release_now();
                     self->close();
                 }));
     }
@@ -286,6 +302,7 @@ private:
     boost::asio::streambuf request_buf_;
     app_codec::HttpRequest request_;
     std::uint8_t stream_id_{0};
+    bool open_result_received_{false};
     bool responded_{false};
     bool closed_{false};
 };

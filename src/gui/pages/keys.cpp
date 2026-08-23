@@ -38,6 +38,11 @@ public:
             const auto p = facade::config_io::default_data_dir() / "authorized_keys.meta.json";
             std::strncpy(meta_path_, p.string().c_str(), sizeof(meta_path_) - 1);
         }
+        if (admin_keys_path_[0] == 0) {
+            const auto p = facade::config_io::default_data_dir() / "admin_keys";
+            std::strncpy(admin_keys_path_, p.string().c_str(),
+                         sizeof(admin_keys_path_) - 1);
+        }
     }
 
     void render(AppContext& /*ctx*/) override {
@@ -94,6 +99,10 @@ public:
             ui::field_label("metadata JSON");
             ImGui::SetNextItemWidth(ui::form_width());
             ImGui::InputText("##meta_path", meta_path_, sizeof(meta_path_));
+            ui::field_label("admin_keys");
+            ImGui::SetNextItemWidth(ui::form_width());
+            ImGui::InputText("##admin_keys_path", admin_keys_path_,
+                             sizeof(admin_keys_path_));
 
             const float button_h = 44 * sc;
             if (ui::secondary_button("Refresh",
@@ -119,7 +128,8 @@ public:
                     meta.alias = import_alias_;
                     std::string err;
                     const bool ok = facade::keys::append_authorized(
-                        auth_keys_path_, meta_path_, import_buf_, meta, &err);
+                        auth_keys_path_, meta_path_, admin_keys_path_,
+                        import_buf_, meta, &err);
                     last_message_ = ok ? "Imported." : ("Failed: " + err);
                     last_was_error_ = !ok;
                     if (ok) {
@@ -199,6 +209,7 @@ private:
     char base_name_[128] = {'i','d','_','e','d','2','5','5','1','9','\0'};
     char auth_keys_path_[512]{};
     char meta_path_[512]{};
+    char admin_keys_path_[512]{};
 
     char import_buf_[4096]{};
     char import_alias_[128]{};

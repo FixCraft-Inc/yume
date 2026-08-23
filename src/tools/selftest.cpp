@@ -7,7 +7,9 @@
 #include "tools/selftest/runner.hpp"
 
 #include "core/protocol/packet_bulk.hpp"
+#include "core/runtime/local_runtime.hpp"
 #include "core/runtime/system_profile.hpp"
+#include "core/security/crypto.hpp"
 #include "core/security/ratchet.hpp"
 #include "selftest/runtime.hpp"
 #include "selftest/render.hpp"
@@ -18,6 +20,7 @@
 #include "selftest/telemetry.hpp"
 
 #include <basefwx/crypto.hpp>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -183,7 +186,10 @@ Args parse_args(int argc, char** argv) {
             args.bulk_mib = std::max(1, std::stoi(require_value(i, arg)));
             args.bulk_mib_override = true;
         } else if (arg == "--tunnels") {
-            args.tunnels = std::max(1, std::stoi(require_value(i, arg)));
+            args.tunnels = std::stoi(require_value(i, arg));
+            if (args.tunnels < 1 || args.tunnels > 16) {
+                throw std::runtime_error("--tunnels must be in 1..16");
+            }
             args.tunnel_count_override = true;
         } else if (arg == "--rekey-window") {
             args.rekey_window = std::stoi(require_value(i, arg));
@@ -236,7 +242,8 @@ struct Keyset {
     fs::path cert;
     fs::path key;
     fs::path authorized_keys;
-    fs::path client_key;
+    fs::path authorized_keys_meta;
+    std::vector<fs::path> client_keys;
     fs::path obfs_secret;
     fs::path inner_psk;
 };
@@ -281,7 +288,8 @@ Keyset generate_keyset(const Args& args, const fs::path& workdir) {
         workdir / "server.crt",
         workdir / "server.key",
         workdir / "authorized_keys",
-        workdir / "client.key",
+        workdir / "authorized_keys.json",
+        {},
         workdir / ".secrets" / "obfs.hex",
         workdir / ".secrets" / "inner-psk.hex",
     };
@@ -295,30 +303,51 @@ Keyset generate_keyset(const Args& args, const fs::path& workdir) {
         "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
     }, workdir, workdir / "openssl-cert.log");
 
-    const fs::path prefix = workdir / "client";
-    run_checked({args.yumed.string(), "--keys-gen", prefix.string()}, workdir, workdir / "keys-gen.log");
-    const fs::path client_pub = workdir / "client.pub";
-    if (!fs::exists(ks.client_key) || !fs::exists(client_pub)) {
-        throw std::runtime_error("yumed --keys-gen did not produce client keypair");
-    }
-    fs::copy_file(client_pub, ks.authorized_keys, fs::copy_options::overwrite_existing);
+    std::string authorized_contents;
+    nlohmann::json metadata = nlohmann::json::object();
+    ks.client_keys.reserve(static_cast<std::size_t>(args.tunnels));
+    for (int tunnel = 1; tunnel <= args.tunnels; ++tunnel) {
+        const std::string stem = tunnel == 1
+            ? "client" : "client-" + std::to_string(tunnel);
+        const fs::path prefix = workdir / stem;
+        const fs::path client_key = workdir / (stem + ".key");
+        const fs::path client_pub = workdir / (stem + ".pub");
+        run_checked(
+            {args.yumed.string(), "--keys-gen", prefix.string()},
+            workdir,
+            workdir / (stem + "-keys-gen.log"));
+        if (!fs::exists(client_key) || !fs::exists(client_pub)) {
+            throw std::runtime_error(
+                "yumed --keys-gen did not produce selftest keypair " +
+                std::to_string(tunnel));
+        }
+        ks.client_keys.push_back(client_key);
 
-    const fs::path der = workdir / "client.pub.der";
-    run_checked({
-        "openssl", "pkey", "-pubin",
-        "-in", client_pub.string(),
-        "-outform", "DER",
-        "-out", der.string(),
-    }, workdir, workdir / "openssl-pubder.log");
-    const std::string fp = sha256_hex(read_file(der));
-    std::ostringstream meta;
-    meta << "{\n"
-         << "  \"" << fp << "\": {\n"
-         << "    \"alias\": \"selftest\",\n"
-         << "    \"permissions\": { \"allow_local_ip\": true }\n"
-         << "  }\n"
-         << "}\n";
-    write_text(ks.authorized_keys.string() + ".json", meta.str());
+        // Each identity is two consecutive PEM blocks. Concatenating complete
+        // composite bundles is the authorized-store format; the server never
+        // matches the classical half independently.
+        const std::vector<std::uint8_t> bundle = read_file(client_pub);
+        const yume::crypto::CompositePublicKey identity =
+            yume::crypto::parse_composite_identity(bundle);
+        if (!identity.valid()) {
+            throw std::runtime_error(
+                "selftest client key is not a composite identity: " +
+                client_pub.string());
+        }
+        authorized_contents.append(
+            reinterpret_cast<const char*>(bundle.data()), bundle.size());
+        if (authorized_contents.empty() || authorized_contents.back() != '\n') {
+            authorized_contents.push_back('\n');
+        }
+        const std::string fingerprint =
+            yume::crypto::composite_fingerprint(identity);
+        metadata[fingerprint] = {
+            {"alias", "selftest-tunnel-" + std::to_string(tunnel)},
+            {"permissions", {{"allow_local_ip", true}}},
+        };
+    }
+    write_text(ks.authorized_keys.string(), authorized_contents);
+    write_text(ks.authorized_keys_meta.string(), metadata.dump(2) + "\n");
     write_secret_file(ks.obfs_secret);
     write_secret_file(ks.inner_psk);
     return ks;
@@ -331,6 +360,7 @@ std::vector<std::pair<std::string, std::string>> run_env(const Args& args,
     (void)server;
     std::vector<std::pair<std::string, std::string>> env{
         {"HOME", (workdir / "home").string()},
+        {"XDG_RUNTIME_DIR", (workdir / "runtime").string()},
     };
     return env;
 }
@@ -350,7 +380,9 @@ public:
         , workdir_(workdir)
         , yumed_port_(yumed_port)
         , socks_port_(socks_port)
-        , cover_port_(cover_port) {}
+        , cover_port_(cover_port)
+        , instance_name_("selftest-" + std::to_string(yumed_port) + "-" +
+                         std::to_string(socks_port)) {}
 
     void start(Breakdown& breakdown) {
         std::vector<std::string> server_argv{
@@ -359,6 +391,10 @@ public:
             "--cert", ks_.cert.string(),
             "--key", ks_.key.string(),
             "--auth-keys", ks_.authorized_keys.string(),
+            // Without this the meta file above is written and never read, so
+            // the key never inherits allow_local_ip and every routed loopback
+            // benchmark fails with "blocked destination".
+            "--auth-keys-meta", ks_.authorized_keys_meta.string(),
             "--allow-local-ip",
             "--threads", std::to_string(args_.server_threads),
             "--obfs-secret-file", ks_.obfs_secret.string(),
@@ -387,10 +423,11 @@ public:
             args_.yume.string(),
             "--server", "127.0.0.1",
             "--port", std::to_string(yumed_port_),
-            "--auth", ks_.client_key.string(),
+            "--auth", ks_.client_keys.front().string(),
             "--socks", std::to_string(socks_port_),
             "--allow-local-ip",
             "--tunnels", std::to_string(args_.tunnels),
+            "--instance", instance_name_,
             "--non-interactive",
             "--accept-monitoring",
             "--boring",
@@ -398,6 +435,10 @@ public:
             "--obfs-secret-file", ks_.obfs_secret.string(),
             "--inner-psk-file", ks_.inner_psk.string(),
         };
+        for (std::size_t index = 1; index < ks_.client_keys.size(); ++index) {
+            client_argv.push_back("--secondary-auth");
+            client_argv.push_back(ks_.client_keys[index].string());
+        }
         if (args_.client_threads > 0) {
             client_argv.push_back("--threads");
             client_argv.push_back(std::to_string(args_.client_threads));
@@ -419,7 +460,7 @@ public:
             throw std::runtime_error("yume did not start SOCKS; see " + client_->log_path().string());
         }
         breakdown.client_socks_ms = elapsed_ms(client_start, Clock::now());
-        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        verify_authenticated_tunnel_pool(breakdown);
     }
 
     void stop() {
@@ -428,6 +469,54 @@ public:
     }
 
 private:
+    void verify_authenticated_tunnel_pool(Breakdown& breakdown) const {
+        const fs::path socket_path =
+            workdir_ / "runtime" / "yume" /
+            ("client-" + instance_name_ + ".sock");
+        const auto deadline = Clock::now() + std::chrono::seconds(5);
+        std::string last_error;
+        while (Clock::now() < deadline) {
+            std::string request_error;
+            const nlohmann::json response = yume::local_runtime::Server::request(
+                socket_path.string(),
+                {{"op", "runtime.status"}, {"args", nlohmann::json::object()}},
+                &request_error,
+                1000);
+            if (request_error.empty() && response.value("ok", false) &&
+                response.contains("result")) {
+                const auto& status = response["result"];
+                const auto requested = status.value("requested_tunnels", 0U);
+                const auto authenticated =
+                    status.value("authenticated_tunnels", 0U);
+                const auto live = status.value("live_tunnels", 0U);
+                breakdown.requested_tunnels = static_cast<int>(requested);
+                breakdown.authenticated_tunnels =
+                    static_cast<int>(authenticated);
+                breakdown.live_tunnels = static_cast<int>(live);
+                if (requested == static_cast<unsigned>(args_.tunnels) &&
+                    authenticated == requested && live == requested) {
+                    std::cerr << kBenchLogPrefix
+                              << " tunnel pool requested=" << requested
+                              << " authenticated=" << authenticated
+                              << " live=" << live << "\n";
+                    return;
+                }
+                last_error = "tunnel pool requested=" +
+                    std::to_string(requested) + " authenticated=" +
+                    std::to_string(authenticated) + " live=" +
+                    std::to_string(live);
+            } else {
+                last_error = request_error.empty()
+                    ? response.value("error", "invalid runtime status response")
+                    : request_error;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        }
+        throw std::runtime_error(
+            "selftest did not obtain the required authenticated tunnel pool" +
+            (last_error.empty() ? std::string{} : ": " + last_error));
+    }
+
     const Args& args_;
     const Keyset& ks_;
     const Config& cfg_;
@@ -435,6 +524,7 @@ private:
     int yumed_port_{0};
     int socks_port_{0};
     int cover_port_{0};
+    std::string instance_name_;
     std::unique_ptr<ChildProcess> server_;
     std::unique_ptr<ChildProcess> client_;
 };

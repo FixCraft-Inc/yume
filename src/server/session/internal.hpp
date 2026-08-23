@@ -56,6 +56,7 @@
 #include "core/version.hpp"
 #include "server/auth/auth.hpp"
 #include "server/config/config.hpp"
+#include "core/diagnostics/timing.hpp"
 #include "util.hpp"
 
 #if YUME_USE_BASEFWX
@@ -78,21 +79,17 @@ inline constexpr int64_t kIdleTimeoutMs = 90 * 1000;
 inline constexpr int64_t kIdleCheckIntervalMs = 30 * 1000;
 inline constexpr int64_t kFrameHeaderTimeoutMs = 90 * 1000;
 inline constexpr int64_t kFramePayloadTimeoutMs = 30 * 1000;
-// Decrypt-time hop-key tolerance. With hop_interval_ms=500 (default),
-// 120 hops = ±60 s of clock-drift / queue-delay tolerance. Wide enough
-// for an Android client whose outbound TLS pipe backs up under congested
-// upload (frames can sit queued 12+ s, pushing their hop_id outside a
-// narrower window and triggering a spurious "DATA decrypt failed" reset).
-inline constexpr std::uint64_t kHopDecryptWindow = 120;
 inline constexpr int64_t kResolverTimeoutMs = 8000;
 inline constexpr int64_t kConnectTimeoutMs = 15000;
 inline constexpr int64_t kReverseAcceptTimeoutMs = 30000;
 inline constexpr uint32_t kMaxWriteQueueSize = 512;
 inline constexpr uint32_t kWriteQueueHighWatermark = 64;
 inline constexpr uint32_t kWriteQueueLowWatermark = 16;
+inline constexpr std::size_t kH2AppWriteHighWatermarkBytes = 4U * 1024U * 1024U;
+inline constexpr std::size_t kH2AppWriteLowWatermarkBytes = 1U * 1024U * 1024U;
+inline constexpr std::size_t kH2AppWriteMaxBytes = 32U * 1024U * 1024U;
 inline constexpr uint32_t kMaxWriteBatchFrames = 64;
 inline constexpr std::size_t kMaxWriteBatchBytes = 1024 * 1024;
-inline constexpr int kSocketBufferBytes = 2 * 1024 * 1024;
 inline constexpr const char kBenchSinkProto[] = "bench-sink-v1";
 inline constexpr const char kBenchSourceProto[] = "bench-source-v1";
 inline constexpr const char kBenchEchoProto[] = "bench-message-echo-v1";
@@ -165,7 +162,7 @@ void prefer_ipv4_endpoints(std::vector<Endpoint>* endpoints) {
 // Self-contained async helper used by the upstream-connect path. Kept fully
 // in the header because more than one session_*.cpp may instantiate it once
 // handle_open and friends are split out; it only depends on the free helpers
-// declared above plus util::now_ms().
+// declared above plus the diagnostics clock helpers.
 class DirectDnsAQuery : public std::enable_shared_from_this<DirectDnsAQuery> {
 public:
     using Handler = std::function<void(bool,
@@ -182,7 +179,7 @@ public:
         , dns_server_(std::move(dns_server))
         , host_(std::move(host))
         , handler_(std::move(handler))
-        , started_ms_(util::now_ms()) {}
+        , started_ms_(diagnostics::timing_now_ms()) {}
 
     void start() {
         boost::system::error_code address_ec;
@@ -278,7 +275,11 @@ private:
         boost::system::error_code ignored;
         timer_.cancel(ignored);
         socket_.close(ignored);
-        const int64_t elapsed = elapsed_override > 0 ? elapsed_override : (util::now_ms() - started_ms_);
+        // Diagnostics only: the handler feeds this to YUME_TIMING_LOG and
+        // nothing else, so it reads no clock in Release.
+        const int64_t elapsed = elapsed_override > 0
+            ? elapsed_override
+            : diagnostics::elapsed_ms_since(started_ms_);
         handler_(ok, addresses, reason, elapsed);
     }
 

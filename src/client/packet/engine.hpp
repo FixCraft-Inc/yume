@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "core/protocol/packet_bulk.hpp"
+#include "core/runtime/inbound_credit.hpp"
 
 namespace yume::client::packet {
 
@@ -63,6 +64,12 @@ public:
     // Copies all packets before returning. The operation is all-or-none.
     QueueResult enqueue_outbound(const std::vector<Bytes>& packets,
                                  std::string* error = nullptr);
+    // Waits for enough capacity to admit the complete batch. A zero timeout
+    // is the nonblocking form above; stop wakes a blocked producer.
+    QueueResult enqueue_outbound(
+        const std::vector<Bytes>& packets,
+        std::chrono::milliseconds timeout,
+        std::string* error = nullptr);
 
     // Coalesces up to 64 packets / 128 KiB and waits no longer than the
     // packet-bulk 2 ms flush delay after the first packet was enqueued.
@@ -76,7 +83,8 @@ public:
     QueueResult accept_inbound_payload(const Bytes& payload,
                                        std::string* error = nullptr);
     QueueResult accept_inbound_batch(protocol::packet_bulk::Batch batch,
-                                     std::string* error = nullptr);
+                                     std::string* error = nullptr,
+                                     runtime::InboundCredit inbound_credit = {});
 
     // Returns complete packets only. If the first packet does not fit,
     // buffer_too_small is returned and it remains queued.
@@ -90,6 +98,14 @@ public:
     EngineStats stats() const;
 
 private:
+    struct InboundPacket {
+        Bytes data;
+        // A batch's credit is attached to its final packet, so partial reads
+        // keep the entire authenticated DATA frame backpressured until every
+        // packet derived from it has left the queue.
+        runtime::InboundCredit batch_credit;
+    };
+
     static void set_error(std::string* error, const std::string& value);
     bool can_admit_locked(std::size_t packets, std::size_t bytes,
                           std::size_t queued_packets,
@@ -99,7 +115,7 @@ private:
     mutable std::mutex mu_;
     std::condition_variable cv_;
     std::deque<Bytes> outbound_;
-    std::deque<Bytes> inbound_;
+    std::deque<InboundPacket> inbound_;
     std::size_t outbound_bytes_{0};
     std::size_t inbound_bytes_{0};
     std::chrono::steady_clock::time_point outbound_first_queued_{};

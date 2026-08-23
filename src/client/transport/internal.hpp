@@ -22,11 +22,9 @@
 namespace yume::client {
 namespace detail {
 
-// Must match the server's tolerance. Under Android/desktop upload
-// congestion, encrypted DATA frames can sit behind large batched writes
-// long enough to cross many hop ticks; accept the bounded adjacent-hop
-// window instead of tearing down the whole transport on a stale frame.
-inline constexpr std::uint64_t kHopDecryptWindow = 120;
+// Bound queued work so congestion cannot retain unbounded frame storage or
+// starve control traffic behind large DATA batches.
+
 inline constexpr std::size_t kMaxFramePayloadBytes = 16U * 1024U * 1024U;
 inline constexpr std::size_t kMaxWriteBatchFrames = 64;
 inline constexpr std::size_t kMaxWriteBatchBytes = 1024U * 1024U;

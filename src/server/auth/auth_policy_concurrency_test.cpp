@@ -67,8 +67,12 @@ void test_concurrent_policy_reads_and_last_seen_updates() {
     std::atomic<bool> failed{false};
     std::thread writer([&]() {
         for (int i = 0; i < 250; ++i) {
-            yume::server::update_auth_meta(
-                meta_path.string(), fingerprint, "client-" + std::to_string(i));
+            std::string error;
+            if (!yume::server::update_auth_meta(
+                    meta_path.string(), fingerprint,
+                    "client-" + std::to_string(i), &error)) {
+                failed.store(true, std::memory_order_relaxed);
+            }
         }
     });
     std::thread reader([&]() {

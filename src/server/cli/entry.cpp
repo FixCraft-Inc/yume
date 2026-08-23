@@ -40,6 +40,7 @@
 #endif
 #include "server/cli/help.hpp"
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
 
 #include "core/protocol/runtime_policy.hpp"
 #include "core/app_codec/codec.hpp"
@@ -212,8 +213,6 @@ int Server::run(int argc, char** argv) {
     ServerKeyCommand key_command = cli_args.key_command;
     const bool inner_heavy_override = cli_args.inner_heavy_override;
     const bool inner_heavy_value = cli_args.inner_heavy_value;
-    const bool inner_hop_override = cli_args.inner_hop_override;
-    const bool inner_hop_value = cli_args.inner_hop_value;
     const bool attach_local = cli_args.attach_local;
     const bool keep_root = cli_args.keep_root;
 
@@ -242,23 +241,6 @@ int Server::run(int argc, char** argv) {
     }
     if (cfg.inner_dual || cfg.inner_required) {
         cfg.inner_crypto = true;
-    }
-    if (inner_hop_override) {
-        cfg.inner_hop = inner_hop_value;
-    }
-    if (cfg.inner_hop) {
-        cfg.inner_crypto = true;
-        cfg.inner_required = true;
-        if (cfg.hop_interval_ms == 0) {
-            cfg.hop_interval_ms = 500;
-        }
-    }
-    if (cfg.hop_interval_ms > 0) {
-        if (cfg.hop_interval_ms < 250) {
-            cfg.hop_interval_ms = 250;
-        } else if (cfg.hop_interval_ms > 1000) {
-            cfg.hop_interval_ms = 1000;
-        }
     }
     cfg.reverse_port_min = std::clamp(cfg.reverse_port_min, 1, 65535);
     cfg.reverse_port_max = std::clamp(cfg.reverse_port_max, 1, 65535);
@@ -489,12 +471,10 @@ int Server::run(int argc, char** argv) {
         });
     }
 
-    std::atomic<bool> shutting_down{false};
-    yume::util::install_signal_handlers([&](int sig) {
-        if (sig == SIGTERM) {
-            shutting_down.store(true);
-        }
-        if (shutting_down.exchange(true)) {
+    ShutdownRequestLatch shutdown_requests;
+    boost::asio::steady_timer shutdown_deadline(io);
+    yume::util::SignalHandlerRegistration signal_handler([&](int) {
+        if (shutdown_requests.request() == ShutdownRequest::Force) {
             std::cerr << "\033[1;31mforce exit requested\033[0m\n";
             std::_Exit(1);
         }
@@ -507,10 +487,17 @@ int Server::run(int argc, char** argv) {
         manager.stop();
         stop_refresh.store(true);
         refresh_cv.notify_all();
-        std::thread([&io]() {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1500));
-            io.stop();
-        }).detach();
+        // Keep the deadline owned by Server::run. A detached thread capturing
+        // io could otherwise outlive this stack frame when the manager drains
+        // early. The pending wait also keeps io.run() alive long enough for
+        // orderly session-close handlers before enforcing the bound.
+        shutdown_deadline.expires_after(std::chrono::milliseconds(1500));
+        shutdown_deadline.async_wait(
+            [&io](const boost::system::error_code& error) {
+                if (!error) {
+                    io.stop();
+                }
+            });
     });
 
 #if !defined(_WIN32)
@@ -554,9 +541,41 @@ int Server::run(int argc, char** argv) {
     }
 
     std::vector<std::thread> workers;
-    workers.reserve(static_cast<size_t>(threads));
-    for (int i = 0; i < threads; ++i) {
-        workers.emplace_back([&]() { io.run(); });
+    auto rollback_worker_start = [&]() noexcept {
+        try { local_runtime->stop(); } catch (...) {}
+        try { manager.stop(); } catch (...) {}
+        try { io.stop(); } catch (...) {}
+        for (auto& worker : workers) {
+            if (worker.joinable()) worker.join();
+        }
+        stop_refresh.store(true);
+        refresh_cv.notify_all();
+        if (refresh_thread.joinable()) refresh_thread.join();
+    };
+    auto report_worker_start_error = [&](const std::string& message) {
+        if (yume::util::is_logging_enabled()) {
+            yume::util::log_error(message);
+        } else {
+            std::cerr << message << '\n';
+        }
+    };
+    try {
+        workers.reserve(static_cast<size_t>(threads));
+        for (int i = 0; i < threads; ++i) {
+            workers.emplace_back([&]() { io.run(); });
+        }
+    } catch (const std::exception& ex) {
+        // A later thread can fail after earlier workers entered io.run().
+        // Stop every producer before joining so vector destruction never
+        // encounters a joinable thread.
+        rollback_worker_start();
+        report_worker_start_error(
+            std::string("server worker start failed: ") + ex.what());
+        return 1;
+    } catch (...) {
+        rollback_worker_start();
+        report_worker_start_error("server worker start failed: unknown error");
+        return 1;
     }
     for (auto& t : workers) {
         t.join();

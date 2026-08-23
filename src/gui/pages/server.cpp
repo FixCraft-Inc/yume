@@ -147,6 +147,9 @@ std::filesystem::path resolved_auth_meta(server::ServerConfig const& cfg) {
     return cfg.auth_keys_meta.empty() ? default_auth_meta_path()
                                       : std::filesystem::path(cfg.auth_keys_meta);
 }
+std::filesystem::path resolved_admin_keys(server::ServerConfig const& cfg) {
+    return std::filesystem::path(cfg.admin_keys);
+}
 
 void push_log(facade::LogLevel level, std::string msg) {
     facade::LogSink::instance().push(level, "gui.server", std::move(msg));
@@ -404,8 +407,8 @@ private:
                 ImGui::Dummy(ImVec2(0, 6 * sc));
                 ui::section_label("Federation");
                 file_picker("Federation AUTH key",
-                            "Pick federation Ed25519 private key",
-                            cfg_.federation_auth_key,
+                            "Pick federation composite identity PEM",
+                            cfg_.federation_identity,
                             "(required)", nullptr);
                 file_picker("Federation peer CA",
                             "Pick federation peer CA",
@@ -513,14 +516,6 @@ private:
             ImGui::Dummy(ImVec2(0, 4 * sc));
             ui::checkbox("Require inner crypto (refuse clients without it)",
                          &cfg_.inner_required);
-
-            ImGui::Dummy(ImVec2(0, 4 * sc));
-            ui::checkbox("Rotate inner keys mid-session", &cfg_.inner_hop);
-            ImGui::BeginDisabled(!cfg_.inner_hop);
-            int hop = static_cast<int>(cfg_.hop_interval_ms);
-            int_input("Rotation interval (ms)", hop);
-            cfg_.hop_interval_ms = hop < 0 ? 0u : static_cast<std::uint32_t>(hop);
-            ImGui::EndDisabled();
 
             ImGui::EndDisabled();  // closes !cfg_.inner_crypto disabled
 
@@ -707,6 +702,7 @@ private:
         meta.alias = picked->stem().string();
         if (facade::keys::append_authorized(
                 resolved_auth_keys(cfg_), resolved_auth_meta(cfg_),
+                resolved_admin_keys(cfg_),
                 pem, meta, &err)) {
             users_message_ = std::string("Added user: ") + meta.alias;
             users_message_error_ = false;
@@ -755,6 +751,7 @@ private:
         meta.alias = alias;
         if (facade::keys::append_authorized(
                 resolved_auth_keys(cfg_), resolved_auth_meta(cfg_),
+                resolved_admin_keys(cfg_),
                 pem, meta, &err)) {
             users_message_ = std::string("Created ") + alias + ". Share "
                            + kp->private_path.string()

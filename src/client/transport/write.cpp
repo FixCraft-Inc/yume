@@ -35,6 +35,14 @@ bool is_bulk_frame(const protocol::Frame& frame) noexcept {
     return frame.header.type == protocol::DATA;
 }
 
+bool bulk_capacity_available(std::size_t payload_bytes,
+                             std::size_t outstanding_frames,
+                             std::size_t outstanding_bytes) noexcept {
+    return outstanding_frames < kMaxOutstandingBulkFrames &&
+           payload_bytes <= kMaxOutstandingBulkBytes &&
+           outstanding_bytes <= kMaxOutstandingBulkBytes - payload_bytes;
+}
+
 }  // namespace
 
 void TransportCore::mark_stream_ready_locked(uint8_t stream_id) {
@@ -63,9 +71,11 @@ TransportCore::PendingWrite TransportCore::pop_stream_head_locked(uint8_t stream
 }
 
 void TransportCore::release_write_reservation_locked(const PendingWrite& write) noexcept {
+    bool released = false;
     if (write.bulk_reservation) {
         if (outstanding_bulk_frames_ > 0) {
             --outstanding_bulk_frames_;
+            released = true;
         }
         outstanding_bulk_bytes_ = write.reserved_bytes <= outstanding_bulk_bytes_
             ? outstanding_bulk_bytes_ - write.reserved_bytes : 0;
@@ -74,6 +84,9 @@ void TransportCore::release_write_reservation_locked(const PendingWrite& write) 
         outstanding_control_bytes_ =
             write.reserved_bytes <= outstanding_control_bytes_
             ? outstanding_control_bytes_ - write.reserved_bytes : 0;
+    }
+    if (released) {
+        write_capacity_cv_.notify_all();
     }
 }
 
@@ -134,6 +147,96 @@ bool TransportCore::queue_frame(protocol::Frame frame, WriteCompletion handler,
         dispatch_next_write();
     }
     return accepted;
+}
+
+TransportCore::DataWriteAdmission TransportCore::wait_send_data(
+    uint8_t stream_id,
+    Bytes&& data,
+    std::chrono::milliseconds timeout,
+    WriteCompletion handler) {
+    if (timeout.count() < 0 || data.size() > kMaxOutstandingBulkBytes) {
+        return DataWriteAdmission::invalid;
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    for (;;) {
+        bool dispatch = false;
+        bool stopped = false;
+        bool accepted = false;
+        ActivityHandler activity_handler;
+        {
+            std::scoped_lock lock(state_mu_, write_mu_);
+            stopped = stopped_;
+            if (!stopped && bulk_capacity_available(
+                                data.size(), outstanding_bulk_frames_,
+                                outstanding_bulk_bytes_)) {
+                uint16_t flags = inner_key_.has_value()
+                    ? protocol::kFlagInnerEncrypted : 0;
+                if (!data.empty()) {
+                    activity_handler = activity_handler_;
+                }
+                const std::size_t reserved_bytes = data.size();
+                protocol::Frame frame{
+                    {static_cast<uint32_t>(data.size()), protocol::DATA,
+                     stream_id, flags},
+                    std::move(data)};
+                const bool was_empty = write_queues_[stream_id].empty();
+                PendingWrite write{
+                    std::move(frame), std::move(handler), false, true,
+                    reserved_bytes, ++next_enqueue_order_};
+                ++outstanding_bulk_frames_;
+                outstanding_bulk_bytes_ += write.reserved_bytes;
+                write_queues_[stream_id].push_back(std::move(write));
+                ++queued_frames_;
+                if (was_empty) {
+                    mark_stream_ready_locked(stream_id);
+                }
+                if (!write_in_flight_) {
+                    write_in_flight_ = true;
+                    dispatch = true;
+                }
+                accepted = true;
+            }
+        }
+        if (stopped) {
+            return DataWriteAdmission::stopped;
+        }
+        if (accepted) {
+            if (dispatch) dispatch_next_write();
+            // Activity callbacks are advisory. An embedder callback must not
+            // unwind across transport admission after ownership of the write
+            // and its completion has transferred to the queue.
+            if (activity_handler) {
+                try {
+                    activity_handler();
+                } catch (...) {
+                }
+            }
+            return DataWriteAdmission::accepted;
+        }
+        if (timeout == std::chrono::milliseconds::zero()) {
+            return DataWriteAdmission::would_block;
+        }
+
+        std::unique_lock<std::mutex> lock(write_mu_);
+        if (write_admission_stopped_) {
+            return DataWriteAdmission::stopped;
+        }
+        if (bulk_capacity_available(data.size(), outstanding_bulk_frames_,
+                                    outstanding_bulk_bytes_)) {
+            continue;
+        }
+        const bool awakened = write_capacity_cv_.wait_until(
+            lock, deadline, [&] {
+                return write_admission_stopped_ ||
+                       bulk_capacity_available(
+                           data.size(), outstanding_bulk_frames_,
+                           outstanding_bulk_bytes_);
+            });
+        if (!awakened) {
+            return DataWriteAdmission::timeout;
+        }
+    }
 }
 
 std::shared_ptr<TransportCore::Bytes> TransportCore::encode_outgoing_frame(
@@ -386,15 +489,16 @@ void TransportCore::dispatch_next_write() {
     }
 #endif
 
-    writer(encoded, [this, batch = std::move(batch), encoded_sizes = std::move(encoded_sizes)](
-                        bool ok,
-                        std::size_t bytes,
-                        const std::string& error) mutable {
+    auto finish_batch = [this](std::vector<PendingWrite> completed_batch,
+                               std::vector<std::size_t> completed_sizes,
+                               bool ok,
+                               std::size_t bytes,
+                               const std::string& error) {
         bool dispatch = false;
         const bool stopped = is_stopped();
         {
             std::lock_guard<std::mutex> write_lock(write_mu_);
-            for (const auto& item : batch) {
+            for (const auto& item : completed_batch) {
                 release_write_reservation_locked(item);
             }
             if (!ok || stopped || write_queues_empty_locked()) {
@@ -404,14 +508,20 @@ void TransportCore::dispatch_next_write() {
                 dispatch = true;
             }
         }
-        for (std::size_t i = 0; i < batch.size(); ++i) {
-            auto& item = batch[i];
+        for (std::size_t i = 0; i < completed_batch.size(); ++i) {
+            auto& item = completed_batch[i];
             if (item.handler) {
                 const bool completion_ok = ok && !stopped;
-                const std::size_t item_bytes = completion_ok && i < encoded_sizes.size()
-                    ? encoded_sizes[i] : bytes;
-                item.handler(completion_ok, item_bytes,
-                             stopped ? "transport stopped" : error);
+                const std::size_t item_bytes =
+                    completion_ok && i < completed_sizes.size()
+                        ? completed_sizes[i] : bytes;
+                try {
+                    item.handler(completion_ok, item_bytes,
+                                 stopped ? "transport stopped" : error);
+                } catch (...) {
+                    // User completions cannot be allowed to strand the
+                    // scheduler or suppress settlement of sibling writes.
+                }
             }
         }
         if (!ok) {
@@ -421,7 +531,51 @@ void TransportCore::dispatch_next_write() {
         if (dispatch) {
             dispatch_next_write();
         }
-    });
+    };
+
+    struct CompletionState {
+        bool settled{false};  // protected by TransportCore::write_mu_
+        std::vector<PendingWrite> batch;
+        std::vector<std::size_t> encoded_sizes;
+    };
+
+    std::shared_ptr<CompletionState> completion_state;
+    try {
+        completion_state = std::make_shared<CompletionState>();
+    } catch (...) {
+        finish_batch(std::move(batch), std::move(encoded_sizes), false, 0,
+                     "unable to allocate transport write completion state");
+        return;
+    }
+    completion_state->batch = std::move(batch);
+    completion_state->encoded_sizes = std::move(encoded_sizes);
+
+    auto completion = [this, completion_state, finish_batch](
+                          bool ok,
+                          std::size_t bytes,
+                          const std::string& error) mutable {
+        std::vector<PendingWrite> owned_batch;
+        std::vector<std::size_t> owned_sizes;
+        {
+            std::lock_guard<std::mutex> write_lock(write_mu_);
+            if (completion_state->settled) {
+                return;
+            }
+            completion_state->settled = true;
+            owned_batch = std::move(completion_state->batch);
+            owned_sizes = std::move(completion_state->encoded_sizes);
+        }
+        finish_batch(std::move(owned_batch), std::move(owned_sizes), ok,
+                     bytes, error);
+    };
+
+    try {
+        writer(encoded, completion);
+    } catch (const std::exception& ex) {
+        completion(false, 0, ex.what());
+    } catch (...) {
+        completion(false, 0, "transport writer threw an unknown exception");
+    }
 }
 
 void TransportCore::resume_writes_after_rekey() {

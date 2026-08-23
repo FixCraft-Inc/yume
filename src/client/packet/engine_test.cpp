@@ -67,6 +67,68 @@ void test_queue_admission_is_all_or_none() {
     assert(stats.outbound_queue_bytes == 16);
 }
 
+void test_inbound_batch_credit_releases_after_final_packet() {
+    PacketBatchEngine engine;
+    yume::protocol::packet_bulk::Batch batch;
+    batch.sequence = 0;
+    batch.packets = {Bytes(20, 0x31), Bytes(24, 0x42)};
+
+    std::size_t released = 0U;
+    assert(engine.accept_inbound_batch(
+               std::move(batch), nullptr,
+               yume::runtime::InboundCredit(
+                   77U,
+                   [&](std::size_t bytes) { released += bytes; })) ==
+           QueueResult::ok);
+    assert(released == 0U);
+
+    std::vector<Bytes> packets;
+    assert(engine.read_inbound(
+               1U, 64U, std::chrono::milliseconds(0), &packets) ==
+           QueueResult::ok);
+    assert(packets.size() == 1U);
+    assert(released == 0U);
+
+    assert(engine.read_inbound(
+               1U, 64U, std::chrono::milliseconds(0), &packets) ==
+           QueueResult::ok);
+    assert(packets.size() == 1U);
+    assert(released == 77U);
+}
+
+void test_blocking_write_admission_wakes_on_capacity_and_stop() {
+    PacketBatchEngine engine({2, 16});
+    assert(engine.enqueue_outbound({Bytes(8, 1), Bytes(8, 2)}) ==
+           QueueResult::ok);
+    assert(engine.enqueue_outbound(
+               {Bytes(1, 3)}, std::chrono::milliseconds(1)) ==
+           QueueResult::timeout);
+
+    QueueResult admitted = QueueResult::invalid;
+    std::thread writer([&] {
+        admitted = engine.enqueue_outbound(
+            {Bytes(1, 4)}, std::chrono::seconds(10));
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    Bytes payload;
+    assert(engine.take_outbound_payload(
+               &payload, std::chrono::milliseconds(0)) == QueueResult::ok);
+    writer.join();
+    assert(admitted == QueueResult::ok);
+
+    PacketBatchEngine stopped({1, 8});
+    assert(stopped.enqueue_outbound({Bytes(8, 1)}) == QueueResult::ok);
+    QueueResult interrupted = QueueResult::invalid;
+    std::thread blocked([&] {
+        interrupted = stopped.enqueue_outbound(
+            {Bytes(1, 2)}, std::chrono::seconds(10));
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    stopped.stop("test stop");
+    blocked.join();
+    assert(interrupted == QueueResult::stopped);
+}
+
 void test_stop_interrupts_blocking_read() {
     PacketBatchEngine engine;
     QueueResult result = QueueResult::ok;
@@ -86,6 +148,8 @@ int main() {
     test_batch_limits_and_sequences();
     test_inbound_sequence_and_buffer_sizing();
     test_queue_admission_is_all_or_none();
+    test_inbound_batch_credit_releases_after_final_packet();
+    test_blocking_write_admission_wakes_on_capacity_and_stop();
     test_stop_interrupts_blocking_read();
     return 0;
 }

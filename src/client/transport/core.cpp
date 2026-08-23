@@ -8,7 +8,9 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <limits>
 #include <thread>
+#include <utility>
 
 #include "core/security/inner_crypto.hpp"
 #include "core/security/secure_erase.hpp"
@@ -77,6 +79,15 @@ void TransportCore::set_close_transport_handler(std::function<void(const std::st
     close_transport_handler_ = std::move(handler);
 }
 
+void TransportCore::set_inbound_credit_release_handler(
+    InboundCredit::ReleaseHandler handler) {
+    std::lock_guard<std::mutex> lock(state_mu_);
+    if (stopped_) {
+        return;
+    }
+    inbound_credit_release_handler_ = std::move(handler);
+}
+
 void TransportCore::start(std::chrono::steady_clock::time_point now) {
     std::lock_guard<std::mutex> lock(state_mu_);
     last_pong_ = now;
@@ -113,6 +124,19 @@ bool TransportCore::rekey_timed_out(
 std::vector<TransportCore::CloseHandler> TransportCore::shutdown() {
     std::vector<CloseHandler> close_callbacks;
     std::vector<WriteCompletion> write_callbacks;
+    WriteHandler retired_write_handler;
+    std::function<void(const std::string&)> retired_close_transport_handler;
+    ReverseOpenHandler retired_reverse_handler;
+    ControlHandler retired_control_handler;
+    InboundOpenHandler retired_inbound_open_handler;
+    ActivityHandler retired_activity_handler;
+    ServerStreamOpenHandler retired_server_stream_open_handler;
+    ExecHandler retired_exec_handler;
+    InboundCredit::ReleaseHandler retired_credit_release_handler;
+    std::size_t incomplete_inbound_credit_bytes = 0U;
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    TimingHandler retired_timing_handler;
+#endif
     {
         std::lock_guard<std::mutex> state_lock(state_mu_);
         if (stopped_) {
@@ -129,6 +153,25 @@ std::vector<TransportCore::CloseHandler> TransportCore::shutdown() {
         pending_open_.clear();
         pending_rlisten_.clear();
         reserved_streams_.clear();
+        retired_streams_.clear();
+        // Runtime handlers frequently close over facade or relay ownership.
+        // Retire them on terminal shutdown so a Tunnel cannot keep its owner
+        // graph alive after the executor and API handles have stopped. Move
+        // them out and destroy them after releasing state_mu_: user-provided
+        // closure destructors must never run under an internal lock.
+        retired_write_handler = std::move(write_handler_);
+        retired_close_transport_handler =
+            std::move(close_transport_handler_);
+        retired_reverse_handler = std::move(reverse_handler_);
+        retired_control_handler = std::move(control_handler_);
+        retired_inbound_open_handler = std::move(inbound_open_handler_);
+        retired_activity_handler = std::move(activity_handler_);
+        retired_server_stream_open_handler =
+            std::move(server_stream_open_handler_);
+        retired_exec_handler = std::move(exec_handler_);
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        retired_timing_handler = std::move(timing_handler_);
+#endif
         if (incoming_frame_.has_value()) {
             security::secure_erase(incoming_frame_->payload);
             incoming_frame_.reset();
@@ -136,6 +179,10 @@ std::vector<TransportCore::CloseHandler> TransportCore::shutdown() {
         incoming_header_.fill(0);
         incoming_header_bytes_ = 0;
         incoming_payload_bytes_ = 0;
+        incomplete_inbound_credit_bytes =
+            std::exchange(incoming_frame_credit_bytes_, 0U);
+        retired_credit_release_handler =
+            std::move(inbound_credit_release_handler_);
         if (inner_key_.has_value()) {
             security::secure_erase(*inner_key_);
             inner_key_.reset();
@@ -145,10 +192,13 @@ std::vector<TransportCore::CloseHandler> TransportCore::shutdown() {
         outbound_rekey_wait_.reset();
         timing_open_.reset();
 #endif
-        clear_hop_key_cache_locked();
     }
     {
         std::lock_guard<std::mutex> write_lock(write_mu_);
+        // Publish the terminal predicate before notifying capacity waiters.
+        // This closes the check-to-wait race: a waiter arriving after the
+        // notification still observes shutdown while holding write_mu_.
+        write_admission_stopped_ = true;
         for (auto& queue : write_queues_) {
             while (!queue.empty()) {
                 auto write = std::move(queue.front());
@@ -168,6 +218,13 @@ std::vector<TransportCore::CloseHandler> TransportCore::shutdown() {
         // completion. Keeping write_in_flight_ set prevents a late callback
         // from starting another dispatch after shutdown.
     }
+    write_capacity_cv_.notify_all();
+    // The release callback can post back to the Tunnel strand. Never invoke it
+    // while either TransportCore mutex is held.
+    InboundCredit incomplete_credit(
+        incomplete_inbound_credit_bytes,
+        std::move(retired_credit_release_handler));
+    incomplete_credit.release_now();
     for (auto& callback : write_callbacks) {
         callback(false, 0, "transport stopped");
     }
@@ -179,17 +236,11 @@ bool TransportCore::is_stopped() const {
     return stopped_;
 }
 
-void TransportCore::clear_hop_key_cache_locked() {
-    security::secure_erase(encrypt_hop_key_);
-    security::secure_erase(decrypt_hop_key_);
-    encrypt_hop_id_.reset();
-    decrypt_hop_id_.reset();
-}
-
 void TransportCore::set_inner_key(const Bytes& key) {
     std::lock_guard<std::mutex> lock(state_mu_);
+    // Assigning over the optional frees the superseded key without clearing it.
+    if (inner_key_) security::secure_erase(*inner_key_);
     inner_key_ = key;
-    clear_hop_key_cache_locked();
 }
 
 void TransportCore::set_ratchet(
@@ -200,14 +251,6 @@ void TransportCore::set_ratchet(
         throw std::runtime_error("static inner key and the directional ratchet are exclusive");
     }
     ratchet_ = std::move(ratchet);
-}
-
-void TransportCore::set_hop(bool enabled, std::uint32_t interval_ms, std::int64_t offset_ms) {
-    std::lock_guard<std::mutex> lock(state_mu_);
-    hop_enabled_ = enabled;
-    hop_interval_ms_ = interval_ms;
-    hop_offset_ms_ = offset_ms;
-    clear_hop_key_cache_locked();
 }
 
 void TransportCore::set_server_in_charge(bool enabled) {
@@ -278,7 +321,26 @@ bool TransportCore::has_stream_id_locked(uint8_t stream_id) const {
     return streams_.find(stream_id) != streams_.end() ||
            pending_open_.find(stream_id) != pending_open_.end() ||
            pending_rlisten_.find(stream_id) != pending_rlisten_.end() ||
-           reserved_streams_.find(stream_id) != reserved_streams_.end();
+           reserved_streams_.find(stream_id) != reserved_streams_.end() ||
+           retired_streams_.find(stream_id) != retired_streams_.end();
+}
+
+bool TransportCore::try_reserve_peer_stream_id(uint8_t stream_id) {
+    if (stream_id == 0) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(state_mu_);
+    if (stopped_ || has_stream_id_locked(stream_id)) {
+        return false;
+    }
+    return reserved_streams_.insert(stream_id).second;
+}
+
+bool TransportCore::peer_stream_registration_complete(uint8_t stream_id) {
+    std::lock_guard<std::mutex> lock(state_mu_);
+    const bool registered = streams_.find(stream_id) != streams_.end();
+    reserved_streams_.erase(stream_id);
+    return registered;
 }
 
 uint8_t TransportCore::reserve_stream_id() {
@@ -299,16 +361,28 @@ uint8_t TransportCore::reserve_stream_id() {
     return 0;
 }
 
-void TransportCore::register_stream(uint8_t stream_id,
+bool TransportCore::register_stream(uint8_t stream_id,
                                     DataHandler on_data,
                                     CloseHandler on_close,
                                     HalfCloseHandler on_half_close) {
     std::lock_guard<std::mutex> lock(state_mu_);
-    if (stopped_) {
-        return;
+    if (stopped_ || stream_id == 0 ||
+        streams_.find(stream_id) != streams_.end() ||
+        pending_open_.find(stream_id) != pending_open_.end() ||
+        pending_rlisten_.find(stream_id) != pending_rlisten_.end() ||
+        retired_streams_.find(stream_id) != retired_streams_.end()) {
+        return false;
+    }
+    const auto [it, inserted] = streams_.emplace(
+        stream_id,
+        StreamCallbacks{std::move(on_data), std::move(on_close),
+                        std::move(on_half_close)});
+    (void)it;
+    if (!inserted) {
+        return false;
     }
     reserved_streams_.erase(stream_id);
-    streams_[stream_id] = StreamCallbacks{std::move(on_data), std::move(on_close), std::move(on_half_close)};
+    return true;
 }
 
 void TransportCore::unregister_stream(uint8_t stream_id) {
@@ -316,6 +390,19 @@ void TransportCore::unregister_stream(uint8_t stream_id) {
     reserved_streams_.erase(stream_id);
     streams_.erase(stream_id);
     pending_open_.erase(stream_id);
+    pending_rlisten_.erase(stream_id);
+}
+
+void TransportCore::retire_stream_id(uint8_t stream_id) {
+    if (stream_id == 0) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(state_mu_);
+    streams_.erase(stream_id);
+    pending_open_.erase(stream_id);
+    pending_rlisten_.erase(stream_id);
+    reserved_streams_.erase(stream_id);
+    retired_streams_.insert(stream_id);
 }
 
 void TransportCore::release_reserved_stream(uint8_t stream_id) {
@@ -486,7 +573,12 @@ bool TransportCore::try_send_data(uint8_t stream_id,
     protocol::Frame frame{{static_cast<uint32_t>(data.size()), protocol::DATA, stream_id, flags}, std::move(data)};
     const bool accepted = queue_frame(std::move(frame), std::move(handler));
     if (accepted && activity_handler) {
-        activity_handler();
+        try {
+            activity_handler();
+        } catch (...) {
+            // Activity callbacks are advisory and must not make an accepted
+            // application write appear rejected to its caller.
+        }
     }
     return accepted;
 }
@@ -577,21 +669,45 @@ void TransportCore::feed_tls_bytes(const Bytes& data) {
 }
 
 void TransportCore::feed_tls_bytes(const uint8_t* data, std::size_t size) {
+    feed_tls_bytes(data, size, 0U);
+}
+
+void TransportCore::feed_tls_bytes(const uint8_t* data,
+                                   std::size_t size,
+                                   std::size_t credited_size) {
     if (!data || size == 0) {
+        return;
+    }
+    if (credited_size != 0U && credited_size != size) {
+        request_transport_close("invalid inbound receive-credit size");
         return;
     }
 
     const std::uint8_t* cursor = data;
     std::size_t remaining = size;
+    const bool credit_this_feed = credited_size != 0U;
     while (remaining > 0) {
         protocol::Frame frame{};
         bool have_frame = false;
         const char* fatal_reason = nullptr;
+        std::size_t frame_credit_bytes = 0U;
+        InboundCredit::ReleaseHandler credit_release_handler;
         {
             std::lock_guard<std::mutex> lock(state_mu_);
             if (stopped_) {
                 return;
             }
+            auto account_credit = [&](std::size_t bytes) {
+                if (!credit_this_feed || fatal_reason) {
+                    return;
+                }
+                if (bytes > std::numeric_limits<std::size_t>::max() -
+                                incoming_frame_credit_bytes_) {
+                    fatal_reason = "inbound receive-credit ledger overflow";
+                    return;
+                }
+                incoming_frame_credit_bytes_ += bytes;
+            };
             if (!incoming_frame_.has_value()) {
                 const std::size_t header_bytes = std::min(
                     remaining, incoming_header_.size() - incoming_header_bytes_);
@@ -600,20 +716,24 @@ void TransportCore::feed_tls_bytes(const uint8_t* data, std::size_t size) {
                                 static_cast<std::ptrdiff_t>(incoming_header_bytes_));
                 cursor += header_bytes;
                 remaining -= header_bytes;
+                account_credit(header_bytes);
                 incoming_header_bytes_ += header_bytes;
-                if (incoming_header_bytes_ < incoming_header_.size()) {
+                if (!fatal_reason &&
+                    incoming_header_bytes_ < incoming_header_.size()) {
                     return;
                 }
 
-                const auto header = parse_header(incoming_header_.data());
-                incoming_header_bytes_ = 0;
-                if (header.len > kMaxFramePayloadBytes) {
-                    fatal_reason = "frame too large";
-                } else {
-                    incoming_frame_.emplace();
-                    incoming_frame_->header = header;
-                    incoming_frame_->payload.resize(header.len);
-                    incoming_payload_bytes_ = 0;
+                if (!fatal_reason) {
+                    const auto header = parse_header(incoming_header_.data());
+                    incoming_header_bytes_ = 0;
+                    if (header.len > kMaxFramePayloadBytes) {
+                        fatal_reason = "frame too large";
+                    } else {
+                        incoming_frame_.emplace();
+                        incoming_frame_->header = header;
+                        incoming_frame_->payload.resize(header.len);
+                        incoming_payload_bytes_ = 0;
+                    }
                 }
             }
 
@@ -629,12 +749,18 @@ void TransportCore::feed_tls_bytes(const uint8_t* data, std::size_t size) {
                             static_cast<std::ptrdiff_t>(incoming_payload_bytes_));
                     cursor += payload_bytes;
                     remaining -= payload_bytes;
+                    account_credit(payload_bytes);
                     incoming_payload_bytes_ += payload_bytes;
                 }
-                if (incoming_payload_bytes_ == incoming_frame_->payload.size()) {
+                if (!fatal_reason &&
+                    incoming_payload_bytes_ == incoming_frame_->payload.size()) {
                     frame = std::move(*incoming_frame_);
                     incoming_frame_.reset();
                     incoming_payload_bytes_ = 0;
+                    frame_credit_bytes = std::exchange(
+                        incoming_frame_credit_bytes_, 0U);
+                    credit_release_handler =
+                        inbound_credit_release_handler_;
                     if ((frame.header.flags & protocol::kFlagPadded) != 0 &&
                         !protocol::strip_padding(frame)) {
                         fatal_reason =
@@ -644,7 +770,31 @@ void TransportCore::feed_tls_bytes(const uint8_t* data, std::size_t size) {
                     }
                 }
             }
+
+            if (fatal_reason) {
+                if (incoming_frame_.has_value()) {
+                    security::secure_erase(incoming_frame_->payload);
+                    incoming_frame_.reset();
+                }
+                incoming_header_.fill(0);
+                incoming_header_bytes_ = 0;
+                incoming_payload_bytes_ = 0;
+                frame_credit_bytes = std::exchange(
+                    incoming_frame_credit_bytes_, 0U);
+                if (credit_this_feed &&
+                    remaining <= std::numeric_limits<std::size_t>::max() -
+                                     frame_credit_bytes) {
+                    // TakeTunnelBytes() transferred the entire decoded chunk
+                    // to TransportCore. On a fatal parser error, return credit
+                    // for the unread tail as well before closing the carrier.
+                    frame_credit_bytes += remaining;
+                }
+                credit_release_handler = inbound_credit_release_handler_;
+            }
         }
+
+        InboundCredit inbound_credit(
+            frame_credit_bytes, std::move(credit_release_handler));
 
         if (fatal_reason) {
             request_transport_close(fatal_reason);
@@ -715,7 +865,7 @@ void TransportCore::feed_tls_bytes(const uint8_t* data, std::size_t size) {
             }
             frame = std::move(*opened_frame);
         }
-        handle_frame(frame);
+        handle_frame(frame, std::move(inbound_credit));
         if (is_stopped()) {
             return;
         }

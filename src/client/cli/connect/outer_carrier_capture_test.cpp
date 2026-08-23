@@ -1,16 +1,21 @@
 #include "client/cli/connect/outer_carrier_capture.hpp"
+#include "client/cli/connect/secondary_tunnel.hpp"
 #include "client/cli/config/args.hpp"
 #include "client/cli/commands/bench.hpp"
+#include "client/proxy/outbound_proxy.hpp"
 #include "client/transport/client_stream.hpp"
 #include "client/transport/core.hpp"
 #include "client/transport/tunnel.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -24,8 +29,10 @@
 #include "core/stealth/h2_carrier.hpp"
 #include <boost/asio/error.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/local/connect_pair.hpp>
 #include <boost/asio/local/stream_protocol.hpp>
+#include <boost/asio/ssl/context.hpp>
 
 namespace yume::client {
 
@@ -455,7 +462,8 @@ void ProductionRatchetGeometryIsReportedTruthfully() {
             yume::client::TransportCore::WriteCompletion completion) {
             assert(client.SendBinary(*wire));
             PumpCarrier(client, server);
-            (void)server.TakeTunnelBytes();
+            const auto received = server.TakeTunnelBytes();
+            assert(server.ConsumeTunnelBytes(received.size()));
             if (completion) completion(true, wire->size(), {});
         },
         [&](const std::string& reason) { close_reason = reason; });
@@ -563,6 +571,157 @@ void TunnelCloseStateIsRaceSafeAndFailClosed() {
     }
 }
 
+void SecondaryTunnelStartupCancellationDrainsIo() {
+    using boost::asio::ip::tcp;
+
+    boost::asio::io_context server_io;
+    tcp::acceptor acceptor(server_io, tcp::endpoint(tcp::v4(), 0));
+    acceptor.non_blocking(true);
+    std::atomic<bool> accepted{false};
+    std::atomic<bool> release_server{false};
+    std::thread server([&]() {
+        tcp::socket socket(server_io);
+        const auto accept_deadline = std::chrono::steady_clock::now() +
+                                     std::chrono::seconds(2);
+        while (!release_server.load(std::memory_order_acquire) &&
+               std::chrono::steady_clock::now() < accept_deadline) {
+            boost::system::error_code error;
+            acceptor.accept(socket, error);
+            if (!error) {
+                accepted.store(true, std::memory_order_release);
+                break;
+            }
+            assert(error == boost::asio::error::would_block ||
+                   error == boost::asio::error::try_again);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        while (!release_server.load(std::memory_order_acquire)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        boost::system::error_code ignored;
+        socket.close(ignored);
+    });
+
+    std::atomic<bool> stop_requested{false};
+    std::thread interrupter([&]() {
+        const auto accept_deadline = std::chrono::steady_clock::now() +
+                                     std::chrono::seconds(1);
+        while (!accepted.load(std::memory_order_acquire) &&
+               std::chrono::steady_clock::now() < accept_deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        stop_requested.store(true, std::memory_order_release);
+    });
+
+    boost::asio::io_context client_io;
+    boost::asio::ssl::context tls_context(
+        boost::asio::ssl::context::tls_client);
+    tls_context.set_verify_mode(boost::asio::ssl::verify_none);
+    yume::client::ClientConfig config;
+    config.server = "127.0.0.1";
+    config.tls_server_name = "localhost";
+    config.port = acceptor.local_endpoint().port();
+    config.obfuscation = false;
+    const yume::client::outbound_proxy::Config no_proxy;
+
+    bool cancelled = false;
+    const auto started = std::chrono::steady_clock::now();
+    try {
+        (void)yume::client::connect_secondary_tunnel(
+            client_io, tls_context, config, no_proxy, 2, std::nullopt,
+            nullptr, [&]() {
+                return stop_requested.load(std::memory_order_acquire);
+            });
+    } catch (const std::runtime_error& error) {
+        cancelled = std::string(error.what()).find("cancelled") !=
+                    std::string::npos;
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+
+    interrupter.join();
+    release_server.store(true, std::memory_order_release);
+    server.join();
+    if (!accepted.load(std::memory_order_acquire)) {
+        throw std::runtime_error(
+            "secondary cancellation fixture never reached the TLS stall");
+    }
+    if (!cancelled) {
+        throw std::runtime_error(
+            "secondary TLS startup did not report cancellation");
+    }
+    if (elapsed >= std::chrono::seconds(2)) {
+        throw std::runtime_error(
+            "secondary TLS startup did not cancel promptly");
+    }
+
+    // Every timer/socket completion used stack-bound state. A clean poll after
+    // the exception proves cancellation drained those handlers before the
+    // setup frame unwound; ASan then checks the same invariant dynamically.
+    client_io.restart();
+    if (client_io.poll() != 0) {
+        throw std::runtime_error(
+            "secondary TLS cancellation left completion handlers queued");
+    }
+}
+
+void SocksProxyHandshakeCancellationDrainsIo() {
+    using boost::asio::ip::tcp;
+    using namespace std::chrono_literals;
+
+    boost::asio::io_context server_io;
+    tcp::acceptor acceptor(server_io, tcp::endpoint(tcp::v4(), 0));
+    std::atomic<bool> accepted{false};
+    std::atomic<bool> release_server{false};
+    std::thread server([&]() {
+        boost::system::error_code error;
+        tcp::socket socket(server_io);
+        acceptor.accept(socket, error);
+        if (!error) accepted.store(true, std::memory_order_release);
+        while (!error && !release_server.load(std::memory_order_acquire)) {
+            std::this_thread::sleep_for(1ms);
+        }
+    });
+
+    std::atomic<bool> stop_requested{false};
+    std::thread interrupter([&]() {
+        const auto deadline = std::chrono::steady_clock::now() + 1s;
+        while (!accepted.load(std::memory_order_acquire) &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(1ms);
+        }
+        stop_requested.store(true, std::memory_order_release);
+    });
+
+    boost::asio::io_context client_io;
+    tcp::socket client(client_io);
+    yume::client::outbound_proxy::Config proxy;
+    proxy.type = yume::client::outbound_proxy::Type::Socks5;
+    proxy.host = "127.0.0.1";
+    proxy.port = acceptor.local_endpoint().port();
+    const auto started = std::chrono::steady_clock::now();
+    const auto result = yume::client::outbound_proxy::socks5_dial(
+        client, client_io, proxy, "target.example", 443, 2s, {},
+        [&]() { return stop_requested.load(std::memory_order_acquire); });
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+
+    interrupter.join();
+    release_server.store(true, std::memory_order_release);
+    server.join();
+    if (!accepted.load(std::memory_order_acquire)) {
+        throw std::runtime_error(
+            "proxy cancellation fixture never reached SOCKS negotiation");
+    }
+    if (!result.cancelled || result.ok || result.timed_out || elapsed >= 500ms) {
+        throw std::runtime_error(
+            "stalled SOCKS negotiation did not cancel promptly");
+    }
+    client_io.restart();
+    if (client_io.poll() != 0) {
+        throw std::runtime_error(
+            "SOCKS cancellation left completion handlers queued");
+    }
+}
+
 void UnsafeDestinationsAreRejected() {
     TemporaryDirectory directory;
     std::string error;
@@ -606,6 +765,8 @@ int main() {
     SecureWriterProducesTerminalDocuments();
     ProductionRatchetGeometryIsReportedTruthfully();
     TunnelCloseStateIsRaceSafeAndFailClosed();
+    SecondaryTunnelStartupCancellationDrainsIo();
+    SocksProxyHandshakeCancellationDrainsIo();
     UnsafeDestinationsAreRejected();
 #endif
     return 0;

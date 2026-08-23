@@ -5,6 +5,7 @@
  */
 
 #include "server/cli/config_load.hpp"
+#include "server/cli/entry.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -14,8 +15,11 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "facade/config/config_io.hpp"
 #include "server/cli/args.hpp"
+#include "server/cli/cluster.hpp"
 #include "server/config/config.hpp"
 
 namespace {
@@ -52,6 +56,19 @@ bool expect(bool condition, const char* message) {
         std::cerr << "FAIL: " << message << '\n';
     }
     return condition;
+}
+
+bool test_shutdown_request_latch() {
+    yume::server::ShutdownRequestLatch latch;
+    return expect(
+               latch.request() == yume::server::ShutdownRequest::Graceful,
+               "the first termination request should begin graceful shutdown") &&
+           expect(
+               latch.request() == yume::server::ShutdownRequest::Force,
+               "a second termination request should force shutdown") &&
+           expect(
+               latch.request() == yume::server::ShutdownRequest::Force,
+               "all later termination requests should remain forceful");
 }
 
 bool test_cli_config_load(const std::filesystem::path& base) {
@@ -157,6 +174,31 @@ bool test_cli_config_load(const std::filesystem::path& base) {
         return false;
     }
 
+    const auto expanded = nlohmann::json::parse(
+        yume::server::cli::expand_cluster_join_spec(
+            "peer-a@example.test:9443?psk_file=/run/peer.psk&"
+            "carrier_secret_file=/run/peer.carrier&pin=abcd"));
+    if (!expect(expanded.value("id", "") == "peer-a",
+                "cluster join should preserve the explicit peer id") ||
+        !expect(expanded.value("psk_file", "") == "/run/peer.psk",
+                "cluster join should carry the pairwise PSK path") ||
+        !expect(expanded.value("carrier_secret_file", "") ==
+                    "/run/peer.carrier",
+                "cluster join should carry the carrier-secret path")) {
+        return false;
+    }
+    bool missing_secrets_rejected = false;
+    try {
+        (void)yume::server::cli::expand_cluster_join_spec(
+            "peer-a@example.test:9443");
+    } catch (const std::runtime_error&) {
+        missing_secrets_rejected = true;
+    }
+    if (!expect(missing_secrets_rejected,
+                "cluster join without both secret paths must fail closed")) {
+        return false;
+    }
+
     std::vector<std::string> removed_arguments{
         "yumed", "--allow-remote-server-admin"};
     std::vector<char*> removed_argv;
@@ -170,6 +212,114 @@ bool test_cli_config_load(const std::filesystem::path& base) {
                       removed_argv.data(), base.string(), removed_cfg,
                       &removed_result),
                   "retired --allow-remote-server-admin must fail unknown");
+}
+
+bool test_cli_rejects_malformed_collections(
+    const std::filesystem::path& base) {
+    const auto rejects = [&](const std::string& name,
+                             const std::string& document) {
+        const auto path = base / name;
+        {
+            std::ofstream output(path);
+            output << document;
+            if (!output) return false;
+        }
+        yume::server::ServerConfig config;
+        yume::server::cli::ServerConfigLoadContext context;
+        context.config_path = path.string();
+        context.config_specified = true;
+        return !yume::server::cli::load_server_config_file_and_resolve_paths(
+            config, context, {});
+    };
+
+    return expect(rejects("non-object.json", R"([])"),
+                  "CLI must reject a non-object server config") &&
+           expect(rejects("filter-lists-object.json",
+                          R"({"filter_lists":{}})"),
+                  "CLI must reject a non-array filter_lists value") &&
+           expect(rejects("filter-lists-entry.json",
+                          R"({"filter_lists":["allow.txt",7]})"),
+                  "CLI must reject a non-string filter_lists entry") &&
+           expect(rejects("federation-peers-object.json",
+                          R"({"federation_peers":{}})"),
+                  "CLI must reject a non-array federation_peers value") &&
+           expect(rejects("federation-peers-entry.json",
+                          R"({"federation_peers":["peer.example"]})"),
+                  "CLI must reject a non-object federation peer");
+}
+
+bool test_cli_load_is_type_strict_and_transactional(
+    const std::filesystem::path& base) {
+    const auto rejects_without_mutation = [&](const std::string& name,
+                                               const std::string& document,
+                                               const auto& configure_overrides) {
+        const auto path = base / name;
+        {
+            std::ofstream output(path);
+            output << document;
+            if (!output) return false;
+        }
+
+        yume::server::ServerConfig config;
+        config.listen_address = "original-listen";
+        config.max_sessions = 37;
+        config.allowed_services = {"original-service"};
+        yume::server::cli::ServerConfigLoadContext context;
+        context.config_path = path.string();
+        context.config_specified = true;
+        context.config_dir = "original-config-dir";
+        yume::server::cli::ServerConfigOverrides overrides;
+        configure_overrides(&overrides);
+
+        if (yume::server::cli::load_server_config_file_and_resolve_paths(
+                config, context, overrides)) {
+            return false;
+        }
+        return config.listen_address == "original-listen" &&
+               config.max_sessions == 37 &&
+               config.allowed_services ==
+                   std::vector<std::string>{"original-service"} &&
+               context.config_dir == "original-config-dir";
+    };
+    const auto no_overrides = [](auto*) {};
+
+    return expect(
+               rejects_without_mutation(
+                   "partial-before-error.json",
+                   R"({"listen_address":"must-not-escape","allow_services":["new-service",7]})",
+                   no_overrides),
+               "a late collection error must not expose earlier server fields") &&
+           expect(
+               rejects_without_mutation(
+                   "float-port.json", R"({"listen_port":443.5})",
+                   no_overrides),
+               "floating-point JSON must not be coerced into an integer port") &&
+           expect(
+               rejects_without_mutation(
+                   "numeric-bool.json", R"({"obfuscation":1})",
+                   no_overrides),
+               "numeric JSON must not be coerced into a boolean") &&
+           expect(
+               rejects_without_mutation(
+                   "negative-u32.json", R"({"max_sessions":-1})",
+                   no_overrides),
+               "negative JSON must not be accepted for an unsigned field") &&
+           expect(
+               rejects_without_mutation(
+                   "oversized-u32.json", R"({"max_sessions":4294967296})",
+                   no_overrides),
+               "out-of-range JSON must not wrap an unsigned field") &&
+           expect(
+               rejects_without_mutation(
+                   "overridden-wrong-type.json", R"({"listen_address":7})",
+                   [](auto* overrides) { overrides->listen = true; }),
+               "CLI precedence must not hide a malformed config value") &&
+           expect(
+               rejects_without_mutation(
+                   "security-float.json",
+                   R"({"security_mode":"ultimate","security_custom":{"epoch_bytes":262144.5,"epoch_frames":1,"epoch_active_ms":500}})",
+                   no_overrides),
+               "custom security limits must require exact integer JSON");
 }
 
 bool test_facade_round_trip(const std::filesystem::path& base) {
@@ -191,16 +341,54 @@ bool test_facade_round_trip(const std::filesystem::path& base) {
         return false;
     }
 
+    auto wrong_type = yume::facade::config_io::parse_server_json(
+        R"({"listen_port":"443"})", base, &error);
+    if (!expect(!wrong_type.has_value(),
+                "facade must reject a wrong-typed server field") ||
+        !expect(error.find("listen_port") != std::string::npos,
+                "wrong-typed server field should name its key")) {
+        return false;
+    }
+    auto wrong_root = yume::facade::config_io::parse_server_json(
+        R"([])", base, &error);
+    if (!expect(!wrong_root.has_value(),
+                "facade must reject a non-object server config") ||
+        !expect(error.find("JSON object") != std::string::npos,
+                "non-object server config should report its contract")) {
+        return false;
+    }
+    auto wrong_codec_list = yume::facade::config_io::parse_server_json(
+        R"({"allow_codecs":["not-a-codec"]})", base, &error);
+    if (!expect(!wrong_codec_list.has_value(),
+                "facade must reject an unsupported server codec") ||
+        !expect(error.find("unsupported application codec") !=
+                    std::string::npos,
+                "unsupported server codec should report its contract")) {
+        return false;
+    }
+
     yume::server::ServerConfig saved;
     saved.listen_address = "127.0.0.1";
     saved.admin_keys = "saved-admin-keys";
     saved.allow_embedded_master = true;
     saved.preauth_services = {"bootstrap-v1"};
+    saved.obfs_secret = "inline-secret-must-not-survive";
     const auto saved_path = base / "facade-yumed.json";
     if (!expect(yume::facade::config_io::save_server(saved, saved_path, &error),
                 "facade config should save") ||
         !expect(error.empty(), "facade save should not report an error")) {
         return false;
+    }
+    {
+        std::ifstream input(saved_path);
+        nlohmann::json document;
+        input >> document;
+        if (!expect(input.good() || input.eof(),
+                    "saved facade server config should be readable") ||
+            !expect(!document.contains("obfs_secret"),
+                    "server writer must not serialize inline legacy secrets")) {
+            return false;
+        }
     }
     auto loaded = yume::facade::config_io::load_server(saved_path, &error);
     if (!expect(loaded.has_value(), "saved facade config should load") ||
@@ -218,13 +406,43 @@ bool test_facade_round_trip(const std::filesystem::path& base) {
                   "facade should serialize and restore preauth_services");
 }
 
+bool test_typed_facade_load_errors(const std::filesystem::path& base) {
+    using Error = yume::facade::config_io::ConfigLoadError;
+    std::string detail;
+    Error error = Error::None;
+    if (!expect(!yume::facade::config_io::load_server(
+                    base / "missing-server.json", &detail, &error),
+                "missing server config should fail") ||
+        !expect(error == Error::NotFound,
+                "missing server config should have a typed not-found error")) {
+        return false;
+    }
+
+    const auto invalid = base / "invalid-server.json";
+    std::ofstream output(invalid);
+    output << R"({"listen_port":"not-a-number"})";
+    output.close();
+    error = Error::None;
+    return expect(!yume::facade::config_io::load_server(
+                      invalid, &detail, &error),
+                  "invalid server config should fail") &&
+           expect(error == Error::Parse,
+                  "invalid server config should have a typed parse error");
+}
+
 }  // namespace
 
 int main() {
     try {
         const TemporaryDirectory temporary;
-        return test_cli_config_load(temporary.path()) &&
-                       test_facade_round_trip(temporary.path())
+        return test_shutdown_request_latch() &&
+                       test_cli_config_load(temporary.path()) &&
+                       test_cli_rejects_malformed_collections(
+                           temporary.path()) &&
+                       test_cli_load_is_type_strict_and_transactional(
+                           temporary.path()) &&
+                       test_facade_round_trip(temporary.path()) &&
+                       test_typed_facade_load_errors(temporary.path())
                    ? 0
                    : 1;
     } catch (const std::exception& error) {

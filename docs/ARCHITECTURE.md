@@ -34,11 +34,17 @@ Debian packages split these into `yume`, `yume-daemon`, `yume-gui`,
                     |                               |
                     +---------------+---------------+
                                     |
+                          +---------v---------+
+                          | yume_outbound_    |
+                          | transport         |
+                          | dial/tunnel/auth  |
+                          +---------+---------+
+                                    |
                     +---------------+---------------+
                     |                               |
           +---------v---------+           +---------v---------+
           | yume_client_lib   |           |   yume_server     |
-          | cli/transport/... |           | session/runtime/..|
+          | cli/runtime/share |           | session/runtime/..|
           +----+--------------+           +----+--------------+
                |    \                       /    |
                |     +---------+-----------+     |
@@ -58,7 +64,9 @@ composite-AUTH, ratchet, and secret-material sources one compiled owner.
 `yume_core` and `yume_transport_core` both link it instead of compiling those
 sources twice. `yume_transport_core` is always built, so Android and embedders
 can link the reduced transport slice without pulling the full CLI or server
-stacks.
+stacks. `yume_outbound_transport` owns the small client/server-common dial,
+tunnel, forwarding, outbound-proxy, and authenticated-connect slice used by
+both the CLI and federation. The server does not link `yume_client_lib`.
 
 ## Source layout
 
@@ -134,7 +142,13 @@ C++ and Go helper registries, and TLS/HTTP/H2 code reads
 Edits should respect this import order:
 
 ```text
-core  →  client | server  →  facade  →  gui
+secure/core + reduced transport
+                 ↓
+       outbound transport
+           ↙           ↘
+      client           server
+           ↘           ↙
+              facade  →  gui / ABI
 ```
 
 `core` must not include headers from `client/`, `server/`, `facade/`, or

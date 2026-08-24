@@ -60,9 +60,20 @@ void int_input(const char* label, int& value, float width = 0.0f) {
     ImGui::PopID();
 }
 
+ImVec4 state_color(facade::ConnectionState s) {
+    auto const& c = ui::colors();
+    switch (s) {
+        case facade::ConnectionState::Connected: return c.success;
+        case facade::ConnectionState::Failed:    return c.error;
+        case facade::ConnectionState::Disconnected:
+        case facade::ConnectionState::Idle:      return c.muted;
+        default:                                 return c.warning;
+    }
+}
+
 class ConnectPage : public Page {
 public:
-    std::string_view title() const override { return "Client"; }
+    std::string_view title() const override { return "Connection"; }
 
     void on_show(AppContext& ctx) override {
         refresh_profiles();
@@ -76,11 +87,17 @@ public:
         auto const& c = ui::colors();
         const float sc = ui::scale();
 
-        ui::page_header("Client",
+        ui::page_header("Connection",
                         "Pick a saved server profile, choose trust material, then connect.");
 
+        // Live state and the Connect/Disconnect control lead the page. They
+        // used to sit at the bottom of a long form, which put the page's
+        // primary verb below the fold at the default window size.
+        render_connection_header(ctx, c, sc);
+        ImGui::Dummy(ImVec2(0, 6 * sc));
+
         render_profile_card(ctx);
-        ImGui::Dummy(ImVec2(0, 8 * sc));
+        ImGui::Dummy(ImVec2(0, 6 * sc));
 
         if (ui::begin_auto_card("##connect_essential")) {
             ui::section_label("Server");
@@ -102,8 +119,7 @@ public:
             ImGui::EndGroup();
             text_input("Display name", cfg_.preferred_name, "optional");
 
-            ImGui::Dummy(ImVec2(0, 8 * sc));
-            ui::section_label("Trust material");
+            ImGui::Dummy(ImVec2(0, 6 * sc));
             std::string ca_name = "Not selected";
             std::string key_name = cfg_.identity.empty() ? "Not selected" : cfg_.identity;
             if (!cfg_.anonym_ca_material_id.empty()) {
@@ -118,31 +134,43 @@ public:
                     key_name = key->display_name;
                 }
             }
+            ui::section_label_help(
+                "Trust material",
+                "Import or switch saved operator CAs and auth keys on the "
+                "Security page.");
             ui::muted_text("Operator CA: %s", ca_name.c_str());
             ui::muted_text("Auth key: %s", key_name.c_str());
-            ui::muted_text("Use Security to import or switch saved CAs and auth keys.");
         }
         ui::end_card();
 
-        ImGui::Dummy(ImVec2(0, 8 * sc));
+        ImGui::Dummy(ImVec2(0, 6 * sc));
         if (ui::begin_auto_card("##connect_security")) {
-            ui::section_label("Connection");
+            // Not a choice: dev6 pins these. State them, do not offer them.
             cfg_.inner_crypto = true;
             cfg_.inner_heavy = false;
             cfg_.pq_public_key.clear();
-            ui::muted_text(
-                "YUME 2.0 always uses ML-KEM-1024 + X25519 + PSK and directional ratchets.");
+            ui::section_label_help(
+                "Transport security",
+                "Fixed by the protocol, not configurable. Every session uses "
+                "ML-KEM-1024 + X25519 + PSK with directional ratchets inside "
+                "the HTTP/2 carrier.");
+            ImGui::Dummy(ImVec2(0, 4 * sc));
+            ui::status_pill("ML-KEM-1024 / X25519 / PSK", c.success);
+            ImGui::SameLine(0.0f, 6 * sc);
+            ui::status_pill("Directional ratchet", c.success);
 
-            ImGui::Dummy(ImVec2(0, 12 * sc));
+            ImGui::Dummy(ImVec2(0, 8 * sc));
             ui::section_label("Operator identity proof");
-            ui::field_label("Operator verification policy");
+            ui::field_label_help(
+                "Operator verification policy",
+                "Proves the server is authorized by the selected operator CA. "
+                "It does not prove the operator cannot inspect or log "
+                "traffic.");
             const char* anonym_modes[] = {"Required", "Allow monitored server"};
             int anonym_idx = (!cfg_.require_anonym && cfg_.accept_monitoring) ? 1 : 0;
             (void)ui::combo("##anonym_mode", &anonym_idx, anonym_modes, 2, 320.f);
             cfg_.require_anonym = anonym_idx == 0;
             cfg_.accept_monitoring = anonym_idx == 1;
-            ui::muted_text(
-                "This proves the server is authorized by the selected operator CA. It does not prove that the operator cannot inspect or log traffic.");
             int_input("SOCKS5 port (0 = auto)", cfg_.socks_port);
 
             ImGui::Dummy(ImVec2(0, 8 * sc));
@@ -222,9 +250,8 @@ public:
             }
 
             ImGui::Separator();
-            const bool can_save = report.ok();
-            ImGui::BeginDisabled(!can_save);
-            if (ui::primary_button("Save profile", ImVec2(150 * sc, 48 * sc))) {
+            ImGui::BeginDisabled(!report.ok());
+            if (ui::secondary_button("Save profile", ImVec2(126 * sc, 30 * sc))) {
                 std::string err;
                 if (facade::config_io::save_client(
                         cfg_, facade::config_io::default_client_config_path(), &err)) {
@@ -237,41 +264,92 @@ public:
                 }
             }
             ImGui::EndDisabled();
-            ImGui::SameLine();
-            const bool running = ctx.client && ctx.client->running();
-            ImGui::BeginDisabled(!ctx.client || (!running && !can_save));
-            if (running) {
-                if (ui::secondary_button("Disconnect", ImVec2(150 * sc, 48 * sc))) {
-                    ctx.client->stop();
-                    last_message_ = "Disconnected.";
-                    last_error_ = false;
-                }
-            } else {
-                if (ui::secondary_button("Connect", ImVec2(132 * sc, 48 * sc))) {
-                    std::string err;
-                    if (ctx.client) {
-                        ctx.client->set_config(cfg_);
-                        if (ctx.client->start(&err)) {
-                            last_message_ = "Client starting.";
-                            last_error_ = false;
-                        } else {
-                            last_message_ = err.empty() ? "Connect failed." : err;
-                            last_error_ = true;
-                        }
-                    }
-                }
-            }
-            ImGui::EndDisabled();
-            ImGui::Dummy(ImVec2(0, 2 * sc));
-            ui::muted_text("Uses the embedded client engine in a background thread.");
-            if (!last_message_.empty()) {
-                ui::message_text(last_error_ ? c.error : c.success, "%s", last_message_.c_str());
-            }
         }
         ui::end_card();
     }
 
 private:
+    // Live connection state plus the page's primary verb, in one row.
+    void render_connection_header(AppContext& ctx, ui::Colors const& c, float sc) {
+        facade::ClientStatus st{};
+        if (ctx.client) st = ctx.client->status();
+        const bool running = ctx.client && ctx.client->running();
+        // stop() returns before teardown finishes, so there is a window where
+        // running() is already false but start() is still refused. Offering
+        // Connect during it produces an error the user did nothing to cause.
+        const bool busy = ctx.client && ctx.client->busy();
+        auto const report = facade::config_io::validate(cfg_);
+
+        if (ui::begin_auto_card("##connection_header")) {
+            const float btn_w = 132 * sc;
+            const float btn_h = 34 * sc;
+
+            ImGui::BeginGroup();
+            ui::status_pill(facade::display_label(st.state), state_color(st.state));
+            ImGui::SameLine(0.0f, 10 * sc);
+            ui::muted_text("%s", st.server_endpoint.empty()
+                                     ? "No server configured"
+                                     : st.server_endpoint.c_str());
+            ImGui::EndGroup();
+
+            ImGui::SameLine();
+            const float shift = ImGui::GetContentRegionAvail().x - btn_w;
+            if (shift > 0.0f) ImGui::Dummy(ImVec2(shift, 1));
+            ImGui::SameLine(0.0f, 0.0f);
+
+            ImGui::BeginDisabled(!ctx.client ||
+                                 (!running && (busy || !report.ok())));
+            if (running) {
+                if (ui::secondary_button("Disconnect", ImVec2(btn_w, btn_h))) {
+                    ctx.client->stop();
+                    last_message_ = "Disconnected.";
+                    last_error_ = false;
+                }
+            } else {
+                if (ui::primary_button(busy ? "Disconnecting..." : "Connect",
+                                       ImVec2(btn_w, btn_h))) {
+                    std::string err;
+                    ctx.client->set_config(cfg_);
+                    if (ctx.client->start(&err)) {
+                        last_message_ = "Client starting.";
+                        last_error_ = false;
+                    } else {
+                        last_message_ = err.empty() ? "Connect failed." : err;
+                        last_error_ = true;
+                    }
+                }
+            }
+            ImGui::EndDisabled();
+
+            // When connected, the facade's own posture reporting is the
+            // truth about this session -- not anything the form says.
+            if (running && st.state == facade::ConnectionState::Connected) {
+                ImGui::Dummy(ImVec2(0, 6 * sc));
+                ui::muted_text("%s \xC2\xB7 %s \xC2\xB7 rekey window %u",
+                               st.effective_protection.c_str(),
+                               st.tls_backend.empty() ? "openssl"
+                                                      : st.tls_backend.c_str(),
+                               static_cast<unsigned>(st.rekey_window));
+            }
+            if (!st.message.empty()) {
+                ImGui::Dummy(ImVec2(0, 4 * sc));
+                ui::muted_text("%s", st.message.c_str());
+            }
+            if (!last_message_.empty()) {
+                ImGui::Dummy(ImVec2(0, 4 * sc));
+                ui::message_text(last_error_ ? c.error : c.success, "%s",
+                                 last_message_.c_str());
+            }
+            if (!running && !report.ok()) {
+                ImGui::Dummy(ImVec2(0, 4 * sc));
+                for (auto const& e : report.errors) {
+                    ImGui::TextColored(c.error, "\xE2\x80\xA2 %s", e.c_str());
+                }
+            }
+        }
+        ui::end_card();
+    }
+
     void render_profile_card(AppContext& ctx) {
         const float sc = ui::scale();
         if (!ui::begin_auto_card("##connect_profile")) { ui::end_card(); return; }

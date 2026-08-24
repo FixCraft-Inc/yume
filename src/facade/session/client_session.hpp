@@ -36,6 +36,14 @@ public:
     void stop();
 
     bool running() const noexcept;
+
+    // True while any lifecycle work is in flight, so start() would be
+    // refused. running() alone is not enough: stop() deliberately returns
+    // before teardown completes, leaving a window where the runtime is no
+    // longer running but a restart is still rejected. Consumers that offer a
+    // reconnect control need this to know when it becomes usable.
+    bool busy() const noexcept;
+
     ClientStatus status() const;
     TrafficMeter const& traffic() const noexcept;
 

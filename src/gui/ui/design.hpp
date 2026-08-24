@@ -50,6 +50,19 @@ Colors const& colors();
 float scale();
 
 void page_header(char const* title, char const* subtitle = nullptr);
+
+// Inline "?" affordance. Draws a small circled glyph on the current line and
+// reveals `text` on hover. This is how per-control explanation is delivered:
+// the page states what a control is, and the detail stays folded away until
+// someone asks for it. Prefer this over a paragraph of TextWrapped under
+// every field -- that is what made these pages unreadable.
+void help(char const* text);
+
+// section_label + trailing help marker on the same line.
+void section_label_help(char const* label, char const* text);
+
+// field_label + trailing help marker on the same line.
+void field_label_help(char const* label, char const* text);
 void section_label(char const* label);
 void field_label(char const* label);
 void muted_text(char const* fmt, ...);

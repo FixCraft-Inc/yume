@@ -571,6 +571,16 @@ bool ClientSession::running() const noexcept {
     return impl_->runtime.running();
 }
 
+bool ClientSession::busy() const noexcept {
+    // Mirrors exactly what start() admits on, so a caller that waits for
+    // !busy() is guaranteed the next start() is not refused as "still
+    // stopping" or "needs stop cleanup".
+    return impl_->runtime.running() ||
+           impl_->worker_busy.load(std::memory_order_acquire) ||
+           impl_->stop_busy.load(std::memory_order_acquire) ||
+           impl_->has_stats_thread();
+}
+
 ClientStatus ClientSession::status() const {
     auto runtime_status = impl_->runtime.status();
     std::lock_guard<std::mutex> lock(impl_->mtx);
@@ -583,6 +593,15 @@ ClientStatus ClientSession::status() const {
         if (runtime_status.ipc_available && s.connected_since.time_since_epoch().count() == 0) {
             s.connected_since = runtime_status.started;
         }
+    } else if (impl_->worker_busy.load(std::memory_order_acquire)) {
+        // A start has been admitted but its worker has not reached
+        // InProcClient::start() yet, so the runtime still carries the previous
+        // run's terminal exit code and message. Deriving state from it here
+        // republished the *last* session's failure over a healthy restart --
+        // a reconnect issued after a clean stop reported Failed/"stopped"
+        // before it had attempted anything. While the worker is in flight the
+        // session's own published state is authoritative; the worker sets
+        // Failed itself if the start genuinely fails.
     } else if (s.state != ConnectionState::Idle &&
                s.state != ConnectionState::Disconnected &&
                s.state != ConnectionState::Failed) {

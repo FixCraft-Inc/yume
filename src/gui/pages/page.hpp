@@ -52,7 +52,6 @@ std::unique_ptr<Page> make_chat_page();
 std::unique_ptr<Page> make_keys_page();
 std::unique_ptr<Page> make_logs_page();
 std::unique_ptr<Page> make_settings_page();
-std::unique_ptr<Page> make_tools_page();
 std::unique_ptr<Page> make_credits_page();
 
 }  // namespace yume::gui

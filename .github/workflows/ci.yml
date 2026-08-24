@@ -242,3 +242,113 @@ jobs:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: |
           ctest --test-dir build-asan --output-on-failure --parallel 2
+
+  # The optional desktop GUI. It defaults to OFF, so before this job nothing
+  # in CI compiled it and no automated check ever opened its window: a GUI
+  # break could only be found by a human building locally.
+  #
+  # This job builds it with warnings-as-errors, renders every page headlessly
+  # under Xvfb with software GL, and runs both halves of the --headless
+  # contract -- including the live one, which stands up a real dev6 yumed and
+  # requires the GUI's facade to connect, stop and reconnect against it.
+  gui:
+    needs: [preflight]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure BaseFWX sources
+        run: |
+          BASEFWX_REPO="$(python3 scripts/yume_dependencies.py get basefwx repository)"
+          BASEFWX_REF="$(python3 scripts/yume_dependencies.py get basefwx revision)"
+          if [[ -d basefwx ]] && ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            rm -rf basefwx
+          fi
+          if ! git -C basefwx rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            rm -rf basefwx
+            git clone --filter=blob:none --no-checkout "${BASEFWX_REPO}" basefwx
+          fi
+          git -C basefwx fetch --depth 1 origin "${BASEFWX_REF}"
+          git -C basefwx checkout --detach FETCH_HEAD
+          test -f basefwx/cpp/CMakeLists.txt
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config perl \
+            zlib1g-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
+            libboost-all-dev libspdlog-dev nlohmann-json3-dev
+          # GUI-only: GLFW's X11 backend, GL, and the font stack. GLFW/ImGui/
+          # ImPlot themselves come from FetchContent.
+          sudo apt-get install -y \
+            libgl1-mesa-dev libglu1-mesa-dev \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libxkbcommon-dev libwayland-dev wayland-protocols extra-cmake-modules \
+            libfreetype6-dev libfontconfig1-dev \
+            xvfb libgl1-mesa-dri
+          source scripts/ensure-openssl.sh
+          yume_openssl_ensure
+          source scripts/ensure-nghttp2.sh
+          yume_nghttp2_ensure
+
+      - name: Fetch and verify prebuilt vendor libs
+        run: |
+          bash scripts/vendor_prebuilt.sh ensure linux-x86_64
+
+      - name: Configure
+        run: |
+          cmake -S . -B build-gui \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DYUME_BUILD_GUI=ON \
+            -DYUME_BUILD_TESTING=ON \
+            -DYUME_WARNINGS_AS_ERRORS=ON \
+            -DYUME_LTO=OFF \
+            -DBASEFWX_USE_VENDOR_DEPS=ON \
+            -DBASEFWX_VENDOR_DIR="${GITHUB_WORKSPACE}/vendor/linux-x86_64" \
+            -DBASEFWX_REQUIRE_ARGON2=ON \
+            -DBASEFWX_REQUIRE_OQS=ON \
+            -DBASEFWX_REQUIRE_LZMA=ON
+
+      - name: Build GUI and daemon
+        run: |
+          cmake --build build-gui --parallel "${CI_SANITIZER_BUILD_JOBS}" \
+            --target yume-gui yumed yume
+
+      - name: Link and help smoke
+        run: |
+          set -euo pipefail
+          ldd -r ./build-gui/bin/yume-gui | grep -E 'not found|undefined symbol' && exit 1
+          ./build-gui/bin/yume-gui --help >/dev/null
+
+      # Software GL under Xvfb. This is the only automated proof that the
+      # window and every page actually render; a compile gate cannot catch a
+      # layout assertion or a draw-time crash.
+      - name: Render every page headlessly
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          set -euo pipefail
+          xvfb-run -a --server-args='-screen 0 1280x800x24' \
+            ./build-gui/bin/yume-gui --no-tray --capture-all "${GITHUB_WORKSPACE}/gui-shots"
+          count="$(find "${GITHUB_WORKSPACE}/gui-shots" -name '*.png' | wc -l)"
+          echo "captured ${count} page renders"
+          test "${count}" -ge 8
+
+      - name: Upload page renders
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-page-renders
+          path: gui-shots/
+          if-no-files-found: warn
+
+      # Both halves of the headless contract: the negative cases, and the live
+      # connect/stop/reconnect against a real dev6 server.
+      - name: GUI contract tests
+        run: |
+          ctest --test-dir build-gui --output-on-failure \
+            -R 'yume_gui_(headless|live)_contract'

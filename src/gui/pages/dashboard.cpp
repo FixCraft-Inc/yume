@@ -74,106 +74,37 @@ public:
 
         ui::page_header("Overview", "Connection and local daemon status.");
 
-        if (ui::begin_auto_card("##hero")) {
-            if (ImGui::BeginTable("##status_table", 2, ImGuiTableFlags_SizingStretchSame)) {
-                ImGui::TableNextColumn();
-                ui::section_label("Client");
-                ui::status_pill(facade::display_label(client.state), state_color(client.state));
-                ui::muted_text("%s", client.server_endpoint.empty() ? "No server configured" : client.server_endpoint.c_str());
-                if (!client.message.empty()) ui::muted_text("%s", client.message.c_str());
-                if (!client.server_tls_fingerprint_sha256.empty()) {
-                    ui::muted_text("TLS leaf: %.16s...",
-                                   client.server_tls_fingerprint_sha256.c_str());
-                }
-                if (client.state == facade::ConnectionState::Connected) {
-                    ui::muted_text("Packet ABI: %s",
-                                   client.packet_bulk_supported
-                                       ? "packet_bulk_v1 ready"
-                                       : "not advertised");
-                    if (!client.server_capabilities.empty()) {
-                        std::string caps;
-                        for (auto const& capability : client.server_capabilities) {
-                            if (!caps.empty()) caps += ", ";
-                            caps += capability;
-                        }
-                        ui::muted_text("Capabilities: %s", caps.c_str());
-                    }
-                }
-
-                ImGui::TableNextColumn();
-                ui::section_label("Local yumed");
-                ui::status_pill(server.running ? "Running" : "Stopped",
-                                server.running ? c.success : c.muted);
-                ui::muted_text("%s", server.listen_endpoint.empty() ? "0.0.0.0:443" : server.listen_endpoint.c_str());
-                if (!server.message.empty()) {
-                    // Display the message in error red when the server
-                    // isn't running so failures (privileged port, port
-                    // in use, missing certs) don't disappear into the
-                    // muted grey under "Stopped".
-                    if (!server.running) {
-                        ui::message_text(c.error, "%s", server.message.c_str());
-                    } else {
-                        ui::muted_text("%s", server.message.c_str());
-                    }
-                }
-                ImGui::EndTable();
-            }
-        }
-        ui::end_card();
-
-        ImGui::Dummy(ImVec2(0, 8 * sc));
-
-        if (ui::begin_auto_card("##actions")) {
-            const bool server_running = ctx.server && ctx.server->running();
-            if (server_running) {
-                if (ui::primary_button("Stop local server", ImVec2(190 * sc, 48 * sc))) {
-                    ctx.server->stop();
-                }
-            } else {
-                if (ui::primary_button("Start local server", ImVec2(190 * sc, 48 * sc)) && ctx.server) {
-                    std::string err;
-                    if (!ctx.server->start(&err)) {
-                        last_error_ = err.empty() ? "server start failed" : err;
-                    } else {
-                        last_error_.clear();
-                    }
-                }
-            }
-            ImGui::SameLine(0.0f, 14 * sc);
-            const bool client_running = ctx.client && ctx.client->running();
-            ImGui::BeginDisabled(!ctx.client);
-            if (client_running) {
-                if (ui::secondary_button("Disconnect client", ImVec2(190 * sc, 48 * sc))) {
-                    ctx.client->stop();
-                    last_error_.clear();
-                }
-            } else {
-                if (ui::secondary_button("Connect client", ImVec2(170 * sc, 48 * sc))) {
-                    std::string err;
-                    if (!ctx.client->start(&err)) {
-                        last_error_ = err.empty() ? "client start failed" : err;
-                    } else {
-                        last_error_.clear();
-                    }
-                }
-            }
-            ImGui::EndDisabled();
-            ImGui::Dummy(ImVec2(0, 2 * sc));
-            ui::muted_text("Client runs in-process in the background.");
-            if (!last_error_.empty()) {
-                ui::message_text(c.error, "%s", last_error_.c_str());
-            }
-        }
-        ui::end_card();
-
-        // Per-side traffic card. Only show the ones whose runtime is
-        // running, so the dashboard stays uncluttered when only one
-        // half of the app is active.
         const bool client_running = ctx.client && ctx.client->running();
         const bool server_running = ctx.server && ctx.server->running();
+        // Teardown outlives running(); see ClientSession::busy().
+        const bool client_busy = ctx.client && ctx.client->busy();
+        const bool server_busy = ctx.server && ctx.server->busy();
+
+        // Two peer status panels side by side, each owning its own action.
+        // The old layout put both states in one card and both buttons in a
+        // second card below, so neither state sat next to the control that
+        // changes it.
+        const float gap = 6 * sc;
+        const float half = (ImGui::GetContentRegionAvail().x - gap) * 0.5f;
+
+        ImGui::BeginGroup();
+        render_client_panel(ctx, c, sc, half, client, client_running,
+                            client_busy);
+        ImGui::EndGroup();
+        ImGui::SameLine(0.0f, gap);
+        ImGui::BeginGroup();
+        render_server_panel(ctx, c, sc, half, server, server_running,
+                            server_busy);
+        ImGui::EndGroup();
+
+        if (!last_error_.empty()) {
+            ImGui::Dummy(ImVec2(0, 4 * sc));
+            ui::message_text(c.error, "%s", last_error_.c_str());
+        }
+
+        ImGui::Dummy(ImVec2(0, gap));
 
         if (client_running) {
-            ImGui::Dummy(ImVec2(0, 8 * sc));
             render_traffic_card(
                 "##traffic_client",
                 "Live traffic",
@@ -184,7 +115,7 @@ public:
                 window_idx_client_);
         }
         if (server_running) {
-            ImGui::Dummy(ImVec2(0, 8 * sc));
+            if (client_running) ImGui::Dummy(ImVec2(0, gap));
             render_traffic_card(
                 "##traffic_server",
                 "Server traffic",
@@ -195,20 +126,156 @@ public:
                 window_idx_server_);
         }
         if (!client_running && !server_running) {
-            ImGui::Dummy(ImVec2(0, 8 * sc));
-            if (ui::begin_auto_card("##traffic_idle")) {
-                ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
-                const char* msg = "Start the client or server to see live traffic.";
-                ImVec2 ts = ImGui::CalcTextSize(msg);
-                ImGui::SetCursorPosX((ImGui::GetWindowSize().x - ts.x) * 0.5f);
-                ImGui::Dummy(ImVec2(0, 36 * sc));
-                ImGui::SetCursorPosX((ImGui::GetWindowSize().x - ts.x) * 0.5f);
-                ImGui::TextUnformatted(msg);
-                ImGui::Dummy(ImVec2(0, 36 * sc));
-                ImGui::PopStyleColor();
-            }
-            ui::end_card();
+            render_idle_traffic_card(c, sc);
         }
+    }
+
+    // One peer panel: state pill, endpoint, a few live facts, and the single
+    // button that starts or stops it.
+    void render_client_panel(AppContext& ctx, ui::Colors const& c, float sc,
+                             float width, facade::ClientStatus const& client,
+                             bool running, bool busy) {
+        if (ui::begin_auto_card("##panel_client", width)) {
+            ui::section_label("Client");
+            ImGui::Dummy(ImVec2(0, 2 * sc));
+            ui::status_pill(facade::display_label(client.state),
+                            state_color(client.state));
+            ImGui::SameLine(0.0f, 8 * sc);
+            ui::muted_text("%s", client.server_endpoint.empty()
+                                     ? "No server configured"
+                                     : client.server_endpoint.c_str());
+
+            if (client.state == facade::ConnectionState::Connected) {
+                ImGui::Dummy(ImVec2(0, 4 * sc));
+                stat_row("Up", format_rate(client.tx_rate_bps).c_str(),
+                         format_bytes(client.bytes_sent).c_str(), c.accent, sc);
+                stat_row("Down", format_rate(client.rx_rate_bps).c_str(),
+                         format_bytes(client.bytes_received).c_str(),
+                         c.success, sc);
+                ImGui::Dummy(ImVec2(0, 4 * sc));
+                if (!client.server_tls_fingerprint_sha256.empty()) {
+                    ui::muted_text("TLS leaf %.16s\xE2\x80\xA6",
+                                   client.server_tls_fingerprint_sha256.c_str());
+                }
+                ui::muted_text("Packet ABI: %s",
+                               client.packet_bulk_supported
+                                   ? "packet_bulk_v1 ready"
+                                   : "not advertised");
+            } else if (!client.message.empty()) {
+                ImGui::Dummy(ImVec2(0, 4 * sc));
+                ui::muted_text("%s", client.message.c_str());
+            }
+
+            ImGui::Dummy(ImVec2(0, 6 * sc));
+            const ImVec2 btn(-1, 30 * sc);
+            ImGui::BeginDisabled(!ctx.client || (!running && busy));
+            if (running) {
+                if (ui::secondary_button("Disconnect", btn)) {
+                    ctx.client->stop();
+                    last_error_.clear();
+                }
+            } else {
+                if (ui::primary_button(busy ? "Disconnecting..." : "Connect",
+                                       btn)) {
+                    std::string err;
+                    if (!ctx.client->start(&err)) {
+                        last_error_ = err.empty() ? "client start failed" : err;
+                    } else {
+                        last_error_.clear();
+                    }
+                }
+            }
+            ImGui::EndDisabled();
+        }
+        ui::end_card();
+    }
+
+    void render_server_panel(AppContext& ctx, ui::Colors const& c, float sc,
+                             float width, facade::ServerStatus const& server,
+                             bool running, bool busy) {
+        if (ui::begin_auto_card("##panel_server", width)) {
+            ui::section_label("Local server");
+            ImGui::Dummy(ImVec2(0, 2 * sc));
+            ui::status_pill(running ? "Running" : "Stopped",
+                            running ? c.success : c.muted);
+            ImGui::SameLine(0.0f, 8 * sc);
+            ui::muted_text("%s", server.listen_endpoint.empty()
+                                     ? "0.0.0.0:443"
+                                     : server.listen_endpoint.c_str());
+
+            if (running) {
+                ImGui::Dummy(ImVec2(0, 4 * sc));
+                ui::muted_text("%zu connected \xC2\xB7 %zu authorized keys",
+                               server.active_sessions,
+                               server.authorized_keys_count);
+                stat_row("In", "", format_bytes(server.bytes_in).c_str(),
+                         c.success, sc);
+                stat_row("Out", "", format_bytes(server.bytes_out).c_str(),
+                         c.accent, sc);
+            } else if (!server.message.empty()) {
+                ImGui::Dummy(ImVec2(0, 4 * sc));
+                ui::message_text(c.error, "%s", server.message.c_str());
+            }
+
+            ImGui::Dummy(ImVec2(0, 6 * sc));
+            const ImVec2 btn(-1, 30 * sc);
+            ImGui::BeginDisabled(!ctx.server || (!running && busy));
+            if (running) {
+                if (ui::secondary_button("Stop server", btn)) {
+                    ctx.server->stop();
+                    last_error_.clear();
+                }
+            } else {
+                if (ui::primary_button(busy ? "Stopping..." : "Start server",
+                                       btn)) {
+                    std::string err;
+                    if (!ctx.server->start(&err)) {
+                        last_error_ = err.empty() ? "server start failed" : err;
+                    } else {
+                        last_error_.clear();
+                    }
+                }
+            }
+            ImGui::EndDisabled();
+        }
+        ui::end_card();
+    }
+
+    // Small "label  rate  total" row with a colour key dot.
+    static void stat_row(char const* label, char const* rate,
+                         char const* total, ImVec4 color, float sc) {
+        auto const& c = ui::colors();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        const float r = 3.0f * sc;
+        dl->AddCircleFilled(
+            ImVec2(p.x + r, p.y + ImGui::GetTextLineHeight() * 0.5f), r,
+            ImGui::GetColorU32(color));
+        ImGui::Dummy(ImVec2(r * 2 + 6 * sc, ImGui::GetTextLineHeight()));
+        ImGui::SameLine(0.0f, 0.0f);
+        ImGui::TextColored(color, "%s", label);
+        ImGui::SameLine(0.0f, 6 * sc);
+        if (rate && *rate) {
+            ImGui::TextUnformatted(rate);
+            ImGui::SameLine(0.0f, 6 * sc);
+            ImGui::TextColored(c.muted, "\xC2\xB7 %s", total);
+        } else {
+            ImGui::TextUnformatted(total);
+        }
+    }
+
+    void render_idle_traffic_card(ui::Colors const& c, float sc) {
+        if (ui::begin_auto_card("##traffic_idle")) {
+            ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
+            const char* msg = "Start the client or server to see live traffic.";
+            ImVec2 ts = ImGui::CalcTextSize(msg);
+            ImGui::Dummy(ImVec2(0, 40 * sc));
+            ImGui::SetCursorPosX((ImGui::GetWindowSize().x - ts.x) * 0.5f);
+            ImGui::TextUnformatted(msg);
+            ImGui::Dummy(ImVec2(0, 40 * sc));
+            ImGui::PopStyleColor();
+        }
+        ui::end_card();
     }
 
     void render_traffic_card(char const* id,

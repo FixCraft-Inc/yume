@@ -142,6 +142,21 @@ std::optional<std::string> find_mono_font() {
     });
 }
 
+// ImGui's default range stops at U+00FF, so a bullet, arrow or en-dash comes
+// out as a "?" box. Extend it just far enough to cover the typographic marks
+// the UI actually uses: General Punctuation (bullet, dashes, quotes) and the
+// four cardinal Arrows.
+ImWchar const* ui_glyph_ranges() {
+    static ImWchar ranges[] = {
+        0x0020, 0x00FF,  // Basic Latin + Latin-1 Supplement
+        0x2010, 0x205E,  // General Punctuation: dashes, quotes, bullet, ellipsis
+        0x2190, 0x21FF,  // Arrows
+        0x2713, 0x2717,  // check / ballot marks
+        0,
+    };
+    return ranges;
+}
+
 ImFont* add_embedded_jost(float size,
                           float rasterizer_multiply,
                           bool synthetic_bold,
@@ -158,6 +173,7 @@ ImFont* add_embedded_jost(float size,
     // explicitly opt out — otherwise ImGui calls free() on a static
     // address and the process aborts at shutdown.
     cfg.FontDataOwnedByAtlas = false;
+    cfg.GlyphRanges = ui_glyph_ranges();
 #if YUME_GUI_FREETYPE
     // Jost's built-in TrueType hinting is weaker than a foundry font
     // like URW Gothic, so LightHinting tends to pixel-snap stems and
@@ -209,6 +225,7 @@ ImFont* add_system_or_jost(std::optional<std::string> const& path,
 #else
         (void)synthetic_oblique;
 #endif
+        cfg.GlyphRanges = ui_glyph_ranges();
         std::snprintf(cfg.Name, sizeof(cfg.Name), "%s %.0f", path->c_str(), size);
         if (ImFont* font = io.Fonts->AddFontFromFileTTF(path->c_str(), size, &cfg)) {
             return font;
@@ -246,13 +263,18 @@ void install_fonts(float content_scale) {
     const auto strong_font = find_strong_font();
     const auto mono_font = find_mono_font();
 
-    g_fonts.small       = add_system_or_jost(ui_font, px(15.5f), 1.12f, false);
-    g_fonts.body        = add_system_or_jost(ui_font, px(18.5f), 1.10f, false);
-    g_fonts.body_italic = add_system_or_jost(ui_font, px(18.5f), 1.10f, false, true);
-    g_fonts.strong      = add_system_or_jost(strong_font ? strong_font : ui_font, px(18.5f), 1.04f, true);
-    g_fonts.section     = add_system_or_jost(strong_font ? strong_font : ui_font, px(20.5f), 1.04f, true);
-    g_fonts.title       = add_system_or_jost(strong_font ? strong_font : ui_font, px(30.0f), 1.02f, true);
-    g_fonts.mono        = add_system_or_jost(mono_font ? mono_font : ui_font, px(15.5f), 1.08f, false);
+    // Desktop control-surface type scale. The previous sizes were inherited
+    // from the Android Material 3 theme, where 18.5 px body and 30 px titles
+    // are correct for a phone held at arm's length. On a 1280x800 window they
+    // left the Client page unable to show its own Connect button. These are
+    // sized for a mouse-and-keyboard app that has real information to show.
+    g_fonts.small       = add_system_or_jost(ui_font, px(12.5f), 1.12f, false);
+    g_fonts.body        = add_system_or_jost(ui_font, px(14.0f), 1.10f, false);
+    g_fonts.body_italic = add_system_or_jost(ui_font, px(14.0f), 1.10f, false, true);
+    g_fonts.strong      = add_system_or_jost(strong_font ? strong_font : ui_font, px(14.0f), 1.04f, true);
+    g_fonts.section     = add_system_or_jost(strong_font ? strong_font : ui_font, px(15.5f), 1.04f, true);
+    g_fonts.title       = add_system_or_jost(strong_font ? strong_font : ui_font, px(23.0f), 1.02f, true);
+    g_fonts.mono        = add_system_or_jost(mono_font ? mono_font : ui_font, px(12.5f), 1.08f, false);
 
     io.FontDefault = g_fonts.body ? g_fonts.body : io.Fonts->Fonts[0];
 }
@@ -278,21 +300,21 @@ void apply_style(float content_scale, bool dark_mode) {
     g_colors.error        = p.error;
 
     ImGuiStyle& s = ImGui::GetStyle();
-    s.WindowPadding = ImVec2(px(26), px(24));
-    s.FramePadding = ImVec2(px(16), px(12));
-    s.CellPadding = ImVec2(px(14), px(11));
-    s.ItemSpacing = ImVec2(px(13), px(13));
-    s.ItemInnerSpacing = ImVec2(px(10), px(8));
-    s.IndentSpacing = px(18);
-    s.ScrollbarSize = px(12);
-    s.GrabMinSize = px(14);
+    s.WindowPadding = ImVec2(px(18), px(16));
+    s.FramePadding = ImVec2(px(10), px(7));
+    s.CellPadding = ImVec2(px(10), px(7));
+    s.ItemSpacing = ImVec2(px(9), px(7));
+    s.ItemInnerSpacing = ImVec2(px(7), px(5));
+    s.IndentSpacing = px(14);
+    s.ScrollbarSize = px(10);
+    s.GrabMinSize = px(11);
     s.WindowRounding = px(0);
-    s.ChildRounding = px(12);
-    s.FrameRounding = px(10);
-    s.PopupRounding = px(12);
-    s.GrabRounding = px(10);
-    s.ScrollbarRounding = px(8);
-    s.TabRounding = px(8);
+    s.ChildRounding = px(9);
+    s.FrameRounding = px(6);
+    s.PopupRounding = px(9);
+    s.GrabRounding = px(6);
+    s.ScrollbarRounding = px(6);
+    s.TabRounding = px(6);
     s.WindowBorderSize = 0.0f;
     s.ChildBorderSize = 1.0f;
     s.FrameBorderSize = 0.0f;
@@ -316,7 +338,73 @@ void page_header(char const* title, char const* subtitle) {
         ImGui::PopStyleColor();
         if (g_fonts.body) ImGui::PopFont();
     }
-    ImGui::Dummy(ImVec2(0, px(10)));
+    ImGui::Dummy(ImVec2(0, px(6)));
+}
+
+// Small circled "?" that reveals its text on hover. Sized off the small font
+// so it sits inside a label row without changing the row's height.
+void help(char const* text) {
+    if (!text || !*text) return;
+    ImGui::SameLine(0.0f, px(6));
+
+    const float d = px(13);
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+    // Nudge onto the text baseline of the label we follow.
+    const float line = ImGui::GetTextLineHeight();
+    pos.y += (line - d) * 0.5f;
+
+    ImGui::PushID(text);
+    ImGui::Dummy(ImVec2(d, line));
+    const bool hovered = ImGui::IsItemHovered();
+    ImGui::PopID();
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 centre(pos.x + d * 0.5f, pos.y + d * 0.5f);
+    const ImVec4 tint = hovered ? g_colors.accent : g_colors.muted;
+    dl->AddCircle(centre, d * 0.5f, color_u32(alpha(tint, hovered ? 0.95f : 0.55f)),
+                  0, std::max(1.0f, px(1.2f)));
+
+    ImFont* font = g_fonts.small ? g_fonts.small : ImGui::GetFont();
+    const float fs = font ? font->FontSize : ImGui::GetFontSize();
+    ImVec2 ts = font ? font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "?")
+                     : ImGui::CalcTextSize("?");
+    dl->AddText(font, fs,
+                ImVec2(centre.x - ts.x * 0.5f, centre.y - ts.y * 0.5f),
+                color_u32(tint), "?");
+
+    if (hovered) {
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(12), px(10)));
+        ImGui::PushStyleColor(ImGuiCol_PopupBg, g_colors.surface_high);
+        ImGui::PushStyleColor(ImGuiCol_Border, g_colors.outline);
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(px(340));
+        if (g_fonts.body) ImGui::PushFont(g_fonts.body);
+        ImGui::PushStyleColor(ImGuiCol_Text, g_colors.text);
+        ImGui::TextUnformatted(text);
+        ImGui::PopStyleColor();
+        if (g_fonts.body) ImGui::PopFont();
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+        ImGui::PopStyleColor(2);
+        ImGui::PopStyleVar();
+    }
+}
+
+void section_label_help(char const* label, char const* text) {
+    section_label(label);
+    help(text);
+}
+
+void field_label_help(char const* label, char const* text) {
+    // field_label ends with a negative cursor nudge so the label hugs its
+    // input. Emit the marker before that nudge happens, then re-apply it.
+    if (g_fonts.small) ImGui::PushFont(g_fonts.small);
+    ImGui::PushStyleColor(ImGuiCol_Text, g_colors.muted);
+    ImGui::TextUnformatted(label);
+    ImGui::PopStyleColor();
+    if (g_fonts.small) ImGui::PopFont();
+    help(text);
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - px(2));
 }
 
 void section_label(char const* label) {
@@ -340,7 +428,7 @@ void field_label(char const* label) {
     // Subtle negative spacing so the label and input live as one widget.
     // Keep it small so a row of side-by-side fields stays vertically
     // aligned even when their labels differ in length.
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - px(4));
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - px(2));
 }
 
 void muted_text(char const* fmt, ...) {
@@ -379,30 +467,30 @@ bool nav_item(char const* id, char const* label, bool selected, ImVec2 size) {
     ImGui::PushID(id);
     ImVec2 actual = size;
     if (actual.x <= 0.0f) {
-        actual.x = std::max(px(44), ImGui::GetContentRegionAvail().x + actual.x);
+        actual.x = std::max(px(36), ImGui::GetContentRegionAvail().x + actual.x);
     }
-    if (actual.y <= 0.0f) actual.y = px(48);
+    if (actual.y <= 0.0f) actual.y = px(34);
     ImVec2 pos = ImGui::GetCursorScreenPos();
     bool pressed = ImGui::InvisibleButton("##nav", actual);
     const bool hovered = ImGui::IsItemHovered();
     ImDrawList* draw = ImGui::GetWindowDrawList();
-    const float radius = px(10);
+    const float radius = px(7);
     ImVec4 fill = selected ? alpha(g_colors.accent, 0.18f)
                            : (hovered ? alpha(g_colors.surface_high, 0.9f)
                                       : alpha(g_colors.surface_high, 0.0f));
     draw->AddRectFilled(pos, ImVec2(pos.x + actual.x, pos.y + actual.y),
                         color_u32(fill), radius);
     if (selected) {
-        draw->AddRectFilled(ImVec2(pos.x, pos.y + px(9)),
-                            ImVec2(pos.x + px(4), pos.y + actual.y - px(9)),
-                            color_u32(g_colors.accent), px(3));
+        draw->AddRectFilled(ImVec2(pos.x, pos.y + px(7)),
+                            ImVec2(pos.x + px(3), pos.y + actual.y - px(7)),
+                            color_u32(g_colors.accent), px(2));
     }
     ImFont* font = g_fonts.strong ? g_fonts.strong : ImGui::GetFont();
     const float font_size = font ? font->FontSize : ImGui::GetFontSize();
     ImVec2 text_size = font ? font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, label)
                             : ImGui::CalcTextSize(label);
     draw->AddText(font, font_size,
-                  ImVec2(pos.x + px(22), pos.y + (actual.y - text_size.y) * 0.5f),
+                  ImVec2(pos.x + px(14), pos.y + (actual.y - text_size.y) * 0.5f),
                   color_u32(selected ? g_colors.text : g_colors.muted),
                   label);
     ImGui::PopID();
@@ -414,7 +502,7 @@ float button_width(char const* label, float min_width) {
     const float font_size = font ? font->FontSize : ImGui::GetFontSize();
     ImVec2 text_size = font ? font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, label)
                             : ImGui::CalcTextSize(label);
-    return std::max(px(min_width), text_size.x + px(44));
+    return std::max(px(min_width), text_size.x + px(26));
 }
 
 bool primary_button(char const* label, ImVec2 size) {
@@ -476,8 +564,8 @@ bool quiet_button(char const* label, ImVec2 size) {
 
 bool disclosure_header(char const* label, bool open) {
     ImGui::PushID(label);
-    const float h = px(46);
-    const float w = std::max(px(180), ImGui::GetContentRegionAvail().x);
+    const float h = px(32);
+    const float w = std::max(px(160), ImGui::GetContentRegionAvail().x);
     ImVec2 pos = ImGui::GetCursorScreenPos();
     bool pressed = ImGui::InvisibleButton("##disclosure", ImVec2(w, h));
     if (pressed) open = !open;
@@ -486,13 +574,13 @@ bool disclosure_header(char const* label, bool open) {
     ImDrawList* draw = ImGui::GetWindowDrawList();
     ImVec4 fill = hovered ? alpha(g_colors.surface_high, 0.92f)
                           : alpha(g_colors.surface_high, 0.58f);
-    draw->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), color_u32(fill), px(12));
+    draw->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), color_u32(fill), px(8));
     draw->AddRect(pos, ImVec2(pos.x + w, pos.y + h),
-                  color_u32(alpha(g_colors.outline, hovered ? 0.95f : 0.55f)), px(12));
+                  color_u32(alpha(g_colors.outline, hovered ? 0.95f : 0.55f)), px(8));
 
-    const float cx = pos.x + px(19);
+    const float cx = pos.x + px(14);
     const float cy = pos.y + h * 0.5f;
-    const float r = px(5.5f);
+    const float r = px(4.5f);
     const ImU32 chevron = color_u32(g_colors.muted);
     if (open) {
         draw->AddLine(ImVec2(cx - r, cy - r * 0.35f), ImVec2(cx, cy + r * 0.45f), chevron, px(2.0f));
@@ -507,7 +595,7 @@ bool disclosure_header(char const* label, bool open) {
     ImVec2 text_size = font ? font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, label)
                             : ImGui::CalcTextSize(label);
     draw->AddText(font, font_size,
-                  ImVec2(pos.x + px(40), pos.y + (h - text_size.y) * 0.5f),
+                  ImVec2(pos.x + px(28), pos.y + (h - text_size.y) * 0.5f),
                   color_u32(g_colors.text), label);
     ImGui::PopID();
     return open;
@@ -516,8 +604,8 @@ bool disclosure_header(char const* label, bool open) {
 bool begin_card(char const* id, ImVec2 size) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, g_colors.surface);
     ImGui::PushStyleColor(ImGuiCol_Border, g_colors.outline);
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, px(14));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(24), px(24)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, px(10));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(16), px(14)));
     return ImGui::BeginChild(id, size,
                              ImGuiChildFlags_Border |
                              ImGuiChildFlags_AlwaysUseWindowPadding);
@@ -526,8 +614,8 @@ bool begin_card(char const* id, ImVec2 size) {
 bool begin_auto_card(char const* id, float width) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, g_colors.surface);
     ImGui::PushStyleColor(ImGuiCol_Border, g_colors.outline);
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, px(14));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(24), px(24)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, px(10));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(16), px(14)));
     return ImGui::BeginChild(id,
                              ImVec2(width, 0),
                              ImGuiChildFlags_Border |
@@ -556,14 +644,14 @@ bool checkbox(char const* label, bool* value) {
     // Slightly larger box with deeper rounding so it reads as a modern
     // "rounded square" rather than a sharp Win9x checkbox. The radius is
     // ~40% of the box edge — between a square and a pill.
-    const float box = px(22);
-    const float r   = px(9);
-    const float gap = px(12);
+    const float box = px(16);
+    const float r   = px(5);
+    const float gap = px(9);
     // Use the font's metric line height (not the bounding box) so the
     // checkbox row sits on the same baseline as adjacent text inside a
     // SameLine() group. text_size.y is already the line height for one
     // line of body font.
-    const float row_h = std::max(box, font_size) + px(4);
+    const float row_h = std::max(box, font_size) + px(2);
     const float row_w = box + gap + text_size.x + px(2);
 
     ImVec2 pos = ImGui::GetCursorScreenPos();
@@ -904,14 +992,14 @@ ImVec2 status_pill(char const* text, ImVec4 color) {
     ImVec2 text_size = font ? font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, text)
                             : ImGui::CalcTextSize(text);
     ImVec2 pos = ImGui::GetCursorScreenPos();
-    ImVec2 size(text_size.x + px(52), text_size.y + px(14));
+    ImVec2 size(text_size.x + px(34), text_size.y + px(7));
     ImDrawList* draw = ImGui::GetWindowDrawList();
     draw->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y),
                         color_u32(alpha(color, 0.16f)), size.y * 0.5f);
-    draw->AddCircleFilled(ImVec2(pos.x + px(17), pos.y + size.y * 0.5f),
-                          px(3.5f), color_u32(color));
+    draw->AddCircleFilled(ImVec2(pos.x + px(11), pos.y + size.y * 0.5f),
+                          px(2.8f), color_u32(color));
     draw->AddText(font, font_size,
-                  ImVec2(pos.x + px(34),
+                  ImVec2(pos.x + px(21),
                          pos.y + (size.y - text_size.y) * 0.5f),
                   color_u32(color), text);
     ImGui::Dummy(size);
@@ -919,7 +1007,7 @@ ImVec2 status_pill(char const* text, ImVec4 color) {
 }
 
 void unavailable_panel(char const* title, char const* message) {
-    begin_card(title, ImVec2(0, px(150)));
+    begin_card(title, ImVec2(0, px(110)));
     section_label(title);
     muted_text("%s", message);
     end_card();

@@ -459,6 +459,40 @@ ValidationReport validate(server::ServerConfig const& s) {
         r.warnings.emplace_back(
             "auth_keys: no authorized_keys path set; no clients will be able to connect");
     }
+    // prepare_v2_security_config() refuses to start without these three, so a
+    // report that omits them lets a consumer enable "Start" on a config that
+    // cannot possibly run. Mirror the runtime's admission here.
+    if (s.obfs_secret_file.empty()) {
+        r.errors.emplace_back(
+            "obfs_secret_file: required; YUME 2.0 does not accept an inline "
+            "obfs_secret");
+    }
+    if (s.inner_psk_file.empty()) {
+        r.errors.emplace_back("inner_psk_file: required");
+    }
+    if (!s.obfs_secret.empty()) {
+        r.errors.emplace_back(
+            "obfs_secret: inline secrets are refused; use obfs_secret_file");
+    }
+    if (s.real_backend.empty()) {
+        r.errors.emplace_back(
+            "real_backend: required; expected "
+            "loopback://<loopback-ip-literal>:<port>");
+    } else if (!yume::server::host::parse_loopback_backend(s.real_backend)
+                    .has_value()) {
+        r.errors.emplace_back(
+            "real_backend: must be loopback://<loopback-ip-literal>:<port>");
+    }
+    if (!s.obfuscation || !s.inner_crypto) {
+        r.errors.emplace_back(
+            "obfuscation/inner_crypto: mandatory in " +
+            std::string(yume::kVersion) + "; both must be enabled");
+    }
+    if (s.obfs_pad_multiple != 0 || s.obfs_jitter_ms != 0) {
+        r.errors.emplace_back(
+            "obfs_pad_multiple/obfs_jitter_ms: the Chrome profile capture "
+            "contains neither; both must be 0");
+    }
     if (s.reverse_port_min > s.reverse_port_max) {
         r.errors.emplace_back(
             "reverse_port_min must be <= reverse_port_max");

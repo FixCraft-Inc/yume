@@ -212,6 +212,7 @@ set(YUME_GUI_SOURCES
     app.cpp
     platform/app_icon.cpp
     platform/file_dialog.cpp
+    platform/png_writer.cpp
     platform/tray.cpp
     platform/tray_icon.cpp
     platform/window.cpp
@@ -226,7 +227,6 @@ set(YUME_GUI_SOURCES
     pages/keys.cpp
     pages/logs.cpp
     pages/settings.cpp
-    pages/tools.cpp
     pages/credits.cpp
     geo/country_lookup.cpp
     "${YUME_FONT_JOST_OUTPUT}"
@@ -324,8 +324,16 @@ if(WIN32)
             -U_WIN32_WINNT -D_WIN32_WINNT=0x0601
         )
     endif()
-    # No console window in release builds.
+    # No console window when launched from Explorer.
     set_target_properties(yume-gui PROPERTIES WIN32_EXECUTABLE ON)
+    if(MSVC)
+        # /SUBSYSTEM:WINDOWS makes the MSVC linker look for WinMain, and this
+        # program has an ordinary main(). Point the entry at the console CRT
+        # startup so main() is used while the windows subsystem (and therefore
+        # the absent console window) is preserved. Without this the MSVC build
+        # fails to link with LNK2019 on WinMain.
+        target_link_options(yume-gui PRIVATE "/ENTRY:mainCRTStartup")
+    endif()
 endif()
 if(APPLE)
     target_link_libraries(yume-gui PRIVATE
@@ -413,4 +421,34 @@ if(UNIX AND NOT APPLE)
         DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/512x512/apps"
         OPTIONAL
         COMPONENT yume_gui)
+endif()
+
+# Headless exit-code contract. --headless is an acceptance gate, not a
+# courtesy smoke: it must return non-zero when nothing could be exercised and
+# when an exercised lifecycle fails. This test covers the negative half, which
+# needs no server, keys, or network. The positive connect/stop/reconnect half
+# runs against a live dev6 yumed and is a separate integration gate.
+if(YUME_BUILD_TESTING)
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_FOUND)
+        add_test(NAME yume_gui_headless_contract
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/tests/test_yume_gui_headless.py"
+                --gui "$<TARGET_FILE:yume-gui>")
+        set_tests_properties(yume_gui_headless_contract PROPERTIES TIMEOUT 180)
+
+        # Positive half: stand up a real dev6 yumed -- composite AUTH v2
+        # identity, admission secret, inner PSK, loopback cover backend -- and
+        # require the GUI's headless lifecycle to connect, stop, reconnect and
+        # stop against it. This is the gate that proves the GUI's facade drives
+        # real core rather than merely compiling and rendering.
+        if(TARGET yumed)
+            add_test(NAME yume_gui_live_contract
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_SOURCE_DIR}/tests/test_yume_gui_live.py"
+                    --gui "$<TARGET_FILE:yume-gui>"
+                    --yumed "$<TARGET_FILE:yumed>")
+            set_tests_properties(yume_gui_live_contract PROPERTIES TIMEOUT 400)
+        endif()
+    endif()
 endif()

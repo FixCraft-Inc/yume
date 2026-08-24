@@ -353,6 +353,13 @@ bool ServerSession::running() const noexcept {
     return impl_->runtime.running();
 }
 
+bool ServerSession::busy() const noexcept {
+    // Mirrors exactly what start() admits on.
+    return impl_->runtime.running() ||
+           impl_->worker_busy.load(std::memory_order_acquire) ||
+           impl_->stop_busy.load(std::memory_order_acquire);
+}
+
 ServerStatus ServerSession::status() const {
     server::ServerConfig cfg;
     {

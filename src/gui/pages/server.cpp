@@ -89,11 +89,18 @@ bool file_picker(char const* label,
     const float sc = ui::scale();
 
     ImGui::PushID(label);
-    ui::field_label(label);
+    // Explanation rides on a hover marker rather than a paragraph under the
+    // control; a column of file pickers each trailed by three wrapped lines
+    // was most of what made this page unreadable.
+    if (help_text && *help_text) {
+        ui::field_label_help(label, help_text);
+    } else {
+        ui::field_label(label);
+    }
 
     // Layout: path display takes most of the row, button on the right.
     const float row_avail   = ImGui::GetContentRegionAvail().x;
-    const float button_w    = 110.0f * sc;
+    const float button_w    = 84.0f * sc;
     const float gap         = 10.0f * sc;
     const float path_w      = std::max(120.0f * sc, row_avail - button_w - gap);
 
@@ -121,11 +128,6 @@ bool file_picker(char const* label,
         }
     }
 
-    if (help_text && *help_text) {
-        ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
-        ImGui::TextWrapped("%s", help_text);
-        ImGui::PopStyleColor();
-    }
     ImGui::PopID();
     return changed;
 }
@@ -151,13 +153,28 @@ std::filesystem::path resolved_admin_keys(server::ServerConfig const& cfg) {
     return std::filesystem::path(cfg.admin_keys);
 }
 
+std::string format_byte_count(std::uint64_t b) {
+    char buf[32];
+    if (b < 1024ull) {
+        std::snprintf(buf, sizeof(buf), "%llu B",
+                      static_cast<unsigned long long>(b));
+    } else if (b < 1024ull * 1024) {
+        std::snprintf(buf, sizeof(buf), "%.1f KiB", b / 1024.0);
+    } else if (b < 1024ull * 1024 * 1024) {
+        std::snprintf(buf, sizeof(buf), "%.1f MiB", b / (1024.0 * 1024));
+    } else {
+        std::snprintf(buf, sizeof(buf), "%.2f GiB", b / (1024.0 * 1024 * 1024));
+    }
+    return buf;
+}
+
 void push_log(facade::LogLevel level, std::string msg) {
     facade::LogSink::instance().push(level, "gui.server", std::move(msg));
 }
 
 class ServerPage : public Page {
 public:
-    std::string_view title() const override { return "Server"; }
+    std::string_view title() const override { return "Configuration"; }
 
     void on_show(AppContext& ctx) override {
         if (ctx.server && !loaded_) {
@@ -177,74 +194,134 @@ public:
         ui::page_header("Server",
                         "Host your own Yume server so other people can connect to you.");
 
-        render_status_card(c, sc, running, st);
-        ImGui::Dummy(ImVec2(0, 8 * sc));
+        // Status and the Start/Stop control are one card at the top. The
+        // action used to sit below six configuration cards, which put the
+        // page's primary verb off-screen at the default window size.
+        render_status_card(ctx, c, sc, running, st);
+        ImGui::Dummy(ImVec2(0, 6 * sc));
+
+        if (running) {
+            render_sessions(ctx, c, sc);
+            ImGui::Dummy(ImVec2(0, 6 * sc));
+        }
 
         render_listening_card(running, sc);
-        ImGui::Dummy(ImVec2(0, 8 * sc));
+        ImGui::Dummy(ImVec2(0, 6 * sc));
 
         render_certificates_card(running, c, sc);
-        ImGui::Dummy(ImVec2(0, 8 * sc));
+        ImGui::Dummy(ImVec2(0, 6 * sc));
+
+        render_transport_security_card(running, c, sc);
+        ImGui::Dummy(ImVec2(0, 6 * sc));
 
         render_users_card(running, c, sc);
-        ImGui::Dummy(ImVec2(0, 8 * sc));
+        ImGui::Dummy(ImVec2(0, 6 * sc));
 
         render_advanced_card(running, c, sc);
-        ImGui::Dummy(ImVec2(0, 8 * sc));
-
-        render_actions(ctx, running, c, sc);
-        if (running) {
-            ImGui::Dummy(ImVec2(0, 8 * sc));
-            render_sessions(ctx, c, sc);
-        }
     }
 
 private:
-    void render_status_card(ui::Colors const& c, float sc,
+    // Status + primary action in one header card: state pill and endpoint on
+    // the left, Start/Stop on the right, live counters underneath. Blocking
+    // errors are listed here too, next to the button they block.
+    void render_status_card(AppContext& ctx, ui::Colors const& c, float sc,
                             bool running, facade::ServerStatus const& st) {
+        auto const report = facade::config_io::validate(cfg_);
         if (ui::begin_auto_card("##server_status")) {
-            ui::section_label("Status");
+            const float btn_w = 132 * sc;
+            const float btn_h = 34 * sc;
+
+            ImGui::BeginGroup();
             ui::status_pill(running ? "Running" : "Stopped",
                             running ? c.success : c.muted);
-            ImGui::SameLine(0.0f, 16 * sc);
+            ImGui::SameLine(0.0f, 10 * sc);
             ui::muted_text("%s",
                 st.listen_endpoint.empty()
                     ? "Not yet listening"
                     : (std::string("Listening on ") + st.listen_endpoint).c_str());
+            ImGui::EndGroup();
 
+            // Right-align the action on the same row as the status pill.
+            ImGui::SameLine();
+            const float shift =
+                ImGui::GetContentRegionAvail().x - btn_w;
+            if (shift > 0.0f) ImGui::Dummy(ImVec2(shift, 1));
+            ImGui::SameLine(0.0f, 0.0f);
+            render_start_stop(ctx, running, report, ImVec2(btn_w, btn_h));
+
+            if (running) {
+                ImGui::Dummy(ImVec2(0, 6 * sc));
+                ui::muted_text("%zu connected  \xC2\xB7  %s in  \xC2\xB7  %s out",
+                               st.active_sessions,
+                               format_byte_count(st.bytes_in).c_str(),
+                               format_byte_count(st.bytes_out).c_str());
+            }
             if (!st.message.empty()) {
+                ImGui::Dummy(ImVec2(0, 4 * sc));
                 if (!running) {
-                    // Red error text when the server isn't running and
-                    // there's a message - port-bind permission denied,
-                    // missing cert, etc.
                     ui::message_text(c.error, "%s", st.message.c_str());
                 } else {
                     ui::muted_text("%s", st.message.c_str());
                 }
             }
-            if (running) {
-                ui::muted_text("Connected users: %zu", st.active_sessions);
-                ui::muted_text("Traffic in:  %llu bytes",
-                               static_cast<unsigned long long>(st.bytes_in));
-                ui::muted_text("Traffic out: %llu bytes",
-                               static_cast<unsigned long long>(st.bytes_out));
+            if (!last_message_.empty()) {
+                ImGui::Dummy(ImVec2(0, 4 * sc));
+                ui::message_text(last_error_ ? c.error : c.success,
+                                 "%s", last_message_.c_str());
+            }
+            if (!running && !report.ok()) {
+                ImGui::Dummy(ImVec2(0, 4 * sc));
+                for (auto const& e : report.errors) {
+                    ImGui::TextColored(c.error, "\xE2\x80\xA2 %s", e.c_str());
+                }
             }
         }
         ui::end_card();
+    }
+
+    void render_start_stop(AppContext& ctx, bool running,
+                           facade::config_io::ValidationReport const& report,
+                           ImVec2 size) {
+        if (running) {
+            if (ui::secondary_button("Stop server", size) && ctx.server) {
+                ctx.server->stop();
+                last_message_.clear();
+            }
+            return;
+        }
+        // Teardown outlives running(); offering Start during it would only
+        // produce a "still stopping" refusal.
+        const bool busy = ctx.server && ctx.server->busy();
+        ImGui::BeginDisabled(!report.ok() || !ctx.server || busy);
+        if (ui::primary_button(busy ? "Stopping..." : "Start server", size)) {
+            ctx.server->set_config(cfg_);
+            facade::config_io::save_server(
+                cfg_, facade::config_io::default_server_config_path(), nullptr);
+            std::string err;
+            if (!ctx.server->start(&err)) {
+                last_message_ = err.empty() ? "Couldn't start the server." : err;
+                last_error_ = true;
+            } else {
+                last_message_.clear();
+                last_error_ = false;
+            }
+        }
+        ImGui::EndDisabled();
     }
 
     void render_listening_card(bool running, float sc) {
         if (ui::begin_auto_card("##listening")) {
             ui::section_label("Listening");
             ImGui::BeginDisabled(running);
-            int_input("Port", cfg_.listen_port);
-            ImGui::PushStyleColor(ImGuiCol_Text, ui::colors().muted);
-            ImGui::TextWrapped(
-                "The TCP port your server listens on. "
-                "Ports below 1024 (like the default 443) require root or "
-                "the cap_net_bind_service capability on Linux. "
-                "8443 is a popular safe choice.");
-            ImGui::PopStyleColor();
+            ImGui::PushID("Port");
+            ui::field_label_help(
+                "Port",
+                "The TCP port your server listens on. Ports below 1024 "
+                "(including the default 443) need root or the "
+                "cap_net_bind_service capability on Linux. 8443 avoids that.");
+            ImGui::SetNextItemWidth(ui::form_width(220));
+            ImGui::InputInt("##value", &cfg_.listen_port, 0, 0);
+            ImGui::PopID();
             ImGui::EndDisabled();
         }
         ui::end_card();
@@ -259,17 +336,17 @@ private:
                         "Pick TLS certificate (.pem / .crt)",
                         cfg_.tls_cert,
                         "(no certificate selected)",
-                        "Your server's TLS certificate. "
-                        "Drop in a real Let's Encrypt-issued PEM for "
-                        "public servers, or a self-signed one for friends-only.");
-            ImGui::Dummy(ImVec2(0, 6 * sc));
+                        "Your server's TLS certificate. A real Let's "
+                        "Encrypt-issued PEM for public servers, or a "
+                        "self-signed one for friends-only.");
+            ImGui::Dummy(ImVec2(0, 4 * sc));
             file_picker("Private key file",
                         "Pick TLS private key (.pem / .key)",
                         cfg_.tls_key,
                         "(no private key selected)",
-                        "The private key that matches the certificate above. "
-                        "Anyone with this file can impersonate your server - "
-                        "store it safely.");
+                        "The private key matching the certificate above. "
+                        "Anyone holding this file can impersonate your "
+                        "server.");
             ImGui::EndDisabled();
             if (cfg_.tls_cert.empty() || cfg_.tls_key.empty()) {
                 ImGui::Dummy(ImVec2(0, 4 * sc));
@@ -282,6 +359,65 @@ private:
         ui::end_card();
     }
 
+    // Transport security. Everything the 2.0 runtime treats as mandatory is
+    // stated, not offered: prepare_v2_security_config() refuses a config with
+    // obfuscation or inner crypto disabled and force-sets inner_required, and
+    // the server advertises inner_mode="ratchet" regardless of the legacy
+    // light/heavy/dual fields. The three inputs below are the ones the runtime
+    // genuinely reads and cannot start without.
+    void render_transport_security_card(bool running, ui::Colors const& c, float sc) {
+        if (ui::begin_auto_card("##transport_security")) {
+            ui::section_label_help(
+                "Transport security",
+                "Fixed by the protocol, not configurable. Every session uses "
+                "composite Ed25519 + ML-DSA-87 authentication and an "
+                "ML-KEM-1024/X25519/PSK directional ratchet inside the HTTP/2 "
+                "carrier.");
+            ImGui::Dummy(ImVec2(0, 4 * sc));
+
+            ui::status_pill("Composite AUTH v2", c.success);
+            ImGui::SameLine(0.0f, 6 * sc);
+            ui::status_pill("Hybrid ratchet", c.success);
+            ImGui::SameLine(0.0f, 6 * sc);
+            ui::status_pill("H2 carrier", c.success);
+
+            ImGui::Dummy(ImVec2(0, 8 * sc));
+            ImGui::BeginDisabled(running);
+            file_picker("Admission secret file",
+                        "Pick the 32-byte admission secret",
+                        cfg_.obfs_secret_file,
+                        "(required)",
+                        "Shared out-of-band with every client. The server "
+                        "refuses to start without it.");
+            ImGui::Dummy(ImVec2(0, 4 * sc));
+            file_picker("Inner PSK file",
+                        "Pick the 32-byte inner pre-shared key",
+                        cfg_.inner_psk_file,
+                        "(required)",
+                        "Seeds the inner ratchet alongside the hybrid KEM. "
+                        "Also required at startup.");
+            ImGui::Dummy(ImVec2(0, 4 * sc));
+            ImGui::PushID("cover_backend");
+            ui::field_label_help(
+                "Cover backend",
+                "A real local HTTP server that answers unauthenticated "
+                "requests, so the port looks like an ordinary web host. "
+                "Health-checked at startup; must be a loopback literal.");
+            ImGui::SetNextItemWidth(ui::form_width());
+            {
+                char buf[512];
+                std::strncpy(buf, cfg_.real_backend.c_str(), sizeof(buf) - 1);
+                buf[sizeof(buf) - 1] = 0;
+                ImGui::InputTextWithHint("##value", "loopback://127.0.0.1:8080",
+                                         buf, sizeof(buf));
+                cfg_.real_backend = buf;
+            }
+            ImGui::PopID();
+            ImGui::EndDisabled();
+        }
+        ui::end_card();
+    }
+
     // `running` is unused here on purpose, and kept for symmetry with the five
     // sibling render_*_card functions. Authorized keys are the one setting that
     // stays editable while the server is up — the daemon reloads them live
@@ -289,14 +425,12 @@ private:
     // cards there is nothing here to disable.
     void render_users_card([[maybe_unused]] bool running, ui::Colors const& c, float sc) {
         if (ui::begin_auto_card("##users")) {
-            ui::section_label("Allowed users");
-            ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
-            ImGui::TextWrapped(
-                "Anyone connecting needs their public key listed here. "
-                "Share their public key file with them out-of-band; they "
-                "keep the matching private key on their own device.");
-            ImGui::PopStyleColor();
-            ImGui::Dummy(ImVec2(0, 6 * sc));
+            ui::section_label_help(
+                "Allowed users",
+                "Anyone connecting needs their public key listed here. They "
+                "send you their public key file out-of-band and keep the "
+                "matching private key on their own device.");
+            ImGui::Dummy(ImVec2(0, 4 * sc));
 
             if (auth_keys_.empty()) {
                 ui::muted_text("No users authorized yet.");
@@ -369,7 +503,8 @@ private:
         ui::end_card();
     }
 
-    void render_advanced_card(bool running, ui::Colors const& c, float sc) {
+    void render_advanced_card(bool running, [[maybe_unused]] ui::Colors const& c,
+                              float sc) {
         advanced_open_ = ui::disclosure_header("Advanced", advanced_open_);
         if (!advanced_open_) return;
         if (ui::begin_auto_card("##server_advanced")) {
@@ -430,13 +565,11 @@ private:
 
             if (cfg_.anonym) {
                 ImGui::Dummy(ImVec2(0, 6 * sc));
-                ui::section_label("Operator identity proof");
-                ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
-                ImGui::TextWrapped(
-                    "Proves that this server is authorized by the operator CA "
-                    "selected by the client. It does not prove that the host "
-                    "cannot inspect or log traffic.");
-                ImGui::PopStyleColor();
+                ui::section_label_help(
+                    "Operator identity proof",
+                    "Proves this server is authorized by the operator CA the "
+                    "client selected. It does not prove the host cannot "
+                    "inspect or log traffic.");
                 ImGui::Dummy(ImVec2(0, 4 * sc));
 
                 const char* proof_modes[] = {"auto", "local", "fixcraft"};
@@ -467,67 +600,11 @@ private:
             }
 
             ImGui::Dummy(ImVec2(0, 8 * sc));
-            ui::section_label("Inner post-quantum crypto");
-            ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
-            ImGui::TextWrapped(
-                "Adds an extra cipher layer on top of TLS. Heavy + Both "
-                "is the recommended default; turn off only if you need "
-                "to debug.");
-            ImGui::PopStyleColor();
-            ImGui::Dummy(ImVec2(0, 4 * sc));
-
-            ui::checkbox("Enable inner crypto", &cfg_.inner_crypto);
-
-            // Everything under here only matters if inner crypto is on.
-            // Disable the controls (greyed) rather than hide them so the
-            // user can see what they'd be setting if they re-enabled.
-            ImGui::BeginDisabled(!cfg_.inner_crypto);
-            ImGui::Dummy(ImVec2(0, 4 * sc));
-
-            // Heavy / Dual were two booleans on disk but a single mode
-            // in protocol terms. Collapse to one segmented selector and
-            // map back to the two flags here so the underlying config
-            // file format stays compatible with the CLI.
-            //   Light = HKDF only        → heavy=false, dual=false
-            //   Heavy = Argon2 only      → heavy=true,  dual=false
-            //   Both  = advertise both,  → heavy=true,  dual=true
-            //           client picks
-            ui::field_label("Strength");
-            int mode = 0;  // 0=Light, 1=Heavy, 2=Both
-            if (cfg_.inner_heavy && cfg_.inner_dual) mode = 2;
-            else if (cfg_.inner_heavy)               mode = 1;
-            else                                     mode = 0;
-            char const* mode_labels[] = {"Light", "Heavy", "Both"};
-            int new_mode = ui::segmented_control(
-                "##inner_mode", mode_labels, 3, mode, 280.0f * sc);
-            if (new_mode != mode) {
-                switch (new_mode) {
-                    case 0: cfg_.inner_heavy = false; cfg_.inner_dual = false; break;
-                    case 1: cfg_.inner_heavy = true;  cfg_.inner_dual = false; break;
-                    case 2: cfg_.inner_heavy = true;  cfg_.inner_dual = true;  break;
-                }
-            }
-            ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
-            ImGui::TextWrapped(
-                "Light is fast (HKDF). Heavy is slow but stronger (Argon2). "
-                "Both advertises Heavy+Light and lets each client pick.");
-            ImGui::PopStyleColor();
-
-            ImGui::Dummy(ImVec2(0, 4 * sc));
-            ui::checkbox("Require inner crypto (refuse clients without it)",
-                         &cfg_.inner_required);
-
-            ImGui::EndDisabled();  // closes !cfg_.inner_crypto disabled
-
-            ImGui::Dummy(ImVec2(0, 8 * sc));
             codecs_open_ = ui::disclosure_header("App Codecs", codecs_open_);
             if (codecs_open_) {
-                ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
-                ImGui::TextWrapped(
-                    "Application codecs parse local app protocols and relay typed "
-                    "envelopes over Yume streams. Each connecting key still needs "
-                    "its own codec permission.");
-                ImGui::PopStyleColor();
+                ui::muted_text(
+                    "Parse local app protocols and relay typed envelopes over "
+                    "Yume streams. Each key still needs its own permission.");
                 ImGui::Dummy(ImVec2(0, 4 * sc));
                 if (ui::checkbox("Enable Monero RPC codec", &cfg_.allow_monero_rpc_codec)) {
                     if (cfg_.allow_monero_rpc_codec) {
@@ -555,13 +632,11 @@ private:
             }
 
             ImGui::Dummy(ImVec2(0, 8 * sc));
-            ui::section_label("External CLI control");
-            ImGui::PushStyleColor(ImGuiCol_Text, c.muted);
-            ImGui::TextWrapped(
+            ui::section_label_help(
+                "External CLI control",
                 "Lets a separate `yume` command-line tool attach to this "
-                "server for power-user automation. Leave off unless you "
-                "specifically need it - the GUI itself doesn't use it.");
-            ImGui::PopStyleColor();
+                "server for automation. Leave off unless you need it - the "
+                "GUI itself does not use it.");
             ImGui::Dummy(ImVec2(0, 4 * sc));
             ui::checkbox("Allow external CLI to attach", &cfg_.ipc_enable);
             // The path is just plumbing - we pick a sensible default
@@ -569,47 +644,6 @@ private:
             // or edit it. cfg_.ipc_path is left as-is (empty means auto).
 
             ImGui::EndDisabled();
-        }
-        ui::end_card();
-    }
-
-    void render_actions(AppContext& ctx, bool running,
-                        ui::Colors const& c, float sc) {
-        if (ui::begin_auto_card("##server_actions")) {
-            auto report = facade::config_io::validate(cfg_);
-            for (auto const& e : report.errors)   ImGui::TextColored(c.error,   "- %s", e.c_str());
-            for (auto const& w : report.warnings) ImGui::TextColored(c.warning, "- %s", w.c_str());
-            if (!report.errors.empty()) ImGui::Dummy(ImVec2(0, 4 * sc));
-
-            const ImVec2 btn(190 * sc, 48 * sc);
-            if (!running) {
-                ImGui::BeginDisabled(!report.ok() || !ctx.server);
-                if (ui::primary_button("Start server", btn)) {
-                    ctx.server->set_config(cfg_);
-                    facade::config_io::save_server(
-                        cfg_, facade::config_io::default_server_config_path(),
-                        nullptr);
-                    std::string err;
-                    if (!ctx.server->start(&err)) {
-                        last_message_ = err.empty() ? "Couldn't start the server."
-                                                    : err;
-                        last_error_ = true;
-                    } else {
-                        last_message_.clear();
-                    }
-                }
-                ImGui::EndDisabled();
-            } else {
-                if (ui::secondary_button("Stop server", btn) && ctx.server) {
-                    ctx.server->stop();
-                    last_message_.clear();
-                }
-            }
-            if (!last_message_.empty()) {
-                ImGui::Dummy(ImVec2(0, 4 * sc));
-                ui::message_text(last_error_ ? c.error : c.success,
-                                 "%s", last_message_.c_str());
-            }
         }
         ui::end_card();
     }

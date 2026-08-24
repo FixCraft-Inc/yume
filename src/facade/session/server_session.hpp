@@ -33,6 +33,13 @@ public:
     void stop();
 
     bool running() const noexcept;
+
+    // True while any lifecycle work is in flight, so start() would be
+    // refused. See ClientSession::busy(): stop() returns before teardown
+    // finishes, so running() alone cannot tell a consumer when a restart
+    // will be accepted.
+    bool busy() const noexcept;
+
     ServerStatus status() const;
     TrafficMeter const& traffic() const noexcept;
 

@@ -7,6 +7,7 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -30,6 +31,14 @@ struct Options {
     bool no_tray{false};
     std::string client_config_path;
     std::string server_config_path;
+    // Rendered-smoke support. `page` selects the initially shown page by
+    // title; `capture_path` renders that one page to a PNG and exits;
+    // `capture_all_dir` walks every page in both workspaces and writes one
+    // PNG each. These make "the window actually rendered" a scriptable
+    // check instead of something only a human at a screen can confirm.
+    std::string page;
+    std::string capture_path;
+    std::string capture_all_dir;
 };
 
 class App {
@@ -41,6 +50,10 @@ public:
     App& operator=(App const&) = delete;
 
     int run();
+
+    // Renders pages headfully and writes PNGs, then returns. Used by the
+    // rendered-smoke path; returns false if any capture could not be written.
+    bool run_capture();
 
 private:
     enum class Workspace {
@@ -92,11 +105,22 @@ private:
 
     // Background-resolved IPv4 of the active server, used by the tray
     // menu's country line. We resolve on a worker so the frame loop
-    // never blocks on getaddrinfo. The host string we last submitted a
-    // resolve for is held under the same mutex.
-    std::mutex resolve_mtx_;
-    std::string resolved_host_;
-    std::string resolved_ip_;
+    // never blocks on getaddrinfo.
+    //
+    // The worker touches only this shared state, never `this`, so it stays
+    // safe if it outlives the App. That matters because getaddrinfo is not
+    // interruptible: under hostile or black-holed DNS a lookup can sit for
+    // the full resolver timeout. Destruction therefore waits a bounded
+    // moment and detaches rather than joining unconditionally, so a stuck
+    // lookup cannot hold the window open.
+    struct ResolveState {
+        std::mutex mtx;
+        std::condition_variable done;
+        std::string host;
+        std::string ip;
+        bool finished{true};
+    };
+    std::shared_ptr<ResolveState> resolve_{std::make_shared<ResolveState>()};
     std::atomic<bool> resolve_in_flight_{false};
     std::thread resolver_thread_;
 

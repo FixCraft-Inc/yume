@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cstdlib>
@@ -39,12 +40,22 @@ std::vector<std::uint8_t> encode_document(
         serialised.begin(), serialised.end());
     const auto encrypted =
         basefwx::fwxaes::EncryptRaw(plaintext, password);
-    std::vector<std::uint8_t> output{
-        'Y', 'U', 'M', 'E', 'S', 'H', 'R', 'E',
-        yume::share::kFormatVersion,
-        static_cast<std::uint8_t>(yume::share::BundleType::Backup),
-        0, 0};
-    output.insert(output.end(), encrypted.begin(), encrypted.end());
+    // Fill a size-checked destination directly. GCC 11 can misdiagnose the
+    // vector::insert growth path below this fixed header as an overread when
+    // Release inlining and -Werror are enabled.
+    constexpr std::size_t kHeaderSize = 12U;
+    std::vector<std::uint8_t> output(kHeaderSize + encrypted.size());
+    std::size_t offset = 0;
+    for (const std::uint8_t byte : std::array<std::uint8_t, kHeaderSize>{
+             'Y', 'U', 'M', 'E', 'S', 'H', 'R', 'E',
+             yume::share::kFormatVersion,
+             static_cast<std::uint8_t>(yume::share::BundleType::Backup),
+             0, 0}) {
+        output[offset++] = byte;
+    }
+    for (const std::uint8_t byte : encrypted) {
+        output[offset++] = byte;
+    }
     return output;
 }
 

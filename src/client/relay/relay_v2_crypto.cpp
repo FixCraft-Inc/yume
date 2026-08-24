@@ -291,16 +291,25 @@ Bytes EncodeRecord(std::uint8_t kind, const std::vector<Field>& fields) {
         previous = field.id;
     }
 
-    Bytes out;
-    out.reserve(total);
-    out.insert(out.end(), kRecordMagic.begin(), kRecordMagic.end());
-    out.push_back(kRecordSchemaVersion);
-    out.push_back(kind);
-    AppendU16(out, static_cast<std::uint16_t>(fields.size()));
+    // Populate a size-checked destination directly.  Besides avoiding
+    // reallocations, this keeps GCC 11 from misdiagnosing vector::insert's
+    // growth path as a zero-sized destination under Release inlining.
+    Bytes out(total);
+    std::size_t offset = 0;
+    for (const std::uint8_t byte : kRecordMagic) {
+        out[offset++] = byte;
+    }
+    out[offset++] = kRecordSchemaVersion;
+    out[offset++] = kind;
+    out[offset++] = static_cast<std::uint8_t>(fields.size() >> 8U);
+    out[offset++] = static_cast<std::uint8_t>(fields.size());
     for (const Field& field : fields) {
-        out.push_back(field.id);
-        AppendU16(out, static_cast<std::uint16_t>(field.value.size()));
-        out.insert(out.end(), field.value.begin(), field.value.end());
+        out[offset++] = field.id;
+        out[offset++] = static_cast<std::uint8_t>(field.value.size() >> 8U);
+        out[offset++] = static_cast<std::uint8_t>(field.value.size());
+        for (const std::uint8_t byte : field.value) {
+            out[offset++] = byte;
+        }
     }
     return out;
 }

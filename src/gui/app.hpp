@@ -98,6 +98,7 @@ private:
     std::string resolved_host_;
     std::string resolved_ip_;
     std::atomic<bool> resolve_in_flight_{false};
+    std::thread resolver_thread_;
 
     std::string pending_jump_arg_;
 

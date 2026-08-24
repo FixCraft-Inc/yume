@@ -86,6 +86,15 @@ nlohmann::json RelayRuntime::status_json() const {
     json["active_channels"] = channels_.size();
     if (active_chat_stream_.has_value()) {
         json["active_chat_stream"] = *active_chat_stream_;
+        auto active = channels_.find(*active_chat_stream_);
+        if (active != channels_.end() &&
+            active->second.channel_kind == control::ChannelKind::chat) {
+            json["active_chat"] = {
+                {"channel_id", active->second.channel_id},
+                {"peer_id", active->second.peer_id},
+                {"peer_name", active->second.peer_name},
+            };
+        }
     }
     if (active_admin_stream_.has_value()) {
         json["active_admin_stream"] = *active_admin_stream_;
@@ -183,15 +192,32 @@ nlohmann::json RelayRuntime::handle_local_request(const nlohmann::json& request)
     }
     if (op == "chat.open") {
         std::string error;
+        std::string channel_id;
+        std::string peer_id;
         RelaySecretArgument relay_secret(args);
-        if (!open_chat(args.value("peer", ""), relay_secret.value(), &error)) {
+        if (!open_chat(args.value("peer", ""), relay_secret.value(), &error,
+                       &channel_id, &peer_id)) {
+            return {{"ok", false}, {"error", error}};
+        }
+        return {
+            {"ok", true},
+            {"result", {
+                {"channel_id", channel_id},
+                {"peer_id", peer_id},
+            }},
+        };
+    }
+    if (op == "chat.send") {
+        std::string error;
+        if (!send_chat(args.value("channel_id", ""),
+                       args.value("text", ""), &error)) {
             return {{"ok", false}, {"error", error}};
         }
         return {{"ok", true}, {"result", true}};
     }
-    if (op == "chat.send") {
+    if (op == "chat.close") {
         std::string error;
-        if (!send_chat(args.value("text", ""), &error)) {
+        if (!close_chat(args.value("channel_id", ""), &error)) {
             return {{"ok", false}, {"error", error}};
         }
         return {{"ok", true}, {"result", true}};

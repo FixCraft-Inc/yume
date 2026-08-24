@@ -10,8 +10,8 @@ the target, and how much trust is placed in the YUME server.
 
 The current qualified-development scope is the glibc Linux x86-64 CLI/server/
 helper slice. Android diagrams below describe the intended architecture only:
-the separate Android client remains on the incompatible `2.0-dev1` wire and is
-not a supported or validated `2.0-dev6` path.
+the separate Android client remains on the incompatible `0.2.0-dev1` wire and is
+not a supported or validated `0.2.0-dev6` path.
 
 ## Diagram Style
 

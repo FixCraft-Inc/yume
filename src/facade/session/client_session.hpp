@@ -61,10 +61,11 @@ public:
         std::string from_endpoint_id;
         std::string text;
         std::chrono::system_clock::time_point ts;
+        bool outgoing{false};
     };
 
-    // Chat - wired up once RelayRuntime is connected. For now these are
-    // safe no-ops that surface a friendly error.
+    // Chat uses the configured owner-only relay_key_file. open_chat() returns
+    // the pending/active channel id; send/close reject a different channel.
     std::string open_chat(std::string const& peer_endpoint_id, std::string* err);
     void close_chat(std::string const& channel_id);
     bool send_chat(std::string const& channel_id, std::string const& text,
@@ -73,13 +74,11 @@ public:
                                           std::size_t max = 200) const;
 
     using StatusCallback = std::function<void(ClientStatus const&)>;
-    using ChatCallback   = std::function<void(ChatMessage const&)>;
     // Status callbacks are serialized, never run under the lifecycle mutex,
     // and may re-enter start()/stop(). Exceptions are contained by the facade.
     // As with any member callback, the owner must keep this session alive until
     // the callback returns.
     void set_status_callback(StatusCallback cb);
-    void set_chat_callback(ChatCallback cb);
 
 private:
     struct Impl;

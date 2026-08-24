@@ -184,7 +184,7 @@ public:
                     ImGui::EndCombo();
                 }
                 ui::muted_text(
-                    "YUME 2.0-dev6 exposes one complete Chrome 151 + Node 24 identity.");
+                    "YUME 0.2.0-dev6 exposes one complete Chrome 151 + Node 24 identity.");
                 int_input("IO threads (0 = auto)", cfg_.io_threads);
 
                 const char* relay_modes[] = {"untrusted", "trusted", "operator"};

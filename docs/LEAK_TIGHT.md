@@ -11,7 +11,7 @@ close it.
 For the supported YUME 2.0 Linux desktop slice, full-system enforcement requires
 an independently reviewed OS-level routing/kill-switch setup such as the
 iptables design at the bottom of this page. The separate Android client is
-currently on the incompatible `2.0-dev1` wire and is not a supported or
+currently on the incompatible `0.2.0-dev1` wire and is not a supported or
 qualified YUME 2.0 leak-tight option.
 
 ## What leaks, and why
@@ -169,8 +169,8 @@ still loads, your rule set has a hole.
 
 The intended Android architecture uses `android.net.VpnService` and a TUN
 device to capture app traffic. That architecture does not establish current
-behavior: the separate Android checkout remains on `2.0-dev1`, is rejected by
-desktop `2.0-dev6`, and has not passed current ABI/JNI, packet, lifecycle, leak,
+behavior: the separate Android checkout remains on `0.2.0-dev1`, is rejected by
+desktop `0.2.0-dev6`, and has not passed current ABI/JNI, packet, lifecycle, leak,
 or recovery qualification.
 
 Do not rely on the present Android build as a YUME 2.0 kill switch. After it is

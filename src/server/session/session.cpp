@@ -459,7 +459,7 @@ void Session::handle_frame(protocol::Frame frame,
                 std::string reason = auth_error_.empty() ? "access denied: invalid key" : auth_error_;
                 nlohmann::json anon_error = {
                     {"error", reason},
-                    {"version", yume::kVersion}
+                    {"version", yume::kTransportVersion}
                 };
                 if (!cfg_.anonym_certfp.empty()) {
                     anon_error["certfp"] = cfg_.anonym_certfp;
@@ -500,7 +500,7 @@ void Session::handle_frame(protocol::Frame frame,
             util::log_info("session " + std::to_string(session_id_) + ": authenticated");
         }
         nlohmann::json anon = {
-            {"version", yume::kVersion},
+            {"version", yume::kTransportVersion},
             {"mode", cfg_.anonym ? "anonym" : "normal"},
             {"hash", cfg_.anonym_hash},
             {"sig", cfg_.anonym_sig},

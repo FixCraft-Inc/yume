@@ -1,6 +1,6 @@
 # YUME 2.0 desktop wire contract
 
-Status: current `2.0-dev6` development contract for the first Linux x86-64 desktop slice.
+Status: current `0.2.0-dev6` development contract for the first Linux x86-64 desktop slice.
 The release version remains gated on exact-Chrome same-session capture,
 external conformance/classification, matched WAN, an uninterrupted deployed
 soak, and independent review. Bounded lifecycle, scale, reconnect, and
@@ -89,7 +89,7 @@ limited to 64 KiB before allocation.
 
 | ID | Critical | Value |
 | -- | -- | -- |
-| 1 | yes | UTF-8 exact transport version `2.0-dev6` |
+| 1 | yes | UTF-8 exact transport version `0.2.0-dev6` |
 | 2 | yes | 32-byte server challenge |
 | 3 | yes | ephemeral ML-KEM-1024 public key |
 | 4 | yes | 32-byte ephemeral X25519 public key |
@@ -213,7 +213,7 @@ token is:
 
 ```
 HMAC-SHA256(obfs_secret,
-  len("2.0-dev6") || "2.0-dev6" ||
+  len("0.2.0-dev6") || "0.2.0-dev6" ||
   len("chrome151-node24-v1") || "chrome151-node24-v1" ||
   len(lowercase_sni) || lowercase_sni ||
   hour_u64 || nonce_32)

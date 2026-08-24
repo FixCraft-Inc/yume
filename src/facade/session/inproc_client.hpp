@@ -153,12 +153,6 @@ public:
                            int timeout_ms = 5000,
                            runtime::OperationStatus* operation_status = nullptr);
 
-    // Subscribe to log lines emitted by the embedded Cli (useful so
-    // the GUI's log viewer mirrors what the CLI would show). Lines
-    // are pushed from worker threads; do not block in the callback.
-    using LogCallback = std::function<void(std::string const&)>;
-    void set_log_callback(LogCallback cb);
-
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

@@ -1,8 +1,9 @@
 # Changelog
 
-## [Unreleased 2.0-dev6]
+## [Unreleased 0.2.0-dev6]
 
-Hard break from `2.0-dev5`: the exact transport version changed and dev6 has
+Product and transport versions were rebaselined to reflect YUME's experimental
+maturity. This transport is a hard break from `0.2.0-dev5`, and dev6 has
 one evidence-backed `chrome151-node24-v1` identity. No dev5 compatibility or
 downgrade mode exists.
 
@@ -33,7 +34,7 @@ downgrade mode exists.
   missing fields, and configured profile mismatches fail closed without a
   fallback.
 
-- **Fail-closed Linux 2.0 release lane.** The `linux-desktop-2.0` profile
+- **Fail-closed Linux 0.2.0 release lane.** The `linux-desktop-0.2.0` profile
   builds only glibc Linux x86-64 with exact Go 1.26.5 and the Chrome helper
   enabled. It emits `yume-amd64-linux.tar.xz` with the adjacent client/helper,
   licensing, quick-start, and machine manifest, plus a separate
@@ -43,6 +44,12 @@ downgrade mode exists.
   and requires explicit independent-review and RC-gate acknowledgements.
 
 ### Changed
+
+- **Experimental version rebaseline.** Product, package, release-profile, and
+  authenticated transport identity now use `0.2.0-dev6`; AUTH v2, relay-v2,
+  ABI v1, helper IPC v1, and crypto domain schemas remain independently
+  versioned. The obsolete `v1.0` tag was withdrawn because it named an
+  unstable, incorrect project state.
 
 - **Go helper dependency floor.** The opt-in uTLS helper now requires Go 1.25
   module semantics while retaining the exact Go 1.26.5 build toolchain. Its
@@ -148,11 +155,20 @@ downgrade mode exists.
   matching its client. Independent build matrices no longer contend for one
   user-level daemon instance lock when their federation tests overlap.
 
-- **Repeat-safe BaseFWX dependency discovery.** The pinned BaseFWX revision is
-  now `216a48a6110e8f6606b2a63b51950511466bf25a`. It clears CMake's cached
-  private `find_library` result between distinct pkg-config entries, so a
-  repeated shared-ABI configure cannot silently reuse the `rt`/`dl` result and
-  omit `libargon2`. Crypto APIs and wire contracts are unchanged.
+- **GUI facade synchronization boundary.** Client status now exposes the
+  configured security mode, composite/hybrid-ratchet posture, TLS backend,
+  rekey window, peer fingerprint, and capabilities rather than obsolete
+  light/heavy/off state. Chat open/send/close/history honor real channel and
+  peer identities, and the unused callback promises are removed. Log
+  subscribers run outside the sink lock with exception containment; the GUI
+  resolver is owned through shutdown; and macOS bundle versions derive from
+  the project version.
+
+- **Hardened BaseFWX dependency pin.** The pinned BaseFWX revision is now
+  `5c42eafbb95e5c7ea3b6cd57299d577be814f5f2`. It retains repeat-safe Argon2
+  discovery and adds fail-closed crypto/format limits, safer caller-buffer
+  primitives, peer KDF policy coverage, and corrected Java streaming-test
+  nonce discipline. YUME's consumed wire contracts are unchanged.
 
 - **Helper crash and truncation lifecycle.** After `posix_spawn`, the parent
   retained duplicate copies of the child-side IPC and connected TCP
@@ -169,12 +185,12 @@ downgrade mode exists.
   evidence, and independent security review remain release gates. Installed
   Chrome `151.0.7922.108` is functional-only evidence and does not replace or
   rewrite the dev6 fixture. Android, GUI, Windows, macOS, ARM, OpenWRT, static
-  builds, and Debian archive publication are outside the first official 2.0
+  builds, and Debian archive publication are outside the first official 0.2.0
   scope.
 
-## [Unreleased 2.0-dev5]
+## [Unreleased 0.2.0-dev5]
 
-Hard break from `2.0-dev4`: AUTH now carries each endpoint's accepted ratchet
+Hard break from `0.2.0-dev4`: AUTH now carries each endpoint's accepted ratchet
 policy. Exact version equality rejects mixed dev4/dev5 peers; no compatibility
 mode exists.
 
@@ -193,9 +209,9 @@ mode exists.
   BaseFWX commit `4692d4ce4edec2aa9835d04ad9ff6c3ad3ab9374`; the consumed crypto APIs and
   wire contracts are unchanged from the prior pin.
 
-## [Unreleased 2.0-dev4]
+## [Unreleased 0.2.0-dev4]
 
-Hard break from `2.0-dev2` and `2.0-dev3`: the exact transport version changed,
+Hard break from `0.2.0-dev2` and `0.2.0-dev3`: the exact transport version changed,
 so dev2, dev3, and dev4 binaries do not interoperate at admission or AUTH. No
 compatibility mode exists or is planned.
 
@@ -275,7 +291,7 @@ compatibility mode exists or is planned.
   pointer into the loop's stack frame. The lifetime was already guarded, but a
   counted reference removes the class of defect entirely.
 
-## [Unreleased 2.0-dev2]
+## [Unreleased 0.2.0-dev2]
 
 Dev2 was the first hard-break 2.0 desktop transport line. It was superseded by
 dev3 before release; neither development version is a stable release.
@@ -392,9 +408,11 @@ validation are complete.
 
 ### Changed
 
-> **Browser profiles:** The v1.0 test-release block below documents the TLS profiles shipped at 1.0. Current builds use the bumped versions listed in this section.
+> **Browser profiles:** The withdrawn v1.0 test-release block below documents the TLS profiles shipped at 1.0. Current builds use the bumped versions listed in this section.
 
-- **Release line moved to 1.1.** The public `v1.0` tag remains the first test release. Current source, packages, man pages, GUI bundle metadata, Android `versionName`, and release notes now target `1.1` as the first stable line.
+- **Historical release line moved to 1.1.** At the time, the now-withdrawn
+  `v1.0` tag named the first test release and the tree targeted `1.1` as its
+  first stable line.
 - **BaseFWX pin currently names legacy-history 3.7.0 commit** `ddf31617aab6bb9ac87129295564d6736e48c601`, carrying Java Argon2id support, fixed Argon2 lane defaults across runtimes, secret-hygiene hardening, and the blackbox plugin ABI surface. The SHA remains fetchable but is not on the rewritten current `main`/`v3.7.0` lineage; choose and validate the intended canonical release commit before shipping 1.1.
 - **Inner crypto secret hygiene.** Introduced `basefwx::crypto::SecureBytes` — move-only RAII owner that wraps `Bytes` and SecureClears on destruction. Replaces the `SecretGuard` raw-pointer pattern at every KEM-touching call site in yume (`server_derive_key`, `validate_pq_keypair`) and basefwx (`filecodec.cpp` 4 sites, `keywrap.cpp` 2 sites). Eliminates a use-after-free class fixed in 66153f6 by structural change rather than placement discipline. Existing string-secret SecretGuard sites are unchanged.
 - **TLS browser-profile labels corrected** to match the captured shapes: Chrome 131, Firefox 126, Safari 18, and Edge 123.
@@ -406,9 +424,9 @@ validation are complete.
 - **Pre-existing yume_server link break** from the `f6db161` session.cpp split: `epoch_now_ms` was anonymous-namespace-local in session.cpp but referenced from session_control.cpp. Exposed at file scope in session.hpp; duplicate copy in federation_link.cpp removed.
 - **Argon2 admission was not aggregate.** `argon2_env_limits()` previously returned `{0,0,0}` by default, making the parameter guard a no-op. It now seeds per-derivation ceilings (`time=12, memory=512 MiB, parallelism=8`), and positive environment values may deliberately lower or raise them. The server additionally reserves each Argon2 derivation against manager-owned aggregate memory/job limits before allocation; move-only RAII leases release accounting on all exits. Defaults are 512 MiB aggregate and four jobs, configurable through CLI or JSON. The `has_argon2_limits` gate this enabled was dead code and is removed; the client local-cap check stays for old-server backwards compatibility.
 
-## [v1.0] - 2026-05-16
+## [withdrawn v1.0] - 2026-05-16
 
-Compare: <https://github.com/FixCraft-Inc/yume/commits/v1.0> (first public test release)
+Former tag commit: <https://github.com/FixCraft-Inc/yume/commit/82735dc12b17e7bc72592e32e74f52afd4b46247>
 
 ### Added
 - **First public test release** of YUME (Yume Universal Multiprotocol Engine) — an open-source post-quantum stealth transport that tunnels TCP and UDP through real TLS 1.3 sessions using the project's browser-oriented presets. The client (`yume`), daemon (`yumed`), proxy, GUI, and libyume surface are AGPL-3.0-or-later and build from this tree.

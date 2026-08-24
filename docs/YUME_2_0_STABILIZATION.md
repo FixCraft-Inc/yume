@@ -1,13 +1,13 @@
 # YUME 2.0 stabilization and integration gates
 
-Status: working checklist for the Linux x86-64 `2.0-dev6` vertical slice.
+Status: working checklist for the Linux x86-64 `0.2.0-dev6` vertical slice.
 Passing the merge lane below permits landing reviewed development work on
 `main`; it does not by itself make YUME 2.0 release-qualified.
 
 ## Supported 2.0 scope
 
 The first credible 2.0 release is the glibc Linux x86-64 CLI client, Chrome TLS
-helper, and `yumed` server described by the `linux-desktop-2.0` release profile.
+helper, and `yumed` server described by the `linux-desktop-0.2.0` release profile.
 Android, the GUI, static/cross-platform packages, multiple simultaneously
 admitted browser identities, H3, federation, and a mature control-plane
 ecosystem are follow-up scopes. They must not be advertised as supported, but
@@ -82,7 +82,7 @@ prepared-directory, and transfer-round-trip preflight. This closes the old
 dirty-overlay qualification gap for that architecture checkpoint; it does not
 close any Gate B or Gate C item.
 
-## Gate B: authorize `2.0-rc1` as a stable-ish Linux preview
+## Gate B: authorize `0.2.0-rc1` as a stable-ish Linux preview
 
 These gates may follow the merge. Until they pass, keep the source version at a
 development label, keep `chrome151` opt-in, and avoid release-parity claims.
@@ -134,7 +134,7 @@ development label, keep `chrome151` opt-in, and avoid release-parity claims.
 
 Only after these items pass should a separate change consider switching the
 Linux release default from `openssl-diagnostic` to the qualified helper and
-bumping to `2.0-rc1`.
+bumping to `0.2.0-rc1`.
 
 ## Gate C: call the narrow target exact `2.0`
 

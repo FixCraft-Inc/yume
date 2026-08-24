@@ -297,7 +297,7 @@ public:
             ImGui::SameLine(0.0f, 24 * sc);
             ImGui::TextColored(c.muted, "%s / %s",
                                client.profile.c_str(),
-                               client.inner_mode.empty() ? "off" : client.inner_mode.c_str());
+                               client.security_mode.empty() ? "unknown" : client.security_mode.c_str());
         }
         ui::end_card();
     }

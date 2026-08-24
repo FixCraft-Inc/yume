@@ -35,7 +35,7 @@ class CaptureBinaryProvenanceTest(unittest.TestCase):
                  "sha256": hashlib.sha256(helper.read_bytes()).hexdigest()},
             ]}
             with (
-                mock.patch.object(provenance, "source_version", return_value="2.0-dev6"),
+                mock.patch.object(provenance, "source_version", return_value="0.2.0-dev6"),
                 mock.patch.object(provenance, "transport_dependency", return_value={}),
                 mock.patch.object(provenance, "validate_bundle", return_value=manifest),
             ):
@@ -62,7 +62,7 @@ class CaptureBinaryProvenanceTest(unittest.TestCase):
                  "sha256": hashlib.sha256(helper.read_bytes()).hexdigest()},
             ]}
             with (
-                mock.patch.object(provenance, "source_version", return_value="2.0-dev6"),
+                mock.patch.object(provenance, "source_version", return_value="0.2.0-dev6"),
                 mock.patch.object(provenance, "transport_dependency", return_value={}),
                 mock.patch.object(provenance, "validate_bundle", return_value=manifest),
             ):

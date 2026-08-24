@@ -554,7 +554,7 @@ bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
                                    const StartupCheckOptions& options) {
     if (cfg.transport_profile != yume::kTransportProfile) {
         yume::util::log_error(
-            "YUME 2.0-dev6 requires transport_profile " +
+            "YUME 0.2.0-dev6 requires transport_profile " +
             std::string(yume::kTransportProfile));
         return false;
     }

@@ -1,6 +1,6 @@
 # YUME security modes
 
-YUME 2.0-dev6 supports four ratchet-policy modes. `extreme` remains the
+YUME 0.2.0-dev6 supports four ratchet-policy modes. `extreme` remains the
 default and exactly preserves the dev4 epoch limits. The mode changes how much
 traffic may share one hybrid ML-KEM-1024 + X25519 epoch; it does not disable
 TLS 1.3, the random PSK, HKDF, AES-256-GCM, or the fresh one-use key derived

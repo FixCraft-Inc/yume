@@ -10,7 +10,11 @@ upstream_version="$(
 )"
 debian_version="$(cd "${repo_root}" && dpkg-parsechangelog -S Version)"
 archive_version="${upstream_version/-dev/~dev}"
-debian_upstream_version="${debian_version%-*}"
+# Debian's epoch preserves upgrade ordering across the intentional upstream
+# 2.0 -> 0.2.0 maturity rebaseline. Epochs are metadata and are omitted from
+# source-package filenames and the upstream tarball version.
+debian_filename_version="${debian_version#*:}"
+debian_upstream_version="${debian_filename_version%-*}"
 
 if [[ -z "${upstream_version}" || -z "${debian_version}" ]]; then
   echo "failed to read YUME/Debian version" >&2
@@ -34,8 +38,8 @@ cmake \
 prefix="yume-${archive_version}"
 artifacts=(
   "${repo_root}/../yume_${archive_version}.orig.tar.xz"
-  "${repo_root}/../yume_${debian_version}.debian.tar.xz"
-  "${repo_root}/../yume_${debian_version}.dsc"
+  "${repo_root}/../yume_${debian_filename_version}.debian.tar.xz"
+  "${repo_root}/../yume_${debian_filename_version}.dsc"
 )
 
 for artifact in "${artifacts[@]}"; do

@@ -250,7 +250,7 @@ std::optional<int> validate_transport_and_tls(const ClientConfig& cfg,
                                               const std::string& helper_tls_backend) {
     if (cfg.transport_profile != yume::kTransportProfile) {
         util::log_error(
-            "YUME 2.0-dev6 requires transport_profile " +
+            "YUME 0.2.0-dev6 requires transport_profile " +
             std::string(yume::kTransportProfile));
         return 1;
     }

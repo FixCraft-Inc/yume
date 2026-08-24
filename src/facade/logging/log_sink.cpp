@@ -126,6 +126,7 @@ void LogSink::install_spdlog_sink() {
 
 void LogSink::push(LogEntry entry) {
     std::vector<std::pair<int, Subscriber>> subs_copy;
+    LogEntry delivered = entry;
     {
         std::lock_guard<std::mutex> lock(mtx_);
         if (size_ < kCapacity) {
@@ -138,21 +139,15 @@ void LogSink::push(LogEntry entry) {
         }
         subs_copy = subscribers_;
     }
-    if (!subs_copy.empty()) {
-        // Re-acquire the latest entry so subscribers see the same data the
-        // ring buffer just received. We index by computed slot to avoid a
-        // copy under the lock.
-        LogEntry const* latest = nullptr;
-        {
-            std::lock_guard<std::mutex> lock(mtx_);
-            const std::size_t slot = (head_ + size_ - 1) % kCapacity;
-            latest = &ring_[slot];
-            // Subscribers may be invoked while still under the lock so the
-            // reference remains valid; this is acceptable for our low rate.
-            for (auto& [token, cb] : subs_copy) {
-                (void)token;
-                if (cb) cb(*latest);
-            }
+    // Consumer callbacks may re-enter the sink, unsubscribe themselves, or
+    // throw. Invoke a stable copy after releasing the ring lock and contain
+    // failures so diagnostics cannot unwind a transport/lifecycle worker.
+    for (auto& [token, cb] : subs_copy) {
+        (void)token;
+        if (!cb) continue;
+        try {
+            cb(delivered);
+        } catch (...) {
         }
     }
 }

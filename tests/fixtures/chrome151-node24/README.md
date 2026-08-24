@@ -1,6 +1,6 @@
 # Chrome 151 / Node 24 reference fixture
 
-This is YUME 2.0-dev6's single evidence-backed cover identity. Five fresh,
+This is YUME 0.2.0-dev6's single evidence-backed cover identity. Five fresh,
 normal (non-headless) Google Chrome `151.0.7922.71` profiles were captured on
 Debian 13 against `tools/cover-node/server.mjs` under official Node
 `24.18.0`.

@@ -102,7 +102,6 @@ struct InProcClient::Impl {
     std::shared_ptr<std::atomic<bool>> cancel_requested;
     std::vector<std::weak_ptr<RequestWaitState>> pending_requests;
 
-    LogCallback log_callback;
     Status     last_status;
     std::atomic<int> exit_code{0};
     std::chrono::system_clock::time_point started;
@@ -145,11 +144,6 @@ std::optional<InProcClient::RuntimeAccess> InProcClient::acquire_runtime() const
     return RuntimeAccess(
         std::move(lease), impl_->runtime_gate, impl_->tunnel, impl_->relay,
         impl_->server_capabilities);
-}
-
-void InProcClient::set_log_callback(LogCallback cb) {
-    std::lock_guard<std::mutex> lock(impl_->ready_mtx);
-    impl_->log_callback = std::move(cb);
 }
 
 bool InProcClient::start(client::ClientConfig cfg, std::string* error,

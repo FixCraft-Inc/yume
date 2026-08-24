@@ -1,10 +1,11 @@
-yume (2.0~dev6-1) UNRELEASED; urgency=medium
+yume (1:0.2.0~dev6-1) UNRELEASED; urgency=medium
 
+  * Rebaseline the experimental product and transport version as 0.2.0-dev6.
   * Add authenticated, bounded Extreme/Normal/Soft/Ultimate ratchet policies.
 
  -- FixCraft Maintainers <debian@fixcraft.jp>  Sat, 01 Aug 2026 12:00:00 -0700
 
-yume (2.0~dev4-1) UNRELEASED; urgency=medium
+yume (1:0.2.0~dev4-1) UNRELEASED; urgency=medium
 
   * Package the hard-break YUME 2.0 development transport with mandatory
     admission and ML-KEM-1024/X25519/PSK inner protection.

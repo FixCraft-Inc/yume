@@ -82,8 +82,9 @@ Used by client, server, facade, and ABI. No UI, no `main()`.
 | `app_codec/` | Codec-neutral envelope and registry; `builtin/` holds one unit per codec |
 | `runtime/` | Local IPC / runtime socket helpers |
 
-`src/core/version.hpp` holds `kVersion` — protocol compatibility bump
-only with a deliberate plan.
+`src/core/version.hpp` holds the current development `kVersion` and its
+authenticated `kTransportVersion` alias. AUTH, relay, ABI, and helper IPC
+schema versions remain independent in their owning modules.
 
 ### `src/client/` — CLI client
 

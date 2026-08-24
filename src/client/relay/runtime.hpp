@@ -73,8 +73,16 @@ public:
     std::vector<control::EndpointInfo> request_directory(std::string* error);
     control::EndpointInfo self_info() const;
     std::vector<control::PendingInvite> pending_invites() const;
-    bool open_chat(const std::string& peer, const std::string& relay_secret_b64, std::string* error);
+    bool open_chat(const std::string& peer,
+                   const std::string& relay_secret_b64,
+                   std::string* error,
+                   std::string* channel_id = nullptr,
+                   std::string* peer_id = nullptr);
     bool send_chat(const std::string& text, std::string* error);
+    bool send_chat(const std::string& channel_id,
+                   const std::string& text,
+                   std::string* error);
+    bool close_chat(const std::string& channel_id, std::string* error);
     bool send_file(const std::string& peer, const std::filesystem::path& path, const std::string& relay_secret_b64, std::string* error);
     bool send_bytes_path(const std::string& peer, const std::filesystem::path& path, const std::string& relay_secret_b64, std::string* error);
     bool accept_invite(const std::string& invite_id, const std::string& relay_secret_b64, std::string* error);

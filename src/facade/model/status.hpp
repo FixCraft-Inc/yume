@@ -34,7 +34,10 @@ struct ClientStatus {
     std::string message;
     std::string server_endpoint;
     std::string profile;
-    std::string inner_mode;
+    std::string security_mode;
+    std::string effective_protection;
+    std::string tls_backend;
+    std::uint16_t rekey_window{0};
     std::string server_tls_fingerprint_sha256;
     std::vector<std::string> server_capabilities;
     bool packet_bulk_supported{false};

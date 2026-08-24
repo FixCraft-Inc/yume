@@ -21,6 +21,7 @@ from collections.abc import Iterator
 
 
 SERVICE = "abi-stream-v1"
+CHILD_ASAN_OPTIONS_ENV = "YUME_TEST_CHILD_ASAN_OPTIONS"
 
 
 class CoverHandler(BaseHTTPRequestHandler):
@@ -221,6 +222,13 @@ def main() -> int:
         home.mkdir(mode=0o700)
         runtime.mkdir(mode=0o700)
         environment = os.environ.copy()
+        child_asan_options = environment.pop(CHILD_ASAN_OPTIONS_ENV, None)
+        if child_asan_options is not None:
+            # The ASan-preloaded Python host disables only leak detection to
+            # avoid reporting CPython's process-lifetime allocations. Each
+            # spawned instrumented executable must retain the strict CI leak
+            # policy.
+            environment["ASAN_OPTIONS"] = child_asan_options
         environment.update(
             {
                 "HOME": str(home),

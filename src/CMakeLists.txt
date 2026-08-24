@@ -1831,8 +1831,16 @@ if(YUME_BUILD_SHARED_ABI AND TARGET yume_abi)
         set_tests_properties(yume_abi_stream_integration PROPERTIES
             TIMEOUT 90)
         if(DEFINED _yume_asan_preload AND NOT _yume_asan_preload STREQUAL "")
+            # Python must preload ASan before ctypes opens libyume, but
+            # LeakSanitizer cannot distinguish CPython's process-lifetime
+            # allocations from leaks. Disable leak checking only in the host
+            # interpreter; the harness restores it for every spawned YUME
+            # executable through YUME_TEST_CHILD_ASAN_OPTIONS.
             set_property(TEST yume_abi_stream_integration APPEND PROPERTY
-                ENVIRONMENT "LD_PRELOAD=${_yume_asan_preload}")
+                ENVIRONMENT
+                    "LD_PRELOAD=${_yume_asan_preload}"
+                    "ASAN_OPTIONS=detect_leaks=0:halt_on_error=1:abort_on_error=1"
+                    "YUME_TEST_CHILD_ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1")
         endif()
     endif()
     if(UNIX AND CMAKE_NM)

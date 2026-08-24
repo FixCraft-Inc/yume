@@ -56,9 +56,9 @@ int main() {
     const Bytes encoded = BuildChallenge(challenge, kem_public, x_public,
                                          psk_salt, transcript_salt,
                                          rekey_window, policy);
-    assert(encoded.size() == 1803);
+    assert(encoded.size() == 1805);
     assert(Sha256Hex(encoded) ==
-           "ac09d9ede47e374cbdbccb84b2ec89031f49cb5dec99c858573134b2ae30fa04");
+           "1d55a549a640df215557c4f556b7ef8ce7de925e66ea5e5e9c3529d0b93e9874");
     const auto parsed = ParseChallenge(encoded);
     assert(parsed.challenge == challenge);
     assert(parsed.mlkem_public_key == kem_public);
@@ -91,12 +91,11 @@ int main() {
     const Bytes channel_binding(kChannelBindingLen, 0x88);
     const Bytes signature_input = BuildSignatureInput(encoded, unsigned_response,
                                                       channel_binding);
-    assert(signature_input.size() == 3556);
-    // KAT moved with the v3 -> v4 domain bump. The length is unchanged because
-    // the domain string is the same width; only its content differs, which is
-    // exactly the intended effect -- a v3 signature cannot verify here.
+    assert(signature_input.size() == 3558);
+    // Pin the exact development wire as well as the v4 signature domain. A
+    // stale version string or v3 signature transcript must not verify here.
     assert(Sha256Hex(signature_input) ==
-           "85ed6c8cef7f91f6fc113bc0ba607719fcf3c262d502b83df4ca01d27d2b6faa");
+           "f870f40854f93044f48ae8e7350bc527b71a9a0c9b55570c998891f0b9a489bd");
 
     // The admin second factor covers the same transcript under a different
     // domain and is additionally bound to the visitor identity that presented
@@ -105,9 +104,9 @@ int main() {
     // an admin proof could be lifted onto a different visitor's response.
     const Bytes admin_input = BuildAdminSignatureInput(
         encoded, unsigned_response, channel_binding, identity);
-    assert(admin_input.size() == 3558);
+    assert(admin_input.size() == 3560);
     assert(Sha256Hex(admin_input) ==
-           "d16b8219f7b79d6f57a16369c86d017c4d42163a910fe5c67719c008d80a5697");
+           "75da6e2313408ecfe8ad7d2641b98243739a183fa0ba8670d7260086fb4d327a");
     assert(admin_input != signature_input);
 
     // Pin the domain separation itself, not just "the two inputs differ".

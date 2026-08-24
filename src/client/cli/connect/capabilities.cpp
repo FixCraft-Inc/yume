@@ -12,9 +12,9 @@ namespace yume::client {
 
 ServerCapabilityResult evaluate_server_capabilities(const ServerCapabilityInput& input) {
     ServerCapabilityResult result;
-    if (input.server_version != yume::kVersion) {
+    if (input.server_version != yume::kTransportVersion) {
         result.error = "server is version " + input.server_version + ", you are " +
-                       std::string(yume::kVersion) +
+                       std::string(yume::kTransportVersion) +
                        ", transport core versions must match";
         return result;
     }

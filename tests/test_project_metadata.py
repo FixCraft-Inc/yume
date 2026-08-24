@@ -60,6 +60,13 @@ class MetadataTests(unittest.TestCase):
         self.assertTrue(profile["tls_wire_profile"].is_file())
         self.assertGreaterEqual(len(profile["tls_wire_candidates"]), 1)
 
+    def test_product_and_transport_versions_are_coherent(self) -> None:
+        version_header = (ROOT / "src/core/version.hpp").read_text(encoding="utf-8")
+        self.assertIn('kVersion[] = "0.2.0-dev6"', version_header)
+        self.assertIn("kTransportVersion = kVersion", version_header)
+        vcpkg = json.loads((ROOT / "vcpkg.json").read_text(encoding="utf-8"))
+        self.assertEqual(vcpkg["version-string"], "0.2.0-dev6")
+
     def test_dependency_revision_must_be_immutable(self) -> None:
         document = json.loads(DEFAULT_MANIFEST.read_text(encoding="utf-8"))
         document["dependencies"]["basefwx"]["revision"] = "main"
@@ -149,7 +156,7 @@ class MetadataTests(unittest.TestCase):
                 generate(path)
 
     def test_source_archive_rejects_private_and_malformed_paths(self) -> None:
-        prefix = "yume-2.0~dev6"
+        prefix = "yume-0.2.0~dev6"
         rejected = rejected_paths([
             f"{prefix}/README.md",
             f"{prefix}/.private/handoff.md",
@@ -176,7 +183,7 @@ class MetadataTests(unittest.TestCase):
             shutil.copyfile(ROOT / "scripts/make_debian_orig.sh",
                             root / "scripts/make_debian_orig.sh")
             (root / "src/core/version.hpp").write_text(
-                'constexpr const char kVersion[] = "2.0-dev6";\n',
+                'constexpr const char kVersion[] = "0.2.0-dev6";\n',
                 encoding="utf-8")
             (root / "README.md").write_text("public\n", encoding="utf-8")
             (root / ".private/handoff.md").write_text("private\n", encoding="utf-8")
@@ -190,7 +197,7 @@ class MetadataTests(unittest.TestCase):
             archive = pathlib.Path(result.stdout.strip())
             with tarfile.open(archive, "r:xz") as handle:
                 names = handle.getnames()
-            self.assertIn("yume-2.0~dev6/README.md", names)
+            self.assertIn("yume-0.2.0~dev6/README.md", names)
             self.assertFalse(any(".private" in pathlib.PurePosixPath(name).parts
                                  for name in names))
             self.assertFalse(any(".secrets" in pathlib.PurePosixPath(name).parts

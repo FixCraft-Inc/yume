@@ -4,15 +4,16 @@
 
 Yume Universal Multiprotocol Engine. An open-source post-quantum stealth transport. The name is a single character — 夢 — and we use it the way Japanese uses it: a dream of a network you can trust, where the wire shape blends into ordinary HTTPS and neither endpoint has to advertise YUME by name.
 
-YUME 2.0-dev6 tunnels TCP and UDP through a persistent TLS 1.3 + HTTP/2 +
-WebSocket connection. The focused Linux desktop slice uses mandatory
+YUME 0.2.0-dev6 is experimental software implementing its incompatible dev6
+transport contract. It tunnels TCP and UDP through a persistent TLS 1.3 +
+HTTP/2 + WebSocket connection. The focused Linux desktop slice uses mandatory
 ML-KEM-1024 + X25519 + random-PSK key establishment, per-message AES-256-GCM
 keys, and independent directional epochs. The default Extreme policy retains
 the 256 KiB, 512-DATA-frame, or 500 ms sender-active limits; authenticated
 Normal, Soft, and bounded Ultimate policies trade a wider active epoch for less
 hybrid-rekey overhead. The client (`yume`) and daemon
 (`yumed`) are AGPL-3.0-or-later and build from this tree. Other platforms and
-the optional GUI have not yet passed the 2.0 release gates.
+the optional GUI have not yet passed the 0.2.0 release gates.
 
 - Website: https://yume.fixcraft.jp
 - Source: https://github.com/FixCraft-Inc/yume
@@ -468,7 +469,7 @@ The 2.0 tools report MiB/s at three different layers:
 
 See [docs/SELFTEST.md](docs/SELFTEST.md) for commands and how to compare the
 numbers. The older WAN results in [docs/PERFORMANCE.md](docs/PERFORMANCE.md)
-describe 1.x and are not evidence for the 2.0 release gates.
+describe 1.x and are not evidence for the 0.2.0 release gates.
 
 ## Cluster federation
 
@@ -640,7 +641,7 @@ gate** that all must agree:
    identity and directional opt-ins.
 
 EXEC policy inputs remain reserved, but command execution is deliberately
-unavailable in `2.0-dev6`: the server rejects direct EXEC and clients reject
+unavailable in `0.2.0-dev6`: the server rejects direct EXEC and clients reject
 `--allow-exec`, persisted `allow_exec=true`, and every inbound EXEC request.
 The outbound `--exec <command>` request syntax remains distinct from inbound
 permission and receives the server's explicit safety denial.

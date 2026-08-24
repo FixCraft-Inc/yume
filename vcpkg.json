@@ -1,6 +1,6 @@
 {
   "name": "yume",
-  "version-string": "2.0-dev6",
+  "version-string": "0.2.0-dev6",
   "builtin-baseline": "c2aeddd80357b17592e59ad965d2adf65a19b22f",
   "dependencies": [
     "argon2",

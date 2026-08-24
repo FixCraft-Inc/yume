@@ -73,8 +73,8 @@ Each client directory includes a desktop config,
 `DEVICE_SETUP.txt`, and launchers. Run `./start-socks` to use the default
 `~/yume/build/bin/yume`, or `./export-yss [output.yss]` to create an encrypted `.yss`
 containing both required YUME 2.0 secrets. The export format is preparatory only:
-the separate Android client remains on the incompatible `2.0-dev1` wire and is
-not a supported `2.0-dev6` consumer. Share passwords must be at least 12
+the separate Android client remains on the incompatible `0.2.0-dev1` wire and is
+not a supported `0.2.0-dev6` consumer. Share passwords must be at least 12
 characters, matching BaseFWX itself.
 
 ## Create local test material
@@ -201,6 +201,6 @@ line rate as a WAN support claim.
 - Do not place an HTTP-mode reverse proxy in front of `yumed`; it must receive
   the original TLS connection. Use TCP passthrough when a fronting layer is
   required.
-- `2.0-dev6` is not release-complete. Check
+- `0.2.0-dev6` is not release-complete. Check
   [YUME_2_0_IMPLEMENTATION_STATUS.md](YUME_2_0_IMPLEMENTATION_STATUS.md) before
   treating a test result as a production support claim.

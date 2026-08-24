@@ -1,6 +1,6 @@
-# YUME 2.0 Linux x86-64 quick start
+# YUME 0.2.0 Linux x86-64 quick start
 
-The first YUME 2.0 release lane supports only glibc Linux on x86-64. The client
+The first YUME 0.2.0 release lane supports only glibc Linux on x86-64. The client
 archive and server executable are separate artifacts:
 
 - `yume-amd64-linux.tar.xz` contains `yume`, the adjacent

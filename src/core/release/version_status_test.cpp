@@ -34,18 +34,18 @@ void test_version_parsing() {
     assert(short_version->patch == 0);
     assert(!short_version->development);
 
-    const auto development = yume::release::parse_version("2.0-dev1");
+    const auto development = yume::release::parse_version("0.2.0-dev1");
     assert(development.has_value());
-    assert(development->major == 2);
-    assert(development->minor == 0);
+    assert(development->major == 0);
+    assert(development->minor == 2);
     assert(development->patch == 0);
     assert(development->development);
     assert(development->development_sequence == 1);
 
     assert(!yume::release::parse_version("2").has_value());
-    assert(!yume::release::parse_version("2.0-rc1").has_value());
-    assert(!yume::release::parse_version("2.0-dev").has_value());
-    assert(!yume::release::parse_version("2.0-dev1-extra").has_value());
+    assert(!yume::release::parse_version("0.2.0-rc1").has_value());
+    assert(!yume::release::parse_version("0.2.0-dev").has_value());
+    assert(!yume::release::parse_version("0.2.0-dev1-extra").has_value());
 }
 
 void test_stable_release_statuses() {
@@ -78,18 +78,18 @@ void test_stable_release_statuses() {
 }
 
 void test_tag_only_failsafe() {
-    const auto old_tag = tag("v1.0");
+    const auto old_tag = tag("v0.1.0");
     assert(yume::release::evaluate_version_status(
-               "Yume", "2.0-dev1", std::nullopt, old_tag)
+               "Yume", "0.2.0-dev1", std::nullopt, old_tag)
                .freshness == Freshness::development);
     assert(yume::release::evaluate_version_status(
-               "Yume", "1.0", std::nullopt, old_tag)
+               "Yume", "0.1.0", std::nullopt, old_tag)
                .freshness == Freshness::unknown);
     assert(yume::release::evaluate_version_status(
-               "Yume", "1.0-dev1", std::nullopt, old_tag)
+               "Yume", "0.1.0-dev1", std::nullopt, old_tag)
                .freshness == Freshness::unknown);
     assert(yume::release::evaluate_version_status(
-               "Yume", "2.0-dev1", std::nullopt, std::nullopt, "network error")
+               "Yume", "0.2.0-dev1", std::nullopt, std::nullopt, "network error")
                .freshness == Freshness::unknown);
 }
 

@@ -72,6 +72,7 @@ yume_openssl_activate_prefix() {
     local pkgconfig_dir="${lib_dir}/pkgconfig"
     if [[ ! -x "${prefix}/bin/openssl" ||
           ! -f "${prefix}/include/openssl/ssl.h" ||
+          ! -f "${prefix}/ssl/openssl.cnf" ||
           ! -d "${pkgconfig_dir}" ]]; then
         return 1
     fi
@@ -181,7 +182,12 @@ yume_openssl_build_fallback() (
             --libdir=lib \
             shared zlib enable-zstd no-tests
         make -j"${jobs}" build_sw
-        make install_sw
+        make install_sw install_ssldirs
+        # install_sw intentionally omits the request configuration.  CI uses
+        # this exact openssl binary to mint ephemeral fixture certificates, so
+        # keep the checksum-verified source configuration with the otherwise
+        # self-contained prefix instead of inheriting a host openssl.cnf.
+        install -m 0644 apps/openssl.cnf "${prefix}/ssl/openssl.cnf"
     )
 )
 

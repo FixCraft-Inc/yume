@@ -35,7 +35,7 @@ int main() {
 
     yume::release::VersionReport report;
     report.components.push_back({
-        "Yume", "2.0-dev1", yume::release::Freshness::development,
+        "Yume", "0.2.0-dev1", yume::release::Freshness::development,
         std::nullopt,
     });
     report.components.push_back({
@@ -52,7 +52,7 @@ int main() {
     const std::string plain =
         yume::release::render_version_report(report, "Yume", false);
     assert(plain.rfind("YUME\nPost-quantum stealth transport\n", 0) == 0);
-    assert(plain.find("Yume 2.0-dev1") != std::string::npos);
+    assert(plain.find("Yume 0.2.0-dev1") != std::string::npos);
     assert(plain.find("Not checked") != std::string::npos);
     assert(plain.find("\033[") == std::string::npos);
 

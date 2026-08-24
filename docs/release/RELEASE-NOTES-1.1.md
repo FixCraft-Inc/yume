@@ -1,7 +1,7 @@
 # YUME 1.1 — First Stable Release
 
 > **Historical plan:** this document records the superseded 1.x release plan.
-> The current source is the incompatible `2.0-dev6` development line. Use
+> The current source is the incompatible `0.2.0-dev6` development line. Use
 > [`../YUME_2_0_IMPLEMENTATION_STATUS.md`](../YUME_2_0_IMPLEMENTATION_STATUS.md)
 > and [`../protocol/YUME_2_0_WIRE.md`](../protocol/YUME_2_0_WIRE.md) for current
 > implementation and protocol truth.
@@ -11,9 +11,9 @@ through real TLS 1.3 sessions with browser-profiled ClientHellos and an
 HTTP/2-shaped opening exchange. Both ends — the client `yume` and the daemon
 `yumed` — are open-source under AGPL-3.0-or-later and build from this tree.
 
-This is the planned stable release after the public `v1.0` test release.
-The `v1.0` GitHub tag is intentionally left as published; `v1.1` is the
-roll-forward stable line. The wire format, authentication keys, anonym CA /
+This was the planned stable release after the former `v1.0` test release.
+That tag was withdrawn on 2026-08-23 because the project state it named was
+unstable and incorrect; this document remains historical context. The wire format, authentication keys, anonym CA /
 sub-key files, and `yume-obfs-v2` HTTP/2 token format are considered stable
 for the 1.x line starting with 1.1.
 
@@ -424,8 +424,9 @@ gpg --verify yume-amd64-linux.sig yume-amd64-linux
 
 ## 11. Compatibility & upgrade
 
-Upgrade from the public `v1.0` test release by installing the matching 1.1
-transport core on both client and daemon. The handshake rejects a different
+Former `v1.0` test builds are unsupported. This historical upgrade path
+required installing the matching 1.1 transport core on both client and daemon.
+The handshake rejects a different
 `kVersion` before carrying traffic; desktop GUI and Android app release
 versions are independent and are not part of that check. Stable artifacts
 continue to carry forward across the 1.x line:

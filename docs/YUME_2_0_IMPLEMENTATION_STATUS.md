@@ -6,7 +6,7 @@ and release gates remain incomplete.
 The older signed-commit inventory and performance chronology are in
 `docs/YUME_2_0_DEV6_HANDOFF.md`; its dated ordered-work sections are historical.
 This page carries the current implementation and consumer-readiness boundary.
-The explicit development-merge, `2.0-rc1`, exact-`2.0`, and branch-sync gates
+The explicit development-merge, `0.2.0-rc1`, exact-`0.2.0`, and branch-sync gates
 are in `docs/YUME_2_0_STABILIZATION.md`.
 
 This is a truthful inventory of the focused Linux x86-64 client/server work. It
@@ -119,7 +119,7 @@ closed before either frontend is called synchronized or qualified:
   shutdown wakeup, and exact queue caps have focused tests. Android still needs
   its own JNI/device/VPN saturation gate.
 - **Android migration:** the separate Android checkout still pins
-  `2.0-dev1`, accepts a bare Ed25519 PEM even though dev6 requires the exact
+  `0.2.0-dev1`, accepts a bare Ed25519 PEM even though dev6 requires the exact
   Ed25519 + ML-DSA-87 composite private identity, and its BaseFWX Java sync list
   omits direct dependencies `PasswordPolicy.java` and
   `PayloadKeySeparation.java` (plus the separately required `X25519.java`
@@ -138,11 +138,17 @@ closed before either frontend is called synchronized or qualified:
   connection phase and cannot be followed by a late successful start. This
   removes the shared blocker; a real GUI window-level lifecycle smoke is still
   required before functional GUI qualification.
-- **GUI surface:** remove the obsolete light/heavy/dual/optional inner-crypto
-  controls and status, fix the detached DNS worker that captures `App*`, and
-  either complete or clearly remove the partial chat
-  callback/close contract. The in-process status message is never populated and
-  log callbacks are stored but never delivered. `--headless` currently exits
+- **GUI facade/core preparation:** the DNS worker is owned and joined instead
+  of detaching with an `App*`; the facade reports the actual security mode,
+  effective composite/hybrid ratchet posture, TLS backend, rekey window,
+  fingerprint, and server capabilities instead of deriving obsolete
+  light/heavy/off status. The dead in-process log callback promise is removed;
+  the typed `LogSink` remains the single log stream and now invokes reentrant,
+  exception-throwing subscribers outside its lock. Chat open returns a real
+  channel id, send/close enforce it, and history carries direction and time;
+  the unused live-chat callback promise is removed. macOS bundle versions now
+  follow the project version. The visual redesign must still remove the
+  obsolete optional/light/heavy/dual server controls. `--headless` still exits
   successfully when valid session startup fails or configurations are absent,
   so it is not a real connect/stop/reconnect gate.
 
@@ -168,8 +174,9 @@ qualified.
 - BaseFWX repository, exact commit, and minimum version are defined once in
   `config/dependencies.json` and consumed by CMake, build scripts, CI, CodeQL,
   and release tooling; a floating branch is rejected. The repeated Argon2
-  discovery cache-reset correction is separately signed, pushed, and pinned at
-  `216a48a6110e8f6606b2a63b51950511466bf25a`, so the YUME candidate no longer
+  discovery cache-reset correction and subsequent crypto/format hardening are
+  separately signed, pushed, and pinned at
+  `5c42eafbb95e5c7ea3b6cd57299d577be814f5f2`, so the YUME candidate no longer
   depends on an unpublished BaseFWX worktree.
 - Full builds now fail configuration below OpenSSL 3.5 instead of discovering
   the missing ML-DSA-87 provider during AUTH. The official OpenSSL source
@@ -284,7 +291,7 @@ qualified.
   separate TLS/operator CA material, TLS/SNI name, admission secret, inner PSK,
   tunnel count, and operator-proof policy. Legacy v1 files that carried only
   the shared private CA remain importable.
-- Exact `2.0-dev6` version and `chrome151-node24-v1` profile equality at
+- Exact `0.2.0-dev6` version and `chrome151-node24-v1` profile equality at
   admission, AUTH, establishment, and protected-frame boundaries. Schema-2
   AUTH/dev5, stale-profile, and missing-profile records have no downgrade path.
   Legacy
@@ -370,7 +377,7 @@ qualified.
   reproducible helpers, exact Linux preparation, release preflight, and
   transfer round trip. This is Gate A development-integration evidence, not
   the same-session Chrome, WAN, deployed-soak, or independent release audit
-  required for `2.0-rc1`.
+  required for `0.2.0-rc1`.
 - The architecture push's first GitHub CI run exposed one test-only portability
   defect: the Chrome/Node hash negative test assumed `ss` and `rg` were
   installed. Signed correction `815ea405568edeb661389bae128a6678cb4cdf1b`
@@ -431,7 +438,7 @@ qualified.
   increase. The capped upload median was 1,267.9 Mbit/s. This local functional
   run used Node 20.19.2 rather than the pinned Node 24 fixture; the direct
   Ethernet result was still limited by the dev1 stop-and-wait epoch exchange.
-- Matched `2.0-dev2` client/server binaries pipelined that exchange without
+- Matched `0.2.0-dev2` client/server binaries pipelined that exchange without
   changing the 256 KiB, 512-frame, or 500 ms limits. On the direct
   10.77.77.2-to-10.77.77.1 one-gigabit link (940-941 Mbit/s raw iperf3), three
   256 MiB-per-direction one-stream trials measured 930.6 Mbit/s upload and
@@ -543,7 +550,7 @@ qualified.
   per-invocation bound, so it is not one uninterrupted >16 GiB connection or
   matched WAN evidence.
 
-## Required before `2.0-rc1`
+## Required before `0.2.0-rc1`
 
 - Run an actual desktop tunnel bidirectionally across multiple epochs and
   reconnect cleanly in the intended deployed network; current long-flow and
@@ -576,7 +583,7 @@ qualified.
   H2 shape, assets, and cover server while closing the remaining OpenSSL
   ClientHello differences.
 - Obtain independent cryptographic/protocol review and adversarial deployment
-  testing before authorizing `2.0-rc1`.
+  testing before authorizing `0.2.0-rc1`.
 
 ## Required before exact version `2.0`
 
@@ -638,7 +645,7 @@ automatic improvement.
 Client AUTH sends a composite Ed25519 + ML-DSA-87 public identity and both
 signatures over the complete
 canonical challenge/response transcript; it never sends the private key. As of
-`2.0-dev4` the signature input also covers a 32-byte RFC 8446 exporter that
+`0.2.0-dev4` the signature input also covers a 32-byte RFC 8446 exporter that
 each endpoint derives from its own live TLS object and never transmits, and the
 same value is folded into the establishment root. A malicious terminating
 endpoint with compatible admission/PSK access can no longer relay a live AUTH

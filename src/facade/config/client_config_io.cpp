@@ -154,7 +154,7 @@ client::ClientConfig client_from_json(json const& j, std::filesystem::path const
     if (j.contains(cfg_key::tls_stealth_rotate) ||
         j.contains(cfg_key::tls_stealth_rotation_interval)) {
         throw std::runtime_error(
-            "TLS profile rotation keys were removed in YUME 2.0-dev6");
+            "TLS profile rotation keys were removed in YUME 0.2.0-dev6");
     }
     read_opt(j, cfg_key::tls_fingerprint_log, c.tls_fingerprint_log);
     read_opt(j, cfg_key::tls_fingerprint_log_path, c.tls_fingerprint_log_path);

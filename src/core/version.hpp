@@ -14,7 +14,9 @@
 
 namespace yume {
 
-constexpr const char kVersion[] = "2.0-dev6";
+// Current development identity. AUTH, relay, ABI, and helper IPC schema
+// versions remain independent constants in their owning modules.
+constexpr const char kVersion[] = "0.2.0-dev6";
 inline constexpr std::string_view kTransportVersion = kVersion;
 // dev6 intentionally supports one evidence-backed outer transport identity.
 // This value is authenticated during admission and AUTH and is also bound into

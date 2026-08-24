@@ -21,6 +21,8 @@
 #include "facade/logging/log_sink.hpp"
 #include "facade/security/secure_materials.hpp"
 #include "facade/metrics/traffic_meter.hpp"
+#include "client/relay/secret.hpp"
+#include "util.hpp"
 
 namespace yume::facade {
 
@@ -29,23 +31,6 @@ namespace {
 std::string endpoint_for(client::ClientConfig const& cfg) {
     if (cfg.server.empty()) return {};
     return cfg.server + ":" + std::to_string(cfg.port);
-}
-
-std::string strip_ansi(std::string const& in) {
-    std::string out;
-    out.reserve(in.size());
-    std::size_t i = 0;
-    while (i < in.size()) {
-        if (in[i] == '\x1b' && i + 1 < in.size() && in[i + 1] == '[') {
-            i += 2;
-            while (i < in.size() && (in[i] < '@' || in[i] > '~')) ++i;
-            if (i < in.size()) ++i;  // skip the CSI terminator
-            continue;
-        }
-        out.push_back(in[i]);
-        ++i;
-    }
-    return out;
 }
 
 bool resolve_secure_materials(client::ClientConfig& cfg, std::string* err) {
@@ -107,12 +92,16 @@ void push_client_log(LogLevel level, std::string message) noexcept {
     }
 }
 
-void push_client_runtime_log(LogLevel level, std::string message) noexcept {
-    try {
-        LogSink::instance().push(
-            level, "client.runtime", std::move(message));
-    } catch (...) {
-    }
+void apply_config_status(ClientStatus& status,
+                         client::ClientConfig const& cfg) {
+    status.profile = cfg.tls_stealth_profile;
+    status.security_mode = std::string(
+        ratchet::SecurityModeName(cfg.security_profile.mode));
+    status.effective_protection =
+        "composite-auth + ML-KEM-1024/X25519/PSK directional ratchet";
+    status.tls_backend = cfg.tls_backend;
+    status.rekey_window = cfg.rekey_window;
+    status.server_endpoint = endpoint_for(cfg);
 }
 
 void notify_client_status(ClientSession::StatusCallback const& callback,
@@ -144,8 +133,7 @@ struct ClientSession::Impl {
     InProcClient runtime;
 
     StatusCallback status_cb;
-    ChatCallback chat_cb;
-    std::unordered_map<std::string, std::vector<ChatMessage>> history;
+    std::unordered_map<std::string, std::string> chat_peers;
 
     std::thread worker;
     std::atomic<bool> worker_busy{false};
@@ -234,27 +222,7 @@ struct ClientSession::Impl {
 ClientSession::ClientSession(client::ClientConfig cfg)
     : impl_(std::make_unique<Impl>()) {
     impl_->cfg = std::move(cfg);
-    impl_->status.profile = impl_->cfg.tls_stealth_profile;
-    impl_->status.inner_mode =
-        impl_->cfg.inner_crypto
-            ? (impl_->cfg.inner_heavy ? "heavy" : "light")
-            : "off";
-    impl_->status.server_endpoint = endpoint_for(impl_->cfg);
-    impl_->runtime.set_log_callback([](std::string const& line) noexcept {
-        try {
-            std::string clean = strip_ansi(line);
-            LogLevel level = LogLevel::Info;
-            if (clean.find("[ERROR]") != std::string::npos ||
-                clean.find("error") != std::string::npos) {
-                level = LogLevel::Error;
-            } else if (clean.find("[WARN]") != std::string::npos ||
-                       clean.find("warn") != std::string::npos) {
-                level = LogLevel::Warn;
-            }
-            push_client_runtime_log(level, std::move(clean));
-        } catch (...) {
-        }
-    });
+    apply_config_status(impl_->status, impl_->cfg);
 }
 
 ClientSession::~ClientSession() {
@@ -266,7 +234,6 @@ ClientSession::~ClientSession() {
             impl_->notification_mtx);
         std::lock_guard<std::mutex> lock(impl_->mtx);
         impl_->status_cb = {};
-        impl_->chat_cb = {};
     }
     stop();
     impl_->request_stats_stop(true);
@@ -644,12 +611,7 @@ TrafficMeter const& ClientSession::traffic() const noexcept {
 void ClientSession::set_config(client::ClientConfig cfg) {
     std::lock_guard<std::mutex> lock(impl_->mtx);
     impl_->cfg = std::move(cfg);
-    impl_->status.profile = impl_->cfg.tls_stealth_profile;
-    impl_->status.inner_mode =
-        impl_->cfg.inner_crypto
-            ? (impl_->cfg.inner_heavy ? "heavy" : "light")
-            : "off";
-    impl_->status.server_endpoint = endpoint_for(impl_->cfg);
+    apply_config_status(impl_->status, impl_->cfg);
 }
 
 client::ClientConfig ClientSession::config() const {
@@ -689,12 +651,39 @@ std::vector<ClientSession::DirectoryEntry> ClientSession::directory(std::string*
 
 std::string ClientSession::open_chat(std::string const& peer_endpoint_id,
                                      std::string* err) {
+    client::ClientConfig cfg;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mtx);
+        cfg = impl_->cfg;
+    }
+    if (cfg.relay_key_file.empty()) {
+        if (err) {
+            *err = "chat requires a configured relay_key_file";
+        }
+        return {};
+    }
+    std::string relay_secret;
+    client::RelaySecretWiper relay_secret_wiper(relay_secret);
+    if (!client::load_relay_secret_file(
+            yume::util::expand_user(cfg.relay_key_file),
+            &relay_secret, err)) {
+        return {};
+    }
+    nlohmann::json args{
+        {"peer", peer_endpoint_id},
+        {"relay_secret", relay_secret},
+    };
     std::string request_error;
     auto resp = impl_->runtime.request(
         "chat.open",
-        nlohmann::json{{"peer", peer_endpoint_id}},
+        args,
         &request_error,
         10000);
+    if (auto secret = args.find("relay_secret");
+        secret != args.end() && secret->is_string()) {
+        client::wipe_relay_secret(secret->get_ref<std::string&>());
+        args.erase(secret);
+    }
     if (!request_error.empty()) {
         if (err) *err = request_error;
         return {};
@@ -703,18 +692,47 @@ std::string ClientSession::open_chat(std::string const& peer_endpoint_id,
         if (err) *err = resp.value("error", "chat open failed");
         return {};
     }
-    return "active";
+    auto result = resp.find("result");
+    if (result == resp.end() || !result->is_object()) {
+        if (err) *err = "chat open returned no channel identity";
+        return {};
+    }
+    const std::string channel_id = result->value("channel_id", "");
+    const std::string peer_id = result->value("peer_id", "");
+    if (channel_id.empty() || peer_id.empty()) {
+        if (err) *err = "chat open returned an invalid channel identity";
+        return {};
+    }
+    {
+        std::lock_guard<std::mutex> lock(impl_->mtx);
+        impl_->chat_peers[channel_id] = peer_id;
+    }
+    return channel_id;
 }
 
-void ClientSession::close_chat(std::string const& /*channel_id*/) {}
+void ClientSession::close_chat(std::string const& channel_id) {
+    std::string request_error;
+    auto resp = impl_->runtime.request(
+        "chat.close", nlohmann::json{{"channel_id", channel_id}},
+        &request_error, 10000);
+    if (!request_error.empty() || !resp.value("ok", false)) {
+        const std::string message = !request_error.empty()
+            ? std::move(request_error)
+            : resp.value("error", "chat close failed");
+        push_client_log(LogLevel::Warn, message);
+        return;
+    }
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    impl_->chat_peers.erase(channel_id);
+}
 
-bool ClientSession::send_chat(std::string const& /*channel_id*/,
+bool ClientSession::send_chat(std::string const& channel_id,
                               std::string const& text,
                               std::string* err) {
     std::string request_error;
     auto resp = impl_->runtime.request(
         "chat.send",
-        nlohmann::json{{"text", text}},
+        nlohmann::json{{"channel_id", channel_id}, {"text", text}},
         &request_error,
         10000);
     if (!request_error.empty()) {
@@ -731,8 +749,11 @@ bool ClientSession::send_chat(std::string const& /*channel_id*/,
 std::vector<ClientSession::ChatMessage> ClientSession::chat_history(
     std::string const& channel_id, std::size_t max) const {
     nlohmann::json args = nlohmann::json::object();
-    if (!channel_id.empty() && channel_id != "active") {
-        args["peer_id"] = channel_id;
+    if (!channel_id.empty()) {
+        std::lock_guard<std::mutex> lock(impl_->mtx);
+        auto peer = impl_->chat_peers.find(channel_id);
+        if (peer == impl_->chat_peers.end()) return {};
+        args["peer_id"] = peer->second;
     }
     std::string request_error;
     auto resp = impl_->runtime.request("history.list", args, &request_error, 10000);
@@ -742,9 +763,14 @@ std::vector<ClientSession::ChatMessage> ClientSession::chat_history(
     std::vector<ChatMessage> out;
     for (auto const& item : *items) {
         ChatMessage msg;
-        msg.channel_id = channel_id.empty() ? "active" : channel_id;
-        msg.from_endpoint_id = item.value("peer_id", "");
+        msg.channel_id = channel_id;
+        msg.outgoing = item.value("direction", "") == "out";
+        msg.from_endpoint_id = msg.outgoing
+            ? "you" : item.value("peer_id", "");
         msg.text = item.value("text", "");
+        const auto ts_ms = item.value("ts_ms", std::int64_t{0});
+        msg.ts = std::chrono::system_clock::time_point{
+            std::chrono::milliseconds(ts_ms)};
         out.push_back(std::move(msg));
     }
     if (out.size() <= max) return out;
@@ -756,11 +782,6 @@ void ClientSession::set_status_callback(StatusCallback cb) {
         impl_->notification_mtx);
     std::lock_guard<std::mutex> lock(impl_->mtx);
     impl_->status_cb = std::move(cb);
-}
-
-void ClientSession::set_chat_callback(ChatCallback cb) {
-    std::lock_guard<std::mutex> lock(impl_->mtx);
-    impl_->chat_cb = std::move(cb);
 }
 
 }  // namespace yume::facade

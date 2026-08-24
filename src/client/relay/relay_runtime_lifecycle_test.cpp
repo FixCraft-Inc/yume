@@ -458,6 +458,37 @@ struct RelayRuntimeTestPeer {
         }
         runtime.schedule_pending_invite_expiry_locked();
     }
+
+    static void CheckChatIdentityRouting(RelayRuntime& runtime) {
+        constexpr std::uint8_t stream_id = 19;
+        {
+            std::lock_guard<std::mutex> lock(runtime.mutex_);
+            auto channel = MakeReadyChannel(stream_id);
+            channel.channel_id = "chat-channel-a";
+            channel.channel_kind = control::ChannelKind::chat;
+            channel.peer_id = "peer-a";
+            channel.peer_name = "Peer A";
+            assert(runtime.channels_.emplace(
+                stream_id, std::move(channel)).second);
+            runtime.active_chat_stream_ = stream_id;
+        }
+
+        const auto status = runtime.status_json();
+        assert(status.at("active_chat").at("channel_id") ==
+               "chat-channel-a");
+        assert(status.at("active_chat").at("peer_id") == "peer-a");
+
+        std::string error;
+        assert(!runtime.send_chat("chat-channel-b", "wrong channel", &error));
+        assert(error == "requested chat channel is not active");
+        error.clear();
+        assert(!runtime.close_chat("chat-channel-b", &error));
+        assert(error == "requested chat channel is not active");
+
+        std::lock_guard<std::mutex> lock(runtime.mutex_);
+        runtime.active_chat_stream_.reset();
+        runtime.channels_.erase(stream_id);
+    }
 };
 
 }  // namespace yume::client
@@ -522,6 +553,7 @@ int main() {
 
     RelayRuntimeTestPeer::CheckBoundedRekeyQueue(*runtime);
     RelayRuntimeTestPeer::CheckRekeyAckFlush(*runtime);
+    RelayRuntimeTestPeer::CheckChatIdentityRouting(*runtime);
 
     assert(RelayRuntimeTestPeer::AddIncoming(
         *runtime, "incoming-secret", true));

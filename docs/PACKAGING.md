@@ -23,7 +23,7 @@ BaseFWX Debian archive builds must use packaged dependencies, including
 Full YUME packages also require OpenSSL 3.5 or newer: composite identities use
 the ML-DSA-87 provider, so `debian/control` deliberately rejects older
 `libssl-dev` packages instead of producing a binary that fails during AUTH.
-The prepared `linux-desktop-2.0` archive is a separate contract: it links the
+The prepared `linux-desktop-0.2.0` archive is a separate contract: it links the
 checksum-verified liboqs 0.16.0 archive statically, leaves OpenSSL dynamic with a declared 3.5
 runtime floor, and rejects any `DT_RPATH`, `DT_RUNPATH`, or dynamic
 `liboqs.so` dependency before copying an executable into the artifact.
@@ -212,8 +212,10 @@ The helper writes `../yume_<version>.orig.tar.xz` and excludes bundled
 dependency trees, vendored binaries, build directories, logs, bytecode, and
 the `debian/` directory. The source package then contains the upstream
 tarball plus Debian packaging metadata as a separate Debian tarball.
-Development versions use Debian's sorting-safe spelling (`2.0-dev6` becomes
-`2.0~dev6`) and `scripts/check_debian_source.sh` rejects a mismatch between
+Development versions use Debian's sorting-safe spelling (`0.2.0-dev6` becomes
+`1:0.2.0~dev6` with the packaging-only epoch). The epoch preserves upgrade
+ordering across the upstream maturity reset and is omitted from archive
+filenames. `scripts/check_debian_source.sh` rejects a mismatch between
 `src/core/version.hpp` and the top Debian changelog entry.
 
 The Debian package builds with:

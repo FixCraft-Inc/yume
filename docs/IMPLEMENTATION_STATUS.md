@@ -120,7 +120,7 @@ Not done / not fully tested:
 - Best-effort erasure is not a locked allocator and cannot erase prior copies.
 - External HTTP/2 conformance, exact native browser/web-server identity, and
   ML/DPI immunity are not implemented claims. Full-session HTTP/2 is present in
-  `2.0-dev6`, but external conformance and sustained-session release gates are
+  `0.2.0-dev6`, but external conformance and sustained-session release gates are
   still open. Direct one-stream LAN traffic reached line rate, and dev3 removes
   the modeled one-pending-epoch ceiling. The former high-RTT ceiling was traced
   first to explicit TCP buffer pins and then to H2/ratchet credit geometry, not

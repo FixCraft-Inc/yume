@@ -7,6 +7,7 @@
 #include "facade/session/client_session.hpp"
 #include "facade/session/inproc_client.hpp"
 #include "facade/session/server_session.hpp"
+#include "facade/logging/log_sink.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -69,6 +70,23 @@ void WriteTestSecret(std::filesystem::path const& path, std::uint8_t digit) {
         throw std::runtime_error(
             error.empty() ? "failed to create test secret" : error);
     }
+}
+
+void TestLogSubscriberReentryAndExceptions() {
+    auto& sink = yume::facade::LogSink::instance();
+    int token = 0;
+    std::atomic<int> calls{0};
+    token = sink.subscribe([&](yume::facade::LogEntry const& entry) {
+        calls.fetch_add(1, std::memory_order_relaxed);
+        if (entry.message == "outer") {
+            sink.unsubscribe(token);
+            sink.push(yume::facade::LogLevel::Info, "test", "inner");
+            throw std::runtime_error("intentional log subscriber failure");
+        }
+    });
+    sink.push(yume::facade::LogLevel::Info, "test", "outer");
+    Expect(calls.load(std::memory_order_relaxed) == 1,
+           "log subscriber could not unsubscribe and re-enter safely");
 }
 
 void TestInProcPreReadyCancellation() {
@@ -363,6 +381,7 @@ void TestServerControllerStartStopReloadStress() {
 }  // namespace
 
 int main() {
+    TestLogSubscriberReentryAndExceptions();
     TestInProcAdmissionCancellation();
     TestInProcPreReadyCancellation();
     TestClientFacadeReentrantStopAndThrowingCallbacks();

@@ -93,7 +93,7 @@ and it is not an independent-audit claim.
 
 ## Carrier admission boundary
 
-The HMAC admission token covers exact version `2.0-dev6`, normalized SNI, UTC hour,
+The HMAC admission token covers exact version `0.2.0-dev6`, normalized SNI, UTC hour,
 and a 32-byte nonce. SNI and HTTP/2 authority must match. The server accepts only
 the bounded clock window and stores authenticated nonces in a bounded replay
 cache.
@@ -269,7 +269,7 @@ integration and runtime evidence.
 
 ## Release claims
 
-The transport stays `2.0-dev6` or a later development/RC version until the release gates in
+The transport stays `0.2.0-dev6` or a later development/RC version until the release gates in
 `docs/YUME_2_0_IMPLEMENTATION_STATUS.md` pass. Unit tests and a short loopback
 smoke are not evidence for WAN behavior, a 30-minute lifetime, sanitizer safety,
 external conformance, or sustained overhead. Release documentation must separate

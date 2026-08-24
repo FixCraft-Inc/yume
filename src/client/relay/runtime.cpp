@@ -259,7 +259,11 @@ std::vector<control::PendingInvite> RelayRuntime::pending_invites() const {
     return out;
 }
 
-bool RelayRuntime::open_chat(const std::string& peer, const std::string& relay_secret_b64, std::string* error) {
+bool RelayRuntime::open_chat(const std::string& peer,
+                             const std::string& relay_secret_b64,
+                             std::string* error,
+                             std::string* channel_id,
+                             std::string* peer_id) {
     if (relay_secret_b64.empty()) {
         if (error) {
             *error = "relay password is required";
@@ -292,11 +296,28 @@ bool RelayRuntime::open_chat(const std::string& peer, const std::string& relay_s
     invite.channel_kind = control::ChannelKind::chat;
     invite.requires_password = true;
     invite.from_display_name = self_.display_name;
-    return begin_outgoing_invite_locked(
-        std::move(invite), *peer_info, relay_secret_b64, {}, {}, error);
+    const std::string admitted_channel_id = invite.invite_id;
+    const std::string admitted_peer_id = peer_info->endpoint_id;
+    // Publish result storage before admitting network work so an allocation
+    // failure cannot leave the caller unaware of an already-started invite.
+    if (channel_id) *channel_id = admitted_channel_id;
+    if (peer_id) *peer_id = admitted_peer_id;
+    if (!begin_outgoing_invite_locked(
+            std::move(invite), *peer_info, relay_secret_b64, {}, {}, error)) {
+        if (channel_id) channel_id->clear();
+        if (peer_id) peer_id->clear();
+        return false;
+    }
+    return true;
 }
 
 bool RelayRuntime::send_chat(const std::string& text, std::string* error) {
+    return send_chat({}, text, error);
+}
+
+bool RelayRuntime::send_chat(const std::string& channel_id,
+                             const std::string& text,
+                             std::string* error) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!active_chat_stream_.has_value()) {
         if (error) {
@@ -310,6 +331,10 @@ bool RelayRuntime::send_chat(const std::string& text, std::string* error) {
         if (error) {
             *error = "chat channel unavailable";
         }
+        return false;
+    }
+    if (!channel_id.empty() && it->second.channel_id != channel_id) {
+        if (error) *error = "requested chat channel is not active";
         return false;
     }
     nlohmann::json message{{"type", "chat"}, {"text", text}, {"ts_ms", yume::util::now_ms()}};
@@ -326,6 +351,27 @@ bool RelayRuntime::send_chat(const std::string& text, std::string* error) {
         return false;
     }
     append_history(it->second.peer_id, it->second.peer_name, "out", text);
+    return true;
+}
+
+bool RelayRuntime::close_chat(const std::string& channel_id,
+                              std::string* error) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!active_chat_stream_.has_value()) {
+        if (error) *error = "no active chat channel";
+        return false;
+    }
+    auto it = channels_.find(*active_chat_stream_);
+    if (it == channels_.end() ||
+        it->second.channel_kind != control::ChannelKind::chat) {
+        if (error) *error = "chat channel unavailable";
+        return false;
+    }
+    if (channel_id.empty() || it->second.channel_id != channel_id) {
+        if (error) *error = "requested chat channel is not active";
+        return false;
+    }
+    close_channel_locked(it->second.stream_id, "chat closed locally");
     return true;
 }
 

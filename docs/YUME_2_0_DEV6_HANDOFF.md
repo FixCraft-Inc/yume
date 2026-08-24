@@ -1,4 +1,4 @@
-# YUME 2.0-dev6 Chrome 151 handoff
+# YUME 0.2.0-dev6 Chrome 151 handoff
 
 Status: core/ABI/CLI stabilization checkpoint completed for Linux x86-64;
 consumer and release qualification remain incomplete.
@@ -53,7 +53,7 @@ was selected by exact CMake cache/link path, reported by the CLI, and passed the
 full 102/102 Release suite.
 
 BaseFWX is independently signed and published at
-`216a48a6110e8f6606b2a63b51950511466bf25a`; YUME pins that exact commit. The
+`5c42eafbb95e5c7ea3b6cd57299d577be814f5f2`; YUME pins that exact commit. The
 experimental Go/uTLS Chrome helper remains opt-in and disabled by default. It
 is intentionally retained because the OpenSSL C++ backend matches the current
 Chrome 151 JA4 and normalized non-GREASE sets but does not yet match the raw
@@ -69,6 +69,26 @@ soak work; a matched Xray/VLESS reference run; relay destination ancestor-
 symlink policy under a malicious local account; ABI handle destruction without
 caller synchronization; and removal of remaining server-to-client layering.
 These are explicit next gates, not hidden claims of this checkpoint.
+
+## GUI facade synchronization preparation
+
+The core-side handoff now has a truthful facade boundary for the visual
+redesign. `ClientStatus` reports the configured security mode, effective
+composite-auth/hybrid-ratchet posture, TLS backend, rekey window, server
+fingerprint, and capabilities; it no longer presents the legacy
+light/heavy/off selector as runtime security state. Embedded client logs flow
+through the typed `LogSink` only, whose subscribers are invoked outside the
+ring lock with exceptions contained. The unused duplicate log and chat
+callback promises were removed.
+
+Chat open returns the admitted channel and canonical peer identities. Send and
+close reject a different channel, and facade history preserves direction and
+timestamp. The GUI DNS worker is owned and joined through `App` destruction,
+and the macOS bundle version follows the project version. These are core and
+lifecycle preparations, not a rendered-GUI acceptance claim. The visual pass
+still owns removal of optional/light/heavy/dual server controls and the major
+layout/theme redesign; the headless command still needs a real positive and
+negative connect/stop/reconnect contract before it can be an acceptance gate.
 
 The material below begins with a historical 2026-08-21 checkpoint. Its
 ordered-next-work list predates
@@ -915,7 +935,7 @@ add `--no-sandbox`.
 
 ### One evidence-backed cover identity
 
-- The exact transport version is `2.0-dev6`.
+- The exact transport version is `0.2.0-dev6`.
 - The only admitted transport profile is `chrome151-node24-v1`.
 - Five independent normal Google Chrome `151.0.7922.71` profiles on Debian 13
   were captured against official Node `24.18.0`.
@@ -1194,7 +1214,7 @@ old campaigns without freezing a new workload and artifact location.
    backend and disk/log failure, installed helper discovery and permissions,
    per-key fairness, resource telemetry without a new wire marker, and obtain
    independent cryptographic/protocol plus adversarial deployment review before
-   `2.0-rc1`.
+   `0.2.0-rc1`.
 
 The long-term stealth target is low measured classifier advantage against a
 specific cover distribution, not a promise that DPI or a neural classifier can
@@ -1249,10 +1269,10 @@ Validation on 2026-08-10:
 - mandatory CLI process smoke: passed at 83.37 MiB/s (local regression only);
 - functional Chrome-helper-through-SOCKS smoke: passed with H2 selected and no
   packet capture; installed Chrome was not used as parity evidence;
-- `linux-desktop-2.0` release preflight, exact bundle-content/hash/mode checks,
+- `linux-desktop-0.2.0` release preflight, exact bundle-content/hash/mode checks,
   ABI/export checks, and Debian source consistency: passed.
 
-The first 2.0 release lane is now glibc Linux x86-64 CLI/server only. It builds
+The first 0.2.0 release lane is now glibc Linux x86-64 CLI/server only. It builds
 with exact Go 1.26.5, helper ON, GUI/static/cross-platform surfaces OFF, and
 strict PQ/Argon2/LZMA requirements. `yume-amd64-linux.tar.xz` contains adjacent
 `yume` and `yume-chrome-tls-helper`, licensing, quick-start, and a machine
@@ -1334,7 +1354,7 @@ These results close the documented bounded lifecycle, process-ramp, reconnect,
 and segmented-soak gates. They do not close matched WAN, exact Chrome
 `151.0.7922.71` same-session capture, external classification/active probing,
 or independent security review. `chrome151` remains opt-in;
-`openssl-diagnostic` remains the explicit default; and no `2.0-rc1` bump, tag,
+`openssl-diagnostic` remains the explicit default; and no `0.2.0-rc1` bump, tag,
 push, publication, or default switch is authorized.
 
 BoringSSL is not the next automatic step. The uTLS implementation already

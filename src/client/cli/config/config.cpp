@@ -240,7 +240,7 @@ bool load_client_config_file(const ParsedArgs& args,
         if (json.contains("tls_stealth_rotate") ||
             json.contains("tls_stealth_rotation_interval")) {
             throw std::runtime_error(
-                "TLS profile rotation keys were removed in YUME 2.0-dev6");
+                "TLS profile rotation keys were removed in YUME 0.2.0-dev6");
         }
         if (json.contains("server") && cfg->server.empty()) {
             cfg->server = json["server"].get<std::string>();
@@ -920,7 +920,7 @@ bool save_client_config_file(const ParsedArgs& args,
             json.contains("tls_stealth_rotation_interval")) {
             if (error) {
                 *error = "existing client config is not usable: TLS profile "
-                         "rotation keys were removed in YUME 2.0-dev6";
+                         "rotation keys were removed in YUME 0.2.0-dev6";
             }
             return false;
         }

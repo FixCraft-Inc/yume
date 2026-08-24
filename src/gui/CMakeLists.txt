@@ -331,6 +331,12 @@ if(APPLE)
     target_link_libraries(yume-gui PRIVATE
         "-framework Cocoa" "-framework IOKit" "-framework CoreVideo")
 
+    # Apple bundle versions accept numeric components only. Keep the full
+    # development identity in YUME_PACKAGE_VERSION/UI output while deriving
+    # the required numeric bundle value from its SemVer core.
+    string(REGEX REPLACE "-.*$" "" YUME_MACOS_BUNDLE_VERSION
+        "${YUME_PACKAGE_VERSION}")
+
     # Ship as a proper Yume.app bundle (Contents/MacOS/Yume + a CMake-generated
     # Info.plist + Resources/). This works for BOTH a native macOS build and an
     # osxcross cross-build — CMake only lays out the directory tree and writes
@@ -341,8 +347,8 @@ if(APPLE)
         OUTPUT_NAME "Yume"
         MACOSX_BUNDLE_BUNDLE_NAME "Yume"
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.fixcraft.yume.gui"
-        MACOSX_BUNDLE_BUNDLE_VERSION "1.1"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.1"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${YUME_MACOS_BUNDLE_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${YUME_MACOS_BUNDLE_VERSION}"
         MACOSX_BUNDLE_COPYRIGHT "Copyright (C) FixCraft Inc.")
 
     # Bake the country-by-IP DB into Contents/Resources/geoip so the lookup

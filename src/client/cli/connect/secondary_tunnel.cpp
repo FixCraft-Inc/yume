@@ -205,7 +205,7 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
     if (!server_info.error.empty()) {
         throw std::runtime_error(server_info.error);
     }
-    if (server_info.version != yume::kVersion) {
+    if (server_info.version != yume::kTransportVersion) {
         throw std::runtime_error("transport core version mismatch");
     }
     if (cfg.require_anonym && server_info.mode != "anonym") {

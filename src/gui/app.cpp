@@ -210,7 +210,10 @@ void App::kick_off_resolve_if_needed(std::string const& host) {
     if (!resolve_in_flight_.compare_exchange_strong(expected, true)) {
         return;  // someone else is already resolving
     }
-    std::thread([this, host]() {
+    if (resolver_thread_.joinable()) {
+        resolver_thread_.join();
+    }
+    resolver_thread_ = std::thread([this, host]() {
         std::string ip;
         addrinfo hints{};
         hints.ai_family   = AF_INET;
@@ -230,10 +233,13 @@ void App::kick_off_resolve_if_needed(std::string const& host) {
             resolved_ip_   = ip;
         }
         resolve_in_flight_.store(false);
-    }).detach();
+    });
 }
 
 App::~App() {
+    if (resolver_thread_.joinable()) {
+        resolver_thread_.join();
+    }
     if (window_) {
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplGlfw_Shutdown();
@@ -504,10 +510,10 @@ int App::run() {
             if (!cs.server_endpoint.empty()) {
                 info.client_server = cs.server_endpoint;
             }
-            if (!cs.profile.empty() || !cs.inner_mode.empty()) {
+            if (!cs.profile.empty() || !cs.security_mode.empty()) {
                 info.client_profile = (cs.profile.empty() ? "default" : cs.profile)
                                     + std::string(" / ")
-                                    + (cs.inner_mode.empty() ? "off" : cs.inner_mode);
+                                    + (cs.security_mode.empty() ? "unknown" : cs.security_mode);
             }
             std::string host = host_part_of(cs.server_endpoint);
             kick_off_resolve_if_needed(host);

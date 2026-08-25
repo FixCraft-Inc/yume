@@ -1,4 +1,4 @@
-# YUME performance
+# YUME performance (historical 1.x datapoint)
 
 This page preserves a historical 1.x WAN datapoint. It does not describe the
 current 2.0 transport or its new multi-client resource telemetry. For current

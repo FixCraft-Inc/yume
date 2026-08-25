@@ -1,25 +1,13 @@
+# Jekyll builds only the website/ directory (see .github/workflows/pages.yml),
+# so nothing outside it needs excluding.
 title: YUME
+description: >-
+  YUME 0.2.0-dev6 - an open-source post-quantum stealth transport that carries
+  TCP and UDP through a browser-shaped TLS 1.3 + HTTP/2 connection.
 markdown: kramdown
 theme: null
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
 exclude:
-  - basefwx
-  - cpp
-  - tests
-  - scripts
-  - src
-  - .github
-  - .venv
-  - build
-  - build-user
-  - dist
-  - vendor
-  - third_party
-  - AI_gen
-  - CMakeLists.txt
-  - ezbuild.sh
-  - fullau.sh
-  - LICENSE
-  - README.md
-  - crashed.log
-  - example.log
-  - third_party/prebuilt/yume-vendor-prebuilt.tar.xz
+  - .jekyll-cache

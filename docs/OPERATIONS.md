@@ -4,10 +4,12 @@ This page covers the release, deployment, and service workflows that operators n
 
 ## Release verification
 
-Each release is expected to publish:
+The 0.2.0 release surface is Linux x86-64 only. A release publishes:
 
-- client and daemon artifacts for supported targets
-- per-artifact `.sha256` files
+- `yume-amd64-linux.tar.xz`, the client bundle (`yume`, the Chrome TLS helper,
+  license, third-party notices, quick start, and a per-bundle `manifest.json`)
+- `yumed-amd64-linux`, the daemon executable
+- a `.sha256` file for each of those two artifacts
 - aggregate `SHA256SUMS.txt`
 - `release-manifest.json`
 - detached signatures once the stable publication gate is enabled

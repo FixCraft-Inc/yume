@@ -287,7 +287,7 @@ rm -f debian/shlibs.local
 For Debian main, BaseFWX itself must not hide a vendored or prebuilt liboqs.
 If liboqs is not already available as a Debian package, it needs to be
 packaged separately first. The local BaseFWX packaging can use
-`../vendor/linux-x86_64` for ML-KEM-768 while testing, but that mode is not
+`../vendor/linux-x86_64` for ML-KEM-1024 while testing, but that mode is not
 the final archive-ready form.
 
 Before asking for sponsorship:

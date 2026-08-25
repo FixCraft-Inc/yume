@@ -108,3 +108,10 @@ bins/
 # .private/ai/ (already covered above); this is belt-and-braces for the root.
 /AGENTS.md
 /AI_NOTES.md
+
+# Website build outputs. website/docs/*.md is regenerated from docs/*.md by
+# .github/workflows/pages.yml on every deploy; a committed copy is stale by
+# definition. website/docs/index.html is hand-written and stays tracked.
+website/docs/*.md
+website/.jekyll-cache/
+website/_site/

@@ -39,6 +39,83 @@ class MetadataTests(unittest.TestCase):
         path.write_text(json.dumps(value), encoding="utf-8")
         return path
 
+    def make_source_archive_fixture(self, root: pathlib.Path) -> None:
+        (root / "scripts").mkdir(parents=True)
+        (root / "src/core").mkdir(parents=True)
+        (root / ".agents").mkdir()
+        (root / ".private").mkdir()
+        (root / ".secrets").mkdir()
+        (root / ".pytest_cache").mkdir()
+        (root / "docs/_site").mkdir(parents=True)
+        (root / "nested/.secrets").mkdir(parents=True)
+        (root / "website/_site").mkdir(parents=True)
+        (root / "yume-bench-results").mkdir()
+        shutil.copyfile(ROOT / "scripts/make_debian_orig.sh",
+                        root / "scripts/make_debian_orig.sh")
+        shutil.copyfile(ROOT / "scripts/check_source_archive_listing.py",
+                        root / "scripts/check_source_archive_listing.py")
+        (root / "src/core/version.hpp").write_text(
+            'constexpr const char kVersion[] = "0.2.0-dev6";\n',
+            encoding="utf-8")
+        (root / "README.md").write_text("public\n", encoding="utf-8")
+        (root / "CONTRIBUTING.md").write_text("public untracked\n",
+                                               encoding="utf-8")
+        (root / "docs/AGENTS.md").write_text(
+            "component guidance\n", encoding="utf-8")
+        (root / "docs/_site/manual.txt").write_text(
+            "legitimate nested name\n", encoding="utf-8")
+        (root / "AGENTS.md").write_text("machine local\n", encoding="utf-8")
+        (root / "AI_NOTES.md").write_text("machine local\n", encoding="utf-8")
+        (root / "opencode.json").write_text("{}\n", encoding="utf-8")
+        (root / ".agents/example.txt").write_text("agent\n", encoding="utf-8")
+        (root / ".private/handoff.md").write_text("private\n", encoding="utf-8")
+        (root / ".secrets/token").write_text("secret\n", encoding="utf-8")
+        (root / "nested/.secrets/credential").write_text(
+            "nested secret\n", encoding="utf-8")
+        (root / ".pytest_cache/CACHEDIR.TAG").write_text(
+            "cache\n", encoding="utf-8")
+        (root / "website/_site/index.html").write_text(
+            "generated\n", encoding="utf-8")
+        (root / "yume-bench-results/report.json").write_text(
+            "{}\n", encoding="utf-8")
+        (root / ".DS_Store").write_text("metadata\n", encoding="utf-8")
+
+    def create_source_archive(
+            self, root: pathlib.Path,
+            environment_overrides: dict[str, str] | None = None) -> list[str]:
+        environment = dict(os.environ)
+        environment["SOURCE_DATE_EPOCH"] = "0"
+        if environment_overrides:
+            environment.update(environment_overrides)
+        result = subprocess.run(
+            ["bash", str(root / "scripts/make_debian_orig.sh")],
+            check=True, text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, env=environment)
+        archive = pathlib.Path(result.stdout.strip())
+        with tarfile.open(archive, "r:xz") as handle:
+            return handle.getnames()
+
+    def assert_source_archive_boundary(self, names: list[str]) -> None:
+        prefix = "yume-0.2.0~dev6"
+        self.assertIn(f"{prefix}/README.md", names)
+        self.assertIn(f"{prefix}/docs/AGENTS.md", names)
+        self.assertIn(f"{prefix}/docs/_site/manual.txt", names)
+        for name in names:
+            parts = pathlib.PurePosixPath(name).parts
+            self.assertEqual(parts[0], prefix)
+            relative = parts[1:]
+            if not relative:
+                continue
+            self.assertNotIn(
+                relative[0],
+                {"AGENTS.md", "AI_NOTES.md", "opencode.json",
+                 "yume-bench-results"})
+            for forbidden in {
+                    ".agents", ".cache", ".claude", ".codex", ".private",
+                    ".pytest_cache", ".secrets", ".wrangler", ".DS_Store"}:
+                self.assertNotIn(forbidden, relative)
+            self.assertNotEqual(relative[:2], ("website", "_site"))
+
     def test_current_metadata_is_coherent(self) -> None:
         dependencies = load_dependencies()
         self.assertRegex(dependencies["basefwx"]["revision"], r"^[0-9a-f]{40}$")
@@ -47,6 +124,12 @@ class MetadataTests(unittest.TestCase):
             dependencies["openssl"]["revision"],
             "8cf17aaeb4599f8af87fefd810b5b5fee90fe69e",
         )
+        self.assertEqual(dependencies["openssl"]["patch_series"],
+                         "patches/openssl/series")
+        series = ROOT / dependencies["openssl"]["patch_series"]
+        self.assertTrue(series.is_file())
+        self.assertIn("0001-yume-chrome-clienthello.patch",
+                      series.read_text(encoding="utf-8"))
         self.assertEqual(dependencies["liboqs"]["minimum_version"], "0.16.0")
         self.assertEqual(
             dependencies["liboqs"]["revision"],
@@ -66,6 +149,24 @@ class MetadataTests(unittest.TestCase):
         self.assertIn("kTransportVersion = kVersion", version_header)
         vcpkg = json.loads((ROOT / "vcpkg.json").read_text(encoding="utf-8"))
         self.assertEqual(vcpkg["version-string"], "0.2.0-dev6")
+
+    def test_native_openssl_runtime_contract_is_fail_closed(self) -> None:
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertRegex(
+            cmake,
+            r'option\(YUME_STATIC_OPENSSL[\s\S]*?runtime libssl dependency"\s+ON\)',
+        )
+        self.assertIn("SSL_OP_YUME_CHROME_CLIENT_HELLO", cmake)
+        self.assertIn("SSL_CTRL_YUME_CHROME_CLIENT_HELLO", cmake)
+        self.assertIn("Stock libssl is not accepted for a normal build", cmake)
+
+        package_script = (ROOT / "scripts/package_linux_release.py").read_text(
+            encoding="utf-8")
+        self.assertIn('"native_chrome_client_hello": True', package_script)
+        self.assertIn('"patched_openssl_embedded": True', package_script)
+        self.assertIn('"required_at_runtime": False', package_script)
+        self.assertNotIn('"chrome_tls_helper": True,\n                "openssl_minimum"',
+                         package_script)
 
     def test_dependency_revision_must_be_immutable(self) -> None:
         document = json.loads(DEFAULT_MANIFEST.read_text(encoding="utf-8"))
@@ -159,16 +260,32 @@ class MetadataTests(unittest.TestCase):
         prefix = "yume-0.2.0~dev6"
         rejected = rejected_paths([
             f"{prefix}/README.md",
+            f"{prefix}/docs/AGENTS.md",
+            f"{prefix}/docs/_site/manual.txt",
+            f"{prefix}/AGENTS.md",
+            f"{prefix}/opencode.json",
+            f"{prefix}/nested/.agents/task.md",
+            f"{prefix}/.pytest_cache/CACHEDIR.TAG",
+            f"{prefix}/yume-bench-results/run/report.json",
             f"{prefix}/.private/handoff.md",
             f"{prefix}/.secrets/token",
             f"{prefix}/nested/.secrets/credential",
+            f"{prefix}/website/_site/index.html",
+            f"{prefix}/docs/.DS_Store",
             f"{prefix}/../outside",
             "unexpected-root/file",
         ], prefix)
         self.assertEqual(rejected, [
+            f"{prefix}/AGENTS.md",
+            f"{prefix}/opencode.json",
+            f"{prefix}/nested/.agents/task.md",
+            f"{prefix}/.pytest_cache/CACHEDIR.TAG",
+            f"{prefix}/yume-bench-results/run/report.json",
             f"{prefix}/.private/handoff.md",
             f"{prefix}/.secrets/token",
             f"{prefix}/nested/.secrets/credential",
+            f"{prefix}/website/_site/index.html",
+            f"{prefix}/docs/.DS_Store",
             f"{prefix}/../outside",
             "unexpected-root/file",
         ])
@@ -176,36 +293,132 @@ class MetadataTests(unittest.TestCase):
     def test_orig_archive_creation_excludes_secret_roots(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary) / "repo"
-            (root / "scripts").mkdir(parents=True)
-            (root / "src/core").mkdir(parents=True)
-            (root / ".private").mkdir()
-            (root / ".secrets").mkdir()
-            shutil.copyfile(ROOT / "scripts/make_debian_orig.sh",
-                            root / "scripts/make_debian_orig.sh")
-            (root / "src/core/version.hpp").write_text(
-                'constexpr const char kVersion[] = "0.2.0-dev6";\n',
-                encoding="utf-8")
-            (root / "README.md").write_text("public\n", encoding="utf-8")
-            (root / ".private/handoff.md").write_text("private\n", encoding="utf-8")
-            (root / ".secrets/token").write_text("secret\n", encoding="utf-8")
+            self.make_source_archive_fixture(root)
+            names = self.create_source_archive(root)
+            self.assertIn("yume-0.2.0~dev6/CONTRIBUTING.md", names)
+            self.assert_source_archive_boundary(names)
+
+    def test_git_orig_archive_applies_explicit_public_path_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary) / "repo"
+            self.make_source_archive_fixture(root)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(
+                ["git", "add", "README.md", "scripts", "src"],
+                cwd=root, check=True)
+            subprocess.run(
+                ["git", "add", "-f", "AGENTS.md", "AI_NOTES.md",
+                 "opencode.json", ".agents", ".pytest_cache",
+                 "nested/.secrets", "website/_site", ".DS_Store"],
+                cwd=root, check=True)
+            developer_excludes = root / "developer-global-ignore"
+            developer_excludes.write_text(
+                "CONTRIBUTING.md\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "config", "core.excludesFile",
+                 str(developer_excludes)], cwd=root, check=True)
+            names = self.create_source_archive(root)
+            # Intentional non-ignored untracked public files remain part of
+            # the live candidate, while even tracked local overlays do not.
+            self.assertIn("yume-0.2.0~dev6/CONTRIBUTING.md", names)
+            self.assert_source_archive_boundary(names)
+
+    def test_orig_archive_creation_invokes_validator_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary) / "repo"
+            self.make_source_archive_fixture(root)
+            (root / "scripts/check_source_archive_listing.py").write_text(
+                "raise SystemExit(9)\n", encoding="utf-8")
             environment = dict(os.environ)
             environment["SOURCE_DATE_EPOCH"] = "0"
             result = subprocess.run(
                 ["bash", str(root / "scripts/make_debian_orig.sh")],
-                check=True, text=True, stdout=subprocess.PIPE,
+                check=False, text=True, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, env=environment)
-            archive = pathlib.Path(result.stdout.strip())
-            with tarfile.open(archive, "r:xz") as handle:
-                names = handle.getnames()
-            self.assertIn("yume-0.2.0~dev6/README.md", names)
-            self.assertFalse(any(".private" in pathlib.PurePosixPath(name).parts
-                                 for name in names))
-            self.assertFalse(any(".secrets" in pathlib.PurePosixPath(name).parts
-                                 for name in names))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(
+                (root.parent / "yume_0.2.0~dev6.orig.tar.xz").exists())
+
+    def test_orig_archive_tmpdir_inside_repo_is_not_enumerated(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary) / "repo"
+            self.make_source_archive_fixture(root)
+            # This validator runs while the maker's listing scratch file is
+            # live. It fails the old implementation where TMPDIR caused that
+            # file to exist inside the repository during validation.
+            (root / "scripts/check_source_archive_listing.py").write_text(
+                """import pathlib
+root = pathlib.Path(__file__).resolve().parents[1]
+raise SystemExit(97 if list(root.glob("tmp.*")) else 0)
+""",
+                encoding="utf-8")
+            names = self.create_source_archive(
+                root, {"TMPDIR": str(root)})
+            prefix = "yume-0.2.0~dev6"
+            self.assertFalse(any(
+                pathlib.PurePosixPath(name).parts[0] == prefix and
+                len(pathlib.PurePosixPath(name).parts) == 2 and
+                pathlib.PurePosixPath(name).parts[1].startswith("tmp.")
+                for name in names))
+            self.assert_source_archive_boundary(names)
+
+    def test_orig_archive_publication_refuses_directory_races(self) -> None:
+        real_ln = shutil.which("ln")
+        self.assertIsNotNone(real_ln)
+        for mode in ("directory", "symlink"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                parent = pathlib.Path(temporary)
+                root = parent / "repo"
+                self.make_source_archive_fixture(root)
+                tool_bin = parent / "tool-bin"
+                tool_bin.mkdir()
+                wrapper = tool_bin / "ln"
+                wrapper.write_text(
+                    """#!/usr/bin/env bash
+set -euo pipefail
+destination="${@: -1}"
+if [[ "${YUME_TEST_LN_RACE:?}" == directory ]]; then
+  mkdir -- "${destination}"
+else
+  mkdir -- "${destination}.target"
+  "${REAL_LN:?}" -s -- "${destination}.target" "${destination}"
+fi
+exec "${REAL_LN}" "$@"
+""",
+                    encoding="utf-8")
+                wrapper.chmod(0o755)
+                environment = dict(os.environ)
+                environment["PATH"] = (
+                    str(tool_bin) + os.pathsep + environment["PATH"])
+                environment["REAL_LN"] = str(real_ln)
+                environment["SOURCE_DATE_EPOCH"] = "0"
+                environment["YUME_TEST_LN_RACE"] = mode
+                result = subprocess.run(
+                    ["bash", str(root / "scripts/make_debian_orig.sh")],
+                    check=False, text=True, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, env=environment)
+                self.assertNotEqual(result.returncode, 0)
+                archive = parent / "yume_0.2.0~dev6.orig.tar.xz"
+                if mode == "directory":
+                    self.assertTrue(archive.is_dir())
+                else:
+                    self.assertTrue(archive.is_symlink())
+                self.assertEqual(list(archive.iterdir()), [])
 
     def test_dpkg_source_ignores_secret_roots(self) -> None:
         options = (ROOT / "debian/source/options").read_text(encoding="utf-8")
-        self.assertIn(r"\.private|\.secrets|", options)
+        self.assertIn(r"\.private", options)
+        self.assertIn(r"\.secrets", options)
+        self.assertIn(r"(^|/)\.DS_Store$", options)
+        self.assertIn(r"^(AGENTS\.md|AI_NOTES\.md|opencode\.json)$", options)
+
+        copyright_text = (ROOT / "debian/copyright").read_text(encoding="utf-8")
+        self.assertIn("\n AGENTS.md\n", copyright_text)
+        self.assertIn("\n opencode.json\n", copyright_text)
+        self.assertIn("\n .pytest_cache\n", copyright_text)
+        self.assertIn("\n .secrets\n", copyright_text)
+        self.assertIn("\n .DS_Store\n", copyright_text)
+        self.assertIn("\n website/_site\n", copyright_text)
 
 
 if __name__ == "__main__":

@@ -74,6 +74,74 @@ class CaptureFinalizeTest(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 finalize_capture(root)
 
+    def test_native_yume_arm_does_not_require_a_helper_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._prepare(root)
+            environment = json.loads((root / "environment.json").read_text())
+            digest = "a" * 64
+            environment.update({
+                "arm": "yume",
+                "tls_wire_evidence": True,
+                "tls_backend": "openssl-chrome151",
+                "yume_binary_sha256": digest,
+                "release_bundle_sha256": "b" * 64,
+                "client_config_sha256": "d" * 64,
+                "tls_leaf_sha256": "c" * 64,
+            })
+            (root / "environment.json").write_text(json.dumps(environment))
+            run = root / "run-01"
+            (run / "netlog.json").unlink()
+            (run / "sanitized.json").unlink()
+            (run / "tls-wire.json").write_text("{}\n")
+            (run / "behavior.json").write_text("{}\n")
+            self._write_checksums(run, ["tls-wire.json", "behavior.json"])
+            self._write_checksums(
+                root,
+                [
+                    "environment.json",
+                    "server.crt",
+                    "runtime-source/SHA256SUMS",
+                    "run-01/SHA256SUMS",
+                ],
+            )
+            result = finalize_capture(root)
+            self.assertEqual(result["arm"], "yume")
+
+    def test_yume_arm_requires_behavior_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._prepare(root)
+            environment = json.loads((root / "environment.json").read_text())
+            environment.update({
+                "arm": "yume",
+                "tls_wire_evidence": True,
+                "tls_backend": "openssl-chrome151",
+                "yume_binary_sha256": "a" * 64,
+                "release_bundle_sha256": "b" * 64,
+                "client_config_sha256": "d" * 64,
+                "tls_leaf_sha256": "c" * 64,
+            })
+            (root / "environment.json").write_text(json.dumps(environment))
+            run = root / "run-01"
+            (run / "netlog.json").unlink()
+            (run / "sanitized.json").unlink()
+            (run / "tls-wire.json").write_text("{}\n")
+            self._write_checksums(run, ["tls-wire.json"])
+            self._write_checksums(
+                root,
+                [
+                    "environment.json",
+                    "server.crt",
+                    "runtime-source/SHA256SUMS",
+                    "run-01/SHA256SUMS",
+                ],
+            )
+            with self.assertRaisesRegex(
+                FinalizeError, "run-01 checksum paths differ"
+            ):
+                finalize_capture(root)
+
     def test_absolute_checksum_path_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

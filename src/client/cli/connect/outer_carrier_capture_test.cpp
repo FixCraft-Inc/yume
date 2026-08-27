@@ -160,8 +160,8 @@ OuterCarrierCapturePolicy ValidPolicy() {
     policy.bench_direction = "both";
     policy.tunnel_count = 1;
     policy.transport_profile = std::string(profile.id);
-    policy.tls_backend = std::string(profile.tls_backend);
-    policy.required_tls_backend = std::string(profile.tls_backend);
+    policy.tls_backend = "openssl-chrome151";
+    policy.required_tls_backend = "openssl-chrome151";
     policy.obfuscation = true;
     policy.non_interactive = true;
     return policy;
@@ -198,6 +198,10 @@ void PolicyIsExactAndFailClosed() {
     assert(!ValidateOuterCarrierCapturePolicy(policy).empty());
     policy = ValidPolicy();
     policy.tls_backend = "openssl-diagnostic";
+    assert(!ValidateOuterCarrierCapturePolicy(policy).empty());
+    policy = ValidPolicy();
+    policy.tls_backend =
+        std::string(yume::cover_profile::active().tls_backend);
     assert(!ValidateOuterCarrierCapturePolicy(policy).empty());
     policy = ValidPolicy();
     policy.obfuscation = false;

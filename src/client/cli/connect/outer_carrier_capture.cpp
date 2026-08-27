@@ -666,7 +666,8 @@ std::string ValidateOuterCarrierCapturePolicy(
     if (!policy.obfuscation ||
         policy.transport_profile != cover_profile::active().id ||
         policy.tls_backend != policy.required_tls_backend) {
-        return "--outer-carrier-evidence requires the pinned chrome151 H2 carrier/backend";
+        return "--outer-carrier-evidence requires the pinned chrome151 H2 carrier "
+               "and openssl-chrome151 backend";
     }
     if (!policy.non_interactive) {
         return "--outer-carrier-evidence requires non-interactive endpoint benchmark mode";

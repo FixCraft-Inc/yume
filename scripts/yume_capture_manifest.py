@@ -290,17 +290,28 @@ def build_environment(args: argparse.Namespace) -> dict[str, Any]:
     if args.arm == "yume":
         for field, value in (
             ("YUME binary SHA-256", args.yume_binary_sha256),
-            ("YUME helper SHA-256", args.yume_helper_sha256),
             ("release bundle SHA-256", args.release_bundle_sha256),
+            ("client config SHA-256", args.client_config_sha256),
             ("TLS leaf SHA-256", args.tls_leaf_sha256),
         ):
             if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
                 raise ManifestError(f"{field} must be lowercase 64-hex")
+        if args.tls_backend not in {"openssl-chrome151", "chrome151"}:
+            raise ManifestError("YUME arm must name its Chrome TLS backend")
+        if args.tls_backend == "chrome151":
+            if not re.fullmatch(r"[0-9a-f]{64}", args.yume_helper_sha256):
+                raise ManifestError(
+                    "helper-backed YUME arm requires a helper SHA-256")
+        elif args.yume_helper_sha256:
+            raise ManifestError(
+                "native YUME arm must not declare an unused helper SHA-256")
     elif (
         args.yume_binary_sha256
         or args.yume_helper_sha256
         or args.release_bundle_sha256
+        or args.client_config_sha256
         or args.tls_leaf_sha256
+        or args.tls_backend
     ):
         raise ManifestError("normal arm must not declare YUME runtime hashes")
     environment = {
@@ -334,8 +345,11 @@ def build_environment(args: argparse.Namespace) -> dict[str, Any]:
     }
     if args.arm == "yume":
         environment["yume_binary_sha256"] = args.yume_binary_sha256
-        environment["yume_helper_sha256"] = args.yume_helper_sha256
+        environment["tls_backend"] = args.tls_backend
+        if args.yume_helper_sha256:
+            environment["yume_helper_sha256"] = args.yume_helper_sha256
         environment["release_bundle_sha256"] = args.release_bundle_sha256
+        environment["client_config_sha256"] = args.client_config_sha256
         environment["tls_leaf_sha256"] = args.tls_leaf_sha256
     return environment
 
@@ -378,7 +392,9 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--display", required=True)
     result.add_argument("--yume-binary-sha256", default="")
     result.add_argument("--yume-helper-sha256", default="")
+    result.add_argument("--tls-backend", default="")
     result.add_argument("--release-bundle-sha256", default="")
+    result.add_argument("--client-config-sha256", default="")
     result.add_argument("--tls-leaf-sha256", default="")
     result.add_argument(
         "--tls-wire-evidence", required=True, type=int, choices=(0, 1)

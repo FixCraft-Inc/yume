@@ -8,10 +8,13 @@ YUME is a stealth transport and relay. It does not provide anonymity by
 itself. The route you choose decides who can see the client, who can see
 the target, and how much trust is placed in the YUME server.
 
-The current qualified-development scope is the glibc Linux x86-64 CLI/server/
-helper slice. Android diagrams below describe the intended architecture only:
-the separate Android client remains on the incompatible `0.2.0-dev1` wire and is
-not a supported or validated `0.2.0-dev6` path.
+The current qualified-development scope is the glibc Linux x86-64 CLI/server
+slice. The Go TLS helper is an optional comparison backend. The separate
+Android checkout has earlier `0.2.0-dev6` non-connected ARM64/device evidence,
+but it has not been synchronized against the current native stabilization
+candidate; connected VPN routing, leak policy, and release qualification also
+remain open. Android diagrams below describe the intended connected
+architecture, not a current support claim.
 
 ## Diagram Style
 

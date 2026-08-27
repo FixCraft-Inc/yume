@@ -8,11 +8,13 @@ they're browser/OS behavior — but yume can't fix them from inside the
 SOCKS server. This page lists each leak vector and the exact knob to
 close it.
 
-For the supported YUME 2.0 Linux desktop slice, full-system enforcement requires
+For the current Linux desktop development slice, full-system enforcement requires
 an independently reviewed OS-level routing/kill-switch setup such as the
-iptables design at the bottom of this page. The separate Android client is
-currently on the incompatible `0.2.0-dev1` wire and is not a supported or
-qualified YUME 2.0 leak-tight option.
+iptables design at the bottom of this page. The separate Android client has
+earlier `0.2.0-dev6` non-connected evidence but has not been synchronized to
+the current native candidate. It also has not passed connected VPN, DNS, IPv6,
+bypass, kill-switch, or release qualification and is not a supported leak-tight
+option.
 
 ## What leaks, and why
 
@@ -165,23 +167,25 @@ iptables wall and fails closed.
 nothing on the box should be able to reach the internet. If anything
 still loads, your rule set has a hole.
 
-## Android: historical design, not current 2.0 support
+## Android: native re-synchronization and connected leak gates remain open
 
-The intended Android architecture uses `android.net.VpnService` and a TUN
-device to capture app traffic. That architecture does not establish current
-behavior: the separate Android checkout remains on `0.2.0-dev1`, is rejected by
-desktop `0.2.0-dev6`, and has not passed current ABI/JNI, packet, lifecycle, leak,
-or recovery qualification.
+The Android architecture uses `android.net.VpnService` and a TUN device to
+capture app traffic. The separate checkout has earlier `0.2.0-dev6`
+client-only ABI and non-connected ARM64/device lifecycle evidence, but it has
+not been synchronized against the current native stabilization candidate.
+That also does not establish routed behavior: matching-server packet transfer,
+DNS/IPv6 policy, bypass, leak, revoke/reconnect, and recovery qualification
+remain open.
 
-Do not rely on the present Android build as a YUME 2.0 kill switch. After it is
-ported, its TUN capture, route/DNS policy, bypass behavior, and fail-closed
-recovery need direct device evidence before this claim can be restored.
+Do not rely on the present Android build as a YUME kill switch. Its TUN
+capture, route/DNS policy, bypass behavior, and fail-closed recovery need direct
+connected-device evidence before this claim can be made.
 
 ## Quick decision tree
 
 ```
 Are you on Android?
-├─ Yes → Current YUME 2.0 support is not qualified; do not rely on it yet.
+├─ Yes → Connected Android leak-tight support is not qualified; do not rely on it yet.
 └─ No → Are you OK with browser-only coverage?
         ├─ Yes → Use the Chromium / Firefox flags above.
         └─ No  → Set up redsocks + iptables for full-system tight.

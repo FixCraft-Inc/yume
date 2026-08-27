@@ -246,10 +246,15 @@ capacity before authenticated admission.
 - The target from the direct YUME server operator.
 - Availability against an attacker who can exhaust the network, TLS handshakes,
   or all configured connection limits.
-- Byte-identical Chrome TLS. OpenSSL’s ClientHello/GREASE ordering remains a
-  classifier-visible residual. The TLS/H2/HTTP consumers now use one coherent
-  Chrome 151/Debian 13 profile, but BoringSSL remains only a candidate
-  experiment, not proof of Chrome parity.
+- Byte-identical Chrome sessions. The default `openssl-chrome151` backend now
+  implements the six pinned ClientHello structure rows through an additive,
+  default-off patch on the exact OpenSSL 3.5.7 source pin. That is still
+  narrower than indistinguishable Chrome: certificate-compression value
+  recapture, resumed/PSK handshakes, same-session Chrome comparison, complete
+  H2/WebSocket behavior, traffic timing/volume, classifier/active-probe,
+  lifecycle/soak, and independent review remain open. The older uTLS helper's
+  passing evidence does not transfer to the native replacement. See
+  `docs/STEALTH.md`.
 - Protected identity-file loading on Windows. The POSIX ownership/mode
   invariant has no Windows equivalent yet, so identity loading fails closed
   there instead of accepting an arbitrary ACL.

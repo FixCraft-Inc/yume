@@ -105,8 +105,8 @@ Entry: `main_client.cpp` → `client/cli/entry.cpp`.
 | --- | --- |
 | `cli/` | Args, config load, keys, cluster, startup checks |
 | `session/` | Per-client sessions: auth, carrier, codecs, streams |
-| `runtime/` | `ServerManager`, local runtime controller, identity admission, optional weighted egress |
-| `federation/` | Cluster peer links |
+| `runtime/` | `Manager`, `RuntimeController`, identity admission, optional weighted egress |
+| `federation/` | Cluster peer links, plus the topology/status document a cluster viewer reads and its text layout |
 | `filter/` | IP / robots filtering, optional GeoIP |
 | `packet/` | TUN egress for packet-bulk mode |
 | `auth/` | Composite Ed25519 + ML-DSA-87 verification plus immutable regular/operator/admin snapshots |
@@ -116,7 +116,9 @@ Entry: `main_server.cpp` → `server/cli/entry.cpp`.
 ### `src/facade/` — embedder API
 
 Static library over core + client + server. Used by `yume-gui` and
-automation. No Dear ImGui dependency.
+automation. No Dear ImGui dependency. Its chat-history result preserves
+messages, storage availability, truncation, and the storage diagnostic as
+typed state; transport/envelope/schema failures remain a separate error path.
 
 ### `src/gui/` — desktop UI
 
@@ -186,3 +188,8 @@ man pages. `scripts/check_ascii_diagrams.py` enforces fixed box widths.
 | App codecs | `docs/APP_CODECS.md` |
 | Packet bulk | `docs/PACKET_NATIVE_BULK.md` |
 | C ABI scope | `docs/ABI.md` |
+| JSON control API | `docs/CONTROL_API.md` |
+| Federation transit (design only) | `docs/protocol/YUME_2_0_FEDERATION_TRANSIT.md` |
+| Current implementation boundary | `docs/IMPLEMENTATION_STATUS.md` |
+| Stabilization gates | `docs/YUME_2_0_STABILIZATION.md` |
+| Contributor entry point | `AGENTS.md`, `CONTRIBUTING.md`, `docs/README.md` |

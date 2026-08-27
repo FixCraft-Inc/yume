@@ -1,7 +1,11 @@
 # YUME 2.0 desktop implementation status
 
-Status: core/ABI/CLI stabilization checkpoint implemented; frontend/platform
-and release gates remain incomplete.
+Status: a new core/ABI/CLI/federation stabilization candidate is implemented.
+Before publication remediation and commit splitting, its aggregate passed 108/108 full
+RelWithDebInfo/warnings-as-errors tests, 103/103 client-only ABI tests, and
+104/104 Debug ASan+UBSan+LeakSanitizer tests. Those results do not qualify the
+exact signed checkpoint after documentation and licensing remediation;
+frontend/platform and release gates remain incomplete.
 
 The older signed-commit inventory and performance chronology are in
 `docs/YUME_2_0_DEV6_HANDOFF.md`; its dated ordered-work sections are historical.
@@ -17,11 +21,49 @@ scope. Development-merge evidence must
 include a fresh full optimized and sanitizer qualification of the exact signed
 tree; results from an earlier checkpoint do not transfer across corrections.
 
-## 2026-08-23 stabilization checkpoint (authoritative)
+## Current 0.2.0-dev6 stabilization continuation
 
-The shared Linux x86-64 core, stable C ABI, and CLI gate selected before later
-GUI/Android synchronization is closed in this checkpoint. This supersedes the
-older 80/86-test development totals below. It does not qualify a release,
+This signed stabilization continuation supersedes the older checkpoint as the current
+consumer contract. It keeps the product version `0.2.0-dev6`, transport/AUTH/
+relay v2, C ABI v1, and helper IPC v1 as independent version axes.
+
+- Federation configuration uses the canonical `federation_operator_ca` name
+  and exact peer objects. Each outbound adjacency requires its own PSK and
+  carrier-secret files. The accepting side selects a distinct protected PSK
+  from the authenticated identity's `federation_peer_id` plus
+  `federation_psk_file` metadata; the ordinary client inner PSK is not reused.
+- An explicitly configured bootstrap node may accept authenticated inbound
+  federation without dialing a peer. Redacted `federation.status` and
+  `federation.topology` report configured, outbound, and inbound state without
+  exposing secret paths. The three-node fixture uses different A-B and B-C
+  secrets and proves that the far endpoint remains invisible and unroutable.
+  Federation is still direct and single-hop; the transit document is design
+  only and cannot be used as an implementation or privacy claim.
+- The stable ABI has bounded generic client/server JSON requests, typed outer
+  failures, and per-handle completed-response replay so a two-call sizing
+  sequence does not execute a mutation twice. Operation names are limited to
+  128 bytes and arguments to 1 MiB. The JSON operation envelope and exact
+  migration rules are documented in `docs/CONTROL_API.md`.
+- Chat history exposes storage availability and truncation separately from
+  transport/schema errors. Scans and returned plaintext are bounded, special
+  files fail closed, and delete-all validates the bounded directory before
+  mutation. Persistence remains best-effort and a multi-file delete can
+  partially complete on a later filesystem failure; both caveats are public.
+  Protected on-disk records use an exact five-field schema, while API
+  consumers accept additive row fields as required by the ABI-v1 JSON
+  compatibility rule.
+
+The in-tree GUI has only the compile-time facade adaptation needed for this
+typed history result. That is not a new GUI synchronization or behavior gate.
+The separate Android checkout has not been synchronized or qualified against
+this signed continuation. Consumer work resumes only after the exact native
+checkpoint is complete and its full optimized build/test matrix passes.
+
+## 2026-08-23 stabilization checkpoint (historical baseline)
+
+At that checkpoint, the shared Linux x86-64 core, stable C ABI, and CLI gate
+selected before later GUI/Android work was closed. The recorded evidence below
+does not transfer to the current continuation and did not qualify a release,
 mobile/desktop consumer, Windows, or ARM.
 
 Implemented and regression-covered:
@@ -57,14 +99,24 @@ checksum-pinned liboqs 0.16.0 archive was built from the declared source,
 selected by exact cache and link path, reported as 0.16.0 by the CLI, and
 passed 102/102 Release tests.
 
-The Go/uTLS helper is not scheduled for removal in this checkpoint. It remains
-an experimental, opt-in, default-off backend because it is the only current
-backend that passes the normalized Chrome 151 raw-first-flight gate. OpenSSL
-C++ reaches exact JA4 and exact non-GREASE cipher/signature/extension sets, but
-still lacks equivalent GREASE geometry, extension placement/rotation, and the
-required certificate-compression offer. Any later removal must first put the
-C++ backend through the same wire, same-session, classifier, lifecycle, and
-reproducibility gates.
+The default backend is now `openssl-chrome151`. It opts into YUME's additive,
+default-off OpenSSL 3.5.7 patch through an existing `SSL_CTX_ctrl` symbol, so a
+binary remains loadable with stock libssl but selection fails closed when the
+capability is absent. The patch supplies all four properties unavailable from
+stock OpenSSL: correlated per-connection GREASE across the cipher/group/version/
+key-share slots, first/last GREASE extensions, per-connection permutation of
+custom and built-in extensions, and `ec_point_formats == [0]`. Round 1 already
+supplied both real key shares and brotli-only certificate compression. The
+native wire gate checks all six rows across 12 SSL objects sharing one context;
+the stock `openssl-diagnostic` negative gate remains to protect default-off
+behavior. Release builds statically embed the exact patched OpenSSL.
+
+The Go/uTLS helper is retained only until the native backend independently
+passes its complete handshake/exporter/pinning/lifecycle/reconnect/soak/
+reproducibility and same-session/classifier gates. Existing helper evidence is
+not replacement evidence, and the fixture still needs a fresh immutable Chrome
+capture that records the `compress_certificate` algorithm value rather than
+only its three-byte length.
 
 Remaining work is deliberately outside the shared checkpoint: GUI/Android
 consumer behavior; Windows/ARM/NDK/hardware; release/tag/artifact signing and
@@ -98,10 +150,11 @@ The current development tree also carries the completed core/ABI/CLI slice:
   remains in use and Windows file/bytes/trust persistence fails closed where
   equivalent descriptor-relative protection is unavailable. The unused v1
   record/KDF implementation and tests have been removed.
-- Linux qualification of this unsigned working tree passed the full optimized
-  suite (80/80), full shared ABI (86/86), client-only shared ABI (85/85), and
-  full shared-ABI Debug ASan+UBSan+LeakSanitizer suite (86/86). These are
-  development results, not exact signed-commit or release qualification.
+- Linux qualification of the pre-remediation aggregate passed the
+  full RelWithDebInfo/warnings-as-errors profile (108/108), client-only shared
+  ABI profile (103/103), and Debug ASan+UBSan+LeakSanitizer profile (104/104).
+  These are aggregate development results, not exact qualification of the
+  remediated signed checkpoint or a release.
 
 ### Consumer synchronization gate (2026-08-23)
 
@@ -118,26 +171,25 @@ closed before either frontend is called synchronized or qualified:
   longer loses the dequeued batch or closes the channel; saturation/recovery,
   shutdown wakeup, and exact queue caps have focused tests. Android still needs
   its own JNI/device/VPN saturation gate.
-- **Android migration:** the separate Android checkout still pins
-  `0.2.0-dev1`, accepts a bare Ed25519 PEM even though dev6 requires the exact
-  Ed25519 + ML-DSA-87 composite private identity, and its BaseFWX Java sync list
-  omits direct dependencies `PasswordPolicy.java` and
-  `PayloadKeySeparation.java` (plus the separately required `X25519.java`
-  parity file). The socket-protector callback covers connected carrier sockets,
-  not the resolver that runs first; use a numeric underlying-network endpoint
-  plus `tls_server_name` until a protected resolver handoff exists. Shared
-  pre-ready DNS/connect/proxy/TLS/H2/AUTH/helper cancellation is now prompt and
-  regression-tested, but Android must still prove its VpnService revoke and
-  airplane-mode handoff. Packet v1 is IPv4-only, so the VPN must block IPv6
-  deliberately rather than route it to native or let it bypass. NDK/ARM, JNI
-  lifecycle, device
-  leak/revoke/reconnect, and forward/reverse throughput gates remain unrun.
-- **GUI lifecycle (shared facade closed):** client/server facade start, stop,
+- **Historical Android synchronization; connected gate remained open:** the
+  separate checkout consumed that checkpoint's `0.2.0-dev6` client-only ABI,
+  exact composite Ed25519 + ML-DSA-87 identities, and BaseFWX/native source. A physical
+  ARM64 device reports ABI v1/dev6/PQ and has non-connected lifecycle, bounded
+  packet-codec, and agent-harness evidence. This is not connected VPN evidence:
+  approved credentials/matching server, native packet/TUN transfer, routed
+  HTTP, DNS/IPv6/bypass policy, revoke/reconnect, backpressure, dependency
+  provenance, and release qualification remain open. The carrier must still be
+  resolved on the underlying Android `Network` while retaining
+  `tls_server_name`; packet v1 remains IPv4-only and IPv6 must fail closed.
+- **GUI lifecycle and implementation closed:** client/server facade start, stop,
   restart, join, callback reentrancy/exception, and destruction use serialized
   generations and separately owned workers. Pre-ready stop reaches every
   connection phase and cannot be followed by a late successful start. This
-  removes the shared blocker; a real GUI window-level lifecycle smoke is still
-  required before functional GUI qualification.
+  removes the shared blocker. The signed desktop implementation pass also
+  removed obsolete security toggles and completed the visual redesign. A real
+  dev6 headless contract passed connect -> stop -> reconnect -> stop 5/5; that
+  is Linux/X11 core-driving evidence, not Windows/macOS/tray or human-window
+  qualification.
 - **GUI facade/core preparation:** the DNS worker is owned and joined instead
   of detaching with an `App*`; the facade reports the actual security mode,
   effective composite/hybrid ratchet posture, TLS backend, rekey window,
@@ -147,18 +199,65 @@ closed before either frontend is called synchronized or qualified:
   exception-throwing subscribers outside its lock. Chat open returns a real
   channel id, send/close enforce it, and history carries direction and time;
   the unused live-chat callback promise is removed. macOS bundle versions now
-  follow the project version. The visual redesign must still remove the
-  obsolete optional/light/heavy/dual server controls. `--headless` still exits
-  successfully when valid session startup fails or configurations are absent,
-  so it is not a real connect/stop/reconnect gate.
+  follow the project version. The facade now also exposes durable contacts and
+  uses real endpoint IDs in history rather than a display placeholder. Incoming
+  chat discovery remains polling/history-oriented; no live-message callback is
+  promised.
 
-An isolated `YUME_BUILD_GUI=ON` RelWithDebInfo build of this exact source on
-`192.168.1.165` completed all 209 build steps and `ldd -r` found no missing or
-unresolved symbols. That closes only the compile/link check; no real GUI
-connection, cancellation, restart, window, tray, or platform behavior was
-qualified.
+The signed GUI pass includes an isolated warnings-as-errors build, `ldd -r`,
+and the 5/5 real dev6 headless lifecycle contract. Changes after that signed
+checkpoint require their own exact-source rebuild; human window interaction,
+tray behavior, Windows, and macOS remain separate qualification gates.
 
 ## Implemented
+
+- Cluster inspection has one source of truth. `federation.status` reports
+  configured peers and authenticated inbound-only peers, keeping overall
+  readiness, outbound-link readiness, and inbound-connection counts distinct.
+  Its structured configuration view contains the dial address plus whether a
+  TLS pin, pairwise PSK and carrier secret were supplied, never the secret file
+  paths the raw `--peer` JSON contains, and counts entries that failed to parse
+  rather than dropping them silently. `federation.topology`
+  returns the whole graph a cluster viewer needs: the reporting node, its
+  peers with link state and advertised-endpoint counts, the link edges, and the
+  active relay channels. Both are pure functions over snapshot vectors
+  (`server/federation/topology.cpp`), so the response contract is tested
+  without launching a cluster. `yume-net-map` and the `yumed` attach console
+  render the same document through one shared layout
+  (`server/federation/topology_render.cpp`); neither re-derives a cluster from
+  separate status calls. The topology document states its own hop budget
+  (`transit.supported = false`, `transit.max_hops = 1`) and carries per-node
+  `route`/`hops` fields so a consumer that draws paths keeps one shape.
+  The three-node line fixture uses a different pairwise PSK on A-B and B-C, so
+  its multi-peer node also exercises accepting-side PSK selection by the
+  authenticated federation identity.
+- Relay peer trust is enumerable, so a contacts surface exists. `PeerTrustStore`
+  gained `list()` and `forget()` alongside the existing precheck/commit pair,
+  reading the trust directory through the same descriptor-relative, no-follow,
+  owner-only discipline and requiring each record's filename to be the digest
+  of the endpoint the record names. `contacts.list` merges durable local trust
+  with live directory presence and reports whether the directory was reachable,
+  so contacts still render when the server is not. `contacts.forget` removes
+  learned trust-on-first-use pins only: a fingerprint named by configuration or
+  carrying a durable explicit marker is refused, because that records an
+  out-of-band authorization decision. Both are reachable from the CLI console
+  and, through `yume_client_request_json`, from the stable C ABI.
+- The stable C ABI gained `yume_server_request_json`, an additive read-only
+  operation surface for bounded server snapshots. Federation status and
+  topology were previously unreachable from an embedder; they now are whether
+  or not IPC is enabled. Its output uses the same `{ok,result|error}` envelope
+  as `yume_client_request_json`; malformed arguments/lifecycle failures remain
+  typed ABI statuses. Mutating admin-socket operations are deliberately refused
+  on this no-deadline path and use typed lifecycle/facade methods instead.
+  `YUME_ABI_VERSION` remains 1; `docs/CONTROL_API.md` is the payload contract.
+- Federation remains **single-hop**, now with a regression that says so. A node
+  advertises only its own local endpoints, so every federated endpoint it knows
+  is one authenticated link away, and traffic never transits a third node. A
+  three-node line integration test proves multi-peer link fan-out and holds the
+  far side absent and unroutable across several directory refresh cycles.
+  `docs/protocol/YUME_2_0_FEDERATION_TRANSIT.md` records the transit design,
+  the four layers that currently enforce the boundary, and the gates any
+  implementation must pass. Nothing in the tree implements forwarding.
 
 - A browser-neutral build-time transport-profile registry now owns profile
   aliases, fixture paths, artifact names, backend routing, and captured
@@ -178,12 +277,13 @@ qualified.
   separately signed, pushed, and pinned at
   `5c42eafbb95e5c7ea3b6cd57299d577be814f5f2`, so the YUME candidate no longer
   depends on an unpublished BaseFWX worktree.
-- Full builds now fail configuration below OpenSSL 3.5 instead of discovering
-  the missing ML-DSA-87 provider during AUTH. The official OpenSSL source
-  revision is recorded beside BaseFWX metadata; CI, CodeQL, and release builds
-  force a SHA-256-verified 3.5.7 source fallback, while native Linux development
-  may use a capable system OpenSSL >= 3.5. Debian package metadata carries the
-  same build and runtime floor explicitly.
+- Full builds now require both OpenSSL 3.5 and YUME's additive ClientHello
+  patch instead of discovering a missing ML-DSA-87 provider or native-emitter
+  capability at runtime. The official revision and patch series are recorded
+  beside BaseFWX metadata; CI, CodeQL, release, and normal `ezbuild` paths force
+  the SHA-256-verified patched 3.5.7 source. A stock system OpenSSL is only a
+  diagnostic reference and is rejected by normal CMake configuration. Debian
+  archive packaging remains blocked on an approved patched-library policy.
 - Prepared Linux release artifacts pin and checksum-verify liboqs 0.16.0,
   link it statically, and are rejected if they contain a dynamic `liboqs.so`
   dependency or an embedded runtime library search path.
@@ -192,6 +292,13 @@ qualified.
   manifest, and sanitized HTTP/2 profile. One immutable Chrome 151/Debian 13 +
   Node 24 profile supplies the TLS selection, User-Agent/client hints, H2
   settings/priorities/header order, assets, and cover-server identity.
+- The normal client backend, `openssl-chrome151`, runs in process and opts into
+  the default-off OpenSSL patch through `SSL_CTX_ctrl`. Its emitted-byte gate
+  closes all six pinned ClientHello structure rows over 12 connections sharing
+  one context. It does not launch the helper, and the release lane statically
+  embeds the patched library. This structural gate is not end-to-end Chrome
+  qualification and still needs HRR, resumption/PSK, handshake/exporter,
+  validation, lifecycle, soak, reproducibility, and same-session evidence.
 - A Linux-only experimental Chrome TLS backend is implemented as one pinned
   uTLS helper process per outer connection. The C++ parent performs direct or
   SOCKS/Tor routing and passes only the connected descriptor plus an anonymous
@@ -245,9 +352,9 @@ qualified.
 - `tools/cover-node/capture_yume151_runs.sh` is the unprivileged YUME-arm
   producer. It requires a clean exact source, fresh owner-only output outside
   every Git worktree, a prepared bundle whose manifest binds the supplied YUME
-  client and adjacent helper to that source commit, pinned Chrome/Node/helper
-  identities, the adjacent helper selected explicitly, a certificate-valid
-  SNI and separate DER leaf pin, and one
+  client to that source commit, pinned Chrome/Node identities, the native
+  `openssl-chrome151` backend, a certificate-valid SNI and separate DER leaf
+  pin, and one
   per-run TLS-wire plus live-behavior report. It copies no config or secret,
   restores its relay on exit/signal, and seals the arm only after all five runs
   and their runtime-source/checksum manifests verify.
@@ -299,8 +406,10 @@ qualified.
   are rejected. The unreachable client-side 1.x AUTH response, Argon2 challenge
   metadata, and long-lived PQ auto-trust/reconnect implementation have been
   removed. The federation dial now speaks AUTH v2 as well (`yume/federation-v2`):
-  carrier admission, composite identity, channel binding, per-peer PSK and
-  ratchet establishment, so no live path retains the separate legacy AUTH and
+  carrier admission, composite identity, channel binding, and ratchet
+  establishment. The accepting server selects the pairwise PSK from the
+  authenticated identity's required `federation_psk_file` metadata rather than
+  its ordinary client PSK, so no live path retains the separate legacy AUTH and
   inner-key flow. Legacy hop derivation, skew-window decryption, cached state,
   configuration/share/status fields, and the inert Argon2 admission controller
   have now been removed. Focused legacy-AEAD negatives reject wrong key, wrong
@@ -580,12 +689,12 @@ qualified.
   measured advantage; it cannot prove that future DPI or a neural model is
   unable to learn YUME.
 - Preserve fixture-backed coherence between the TLS selection, HTTP headers,
-  H2 shape, assets, and cover server while closing the remaining OpenSSL
-  ClientHello differences.
+  H2 shape, assets, and cover server while qualifying the newly closed native
+  ClientHello structure against complete sessions and fresh browser evidence.
 - Obtain independent cryptographic/protocol review and adversarial deployment
   testing before authorizing `0.2.0-rc1`.
 
-## Required before exact version `2.0`
+## Required before exact product version `0.2.0`
 
 - A valid uninterrupted tunnel lasting at least 30 minutes in the intended
   deployment environment. The current >30-minute loopback qualification is a
@@ -607,10 +716,11 @@ qualified.
 - Directly affected CLI, wire, stealth, threat-model, and deployment docs
   reconciled with the final capture and commands.
 - If the release claims constrained-host support, qualify the named CPU/RAM
-  tier with the full Chrome-helper/Node/hybrid-PQ stack under cgroup limits and
+  tier with the default native-OpenSSL/Node/hybrid-PQ stack under cgroup limits
+  and retain a separate helper comparison only while that backend is shipped;
   retain latency, RSS/fd/queue, overload-rejection and recovery evidence. If it
   does not pass, omit the claim rather than weakening cryptography.
-- If the release claims any target beyond glibc Linux x86_64 CLI/server/helper,
+- If the release claims any target beyond glibc Linux x86_64 CLI/server,
   add an exact OS/architecture/libc/toolchain/package matrix with native or
   explicitly named emulation smoke evidence. “Any server” is not a supported
   scope.
@@ -627,9 +737,10 @@ arbitrary “randomish millisecond” rotation is not an accepted substitute.
 ## Known residual
 
 The former Chrome 131/150 and Windows/Linux identity mismatch is fixed behind
-one immutable Chrome 151/Debian 13 + Node 24 profile. The normal build still
-defaults to the explicitly named `openssl-diagnostic` backend. The new pinned
-uTLS helper builds reproducibly with official Go 1.26.5 and its five live
+one immutable Chrome 151/Debian 13 + Node 24 profile. The normal configuration
+defaults to `openssl-chrome151`; it requires the pinned patched OpenSSL and
+never falls back to `openssl-diagnostic` or the helper. The pinned uTLS helper
+still builds reproducibly with official Go 1.26.5 and its five live
 first flights pass the normalized ClientHello/ServerHello structural gate.
 Selecting `chrome151` never silently falls back: a build without the helper
 fails closed. The bounded certificate/exporter and process lifecycle matrix,
@@ -637,8 +748,8 @@ process ramps, reconnect storm, segmented full-speed soak, and partial matched
 WAN qualification pass. The remaining WAN loss/rate/soak arms, one
 uninterrupted deployed-network soak, exact Chrome `151.0.7922.71` same-session
 capture, classifier/active-probe evidence, and independent review remain
-required before that backend becomes the default or YUME claims release-
-qualified Chrome parity. Matching ALPN or a coarse JA3/JA4 summary is
+required before the native replacement is release-qualified, the helper is
+removed, or YUME claims full Chrome parity. Matching ALPN or a coarse JA3/JA4 summary is
 insufficient. Traffic padding is likewise an evidence-driven option, not an
 automatic improvement.
 

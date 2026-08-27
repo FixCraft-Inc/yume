@@ -102,20 +102,20 @@
             to build this tree.
           </p>
           <p>
-            No 2.0 transport throughput or latency measurement has been published. The one WAN run
-            in the repository used 1.x and does not describe the current transport; treat it as a
-            historical datapoint only. Current WAN work in progress is tracked in
+            No 0.2.0 release-qualified transport throughput or latency result has been published.
+            The older public WAN run used 1.x and does not describe the current transport; treat it
+            as a historical datapoint only. Current development measurements and their limits are tracked in
             <a href="docs/YUME_2_0_WAN_BEHAVIOR/">WAN behavior and release gate</a>.
           </p>
         </div>
         <div class="grid" style="margin-top:18px;">
           <div class="card">
-            <h4>Qualified</h4>
-            <p>The Linux x86-64 <code>yume</code> / <code>yumed</code> command-line slice, with the Go-based Chrome TLS helper.</p>
+            <h4>Existing evidence</h4>
+            <p>The historical Linux x86-64 <code>yume</code> / <code>yumed</code> command-line slice with its explicitly selected Go TLS helper; that evidence does not qualify the new native default.</p>
           </div>
           <div class="card">
             <h4>In progress</h4>
-            <p>The desktop GUI, and the Android client - which is still on the incompatible <code>0.2.0-dev1</code> wire and is being resynchronized. Neither has passed the 0.2.0 gates.</p>
+            <p>The desktop GUI has earlier Linux/X11 lifecycle evidence but the current native candidate still needs a fresh consumer gate. Android has earlier <code>0.2.0-dev6</code> non-connected ARM64 evidence, but it is not synchronized to the current candidate; its connected VPN, routing, leak-policy, and release gates remain open.</p>
           </div>
           <div class="card">
             <h4>Not qualified</h4>
@@ -131,8 +131,9 @@
       <section id="install">
         <div class="section-title">Install</div>
         <p class="section-lead">
-          YUME builds from source on Linux x86-64. Full builds need OpenSSL 3.5 or newer, because
-          composite client identities use the ML-DSA-87 provider, and nghttp2 1.64 or newer.
+          YUME builds from source on Linux x86-64. Full builds use the checksum-pinned, patched
+          OpenSSL 3.5.7 because the native Chrome emitter needs its default-off extension and
+          composite identities need ML-DSA-87; they also need nghttp2 1.64 or newer.
         </p>
         <div class="download-grid">
           <article class="download-card">
@@ -158,7 +159,7 @@
               plus their integrity sidecars. Nothing else is a YUME release.
             </p>
             <ul class="card-list">
-              <li><code>yume-amd64-linux.tar.xz</code> - client bundle: <code>yume</code>, the Chrome TLS helper, license, third-party notices, quick start, and <code>manifest.json</code></li>
+              <li><code>yume-amd64-linux.tar.xz</code> - client bundle: <code>yume</code>, the optional temporarily retained Chrome TLS helper, license, third-party notices, quick start, and <code>manifest.json</code></li>
               <li><code>yumed-amd64-linux</code> - the daemon executable</li>
             </ul>
             <div class="link-row">
@@ -238,7 +239,7 @@
               </tr>
               <tr>
                 <td>Carrier</td>
-                <td>Persistent TLS 1.3 + HTTP/2 + WebSocket on one connection, using a single immutable Chrome 151 transport profile.</td>
+                <td>Persistent TLS 1.3 + HTTP/2 + WebSocket on one connection, using a single immutable Chrome 151 transport profile. The default native backend uses a default-off patch on pinned OpenSSL 3.5.7 for browser-shaped GREASE, extension permutation, key shares, point formats, and certificate compression.</td>
               </tr>
               <tr>
                 <td>Admission</td>
@@ -255,9 +256,14 @@
           <p>
             <strong>What this is not.</strong> YUME raises the cost of blocking and can reduce
             metadata exposure depending on the route. It is not impossible to block, not immune to
-            stateful DPI, and not identical to Chrome on the wire - a known TLS residual remains.
-            <code>yumed</code> is a terminating single-hop proxy, not an onion relay: the server
-            sees traffic as it exits. Read the
+            stateful DPI, and not identical to Chrome on the wire. The default
+            <code>openssl-chrome151</code> backend closes the six pinned ClientHello structure rows,
+            but resumed sessions, same-session browser comparison, full carrier behavior, traffic
+            timing/volume, classifier testing, and deployed soak are separate gates. The older
+            helper's evidence does not automatically qualify the native replacement.
+            <code>yumed</code> is a terminating single-hop proxy, not an
+            onion relay: the server sees traffic as it exits. Read the
+            <a href="docs/STEALTH/">stealth model</a> and the
             <a href="docs/THREAT_MODEL/">threat model</a> before deploying it.
           </p>
         </div>
@@ -399,7 +405,7 @@ cd yume
               </tr>
               <tr>
                 <td>HTTPS-shaped carrier</td>
-                <td class="yes">persistent TLS + H2/WebSocket; known TLS residual</td>
+                <td class="yes">persistent TLS + H2/WebSocket; Chrome-shaped native ClientHello implementation, qualification gates documented</td>
                 <td class="no">distinctive UDP handshake</td>
                 <td class="no">deployment-dependent shape</td>
                 <td class="yes">obfs4 bridge</td>

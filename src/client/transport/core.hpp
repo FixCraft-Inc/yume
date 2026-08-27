@@ -63,6 +63,14 @@ public:
     using TimingHandler = std::function<void(const std::string&,
                                              const std::string&,
                                              const std::string&)>;
+    struct RatchetFlowStats {
+        std::uint64_t application_block_count{0};
+        std::uint64_t application_block_us{0};
+        std::uint64_t offer_count{0};
+        std::size_t max_pending_epochs{0};
+        std::size_t max_prepared_epochs{0};
+        std::size_t max_total_depth{0};
+    };
 #endif
     using ServerStreamOpenHandler = std::function<bool(uint8_t stream_id,
                                                        const std::string& host,
@@ -103,6 +111,7 @@ public:
     void set_activity_handler(ActivityHandler handler);
 #if YUME_ENABLE_DEV_DIAGNOSTICS
     void set_timing_handler(TimingHandler handler);
+    RatchetFlowStats ratchet_flow_stats();
 #endif
     void set_server_stream_open_handler(ServerStreamOpenHandler handler);
     void set_exec_handler(ExecHandler handler);
@@ -253,7 +262,10 @@ private:
     std::unique_ptr<ratchet::SessionRatchet> ratchet_;
 #if YUME_ENABLE_DEV_DIAGNOSTICS
     diagnostics::IntervalTimer outbound_rekey_wait_;
+    diagnostics::IntervalTimer outbound_application_block_wait_;
     diagnostics::SampleAccumulator timing_open_;
+    RatchetFlowStats ratchet_flow_stats_;
+    bool outbound_application_blocked_{false};
 #endif
     bool server_in_charge_{false};
     bool allow_exec_{false};

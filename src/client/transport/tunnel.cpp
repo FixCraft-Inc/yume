@@ -616,20 +616,22 @@ void Tunnel::finish_close(const std::string& reason) {
         const auto stats = carrier_->stats();
         YUME_TIMING_LOG(
             "client.carrier", "summary",
-            "h2_feed_calls=" + std::to_string(stats.h2_feed_calls) +
-            " h2_feed_bytes=" + std::to_string(stats.h2_feed_bytes) +
-            " h2_feed_us=" + std::to_string(stats.h2_feed_ns / 1000U) +
-            " h2_flush_calls=" + std::to_string(stats.h2_flush_calls) +
-            " h2_flush_bytes=" + std::to_string(stats.h2_flush_bytes) +
-            " h2_flush_us=" + std::to_string(stats.h2_flush_ns / 1000U) +
-            " websocket_encode_bytes=" +
-                std::to_string(stats.websocket_encode_bytes) +
-            " websocket_encode_us=" +
-                std::to_string(stats.websocket_encode_ns / 1000U) +
-            " websocket_decode_bytes=" +
-                std::to_string(stats.websocket_decode_bytes) +
-            " websocket_decode_us=" +
-                std::to_string(stats.websocket_decode_ns / 1000U));
+            obfs::FormatH2CarrierStats(stats));
+    }
+    if (YUME_TIMING_ENABLED()) {
+        const auto stats = core_.ratchet_flow_stats();
+        YUME_TIMING_LOG(
+            "client.ratchet", "summary",
+            "offers=" + std::to_string(stats.offer_count) +
+            " application_blocks=" +
+                std::to_string(stats.application_block_count) +
+            " application_block_us=" +
+                std::to_string(stats.application_block_us) +
+            " max_pending=" +
+                std::to_string(stats.max_pending_epochs) +
+            " max_prepared=" +
+                std::to_string(stats.max_prepared_epochs) +
+            " max_depth=" + std::to_string(stats.max_total_depth));
     }
 #endif
 

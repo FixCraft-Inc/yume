@@ -471,8 +471,17 @@ private:
     std::unique_ptr<ratchet::SessionRatchet> ratchet_;
 #if YUME_ENABLE_DEV_DIAGNOSTICS
     diagnostics::IntervalTimer outbound_rekey_wait_;
+    diagnostics::IntervalTimer outbound_application_block_wait_;
     diagnostics::SampleAccumulator timing_seal_;
     diagnostics::SampleAccumulator timing_open_;
+    std::uint64_t ratchet_offer_count_{0};
+    std::uint64_t ratchet_application_block_count_{0};
+    std::uint64_t ratchet_application_block_us_{0};
+    std::size_t ratchet_max_pending_epochs_{0};
+    std::size_t ratchet_max_prepared_epochs_{0};
+    std::size_t ratchet_max_total_depth_{0};
+    std::size_t ratchet_max_blocked_writes_{0};
+    bool outbound_application_blocked_{false};
 #endif
     bool authenticated_{false};
     authorization::SessionTier authorization_tier_{

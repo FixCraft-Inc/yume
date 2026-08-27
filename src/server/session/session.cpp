@@ -567,6 +567,18 @@ void Session::handle_frame(protocol::Frame frame,
             }
             if (opened.outbound_rekey_completed) {
 #if YUME_ENABLE_DEV_DIAGNOSTICS
+                if (YUME_TIMING_ENABLED()) {
+                    const std::size_t pending =
+                        ratchet_->outbound_rekeys_in_flight();
+                    const std::size_t prepared =
+                        ratchet_->prepared_outbound_epochs();
+                    ratchet_max_pending_epochs_ = std::max(
+                        ratchet_max_pending_epochs_, pending);
+                    ratchet_max_prepared_epochs_ = std::max(
+                        ratchet_max_prepared_epochs_, prepared);
+                    ratchet_max_total_depth_ = std::max(
+                        ratchet_max_total_depth_, pending + prepared);
+                }
                 if (const auto wait_us = outbound_rekey_wait_.finish_us(
                         std::chrono::steady_clock::now())) {
                     YUME_TIMING_LOG(
@@ -1084,25 +1096,37 @@ void Session::begin_close() {
         }
     }
 #if YUME_ENABLE_DEV_DIAGNOSTICS
+    if (ratchet_ && YUME_TIMING_ENABLED()) {
+        if (outbound_application_blocked_) {
+            if (const auto elapsed =
+                    outbound_application_block_wait_.finish_us(
+                        std::chrono::steady_clock::now())) {
+                ratchet_application_block_us_ += *elapsed;
+            }
+            outbound_application_blocked_ = false;
+        }
+        YUME_TIMING_LOG(
+            "server.ratchet", "summary",
+            "session=" + std::to_string(session_id_) +
+            " offers=" + std::to_string(ratchet_offer_count_) +
+            " application_blocks=" +
+                std::to_string(ratchet_application_block_count_) +
+            " application_block_us=" +
+                std::to_string(ratchet_application_block_us_) +
+            " max_pending=" +
+                std::to_string(ratchet_max_pending_epochs_) +
+            " max_prepared=" +
+                std::to_string(ratchet_max_prepared_epochs_) +
+            " max_depth=" + std::to_string(ratchet_max_total_depth_) +
+            " max_blocked_writes=" +
+                std::to_string(ratchet_max_blocked_writes_));
+    }
     if (v2_h2_carrier_ && YUME_TIMING_ENABLED()) {
         const auto stats = v2_h2_carrier_->stats();
         YUME_TIMING_LOG(
             "server.carrier", "summary",
             "session=" + std::to_string(session_id_) +
-            " h2_feed_calls=" + std::to_string(stats.h2_feed_calls) +
-            " h2_feed_bytes=" + std::to_string(stats.h2_feed_bytes) +
-            " h2_feed_us=" + std::to_string(stats.h2_feed_ns / 1000U) +
-            " h2_flush_calls=" + std::to_string(stats.h2_flush_calls) +
-            " h2_flush_bytes=" + std::to_string(stats.h2_flush_bytes) +
-            " h2_flush_us=" + std::to_string(stats.h2_flush_ns / 1000U) +
-            " websocket_encode_bytes=" +
-                std::to_string(stats.websocket_encode_bytes) +
-            " websocket_encode_us=" +
-                std::to_string(stats.websocket_encode_ns / 1000U) +
-            " websocket_decode_bytes=" +
-                std::to_string(stats.websocket_decode_bytes) +
-            " websocket_decode_us=" +
-                std::to_string(stats.websocket_decode_ns / 1000U));
+            " " + obfs::FormatH2CarrierStats(stats));
     }
 #endif
     boost::system::error_code ec;

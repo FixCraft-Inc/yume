@@ -491,6 +491,28 @@ void Session::queue_frame_on_strand(const protocol::Frame& frame,
                 }
                 ratchet_blocked_writes_.push_back(
                     {frame, std::move(handler)});
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+                if (YUME_TIMING_ENABLED()) {
+                    if (!outbound_application_blocked_) {
+                        outbound_application_block_wait_.start_if(true, now);
+                        outbound_application_blocked_ = true;
+                        ++ratchet_application_block_count_;
+                    }
+                    ratchet_max_blocked_writes_ = std::max(
+                        ratchet_max_blocked_writes_,
+                        ratchet_blocked_writes_.size());
+                    const std::size_t pending =
+                        ratchet_->outbound_rekeys_in_flight();
+                    const std::size_t prepared =
+                        ratchet_->prepared_outbound_epochs();
+                    ratchet_max_pending_epochs_ = std::max(
+                        ratchet_max_pending_epochs_, pending);
+                    ratchet_max_prepared_epochs_ = std::max(
+                        ratchet_max_prepared_epochs_, prepared);
+                    ratchet_max_total_depth_ = std::max(
+                        ratchet_max_total_depth_, pending + prepared);
+                }
+#endif
                 return;
             }
             if (!already_protected && application &&
@@ -498,6 +520,19 @@ void Session::queue_frame_on_strand(const protocol::Frame& frame,
                 protocol::Frame init = ratchet_->BeginOutboundRekey(now);
 #if YUME_ENABLE_DEV_DIAGNOSTICS
                 outbound_rekey_wait_.start_if(YUME_TIMING_ENABLED(), now);
+                if (YUME_TIMING_ENABLED()) {
+                    ++ratchet_offer_count_;
+                    const std::size_t pending =
+                        ratchet_->outbound_rekeys_in_flight();
+                    const std::size_t prepared =
+                        ratchet_->prepared_outbound_epochs();
+                    ratchet_max_pending_epochs_ = std::max(
+                        ratchet_max_pending_epochs_, pending);
+                    ratchet_max_prepared_epochs_ = std::max(
+                        ratchet_max_prepared_epochs_, prepared);
+                    ratchet_max_total_depth_ = std::max(
+                        ratchet_max_total_depth_, pending + prepared);
+                }
                 // Preparation depth at each offer. `prepared` approaching the
                 // negotiated window means the direction is pipelining; a
                 // steady prepared=0 means it is advancing one epoch per round
@@ -565,6 +600,15 @@ void Session::flush_ratchet_blocked_writes_on_strand() {
     // still in flight, so this cannot wait for the whole window to drain.
     // Frames that are still blocked re-queue in order via queue_frame_on_strand.
     if (!ratchet_) return;
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    if (outbound_application_blocked_) {
+        if (const auto elapsed = outbound_application_block_wait_.finish_us(
+                std::chrono::steady_clock::now())) {
+            ratchet_application_block_us_ += *elapsed;
+        }
+        outbound_application_blocked_ = false;
+    }
+#endif
     auto pending = std::move(ratchet_blocked_writes_);
     ratchet_blocked_writes_.clear();
     for (auto& write : pending) {

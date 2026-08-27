@@ -353,9 +353,30 @@ void TransportCore::dispatch_next_write() {
             const auto now = std::chrono::steady_clock::now();
             if (ratchet_active && !head.already_protected &&
                 ratchet_->ApplicationWriteBlocked(head.frame, now)) {
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+                if (collect_timing) {
+                    if (!outbound_application_blocked_) {
+                        outbound_application_block_wait_.start_if(true, now);
+                        outbound_application_blocked_ = true;
+                        ++ratchet_flow_stats_.application_block_count;
+                    }
+                    const std::size_t pending =
+                        ratchet_->outbound_rekeys_in_flight();
+                    const std::size_t prepared =
+                        ratchet_->prepared_outbound_epochs();
+                    ratchet_flow_stats_.max_pending_epochs = std::max(
+                        ratchet_flow_stats_.max_pending_epochs, pending);
+                    ratchet_flow_stats_.max_prepared_epochs = std::max(
+                        ratchet_flow_stats_.max_prepared_epochs, prepared);
+                    ratchet_flow_stats_.max_total_depth = std::max(
+                        ratchet_flow_stats_.max_total_depth,
+                        pending + prepared);
+                }
+#endif
                 // The pipelined exchange may use the remaining authenticated
                 // old-epoch allowance, but never cross its hard boundary. Keep
-                // the head queued until the ACK commits the new send chain.
+                // the head queued until the ACK prepares the next send epoch;
+                // Seal() commits it at the hard boundary.
                 mark_stream_ready_locked(*stream_id);
                 if (batch.empty()) {
                     write_in_flight_ = false;
@@ -367,6 +388,20 @@ void TransportCore::dispatch_next_write() {
                 rekey = ratchet_->BeginOutboundRekey(now);
 #if YUME_ENABLE_DEV_DIAGNOSTICS
                 outbound_rekey_wait_.start_if(collect_timing, now);
+                if (collect_timing) {
+                    ++ratchet_flow_stats_.offer_count;
+                    const std::size_t pending =
+                        ratchet_->outbound_rekeys_in_flight();
+                    const std::size_t prepared =
+                        ratchet_->prepared_outbound_epochs();
+                    ratchet_flow_stats_.max_pending_epochs = std::max(
+                        ratchet_flow_stats_.max_pending_epochs, pending);
+                    ratchet_flow_stats_.max_prepared_epochs = std::max(
+                        ratchet_flow_stats_.max_prepared_epochs, prepared);
+                    ratchet_flow_stats_.max_total_depth = std::max(
+                        ratchet_flow_stats_.max_total_depth,
+                        pending + prepared);
+                }
 #endif
                 mark_stream_ready_locked(*stream_id);
             } else {
@@ -590,6 +625,26 @@ void TransportCore::resume_writes_after_rekey() {
         timing_handler = timing_handler_;
         rekey_wait_us = outbound_rekey_wait_.finish_us(
             std::chrono::steady_clock::now());
+        if (timing_handler && ratchet_) {
+            const std::size_t pending =
+                ratchet_->outbound_rekeys_in_flight();
+            const std::size_t prepared =
+                ratchet_->prepared_outbound_epochs();
+            ratchet_flow_stats_.max_pending_epochs = std::max(
+                ratchet_flow_stats_.max_pending_epochs, pending);
+            ratchet_flow_stats_.max_prepared_epochs = std::max(
+                ratchet_flow_stats_.max_prepared_epochs, prepared);
+            ratchet_flow_stats_.max_total_depth = std::max(
+                ratchet_flow_stats_.max_total_depth, pending + prepared);
+        }
+        if (outbound_application_blocked_) {
+            if (const auto elapsed =
+                    outbound_application_block_wait_.finish_us(
+                        std::chrono::steady_clock::now())) {
+                ratchet_flow_stats_.application_block_us += *elapsed;
+            }
+            outbound_application_blocked_ = false;
+        }
 #endif
         if (!write_in_flight_ && !write_queues_empty_locked()) {
             write_in_flight_ = true;

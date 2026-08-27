@@ -151,6 +151,10 @@ void FullSessionRoundTrip() {
     auto trace = std::make_shared<yume::obfs::OuterCarrierTrace>();
     H2Carrier client(H2CarrierRole::Client, trace);
     H2Carrier server(H2CarrierRole::Server);
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    client.set_timing_enabled(true);
+    server.set_timing_enabled(true);
+#endif
     assert(client.StartClient(secret_authority));
     Pump(client, server);
     Pump(server, client);
@@ -234,6 +238,16 @@ void FullSessionRoundTrip() {
     assert(received_down == down);
     assert(client.unconsumed_tunnel_bytes() == received_down.size());
     assert(client.ConsumeTunnelBytes(received_down.size()));
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    const auto server_stats = server.stats();
+    assert(server_stats.carrier_credit_consume_calls > 0);
+    assert(server_stats.carrier_credit_consume_bytes >= up.size());
+    assert(server_stats.max_received_unconsumed_carrier_bytes > 0);
+    assert(server_stats.max_unconsumed_tunnel_bytes > 0);
+    assert(server_stats.flow_window_samples > 0);
+    assert(yume::obfs::FormatH2CarrierStats(server_stats).find(
+               "carrier_credit_bytes=") != std::string::npos);
+#endif
 
     // The captured Chrome role originates one H2 PING immediately before its
     // masked WebSocket close. nghttp2 makes the Node/server role ACK it while
@@ -503,6 +517,10 @@ void ServerSaturationRefusalIsRetryableAndReleasesState() {
 void ServerManualFlowControlStallsAndResumes() {
     H2Carrier client(H2CarrierRole::Client);
     H2Carrier server(H2CarrierRole::Server);
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    client.set_timing_enabled(true);
+    server.set_timing_enabled(true);
+#endif
     OpenCarrier(client, server);
 
     H2Bytes payload(3U * 65535U);
@@ -533,6 +551,14 @@ void ServerManualFlowControlStallsAndResumes() {
         resume_wire,
         static_cast<std::uint32_t>(server.carrier_stream_id()));
     assert(updates.connection && updates.carrier_stream);
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    const auto stats = server.stats();
+    // WebSocket framing bytes are retired immediately and share this aggregate
+    // with the two sink-coupled payload releases above.
+    assert(stats.carrier_credit_consume_calls >= 2);
+    assert(stats.window_update_sent_connection_frames > 0);
+    assert(stats.window_update_sent_carrier_frames > 0);
+#endif
     client.Feed(resume_wire);
     assert(!client.failed());
 

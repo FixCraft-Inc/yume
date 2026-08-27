@@ -253,8 +253,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--tls-backend",
-        choices=("chrome151", "openssl-diagnostic"),
-        default="openssl-diagnostic",
+        choices=("openssl-chrome151", "chrome151", "openssl-diagnostic"),
+        default="openssl-chrome151",
         help="outer client TLS backend used for the endpoint benchmark",
     )
     size = parser.add_mutually_exclusive_group()
@@ -276,6 +276,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--keep-workdir", action="store_true")
     parser.add_argument("--resource-sample-ms", type=int, default=250)
     parser.add_argument("--no-resource-sampling", action="store_true")
+    parser.add_argument(
+        "--timing",
+        action="store_true",
+        help=(
+            "enable developer timing diagnostics on both endpoints; requires "
+            "instrumented binaries and is excluded from throughput baselines"
+        ),
+    )
     parser.add_argument(
         "--isolated-userns",
         action="store_true",
@@ -419,12 +427,14 @@ def start_yumed(
     resource_sampling: bool,
     resource_sample_ms: int,
     isolated_userns: bool,
+    timing: bool,
     rekey_window: int | None,
     security_config: Path | None,
 ) -> tuple[ManagedProcess, dict[str, object] | None]:
     command = [
         str(yumed),
         *(["--root"] if isolated_userns else []),
+        *(["--timing"] if timing else []),
         *(["--rekey-window", str(rekey_window)] if rekey_window else []),
         *(["--config", str(security_config)] if security_config else []),
         "--listen", f"{SERVER_IP}:{lab.yume_port}",
@@ -516,6 +526,7 @@ def run_endpoint(
     command = [
         str(yume),
         *(["--root"] if args.isolated_controller else []),
+        *(["--timing"] if args.timing else []),
         "--server", SERVER_IP,
         "--port", str(lab.yume_port),
         "--tls-name", TLS_NAME,
@@ -779,6 +790,7 @@ def main() -> int:
             resource_sampling=not args.no_resource_sampling,
             resource_sample_ms=args.resource_sample_ms,
             isolated_userns=args.isolated_controller,
+            timing=args.timing,
             rekey_window=args.rekey_window,
             security_config=(write_security_config(
                 workdir, "server", args.security_mode)
@@ -995,6 +1007,7 @@ def main() -> int:
                 "exit_code": endpoint_code,
                 "command": endpoint_command,
                 "tls_backend": args.tls_backend,
+                "timing_diagnostics": args.timing,
                 "chunk_kib": effective_chunk_kib,
                 "requested_chunk_kib": args.bench_chunk_kib,
                 "chunk_source": (

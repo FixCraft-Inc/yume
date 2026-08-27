@@ -426,6 +426,54 @@ int main() {
         yume_client_destroy(client);
         return 13;
     }
+    if (yume_client_request_json(client, "runtime.status", "[]",
+                                 small, sizeof(small), &needed, 1) !=
+        YUME_STATUS_INVALID_ARGUMENT) {
+        yume_client_destroy(client);
+        return 74;
+    }
+    if (yume_client_request_json(client, "runtime.status",
+                                 "{\"limit\":1e10000}",
+                                 small, sizeof(small), &needed, 1) !=
+        YUME_STATUS_PARSE_ERROR) {
+        yume_client_destroy(client);
+        return 76;
+    }
+    constexpr std::size_t kMaxRequestOperationBytes = 128U;
+    constexpr std::size_t kMaxRequestArgsJsonBytes = 1024U * 1024U;
+    const std::string maximum_operation(kMaxRequestOperationBytes, 'x');
+    if (yume_client_request_json(
+            client, maximum_operation.c_str(), nullptr,
+            small, sizeof(small), &needed, 1) != YUME_STATUS_NOT_RUNNING) {
+        yume_client_destroy(client);
+        return 80;
+    }
+    const std::string oversized_operation(
+        kMaxRequestOperationBytes + 1U, 'x');
+    if (yume_client_request_json(
+            client, oversized_operation.c_str(), nullptr,
+            small, sizeof(small), &needed, 1) !=
+        YUME_STATUS_RESOURCE_EXHAUSTED) {
+        yume_client_destroy(client);
+        return 78;
+    }
+    std::string maximum_args(kMaxRequestArgsJsonBytes, ' ');
+    maximum_args[0] = '{';
+    maximum_args[1] = '}';
+    if (yume_client_request_json(
+            client, "runtime.status", maximum_args.c_str(),
+            small, sizeof(small), &needed, 1) != YUME_STATUS_NOT_RUNNING) {
+        yume_client_destroy(client);
+        return 81;
+    }
+    const std::string oversized_args(kMaxRequestArgsJsonBytes + 1U, ' ');
+    if (yume_client_request_json(
+            client, "runtime.status", oversized_args.c_str(),
+            small, sizeof(small), &needed, 1) !=
+        YUME_STATUS_RESOURCE_EXHAUSTED) {
+        yume_client_destroy(client);
+        return 79;
+    }
     yume_client_destroy(client);
 
 #if !defined(_WIN32)
@@ -461,6 +509,71 @@ int main() {
         stream != nullptr) {
         yume_server_destroy(server);
         return 16;
+    }
+
+    // yume_server_request_json argument and lifecycle contract. Invalid
+    // handles and missing/empty operation names are rejected consistently in
+    // full and client-only builds before any runtime dispatch.
+    if (yume_server_request_json(nullptr, "runtime.status", nullptr,
+                                 small, sizeof(small), &needed) !=
+        YUME_STATUS_INVALID_ARGUMENT) {
+        yume_server_destroy(server);
+        return 40;
+    }
+    if (yume_server_request_json(server, nullptr, nullptr,
+                                 small, sizeof(small), &needed) !=
+        YUME_STATUS_INVALID_ARGUMENT) {
+        yume_server_destroy(server);
+        return 41;
+    }
+    if (yume_server_request_json(server, "", nullptr,
+                                 small, sizeof(small), &needed) !=
+        YUME_STATUS_INVALID_ARGUMENT) {
+        yume_server_destroy(server);
+        return 42;
+    }
+    // A stopped server reports NOT_RUNNING rather than an operation error, so
+    // an embedder can tell "not started yet" from "that op does not exist".
+    if (yume_server_request_json(server, "federation.status", nullptr,
+                                 small, sizeof(small), &needed) !=
+        YUME_STATUS_NOT_RUNNING) {
+        yume_server_destroy(server);
+        return 43;
+    }
+    // JSON syntax and the object-shaped argument schema are validated before
+    // lifecycle dispatch in both full and client-only builds.
+    const int server_request_parse_status = yume_server_request_json(
+        server, "federation.status", "{", small, sizeof(small), &needed);
+    if (server_request_parse_status != YUME_STATUS_PARSE_ERROR) {
+        yume_server_destroy(server);
+        return 44;
+    }
+    if (yume_server_request_json(server, "federation.status", "[]",
+                                 small, sizeof(small), &needed) !=
+        YUME_STATUS_INVALID_ARGUMENT) {
+        yume_server_destroy(server);
+        return 75;
+    }
+    if (yume_server_request_json(server, "federation.status",
+                                 "{\"limit\":1e10000}",
+                                 small, sizeof(small), &needed) !=
+        YUME_STATUS_PARSE_ERROR) {
+        yume_server_destroy(server);
+        return 77;
+    }
+    if (yume_server_request_json(
+            server, oversized_operation.c_str(), nullptr,
+            small, sizeof(small), &needed) !=
+        YUME_STATUS_RESOURCE_EXHAUSTED) {
+        yume_server_destroy(server);
+        return 82;
+    }
+    if (yume_server_request_json(
+            server, "federation.status", oversized_args.c_str(),
+            small, sizeof(small), &needed) !=
+        YUME_STATUS_RESOURCE_EXHAUSTED) {
+        yume_server_destroy(server);
+        return 83;
     }
     const int server_start_status = yume_server_start_json(server, "{", nullptr);
 #if defined(YUME_ABI_CLIENT_ONLY) && YUME_ABI_CLIENT_ONLY

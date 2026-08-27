@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "core/runtime/service_stream.hpp"
 #include "core/runtime/operation_status.hpp"
 #include "server/config/config.hpp"
@@ -58,6 +60,17 @@ public:
     Status status() const;
     std::vector<SessionSnapshot> sessions() const;
     ServerConfig config() const;
+
+    // Serves one allowlisted, read-only local-runtime operation in process
+    // without requiring IPC. The result keeps the local runtime's
+    // {ok,result|error} envelope. Mutating admin-socket operations are not
+    // exposed here because this synchronous embedder path has no deadline and
+    // lifecycle operations already have typed methods above.
+    nlohmann::json request(
+        std::string const& op,
+        nlohmann::json const& args,
+        std::string* error = nullptr,
+        runtime::OperationStatus* operation_status = nullptr) const;
     bool register_service(
         const std::string& service,
         std::string* error = nullptr,

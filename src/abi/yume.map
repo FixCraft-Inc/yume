@@ -33,6 +33,7 @@
         yume_server_reload_auth;
         yume_server_status_json;
         yume_server_sessions_json;
+        yume_server_request_json;
         yume_server_register_service;
         yume_server_accept_stream;
         yume_stream_peer_json;

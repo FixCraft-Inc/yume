@@ -29,6 +29,7 @@ libyume.so.1 libyume1 #MINVER#
  yume_server_destroy@Base 1.1-1
  yume_server_register_service@Base 1.1-1
  yume_server_reload_auth@Base 1:0.2.0~dev4-1
+ yume_server_request_json@Base 1:0.2.0~dev6-1
  yume_server_sessions_json@Base 1.1-1
  yume_server_start_file@Base 1.1-1
  yume_server_start_json@Base 1.1-1

@@ -32,11 +32,19 @@ freezing compiler, standard library, exception, allocator, or object-layout
 details. A C ABI gives C and C++ embedders a stable link target while YUME keeps
 its internal transport code private.
 
-## 1.1 Runtime Surface
+## ABI v1 Runtime Surface
 
 `libyume.so.1` supports:
 
 - Client/server create, destroy, start, stop, and status calls.
+- Local-runtime operations by name: `yume_client_request_json` and
+  `yume_server_request_json`. Both write the same `{ok,result|error}` operation
+  envelope. The server call works without IPC but intentionally exposes only
+  bounded read operations: status/info, sessions/events, directory, and
+  federation status/topology. Unknown and disallowed operations are handled
+  `ok=false` responses; malformed JSON/non-object args and a stopped runtime
+  remain typed ABI errors. The normative operation list and compatibility rules
+  are in [CONTROL_API.md](CONTROL_API.md).
 - Start from a JSON string or a config file path.
 - Caller-owned JSON output buffers. If the buffer is too small, functions
   return `YUME_STATUS_BUFFER_TOO_SMALL` and report the required byte count.
@@ -50,6 +58,27 @@ its internal transport code private.
 - One negotiated packet-native channel with `yume_client_open_packet`,
   `yume_packet_status_json`, `yume_packet_write_batch`,
   `yume_packet_read_batch`, `yume_packet_close`, and `yume_packet_destroy`.
+
+### Status values
+
+ABI status values are machine-readable and stable within ABI v1. Diagnostic
+text from `yume_strerror`, `yume_handle_last_error`, or `yume_last_error` must
+not be parsed to recover one of them.
+
+| Macro | Value | Meaning |
+| --- | ---: | --- |
+| `YUME_STATUS_OK` | 0 | The ABI call completed; for a JSON operation, inspect its envelope for handled success/failure. |
+| `YUME_STATUS_INVALID_ARGUMENT` | -1 | A required pointer/value or argument shape is invalid. |
+| `YUME_STATUS_BUFFER_TOO_SMALL` | -2 | Caller-owned output storage is absent or too small; `needed` reports the required bytes when available. |
+| `YUME_STATUS_INTERNAL_ERROR` | -3 | An internal, I/O, or otherwise unclassified failure occurred. |
+| `YUME_STATUS_NOT_RUNNING` | -4 | The relevant runtime/handle is stopped, closing, or unavailable. |
+| `YUME_STATUS_ALREADY_RUNNING` | -5 | A conflicting runtime generation is already active or still unwinding. |
+| `YUME_STATUS_TIMEOUT` | -6 | A positive caller deadline expired. |
+| `YUME_STATUS_NOT_FOUND` | -7 | A requested resource was not found. |
+| `YUME_STATUS_PERMISSION_DENIED` | -8 | Policy, authorization, platform profile, or socket protection denied the operation. |
+| `YUME_STATUS_PARSE_ERROR` | -9 | Caller-controlled configuration or JSON could not be parsed or represented. |
+| `YUME_STATUS_WOULD_BLOCK` | -10 | A zero-time poll could not complete immediately. |
+| `YUME_STATUS_RESOURCE_EXHAUSTED` | -11 | A bounded queue, request-input limit, identifier space, or other resource cannot admit more work. |
 
 The ABI v1 stream API is synchronous by design. Async callbacks can be added in
 a later ABI version without forcing embedders into YUME's internal threading
@@ -73,6 +102,30 @@ are not rounded to whole seconds. For stream and packet operations:
   server stop wakes every waiter. A successful return therefore means the
   write reached bounded Session/transport ownership, not merely that a strand
   callback was posted.
+
+`yume_client_request_json` uses its timeout as a caller-wait deadline; zero is
+a nonblocking wait. A queued handler is cancelled if the deadline expires
+before it starts. Once a handler has started, it may finish after the caller
+receives `YUME_STATUS_TIMEOUT`, including completing a mutation. Timeout is
+therefore not a rollback result and a caller must not blindly retry a mutating
+operation. [CONTROL_API.md](CONTROL_API.md) defines the exact operation
+contracts and the independent remote-admin deadline.
+
+The two generic request calls serialize requests per handle. Their sizing call
+executes a well-formed request once. If its completed handled response does not
+fit, YUME retains one pending serialized response on that handle and identifies
+its operation plus normalized argument object by a fixed-size digest, not by
+retaining plaintext request JSON. The next call with the same operation and
+normalized arguments copies the pending response without re-executing the
+handler; another too-small buffer leaves it pending, and successful delivery
+consumes and wipes it. A different well-formed request discards the pending
+response before executing. Callers should therefore make the sizing retry
+immediately. `NULL`, an empty string, and `{}` normalize to the same empty
+argument object. A typed transport/lifecycle/deadline failure has no completed
+response to cache; the timeout mutation caveat above still applies.
+Operation names are bounded to 128 bytes and serialized argument JSON to 1 MiB,
+excluding their terminating NULs; larger caller inputs return
+`YUME_STATUS_RESOURCE_EXHAUSTED` before dispatch.
 
 `yume_server_stop` and `yume_server_destroy` interrupt an in-flight
 `yume_server_accept_stream` wait. The accept call returns
@@ -141,9 +194,13 @@ start. The lifecycle suite covers a stalled TLS peer, while the ABI suite uses
 a FIFO config fixture to cover cancellation before runtime handoff.
 
 Android integrations targeting dev6 should use the client-only ABI build
-profile. The current separate Android checkout still targets dev1 and is not a
-qualified dev6 consumer. The client-only profile preserves the ABI v1 export
-surface for loaders, but server lifecycle calls report
+profile. The separate Android checkout has earlier `0.2.0-dev6` ABI-v1 ARM64
+device evidence, but it has not been synchronized or qualified against the
+current native stabilization candidate, and its connected VPN/routing/release
+path is not qualified. In particular, matched
+server credentials/routed traffic, IPv6/DNS/leak behavior, dependency
+provenance, and connected lifecycle/backpressure remain open. The client-only
+profile preserves the ABI v1 export surface for loaders, but server lifecycle calls report
 `YUME_STATUS_PERMISSION_DENIED` or `YUME_STATUS_NOT_RUNNING`; no server runtime
 is linked into the APK. Client, stream, and packet behavior is unchanged.
 
@@ -191,6 +248,27 @@ the daemon flags: `threads: 0` selects hardware-aware automatic sizing,
 `bulk_key_max_sessions` is the default for explicitly shared regular keys,
 `accept_rate_limit` is aggregate accepts per second, and `egress_mbps` is the
 optional weighted-fair link cap (`0` disables shaping).
+
+An embedded federation bootstrap uses the same server start schema as the
+daemon configuration:
+
+```json
+{
+  "federation_enable": true,
+  "cluster_bootstrap": true,
+  "federation_identity": "federation.key",
+  "federation_operator_ca": "federation-ca.pem",
+  "federation_peers": []
+}
+```
+
+`cluster_bootstrap` is a Boolean and defaults to `false`. It requires
+`federation_enable: true` and permits an empty outbound `federation_peers`
+array so the node can operate with authenticated inbound peer links only. When
+federation is enabled without bootstrap mode, at least one outbound peer is
+required. The flag does not enable multi-hop transit; federation remains
+single-hop as specified in
+[the federation transit design](protocol/YUME_2_0_FEDERATION_TRANSIT.md).
 
 Minimum client-side embed shape:
 

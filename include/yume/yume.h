@@ -141,6 +141,26 @@ YUME_API int yume_client_status_json(yume_client* client,
                                      char* out,
                                      size_t out_size,
                                      size_t* needed);
+/*
+ * Serves one client local-runtime operation. args_json is NULL/empty or a JSON
+ * object. A handled operation writes an {ok,result|error} envelope and returns
+ * YUME_STATUS_OK; parse, lifecycle, timeout, and buffer failures use the typed
+ * ABI status. timeout_ms bounds the caller's wait: a queued operation is
+ * cancelled if its deadline expires before it starts, but an operation that
+ * already started may still finish after YUME_STATUS_TIMEOUT. In particular,
+ * timeout is not proof that a mutation was rolled back; do not retry one
+ * blindly.
+ *
+ * Calls are serialized per client handle. If a completed handled response does
+ * not fit, the handle retains it; the next call with the same operation and
+ * normalized arguments copies that response without executing the operation
+ * again. Successful delivery consumes it, while a different well-formed
+ * request discards it. NULL, empty, and {} are the same empty argument object.
+ * Operation names are limited to 128 bytes and args_json to 1 MiB, excluding
+ * each terminating NUL; exceeding either bound returns
+ * YUME_STATUS_RESOURCE_EXHAUSTED.
+ * See docs/CONTROL_API.md.
+ */
 YUME_API int yume_client_request_json(yume_client* client,
                                       const char* op,
                                       const char* args_json,
@@ -203,6 +223,27 @@ YUME_API int yume_server_sessions_json(yume_server* server,
                                        char* out,
                                        size_t out_size,
                                        size_t* needed);
+/*
+ * Serves one read-only embedded-server operation and writes the same
+ * {"ok":true,"result":...} / {"ok":false,"error":...} response envelope
+ * as yume_client_request_json. The allowlisted operations are documented in
+ * docs/CONTROL_API.md and include federation.status and federation.topology.
+ * IPC need not be enabled.
+ *
+ * The call is synchronous because every allowlisted operation reads a bounded
+ * runtime snapshot. Malformed args_json returns a typed ABI error; an unknown
+ * or disallowed operation is a handled request and therefore returns
+ * YUME_STATUS_OK with ok=false in the JSON envelope. A stopped server returns
+ * YUME_STATUS_NOT_RUNNING. Calls are serialized per server handle and use the
+ * same input bounds and completed-response sizing/retry behavior as
+ * yume_client_request_json.
+ */
+YUME_API int yume_server_request_json(yume_server* server,
+                                      const char* op,
+                                      const char* args_json,
+                                      char* out,
+                                      size_t out_size,
+                                      size_t* needed);
 YUME_API int yume_server_register_service(yume_server* server,
                                           const char* service);
 YUME_API int yume_server_accept_stream(yume_server* server,
@@ -212,8 +253,9 @@ YUME_API int yume_server_accept_stream(yume_server* server,
 
 /*
  * Writes stream metadata JSON. Server-accepted streams include
- * auth_fingerprint_sha256, the authenticated client's Ed25519 SPKI SHA-256
- * fingerprint, which embedders should use for device binding.
+ * auth_fingerprint_sha256, the authenticated client's domain-separated
+ * composite Ed25519 + ML-DSA-87 identity fingerprint, which embedders should
+ * use for device binding.
  */
 YUME_API int yume_stream_peer_json(yume_stream* stream,
                                    char* out,

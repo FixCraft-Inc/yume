@@ -121,7 +121,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake ninja-build pkg-config binutils xz-utils perl \
-            zlib1g-dev liblzma-dev libzstd-dev libargon2-dev \
+            zlib1g-dev libbrotli-dev liblzma-dev libzstd-dev libargon2-dev \
             libnghttp2-dev libboost-all-dev libspdlog-dev nlohmann-json3-dev
           source scripts/ensure-openssl.sh
           yume_openssl_ensure
@@ -161,6 +161,7 @@ jobs:
             -DYUME_BUILD_SELFTEST=OFF \
             -DYUME_BUILD_TESTING=ON \
             -DYUME_STATIC=OFF \
+            -DYUME_STATIC_OPENSSL=ON \
             -DYUME_NATIVE_OPT=OFF \
             -DYUME_FAST_MATH=OFF \
             -DYUME_WARNINGS_AS_ERRORS=ON \
@@ -199,6 +200,7 @@ jobs:
             -DYUME_BUILD_SELFTEST=OFF \
             -DYUME_BUILD_TESTING=OFF \
             -DYUME_STATIC=OFF \
+            -DYUME_STATIC_OPENSSL=ON \
             -DYUME_NATIVE_OPT=OFF \
             -DYUME_FAST_MATH=OFF \
             -DYUME_WARNINGS_AS_ERRORS=ON \

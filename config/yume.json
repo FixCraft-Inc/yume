@@ -4,7 +4,7 @@
   "identity": "~/.yume/id_ed25519",
   "socks_port": 1080,
   "transport_profile": "chrome151-node24-v1",
-  "tls_backend": "openssl-diagnostic",
+  "tls_backend": "openssl-chrome151",
   "security_mode": "extreme",
   "rekey_window": 8,
   "obfuscation": true,

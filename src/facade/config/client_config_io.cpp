@@ -394,10 +394,22 @@ ValidationReport validate(client::ClientConfig const& c) {
             std::string(yume::kTransportProfile));
     }
     if (c.tls_backend != helper_tls_backend &&
-        c.tls_backend != "openssl-diagnostic") {
+        c.tls_backend != "openssl-diagnostic" &&
+        c.tls_backend != "openssl-chrome151") {
         r.errors.emplace_back(
             "tls_backend: must be " + helper_tls_backend +
-            " or openssl-diagnostic");
+            ", openssl-chrome151, or openssl-diagnostic");
+    }
+    if (c.tls_backend != helper_tls_backend && !c.tls_helper_path.empty()) {
+        r.errors.emplace_back(
+            "tls_helper_path: valid only with tls_backend " +
+            helper_tls_backend);
+    }
+    if (c.tls_backend != "openssl-diagnostic" &&
+        (c.tls_fingerprint_verify || c.tls_fingerprint_log)) {
+        r.errors.emplace_back(
+            "tls_fingerprint_verify/tls_fingerprint_log: available only with "
+            "tls_backend openssl-diagnostic");
     }
     if (c.tls_backend == helper_tls_backend && c.tunnel_count != 1) {
         r.errors.emplace_back(

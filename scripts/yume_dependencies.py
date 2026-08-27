@@ -17,7 +17,9 @@ DEFAULT_MANIFEST = ROOT / "config" / "dependencies.json"
 COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?")
 NAME_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
-FIELDS = {"repository", "revision", "minimum_version"}
+REQUIRED_FIELDS = {"repository", "revision", "minimum_version"}
+OPTIONAL_FIELDS = {"patch_series"}
+FIELDS = REQUIRED_FIELDS | OPTIONAL_FIELDS
 
 
 class DependencyError(ValueError):
@@ -46,8 +48,10 @@ def load_dependencies(path: pathlib.Path = DEFAULT_MANIFEST) -> dict[str, dict[s
     for name, fields in dependencies.items():
         require(isinstance(name, str) and NAME_RE.fullmatch(name) is not None,
                 f"invalid dependency name: {name!r}")
-        require(isinstance(fields, dict) and set(fields) == FIELDS,
-                f"{name} must contain exactly {sorted(FIELDS)}")
+        require(isinstance(fields, dict) and
+                REQUIRED_FIELDS <= set(fields) <= FIELDS,
+                f"{name} must contain {sorted(REQUIRED_FIELDS)} and only "
+                f"optional fields {sorted(OPTIONAL_FIELDS)}")
         require(all(isinstance(value, str) and value for value in fields.values()),
                 f"{name} fields must be non-empty strings")
         repository = fields["repository"]
@@ -60,6 +64,10 @@ def load_dependencies(path: pathlib.Path = DEFAULT_MANIFEST) -> dict[str, dict[s
                 f"{name}.revision must be an exact lowercase 40-hex commit")
         require(VERSION_RE.fullmatch(fields["minimum_version"]) is not None,
                 f"{name}.minimum_version is invalid")
+        if "patch_series" in fields:
+            patch_series = pathlib.PurePosixPath(fields["patch_series"])
+            require(not patch_series.is_absolute() and ".." not in patch_series.parts,
+                    f"{name}.patch_series must be a repository-relative path")
         validated[name] = dict(fields)
     return validated
 
@@ -78,6 +86,8 @@ def main() -> int:
         if args.command == "get":
             require(args.dependency in dependencies,
                     f"unknown dependency: {args.dependency}")
+            require(args.field in dependencies[args.dependency],
+                    f"{args.dependency}.{args.field} is not defined")
             print(dependencies[args.dependency][args.field])
     except (OSError, DependencyError) as error:
         print(f"dependency manifest error: {error}", file=sys.stderr)

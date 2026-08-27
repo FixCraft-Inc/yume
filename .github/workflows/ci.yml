@@ -102,7 +102,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake ninja-build pkg-config perl \
-            zlib1g-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
+            zlib1g-dev libbrotli-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
             libboost-all-dev libspdlog-dev nlohmann-json3-dev
           source scripts/ensure-openssl.sh
           yume_openssl_ensure
@@ -126,6 +126,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DYUME_BUILD_TESTING=ON \
             -DYUME_BUILD_SHARED_ABI=ON \
+            -DYUME_STATIC_OPENSSL=ON \
             -DYUME_WARNINGS_AS_ERRORS=ON \
             -DBASEFWX_USE_VENDOR_DEPS=ON \
             -DBASEFWX_VENDOR_DIR="${GITHUB_WORKSPACE}/vendor/linux-x86_64" \
@@ -189,7 +190,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake ninja-build pkg-config perl \
-            zlib1g-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
+            zlib1g-dev libbrotli-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
             libboost-all-dev libspdlog-dev nlohmann-json3-dev
           source scripts/ensure-openssl.sh
           yume_openssl_ensure
@@ -220,6 +221,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Debug \
             -DYUME_BUILD_TESTING=ON \
             -DYUME_BUILD_SHARED_ABI=ON \
+            -DYUME_STATIC_OPENSSL=ON \
             -DYUME_WARNINGS_AS_ERRORS=ON \
             -DYUME_SANITIZE=address+undefined \
             -DBASEFWX_USE_VENDOR_DEPS=ON \
@@ -279,7 +281,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake ninja-build pkg-config perl \
-            zlib1g-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
+            zlib1g-dev libbrotli-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
             libboost-all-dev libspdlog-dev nlohmann-json3-dev
           # GUI-only: GLFW's X11 backend, GL, and the font stack. GLFW/ImGui/
           # ImPlot themselves come from FetchContent.
@@ -305,6 +307,7 @@ jobs:
             -DYUME_BUILD_GUI=ON \
             -DYUME_BUILD_TESTING=ON \
             -DYUME_WARNINGS_AS_ERRORS=ON \
+            -DYUME_STATIC_OPENSSL=ON \
             -DYUME_LTO=OFF \
             -DBASEFWX_USE_VENDOR_DEPS=ON \
             -DBASEFWX_VENDOR_DIR="${GITHUB_WORKSPACE}/vendor/linux-x86_64" \

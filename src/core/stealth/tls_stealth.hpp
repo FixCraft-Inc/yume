@@ -18,6 +18,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,10 @@ namespace yume::tls_stealth {
 
 struct StealthConfig {
     bool enabled{false};
+    // Opt into YUME's default-off OpenSSL 3.5.7 ClientHello patch. The
+    // capability is probed through SSL_CTX_ctrl so a binary can still load
+    // against stock libssl and fail closed only when this backend is selected.
+    bool native_chrome_client_hello{false};
     tls_fingerprint::BrowserProfile target_profile{
         cover_profile::active().tls_profile};
     bool log_fingerprints{true};
@@ -57,7 +62,9 @@ public:
 
 private:
     void configure_cipher_suites(const std::vector<uint16_t>& suites);
-    void configure_supported_groups(const std::vector<uint16_t>& groups);
+    void configure_cert_compression(std::span<const std::uint16_t> algorithms);
+    void configure_supported_groups(const std::vector<uint16_t>& groups,
+                                    const std::vector<uint16_t>& key_share_groups);
     void configure_signature_algorithms(const std::vector<uint16_t>& algorithms);
     void configure_alpn(const std::vector<std::string>& protocols);
 
@@ -159,6 +166,9 @@ private:
 
 std::string cipher_list_to_openssl_string(const std::vector<uint16_t>& cipher_suites);
 std::string groups_to_openssl_string(const std::vector<uint16_t>& groups);
+std::string groups_to_openssl_string(
+    const std::vector<uint16_t>& groups,
+    const std::vector<uint16_t>& key_share_groups);
 std::string cipher_suite_name(uint16_t code);
 std::string supported_group_name(uint16_t code);
 

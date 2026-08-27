@@ -468,6 +468,8 @@ const std::vector<BrowserFingerprint>& cached_browser_fingerprints() {
                              cover.tls_extensions.end());
         fp.supported_groups.assign(cover.tls_supported_groups.begin(),
                                    cover.tls_supported_groups.end());
+        fp.key_share_groups.assign(cover.tls_key_share_groups.begin(),
+                                   cover.tls_key_share_groups.end());
         fp.ec_point_formats.assign(cover.tls_ec_point_formats.begin(),
                                    cover.tls_ec_point_formats.end());
         fp.signature_algorithms.assign(cover.tls_signature_algorithms.begin(),

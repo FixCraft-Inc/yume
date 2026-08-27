@@ -27,6 +27,11 @@ equal the authenticated `kTransportProfile`, then generates both the C++
 registry consumed through `cover_profile::active()` and the Go helper registry.
 TLS/HTTP/H2 consumers contain no browser-version branches.
 
+The registry's `tls_backend: chrome151` field names the explicit helper/evidence
+provider associated with the historical fixture; it is not the client default.
+Normal client configuration and capture select the in-process
+`openssl-chrome151` backend.
+
 Dev6's carrier implementation currently requires exactly two assets and the
 captured stream sequence 1/3/5/7 (priming, CSS, JavaScript, extended CONNECT).
 The generator rejects any other geometry instead of admitting metadata that
@@ -46,7 +51,7 @@ matched captures and must not silently rewrite the existing
 `chrome151-node24-v1` evidence claim.
 
 The opt-in YUME `--outer-carrier-evidence` path is admitted only when this
-active profile, its declared `chrome151` helper backend, and the frozen
+active profile, the native `openssl-chrome151` backend, and the frozen
 one-tunnel workload all match. The capture-only application transaction is 64
 ordered 16-KiB messages echoed byte-for-byte; ordinary endpoint benchmarks do
 not use that protocol. Its stable behavior summary is reconstructed from
@@ -87,8 +92,10 @@ flattened evidence files that installed diagnostics consume.
    | `cipher_suites` | Offered suites, in order. Split across `SSL_CTX_set_ciphersuites` (TLS 1.3) and `SSL_CTX_set_cipher_list` (TLS 1.2); both preserve order. |
    | `signature_algorithms` | Offered schemes, in order. JA4 hashes these in order, so the sequence is load-bearing, not just the set. |
    | `supported_groups` | Offered groups, in order. |
+   | `key_share_groups` | Subset of `supported_groups` that must carry a `key_share`. OpenSSL generates a share only for groups whose name carries a `*` prefix in `SSL_CTX_set1_groups_list`, and defaults to the first group alone — a browser offering a hybrid *and* a classical share needs both named here. Every entry must appear in `supported_groups`. |
+   | `cert_compression` | RFC 8879 algorithms for `compress_certificate` (`0x001b`), in preference order, by name (`zlib`, `brotli`, `zstd`). OpenSSL can only advertise an algorithm compiled into the library. `openssl-chrome151` therefore requires Brotli and fails closed without it; `openssl-diagnostic` may log its declared degradation. |
    | `extensions` | The target extension set. Not an emission order: see below. |
-   | `injected_extensions` | Extensions OpenSSL will not emit itself, each with a body shape. `"GREASE"` as the type allocates an RFC 8701 value when the `SSL_CTX` is configured; OpenSSL then reuses that registered type for the context's connections. |
+   | `injected_extensions` | Extensions OpenSSL will not emit itself, each with a body shape. In `openssl-diagnostic`, `"GREASE"` allocates a type when the `SSL_CTX` is configured. `openssl-chrome151` skips those two registrations because the patched library supplies distinct first/last values per connection. |
    | `alps_protocols` | Body for the injected `0x44cd` extension. |
    | `ech_grease_lengths` | Permitted total lengths for the injected `0xfe0d` GREASE ECH body, taken from the capture. |
    | `no_encrypt_then_mac` | Suppresses `0x0016`, which OpenSSL offers by default and browsers generally do not. |
@@ -96,17 +103,26 @@ flattened evidence files that installed diagnostics consume.
    | `min_version` / `max_version` | The offered range. Browser-shaped, so usually TLS 1.2 through 1.3 — offering only 1.3 silently drops the TLS 1.2 half of the cipher list and extension `0xff01`. |
    | `require_negotiated_version` | The version the handshake must actually end on. Keeps a browser-shaped offer from becoming a carrier downgrade; enforced in `handshake_with_timeout` and fails closed. |
 
-   Extension *emission order* is not configurable and is not claimed. OpenSSL
-   fixes the order of its built-in extensions and prepends injected ones, and
-   Chrome has permuted its own order per connection since v110 — which is what
-   broke JA3 as a browser discriminator and motivated JA4's sorted,
-   GREASE-excluding construction. The gate targets JA4.
+   Stock extension emission order is not configurable. The
+   `openssl-diagnostic` gate therefore targets JA4 and pins its fixed order as
+   a negative control. `openssl-chrome151` serializes each movable custom and
+   built-in extension as an independent block and shuffles those blocks per
+   SSL object. Padding remains second-to-last and PSK remains last; their
+   constructors run on the final packet so padding length and the TLS 1.3
+   binder transcript stay correct.
 
-6. Record the residual gap in `known_tls_divergence` and let the tests pin it.
-   `scripts/generate_transport_profiles.py` compares the declared selection
-   against the capture, and `tests/test_yume_native_tls_wire.py` re-derives the
-   same gap from the bytes the production backend actually emits. Both fail if
-   the gap widens, so a divergence cannot be introduced silently.
+   One further property has no registry key. Stock OpenSSL offers all three
+   `ec_point_formats`; the native Chrome patch emits only uncompressed (`[0]`)
+   when its default-off control is enabled.
+
+6. Record the stock diagnostic gap in `known_tls_divergence` and let the tests pin it.
+   `scripts/generate_transport_profiles.py` compares the four declared
+   *set* fields against the capture, and `tests/test_yume_native_tls_wire.py`
+   re-derives those plus the `ec_point_formats` and `key_share` geometry from
+   the bytes the production backend actually emits, and asserts that JA3 still
+   fails to match. Both fail if the gap widens, so a divergence cannot be
+   introduced silently — and note that closing all four set fields buys an
+   exact JA4 and nothing wider, because sets are all JA4 hashes.
 7. Regenerate and validate:
 
    ```sh

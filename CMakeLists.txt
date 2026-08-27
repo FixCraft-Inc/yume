@@ -147,6 +147,9 @@ option(YUME_USE_SPDLOG "Enable spdlog logging backend" ON)
 option(YUME_USE_BUNDLED_NLOHMANN "Allow bundled nlohmann_json fallback" ON)
 option(YUME_MINIMAL "Build for minimal systems (disable heavy deps/features)" OFF)
 option(YUME_STATIC "Attempt static build (requires static deps)" OFF)
+option(YUME_STATIC_OPENSSL
+    "Link the pinned OpenSSL into YUME binaries so native Chrome TLS has no runtime libssl dependency"
+    ON)
 option(YUME_NATIVE_OPT "Enable host-specific -march/-mtune=native CPU tuning; disables portable binaries" OFF)
 option(YUME_LTO "Enable link-time optimization for yume builds" ON)
 option(YUME_FAST_MATH "Enable fast-math (unsafe for crypto)" OFF)
@@ -262,10 +265,11 @@ option(YUME_FEATURE_FULL_CONTROL "Compile in unrestricted address bridging" OFF)
 # stock builds and minimal/embedded builds remain unaffected.
 option(YUME_BUILD_GUI "Build the optional Dear ImGui-based yume-gui desktop app" OFF)
 
-# Experimental Linux desktop TLS helper. It is opt-in until its five-run wire,
-# exporter, failure, and performance qualification is complete; enabling it
-# requires the exact reviewed Go toolchain rather than silently using another
-# compiler or downloading one through Go's toolchain selection.
+# Optional Linux desktop comparison helper. Normal runtime uses the in-process
+# openssl-chrome151 backend and does not discover or require this executable.
+# Enabling the comparison backend requires the exact reviewed Go toolchain
+# rather than silently using another compiler or downloading one through Go's
+# toolchain selection.
 option(YUME_BUILD_CHROME_TLS_HELPER
     "Build the pinned Chrome 151 uTLS helper with Go 1.26.5" OFF)
 
@@ -383,13 +387,17 @@ function(yume_prepare_static_for_shared_abi target)
     endif()
 endfunction()
 
+if(YUME_STATIC OR YUME_STATIC_OPENSSL)
+    set(OPENSSL_USE_STATIC_LIBS TRUE)
+else()
+    set(OPENSSL_USE_STATIC_LIBS FALSE)
+endif()
+
 if(YUME_STATIC)
     set(BUILD_SHARED_LIBS OFF)
-    set(OPENSSL_USE_STATIC_LIBS TRUE)
     set(Boost_USE_STATIC_LIBS ON)
     add_compile_definitions(YUME_STATIC_BUILD=1)
 else()
-    set(OPENSSL_USE_STATIC_LIBS FALSE)
     set(Boost_USE_STATIC_LIBS OFF)
 endif()
 
@@ -487,11 +495,40 @@ else()
 endif()
 
 if(NOT YUME_TRANSPORT_CORE_ONLY)
-    # Composite AUTH and the qualified native TLS profile both depend on
-    # primitives first provided by OpenSSL 3.5 (ML-DSA and X25519MLKEM768).
-    # Accepting an older library produces binaries that configure and link but
-    # fail closed only when an identity is generated or a session starts.
-    find_package(OpenSSL 3.5 REQUIRED)
+    # Composite AUTH depends on primitives first provided by OpenSSL 3.5
+    # (ML-DSA and X25519MLKEM768), while the default native TLS emitter also
+    # requires YUME's additive ClientHello patch.
+    if(YUME_STATIC_OPENSSL)
+        # The pinned source install exports compression and system libraries
+        # on its static targets; CMake's generic FindOpenSSL module does not
+        # reliably carry Brotli/Zstd through a static link.
+        find_package(OpenSSL 3.5 REQUIRED CONFIG)
+    else()
+        find_package(OpenSSL 3.5 REQUIRED)
+    endif()
+    include(CheckCXXSourceCompiles)
+    set(_yume_saved_required_libraries "${CMAKE_REQUIRED_LIBRARIES}")
+    set(CMAKE_REQUIRED_LIBRARIES OpenSSL::SSL)
+    unset(YUME_OPENSSL_HAS_CHROME_CLIENTHELLO_PATCH CACHE)
+    check_cxx_source_compiles([=[
+        #include <openssl/ssl.h>
+        #ifndef SSL_OP_YUME_CHROME_CLIENT_HELLO
+        # error "YUME OpenSSL ClientHello patch is missing"
+        #endif
+        #ifndef SSL_CTRL_YUME_CHROME_CLIENT_HELLO
+        # error "YUME OpenSSL ClientHello control is missing"
+        #endif
+        int main() { return SSL_CTRL_YUME_CHROME_CLIENT_HELLO == 0; }
+    ]=] YUME_OPENSSL_HAS_CHROME_CLIENTHELLO_PATCH)
+    set(CMAKE_REQUIRED_LIBRARIES "${_yume_saved_required_libraries}")
+    unset(_yume_saved_required_libraries)
+    if(NOT YUME_OPENSSL_HAS_CHROME_CLIENTHELLO_PATCH)
+        message(FATAL_ERROR
+            "YUME's default openssl-chrome151 backend requires the pinned "
+            "default-off OpenSSL patch. Run ezbuild.sh, or source "
+            "scripts/ensure-openssl.sh and call yume_openssl_ensure before "
+            "configuring CMake. Stock libssl is not accepted for a normal build.")
+    endif()
     find_package(PkgConfig REQUIRED)
     if(YUME_STATIC)
         # FindPkgConfig's generated imported target resolves -lnghttp2 to the

@@ -53,6 +53,8 @@ std::shared_ptr<Tunnel> connect_secondary_tunnel(boost::asio::io_context& io,
     if (profile.has_value()) {
         tls_stealth::StealthConfig stealth_config;
         stealth_config.enabled = true;
+        stealth_config.native_chrome_client_hello =
+            cfg.tls_backend == "openssl-chrome151";
         stealth_config.target_profile = *profile;
         owned_stealth_context =
             std::make_unique<tls_stealth::StealthContext>(stealth_config);

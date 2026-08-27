@@ -60,7 +60,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential cmake ninja-build pkg-config perl \
-            zlib1g-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
+            zlib1g-dev libbrotli-dev liblzma-dev libzstd-dev libargon2-dev libnghttp2-dev \
             libboost-all-dev libspdlog-dev nlohmann-json3-dev
           source scripts/ensure-openssl.sh
           yume_openssl_ensure
@@ -84,6 +84,7 @@ jobs:
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DYUME_LTO=OFF \
+            -DYUME_STATIC_OPENSSL=ON \
             -DBASEFWX_USE_VENDOR_DEPS=ON \
             -DBASEFWX_VENDOR_DIR="${GITHUB_WORKSPACE}/vendor/linux-x86_64" \
             -DBASEFWX_REQUIRE_ARGON2=ON \

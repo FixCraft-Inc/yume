@@ -41,6 +41,11 @@ namespace yume::tls_stealth {
 
 namespace {
 
+// Downstream OpenSSL control kept numeric here on purpose. Calling the stable
+// SSL_CTX_ctrl symbol avoids a new dynamic-link dependency; stock libssl
+// returns 0 for the unknown command and the native Chrome backend fails closed.
+constexpr int kYumeChromeClientHelloCtrl = 0x5943;
+
 // RFC 8701 §2.1: GREASE values reserved for cipher_suites,
 // supported_groups, extensions, and ALPN. This backend currently uses the
 // picker while configuring injected extension types on an SSL_CTX. OpenSSL
@@ -550,13 +555,26 @@ std::string cipher_list_to_openssl_string(const std::vector<uint16_t>& cipher_su
     return oss.str();
 }
 
-std::string groups_to_openssl_string(const std::vector<uint16_t>& groups) {
+// A "*" prefix tells SSL_CTX_set1_groups_list to generate a key_share for that
+// group. Without it OpenSSL shares only the first group, while a browser
+// offering a hybrid and a classical share sends both -- so the prefix is what
+// closes the key_share count against the capture.
+std::string groups_to_openssl_string(const std::vector<uint16_t>& groups,
+                                     const std::vector<uint16_t>& key_share_groups) {
     std::ostringstream oss;
     for (size_t i = 0; i < groups.size(); ++i) {
         if (i > 0) oss << ":";
+        if (std::find(key_share_groups.begin(), key_share_groups.end(),
+                      groups[i]) != key_share_groups.end()) {
+            oss << "*";
+        }
         oss << supported_group_name(groups[i]);
     }
     return oss.str();
+}
+
+std::string groups_to_openssl_string(const std::vector<uint16_t>& groups) {
+    return groups_to_openssl_string(groups, {});
 }
 
 StealthContext::StealthContext(const StealthConfig& config)
@@ -583,15 +601,25 @@ void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profi
     if (!profile_info) {
         profile_info = tls_fingerprint::get_browser_profile_info(
             cover_profile::active().tls_profile);
-        if (!profile_info) return;
+        if (!profile_info) {
+            throw std::runtime_error("no TLS profile data is available");
+        }
+    }
+
+    SSL_CTX* ctx = ssl_context_.native_handle();
+    if (config_.native_chrome_client_hello &&
+        SSL_CTX_ctrl(ctx, kYumeChromeClientHelloCtrl, 1, nullptr) != 1) {
+        throw std::runtime_error(
+            "tls_backend openssl-chrome151 requires YUME's pinned, patched "
+            "OpenSSL 3.5.7; stock libssl cannot provide Chrome ClientHello parity");
     }
 
     configure_cipher_suites(profile_info->cipher_suites);
-    configure_supported_groups(profile_info->supported_groups);
+    configure_supported_groups(profile_info->supported_groups,
+                               profile_info->key_share_groups);
     configure_signature_algorithms(profile_info->signature_algorithms);
     configure_alpn(profile_info->alpn_protocols);
 
-    SSL_CTX* ctx = ssl_context_.native_handle();
     const auto& cover = cover_profile::active();
     if (SSL_CTX_set_min_proto_version(ctx, cover.tls_min_version) != 1 ||
         SSL_CTX_set_max_proto_version(ctx, cover.tls_max_version) != 1) {
@@ -609,8 +637,21 @@ void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profi
     // refuses it; the dedicated setter emits the same 5-byte body the capture
     // records.
     if (cover.tls_status_request_ocsp) {
-        SSL_CTX_set_tlsext_status_type(ctx, TLSEXT_STATUSTYPE_ocsp);
+        if (SSL_CTX_set_tlsext_status_type(ctx, TLSEXT_STATUSTYPE_ocsp) != 1) {
+            throw std::runtime_error(
+                "failed to install the cover-profile OCSP status request");
+        }
     }
+    // compress_certificate (0x001b). OpenSSL defaults to advertising every
+    // algorithm the build carries -- zlib+zstd on a stock Debian build, a
+    // 5-byte body -- while the capture offers exactly one, a 3-byte body.
+    //
+    // This is a build-time limit, not an API one: set1_cert_comp_preference
+    // returns 0 for an algorithm the library was not compiled with. Configure
+    // OpenSSL with enable-brotli (scripts/ensure-openssl.sh does) to satisfy
+    // the profile. The native Chrome backend fails closed if it cannot; the
+    // explicitly selected diagnostic backend records the degradation.
+    configure_cert_compression(cover.tls_cert_compression);
 
     // Extensions OpenSSL will not emit itself, driven entirely from the
     // registry so that a new browser profile is a data change. add_cb returning
@@ -626,15 +667,18 @@ void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profi
     static const auto injected_add_cb =
         +[](SSL*, unsigned int /*ext_type*/, unsigned int /*context*/,
             const unsigned char** out, size_t* out_len,
-            X509* /*x*/, size_t /*chainidx*/, int* /*al*/,
+            X509* /*x*/, size_t /*chainidx*/, int* al,
             void* add_arg) -> int {
+            const auto encoded = reinterpret_cast<std::uintptr_t>(add_arg);
+            const bool fail_closed = (encoded & 0x100U) != 0;
             const auto kind = static_cast<cover_profile::InjectedExtensionPayload>(
-                reinterpret_cast<std::uintptr_t>(add_arg));
+                encoded & 0xFFU);
             std::vector<std::uint8_t> body;
             try {
                 body = build_injected_body(kind);
             } catch (const std::exception&) {
-                return 0;  // omit this extension rather than fail the handshake
+                if (fail_closed && al != nullptr) *al = SSL_AD_INTERNAL_ERROR;
+                return fail_closed ? -1 : 0;
             }
             if (body.empty()) {
                 *out = nullptr;
@@ -642,7 +686,10 @@ void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profi
                 return 1;
             }
             auto* buffer = new (std::nothrow) std::uint8_t[body.size()];
-            if (buffer == nullptr) return 0;
+            if (buffer == nullptr) {
+                if (fail_closed && al != nullptr) *al = SSL_AD_INTERNAL_ERROR;
+                return fail_closed ? -1 : 0;
+            }
             std::copy(body.begin(), body.end(), buffer);
             *out = buffer;
             *out_len = body.size();
@@ -657,6 +704,13 @@ void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profi
     std::size_t rejected = 0;
     std::size_t slot = 0;
     for (const auto& injected : cover.tls_injected_extensions) {
+        // The patched backend generates its two GREASE extension slots inside
+        // libssl so they can vary per connection and bracket the shuffled
+        // middle block. Registering the diagnostic callbacks as well would
+        // emit four GREASE extensions.
+        if (config_.native_chrome_client_hello && injected.type == 0) {
+            continue;
+        }
         // A registry type of 0 means "pick an RFC 8701 GREASE value while this
         // SSL_CTX is configured". The bucket is the slot index, so the two
         // registered GREASE extensions cannot collide (RFC 8701 §3.3).
@@ -667,10 +721,16 @@ void StealthContext::apply_stealth_profile(tls_fingerprint::BrowserProfile profi
                 ctx, ext_type, SSL_EXT_CLIENT_HELLO,
                 injected_add_cb, injected_free_cb,
                 reinterpret_cast<void*>(
-                    static_cast<std::uintptr_t>(injected.payload)),
+                    static_cast<std::uintptr_t>(injected.payload) |
+                    (config_.native_chrome_client_hello ? 0x100U : 0U)),
                 /*parse_cb=*/nullptr, /*parse_arg=*/nullptr) != 1) {
             ++rejected;
         }
+    }
+    if (rejected != 0 && config_.native_chrome_client_hello) {
+        throw std::runtime_error(
+            "patched OpenSSL refused " + std::to_string(rejected) +
+            " required Chrome ClientHello extension(s)");
     }
     if (rejected != 0) {
         util::log_warn("tls: " + std::to_string(rejected) + " of " +
@@ -757,7 +817,45 @@ void StealthContext::configure_cipher_suites(const std::vector<uint16_t>& suites
     }
 }
 
-void StealthContext::configure_supported_groups(const std::vector<uint16_t>& groups) {
+void StealthContext::configure_cert_compression(
+    std::span<const std::uint16_t> algorithms) {
+    if (algorithms.empty()) {
+        return;
+    }
+    SSL_CTX* ctx = ssl_context_.native_handle();
+    std::vector<int> preference(algorithms.begin(), algorithms.end());
+    if (SSL_CTX_set1_cert_comp_preference(ctx, preference.data(),
+                                          preference.size()) == 1) {
+        return;
+    }
+
+    // Report what the profile asked for by name; the numeric IDs alone would
+    // not tell a packager which OpenSSL option is missing.
+    std::string requested;
+    for (std::uint16_t algorithm : algorithms) {
+        if (!requested.empty()) requested += ", ";
+        switch (algorithm) {
+            case 1: requested += "zlib"; break;
+            case 2: requested += "brotli"; break;
+            case 3: requested += "zstd"; break;
+            default: requested += std::to_string(algorithm); break;
+        }
+    }
+    if (config_.native_chrome_client_hello) {
+        throw std::runtime_error(
+            "tls_backend openssl-chrome151 requires certificate compression "
+            "(" + requested + "); rebuild pinned OpenSSL with enable-brotli");
+    }
+    util::log_warn(
+        "TLS profile degraded: this OpenSSL build cannot offer certificate "
+        "compression (" + requested + "), so compress_certificate advertises "
+        "the build's own algorithms and no longer matches the cover profile; "
+        "rebuild OpenSSL with enable-brotli to close it");
+}
+
+void StealthContext::configure_supported_groups(
+    const std::vector<uint16_t>& groups,
+    const std::vector<uint16_t>& key_share_groups) {
     // Use the name-based string API. The uint16-array API
     // (SSL_CTX_set1_groups) was tried during 1.x development but
     // OpenSSL 3.5 silently rejects any unknown / GREASE-range
@@ -774,9 +872,31 @@ void StealthContext::configure_supported_groups(const std::vector<uint16_t>& gro
     // we drop the groups this build cannot name and retry, reporting exactly
     // what was lost, rather than emitting an unrelated default list.
     SSL_CTX* ctx = ssl_context_.native_handle();
-    const std::string groups_string = groups_to_openssl_string(groups);
+    const std::string groups_string =
+        groups_to_openssl_string(groups, key_share_groups);
     if (SSL_CTX_set1_groups_list(ctx, groups_string.c_str()) == 1) {
         return;
+    }
+    if (config_.native_chrome_client_hello) {
+        throw std::runtime_error(
+            "tls_backend openssl-chrome151 requires the exact supported_groups "
+            "and key_share list: " + groups_string);
+    }
+
+    // The "*" key_share prefix is newer than the groups-list API itself. If the
+    // starred form is rejected as a whole, retry the plain names before
+    // bisecting: a library that knows every group but not the prefix should
+    // lose only the second key_share, not the whole profile. Losing it changes
+    // the ClientHello, so say so rather than degrading quietly.
+    if (!key_share_groups.empty()) {
+        const std::string unstarred = groups_to_openssl_string(groups, {});
+        if (SSL_CTX_set1_groups_list(ctx, unstarred.c_str()) == 1) {
+            util::log_warn(
+                "TLS profile degraded: this OpenSSL build rejected the key_share "
+                "group prefix, so only the first group carries a share; the "
+                "emitted key_share no longer matches the cover profile");
+            return;
+        }
     }
 
     std::vector<uint16_t> supported;
@@ -800,10 +920,20 @@ void StealthContext::configure_supported_groups(const std::vector<uint16_t>& gro
             groups_string);
     }
 
-    const std::string reduced = groups_to_openssl_string(supported);
+    std::vector<uint16_t> reduced_shares;
+    for (uint16_t group : key_share_groups) {
+        if (std::find(supported.begin(), supported.end(), group) != supported.end()) {
+            reduced_shares.push_back(group);
+        }
+    }
+    std::string reduced = groups_to_openssl_string(supported, reduced_shares);
     if (SSL_CTX_set1_groups_list(ctx, reduced.c_str()) != 1) {
-        throw std::runtime_error(
-            "TLS profile supported_groups could not be installed: " + reduced);
+        // Same prefix fallback as above, now on the reduced list.
+        reduced = groups_to_openssl_string(supported, {});
+        if (SSL_CTX_set1_groups_list(ctx, reduced.c_str()) != 1) {
+            throw std::runtime_error(
+                "TLS profile supported_groups could not be installed: " + reduced);
+        }
     }
 
     std::string lost;

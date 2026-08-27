@@ -96,11 +96,11 @@ struct ClientConfig {
     std::string tls_ca_material_id;
     std::string tls_server_name;
     std::string tls_pin_sha256;
-    // dev6 supports one authenticated transport identity. The Chrome helper
-    // is opt-in until its qualification gate is complete; OpenSSL is retained
-    // only as an explicitly labelled diagnostic backend.
+    // The in-process patched OpenSSL emitter is the default. The legacy helper
+    // and stock OpenSSL diagnostic emitter remain explicit alternatives only;
+    // no backend silently falls back to either one.
     std::string transport_profile{yume::kTransportProfile};
-    std::string tls_backend{"openssl-diagnostic"};
+    std::string tls_backend{"openssl-chrome151"};
     std::string tls_helper_path;
     bool require_anonym{false};
     bool accept_monitoring{false};

@@ -76,6 +76,10 @@ def require_glibc_dynamic(path: pathlib.Path, description: str) -> None:
             f"{description} contains an unsafe runtime library search path")
     require("Shared library: [liboqs" not in dynamic,
             f"{description} dynamically links liboqs; release binaries must use the pinned static archive")
+    require("Shared library: [libssl" not in dynamic and
+            "Shared library: [libcrypto" not in dynamic,
+            f"{description} dynamically links OpenSSL; the native Chrome TLS "
+            "patch must be embedded in the release binary")
 
 
 def version_output(path: pathlib.Path) -> str:
@@ -205,6 +209,7 @@ def main() -> None:
             "libc": "glibc",
             "transport_profile": transport_profile,
             "chrome_tls_helper": {
+                "required_at_runtime": False,
                 "build_id": helper_build_id,
                 "ipc_protocol": 1,
                 "go_version": GO_VERSION,
@@ -221,8 +226,12 @@ def main() -> None:
             "required_features": {
                 "argon2": True,
                 "post_quantum": True,
-                "chrome_tls_helper": True,
+                "native_chrome_client_hello": True,
+                "patched_openssl_embedded": True,
                 "openssl_minimum": "3.5.0",
+            },
+            "optional_features": {
+                "chrome_tls_helper": True,
             },
             "unsupported_in_first_2_0_release": [
                 "android", "gui", "windows", "macos", "arm", "openwrt",

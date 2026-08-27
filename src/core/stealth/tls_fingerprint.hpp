@@ -85,6 +85,10 @@ struct BrowserFingerprint {
     std::vector<uint16_t> cipher_suites;
     std::vector<uint16_t> extensions;
     std::vector<uint16_t> supported_groups;
+    // Subset of supported_groups that must carry a key_share. Not a JA3/JA4
+    // component -- it exists because OpenSSL needs to be told, per group,
+    // whether to generate a share.
+    std::vector<uint16_t> key_share_groups;
     std::vector<uint8_t> ec_point_formats;
     std::vector<std::string> alpn_protocols;
     std::vector<uint16_t> signature_algorithms;

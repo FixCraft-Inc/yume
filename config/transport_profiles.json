@@ -66,8 +66,15 @@
           "0x0017",
           "0x0018"
         ],
+        "key_share_groups": [
+          "0x11ec",
+          "0x001d"
+        ],
         "ec_point_formats": [
           0
+        ],
+        "cert_compression": [
+          "brotli"
         ],
         "alpn_protocols": [
           "h2",
@@ -124,7 +131,7 @@
         "require_negotiated_version": "0x0304"
       },
       "known_tls_divergence": {
-        "comment": "Machine-checked gap between what the openssl-diagnostic backend offers and the captured browser ClientHello, comparing sets only. All four tracked sets are now closed: OpenSSL 3.5 emits Chrome's exact non-GREASE cipher list, supported-group list, extension set (0x0012/0x44cd/0xfe0d injected via SSL_CTX_add_custom_ext, 0x0005 via SSL_CTX_set_tlsext_status_type, 0x0016 suppressed via SSL_OP_NO_ENCRYPT_THEN_MAC) and signature-algorithm list including the ML-DSA schemes. What remains OUTSIDE these four sets, and is not closable without patching OpenSSL internals: GREASE is absent from the cipher list, supported_groups, supported_versions and key_share (JA4 excludes GREASE, so this does not move JA4); both injected GREASE extensions land at the front rather than first-and-last, because add_custom_ext prepends; extension emission order is fixed rather than permuted per connection as Chrome has done since v110; compress_certificate advertises OpenSSL's zlib+zstd rather than Chrome's brotli; and the two GREASE extension types are fixed per SSL_CTX rather than redrawn per connection, because SSL_CTX_add_custom_ext binds the extension number at registration time. The per-process starting point is drawn from the CSPRNG, so the values vary across installs and restarts, but a single long-lived context reuses them. See tests/test_yume_native_tls_wire.py, which gates complete JA4 equality, re-derives all four declared sets from emitted bytes, and pins this residual gap.",
+        "comment": "Machine-checked gap between what the openssl-diagnostic backend offers and the captured browser ClientHello. The four set comparisons below are all closed: OpenSSL 3.5 emits Chrome's exact non-GREASE cipher list, supported-group list, extension set (0x0012/0x44cd/0xfe0d injected via SSL_CTX_add_custom_ext, 0x0005 via SSL_CTX_set_tlsext_status_type, 0x0016 suppressed via SSL_OP_NO_ENCRYPT_THEN_MAC) and signature-algorithm list including the ML-DSA schemes, which is what makes JA4 match exactly. Sets are not the whole ClientHello, so the residuals JA4 cannot see are tracked here too. Not closable without patching OpenSSL: GREASE is absent from the cipher list, supported_groups, supported_versions and key_share; both injected GREASE extensions land at the front rather than first-and-last, because add_custom_ext prepends; extension emission order is fixed rather than permuted per connection as Chrome has done since v110, which makes this backend's JA3 constant where a real browser's changes every connection; ec_point_formats offers all three formats because OpenSSL exposes only the SSL_get0_ec_point_formats getter and no setter; and GREASE code points are refused outright by set1_groups_list, set_cipher_list and set_ciphersuites, so GREASE cannot be carried anywhere. CLOSED without patching OpenSSL: the browser's second (X25519) key_share entry, via the '*' prefix that openssl_selection.key_share_groups now applies. Structurally closed on the pinned enable-brotli build: certificate compression is a build-flag limit rather than an API limit, and SSL_CTX_set1_cert_comp_preference emits the requested Brotli-only 3-byte body. The fixture pins only that length and not the algorithm value, so recapture the value before calling the algorithm capture-proven. The two GREASE extension types are fixed per SSL_CTX rather than redrawn per connection, because SSL_CTX_add_custom_ext binds the extension number at registration time; the per-process starting point is drawn from the CSPRNG, so the values vary across installs and restarts, but a single long-lived context reuses them. See tests/test_yume_native_tls_wire.py, which gates complete JA4 equality, re-derives every declared set and geometry from emitted bytes, and pins the JA3 mismatch in both directions.",
         "cipher_suites": {
           "missing": [],
           "extra": []
@@ -140,6 +147,55 @@
         "extensions": {
           "missing": [],
           "extra": []
+        },
+        "ec_point_formats": {
+          "comment": "0x000b. JA4 does not hash this; JA3 and any raw reader do.",
+          "capture": [
+            0
+          ],
+          "offered": [
+            0,
+            1,
+            2
+          ]
+        },
+        "key_share": {
+          "comment": "0x0033 geometry as [group, key_exchange_length]. The browser's second (0x001d) share is now offered: openssl_selection.key_share_groups marks it with a '*' prefix for SSL_CTX_set1_groups_list, which grew the extension body from 1222 to 1258 bytes. Only the GREASE share remains, and it is unreachable from stock OpenSSL -- 1258 vs the capture's 1263 is exactly those 5 bytes.",
+          "capture": [
+            [
+              "GREASE",
+              1
+            ],
+            [
+              "0x11ec",
+              1216
+            ],
+            [
+              "0x001d",
+              32
+            ]
+          ],
+          "offered": [
+            [
+              "0x11ec",
+              1216
+            ],
+            [
+              "0x001d",
+              32
+            ]
+          ]
+        },
+        "cert_compression": {
+          "comment": "0x001b. Build-dependent, so both states are pinned. The pinned enable-brotli build honours openssl_selection.cert_compression and emits a 3-byte body (020002) matching the capture's recorded length; a build without brotli falls back to advertising its own algorithms and tls_stealth warns. This is structurally closed against the documented Brotli target but not capture-proven: the fixture records only the LENGTH of 0x001b, not the algorithm value. Recapture the value before treating the algorithm as matched.",
+          "capture_length": 3,
+          "requested": [
+            "brotli"
+          ],
+          "degraded": [
+            "zlib",
+            "zstd"
+          ]
         }
       }
     }

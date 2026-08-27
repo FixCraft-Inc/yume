@@ -188,9 +188,10 @@ bool Session::handle_relay_open(uint8_t stream_id,
         return true;
     }
     if (is_federation_authenticated() &&
-        !federation_hello_accepted_) {
+        (!manager_ || !manager_->federation_enabled() ||
+         !federation_hello_accepted_)) {
         send_open_reply(stream_id, false,
-                        "accepted federation hello required");
+                        "enabled federation hello required");
         return true;
     }
     if (target_id.empty() || to_id.empty() || target_id != to_id ||

@@ -128,7 +128,7 @@ private:
     std::thread directory_worker_;
     std::string state_{"idle"};
     std::string last_error_;
-    std::int64_t last_handshake_ts_{0};
+    std::int64_t last_handshake_ms_{0};
     bool ready_{false};
     std::string remote_namespace_for_local_;
     std::uint32_t channels_active_{0};

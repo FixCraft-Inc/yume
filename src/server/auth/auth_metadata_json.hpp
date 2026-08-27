@@ -118,7 +118,8 @@ inline bool validate_auth_metadata_json_types(const nlohmann::json& metadata,
             if (error) *error = prefix + "max_sessions must be an integer";
             return false;
         }
-        for (const char* key : {"key_type", "federation_peer_id"}) {
+        for (const char* key : {"key_type", "federation_peer_id",
+                                "federation_psk_file"}) {
             const auto value = entry.find(key);
             if (value != entry.end() && !value->is_string()) {
                 if (error) *error = prefix + key + " must be a string";

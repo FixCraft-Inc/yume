@@ -417,9 +417,14 @@ or
 See
 .BR HOST_CONTROLLER.md .
 .SH FEDERATION AND CLUSTER OPTIONS
-Federation links are mutual TLS 1.3 connections between
-.BR yumed (8)
-peers. Each peer keeps its own
+Federation links are TLS 1.3 connections with server-certificate and hostname
+verification by the dialing
+.BR yumed (8).
+After H2-carrier admission, the dialing node authenticates with exporter-bound
+AUTH v2 using the pairwise PSK and its enrolled composite identity. The remote
+server identity comes from its verified TLS certificate and hostname, plus an
+optional certificate pin. Federation does not use TLS client certificates and
+is not mutual TLS. Each peer keeps its own
 .B authorized_keys
 and
 .BR auth_keys.meta .
@@ -434,6 +439,12 @@ Dial a peer using the short form
 .BI [id@]host[:port]?psk_file=path&carrier_secret_file=path[&pin=sha256] .
 Bracket IPv6 addresses as
 .BR [2001:db8::1]:443 .
+IPv6 joins require an explicit peer-id prefix, for example
+.BR peer-v6@[2001:db8::1]:443 .
+When supplied,
+.B pin
+is exactly 64 lowercase hexadecimal characters (the SHA-256 of the TLS leaf
+DER).
 Both secret-file parameters are mandatory. Repeat for multiple peers.
 .TP
 .B --public-node
@@ -450,10 +461,18 @@ federation peers. The peer must enroll this identity in its
 .B --auth-keys
 with a
 .B federation_peer_id
-meta entry.
+and
+.B federation_psk_file
+meta entry. The latter is the pairwise AUTH-v2 PSK for that exact identity;
+relative paths are resolved from the metadata file. It is separate from the
+daemon's ordinary client
+.BR inner_psk_file .
 .TP
 .BI "--federation-operator-ca " path
-CA certificate peers must present for federated TLS.
+CA bundle used by an outbound federation dialer to verify the remote
+.B yumed
+server certificate and hostname. This option does not configure a TLS client
+certificate; peer authorization occurs in exporter-bound AUTH v2.
 .TP
 .BI "--peer " json
 Add a federation peer using raw JSON (power-user form). Each peer requires
@@ -464,6 +483,42 @@ Add a federation peer using raw JSON (power-user form). Each peer requires
 .BR --obfs-secret-file ),
 because YUME 2.0 federation dials pass the same H2-carrier admission as
 clients.
+.PP
+Federation is single-hop. A node advertises only its own local endpoints to a
+peer, so every federated endpoint it knows is exactly one authenticated link
+away and a federated relay channel never transits a third node. Federation does
+not carry SOCKS, forward, reverse-forward, packet/TUN, or other exit traffic. In
+a hub-and-spoke cluster two spokes therefore cannot reach each other; give every
+pair that must communicate a direct peer entry. See
+.B docs/protocol/YUME_2_0_FEDERATION_TRANSIT.md
+for the design that would change this and the gates it must pass first.
+.SH CLUSTER INSPECTION
+An attached
+.B yumed
+console accepts
+.BR help ", " status ", " sessions ", " directory ", " peers ", "
+.BR federation ", " topology ", " "disconnect " endpoint-id ", " stop ", and " quit .
+.TP
+.B federation
+Per-peer configuration and link liveness. Peer rows report the dial address and
+whether a TLS pin, pairwise PSK, and carrier secret were supplied; the secret
+file paths themselves are never emitted on this surface. Overall readiness,
+outbound-link readiness, and authenticated inbound-connection counts are
+separate, so an inbound-only bootstrap connection is visible without claiming
+that the node configured a dial-out link.
+.TP
+.B topology
+Draws the cluster: this node above its peers, with each peer's link state and
+active channel count. Unparsed peer entries are reported as a count, because a
+malformed entry has no usable id to name.
+.PP
+.BR yume-net-map (1)
+prints the same drawing from a separate read-only binary, and
+.B "yume-net-map --json"
+prints the underlying
+.B federation.topology
+document. Both read the daemon's own graph, so a viewer never re-derives the
+cluster from separate status calls.
 .SH AUTH_KEYS.META FORMAT
 .B auth_keys.meta
 is JSON keyed by composite identity fingerprint (hex). Each entry may

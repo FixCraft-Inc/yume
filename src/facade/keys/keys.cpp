@@ -538,6 +538,10 @@ void apply_meta_to_entry(nlohmann::json const& meta_root,
     if (auto p = it->find("federation_peer_id"); p != it->end() && p->is_string()) {
         e.federation_peer_id = p->get<std::string>();
     }
+    if (auto p = it->find("federation_psk_file");
+        p != it->end() && p->is_string()) {
+        e.federation_psk_file = p->get<std::string>();
+    }
     if (auto p = it->find("key_type"); p != it->end() && p->is_string()) {
         e.key_type = p->get<std::string>();
     }
@@ -601,6 +605,7 @@ void entry_meta_to_json(AuthorizedKeyEntry const& e, nlohmann::json& dst) {
     dst["alias"] = e.alias;
     if (!e.federation_peer_id.empty()) {
         dst["federation_peer_id"] = e.federation_peer_id;
+        dst["federation_psk_file"] = e.federation_psk_file;
     }
     dst["key_type"] = e.key_type.empty() ? "individual" : e.key_type;
     if (e.weight.has_value()) {
@@ -632,6 +637,13 @@ void entry_meta_to_json(AuthorizedKeyEntry const& e, nlohmann::json& dst) {
 
 bool validate_authorized_entry(const AuthorizedKeyEntry& entry,
                                std::string* error) {
+    if (entry.clear_federation_enrollment) {
+        if (error) {
+            *error = "clear_federation_enrollment is valid only as an "
+                     "update operation";
+        }
+        return false;
+    }
     const std::string key_type =
         entry.key_type.empty() ? "individual" : entry.key_type;
     if (key_type != "individual" && key_type != "bulk") {
@@ -652,6 +664,14 @@ bool validate_authorized_entry(const AuthorizedKeyEntry& entry,
     if (!entry.federation_peer_id.empty() &&
         !server::is_valid_federation_peer_id(entry.federation_peer_id)) {
         if (error) *error = "federation_peer_id has invalid syntax";
+        return false;
+    }
+    if (entry.federation_peer_id.empty() !=
+        entry.federation_psk_file.empty()) {
+        if (error) {
+            *error = "federation_peer_id and federation_psk_file must be "
+                     "configured together";
+        }
         return false;
     }
     if (entry.control_full.value_or(false) ||
@@ -675,10 +695,55 @@ bool validate_authorized_entry(const AuthorizedKeyEntry& entry,
         (entry.allow_exec.value_or(false) ||
          entry.allow_local_ip.value_or(false) ||
          !entry.allow_codecs.empty() || !entry.allow_services.empty() ||
-         !entry.federation_peer_id.empty())) {
+         !entry.federation_peer_id.empty() ||
+         !entry.federation_psk_file.empty())) {
         if (error) {
             *error = "bulk keys cannot grant exec, local-IP, codec, service, "
                      "or federation permissions";
+        }
+        return false;
+    }
+    return true;
+}
+
+bool validate_federation_enrollment(
+    const AuthorizedKeyEntry& entry,
+    const std::filesystem::path& meta_file,
+    const nlohmann::json& existing_metadata,
+    std::string_view fingerprint,
+    std::string* error) {
+    if (entry.federation_peer_id.empty()) return true;
+
+    for (auto it = existing_metadata.begin();
+         it != existing_metadata.end(); ++it) {
+        if (it.key() == fingerprint || !it->is_object()) continue;
+        const auto peer_id = it->find("federation_peer_id");
+        if (peer_id != it->end() && peer_id->is_string() &&
+            peer_id->get_ref<const std::string&>() ==
+                entry.federation_peer_id) {
+            if (error) {
+                *error = "federation_peer_id is already assigned to another "
+                         "authorized identity";
+            }
+            return false;
+        }
+    }
+
+    try {
+        std::filesystem::path psk_path(entry.federation_psk_file);
+        if (psk_path.is_relative()) {
+            psk_path = meta_file.parent_path() / psk_path;
+        }
+        // Validate the same protected-file contract yumed will enforce before
+        // publishing metadata that refers to the secret. The move-only value
+        // wipes its material when this scope exits.
+        auto secret = security::LoadSecretFile32(psk_path);
+        (void)secret;
+    } catch (const std::exception& ex) {
+        if (error) {
+            *error = std::string(
+                "federation_psk_file is not a usable protected secret: ") +
+                     ex.what();
         }
         return false;
     }
@@ -798,6 +863,11 @@ bool append_authorized(std::filesystem::path const& auth_keys_file,
     AuthorizedKeyEntry entry = entry_meta;
     entry.fingerprint = candidate.fingerprint;
     if (!validate_authorized_entry(entry, &error)) {
+        if (err) *err = error;
+        return false;
+    }
+    if (!validate_federation_enrollment(entry, meta_file, meta,
+                                        candidate.fingerprint, &error)) {
         if (err) *err = error;
         return false;
     }
@@ -967,8 +1037,24 @@ bool update_authorized(std::filesystem::path const& auth_keys_file,
 
     AuthorizedKeyEntry merged = current;
     merged.alias = patch.alias;
-    if (!patch.federation_peer_id.empty()) {
-        merged.federation_peer_id = patch.federation_peer_id;
+    if (patch.clear_federation_enrollment) {
+        if (!patch.federation_peer_id.empty() ||
+            !patch.federation_psk_file.empty()) {
+            if (err) {
+                *err = "clear_federation_enrollment cannot be combined with "
+                       "federation_peer_id or federation_psk_file";
+            }
+            return false;
+        }
+        merged.federation_peer_id.clear();
+        merged.federation_psk_file.clear();
+    } else {
+        if (!patch.federation_peer_id.empty()) {
+            merged.federation_peer_id = patch.federation_peer_id;
+        }
+        if (!patch.federation_psk_file.empty()) {
+            merged.federation_psk_file = patch.federation_psk_file;
+        }
     }
     if (!patch.key_type.empty()) merged.key_type = patch.key_type;
     if (patch.weight.has_value()) merged.weight = patch.weight;
@@ -989,6 +1075,11 @@ bool update_authorized(std::filesystem::path const& auth_keys_file,
     if (patch.allow_bytes.has_value()) merged.allow_bytes = patch.allow_bytes;
 
     if (!validate_authorized_entry(merged, &error)) {
+        if (err) *err = error;
+        return false;
+    }
+    if (!validate_federation_enrollment(merged, meta_file, meta, fingerprint,
+                                        &error)) {
         if (err) *err = error;
         return false;
     }

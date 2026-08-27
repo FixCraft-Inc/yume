@@ -787,7 +787,7 @@ CliCommandResult run_server_manager_ui(yume::server::ServerConfig& cfg, ServerKe
         std::string federation_enable = prompt("federation_enable (true/false)",
                                                cfg.federation_enable ? "true" : "false");
         std::string federation_identity = prompt("federation_identity", cfg.federation_identity);
-        std::string federation_anonym_ca = prompt("federation_anonym_ca", cfg.federation_anonym_ca);
+        std::string federation_operator_ca = prompt("federation_operator_ca", cfg.federation_operator_ca);
         std::string federation_peer = prompt("federation_peer_json",
                                              cfg.federation_peers.empty() ? "" : cfg.federation_peers.front());
 
@@ -851,8 +851,8 @@ CliCommandResult run_server_manager_ui(yume::server::ServerConfig& cfg, ServerKe
             if (!federation_identity.empty()) {
                 json["federation_identity"] = federation_identity;
             }
-            if (!federation_anonym_ca.empty()) {
-                json["federation_anonym_ca"] = federation_anonym_ca;
+            if (!federation_operator_ca.empty()) {
+                json["federation_operator_ca"] = federation_operator_ca;
             }
             if (!federation_peer.empty()) {
                 auto peer = nlohmann::json::parse(federation_peer);

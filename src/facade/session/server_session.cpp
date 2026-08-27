@@ -389,7 +389,9 @@ std::vector<ServerSession::ConnectedSession> ServerSession::list_sessions() cons
         ConnectedSession row;
         row.endpoint_id = s.endpoint_id;
         row.display_name = s.display_name;
-        row.peer_address = s.client_platform;
+        row.state = s.state;
+        row.client_platform = s.client_platform;
+        row.client_version = s.client_version;
         row.authenticated = true;
         out.push_back(std::move(row));
     }

@@ -55,8 +55,17 @@ struct AuthorizedKeyEntry {
     std::string algorithm;      // typically "ed25519"
     std::string pem;            // full PEM block (PUBLIC KEY)
     std::string federation_peer_id;
-    // Empty in an update patch means "preserve". Listed/new metadata is
-    // normalized to "individual" by the facade implementation.
+    // Path written to auth_keys.meta. Relative paths are resolved from that
+    // metadata file by yumed. Required whenever federation_peer_id is set and
+    // must already satisfy yumed's protected 32-byte secret-file contract when
+    // an entry is appended or updated.
+    std::string federation_psk_file;
+    // Update patches preserve both federation strings when they are empty.
+    // Set this explicit operation flag to remove both fields atomically; it is
+    // invalid on append or together with either non-empty federation field.
+    bool clear_federation_enrollment{false};
+    // Empty key_type in an update patch means "preserve". Listed/new metadata
+    // is normalized to "individual" by the facade implementation.
     std::string key_type;
     std::optional<double> weight;
     std::optional<std::uint32_t> max_sessions;
@@ -96,8 +105,9 @@ bool remove_authorized(std::filesystem::path const& auth_keys_file,
                        std::string const& fingerprint,
                        std::string* err);
 
-// Updates metadata for an existing authorized key (alias, permissions).
-// The PEM file is not modified.
+// Updates metadata for an existing authorized key. Federation enrollment can
+// be removed only through patch.clear_federation_enrollment; empty federation
+// strings preserve their current values. The PEM file is not modified.
 bool update_authorized(std::filesystem::path const& auth_keys_file,
                        std::filesystem::path const& meta_file,
                        std::string const& fingerprint,

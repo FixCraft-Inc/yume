@@ -318,9 +318,10 @@ void Session::handle_control_impl(const protocol::Frame& frame) {
     if (cmd == "federation.hello") {
         nlohmann::json resp;
         resp["cmd"] = cmd;
-        if (!is_federation_authenticated()) {
+        if (!manager_ || !manager_->federation_enabled() ||
+            !is_federation_authenticated()) {
             resp["ok"] = false;
-            resp["error"] = "federation auth required";
+            resp["error"] = "enabled federation auth required";
             send_json(resp);
             return;
         }
@@ -341,6 +342,8 @@ void Session::handle_control_impl(const protocol::Frame& frame) {
             return;
         }
         federation_hello_accepted_ = true;
+        manager_->register_inbound_federation_session(
+            this, federation_peer_id_);
         resp["ok"] = true;
         resp["peer_id"] = federation_peer_id_;
         resp["your_peer_id"] = federation_peer_id_;

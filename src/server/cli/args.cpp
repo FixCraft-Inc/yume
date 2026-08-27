@@ -12,6 +12,8 @@
 #include <string>
 #include <string_view>
 
+#include <nlohmann/json.hpp>
+
 #include "core/app_codec/builtin/monero_rpc.hpp"
 #include "core/app_codec/codec.hpp"
 #include "server/cli/cluster.hpp"
@@ -325,13 +327,20 @@ bool parse_server_cli_args(int argc,
         } else if (arg == "--federation-identity" && i + 1 < argc) {
             cfg.federation_identity = resolve_cli_path(argv[++i]);
         } else if (arg == "--federation-operator-ca" && i + 1 < argc) {
-            cfg.federation_anonym_ca = resolve_cli_path(argv[++i]);
+            cfg.federation_operator_ca = resolve_cli_path(argv[++i]);
         } else if (arg == "--peer" && i + 1 < argc) {
             cfg.federation_peers.push_back(argv[++i]);
         } else if (arg == "--cluster-join" && i + 1 < argc) {
             const std::string spec = argv[++i];
             try {
-                cfg.federation_peers.push_back(expand_cluster_join_spec(spec));
+                auto peer = nlohmann::json::parse(
+                    expand_cluster_join_spec(spec));
+                for (const char* key : {"psk_file",
+                                        "carrier_secret_file"}) {
+                    peer[key] = resolve_cli_path(
+                        peer.at(key).get_ref<const std::string&>());
+                }
+                cfg.federation_peers.push_back(peer.dump());
             } catch (const std::exception& ex) {
                 yume::util::log_error(ex.what());
                 return false;

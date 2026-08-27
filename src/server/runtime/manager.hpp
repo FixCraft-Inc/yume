@@ -34,9 +34,11 @@
 #include "core/stealth/obfs.hpp"
 #include "core/stealth/obfs_signal.hpp"
 #include "server/config/config.hpp"
+#include "server/federation/topology.hpp"
 #include "server/federation/types.hpp"
 #include "server/filter/ip_filter.hpp"
 #include "server/host/exposure_check.hpp"
+#include "server/runtime/session_selector.hpp"
 #include "server/host/extra_listeners.hpp"
 #include "server/host/host_routes.hpp"
 #include "server/packet/tun_egress.hpp"
@@ -75,6 +77,12 @@ public:
     void stop();
     void register_session(const std::shared_ptr<Session>& session);
     void unregister_session(Session* session);
+    // An inbound federation connection becomes operational only after the
+    // authenticated session has completed federation.hello. Tracking that
+    // transition explicitly keeps bootstrap-only nodes visible without
+    // treating a merely authenticated, pre-hello socket as a ready peer.
+    void register_inbound_federation_session(
+        Session* session, const std::string& peer_id);
     void update_anonym_proof(const std::string& hash,
                              const std::string& sig,
                              const std::string& ts,
@@ -144,10 +152,20 @@ public:
     void unregister_active_channel(const std::string& channel_id);
     std::vector<control::ActiveRelayChannel> list_active_channels() const;
     std::vector<FederationPeerStatus> federation_statuses() const;
-    bool disconnect_endpoint(const std::string& query, std::string* error);
+    ConfiguredFederationPeers federation_configured_peers() const;
+    // Federated endpoints only, so a reporting caller can attribute them to
+    // their advertising peer without competing with local endpoints for the
+    // shared directory budget list_endpoints() applies.
+    std::vector<control::EndpointInfo> federation_remote_endpoints(
+        std::size_t limit = control::kMaxFederatedCachedEndpoints) const;
+    bool disconnect_endpoint(const std::string& endpoint_id,
+                             std::string* error);
     const ServerConfig& config_snapshot() const;
     const std::string& server_id() const { return server_id_; }
     const std::string& server_name() const { return server_name_; }
+    bool federation_enabled() const noexcept {
+        return cfg_.federation_enable;
+    }
     bool egress_fairness_enabled() const;
     std::chrono::milliseconds reserve_egress_write(const std::string& client_key,
                                                    double weight,
@@ -167,7 +185,9 @@ public:
     bool admit_plain_client(boost::asio::ip::tcp::socket& socket);
     bool reload_auth(std::string* error);
     bool reload_client_filter(std::string* error);
-    bool kill_sessions(const std::string& query, std::string* error);
+    bool kill_sessions(RuntimeSessionSelector selector,
+                       const std::string& value,
+                       std::string* error);
     nlohmann::json host_runtime_info() const;
     const host::HostRouteTable& host_routes() const { return host_routes_; }
     const host::ExposureResult& exposure_result() const { return exposure_result_; }
@@ -243,8 +263,14 @@ private:
     std::shared_ptr<obfs::AdmissionReplayCache> admission_replay_cache_;
 
     std::atomic<uint64_t> next_session_id_{1};
-    std::mutex sessions_mutex_;
+    mutable std::mutex sessions_mutex_;
     std::unordered_map<Session*, std::weak_ptr<Session>> live_sessions_;
+    struct InboundFederationSession {
+        std::string peer_id;
+        std::int64_t handshake_ms{0};
+    };
+    std::unordered_map<Session*, InboundFederationSession>
+        inbound_federation_sessions_;
     std::mutex reverse_mutex_;
     std::unordered_map<int, std::weak_ptr<Session>> reverse_port_sessions_;
     struct ControlledClientEntry {

@@ -19,6 +19,7 @@
 #include "core/protocol/control_protocol.hpp"
 #include "core/protocol/directory_policy.hpp"
 #include "server/config/config.hpp"
+#include "server/federation/topology.hpp"
 #include "server/federation/types.hpp"
 
 namespace yume::server {
@@ -37,7 +38,7 @@ public:
 
     std::shared_ptr<FederationLink> find(const std::string& peer_id) const;
     std::vector<control::EndpointInfo> remote_endpoints(
-        std::size_t limit = control::kMaxDirectoryEndpoints) const;
+        std::size_t limit = control::kMaxFederatedCachedEndpoints) const;
     bool resolve_remote_endpoint(const std::string& visible_id,
                                  std::string* peer_id,
                                  std::string* remote_id,
@@ -63,6 +64,15 @@ public:
                           const std::vector<control::EndpointInfo>& endpoints);
     void clear_directory(const std::string& peer_id);
     std::vector<FederationPeerStatus> statuses() const;
+
+    // Redacted snapshot of the configured `--peer` / `--cluster-join` entries.
+    // Reparses the same strings start() consumed rather than retaining a
+    // second copy, so a reporting path can never drift from what was dialed.
+    ConfiguredFederationPeers configured_peers() const;
+    // Also works when federation was disabled before a FederationManager was
+    // created, so status can still explain configured-but-not-started peers.
+    static ConfiguredFederationPeers configured_peers(
+        const ServerConfig& cfg);
 
 private:
     static FederationPeer parse_peer(const std::string& raw);

@@ -7,6 +7,7 @@
 #include "server/federation/manager.hpp"
 
 #include <algorithm>
+#include <array>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -39,11 +40,29 @@ FederationManager::~FederationManager() {
 
 FederationPeer FederationManager::parse_peer(const std::string& raw) {
     auto json = nlohmann::json::parse(raw);
-    if (json.is_string()) {
-        json = nlohmann::json::parse(json.get<std::string>());
-    }
     if (!json.is_object()) {
         throw std::runtime_error("peer entry must be a JSON object");
+    }
+    constexpr std::array<std::string_view, 5> kPeerFields{
+        "id", "url", "tls_pin", "psk_file", "carrier_secret_file"};
+    for (auto field = json.begin(); field != json.end(); ++field) {
+        if (std::find(kPeerFields.begin(), kPeerFields.end(), field.key()) ==
+            kPeerFields.end()) {
+            throw std::runtime_error(
+                "peer entry contains an unsupported field: " + field.key());
+        }
+        if (!field->is_string()) {
+            throw std::runtime_error(
+                "peer field must be a string: " + field.key());
+        }
+    }
+    for (const char* required : {"id", "url", "psk_file",
+                                 "carrier_secret_file"}) {
+        if (!json.contains(required)) {
+            throw std::runtime_error(
+                std::string("peer entry is missing required field: ") +
+                required);
+        }
     }
     FederationPeer peer;
     peer.raw_json = raw;
@@ -57,21 +76,40 @@ FederationPeer FederationManager::parse_peer(const std::string& raw) {
         url.rfind(scheme, 0) != 0) {
         throw std::runtime_error("peer requires id and yume://host:port url");
     }
+    if (!peer.tls_pin_sha256.empty() &&
+        !is_valid_federation_tls_pin(peer.tls_pin_sha256)) {
+        throw std::runtime_error(
+            "peer tls_pin must be exactly 64 lowercase hexadecimal characters");
+    }
     std::string hostport = url.substr(scheme.size());
-    auto slash = hostport.find('/');
-    if (slash != std::string::npos) {
-        hostport.resize(slash);
+    if (hostport.find_first_of("/?#") != std::string::npos) {
+        throw std::runtime_error(
+            "peer url must contain only yume://host:port");
     }
-    auto colon = hostport.rfind(':');
-    if (colon == std::string::npos) {
-        throw std::runtime_error("peer url missing :port");
+    std::string_view port_text;
+    if (!hostport.empty() && hostport.front() == '[') {
+        const auto close = hostport.find(']');
+        if (close == std::string::npos || close + 1U >= hostport.size() ||
+            hostport[close + 1U] != ':') {
+            throw std::runtime_error(
+                "peer IPv6 url requires [host]:port");
+        }
+        peer.host = hostport.substr(1U, close - 1U);
+        port_text = std::string_view(hostport).substr(close + 2U);
+    } else {
+        const auto colon = hostport.find(':');
+        if (colon == std::string::npos) {
+            throw std::runtime_error("peer url missing :port");
+        }
+        if (colon != hostport.rfind(':')) {
+            throw std::runtime_error(
+                "peer IPv6 url requires brackets around the host");
+        }
+        peer.host = hostport.substr(0U, colon);
+        port_text = std::string_view(hostport).substr(colon + 1U);
     }
-    peer.host = hostport.substr(0, colon);
-    if (!peer.host.empty() && peer.host.front() == '[' && peer.host.back() == ']') {
-        peer.host = peer.host.substr(1, peer.host.size() - 2);
-    }
-    peer.port = std::stoi(hostport.substr(colon + 1));
-    if (peer.host.empty() || peer.port <= 0 || peer.port > 65535) {
+    if (peer.host.empty() ||
+        !parse_federation_port(port_text, &peer.port)) {
         throw std::runtime_error("peer url host/port invalid");
     }
     if (peer.psk_file.empty()) {
@@ -120,7 +158,15 @@ void FederationManager::start() {
         }
     }
     if (links_.empty()) {
-        util::log_warn("federation enabled but no usable peers were configured");
+        if (cfg_.cluster_bootstrap && cfg_.federation_peers.empty()) {
+            util::log_info(
+                "federation bootstrap enabled; awaiting authenticated "
+                "inbound peers");
+        } else {
+            util::log_warn(
+                "federation enabled but no usable outbound peers were "
+                "configured");
+        }
     }
 }
 
@@ -149,7 +195,7 @@ std::shared_ptr<FederationLink> FederationManager::find(const std::string& peer_
 
 std::vector<control::EndpointInfo> FederationManager::remote_endpoints(
         std::size_t limit) const {
-    limit = std::min(limit, control::kMaxDirectoryEndpoints);
+    limit = std::min(limit, control::kMaxFederatedCachedEndpoints);
     std::vector<control::EndpointInfo> out;
     if (limit == 0U) return out;
     std::lock_guard<std::mutex> lock(mutex_);
@@ -292,6 +338,44 @@ void FederationManager::clear_directory(const std::string& peer_id) {
             ++it;
         }
     }
+}
+
+ConfiguredFederationPeers FederationManager::configured_peers() const {
+    return configured_peers(cfg_);
+}
+
+ConfiguredFederationPeers FederationManager::configured_peers(
+        const ServerConfig& cfg) {
+    ConfiguredFederationPeers snapshot;
+    snapshot.peers.reserve(cfg.federation_peers.size());
+    std::unordered_set<std::string> configured_ids;
+    for (const auto& raw : cfg.federation_peers) {
+        try {
+            const auto peer = parse_peer(raw);
+            // start() keeps the first valid occurrence of an id. Mirror that
+            // exact choice so conflicting duplicate rows cannot make status
+            // describe a different dial target than the live manager used.
+            if (!configured_ids.insert(peer.id).second) {
+                ++snapshot.invalid_entries;
+                continue;
+            }
+            snapshot.peers.push_back(ConfiguredFederationPeer{
+                peer.id,
+                peer.host,
+                peer.port,
+                !peer.tls_pin_sha256.empty(),
+                !peer.psk_file.empty(),
+                !peer.carrier_secret_file.empty(),
+            });
+        } catch (const std::exception&) {
+            // An active manager's start() already logged why this entry was
+            // rejected. Report only that one exists: the raw string holds the
+            // operator's PSK and carrier-secret paths and must not reach a
+            // reporting surface, including the pre-manager status path.
+            ++snapshot.invalid_entries;
+        }
+    }
+    return snapshot;
 }
 
 std::vector<FederationPeerStatus> FederationManager::statuses() const {

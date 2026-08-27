@@ -585,6 +585,8 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/runtime/local_runtime.cpp
         server/federation/link.cpp
         server/federation/manager.cpp
+        server/federation/topology.cpp
+        server/federation/topology_render.cpp
         server/filter/ip_filter.cpp
         server/filter/ip_filter_mmdb.cpp
         server/host/host_types.cpp
@@ -1407,7 +1409,40 @@ yume_apply_perf_opts(yume_admin_relationships_test)
 add_test(NAME yume_admin_relationships_test
     COMMAND yume_admin_relationships_test)
 
+add_executable(yume_runtime_session_selector_test
+    server/runtime/session_selector_test.cpp)
+target_include_directories(yume_runtime_session_selector_test
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+yume_apply_perf_opts(yume_runtime_session_selector_test)
+add_test(NAME yume_runtime_session_selector_test
+    COMMAND yume_runtime_session_selector_test)
+
+# The topology/status builders are deliberately pure functions over snapshot
+# vectors, so the reporting contract -- redaction, peer merging, and the
+# single-hop route claim -- is provable without launching a cluster.
+add_executable(yume_federation_topology_test
+    server/federation/topology_test.cpp
+    server/federation/topology.cpp
+    server/federation/topology_render.cpp
+    core/protocol/control_protocol.cpp
+)
+target_include_directories(yume_federation_topology_test
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+yume_link_atomic_if_needed(yume_federation_topology_test PRIVATE)
+yume_apply_perf_opts(yume_federation_topology_test)
+add_test(NAME yume_federation_topology_test
+    COMMAND yume_federation_topology_test)
+
 if(TARGET yume_server)
+    add_executable(yume_server_local_runtime_test
+        server/runtime/local_runtime_test.cpp)
+    target_link_libraries(yume_server_local_runtime_test
+        PRIVATE yume_server Threads::Threads)
+    yume_link_atomic_if_needed(yume_server_local_runtime_test PRIVATE)
+    yume_apply_perf_opts(yume_server_local_runtime_test)
+    add_test(NAME yume_server_local_runtime_test
+        COMMAND yume_server_local_runtime_test)
+
     add_executable(yume_server_control_survival_test
         server/session/control_survival_test.cpp)
     target_link_libraries(yume_server_control_survival_test
@@ -1705,6 +1740,16 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         )
         set_tests_properties(yume_federation_v2_integration_test PROPERTIES
             TIMEOUT 90)
+        # Three nodes in a line. Proves multi-peer link fan-out and pins the
+        # single-hop boundary: the far end must stay invisible and unroutable.
+        add_test(NAME yume_federation_cluster_integration_test
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/tests/test_yume_federation_cluster.py"
+                --yume "$<TARGET_FILE:yume>"
+                --yumed "$<TARGET_FILE:yumed>"
+        )
+        set_tests_properties(yume_federation_cluster_integration_test PROPERTIES
+            TIMEOUT 180)
     endif()
     add_test(NAME yume_h2_fingerprint_check
         COMMAND "${Python3_EXECUTABLE}"

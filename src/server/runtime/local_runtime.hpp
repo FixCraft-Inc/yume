@@ -31,9 +31,17 @@ public:
                                   std::string* error,
                                   int timeout_ms = 5000);
 
-private:
+    // Serves one operation directly, without the socket. Embedders reach the
+    // same op surface as an admin-socket client through the stable C ABI, and
+    // do so even when IPC is disabled.
+    //
+    // Synchronous, and safe to call from any thread. The caller must keep the
+    // Manager this runtime was constructed with alive for the duration: the
+    // reference here is non-owning, so the owner holds its Manager handle
+    // across the call rather than relying on this object's lifetime alone.
     nlohmann::json handle_request(const nlohmann::json& request);
 
+private:
     Manager* manager_{nullptr};
     std::function<void()> stop_callback_;
     yume::local_runtime::Server server_;

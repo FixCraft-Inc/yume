@@ -25,7 +25,6 @@
 #include <fstream>
 #include <functional>
 #include <future>
-#include <unistd.h>
 #include <iostream>
 #include <iterator>
 #include <memory>
@@ -34,6 +33,12 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 #include <boost/asio/io_context.hpp>
 #include <nlohmann/json.hpp>
@@ -44,6 +49,7 @@
 
 #include "core/runtime/file_transaction_lock.hpp"
 #include "core/security/crypto.hpp"
+#include "core/security/secret_file.hpp"
 #include "facade/keys/keys.hpp"
 #include "server/auth/auth.hpp"
 #include "server/cli/key.hpp"
@@ -54,11 +60,19 @@ namespace {
 
 namespace fs = std::filesystem;
 
+long current_process_id() noexcept {
+#if defined(_WIN32)
+    return static_cast<long>(::_getpid());
+#else
+    return static_cast<long>(::getpid());
+#endif
+}
+
 struct TempDir {
     fs::path path;
     TempDir() {
         path = fs::temp_directory_path() /
-               ("yume-dual-key-" + std::to_string(::getpid()));
+               ("yume-dual-key-" + std::to_string(current_process_id()));
         fs::create_directories(path);
     }
     ~TempDir() {
@@ -695,7 +709,7 @@ void test_cli_failure_order_is_fail_closed() {
     const auto identity = yume::crypto::generate_composite_keypair();
     const auto public_path = dir.path / "identity.pub";
     write_file(public_path, pem_of(identity));
-    const std::string unique = std::to_string(::getpid());
+    const std::string unique = std::to_string(current_process_id());
 
     // If metadata cannot be published, authorization must never be attempted.
     yume::server::ServerConfig metadata_failure;
@@ -810,8 +824,100 @@ void test_facade_key_mutations_are_atomic_and_exact() {
     assert(read_file(auth_path) == incomplete);
     assert(read_file(meta_path) == "{}");
 
+    const auto federation_auth = dir.path / "facade-federation-keys";
+    const auto federation_meta = dir.path / "facade-federation-meta.json";
+    const auto federation_admin = dir.path / "facade-federation-admin";
+    yume::facade::keys::AuthorizedKeyEntry federation_entry;
+    federation_entry.alias = "edge-west";
+    federation_entry.federation_peer_id = "edge-west";
+    assert(!yume::facade::keys::append_authorized(
+        federation_auth, federation_meta, federation_admin, second_pem,
+        federation_entry, &error));
+    assert(!fs::exists(federation_auth));
+    assert(!fs::exists(federation_meta));
+    federation_entry.federation_psk_file = "secrets/edge-west.psk";
+    assert(!yume::facade::keys::append_authorized(
+        federation_auth, federation_meta, federation_admin, second_pem,
+        federation_entry, &error));
+    assert(!fs::exists(federation_auth));
+    assert(!fs::exists(federation_meta));
+
+    const auto federation_psk = dir.path / "secrets/edge-west.psk";
+    const std::vector<std::uint8_t> secret_hex(64, 'a');
+    assert(yume::security::WriteFileExclusive0600(
+        federation_psk, secret_hex, &error));
+#if defined(_WIN32)
+    // Protected secret loading deliberately remains unavailable on Windows.
+    // Facade enrollment must therefore fail closed even when the DACL-safe
+    // writer created an otherwise valid 64-byte secret.
+    assert(!yume::facade::keys::append_authorized(
+        federation_auth, federation_meta, federation_admin, second_pem,
+        federation_entry, &error));
+    assert(error.find("Linux/POSIX only") != std::string::npos);
+    assert(!fs::exists(federation_auth));
+    assert(!fs::exists(federation_meta));
+#else
+    assert(yume::facade::keys::append_authorized(
+        federation_auth, federation_meta, federation_admin, second_pem,
+        federation_entry, &error));
+    const auto federation_list = yume::facade::keys::list_authorized(
+        federation_auth, federation_meta);
+    assert(federation_list.size() == 1);
+    assert(federation_list.front().federation_peer_id == "edge-west");
+    assert(federation_list.front().federation_psk_file ==
+           "secrets/edge-west.psk");
+
+    const std::string federation_store = read_file(federation_auth);
+    const std::string federation_metadata = read_file(federation_meta);
+    yume::facade::keys::AuthorizedKeyEntry duplicate_peer = federation_entry;
+    duplicate_peer.alias = "edge-west-duplicate";
+    assert(!yume::facade::keys::append_authorized(
+        federation_auth, federation_meta, federation_admin, first_pem,
+        duplicate_peer, &error));
+    assert(read_file(federation_auth) == federation_store);
+    assert(read_file(federation_meta) == federation_metadata);
+
+    yume::facade::keys::AuthorizedKeyEntry broken_update;
+    broken_update.alias = "must-not-land";
+    broken_update.federation_psk_file = "secrets/missing.psk";
+    assert(!yume::facade::keys::update_authorized(
+        federation_auth, federation_meta,
+        federation_list.front().fingerprint, broken_update, &error));
+    assert(read_file(federation_auth) == federation_store);
+    assert(read_file(federation_meta) == federation_metadata);
+
+    yume::facade::keys::AuthorizedKeyEntry ambiguous_clear;
+    ambiguous_clear.alias = "edge-west";
+    ambiguous_clear.clear_federation_enrollment = true;
+    ambiguous_clear.federation_peer_id = "replacement";
+    assert(!yume::facade::keys::update_authorized(
+        federation_auth, federation_meta,
+        federation_list.front().fingerprint, ambiguous_clear, &error));
+    assert(read_file(federation_auth) == federation_store);
+    assert(read_file(federation_meta) == federation_metadata);
+
+    yume::facade::keys::AuthorizedKeyEntry clear_enrollment;
+    clear_enrollment.alias = "edge-west";
+    clear_enrollment.clear_federation_enrollment = true;
+    assert(yume::facade::keys::update_authorized(
+        federation_auth, federation_meta,
+        federation_list.front().fingerprint, clear_enrollment, &error));
+    assert(read_file(federation_auth) == federation_store);
+    const auto cleared_list = yume::facade::keys::list_authorized(
+        federation_auth, federation_meta);
+    assert(cleared_list.size() == 1);
+    assert(cleared_list.front().federation_peer_id.empty());
+    assert(cleared_list.front().federation_psk_file.empty());
+    const auto cleared_metadata =
+        nlohmann::json::parse(read_file(federation_meta));
+    const auto& cleared_entry =
+        cleared_metadata.at(federation_list.front().fingerprint);
+    assert(!cleared_entry.contains("federation_peer_id"));
+    assert(!cleared_entry.contains("federation_psk_file"));
+#endif
+
 #if !defined(_WIN32)
-    const std::string unique = std::to_string(::getpid());
+    const std::string unique = std::to_string(current_process_id());
     yume::facade::keys::AuthorizedKeyEntry failure_entry;
     failure_entry.alias = "failure";
 
@@ -1012,7 +1118,8 @@ void test_manager_ui_preserves_unusable_config() {
 
 #if !defined(_WIN32)
     const auto failure_path = fs::path(
-        "/proc/yume-ui-write-failure-" + std::to_string(::getpid()));
+        "/proc/yume-ui-write-failure-" +
+        std::to_string(current_process_id()));
     const auto failure_result = run_manager_ui(
         &config, "6\n" + failure_path.string() + "\n" +
                      std::string(64, '\n'));

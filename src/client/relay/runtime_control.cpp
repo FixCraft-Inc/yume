@@ -9,9 +9,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <initializer_list>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <utility>
 
 #include "core/security/identity.hpp"
@@ -43,6 +46,33 @@ bool has_exact_relay_protocol_version(const nlohmann::json& json) {
     return false;
 }
 
+bool has_only_argument_keys(
+        const nlohmann::json& args,
+        std::initializer_list<std::string_view> allowed) {
+    for (auto it = args.begin(); it != args.end(); ++it) {
+        const std::string_view key = it.key();
+        if (std::find(allowed.begin(), allowed.end(), key) ==
+            allowed.end()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+const std::string* string_argument(const nlohmann::json& args,
+                                   std::string_view key,
+                                   bool require_nonempty = true) {
+    const auto found = args.find(std::string(key));
+    if (found == args.end() || !found->is_string()) {
+        return nullptr;
+    }
+    const auto& value = found->get_ref<const std::string&>();
+    if (require_nonempty && value.empty()) {
+        return nullptr;
+    }
+    return &value;
+}
+
 relay_v2::Bytes decode_handshake_request(const std::string& encoded) {
     const std::string raw = yume::util::base64_decode(encoded);
     return relay_v2::Bytes(raw.begin(), raw.end());
@@ -50,18 +80,35 @@ relay_v2::Bytes decode_handshake_request(const std::string& encoded) {
 
 class RelaySecretArgument {
 public:
-    explicit RelaySecretArgument(const nlohmann::json& args)
-        : value_(args.value("relay_secret", "")) {
-        if (value_.empty()) {
-            std::string password = args.value("password", "");
-            struct PasswordWiper {
-                std::string& value;
-                ~PasswordWiper() { wipe_relay_secret(value); }
-            } password_wiper{password};
-            if (!password.empty()) {
-                value_ = derive_relay_secret_b64(password);
-            }
+    explicit RelaySecretArgument(const nlohmann::json& args) {
+        const auto relay_secret = args.find("relay_secret");
+        const auto password = args.find("password");
+        if (relay_secret != args.end() && !relay_secret->is_string()) {
+            throw std::invalid_argument("relay_secret must be a string");
         }
+        if (password != args.end() && !password->is_string()) {
+            throw std::invalid_argument("password must be a string");
+        }
+        if (relay_secret != args.end() && password != args.end()) {
+            throw std::invalid_argument(
+                "relay_secret and password are mutually exclusive");
+        }
+
+        if (password != args.end() &&
+            !password->get_ref<const std::string&>().empty()) {
+            std::string derived = derive_relay_secret_b64(
+                password->get_ref<const std::string&>());
+            RelaySecretWiper derived_wiper(derived);
+            value_.swap(derived);
+            return;
+        }
+
+        std::string selected;
+        RelaySecretWiper selected_wiper(selected);
+        if (relay_secret != args.end()) {
+            selected.assign(relay_secret->get_ref<const std::string&>());
+        }
+        value_.swap(selected);
     }
     ~RelaySecretArgument() { wipe_relay_secret(value_); }
     RelaySecretArgument(const RelaySecretArgument&) = delete;
@@ -72,6 +119,35 @@ public:
 private:
     std::string value_;
 };
+
+// One contact: durable local trust policy, overlaid with directory presence
+// when the peer is currently advertised. A fingerprint is a public digest, so
+// nothing here is secret material; the composite identity bytes behind it are
+// deliberately never held by the trust store or echoed to a caller.
+nlohmann::json contact_to_json(const relay_v2::PeerTrustEntry& entry,
+                               const control::EndpointInfo* presence) {
+    nlohmann::json item{
+        {"endpoint_id", entry.endpoint_id},
+        {"fingerprint", entry.fingerprint},
+        {"trust_source", std::string(relay_v2::to_string(entry.source))},
+        {"explicit_marker", entry.explicit_marker},
+        {"configured_mismatch", entry.configured_mismatch},
+        {"in_directory", presence != nullptr},
+    };
+    if (presence == nullptr) {
+        return item;
+    }
+    item["online"] = presence->online;
+    item["display_name"] = presence->display_name;
+    item["endpoint_kind"] = control::to_string(presence->endpoint_kind);
+    item["relay_mode"] = control::to_string(presence->relay_mode);
+    item["allow_chat"] = presence->allow_chat;
+    item["allow_file"] = presence->allow_file;
+    item["allow_bytes"] = presence->allow_bytes;
+    item["remote"] = presence->remote;
+    item["federation_peer_id"] = presence->federation_peer_id;
+    return item;
+}
 
 }  // namespace
 
@@ -130,13 +206,42 @@ void RelayRuntime::set_tunnel_pool(std::weak_ptr<TunnelPool> tunnel_pool,
     requested_tunnels_ = std::max<std::size_t>(1, requested_tunnels);
 }
 
-nlohmann::json RelayRuntime::handle_local_request(const nlohmann::json& request) {
-    const std::string op = request.value("op", "");
-    const nlohmann::json args = request.value("args", nlohmann::json::object());
+nlohmann::json RelayRuntime::handle_local_request(
+    const nlohmann::json& request) try {
+    if (!request.is_object()) {
+        return {{"ok", false}, {"error", "request must be a JSON object"}};
+    }
+    const auto op_it = request.find("op");
+    if (op_it == request.end() || !op_it->is_string() ||
+        op_it->get_ref<const std::string&>().empty()) {
+        return {{"ok", false},
+                {"error", "request op must be a non-empty string"}};
+    }
+    const std::string op = op_it->get<std::string>();
+    const nlohmann::json empty_args = nlohmann::json::object();
+    const auto args_it = request.find("args");
+    if (args_it != request.end()) {
+        if (!args_it->is_object()) {
+            return {{"ok", false},
+                    {"error", "request args must be a JSON object"}};
+        }
+    }
+    // Keep a reference rather than copying the object: relay_secret/password
+    // fields are sensitive and must not acquire another ordinary allocation.
+    const nlohmann::json& args =
+        args_it == request.end() ? empty_args : *args_it;
     if (op == "runtime.info" || op == "runtime.status") {
+        if (!args.empty()) {
+            return {{"ok", false},
+                    {"error", op + " does not accept arguments"}};
+        }
         return {{"ok", true}, {"result", status_json()}};
     }
     if (op == "directory.list") {
+        if (!args.empty()) {
+            return {{"ok", false},
+                    {"error", "directory.list does not accept arguments"}};
+        }
         std::vector<nlohmann::json> items;
         std::string error;
         for (const auto& endpoint : request_directory(&error)) {
@@ -147,27 +252,149 @@ nlohmann::json RelayRuntime::handle_local_request(const nlohmann::json& request)
         }
         return {{"ok", true}, {"result", items}};
     }
+    if (op == "contacts.list") {
+        if (!args.empty()) {
+            return {{"ok", false},
+                    {"error", "contacts.list does not accept arguments"}};
+        }
+        // Trust is durable local state; directory presence is a live overlay.
+        // A contact list must still render every trusted peer when the server
+        // is unreachable, so a failed directory refresh degrades to
+        // presence-unknown rather than to an error.
+        std::string directory_error;
+        std::unordered_map<std::string, control::EndpointInfo> presence;
+        for (auto& endpoint : request_directory(&directory_error)) {
+            presence.emplace(endpoint.endpoint_id, std::move(endpoint));
+        }
+
+        nlohmann::json contacts = nlohmann::json::array();
+        try {
+            for (const auto& entry : peer_trust_store().list()) {
+                const auto found = presence.find(entry.endpoint_id);
+                contacts.push_back(contact_to_json(
+                    entry,
+                    found == presence.end() ? nullptr : &found->second));
+            }
+        } catch (const std::exception& ex) {
+            return {{"ok", false}, {"error", ex.what()}};
+        }
+        return {{"ok", true},
+                {"result", {
+                    {"schema_version", 1},
+                    {"contacts", std::move(contacts)},
+                    {"directory_available", directory_error.empty()},
+                    {"directory_error", directory_error},
+                }}};
+    }
+    if (op == "contacts.forget") {
+        const auto endpoint_id =
+            string_argument(args, "endpoint_id");
+        if (args.size() != 1U || endpoint_id == nullptr) {
+            return {{"ok", false},
+                    {"error", "contacts.forget requires exactly one "
+                              "non-empty endpoint_id string"}};
+        }
+        try {
+            const bool removed =
+                peer_trust_store().forget(*endpoint_id);
+            return {{"ok", true}, {"result", {{"removed", removed}}}};
+        } catch (const std::exception& ex) {
+            return {{"ok", false}, {"error", ex.what()}};
+        }
+    }
     if (op == "history.list") {
+        constexpr std::uint64_t kDefaultHistoryLimit = 200U;
+        constexpr std::uint64_t kMaxHistoryLimit = 1000U;
+        bool unknown_argument = args.size() > 2U;
+        for (auto it = args.begin();
+             !unknown_argument && it != args.end(); ++it) {
+            unknown_argument =
+                it.key() != "peer_id" && it.key() != "limit";
+        }
+        if (unknown_argument) {
+            return {{"ok", false},
+                    {"error", "history.list accepts only peer_id and limit"}};
+        }
         std::optional<std::string> peer_id;
         if (args.contains("peer_id")) {
+            if (!args["peer_id"].is_string() ||
+                args["peer_id"].get_ref<const std::string&>().empty()) {
+                return {{"ok", false},
+                        {"error", "history.list peer_id must be a non-empty string"}};
+            }
             peer_id = args["peer_id"].get<std::string>();
         }
+        std::uint64_t limit = kDefaultHistoryLimit;
+        if (const auto found = args.find("limit"); found != args.end()) {
+            if (found->is_number_unsigned()) {
+                limit = found->get<std::uint64_t>();
+            } else if (found->is_number_integer()) {
+                const auto signed_limit = found->get<std::int64_t>();
+                if (signed_limit <= 0) {
+                    return {{"ok", false},
+                            {"error", "history.list limit must be in 1..1000"}};
+                }
+                limit = static_cast<std::uint64_t>(signed_limit);
+            } else {
+                return {{"ok", false},
+                        {"error", "history.list limit must be an integer"}};
+            }
+            if (limit == 0U || limit > kMaxHistoryLimit) {
+                return {{"ok", false},
+                        {"error", "history.list limit must be in 1..1000"}};
+            }
+        }
+        const auto listed = history_.list_chat(
+            peer_id, static_cast<std::size_t>(limit));
         nlohmann::json items = nlohmann::json::array();
-        for (const auto& item : history_.list_chat(peer_id)) {
+        for (const auto& item : listed.items) {
             items.push_back({{"ts_ms", item.ts_ms}, {"peer_id", item.peer_id}, {"peer_name", item.peer_name},
                              {"direction", item.direction}, {"text", item.text}});
         }
-        return {{"ok", true}, {"result", items}};
+        return {{"ok", true},
+                {"result", {
+                    {"schema_version", 1},
+                    {"available", listed.available},
+                    {"error", listed.error},
+                    {"truncated", listed.truncated},
+                    {"items", std::move(items)},
+                }}};
     }
     if (op == "history.delete") {
-        if (args.contains("peer_id")) {
-            history_.delete_chat(args["peer_id"].get<std::string>());
-        } else {
-            history_.delete_chat();
+        const bool has_peer = args.contains("peer_id");
+        const bool has_all = args.contains("all");
+        if (args.size() != 1U || has_peer == has_all) {
+            return {{"ok", false},
+                    {"error", "history.delete requires exactly one of a "
+                              "non-empty peer_id or all=true"}};
+        }
+        std::optional<std::string> peer_id;
+        if (has_peer) {
+            if (!args["peer_id"].is_string() ||
+                args["peer_id"].get_ref<const std::string&>().empty()) {
+                return {{"ok", false},
+                        {"error", "history.delete peer_id must be a "
+                                  "non-empty string"}};
+            }
+            peer_id = args["peer_id"].get<std::string>();
+        } else if (!args["all"].is_boolean() ||
+                   !args["all"].get<bool>()) {
+            return {{"ok", false},
+                    {"error", "history.delete all must be true"}};
+        }
+        std::string error;
+        if (!history_.delete_chat(peer_id, &error)) {
+            return {{"ok", false},
+                    {"error", error.empty()
+                                  ? "history deletion failed" : error}};
         }
         return {{"ok", true}, {"result", true}};
     }
     if (op == "invite.list") {
+        if (!args.empty()) {
+            return {{"ok", false},
+                    {"error", "invite.list does not accept arguments"}};
+        }
         nlohmann::json items = nlohmann::json::array();
         for (const auto& invite : pending_invites()) {
             items.push_back(control::invite_to_json(invite, true));
@@ -175,27 +402,55 @@ nlohmann::json RelayRuntime::handle_local_request(const nlohmann::json& request)
         return {{"ok", true}, {"result", items}};
     }
     if (op == "invite.accept") {
+        const auto selector =
+            string_argument(args, "invite_selector");
+        if (selector == nullptr ||
+            !has_only_argument_keys(
+                args, {"invite_selector", "relay_secret", "password"})) {
+            return {{"ok", false},
+                    {"error", "invite.accept requires invite_selector and "
+                              "accepts only one optional relay secret input"}};
+        }
         std::string error;
         RelaySecretArgument relay_secret(args);
-        if (!accept_invite(args.value("invite_id", ""),
+        if (!accept_invite(*selector,
                            relay_secret.value(), &error)) {
             return {{"ok", false}, {"error", error}};
         }
         return {{"ok", true}, {"result", true}};
     }
     if (op == "invite.reject") {
+        const auto selector =
+            string_argument(args, "invite_selector");
+        const auto reason_it = args.find("reason");
+        if (selector == nullptr ||
+            !has_only_argument_keys(args, {"invite_selector", "reason"}) ||
+            (reason_it != args.end() && !reason_it->is_string())) {
+            return {{"ok", false},
+                    {"error", "invite.reject requires invite_selector and "
+                              "an optional reason string"}};
+        }
         std::string error;
-        if (!reject_invite(args.value("invite_id", ""), args.value("reason", ""), &error)) {
+        if (!reject_invite(*selector,
+                           args.value("reason", ""), &error)) {
             return {{"ok", false}, {"error", error}};
         }
         return {{"ok", true}, {"result", true}};
     }
     if (op == "chat.open") {
+        const auto peer = string_argument(args, "peer");
+        if (peer == nullptr ||
+            !has_only_argument_keys(
+                args, {"peer", "relay_secret", "password"})) {
+            return {{"ok", false},
+                    {"error", "chat.open requires peer and accepts only one "
+                              "optional relay secret input"}};
+        }
         std::string error;
         std::string channel_id;
         std::string peer_id;
         RelaySecretArgument relay_secret(args);
-        if (!open_chat(args.value("peer", ""), relay_secret.value(), &error,
+        if (!open_chat(*peer, relay_secret.value(), &error,
                        &channel_id, &peer_id)) {
             return {{"ok", false}, {"error", error}};
         }
@@ -208,46 +463,93 @@ nlohmann::json RelayRuntime::handle_local_request(const nlohmann::json& request)
         };
     }
     if (op == "chat.send") {
+        const auto channel_id = args.find("channel_id");
+        const auto text = args.find("text");
+        if (args.size() != 2U || channel_id == args.end() ||
+            !channel_id->is_string() ||
+            channel_id->get_ref<const std::string&>().empty() ||
+            text == args.end() || !text->is_string()) {
+            return {{"ok", false},
+                    {"error", "chat.send requires exactly non-empty "
+                              "channel_id and string text"}};
+        }
         std::string error;
-        if (!send_chat(args.value("channel_id", ""),
-                       args.value("text", ""), &error)) {
+        if (!send_chat(channel_id->get_ref<const std::string&>(),
+                       text->get_ref<const std::string&>(), &error)) {
             return {{"ok", false}, {"error", error}};
         }
         return {{"ok", true}, {"result", true}};
     }
     if (op == "chat.close") {
+        const auto channel_id =
+            string_argument(args, "channel_id");
+        if (args.size() != 1U || channel_id == nullptr) {
+            return {{"ok", false},
+                    {"error", "chat.close requires exactly one non-empty "
+                              "channel_id string"}};
+        }
         std::string error;
-        if (!close_chat(args.value("channel_id", ""), &error)) {
+        if (!close_chat(*channel_id, &error)) {
             return {{"ok", false}, {"error", error}};
         }
         return {{"ok", true}, {"result", true}};
     }
     if (op == "file.send") {
+        const auto peer = string_argument(args, "peer");
+        const auto path = string_argument(args, "path");
+        if (peer == nullptr || path == nullptr ||
+            !has_only_argument_keys(
+                args, {"peer", "path", "relay_secret", "password"})) {
+            return {{"ok", false},
+                    {"error", "file.send requires peer and path and accepts "
+                              "only one optional relay secret input"}};
+        }
         std::string error;
         RelaySecretArgument relay_secret(args);
-        if (!send_file(args.value("peer", ""), args.value("path", ""),
+        if (!send_file(*peer, *path,
                        relay_secret.value(), &error)) {
             return {{"ok", false}, {"error", error}};
         }
         return {{"ok", true}, {"result", true}};
     }
     if (op == "bytes.send") {
+        const auto peer = string_argument(args, "peer");
+        const auto path = string_argument(args, "path");
+        if (peer == nullptr || path == nullptr ||
+            !has_only_argument_keys(
+                args, {"peer", "path", "relay_secret", "password"})) {
+            return {{"ok", false},
+                    {"error", "bytes.send requires peer and path and accepts "
+                              "only one optional relay secret input"}};
+        }
         std::string error;
         RelaySecretArgument relay_secret(args);
-        if (!send_bytes_path(args.value("peer", ""), args.value("path", ""),
+        if (!send_bytes_path(*peer, *path,
                              relay_secret.value(), &error)) {
             return {{"ok", false}, {"error", error}};
         }
         return {{"ok", true}, {"result", true}};
     }
     if (op == "admin.attach") {
+        const auto peer = args.find("peer");
+        if (args.size() != 1U || peer == args.end() ||
+            !peer->is_string() ||
+            peer->get_ref<const std::string&>().empty()) {
+            return {{"ok", false},
+                    {"error", "admin.attach requires exactly one non-empty "
+                              "peer string"}};
+        }
         std::string error;
-        if (!admin_attach(args.value("peer", ""), &error)) {
+        if (!admin_attach(peer->get_ref<const std::string&>(), &error)) {
             return {{"ok", false}, {"error", error}};
         }
         return {{"ok", true}, {"result", true}};
     }
     if (op == "admin.status" || op == "admin.sessions" || op == "admin.stop") {
+        if (!args.empty()) {
+            return {{"ok", false},
+                    {"error", op + " does not accept arguments"}};
+        }
         std::string error;
         const std::string remote_op =
             (op == "admin.stop") ? "runtime.stop" :
@@ -259,10 +561,33 @@ nlohmann::json RelayRuntime::handle_local_request(const nlohmann::json& request)
         return {{"ok", true}, {"result", response}};
     }
     if (op == "runtime.stop") {
-        invoke_stop_callback();
+        if (!args.empty()) {
+            return {{"ok", false},
+                    {"error", "runtime.stop does not accept arguments"}};
+        }
+        std::string error;
+        if (!invoke_stop_callback(&error)) {
+            return {{"ok", false},
+                    {"error", error.empty()
+                                  ? "relay runtime stop callback failed"
+                                  : error}};
+        }
         return {{"ok", true}, {"result", true}};
     }
     return {{"ok", false}, {"error", "unsupported op"}};
+} catch (const nlohmann::json::exception& ex) {
+    return {{"ok", false},
+            {"error", "invalid operation arguments: " +
+                          std::string(ex.what())}};
+} catch (const std::invalid_argument& ex) {
+    return {{"ok", false},
+            {"error", "invalid operation arguments: " +
+                          std::string(ex.what())}};
+} catch (const std::exception& ex) {
+    return {{"ok", false},
+            {"error", "operation failed: " + std::string(ex.what())}};
+} catch (...) {
+    return {{"ok", false}, {"error", "operation failed"}};
 }
 
 void RelayRuntime::set_stop_callback(std::function<void()> callback) {

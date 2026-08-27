@@ -9,6 +9,8 @@
 #include <filesystem>
 #include <string>
 
+#include <nlohmann/json_fwd.hpp>
+
 namespace yume::client {
 
 // Overwrites the complete currently-owned string buffer before clearing it.
@@ -26,6 +28,24 @@ public:
 
 private:
     std::string& value_;
+};
+
+// Best-effort erasure for JSON copies owned by YUME request plumbing. It
+// recursively wipes string values below `password` and `relay_secret` keys;
+// callers still own and must clear their original input buffers.
+void wipe_relay_request_secrets(nlohmann::json& value) noexcept;
+
+class RelayRequestSecretsWiper {
+public:
+    explicit RelayRequestSecretsWiper(nlohmann::json& value) noexcept
+        : value_(value) {}
+    RelayRequestSecretsWiper(const RelayRequestSecretsWiper&) = delete;
+    RelayRequestSecretsWiper& operator=(
+        const RelayRequestSecretsWiper&) = delete;
+    ~RelayRequestSecretsWiper() { wipe_relay_request_secrets(value_); }
+
+private:
+    nlohmann::json& value_;
 };
 
 std::string derive_relay_secret_b64(const std::string& password);

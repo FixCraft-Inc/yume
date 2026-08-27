@@ -8,8 +8,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <limits>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -121,6 +123,85 @@ void notify_client_status(ClientSession::StatusCallback const& callback,
             LogLevel::Error,
             "client status callback threw an unknown exception");
     }
+}
+
+const std::string* json_string_member(nlohmann::json const& object,
+                                      char const* name) {
+    if (!object.is_object()) return nullptr;
+    const auto found = object.find(name);
+    if (found == object.end()) return nullptr;
+    return found->get_ptr<const nlohmann::json::string_t*>();
+}
+
+const nlohmann::json::boolean_t* json_boolean_member(
+    nlohmann::json const& object, char const* name) {
+    if (!object.is_object()) return nullptr;
+    const auto found = object.find(name);
+    if (found == object.end()) return nullptr;
+    return found->get_ptr<const nlohmann::json::boolean_t*>();
+}
+
+std::optional<std::int64_t> json_integer(
+    nlohmann::json const& value) noexcept {
+    if (const auto* signed_value =
+            value.get_ptr<const nlohmann::json::number_integer_t*>()) {
+        return *signed_value;
+    }
+    if (const auto* unsigned_value =
+            value.get_ptr<const nlohmann::json::number_unsigned_t*>()) {
+        if (*unsigned_value <= static_cast<nlohmann::json::number_unsigned_t>(
+                                   std::numeric_limits<std::int64_t>::max())) {
+            return static_cast<std::int64_t>(*unsigned_value);
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::int64_t> json_integer_member(
+    nlohmann::json const& object, char const* name) {
+    if (!object.is_object()) return std::nullopt;
+    const auto found = object.find(name);
+    if (found == object.end()) return std::nullopt;
+    return json_integer(*found);
+}
+
+bool runtime_self_endpoint(nlohmann::json const& response,
+                           std::string* endpoint_id,
+                           std::string* err) {
+    if (!response.is_object()) {
+        if (err) *err = "runtime status returned a non-object envelope";
+        return false;
+    }
+    const auto* ok = json_boolean_member(response, "ok");
+    if (ok == nullptr) {
+        if (err) *err = "runtime status envelope is missing boolean ok";
+        return false;
+    }
+    if (!*ok) {
+        const auto* operation_error = json_string_member(response, "error");
+        if (err) {
+            *err = operation_error != nullptr && !operation_error->empty()
+                ? *operation_error : "runtime status request failed";
+        }
+        return false;
+    }
+    const auto result = response.find("result");
+    if (result == response.end() || !result->is_object()) {
+        if (err) *err = "runtime status is missing its result object";
+        return false;
+    }
+    const auto self = result->find("self");
+    if (self == result->end() || !self->is_object()) {
+        if (err) *err = "runtime status is missing its self object";
+        return false;
+    }
+    const auto* parsed_endpoint_id = json_string_member(*self, "endpoint_id");
+    if (parsed_endpoint_id == nullptr || parsed_endpoint_id->empty()) {
+        if (err) *err = "runtime status has an invalid self endpoint_id";
+        return false;
+    }
+    if (endpoint_id) *endpoint_id = *parsed_endpoint_id;
+    return true;
 }
 
 }  // namespace
@@ -668,6 +749,81 @@ std::vector<ClientSession::DirectoryEntry> ClientSession::directory(std::string*
     return out;
 }
 
+ClientSession::ContactList ClientSession::list_contacts(std::string* err) const {
+    ContactList out;
+    std::string request_error;
+    const auto response = impl_->runtime.request(
+        "contacts.list", nlohmann::json::object(), &request_error, 10000);
+    if (!request_error.empty()) {
+        if (err) *err = request_error;
+        return out;
+    }
+    if (!response.value("ok", false)) {
+        if (err) *err = response.value("error", "contacts request failed");
+        return out;
+    }
+    const auto result = response.find("result");
+    if (result == response.end() || !result->is_object()) {
+        if (err) *err = "contacts request returned no result object";
+        return out;
+    }
+    out.directory_available = result->value("directory_available", false);
+    out.directory_error = result->value("directory_error", "");
+    const auto contacts = result->find("contacts");
+    if (contacts == result->end() || !contacts->is_array()) {
+        if (err) *err = "contacts result is missing its contacts array";
+        return ContactList{};
+    }
+    out.contacts.reserve(contacts->size());
+    for (const auto& item : *contacts) {
+        if (!item.is_object()) continue;
+        Contact contact;
+        contact.endpoint_id = item.value("endpoint_id", "");
+        contact.display_name = item.value("display_name", "");
+        contact.fingerprint = item.value("fingerprint", "");
+        contact.trust_source = item.value("trust_source", "");
+        contact.endpoint_kind = item.value("endpoint_kind", "");
+        contact.relay_mode = item.value("relay_mode", "");
+        contact.explicit_marker = item.value("explicit_marker", false);
+        contact.configured_mismatch =
+            item.value("configured_mismatch", false);
+        contact.in_directory = item.value("in_directory", false);
+        contact.online = item.value("online", false);
+        contact.remote = item.value("remote", false);
+        out.contacts.push_back(std::move(contact));
+    }
+    return out;
+}
+
+bool ClientSession::forget_contact(std::string const& endpoint_id,
+                                   bool* removed,
+                                   std::string* err) const {
+    if (removed) *removed = false;
+    if (endpoint_id.empty()) {
+        if (err) *err = "contact endpoint id is empty";
+        return false;
+    }
+    std::string request_error;
+    const auto response = impl_->runtime.request(
+        "contacts.forget", {{"endpoint_id", endpoint_id}},
+        &request_error, 10000);
+    if (!request_error.empty()) {
+        if (err) *err = request_error;
+        return false;
+    }
+    if (!response.value("ok", false)) {
+        if (err) *err = response.value("error", "contact forget failed");
+        return false;
+    }
+    const auto result = response.find("result");
+    if (result == response.end() || !result->is_object()) {
+        if (err) *err = "contact forget returned no result object";
+        return false;
+    }
+    if (removed) *removed = result->value("removed", false);
+    return true;
+}
+
 std::string ClientSession::open_chat(std::string const& peer_endpoint_id,
                                      std::string* err) {
     client::ClientConfig cfg;
@@ -765,35 +921,165 @@ bool ClientSession::send_chat(std::string const& channel_id,
     return true;
 }
 
-std::vector<ClientSession::ChatMessage> ClientSession::chat_history(
-    std::string const& channel_id, std::size_t max) const {
+ClientSession::ChatHistoryResult ClientSession::parse_chat_history_response(
+    nlohmann::json const& response,
+    std::string const& channel_id,
+    std::optional<std::string> const& expected_peer_id,
+    std::size_t max,
+    std::string* err) {
+    if (err) err->clear();
+    const auto fail = [err](std::string message) {
+        if (err) *err = std::move(message);
+        return ChatHistoryResult{};
+    };
+
+    if (max == 0U || max > 1000U) {
+        return fail("chat history max must be in 1..1000");
+    }
+    if (!response.is_object()) {
+        return fail("chat history returned a non-object envelope");
+    }
+    const auto* ok = json_boolean_member(response, "ok");
+    if (ok == nullptr) {
+        return fail("chat history envelope is missing boolean ok");
+    }
+    if (!*ok) {
+        const auto* operation_error = json_string_member(response, "error");
+        return fail(operation_error != nullptr && !operation_error->empty()
+                        ? *operation_error : "chat history request failed");
+    }
+
+    const auto result = response.find("result");
+    if (result == response.end() || !result->is_object()) {
+        return fail("chat history is missing its result object");
+    }
+    const auto schema_version = json_integer_member(*result, "schema_version");
+    if (!schema_version || *schema_version != 1) {
+        return fail("chat history has an unsupported schema_version");
+    }
+    const auto* available = json_boolean_member(*result, "available");
+    const auto* storage_error = json_string_member(*result, "error");
+    const auto* truncated = json_boolean_member(*result, "truncated");
+    const auto items = result->find("items");
+    if (available == nullptr || storage_error == nullptr ||
+        truncated == nullptr || items == result->end() || !items->is_array()) {
+        return fail("chat history result schema is invalid");
+    }
+
+    ChatHistoryResult parsed;
+    parsed.available = *available;
+    parsed.truncated = *truncated;
+    parsed.storage_error = *storage_error;
+    if (!parsed.available) {
+        if (parsed.storage_error.empty() || parsed.truncated || !items->empty()) {
+            return fail("unavailable chat history result is inconsistent");
+        }
+        return parsed;
+    }
+    if (!parsed.storage_error.empty()) {
+        return fail("available chat history contains a storage error");
+    }
+    if (items->size() > max) {
+        return fail("chat history exceeded the requested item limit");
+    }
+
+    parsed.messages.reserve(items->size());
+    std::optional<std::int64_t> previous_timestamp;
+    for (const auto& item : *items) {
+        if (!item.is_object()) {
+            return fail("chat history contains a non-object row");
+        }
+        const auto timestamp = json_integer_member(item, "ts_ms");
+        const auto* peer_id = json_string_member(item, "peer_id");
+        const auto* peer_name = json_string_member(item, "peer_name");
+        const auto* direction = json_string_member(item, "direction");
+        const auto* text = json_string_member(item, "text");
+        if (!timestamp || peer_id == nullptr || peer_id->empty() ||
+            peer_name == nullptr || direction == nullptr || text == nullptr ||
+            (*direction != "in" && *direction != "out")) {
+            return fail("chat history row schema is invalid");
+        }
+        if (expected_peer_id && *peer_id != *expected_peer_id) {
+            return fail("chat history row does not match the requested peer");
+        }
+        if (previous_timestamp && *timestamp < *previous_timestamp) {
+            return fail("chat history rows are not ordered oldest-to-newest");
+        }
+        previous_timestamp = *timestamp;
+
+        ChatMessage message;
+        message.channel_id = channel_id;
+        message.from_endpoint_id = *peer_id;
+        message.text = *text;
+        message.ts = std::chrono::system_clock::time_point{
+            std::chrono::milliseconds(*timestamp)};
+        message.outgoing = *direction == "out";
+        parsed.messages.push_back(std::move(message));
+    }
+    return parsed;
+}
+
+ClientSession::ChatHistoryResult ClientSession::chat_history(
+    std::string const& channel_id, std::size_t max, std::string* err) const {
+    if (err) err->clear();
+    if (max == 0U || max > 1000U) {
+        if (err) *err = "chat history max must be in 1..1000";
+        return {};
+    }
+
     nlohmann::json args = nlohmann::json::object();
+    std::optional<std::string> expected_peer_id;
     if (!channel_id.empty()) {
         std::lock_guard<std::mutex> lock(impl_->mtx);
-        auto peer = impl_->chat_peers.find(channel_id);
-        if (peer == impl_->chat_peers.end()) return {};
-        args["peer_id"] = peer->second;
+        const auto peer = impl_->chat_peers.find(channel_id);
+        if (peer == impl_->chat_peers.end()) {
+            if (err) *err = "chat history channel is not open";
+            return {};
+        }
+        expected_peer_id = peer->second;
+        args["peer_id"] = *expected_peer_id;
     }
+    args["limit"] = max;
+
     std::string request_error;
-    auto resp = impl_->runtime.request("history.list", args, &request_error, 10000);
-    if (!request_error.empty() || !resp.value("ok", false)) return {};
-    auto items = resp.find("result");
-    if (items == resp.end() || !items->is_array()) return {};
-    std::vector<ChatMessage> out;
-    for (auto const& item : *items) {
-        ChatMessage msg;
-        msg.channel_id = channel_id;
-        msg.outgoing = item.value("direction", "") == "out";
-        msg.from_endpoint_id = msg.outgoing
-            ? "you" : item.value("peer_id", "");
-        msg.text = item.value("text", "");
-        const auto ts_ms = item.value("ts_ms", std::int64_t{0});
-        msg.ts = std::chrono::system_clock::time_point{
-            std::chrono::milliseconds(ts_ms)};
-        out.push_back(std::move(msg));
+    const auto response = impl_->runtime.request(
+        "history.list", args, &request_error, 10000);
+    if (!request_error.empty()) {
+        if (err) *err = std::move(request_error);
+        return {};
     }
-    if (out.size() <= max) return out;
-    return std::vector<ChatMessage>(out.end() - static_cast<std::ptrdiff_t>(max), out.end());
+    auto parsed = parse_chat_history_response(
+        response, channel_id, expected_peer_id, max, err);
+    if (!parsed.available ||
+        std::none_of(parsed.messages.begin(), parsed.messages.end(),
+                     [](const ChatMessage& message) {
+                         return message.outgoing;
+                     })) {
+        return parsed;
+    }
+
+    std::string status_error;
+    const auto status = impl_->runtime.request(
+        "runtime.status", nlohmann::json::object(), &status_error, 10000);
+    if (!status_error.empty()) {
+        for (auto& message : parsed.messages) {
+            if (message.outgoing) message.from_endpoint_id.clear();
+        }
+        return parsed;
+    }
+    std::string self_endpoint_id;
+    std::string status_schema_error;
+    if (!runtime_self_endpoint(
+            status, &self_endpoint_id, &status_schema_error)) {
+        for (auto& message : parsed.messages) {
+            if (message.outgoing) message.from_endpoint_id.clear();
+        }
+        return parsed;
+    }
+    for (auto& message : parsed.messages) {
+        if (message.outgoing) message.from_endpoint_id = self_endpoint_id;
+    }
+    return parsed;
 }
 
 void ClientSession::set_status_callback(StatusCallback cb) {

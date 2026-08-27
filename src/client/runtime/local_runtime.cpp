@@ -15,6 +15,8 @@ LocalRuntime::LocalRuntime(std::string path, std::shared_ptr<RelayRuntime> relay
             return nlohmann::json{{"ok", false}, {"error", "relay runtime unavailable"}};
         }
         return relay_runtime_->handle_local_request(request);
+    }, [](nlohmann::json& request) {
+        wipe_relay_request_secrets(request);
     }) {}
 
 bool LocalRuntime::start(std::string* error) {

@@ -85,8 +85,12 @@ public:
     bool close_chat(const std::string& channel_id, std::string* error);
     bool send_file(const std::string& peer, const std::filesystem::path& path, const std::string& relay_secret_b64, std::string* error);
     bool send_bytes_path(const std::string& peer, const std::filesystem::path& path, const std::string& relay_secret_b64, std::string* error);
-    bool accept_invite(const std::string& invite_id, const std::string& relay_secret_b64, std::string* error);
-    bool reject_invite(const std::string& invite_id, const std::string& reason, std::string* error);
+    bool accept_invite(const std::string& invite_selector,
+                       const std::string& relay_secret_b64,
+                       std::string* error);
+    bool reject_invite(const std::string& invite_selector,
+                       const std::string& reason,
+                       std::string* error);
     bool admin_attach(const std::string& peer, std::string* error);
     nlohmann::json status_json() const;
     void set_tunnel_pool(std::weak_ptr<TunnelPool> tunnel_pool,
@@ -266,7 +270,7 @@ private:
     void send_admin_response(ChannelState& channel,
                              const nlohmann::json& response,
                              bool stop_after_response);
-    void invoke_stop_callback();
+    bool invoke_stop_callback(std::string* error = nullptr) noexcept;
     bool notify_lifecycle(const std::string& state,
                           const std::string& message,
                           const std::string& detail,

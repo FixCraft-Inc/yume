@@ -18,6 +18,7 @@
 #include "core/security/crypto.hpp"
 
 #if !defined(_WIN32)
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -36,6 +37,8 @@ constexpr std::size_t kFingerprintHexBytes = kFingerprintBytes * 2U;
 
 constexpr std::size_t kMaxCanonicalIdentityBytes = 16U * 1024U;
 constexpr std::size_t kMaxTrustRecordBytes = 1024;
+constexpr std::size_t kMaxScannedTrustDirectoryEntries =
+    (2U * kMaxListedPeerTrustEntries) + 32U;
 constexpr std::string_view kPinFormat = "yume-relay-peer-pin-v1";
 constexpr std::string_view kExplicitFormat =
     "yume-relay-peer-explicit-v1";
@@ -53,6 +56,11 @@ struct ParsedTrustPath {
 struct DiskState {
     std::optional<std::string> pin;
     std::optional<std::string> explicit_marker;
+};
+
+struct PinRecord {
+    std::string endpoint_id;
+    std::string fingerprint;
 };
 
 [[noreturn]] void ThrowErrno(std::string_view action, int error) {
@@ -201,6 +209,15 @@ public:
     int get() const noexcept { return fd_; }
     explicit operator bool() const noexcept { return fd_ >= 0; }
 
+    // Hands the descriptor to an owner that closes it itself, such as
+    // fdopendir's DIR*. Double-closing a descriptor another thread may have
+    // already reused is the bug this exists to prevent.
+    int release() noexcept {
+        const int released = fd_;
+        fd_ = -1;
+        return released;
+    }
+
 private:
     int fd_;
 };
@@ -345,19 +362,23 @@ std::optional<FileDescriptor> OpenTrustDirectory(
 #endif
 }
 
-std::optional<std::string> ReadRecordIfPresent(
+// Reads one record file by its on-disk name and returns its exact bytes.
+// `subject` names the record in policy errors: a lookup knows the endpoint it
+// asked for, while a directory listing only knows the file it found.
+std::optional<std::string> ReadRecordContent(
         int directory_fd,
         RecordKind kind,
-        std::string_view endpoint_id) {
+        const std::string& name,
+        std::string_view subject) {
 #if !defined(O_NOFOLLOW) || !defined(O_CLOEXEC) || !defined(O_NONBLOCK)
     (void)directory_fd;
     (void)kind;
-    (void)endpoint_id;
+    (void)name;
+    (void)subject;
     throw PeerTrustError(
         "secure relay peer trust storage requires O_NOFOLLOW, O_CLOEXEC, "
         "and O_NONBLOCK");
 #else
-    const std::string name = RecordName(endpoint_id, kind);
     FileDescriptor file(::openat(
         directory_fd, name.c_str(),
         O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK));
@@ -373,7 +394,7 @@ std::optional<std::string> ReadRecordIfPresent(
     if (info.st_size <= 0 ||
         static_cast<std::uintmax_t>(info.st_size) >
             kMaxTrustRecordBytes) {
-        ThrowPolicy("protected trust record size is invalid", endpoint_id);
+        ThrowPolicy("protected trust record size is invalid", subject);
     }
 
     std::string content(static_cast<std::size_t>(info.st_size), '\0');
@@ -387,8 +408,7 @@ std::optional<std::string> ReadRecordIfPresent(
             ThrowErrno("read protected relay peer trust file", errno);
         }
         if (count == 0) {
-            ThrowPolicy("protected trust record changed while read",
-                        endpoint_id);
+            ThrowPolicy("protected trust record changed while read", subject);
         }
         offset += static_cast<std::size_t>(count);
     }
@@ -402,10 +422,20 @@ std::optional<std::string> ReadRecordIfPresent(
         ThrowErrno("verify protected relay peer trust file size", errno);
     }
     if (extra_count != 0) {
-        ThrowPolicy("protected trust record grew while read", endpoint_id);
+        ThrowPolicy("protected trust record grew while read", subject);
     }
-    return DecodeRecord(kind, endpoint_id, content);
+    return content;
 #endif
+}
+
+std::optional<std::string> ReadRecordIfPresent(
+        int directory_fd,
+        RecordKind kind,
+        std::string_view endpoint_id) {
+    auto content = ReadRecordContent(
+        directory_fd, kind, RecordName(endpoint_id, kind), endpoint_id);
+    if (!content) return std::nullopt;
+    return DecodeRecord(kind, endpoint_id, *content);
 }
 
 void WriteAll(int fd, std::string_view content) {
@@ -493,6 +523,99 @@ bool CreateRecordExclusive(int directory_fd,
     }
     return true;
 #endif
+}
+
+bool IsPinRecordName(std::string_view name) {
+    constexpr std::string_view suffix = ".pin";
+    if (name.size() != kFingerprintHexBytes + suffix.size() ||
+        !name.ends_with(suffix)) {
+        return false;
+    }
+    const std::string_view digest = name.substr(0, kFingerprintHexBytes);
+    return std::all_of(digest.begin(), digest.end(), [](unsigned char value) {
+        return (value >= '0' && value <= '9') ||
+               (value >= 'a' && value <= 'f');
+    });
+}
+
+// Names of every pin record in the trust directory. Enumeration is bounded:
+// a corrupted or hostile directory must not be able to make a listing
+// allocate without limit, and refusing loudly beats silently hiding peers.
+std::vector<std::string> ListPinRecordNames(int directory_fd) {
+    FileDescriptor duplicate(::dup(directory_fd));
+    if (!duplicate) {
+        ThrowErrno("duplicate relay peer trust directory", errno);
+    }
+    DIR* stream = ::fdopendir(duplicate.get());
+    if (stream == nullptr) {
+        ThrowErrno("enumerate relay peer trust directory", errno);
+    }
+    // fdopendir owns the descriptor once it succeeds; closedir closes it.
+    (void)duplicate.release();
+    struct StreamCloser {
+        DIR* stream;
+        ~StreamCloser() { (void)::closedir(stream); }
+    } closer{stream};
+
+    std::vector<std::string> names;
+    ::rewinddir(stream);
+    std::size_t scanned = 0;
+    for (;;) {
+        errno = 0;
+        const dirent* entry = ::readdir(stream);
+        if (entry == nullptr) {
+            if (errno != 0) {
+                ThrowErrno("enumerate relay peer trust directory", errno);
+            }
+            break;
+        }
+        const std::string_view name(entry->d_name);
+        if (name == "." || name == "..") continue;
+        if (++scanned > kMaxScannedTrustDirectoryEntries) {
+            throw PeerTrustError(
+                "relay peer trust directory holds more entries than the "
+                "scan bound allows");
+        }
+        if (!IsPinRecordName(name)) continue;
+        if (names.size() >= kMaxListedPeerTrustEntries) {
+            throw PeerTrustError(
+                "relay peer trust directory holds more pin records than the "
+                "listing bound allows");
+        }
+        names.emplace_back(name);
+    }
+    return names;
+}
+
+// A pin record names the endpoint it belongs to, while its filename is that
+// endpoint's digest. Reading both and requiring them to agree means a planted
+// file cannot claim trust for an endpoint it is not named after.
+std::optional<PinRecord> ReadPinRecordByName(int directory_fd,
+                                             const std::string& name) {
+    auto content = ReadRecordContent(
+        directory_fd, RecordKind::Pin, name, name);
+    if (!content) return std::nullopt;
+
+    const std::string prefix =
+        "format=" + RecordFormat(RecordKind::Pin) + "\nendpoint=";
+    if (!content->starts_with(prefix)) {
+        ThrowPolicy("malformed protected trust record", name);
+    }
+    const auto terminator = content->find('\n', prefix.size());
+    if (terminator == std::string::npos) {
+        ThrowPolicy("malformed protected trust record", name);
+    }
+    PinRecord record;
+    record.endpoint_id = content->substr(prefix.size(),
+                                         terminator - prefix.size());
+    if (!IsValidPeerEndpointId(record.endpoint_id) ||
+        RecordName(record.endpoint_id, RecordKind::Pin) != name) {
+        ThrowPolicy("protected trust record does not match its file name",
+                    name);
+    }
+    record.fingerprint = DecodeRecord(
+        RecordKind::Pin, record.endpoint_id, *content);
+    return record;
 }
 
 DiskState ReadDiskState(int directory_fd, std::string_view endpoint_id) {
@@ -704,6 +827,109 @@ PeerTrustDecision PeerTrustStore::commit_verified(
     }
     return committed;
 #endif
+}
+
+std::vector<PeerTrustEntry> PeerTrustStore::list() const {
+#if defined(_WIN32)
+    throw PeerTrustError(
+        "secure relay peer trust storage is unavailable on Windows");
+#else
+    // Keyed by endpoint ID so disk and configuration merge into one row per
+    // peer and the result is ordered without a separate sort.
+    std::map<std::string, PeerTrustEntry, std::less<>> merged;
+
+    if (auto directory = OpenTrustDirectory(config_.directory, false)) {
+        DirectoryLock lock(directory->get(), LOCK_SH);
+        for (const auto& name : ListPinRecordNames(directory->get())) {
+            auto record = ReadPinRecordByName(directory->get(), name);
+            if (!record) continue;  // removed between listing and read
+            // Re-read through the shared path so the pin/marker agreement
+            // rules that guard a handshake also guard what is listed.
+            const DiskState state = ReadDiskState(
+                directory->get(), record->endpoint_id);
+            if (!state.pin) continue;
+
+            PeerTrustEntry entry;
+            entry.endpoint_id = record->endpoint_id;
+            entry.fingerprint = *state.pin;
+            entry.explicit_marker = state.explicit_marker.has_value();
+            entry.source = entry.explicit_marker ? PeerTrustSource::Explicit
+                                                 : PeerTrustSource::Tofu;
+            merged.insert_or_assign(entry.endpoint_id, std::move(entry));
+        }
+    }
+
+    for (const auto& [endpoint_id, fingerprint] : config_.explicit_pins) {
+        const auto found = merged.find(endpoint_id);
+        if (found == merged.end()) {
+            PeerTrustEntry entry;
+            entry.endpoint_id = endpoint_id;
+            entry.fingerprint = fingerprint;
+            entry.source = PeerTrustSource::Configured;
+            merged.emplace(endpoint_id, std::move(entry));
+            continue;
+        }
+        found->second.source = PeerTrustSource::Configured;
+        found->second.configured_mismatch =
+            found->second.fingerprint != fingerprint;
+    }
+
+    std::vector<PeerTrustEntry> entries;
+    entries.reserve(merged.size());
+    for (auto& [endpoint_id, entry] : merged) {
+        entries.push_back(std::move(entry));
+    }
+    return entries;
+#endif
+}
+
+bool PeerTrustStore::forget(std::string_view endpoint_id) const {
+#if defined(_WIN32)
+    (void)endpoint_id;
+    throw PeerTrustError(
+        "secure relay peer trust storage is unavailable on Windows");
+#else
+    if (!IsValidPeerEndpointId(endpoint_id)) {
+        throw PeerTrustError("invalid relay peer endpoint ID");
+    }
+    if (ConfiguredPin(config_, endpoint_id) != nullptr) {
+        throw PeerTrustError(
+            "a configured relay peer pin is operator authorization, not "
+            "learned trust; remove it from the configuration instead");
+    }
+
+    auto directory = OpenTrustDirectory(config_.directory, false);
+    if (!directory) return false;
+    DirectoryLock lock(directory->get(), LOCK_EX);
+
+    const DiskState state = ReadDiskState(directory->get(), endpoint_id);
+    if (!state.pin) return false;
+    if (state.explicit_marker) {
+        throw PeerTrustError(
+            "an explicitly authorized relay peer cannot be forgotten; its "
+            "trust came from an out-of-band decision, not from first use");
+    }
+
+    const std::string name = RecordName(endpoint_id, RecordKind::Pin);
+    if (::unlinkat(directory->get(), name.c_str(), 0) != 0) {
+        const int unlink_error = errno;
+        if (unlink_error == ENOENT) return false;
+        ThrowErrno("remove relay peer pin", unlink_error);
+    }
+    if (::fsync(directory->get()) != 0) {
+        ThrowErrno("sync relay peer trust directory", errno);
+    }
+    return true;
+#endif
+}
+
+std::string_view to_string(PeerTrustSource source) noexcept {
+    switch (source) {
+        case PeerTrustSource::Tofu:       return "tofu";
+        case PeerTrustSource::Explicit:   return "explicit";
+        case PeerTrustSource::Configured: return "configured";
+    }
+    return "unknown";
 }
 
 }  // namespace yume::client::relay_v2

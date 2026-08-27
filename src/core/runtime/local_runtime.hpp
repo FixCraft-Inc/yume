@@ -16,6 +16,7 @@
 namespace yume::local_runtime {
 
 using RequestHandler = std::function<nlohmann::json(const nlohmann::json&)>;
+using RequestCleanup = std::function<void(nlohmann::json&)>;
 
 bool supported();
 std::string runtime_dir();
@@ -23,7 +24,8 @@ std::string socket_path(const std::string& role, const std::string& instance_key
 
 class Server {
 public:
-    Server(std::string path, RequestHandler handler);
+    Server(std::string path, RequestHandler handler,
+           RequestCleanup cleanup = {});
     ~Server();
 
     bool start(std::string* error);
@@ -43,6 +45,7 @@ private:
 
     std::string path_;
     RequestHandler handler_;
+    RequestCleanup cleanup_;
     std::atomic<bool> running_{false};
     std::atomic<bool> stopping_{false};
     int server_fd_{-1};

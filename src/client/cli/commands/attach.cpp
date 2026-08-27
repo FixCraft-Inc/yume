@@ -18,6 +18,7 @@
 #include "client/cli/config/args.hpp"
 #include "client/cli/config/input.hpp"
 #include "client/cli/commands/relay_secret.hpp"
+#include "client/relay/secret.hpp"
 #include "client/runtime/local_runtime.hpp"
 #include "core/security/identity.hpp"
 #include "util.hpp"
@@ -26,16 +27,26 @@ namespace yume::client {
 namespace {
 
 void print_local_client_attach_help() {
-    util::log_info("Attached console: help | whoami | status | directory | invites | chat <peer> | send <text> | send-file <peer> <path> | send-bytes <peer> <path> | accept <invite|from> [password] | reject <invite|from> [reason] | history [peer] | history-delete <peer|all> | admin attach <peer> | admin status | admin sessions | admin stop | quit");
+    util::log_info("Attached console: help | whoami | status | directory | contacts | forget <endpoint-id> | invites | chat <peer> | send <text> | send-file <peer> <path> | send-bytes <peer> <path> | accept <invite|from> [password] | reject <invite|from> [reason] | history [peer] | history-delete <peer|all> | admin attach <peer> | admin status | admin sessions | admin stop | quit");
 }
 
 nlohmann::json request_local_client_runtime(const std::string& socket_path,
                                            const std::string& op,
-                                           const nlohmann::json& args,
+                                           nlohmann::json args,
                                            std::string* error) {
+    // This wrapper owns the request copy passed to the socket transport. Move
+    // secret-bearing arguments into it and wipe both objects on every exit;
+    // the caller remains responsible for its original password/key buffer.
+    RelayRequestSecretsWiper args_wiper(args);
+    nlohmann::json request{
+        {"op", op},
+        {"args", nlohmann::json::object()},
+    };
+    RelayRequestSecretsWiper request_wiper(request);
+    request["args"] = std::move(args);
     return yume::client::LocalRuntime::request(
         socket_path,
-        nlohmann::json{{"op", op}, {"args", args}},
+        request,
         error,
         10000);
 }
@@ -275,6 +286,52 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
             }
             continue;
         }
+        if (line == "contacts") {
+            auto resp = request_local_client_runtime(socket_path, "contacts.list", nlohmann::json::object(), &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                util::log_warn(error.empty() ? resp.value("error", "contacts failed") : error);
+                error.clear();
+                continue;
+            }
+            const auto& result = resp["result"];
+            if (!result.value("directory_available", false)) {
+                // Trust is local, presence is not. Say which half is missing
+                // rather than showing every contact as offline.
+                util::log_warn("directory unavailable; presence is unknown: " +
+                               result.value("directory_error", "unknown error"));
+            }
+            for (const auto& contact : result["contacts"]) {
+                std::cout << contact.value("endpoint_id", "") << " "
+                          << contact.value("display_name", "")
+                          << " trust=" << contact.value("trust_source", "")
+                          << " presence=" << (!contact.value("in_directory", false)
+                                                  ? "unknown"
+                                                  : (contact.value("online", false) ? "online" : "offline"));
+                if (contact.value("configured_mismatch", false)) {
+                    std::cout << " CONFIGURED-PIN-MISMATCH";
+                }
+                std::cout << std::endl;
+            }
+            continue;
+        }
+        if (line == "forget") {
+            util::log_warn("usage: forget <endpoint-id>");
+            continue;
+        }
+        if (line.rfind("forget ", 0) == 0) {
+            auto resp = request_local_client_runtime(
+                socket_path, "contacts.forget",
+                {{"endpoint_id", trim_copy(line.substr(7))}}, &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                util::log_warn(error.empty() ? resp.value("error", "forget failed") : error);
+                error.clear();
+                continue;
+            }
+            util::log_info(resp["result"].value("removed", false)
+                               ? "contact forgotten"
+                               : "no learned trust was stored for that peer");
+            continue;
+        }
         if (line == "invites") {
             auto resp = request_local_client_runtime(socket_path, "invite.list", nlohmann::json::object(), &error);
             if (!error.empty() || !resp.value("ok", false)) {
@@ -426,7 +483,7 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
                 continue;
             }
             auto resp = request_local_client_runtime(socket_path, "invite.accept",
-                                                     {{"invite_id", invite_id}, {"relay_secret", relay_secret_b64}}, &error);
+                                                     {{"invite_selector", invite_id}, {"relay_secret", relay_secret_b64}}, &error);
             if (!error.empty() || !resp.value("ok", false)) {
                 util::log_warn(error.empty() ? resp.value("error", "invite accept failed") : error);
                 error.clear();
@@ -444,7 +501,7 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
             std::string reason;
             std::getline(iss, reason);
             auto resp = request_local_client_runtime(socket_path, "invite.reject",
-                                                     {{"invite_id", invite_id}, {"reason", trim_copy(reason)}}, &error);
+                                                     {{"invite_selector", invite_id}, {"reason", trim_copy(reason)}}, &error);
             if (!error.empty() || !resp.value("ok", false)) {
                 util::log_warn(error.empty() ? resp.value("error", "invite reject failed") : error);
                 error.clear();
@@ -456,6 +513,8 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
             nlohmann::json req_args = nlohmann::json::object();
             if (arg != "all" && !arg.empty()) {
                 req_args["peer_id"] = arg;
+            } else if (arg == "all") {
+                req_args["all"] = true;
             }
             auto resp = request_local_client_runtime(socket_path, "history.delete", req_args, &error);
             if (!error.empty() || !resp.value("ok", false)) {
@@ -476,10 +535,34 @@ int run_local_client_attach(const std::string& socket_path, const ParsedArgs& ar
                 error.clear();
                 continue;
             }
-            for (const auto& item : resp["result"]) {
+            const auto result = resp.find("result");
+            if (result == resp.end() || !result->is_object() ||
+                !result->contains("items") ||
+                !(*result)["items"].is_array() ||
+                !result->contains("available") ||
+                !(*result)["available"].is_boolean() ||
+                !result->contains("truncated") ||
+                !(*result)["truncated"].is_boolean() ||
+                !result->contains("error") ||
+                !(*result)["error"].is_string()) {
+                util::log_warn("history response was malformed");
+                continue;
+            }
+            if (!result->value("available", false)) {
+                util::log_warn(result->value(
+                    "error", "history storage is unavailable"));
+            }
+            for (const auto& item : (*result)["items"]) {
+                if (!item.is_object()) {
+                    util::log_warn("history response contained a malformed item");
+                    continue;
+                }
                 std::cout << item.value("direction", "?") << " "
                           << item.value("peer_name", item.value("peer_id", ""))
                           << " " << item.value("text", "") << std::endl;
+            }
+            if (result->value("truncated", false)) {
+                util::log_warn("history output is truncated");
             }
             continue;
         }

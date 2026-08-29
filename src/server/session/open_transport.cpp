@@ -11,6 +11,94 @@ namespace yume::server {
 
 using namespace detail;
 
+namespace {
+
+struct ResolveClassification {
+    bool ignore_{false};
+    std::string error_;
+};
+
+ResolveClassification classify_resolve_result(
+    const boost::system::error_code& error,
+    bool timed_out,
+    bool session_closing) {
+    if (!error) return {};
+    if (error == boost::asio::error::operation_aborted && session_closing) {
+        return {true, {}};
+    }
+    return {false, timed_out ? "resolve timeout"
+                             : "resolve failed: " + error.message()};
+}
+
+template <typename Executor, typename Cancel>
+void arm_resolver_timeout(
+    const std::shared_ptr<boost::asio::deadline_timer>& timer,
+    Executor executor,
+    const std::shared_ptr<bool>& timed_out,
+    Cancel cancel) {
+    timer->async_wait(boost::asio::bind_executor(
+        std::move(executor),
+        [timed_out, cancel = std::move(cancel)](
+            const boost::system::error_code& error) mutable {
+            if (error) return;
+            *timed_out = true;
+            cancel();
+        }));
+}
+
+template <typename Endpoint>
+struct EndpointFilterResult {
+    std::vector<Endpoint> allowed_;
+    bool blocked_active_server_{false};
+    bool blocked_egress_filter_{false};
+    std::string egress_filter_reason_;
+
+    std::string rejection_reason() const {
+        if (blocked_active_server_) {
+            return "blocked destination: active server endpoint";
+        }
+        if (blocked_egress_filter_) {
+            return "blocked destination: egress filter";
+        }
+        return "blocked destination";
+    }
+};
+
+template <typename Endpoint, typename Config, typename LocalAddress>
+EndpointFilterResult<Endpoint> filter_open_endpoints(
+    std::vector<Endpoint> resolved,
+    const Config& config,
+    const LocalAddress& session_local_address,
+    bool allow_local_ip,
+    bool full_control,
+    Manager* manager) {
+    EndpointFilterResult<Endpoint> result;
+    result.allowed_.reserve(resolved.size());
+    for (auto& endpoint : resolved) {
+        if (is_active_server_endpoint(
+                endpoint, config, session_local_address)) {
+            result.blocked_active_server_ = true;
+            continue;
+        }
+        if (!is_allowed_address(endpoint.address(), allow_local_ip,
+                                full_control)) {
+            continue;
+        }
+        std::string reason;
+        if (!egress_filter_allows(manager, endpoint.address(), &reason)) {
+            result.blocked_egress_filter_ = true;
+            if (result.egress_filter_reason_.empty()) {
+                result.egress_filter_reason_ = std::move(reason);
+            }
+            continue;
+        }
+        result.allowed_.push_back(std::move(endpoint));
+    }
+    return result;
+}
+
+}  // namespace
+
 void Session::start_udp_open(uint8_t stream_id, const std::string& host, int port) {
     util::log_info("session " + std::to_string(session_id_) + ": OPEN udp stream " +
                    std::to_string(stream_id) + " -> " + host + ":" + std::to_string(port));
@@ -62,30 +150,29 @@ void Session::start_udp_open(uint8_t stream_id, const std::string& host, int por
                 }
             }
 
-            if (ec) {
-                if (ec == boost::asio::error::operation_aborted &&
-                    self->close_state_ != CloseState::Open) {
-                    return;
-                }
-                const std::string reason =
-                    *resolve_timed_out ? "resolve timeout"
-                                       : ("resolve failed: " + ec.message());
+            const ResolveClassification resolve = classify_resolve_result(
+                ec, *resolve_timed_out,
+                self->close_state_ != CloseState::Open);
+            if (resolve.ignore_) {
+                return;
+            }
+            if (!resolve.error_.empty()) {
                 YUME_TIMING_LOG(
                     "server.open",
                     "resolve_failed",
                     "session=" + std::to_string(self->session_id_) +
                         " stream=" + std::to_string(stream_id) +
                         " proto=udp ms=" + std::to_string(resolve_ms) +
-                        " reason=" + reason);
-                self->send_open_reply(stream_id, false, reason);
+                        " reason=" + resolve.error_);
+                self->send_open_reply(stream_id, false, resolve.error_);
                 std::lock_guard<std::mutex> lock(self->streams_mutex_);
                 self->udp_streams_.erase(stream_id);
                 return;
             }
-            std::size_t result_count = 0;
+
+            std::vector<boost::asio::ip::udp::endpoint> resolved;
             for (const auto& result : results) {
-                (void)result;
-                ++result_count;
+                resolved.push_back(result.endpoint());
             }
             YUME_TIMING_LOG(
                 "server.open",
@@ -93,51 +180,23 @@ void Session::start_udp_open(uint8_t stream_id, const std::string& host, int por
                 "session=" + std::to_string(self->session_id_) +
                     " stream=" + std::to_string(stream_id) +
                     " proto=udp ms=" + std::to_string(resolve_ms) +
-                    " results=" + std::to_string(result_count));
+                    " results=" + std::to_string(resolved.size()));
 
-            std::vector<boost::asio::ip::udp::endpoint> allowed;
-            bool blocked_active_server = false;
-            bool blocked_egress_filter = false;
-            std::string egress_filter_reason;
-            for (const auto& entry : results) {
-                if (is_active_server_endpoint(
-                        entry.endpoint(), self->cfg_, self_local_addr)) {
-                    blocked_active_server = true;
-                    continue;
-                }
-                if (is_allowed_address(entry.endpoint().address(),
-                                       self->session_allow_local_ip_,
-                                       self->session_control_full_)) {
-                    std::string reason;
-                    if (!egress_filter_allows(
-                            self->manager_, entry.endpoint().address(), &reason)) {
-                        blocked_egress_filter = true;
-                        if (egress_filter_reason.empty()) {
-                            egress_filter_reason = std::move(reason);
-                        }
-                        continue;
-                    }
-                    allowed.push_back(entry.endpoint());
-                }
-            }
-
-            if (allowed.empty()) {
-                self->send_open_reply(
-                    stream_id,
-                    false,
-                    blocked_active_server
-                        ? "blocked destination: active server endpoint"
-                        : (blocked_egress_filter
-                               ? "blocked destination: egress filter"
-                               : "blocked destination"));
-                if (blocked_egress_filter) {
+            auto filtered = filter_open_endpoints(
+                std::move(resolved), self->cfg_, self_local_addr,
+                self->session_allow_local_ip_, self->session_control_full_,
+                self->manager_);
+            if (filtered.allowed_.empty()) {
+                self->send_open_reply(stream_id, false,
+                                      filtered.rejection_reason());
+                if (filtered.blocked_egress_filter_) {
                     util::log_info_rate_limited(
                         "server-open-egress-filter",
                         "egress filter blocked UDP OPEN target " + udp->host +
                             ":" + std::to_string(udp->port) +
-                            (egress_filter_reason.empty()
+                            (filtered.egress_filter_reason_.empty()
                                  ? ""
-                                 : " (" + egress_filter_reason + ")"),
+                                 : " (" + filtered.egress_filter_reason_ + ")"),
                         30000);
                 }
                 std::lock_guard<std::mutex> lock(self->streams_mutex_);
@@ -145,8 +204,8 @@ void Session::start_udp_open(uint8_t stream_id, const std::string& host, int por
                 return;
             }
 
-            prefer_ipv4_endpoints(&allowed);
-            udp->remote = allowed.front();
+            prefer_ipv4_endpoints(&filtered.allowed_);
+            udp->remote = filtered.allowed_.front();
             boost::system::error_code ec2;
             udp->socket.open(udp->remote.protocol(), ec2);
             if (ec2) {
@@ -219,53 +278,29 @@ void Session::start_udp_open(uint8_t stream_id, const std::string& host, int por
                         std::to_string(resolve_ms) +
                         " results=" + std::to_string(addresses.size()));
 
-                std::vector<boost::asio::ip::udp::endpoint> allowed;
-                bool blocked_active_server = false;
-                bool blocked_egress_filter = false;
-                std::string egress_filter_reason;
+                std::vector<boost::asio::ip::udp::endpoint> resolved;
+                resolved.reserve(addresses.size());
                 for (const auto& address : addresses) {
-                    boost::asio::ip::udp::endpoint endpoint(
+                    resolved.emplace_back(
                         address, static_cast<unsigned short>(port));
-                    if (is_active_server_endpoint(
-                            endpoint, self->cfg_, self_local_addr)) {
-                        blocked_active_server = true;
-                        continue;
-                    }
-                    if (is_allowed_address(endpoint.address(),
-                                           self->session_allow_local_ip_,
-                                           self->session_control_full_)) {
-                        std::string filter_reason;
-                        if (!egress_filter_allows(
-                                self->manager_,
-                                endpoint.address(),
-                                &filter_reason)) {
-                            blocked_egress_filter = true;
-                            if (egress_filter_reason.empty()) {
-                                egress_filter_reason = std::move(filter_reason);
-                            }
-                            continue;
-                        }
-                        allowed.push_back(endpoint);
-                    }
                 }
-
-                if (allowed.empty()) {
-                    self->send_open_reply(
-                        stream_id,
-                        false,
-                        blocked_active_server
-                            ? "blocked destination: active server endpoint"
-                            : (blocked_egress_filter
-                                   ? "blocked destination: egress filter"
-                                   : "blocked destination"));
-                    if (blocked_egress_filter) {
+                auto filtered = filter_open_endpoints(
+                    std::move(resolved), self->cfg_, self_local_addr,
+                    self->session_allow_local_ip_,
+                    self->session_control_full_, self->manager_);
+                if (filtered.allowed_.empty()) {
+                    self->send_open_reply(stream_id, false,
+                                          filtered.rejection_reason());
+                    if (filtered.blocked_egress_filter_) {
                         util::log_info_rate_limited(
                             "server-open-egress-filter",
                             "egress filter blocked UDP OPEN target " +
                                 udp->host + ":" + std::to_string(udp->port) +
-                                (egress_filter_reason.empty()
+                                (filtered.egress_filter_reason_.empty()
                                      ? ""
-                                     : " (" + egress_filter_reason + ")"),
+                                     : " (" +
+                                           filtered.egress_filter_reason_ +
+                                           ")"),
                             30000);
                     }
                     std::lock_guard<std::mutex> lock(self->streams_mutex_);
@@ -273,7 +308,7 @@ void Session::start_udp_open(uint8_t stream_id, const std::string& host, int por
                     return;
                 }
 
-                udp->remote = allowed.front();
+                udp->remote = filtered.allowed_.front();
                 boost::system::error_code ec2;
                 udp->socket.open(udp->remote.protocol(), ec2);
                 if (ec2) {
@@ -314,15 +349,8 @@ void Session::start_udp_open(uint8_t stream_id, const std::string& host, int por
             std::to_string(port),
             resolver_flags,
             boost::asio::bind_executor(strand_, resolver_handler));
-        resolver_timer->async_wait(boost::asio::bind_executor(
-            strand_,
-            [udp, resolve_timed_out](const boost::system::error_code& ec) {
-                if (ec) {
-                    return;
-                }
-                *resolve_timed_out = true;
-                udp->resolver.cancel();
-            }));
+        arm_resolver_timeout(resolver_timer, strand_, resolve_timed_out,
+                             [udp] { udp->resolver.cancel(); });
     } else {
         udp->resolver.async_resolve(
             boost::asio::ip::udp::v4(),
@@ -330,15 +358,8 @@ void Session::start_udp_open(uint8_t stream_id, const std::string& host, int por
             std::to_string(port),
             resolver_flags,
             boost::asio::bind_executor(strand_, resolver_handler));
-        resolver_timer->async_wait(boost::asio::bind_executor(
-            strand_,
-            [udp, resolve_timed_out](const boost::system::error_code& ec) {
-                if (ec) {
-                    return;
-                }
-                *resolve_timed_out = true;
-                udp->resolver.cancel();
-            }));
+        arm_resolver_timeout(resolver_timer, strand_, resolve_timed_out,
+                             [udp] { udp->resolver.cancel(); });
     }
 }
 
@@ -392,49 +413,22 @@ void Session::start_tcp_open(uint8_t stream_id, const std::string& host, int por
                     " ms=" + std::to_string(resolve_ms) +
                     " results=" + std::to_string(result_count));
 
-            std::vector<boost::asio::ip::tcp::endpoint> allowed;
-            bool blocked_active_server = false;
-            bool blocked_egress_filter = false;
-            std::string egress_filter_reason;
-            for (const auto& endpoint : resolved) {
-                if (is_active_server_endpoint(
-                        endpoint, self->cfg_, self_local_addr)) {
-                    blocked_active_server = true;
-                    continue;
-                }
-                if (is_allowed_address(endpoint.address(),
-                                       self->session_allow_local_ip_,
-                                       self->session_control_full_)) {
-                    std::string reason;
-                    if (!egress_filter_allows(
-                            self->manager_, endpoint.address(), &reason)) {
-                        blocked_egress_filter = true;
-                        if (egress_filter_reason.empty()) {
-                            egress_filter_reason = std::move(reason);
-                        }
-                        continue;
-                    }
-                    allowed.push_back(endpoint);
-                }
-            }
-
-            if (allowed.empty()) {
-                self->send_open_reply(
-                    stream_id,
-                    false,
-                    blocked_active_server
-                        ? "blocked destination: active server endpoint"
-                        : (blocked_egress_filter
-                               ? "blocked destination: egress filter"
-                               : "blocked destination"));
-                if (blocked_egress_filter) {
+            auto filtered = filter_open_endpoints(
+                std::move(resolved), self->cfg_, self_local_addr,
+                self->session_allow_local_ip_, self->session_control_full_,
+                self->manager_);
+            if (filtered.allowed_.empty()) {
+                self->send_open_reply(stream_id, false,
+                                      filtered.rejection_reason());
+                if (filtered.blocked_egress_filter_) {
                     util::log_info_rate_limited(
                         "server-open-egress-filter",
                         "egress filter blocked TCP OPEN target " + remote->host +
                             ":" + std::to_string(remote->port) +
-                            (egress_filter_reason.empty()
+                            (filtered.egress_filter_reason_.empty()
                                  ? ""
-                                 : " (" + egress_filter_reason + ")"),
+                                 : " (" +
+                                       filtered.egress_filter_reason_ + ")"),
                         30000);
                 }
                 std::lock_guard<std::mutex> lock(self->streams_mutex_);
@@ -442,7 +436,7 @@ void Session::start_tcp_open(uint8_t stream_id, const std::string& host, int por
                 return;
             }
 
-            prefer_ipv4_endpoints(&allowed);
+            prefer_ipv4_endpoints(&filtered.allowed_);
 
             auto connect_timer =
                 std::make_shared<boost::asio::deadline_timer>(
@@ -456,7 +450,7 @@ void Session::start_tcp_open(uint8_t stream_id, const std::string& host, int por
             // shared_ptr captures from continue_tcp_open's body.
             boost::asio::async_connect(
                 remote->socket,
-                allowed,
+                filtered.allowed_,
                 boost::asio::bind_executor(
                     self->strand_,
                     [=](const boost::system::error_code& ec2,
@@ -553,22 +547,21 @@ void Session::start_tcp_open(uint8_t stream_id, const std::string& host, int por
                 }
             }
 
-            if (ec) {
-                if (ec == boost::asio::error::operation_aborted &&
-                    self->close_state_ != CloseState::Open) {
-                    return;
-                }
-                const std::string reason =
-                    *resolve_timed_out ? "resolve timeout"
-                                       : ("resolve failed: " + ec.message());
+            const ResolveClassification resolve = classify_resolve_result(
+                ec, *resolve_timed_out,
+                self->close_state_ != CloseState::Open);
+            if (resolve.ignore_) {
+                return;
+            }
+            if (!resolve.error_.empty()) {
                 YUME_TIMING_LOG(
                     "server.open",
                     "resolve_failed",
                     "session=" + std::to_string(self->session_id_) +
                         " stream=" + std::to_string(stream_id) +
                         " proto=tcp ms=" + std::to_string(resolve_ms) +
-                        " reason=" + reason);
-                self->send_open_reply(stream_id, false, reason);
+                        " reason=" + resolve.error_);
+                self->send_open_reply(stream_id, false, resolve.error_);
                 std::lock_guard<std::mutex> lock(self->streams_mutex_);
                 self->streams_.erase(stream_id);
                 return;
@@ -632,16 +625,8 @@ void Session::start_tcp_open(uint8_t stream_id, const std::string& host, int por
             std::to_string(port),
             resolver_flags,
             boost::asio::bind_executor(strand_, resolver_handler));
-        resolver_timer->async_wait(boost::asio::bind_executor(
-            strand_,
-            [self, stream_id, remote, resolve_timed_out](
-                const boost::system::error_code& ec) {
-                if (ec) {
-                    return;
-                }
-                *resolve_timed_out = true;
-                remote->resolver.cancel();
-            }));
+        arm_resolver_timeout(resolver_timer, strand_, resolve_timed_out,
+                             [remote] { remote->resolver.cancel(); });
     } else {
         remote->resolver.async_resolve(
             boost::asio::ip::tcp::v4(),
@@ -649,16 +634,8 @@ void Session::start_tcp_open(uint8_t stream_id, const std::string& host, int por
             std::to_string(port),
             resolver_flags,
             boost::asio::bind_executor(strand_, resolver_handler));
-        resolver_timer->async_wait(boost::asio::bind_executor(
-            strand_,
-            [self, stream_id, remote, resolve_timed_out](
-                const boost::system::error_code& ec) {
-                if (ec) {
-                    return;
-                }
-                *resolve_timed_out = true;
-                remote->resolver.cancel();
-            }));
+        arm_resolver_timeout(resolver_timer, strand_, resolve_timed_out,
+                             [remote] { remote->resolver.cancel(); });
     }
 }
 

@@ -6,8 +6,9 @@ This page covers the release, deployment, and service workflows that operators n
 
 The 0.2.0 release surface is Linux x86-64 only. A release publishes:
 
-- `yume-amd64-linux.tar.xz`, the client bundle (`yume`, the Chrome TLS helper,
-  license, third-party notices, quick start, and a per-bundle `manifest.json`)
+- `yume-amd64-linux.tar.xz`, the client bundle (`yume`, the optional temporarily
+  retained Chrome TLS helper, license, third-party notices, quick start, and a
+  per-bundle `manifest.json`)
 - `yumed-amd64-linux`, the daemon executable
 - a `.sha256` file for each of those two artifacts
 - aggregate `SHA256SUMS.txt`
@@ -199,11 +200,12 @@ change default policies, and stores the exact resources it owns under `/run`.
 
 ## Weak-host and portable-server status
 
-The current 2.0 qualification target is glibc Linux x86_64 for the CLI,
-daemon, and Chrome helper. This document does **not** claim that YUME is ready
+The current 2.0 qualification target is glibc Linux x86_64 for the CLI and
+daemon, using the in-process patched-OpenSSL backend. The retained helper is a
+separate comparison arm. This document does **not** claim that YUME is ready
 for every server, architecture, libc, container image, or init system. Add a
 support-matrix cell only after its exact dependency build, package, startup,
-service, helper discovery, certificate/exporter, multi-epoch transfer and
+service, native TLS capability, certificate/exporter, multi-epoch transfer and
 shutdown checks pass; name QEMU/emulation evidence when real hardware was not
 used.
 
@@ -243,11 +245,11 @@ Freeze a workload and explicit cgroup CPU, memory, task and fd limits, then
 retain artifacts for:
 
 - cold and warm handshake plus rekey p50/p95/p99;
-- steady and peak RSS, CPU, helper/Node tasks, open fds and queue depth;
+- steady and peak RSS, CPU, client/Node tasks, open fds and queue depth;
 - upload, download, interactive latency and high-RTT prepared-depth behavior;
 - admission floods, backend slowdown, memory pressure, session-cap rejection,
   cleanup and recovery; and
-- a sustained run with no root/window leak, unbounded queue growth, helper
+- a sustained run with no root/window leak, unbounded queue growth, child
   residue or cryptographic downgrade.
 
 Derive `threads`, `max_sessions`, `bulk_key_max_sessions`, `rekey_window`,
@@ -260,7 +262,7 @@ per-epoch byte/frame/time limits or disabling hybrid-PQ establishment, TLS
 verification, ratcheting, replay protection, or fail-closed behavior.
 
 On overload, the desired behavior is bounded rejection and recovery. An OOM
-kill, swap storm, helper fork storm, silent fallback to the diagnostic TLS
+kill, swap storm, process storm, silent fallback to the diagnostic TLS
 backend, or a cover identity that changes with machine size fails the tier.
 See `docs/YUME_2_0_WAN_BEHAVIOR.md` for the separate high-latency design and
 validation boundary.

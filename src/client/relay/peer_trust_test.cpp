@@ -195,6 +195,19 @@ std::string Fingerprint(const Bytes& identity) {
 
 #if defined(YUME_USE_BASEFWX) && YUME_USE_BASEFWX
 
+// Creates an owner-only file inside the trust directory. The store refuses
+// group/world-accessible records, so a fixture that plants one must produce
+// the same 0600 mode a genuine record has, or it proves the wrong thing.
+void WriteFile(const std::filesystem::path& path,
+               const std::string& content) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    Check(out.good(), "failed to create a fixture trust file");
+    out << content;
+    out.close();
+    Check(::chmod(path.c_str(), S_IRUSR | S_IWUSR) == 0,
+          "failed to protect a fixture trust file");
+}
+
 struct Identities {
     yume::crypto::CompositeKeyPair first{
         yume::crypto::generate_composite_keypair()};
@@ -617,6 +630,189 @@ void TestConcurrentFirstWriters(const std::filesystem::path& root,
     }
 }
 
+// A contacts surface reads this store, so listing has to agree with what the
+// handshake path would decide: which peers are known, where each one's
+// authority comes from, and whether configuration and disk still agree.
+void TestListing(const std::filesystem::path& root,
+                 const Identities& identities) {
+    constexpr std::string_view tofu_endpoint =
+        "1111111111111111111111111111aaaa";
+    constexpr std::string_view explicit_endpoint =
+        "2222222222222222222222222222bbbb";
+    const auto trust_directory = root / "listing" / "trust";
+
+    {
+        relay_v2::PeerTrustStore empty(Config(trust_directory));
+        Check(empty.list().empty(),
+              "a store with no trust directory listed entries");
+    }
+
+    // One learned peer, and one authorized out of band whose explicit marker
+    // only materializes after a verified handshake.
+    relay_v2::PeerTrustStore tofu_store(Config(trust_directory));
+    (void)tofu_store.commit_verified(tofu_endpoint, identities.first_encoded);
+
+    relay_v2::PeerTrustStore authorized_store(Config(
+        trust_directory, relay_v2::PeerTrustMode::Tofu,
+        {{std::string(explicit_endpoint), identities.second_fingerprint}}));
+    (void)authorized_store.commit_verified(
+        explicit_endpoint, identities.second_encoded,
+        relay_v2::PeerTrustRequirement::Admin);
+
+    const auto listed = tofu_store.list();
+    Check(listed.size() == 2U, "listing did not return both trusted peers");
+    // Ordered by endpoint ID, so a caller renders a stable list.
+    Check(listed[0].endpoint_id == tofu_endpoint &&
+              listed[1].endpoint_id == explicit_endpoint,
+          "listing is not ordered by endpoint ID");
+    Check(listed[0].source == relay_v2::PeerTrustSource::Tofu &&
+              !listed[0].explicit_marker,
+          "a learned pin was not reported as TOFU");
+    Check(listed[0].fingerprint == identities.first_fingerprint,
+          "a learned pin reported the wrong fingerprint");
+    Check(listed[1].source == relay_v2::PeerTrustSource::Explicit &&
+              listed[1].explicit_marker,
+          "a durable explicit marker was not reported");
+
+    // The same directory read by the store that configured the pin must
+    // attribute it to the configuration rather than to the disk marker.
+    const auto configured = authorized_store.list();
+    Check(configured.size() == 2U,
+          "a configured store listed a different peer count");
+    Check(configured[1].source == relay_v2::PeerTrustSource::Configured,
+          "a configured pin was not attributed to the configuration");
+    Check(!configured[1].configured_mismatch,
+          "an agreeing configured pin was reported as a mismatch");
+
+    // A configured fingerprint that disagrees with the durable pin fails
+    // every handshake, so a contacts view must be able to show it.
+    relay_v2::PeerTrustStore conflicting(Config(
+        trust_directory, relay_v2::PeerTrustMode::Tofu,
+        {{std::string(tofu_endpoint), identities.second_fingerprint}}));
+    const auto conflicted = conflicting.list();
+    Check(conflicted[0].configured_mismatch,
+          "a configured pin disagreeing with disk was reported as healthy");
+
+    // A configured peer with no durable record is still a contact.
+    constexpr std::string_view unseen_endpoint =
+        "3333333333333333333333333333cccc";
+    relay_v2::PeerTrustStore unseen(Config(
+        trust_directory, relay_v2::PeerTrustMode::Tofu,
+        {{std::string(unseen_endpoint), identities.first_fingerprint}}));
+    const auto with_unseen = unseen.list();
+    Check(with_unseen.size() == 3U,
+          "a configured peer without a durable record was dropped");
+    Check(with_unseen[2].endpoint_id == unseen_endpoint &&
+              with_unseen[2].source ==
+                  relay_v2::PeerTrustSource::Configured &&
+              !with_unseen[2].explicit_marker,
+          "a configured peer without a record was misreported");
+}
+
+// Forgetting is for learned state only. Operator authorization -- configured
+// or durably marked -- must survive, or a contacts view could silently undo
+// an out-of-band decision it is not entitled to reverse.
+void TestForget(const std::filesystem::path& root,
+                const Identities& identities) {
+    constexpr std::string_view tofu_endpoint =
+        "4444444444444444444444444444dddd";
+    constexpr std::string_view explicit_endpoint =
+        "5555555555555555555555555555eeee";
+    const auto trust_directory = root / "forget" / "trust";
+
+    relay_v2::PeerTrustStore store(Config(trust_directory));
+    Check(!store.forget(tofu_endpoint),
+          "forgetting an unknown peer reported a removal");
+
+    (void)store.commit_verified(tofu_endpoint, identities.first_encoded);
+    Check(store.list().size() == 1U, "commit did not create a listed pin");
+    Check(store.forget(tofu_endpoint),
+          "forgetting a learned pin reported no removal");
+    Check(store.list().empty(), "a forgotten pin remained listed");
+    Check(!store.forget(tofu_endpoint),
+          "forgetting an already-removed pin reported a removal");
+
+    // A peer can be re-learned after being forgotten, and may present a
+    // different identity: forgetting must clear the pin, not merely hide it.
+    (void)store.commit_verified(tofu_endpoint, identities.second_encoded);
+    Check(store.list()[0].fingerprint == identities.second_fingerprint,
+          "a re-learned peer kept its forgotten fingerprint");
+    Check(store.forget(tofu_endpoint), "re-learned pin could not be forgotten");
+
+    // A configured pin with no durable record yet must still be refused
+    // rather than reported as "nothing stored". Only the configuration check
+    // can catch this: there is no explicit marker on disk to fall back on.
+    constexpr std::string_view configured_only_endpoint =
+        "8888888888888888888888888888aaaa";
+    relay_v2::PeerTrustStore configured_only(Config(
+        trust_directory, relay_v2::PeerTrustMode::Tofu,
+        {{std::string(configured_only_endpoint),
+          identities.first_fingerprint}}));
+    ExpectFailure([&] { (void)configured_only.forget(configured_only_endpoint); },
+                  "a configured peer with no durable record was forgotten");
+
+    relay_v2::PeerTrustStore authorized(Config(
+        trust_directory, relay_v2::PeerTrustMode::Tofu,
+        {{std::string(explicit_endpoint), identities.second_fingerprint}}));
+    (void)authorized.commit_verified(
+        explicit_endpoint, identities.second_encoded,
+        relay_v2::PeerTrustRequirement::Admin);
+    ExpectFailure([&] { (void)authorized.forget(explicit_endpoint); },
+                  "a configured peer pin was forgotten");
+
+    // Dropping the pin from configuration must not make the durable explicit
+    // marker forgettable either: it records a verified OOB authorization.
+    relay_v2::PeerTrustStore unconfigured(Config(trust_directory));
+    ExpectFailure([&] { (void)unconfigured.forget(explicit_endpoint); },
+                  "a durable explicit marker was forgotten");
+    Check(!unconfigured.list().empty(),
+          "an explicitly authorized peer disappeared after a refused forget");
+
+    ExpectFailure([&] { (void)store.forget("bad/endpoint"); },
+                  "an invalid endpoint ID was accepted by forget");
+}
+
+// The listing walks the trust directory, so it must reject planted files
+// rather than trusting a name or a record body on its own.
+void TestListingRejectsPlantedRecords(const std::filesystem::path& root,
+                                      const Identities& identities) {
+    constexpr std::string_view endpoint =
+        "6666666666666666666666666666ffff";
+    const auto trust_directory = root / "planted" / "trust";
+    relay_v2::PeerTrustStore store(Config(trust_directory));
+    (void)store.commit_verified(endpoint, identities.first_encoded);
+    Check(store.list().size() == 1U, "setup did not create one pin");
+
+    // Files that are not pin records are ignored, not parsed.
+    WriteFile(trust_directory / "notes.txt", "ignore me\n");
+    WriteFile(trust_directory / "0011.pin", "too short a digest name\n");
+    Check(store.list().size() == 1U,
+          "listing parsed a file that is not a pin record");
+
+    // A well-formed record whose filename is not its endpoint's digest is a
+    // planted claim: the name and the body must agree.
+    const std::string forged_name =
+        yume::crypto::sha256_hex("7777777777777777777777777777aaaa") + ".pin";
+    WriteFile(trust_directory / forged_name,
+              "format=yume-relay-peer-pin-v1\nendpoint=" +
+                  std::string(endpoint) + "\nfingerprint=" +
+                  identities.first_fingerprint + "\n");
+    ExpectFailure([&] { (void)store.list(); },
+                  "listing accepted a record that does not match its name");
+    std::filesystem::remove(trust_directory / forged_name);
+
+    // A group-readable record is refused for listing exactly as it is for a
+    // handshake read.
+    const std::string name =
+        yume::crypto::sha256_hex(endpoint) + ".pin";
+    ::chmod((trust_directory / name).c_str(), S_IRUSR | S_IWUSR | S_IRGRP);
+    ExpectFailure([&] { (void)store.list(); },
+                  "listing accepted a group-readable trust record");
+    ::chmod((trust_directory / name).c_str(), S_IRUSR | S_IWUSR);
+    Check(store.list().size() == 1U,
+          "listing did not recover after permissions were restored");
+}
+
 #endif  // YUME_USE_BASEFWX
 #endif  // !_WIN32
 
@@ -639,6 +835,9 @@ int main() {
     TestExplicitAndPinnedPolicy(temp.path(), identities);
     TestDirectorySymlinks(temp.path(), identities);
     TestConcurrentFirstWriters(temp.path(), identities);
+    TestListing(temp.path(), identities);
+    TestForget(temp.path(), identities);
+    TestListingRejectsPlantedRecords(temp.path(), identities);
 #endif
 #endif
     std::cout << "relay_peer_trust_test ok\n";

@@ -9,6 +9,9 @@ the following projects under their respective licenses:
   release.
 - Boost — Boost Software License 1.0.
 - OpenSSL — Apache License 2.0.
+- YUME's downstream OpenSSL patch overlay — AGPL-3.0-or-later; the underlying
+  OpenSSL source remains under Apache-2.0.
+- Brotli — MIT License.
 - nghttp2 — MIT License.
 - zlib — zlib License.
 - XZ Utils/liblzma — public domain and LGPL components as documented upstream.

@@ -54,14 +54,15 @@ the completed logical stream open only for the frozen 42-second capture quiet
 interval. Normal benchmark sink/source protocols and all cryptographic/AAD
 domains are unchanged.
 
-This is the normative target, not a statement that the current emitter has
-complete identity parity. One immutable Chrome 151/Debian 13 + Node 24 profile
-now supplies the production TLS selection, User-Agent/client hints, H2
-settings/priorities/header order, assets, and cover-server identity. Stock
-OpenSSL still cannot reproduce Chrome/BoringSSL extension/GREASE ordering.
-That classifier-visible TLS difference and the remaining external conformance
-and traffic-shape work are release gates; `docs/STEALTH.md` records the
-required acceptance evidence.
+This is the normative target, not a statement of complete on-wire identity.
+One immutable Chrome 151/Debian 13 + Node 24 profile supplies the production
+TLS selection, User-Agent/client hints, H2 settings/priorities/header order,
+assets, and cover-server identity. The `openssl-chrome151` emitter opts into a
+default-off patch on the exact OpenSSL 3.5.7 source pin and implements the six
+pinned ClientHello structure rows that stock OpenSSL cannot fully express.
+External same-session, resumption, classifier, active-probe, traffic-shape,
+and deployed-soak evidence remain release gates; `docs/STEALTH.md` records the
+claim boundary and required acceptance evidence.
 
 ## Integers and envelopes
 

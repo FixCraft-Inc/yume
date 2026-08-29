@@ -35,8 +35,9 @@ downgrade mode exists.
   fallback.
 
 - **Fail-closed Linux 0.2.0 release lane.** The `linux-desktop-0.2.0` profile
-  builds only glibc Linux x86-64 with exact Go 1.26.5 and the Chrome helper
-  enabled. It emits `yume-amd64-linux.tar.xz` with the adjacent client/helper,
+  builds only glibc Linux x86-64, statically embeds the checksum-pinned patched
+  OpenSSL 3.5.7, and retains the exact-Go-1.26.5 Chrome helper as an optional
+  comparison backend. It emits `yume-amd64-linux.tar.xz` with the client/helper,
   licensing, quick-start, and machine manifest, plus a separate
   `yumed-amd64-linux`. The preflight rejects other platforms and variants,
   incomplete bundles, version/tag drift, unequal clean helper rebuilds, or
@@ -57,19 +58,23 @@ downgrade mode exists.
   `golang.org/x/sys` from 0.31.0 to 0.45.0, leaving GitHub's reported vulnerable
   module ranges while preserving the pinned uTLS and wire protocol versions.
 
-- **OpenSSL parity boundary and helper retention.** The C++ OpenSSL backend now
-  emits the captured Chrome 151 JA4 plus the exact non-GREASE cipher,
-  signature, and extension sets. It still cannot reproduce raw browser GREASE
-  placement/rotation or brotli-only certificate compression. The pinned
-  Go/uTLS helper therefore remains an experimental Linux-only opt-in and stays
-  disabled by default; removal is deferred until a C++ backend passes the same
-  raw-wire, same-session, lifecycle, classifier, and reproducibility gates.
+- **Native OpenSSL ClientHello emitter and helper retention.** The default
+  `openssl-chrome151` backend opts into an additive, default-off patch on the
+  exact OpenSSL 3.5.7 source. Its emitted-byte gate closes all six pinned
+  ClientHello structure rows across 12 SSL objects sharing one context,
+  including per-connection GREASE, edge placement, extension shuffling,
+  `[0]` point formats, both real key shares, and Brotli-only certificate
+  compression. The pinned Go/uTLS helper remains an explicit optional
+  comparison backend until the native path passes full handshake, exporter,
+  validation, HRR/resumption, lifecycle, soak, same-session, classifier, and
+  reproducibility gates. There is no fallback between backends.
 
 - **One coherent identity.** Chrome is rebased to exact Google Chrome
   `151.0.7922.71` and official Node `24.18.0`. The incomplete Firefox/Safari
   presets and dead rotation state were removed instead of being carried as
-  unsupported claims. The OpenSSL ClientHello remains an explicit `KNOWN_GAP`;
-  the helper has passed local wire/performance, lifecycle, process-scale,
+  unsupported claims. The native ClientHello structure is now closed, but
+  complete-session qualification and a capture of the `0x001b` algorithm value
+  remain explicit gaps. The helper has passed local wire/performance, lifecycle, process-scale,
   reconnect, and segmented-soak gates but remains opt-in pending matched WAN,
   same-session stealth, independent review, and the remaining RC gates.
 
@@ -165,10 +170,23 @@ downgrade mode exists.
   the project version.
 
 - **Hardened BaseFWX dependency pin.** The pinned BaseFWX revision is now
-  `5c42eafbb95e5c7ea3b6cd57299d577be814f5f2`. It retains repeat-safe Argon2
-  discovery and adds fail-closed crypto/format limits, safer caller-buffer
-  primitives, peer KDF policy coverage, and corrected Java streaming-test
-  nonce discipline. YUME's consumed wire contracts are unchanged.
+  `e6ffbb79daa02bf62c31c3ae6513d5c603ec8dcd`. It retains repeat-safe Argon2
+  discovery, fail-closed crypto/format limits, safer caller-buffer primitives,
+  peer KDF policy coverage, and corrected Java streaming-test nonce discipline.
+  It also supplies the owned explicit-nonce ChaCha20-Poly1305 operation used by
+  YUME's existing relay-history format, propagates Java benchmark worker
+  failures, bounds whole-file benchmark concurrency, and defaults retired
+  compatibility performance rows off. YUME's consumed wire contracts are
+  unchanged.
+
+- **Bounded operator-proof HTTPS.** External proof URLs now use one strict
+  HTTPS authority/target grammar across the in-process and static-Linux curl
+  transports. The native path verifies the configured DNS name or IP literal,
+  applies a 30-second end-to-end request deadline, constructs and parses HTTP
+  with bounded Beast messages, and rejects bearer-token controls before any
+  connection is attempted. Remote responses require an object containing a
+  bounded canonical signature; untrusted API error text is not reflected into
+  daemon errors.
 
 - **Helper crash and truncation lifecycle.** After `posix_spawn`, the parent
   retained duplicate copies of the child-side IPC and connected TCP
@@ -179,8 +197,9 @@ downgrade mode exists.
 
 ### Remaining dev6 limitations
 
-- `chrome151` remains opt-in and `openssl-diagnostic` remains the default.
-  Matched WAN evidence, one uninterrupted >16 GiB connection, exact Chrome
+- `openssl-chrome151` is the development default and runs without the helper;
+  this is not a release-qualification claim. Matched WAN evidence, one
+  uninterrupted >16 GiB connection, exact Chrome
   `151.0.7922.71` same-session recapture, external classifier/active-probe
   evidence, and independent security review remain release gates. Installed
   Chrome `151.0.7922.108` is functional-only evidence and does not replace or
@@ -393,7 +412,7 @@ validation are complete.
 ## [v1.1] - TBD
 
 ### Added
-- **`--cluster-join <spec>`** + **`--cluster-bootstrap`** on `yumed`. Friendly shorthand over the existing `--peer '<json>'` federation surface: `--cluster-join [id@]host[:port][?pin=<sha256>]` parses into the same FederationPeer JSON the daemon already consumes. `--cluster-bootstrap` marks a node as a cluster entry point so federation works without an outbound peer list. Bracketed IPv6 supported. Implies `--federation-enable`.
+- **`--cluster-join <spec>`** + **`--cluster-bootstrap`** on `yumed`. Friendly shorthand over the existing `--peer '<json>'` federation surface: `--cluster-join [id@]host[:port][?pin=<sha256>]` parses into the same FederationPeer JSON the daemon already consumes. `--cluster-bootstrap` marks a node as a cluster entry point so federation works without an outbound peer list. Bracketed IPv6 is supported with an explicit valid `id@` prefix. Implies `--federation-enable`.
 - **`--cluster <host[:port]>`** on `yume` (client) as a friendly alias for `--server` + `--port`.
 - **`--public-node`** on `yumed`: hardening preset for internet-facing daemons. Rejects `--allow-exec` / `--allow-local-ip` / `--control-full` / `--no-inner` / `--no-obfs`, requires `--auth-keys` and a nonempty `--obfs-secret`, defaults `--hide-in-the-crowd` to `nginx`, and applies bounded session/Argon2 defaults.
 - **`--hide-in-the-crowd <profile>`** on both binaries: HTTP-layer disguise. Server profiles (`nginx`, `nginx-stable`, `apache`, `caddy`, `cloudflare`, `express`, `gunicorn`, `none`, `yumed`) are synthetic templates with profile-specific header order, charset, extras, and body shapes; they are not native server implementations. Client profiles (`chrome`, `firefox`, `safari`, `edge`, `curl`, `wget`, `yume`) set the User-Agent in stealth probes; when unspecified, the UA follows the active TLS preset.

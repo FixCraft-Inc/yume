@@ -305,6 +305,18 @@ void TransportCore::set_timing_handler(TimingHandler handler) {
     timing_handler_ = std::move(handler);
     timing_open_.set_active(static_cast<bool>(timing_handler_));
 }
+
+TransportCore::RatchetFlowStats TransportCore::ratchet_flow_stats() {
+    std::scoped_lock lock(state_mu_, write_mu_);
+    if (outbound_application_blocked_) {
+        if (const auto elapsed = outbound_application_block_wait_.finish_us(
+                std::chrono::steady_clock::now())) {
+            ratchet_flow_stats_.application_block_us += *elapsed;
+        }
+        outbound_application_blocked_ = false;
+    }
+    return ratchet_flow_stats_;
+}
 #endif
 
 void TransportCore::set_server_stream_open_handler(ServerStreamOpenHandler handler) {

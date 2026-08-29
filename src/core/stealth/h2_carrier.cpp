@@ -18,6 +18,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
@@ -126,6 +127,10 @@ public:
             callbacks, &Impl::OnBeginHeaders);
         nghttp2_session_callbacks_set_on_header_callback(callbacks, &Impl::OnHeader);
         nghttp2_session_callbacks_set_on_frame_recv_callback(callbacks, &Impl::OnFrameRecv);
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        nghttp2_session_callbacks_set_on_frame_send_callback(
+            callbacks, &Impl::OnFrameSend);
+#endif
         nghttp2_session_callbacks_set_on_data_chunk_recv_callback(
             callbacks, &Impl::OnDataChunk);
         nghttp2_session_callbacks_set_on_stream_close_callback(
@@ -411,6 +416,9 @@ public:
             Fail("libnghttp2 did not consume the complete TLS plaintext chunk");
             return;
         }
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        ObserveFlowControlStats();
+#endif
         Flush();
     }
 
@@ -481,6 +489,13 @@ public:
             return {};
         }
         unconsumed_tunnel_bytes_ += tunnel_bytes_.size();
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        if (collect_timing_) {
+            stats_.max_unconsumed_tunnel_bytes = std::max<std::uint64_t>(
+                stats_.max_unconsumed_tunnel_bytes,
+                unconsumed_tunnel_bytes_);
+        }
+#endif
         H2Bytes out;
         out.swap(tunnel_bytes_);
         return out;
@@ -554,7 +569,16 @@ public:
         return total;
     }
 #if YUME_ENABLE_DEV_DIAGNOSTICS
-    H2CarrierStats stats() const noexcept { return stats_; }
+    H2CarrierStats stats() const noexcept {
+        H2CarrierStats result = stats_;
+        if (collect_timing_ && remote_window_stall_started_.has_value()) {
+            result.remote_window_stall_ns += static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() -
+                    *remote_window_stall_started_).count());
+        }
+        return result;
+    }
     void set_timing_enabled(bool enabled) noexcept { collect_timing_ = enabled; }
 #endif
     bool failed() const noexcept { return !error_.empty(); }
@@ -1158,16 +1182,36 @@ private:
     }
 
     void ObserveCarrierWindowState() noexcept {
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        if (!outer_trace_ && !collect_timing_) return;
+#else
         if (!outer_trace_) return;
+#endif
         const bool blocked = CarrierWindowBlocked();
         if (blocked == carrier_window_stalled_) return;
-        OuterCarrierEvent event;
-        event.kind = blocked
-            ? OuterCarrierEventKind::FlowWindowStalled
-            : OuterCarrierEventKind::FlowWindowRecovered;
-        event.direction = OuterCarrierDirection::Sent;
-        event.stream_class = OuterCarrierStreamClass::Carrier;
-        outer_trace_->Record(std::move(event));
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        if (collect_timing_) {
+            const auto now = std::chrono::steady_clock::now();
+            if (blocked) {
+                ++stats_.remote_window_stall_count;
+                remote_window_stall_started_ = now;
+            } else if (remote_window_stall_started_.has_value()) {
+                stats_.remote_window_stall_ns += static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        now - *remote_window_stall_started_).count());
+                remote_window_stall_started_.reset();
+            }
+        }
+#endif
+        if (outer_trace_) {
+            OuterCarrierEvent event;
+            event.kind = blocked
+                ? OuterCarrierEventKind::FlowWindowStalled
+                : OuterCarrierEventKind::FlowWindowRecovered;
+            event.direction = OuterCarrierDirection::Sent;
+            event.stream_class = OuterCarrierStreamClass::Carrier;
+            outer_trace_->Record(std::move(event));
+        }
         carrier_window_stalled_ = blocked;
     }
 
@@ -1318,6 +1362,79 @@ private:
         }
     }
 
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    void ObserveWindowUpdate(const nghttp2_frame& frame,
+                             bool sent) noexcept {
+        if (!collect_timing_ || frame.hd.type != NGHTTP2_WINDOW_UPDATE) {
+            return;
+        }
+        const auto increment = static_cast<std::uint64_t>(
+            frame.window_update.window_size_increment);
+        const bool connection = frame.hd.stream_id == 0;
+        const bool carrier = frame.hd.stream_id == carrier_stream_id_;
+        if (!connection && !carrier) return;
+        if (sent && connection) {
+            ++stats_.window_update_sent_connection_frames;
+            stats_.window_update_sent_connection_increment_bytes += increment;
+        } else if (sent) {
+            ++stats_.window_update_sent_carrier_frames;
+            stats_.window_update_sent_carrier_increment_bytes += increment;
+        } else if (connection) {
+            ++stats_.window_update_received_connection_frames;
+            stats_.window_update_received_connection_increment_bytes += increment;
+        } else {
+            ++stats_.window_update_received_carrier_frames;
+            stats_.window_update_received_carrier_increment_bytes += increment;
+        }
+    }
+
+    void ObserveFlowControlStats() noexcept {
+        if (!collect_timing_ || carrier_stream_id_ < 0) return;
+        const std::int32_t local_connection =
+            nghttp2_session_get_local_window_size(session_.get());
+        const std::int32_t local_carrier =
+            nghttp2_session_get_stream_local_window_size(
+                session_.get(), carrier_stream_id_);
+        const std::int32_t remote_connection =
+            nghttp2_session_get_remote_window_size(session_.get());
+        const std::int32_t remote_carrier =
+            nghttp2_session_get_stream_remote_window_size(
+                session_.get(), carrier_stream_id_);
+        const std::int32_t effective_connection_received =
+            nghttp2_session_get_effective_recv_data_length(session_.get());
+        const std::int32_t effective_carrier_received =
+            nghttp2_session_get_stream_effective_recv_data_length(
+                session_.get(), carrier_stream_id_);
+        if (local_connection < 0 || local_carrier < 0 ||
+            effective_connection_received < 0 ||
+            effective_carrier_received < 0) {
+            return;
+        }
+        if (stats_.flow_window_samples == 0) {
+            stats_.min_local_connection_window = local_connection;
+            stats_.min_local_carrier_window = local_carrier;
+            stats_.min_remote_connection_window = remote_connection;
+            stats_.min_remote_carrier_window = remote_carrier;
+        } else {
+            stats_.min_local_connection_window = std::min(
+                stats_.min_local_connection_window, local_connection);
+            stats_.min_local_carrier_window = std::min(
+                stats_.min_local_carrier_window, local_carrier);
+            stats_.min_remote_connection_window = std::min(
+                stats_.min_remote_connection_window, remote_connection);
+            stats_.min_remote_carrier_window = std::min(
+                stats_.min_remote_carrier_window, remote_carrier);
+        }
+        stats_.max_effective_connection_received = std::max(
+            stats_.max_effective_connection_received,
+            effective_connection_received);
+        stats_.max_effective_carrier_received = std::max(
+            stats_.max_effective_carrier_received,
+            effective_carrier_received);
+        ++stats_.flow_window_samples;
+    }
+#endif
+
     static int OnBeginHeaders(nghttp2_session*, const nghttp2_frame* frame,
                               void* user_data) noexcept {
         auto& self = *static_cast<Impl*>(user_data);
@@ -1357,6 +1474,9 @@ private:
                            void* user_data) noexcept {
         auto& self = *static_cast<Impl*>(user_data);
         try {
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+            self.ObserveWindowUpdate(*frame, false);
+#endif
             self.ObserveInboundH2Frame(*frame);
             self.HandleFrame(*frame);
             return self.failed() ? NGHTTP2_ERR_CALLBACK_FAILURE : 0;
@@ -1368,6 +1488,15 @@ private:
             return NGHTTP2_ERR_CALLBACK_FAILURE;
         }
     }
+
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+    static int OnFrameSend(nghttp2_session*, const nghttp2_frame* frame,
+                           void* user_data) noexcept {
+        auto& self = *static_cast<Impl*>(user_data);
+        self.ObserveWindowUpdate(*frame, true);
+        return 0;
+    }
+#endif
 
     static int OnDataChunk(nghttp2_session*, std::uint8_t,
                            std::int32_t stream_id, const std::uint8_t* data,
@@ -1595,6 +1724,14 @@ private:
             return;
         }
         received_unconsumed_carrier_bytes_ += len;
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        if (collect_timing_) {
+            stats_.max_received_unconsumed_carrier_bytes =
+                std::max<std::uint64_t>(
+                    stats_.max_received_unconsumed_carrier_bytes,
+                    received_unconsumed_carrier_bytes_);
+        }
+#endif
         websocket_.Feed(data, len);
         if (websocket_.failed()) {
             Fail("WebSocket carrier: " + websocket_.error());
@@ -1667,6 +1804,13 @@ private:
             return false;
         }
         received_unconsumed_carrier_bytes_ -= size;
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+        if (collect_timing_) {
+            ++stats_.carrier_credit_consume_calls;
+            stats_.carrier_credit_consume_bytes += size;
+            ObserveFlowControlStats();
+        }
+#endif
         return true;
     }
 
@@ -1790,6 +1934,7 @@ private:
         }
         ObserveCarrierWindowState();
 #if YUME_ENABLE_DEV_DIAGNOSTICS
+        ObserveFlowControlStats();
         stats_.h2_flush_calls += 1;
         stats_.h2_flush_bytes +=
             serialized_output_.size() - output_before;
@@ -1820,6 +1965,8 @@ private:
 #if YUME_ENABLE_DEV_DIAGNOSTICS
     H2CarrierStats stats_;
     bool collect_timing_{false};
+    std::optional<std::chrono::steady_clock::time_point>
+        remote_window_stall_started_;
 #endif
     std::unique_ptr<nghttp2_session_callbacks, CallbacksDeleter> callbacks_;
     std::unique_ptr<nghttp2_session, SessionDeleter> session_;
@@ -1888,6 +2035,67 @@ private:
     bool last_sent_ping_valid_{false};
     bool last_received_ping_valid_{false};
 };
+
+#if YUME_ENABLE_DEV_DIAGNOSTICS
+std::string FormatH2CarrierStats(const H2CarrierStats& stats) {
+    return
+        "h2_feed_calls=" + std::to_string(stats.h2_feed_calls) +
+        " h2_feed_bytes=" + std::to_string(stats.h2_feed_bytes) +
+        " h2_feed_us=" + std::to_string(stats.h2_feed_ns / 1000U) +
+        " h2_flush_calls=" + std::to_string(stats.h2_flush_calls) +
+        " h2_flush_bytes=" + std::to_string(stats.h2_flush_bytes) +
+        " h2_flush_us=" + std::to_string(stats.h2_flush_ns / 1000U) +
+        " websocket_encode_bytes=" +
+            std::to_string(stats.websocket_encode_bytes) +
+        " websocket_encode_us=" +
+            std::to_string(stats.websocket_encode_ns / 1000U) +
+        " websocket_decode_bytes=" +
+            std::to_string(stats.websocket_decode_bytes) +
+        " websocket_decode_us=" +
+            std::to_string(stats.websocket_decode_ns / 1000U) +
+        " carrier_credit_calls=" +
+            std::to_string(stats.carrier_credit_consume_calls) +
+        " carrier_credit_bytes=" +
+            std::to_string(stats.carrier_credit_consume_bytes) +
+        " carrier_ledger_high_water=" +
+            std::to_string(stats.max_received_unconsumed_carrier_bytes) +
+        " tunnel_credit_high_water=" +
+            std::to_string(stats.max_unconsumed_tunnel_bytes) +
+        " wu_tx_conn_frames=" +
+            std::to_string(stats.window_update_sent_connection_frames) +
+        " wu_tx_conn_bytes=" + std::to_string(
+            stats.window_update_sent_connection_increment_bytes) +
+        " wu_tx_stream_frames=" +
+            std::to_string(stats.window_update_sent_carrier_frames) +
+        " wu_tx_stream_bytes=" + std::to_string(
+            stats.window_update_sent_carrier_increment_bytes) +
+        " wu_rx_conn_frames=" +
+            std::to_string(stats.window_update_received_connection_frames) +
+        " wu_rx_conn_bytes=" + std::to_string(
+            stats.window_update_received_connection_increment_bytes) +
+        " wu_rx_stream_frames=" +
+            std::to_string(stats.window_update_received_carrier_frames) +
+        " wu_rx_stream_bytes=" + std::to_string(
+            stats.window_update_received_carrier_increment_bytes) +
+        " window_samples=" + std::to_string(stats.flow_window_samples) +
+        " min_local_conn_window=" +
+            std::to_string(stats.min_local_connection_window) +
+        " min_local_stream_window=" +
+            std::to_string(stats.min_local_carrier_window) +
+        " min_remote_conn_window=" +
+            std::to_string(stats.min_remote_connection_window) +
+        " min_remote_stream_window=" +
+            std::to_string(stats.min_remote_carrier_window) +
+        " max_effective_conn_received=" +
+            std::to_string(stats.max_effective_connection_received) +
+        " max_effective_stream_received=" +
+            std::to_string(stats.max_effective_carrier_received) +
+        " remote_window_stalls=" +
+            std::to_string(stats.remote_window_stall_count) +
+        " remote_window_stall_us=" +
+            std::to_string(stats.remote_window_stall_ns / 1000U);
+}
+#endif
 
 H2Carrier::H2Carrier(
     H2CarrierRole role, std::shared_ptr<OuterCarrierTrace> outer_trace)

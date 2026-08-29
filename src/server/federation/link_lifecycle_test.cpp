@@ -71,6 +71,11 @@ struct FederationLinkLifecycleTestPeer {
     static std::string PeerPskFile(const FederationLink& link) {
         return link.peer_.psk_file;
     }
+
+    static void SetLastError(FederationLink& link, std::string error) {
+        std::lock_guard<std::mutex> lock(link.mutex_);
+        link.last_error_ = std::move(error);
+    }
 };
 
 }  // namespace yume::server
@@ -223,6 +228,17 @@ void CheckDuplicatePeerIds(const std::filesystem::path& root) {
     };
 
     yume::server::FederationManager manager(io, config, nullptr);
+    const auto configured = manager.configured_peers();
+    Require(configured.peers.size() == 1U &&
+                configured.invalid_entries == 1U,
+            "status did not count the rejected duplicate peer id");
+    Require(configured.peers[0].port == 1,
+            "status did not retain the first duplicate peer target");
+    const auto pre_manager =
+        yume::server::FederationManager::configured_peers(config);
+    Require(pre_manager.peers.size() == 1U &&
+                pre_manager.invalid_entries == 1U,
+            "static configuration status drifted from manager status");
     manager.start();
     const auto first_link = manager.find("duplicate-peer");
     Require(first_link != nullptr,
@@ -239,6 +255,121 @@ void CheckDuplicatePeerIds(const std::filesystem::path& root) {
     Require(manager.find("duplicate-peer") == first_link,
             "repeated manager start replaced the tracked federation link");
     manager.stop();
+}
+
+void CheckStrictPeerConfiguration() {
+    const auto peer_json = [](const std::string& id,
+                              const std::string& url,
+                              const std::string& pin) {
+        nlohmann::json peer{
+            {"id", id},
+            {"url", url},
+            {"psk_file", "/run/yume/test.psk"},
+            {"carrier_secret_file", "/run/yume/test.carrier"},
+        };
+        if (!pin.empty()) {
+            peer["tls_pin"] = pin;
+        }
+        return peer.dump();
+    };
+
+    yume::server::ServerConfig config;
+    const std::string valid_pin(64U, 'a');
+    config.federation_peers = {
+        peer_json("valid-v6", "yume://[2001:db8::1]:9443", valid_pin),
+        peer_json("port-prefix", "yume://peer.invalid:443junk", ""),
+        peer_json("uppercase-pin", "yume://peer.invalid:443",
+                  std::string(64U, 'A')),
+        peer_json("short-pin", "yume://peer.invalid:443",
+                  std::string(63U, 'a')),
+        peer_json("bare-v6", "yume://2001:db8::2:443", ""),
+        peer_json("url-path", "yume://peer.invalid:443/ignored", ""),
+    };
+    auto unknown_field = nlohmann::json::parse(
+        peer_json("unknown-field", "yume://peer.invalid:443", ""));
+    unknown_field["legacy"] = true;
+    config.federation_peers.push_back(unknown_field.dump());
+    config.federation_peers.push_back(
+        nlohmann::json(peer_json(
+            "string-wrapper", "yume://peer.invalid:443", "")).dump());
+
+    const auto configured =
+        yume::server::FederationManager::configured_peers(config);
+    Require(configured.peers.size() == 1U,
+            "strict federation parsing rejected the valid IPv6 peer");
+    Require(configured.invalid_entries == 7U,
+            "strict federation parsing accepted malformed ports, pins, IPv6, "
+            "URL suffixes, unknown fields, or string-wrapped objects");
+    Require(configured.peers[0].host == "2001:db8::1" &&
+                configured.peers[0].port == 9443 &&
+                configured.peers[0].tls_pin_present,
+            "valid bracketed IPv6 configuration was not normalized");
+}
+
+void CheckRemoteSnapshotUsesFederatedCacheBudget() {
+    boost::asio::io_context io;
+    yume::server::ServerConfig config;
+    yume::server::FederationManager manager(io, config, nullptr);
+
+    yume::control::EndpointInfo endpoint;
+    endpoint.display_name = "cached endpoint";
+    endpoint.client_platform = "linux";
+    endpoint.client_variant = "cli";
+    // Canonical base64 for exactly 256 zero bytes, the minimum accepted
+    // relay identity size at the directory trust boundary.
+    endpoint.auth_pubkey_b64.assign(340U, 'A');
+    endpoint.auth_pubkey_b64.append("AA==");
+
+    constexpr std::size_t kSnapshotRows =
+        yume::control::kMaxDirectoryEndpoints + 1U;
+    for (std::size_t index = 0; index < kSnapshotRows; ++index) {
+        const std::string suffix = std::to_string(index);
+        endpoint.endpoint_id = "endpoint-" + suffix;
+        manager.update_directory(
+            "peer-" + suffix, "server-" + suffix, "server", {endpoint});
+    }
+
+    Require(manager.remote_endpoints().size() == kSnapshotRows,
+            "federation-only snapshot reused the smaller client directory "
+            "response budget");
+    Require(manager.remote_endpoints(
+                yume::control::kMaxDirectoryEndpoints).size() ==
+                yume::control::kMaxDirectoryEndpoints,
+            "explicit federation snapshot limit was not honored");
+}
+
+void CheckPublicErrorRedaction() {
+    boost::asio::io_context io;
+    yume::server::ServerConfig config;
+    config.federation_identity = "/private/federation/identity.pem";
+    config.federation_operator_ca = "/private/federation/operator-ca.pem";
+    yume::server::FederationPeer peer;
+    peer.id = "redaction-peer";
+    peer.psk_file = "/private/federation/peer.psk";
+    peer.carrier_secret_file = "/private/federation/carrier.hex";
+
+    yume::server::FederationLink link(io, config, peer, nullptr);
+    std::string error = "failed " + config.federation_identity + " and " +
+                        config.federation_operator_ca + " and " + peer.psk_file +
+                        " and " + peer.carrier_secret_file;
+    error.push_back('\n');
+    error.push_back('\x1b');
+    error.append(700U, 'x');
+    yume::server::FederationLinkLifecycleTestPeer::SetLastError(
+        link, std::move(error));
+
+    const auto status = link.status();
+    Require(status.last_error.size() <=
+                yume::server::kMaxFederationPublicErrorBytes,
+            "public federation error exceeded its size bound");
+    Require(status.last_error.find("/private/federation") ==
+                std::string::npos,
+            "public federation error leaked a configured path");
+    Require(status.last_error.find('\n') == std::string::npos &&
+                status.last_error.find('\x1b') == std::string::npos,
+            "public federation error retained terminal control characters");
+    Require(status.last_error.find("[redacted-path]") != std::string::npos,
+            "public federation error did not mark redacted paths");
 }
 
 class ScopedDirectory {
@@ -271,6 +402,9 @@ int main() {
     ScopedDirectory cleanup(root);
 
     CheckDuplicatePeerIds(root);
+    CheckStrictPeerConfiguration();
+    CheckRemoteSnapshotUsesFederatedCacheBudget();
+    CheckPublicErrorRedaction();
 
     const std::vector<std::uint8_t> encoded_secret(64, '0');
     const auto psk_path = root / "peer.psk";

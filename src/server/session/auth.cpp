@@ -425,8 +425,15 @@ bool Session::handle_auth(const protocol::Frame& frame) {
             basefwx::x25519::DeriveSharedSecret(
                 auth_v2_ephemeral_->x25519.private_key,
                 response.x25519_public_key)};
+        const auto& selected_psk = auth_policy.federation_peer_id.empty()
+            ? cfg_.inner_psk_material
+            : auth_policy.federation_psk_material;
+        if (!selected_psk) {
+            auth_error_ = "access denied: federation PSK unavailable";
+            return false;
+        }
         basefwx::crypto::SecureBytes file_psk{
-            cfg_.inner_psk_material->CopyBytes()};
+            selected_psk->CopyBytes()};
         basefwx::crypto::SecureBytes psk_key{
             ratchet::DerivePskKey(file_psk.bytes(),
                                  auth_v2_ephemeral_->psk_salt)};

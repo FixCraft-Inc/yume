@@ -5,22 +5,19 @@
  */
 
 #include "server/cli/anonym.hpp"
+#include "server/cli/curl_json_transport.hpp"
 
 #include <algorithm>
-#include <array>
 #include <chrono>
-#include <cctype>
-#include <cstdio>
-#include <cstdlib>
 #include <ctime>
-#include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
+#include <boost/beast/core.hpp>
+#include <boost/beast/http.hpp>
 #include <nlohmann/json.hpp>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -35,6 +32,68 @@
 namespace yume::server::cli {
 namespace {
 
+namespace beast = boost::beast;
+namespace http = beast::http;
+
+struct TimedIoResult {
+    boost::system::error_code error;
+    bool timed_out{false};
+};
+
+template <typename Initiate, typename Cancel>
+TimedIoResult run_until(
+        boost::asio::io_context& io,
+        std::chrono::steady_clock::time_point deadline,
+        Initiate initiate,
+        Cancel cancel) {
+    TimedIoResult result;
+    if (std::chrono::steady_clock::now() >= deadline) {
+        result.timed_out = true;
+        return result;
+    }
+
+    bool done = false;
+    boost::asio::steady_timer timer(io);
+    timer.expires_at(deadline);
+    timer.async_wait([&](const boost::system::error_code& error) {
+        if (error || done) {
+            return;
+        }
+        result.timed_out = true;
+        try {
+            cancel();
+        } catch (...) {
+        }
+    });
+    try {
+        initiate([&](const boost::system::error_code& error) {
+            result.error = error;
+            done = true;
+            (void)timer.cancel();
+        });
+    } catch (...) {
+        done = true;
+        (void)timer.cancel();
+        io.restart();
+        io.run();
+        throw;
+    }
+
+    io.restart();
+    io.run();
+    return result;
+}
+
+std::chrono::milliseconds remaining_until(
+        std::chrono::steady_clock::time_point deadline) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+        return std::chrono::milliseconds::zero();
+    }
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline - now);
+}
+
 constexpr const char kAnonMsgPrefix[] = "YUME-ANON-V1:";
 constexpr const char kPqMsgPrefix[] = "YUME-PQ-V1:";
 constexpr const char kFixcraftAnonymPubPem[] =
@@ -42,245 +101,206 @@ constexpr const char kFixcraftAnonymPubPem[] =
     "MCowBQYDK2VwAyEAtupzLhANnB0VxP51vB/7yYwR+/3/jv4Str9MGLGA+is=\n"
     "-----END PUBLIC KEY-----\n";
 
-bool parse_env_bool_local(const char* name, bool fallback) {
-    const char* raw = std::getenv(name);
-    if (!raw || !*raw) {
-        return fallback;
-    }
-    std::string value(raw);
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    if (value == "1" || value == "true" || value == "yes" || value == "on") {
-        return true;
-    }
-    if (value == "0" || value == "false" || value == "no" || value == "off") {
-        return false;
-    }
-    return fallback;
-}
-
-bool use_curl_for_anonym_https() {
-#if defined(YUME_STATIC_BUILD) && defined(__linux__)
-    return parse_env_bool_local("YUME_ANONYM_USE_CURL", true);
-#else
-    return parse_env_bool_local("YUME_ANONYM_USE_CURL", false);
-#endif
-}
-
-std::string shell_quote(const std::string& input) {
-    if (input.empty()) {
-        return "''";
-    }
-    std::string out;
-    out.reserve(input.size() + 8);
-    out.push_back('\'');
-    for (char ch : input) {
-        if (ch == '\'') {
-            out += "'\"'\"'";
-        } else {
-            out.push_back(ch);
-        }
-    }
-    out.push_back('\'');
-    return out;
-}
-
-bool command_exists(const std::string& command) {
-    if (command.empty()) {
-        return false;
-    }
-    std::string cmd = "command -v " + shell_quote(command) + " >/dev/null 2>&1";
-    return std::system(cmd.c_str()) == 0;
-}
-
-std::string run_command_capture(const std::string& command, int* status_out) {
-    if (status_out) {
-        *status_out = -1;
-    }
-#if defined(_WIN32)
-    FILE* pipe = _popen(command.c_str(), "r");
-#else
-    FILE* pipe = popen(command.c_str(), "r");
-#endif
-    if (!pipe) {
-        throw std::runtime_error("failed to launch command");
-    }
-    std::string output;
-    std::array<char, 1024> buf{};
-    while (true) {
-        std::size_t n = std::fread(buf.data(), 1, buf.size(), pipe);
-        if (n > 0) {
-            output.append(buf.data(), n);
-        }
-        if (n < buf.size()) {
-            if (std::feof(pipe) != 0) {
-                break;
-            }
-            if (std::ferror(pipe) != 0) {
-                break;
-            }
-        }
-    }
-#if defined(_WIN32)
-    int status = _pclose(pipe);
-#else
-    int status = pclose(pipe);
-#endif
-    if (status_out) {
-        *status_out = status;
-    }
-    return output;
-}
-
-nlohmann::json post_json_https_via_curl(const std::string& host,
-                                        const std::string& port,
-                                        const std::string& target,
-                                        const nlohmann::json& payload,
-                                        const std::string& token,
-                                        const std::string& outbound_proxy_url) {
-    if (!command_exists("curl")) {
-        throw std::runtime_error("curl is required for anonym HTTPS transport on this build");
-    }
-
-    std::string url = "https://" + host;
-    if (!port.empty() && port != "443") {
-        url += ":" + port;
-    }
-    if (!target.empty() && target[0] == '/') {
-        url += target;
-    } else if (!target.empty()) {
-        url += "/";
-        url += target;
-    } else {
-        url += "/";
-    }
-
-    std::string nonce = yume::util::random_hex(8);
-    if (nonce.empty()) {
-        nonce = std::to_string(static_cast<long long>(std::time(nullptr)));
-    }
-    auto tmp_path = std::filesystem::temp_directory_path() / ("yume-anonym-" + nonce + ".json");
-    {
-        std::ofstream tmp(tmp_path, std::ios::binary | std::ios::trunc);
-        if (!tmp) {
-            throw std::runtime_error("failed to create curl payload file");
-        }
-        tmp << payload.dump();
-    }
-
-    std::string cmd = "curl --silent --show-error --fail --connect-timeout 10 --max-time 30 "
-                      "--header " + shell_quote("Content-Type: application/json") + " ";
-    if (!outbound_proxy_url.empty()) {
-        std::string curl_proxy = outbound_proxy_url;
-        constexpr std::string_view socks5 = "socks5://";
-        if (curl_proxy.rfind(socks5, 0) == 0) {
-            curl_proxy = "socks5h://" + curl_proxy.substr(socks5.size());
-        }
-        cmd += "--proxy " + shell_quote(curl_proxy) + " ";
-    }
-    if (!token.empty()) {
-        cmd += "--header " + shell_quote("X-FC-VERITY-TOKEN: " + token) + " ";
-    }
-    cmd += "--data-binary @" + shell_quote(tmp_path.string()) + " " + shell_quote(url) + " 2>&1";
-
-    int status = -1;
-    std::string output;
-    try {
-        output = run_command_capture(cmd, &status);
-    } catch (...) {
-        std::error_code ec;
-        std::filesystem::remove(tmp_path, ec);
-        throw;
-    }
-    std::error_code ec;
-    std::filesystem::remove(tmp_path, ec);
-
-    if (status != 0) {
-        if (output.size() > 240) {
-            output.resize(240);
-            output += "...";
-        }
-        throw std::runtime_error("curl request failed: " + output);
-    }
-
-    try {
-        return nlohmann::json::parse(output);
-    } catch (...) {
-        std::string snippet = output;
-        if (snippet.size() > 200) {
-            snippet.resize(200);
-            snippet += "...";
-        }
-        throw std::runtime_error("verity API returned invalid JSON: " + snippet);
-    }
-}
-
-nlohmann::json post_json_https(const std::string& host,
-                               const std::string& port,
-                               const std::string& target,
+nlohmann::json post_json_https(const detail::HttpsEndpoint& endpoint,
                                const nlohmann::json& payload,
                                const std::string& token,
                                const std::string& outbound_proxy_url) {
-    if (use_curl_for_anonym_https()) {
-        return post_json_https_via_curl(host, port, target, payload, token, outbound_proxy_url);
+    if (detail::use_curl_for_anonym_https()) {
+        return detail::post_json_https_via_curl(
+            endpoint, payload, token, outbound_proxy_url);
     }
 
+    detail::validate_http_field_value(token, "operator proof token");
+
     boost::asio::io_context io;
-    boost::asio::ssl::context ctx(boost::asio::ssl::context::tlsv12_client);
+    boost::asio::ssl::context ctx(boost::asio::ssl::context::tls_client);
     ctx.set_options(boost::asio::ssl::context::default_workarounds);
     ctx.set_verify_mode(boost::asio::ssl::verify_peer);
     ctx.set_default_verify_paths();
+    if (SSL_CTX_set_min_proto_version(
+            ctx.native_handle(), TLS1_2_VERSION) != 1) {
+        throw std::runtime_error(
+            "failed to set operator proof TLS minimum version");
+    }
 
     boost::asio::ssl::stream<boost::asio::ip::tcp::socket> stream(io, ctx);
-    SSL_set_tlsext_host_name(stream.native_handle(), host.c_str());
+    boost::system::error_code address_error;
+    (void)boost::asio::ip::make_address(endpoint.host, address_error);
+    if (address_error) {
+        if (SSL_set_tlsext_host_name(
+                stream.native_handle(), endpoint.host.c_str()) != 1 ||
+            SSL_set1_host(
+                stream.native_handle(), endpoint.host.c_str()) != 1) {
+            throw std::runtime_error(
+                "failed to bind operator proof TLS to its DNS name");
+        }
+    } else {
+        X509_VERIFY_PARAM* parameters =
+            SSL_get0_param(stream.native_handle());
+        if (!parameters || X509_VERIFY_PARAM_set1_ip_asc(
+                parameters, endpoint.host.c_str()) != 1) {
+            throw std::runtime_error(
+                "failed to bind operator proof TLS to its IP address");
+        }
+    }
+
+    constexpr auto kConnectTimeout = std::chrono::seconds(15);
+    constexpr auto kRequestTimeout = std::chrono::seconds(30);
+    const auto deadline =
+        std::chrono::steady_clock::now() + kRequestTimeout;
     if (!outbound_proxy_url.empty()) {
         yume::client::outbound_proxy::Config proxy_cfg;
         std::string parse_error;
         if (!yume::client::outbound_proxy::parse_proxy_url(outbound_proxy_url, proxy_cfg, &parse_error)) {
             throw std::runtime_error("outbound proxy: " + parse_error);
         }
-        auto dial = yume::client::outbound_proxy::socks5_dial(stream.next_layer(),
-                                                              io,
-                                                              proxy_cfg,
-                                                              host,
-                                                              std::stoi(port),
-                                                              std::chrono::milliseconds(15000));
+        const auto remaining = remaining_until(deadline);
+        if (remaining == std::chrono::milliseconds::zero()) {
+            throw std::runtime_error("operator proof connection timed out");
+        }
+        auto dial = yume::client::outbound_proxy::socks5_dial(
+            stream.next_layer(), io, proxy_cfg, endpoint.host,
+            std::stoi(endpoint.port), std::min(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    kConnectTimeout),
+                remaining));
         if (!dial.ok) {
             throw std::runtime_error(dial.error.empty() ? "outbound proxy failed" : "outbound proxy: " + dial.error);
         }
     } else {
         boost::asio::ip::tcp::resolver resolver(io);
-        auto endpoints = resolver.resolve(host, port);
-        boost::asio::connect(stream.next_layer(), endpoints);
+        boost::asio::ip::tcp::resolver::results_type endpoints;
+        const auto resolved = run_until(
+            io, deadline,
+            [&](auto complete) {
+                resolver.async_resolve(
+                    endpoint.host, endpoint.port,
+                    [&, complete](
+                            const boost::system::error_code& error,
+                            boost::asio::ip::tcp::resolver::results_type value) {
+                        if (!error) {
+                            endpoints = std::move(value);
+                        }
+                        complete(error);
+                    });
+            },
+            [&resolver]() { resolver.cancel(); });
+        if (resolved.timed_out) {
+            throw std::runtime_error("operator proof DNS lookup timed out");
+        }
+        if (resolved.error) {
+            throw std::runtime_error(
+                "operator proof DNS lookup failed: " +
+                resolved.error.message());
+        }
+        const auto close_socket = [&stream]() {
+            boost::system::error_code ignored;
+            stream.lowest_layer().cancel(ignored);
+            stream.lowest_layer().close(ignored);
+        };
+        const auto connected = run_until(
+            io, deadline,
+            [&](auto complete) {
+                boost::asio::async_connect(
+                    stream.next_layer(), endpoints,
+                    [complete](const boost::system::error_code& error,
+                               const boost::asio::ip::tcp::endpoint&) {
+                        complete(error);
+                    });
+            },
+            close_socket);
+        if (connected.timed_out) {
+            throw std::runtime_error("operator proof connection timed out");
+        }
+        if (connected.error) {
+            throw std::runtime_error(
+                "operator proof connection failed: " +
+                connected.error.message());
+        }
     }
-    stream.handshake(boost::asio::ssl::stream_base::client);
-
-    std::string body = payload.dump();
-    std::string req =
-        "POST " + target + " HTTP/1.1\r\n" +
-        "Host: " + host + "\r\n" +
-        "Content-Type: application/json\r\n" +
-        (token.empty() ? "" : ("X-FC-VERITY-TOKEN: " + token + "\r\n")) +
-        "Content-Length: " + std::to_string(body.size()) + "\r\n" +
-        "Connection: close\r\n\r\n" +
-        body;
-    boost::asio::write(stream, boost::asio::buffer(req));
-
-    boost::asio::streambuf resp;
-    boost::system::error_code ec;
-    boost::asio::read(stream, resp, ec);
-    std::istream is(&resp);
-    std::string resp_str((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
-
-    auto pos = resp_str.find("\r\n\r\n");
-    if (pos == std::string::npos) {
-        throw std::runtime_error("invalid response from verity API");
+    const auto close_socket = [&stream]() {
+        boost::system::error_code ignored;
+        stream.lowest_layer().cancel(ignored);
+        stream.lowest_layer().close(ignored);
+    };
+    const auto handshake = run_until(
+        io, deadline,
+        [&](auto complete) {
+            stream.async_handshake(
+                boost::asio::ssl::stream_base::client,
+                [complete](const boost::system::error_code& error) {
+                    complete(error);
+                });
+        },
+        close_socket);
+    if (handshake.timed_out) {
+        throw std::runtime_error("operator proof TLS handshake timed out");
     }
-    std::string body_str = resp_str.substr(pos + 4);
+    if (handshake.error) {
+        throw std::runtime_error(
+            "operator proof TLS handshake failed: " +
+            handshake.error.message());
+    }
+
+    http::request<http::string_body> request;
+    request.version(11);
+    request.method(http::verb::post);
+    request.target(endpoint.target);
+    request.set(http::field::host, detail::https_authority(endpoint));
+    request.set(http::field::content_type, "application/json");
+    request.set(http::field::connection, "close");
+    if (!token.empty()) {
+        request.set("X-FC-VERITY-TOKEN", token);
+    }
+    request.body() = payload.dump();
+    request.prepare_payload();
+
+    const auto write_result = run_until(
+        io, deadline,
+        [&](auto complete) {
+            http::async_write(
+                stream, request,
+                [complete](const boost::system::error_code& error,
+                           std::size_t) { complete(error); });
+        },
+        close_socket);
+    if (write_result.timed_out) {
+        throw std::runtime_error("operator proof request write timed out");
+    }
+    if (write_result.error) {
+        throw std::runtime_error(
+            "operator proof request write failed: " +
+            write_result.error.message());
+    }
+
+    beast::flat_buffer response_buffer;
+    http::response_parser<http::string_body> response_parser;
+    response_parser.header_limit(64U * 1024U);
+    response_parser.body_limit(1024U * 1024U);
+    const auto read_result = run_until(
+        io, deadline,
+        [&](auto complete) {
+            http::async_read(
+                stream, response_buffer, response_parser,
+                [complete](const boost::system::error_code& error,
+                           std::size_t) { complete(error); });
+        },
+        close_socket);
+    if (read_result.timed_out) {
+        throw std::runtime_error("operator proof response timed out");
+    }
+    if (read_result.error) {
+        throw std::runtime_error(
+            "operator proof response failed: " +
+            read_result.error.message());
+    }
+
+    auto response = response_parser.release();
+    std::string body = std::move(response.body());
     try {
-        return nlohmann::json::parse(body_str);
+        return nlohmann::json::parse(body);
     } catch (...) {
-        throw std::runtime_error("verity API returned invalid JSON: " + body_str.substr(0, 200));
+        throw std::runtime_error("verity API returned invalid JSON");
     }
 }
 
@@ -297,8 +317,11 @@ bool verify_anonym_signature(const std::string& hash,
         message += ":" + certfp;
     }
     yume::crypto::Bytes msg_bytes(message.begin(), message.end());
+    if (sig_b64.size() > 128U) {
+        return false;
+    }
     std::string sig_raw = yume::util::base64_decode(sig_b64);
-    if (sig_raw.empty()) {
+    if (sig_raw.empty() || yume::util::base64_encode(sig_raw) != sig_b64) {
         return false;
     }
     yume::crypto::Bytes sig_bytes(sig_raw.begin(), sig_raw.end());
@@ -358,71 +381,26 @@ bool sign_anonym_with_ca(const std::string& hash,
     }
     yume::crypto::Bytes msg_bytes(message.begin(), message.end());
 
-    std::string key_pem;
+    yume::crypto::EVP_PKEY_ptr key{nullptr, EVP_PKEY_free};
     try {
-        key_pem = read_file_bytes(ca_key_path);
+        key = yume::crypto::load_private_key(ca_key_path);
     } catch (...) {
-        return false;
-    }
-    if (key_pem.empty()) {
-        return false;
-    }
-
-    BIO* bio = BIO_new_mem_buf(key_pem.data(), static_cast<int>(key_pem.size()));
-    if (!bio) {
-        return false;
-    }
-    EVP_PKEY* key = PEM_read_bio_PrivateKey(bio, nullptr, nullptr, nullptr);
-    BIO_free(bio);
-    if (!key) {
         return false;
     }
 
     bool ok = false;
     try {
-        auto sig = yume::crypto::sign_message(key, msg_bytes);
+        auto sig = yume::crypto::sign_message(key.get(), msg_bytes);
         if (!sig.empty()) {
             std::string sig_raw(reinterpret_cast<const char*>(sig.data()), sig.size());
             *out_sig_b64 = yume::util::base64_encode(sig_raw);
-            *out_alg = key_alg_label(key);
+            *out_alg = key_alg_label(key.get());
             ok = !out_sig_b64->empty();
         }
     } catch (...) {
         ok = false;
     }
-    EVP_PKEY_free(key);
     return ok;
-}
-
-struct ApiEndpoint {
-    std::string host;
-    std::string port;
-    std::string target;
-};
-
-ApiEndpoint parse_api_url(const std::string& url) {
-    const std::string prefix = "https://";
-    if (url.rfind(prefix, 0) != 0) {
-        throw std::runtime_error("anonym_api must be https://");
-    }
-    std::string rest = url.substr(prefix.size());
-    std::string hostport;
-    std::string target = "/";
-    auto slash = rest.find('/');
-    if (slash == std::string::npos) {
-        hostport = rest;
-    } else {
-        hostport = rest.substr(0, slash);
-        target = rest.substr(slash);
-    }
-    std::string host = hostport;
-    std::string port = "443";
-    auto colon = hostport.find(':');
-    if (colon != std::string::npos) {
-        host = hostport.substr(0, colon);
-        port = hostport.substr(colon + 1);
-    }
-    return {host, port, target};
 }
 
 void add_proof_source(std::vector<std::string>* sources, std::string_view source) {
@@ -486,39 +464,25 @@ bool sign_pq_pub_with_key(const std::string& pq_pub_b64,
     std::string message = std::string(kPqMsgPrefix) + pq_pub_b64 + ":" + certfp;
     yume::crypto::Bytes msg_bytes(message.begin(), message.end());
 
-    std::string key_pem;
+    yume::crypto::EVP_PKEY_ptr key{nullptr, EVP_PKEY_free};
     try {
-        key_pem = read_file_bytes(key_path);
+        key = yume::crypto::load_private_key(key_path);
     } catch (...) {
-        return false;
-    }
-    if (key_pem.empty()) {
-        return false;
-    }
-
-    BIO* bio = BIO_new_mem_buf(key_pem.data(), static_cast<int>(key_pem.size()));
-    if (!bio) {
-        return false;
-    }
-    EVP_PKEY* key = PEM_read_bio_PrivateKey(bio, nullptr, nullptr, nullptr);
-    BIO_free(bio);
-    if (!key) {
         return false;
     }
 
     bool ok = false;
     try {
-        auto sig = yume::crypto::sign_message(key, msg_bytes);
+        auto sig = yume::crypto::sign_message(key.get(), msg_bytes);
         if (!sig.empty()) {
             std::string sig_raw(reinterpret_cast<const char*>(sig.data()), sig.size());
             *out_sig_b64 = yume::util::base64_encode(sig_raw);
-            *out_alg = key_alg_label(key);
+            *out_alg = key_alg_label(key.get());
             ok = !out_sig_b64->empty();
         }
     } catch (...) {
         ok = false;
     }
-    EVP_PKEY_free(key);
     return ok;
 }
 
@@ -568,13 +532,10 @@ AnonymProof fetch_anonym_proof(const std::string& hash,
     const bool require_local = yume::policy::anonym_proof_mode_requires_local(proof.proof_policy);
 
     if (allow_remote && !api_url.empty()) {
-        ApiEndpoint ep = parse_api_url(api_url);
-        auto resp = post_json_https(ep.host, ep.port, ep.target, req, token, outbound_proxy_url);
-        proof.sig = resp.value("sig", "");
-        if (proof.sig.empty()) {
-            std::string err = resp.value("error", "unknown");
-            throw std::runtime_error("external operator proof signature missing (API error: " + err + ")");
-        }
+        const auto endpoint = detail::parse_https_endpoint(api_url);
+        auto resp = post_json_https(
+            endpoint, req, token, outbound_proxy_url);
+        proof.sig = detail::require_operator_proof_signature(resp);
         if (!verify_anonym_signature(proof.hash, proof.ts, proof.nonce, proof.certfp, proof.sig)) {
             throw std::runtime_error("external operator proof signature verification failed");
         }

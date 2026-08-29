@@ -11,11 +11,13 @@ readonly EXPECTED_CHROME_LAUNCHER_SHA256='aea09d69ce7f24d5901f6bfb15dd44d0c856e7
 readonly EXPECTED_CHROME_BINARY_SHA256='4cf210c4a0aeee3e69a73639260918a7448626d6b99892ec61e20750bc7c7079'
 readonly EXPECTED_NODE_VERSION='v24.18.0'
 readonly EXPECTED_NODE_BINARY_SHA256='41a74efb34cbde5c7632cdac0cf8bd1a14d0b8d73dc1e82755014d9a9ce70f5c'
-readonly EXPECTED_HELPER_SHA256='f0e2cf15f9f0f1984cf7b105ce6837537074d8b8b3d84343b37d47a9ec84f269'
 readonly DEFAULT_RUNS=5
 readonly CAPTURE_IDLE_MS=42000
 readonly RELAY_PORT=39445
 readonly GIT_TIMEOUT_SECONDS=10
+readonly YUME_RUN_TIMEOUT_SECONDS=180
+readonly YUME_RUN_KILL_AFTER_SECONDS=5
+readonly YUME_LOG_BLOCKS=16384
 
 usage() {
     cat <<'EOF'
@@ -97,6 +99,14 @@ ISOLATION
     fi
 }
 
+for non_symlink_input in "$yume_input" "$release_bundle_input" \
+        "$config_input" "$certificate_input"; do
+    if [[ -L $non_symlink_input ]]; then
+        echo "capture input must not be a symlink: $non_symlink_input" >&2
+        exit 1
+    fi
+done
+
 yume_bin=$(realpath -e -- "$yume_input")
 client_config=$(realpath -e -- "$config_input")
 certificate=$(realpath -e -- "$certificate_input")
@@ -104,15 +114,10 @@ release_bundle=$(realpath -e -- "$release_bundle_input")
 chrome_launcher=$(realpath -e -- "$chrome_launcher_input")
 chrome_binary=$(realpath -e -- "$chrome_binary_input")
 node_bin=$(realpath -e -- "$node_input")
-helper_bin=$(realpath -e -- "$(dirname -- "$yume_bin")/yume-chrome-tls-helper")
 readonly yume_bin client_config certificate release_bundle chrome_launcher chrome_binary
-readonly node_bin helper_bin
-if [[ ! -x $helper_bin ]]; then
-    echo "required executable is missing: $helper_bin" >&2
-    exit 1
-fi
+readonly node_bin
 for regular in "$client_config" "$certificate" "$release_bundle"; do
-    if [[ ! -f $regular || ! -r $regular || -L $regular ]]; then
+    if [[ ! -f $regular || ! -r $regular ]]; then
         echo "input must be a readable, non-symlink regular file: $regular" >&2
         exit 1
     fi
@@ -194,21 +199,16 @@ require_clean_source() {
 source_commit=$(git_identity 'HEAD^{commit}')
 source_tree=$(git_identity 'HEAD^{tree}')
 yume_sha256=$(sha256sum -- "$yume_bin" | awk '{print $1}')
-helper_sha256=$(sha256sum -- "$helper_bin" | awk '{print $1}')
 release_bundle_sha256=$(sha256sum -- "$release_bundle" | awk '{print $1}')
 config_sha256=$(sha256sum -- "$client_config" | awk '{print $1}')
 certificate_sha256=$(sha256sum -- "$certificate" | awk '{print $1}')
 tls_leaf_sha256=$(openssl x509 -in "$certificate" -outform DER |
     sha256sum | awk '{print $1}')
-readonly source_commit source_tree yume_sha256 helper_sha256 release_bundle_sha256
+readonly source_commit source_tree yume_sha256 release_bundle_sha256
 readonly config_sha256
 readonly certificate_sha256 tls_leaf_sha256
 if [[ ! $tls_leaf_sha256 =~ ^[0-9a-f]{64}$ ]]; then
     echo 'could not compute the certificate DER leaf SHA-256' >&2
-    exit 1
-fi
-if [[ $helper_sha256 != "$EXPECTED_HELPER_SHA256" ]]; then
-    echo 'YUME helper SHA-256 does not match this exact source checkpoint' >&2
     exit 1
 fi
 if ! require_clean_source; then
@@ -217,8 +217,8 @@ if ! require_clean_source; then
 fi
 if ! python3 "$repo_root/scripts/yume_capture_binary_provenance.py" \
         --bundle "$release_bundle" --yume "$yume_bin" \
-        --helper "$helper_bin" --source-commit "$source_commit"; then
-    echo 'YUME capture executables are not exact release-bundle artifacts' >&2
+        --source-commit "$source_commit"; then
+    echo 'YUME capture executable is not the exact release-bundle artifact' >&2
     exit 1
 fi
 
@@ -296,8 +296,9 @@ python3 "$runtime_root/scripts/yume_capture_manifest.py" \
     --node-binary-sha256 "$node_sha256" \
     --display "${DISPLAY:-not-launched-in-yume-arm}" \
     --yume-binary-sha256 "$yume_sha256" \
-    --yume-helper-sha256 "$helper_sha256" \
+    --tls-backend openssl-chrome151 \
     --release-bundle-sha256 "$release_bundle_sha256" \
+    --client-config-sha256 "$config_sha256" \
     --tls-leaf-sha256 "$tls_leaf_sha256" \
     --tls-wire-evidence 1
 
@@ -342,19 +343,31 @@ for run_index in $(seq 1 "$run_count"); do
         exit 1
     fi
 
-    if ! "$yume_bin" \
-        --config "$client_config" \
-        --server 127.0.0.1 --port "$RELAY_PORT" \
-        --tls-name "$capture_sni" --tls-ca "$output_dir/server.crt" \
-        --tls-pin "$tls_leaf_sha256" --tls-helper "$helper_bin" \
-        --bench --bench-mib 1 --bench-chunk-kib 16 \
-        --bench-streams 1 --bench-direction both \
-        --tunnels 1 --obfs \
-        --transport-profile chrome151-node24-v1 \
-        --tls-backend chrome151 \
-        --outer-carrier-evidence "$run_dir/behavior.json" \
-        >"$run_dir/yume.log" 2>&1; then
-        echo "$run_name: YUME capture failed; inspect $run_dir/yume.log" >&2
+    if (
+        ulimit -f "$YUME_LOG_BLOCKS"
+        exec "$timeout_bin" --signal=TERM \
+            --kill-after="${YUME_RUN_KILL_AFTER_SECONDS}s" \
+            "${YUME_RUN_TIMEOUT_SECONDS}s" \
+            "$yume_bin" \
+            --config "$client_config" \
+            --server 127.0.0.1 --port "$RELAY_PORT" \
+            --tls-name "$capture_sni" --tls-ca "$output_dir/server.crt" \
+            --tls-pin "$tls_leaf_sha256" \
+            --bench --bench-mib 1 --bench-chunk-kib 16 \
+            --bench-streams 1 --bench-direction both \
+            --tunnels 1 --obfs \
+            --transport-profile chrome151-node24-v1 \
+            --tls-backend openssl-chrome151 \
+            --outer-carrier-evidence "$run_dir/behavior.json"
+    ) >"$run_dir/yume.log" 2>&1; then
+        :
+    else
+        yume_status=$?
+        if [[ $yume_status == 124 || $yume_status == 137 ]]; then
+            echo "$run_name: YUME capture exceeded the bounded runtime; inspect $run_dir/yume.log" >&2
+        else
+            echo "$run_name: YUME capture failed; inspect $run_dir/yume.log" >&2
+        fi
         exit 1
     fi
     if ! wait "$relay_pid"; then
@@ -378,12 +391,14 @@ if [[ $(git_identity 'HEAD^{commit}') != "$source_commit" ||
     exit 1
 fi
 if [[ $(sha256sum -- "$yume_bin" | awk '{print $1}') != "$yume_sha256" ||
-      $(sha256sum -- "$helper_bin" | awk '{print $1}') != "$helper_sha256" ||
       $(sha256sum -- "$release_bundle" | awk '{print $1}') != "$release_bundle_sha256" ||
       $(sha256sum -- "$client_config" | awk '{print $1}') != "$config_sha256" ||
       $(sha256sum -- "$certificate" | awk '{print $1}') != "$certificate_sha256" ||
-      $(sha256sum -- "$output_dir/server.crt" | awk '{print $1}') != "$certificate_sha256" ]]; then
-    echo 'capture executable, config, or certificate changed during capture' >&2
+      $(sha256sum -- "$output_dir/server.crt" | awk '{print $1}') != "$certificate_sha256" ||
+      $(sha256sum -- "$chrome_launcher" | awk '{print $1}') != "$chrome_launcher_sha256" ||
+      $(sha256sum -- "$chrome_binary" | awk '{print $1}') != "$chrome_binary_sha256" ||
+      $(sha256sum -- "$node_bin" | awk '{print $1}') != "$node_sha256" ]]; then
+    echo 'capture executable, browser, Node, config, or certificate changed during capture' >&2
     exit 1
 fi
 if ! (cd -- "$runtime_root" &&

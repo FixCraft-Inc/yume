@@ -67,6 +67,33 @@ std::string TransferInviteSummary(const control::PendingInvite& invite) {
     return " metadata=invalid";
 }
 
+void PrintContacts(const nlohmann::json& result) {
+    if (!result.value("directory_available", false)) {
+        util::log_warn(
+            "directory unavailable; presence is unknown: " +
+            result.value("directory_error", "unknown error"));
+    }
+    const auto contacts = result.find("contacts");
+    if (contacts == result.end() || !contacts->is_array()) {
+        util::log_warn("contacts response is missing its contacts array");
+        return;
+    }
+    for (const auto& contact : *contacts) {
+        std::cout << contact.value("endpoint_id", "") << " "
+                  << contact.value("display_name", "")
+                  << " trust=" << contact.value("trust_source", "")
+                  << " presence="
+                  << (!contact.value("in_directory", false)
+                          ? "unknown"
+                          : (contact.value("online", false)
+                                 ? "online" : "offline"));
+        if (contact.value("configured_mismatch", false)) {
+            std::cout << " CONFIGURED-PIN-MISMATCH";
+        }
+        std::cout << std::endl;
+    }
+}
+
 }  // namespace
 
 InteractiveConsoleSession::InteractiveConsoleSession(std::shared_ptr<std::atomic<bool>> stop,
@@ -128,7 +155,7 @@ InteractiveConsoleSession start_interactive_console(
     InteractiveConsoleSession::DisconnectCallback request_disconnect) {
     auto console_stop = std::make_shared<std::atomic<bool>>(false);
     util::log_info("Interactive console ready. Type help + Enter.");
-    util::log_info("Console: help | whoami | status | directory | invites | chat <peer> | send <text> | send-file <peer> <path> | send-bytes <peer> <path> | accept <invite|from> [password] | reject <invite|from> [reason] | history [peer] | history-delete <peer|all> | admin attach <peer> | exec <cmd> | quit");
+    util::log_info("Console: help | whoami | status | directory | contacts | forget <endpoint-id> | invites | chat <peer> | send <text> | send-file <peer> <path> | send-bytes <peer> <path> | accept <invite|from> [password] | reject <invite|from> [reason] | history [peer] | history-delete <peer|all> | admin attach <peer> | exec <cmd> | quit");
 #if !defined(_WIN32)
     auto line_reader = std::make_shared<InteractiveLineReader>();
 #endif
@@ -172,7 +199,7 @@ InteractiveConsoleSession start_interactive_console(
                 continue;
             }
             if (line == "help") {
-                util::log_info("Commands: help | whoami | status | directory | invites | chat <peer> | send <text> | send-file <peer> <path> | send-bytes <peer> <path> | accept <invite|from> [password] | reject <invite|from> [reason] | history [peer] | history-delete <peer|all> | admin attach <peer> | admin status | admin sessions | admin stop | exec <cmd> | quit");
+                util::log_info("Commands: help | whoami | status | directory | contacts | forget <endpoint-id> | invites | chat <peer> | send <text> | send-file <peer> <path> | send-bytes <peer> <path> | accept <invite|from> [password] | reject <invite|from> [reason] | history [peer] | history-delete <peer|all> | admin attach <peer> | admin status | admin sessions | admin stop | exec <cmd> | quit");
                 continue;
             }
             if (line == "whoami") {
@@ -208,6 +235,42 @@ InteractiveConsoleSession start_interactive_console(
                               << " bytes=" << (entry.allow_bytes ? "yes" : "no")
                               << std::endl;
                 }
+                continue;
+            }
+            if (line == "contacts") {
+                auto response = relay_runtime->handle_local_request(
+                    {{"op", "contacts.list"},
+                     {"args", nlohmann::json::object()}});
+                if (!response.value("ok", false)) {
+                    util::log_warn(
+                        response.value("error", "contacts failed"));
+                    continue;
+                }
+                PrintContacts(response["result"]);
+                continue;
+            }
+            if (line == "forget") {
+                util::log_warn("usage: forget <endpoint-id>");
+                continue;
+            }
+            if (line.rfind("forget ", 0) == 0) {
+                const std::string endpoint_id = trim_copy(line.substr(7));
+                if (endpoint_id.empty()) {
+                    util::log_warn("usage: forget <endpoint-id>");
+                    continue;
+                }
+                auto response = relay_runtime->handle_local_request(
+                    {{"op", "contacts.forget"},
+                     {"args", {{"endpoint_id", endpoint_id}}}});
+                if (!response.value("ok", false)) {
+                    util::log_warn(
+                        response.value("error", "forget failed"));
+                    continue;
+                }
+                util::log_info(
+                    response["result"].value("removed", false)
+                        ? "contact forgotten"
+                        : "no learned trust was stored for that peer");
                 continue;
             }
             if (line == "invites") {
@@ -364,9 +427,16 @@ InteractiveConsoleSession start_interactive_console(
                 nlohmann::json req{{"op", "history.delete"}, {"args", nlohmann::json::object()}};
                 if (arg != "all" && !arg.empty()) {
                     req["args"]["peer_id"] = arg;
+                } else if (arg == "all") {
+                    req["args"]["all"] = true;
                 }
-                relay_runtime->handle_local_request(req);
-                util::log_info("history deleted");
+                const auto response = relay_runtime->handle_local_request(req);
+                if (!response.value("ok", false)) {
+                    util::log_warn(
+                        response.value("error", "history delete failed"));
+                } else {
+                    util::log_info("history deleted");
+                }
                 continue;
             }
             if (line.rfind("history", 0) == 0) {
@@ -380,7 +450,13 @@ InteractiveConsoleSession start_interactive_console(
                     util::log_warn(resp.value("error", "history failed"));
                     continue;
                 }
-                for (const auto& item : resp["result"]) {
+                const auto& result = resp["result"];
+                if (!result.value("available", false)) {
+                    util::log_warn(result.value(
+                        "error", "protected relay history is unavailable"));
+                    continue;
+                }
+                for (const auto& item : result["items"]) {
                     std::cout << item.value("direction", "?") << " "
                               << item.value("peer_name", item.value("peer_id", "")) << " "
                               << item.value("text", "") << std::endl;

@@ -17,6 +17,7 @@
 #include <cmath>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 
 #include <nlohmann/json.hpp>
 
@@ -288,7 +289,8 @@ bool AuthKeyPolicy::empty() const {
            !weight.has_value() &&
            !max_sessions.has_value() &&
            key_type == AuthKeyType::Individual &&
-           federation_peer_id.empty();
+           federation_peer_id.empty() &&
+           !federation_psk_material;
 }
 
 double AuthKeyPolicy::effective_weight() const {
@@ -486,11 +488,61 @@ AuthKeyPolicyMap load_auth_policies(const std::string& meta_path) {
             policy.federation_peer_id = it.value()["federation_peer_id"].get<std::string>();
         }
         validate_key_policy(policy);
+        const auto psk_path_value = it.value().find("federation_psk_file");
+        if (policy.federation_peer_id.empty() &&
+            psk_path_value != it.value().end()) {
+            throw std::runtime_error(
+                "federation_psk_file requires federation_peer_id");
+        }
+        if (!policy.federation_peer_id.empty()) {
+            if (psk_path_value == it.value().end() ||
+                psk_path_value->get_ref<const std::string&>().empty()) {
+                throw std::runtime_error(
+                    "federation_peer_id requires federation_psk_file");
+            }
+            std::filesystem::path psk_path(
+                psk_path_value->get_ref<const std::string&>());
+            if (psk_path.is_relative()) {
+                psk_path = std::filesystem::path(meta_path).parent_path() /
+                           psk_path;
+            }
+            policy.federation_psk_material =
+                std::make_shared<const security::Secret32>(
+                    security::LoadSecretFile32(psk_path));
+        }
         if (!policy.empty()) {
             policies[it.key()] = std::move(policy);
         }
     }
+    validate_unique_federation_peer_ids(policies);
     return policies;
+}
+
+void validate_unique_federation_peer_ids(
+        const AuthKeyPolicyMap& policies) {
+    const AuthKeyPolicyMap empty;
+    validate_unique_federation_peer_ids(policies, empty);
+}
+
+void validate_unique_federation_peer_ids(
+        const AuthKeyPolicyMap& regular,
+        const AuthKeyPolicyMap& operators) {
+    std::unordered_map<std::string, std::string> owner_by_peer_id;
+    const auto add = [&](const AuthKeyPolicyMap& policies) {
+        for (const auto& [fingerprint, policy] : policies) {
+            if (policy.federation_peer_id.empty()) continue;
+            const auto [found, inserted] = owner_by_peer_id.emplace(
+                policy.federation_peer_id, fingerprint);
+            if (!inserted && found->second != fingerprint) {
+                throw std::runtime_error(
+                    "federation_peer_id '" + policy.federation_peer_id +
+                    "' is assigned to more than one authenticated visitor "
+                    "identity");
+            }
+        }
+    };
+    add(regular);
+    add(operators);
 }
 
 bool is_authorized(EVP_PKEY* pubkey, const std::vector<crypto::Bytes>& authorized) {
@@ -615,6 +667,7 @@ std::string summarize_auth_policy(const AuthKeyPolicy& policy) {
     }
     if (!policy.federation_peer_id.empty()) {
         parts.emplace_back("federation_peer_id=" + policy.federation_peer_id);
+        parts.emplace_back("federation_psk=configured");
     }
 
     std::ostringstream out;

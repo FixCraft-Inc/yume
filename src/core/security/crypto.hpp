@@ -56,6 +56,10 @@ struct KeyPair {
     EVP_PKEY_ptr public_key{nullptr, EVP_PKEY_free};
 };
 
+// Load one signing/decryption key through the protected, descriptor-bound
+// private-file contract. Unlike load_keypair(path, ""), this does not create
+// a redundant public-key reference for a caller that only signs.
+EVP_PKEY_ptr load_private_key(const std::string& path_priv);
 KeyPair load_keypair(const std::string& path_priv, const std::string& path_pub);
 
 bool verify_key(EVP_PKEY* pubkey, const Bytes& message, const Bytes& signature);

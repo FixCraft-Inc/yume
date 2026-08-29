@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace yume::client::relay_v2 {
 
@@ -54,6 +55,42 @@ struct PeerTrustDecision {
     bool commit_required{false};
 };
 
+// Where an entry's authority comes from. Configured outranks the others: a
+// fingerprint named by the current configuration is operator authorization,
+// whether or not a durable record has materialized for it yet.
+enum class PeerTrustSource : std::uint8_t {
+    // Learned on first use: a durable pin with no explicit marker and no
+    // configured fingerprint.
+    Tofu = 1,
+    // A durable explicit marker exists, materialized by a verified handshake
+    // against an out-of-band fingerprint.
+    Explicit = 2,
+    // The active PeerTrustConfig names this endpoint's fingerprint.
+    Configured = 3,
+};
+
+// One trusted peer, as a contacts surface sees it. This is identity policy
+// only: it never carries public identity bytes, and there is nothing secret
+// in it to wipe -- a composite fingerprint is a public digest.
+struct PeerTrustEntry {
+    std::string endpoint_id;
+    // The durable pin when one exists, otherwise the configured fingerprint.
+    std::string fingerprint;
+    PeerTrustSource source{PeerTrustSource::Tofu};
+    bool explicit_marker{false};
+    // The configuration names a different fingerprint than the durable pin.
+    // Every handshake for this peer fails closed until that is resolved, so a
+    // contacts view must be able to show it rather than a healthy-looking row.
+    bool configured_mismatch{false};
+};
+
+std::string_view to_string(PeerTrustSource source) noexcept;
+
+// Enumeration bound. A trust directory is owner-only, so exceeding this means
+// corruption or an already-compromised account; the listing refuses rather
+// than truncating, because silently hiding a trusted peer is worse.
+inline constexpr std::size_t kMaxListedPeerTrustEntries = 4096;
+
 // Persistent relay-v2 peer identity policy.
 //
 // The canonical_identity input is the exact canonical two-PEM Ed25519 +
@@ -82,6 +119,19 @@ public:
         std::span<const std::uint8_t> canonical_identity,
         PeerTrustRequirement requirement =
             PeerTrustRequirement::Ordinary) const;
+
+    // Every peer this store would recognise: durable pins on disk merged with
+    // the fingerprints the configuration names. Ordered by endpoint ID, so a
+    // caller renders a stable list. Read-only; never creates the directory.
+    std::vector<PeerTrustEntry> list() const;
+
+    // Removes a learned TOFU pin. Returns false when nothing was stored.
+    //
+    // Refuses anything that is operator authorization rather than learned
+    // state: a fingerprint named by the configuration, or one with a durable
+    // explicit marker. Deleting those would silently drop an out-of-band
+    // decision that the operator, not this process, is entitled to reverse.
+    bool forget(std::string_view endpoint_id) const;
 
     const PeerTrustConfig& config() const noexcept { return config_; }
 

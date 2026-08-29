@@ -29,6 +29,7 @@ from yume_classifier_evidence import (  # noqa: E402
 )
 from yume_capture_finalize import (  # noqa: E402
     EXPECTED_RUNTIME_FILES,
+    FinalizeError,
     finalize_capture,
 )
 
@@ -249,6 +250,7 @@ class ClassifierEvidenceTest(unittest.TestCase):
         certificate: bytes,
         include_behavior: bool = True,
         workload_mode: str = "cover-page-websocket-v1",
+        tls_backend: str = "openssl-chrome151",
     ) -> Path:
         arm = root / name
         arm.mkdir()
@@ -309,8 +311,11 @@ class ClassifierEvidenceTest(unittest.TestCase):
         else:
             environment["node_sha256"] = PINNED_NODE_BINARY_SHA256
             environment["yume_binary_sha256"] = "c" * 64
-            environment["yume_helper_sha256"] = "d" * 64
+            environment["tls_backend"] = tls_backend
+            if tls_backend == "chrome151":
+                environment["yume_helper_sha256"] = "d" * 64
             environment["release_bundle_sha256"] = "f" * 64
+            environment["client_config_sha256"] = "0" * 64
             environment["tls_leaf_sha256"] = "e" * 64
         (arm / "server.crt").write_bytes(certificate)
         (arm / "environment.json").write_text(json.dumps(environment))
@@ -452,17 +457,25 @@ class ClassifierEvidenceTest(unittest.TestCase):
             for item in report["findings"]
         ))
 
-    def test_missing_yume_behavior_is_known_gap(self) -> None:
+    def test_missing_yume_behavior_is_rejected_during_finalization(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            normal = self._make_arm(root, "normal", normal=True, certificate=b"cert")
+            with self.assertRaisesRegex(FinalizeError, "run-01 checksum paths differ"):
+                self._make_arm(
+                    root, "yume", normal=False, certificate=b"cert",
+                    include_behavior=False,
+                )
+
+    def test_helper_backed_yume_arm_accepts_bound_helper_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
             yume = self._make_arm(
                 root, "yume", normal=False, certificate=b"cert",
-                include_behavior=False,
+                tls_backend="chrome151",
             )
-            report = analyze(load_arm(normal, normal=True), load_arm(yume, normal=False))
-        self.assertEqual(report["verdict"], "KNOWN_GAP")
-        self.assertIn("behavior.yume", {item["field"] for item in report["findings"]})
+            evidence = load_arm(yume, normal=False)
+        self.assertEqual(evidence.environment["tls_backend"], "chrome151")
+        self.assertEqual(evidence.environment["yume_helper_sha256"], "d" * 64)
 
     def test_arm_relabeling_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -534,15 +547,15 @@ class ClassifierEvidenceTest(unittest.TestCase):
             with self.assertRaisesRegex(EvidenceError, "not a regular file"):
                 load_arm(normal, normal=True)
 
-    def test_optional_yume_behavior_symlink_is_not_treated_as_missing(self) -> None:
+    def test_yume_behavior_symlink_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             yume = self._make_arm(
-                root, "yume", normal=False, certificate=b"cert",
-                include_behavior=False,
+                root, "yume", normal=False, certificate=b"cert"
             )
             outside = root / "outside.json"
             outside.write_text("{}")
+            (yume / "run-01/behavior.json").unlink()
             (yume / "run-01/behavior.json").symlink_to(outside)
             with self.assertRaisesRegex(EvidenceError, "cannot open evidence file"):
                 load_arm(yume, normal=False)

@@ -822,8 +822,8 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--client-http-profile", default=None,
                     choices=["chrome"],
                     help="compatibility spelling for the pinned cover profile")
-    ap.add_argument("--tls-backend", default="openssl-diagnostic",
-                    choices=["chrome151", "openssl-diagnostic"],
+    ap.add_argument("--tls-backend", default="openssl-chrome151",
+                    choices=["openssl-chrome151", "chrome151", "openssl-diagnostic"],
                     help="client TLS backend; chrome151 requires a helper-enabled build")
     ap.add_argument("--tls-wire-report", default=None,
                     help="local mode only: route YUME through the unprivileged TLS wire relay")

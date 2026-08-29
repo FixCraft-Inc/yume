@@ -1,0 +1,312 @@
+Description: add an opt-in Chrome-shaped ClientHello for YUME
+Author: FixCraft Inc.
+Copyright: 2026 FixCraft Inc.
+License: AGPL-3.0-or-later
+Forwarded: not-needed
+
+--- a/include/openssl/ssl.h.in
++++ b/include/openssl/ssl.h.in
+@@ -431,0 +432,7 @@
++ * YUME's Chrome-shaped ClientHello is an opt-in downstream extension. The
++ * option is deliberately outside SSL_OP_ALL so an ordinary SSL_CTX remains
++ * byte-for-byte compatible with upstream OpenSSL.
++ */
++#define SSL_OP_YUME_CHROME_CLIENT_HELLO SSL_OP_BIT(36)
++
++/*
+@@ -1345,0 +1353 @@
++#define SSL_CTRL_YUME_CHROME_CLIENT_HELLO 0x5943
+@@ -1364,0 +1373,2 @@
++#define SSL_CTX_set_yume_chrome_client_hello(ctx, onoff) \
++    SSL_CTX_ctrl(ctx, SSL_CTRL_YUME_CHROME_CLIENT_HELLO, onoff, NULL)
+--- a/ssl/ssl_local.h
++++ b/ssl/ssl_local.h
+@@ -1484,0 +1485,9 @@
++    /*
++     * Private entropy for the opt-in YUME Chrome ClientHello. Keeping this
++     * separate from ClientHello.random avoids a detectable correlation. The
++     * values are generated once per connection and reused across an HRR.
++     */
++    unsigned char yume_chrome_grease_seed[5];
++    uint64_t yume_chrome_shuffle_seed;
++    unsigned int yume_chrome_seeded : 1;
++
+--- a/ssl/ssl_lib.c
++++ b/ssl/ssl_lib.c
+@@ -593,0 +594,4 @@
++    OPENSSL_cleanse(sc->yume_chrome_grease_seed,
++        sizeof(sc->yume_chrome_grease_seed));
++    sc->yume_chrome_shuffle_seed = 0;
++    sc->yume_chrome_seeded = 0;
+@@ -3203,0 +3208,8 @@
++    case SSL_CTRL_YUME_CHROME_CLIENT_HELLO:
++        if (larg != 0 && larg != 1)
++            return 0;
++        if (larg != 0)
++            ctx->options |= SSL_OP_YUME_CHROME_CLIENT_HELLO;
++        else
++            ctx->options &= ~SSL_OP_YUME_CHROME_CLIENT_HELLO;
++        return 1;
+--- a/ssl/statem/statem_clnt.c
++++ b/ssl/statem/statem_clnt.c
+@@ -1177,0 +1178 @@
++    unsigned char yume_entropy[13] = { 0 };
+@@ -1228,0 +1230,26 @@
++    if ((s->options & SSL_OP_YUME_CHROME_CLIENT_HELLO) != 0
++        && SSL_CONNECTION_IS_DTLS(s)) {
++        SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_UNSUPPORTED);
++        return CON_FUNC_ERROR;
++    }
++    if ((s->options & SSL_OP_YUME_CHROME_CLIENT_HELLO) != 0
++        && !s->yume_chrome_seeded) {
++        if (RAND_bytes_ex(sctx->libctx, yume_entropy, sizeof(yume_entropy), 0)
++            <= 0) {
++            OPENSSL_cleanse(yume_entropy, sizeof(yume_entropy));
++            SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
++            return CON_FUNC_ERROR;
++        }
++        memcpy(s->yume_chrome_grease_seed, yume_entropy,
++            sizeof(s->yume_chrome_grease_seed));
++        memcpy(&s->yume_chrome_shuffle_seed,
++            yume_entropy + sizeof(s->yume_chrome_grease_seed),
++            sizeof(s->yume_chrome_shuffle_seed));
++        /* BoringSSL keeps the two extension GREASE values distinct. */
++        if ((s->yume_chrome_grease_seed[2] & 0xf0)
++            == (s->yume_chrome_grease_seed[3] & 0xf0))
++            s->yume_chrome_grease_seed[3] ^= 0x10;
++        s->yume_chrome_seeded = 1;
++        OPENSSL_cleanse(yume_entropy, sizeof(yume_entropy));
++    }
++
+@@ -1314,0 +1342,11 @@
++    }
++
++    if ((s->options & SSL_OP_YUME_CHROME_CLIENT_HELLO) != 0) {
++        const uint16_t grease =
++            (uint16_t)(((s->yume_chrome_grease_seed[0] & 0xf0) | 0x0a)
++                * 0x0101);
++
++        if (!WPACKET_put_bytes_u16(pkt, grease)) {
++            SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
++            return CON_FUNC_ERROR;
++        }
+--- a/ssl/statem/extensions_clnt.c
++++ b/ssl/statem/extensions_clnt.c
+@@ -200,0 +201,6 @@
++    if ((s->options & SSL_OP_YUME_CHROME_CLIENT_HELLO) != 0) {
++        static const unsigned char uncompressed_only[] = { 0 };
++
++        pformats = uncompressed_only;
++        num_formats = OSSL_NELEM(uncompressed_only);
++    }
+@@ -248,0 +255,10 @@
++    if ((s->options & SSL_OP_YUME_CHROME_CLIENT_HELLO) != 0) {
++        const uint16_t grease =
++            (uint16_t)(((s->yume_chrome_grease_seed[1] & 0xf0) | 0x0a)
++                * 0x0101);
++
++        if (!WPACKET_put_bytes_u16(pkt, grease)) {
++            SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
++            return EXT_RETURN_FAIL;
++        }
++    }
+@@ -595,0 +612,11 @@
++    if ((s->options & SSL_OP_YUME_CHROME_CLIENT_HELLO) != 0) {
++        const uint16_t grease =
++            (uint16_t)(((s->yume_chrome_grease_seed[4] & 0xf0) | 0x0a)
++                * 0x0101);
++
++        if (!WPACKET_put_bytes_u16(pkt, grease)) {
++            SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
++            return EXT_RETURN_FAIL;
++        }
++    }
++
+@@ -734,0 +762,16 @@
++
++    if ((s->options & SSL_OP_YUME_CHROME_CLIENT_HELLO) != 0
++        && !(s->hello_retry_request == SSL_HRR_PENDING
++            && s->s3.group_id != 0 && s->s3.tmp.pkey == NULL)) {
++        const uint16_t grease =
++            (uint16_t)(((s->yume_chrome_grease_seed[1] & 0xf0) | 0x0a)
++                * 0x0101);
++
++        if (!WPACKET_put_bytes_u16(pkt, grease)
++            || !WPACKET_start_sub_packet_u16(pkt)
++            || !WPACKET_put_bytes_u8(pkt, 0)
++            || !WPACKET_close(pkt)) {
++            SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
++            return EXT_RETURN_FAIL;
++        }
++    }
+--- a/ssl/statem/extensions.c
++++ b/ssl/statem/extensions.c
+@@ -790,0 +791,163 @@
++typedef struct yume_extension_block_st {
++    size_t offset;
++    size_t length;
++} YUME_EXTENSION_BLOCK;
++
++static uint64_t yume_chrome_shuffle_word(uint64_t *state)
++{
++    uint64_t value;
++
++    *state += UINT64_C(0x9e3779b97f4a7c15);
++    value = *state;
++    value = (value ^ (value >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
++    value = (value ^ (value >> 27)) * UINT64_C(0x94d049bb133111eb);
++    return value ^ (value >> 31);
++}
++
++static uint16_t yume_chrome_grease(const SSL_CONNECTION *s, size_t slot)
++{
++    return (uint16_t)(((s->yume_chrome_grease_seed[slot] & 0xf0) | 0x0a)
++        * 0x0101);
++}
++
++static int yume_chrome_put_grease_extension(SSL_CONNECTION *s, WPACKET *pkt,
++    size_t slot, int one_byte)
++{
++    if (!WPACKET_put_bytes_u16(pkt, yume_chrome_grease(s, slot))
++        || !WPACKET_start_sub_packet_u16(pkt)
++        || (one_byte && !WPACKET_put_bytes_u8(pkt, 0))
++        || !WPACKET_close(pkt)) {
++        SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
++        return 0;
++    }
++    return 1;
++}
++
++/*
++ * Serialize movable extensions in their ordinary construction order so all
++ * existing constructor side effects are preserved, then shuffle complete
++ * extension blocks. Padding and PSK are constructed on the real packet after
++ * the shuffle: padding depends on the packet's total length and the PSK binder
++ * must cover the actual ClientHello transcript.
++ */
++static int tls_construct_yume_chrome_extensions(SSL_CONNECTION *s,
++    WPACKET *pkt, unsigned int context, X509 *x, size_t chainidx,
++    int max_version)
++{
++    BUF_MEM *buf = NULL;
++    WPACKET tmppkt;
++    YUME_EXTENSION_BLOCK *blocks = NULL;
++    const unsigned char *encoded;
++    size_t encoded_len = 0, offset = 0, count = 0, i;
++    uint64_t shuffle_state = s->yume_chrome_shuffle_seed;
++    int tmppkt_initialized = 0;
++    int ok = 0;
++
++    if ((buf = BUF_MEM_new()) == NULL || !WPACKET_init(&tmppkt, buf))
++        goto internal_error;
++    tmppkt_initialized = 1;
++
++    if (!custom_ext_add(s, context, &tmppkt, x, chainidx, max_version))
++        goto out;
++
++    for (i = 0; i < OSSL_NELEM(ext_defs); i++) {
++        const EXTENSION_DEFINITION *thisexd = &ext_defs[i];
++        EXT_RETURN (*construct)(SSL_CONNECTION *s, WPACKET *pkt,
++            unsigned int context, X509 *x, size_t chainidx);
++        EXT_RETURN ret;
++
++        if (i == TLSEXT_IDX_padding || i == TLSEXT_IDX_psk
++            || !should_add_extension(s, thisexd->context, context, max_version))
++            continue;
++        construct = s->server ? thisexd->construct_stoc
++                              : thisexd->construct_ctos;
++        if (construct == NULL)
++            continue;
++        ret = construct(s, &tmppkt, context, x, chainidx);
++        if (ret == EXT_RETURN_FAIL)
++            goto out;
++        if (ret == EXT_RETURN_SENT)
++            s->ext.extflags[i] |= SSL_EXT_FLAG_SENT;
++    }
++
++    if (!WPACKET_finish(&tmppkt)
++        || !WPACKET_get_total_written(&tmppkt, &encoded_len))
++        goto internal_error;
++    encoded = (const unsigned char *)buf->data;
++
++    while (offset < encoded_len) {
++        size_t body_len;
++
++        if (encoded_len - offset < 4)
++            goto internal_error;
++        body_len = ((size_t)encoded[offset + 2] << 8) | encoded[offset + 3];
++        if (body_len > encoded_len - offset - 4)
++            goto internal_error;
++        offset += 4 + body_len;
++        count++;
++    }
++    if (count != 0) {
++        blocks = OPENSSL_malloc(count * sizeof(*blocks));
++        if (blocks == NULL)
++            goto internal_error;
++    }
++    offset = 0;
++    for (i = 0; i < count; i++) {
++        size_t body_len = ((size_t)encoded[offset + 2] << 8)
++            | encoded[offset + 3];
++
++        blocks[i].offset = offset;
++        blocks[i].length = 4 + body_len;
++        offset += blocks[i].length;
++    }
++    for (i = count; i > 1; i--) {
++        size_t selected = (size_t)(yume_chrome_shuffle_word(&shuffle_state) % i);
++        YUME_EXTENSION_BLOCK swap = blocks[i - 1];
++
++        blocks[i - 1] = blocks[selected];
++        blocks[selected] = swap;
++    }
++
++    if (!yume_chrome_put_grease_extension(s, pkt, 2, 0))
++        goto out;
++    for (i = 0; i < count; i++) {
++        if (!WPACKET_memcpy(pkt, encoded + blocks[i].offset, blocks[i].length))
++            goto internal_error;
++    }
++    if (!yume_chrome_put_grease_extension(s, pkt, 3, 1))
++        goto out;
++
++    for (i = TLSEXT_IDX_padding; i <= TLSEXT_IDX_psk; i++) {
++        const EXTENSION_DEFINITION *thisexd = &ext_defs[i];
++        EXT_RETURN (*construct)(SSL_CONNECTION *s, WPACKET *pkt,
++            unsigned int context, X509 *x, size_t chainidx);
++        EXT_RETURN ret;
++
++        if (!should_add_extension(s, thisexd->context, context, max_version))
++            continue;
++        construct = s->server ? thisexd->construct_stoc
++                              : thisexd->construct_ctos;
++        if (construct == NULL)
++            continue;
++        ret = construct(s, pkt, context, x, chainidx);
++        if (ret == EXT_RETURN_FAIL)
++            goto out;
++        if (ret == EXT_RETURN_SENT)
++            s->ext.extflags[i] |= SSL_EXT_FLAG_SENT;
++    }
++
++    if (!WPACKET_close(pkt))
++        goto internal_error;
++    ok = 1;
++    goto out;
++
++internal_error:
++    SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
++out:
++    OPENSSL_free(blocks);
++    if (tmppkt_initialized)
++        WPACKET_cleanup(&tmppkt);
++    BUF_MEM_free(buf);
++    return ok;
++}
++
+@@ -835,0 +999,4 @@
++    if (!s->server && context == SSL_EXT_CLIENT_HELLO
++        && (s->options & SSL_OP_YUME_CHROME_CLIENT_HELLO) != 0)
++        return tls_construct_yume_chrome_extensions(s, pkt, context, x,
++            chainidx, max_version);

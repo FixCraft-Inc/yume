@@ -49,10 +49,9 @@ public:
     struct ConnectedSession {
         std::string endpoint_id;
         std::string display_name;
-        std::string peer_address;
-        std::chrono::system_clock::time_point connected_since;
-        std::uint64_t bytes_in{0};
-        std::uint64_t bytes_out{0};
+        std::string state;
+        std::string client_platform;
+        std::string client_version;
         bool authenticated{false};
     };
     std::vector<ConnectedSession> list_sessions() const;

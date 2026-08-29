@@ -682,6 +682,11 @@ class BrowserSandboxTest(unittest.TestCase):
         self.assertIn("capture output must be outside the source checkout", script)
         self.assertIn("capture output must be outside every Git worktree", script)
         self.assertIn(
+            'for non_symlink_input in "$yume_input" "$release_bundle_input"',
+            script,
+        )
+        self.assertIn("capture input must not be a symlink", script)
+        self.assertIn(
             '[[ -e $git_ancestor/.git || -L $git_ancestor/.git ]]', script
         )
         self.assertIn('mkdir -m 0700 -- "$output_dir"', script)
@@ -689,23 +694,30 @@ class BrowserSandboxTest(unittest.TestCase):
             "EXPECTED_CHROME_LAUNCHER_SHA256",
             "EXPECTED_CHROME_BINARY_SHA256",
             "EXPECTED_NODE_BINARY_SHA256",
-            "EXPECTED_HELPER_SHA256",
         ):
             self.assertIn(identity, script)
-        self.assertIn(
-            '$(dirname -- "$yume_bin")/yume-chrome-tls-helper', script
-        )
-        self.assertIn('--tls-helper "$helper_bin"', script)
+        self.assertNotIn("EXPECTED_HELPER_SHA256", script)
+        self.assertNotIn("yume-chrome-tls-helper", script)
+        self.assertNotIn("--tls-helper", script)
+        self.assertIn("--tls-backend openssl-chrome151", script)
         self.assertIn("yume_capture_binary_provenance.py", script)
         self.assertIn('--bundle "$release_bundle"', script)
+        self.assertIn('--client-config-sha256 "$config_sha256"', script)
         self.assertIn('openssl x509 -in "$certificate" -outform DER', script)
         self.assertIn('--tls-pin "$tls_leaf_sha256"', script)
         self.assertIn('--tls-leaf-sha256 "$tls_leaf_sha256"', script)
+        for runtime in ("chrome_launcher", "chrome_binary", "node_bin"):
+            self.assertGreaterEqual(
+                script.count(f'sha256sum -- "${runtime}"'), 2
+            )
         self.assertIn('for run_index in $(seq 1 "$run_count")', script)
         self.assertIn('sha256sum -- behavior.json tls-wire.json', script)
         self.assertIn("scripts/yume_capture_finalize.py", script)
         self.assertIn("trap cleanup_relay EXIT", script)
         self.assertIn("trap 'exit 130' INT TERM", script)
+        self.assertIn('ulimit -f "$YUME_LOG_BLOCKS"', script)
+        self.assertIn("readonly YUME_LOG_BLOCKS=16384", script)
+        self.assertIn('"${YUME_RUN_TIMEOUT_SECONDS}s"', script)
         self.assertNotRegex(script, r"install[^\n]*\$client_config")
         self.assertNotRegex(script, r"install[^\n]*(secret|private.key)")
 
@@ -775,7 +787,6 @@ class BrowserSandboxTest(unittest.TestCase):
                 binary = install / "chrome"
                 node = root / "node"
                 yume = yume_dir / "yume"
-                helper = yume_dir / "yume-chrome-tls-helper"
                 self._write_executable(
                     launcher,
                     '#!/bin/sh\ntouch "$CHROME_MARKER"\nexit 0\n',
@@ -786,7 +797,6 @@ class BrowserSandboxTest(unittest.TestCase):
                     '#!/bin/sh\ntouch "$NODE_MARKER"\nexit 0\n',
                 )
                 self._write_executable(yume, "#!/bin/sh\nexit 0\n")
-                self._write_executable(helper, "#!/bin/sh\nexit 0\n")
                 # This case exercises the Chrome/Node hash gates, not host
                 # package discovery. GitHub's minimal runner does not
                 # necessarily provide ss or rg, so keep those later-stage

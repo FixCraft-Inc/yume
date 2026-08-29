@@ -60,6 +60,9 @@ struct InProcClient::Impl {
     };
 
     struct RequestWaitState {
+        ~RequestWaitState() {
+            client::wipe_relay_request_secrets(request);
+        }
         std::mutex mutex;
         std::condition_variable cv;
         bool ready{false};
@@ -69,6 +72,7 @@ struct InProcClient::Impl {
             runtime::OperationStatus::InternalError};
         std::string operation_error;
         client::RuntimeLifetimeGate::Lease runtime_lease;
+        nlohmann::json request;
         nlohmann::json value;
     };
 
@@ -602,13 +606,13 @@ nlohmann::json InProcClient::request(std::string const& op,
         runtime_relay = impl_->relay;
         impl_->pending_requests.emplace_back(state);
         const std::weak_ptr<client::RelayRuntime> weak_relay = runtime_relay;
-        const nlohmann::json req = {{"op", op}, {"args", args}};
         try {
+            state->request = {{"op", op}, {"args", args}};
             // Posting while holding ready_mtx prevents the connected-session
             // teardown callback from destroying the executor concurrently.
             boost::asio::post(
                 runtime_tunnel->get_executor(),
-                [weak_relay, req, state]() {
+                [weak_relay, state]() {
                     {
                         std::lock_guard<std::mutex> state_lock(state->mutex);
                         if (state->cancelled) {
@@ -618,13 +622,15 @@ nlohmann::json InProcClient::request(std::string const& op,
                         state->started = true;
                     }
                     nlohmann::json value;
+                    client::RelayRequestSecretsWiper request_wiper(
+                        state->request);
                     runtime::OperationStatus completed_status =
                         runtime::OperationStatus::Success;
                     std::string completed_error;
                     auto relay = weak_relay.lock();
                     if (relay) {
                         try {
-                            value = relay->handle_local_request(req);
+                            value = relay->handle_local_request(state->request);
                         } catch (std::exception const& ex) {
                             completed_status =
                                 runtime::OperationStatus::InternalError;

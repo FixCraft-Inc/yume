@@ -122,8 +122,8 @@ void resolve_server_config_paths(yume::server::ServerConfig& cfg,
     if (!cfg.federation_identity.empty()) {
         cfg.federation_identity = resolve_cfg_path(cfg.federation_identity);
     }
-    if (!cfg.federation_anonym_ca.empty()) {
-        cfg.federation_anonym_ca = resolve_cfg_path(cfg.federation_anonym_ca);
+    if (!cfg.federation_operator_ca.empty()) {
+        cfg.federation_operator_ca = resolve_cfg_path(cfg.federation_operator_ca);
     }
     if (!cfg.filter_geolite.empty()) {
         cfg.filter_geolite = resolve_cfg_path(cfg.filter_geolite);
@@ -521,25 +521,38 @@ bool load_server_config_file_and_resolve_paths(yume::server::ServerConfig& out_c
             if (json.contains("federation_enable") && !cfg.federation_enable) {
                 cfg.federation_enable = json["federation_enable"].get<bool>();
             }
+            if (json.contains("cluster_bootstrap") &&
+                !cfg.cluster_bootstrap) {
+                cfg.cluster_bootstrap =
+                    json["cluster_bootstrap"].get<bool>();
+            }
             if (json.contains("federation_peers") && cfg.federation_peers.empty()) {
                 if (!json["federation_peers"].is_array()) {
                     yume::util::log_error("federation_peers must be an array");
                     return false;
                 }
                 for (const auto& peer : json["federation_peers"]) {
-                    if (!peer.is_object()) {
-                        yume::util::log_error(
-                            "federation_peers entries must be objects");
-                        return false;
+                    nlohmann::json resolved = peer;
+                    for (const char* key : {"psk_file",
+                                            "carrier_secret_file"}) {
+                        const auto value = resolved.find(key);
+                        if (value == resolved.end()) continue;
+                        if (!value->is_string()) {
+                            throw std::runtime_error(
+                                std::string("federation_peers[].") + key +
+                                " must be a string");
+                        }
+                        *value = resolve_cfg_path(
+                            value->get_ref<const std::string&>());
                     }
-                    cfg.federation_peers.push_back(peer.dump());
+                    cfg.federation_peers.push_back(resolved.dump());
                 }
             }
             if (json.contains("federation_identity") && cfg.federation_identity.empty()) {
                 cfg.federation_identity = resolve_cfg_path(json["federation_identity"].get<std::string>());
             }
-            if (json.contains("federation_anonym_ca") && cfg.federation_anonym_ca.empty()) {
-                cfg.federation_anonym_ca = resolve_cfg_path(json["federation_anonym_ca"].get<std::string>());
+            if (json.contains("federation_operator_ca") && cfg.federation_operator_ca.empty()) {
+                cfg.federation_operator_ca = resolve_cfg_path(json["federation_operator_ca"].get<std::string>());
             }
             if (json.contains("operator_keys") && cfg.operator_keys.empty()) {
                 cfg.operator_keys = resolve_cfg_path(json["operator_keys"].get<std::string>());

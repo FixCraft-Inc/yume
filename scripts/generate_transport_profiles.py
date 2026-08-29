@@ -303,14 +303,16 @@ def check_tls_divergence(entry: dict[str, Any], selection: dict[str, Any],
     """Pin the accepted gap between the diagnostic selection and the capture.
 
     The openssl-diagnostic backend deliberately does not reproduce the captured
-    ClientHello -- stock OpenSSL cannot emit ECH, ALPS, compress_certificate or
-    the ML-DSA signature schemes. That gap is allowed, but it must stay exactly
-    what the registry declares. If either side drifts (the capture is refreshed,
-    or someone edits a selection list), this fails and forces a conscious
-    decision instead of silently widening a classifier-visible difference.
+    ClientHello. Its non-GREASE sets are closed, but stock OpenSSL cannot express
+    the browser's GREASE geometry, per-connection extension permutation, or
+    uncompressed-only EC point formats. That gap is allowed, but it must stay
+    exactly what the registry declares. If either side drifts (the capture is
+    refreshed, or someone edits a selection list), this fails and forces a
+    conscious decision instead of silently widening a classifier-visible
+    difference.
 
-    Ordering is intentionally NOT compared: stock OpenSSL does not let the
-    caller fix extension or group order, so order is a known, untracked gap.
+    Ordering is intentionally NOT compared by these set checks; it is covered
+    separately by the diagnostic and patched-backend emitted-byte gates.
     """
     declared = entry.get("known_tls_divergence")
     require(isinstance(declared, dict),
@@ -492,8 +494,37 @@ def emit_profile(entry: dict[str, Any], index: int,
                                      f"{profile_id}.openssl_selection.extensions")
     tls_groups = code_point_list(selection.get("supported_groups"),
                                  f"{profile_id}.openssl_selection.supported_groups")
+    # OpenSSL emits a key_share only for groups whose name carries a "*" prefix
+    # in SSL_CTX_set1_groups_list, and by default that is the first group alone.
+    # A browser that offers a hybrid *and* a classical share needs both named
+    # here. Every entry must appear in supported_groups: offering a share for a
+    # group that is not advertised is a ClientHello no browser sends.
+    tls_key_share_groups = code_point_list(
+        selection.get("key_share_groups"),
+        f"{profile_id}.openssl_selection.key_share_groups")
+    for group in tls_key_share_groups:
+        require(group in tls_groups,
+                f"{profile_id}.openssl_selection.key_share_groups: "
+                f"0x{group:04x} is not in supported_groups")
+    require(len(set(tls_key_share_groups)) == len(tls_key_share_groups),
+            f"{profile_id}.openssl_selection.key_share_groups must not repeat")
     tls_sigalgs = code_point_list(selection.get("signature_algorithms"),
                                   f"{profile_id}.openssl_selection.signature_algorithms")
+    # RFC 8879 certificate compression. OpenSSL can only offer an algorithm it
+    # was compiled with, so this is a request the build may not be able to
+    # honour; tls_stealth.cpp reports the shortfall rather than failing.
+    cert_comp_ids = {"zlib": 1, "brotli": 2, "zstd": 3}
+    cert_comp = selection.get("cert_compression", [])
+    require(isinstance(cert_comp, list) and len(cert_comp) <= 3,
+            f"{profile_id}.openssl_selection.cert_compression must contain 0..3 entries")
+    for name in cert_comp:
+        require(name in cert_comp_ids,
+                f"{profile_id}.openssl_selection.cert_compression: unknown "
+                f"algorithm {name!r}; expected one of {sorted(cert_comp_ids)}")
+    require(len(set(cert_comp)) == len(cert_comp),
+            f"{profile_id}.openssl_selection.cert_compression must not repeat")
+    tls_cert_comp = [cert_comp_ids[name] for name in cert_comp]
+
     point_formats = selection.get("ec_point_formats")
     require(isinstance(point_formats, list) and 1 <= len(point_formats) <= 8,
             f"{profile_id}.openssl_selection.ec_point_formats must contain 1..8 entries")
@@ -558,9 +589,12 @@ def emit_profile(entry: dict[str, Any], index: int,
     emit_code_point_array(lines, f"{prefix}TlsCiphers", tls_ciphers)
     emit_code_point_array(lines, f"{prefix}TlsExtensions", tls_extensions)
     emit_code_point_array(lines, f"{prefix}TlsGroups", tls_groups)
+    emit_code_point_array(lines, f"{prefix}TlsKeyShareGroups", tls_key_share_groups)
     emit_code_point_array(lines, f"{prefix}TlsSigAlgs", tls_sigalgs)
     emit_code_point_array(lines, f"{prefix}TlsPointFormats", tls_point_formats,
                           kind="std::uint8_t")
+    emit_code_point_array(lines, f"{prefix}TlsCertCompression", tls_cert_comp,
+                          kind="std::uint16_t")
     emit_code_point_array(lines, f"{prefix}TlsEchGreaseLengths", tls_ech_lengths)
     lines.append(
         f"constexpr std::array<InjectedExtension, {len(tls_injected)}> "
@@ -607,8 +641,10 @@ def emit_profile(entry: dict[str, Any], index: int,
         f"    {prefix}TlsCiphers,",
         f"    {prefix}TlsExtensions,",
         f"    {prefix}TlsGroups,",
+        f"    {prefix}TlsKeyShareGroups,",
         f"    {prefix}TlsSigAlgs,",
         f"    {prefix}TlsPointFormats,",
+        f"    {prefix}TlsCertCompression,",
         f"    {prefix}TlsAlpn,",
         f"    {prefix}TlsInjectedExtensions,",
         f"    {prefix}TlsAlpsProtocols,",

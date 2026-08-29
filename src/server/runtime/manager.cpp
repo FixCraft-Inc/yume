@@ -200,6 +200,8 @@ void Manager::start() {
         throw std::runtime_error(
             "the same public key is present in auth_keys and operator_keys");
     }
+    validate_unique_federation_peer_ids(
+        *loaded_policies, *loaded_operator_policies);
     try {
         loaded_admin_keys = std::make_shared<const std::vector<crypto::Bytes>>(
             cfg_.admin_keys.empty()
@@ -240,8 +242,13 @@ void Manager::start() {
                        " operator key(s) from " + cfg_.operator_keys);
     }
     if (cfg_.federation_enable) {
-        if (cfg_.federation_identity.empty() || cfg_.federation_anonym_ca.empty() || cfg_.federation_peers.empty()) {
-            util::log_warn("federation disabled: federation_identity, federation_anonym_ca, and peers are required");
+        if (cfg_.federation_identity.empty() ||
+            cfg_.federation_operator_ca.empty() ||
+            (cfg_.federation_peers.empty() && !cfg_.cluster_bootstrap)) {
+            util::log_warn(
+                "federation disabled: federation_identity, "
+                "federation_operator_ca, and peers (or cluster_bootstrap) "
+                "are required");
             cfg_.federation_enable = false;
         } else {
             federation_ = std::make_unique<FederationManager>(io_, cfg_, this);
@@ -557,12 +564,26 @@ void Manager::register_session(const std::shared_ptr<Session>& session) {
     live_sessions_[session.get()] = session;
 }
 
+void Manager::register_inbound_federation_session(
+        Session* session, const std::string& peer_id) {
+    if (session == nullptr || !cfg_.federation_enable ||
+        !is_valid_federation_peer_id(peer_id)) {
+        return;
+    }
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    inbound_federation_sessions_[session] =
+        InboundFederationSession{peer_id, now};
+}
+
 void Manager::unregister_session(Session* session) {
     if (!session) {
         return;
     }
     identity_admission_.release(session->session_id());
     std::lock_guard<std::mutex> lock(sessions_mutex_);
+    inbound_federation_sessions_.erase(session);
     live_sessions_.erase(session);
 }
 
@@ -1091,6 +1112,15 @@ bool Manager::reload_auth(std::string* error) {
         return false;
     }
     try {
+        validate_unique_federation_peer_ids(
+            *loaded_policies, *loaded_operator_policies);
+    } catch (const std::exception& ex) {
+        if (error) {
+            *error = ex.what();
+        }
+        return false;
+    }
+    try {
         loaded_admin_keys = std::make_shared<const std::vector<crypto::Bytes>>(
             admin_keys_path.empty()
                 ? std::vector<crypto::Bytes>{}
@@ -1173,10 +1203,12 @@ bool Manager::reload_client_filter(std::string* error) {
     return true;
 }
 
-bool Manager::kill_sessions(const std::string& query, std::string* error) {
-    if (query.empty()) {
+bool Manager::kill_sessions(RuntimeSessionSelector selector,
+                            const std::string& value,
+                            std::string* error) {
+    if (value.empty()) {
         if (error) {
-            *error = "query required (session id, endpoint id, or client ip)";
+            *error = "session selector value is required";
         }
         return false;
     }
@@ -1188,9 +1220,9 @@ bool Manager::kill_sessions(const std::string& query, std::string* error) {
             if (!session) {
                 continue;
             }
-            if (std::to_string(session->session_id()) == query ||
-                session->endpoint_id() == query ||
-                session->client_wan_ip() == query) {
+            if (runtime_session_selector_matches(
+                    selector, value, session->session_id(),
+                    session->endpoint_id(), session->client_wan_ip())) {
                 targets.push_back(session);
             }
         }

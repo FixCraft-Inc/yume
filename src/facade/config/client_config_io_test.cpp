@@ -6,6 +6,7 @@
 
 #include "facade/config/config_io.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -121,6 +122,89 @@ bool test_typed_config_load_errors(const std::filesystem::path& base) {
         return false;
     }
     return true;
+}
+
+bool test_server_bootstrap_config_round_trip(
+        const std::filesystem::path& base) {
+    yume::server::ServerConfig config;
+    config.federation_enable = true;
+    config.cluster_bootstrap = true;
+    config.federation_identity = "federation.key";
+    config.federation_operator_ca = "operator-ca.pem";
+
+    const auto path = base / "bootstrap-yumed.json";
+    std::string error;
+    if (!expect(yume::facade::config_io::save_server(
+                    config, path, &error),
+                "facade should save a bootstrap-only server config") ||
+        !expect(error.empty(),
+                "bootstrap server config save should not report an error")) {
+        return false;
+    }
+    auto loaded = yume::facade::config_io::load_server(path, &error);
+    if (!expect(loaded.has_value(),
+                "facade should load a bootstrap-only server config") ||
+        !expect(loaded && loaded->federation_enable &&
+                    loaded->cluster_bootstrap &&
+                    loaded->federation_peers.empty(),
+                "cluster_bootstrap must survive facade JSON round-trip")) {
+        return false;
+    }
+
+    const auto has_peer_requirement = [](const auto& report) {
+        return std::any_of(
+            report.errors.begin(), report.errors.end(),
+            [](const std::string& item) {
+                return item.rfind("federation_peers:", 0U) == 0U;
+            });
+    };
+    const auto bootstrap_report =
+        yume::facade::config_io::validate(config);
+    if (!expect(!has_peer_requirement(bootstrap_report),
+                "bootstrap-only validation must not require an outbound peer")) {
+        return false;
+    }
+    config.cluster_bootstrap = false;
+    if (!expect(
+            has_peer_requirement(yume::facade::config_io::validate(config)),
+            "non-bootstrap federation must still require an outbound peer")) {
+        return false;
+    }
+
+    config.federation_peers.push_back(
+        R"({"id":"edge","url":"yume://edge.example:443","psk_file":"secrets/edge.psk","carrier_secret_file":"secrets/edge.carrier"})");
+    const auto peer_path = base / "peer-yumed.json";
+    if (!expect(yume::facade::config_io::save_server(
+                    config, peer_path, &error),
+                "facade should save federation peers as JSON objects")) {
+        return false;
+    }
+    nlohmann::json saved;
+    {
+        std::ifstream input(peer_path);
+        input >> saved;
+    }
+    if (!expect(saved["federation_peers"].is_array() &&
+                    saved["federation_peers"].size() == 1U &&
+                    saved["federation_peers"][0].is_object(),
+                "saved federation_peers entries must remain objects")) {
+        return false;
+    }
+    loaded = yume::facade::config_io::load_server(peer_path, &error);
+    if (!expect(loaded.has_value() &&
+                    loaded->federation_peers.size() == 1U,
+                "facade should reload its federated server config")) {
+        return false;
+    }
+    const auto peer = nlohmann::json::parse(loaded->federation_peers.front());
+    return expect(
+               peer.value("psk_file", "") ==
+                   (base / "secrets/edge.psk").string(),
+               "peer PSK path must resolve from the config base") &&
+           expect(
+               peer.value("carrier_secret_file", "") ==
+                   (base / "secrets/edge.carrier").string(),
+               "peer carrier-secret path must resolve from the config base");
 }
 
 bool test_atomic_file_replace_and_cleanup(const std::filesystem::path& base) {
@@ -742,6 +826,8 @@ int main() {
         return test_facade_canonical_and_legacy_parse(temporary.path()) &&
                        test_facade_rejects_malformed_values(temporary.path()) &&
                        test_typed_config_load_errors(temporary.path()) &&
+                       test_server_bootstrap_config_round_trip(
+                           temporary.path()) &&
                        test_atomic_file_replace_and_cleanup(temporary.path()) &&
                        test_facade_save_and_cli_load(temporary.path()) &&
                        test_facade_save_surfaces_serialization_failure(

@@ -119,8 +119,18 @@ struct Profile {
     std::span<const std::uint16_t> tls_cipher_suites;
     std::span<const std::uint16_t> tls_extensions;
     std::span<const std::uint16_t> tls_supported_groups;
+    // Subset of tls_supported_groups that must carry a key_share. OpenSSL sends
+    // a share only for groups marked with a "*" prefix in the groups list, and
+    // defaults to the first group alone -- so a browser offering both a hybrid
+    // and a classical share needs both named here.
+    std::span<const std::uint16_t> tls_key_share_groups;
     std::span<const std::uint16_t> tls_signature_algorithms;
     std::span<const std::uint8_t> tls_ec_point_formats;
+    // RFC 8879 algorithm IDs for compress_certificate (0x001b), in preference
+    // order. OpenSSL can only advertise an algorithm the build was compiled
+    // with, so this is a request: a build without brotli offers its own
+    // zlib/zstd list instead, which is visible in the ClientHello.
+    std::span<const std::uint16_t> tls_cert_compression;
     std::span<const std::string_view> tls_alpn_protocols;
 
     // Extensions stock OpenSSL will not emit on its own. SSL_CTX_add_custom_ext

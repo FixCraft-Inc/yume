@@ -159,11 +159,13 @@ def validate_workflow_guards() -> None:
     liboqs = liboqs_dependency()
     required_release = (
         "linux-desktop-0.2.0",
+        "libbrotli-dev",
         'go-version: "1.26.5"',
         "check-latest: false",
         "-DYUME_BUILD_CHROME_TLS_HELPER=ON",
         "-DYUME_BUILD_GUI=OFF",
         "-DYUME_STATIC=OFF",
+        "-DYUME_STATIC_OPENSSL=ON",
         "-DYUME_WARNINGS_AS_ERRORS=ON",
         "-DCMAKE_SKIP_BUILD_RPATH=ON",
         "-DBASEFWX_REQUIRE_ARGON2=ON",
@@ -193,14 +195,17 @@ def validate_workflow_guards() -> None:
         "          source scripts/ensure-nghttp2.sh\n"
         "          yume_nghttp2_ensure"
     )
-    require(ci_yml.count(dependency_setup) == 2,
-            "Both CI build lanes must preserve the combined OpenSSL/nghttp2 environment")
+    require(ci_yml.count(dependency_setup) == 3,
+            "All three CI build lanes must preserve the combined OpenSSL/nghttp2 environment")
+    require(ci_yml.count("-DYUME_STATIC_OPENSSL=ON") == 3,
+            "All three CI build lanes must embed the patched OpenSSL")
     require(codeql_yml.count(dependency_setup) == 1,
             "CodeQL C++ setup must preserve the combined OpenSSL/nghttp2 environment")
     require(release_yml.count(dependency_setup) == 1,
             "Release setup must preserve the combined OpenSSL/nghttp2 environment")
     for needle in (
         'YUME_OPENSSL_FORCE_PINNED: "1"',
+        "-DYUME_STATIC_OPENSSL=ON",
         "-DBASEFWX_REQUIRE_ARGON2=ON",
         "-DBASEFWX_REQUIRE_OQS=ON",
         "-DBASEFWX_REQUIRE_LZMA=ON",
@@ -212,12 +217,21 @@ def validate_workflow_guards() -> None:
             "CMake must reject OpenSSL versions without ML-DSA-87")
     require('YUME_OPENSSL_FORCE_PINNED: "1"' in codeql_yml,
             "CodeQL must use exact OpenSSL source provenance")
+    require("-DYUME_STATIC_OPENSSL=ON" in codeql_yml,
+            "CodeQL must analyze the embedded patched-OpenSSL link mode")
     require(openssl["revision"] in openssl_helper,
             "OpenSSL helper source commit does not match dependency metadata")
+    require(openssl.get("patch_series") == "patches/openssl/series",
+            "OpenSSL dependency metadata must name the downstream patch series")
+    openssl_series = ROOT / openssl["patch_series"]
+    require(openssl_series.is_file(), "OpenSSL patch series is missing")
+    require("0001-yume-chrome-clienthello.patch" in
+            openssl_series.read_text(encoding="utf-8"),
+            "OpenSSL Chrome ClientHello patch is absent from the series")
     for needle in (
         'YUME_OPENSSL_SOURCE_VERSION="3.5.7"',
         'YUME_OPENSSL_SOURCE_SHA256="a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8"',
-        "shared zlib enable-zstd no-tests",
+        'shared zlib enable-zstd "${brotli_option}" no-tests',
         'install -m 0644 apps/openssl.cnf "${prefix}/ssl/openssl.cnf"',
     ):
         require(needle in openssl_helper,
@@ -257,6 +271,7 @@ def validate_cmake_cache(path: pathlib.Path) -> None:
     required = {
         "YUME_USE_BASEFWX": "ON",
         "YUME_BUILD_CHROME_TLS_HELPER": "ON",
+        "YUME_STATIC_OPENSSL": "ON",
         "YUME_BUILD_GUI": "OFF",
         "YUME_STATIC": "OFF",
         "YUME_WARNINGS_AS_ERRORS": "ON",
@@ -387,8 +402,13 @@ def require_no_runtime_search_path(data: bytes, description: str) -> None:
         require(terminator != -1,
                 f"{description} has an unterminated DT_NEEDED entry")
         library = string_table[needed_offset:terminator]
+        require(b"/" not in library,
+                f"{description} contains an unsafe DT_NEEDED path")
         require(not library.startswith(b"liboqs.so"),
                 f"{description} dynamically links liboqs; release binaries must use the pinned static archive")
+        require(not library.startswith((b"libssl", b"libcrypto")),
+                f"{description} dynamically links OpenSSL; the native Chrome TLS "
+                "patch must be embedded in the release binary")
 
 
 def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
@@ -435,6 +455,8 @@ def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
     require(helper.get("build_id") == transport["helper_build_id"],
             "Bundle helper identity mismatch")
     require(helper.get("ipc_protocol") == 1, "Bundle helper IPC mismatch")
+    require(helper.get("required_at_runtime") is False,
+            "Bundled helper must be declared optional at runtime")
     require(helper.get("go_version") == "go1.26.5", "Bundle helper Go version mismatch")
     helper_hash = sha256_bytes(payloads[HELPER_NAME])
     require(helper.get("sha256") == helper_hash, "Bundle helper SHA-256 mismatch")
@@ -446,10 +468,13 @@ def validate_bundle(bundle: pathlib.Path, version: str, commit: str,
     features = manifest.get("required_features", {})
     require(features == {
         "argon2": True,
-        "chrome_tls_helper": True,
+        "native_chrome_client_hello": True,
         "openssl_minimum": "3.5.0",
+        "patched_openssl_embedded": True,
         "post_quantum": True,
     }, "Bundle mandatory feature declarations are incomplete or relaxed")
+    require(manifest.get("optional_features") == {"chrome_tls_helper": True},
+            "Bundle optional helper declaration is missing or malformed")
     entries = manifest.get("files")
     require(isinstance(entries, list), "Bundle manifest file list is missing")
     by_name = {entry.get("file"): entry for entry in entries if isinstance(entry, dict)}

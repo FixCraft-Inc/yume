@@ -24,11 +24,22 @@ public:
                                     .time_since_epoch()
                                     .count()) +
                  ".json");
+        secret_path_ = path_;
+        secret_path_ += ".psk";
+        std::ofstream secret(secret_path_, std::ios::binary);
+        secret << std::string(64, 'a');
+        secret.close();
+        std::filesystem::permissions(
+            secret_path_,
+            std::filesystem::perms::owner_read |
+                std::filesystem::perms::owner_write,
+            std::filesystem::perm_options::replace);
     }
 
     ~TemporaryPolicyFile() {
         std::error_code ignored;
         std::filesystem::remove(path_, ignored);
+        std::filesystem::remove(secret_path_, ignored);
     }
 
     void write(const std::string& json) const {
@@ -37,9 +48,14 @@ public:
     }
 
     std::string path() const { return path_.string(); }
+    std::string secret_path() const { return secret_path_.string(); }
+    std::string secret_filename() const {
+        return secret_path_.filename().string();
+    }
 
 private:
     std::filesystem::path path_;
+    std::filesystem::path secret_path_;
 };
 
 void require(bool condition, const char* message) {
@@ -94,23 +110,73 @@ void test_unsafe_combinations_fail_closed() {
                   "\"allow_services\":[\"example-service-v1\"]}}}");
     require_rejected(file, prefix + "\"weight\":0}}");
     require_rejected(file, prefix + "\"key_type\":\"shared\"}}");
+    const std::string psk = "\",\"federation_psk_file\":\"" +
+                            file.secret_path() + "\"}}";
     require_rejected(file, prefix +
-                              "\"federation_peer_id\":\"ambiguous:peer\"}}");
+                              "\"federation_peer_id\":\"ambiguous:peer" + psk);
     require_rejected(file, prefix +
-                              "\"federation_peer_id\":\"bad peer\"}}");
+                              "\"federation_peer_id\":\"bad peer" + psk);
     require_rejected(file, prefix + "\"federation_peer_id\":\"" +
-                              std::string(65, 'p') + "\"}}");
+                              std::string(65, 'p') + psk);
+    require_rejected(file, prefix +
+                              "\"federation_peer_id\":\"edge-west\"}}");
+    require_rejected(file, prefix +
+                              "\"federation_psk_file\":\"" +
+                              file.secret_path() + "\"}}");
+    require_rejected(file, prefix + "\"federation_psk_file\":42}}");
+    require_rejected(file, prefix +
+                              "\"federation_peer_id\":\"edge-west\","
+                              "\"federation_psk_file\":\"missing.psk\"}}");
 }
 
 void test_federation_peer_id_grammar() {
     TemporaryPolicyFile file;
     const std::string fingerprint(64, 'd');
     file.write("{\"" + fingerprint +
-               "\":{\"federation_peer_id\":\"edge-west_2.example\"}}");
+               "\":{\"federation_peer_id\":\"edge-west_2.example\"," +
+               "\"federation_psk_file\":\"" + file.secret_filename() +
+               "\"}}");
     const auto policies = yume::server::load_auth_policies(file.path());
     require(policies.at(fingerprint).federation_peer_id ==
                 "edge-west_2.example",
             "valid federation peer id was not preserved");
+    require(policies.at(fingerprint).federation_psk_material != nullptr,
+            "federation PSK was not loaded with the policy snapshot");
+}
+
+void test_federation_peer_id_uniqueness() {
+    TemporaryPolicyFile file;
+    const std::string first(64, 'e');
+    const std::string second(64, 'f');
+    file.write("{\"" + first +
+               "\":{\"federation_peer_id\":\"edge-west\"," +
+               "\"federation_psk_file\":\"" + file.secret_path() +
+               "\"},\"" + second +
+               "\":{\"federation_peer_id\":\"edge-west\"," +
+               "\"federation_psk_file\":\"" + file.secret_path() +
+               "\"}}");
+    bool rejected = false;
+    try {
+        (void)yume::server::load_auth_policies(file.path());
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    require(rejected,
+            "duplicate federation peer ids must fail one-store loading");
+
+    yume::server::AuthKeyPolicyMap regular;
+    yume::server::AuthKeyPolicyMap operators;
+    regular[first].federation_peer_id = "edge-east";
+    operators[second].federation_peer_id = "edge-east";
+    rejected = false;
+    try {
+        yume::server::validate_unique_federation_peer_ids(
+            regular, operators);
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    require(rejected,
+            "duplicate federation peer ids must fail cross-store loading");
 }
 
 }  // namespace
@@ -119,5 +185,6 @@ int main() {
     test_bulk_weight_and_limit();
     test_unsafe_combinations_fail_closed();
     test_federation_peer_id_grammar();
+    test_federation_peer_id_uniqueness();
     return 0;
 }

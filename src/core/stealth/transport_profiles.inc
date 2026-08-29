@@ -104,12 +104,20 @@ constexpr std::array<std::uint16_t, 4> kProfile0TlsGroups{
     0x11ec, 0x001d, 0x0017, 0x0018,
 };
 
+constexpr std::array<std::uint16_t, 2> kProfile0TlsKeyShareGroups{
+    0x11ec, 0x001d,
+};
+
 constexpr std::array<std::uint16_t, 11> kProfile0TlsSigAlgs{
     0x0904, 0x0905, 0x0906, 0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601,
 };
 
 constexpr std::array<std::uint8_t, 1> kProfile0TlsPointFormats{
     0,
+};
+
+constexpr std::array<std::uint16_t, 1> kProfile0TlsCertCompression{
+    0x0002,
 };
 
 constexpr std::array<std::uint16_t, 4> kProfile0TlsEchGreaseLengths{
@@ -149,8 +157,10 @@ const Profile kProfile0Value{
     kProfile0TlsCiphers,
     kProfile0TlsExtensions,
     kProfile0TlsGroups,
+    kProfile0TlsKeyShareGroups,
     kProfile0TlsSigAlgs,
     kProfile0TlsPointFormats,
+    kProfile0TlsCertCompression,
     kProfile0TlsAlpn,
     kProfile0TlsInjectedExtensions,
     kProfile0TlsAlpsProtocols,

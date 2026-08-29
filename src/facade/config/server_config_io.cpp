@@ -155,23 +155,34 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     read_opt(j, cfg_key::ipc_enable, s.ipc_enable);
     read_opt(j, cfg_key::ipc_path, s.ipc_path);
     read_opt(j, cfg_key::federation_enable, s.federation_enable);
+    read_opt(j, cfg_key::cluster_bootstrap, s.cluster_bootstrap);
     if (auto it = j.find(cfg_key::federation_peers); it != j.end()) {
         if (!it->is_array()) {
             throw std::runtime_error("federation_peers must be an array");
         }
         for (const auto& peer : *it) {
-            if (peer.is_string()) {
-                s.federation_peers.push_back(peer.get<std::string>());
-            } else if (peer.is_object()) {
-                s.federation_peers.push_back(peer.dump());
-            } else {
+            if (!peer.is_object()) {
                 throw std::runtime_error(
-                    "federation_peers entries must be strings or objects");
+                    "federation_peers entries must be objects");
             }
+            json resolved = peer;
+            for (const char* key : {"psk_file", "carrier_secret_file"}) {
+                const auto value = resolved.find(key);
+                if (value == resolved.end()) continue;
+                if (!value->is_string()) {
+                    throw std::runtime_error(
+                        std::string("federation_peers[].") + key +
+                        " must be a string");
+                }
+                std::string path = value->get<std::string>();
+                resolve_config_path(path, base);
+                *value = std::move(path);
+            }
+            s.federation_peers.push_back(resolved.dump());
         }
     }
     read_opt(j, cfg_key::federation_identity, s.federation_identity);
-    read_opt(j, cfg_key::federation_anonym_ca, s.federation_anonym_ca);
+    read_opt(j, cfg_key::federation_operator_ca, s.federation_operator_ca);
     read_opt(j, cfg_key::operator_keys, s.operator_keys);
     read_opt(j, cfg_key::operator_keys_meta, s.operator_keys_meta);
     read_opt(j, cfg_key::egress_mbps, s.egress_mbps);
@@ -251,7 +262,7 @@ server::ServerConfig server_from_json(json const& j, std::filesystem::path const
     resolve_config_path(s.anonym_sub_cert, base);
     resolve_config_path(s.ipc_path, base);
     resolve_config_path(s.federation_identity, base);
-    resolve_config_path(s.federation_anonym_ca, base);
+    resolve_config_path(s.federation_operator_ca, base);
     resolve_config_path(s.operator_keys, base);
     resolve_config_path(s.operator_keys_meta, base);
     resolve_config_path(s.filter_geolite, base);
@@ -321,6 +332,23 @@ bool save_server(server::ServerConfig const& s,
                  std::filesystem::path const& path,
                  std::string* err) {
     if (err) err->clear();
+    json federation_peers = json::array();
+    try {
+        for (const auto& encoded : s.federation_peers) {
+            auto peer = json::parse(encoded);
+            if (!peer.is_object()) {
+                throw std::runtime_error(
+                    "federation_peers entries must encode objects");
+            }
+            federation_peers.push_back(std::move(peer));
+        }
+    } catch (const std::exception& ex) {
+        if (err) {
+            *err = std::string("cannot serialize federation_peers: ") +
+                   ex.what();
+        }
+        return false;
+    }
     json j = {
         {cfg_key::listen_address, s.listen_address},
         {cfg_key::transport_profile, s.transport_profile},
@@ -379,9 +407,10 @@ bool save_server(server::ServerConfig const& s,
         {cfg_key::ipc_enable, s.ipc_enable},
         {cfg_key::ipc_path, s.ipc_path},
         {cfg_key::federation_enable, s.federation_enable},
-        {cfg_key::federation_peers, s.federation_peers},
+        {cfg_key::cluster_bootstrap, s.cluster_bootstrap},
+        {cfg_key::federation_peers, std::move(federation_peers)},
         {cfg_key::federation_identity, s.federation_identity},
-        {cfg_key::federation_anonym_ca, s.federation_anonym_ca},
+        {cfg_key::federation_operator_ca, s.federation_operator_ca},
         {cfg_key::operator_keys, s.operator_keys},
         {cfg_key::operator_keys_meta, s.operator_keys_meta},
         {cfg_key::egress_mbps, s.egress_mbps},
@@ -545,12 +574,18 @@ ValidationReport validate(server::ServerConfig const& s) {
         if (s.federation_identity.empty()) {
             r.errors.emplace_back("federation_identity: required when federation_enable=true");
         }
-        if (s.federation_anonym_ca.empty()) {
-            r.errors.emplace_back("federation_anonym_ca: required when federation_enable=true");
+        if (s.federation_operator_ca.empty()) {
+            r.errors.emplace_back("federation_operator_ca: required when federation_enable=true");
         }
-        if (s.federation_peers.empty()) {
-            r.errors.emplace_back("federation_peers: at least one peer is required when federation_enable=true");
+        if (s.federation_peers.empty() && !s.cluster_bootstrap) {
+            r.errors.emplace_back(
+                "federation_peers: at least one peer is required when "
+                "federation_enable=true unless cluster_bootstrap=true");
         }
+    }
+    if (s.cluster_bootstrap && !s.federation_enable) {
+        r.errors.emplace_back(
+            "cluster_bootstrap: requires federation_enable=true");
     }
     if (s.host_mode == yume::server::host::HostMode::Off &&
         (!s.host_routes.empty() || !s.extra_listeners.empty())) {

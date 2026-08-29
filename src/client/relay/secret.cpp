@@ -6,6 +6,7 @@
 
 #include "client/relay/secret.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <span>
@@ -130,6 +131,38 @@ void wipe_relay_secret(std::string& value) noexcept {
     value.clear();
 }
 
+void wipe_relay_request_secrets(nlohmann::json& value) noexcept {
+    try {
+        const auto wipe_all_strings = [&](auto&& self,
+                                          nlohmann::json& node) -> void {
+            if (node.is_string()) {
+                wipe_relay_secret(node.get_ref<std::string&>());
+                return;
+            }
+            if (!node.is_array() && !node.is_object()) return;
+            for (auto& child : node) self(self, child);
+        };
+        const auto visit = [&](auto&& self, nlohmann::json& node) -> void {
+            if (node.is_array()) {
+                for (auto& child : node) self(self, child);
+                return;
+            }
+            if (!node.is_object()) return;
+            for (auto item = node.begin(); item != node.end(); ++item) {
+                if (item.key() == "password" ||
+                    item.key() == "relay_secret") {
+                    wipe_all_strings(wipe_all_strings, item.value());
+                } else {
+                    self(self, item.value());
+                }
+            }
+        };
+        visit(visit, value);
+    } catch (...) {
+        // Erasure is best effort and must never destabilize cleanup.
+    }
+}
+
 std::string derive_relay_secret_b64(const std::string& password) {
 #if defined(YUME_USE_BASEFWX) && YUME_USE_BASEFWX
     basefwx::crypto::Bytes salt(
@@ -155,14 +188,38 @@ std::string derive_relay_secret_b64(const std::string& password) {
 
 bool validate_relay_secret_b64(const std::string& relay_secret_b64,
                                std::string* error) {
-    if (relay_secret_b64.empty()) {
-        if (error) *error = "relay secret is empty";
+    if (error) error->clear();
+    // Exactly 32 bytes encode as 43 RFC 4648 base64 alphabet characters plus
+    // one '='. Rejecting anything else before the permissive shared decoder
+    // prevents ignored whitespace/junk and noncanonical padding aliases.
+    const bool canonical_shape = relay_secret_b64.size() == 44U &&
+        relay_secret_b64.back() == '=' &&
+        std::all_of(relay_secret_b64.begin(), relay_secret_b64.end() - 1,
+                    [](unsigned char value) {
+                        return (value >= 'A' && value <= 'Z') ||
+                               (value >= 'a' && value <= 'z') ||
+                               (value >= '0' && value <= '9') ||
+                               value == '+' || value == '/';
+                    });
+    if (!canonical_shape) {
+        if (error) {
+            *error = "relay secret must be canonical base64 for exactly "
+                     "32 bytes";
+        }
         return false;
     }
     std::string raw = yume::util::base64_decode(relay_secret_b64);
     StringWiper raw_wiper{raw};
     if (raw.size() != kRelaySecretBytes) {
         if (error) *error = "relay secret must decode to 32 bytes";
+        return false;
+    }
+    std::string canonical = yume::util::base64_encode(raw);
+    StringWiper canonical_wiper{canonical};
+    if (canonical != relay_secret_b64) {
+        if (error) {
+            *error = "relay secret has a noncanonical base64 encoding";
+        }
         return false;
     }
     return true;

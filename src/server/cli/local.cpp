@@ -20,12 +20,55 @@
 #include <nlohmann/json.hpp>
 
 #include "core/security/identity.hpp"
+#include "server/federation/topology_render.hpp"
+#include "server/federation/types.hpp"
 #include "server/runtime/local_runtime.hpp"
 #include "server/runtime/manager.hpp"
 #include "util.hpp"
 
 namespace yume::server::cli {
 namespace {
+
+// Renders a federation.status result. Peer rows carry a nested `configuration`
+// object only for accepted unique entries. Invalid or duplicate `--peer`
+// strings may not have an unambiguous safe id, so they are reported only as a
+// count rather than as nameless rows.
+void print_federation_status(const nlohmann::json& result, std::ostream& out) {
+    const bool enabled = result.value("enabled", false);
+    if (!enabled) {
+        out << "federation disabled\n";
+    }
+    const auto invalid = result.value("invalid_peer_entries", std::size_t{0});
+    if (invalid > 0) {
+        out << invalid << " peer entr" << (invalid == 1 ? "y" : "ies")
+            << " rejected as invalid or duplicate; see the startup log\n";
+    }
+    if (!result.contains("peers") || result["peers"].empty()) {
+        if (enabled) {
+            out << "federation enabled, no peers configured\n";
+        }
+        return;
+    }
+    for (const auto& peer : result["peers"]) {
+        out << peer.value("peer_id", "")
+            << " state=" << peer.value("state", "")
+            << " ready=" << (peer.value("ready", false) ? "yes" : "no")
+            << " channels=" << peer.value("channels_active", 0)
+            << " last_handshake_ms=" << peer.value("last_handshake_ms", 0LL);
+        if (peer.contains("configuration") && peer["configuration"].is_object()) {
+            const auto& configuration = peer["configuration"];
+            out << " dial=" << format_federation_host_port(
+                                    configuration.value("host", ""),
+                                    configuration.value("port", 0))
+                << " pin=" << (configuration.value("tls_pin_present", false) ? "yes" : "no");
+        }
+        const std::string last_error = peer.value("last_error", "");
+        if (!last_error.empty()) {
+            out << " error=" << last_error;
+        }
+        out << '\n';
+    }
+}
 
 std::string trim_copy(std::string s) {
     auto is_space = [](unsigned char ch) { return std::isspace(ch) != 0; };
@@ -107,7 +150,7 @@ int run_local_server_attach(const std::string& socket_path, bool non_interactive
     }
 
     yume::util::log_info("Attached to existing yumed runtime");
-    yume::util::log_info("Attached console: help | status | sessions | directory | peers | federation | disconnect <endpoint-id> | stop | quit");
+    yume::util::log_info("Attached console: help | status | sessions | directory | peers | federation | topology | disconnect <endpoint-id> | stop | quit");
     for (;;) {
         std::string line;
         if (!std::getline(std::cin, line)) {
@@ -118,7 +161,7 @@ int run_local_server_attach(const std::string& socket_path, bool non_interactive
             continue;
         }
         if (line == "help") {
-            yume::util::log_info("Commands: help | status | sessions | directory | peers | federation | disconnect <endpoint-id> | stop | quit");
+            yume::util::log_info("Commands: help | status | sessions | directory | peers | federation | topology | disconnect <endpoint-id> | stop | quit");
             continue;
         }
         if (line == "quit" || line == "exit") {
@@ -165,29 +208,22 @@ int run_local_server_attach(const std::string& socket_path, bool non_interactive
             if (!error.empty() || !resp.value("ok", false)) {
                 yume::util::log_warn(error.empty() ? resp.value("error", "federation failed") : error);
                 error.clear();
-            } else {
-                const auto& result = resp["result"];
-                if (!result.value("enabled", false)) {
-                    std::cout << "federation disabled\n";
-                    continue;
-                }
-                if (!result.contains("peer_status") || result["peer_status"].empty()) {
-                    std::cout << "federation enabled, no peer status\n";
-                    continue;
-                }
-                for (const auto& peer : result["peer_status"]) {
-                    std::cout << peer.value("id", "")
-                              << " state=" << peer.value("state", "")
-                              << " ready=" << (peer.value("ready", false) ? "yes" : "no")
-                              << " channels=" << peer.value("channels_active", 0)
-                              << " last_handshake=" << peer.value("last_handshake_ts", 0LL);
-                    const std::string last_error = peer.value("last_error", "");
-                    if (!last_error.empty()) {
-                        std::cout << " error=" << last_error;
-                    }
-                    std::cout << std::endl;
-                }
+                continue;
             }
+            print_federation_status(resp["result"], std::cout);
+            continue;
+        }
+        if (line == "topology") {
+            auto resp = request_local_server_runtime(socket_path, "federation.topology", nlohmann::json::object(), &error);
+            if (!error.empty() || !resp.value("ok", false)) {
+                yume::util::log_warn(error.empty() ? resp.value("error", "topology failed") : error);
+                error.clear();
+                continue;
+            }
+            // Same document and same renderer yume-net-map uses, so the two
+            // views of one cluster cannot disagree.
+            render_topology(topology_boxes(resp["result"]),
+                            /*ascii_only=*/false, std::cout);
             continue;
         }
         if (line.rfind("disconnect ", 0) == 0) {

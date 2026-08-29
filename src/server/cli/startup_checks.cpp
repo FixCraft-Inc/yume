@@ -81,7 +81,7 @@ bool validate_required_files(const yume::server::ServerConfig& cfg, bool key_man
            require_readable("anonym_sub_key", cfg.anonym_sub_key) &&
            require_readable("anonym_sub_cert", cfg.anonym_sub_cert) &&
            require_readable("federation_identity", cfg.federation_identity) &&
-           require_readable("federation_anonym_ca", cfg.federation_anonym_ca);
+           require_readable("federation_operator_ca", cfg.federation_operator_ca);
 }
 
 bool validate_http_profile(const yume::server::ServerConfig& cfg) {
@@ -588,7 +588,7 @@ bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
             "(see docs/PERMISSIONS.md)");
     }
     if (cfg.federation_enable &&
-        (cfg.federation_identity.empty() || cfg.federation_anonym_ca.empty())) {
+        (cfg.federation_identity.empty() || cfg.federation_operator_ca.empty())) {
         yume::util::log_error("federation requires --federation-identity and --federation-operator-ca");
         return false;
     }
@@ -628,10 +628,10 @@ bool prepare_server_startup_config(yume::server::ServerConfig& cfg,
     log_security_warnings(cfg);
     log_effective_startup_summary(cfg);
     yume::util::log_warn(
-        "TLS residual: clients using openssl-diagnostic are not Chrome 151 "
-        "ClientHello parity; chrome151 passed local five-run wire and "
-        "performance gates but still requires process-failure negatives and "
-        "the sustained soak");
+        "TLS qualification: openssl-chrome151 closes the pinned Chrome 151 "
+        "ClientHello structure rows without a helper, but whole-session HRR, "
+        "resumption, classifier, and sustained-soak gates remain; "
+        "openssl-diagnostic is not Chrome ClientHello parity");
     return load_real_http_secret(cfg, options.default_secret_path);
 }
 

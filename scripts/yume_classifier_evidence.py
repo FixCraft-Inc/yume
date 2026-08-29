@@ -375,9 +375,7 @@ def _verify_completion(
             if tls_wire:
                 expected.add("tls-wire.json")
         else:
-            expected = {"tls-wire.json"}
-            if "behavior.json" in entries:
-                expected.add("behavior.json")
+            expected = {"behavior.json", "tls-wire.json"}
         if set(entries) != expected:
             raise EvidenceError(f"{name} checksum paths are incomplete or unexpected")
         if _string_hash_mapping(
@@ -406,13 +404,26 @@ def load_arm(path: Path, *, normal: bool) -> ArmEvidence:
         if not normal:
             for field in (
                 "yume_binary_sha256",
-                "yume_helper_sha256",
                 "release_bundle_sha256",
+                "client_config_sha256",
                 "tls_leaf_sha256",
             ):
                 value = environment.get(field)
                 if not isinstance(value, str) or not SHA256_RE.fullmatch(value):
                     raise EvidenceError(f"YUME {field} must be lowercase SHA-256")
+            tls_backend = environment.get("tls_backend")
+            if tls_backend not in {"openssl-chrome151", "chrome151"}:
+                raise EvidenceError("YUME tls_backend is missing or invalid")
+            helper_hash = environment.get("yume_helper_sha256")
+            if tls_backend == "chrome151":
+                if not isinstance(helper_hash, str) or not SHA256_RE.fullmatch(
+                    helper_hash
+                ):
+                    raise EvidenceError(
+                        "helper-backed YUME arm requires yume_helper_sha256")
+            elif helper_hash is not None:
+                raise EvidenceError(
+                    "native YUME arm must not declare yume_helper_sha256")
         runs = _environment_runs(
             environment, "normal Chrome" if normal else "YUME"
         )
@@ -424,14 +435,7 @@ def load_arm(path: Path, *, normal: bool) -> ArmEvidence:
         tls_runs: list[dict[str, Any]] = []
         for index in range(1, runs + 1):
             run = Path(f"run-{index:02d}")
-            behavior = reader.optional_json_object(run / behavior_name)
-            if behavior is None:
-                if normal:
-                    raise EvidenceError(
-                        f"missing normal Chrome behavior: {run / behavior_name}"
-                    )
-            else:
-                behavior_runs.append(behavior)
+            behavior_runs.append(reader.json_object(run / behavior_name))
             tls_runs.append(reader.json_object(run / "tls-wire.json"))
         declared_certificate = environment.get("certificate_sha256")
         if declared_certificate is not None and (

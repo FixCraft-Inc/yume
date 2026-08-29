@@ -2,16 +2,28 @@ Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: yume
 Source: https://github.com/FixCraft-Inc/yume
 Files-Excluded:
+ AGENTS.md
+ AI_NOTES.md
+ opencode.json
+ .agents
+ .pytest_cache
  basefwx
  basefwx/*
  build
  build/*
  build-*/*
+ .cache
  .claude
  .codex
  .private
+ .secrets
  .wrangler
+ .DS_Store
+ */.DS_Store
  DEV_services
+ bins
+ yume-bench-results
+ yume-lan-kit
  vendor
  vendor/*
  third_party/*
@@ -20,7 +32,15 @@ Files-Excluded:
  *.out
  *.tar.xz
  scripts/__pycache__
+ website/.jekyll-cache
+ website/_site
  *.pyc
+
+Files: patches/openssl/*
+Copyright: 2026 FixCraft Inc.
+License: AGPL-3+
+Comment: This stanza covers YUME's downstream patch text. The underlying
+ OpenSSL source remains under its upstream Apache-2.0 license.
 
 Files: *
 Copyright: 2026 FixCraft Inc.

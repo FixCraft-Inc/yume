@@ -14,10 +14,13 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <vector>
 
+#include "core/security/crypto.hpp"
+#include "core/security/secure_erase.hpp"
 #include "core/security/secret_file.hpp"
 #include "util.hpp"
 
@@ -73,6 +76,88 @@ std::string read_all(const std::filesystem::path& path) {
     return {std::istreambuf_iterator<char>(input),
             std::istreambuf_iterator<char>()};
 }
+
+class TestBytesWiper {
+public:
+    explicit TestBytesWiper(std::vector<std::uint8_t>& value) noexcept
+        : value_(value) {}
+    TestBytesWiper(const TestBytesWiper&) = delete;
+    TestBytesWiper& operator=(const TestBytesWiper&) = delete;
+    ~TestBytesWiper() { yume::security::secure_erase(value_); }
+
+private:
+    std::vector<std::uint8_t>& value_;
+};
+
+template <typename Function>
+bool Throws(Function&& function) {
+    try {
+        function();
+        return false;
+    } catch (...) {
+        return true;
+    }
+}
+
+yume::crypto::Bytes FromHex(std::string_view hex) {
+    if (hex.size() % 2U != 0U) {
+        throw std::invalid_argument("odd-length relay-history hex fixture");
+    }
+    const auto nibble = [](char value) -> std::uint8_t {
+        if (value >= '0' && value <= '9') {
+            return static_cast<std::uint8_t>(value - '0');
+        }
+        if (value >= 'a' && value <= 'f') {
+            return static_cast<std::uint8_t>(value - 'a' + 10);
+        }
+        throw std::invalid_argument("invalid relay-history hex fixture");
+    };
+    yume::crypto::Bytes result;
+    result.reserve(hex.size() / 2U);
+    for (std::size_t offset = 0; offset < hex.size(); offset += 2U) {
+        result.push_back(static_cast<std::uint8_t>(
+            (nibble(hex[offset]) << 4U) | nibble(hex[offset + 1U])));
+    }
+    return result;
+}
+
+void write_authenticated_history_record(
+        const std::filesystem::path& key_path,
+        const std::filesystem::path& log_path,
+        std::string plaintext) {
+    using namespace yume;
+    using namespace yume::client;
+
+    RelaySecretWiper plaintext_wiper{plaintext};
+    std::string encoded_key = read_all(key_path);
+    RelaySecretWiper encoded_key_wiper{encoded_key};
+    std::string raw_key = util::base64_decode(encoded_key);
+    RelaySecretWiper raw_key_wiper{raw_key};
+    assert(raw_key.size() == 32U);
+
+    crypto::Bytes key(raw_key.begin(), raw_key.end());
+    TestBytesWiper key_wiper{key};
+    crypto::Bytes plaintext_bytes(plaintext.begin(), plaintext.end());
+    TestBytesWiper plaintext_bytes_wiper{plaintext_bytes};
+    const auto nonce = crypto::random_bytes(12U);
+    const auto encrypted =
+        crypto::encrypt_chacha20(plaintext_bytes, key, nonce);
+
+    std::string packed;
+    packed.reserve(nonce.size() + encrypted.size());
+    packed.append(reinterpret_cast<const char*>(nonce.data()), nonce.size());
+    packed.append(
+        reinterpret_cast<const char*>(encrypted.data()), encrypted.size());
+    const std::string encoded = util::base64_encode(packed);
+    {
+        std::ofstream output(log_path,
+                             std::ios::binary | std::ios::trunc);
+        output << encoded << '\n';
+        output.flush();
+        assert(output.good());
+    }
+    assert(::chmod(log_path.c_str(), 0600) == 0);
+}
 #endif
 
 }  // namespace
@@ -89,12 +174,75 @@ int main() {
 #if defined(_WIN32)
     HistoryStore history("ignored", "instance");
     assert(!history.enabled());
+    std::string error;
+    assert(!history.delete_chat(std::nullopt, &error));
+    assert(!error.empty());
     return 0;
 #else
     TempDirectory temp;
+    crypto::Bytes history_test_key(32U, 0x11U);
+    TestBytesWiper history_test_key_wiper{history_test_key};
+    const crypto::Bytes history_test_nonce(12U, 0x22U);
+    crypto::Bytes history_test_plain{'h', 'i', 's', 't', 'o', 'r', 'y'};
+    TestBytesWiper history_test_plain_wiper{history_test_plain};
+    auto history_test_blob = crypto::encrypt_chacha20(
+        history_test_plain, history_test_key, history_test_nonce);
+    auto history_test_opened = crypto::decrypt_chacha20(
+        history_test_blob, history_test_key, history_test_nonce);
+    TestBytesWiper history_test_opened_wiper{history_test_opened};
+    assert(history_test_opened == history_test_plain);
+    history_test_blob.back() ^= 0x01U;
+    assert(Throws([&] {
+        (void)crypto::decrypt_chacha20(
+            history_test_blob, history_test_key, history_test_nonce);
+    }));
+    const crypto::Bytes empty_history_plain;
+    const auto empty_history_blob = crypto::encrypt_chacha20(
+        empty_history_plain, history_test_key, history_test_nonce);
+    assert(crypto::decrypt_chacha20(
+               empty_history_blob, history_test_key, history_test_nonce)
+               .empty());
+
+    // This fixed record predates the BaseFWX delegation. It proves the
+    // default caller still reads the frozen empty-AAD storage format and that
+    // newly written ciphertext remains byte-identical, rather than merely
+    // proving that one implementation can round-trip itself.
+    crypto::Bytes compatibility_key(32U, 0x2aU);
+    TestBytesWiper compatibility_key_wiper{compatibility_key};
+    const crypto::Bytes compatibility_nonce(12U, 0x19U);
+    crypto::Bytes compatibility_plaintext{
+        'y', 'u', 'm', 'e', ' ', 'r', 'e', 'l', 'a', 'y', ' ', 'h', 'i',
+        's', 't', 'o', 'r', 'y', ' ', 'r', 'e', 'c', 'o', 'r', 'd'};
+    TestBytesWiper compatibility_plaintext_wiper{compatibility_plaintext};
+    const crypto::Bytes compatibility_blob = FromHex(
+        "7d2f5037e54628bb740a597621203cc4f639a2ce0584401f9ab315dd0f"
+        "c4c635c1589234ff3c5b4f02");
+    auto opened_compatibility = crypto::decrypt_chacha20(
+        compatibility_blob, compatibility_key, compatibility_nonce);
+    TestBytesWiper opened_compatibility_wiper{opened_compatibility};
+    assert(opened_compatibility == compatibility_plaintext);
+    assert(crypto::encrypt_chacha20(
+               compatibility_plaintext, compatibility_key,
+               compatibility_nonce) == compatibility_blob);
+
     const std::string secret_b64 =
         util::base64_encode(std::string(32, static_cast<char>(0x42)));
     std::string error;
+    assert(validate_relay_secret_b64(secret_b64, &error));
+    assert(error.empty());
+    assert(!validate_relay_secret_b64(secret_b64 + "!", &error));
+    assert(!validate_relay_secret_b64(" " + secret_b64, &error));
+    assert(!validate_relay_secret_b64(
+        secret_b64.substr(0, secret_b64.size() - 1), &error));
+    std::string noncanonical_alias = secret_b64;
+    constexpr std::string_view alphabet =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const auto final_value = alphabet.find(
+        noncanonical_alias[noncanonical_alias.size() - 2]);
+    assert(final_value != std::string_view::npos && final_value % 4U == 0U);
+    noncanonical_alias[noncanonical_alias.size() - 2] =
+        alphabet[final_value + 1U];
+    assert(!validate_relay_secret_b64(noncanonical_alias, &error));
     const auto relay_key = temp.path() / "relay-key.json";
     assert(write_relay_secret_file(relay_key, secret_b64, &error));
     assert(error.empty());
@@ -124,11 +272,26 @@ int main() {
     assert(load_relay_secret_file(legacy_key, &loaded, &error));
     assert(loaded == secret_b64);
 
+    const auto rejected_history_root =
+        temp.path() / "history-rejected-append";
+    HistoryStore rejected_history(rejected_history_root, "instance");
+    rejected_history.append_chat(
+        {1, "", "Missing peer", "in", "must not persist"});
+    rejected_history.append_chat(
+        {2, "peer", "Invalid direction", "sideways", "must not persist"});
+    std::string oversized_history_text(512U * 1024U, 'x');
+    rejected_history.append_chat(
+        {3, "peer", "Oversized", "in", oversized_history_text});
+    wipe_relay_secret(oversized_history_text);
+    assert(!std::filesystem::exists(rejected_history_root));
+
     const auto history_root = temp.path() / "history";
     HistoryStore history(history_root, "instance_a");
     assert(history.enabled());
     history.append_chat({1, "peer_a", "Peer A", "out", "first secret text"});
     history.append_chat({2, "peer_b", "Peer B", "in", "second secret text"});
+    history.append_chat(
+        {3, "invalid_direction", "Invalid", "sideways", "must not persist"});
     const auto instance_dir = history_root / "instance_a";
     const auto history_key = instance_dir / "history.key";
     const auto peer_a_log = instance_dir / "chat-peer_a.log";
@@ -137,25 +300,105 @@ int main() {
     assert(mode_of(instance_dir) == S_IRWXU);
     assert(mode_of(history_key) == (S_IRUSR | S_IWUSR));
     assert(mode_of(peer_a_log) == (S_IRUSR | S_IWUSR));
+    assert(!std::filesystem::exists(
+        instance_dir / "chat-invalid_direction.log"));
     assert(read_all(peer_a_log).find("first secret text") == std::string::npos);
 
     auto peer_a = history.list_chat("peer_a");
-    assert(peer_a.size() == 1);
-    assert(peer_a.front().text == "first secret text");
+    assert(peer_a.available && peer_a.items.size() == 1);
+    assert(peer_a.items.front().text == "first secret text");
     auto all = history.list_chat();
-    assert(all.size() == 2);
-    assert(all[0].ts_ms == 1 && all[1].ts_ms == 2);
+    assert(all.available && all.items.size() == 2);
+    assert(all.items[0].ts_ms == 1 && all.items[1].ts_ms == 2);
+    auto latest = history.list_chat(std::nullopt, 1U);
+    assert(latest.available && latest.truncated &&
+           latest.items.size() == 1 && latest.items[0].ts_ms == 2);
+    assert(!history.list_chat(std::nullopt, 0U).available);
+    assert(!history.list_chat(std::nullopt, 1001U).available);
 
-    history.delete_chat("peer_a");
+    error.clear();
+    assert(history.delete_chat("peer_a", &error));
+    assert(error.empty());
     assert(!std::filesystem::exists(peer_a_log));
     assert(std::filesystem::exists(peer_b_log));
-    history.delete_chat();
+    assert(history.delete_chat(std::nullopt, &error));
+    assert(error.empty());
     assert(!std::filesystem::exists(peer_b_log));
     assert(std::filesystem::exists(history_key));
 
+    const auto bounded_root = temp.path() / "history-bounded-result";
+    HistoryStore bounded_history(bounded_root, "bounded");
+    std::string large_history_text(300U * 1024U, 'x');
+    bounded_history.append_chat(
+        {1, "peer", "Peer", "out", large_history_text});
+    bounded_history.append_chat(
+        {2, "peer", "Peer", "in", large_history_text});
+    const auto bounded_items = bounded_history.list_chat("peer", 1000U);
+    assert(bounded_items.available && bounded_items.truncated);
+    assert(bounded_items.items.size() == 1U);
+    assert(bounded_items.items.front().ts_ms == 2);
+    wipe_relay_secret(large_history_text);
+
+    const auto relocated_root = temp.path() / "history-relocated";
+    HistoryStore relocated_history(relocated_root, "relocated");
+    relocated_history.append_chat(
+        {1, "original", "Original", "in", "bound to original log"});
+    const auto relocated_instance = relocated_root / "relocated";
+    std::filesystem::rename(
+        relocated_instance / "chat-original.log",
+        relocated_instance / "chat-renamed.log");
+    const auto relocated = relocated_history.list_chat("renamed");
+    assert(!relocated.available && !relocated.error.empty() &&
+           relocated.items.empty());
+
+    const auto schema_root = temp.path() / "history-schema";
+    HistoryStore schema_history(schema_root, "schema");
+    schema_history.append_chat(
+        {1, "schema_peer", "Schema", "in", "valid"});
+    const auto schema_instance = schema_root / "schema";
+    const auto schema_key = schema_instance / "history.key";
+    const auto schema_log = schema_instance / "chat-schema_peer.log";
+    write_authenticated_history_record(
+        schema_key, schema_log,
+        R"({"ts_ms":1,"peer_id":"schema_peer","peer_name":"Schema","direction":"in","text":"hidden","extra":true})");
+    const auto extra_field = schema_history.list_chat("schema_peer");
+    assert(!extra_field.available && !extra_field.error.empty() &&
+           extra_field.items.empty());
+    error.clear();
+    assert(schema_history.delete_chat("schema_peer", &error));
+    assert(error.empty() && !std::filesystem::exists(schema_log));
+
+    schema_history.append_chat(
+        {2, "schema_peer", "Schema", "out", "valid again"});
+    write_authenticated_history_record(
+        schema_key, schema_log,
+        R"({"ts_ms":2,"peer_id":"schema_peer","peer_name":"Schema","direction":"sideways","text":"hidden"})");
+    const auto invalid_stored_direction =
+        schema_history.list_chat("schema_peer");
+    assert(!invalid_stored_direction.available &&
+           !invalid_stored_direction.error.empty() &&
+           invalid_stored_direction.items.empty());
+    error.clear();
+    assert(schema_history.delete_chat("schema_peer", &error));
+    assert(error.empty() && !std::filesystem::exists(schema_log));
+
+    schema_history.append_chat(
+        {3, "schema_peer", "Schema", "in", "valid once more"});
+    write_authenticated_history_record(
+        schema_key, schema_log,
+        R"({"ts_ms":18446744073709551615,"peer_id":"schema_peer","peer_name":"Schema","direction":"in","text":"hidden"})");
+    const auto unsigned_stored_timestamp =
+        schema_history.list_chat("schema_peer");
+    assert(!unsigned_stored_timestamp.available &&
+           !unsigned_stored_timestamp.error.empty() &&
+           unsigned_stored_timestamp.items.empty());
+    error.clear();
+    assert(schema_history.delete_chat("schema_peer", &error));
+    assert(error.empty() && !std::filesystem::exists(schema_log));
+
     history.append_chat({3, "../outside", "Traversal", "in", "contained"});
     assert(!std::filesystem::exists(temp.path() / "outside.log"));
-    assert(history.list_chat("../outside").size() == 1);
+    assert(history.list_chat("../outside").items.size() == 1);
 
     const auto victim = temp.path() / "victim";
     {
@@ -166,8 +409,11 @@ int main() {
     assert(::symlink(victim.c_str(), evil_log.c_str()) == 0);
     history.append_chat({4, "evil", "Evil", "out", "must not follow"});
     assert(read_all(victim) == "unchanged");
-    assert(history.list_chat("evil").empty());
-    history.delete_chat("evil");
+    const auto unsafe_symlink = history.list_chat("evil");
+    assert(!unsafe_symlink.available && !unsafe_symlink.error.empty() &&
+           unsafe_symlink.items.empty());
+    assert(!history.delete_chat("evil", &error));
+    assert(!error.empty());
     assert(read_all(victim) == "unchanged");
 
     history.append_chat({5, "mode_peer", "Mode", "in", "private"});
@@ -176,7 +422,41 @@ int main() {
     const auto before_unsafe_append = read_all(mode_log);
     history.append_chat({6, "mode_peer", "Mode", "in", "rejected"});
     assert(read_all(mode_log) == before_unsafe_append);
-    assert(history.list_chat("mode_peer").empty());
+    const auto unsafe_mode = history.list_chat("mode_peer");
+    assert(!unsafe_mode.available && !unsafe_mode.error.empty() &&
+           unsafe_mode.items.empty());
+    error.clear();
+    assert(!history.delete_chat("mode_peer", &error));
+    assert(!error.empty());
+    assert(std::filesystem::exists(mode_log));
+
+    const auto fifo_root = temp.path() / "history-fifo";
+    HistoryStore fifo_history(fifo_root, "fifo");
+    assert(fifo_history.list_chat().available);
+    const auto fifo_log = fifo_root / "fifo" / "chat-pipe.log";
+    assert(::mkfifo(fifo_log.c_str(), 0600) == 0);
+    const auto fifo_result = fifo_history.list_chat("pipe");
+    assert(!fifo_result.available && !fifo_result.error.empty());
+    error.clear();
+    assert(!fifo_history.delete_chat("pipe", &error));
+    assert(!error.empty());
+
+    const auto oversized_root = temp.path() / "history-oversized-delete";
+    HistoryStore oversized_history(oversized_root, "oversized");
+    assert(oversized_history.list_chat().available);
+    const auto oversized_log =
+        oversized_root / "oversized" / "chat-oversized.log";
+    {
+        std::ofstream output(oversized_log, std::ios::binary);
+        assert(output.good());
+    }
+    assert(::chmod(oversized_log.c_str(), 0600) == 0);
+    std::filesystem::resize_file(
+        oversized_log, 65U * 1024U * 1024U);
+    error.clear();
+    assert(oversized_history.delete_chat("oversized", &error));
+    assert(error.empty());
+    assert(!std::filesystem::exists(oversized_log));
 
     const auto symlink_root = temp.path() / "history-link";
     assert(::symlink(history_root.c_str(), symlink_root.c_str()) == 0);
@@ -195,7 +475,30 @@ int main() {
     }
     for (auto& writer : writers) writer.join();
     HistoryStore concurrent(concurrent_root, "shared");
-    assert(concurrent.list_chat("peer").size() == 8);
+    const auto concurrent_items = concurrent.list_chat("peer");
+    assert(concurrent_items.available &&
+           concurrent_items.items.size() == 8);
+
+    const auto scan_root = temp.path() / "history-scan-bound";
+    HistoryStore scan_history(scan_root, "bounded");
+    assert(scan_history.list_chat().available);
+    const auto scan_instance = scan_root / "bounded";
+    for (std::size_t index = 0; index < 1025U; ++index) {
+        const auto path = scan_instance /
+            ("chat-scan-" + std::to_string(index) + ".log");
+        {
+            std::ofstream output(path, std::ios::binary);
+            assert(output.good());
+        }
+        assert(::chmod(path.c_str(), 0600) == 0);
+    }
+    const auto scan_limited = scan_history.list_chat();
+    assert(!scan_limited.available && !scan_limited.error.empty());
+    error.clear();
+    assert(!scan_history.delete_chat(std::nullopt, &error));
+    assert(!error.empty());
+    assert(std::filesystem::exists(scan_instance / "chat-scan-0.log"));
+    assert(std::filesystem::exists(scan_instance / "chat-scan-1024.log"));
 
     wipe_relay_secret(loaded);
     return 0;

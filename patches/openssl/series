@@ -1,0 +1,21 @@
+# Patch series applied to the pinned OpenSSL source by scripts/ensure-openssl.sh.
+#
+# One patch path per line, applied top to bottom with `patch -p1`. Blank lines
+# and '#' comments are ignored. The series is applied after the checksum-
+# verified tarball is extracted and before ./Configure runs, so a patched build
+# is still built from source YUME verified.
+#
+# Every patch here must be ADDITIVE and DEFAULT-OFF: gated behind a flag that
+# starts disabled, so an unconfigured SSL_CTX emits byte-identical output to
+# stock OpenSSL. BaseFWX and every other consumer link the same library, and
+# they must not observe a behaviour change. A patch that alters default
+# behaviour does not belong in this series.
+#
+# Rebasing onto a new OpenSSL release is a patch refresh, not a merge. If any
+# hunk is rejected the build fails loudly rather than continuing unpatched --
+# an unpatched build silently loses the ClientHello properties the parity
+# backend exists to provide.
+#
+# The single downstream patch is gated by SSL_CTRL_YUME_CHROME_CLIENT_HELLO and
+# leaves ordinary SSL_CTX instances on the upstream byte path.
+0001-yume-chrome-clienthello.patch

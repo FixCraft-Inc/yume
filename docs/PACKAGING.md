@@ -20,13 +20,14 @@ builds because the current 2.0 development line consumes the 3.8 X25519 and
 ML-KEM-1024 APIs.
 BaseFWX Debian archive builds must use packaged dependencies, including
 `liboqs-dev`; vendored liboqs is only a local development override.
-Full YUME packages also require OpenSSL 3.5 or newer: composite identities use
-the ML-DSA-87 provider, so `debian/control` deliberately rejects older
-`libssl-dev` packages instead of producing a binary that fails during AUTH.
+Full YUME builds require the exact patched OpenSSL 3.5.7 source: composite
+identities use the ML-DSA-87 provider and the default in-process ClientHello
+emitter requires YUME's additive patch. CMake rejects a stock `libssl-dev`, even
+when its version is 3.5 or newer.
 The prepared `linux-desktop-0.2.0` archive is a separate contract: it links the
-checksum-verified liboqs 0.16.0 archive statically, leaves OpenSSL dynamic with a declared 3.5
-runtime floor, and rejects any `DT_RPATH`, `DT_RUNPATH`, or dynamic
-`liboqs.so` dependency before copying an executable into the artifact.
+checksum-verified liboqs 0.16.0 archive and patched OpenSSL 3.5.7 statically,
+and rejects any `DT_RPATH`, `DT_RUNPATH`, dynamic `liboqs.so`, `libssl`, or
+`libcrypto` dependency before copying an executable into the artifact.
 `libyume` is the stable native C embed ABI. In 1.1 it exposes build metadata,
 opaque client/server handles, and direct named service streams for projects
 that need to embed YUME as their secure transport. YUME's `yume_core`,
@@ -37,7 +38,9 @@ breaks. See `docs/ABI.md` for the compatibility rules.
 ## Install From A Build Tree
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+source scripts/ensure-openssl.sh
+yume_openssl_ensure
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DYUME_STATIC_OPENSSL=ON
 cmake --build build -j"$(nproc)"
 sudo cmake --install build
 sudo mandb
@@ -59,7 +62,8 @@ Installed files:
 Use a different prefix with:
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+  -DYUME_STATIC_OPENSSL=ON
 cmake --build build -j"$(nproc)"
 sudo cmake --install build
 sudo mandb
@@ -83,7 +87,10 @@ man yumed
 The CMake project has CPack rules for Debian packages.
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+source scripts/ensure-openssl.sh
+yume_openssl_ensure
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+  -DYUME_STATIC_OPENSSL=ON
 cmake --build build -j"$(nproc)"
 (cd build && cpack -G DEB)
 ```
@@ -105,14 +112,14 @@ DEB/TGZ output and uses the older upstream convenience split:
 Use the `debian/` packaging for archive-style source package review and the
 `yume-daemon` systemd/sysusers/tmpfiles split.
 
-For a native dynamic Debian build, CPack uses `dpkg-shlibdeps` by default
-to infer shared-library dependencies. If you are building a static or
-cross-architecture package and dependency scanning is wrong for your
-toolchain, disable it:
+CPack uses `dpkg-shlibdeps` for the remaining dynamic dependencies. The patched
+OpenSSL stays embedded. If dependency scanning is wrong for a cross toolchain,
+disable it:
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
   -DYUME_DEB_SHLIBDEPS=OFF \
+  -DYUME_STATIC_OPENSSL=ON \
   -DYUME_BUILD_SHARED_ABI=ON
 cmake --build build -j"$(nproc)"
 (cd build && cpack -G DEB)
@@ -169,14 +176,19 @@ For cross builds, `ezbuild.sh --deb` disables `dpkg-shlibdeps`
 automatically because host dependency scanning is usually wrong for
 foreign binaries. Prefer static/minimal packages for simple distribution,
 or provide a complete target sysroot and package dependencies manually. A
-target sysroot with OpenSSL 3.0 is no longer sufficient for a full YUME build;
-`YUME_TRANSPORT_CORE_ONLY` remains the intentionally crypto-free exception.
+target sysroot must contain the target-architecture patched OpenSSL 3.5.7;
+neither stock OpenSSL nor the native-host fallback is accepted for a cross
+build. No cross target is currently qualified. `YUME_TRANSPORT_CORE_ONLY`
+remains the intentionally crypto-free exception.
 
 ## Debian Main Packaging
 
-Debian main does not accept upstream-built `.deb` files directly. Debian
-accepts source packages built with Debian packaging metadata. This repo now
-contains a `debian/` scaffold for that workflow:
+Debian main does not accept upstream-built `.deb` files directly. This repo
+contains a `debian/` scaffold, but archive binary builds are currently blocked:
+Debian's system OpenSSL does not carry YUME's downstream ClientHello control,
+while embedding a private TLS library needs an explicit archive security-update
+policy. The normal CMake capability check therefore fails closed instead of
+producing a package whose default backend fails at runtime. The scaffold covers:
 
 - `debian/control`: source and binary package metadata.
 - `debian/rules`: debhelper/CMake build entrypoint.
@@ -195,7 +207,8 @@ It creates and validates the upstream orig tarball, checks for accidentally
 included local/private artifacts, runs `dpkg-source -b`, and removes the
 generated source-package files when it exits.
 
-Build the Debian-style binary package locally:
+Once Debian has an approved patched-library policy, build the Debian-style
+binary package locally:
 
 ```bash
 dpkg-buildpackage -us -uc -b
@@ -208,17 +221,19 @@ scripts/make_debian_orig.sh
 dpkg-buildpackage -S -us -uc
 ```
 
-The helper writes `../yume_<version>.orig.tar.xz` and excludes bundled
-dependency trees, vendored binaries, build directories, logs, bytecode, and
-the `debian/` directory. The source package then contains the upstream
-tarball plus Debian packaging metadata as a separate Debian tarball.
+The helper refuses to overwrite an existing archive, writes
+`../yume_<version>.orig.tar.xz`, and excludes bundled dependency trees,
+vendored binaries, build directories, logs, bytecode, local agent/cache/secret
+overlays, and the `debian/` directory. It validates its own completed listing
+before atomically publishing the output. The source package then contains the
+upstream tarball plus Debian packaging metadata as a separate Debian tarball.
 Development versions use Debian's sorting-safe spelling (`0.2.0-dev6` becomes
 `1:0.2.0~dev6` with the packaging-only epoch). The epoch preserves upgrade
 ordering across the upstream maturity reset and is omitted from archive
 filenames. `scripts/check_debian_source.sh` rejects a mismatch between
 `src/core/version.hpp` and the top Debian changelog entry.
 
-The Debian package builds with:
+The Debian scaffold requests:
 
 ```text
 -DYUME_USE_BASEFWX=ON
@@ -228,7 +243,9 @@ The Debian package builds with:
 ```
 
 That means YUME must build against a separately packaged BaseFWX development
-library. The intended package chain is:
+library and a system OpenSSL that exposes YUME's capability. No current Debian
+archive library does, so this is not yet a usable binary-package path. The
+intended package chain is:
 
 ```text
 basefwx          optional command-line frontend
@@ -256,10 +273,10 @@ Debian package dependencies for libraries that were themselves installed from
 Debian packages. If ML-KEM/liboqs is staged manually under `/usr/local`, the
 generated local `.deb` assumes the target machine has that same library path
 available. For archive-style packages, build through `debian/` against a
-packaged `liboqs-dev` instead. CPack and `debian/control` also declare
-`libssl3t64 (>= 3.5.0)` explicitly because generic OpenSSL provider lookups do
-not give `dpkg-shlibdeps` a 3.5-only symbol from which to infer that runtime
-floor.
+packaged `liboqs-dev` instead. The scaffold's `libssl3t64 (>= 3.5.0)` dependency
+records only the provider floor; it does not satisfy the downstream-patch
+requirement. Do not publish Debian binary packages until the library policy and
+runtime metadata are resolved.
 
 For local testing, build BaseFWX first:
 

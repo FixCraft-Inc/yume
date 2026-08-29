@@ -28,9 +28,13 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
+#include <map>
 #include <random>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -1060,17 +1064,130 @@ std::vector<control::ActiveRelayChannel> Manager::list_active_channels() const {
 }
 
 std::vector<FederationPeerStatus> Manager::federation_statuses() const {
+    std::vector<FederationPeerStatus> outbound;
+    if (federation_) {
+        outbound = federation_->statuses();
+    }
+    std::map<std::string, FederationPeerStatus> merged;
+    for (auto& status : outbound) {
+        status.outbound_state = status.state;
+        status.outbound_ready = status.ready;
+        merged[status.id] = std::move(status);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(sessions_mutex_);
+        for (const auto& [_, inbound] : inbound_federation_sessions_) {
+            auto& status = merged[inbound.peer_id];
+            status.id = inbound.peer_id;
+            if (status.inbound_connections <
+                std::numeric_limits<std::uint32_t>::max()) {
+                ++status.inbound_connections;
+            }
+            status.ready = true;
+            if (!status.outbound_ready) {
+                status.state = "inbound-ready";
+            }
+            status.last_handshake_ms =
+                std::max(status.last_handshake_ms, inbound.handshake_ms);
+        }
+    }
+
+    std::unordered_map<std::string, std::uint32_t> channel_counts;
+    std::unordered_set<std::string> known_peers;
+    for (const auto& [peer_id, _] : merged) {
+        known_peers.insert(peer_id);
+    }
+    for (const auto& configured :
+         FederationManager::configured_peers(cfg_).peers) {
+        known_peers.insert(configured.id);
+    }
+    for (auto& [_, status] : merged) {
+        status.channels_active = 0;
+    }
+    {
+        std::lock_guard<std::mutex> lock(endpoint_mutex_);
+        for (const auto& [_, channel] : active_channels_) {
+            if (!channel.federated) continue;
+            std::string peer_id;
+            const auto consider = [&](const std::string& endpoint_id) {
+                const auto separator = endpoint_id.find(':');
+                if (separator == std::string::npos) return;
+                const std::string candidate =
+                    endpoint_id.substr(0U, separator);
+                if (known_peers.find(candidate) != known_peers.end()) {
+                    peer_id = candidate;
+                }
+            };
+            consider(channel.left_endpoint_id);
+            if (peer_id.empty()) consider(channel.right_endpoint_id);
+            if (peer_id.empty()) continue;
+            auto& count = channel_counts[peer_id];
+            if (count < std::numeric_limits<std::uint32_t>::max()) {
+                ++count;
+            }
+        }
+    }
+    for (const auto& [peer_id, count] : channel_counts) {
+        auto& status = merged[peer_id];
+        status.id = peer_id;
+        status.channels_active = count;
+    }
+
+    std::vector<FederationPeerStatus> result;
+    result.reserve(merged.size());
+    for (auto& [_, status] : merged) {
+        result.push_back(std::move(status));
+    }
+    return result;
+}
+
+ConfiguredFederationPeers Manager::federation_configured_peers() const {
+    if (!federation_) {
+        return FederationManager::configured_peers(cfg_);
+    }
+    return federation_->configured_peers();
+}
+
+std::vector<control::EndpointInfo> Manager::federation_remote_endpoints(
+        std::size_t limit) const {
     if (!federation_) {
         return {};
     }
-    return federation_->statuses();
+    return federation_->remote_endpoints(limit);
 }
 
-bool Manager::disconnect_endpoint(const std::string& query, std::string* error) {
-    auto session = find_endpoint_session(query, nullptr);
+bool Manager::disconnect_endpoint(const std::string& endpoint_id,
+                                  std::string* error) {
+    if (endpoint_id.empty()) {
+        if (error) *error = "endpoint_id is required";
+        return false;
+    }
+
+    std::shared_ptr<Session> session;
+    {
+        std::lock_guard<std::mutex> lock(endpoint_mutex_);
+        const auto found = endpoints_.find(endpoint_id);
+        if (found != endpoints_.end()) {
+            session = found->second.session.lock();
+            if (!session) {
+                const auto stale_session = std::find_if(
+                    session_endpoints_.begin(), session_endpoints_.end(),
+                    [&](const auto& entry) {
+                        return entry.second == endpoint_id;
+                    });
+                if (stale_session != session_endpoints_.end()) {
+                    unregister_endpoint_locked(stale_session->first, true);
+                } else {
+                    endpoint_names_.erase(found->second.info.display_name);
+                    endpoints_.erase(found);
+                }
+            }
+        }
+    }
     if (!session) {
         if (error) {
-            *error = "endpoint not found";
+            *error = "exact endpoint_id not found";
         }
         return false;
     }

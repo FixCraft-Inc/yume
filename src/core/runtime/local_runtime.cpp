@@ -26,6 +26,19 @@ namespace {
 constexpr size_t kMaxMessageBytes = 1024 * 1024;
 constexpr int kDefaultSocketTimeoutMs = 5000;
 
+void wipe_string(std::string& value) noexcept {
+    volatile char* cursor = value.empty() ? nullptr : value.data();
+    for (std::size_t index = 0; index < value.size(); ++index) {
+        cursor[index] = 0;
+    }
+    value.clear();
+}
+
+struct StringWiper {
+    std::string& value;
+    ~StringWiper() { wipe_string(value); }
+};
+
 std::string home_dir() {
     const char* home = std::getenv("HOME");
     return (home && *home) ? std::string(home) : std::string(".");
@@ -166,9 +179,11 @@ std::string socket_path(const std::string& role, const std::string& instance_key
     return (std::filesystem::path(runtime_dir()) / (role + "-" + instance_key + ".sock")).string();
 }
 
-Server::Server(std::string path, RequestHandler handler)
+Server::Server(std::string path, RequestHandler handler,
+               RequestCleanup cleanup)
     : path_(std::move(path))
-    , handler_(std::move(handler)) {}
+    , handler_(std::move(handler))
+    , cleanup_(std::move(cleanup)) {}
 
 Server::~Server() {
     stop();
@@ -330,6 +345,7 @@ nlohmann::json Server::request(const std::string& path,
     set_socket_timeouts(fd, timeout_ms);
 
     std::string payload = request_json.dump();
+    StringWiper payload_wiper{payload};
     payload.push_back('\n');
     if (!send_all(fd, payload.data(), payload.size())) {
         if (error) {
@@ -339,6 +355,7 @@ nlohmann::json Server::request(const std::string& path,
         return nlohmann::json::object();
     }
     std::string response_line;
+    StringWiper response_wiper{response_line};
     if (!recv_line(fd, &response_line)) {
         if (error) {
             *error = "failed to read local runtime response";
@@ -377,12 +394,23 @@ void Server::serve_loop() {
         set_socket_timeouts(client_fd, kDefaultSocketTimeoutMs);
 
         std::string line;
+        StringWiper line_wiper{line};
         nlohmann::json response;
         if (!recv_line(client_fd, &line)) {
             response = {{"ok", false}, {"error", "failed to read request"}};
         } else {
             try {
                 auto request_json = nlohmann::json::parse(line);
+                struct CleanupGuard {
+                    RequestCleanup& cleanup;
+                    nlohmann::json& request;
+                    ~CleanupGuard() {
+                        try {
+                            if (cleanup) cleanup(request);
+                        } catch (...) {
+                        }
+                    }
+                } cleanup_guard{cleanup_, request_json};
                 response = handler_ ? handler_(request_json)
                                     : nlohmann::json{{"ok", false}, {"error", "no handler"}};
             } catch (const std::exception& ex) {
@@ -390,6 +418,7 @@ void Server::serve_loop() {
             }
         }
         std::string encoded = response.dump();
+        StringWiper encoded_wiper{encoded};
         encoded.push_back('\n');
         send_all(client_fd, encoded.data(), encoded.size());
         ::close(client_fd);

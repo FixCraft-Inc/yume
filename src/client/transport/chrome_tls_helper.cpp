@@ -23,7 +23,7 @@
 #include <system_error>
 #include <utility>
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
@@ -39,6 +39,8 @@ extern char** environ;
 namespace yume::client {
 namespace {
 
+#if defined(__linux__) && !defined(__ANDROID__)
+
 std::string Hex(std::span<const std::uint8_t> bytes) {
     static constexpr char kHex[] = "0123456789abcdef";
     std::string output(bytes.size() * 2U, '0');
@@ -48,8 +50,6 @@ std::string Hex(std::span<const std::uint8_t> bytes) {
     }
     return output;
 }
-
-#if defined(__linux__)
 
 class ScopedFd {
 public:
@@ -360,7 +360,7 @@ ClientTransportStream LaunchChromeTlsHelper(
         boost::asio::io_context& io,
         boost::asio::ip::tcp::socket&& connected_socket,
         const ChromeTlsHelperOptions& options) {
-#if !defined(__linux__)
+#if !defined(__linux__) || defined(__ANDROID__)
     (void)io;
     (void)connected_socket;
     (void)options;

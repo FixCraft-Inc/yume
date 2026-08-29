@@ -547,13 +547,14 @@ private:
                             "(required)", nullptr);
                 file_picker("Federation peer CA",
                             "Pick federation peer CA",
-                            cfg_.federation_anonym_ca,
+                            cfg_.federation_operator_ca,
                             "(required)", nullptr);
                 std::string peer_json = cfg_.federation_peers.empty()
                     ? std::string{}
                     : cfg_.federation_peers.front();
                 text_input("Federation peer JSON", peer_json,
-                           "{\"id\":\"peer-b\",\"url\":\"yume://host:443\",\"tls_pin\":\"...\"}");
+                           "{\"id\":\"peer-b\",\"url\":\"yume://host:443\","
+                           "\"psk_file\":\"...\",\"carrier_secret_file\":\"...\"}");
                 if (peer_json.empty()) {
                     cfg_.federation_peers.clear();
                 } else if (cfg_.federation_peers.empty()) {
@@ -655,18 +656,24 @@ private:
         if (ui::begin_auto_card("##sessions_card")) {
             ui::section_label("Connected users");
             if (ui::begin_data_table("##sessions", 4)) {
-                ui::data_table_headers({"Endpoint", "Name", "State", "Traffic"});
+                ui::data_table_headers(
+                    {"Endpoint", "Name", "State", "Client"});
                 for (auto const& s : sessions) {
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn(); ImGui::TextUnformatted(s.endpoint_id.c_str());
                     ImGui::TableNextColumn(); ImGui::TextUnformatted(s.display_name.c_str());
                     ImGui::TableNextColumn();
-                    ui::status_pill(s.authenticated ? "Online" : "Pending",
+                    const char* session_state = !s.authenticated
+                        ? "pending"
+                        : (s.state.empty() ? "online" : s.state.c_str());
+                    ui::status_pill(session_state,
                                     s.authenticated ? c.success : c.warning);
                     ImGui::TableNextColumn();
-                    ImGui::Text("%llu / %llu",
-                                static_cast<unsigned long long>(s.bytes_in),
-                                static_cast<unsigned long long>(s.bytes_out));
+                    const char* client_platform = s.client_platform.empty()
+                        ? "unknown" : s.client_platform.c_str();
+                    ImGui::Text("%s%s%s", client_platform,
+                                s.client_version.empty() ? "" : " ",
+                                s.client_version.c_str());
                 }
                 ui::end_data_table();
             }

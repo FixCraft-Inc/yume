@@ -53,7 +53,7 @@ was selected by exact CMake cache/link path, reported by the CLI, and passed the
 full 102/102 Release suite.
 
 BaseFWX is independently signed and published at
-`5c42eafbb95e5c7ea3b6cd57299d577be814f5f2`; YUME pins that exact commit. The
+`e6ffbb79daa02bf62c31c3ae6513d5c603ec8dcd`; YUME pins that exact commit. The
 experimental Go/uTLS Chrome helper remains opt-in and disabled by default. It
 is intentionally retained because the OpenSSL C++ backend matches the current
 Chrome 151 JA4 and normalized non-GREASE sets but does not yet match the raw

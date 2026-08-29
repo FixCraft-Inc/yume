@@ -981,8 +981,8 @@ def parse_args() -> argparse.Namespace:
     client.add_argument("--bench-direction", choices=("both", "up", "down"), default="both")
     client.add_argument(
         "--tls-backend",
-        choices=("chrome151", "openssl-diagnostic"),
-        default="openssl-diagnostic",
+        choices=("openssl-chrome151", "chrome151", "openssl-diagnostic"),
+        default="openssl-chrome151",
         help="outer client TLS backend used for this benchmark",
     )
     client.add_argument("--timing", action="store_true", help="enable yume timing counters")

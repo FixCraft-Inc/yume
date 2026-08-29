@@ -75,7 +75,7 @@ bool test_cli_config_load(const std::filesystem::path& base) {
     const auto config_path = base / "yumed.json";
     {
         std::ofstream config(config_path);
-        config << R"({"listen_address":"127.0.0.1","listen_port":9443,"auth_keys":"authorized_keys","admin_keys":"admin_keys","allow_embedded_master":true,"preauth_services":["bootstrap-v1"]})";
+        config << R"({"listen_address":"127.0.0.1","listen_port":9443,"auth_keys":"authorized_keys","admin_keys":"admin_keys","allow_embedded_master":true,"preauth_services":["bootstrap-v1"],"cluster_bootstrap":true,"federation_peers":[{"id":"edge","url":"yume://edge.example:443","psk_file":"secrets/edge.psk","carrier_secret_file":"secrets/edge.carrier"}]})";
         if (!config) {
             std::cerr << "FAIL: could not write CLI config fixture\n";
             return false;
@@ -115,6 +115,24 @@ bool test_cli_config_load(const std::filesystem::path& base) {
     if (!expect(cfg.preauth_services ==
                     std::vector<std::string>{"bootstrap-v1"},
                 "preauth_services should load from the config")) {
+        return false;
+    }
+    if (!expect(cfg.cluster_bootstrap,
+                "cluster_bootstrap=true should load from JSON")) {
+        return false;
+    }
+    if (!expect(cfg.federation_peers.size() == 1U,
+                "federation peer should load from JSON")) {
+        return false;
+    }
+    const auto loaded_peer =
+        nlohmann::json::parse(cfg.federation_peers.front());
+    if (!expect(loaded_peer.value("psk_file", "") ==
+                    (base / "secrets/edge.psk").string(),
+                "federation PSK path should resolve from the config") ||
+        !expect(loaded_peer.value("carrier_secret_file", "") ==
+                    (base / "secrets/edge.carrier").string(),
+                "federation carrier path should resolve from the config")) {
         return false;
     }
 
@@ -174,17 +192,72 @@ bool test_cli_config_load(const std::filesystem::path& base) {
         return false;
     }
 
+    const std::string valid_pin(64U, 'a');
     const auto expanded = nlohmann::json::parse(
         yume::server::cli::expand_cluster_join_spec(
             "peer-a@example.test:9443?psk_file=/run/peer.psk&"
-            "carrier_secret_file=/run/peer.carrier&pin=abcd"));
+            "carrier_secret_file=/run/peer.carrier&pin=" + valid_pin));
     if (!expect(expanded.value("id", "") == "peer-a",
                 "cluster join should preserve the explicit peer id") ||
         !expect(expanded.value("psk_file", "") == "/run/peer.psk",
                 "cluster join should carry the pairwise PSK path") ||
         !expect(expanded.value("carrier_secret_file", "") ==
                     "/run/peer.carrier",
-                "cluster join should carry the carrier-secret path")) {
+                "cluster join should carry the carrier-secret path") ||
+        !expect(expanded.value("tls_pin", "") == valid_pin,
+                "cluster join should preserve a canonical TLS pin")) {
+        return false;
+    }
+
+    const std::string secret_query =
+        "?psk_file=/run/peer.psk&carrier_secret_file=/run/peer.carrier";
+    const auto rejects_cluster_join = [](const std::string& value) {
+        try {
+            (void)yume::server::cli::expand_cluster_join_spec(value);
+            return false;
+        } catch (const std::runtime_error&) {
+            return true;
+        }
+    };
+    const auto expanded_ipv6 = nlohmann::json::parse(
+        yume::server::cli::expand_cluster_join_spec(
+            "peer-v6@[2001:db8::1]:9443" + secret_query));
+    if (!expect(expanded_ipv6.value("id", "") == "peer-v6" &&
+                    expanded_ipv6.value("url", "") ==
+                        "yume://[2001:db8::1]:9443",
+                "cluster join should preserve bracketed IPv6 unambiguously") ||
+        !expect(rejects_cluster_join(
+                    "peer-a@example.test:9443junk" + secret_query),
+                "cluster join must reject a partially parsed port") ||
+        !expect(rejects_cluster_join(
+                    "peer-a@example.test:9443" + secret_query +
+                    "&pin=" + std::string(64U, 'A')),
+                "cluster join must reject a non-lowercase TLS pin") ||
+        !expect(rejects_cluster_join(
+                    "peer-a@example.test:9443" + secret_query +
+                    "&pin=" + std::string(63U, 'a')),
+                "cluster join must reject a short TLS pin") ||
+        !expect(rejects_cluster_join(
+                    "[2001:db8::1]:9443" + secret_query),
+                "cluster join IPv6 must require an explicit valid peer id") ||
+        !expect(rejects_cluster_join(
+                    "peer-v6@2001:db8::1:9443" + secret_query),
+                "cluster join must reject unbracketed IPv6") ||
+        !expect(rejects_cluster_join(
+                    "peer-a@example.test:9443" + secret_query +
+                    "&unexpected=value"),
+                "cluster join must reject unknown query parameters") ||
+        !expect(rejects_cluster_join(
+                    "peer-a@example.test:9443" + secret_query +
+                    "&psk_file=/run/other.psk"),
+                "cluster join must reject duplicate query parameters") ||
+        !expect(rejects_cluster_join(
+                    "peer-a@example.test:9443?psk_file&"
+                    "carrier_secret_file=/run/peer.carrier"),
+                "cluster join must reject query entries without a value") ||
+        !expect(rejects_cluster_join(
+                    "peer-a@example.test:9443" + secret_query + "&"),
+                "cluster join must reject a trailing empty query entry")) {
         return false;
     }
     bool missing_secrets_rejected = false;
@@ -196,6 +269,35 @@ bool test_cli_config_load(const std::filesystem::path& base) {
     }
     if (!expect(missing_secrets_rejected,
                 "cluster join without both secret paths must fail closed")) {
+        return false;
+    }
+
+    std::vector<std::string> join_arguments{
+        "yumed", "--cluster-join",
+        "peer-relative@example.test:443?psk_file=secrets/peer.psk&"
+        "carrier_secret_file=secrets/peer.carrier"};
+    std::vector<char*> join_argv;
+    for (auto& argument : join_arguments) {
+        join_argv.push_back(argument.data());
+    }
+    yume::server::ServerConfig join_cfg;
+    yume::server::cli::ServerCliParseResult join_result;
+    if (!expect(yume::server::cli::parse_server_cli_args(
+                    static_cast<int>(join_argv.size()), join_argv.data(),
+                    base.string(), join_cfg, &join_result),
+                "cluster join with relative secret paths should parse") ||
+        !expect(join_cfg.federation_peers.size() == 1U,
+                "cluster join should append one normalized peer")) {
+        return false;
+    }
+    const auto joined_peer =
+        nlohmann::json::parse(join_cfg.federation_peers.front());
+    if (!expect(joined_peer.value("psk_file", "") ==
+                    (base / "secrets/peer.psk").string(),
+                "cluster join PSK should resolve from the CLI working directory") ||
+        !expect(joined_peer.value("carrier_secret_file", "") ==
+                    (base / "secrets/peer.carrier").string(),
+                "cluster join carrier secret should resolve from the CLI working directory")) {
         return false;
     }
 
@@ -301,6 +403,11 @@ bool test_cli_load_is_type_strict_and_transactional(
                "numeric JSON must not be coerced into a boolean") &&
            expect(
                rejects_without_mutation(
+                   "cluster-bootstrap-wrong-type.json",
+                   R"({"cluster_bootstrap":"true"})", no_overrides),
+               "cluster_bootstrap must require a JSON boolean") &&
+           expect(
+               rejects_without_mutation(
                    "negative-u32.json", R"({"max_sessions":-1})",
                    no_overrides),
                "negative JSON must not be accepted for an unsigned field") &&
@@ -325,7 +432,7 @@ bool test_cli_load_is_type_strict_and_transactional(
 bool test_facade_round_trip(const std::filesystem::path& base) {
     std::string error;
     auto parsed = yume::facade::config_io::parse_server_json(
-        R"({"admin_keys":"parsed-admin-keys","preauth_services":["bootstrap-v1"]})",
+        R"({"admin_keys":"parsed-admin-keys","preauth_services":["bootstrap-v1"],"cluster_bootstrap":true})",
         base, &error);
     if (!expect(parsed.has_value(), "facade JSON should parse") ||
         !expect(error.empty(), "facade parse should not report an error")) {
@@ -340,6 +447,10 @@ bool test_facade_round_trip(const std::filesystem::path& base) {
                 "facade should parse preauth_services")) {
         return false;
     }
+    if (!expect(parsed->cluster_bootstrap,
+                "facade should parse cluster_bootstrap=true")) {
+        return false;
+    }
 
     auto wrong_type = yume::facade::config_io::parse_server_json(
         R"({"listen_port":"443"})", base, &error);
@@ -347,6 +458,23 @@ bool test_facade_round_trip(const std::filesystem::path& base) {
                 "facade must reject a wrong-typed server field") ||
         !expect(error.find("listen_port") != std::string::npos,
                 "wrong-typed server field should name its key")) {
+        return false;
+    }
+    auto wrong_bootstrap_type = yume::facade::config_io::parse_server_json(
+        R"({"cluster_bootstrap":"true"})", base, &error);
+    if (!expect(!wrong_bootstrap_type.has_value(),
+                "facade must reject a wrong-typed cluster_bootstrap") ||
+        !expect(error.find("cluster_bootstrap") != std::string::npos,
+                "wrong-typed cluster_bootstrap should name its key")) {
+        return false;
+    }
+    auto string_peer = yume::facade::config_io::parse_server_json(
+        R"({"federation_peers":["{\"id\":\"edge\"}"]})", base,
+        &error);
+    if (!expect(!string_peer.has_value(),
+                "facade must reject string-encoded federation peers") ||
+        !expect(error.find("entries must be objects") != std::string::npos,
+                "string-encoded peer failure should name the object schema")) {
         return false;
     }
     auto wrong_root = yume::facade::config_io::parse_server_json(

@@ -478,6 +478,16 @@ struct RelayRuntimeTestPeer {
                "chat-channel-a");
         assert(status.at("active_chat").at("peer_id") == "peer-a");
 
+        const auto missing_channel = runtime.handle_local_request(
+            {{"op", "chat.send"}, {"args", {{"text", "must not send"}}}});
+        assert(!missing_channel.value("ok", true));
+        assert(missing_channel.value("error", "").find("channel_id") !=
+               std::string::npos);
+        const auto empty_channel = runtime.handle_local_request(
+            {{"op", "chat.send"},
+             {"args", {{"channel_id", ""}, {"text", "must not send"}}}});
+        assert(!empty_channel.value("ok", true));
+
         std::string error;
         assert(!runtime.send_chat("chat-channel-b", "wrong channel", &error));
         assert(error == "requested chat channel is not active");
@@ -550,6 +560,176 @@ int main() {
     auto tunnel = std::make_shared<Tunnel>(std::move(transport));
     auto runtime = std::make_shared<RelayRuntime>(
         tunnel, ClientConfig{}, files.options());
+
+    assert(!runtime->handle_local_request(nlohmann::json::array())
+                .value("ok", true));
+    assert(!runtime->handle_local_request({{"op", ""}})
+                .value("ok", true));
+    assert(!runtime->handle_local_request(
+                {{"op", "runtime.status"},
+                 {"args", nlohmann::json::array()}})
+                .value("ok", true));
+    for (const char* no_argument_op :
+         {"runtime.status", "runtime.info", "directory.list",
+          "contacts.list", "invite.list", "admin.status",
+          "admin.sessions", "admin.stop", "runtime.stop"}) {
+        const auto response = runtime->handle_local_request(
+            {{"op", no_argument_op}, {"args", {{"extra", true}}}});
+        assert(!response.value("ok", true));
+        assert(response.value("error", "").find(
+                   "does not accept arguments") != std::string::npos);
+    }
+    assert(!runtime->handle_local_request(
+                {{"op", "contacts.forget"},
+                 {"args", {{"endpoint_id", "peer-a"},
+                           {"extra", true}}}})
+                .value("ok", true));
+    assert(!runtime->handle_local_request(
+                {{"op", "contacts.forget"},
+                 {"args", {{"endpoint_id", ""}}}})
+                .value("ok", true));
+    assert(!runtime->handle_local_request(
+                {{"op", "invite.accept"},
+                 {"args", {{"invite_id", "legacy-name"}}}})
+                .value("ok", true));
+    assert(!runtime->handle_local_request(
+                {{"op", "invite.accept"},
+                 {"args", {{"invite_selector", "invite-a"},
+                           {"extra", true}}}})
+                .value("ok", true));
+    assert(!runtime->handle_local_request(
+                {{"op", "invite.reject"},
+                 {"args", {{"invite_id", "legacy-name"}}}})
+                .value("ok", true));
+    assert(!runtime->handle_local_request(
+                {{"op", "invite.reject"},
+                 {"args", {{"invite_selector", "invite-a"},
+                           {"reason", 42}}}})
+                .value("ok", true));
+    assert(!runtime->handle_local_request(
+                {{"op", "chat.open"},
+                 {"args", {{"peer", "peer-a"}, {"extra", true}}}})
+                .value("ok", true));
+    assert(!runtime->handle_local_request(
+                {{"op", "invite.accept"},
+                 {"args", {{"invite_selector", ""}}}})
+                .value("ok", true));
+    assert(!runtime->handle_local_request(
+                {{"op", "chat.send"},
+                 {"args", {{"channel_id", "channel-a"}}}})
+                .value("ok", true));
+    assert(!runtime->handle_local_request(
+                {{"op", "chat.send"},
+                 {"args", {{"channel_id", "channel-a"},
+                           {"text", "hello"}, {"extra", true}}}})
+                .value("ok", true));
+    assert(!runtime->handle_local_request(
+                {{"op", "chat.close"},
+                 {"args", {{"channel_id", "channel-a"},
+                           {"extra", true}}}})
+                .value("ok", true));
+    for (const char* send_op : {"file.send", "bytes.send"}) {
+        assert(!runtime->handle_local_request(
+                    {{"op", send_op},
+                     {"args", {{"peer", "peer-a"},
+                               {"path", "/tmp/input"},
+                               {"extra", true}}}})
+                    .value("ok", true));
+        assert(!runtime->handle_local_request(
+                    {{"op", send_op},
+                     {"args", {{"peer", "peer-a"}, {"path", ""}}}})
+                    .value("ok", true));
+    }
+    const auto invalid_history = runtime->handle_local_request(
+        {{"op", "history.list"}, {"args", {{"peer_id", 42}}}});
+    assert(!invalid_history.value("ok", true));
+    assert(invalid_history.value("error", "").find("peer_id") !=
+           std::string::npos);
+    assert(!runtime->handle_local_request(
+                {{"op", "history.list"}, {"args", {{"peer_id", ""}}}})
+                .value("ok", true));
+    for (const auto& invalid_limit :
+         {nlohmann::json(-1), nlohmann::json(0), nlohmann::json(1001),
+          nlohmann::json(1.5), nlohmann::json(true),
+          nlohmann::json("10")}) {
+        const auto response = runtime->handle_local_request(
+            {{"op", "history.list"},
+             {"args", {{"limit", invalid_limit}}}});
+        assert(!response.value("ok", true));
+        assert(response.value("error", "").find("limit") !=
+               std::string::npos);
+    }
+    const auto unknown_history_argument = runtime->handle_local_request(
+        {{"op", "history.list"}, {"args", {{"peer", "peer-a"}}}});
+    assert(!unknown_history_argument.value("ok", true));
+    assert(unknown_history_argument.value("error", "").find("only") !=
+           std::string::npos);
+    const auto history_shape = runtime->handle_local_request(
+        {{"op", "history.list"}, {"args", {{"limit", 1}}}});
+    assert(history_shape.value("ok", false));
+    assert(history_shape.at("result").value("schema_version", 0) == 1);
+    assert(history_shape.at("result").contains("available"));
+    assert(history_shape.at("result").contains("error"));
+    assert(history_shape.at("result").contains("truncated"));
+    assert(history_shape.at("result").at("items").is_array());
+    const auto ambiguous_relay_secret = runtime->handle_local_request(
+        {{"op", "chat.open"},
+         {"args", {{"peer", "peer-a"},
+                   {"relay_secret", "derived-secret"},
+                   {"password", "plaintext-password"}}}});
+    assert(!ambiguous_relay_secret.value("ok", true));
+    assert(ambiguous_relay_secret.value("error", "").find(
+               "mutually exclusive") != std::string::npos);
+    const auto invalid_relay_secret_type = runtime->handle_local_request(
+        {{"op", "chat.open"},
+         {"args", {{"peer", "peer-a"}, {"relay_secret", 42}}}});
+    assert(!invalid_relay_secret_type.value("ok", true));
+    assert(invalid_relay_secret_type.value("error", "").find(
+               "relay_secret must be a string") != std::string::npos);
+    const auto ambiguous_history_delete = runtime->handle_local_request(
+        {{"op", "history.delete"}, {"args", {{"peer_idd", "peer-a"}}}});
+    assert(!ambiguous_history_delete.value("ok", true));
+    assert(ambiguous_history_delete.value("error", "").find(
+               "exactly one") != std::string::npos);
+    const auto false_delete_all = runtime->handle_local_request(
+        {{"op", "history.delete"}, {"args", {{"all", false}}}});
+    assert(!false_delete_all.value("ok", true));
+    const auto explicit_delete_all = runtime->handle_local_request(
+        {{"op", "history.delete"}, {"args", {{"all", true}}}});
+    assert(explicit_delete_all.value("ok", false));
+    assert(!runtime->handle_local_request(
+                {{"op", "admin.attach"},
+                 {"args", {{"peer", "peer-a"}, {"extra", true}}}})
+                .value("ok", true));
+    const auto admin_arguments = runtime->handle_local_request(
+        {{"op", "admin.status"},
+         {"args", {{"password", "must-not-be-forwarded"}}}});
+    assert(!admin_arguments.value("ok", true));
+    assert(admin_arguments.value("error", "").find(
+               "does not accept arguments") != std::string::npos);
+    const auto unavailable_stop = runtime->handle_local_request(
+        {{"op", "runtime.stop"}, {"args", nlohmann::json::object()}});
+    assert(!unavailable_stop.value("ok", true));
+    assert(unavailable_stop.value("error", "").find("unavailable") !=
+           std::string::npos);
+
+    runtime->set_stop_callback([]() {
+        throw std::runtime_error("intentional stop failure");
+    });
+    const auto failed_stop = runtime->handle_local_request(
+        {{"op", "runtime.stop"}, {"args", nlohmann::json::object()}});
+    assert(!failed_stop.value("ok", true));
+    assert(failed_stop.value("error", "").find("intentional stop failure") !=
+           std::string::npos);
+
+    std::atomic<int> local_stop_callbacks{0};
+    runtime->set_stop_callback([&local_stop_callbacks]() {
+        local_stop_callbacks.fetch_add(1, std::memory_order_relaxed);
+    });
+    const auto successful_stop = runtime->handle_local_request(
+        {{"op", "runtime.stop"}, {"args", nlohmann::json::object()}});
+    assert(successful_stop.value("ok", false));
+    assert(local_stop_callbacks.load(std::memory_order_relaxed) == 1);
 
     RelayRuntimeTestPeer::CheckBoundedRekeyQueue(*runtime);
     RelayRuntimeTestPeer::CheckRekeyAckFlush(*runtime);

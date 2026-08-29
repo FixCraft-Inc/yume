@@ -10,9 +10,11 @@ archive and server executable are separate artifacts:
 Android, GUI, Windows, macOS, ARM, OpenWRT, static binaries, and a Debian
 archive are not supported by this release lane.
 
-The native binaries are dynamically linked and require OpenSSL 3.5 or newer at
-runtime. This is a functional requirement, not only a build-host preference:
-composite client identities require the OpenSSL ML-DSA-87 provider.
+The release binaries dynamically link their ordinary system dependencies but
+embed YUME's pinned, patched OpenSSL 3.5.7. This is a functional requirement:
+the default native ClientHello emitter requires the downstream patch and
+composite client identities require the OpenSSL ML-DSA-87 provider. Packaging
+rejects a runtime `libssl` or `libcrypto` dependency.
 The release lane links its pinned liboqs 0.16.0 archive statically; neither `yume` nor
 `yumed` may have a `liboqs.so` runtime dependency or an embedded build/cache
 library search path. Release packaging and preflight reject both conditions.
@@ -25,12 +27,15 @@ Verify the release SHA-256 files and signatures before installation. Then:
 tar -xJf yume-amd64-linux.tar.xz
 cd yume-amd64-linux
 ./yume --version
+# Optional comparison backend only:
 ./yume-chrome-tls-helper --version
 ```
 
-Keep the helper next to `yume`, owned by root or the account running YUME, and
-not writable by group or other users. The client rejects symlinked,
-non-executable, or unsafe helper files.
+The helper is an optional, temporarily retained comparison backend; normal
+runtime does not launch it. If explicitly selecting `--tls-backend chrome151`,
+keep it next to `yume`, owned by root or the account running YUME, and not
+writable by group or other users. The client rejects symlinked, non-executable,
+or unsafe helper files.
 
 Install the server separately if this machine hosts a YUME endpoint:
 
@@ -49,7 +54,8 @@ service contract.
 
 Provision certificates, independent admission and inner PSKs, and a composite
 Ed25519 + ML-DSA-87 client identity by following the full `docs/QUICKSTART.md`
-from the matching source release. The opt-in Chrome 151 backend is selected explicitly:
+from the matching source release. The native Chrome 151 backend is the default;
+it is spelled explicitly here so the captured configuration is unambiguous:
 
 ```sh
 ./yume \
@@ -61,13 +67,14 @@ from the matching source release. The opt-in Chrome 151 backend is selected expl
   --obfs-secret-file /path/to/admission.hex \
   --inner-psk-file /path/to/inner.hex \
   --transport-profile chrome151-node24-v1 \
-  --tls-backend chrome151 \
+  --tls-backend openssl-chrome151 \
   --socks 127.0.0.1:1080
 ```
 
-There is no silent fallback. `openssl-diagnostic` remains the default until
-matched WAN, an uninterrupted deployed-network soak, exact-Chrome same-session
-cover, classifier/active-probe, and independent-review gates are complete. The
-bounded lifecycle, process-scale, reconnect, and segmented loopback-soak gates
-pass. Do not describe the opt-in backend as invisible to DPI or independently
-audited.
+There is no silent fallback. The native backend has passed its six-row
+ClientHello structure gate but not the older helper's full-handshake, exporter,
+validation, lifecycle, reconnect, resumption, soak, reproducibility,
+same-session, classifier/active-probe, or independent-review gates. Do not
+describe it as invisible to DPI or independently audited. The fixture records
+only the length of `compress_certificate`, so a fresh Chrome capture must still
+confirm the Brotli value.

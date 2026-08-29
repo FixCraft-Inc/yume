@@ -24,6 +24,11 @@ codec, federation, plugin, and browser status, see
 [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md).
 For the exact dev6 integration lane and the separate stable-ish RC/stable gates,
 see [docs/YUME_2_0_STABILIZATION.md](docs/YUME_2_0_STABILIZATION.md).
+Contributors and automated agents should start with
+[CONTRIBUTING.md](CONTRIBUTING.md) and the
+[documentation map](docs/README.md). A machine-local
+`.private/ai/AGENTS.md`, when present, is an optional navigation overlay and
+never overrides the tracked source, tests, or documentation.
 
 ## Why YUME
 
@@ -46,13 +51,13 @@ from this tree.
 | HTTPS-shaped carrier | persistent TLS + H2/WebSocket; known TLS residual | distinctive UDP handshake | deployment-dependent TLS/UDP shape | obfs4 bridge | random-prefix |
 | Privacy-minimizing policy + operator identity proof | built in | n/a | per-provider | relay policy differs | n/a |
 | Free public endpoints       | planned (FixCraft) | none        | none                     | yes                | none            |
-| First 2.0 target            | Linux x86-64 CLI | broad          | broad                    | broad              | broad           |
+| First 0.2.0 target          | Linux x86-64 CLI | broad          | broad                    | broad              | broad           |
 | Self-hostable, fully open   | yes (AGPL-v3+)  | yes            | yes                      | bridge only        | yes             |
-| Published 2.0 transport measurement | release gate pending | — | — | — | — |
+| Published 0.2.0 transport measurement | release gate pending | — | — | — | — |
 | License                     | AGPL-v3+        | GPL-v2         | GPL-v2                   | BSD-3              | Apache-2        |
 
 The older WAN run in [docs/PERFORMANCE.md](docs/PERFORMANCE.md) used 1.x and is
-not a 2.0 release measurement.
+not a 0.2.0 release measurement.
 
 ## Quick start
 
@@ -68,12 +73,12 @@ that worktree without fetching, detaching its branch, or discarding changes.
 Use `BASEFWX_SYNC_MODE=pinned ./ezbuild.sh` when you explicitly need the clean
 commit recorded once in `config/dependencies.json`.
 
-Full YUME builds require OpenSSL 3.5 or newer because composite client
-identities use ML-DSA-87. On native Linux, `ezbuild.sh` verifies the provider
-and, when the system library is older, builds the pinned OpenSSL 3.5.7 source
-archive into the user's YUME cache after verifying its SHA-256. Direct CMake
-builds must provide an equivalent OpenSSL development installation, optionally
-through `OPENSSL_ROOT_DIR`.
+Full YUME builds use the checksum-pinned, patched OpenSSL 3.5.7: composite
+client identities need ML-DSA-87 and the default native Chrome ClientHello
+emitter needs YUME's additive capability. On native Linux, `ezbuild.sh` builds
+and selects that source under the user's YUME cache after verifying its
+SHA-256; normal binaries embed it instead of resolving a system libssl at
+runtime. Direct CMake builds must activate the same patched installation.
 
 Browser identities are also centralized. See
 [docs/TRANSPORT_PROFILES.md](docs/TRANSPORT_PROFILES.md): installed Chrome may
@@ -127,9 +132,12 @@ Cluster entry-point short form (translates to `--server` + `--port`):
 ```
 
 Client disguise profiles are registry-backed across the core, CLI, and GUI.
-Chrome is the only complete 2.0 transport fixture today; Firefox or another
-profile belongs in the registry only after its TLS and HTTP/2 capture passes
-the same conformance gates, not after a User-Agent-only change.
+Chrome 151 on Linux with a Node 24 cover is the only configured target fixture
+today. The native backend passes its six-row ClientHello structural gate, but
+whole-session, resumed-handshake, classifier, and release parity remain open.
+Firefox or another profile belongs in the registry only after its TLS and
+HTTP/2 capture passes the same conformance gates, not after a User-Agent-only
+change.
 
 For a privileged port 443 on Linux, run `yumed` with `sudo` or grant `cap_net_bind_service`. Cloudflare HTTP-mode proxies will terminate TLS and break YUME. Use Spectrum or another TCP passthrough if you front the daemon with Cloudflare.
 
@@ -138,11 +146,12 @@ For a privileged port 443 on Linux, run `yumed` with `sudo` or grant `cap_net_bi
 A Dear ImGui + GLFW desktop application is available in the same tree and is
 **off** by default. It uses the shared facade library and drives the same linked,
 in-process client runtime as the CLI; no client subprocess or local IPC round
-trip is required. The shared facade now has serialized, generation-scoped
-start/stop and prompt pre-ready cancellation, but the GUI remains a development
-preview: its stale security controls, detached page-level resolver, partial
-chat/log contract, honest headless failure behavior, and real lifecycle smoke
-still need GUI-owned work. The CLI remains the supported automation surface.
+trip is required. The shared facade has serialized, generation-scoped
+start/stop and prompt pre-ready cancellation, and the Linux/X11 headless path
+has passed connect -> stop -> reconnect -> stop against a real dev6 daemon.
+The GUI remains a development preview: human-window interaction, tray behavior,
+Windows/macOS behavior, and polling-oriented incoming-chat discovery are not
+qualified. The CLI remains the supported automation surface.
 
 ### Build
 
@@ -151,7 +160,7 @@ cmake -B build-gui -DYUME_BUILD_GUI=ON
 cmake --build build-gui -j$(nproc)
 ./build-gui/bin/yume-gui          # main window
 ./build-gui/bin/yume-gui --help   # CLI options
-./build-gui/bin/yume-gui --headless   # facade diagnostic; may skip startup
+./build-gui/bin/yume-gui --headless   # lifecycle diagnostic; nonzero if nothing runs or a leg fails
 ```
 
 `YUME_BUILD_GUI=ON` pulls Dear ImGui, GLFW, and ImPlot via CMake `FetchContent` (pinned tags). On Linux the system tray (minimise-to-tray) is enabled automatically when `libayatana-appindicator3-dev` is present; without it the GUI builds normally but the tray icon is disabled.
@@ -181,9 +190,9 @@ GUI profile, trust material, generated keys, and runtime data live under `~/.yum
 ### Limitations of the current MVP
 
 - `ServerSession::start()` runs a real in-process `yumed` runtime through the shared server manager; start/stop work is separately owned so a caller-side stop does not join blocking startup on the UI thread. Privileged ports still require root or `cap_net_bind_service`.
-- `ClientSession::start()` hosts the CLI connection runtime in-process. Shared start/stop/restart/destructor races, stalled pre-ready TLS cancellation, and callback exception/reentrancy now have focused regression coverage. A real GUI window-level connect/restart smoke is still required.
-- `--headless` validates parseable configs and attempts lifecycle actions, but currently reports success even when configs are absent or a valid session fails to start. It is not a real connection gate.
-- Chat / directory pages depend on a connected background client. Chat close and callback delivery are incomplete in the current facade.
+- `ClientSession::start()` hosts the CLI connection runtime in-process. Shared start/stop/restart/destructor races, stalled pre-ready TLS cancellation, and callback exception/reentrancy have focused regression coverage. The headless path has real lifecycle evidence; human-window interaction remains a separate gate.
+- `--headless` exits 2 when no valid configuration can be exercised, 1 when an attempted lifecycle leg fails, and 0 only when every attempted leg succeeds. The live Linux/X11 fixture passed connect -> stop -> reconnect -> stop 5/5; this is not cross-platform or tray qualification.
+- Chat / directory pages depend on a connected background client. Open/send/close and history polling use real channel/endpoint identities; history storage unavailability and newest-row truncation are displayed separately from an empty history or a failed control request. Incoming chat discovery is polling-oriented and no live-message callback is promised.
 - The tray code path is present but only assembles when `libayatana-appindicator3-dev` is installed; the rest of the GUI works without it.
 
 ## Install, man pages, and Debian packages
@@ -254,15 +263,24 @@ secret material.
 This removes the earlier Chrome-version/platform contradiction and raises the
 cost of custom-protocol matching and casual active probing; it does not make
 YUME identical to Chrome or immune to traffic analysis. The default
-`openssl-diagnostic` backend cannot reproduce Chrome's BoringSSL ClientHello.
-An opt-in Linux helper now implements a pinned uTLS Chrome 151 first flight and
-preserves YUME's certificate checks and TLS exporter. Five complete flows pass
-the normalized Chrome/Node first-flight structural gate and the local
-handshake/throughput budgets. The bounded failure/lifecycle matrix,
-1/10/50/100/256 process ramps, 1,000 reconnects, and segmented 30-minute
-full-speed soak also pass. It remains opt-in until matched WAN, exact-Chrome
-same-session, classifier/active-probe, and independent-review gates pass. It
-never silently falls back to OpenSSL.
+`openssl-chrome151` backend opts into a default-off patch carried on the exact
+OpenSSL 3.5.7 source pin. It adds Chrome-shaped per-connection GREASE, shuffles
+custom and built-in extensions together, emits `ec_point_formats == [0]`, and
+keeps both real key shares plus brotli-only certificate compression. Selection
+fails closed against stock libssl or a build without Brotli; the release lane
+statically embeds the pinned patched OpenSSL, so normal runtime does not launch
+or load the Go helper.
+
+The older `chrome151` uTLS helper is temporarily retained as qualification
+evidence and an explicit optional comparison backend. Its five complete flows, bounded
+failure/lifecycle matrix, process ramps, 1,000 reconnects, and segmented
+30-minute full-speed soak pass. Those results do not transfer automatically to
+the new native backend: full handshake, exporter, certificate/hostname/pin,
+reconnect, resumption, soak, reproducibility, same-session, classifier, and
+independent-review gates still apply before helper retirement or a broad
+"looks exactly like Chrome" claim. The six-of-six native result is structural:
+the committed fixture records only the three-byte `0x001b` body length, not its
+algorithm value, so a fresh Chrome capture must still confirm Brotli.
 See [docs/STEALTH.md](docs/STEALTH.md)
 for the measured scope and [docs/YUME_2_0_IMPLEMENTATION_STATUS.md](docs/YUME_2_0_IMPLEMENTATION_STATUS.md)
 for unfinished release gates.
@@ -477,7 +495,11 @@ Federation uses the same admitted H2 carrier, TLS-exporter-bound AUTH v2, and
 directional ratchet as a normal client. Generate a separate composite identity
 for each node with `yumed --keys-gen`; each peer enrolls the remote public
 identity in `--auth-keys` and assigns it a unique `federation_peer_id` in
-`--auth-keys-meta` (see [docs/PERMISSIONS.md](docs/PERMISSIONS.md)).
+`--auth-keys-meta`. The same entry must set `federation_psk_file` to that
+link's pairwise secret; relative paths are resolved from the metadata file
+(see [docs/PERMISSIONS.md](docs/PERMISSIONS.md)). The ordinary
+`--inner-psk-file` remains the server-wide client PSK and is not reused for
+federation identities.
 
 Every outbound `--peer` JSON requires a pairwise `psk_file` and the remote
 node's `carrier_secret_file`. Secret files are exact 64-hex-character values
@@ -513,28 +535,32 @@ sudo yumed --listen 443 \
     --public-node
 ```
 
-Add one `--peer` object per outbound link. `tls_pin` is optional when the
-configured federation CA and hostname validation are sufficient.
+Add one `--peer` object per outbound link. `tls_pin`, when present, is exactly
+64 lowercase hexadecimal characters (the SHA-256 of the TLS leaf DER); it is
+optional when the configured federation CA and hostname validation are
+sufficient. IPv6 peer URLs use `yume://[address]:port`.
 
 ASCII cluster map from any node:
 
 ```text
 $ yume-net-map
-                ┌──────────────┐
-                │* alice       │
-                │local:443     │
-                │5 endpoints   │
-                └──────┬───────┘
-                       │
-        ┌──────────────┼──────────────┐
-┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-│  bob         │ │  carol       │ │  dave        │
-│bob:443       │ │carol:443     │ │dave:443      │
-│3 ch ready    │ │2 ch ready    │ │0 ch error    │
-└──────────────┘ └──────────────┘ └──────────────┘
+                      ┌──────────────┐
+                      │* alice       │
+                      │local:443     │
+                      │5 endpoints   │
+                      └───────┴──────┘
+          ┌───────────────────┬───────────────────┐
+          │                   │                   │
+  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+  │bob           │    │carol         │    │dave          │
+  │bob.example:4…│    │carol.example…│    │dave.example:…│
+  │3 ch ready    │    │2 ch ready    │    │0 ch error    │
+  └──────────────┘    └──────────────┘    └──────────────┘
 ```
 
-`yume-net-map --ascii` falls back to `+--+` `|` chars for terminals without box-drawing support; `yume-net-map --json` emits the topology as JSON for downstream tooling.
+`yume-net-map --ascii` falls back to `+--+` `|` chars for terminals without box-drawing support; `yume-net-map --json` emits the daemon's `federation.topology` document verbatim for downstream tooling. An attached `yumed` console draws the same map with `topology`, and `federation` prints per-peer link state.
+
+Federation is **single-hop**: a node advertises only its own local endpoints to a peer, so every federated endpoint it knows is exactly one authenticated link away and traffic never transits a third node. Two spokes on a hub-and-spoke cluster therefore cannot reach each other — give every pair that must communicate a direct `--peer` entry. The [federation transit design](docs/protocol/YUME_2_0_FEDERATION_TRANSIT.md) records what would have to change and the gates it must pass first; it is not implemented.
 
 ## Modes
 
@@ -757,8 +783,10 @@ sudo ./build/bin/yumed \
 - Release workflows run preflight validation against the pinned BaseFWX commit
 - Release artifacts are inspected after build for linkage / runtime expectations
 - Missing mandatory BaseFWX crypto support is a release failure, not a degraded release
-- The 2.0 Linux desktop transport additionally requires OpenSSL >= 3.5 with
-  ML-DSA-87, nghttp2 >= 1.64, and ML-KEM-1024 support from the pinned
+- The 2.0 Linux desktop transport embeds the checksum-pinned, YUME-patched
+  OpenSSL 3.5.7 build with Brotli and ML-DSA-87; release validation rejects
+  runtime `libssl`/`libcrypto` dependencies
+- nghttp2 >= 1.64 and ML-KEM-1024 support come from the pinned
   BaseFWX/liboqs 0.16.0 path
 
 ## License

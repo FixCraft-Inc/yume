@@ -50,6 +50,41 @@ namespace {
 // (ExportChannelBinding refuses anything older).
 constexpr std::chrono::milliseconds kConnectTimeout{15000};
 constexpr std::chrono::milliseconds kHelloTimeout{10000};
+constexpr std::string_view kRedactedPath{"[redacted-path]"};
+
+void redact_all(std::string* text, std::string_view value) {
+    if (text == nullptr || value.empty()) {
+        return;
+    }
+    std::size_t offset = 0;
+    while ((offset = text->find(value, offset)) != std::string::npos) {
+        text->replace(offset, value.size(), kRedactedPath);
+        offset += kRedactedPath.size();
+    }
+}
+
+std::string public_link_error(std::string_view error,
+                              const ServerConfig& cfg,
+                              const FederationPeer& peer) {
+    std::string redacted(error);
+    // These paths may be included verbatim by OpenSSL or secret-file errors.
+    // Redact the longest first so one configured path cannot expose the tail
+    // of another path that happens to share a prefix.
+    std::array<std::string_view, 4> configured_paths{
+        cfg.federation_identity,
+        cfg.federation_operator_ca,
+        peer.psk_file,
+        peer.carrier_secret_file,
+    };
+    std::sort(configured_paths.begin(), configured_paths.end(),
+              [](std::string_view left, std::string_view right) {
+                  return left.size() > right.size();
+              });
+    for (const auto path : configured_paths) {
+        redact_all(&redacted, path);
+    }
+    return sanitize_federation_public_error(redacted);
+}
 
 std::string hex_encode(const unsigned char* data, std::size_t len) {
     static const char* kHex = "0123456789abcdef";
@@ -172,8 +207,10 @@ FederationPeerStatus FederationLink::status() const {
     out.id = peer_.id;
     out.state = state_;
     out.ready = ready_;
-    out.last_error = last_error_;
-    out.last_handshake_ts = last_handshake_ts_;
+    out.outbound_state = state_;
+    out.outbound_ready = ready_;
+    out.last_error = public_link_error(last_error_, cfg_, peer_);
+    out.last_handshake_ms = last_handshake_ms_;
     out.channels_active = channels_active_;
     return out;
 }
@@ -389,8 +426,8 @@ std::shared_ptr<client::Tunnel> FederationLink::dial_v2(boost::asio::io_context&
     obfs::configure_alpn(ctx, false, true);
     ctx.set_verify_mode(boost::asio::ssl::verify_peer);
     ctx.set_default_verify_paths();
-    if (!cfg_.federation_anonym_ca.empty()) {
-        ctx.load_verify_file(cfg_.federation_anonym_ca);
+    if (!cfg_.federation_operator_ca.empty()) {
+        ctx.load_verify_file(cfg_.federation_operator_ca);
     }
     client::ClientTransportStream::OpenSslStream tls_stream(std::move(socket), ctx);
     SSL_set_tlsext_host_name(tls_stream.native_handle(), peer_.host.c_str());
@@ -542,7 +579,7 @@ void FederationLink::handle_control(
             } else if (state_ == "hello") {
                 remote_namespace_for_local_ = remote_namespace;
                 ready_ = true;
-                last_handshake_ts_ = epoch_now_ms();
+                last_handshake_ms_ = epoch_now_ms();
                 state_ = "ready";
                 last_error_.clear();
                 became_ready = true;

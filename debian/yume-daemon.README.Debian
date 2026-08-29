@@ -12,6 +12,25 @@ Before enabling it, provide:
   * /etc/yume/server.key
   * at least one client public key in /etc/yume/authorized_keys
   * optional per-key permissions in /etc/yume/auth_keys.meta
+  * /etc/yume/obfs.hex, a protected 32-byte admission secret
+  * /etc/yume/inner.hex, a separate protected 32-byte inner PSK
+  * an ordinary HTTP service on the configured loopback real_backend
+
+The packaged configuration expects the cover backend at
+loopback://127.0.0.1:3000.
+Start that separately supervised service before yumed, or change real_backend
+to another loopback IP literal and port. yumed probes it at startup and fails
+closed when it is absent or unhealthy.
+
+Create independent secret files as the account that will run yumed. Each file
+must be owned by yume, mode 0600, and contain exactly 64 lowercase hexadecimal
+characters with no newline. For example, as root:
+
+  umask 077
+  openssl rand -hex 32 | tr -d '\n' > /etc/yume/obfs.hex
+  openssl rand -hex 32 | tr -d '\n' > /etc/yume/inner.hex
+  chown yume:yume /etc/yume/obfs.hex /etc/yume/inner.hex
+  chmod 0600 /etc/yume/obfs.hex /etc/yume/inner.hex
 
 The daemon runs as the locked yume user. Keep private key material readable
 only by root and the yume group, for example:
@@ -19,9 +38,13 @@ only by root and the yume group, for example:
   chown root:yume /etc/yume/server.key
   chmod 0640 /etc/yume/server.key
 
+An anonym CA or delegated private signing key has a stricter contract: when
+configured, it must be a regular non-symlink file owned by yume, mode 0600,
+and no larger than 64 KiB.
+
 Then check the installed binary and start the service:
 
-  yumed --config /etc/yume/yumed.json --version
+  yumed --version
   systemctl start yumed.service
 
 The unit grants CAP_NET_BIND_SERVICE so yumed can bind TCP port 443 without

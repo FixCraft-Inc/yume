@@ -106,6 +106,11 @@ MCowBQYDK2VwAyEA...alice-ed25519...
       "allow_chat": false,
       "allow_file": false
     }
+  },
+  "94fe20...federation-node-fingerprint...": {
+    "alias": "federation-edge-west",
+    "federation_peer_id": "edge-west",
+    "federation_psk_file": "secrets/edge-west-federation.psk"
   }
   // visitor key omitted (connects only, no extra permissions)
 }
@@ -196,8 +201,23 @@ Top-level resource fields are separate from `permissions`:
 | `weight` | `1.0` | Fair-egress multiplier in `0.1..100`; `1.5` receives 1.5 times the share of a competing `1.0` identity |
 | `max_sessions` | 1 / server bulk default | Per-key authenticated-session cap; values above 1 require `key_type: bulk` |
 | `priority` | unset | Legacy integer weight compatibility; prefer decimal `weight` |
+| `federation_peer_id` | unset | Unique local namespace assigned to one authenticated federation identity; bulk identities cannot use it |
+| `federation_psk_file` | unset | Required with `federation_peer_id`; owner-only 32-byte pairwise AUTH-v2 PSK, resolved relative to the metadata file |
 
 `alias` is a free-form label used in logs.
+
+Facade append and update operations verify that a referenced federation PSK
+already satisfies the same protected-file contract enforced by `yumed`,
+and reject duplicate `federation_peer_id` assignments within the metadata file
+being edited before publishing. `Manager` remains the final authority: startup
+and reload also reject duplicates across the regular and operator metadata
+snapshots. Removing or replacing a PSK file later makes the daemon reject the
+resulting policy on its next load.
+
+For C++ facade update patches, empty federation strings mean “preserve.” Set
+`clear_federation_enrollment` to remove both federation fields atomically; it
+cannot be combined with either non-empty federation field. This operation flag
+is never serialized into the authorization metadata.
 
 ## Bridge / admin modes: the four quadrants
 

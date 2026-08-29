@@ -9,6 +9,7 @@
 #include <atomic>
 #include <mutex>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -47,6 +48,13 @@ bool privileged_port_requires_elevation(int port) {
 #else
     return port > 0 && port < 1024 && ::geteuid() != 0;
 #endif
+}
+
+bool is_embedded_read_operation(std::string_view op) {
+    return op == "runtime.info" || op == "runtime.status" ||
+           op == "runtime.sessions" || op == "runtime.events" ||
+           op == "directory.list" || op == "federation.status" ||
+           op == "federation.topology";
 }
 
 }  // namespace
@@ -368,6 +376,79 @@ std::shared_ptr<runtime::ServiceStream> RuntimeController::accept_service_stream
     }
     return manager->accept_service_stream(
         service, timeout_ms, error, operation_status);
+}
+
+nlohmann::json RuntimeController::request(
+        std::string const& op,
+        nlohmann::json const& args,
+        std::string* error,
+        runtime::OperationStatus* operation_status) const {
+    if (error) error->clear();
+    if (op.empty()) {
+        runtime::SetOperationStatus(
+            operation_status, runtime::OperationStatus::InvalidArgument);
+        if (error) *error = "operation name is empty";
+        return nlohmann::json::object();
+    }
+    if (!args.is_object()) {
+        runtime::SetOperationStatus(
+            operation_status, runtime::OperationStatus::InvalidArgument);
+        if (error) *error = "operation arguments must be a JSON object";
+        return nlohmann::json::object();
+    }
+
+    // The local runtime holds a non-owning Manager pointer, so the Manager
+    // handle is held across the call too: a concurrent stop() moves both out
+    // under this same mutex and would otherwise destroy the Manager while the
+    // operation is still reading it.
+    std::shared_ptr<LocalRuntime> runtime;
+    std::shared_ptr<Manager> manager;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mtx);
+        if (impl_->running.load()) {
+            runtime = impl_->local_runtime;
+            manager = impl_->manager;
+        }
+    }
+    if (!runtime || !manager) {
+        runtime::SetOperationStatus(
+            operation_status, runtime::OperationStatus::NotRunning);
+        if (error) *error = "server runtime is not running";
+        return nlohmann::json::object();
+    }
+
+    if (!is_embedded_read_operation(op)) {
+        runtime::SetOperationStatus(
+            operation_status, runtime::OperationStatus::Success);
+        return {
+            {"ok", false},
+            {"error",
+             "operation is not available through the read-only embedded "
+             "server API"},
+        };
+    }
+
+    nlohmann::json response;
+    try {
+        response = runtime->handle_request({{"op", op}, {"args", args}});
+    } catch (std::exception const& ex) {
+        runtime::SetOperationStatus(
+            operation_status, runtime::OperationStatus::InternalError);
+        if (error) *error = ex.what();
+        return nlohmann::json::object();
+    }
+
+    if (!response.is_object() || !response.contains("ok") ||
+        !response["ok"].is_boolean()) {
+        runtime::SetOperationStatus(
+            operation_status, runtime::OperationStatus::InternalError);
+        if (error) *error = "server operation returned an invalid envelope";
+        return nlohmann::json::object();
+    }
+
+    runtime::SetOperationStatus(
+        operation_status, runtime::OperationStatus::Success);
+    return response;
 }
 
 ServerConfig RuntimeController::config() const {

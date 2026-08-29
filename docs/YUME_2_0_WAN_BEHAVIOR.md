@@ -10,6 +10,54 @@ All measurements and formulas below use the now-named Extreme policy
 dev6 and have not been WAN-validated; substitute their negotiated byte budget
 in the model, but do not treat that model as measured performance.
 
+## Current 60-ms diagnosis: the default prepared-root window is binding
+
+The exact live starting tree was frozen in an isolated Linux benchmark
+environment and tested three times at 60 ms RTT, zero jitter/loss,
+1,000 Mbit/s, 128 MiB each direction, eight logical streams, Extreme policy,
+default window 8, production DATA geometry, and OpenSSL diagnostic TLS. Upload
+was 232.4/238.2/239.1 Mbit/s and download was 252.4/253.6/249.4 Mbit/s: medians
+238.2/252.4 and total 244.1. Client/server median average CPU was 0.097/0.105
+cores. This reproduces the previous series and rules out CPU saturation.
+
+A packet capture from the same canonical path has 62 steady bursts in each
+direction. Each burst is about 2.02 MiB, exactly eight 256-KiB Extreme epochs
+plus framing, and starts about every 61.6 ms; the tunnel is active for roughly
+19 ms and idle for 42 ms. TCP advertised windows are multiple MiB and there is
+no sequence-overlap/retransmission evidence. The authenticated rekey ACK
+contains the responder ML-KEM ciphertext and fresh X25519 public key, so the
+sender cannot derive root `n+8` until an ACK frees and replenishes the bounded
+eight-root pipeline.
+
+Development-only telemetry confirms that interpretation. At window 8, a
+242.0/252.9 Mbit/s run reached client/server depth 8 and recorded 512/507
+ratchet-blocked writes totaling 4.232/3.917 seconds. Both H2 directions
+reported zero remote-window stalls. At diagnostic window 16, throughput rose
+to 334.8/353.2 Mbit/s and ratchet blocking fell, while server H2 blocking
+became secondary. Thus H2 is not the default-window bottleneck; it only becomes
+visible after the root window is enlarged.
+
+This supersedes older subsections below that say the tighter ceiling was
+unknown or predict H2/TCP as the next default-path limit. Those sections are
+retained as historical investigation context. The root-cause claim is based
+on packet cadence, on-wire key dependencies, live queue/block telemetry, and
+the bounded window-16 perturbation—not on the byte-budget formula alone.
+
+Increasing the default is not a mechanical performance fix. It retains more
+future roots, increases endpoint-compromise exposure, and can change outer
+traffic cadence. No Extreme byte/frame/time limit or default window was
+changed. The added counters and `scripts/yume_bench_wan.py --timing` are
+compiled only with `YUME_ENABLE_DEV_DIAGNOSTICS`; Release binaries contain no
+counter labels. Three interleaved timing-off baseline/candidate series had
+median totals 243.6 and 241.9 Mbit/s, respectively, so the diagnostics-only
+source change has no claimed throughput gain.
+
+The detailed reports and source/binary identities were retained as private
+benchmark evidence rather than Git inputs. Full diagnostic CTest passed 94/94,
+focused Release transport/H2 tests passed, and 39 WAN-harness tests passed. The
+2/100/210-ms and loss expansion is intentionally deferred until a candidate
+first clears the material 60-ms matched-improvement gate.
+
 ## What dev2 fixed
 
 Dev1 stopped all application writes as soon as it sent `REKEY_INIT`. Dev2 sends
@@ -592,9 +640,10 @@ stream onto one tunnel**, so it inherits the single-connection ceiling, not the
 gets N independent congestion and receive windows; on this path that is an
 8.4x head start before any crypto is considered. YUME does implement an
 optional 2..16-tunnel pool for pure SOCKS mode with an explicitly admitted bulk
-identity and the `openssl-diagnostic` backend. It was not exercised by this
-matrix, other modes stay on the primary tunnel, and the `chrome151` helper
-deliberately accepts exactly one outer tunnel. Therefore multi-tunnel is a
+identity and either in-process OpenSSL backend, including the new
+`openssl-chrome151` default. It was not exercised by this matrix, other modes
+stay on the primary tunnel, and the `chrome151` helper deliberately accepts
+exactly one outer tunnel. Therefore multi-tunnel is a
 separate performance, identity-policy, and classifier experiment, not a hidden
 denominator for these results.
 
@@ -765,6 +814,56 @@ tracked-diff SHA-256 `e9a9fe81...4f7c97`; current `yume`/`yumed` SHA-256
 not Chrome ClientHello parity, so this matrix is performance evidence, not a
 stealth qualification.
 
+### Core refresh (2026-08-24)
+
+The regular non-Android core was rebuilt and measured again from an isolated
+copy of the then-live tree. This refresh represents commit
+`dd502c464b6a09c380d3faaeb8b52919dfd37636` plus the two portability-only edits
+in `client/relay/runtime.cpp` and `client/transport/chrome_tls_helper.cpp`. The
+workload and boundary match the current-default series above: 60 ms RTT, zero
+jitter/loss, 1,000 Mbit/s, 128 MiB each direction, eight streams, Extreme,
+default `rekey_window=8`, production DATA geometry, OpenSSL diagnostic TLS, no
+browser, and no packet capture.
+
+| Run | Upload | Download | Total |
+| ---: | ---: | ---: | ---: |
+| 1 | 231.2 Mbit/s | 252.0 Mbit/s | 241.1 Mbit/s |
+| 2 | 242.3 | 252.2 | 247.2 |
+| 3 | 239.4 | 252.1 | 245.6 |
+| **Median** | **239.4** | **252.1** | **245.6** |
+
+The refreshed medians differ from the preceding 239.5/252.4 Mbit/s series by
+-0.04% upload and -0.12% download. The live portability edits therefore show
+no measurable Linux throughput regression, and the delayed-path core ceiling
+is reproducible. Median client average CPU was 0.109 cores with 32.3 MiB
+median peak RSS; `yumed` used 0.114 average cores with 24.8 MiB median peak
+RSS. CPU saturation is not the binding resource.
+
+The three separately started desktop quick self-tests used the same 1-thread,
+32-MiB component geometry as the Android quick diagnostic. Their medians were
+15,763.0 MiB/s packet-bulk encode, 15,223.9 MiB/s packet-bulk decode,
+4,439.1 MiB/s AES-GCM encrypt, and 4,862.2 MiB/s AES-GCM decrypt. These are
+C++ component ceilings on a desktop CPU, not packet-ABI network throughput.
+The corresponding loopback `yume-v2` rows were 166.0, 171.9, and 192.9 MiB/s,
+with a 171.9 MiB/s (1,441.6 Mbit/s) median. Quick mode is a smoke profile, but
+this still separates ample local core capacity from the reproducible 60-ms
+ceiling.
+Android's similarly named rows exercise a Kotlin diagnostic codec on a
+different CPU; the supported Android VPN routes packet batches through native
+`libyume.so`, so those rows must not be used as a production desktop-versus-
+Android ratio.
+
+Every report records unchanged source/runtime-input and binary identities, zero
+capabilities, `NoNewPrivs: 1`, disposable user/mount/PID/network namespaces,
+and `host_routes_or_qdiscs_targeted=false`. The detailed reports remain private
+benchmark evidence rather than Git inputs.
+
+This refresh is sufficient to direct the next performance investigation at
+the regular core's high-RTT single-tunnel path. It is not an Android routed
+benchmark, a packet-C-ABI/TUN result, a browser/helper stealth result, a loss
+matrix, or a soak. Android remains performance-unclassified until an approved
+profile and matching packet-enabled `yumed` permit the real VPN benchmark.
+
 ### Historical 32-MiB ceiling experiment
 
 With `kAuthenticatedReceiveWindow` at 32 MiB and `--tcp-mem-max 64`, sweeping
@@ -809,11 +908,13 @@ experiments.
 
 One structural avenue is worth recording rather than assumed away. A real
 browser does not hold one HTTP/2 connection; it holds one per origin, and a
-page load routinely touches ten to thirty origins. YUME's existing OpenSSL-only
-SOCKS pool proves multiple tunnels are implementable, but does not prove that
+page load routinely touches ten to thirty origins. YUME's in-process OpenSSL
+SOCKS pool, now including `openssl-chrome151`, proves multiple tunnels are
+implementable, but does not prove that
 its identity reuse, origin mapping, connection timing, or cross-tunnel
-correlation is browser-plausible. The `chrome151` path remains intentionally
-single-tunnel until that question is measured.
+correlation is browser-plausible. The legacy `chrome151` helper remains
+intentionally single-tunnel until that question is measured; native pool use is
+still a separate classifier experiment, not established browser parity.
 
 ### Relaxing the ratchet does not buy throughput -- it costs it
 

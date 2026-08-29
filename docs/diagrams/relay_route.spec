@@ -1,20 +1,26 @@
-# Relay path: client in one region, exit yumed in another (PERFORMANCE.md).
+# Current direct federated relay path. YRR2 payload protection is endpoint to
+# endpoint; federation uses one direct server link and never selects an exit.
 # Render with: scripts/draw_pipeline.py docs/diagrams/relay_route.spec
 --
-title: HUMAN APP
-sub:   browser / curl
+title: PEER APP A
+sub:   chat / file / bytes
 --
-title: YUME CLIENT
-sub:   US or home network
-arrow: ==YUME==>
+title: YUME CLIENT A
+sub:   relay-v2 initiator
+arrow: local request
 --
-title: RELAY YUMED
-sub:   entry / mid-hop server
-arrow: ==YUME==> federation or relay
+title: YUMED A
+sub:   direct federation peer
+arrow: TLS / H2 / YRR2
 --
-title: EXIT YUMED
-sub:   Japan or egress region
-arrow: outbound socket
+title: YUMED B
+sub:   one hop; no exit or transit
+arrow: direct federation link
 --
-title: TARGET SITE
-sub:   sees exit server IP
+title: YUME CLIENT B
+sub:   relay-v2 responder
+arrow: TLS / H2 / YRR2
+--
+title: PEER APP B
+sub:   chat / file / bytes
+arrow: local delivery

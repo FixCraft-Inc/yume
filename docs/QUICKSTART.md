@@ -18,12 +18,13 @@ and is never fetched or detached automatically. Set
 `BASEFWX_SYNC_MODE=pinned` for an explicitly pinned build, or
 `BASEFWX_SYNC_MODE=worktree` to require the current checkout.
 
-`ezbuild.sh` requires OpenSSL 3.5 or newer with ML-DSA-87 and nghttp2 1.64 or
-newer. When either system package is too old, it builds the pinned,
-checksum-verified OpenSSL 3.5.7 or nghttp2 1.69.0 library under the user cache.
-Direct CMake builds must provide OpenSSL >= 3.5, optionally through
-`OPENSSL_ROOT_DIR`. The default is a portable Release build with `-O3`, LTO, fast-math
-disabled, and developer timing code compiled out. `./ezbuild.sh --native`
+`ezbuild.sh` always selects the pinned, checksum-verified and patched OpenSSL
+3.5.7 because the default native ClientHello emitter requires that capability;
+it also requires nghttp2 1.64 or newer and builds pinned 1.69.0 when needed.
+Direct CMake builds must first source `scripts/ensure-openssl.sh` and call
+`yume_openssl_ensure`; stock OpenSSL is rejected. The normal build embeds the
+patched library. The default is a portable Release build with `-O3`, LTO,
+fast-math disabled, and developer timing code compiled out. `./ezbuild.sh --native`
 produces the fastest executables for the current CPU but they are not portable;
 `./ezbuild.sh --dev` produces optimized RelWithDebInfo binaries with opt-in
 `--timing` hooks. The build produces `build/bin/yume` and
@@ -72,10 +73,11 @@ identity in the operator store and a different second identity in `admin_keys`.
 Each client directory includes a desktop config,
 `DEVICE_SETUP.txt`, and launchers. Run `./start-socks` to use the default
 `~/yume/build/bin/yume`, or `./export-yss [output.yss]` to create an encrypted `.yss`
-containing both required YUME 2.0 secrets. The export format is preparatory only:
-the separate Android client remains on the incompatible `0.2.0-dev1` wire and is
-not a supported `0.2.0-dev6` consumer. Share passwords must be at least 12
-characters, matching BaseFWX itself.
+containing both required YUME transport-v2 secrets. The separate Android client
+has earlier `0.2.0-dev6` import evidence but must be re-synchronized to the
+current native candidate; its connected VPN/routing and release path is also
+not qualified. Share passwords must be at least 12 characters, matching
+BaseFWX itself.
 
 ## Create local test material
 

@@ -7,12 +7,16 @@
 #include "yume/yume.h"
 
 #include "abi/service_open_wait.hpp"
+#include "abi/service_open_transaction.hpp"
 #include "abi/service_status.hpp"
 #include "client/packet/channel.hpp"
+#include "client/relay/secret.hpp"
 #include "client/transport/tunnel.hpp"
 #include "core/runtime/service_stream.hpp"
 #include "core/runtime/operation_status.hpp"
+#include "core/security/crypto.hpp"
 #include "core/security/inner_crypto.hpp"
+#include "core/security/secure_erase.hpp"
 #include "core/version.hpp"
 #include "facade/config/config_io.hpp"
 #include "facade/session/inproc_client.hpp"
@@ -21,6 +25,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -31,6 +36,8 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -39,6 +46,62 @@
 #include <nlohmann/json.hpp>
 
 namespace {
+
+constexpr std::size_t kRequestReplayKeyBytes = 32;
+constexpr std::size_t kMaxRequestOperationBytes = 128;
+constexpr std::size_t kMaxRequestArgsJsonBytes = 1024U * 1024U;
+constexpr std::string_view kRequestReplayDomain =
+    "yume-abi-request-replay-v1";
+
+using RequestReplayKey = yume::crypto::Bytes;
+
+class RequestReplayKeyWiper {
+public:
+    explicit RequestReplayKeyWiper(RequestReplayKey& key) noexcept
+        : key_(key) {}
+    RequestReplayKeyWiper(const RequestReplayKeyWiper&) = delete;
+    RequestReplayKeyWiper& operator=(const RequestReplayKeyWiper&) = delete;
+    ~RequestReplayKeyWiper() { yume::security::secure_erase(key_); }
+
+private:
+    RequestReplayKey& key_;
+};
+
+// A request sizing call has already executed the operation. Retaining exactly
+// one serialized response lets its immediate retry deliver that result without
+// repeating a mutation. The request itself is represented only by a fixed-size
+// digest; no plaintext argument JSON is retained here.
+struct RequestReplayCache {
+    std::mutex mutex;
+    RequestReplayKey key;
+    std::string response;
+    bool valid{false};
+
+    RequestReplayCache() = default;
+    RequestReplayCache(const RequestReplayCache&) = delete;
+    RequestReplayCache& operator=(const RequestReplayCache&) = delete;
+
+    ~RequestReplayCache() { clear(); }
+
+    bool matches(const RequestReplayKey& candidate) const noexcept {
+        return valid && key.size() == kRequestReplayKeyBytes &&
+               candidate.size() == kRequestReplayKeyBytes && key == candidate;
+    }
+
+    void clear() noexcept {
+        valid = false;
+        yume::security::secure_erase(key);
+        yume::client::wipe_relay_secret(response);
+    }
+
+    void replace(RequestReplayKey& candidate,
+                 std::string& completed_response) noexcept {
+        clear();
+        key.swap(candidate);
+        response.swap(completed_response);
+        valid = true;
+    }
+};
 
 struct HandleBase {
     mutable std::mutex error_mu;
@@ -100,6 +163,183 @@ int clear_error(HandleBase* handle) noexcept {
 
 static_assert(noexcept(set_error(nullptr, 0, std::string_view{})));
 static_assert(noexcept(clear_error(nullptr)));
+
+bool bounded_c_string_length(const char* value,
+                             std::size_t maximum,
+                             std::size_t* length) noexcept {
+    if (!value || !length) return false;
+    for (std::size_t index = 0;; ++index) {
+        if (value[index] == '\0') {
+            *length = index;
+            return true;
+        }
+        // Index maximum is the terminator slot for a maximum-length payload.
+        // Stop after inspecting it so even a future SIZE_MAX bound cannot
+        // wrap index.
+        if (index == maximum) return false;
+    }
+}
+
+int parse_request_operation(HandleBase* handle,
+                            const char* operation,
+                            std::string* parsed) noexcept {
+    if (!operation || !parsed) {
+        return set_error(handle, YUME_STATUS_INVALID_ARGUMENT,
+                         "request operation is null");
+    }
+    std::size_t length = 0;
+    if (!bounded_c_string_length(
+            operation, kMaxRequestOperationBytes, &length)) {
+        return set_error(handle, YUME_STATUS_RESOURCE_EXHAUSTED,
+                         "request operation exceeds 128 bytes");
+    }
+    if (length == 0U) {
+        return set_error(handle, YUME_STATUS_INVALID_ARGUMENT,
+                         "request operation is empty");
+    }
+    try {
+        parsed->assign(operation, length);
+        return YUME_STATUS_OK;
+    } catch (const std::bad_alloc&) {
+        return set_error(handle, YUME_STATUS_RESOURCE_EXHAUSTED,
+                         "request operation allocation failed");
+    } catch (const std::exception& ex) {
+        return set_error(handle, YUME_STATUS_INTERNAL_ERROR, ex.what());
+    } catch (...) {
+        return set_error(handle, YUME_STATUS_INTERNAL_ERROR,
+                         "unknown request operation error");
+    }
+}
+
+int parse_request_args(HandleBase* handle,
+                       const char* args_json,
+                       nlohmann::json* args) noexcept {
+    if (!args) {
+        return set_error(handle, YUME_STATUS_INTERNAL_ERROR,
+                         "request argument output is unavailable");
+    }
+    try {
+        *args = nlohmann::json::object();
+        if (args_json) {
+            std::size_t length = 0;
+            if (!bounded_c_string_length(
+                    args_json, kMaxRequestArgsJsonBytes, &length)) {
+                return set_error(
+                    handle, YUME_STATUS_RESOURCE_EXHAUSTED,
+                    "args_json exceeds the 1 MiB request limit");
+            }
+            if (length != 0U) {
+                *args = nlohmann::json::parse(
+                    args_json, args_json + length);
+            }
+        }
+        if (!args->is_object()) {
+            return set_error(handle, YUME_STATUS_INVALID_ARGUMENT,
+                             "args_json must encode a JSON object");
+        }
+        return YUME_STATUS_OK;
+    } catch (const nlohmann::json::parse_error& ex) {
+        return set_error(handle, YUME_STATUS_PARSE_ERROR, ex.what());
+    } catch (const nlohmann::json::out_of_range& ex) {
+        // A syntactically valid numeric token that cannot be represented by
+        // nlohmann::json is still caller-controlled JSON parse input, not an
+        // internal runtime failure.
+        return set_error(handle, YUME_STATUS_PARSE_ERROR, ex.what());
+    } catch (const std::bad_alloc&) {
+        return set_error(handle, YUME_STATUS_RESOURCE_EXHAUSTED,
+                         "request argument allocation failed");
+    } catch (const std::exception& ex) {
+        return set_error(handle, YUME_STATUS_INTERNAL_ERROR, ex.what());
+    } catch (...) {
+        return set_error(handle, YUME_STATUS_INTERNAL_ERROR,
+                         "unknown request argument error");
+    }
+}
+
+void update_request_replay_digest(yume::crypto::Sha256Stream& digest,
+                                  std::string_view field) {
+    static_assert(sizeof(std::size_t) <= sizeof(std::uint64_t));
+    std::array<std::uint8_t, sizeof(std::uint64_t)> encoded_size{};
+    std::uint64_t size = static_cast<std::uint64_t>(field.size());
+    for (std::size_t i = 0; i < encoded_size.size(); ++i) {
+        encoded_size[encoded_size.size() - i - 1] =
+            static_cast<std::uint8_t>(size & 0xffU);
+        size >>= 8U;
+    }
+    digest.Update(encoded_size);
+    if (!field.empty()) {
+        digest.Update(std::span<const std::uint8_t>(
+            reinterpret_cast<const std::uint8_t*>(field.data()),
+            field.size()));
+    }
+}
+
+RequestReplayKey make_request_replay_key(std::string_view op,
+                                         const nlohmann::json& args) {
+    std::string canonical_args = args.dump();
+    yume::client::RelaySecretWiper canonical_args_wiper(canonical_args);
+
+    yume::crypto::Sha256Stream digest;
+    update_request_replay_digest(digest, kRequestReplayDomain);
+    update_request_replay_digest(digest, op);
+    update_request_replay_digest(digest, canonical_args);
+    auto key = digest.Finish();
+    if (key.size() != kRequestReplayKeyBytes) {
+        yume::security::secure_erase(key);
+        throw std::runtime_error("unexpected request replay digest size");
+    }
+    return key;
+}
+
+std::size_t request_response_size(const std::string& response) {
+    if (response.size() == std::numeric_limits<std::size_t>::max()) {
+        throw std::length_error("request response is too large");
+    }
+    return response.size() + 1;
+}
+
+int copy_cached_request_response(HandleBase* handle,
+                                 RequestReplayCache* cache,
+                                 char* out,
+                                 std::size_t out_size,
+                                 std::size_t* needed) {
+    const std::size_t required = request_response_size(cache->response);
+    if (needed) {
+        *needed = required;
+    }
+    if (!out || out_size < required) {
+        return set_error(handle,
+                         YUME_STATUS_BUFFER_TOO_SMALL,
+                         "output buffer is too small");
+    }
+    std::memcpy(out, cache->response.c_str(), required);
+    cache->clear();
+    return clear_error(handle);
+}
+
+int write_completed_request_response(HandleBase* handle,
+                                     RequestReplayCache* cache,
+                                     RequestReplayKey* key,
+                                     const nlohmann::json& response,
+                                     char* out,
+                                     std::size_t out_size,
+                                     std::size_t* needed) {
+    std::string text = response.dump();
+    yume::client::RelaySecretWiper text_wiper(text);
+    const std::size_t required = request_response_size(text);
+    if (needed) {
+        *needed = required;
+    }
+    if (!out || out_size < required) {
+        cache->replace(*key, text);
+        return set_error(handle,
+                         YUME_STATUS_BUFFER_TOO_SMALL,
+                         "output buffer is too small");
+    }
+    std::memcpy(out, text.c_str(), required);
+    cache->clear();
+    return clear_error(handle);
+}
 
 template <typename T>
 void write_complete_abi_field(void* out,
@@ -262,6 +502,7 @@ std::string validation_error(yume::facade::config_io::ValidationReport const& re
 
 struct yume_client {
     HandleBase base{};
+    RequestReplayCache request_replay{};
     std::mutex mu;
     yume::facade::InProcClient runtime;
     yume_socket_protect_fn socket_protect{nullptr};
@@ -301,10 +542,78 @@ private:
     std::shared_ptr<std::atomic<bool>> cancel_requested_;
 };
 
+struct ClientServiceOpenRollbackContext {
+    yume::client::Tunnel* tunnel{nullptr};
+    std::shared_ptr<yume::runtime::ServiceStream>* stream{nullptr};
+    std::uint8_t stream_id{0};
+};
+
+void rollback_client_service_open(
+        void* opaque,
+        yume::abi::detail::ServiceOpenTransaction::Phase phase) noexcept {
+    using Phase = yume::abi::detail::ServiceOpenTransaction::Phase;
+    auto* context = static_cast<ClientServiceOpenRollbackContext*>(opaque);
+    if (!context || !context->tunnel || context->stream_id == 0) {
+        return;
+    }
+
+    // A ServiceStream destructor normally invokes its transport close
+    // callback. Disconnect it first so this transaction remains the only
+    // owner of rollback and cannot send a second CLOSE during stack unwind.
+    if (context->stream && *context->stream) {
+        try {
+            (*context->stream)->set_callbacks({}, {}, {});
+            (*context->stream)->receive_close("stream OPEN rolled back");
+        } catch (...) {
+            // Transport ownership below is the essential cleanup. A failure
+            // to update the already-unpublished local object must not skip it.
+        }
+    }
+
+    const auto action =
+        yume::abi::detail::ServiceOpenTransaction::ActionFor(phase);
+    using RollbackAction =
+        yume::abi::detail::ServiceOpenTransaction::RollbackAction;
+    if (action == RollbackAction::release_reservation) {
+        try {
+            context->tunnel->release_reserved_stream(context->stream_id);
+        } catch (...) {
+        }
+        return;
+    }
+    if (action == RollbackAction::unregister) {
+        try {
+            context->tunnel->unregister_stream(context->stream_id);
+        } catch (...) {
+        }
+        return;
+    }
+    if (action == RollbackAction::none) {
+        return;
+    }
+
+    // Once OPEN construction starts, conservatively assume it may have been
+    // queued. Retire the id even if sending CLOSE fails so a late ACK or DATA
+    // frame can never alias a later stream on this transport.
+    try {
+        context->tunnel->send_close(
+            context->stream_id,
+            phase == Phase::accepted
+                ? "stream handle publication failed"
+                : "stream open aborted");
+    } catch (...) {
+    }
+    try {
+        context->tunnel->retire_stream_id(context->stream_id);
+    } catch (...) {
+    }
+}
+
 }  // namespace
 
 struct yume_server {
     HandleBase base{};
+    RequestReplayCache request_replay{};
     std::mutex mu;
 #if !defined(YUME_ABI_CLIENT_ONLY) || !YUME_ABI_CLIENT_ONLY
     yume::server::RuntimeController runtime;
@@ -740,31 +1049,47 @@ int yume_client_request_json(yume_client* client,
                              size_t out_size,
                              size_t* needed,
                              uint32_t timeout_ms) {
-    if (!client || !op || !*op) {
+    if (!client || !op) {
         return YUME_STATUS_INVALID_ARGUMENT;
     }
     try {
-        nlohmann::json args = nlohmann::json::object();
-        if (args_json && *args_json) {
-            try {
-                args = nlohmann::json::parse(args_json);
-            } catch (std::exception const& ex) {
-                return set_error(&client->base,
-                                 YUME_STATUS_PARSE_ERROR,
-                                 ex.what());
-            }
+        std::lock_guard<std::mutex> request_lock(
+            client->request_replay.mutex);
+        std::string operation;
+        const int operation_parse_status =
+            parse_request_operation(&client->base, op, &operation);
+        if (operation_parse_status != YUME_STATUS_OK) {
+            return operation_parse_status;
         }
+        nlohmann::json args;
+        const int args_status =
+            parse_request_args(&client->base, args_json, &args);
+        if (args_status != YUME_STATUS_OK) {
+            return args_status;
+        }
+        yume::client::RelayRequestSecretsWiper args_wiper(args);
+        auto request_key = make_request_replay_key(operation, args);
+        RequestReplayKeyWiper request_key_wiper(request_key);
+        if (client->request_replay.matches(request_key)) {
+            return copy_cached_request_response(
+                &client->base, &client->request_replay,
+                out, out_size, needed);
+        }
+        client->request_replay.clear();
 
         std::string error;
         yume::runtime::OperationStatus operation_status{};
         auto response = client->runtime.request(
-            op, args, &error, timeout_as_int(timeout_ms), &operation_status);
+            operation, args, &error, timeout_as_int(timeout_ms),
+            &operation_status);
         if (operation_status != yume::runtime::OperationStatus::Success) {
             return set_error(&client->base,
                              status_from_operation_status(operation_status),
                              error.empty() ? "client request failed" : error);
         }
-        return write_json_buffer(&client->base, response, out, out_size, needed);
+        return write_completed_request_response(
+            &client->base, &client->request_replay, &request_key,
+            response, out, out_size, needed);
     } catch (std::exception const& ex) {
         return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
     } catch (...) {
@@ -807,14 +1132,20 @@ int yume_client_open_stream(yume_client* client,
                              "client tunnel is not running");
         }
 
+        std::shared_ptr<yume::runtime::ServiceStream> stream;
+        ClientServiceOpenRollbackContext rollback_context{
+            tunnel.get(), &stream, 0};
         const uint8_t stream_id = tunnel->reserve_stream_id();
         if (stream_id == 0) {
             return set_error(&client->base,
                              YUME_STATUS_RESOURCE_EXHAUSTED,
                              "no stream ids available");
         }
+        rollback_context.stream_id = stream_id;
+        yume::abi::detail::ServiceOpenTransaction open_transaction(
+            &rollback_context, rollback_client_service_open);
 
-        auto stream = std::make_shared<yume::runtime::ServiceStream>(
+        stream = std::make_shared<yume::runtime::ServiceStream>(
             service_name,
             "server");
         auto open_wait = std::make_shared<yume::abi::detail::ServiceOpenWait>();
@@ -890,7 +1221,7 @@ int yume_client_open_stream(yume_client* client,
                 }
             });
 
-        tunnel->register_stream(
+        const bool registered = tunnel->register_stream(
             stream_id,
             [stream, weak_tunnel, lifetime_gate, stream_id](
                 const yume::client::Tunnel::Bytes& data,
@@ -933,7 +1264,19 @@ int yume_client_open_stream(yume_client* client,
             [stream](const std::string& reason) {
                 stream->receive_fin(reason);
             });
+        if (!registered) {
+            if (!tunnel->is_alive()) {
+                return set_error(&client->base,
+                                 YUME_STATUS_NOT_RUNNING,
+                                 "client tunnel stopped while registering stream");
+            }
+            return set_error(&client->base,
+                             YUME_STATUS_INTERNAL_ERROR,
+                             "reserved stream registration failed");
+        }
+        open_transaction.MarkRegistered();
 
+        open_transaction.MarkOpenStarted();
         tunnel->open_relay_stream(
             stream_id,
             nlohmann::json{{"proto", "service.v1"}, {"service", service_name}},
@@ -947,38 +1290,33 @@ int yume_client_open_stream(yume_client* client,
             yume::abi::detail::ServiceOpenWait::Outcome::accepted) {
             using Outcome = yume::abi::detail::ServiceOpenWait::Outcome;
             if (open_result.outcome == Outcome::timed_out) {
-                // OPEN was already admitted to the ordered transport. Send a
-                // matching CLOSE before removing local state, and never reuse
-                // this id on the connection: a late OPEN_ACK or DATA frame
-                // otherwise could be mistaken for a subsequent stream.
-                tunnel->send_close(stream_id, "stream open timed out");
-                tunnel->retire_stream_id(stream_id);
-                stream->set_callbacks({}, {}, {});
-                stream->receive_close("stream open timed out");
                 return set_error(&client->base,
                                  YUME_STATUS_TIMEOUT,
                                  "stream open timed out");
             }
-            tunnel->unregister_stream(stream_id);
-            stream->set_callbacks({}, {}, {});
+            open_transaction.MarkRejected();
             if (open_result.outcome == Outcome::cancelled) {
                 const std::string reason = open_result.reason.empty()
                     ? "client tunnel closed while opening stream"
                     : open_result.reason;
-                stream->receive_close(reason);
                 return set_error(&client->base, YUME_STATUS_NOT_RUNNING, reason);
             }
 
             const std::string reason = open_result.reason.empty()
                 ? "stream open rejected"
                 : open_result.reason;
-            stream->receive_close(reason);
             return set_error(&client->base,
                              YUME_STATUS_PERMISSION_DENIED,
                              reason);
         }
 
-        *out_stream = new yume_stream(std::move(stream));
+        open_transaction.MarkAccepted();
+        // Keep `stream` populated until Publish(): rollback_context points to
+        // it so an allocation failure here can detach the unpublished stream
+        // before the transport is closed and retired.
+        auto published_stream = std::make_unique<yume_stream>(stream);
+        *out_stream = published_stream.release();
+        open_transaction.Publish();
         return clear_error(&client->base);
     } catch (std::bad_alloc const&) {
         return set_error(&client->base, YUME_STATUS_INTERNAL_ERROR, "out of memory");
@@ -1338,6 +1676,59 @@ int yume_server_status_json(yume_server* server,
     }
 }
 
+int yume_server_request_json(yume_server* server,
+                             const char* op,
+                             const char* args_json,
+                             char* out,
+                             size_t out_size,
+                             size_t* needed) {
+    if (!server || !op) {
+        return YUME_STATUS_INVALID_ARGUMENT;
+    }
+    try {
+        std::lock_guard<std::mutex> request_lock(
+            server->request_replay.mutex);
+        std::string operation;
+        const int operation_parse_status =
+            parse_request_operation(&server->base, op, &operation);
+        if (operation_parse_status != YUME_STATUS_OK) {
+            return operation_parse_status;
+        }
+        nlohmann::json args;
+        const int args_status =
+            parse_request_args(&server->base, args_json, &args);
+        if (args_status != YUME_STATUS_OK) {
+            return args_status;
+        }
+        yume::client::RelayRequestSecretsWiper args_wiper(args);
+        auto request_key = make_request_replay_key(operation, args);
+        RequestReplayKeyWiper request_key_wiper(request_key);
+        if (server->request_replay.matches(request_key)) {
+            return copy_cached_request_response(
+                &server->base, &server->request_replay,
+                out, out_size, needed);
+        }
+        server->request_replay.clear();
+
+        std::string error;
+        yume::runtime::OperationStatus operation_status{};
+        auto response = server->runtime.request(
+            operation, args, &error, &operation_status);
+        if (operation_status != yume::runtime::OperationStatus::Success) {
+            return set_error(&server->base,
+                             status_from_operation_status(operation_status),
+                             error.empty() ? "server request failed" : error);
+        }
+        return write_completed_request_response(
+            &server->base, &server->request_replay, &request_key,
+            response, out, out_size, needed);
+    } catch (std::exception const& ex) {
+        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
+    } catch (...) {
+        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, "unknown error");
+    }
+}
+
 int yume_server_sessions_json(yume_server* server,
                               char* out,
                               size_t out_size,
@@ -1464,6 +1855,36 @@ int yume_server_sessions_json(yume_server* server, char*, size_t, size_t*) {
     if (!server) return YUME_STATUS_INVALID_ARGUMENT;
     return set_error(&server->base, YUME_STATUS_NOT_RUNNING,
                      "server runtime is not included in this client-only build");
+}
+
+int yume_server_request_json(yume_server* server, const char* op,
+                             const char* args_json,
+                             char*, size_t, size_t*) {
+    if (!server || !op) return YUME_STATUS_INVALID_ARGUMENT;
+    try {
+        std::lock_guard<std::mutex> request_lock(
+            server->request_replay.mutex);
+        std::string operation;
+        const int operation_parse_status =
+            parse_request_operation(&server->base, op, &operation);
+        if (operation_parse_status != YUME_STATUS_OK) {
+            return operation_parse_status;
+        }
+        nlohmann::json args;
+        const int args_status =
+            parse_request_args(&server->base, args_json, &args);
+        if (args_status != YUME_STATUS_OK) return args_status;
+        yume::client::RelayRequestSecretsWiper args_wiper(args);
+        server->request_replay.clear();
+        return set_error(
+            &server->base, YUME_STATUS_NOT_RUNNING,
+            "server runtime is not included in this client-only build");
+    } catch (std::exception const& ex) {
+        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR, ex.what());
+    } catch (...) {
+        return set_error(&server->base, YUME_STATUS_INTERNAL_ERROR,
+                         "unknown error");
+    }
 }
 
 int yume_server_register_service(yume_server* server, const char* service) {

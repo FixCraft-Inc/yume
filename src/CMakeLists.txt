@@ -585,6 +585,8 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         server/runtime/local_runtime.cpp
         server/federation/link.cpp
         server/federation/manager.cpp
+        server/federation/topology.cpp
+        server/federation/topology_render.cpp
         server/filter/ip_filter.cpp
         server/filter/ip_filter_mmdb.cpp
         server/host/host_types.cpp
@@ -640,6 +642,7 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
     add_executable(yumed
         main_server.cpp
         server/cli/anonym.cpp
+        server/cli/curl_json_transport.cpp
         server/cli/args.cpp
         server/cli/cluster.cpp
         server/cli/config_load.cpp
@@ -664,6 +667,20 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
             WINVER=0x0600
             _WIN32_WINNT=0x0600
         )
+    endif()
+
+    if(YUME_BUILD_TESTING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(yume_anonym_curl_transport_test
+            server/cli/curl_json_transport.cpp
+            server/cli/curl_json_transport_test.cpp)
+        target_include_directories(yume_anonym_curl_transport_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR})
+        target_link_libraries(yume_anonym_curl_transport_test PRIVATE yume_core)
+        target_compile_definitions(yume_anonym_curl_transport_test PRIVATE
+            YUME_CURL_TRANSPORT_TESTING=1)
+        yume_apply_warnings(yume_anonym_curl_transport_test)
+        add_test(NAME yume_anonym_curl_transport_test
+            COMMAND yume_anonym_curl_transport_test)
     endif()
 
     # ------------------------------------------------------------------
@@ -1407,7 +1424,40 @@ yume_apply_perf_opts(yume_admin_relationships_test)
 add_test(NAME yume_admin_relationships_test
     COMMAND yume_admin_relationships_test)
 
+add_executable(yume_runtime_session_selector_test
+    server/runtime/session_selector_test.cpp)
+target_include_directories(yume_runtime_session_selector_test
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+yume_apply_perf_opts(yume_runtime_session_selector_test)
+add_test(NAME yume_runtime_session_selector_test
+    COMMAND yume_runtime_session_selector_test)
+
+# The topology/status builders are deliberately pure functions over snapshot
+# vectors, so the reporting contract -- redaction, peer merging, and the
+# single-hop route claim -- is provable without launching a cluster.
+add_executable(yume_federation_topology_test
+    server/federation/topology_test.cpp
+    server/federation/topology.cpp
+    server/federation/topology_render.cpp
+    core/protocol/control_protocol.cpp
+)
+target_include_directories(yume_federation_topology_test
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+yume_link_atomic_if_needed(yume_federation_topology_test PRIVATE)
+yume_apply_perf_opts(yume_federation_topology_test)
+add_test(NAME yume_federation_topology_test
+    COMMAND yume_federation_topology_test)
+
 if(TARGET yume_server)
+    add_executable(yume_server_local_runtime_test
+        server/runtime/local_runtime_test.cpp)
+    target_link_libraries(yume_server_local_runtime_test
+        PRIVATE yume_server Threads::Threads)
+    yume_link_atomic_if_needed(yume_server_local_runtime_test PRIVATE)
+    yume_apply_perf_opts(yume_server_local_runtime_test)
+    add_test(NAME yume_server_local_runtime_test
+        COMMAND yume_server_local_runtime_test)
+
     add_executable(yume_server_control_survival_test
         server/session/control_survival_test.cpp)
     target_link_libraries(yume_server_control_survival_test
@@ -1705,6 +1755,16 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
         )
         set_tests_properties(yume_federation_v2_integration_test PROPERTIES
             TIMEOUT 90)
+        # Three nodes in a line. Proves multi-peer link fan-out and pins the
+        # single-hop boundary: the far end must stay invisible and unroutable.
+        add_test(NAME yume_federation_cluster_integration_test
+            COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_SOURCE_DIR}/tests/test_yume_federation_cluster.py"
+                --yume "$<TARGET_FILE:yume>"
+                --yumed "$<TARGET_FILE:yumed>"
+        )
+        set_tests_properties(yume_federation_cluster_integration_test PROPERTIES
+            TIMEOUT 180)
     endif()
     add_test(NAME yume_h2_fingerprint_check
         COMMAND "${Python3_EXECUTABLE}"
@@ -1805,6 +1865,14 @@ if(NOT YUME_TRANSPORT_CORE_ONLY)
 endif()
 
 if(YUME_BUILD_SHARED_ABI AND TARGET yume_abi)
+    add_executable(yume_abi_stream_open_transaction_test
+        abi/service_open_transaction_test.cpp)
+    target_include_directories(yume_abi_stream_open_transaction_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR})
+    yume_apply_warnings(yume_abi_stream_open_transaction_test)
+    add_test(NAME yume_abi_stream_open_transaction_test
+        COMMAND yume_abi_stream_open_transaction_test)
+
     add_executable(yume_abi_test abi/yume_c_test.cpp)
     target_include_directories(yume_abi_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR})

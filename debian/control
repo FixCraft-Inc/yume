@@ -95,7 +95,8 @@ Description: stealth transport server daemon
  This package contains the yumed server daemon, a disabled-by-default
  systemd service, a locked service user, and the default /etc/yume
  configuration directory. It does not start listening on install; operators
- must provide TLS material and authorized client keys first.
+ must provide TLS material, authorized client keys, two protected 32-byte
+ secret files, and a healthy loopback HTTP cover backend first.
 
 Package: yume-gui
 Architecture: any

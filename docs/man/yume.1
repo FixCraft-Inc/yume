@@ -482,6 +482,19 @@ Attach to a controlled client.
 .TP
 .B --attach-local
 Attach to a local running YUME instance.
+.TP
+.BI "--packet-tun " ifname
+Attach packet-bulk mode to an operator-created Linux TUN interface. YUME does
+not create routes, NAT rules, or the interface, and this exclusive data-plane
+mode cannot be combined with SOCKS, forwards, relay, benchmark, or control
+modes.
+.TP
+.B --quick-bench
+Run the bounded local device benchmark smoke profile.
+.TP
+.B --full-bench
+Run the extended local device benchmark profile. These local profiles are not
+WAN, stealth, classifier, or release-qualification evidence.
 .SH CONNECTION OPTIONS
 .TP
 .BI "--server " host
@@ -490,6 +503,14 @@ Server hostname or IP address.
 .BI "--port " port
 Server port. If omitted, the client uses the configured/default server
 port.
+.TP
+.BI "--cluster " host[:port]
+Cluster entry-point short form for
+.B --server
+and
+.BR --port .
+Bracket IPv6 literals as
+.BR [2001:db8::1]:443 .
 .TP
 .BI "-i, --auth " path
 Composite Ed25519 + ML-DSA-87 identity used to authenticate this client to the
@@ -581,32 +602,52 @@ Select the authenticated dev6 transport identity. The only accepted value is
 .TP
 .BI "--tls-backend " name
 Select
+.B openssl-chrome151
+for the default in-process, patched-OpenSSL emitter,
 .B chrome151
-for the packaged Linux helper or
+for the optional packaged Linux helper, or
 .B openssl-diagnostic
 for the explicit non-Chrome-parity diagnostic path. There is no silent
 fallback.
 .TP
 .BI "--tls-helper " path
-Use an explicit absolute helper path. The launcher requires a regular
+Use an explicit absolute helper path when
+.B --tls-backend chrome151
+is selected. Other backends reject this option. The launcher requires a regular
 executable owned by root or the current user and rejects group/world-writable
 files.
+.TP
+.BI "--tls-name " host
+Set the TLS SNI, certificate-verification name, and HTTP Host identity
+independently from the dial address. This is required when connecting by IP to
+a certificate issued for a DNS name.
 .TP
 .B "--hide-in-the-crowd chrome"
 Explicit spelling for the same pinned Chrome 151 HTTP User-Agent profile.
 Other HTTP profiles are rejected for 0.2.0-dev6.
 .TP
 .B --tls-fingerprint-log
-Log TLS fingerprint metrics.
+Log TLS fingerprint metrics for the explicit
+.B openssl-diagnostic
+backend. Other backends reject this diagnostic-only option.
 .TP
 .BI "--tls-fingerprint-log-path " path
 Path for TLS fingerprint log output.
 .TP
 .B --tls-fingerprint-verify
-Verify fingerprints against a test endpoint.
+Verify fingerprints against a test endpoint for the explicit
+.B openssl-diagnostic
+backend. Chrome backends use the emitted-byte wire gates instead.
 .TP
 .BI "--tls-fingerprint-test-endpoint " host
 Host used for fingerprint verification tests.
+.TP
+.BI "--outer-carrier-evidence " absolute-path
+Write the exact-policy one-flow outer-carrier evidence bundle. This option is
+admitted only for the documented pinned Chrome 151 H2 benchmark geometry and
+does not by itself prove browser parity, classifier resistance, or release
+qualification. See
+.BR TRANSPORT_PROFILES.md .
 .SH RELAY OPTIONS
 .TP
 .BI "--name " slug
@@ -697,10 +738,28 @@ Service-safe launch separator.
 When a session stays attached, the console accepts commands such as:
 .PP
 .nf
-    help, status, directory, invites, chat, send, send-file, send-bytes,
-    accept, reject, history, history-delete, admin attach, admin status,
-    admin sessions, admin stop, whoami, quit
+    help, status, directory, contacts, forget, invites, chat, send,
+    send-file, send-bytes, accept, reject, history, history-delete,
+    admin attach, admin status, admin sessions, admin stop, whoami, quit
 .fi
+.PP
+.B contacts
+lists every peer whose relay identity this client trusts, merged with the
+current directory so each row shows presence as well as where its trust came
+from
+.RB ( tofu ,
+.BR explicit ,
+or
+.BR configured ).
+Trust is durable local state and the directory is a live overlay, so contacts
+still list when the server is unreachable; presence then reads
+.BR unknown .
+.PP
+.BI "forget " endpoint-id
+removes a trust-on-first-use pin. It refuses a fingerprint named by the
+configuration or one carrying a durable explicit marker: those record an
+out-of-band authorization decision, which is reversed by changing the
+configuration rather than from the console.
 .SH EXAMPLES
 .TP
 Start a local SOCKS5 proxy:

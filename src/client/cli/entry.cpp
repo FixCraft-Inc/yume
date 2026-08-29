@@ -244,8 +244,8 @@ std::optional<int> handle_informational_modes(const ParsedArgs& args,
 }
 
 // Transport profile and TLS backend admission. YUME 2.0 accepts exactly one
-// transport profile and two backends; there is deliberately no silent stealth
-// fallback between them.
+// transport profile and three explicit backends; there is deliberately no
+// silent stealth fallback between them.
 std::optional<int> validate_transport_and_tls(const ClientConfig& cfg,
                                               const std::string& helper_tls_backend) {
     if (cfg.transport_profile != yume::kTransportProfile) {
@@ -255,10 +255,25 @@ std::optional<int> validate_transport_and_tls(const ClientConfig& cfg,
         return 1;
     }
     if (cfg.tls_backend != helper_tls_backend &&
-        cfg.tls_backend != "openssl-diagnostic") {
+        cfg.tls_backend != "openssl-diagnostic" &&
+        cfg.tls_backend != "openssl-chrome151") {
         util::log_error(
             "tls_backend must be " + helper_tls_backend +
-            " or openssl-diagnostic");
+            ", openssl-chrome151, or openssl-diagnostic");
+        return 1;
+    }
+    if (cfg.tls_backend != helper_tls_backend &&
+        !cfg.tls_helper_path.empty()) {
+        util::log_error(
+            "--tls-helper is valid only with tls_backend " + helper_tls_backend);
+        return 1;
+    }
+    if (cfg.tls_backend != "openssl-diagnostic" &&
+        (cfg.tls_fingerprint_verify || cfg.tls_fingerprint_log)) {
+        util::log_error(
+            "--tls-fingerprint-verify and --tls-fingerprint-log are available "
+            "only with tls_backend openssl-diagnostic; use the emitted-byte "
+            "TLS wire gate for Chrome backend evidence");
         return 1;
     }
     try {
@@ -274,8 +289,8 @@ std::optional<int> validate_transport_and_tls(const ClientConfig& cfg,
 #elif !YUME_HAS_CHROME_TLS_HELPER
         util::log_error(
             "this build does not include the Chrome 151 TLS helper; rebuild with "
-            "-DYUME_BUILD_CHROME_TLS_HELPER=ON or explicitly select "
-            "tls_backend openssl-diagnostic");
+            "-DYUME_BUILD_CHROME_TLS_HELPER=ON, or select the in-process "
+            "openssl-chrome151 backend or explicit openssl-diagnostic control");
         return 1;
 #endif
         if (cfg.tunnel_count != 1) {
@@ -283,19 +298,7 @@ std::optional<int> validate_transport_and_tls(const ClientConfig& cfg,
                 "tls_backend chrome151 currently supports exactly one outer tunnel");
             return 1;
         }
-        if (cfg.tls_fingerprint_verify) {
-            util::log_error(
-                "--tls-fingerprint-verify uses an unrelated OpenSSL probe and "
-                "cannot verify the Chrome helper; use scripts/yume_tls_wire.py "
-                "against the helper's emitted ClientHello");
-            return 1;
-        }
-        if (cfg.tls_fingerprint_log) {
-            util::log_warn(
-                "legacy TLS fingerprint logging cannot observe the Chrome "
-                "helper and will be skipped");
-        }
-    } else {
+    } else if (cfg.tls_backend == "openssl-diagnostic") {
         util::log_warn(
             "TLS backend openssl-diagnostic is not Chrome ClientHello parity; "
             "there is no silent stealth fallback");
@@ -731,7 +734,7 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
             .tunnel_count = cfg.tunnel_count,
             .transport_profile = cfg.transport_profile,
             .tls_backend = cfg.tls_backend,
-            .required_tls_backend = helper_tls_backend,
+            .required_tls_backend = "openssl-chrome151",
             .obfuscation = cfg.obfuscation,
             .non_interactive = cfg.non_interactive,
             .conflicting_mode = conflicting_endpoint_mode,
@@ -915,6 +918,8 @@ int Cli::run_parsed(ParsedArgs args, std::string executable_arg) {
 
                 tls_stealth::StealthConfig stealth_config;
                 stealth_config.enabled = true;
+                stealth_config.native_chrome_client_hello =
+                    cfg.tls_backend == "openssl-chrome151";
                 stealth_config.target_profile = profile;
                 stealth_config.log_fingerprints = cfg.tls_fingerprint_log;
                 stealth_config.log_file_path = cfg.tls_fingerprint_log_path;

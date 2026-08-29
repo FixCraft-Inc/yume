@@ -77,7 +77,9 @@ class CaptureManifestTest(unittest.TestCase):
             "display": ":99",
             "yume_binary_sha256": "",
             "yume_helper_sha256": "",
+            "tls_backend": "",
             "release_bundle_sha256": "",
+            "client_config_sha256": "",
             "tls_leaf_sha256": "",
             "tls_wire_evidence": 1,
         }
@@ -137,22 +139,36 @@ class CaptureManifestTest(unittest.TestCase):
         environment = build_environment(self.args(
             arm="yume",
             yume_binary_sha256=digest,
-            yume_helper_sha256=digest,
+            tls_backend="openssl-chrome151",
             release_bundle_sha256=digest,
+            client_config_sha256=digest,
             tls_leaf_sha256=digest,
         ))
         self.assertEqual(environment["yume_binary_sha256"], digest)
-        self.assertEqual(environment["yume_helper_sha256"], digest)
+        self.assertEqual(environment["tls_backend"], "openssl-chrome151")
+        self.assertNotIn("yume_helper_sha256", environment)
         self.assertEqual(environment["release_bundle_sha256"], digest)
+        self.assertEqual(environment["client_config_sha256"], digest)
         self.assertEqual(environment["tls_leaf_sha256"], digest)
         with self.assertRaisesRegex(ManifestError, "TLS leaf SHA-256"):
             build_environment(self.args(
                 arm="yume",
                 yume_binary_sha256=digest,
-                yume_helper_sha256=digest,
+                tls_backend="openssl-chrome151",
                 release_bundle_sha256=digest,
+                client_config_sha256=digest,
                 tls_leaf_sha256="BAD",
             ))
+        helper_environment = build_environment(self.args(
+            arm="yume",
+            yume_binary_sha256=digest,
+            yume_helper_sha256=digest,
+            tls_backend="chrome151",
+            release_bundle_sha256=digest,
+            client_config_sha256=digest,
+            tls_leaf_sha256=digest,
+        ))
+        self.assertEqual(helper_environment["yume_helper_sha256"], digest)
         with self.assertRaisesRegex(ManifestError, "normal arm"):
             build_environment(self.args(tls_leaf_sha256=digest))
 

@@ -53,7 +53,30 @@ struct H2CarrierStats {
     std::uint64_t websocket_encode_ns{0};
     std::uint64_t websocket_decode_bytes{0};
     std::uint64_t websocket_decode_ns{0};
+    std::uint64_t carrier_credit_consume_calls{0};
+    std::uint64_t carrier_credit_consume_bytes{0};
+    std::uint64_t max_received_unconsumed_carrier_bytes{0};
+    std::uint64_t max_unconsumed_tunnel_bytes{0};
+    std::uint64_t window_update_sent_connection_frames{0};
+    std::uint64_t window_update_sent_connection_increment_bytes{0};
+    std::uint64_t window_update_sent_carrier_frames{0};
+    std::uint64_t window_update_sent_carrier_increment_bytes{0};
+    std::uint64_t window_update_received_connection_frames{0};
+    std::uint64_t window_update_received_connection_increment_bytes{0};
+    std::uint64_t window_update_received_carrier_frames{0};
+    std::uint64_t window_update_received_carrier_increment_bytes{0};
+    std::uint64_t flow_window_samples{0};
+    std::int32_t min_local_connection_window{0};
+    std::int32_t min_local_carrier_window{0};
+    std::int32_t min_remote_connection_window{0};
+    std::int32_t min_remote_carrier_window{0};
+    std::int32_t max_effective_connection_received{0};
+    std::int32_t max_effective_carrier_received{0};
+    std::uint64_t remote_window_stall_count{0};
+    std::uint64_t remote_window_stall_ns{0};
 };
+
+std::string FormatH2CarrierStats(const H2CarrierStats& stats);
 #endif
 
 // A complete in-memory HTTP/2 endpoint around libnghttp2. Socket ownership and

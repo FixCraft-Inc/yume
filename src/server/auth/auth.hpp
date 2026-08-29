@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -16,6 +17,7 @@
 #include <openssl/evp.h>
 
 #include "core/security/crypto.hpp"
+#include "core/security/secret_file.hpp"
 
 namespace yume::server {
 
@@ -41,6 +43,10 @@ struct AuthKeyPolicy {
     std::optional<std::uint32_t> max_sessions;
     AuthKeyType key_type{AuthKeyType::Individual};
     std::string federation_peer_id;
+    // Loaded once with the authorization snapshot. Federation AUTH selects
+    // this identity-bound PSK after verifying the composite signature, so
+    // multiple peers never need to share the daemon's ordinary client PSK.
+    std::shared_ptr<const security::Secret32> federation_psk_material;
 
     bool empty() const;
     double effective_weight() const;
@@ -50,6 +56,14 @@ using AuthKeyPolicyMap = std::unordered_map<std::string, AuthKeyPolicy>;
 
 std::vector<crypto::Bytes> load_authorized_keys(const std::string& path);
 AuthKeyPolicyMap load_auth_policies(const std::string& meta_path);
+// Federation peer IDs are topology namespace identities, not display aliases.
+// One label must map to exactly one authenticated visitor key across every
+// visitor store loaded by a Manager.
+void validate_unique_federation_peer_ids(
+    const AuthKeyPolicyMap& policies);
+void validate_unique_federation_peer_ids(
+    const AuthKeyPolicyMap& regular,
+    const AuthKeyPolicyMap& operators);
 
 bool is_authorized(EVP_PKEY* pubkey, const std::vector<crypto::Bytes>& authorized);
 

@@ -272,8 +272,9 @@ commit five-plus-five campaign is still required.
 For the YUME arm, use the checked-in runner from a clean exact-commit checkout.
 It creates the owner-only output, runs five separate production connections
 through an unprivileged TCP relay that records TLS-wire structure, invokes the
-exact capture mode, seals per-run and top-level checksums, snapshots every
-runtime input, and writes `complete.json` only after all runs verify:
+exact capture mode, seals per-run and top-level checksums, snapshots its
+client-side runtime inputs, and writes `complete.json` only after all runs
+verify:
 
 ```bash
 tools/cover-node/capture_yume151_runs.sh \
@@ -283,24 +284,34 @@ tools/cover-node/capture_yume151_runs.sh \
   /private/session/yume-client.json \
   /private/session/server.crt \
   cover.example \
-  192.0.2.10:443 \
+  127.0.0.1:443 \
   /exact/chrome/google-chrome \
   /exact/chrome/chrome \
   /exact/node-v24.18.0/bin/node \
   5
 ```
 
-The target must terminate with the supplied certificate and the config must
-contain the campaign's external admission/inner credentials. The runner hashes
-the config but never copies it or any referenced secret. It separately records
+The target must be reachable from the loopback-only capture namespace (run the
+campaign `yumed` inside that namespace), terminate with the supplied
+certificate, and use the campaign's external admission/inner credentials. The
+runner records the config hash but never copies it or any referenced secret. It separately records
 the certificate PEM-file checksum and passes the X.509 DER leaf fingerprint as
-the helper pin. It fails closed unless the YUME binary, adjacent helper, exact
+the TLS pin. It fails closed unless the YUME binary, exact
 Chrome launcher/binary, exact Node binary, source commit/tree, certificate,
-runtime snapshot, and user-namespace capability remain unchanged. The supplied
-client and its adjacent helper must byte-match the validated prepared Linux
-bundle, whose manifest must name the clean capture source commit. The direct
+client-side runtime snapshot, and user-namespace capability remain unchanged. The supplied
+client must byte-match the validated prepared Linux bundle, whose manifest must
+name the clean capture source commit. The runner selects the in-process
+`openssl-chrome151` backend and never launches the helper. The current release
+bundle validator still expects the separately optional comparison-helper
+artifact to be present in the bundle. The direct
 CLI flag is intentionally incompatible with SOCKS/forwarding, packet-TUN,
 proxy, multi-tunnel, full-benchmark, padding, and jitter modes.
+
+This arm does not yet attest the target `yumed` binary, its configuration, or
+the production Node backend it launches. Seal those server-side identities in a
+separate campaign attestation before treating the pair as matched same-server
+classifier evidence; until then this artifact proves only the client-side arm.
+Each YUME process is bounded by a 180-second deadline and a 16-MiB log limit.
 
 Each run sends 64 ordered 16-KiB application messages and requires the server
 to echo each parsed message byte-for-byte, for exactly 1 MiB in each direction.
@@ -334,6 +345,26 @@ same-session arms and accepted before external classifier/active-probe work.
 
 ## Known classifier-visible residuals
 
+There are now two deliberately separate native OpenSSL contracts:
+
+- `openssl-diagnostic` is the stock/default-off negative control. It retains
+  the measured two-of-six result below and must not change when linked to the
+  patched library. This protects BaseFWX and every unconfigured `SSL_CTX`.
+- `openssl-chrome151` is the normal client selection. It enables YUME's
+  additive patch on the checksum-pinned OpenSSL 3.5.7 tree through
+  `SSL_CTX_ctrl`. It fails closed if that capability or Brotli is absent. The
+  patch emits independent per-connection cipher/group/version/extension
+  GREASE (with the group value shared by `supported_groups` and `key_share`),
+  brackets a shuffled middle block with distinct GREASE extensions, shuffles
+  custom SCT/ALPS/ECH blocks together with built-ins, and emits only
+  uncompressed EC point format. Padding and PSK are excluded from the shuffle
+  and constructed on the final packet, preserving length and binder semantics.
+
+The positive wire gate renders 12 fresh SSL objects from one long-lived
+context and checks the six rows, GREASE value relationships, custom-extension
+interleaving, varying JA3 order, and exact JA4. This is a ClientHello structure
+gate, not proof that an entire YUME session is indistinguishable from Chrome.
+
 TLS remains the weakest classifier-visible layer, but the shape of that weakness
 changed and the earlier description here was wrong. It claimed stock OpenSSL
 could not be driven close to Chrome at all. Measured against OpenSSL 3.5.6, the
@@ -347,8 +378,9 @@ number OpenSSL does not own internally; `0x0005` comes from
 refuses internally-owned numbers; and `0x0016`, which OpenSSL offers and the
 browser does not, is suppressed with `SSL_OP_NO_ENCRYPT_THEN_MAC`.
 
-Those three lists are what JA4 hashes, and the measured result is an exact
-match against the committed capture:
+Those three lists, and only those three lists, are what JA4 hashes — so the
+measured result is an exact JA4 match against the committed capture, and an
+exact match on nothing wider than that:
 
 ```
 capture JA4:  t13d1516h2_8daaf6152771_806a8c22fdea
@@ -363,26 +395,91 @@ on every connection since v110, which is what broke JA3 as a Chrome
 discriminator and motivated JA4's sorted, GREASE-excluding construction. There
 is no stable order to match.
 
-What stock OpenSSL still cannot do, and what patching its internals would be
-required to fix: GREASE is absent from the cipher list, `supported_groups`,
-`supported_versions` and `key_share`; both injected GREASE extensions land at
-the front rather than first-and-last, because `add_custom_ext` prepends; and
-`compress_certificate` advertises OpenSSL's zlib+zstd rather than the browser's
-brotli. The two GREASE extension types are also fixed per `SSL_CTX` rather than
+**Matching JA4 is not matching the ClientHello, and the difference is not
+academic.** JA4 hashes three sorted, GREASE-excluding lists. Everything else in
+the first flight is outside what it can see, and measured against the same
+capture the following are all still different on the wire:
+
+| Residual | Capture | `openssl-diagnostic` | |
+| --- | --- | --- | --- |
+| GREASE in `cipher_suites` / `supported_groups` / `supported_versions` / `key_share` | present | absent | open |
+| GREASE extension placement | first and last | both at the front — `add_custom_ext` prepends | open |
+| Extension emission order | permuted per connection | fixed | open |
+| `ec_point_formats` (`0x000b`) | `[0]` | `[0, 1, 2]` | open |
+| `key_share` entries | GREASE, `0x11ec` (1216 B), `0x001d` (32 B) | GREASE absent; both real shares offered | **closed** |
+| `compress_certificate` (`0x001b`) | one algorithm, 3-byte body | brotli alone, 3-byte body | **closed\*** |
+
+For the stock `openssl-diagnostic` control, two rows are closed and the other
+four are unreachable without patching OpenSSL. Each verdict below was probed
+against the library rather than reasoned about:
+
+- **`key_share` — closed.** `SSL_CTX_set1_groups_list` emits a share for every
+  group whose name carries a `*` prefix.
+  `openssl_selection.key_share_groups` now names both real groups, which grew
+  the extension body from 1222 to 1258 bytes. The capture is 1263; the
+  remaining five bytes are the GREASE share, which stock OpenSSL cannot
+  express.
+- **`compress_certificate` — closed\*, and build-dependent.** This is a
+  build-flag limit, not an API limit: `SSL_CTX_set1_cert_comp_preference`
+  returns 0 for brotli and 1 for zstd on a `-DZLIB -DZSTD` build.
+  `scripts/ensure-openssl.sh` now configures `enable-brotli`, and against such
+  a build the backend emits `020002` — brotli alone, a 3-byte body, exactly the
+  length the capture records. The diagnostic backend records a visible
+  degradation when Brotli is absent; `openssl-chrome151` refuses to start, and
+  the patched source build fails closed without the Brotli development files.
+
+  \* The asterisk is real. The committed fixture records only the *length* of
+  `0x001b`, not the algorithm value, so "brotli" comes from Chrome's documented
+  behaviour rather than our own capture. **Recapture the value before treating
+  this row as genuinely matched.**
+- **GREASE code points — rejected by the API.** `SSL_CTX_set1_groups_list`
+  returns 0 for `0x0a0a`, `GREASE`, `0x2a2a` and any other unnamed code point,
+  and `SSL_CTX_set_cipher_list` / `SSL_CTX_set_ciphersuites` likewise refuse
+  one. OpenSSL will not carry a code point it does not implement, which is what
+  makes GREASE in the cipher list, `supported_groups`, `supported_versions` and
+  `key_share` unreachable.
+- **GREASE extension placement — structurally impossible.** Registering two
+  custom extensions emits both at the very front; the last extension is always
+  an OpenSSL built-in. A custom extension cannot be last, so the browser's
+  first-and-last GREASE pair cannot be built.
+- **Extension order — no setter exists.** OpenSSL has
+  `SSL_client_hello_get_extension_order`, a server-side getter for inspecting
+  someone else's hello. There is no client-side ordering control, and therefore
+  no way to permute per connection the way Chrome has since v110.
+- **`ec_point_formats` — no setter exists.** Only `SSL_CTRL_GET_EC_POINT_FORMATS`
+  is defined; every context tested emitted `[0, 1, 2]`.
+
+The two GREASE extension types are likewise fixed per `SSL_CTX` rather than
 redrawn per connection, because `SSL_CTX_add_custom_ext` binds the extension
 number at registration time; the starting point is drawn from the CSPRNG so the
 values vary across installs and restarts, but one long-lived context reuses
-them. JA4 excludes GREASE, so those do not move JA4 — but they are
-real, they are visible to anything that inspects the raw ClientHello, and they
-are why this backend is still not a parity claim. The exact gap is recorded in
-`known_tls_divergence` in `config/transport_profiles.json` and re-derived from
-emitted bytes by the same test, so it cannot widen unnoticed.
+them.
 
-The experimental Linux `chrome151` backend isolates pinned uTLS `v1.8.2` in a
+So the honest stock bound remains: **stock OpenSSL closes two of six.** The
+new default-off patch implements the other four for `openssl-chrome151`; it
+does not rewrite or relax this negative control.
+
+**JA3 does not match, and the way it fails is worse than a mismatch.** JA3
+preserves extension emission order and hashes `ec_point_formats`, so this
+backend produces a stable
+`771,…,18-17613-65037-65281-0-11-10-35-5-16-23-13-43-45-51-27,…,0-1-2` string
+that is not any Chrome ordering. Because the order is fixed, that JA3 is
+*constant across every connection this backend makes*, where a real Chrome
+client emits a fresh JA3 each time. A stable Chrome-labelled JA3 is a signal in
+its own right, not a step toward parity. Do not report JA3 agreement as
+evidence for this backend, and do not report the JA4 match as byte parity: the
+two claims are not the same size.
+
+The exact stock gap is recorded in `known_tls_divergence` in
+`config/transport_profiles.json`. `tests/test_yume_native_tls_wire.py`
+re-derives every diagnostic row from emitted bytes, then separately gates the
+patched backend across multiple SSL objects sharing one context.
+
+The legacy Linux `chrome151` backend isolates pinned uTLS `v1.8.2` in a
 per-connection helper built with exact Go `1.26.5`. The C++ parent establishes
 the routed TCP socket, the helper emits the custom Chrome 151 first flight and
 returns authenticated certificate metadata plus the mandatory TLS exporter
-over a private socketpair. It is implemented but deliberately not the default:
+over a private socketpair. It is implemented but no longer the default:
 five-run normalized on-wire parity and the local handshake/throughput gates now
 pass. The bounded negative certificate/exporter and process-lifecycle matrix,
 process ramps, reconnect storm, and segmented full-speed loopback soak also
@@ -390,17 +487,14 @@ pass. Matched WAN, one uninterrupted deployed-network soak, exact-Chrome
 same-session capture, classifier/active-probe evidence, and independent review
 remain incomplete.
 
-The Go helper is therefore **retained**, not scheduled for removal in this
-checkpoint. Reaching exact JA4 and exact non-GREASE list equality in the stock
-OpenSSL C++ path is valuable, but it is not the same as passing the helper's raw
-first-flight gate: GREASE placement/rotation and brotli-only certificate
-compression remain observably different. Removing Go now would narrow the
-available stealth backend and invalidate its wire/lifecycle/reproducibility
-evidence. Reconsider removal only when a C++ backend passes the same normalized
-raw-wire, same-session, classifier, process-lifecycle, and reproducible-build
-gates; any removal must then update the profile registry, generated consumers,
-tests, packaging, and evidence together. The helper stays experimental,
-Linux-only, opt-in, and `OFF` in a default build.
+The Go helper is therefore **retained as temporary qualification evidence**,
+but normal runtime selects `openssl-chrome151` and does not launch it. Existing
+helper results do not qualify the replacement. Remove the helper only after the
+native backend passes complete handshake/transcript, certificate, hostname,
+pin, ALPN, 32-byte exporter, cancellation, reconnect storm, resumed/PSK
+ordering, soak, sanitizer, reproducible-build, same-session, classifier, and
+independent-review gates. Removal must update the registry, generated
+consumers, tests, packaging, capture tools, and evidence together.
 
 Each helper connection currently creates fresh uTLS state without a session
 cache, so reconnects always exercise a full TLS 1.3 handshake. The committed
@@ -433,7 +527,11 @@ goal, not a current security claim. Move toward it in this order:
    key-share geometry, padding, and lengths while normalizing only documented
    entropy. A fresh same-session normal-Chrome NetLog plus wire recapture is
    still required for release evidence quality. A matching JA3/JA4 label is
-   insufficient.
+   insufficient. Separately, the native `openssl-chrome151` byte gate closes
+   all six pinned ClientHello structure rows across 12 SSL objects sharing one
+   context. That native gate has not inherited the helper's handshake,
+   exporter, validation, lifecycle, reconnect, soak, or reproducibility
+   evidence; those remain open.
 3. **End-to-end profile coherence.** Capture a real YUME connection and reject
    any TLS, HTTP header, client-hint, H2 setting/priority, WebSocket, certificate,
    cover-site, or server-header contradiction. Validate both admitted and

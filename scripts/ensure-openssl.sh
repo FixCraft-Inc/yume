@@ -111,11 +111,126 @@ yume_openssl_download() {
     mv -- "${tmp_output}" "${output}"
 }
 
+# Apply patches/openssl/series to an extracted OpenSSL source tree.
+#
+# Every patch in the series must be additive and
+# default-off, so the resulting library is byte-identical to stock unless a
+# caller opts in -- BaseFWX and the rest of the tree link this same build.
+#
+# A rejected hunk fails the build. Continuing unpatched would silently produce
+# a library missing the ClientHello properties the parity backend needs, and
+# that failure would only surface later as a wire-gate mismatch.
+# OpenSSL can only offer a certificate-compression algorithm it was compiled
+# with, so brotli is a Configure-time decision, not a runtime one. Chrome offers
+# brotli alone; a build without it can only advertise zlib/zstd, which is a
+# visible ClientHello difference. The patched backend is the default, so a
+# non-stock series fails closed when Brotli is unavailable; a deliberately
+# stock diagnostic build may still warn.
+yume_openssl_brotli_available() {
+    local probe=""
+    for probe in /usr/include/brotli/encode.h /usr/local/include/brotli/encode.h; do
+        [[ -f "${probe}" ]] && return 0
+    done
+    if command -v pkg-config >/dev/null 2>&1 \
+        && pkg-config --exists libbrotlienc libbrotlidec; then
+        return 0
+    fi
+    return 1
+}
+
+# Short identity for the current patch series, folded into the install prefix.
+#
+# Without this, a cached prefix built from a DIFFERENT series would be reused
+# silently -- the cache key would say "openssl-3.5.7" whether the tree was
+# stock or carried YUME's ClientHello changes. Editing a patch would then appear
+# to do nothing until someone cleared the cache by hand. Hashing the series
+# means a changed patch set is simply a different prefix.
+yume_openssl_series_tag() {
+    local series_dir="$1"
+    local series_file="${series_dir}/series"
+    local entry=""
+    local digest=""
+    local manifest=""
+
+    [[ -f "${series_file}" ]] || { printf 'stock'; return 0; }
+
+    manifest="$(yume_openssl_hash_file "${series_file}" || true)"
+    while IFS= read -r entry || [[ -n "${entry}" ]]; do
+        entry="${entry%%#*}"
+        entry="${entry#"${entry%%[![:space:]]*}"}"
+        entry="${entry%"${entry##*[![:space:]]}"}"
+        [[ -z "${entry}" ]] && continue
+        if [[ -f "${series_dir}/${entry}" ]]; then
+            manifest+=" $(yume_openssl_hash_file "${series_dir}/${entry}" || true)"
+        else
+            manifest+=" missing:${entry}"
+        fi
+    done < "${series_file}"
+
+    # An empty series is the stock tree, so name it that way rather than
+    # burning a hash on "no patches applied".
+    if [[ "${manifest}" != *" "* ]]; then
+        printf 'stock'
+        return 0
+    fi
+    digest="$(printf '%s' "${manifest}" | (sha256sum 2>/dev/null || shasum -a 256) | awk '{print $1}')"
+    printf 'p%s' "${digest:0:12}"
+}
+
+yume_openssl_apply_patches() {
+    local source_dir="$1"
+    local series_dir="$2"
+    local series_file="${series_dir}/series"
+    local entry=""
+    local applied=0
+
+    if [[ ! -f "${series_file}" ]]; then
+        yume_openssl_log "No OpenSSL patch series at ${series_file}; building stock."
+        return 0
+    fi
+    if ! command -v patch >/dev/null 2>&1; then
+        yume_openssl_error "patch(1) is required to apply the OpenSSL patch series."
+        return 1
+    fi
+
+    while IFS= read -r entry || [[ -n "${entry}" ]]; do
+        entry="${entry%%#*}"
+        entry="${entry#"${entry%%[![:space:]]*}"}"
+        entry="${entry%"${entry##*[![:space:]]}"}"
+        [[ -z "${entry}" ]] && continue
+        case "${entry}" in
+            /*|*..*)
+                yume_openssl_error "Refusing unsafe patch path in series: ${entry}"
+                return 1
+                ;;
+        esac
+        if [[ ! -f "${series_dir}/${entry}" ]]; then
+            yume_openssl_error "Patch listed in series is missing: ${entry}"
+            return 1
+        fi
+        yume_openssl_log "Applying OpenSSL patch ${entry}..."
+        if ! patch -p1 --batch --forward --directory="${source_dir}" \
+                 --input="${series_dir}/${entry}"; then
+            yume_openssl_error "OpenSSL patch failed to apply cleanly: ${entry}"
+            return 1
+        fi
+        applied=$((applied + 1))
+    done < "${series_file}"
+
+    if (( applied == 0 )); then
+        yume_openssl_log "OpenSSL patch series is empty; building stock source."
+    else
+        yume_openssl_log "Applied ${applied} OpenSSL patch(es)."
+    fi
+    return 0
+}
+
 yume_openssl_build_fallback() (
     set -euo pipefail
 
     local cache_root="$1"
     local prefix="$2"
+    local patch_dir="$3"
     local version="${YUME_OPENSSL_SOURCE_VERSION}"
     local archive_dir="${cache_root}/downloads"
     local archive="${archive_dir}/openssl-${version}.tar.gz"
@@ -124,8 +239,12 @@ yume_openssl_build_fallback() (
     local actual_hash=""
     local jobs="${YUME_OPENSSL_BUILD_JOBS:-2}"
 
+    # The prefix is deleted and rebuilt below, so it must be exactly the path
+    # this function derives -- never a caller-supplied directory. The series tag
+    # is part of that identity: openssl-<version>-<stock|pNNNNNNNNNNNN>.
     if [[ "${cache_root}" != /* || "${cache_root}" == "/" ||
-          "${prefix}" != "${cache_root}/openssl-${version}" ]]; then
+          "${prefix}" != "${cache_root}/openssl-${version}-"* ||
+          "${prefix}" == *"/.."* ]]; then
         yume_openssl_error "Refusing unsafe OpenSSL cache or install prefix."
         return 1
     fi
@@ -161,6 +280,13 @@ yume_openssl_build_fallback() (
     trap 'rm -rf -- "${work_dir}"' EXIT
     tar -xzf "${archive}" -C "${work_dir}" --strip-components=1
 
+    # Patch the verified source before configuring it. Order matters: the
+    # checksum above covers the pristine upstream archive, and the series is
+    # what turns it into YUME's build.
+    if ! yume_openssl_apply_patches "${work_dir}" "${patch_dir}"; then
+        return 1
+    fi
+
     case "${prefix}" in
         "${cache_root}"/openssl-*) rm -rf -- "${prefix}" ;;
         *)
@@ -173,6 +299,21 @@ yume_openssl_build_fallback() (
         yume_openssl_error "YUME_OPENSSL_BUILD_JOBS must be a positive integer."
         return 1
     fi
+    local brotli_option="no-brotli"
+    if yume_openssl_brotli_available; then
+        brotli_option="enable-brotli"
+    elif [[ "$(yume_openssl_series_tag "${patch_dir}")" != "stock" ]]; then
+        yume_openssl_error \
+            "The patched openssl-chrome151 backend requires libbrotli development files."
+        return 1
+    else
+        yume_openssl_warn \
+            "libbrotli development headers were not found; building OpenSSL without \
+brotli. Certificate compression will offer zlib/zstd instead of the cover \
+profile's brotli, which is visible in the ClientHello. Install libbrotli-dev to \
+close it."
+    fi
+
     yume_openssl_log "Building OpenSSL ${version} with ${jobs} job(s)..."
     (
         cd "${work_dir}"
@@ -180,7 +321,7 @@ yume_openssl_build_fallback() (
             --prefix="${prefix}" \
             --openssldir="${prefix}/ssl" \
             --libdir=lib \
-            shared zlib enable-zstd no-tests
+            shared zlib enable-zstd "${brotli_option}" no-tests
         make -j"${jobs}" build_sw
         make install_sw install_ssldirs
         # install_sw intentionally omits the request configuration.  CI uses
@@ -218,10 +359,26 @@ yume_openssl_ensure() {
     local prefix=""
     local found_version=""
     local force_pinned="${YUME_OPENSSL_FORCE_PINNED:-0}"
+    local patch_dir="${YUME_OPENSSL_PATCH_DIR:-}"
+    local series_tag=""
+
+    if [[ -z "${patch_dir}" ]]; then
+        patch_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/patches/openssl"
+    fi
+    series_tag="$(yume_openssl_series_tag "${patch_dir}")"
 
     if [[ "${force_pinned}" != "0" && "${force_pinned}" != "1" ]]; then
         yume_openssl_error "YUME_OPENSSL_FORCE_PINNED must be 0 or 1."
         return 1
+    fi
+    # A non-stock series can only be satisfied by our own build. The host
+    # library is unpatched by definition and there is no capability probe for
+    # "has YUME's ClientHello patches", so skip host detection entirely rather
+    # than accept a library that silently lacks them.
+    if [[ "${series_tag}" != "stock" && "${force_pinned}" == "0" ]]; then
+        yume_openssl_log \
+            "OpenSSL patch series ${series_tag} is active; the host library cannot satisfy it."
+        force_pinned=1
     fi
     if [[ "${force_pinned}" == "0" ]] && yume_openssl_detect; then
         found_version="$(pkg-config --modversion openssl)"
@@ -235,7 +392,7 @@ yume_openssl_ensure() {
         yume_openssl_error "OpenSSL cache root must be a writable directory below the filesystem root."
         return 1
     fi
-    prefix="${cache_root}/openssl-${YUME_OPENSSL_SOURCE_VERSION}"
+    prefix="${cache_root}/openssl-${YUME_OPENSSL_SOURCE_VERSION}-${series_tag}"
 
     if yume_openssl_activate_prefix "${prefix}" && yume_openssl_detect; then
         found_version="$(pkg-config --modversion openssl)"
@@ -257,7 +414,7 @@ yume_openssl_ensure() {
                 return 1
             fi
         done
-        yume_openssl_build_fallback "${cache_root}" "${prefix}" || return 1
+        yume_openssl_build_fallback "${cache_root}" "${prefix}" "${patch_dir}" || return 1
         if ! yume_openssl_activate_prefix "${prefix}" || ! yume_openssl_detect; then
             yume_openssl_error "The OpenSSL fallback completed but ML-DSA-87 is unavailable."
             return 1

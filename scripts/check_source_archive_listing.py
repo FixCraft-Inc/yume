@@ -9,11 +9,17 @@ import re
 
 
 FORBIDDEN_ROOTS = {
-    ".cache", ".claude", ".codex", ".wrangler", "basefwx", "debian",
-    "DEV_services", "third_party", "vendor",
+    ".agents", ".cache", ".claude", ".codex", ".private",
+    ".pytest_cache", ".secrets", ".wrangler", "basefwx", "bins", "debian",
+    "DEV_services", "third_party", "vendor", "yume-bench-results",
+    "yume-lan-kit",
 }
-FORBIDDEN_ANYWHERE = {".git", ".private", ".secrets"}
-FORBIDDEN_FILES = {"AGENTS.md", "AI_NOTES.md"}
+FORBIDDEN_ANYWHERE = {
+    ".git", ".agents", ".cache", ".claude", ".codex", ".jekyll-cache",
+    ".private", ".pytest_cache", ".secrets", ".wrangler", "__pycache__",
+}
+FORBIDDEN_BASENAMES = {".DS_Store"}
+FORBIDDEN_ROOT_FILES = {"AGENTS.md", "AI_NOTES.md", "opencode.json"}
 FORBIDDEN_SUFFIXES = (".log", ".trace", ".out", ".pyc", ".tar.xz")
 GENERATED_ROOT_RE = re.compile(r"(?:build(?:-[^/]+)?|obj-[^/]+)")
 
@@ -36,9 +42,11 @@ def rejected_paths(names: list[str], prefix: str) -> list[str]:
         if not relative:
             continue
         root = relative[0]
-        if (root in FORBIDDEN_ROOTS or root in FORBIDDEN_FILES or
+        if (root in FORBIDDEN_ROOTS or root in FORBIDDEN_ROOT_FILES or
                 GENERATED_ROOT_RE.fullmatch(root) is not None or
                 any(part in FORBIDDEN_ANYWHERE for part in relative) or
+                any(part in FORBIDDEN_BASENAMES for part in relative) or
+                relative[:2] == ["website", "_site"] or
                 name.endswith(FORBIDDEN_SUFFIXES)):
             rejected.append(original)
     return rejected

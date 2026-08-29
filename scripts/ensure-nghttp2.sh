@@ -112,6 +112,18 @@ yume_nghttp2_build_fallback() (
     local actual_hash=""
     local jobs="4"
 
+    if [[ -n "${YUME_NGHTTP2_BUILD_JOBS:-}" ]]; then
+        if [[ ! "${YUME_NGHTTP2_BUILD_JOBS}" =~ ^[1-9][0-9]*$ ]]; then
+            yume_nghttp2_error "YUME_NGHTTP2_BUILD_JOBS must be a positive integer."
+            return 1
+        fi
+        jobs="${YUME_NGHTTP2_BUILD_JOBS}"
+    elif command -v nproc >/dev/null 2>&1; then
+        jobs="$(nproc)"
+    elif command -v sysctl >/dev/null 2>&1; then
+        jobs="$(sysctl -n hw.ncpu 2>/dev/null || printf '4')"
+    fi
+
     mkdir -p "${archive_dir}" "${cache_root}/locks"
     if command -v flock >/dev/null 2>&1; then
         exec 8>"${cache_root}/locks/nghttp2-${version}.lock"
@@ -168,11 +180,6 @@ yume_nghttp2_build_fallback() (
         -DBUILD_SHARED_LIBS=OFF \
         -DBUILD_STATIC_LIBS=ON \
         -DBUILD_TESTING=OFF
-    if command -v nproc >/dev/null 2>&1; then
-        jobs="$(nproc)"
-    elif command -v sysctl >/dev/null 2>&1; then
-        jobs="$(sysctl -n hw.ncpu 2>/dev/null || printf '4')"
-    fi
     cmake --build "${work_dir}/build" --parallel "${jobs}"
     cmake --install "${work_dir}/build"
 )

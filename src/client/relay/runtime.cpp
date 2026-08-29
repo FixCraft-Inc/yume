@@ -42,6 +42,30 @@ crypto::Bytes b64_to_bytes(const std::string& value) {
     return crypto::Bytes(raw.begin(), raw.end());
 }
 
+bool report_stop_callback_failure(std::string* error,
+                                  const char* message,
+                                  const char* detail = nullptr) noexcept {
+    try {
+        std::string formatted(message);
+        if (detail && *detail) {
+            formatted += ": ";
+            formatted += detail;
+        }
+        util::log_warn(formatted);
+        if (error) *error = std::move(formatted);
+    } catch (...) {
+        // Reporting a lifecycle failure must not let another exception escape
+        // an executor completion or cross the local-control boundary.
+        if (error) {
+            try {
+                *error = message;
+            } catch (...) {
+            }
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 struct RelayRuntime::OutboundTransfer {
@@ -515,7 +539,9 @@ bool RelayRuntime::send_bytes_path(const std::string& peer, const std::filesyste
         transfer_name, error);
 }
 
-bool RelayRuntime::accept_invite(const std::string& invite_id, const std::string& relay_secret_b64, std::string* error) {
+bool RelayRuntime::accept_invite(const std::string& invite_selector,
+                                 const std::string& relay_secret_b64,
+                                 std::string* error) {
     std::lock_guard<std::mutex> lock(mutex_);
     expire_pending_invites_locked(std::chrono::steady_clock::now());
     schedule_pending_invite_expiry_locked();
@@ -539,7 +565,7 @@ bool RelayRuntime::accept_invite(const std::string& invite_id, const std::string
         }
         return match;
     };
-    auto it = find_invite(invite_id);
+    auto it = find_invite(invite_selector);
     if (it == incoming_invites_.end()) {
         if (error) {
             *error = ambiguous ? "invite selector is ambiguous" : "invite not found";
@@ -648,7 +674,9 @@ bool RelayRuntime::accept_invite(const std::string& invite_id, const std::string
     return true;
 }
 
-bool RelayRuntime::reject_invite(const std::string& invite_id, const std::string& reason, std::string* error) {
+bool RelayRuntime::reject_invite(const std::string& invite_selector,
+                                 const std::string& reason,
+                                 std::string* error) {
     std::lock_guard<std::mutex> lock(mutex_);
     expire_pending_invites_locked(std::chrono::steady_clock::now());
     schedule_pending_invite_expiry_locked();
@@ -672,7 +700,7 @@ bool RelayRuntime::reject_invite(const std::string& invite_id, const std::string
         }
         return match;
     };
-    auto it = find_invite(invite_id);
+    auto it = find_invite(invite_selector);
     if (it == incoming_invites_.end()) {
         if (error) {
             *error = ambiguous ? "invite selector is ambiguous" : "invite not found";
@@ -1929,20 +1957,26 @@ void RelayRuntime::send_admin_response(
     }
 }
 
-void RelayRuntime::invoke_stop_callback() {
-    std::function<void()> callback;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        callback = stop_callback_;
-    }
-    if (!callback) return;
+bool RelayRuntime::invoke_stop_callback(std::string* error) noexcept {
+    if (error) error->clear();
     try {
+        std::function<void()> callback;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            callback = stop_callback_;
+        }
+        if (!callback) {
+            return report_stop_callback_failure(
+                error, "relay runtime stop callback is unavailable");
+        }
         callback();
+        return true;
     } catch (const std::exception& ex) {
-        util::log_warn(
-            std::string("relay runtime stop callback failed: ") + ex.what());
+        return report_stop_callback_failure(
+            error, "relay runtime stop callback failed", ex.what());
     } catch (...) {
-        util::log_warn("relay runtime stop callback failed");
+        return report_stop_callback_failure(
+            error, "relay runtime stop callback failed");
     }
 }
 

@@ -125,10 +125,9 @@ struct ServerConfig {
     bool ipc_enable{true};
     std::string ipc_path;
     bool federation_enable{false};
-    // True when the operator passed --cluster-bootstrap: the daemon is
-    // an entry point into a federated cluster, expects peers to dial
-    // it but has no outgoing dial-out list of its own. Relaxes the
-    // "federation requires at least one --peer" startup check.
+    // Permits an inbound-only federation entry point with no outbound peer
+    // list. It relaxes only the "federation requires a peer" startup check;
+    // a bootstrap may still configure outbound peers and never enables transit.
     bool cluster_bootstrap{false};
     // True when the operator passed --public-node: hardening preset for
     // a yumed instance reachable from the open internet. Turns the
@@ -229,7 +228,7 @@ struct ServerConfig {
     bool benchmark_enable{false};
     std::vector<std::string> federation_peers;
     std::string federation_identity;
-    std::string federation_anonym_ca;
+    std::string federation_operator_ca;
     std::string operator_keys;
     std::string operator_keys_meta;
     bool boring{false};

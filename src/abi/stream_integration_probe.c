@@ -47,6 +47,184 @@ static int expect_status(const char* operation,
     return 0;
 }
 
+// Exercises the read-only in-process operation surface against a live server:
+// sizing/retry, one real federation document, and fail-closed refusal of both
+// an unknown operation and a mutating admin-socket operation.
+static int probe_server_request_json(yume_server* server) {
+    size_t needed = 0;
+    char* buffer = NULL;
+    int status = yume_server_request_json(
+        server, "federation.status", NULL, NULL, 0, &needed);
+    if (status != YUME_STATUS_BUFFER_TOO_SMALL || needed < 2) {
+        report_failure("yume_server_request_json sizing", status, server);
+        return 0;
+    }
+
+    buffer = (char*)malloc(needed);
+    if (!buffer) {
+        fprintf(stderr, "failed to allocate %zu bytes for federation status\n",
+                needed);
+        return 0;
+    }
+    status = yume_server_request_json(
+        server, "federation.status", "{}", buffer, needed, NULL);
+    if (status != YUME_STATUS_OK) {
+        report_failure("yume_server_request_json", status, server);
+        free(buffer);
+        return 0;
+    }
+    // Federation is off in this fixture, and the document must say so rather
+    // than come back empty. A configured peer's secret paths must never
+    // appear on this surface even when they are set.
+    if (!strstr(buffer, "\"schema_version\":1") ||
+        !strstr(buffer, "\"enabled\"") || !strstr(buffer, "\"self\"") ||
+        strstr(buffer, "psk_file") || strstr(buffer, "carrier_secret_file")) {
+        fprintf(stderr, "unexpected federation.status document: %s\n", buffer);
+        free(buffer);
+        return 0;
+    }
+    free(buffer);
+
+    needed = 0;
+    status = yume_server_request_json(
+        server, "runtime.events", "{\"limit\":-1}", NULL, 0, &needed);
+    if (!expect_status("invalid runtime.events sizing", status,
+                       YUME_STATUS_BUFFER_TOO_SMALL, server)) {
+        return 0;
+    }
+    buffer = (char*)malloc(needed);
+    if (!buffer) return 0;
+    buffer[0] = '\0';
+    status = yume_server_request_json(
+        server, "runtime.events", "{\"limit\":-1}",
+        buffer, needed, NULL);
+    if (!expect_status("invalid runtime.events", status,
+                       YUME_STATUS_OK, server) ||
+        !strstr(buffer, "\"ok\":false") ||
+        !strstr(buffer, "limit must be non-negative")) {
+        fprintf(stderr, "unexpected invalid-argument envelope: %s\n", buffer);
+        free(buffer);
+        return 0;
+    }
+    free(buffer);
+
+    needed = 0;
+    status = yume_server_request_json(
+        server, "no.such.op", NULL, NULL, 0, &needed);
+    if (!expect_status("unknown server op sizing", status,
+                       YUME_STATUS_BUFFER_TOO_SMALL, server)) {
+        return 0;
+    }
+    buffer = (char*)malloc(needed);
+    if (!buffer) return 0;
+    buffer[0] = '\0';
+    status = yume_server_request_json(
+        server, "no.such.op", NULL, buffer, needed, NULL);
+    if (!expect_status("unknown server op", status, YUME_STATUS_OK, server) ||
+        !strstr(buffer, "\"ok\":false") ||
+        !strstr(buffer, "read-only embedded server API")) {
+        fprintf(stderr, "unexpected unknown-op envelope: %s\n", buffer);
+        free(buffer);
+        return 0;
+    }
+    free(buffer);
+
+    needed = 0;
+    status = yume_server_request_json(
+        server, "runtime.stop", NULL, NULL, 0, &needed);
+    if (!expect_status("mutating server op sizing", status,
+                       YUME_STATUS_BUFFER_TOO_SMALL, server)) {
+        return 0;
+    }
+    buffer = (char*)malloc(needed);
+    if (!buffer) return 0;
+    buffer[0] = '\0';
+    status = yume_server_request_json(
+        server, "runtime.stop", NULL, buffer, needed, NULL);
+    if (!expect_status("mutating server op", status, YUME_STATUS_OK, server) ||
+        !strstr(buffer, "\"ok\":false") ||
+        !strstr(buffer, "read-only embedded server API")) {
+        fprintf(stderr, "unexpected mutating-op envelope: %s\n", buffer);
+        free(buffer);
+        return 0;
+    }
+    free(buffer);
+    return 1;
+}
+
+// A request sizing call executes its operation before reporting the required
+// output size. Verify that a different request cannot receive that pending
+// output and that retrying a mutating request returns its completed response
+// without executing the mutation a second time.
+static int probe_client_request_json_replay(yume_client* client) {
+    size_t needed = 0;
+    char* buffer = NULL;
+    char tiny_buffer[1] = {'x'};
+    int status = yume_client_request_json(
+        client, "runtime.status", NULL, NULL, 0, &needed, 5000);
+    if (!expect_status("client runtime.status sizing", status,
+                       YUME_STATUS_BUFFER_TOO_SMALL, client)) {
+        return 0;
+    }
+
+    // This different operation must replace the pending runtime.status result.
+    // Its own sizing/retry also verifies that NULL and {} normalize identically.
+    needed = 0;
+    status = yume_client_request_json(
+        client, "directory.list", NULL, NULL, 0, &needed, 5000);
+    if (!expect_status("client directory.list sizing", status,
+                       YUME_STATUS_BUFFER_TOO_SMALL, client) || needed < 2) {
+        return 0;
+    }
+    buffer = (char*)malloc(needed);
+    if (!buffer) {
+        fprintf(stderr, "failed to allocate client request JSON buffer\n");
+        return 0;
+    }
+    status = yume_client_request_json(
+        client, "directory.list", "{}", buffer, needed, NULL, 5000);
+    if (!expect_status("client directory.list retry", status,
+                       YUME_STATUS_OK, client) ||
+        !strstr(buffer, "\"ok\":true") ||
+        !strstr(buffer, "\"result\":[")) {
+        fprintf(stderr, "unexpected directory.list response: %s\n", buffer);
+        free(buffer);
+        return 0;
+    }
+    free(buffer);
+
+    needed = 0;
+    status = yume_client_request_json(
+        client, "runtime.stop", NULL,
+        tiny_buffer, sizeof(tiny_buffer), &needed, 5000);
+    if (!expect_status("client runtime.stop sizing", status,
+                       YUME_STATUS_BUFFER_TOO_SMALL, client) || needed < 2 ||
+        tiny_buffer[0] != 'x') {
+        fprintf(stderr, "runtime.stop sizing modified a short buffer\n");
+        return 0;
+    }
+    buffer = (char*)malloc(needed);
+    if (!buffer) {
+        fprintf(stderr, "failed to allocate runtime.stop JSON buffer\n");
+        return 0;
+    }
+    // runtime.stop has already requested client shutdown. Without response
+    // replay this second call cannot produce a fresh successful result, so an
+    // OK response proves exactly-once execution across the sizing/retry pair.
+    status = yume_client_request_json(
+        client, "runtime.stop", "{}", buffer, needed, NULL, 5000);
+    if (!expect_status("client runtime.stop retry", status,
+                       YUME_STATUS_OK, client) ||
+        !strstr(buffer, "\"ok\":true") ||
+        !strstr(buffer, "\"result\":true")) {
+        fprintf(stderr, "unexpected runtime.stop response: %s\n", buffer);
+        free(buffer);
+        return 0;
+    }
+    free(buffer);
+    return 1;
+}
+
 static int write_exact(yume_stream* stream,
                        const void* data,
                        size_t size) {
@@ -130,6 +308,9 @@ int main(int argc, char** argv) {
         if (!expect_status("zero-time accept", status,
                            YUME_STATUS_WOULD_BLOCK, server) ||
             server_stream != NULL) {
+            goto cleanup;
+        }
+        if (!probe_server_request_json(server)) {
             goto cleanup;
         }
         status = yume_client_start_file(client, argv[2], 15000);
@@ -281,6 +462,10 @@ int main(int argc, char** argv) {
                 goto cleanup;
             }
         }
+    }
+
+    if (!probe_client_request_json_replay(client)) {
+        goto cleanup;
     }
 
     result = 0;

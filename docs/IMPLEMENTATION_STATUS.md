@@ -5,9 +5,31 @@ to overstate. It should stay conservative: implemented means code exists in this
 tree; tested means it has a specific validation path; planned means no supported
 runtime contract should rely on it yet.
 
+The native core/CLI/C-ABI stabilization candidate is not a synchronized
+consumer release. Before publication remediation and commit splitting, its
+aggregate passed
+108/108 full RelWithDebInfo/warnings-as-errors tests, 103/103 client-only ABI
+tests, and 104/104 Debug ASan+UBSan+LeakSanitizer tests. Those results are
+behavioral evidence for the closely related implementation, not exact-source
+qualification of the signed checkpoint after documentation and licensing
+remediation. The GUI source contains only the facade adaptations required to
+compile against the candidate, and the separate Android checkout must be
+re-synchronized and re-qualified later.
+
 YUME raises the cost of blocking and can reduce metadata exposure depending on
 the route. It should not be described as impossible to block, impossible to
 trace, or a replacement for a full anonymity network by itself.
+
+The public code-health findings and their resolved/open state are maintained in
+`docs/CODE_HEALTH.md`. In particular, packaging startability, strict operator
+signing-key loading, history authentication-failure wiping, anonym refresh
+thread ownership, C ABI stream-open rollback ownership, and the optional
+static-Linux curl proof boundary are fixed in the current source. The common
+operator-proof HTTPS boundary now rejects ambiguous endpoints, binds CA
+verification to the configured DNS name or IP literal, and applies a bounded
+request deadline and response limits. The live
+tunnel rollback coverage gap, large coordinator decomposition, and
+exact-candidate release qualification remain open.
 
 ## Masquerade and authorization hardening
 
@@ -70,8 +92,10 @@ file receive, public-node policy, TLS profile selection helpers, transport
 core, and service-queue policy. A registered integration fixture launches two
 real `yumed` nodes and two real clients, waits for reciprocal AUTH-v2
 federation/directory exchange, then checks exact relayed bytes and channel
-close. Final exact-tree sanitizer and repeated integration results are recorded
-in the private handoff rather than inferred from the presence of the fixture.
+close. Final sanitizer and repeated integration results are recorded for the
+pre-remediation aggregate above; the signed checkpoint still needs its own
+exact-tip reconciliation rather than inferring qualification from the presence
+of the fixtures.
 
 ## Capacity, admission, and key tiers
 
@@ -215,30 +239,42 @@ validation, timeout, permission, and test coverage.
 
 ## Federation and multi-hop privacy
 
-Status: AUTH v2 implementation with a real two-node loopback integration gate;
-this is federation, not multi-hop anonymity.
+Status: AUTH v2 single-hop federation with real two-node coverage and a
+three-node line regression; this is federation, not multi-hop anonymity.
 
 - Federation dials now speak AUTH v2 end to end (`yume/federation-v2`): the
   link performs H2-carrier admission, AUTH v2 with a composite identity
   (`--federation-identity`) and TLS-exporter channel binding, a per-peer PSK,
   and ratchet establishment, then rides the same protected-frame path as a
-  client. The accepting peer needs no federation-specific inbound code; it
-  identifies federating peers by their enrolled composite key's
-  `federation_peer_id` auth-keys meta.
+  client. The accepting peer uses the enrolled composite key's unique
+  `federation_peer_id` and required `federation_psk_file` metadata to select
+  that identity's pairwise PSK; it does not reuse the daemon-wide ordinary
+  client PSK.
 - `yume_federation_v2_integration_test` launches two real `yumed` nodes and two
   real clients, proves both links ready, exchanges both directory endpoints,
   and verifies exact relayed bytes plus channel CLOSE. Legacy hop plumbing and
   its inert Argon2 admission controller are removed. Release/soak and
   classifier evidence remain separate gates. It is not a Tor-like onion-
   routing layer.
+- `federation.status` and `federation.topology` provide one redacted source of
+  truth for configured and authenticated inbound-only peers, distinct overall,
+  outbound, and inbound link state, advertised endpoints, edges, and active relay
+  channels. `yume-net-map` and the attached daemon console use the same
+  topology document and renderer. The document explicitly reports
+  `transit.supported=false` and `transit.max_hops=1`.
+- `yume_federation_cluster_integration_test` launches three nodes in a line,
+  gives the A-B and B-C adjacencies different pairwise PSKs, proves all direct
+  links, and holds the far endpoint absent and unroutable across multiple
+  directory refresh cycles.
 
-Planned but not implemented:
+Designed but not implemented:
 
-- Client-selected guard/middle/service or exit paths.
-- Per-hop layered encryption where each server knows only adjacent hops.
-- Signed node and service descriptors for path selection.
-- Browser-safe circuit telemetry.
-- Tests proving no single non-client node sees the whole route and plaintext.
+- Relay-channel-only transit through a hub, guarded by explicit operator opt-in,
+  a bounded visible route vector, per-hop budgets, and pinned end identities.
+- Exit/proxy traffic transit is explicitly out of scope; `yumed` remains a
+  terminating proxy for SOCKS, forwards, and packet/TUN traffic.
+- The complete staged design and required negative/evidence gates are in
+  [`protocol/YUME_2_0_FEDERATION_TRANSIT.md`](protocol/YUME_2_0_FEDERATION_TRANSIT.md).
 
 ## Browser
 

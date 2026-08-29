@@ -71,11 +71,30 @@ public:
             ImGui::TextColored(p.muted,
                                "Select a channel or open one from the Directory page.");
         } else {
-            auto history = ctx.client->chat_history(active_channel_);
-            for (auto const& msg : history) {
-                ImGui::TextWrapped("<%s> %s",
-                                   msg.from_endpoint_id.c_str(),
-                                   msg.text.c_str());
+            std::string history_error;
+            const auto history = ctx.client->chat_history(
+                active_channel_, 200U, &history_error);
+            if (!history_error.empty()) {
+                ui::message_text(p.error, "Saved history could not be read: %s",
+                                 history_error.c_str());
+            } else if (!history.available) {
+                ui::message_text(
+                    p.warning, "Saved history is unavailable: %s",
+                    history.storage_error.c_str());
+            } else {
+                if (history.messages.empty()) {
+                    ImGui::TextColored(p.muted, "No saved messages.");
+                }
+                for (auto const& msg : history.messages) {
+                    const char* sender = msg.outgoing
+                        ? "You" : msg.from_endpoint_id.c_str();
+                    ImGui::TextWrapped("<%s> %s", sender, msg.text.c_str());
+                }
+                if (history.truncated) {
+                    ui::message_text(
+                        p.warning,
+                        "Showing the newest saved messages; older history was omitted.");
+                }
             }
             ImGui::Separator();
             ImGui::SetNextItemWidth(-110);

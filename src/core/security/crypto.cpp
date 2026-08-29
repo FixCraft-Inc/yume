@@ -6,6 +6,7 @@
 
 #include "core/security/crypto.hpp"
 
+#include "core/encoding/hex.hpp"
 #include "core/security/secret_file.hpp"
 #include "core/security/secure_erase.hpp"
 
@@ -15,7 +16,6 @@
 
 #include <openssl/err.h>
 #include <openssl/hmac.h>
-#include <openssl/kdf.h>
 #include <openssl/pem.h>
 #include <openssl/rand.h>
 #include <openssl/crypto.h>
@@ -33,17 +33,6 @@ namespace {
 
 constexpr std::size_t kSha256Bytes = 32U;
 constexpr std::size_t kChaCha20Poly1305TagBytes = 16U;
-
-std::string DigestHex(std::span<const std::uint8_t> digest) {
-    static constexpr char kHex[] = "0123456789abcdef";
-    std::string out;
-    out.reserve(digest.size() * 2U);
-    for (const std::uint8_t byte : digest) {
-        out.push_back(kHex[byte >> 4U]);
-        out.push_back(kHex[byte & 0x0FU]);
-    }
-    return out;
-}
 
 }  // namespace
 
@@ -101,7 +90,7 @@ Bytes Sha256Stream::Finish() {
 std::string Sha256Stream::FinishHex() {
     Bytes digest = Finish();
     try {
-        std::string encoded = DigestHex(digest);
+        std::string encoded = encoding::hex_lower(digest);
         security::secure_erase(digest);
         return encoded;
     } catch (...) {
@@ -310,180 +299,6 @@ Bytes sign_message(EVP_PKEY* privkey, const Bytes& message) {
     }
     sig.resize(sig_len);
     return sig;
-}
-
-Bytes generate_session_key(EVP_PKEY* ecdh_local,
-                           EVP_PKEY* ecdh_remote,
-                           std::string_view info,
-                           size_t out_len) {
-    if (!ecdh_local || !ecdh_remote) {
-        throw std::runtime_error("generate_session_key: missing ECDH keys");
-    }
-
-    EVP_PKEY_CTX* dctx = EVP_PKEY_CTX_new(ecdh_local, nullptr);
-    if (!dctx) {
-        throw ssl_error("derive ctx alloc failed");
-    }
-
-    if (EVP_PKEY_derive_init(dctx) != 1) {
-        EVP_PKEY_CTX_free(dctx);
-        throw ssl_error("derive init failed");
-    }
-
-    if (EVP_PKEY_derive_set_peer(dctx, ecdh_remote) != 1) {
-        EVP_PKEY_CTX_free(dctx);
-        throw ssl_error("derive set peer failed");
-    }
-
-    size_t secret_len = 0;
-    if (EVP_PKEY_derive(dctx, nullptr, &secret_len) != 1) {
-        EVP_PKEY_CTX_free(dctx);
-        throw ssl_error("derive size failed");
-    }
-
-    Bytes secret(secret_len);
-    // The raw ECDH output must not outlive this frame; several paths below
-    // throw, so the wipe is tied to scope exit rather than the return.
-    struct SecretWiper {
-        Bytes& bytes;
-        ~SecretWiper() { security::secure_erase(bytes); }
-    } secret_wiper{secret};
-    if (EVP_PKEY_derive(dctx, secret.data(), &secret_len) != 1) {
-        EVP_PKEY_CTX_free(dctx);
-        throw ssl_error("derive failed");
-    }
-    EVP_PKEY_CTX_free(dctx);
-    secret.resize(secret_len);
-
-    EVP_PKEY_CTX* hctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, nullptr);
-    if (!hctx) {
-        throw ssl_error("hkdf ctx alloc failed");
-    }
-
-    if (EVP_PKEY_derive_init(hctx) != 1) {
-        EVP_PKEY_CTX_free(hctx);
-        throw ssl_error("hkdf init failed");
-    }
-
-    if (EVP_PKEY_CTX_set_hkdf_md(hctx, EVP_sha256()) != 1) {
-        EVP_PKEY_CTX_free(hctx);
-        throw ssl_error("hkdf set md failed");
-    }
-
-    if (EVP_PKEY_CTX_set1_hkdf_key(hctx, secret.data(), secret.size()) != 1) {
-        EVP_PKEY_CTX_free(hctx);
-        throw ssl_error("hkdf set key failed");
-    }
-
-    if (info.empty()) {
-        EVP_PKEY_CTX_free(hctx);
-        throw std::runtime_error("hkdf set info failed: empty derivation label");
-    }
-    if (EVP_PKEY_CTX_add1_hkdf_info(
-            hctx, reinterpret_cast<const unsigned char*>(info.data()),
-            info.size()) != 1) {
-        EVP_PKEY_CTX_free(hctx);
-        throw ssl_error("hkdf set info failed");
-    }
-
-    Bytes out(out_len);
-    size_t derived_len = out_len;
-    if (EVP_PKEY_derive(hctx, out.data(), &derived_len) != 1) {
-        EVP_PKEY_CTX_free(hctx);
-        throw ssl_error("hkdf derive failed");
-    }
-    EVP_PKEY_CTX_free(hctx);
-    out.resize(derived_len);
-
-    return out;
-}
-
-EVP_PKEY_ptr generate_x25519_key() {
-    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_X25519, nullptr);
-    if (!ctx) {
-        throw ssl_error("x25519 ctx alloc failed");
-    }
-    if (EVP_PKEY_keygen_init(ctx) != 1) {
-        EVP_PKEY_CTX_free(ctx);
-        throw ssl_error("x25519 keygen init failed");
-    }
-    EVP_PKEY* key = nullptr;
-    if (EVP_PKEY_keygen(ctx, &key) != 1) {
-        EVP_PKEY_CTX_free(ctx);
-        throw ssl_error("x25519 keygen failed");
-    }
-    EVP_PKEY_CTX_free(ctx);
-    return EVP_PKEY_ptr(key, EVP_PKEY_free);
-}
-
-EVP_PKEY_ptr import_x25519_public_key(const Bytes& raw_public_key) {
-    EVP_PKEY* key = EVP_PKEY_new_raw_public_key(
-        EVP_PKEY_X25519,
-        nullptr,
-        raw_public_key.data(),
-        raw_public_key.size());
-    if (!key) {
-        throw ssl_error("x25519 raw public key import failed");
-    }
-    return EVP_PKEY_ptr(key, EVP_PKEY_free);
-}
-
-Bytes export_raw_public_key(EVP_PKEY* key) {
-    if (!key) {
-        throw std::runtime_error("export_raw_public_key: missing key");
-    }
-    size_t len = 0;
-    if (EVP_PKEY_get_raw_public_key(key, nullptr, &len) != 1) {
-        throw ssl_error("x25519 public key size query failed");
-    }
-    Bytes out(len);
-    if (EVP_PKEY_get_raw_public_key(key, out.data(), &len) != 1) {
-        throw ssl_error("x25519 public key export failed");
-    }
-    out.resize(len);
-    return out;
-}
-
-Bytes hkdf_sha256(const Bytes& key_material,
-                  std::string_view info,
-                  size_t out_len,
-                  const Bytes& salt) {
-    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, nullptr);
-    if (!ctx) {
-        throw ssl_error("hkdf ctx alloc failed");
-    }
-    if (EVP_PKEY_derive_init(ctx) != 1) {
-        EVP_PKEY_CTX_free(ctx);
-        throw ssl_error("hkdf init failed");
-    }
-    if (EVP_PKEY_CTX_set_hkdf_md(ctx, EVP_sha256()) != 1) {
-        EVP_PKEY_CTX_free(ctx);
-        throw ssl_error("hkdf set md failed");
-    }
-    if (!salt.empty() && EVP_PKEY_CTX_set1_hkdf_salt(ctx, salt.data(), static_cast<int>(salt.size())) != 1) {
-        EVP_PKEY_CTX_free(ctx);
-        throw ssl_error("hkdf set salt failed");
-    }
-    if (EVP_PKEY_CTX_set1_hkdf_key(ctx, key_material.data(), static_cast<int>(key_material.size())) != 1) {
-        EVP_PKEY_CTX_free(ctx);
-        throw ssl_error("hkdf set key failed");
-    }
-    if (!info.empty() &&
-        EVP_PKEY_CTX_add1_hkdf_info(ctx,
-                                    reinterpret_cast<const unsigned char*>(info.data()),
-                                    static_cast<int>(info.size())) != 1) {
-        EVP_PKEY_CTX_free(ctx);
-        throw ssl_error("hkdf set info failed");
-    }
-    Bytes out(out_len);
-    size_t derived_len = out_len;
-    if (EVP_PKEY_derive(ctx, out.data(), &derived_len) != 1) {
-        EVP_PKEY_CTX_free(ctx);
-        throw ssl_error("hkdf derive failed");
-    }
-    EVP_PKEY_CTX_free(ctx);
-    out.resize(derived_len);
-    return out;
 }
 
 Bytes encrypt_chacha20(const Bytes& data, const Bytes& key, const Bytes& nonce) {

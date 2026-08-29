@@ -17,20 +17,10 @@
 #include <openssl/pem.h>
 #include <openssl/x509v3.h>
 
+#include "core/encoding/hex.hpp"
 #include "util.hpp"
 
 namespace yume::client {
-
-std::string hex_encode(const unsigned char* data, size_t len) {
-    static const char* kHex = "0123456789abcdef";
-    std::string out;
-    out.reserve(len * 2);
-    for (size_t i = 0; i < len; ++i) {
-        out.push_back(kHex[(data[i] >> 4) & 0xF]);
-        out.push_back(kHex[data[i] & 0xF]);
-    }
-    return out;
-}
 
 void warn_security_disabled(const std::string& what, bool boring) {
     if (boring) {
@@ -60,7 +50,8 @@ std::string get_peer_cert_fingerprint(EVP_PKEY* key, SSL* ssl) {
     unsigned char hash[SHA256_DIGEST_LENGTH] = {0};
     SHA256(der, static_cast<size_t>(len), hash);
     OPENSSL_free(der);
-    return hex_encode(hash, SHA256_DIGEST_LENGTH);
+    return encoding::hex_lower(std::span<const std::uint8_t>(
+        hash, SHA256_DIGEST_LENGTH));
 }
 
 crypto::EVP_PKEY_ptr load_pubkey_from_cert(const std::string& path) {

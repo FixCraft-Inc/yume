@@ -6,6 +6,7 @@
 
 #include "core/stealth/obfs_signal.hpp"
 
+#include "core/encoding/hex.hpp"
 #include "core/version.hpp"
 
 #include <openssl/crypto.h>
@@ -151,12 +152,12 @@ std::optional<ParsedAuthority> parse_authority(std::string_view authority,
     return ParsedAuthority{std::move(*normalized), port};
 }
 
-std::string to_hex(const std::uint8_t* data, std::size_t len) {
+std::string random_hex(std::span<const std::uint8_t> bytes) {
     std::string out;
-    out.resize(len * 2);
-    for (std::size_t i = 0; i < len; ++i) {
-        out[2 * i]     = kHexDigits[(data[i] >> 4) & 0x0F];
-        out[2 * i + 1] = kHexDigits[data[i] & 0x0F];
+    out.resize(bytes.size() * 2U);
+    for (std::size_t i = 0; i < bytes.size(); ++i) {
+        out[2U * i] = kHexDigits[(bytes[i] >> 4U) & 0x0FU];
+        out[2U * i + 1U] = kHexDigits[bytes[i] & 0x0FU];
     }
     return out;
 }
@@ -191,7 +192,7 @@ std::string derive_path_token(const crypto::Bytes& signal_key,
     append_u64(msg, static_cast<std::uint64_t>(hour_epoch));
     msg.insert(msg.end(), nonce->begin(), nonce->end());
     crypto::Bytes mac = crypto::hmac_sha256(msg, signal_key);
-    return to_hex(mac.data(), mac.size());
+    return encoding::hex_lower(mac);
 }
 
 std::string build_path(const std::string& token, const std::string& nonce_hex) {
@@ -277,7 +278,7 @@ bool verify_path_token(const std::vector<crypto::Bytes>& signal_keys,
 
 std::string random_nonce_hex() {
     crypto::Bytes raw = crypto::random_bytes(kH2NonceHexLen / 2);
-    return to_hex(raw.data(), raw.size());
+    return random_hex(raw);
 }
 
 AdmissionReplayCache::AdmissionReplayCache(std::size_t max_entries,

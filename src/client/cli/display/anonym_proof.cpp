@@ -20,6 +20,7 @@
 
 #include "client/cli/connect/cert.hpp"
 #include "client/cli/connect/diagnostics.hpp"
+#include "core/encoding/hex.hpp"
 #include "core/protocol/runtime_policy.hpp"
 #include "util.hpp"
 
@@ -54,14 +55,8 @@ std::string certificate_fingerprint_sha256(X509* cert) {
     unsigned char digest[EVP_MAX_MD_SIZE]{};
     unsigned int size = 0;
     if (!cert || X509_digest(cert, EVP_sha256(), digest, &size) != 1) return {};
-    static constexpr char kHex[] = "0123456789abcdef";
-    std::string out;
-    out.reserve(size * 2);
-    for (unsigned int i = 0; i < size; ++i) {
-        out.push_back(kHex[digest[i] >> 4]);
-        out.push_back(kHex[digest[i] & 0x0f]);
-    }
-    return out;
+    return encoding::hex_lower(
+        std::span<const std::uint8_t>(digest, size));
 }
 
 std::string certificate_serial(X509* cert) {
